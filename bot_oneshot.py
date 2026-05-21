@@ -929,8 +929,8 @@ def news_noise_warning(total_news, raw_score, capped_score):
     return "Нормально"
 
 
-def build_signal(tech, news, orderflow, macro):
-    score = tech["score"] + news["score"] + orderflow["score"] + macro["score"]
+def build_signal(tech, news, orderflow, macro, event_risk):
+    score = tech["score"] + news["score"] + orderflow["score"] + macro["score"] + event_risk["score"]
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
 
@@ -985,6 +985,8 @@ def build_signal(tech, news, orderflow, macro):
         risk_note = "Тільки скальп: старший тренд не підтвердив LONG"
     if tech.get("trend") == "UP" and signal == "SHORT":
         risk_note = "Тільки скальп: старший тренд не підтвердив SHORT"
+    if event_risk["risk_level"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"] and signal != "NO SIGNAL":
+        risk_note = f"Подієвий ризик {event_risk['risk_level']} — краще чекати або зменшити позицію"
 
     return signal, signal_type, score, confidence, risk_note
 
@@ -1031,6 +1033,231 @@ def make_trade_plan(signal, signal_type, price, tech):
     }
 
 
+
+# ==========================================================
+# UPCOMING EVENT RISK MODEL
+# Sources used:
+# - EIA schedule logic: Wednesday 10:30 ET
+# - BLS CPI known release dates / schedule page fallback
+# - FOMC known meeting dates
+# - Google News RSS / GDELT for Powell, Fed, OPEC, Iran/US talks
+# ==========================================================
+
+FOMC_EVENTS_2026 = [
+    ("FOMC rate decision", "2026-06-17 18:00", "UTC", "HIGH"),
+    ("FOMC rate decision", "2026-07-29 18:00", "UTC", "HIGH"),
+    ("FOMC rate decision", "2026-09-16 18:00", "UTC", "HIGH"),
+    ("FOMC rate decision", "2026-10-28 18:00", "UTC", "HIGH"),
+    ("FOMC rate decision", "2026-12-09 19:00", "UTC", "HIGH"),
+]
+
+CPI_EVENTS_2026 = [
+    ("US CPI release", "2026-06-10 12:30", "UTC", "HIGH"),
+    ("US CPI release", "2026-07-15 12:30", "UTC", "HIGH"),
+    ("US CPI release", "2026-08-12 12:30", "UTC", "HIGH"),
+    ("US CPI release", "2026-09-10 12:30", "UTC", "HIGH"),
+    ("US CPI release", "2026-10-15 12:30", "UTC", "HIGH"),
+    ("US CPI release", "2026-11-12 13:30", "UTC", "HIGH"),
+    ("US CPI release", "2026-12-10 13:30", "UTC", "HIGH"),
+]
+
+OPEC_EVENTS_2026 = [
+    ("OPEC Monthly Oil Market Report", "2026-06-11 12:00", "UTC", "HIGH"),
+    ("OPEC Monthly Oil Market Report", "2026-07-13 12:00", "UTC", "HIGH"),
+    ("OPEC Monthly Oil Market Report", "2026-08-12 12:00", "UTC", "HIGH"),
+    ("OPEC Monthly Oil Market Report", "2026-09-11 12:00", "UTC", "HIGH"),
+    ("OPEC Monthly Oil Market Report", "2026-10-13 12:00", "UTC", "HIGH"),
+    ("OPEC Monthly Oil Market Report", "2026-11-12 12:00", "UTC", "HIGH"),
+    ("OPEC Monthly Oil Market Report", "2026-12-11 12:00", "UTC", "HIGH"),
+]
+
+EVENT_NEWS_QUERIES = [
+    "Powell speech today tomorrow Federal Reserve oil dollar",
+    "Fed speaker today Powell speech FOMC market calendar",
+    "EIA crude oil inventories today forecast",
+    "OPEC meeting next oil output decision",
+    "Iran US talks oil sanctions Hormuz today",
+]
+
+
+def parse_event_dt(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def next_wednesday_eia_event():
+    now = now_utc()
+    # EIA Weekly Petroleum Status Report is normally Wednesday 10:30 ET.
+    # During US daylight saving time this is 14:30 UTC; otherwise 15:30 UTC.
+    # For simplicity in May-October use 14:30 UTC.
+    days_ahead = (2 - now.weekday()) % 7  # Monday=0, Wednesday=2
+    event_day = (now + timedelta(days=days_ahead)).date()
+    event_dt = datetime(event_day.year, event_day.month, event_day.day, 14, 30, tzinfo=timezone.utc)
+
+    if event_dt <= now:
+        event_dt = event_dt + timedelta(days=7)
+
+    return {
+        "name": "EIA crude oil inventories",
+        "time": event_dt,
+        "impact": "HIGH",
+        "source": "EIA schedule rule",
+        "note": "Щотижневий звіт EIA по запасах нафти, сильний ризик волатильності для Brent/BZ.",
+    }
+
+
+def next_nfp_event():
+    now = now_utc()
+    # NFP is usually first Friday of each month at 08:30 ET.
+    year = now.year
+    month = now.month
+
+    for _ in range(14):
+        first_day = datetime(year, month, 1, 12, 30, tzinfo=timezone.utc)
+        days_until_friday = (4 - first_day.weekday()) % 7
+        event_dt = first_day + timedelta(days=days_until_friday)
+
+        if event_dt > now:
+            return {
+                "name": "US Nonfarm Payrolls / NFP",
+                "time": event_dt,
+                "impact": "HIGH",
+                "source": "NFP schedule rule",
+                "note": "NFP може різко рухати DXY, yields, risk assets і непрямо BZ.",
+            }
+
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+
+    return None
+
+
+def static_future_events():
+    now = now_utc()
+    events = []
+
+    for name, time_text, tz, impact in FOMC_EVENTS_2026 + CPI_EVENTS_2026 + OPEC_EVENTS_2026:
+        event_dt = parse_event_dt(time_text)
+        if event_dt and event_dt > now:
+            events.append({
+                "name": name,
+                "time": event_dt,
+                "impact": impact,
+                "source": "official/known schedule",
+                "note": "Запланована макро/нафтова подія високого впливу.",
+            })
+
+    eia = next_wednesday_eia_event()
+    if eia:
+        events.append(eia)
+
+    nfp = next_nfp_event()
+    if nfp:
+        events.append(nfp)
+
+    events.sort(key=lambda x: x["time"])
+    return events
+
+
+def get_upcoming_event_news():
+    news = []
+    cutoff = now_utc() - timedelta(hours=24)
+
+    for query in EVENT_NEWS_QUERIES:
+        url = f"https://news.google.com/rss/search?q={quote_plus(query + ' when:24h')}&hl=en-US&gl=US&ceid=US:en"
+        response = safe_get(url, timeout=10, retries=1)
+        if not response:
+            continue
+
+        try:
+            root = ET.fromstring(response.content)
+            for item in root.findall(".//item")[:8]:
+                title = item.findtext("title", "")
+                pub_date = item.findtext("pubDate", "")
+                link = item.findtext("link", "")
+                published_at = parse_date(pub_date)
+
+                if published_at and published_at < cutoff:
+                    continue
+
+                if title:
+                    news.append({
+                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                        "source": "Google Event RSS",
+                        "link": link,
+                        "published_at": published_at,
+                    })
+        except Exception as error:
+            print(f"[WARN] Event Google RSS parse error: {error}")
+
+    return deduplicate_news(news)
+
+
+def analyze_event_risk():
+    upcoming = static_future_events()
+    event_news = get_upcoming_event_news()
+    now = now_utc()
+
+    score = 0
+    risk_level = "НИЗЬКИЙ"
+    warnings = []
+    confirmations = []
+
+    important_upcoming = []
+
+    for event in upcoming[:10]:
+        hours_to_event = (event["time"] - now).total_seconds() / 3600
+
+        if hours_to_event <= 2:
+            score -= 30
+            warnings.append(f"Через {round(hours_to_event, 1)} год: {event['name']} — дуже високий ризик волатильності")
+            important_upcoming.append(event)
+        elif hours_to_event <= 8:
+            score -= 18
+            warnings.append(f"Сьогодні/скоро: {event['name']} — краще зменшити плече")
+            important_upcoming.append(event)
+        elif hours_to_event <= 24:
+            score -= 10
+            warnings.append(f"Протягом 24 год: {event['name']}")
+            important_upcoming.append(event)
+        elif hours_to_event <= 72:
+            confirmations.append(f"Найближча подія: {event['name']} ({format_time(event['time'])})")
+            important_upcoming.append(event)
+
+    event_keywords = [
+        "powell", "fed", "fomc", "cpi", "nfp", "payrolls", "eia",
+        "inventory", "inventories", "opec", "iran", "us talks",
+        "hormuz", "sanctions", "tariff", "trump",
+    ]
+
+    for item in event_news[:12]:
+        title = item["title"].lower()
+        hits = sum(1 for word in event_keywords if word in title)
+        if hits >= 2:
+            score -= 5
+            warnings.append(f"Подієвий headline: {item['title']}")
+
+    if score <= -35:
+        risk_level = "ДУЖЕ ВИСОКИЙ"
+    elif score <= -20:
+        risk_level = "ВИСОКИЙ"
+    elif score <= -10:
+        risk_level = "ПІДВИЩЕНИЙ"
+
+    return {
+        "score": score,
+        "risk_level": risk_level,
+        "warnings": warnings[:8],
+        "confirmations": confirmations[:5],
+        "events": important_upcoming[:6],
+        "event_news": event_news[:6],
+    }
+
+
 def format_time(dt):
     if not dt:
         return "час невідомий"
@@ -1067,7 +1294,8 @@ def main():
     orderflow = analyze_free_orderflow(tv)
     macro_data = get_macro_quant_data()
     macro = analyze_macro_quant(macro_data)
-    signal, signal_type, score, confidence, risk_note = build_signal(tech, news, orderflow, macro)
+    event_risk = analyze_event_risk()
+    signal, signal_type, score, confidence, risk_note = build_signal(tech, news, orderflow, macro, event_risk)
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
     print(f"SOURCE: {tv['source']}")
@@ -1080,6 +1308,7 @@ def main():
     print(f"TECH SCORE: {tech['score']}")
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
+    print(f"EVENT RISK: {event_risk['risk_level']} | SCORE: {event_risk['score']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -1132,47 +1361,39 @@ def main():
 <b>Nasdaq:</b> {macro['data']['NDX']}%
 <b>BTC:</b> {macro['data']['BTC']}%
 <b>UKOIL/Brent:</b> {macro['data']['UKOIL']}%
-"""
 
-           # ============================================
-    # ORDERFLOW DETAILS
-    # ============================================
+<b>Event risk:</b> {event_risk['risk_level']}
+<b>Event score:</b> {event_risk['score']}
+"""
 
     if orderflow["details"]:
         message += "\n<b>Деталі orderflow:</b>"
-
         for item in orderflow["details"]:
             message += f"\n- {item}"
 
-    # ============================================
-    # MACRO CONFIRMATIONS
-    # ============================================
-
     if macro["confirmations"]:
         message += "\n\n<b>Macro підтвердження:</b>"
-
         for item in macro["confirmations"]:
             message += f"\n- {item}"
 
-    # ============================================
-    # WARNINGS
-    # ============================================
-
-    warnings = (
-        tech["warnings"]
-        + orderflow["warnings"]
-        + macro["warnings"]
-    )
-
-    if warnings:
-        message += "\n\n<b>Попередження:</b>"
-
-        for item in warnings:
+    if event_risk["confirmations"]:
+        message += "\n\n<b>Майбутні події:</b>"
+        for item in event_risk["confirmations"]:
             message += f"\n- {item}"
 
-    # ============================================
-    # NEWS BLOCK
-    # ============================================
+    if event_risk["events"]:
+        message += f"\n\n<b>Event risk:</b> {event_risk['risk_level']} / score {event_risk['score']}"
+        for event in event_risk["events"]:
+            message += (
+                f"\n- {event['name']} — {format_time(event['time'])} "
+                f"({event['impact']})"
+            )
+
+    warnings = tech["warnings"] + orderflow["warnings"] + macro["warnings"] + event_risk["warnings"]
+    if warnings:
+        message += "\n\n<b>Попередження:</b>"
+        for item in warnings:
+            message += f"\n- {item}"
 
     message += f"""
 
@@ -1190,24 +1411,25 @@ def main():
 """
 
     if news["important"]:
-
         for item in news["important"]:
+            message += (
+                f"\n- [{item['source']}] "
+                f"{item['title']} "
+                f"({format_time(item['published_at'])})"
+            )
+    else:
+        message += "\nНемає"
 
+    if event_risk["event_news"]:
+        message += "\n\n<b>Headlines по майбутніх подіях:</b>"
+        for item in event_risk["event_news"]:
             message += (
                 f"\n- [{item['source']}] "
                 f"{item['title']} "
                 f"({format_time(item['published_at'])})"
             )
 
-    else:
-        message += "\nНемає"
-
-    # ============================================
-    # SEND TELEGRAM
-    # ============================================
-
     send_telegram(message.strip())
-
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
 
