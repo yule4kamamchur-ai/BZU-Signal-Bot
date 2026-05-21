@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
@@ -20,6 +21,7 @@ TRADINGVIEW_SYMBOLS = [
 
 NEWS_LOOKBACK_HOURS = 2
 MAX_NEWS_SCORE = 90
+MAX_ITEMS_PER_FEED = 15
 MIN_CONFIDENCE_TO_SEND = 55
 
 STRONG_UP_MOVE_PERCENT = 1.2
@@ -27,79 +29,128 @@ VERY_STRONG_UP_MOVE_PERCENT = 1.8
 STRONG_DOWN_MOVE_PERCENT = -1.2
 VERY_STRONG_DOWN_MOVE_PERCENT = -1.8
 
+# Безкоштовні real-time пошукові запити по нафті / BZ / Brent
 GDELT_QUERIES = [
-    '(oil OR crude OR Brent OR BZ) (Trump OR tariff OR sanctions OR Iran OR Russia OR Ukraine OR war OR Hormuz OR OPEC OR OPEC+ OR EIA OR inventory OR Fed OR Powell)',
+    '(oil OR crude OR Brent) (Trump OR tariff OR sanctions OR Iran OR Russia OR Ukraine OR war OR Hormuz OR OPEC OR EIA OR inventory OR Fed OR Powell)',
+    '(Brent crude OR crude oil OR oil prices) (surge OR rally OR drop OR fall OR supply OR demand OR stockpiles OR sanctions)',
+    '(OPEC OR OPEC+) (cut OR increase OR output OR production OR supply)',
+    '(EIA OR API) (inventory OR stockpiles OR crude draw OR crude build)',
+]
+
+GOOGLE_NEWS_QUERIES = [
+    'Brent crude oil Trump tariff sanctions OPEC EIA',
+    'oil prices Brent crude breaking news today',
+    'crude oil inventory EIA API OPEC',
+    'Iran Russia Ukraine Hormuz oil sanctions',
 ]
 
 NEWS_SOURCES = [
     {
-        "name": "EIA",
+        "name": "EIA Today in Energy",
         "url": "https://www.eia.gov/rss/todayinenergy.xml",
+        "type": "rss",
         "weight": 1.2,
     },
     {
         "name": "OilPrice",
         "url": "https://oilprice.com/rss/main",
+        "type": "rss",
         "weight": 1.0,
+    },
+    {
+        "name": "Oil & Gas Journal",
+        "url": "https://www.ogj.com/__rss/website-scheduled-content.xml?input=%7B%22sectionAlias%22%3A%22general-interest%22%7D",
+        "type": "rss",
+        "weight": 1.0,
+    },
+    {
+        "name": "Energy Intelligence",
+        "url": "https://www.energyintel.com/rss-feed",
+        "type": "html",
+        "weight": 0.6,
+    },
+    {
+        "name": "CoinDesk",
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
+        "type": "rss",
+        "weight": 0.4,
+    },
+    {
+        "name": "Cointelegraph",
+        "url": "https://cointelegraph.com/rss",
+        "type": "rss",
+        "weight": 0.4,
     },
 ]
 
 BULLISH_WORDS = [
-    "inventory draw",
-    "opec cut",
-    "sanctions",
-    "war",
-    "supply disruption",
-    "bullish",
-    "surge",
-    "rally",
+    "inventory draw", "crude draw", "stockpiles fell", "stockpiles decline",
+    "supply disruption", "supply risk", "supply tight", "opec cut", "opec+ cut",
+    "sanctions", "hormuz", "middle east tension", "russia supply", "ukraine attack",
+    "refinery demand", "demand rises", "demand growth", "bullish", "rally",
+    "surge", "higher", "jumps", "rebounds", "rate cut", "fed pause",
 ]
 
 BEARISH_WORDS = [
-    "inventory build",
-    "oversupply",
-    "ceasefire",
-    "recession",
-    "bearish",
-    "drop",
+    "inventory build", "crude build", "stockpiles rose", "stockpiles rise",
+    "demand weak", "weak demand", "demand falls", "oversupply", "supply glut",
+    "opec increase", "output hike", "ceasefire", "peace talks", "recession",
+    "rate hike", "inflation rises", "bearish", "falls", "drops", "tumbles",
+    "slides", "lower",
 ]
 
 BREAKING_WORDS = [
-    "trump",
-    "white house",
-    "opec",
-    "iran",
-    "russia",
-    "ukraine",
-    "fed",
-    "powell",
-    "inventory",
-    "eia",
+    "trump", "white house", "president", "tariff", "sanctions", "iran",
+    "russia", "ukraine", "war", "ceasefire", "hormuz", "opec", "opec+",
+    "fed", "powell", "fomc", "cpi", "eia", "api", "inventory",
+    "stockpiles", "breaking", "urgent",
 ]
+
+HIGH_IMPACT_WORDS = [
+    "eia", "api", "inventory", "stockpiles", "opec", "opec+", "hormuz",
+    "iran", "russia", "ukraine", "sanctions", "fed", "fomc", "cpi",
+    "powell", "inflation", "interest rate", "tariff", "trump",
+]
+
+BULLISH_GEO_WORDS = [
+    "attack", "missile", "strike", "war", "sanctions", "hormuz", "escalation",
+    "embargo", "supply disruption", "shutdown", "blocked",
+]
+
+BEARISH_SUPPLY_WORDS = [
+    "ceasefire", "peace", "deal", "output increase", "supply increase",
+    "inventory build", "stockpiles rose", "demand weak", "oversupply",
+]
+
 
 def now_utc():
     return datetime.now(timezone.utc)
 
-def safe_get(url, timeout=15):
-    try:
-        response = requests.get(
-            url,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "*/*",
-            },
-        )
 
-        if response.status_code >= 400:
-            print(f"[WARN] HTTP {response.status_code}: {url}")
-            return None
+def safe_get(url, timeout=15, retries=2):
+    for attempt in range(retries):
+        try:
+            response = requests.get(
+                url,
+                timeout=timeout,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+                    "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/html, */*",
+                },
+            )
 
-        return response
+            if response.status_code >= 400:
+                print(f"[WARN] HTTP {response.status_code}: {url}")
+                print(response.text[:180])
+                return None
 
-    except Exception as error:
-        print(f"[WARN] {url}: {error}")
-        return None
+            return response
+
+        except Exception as error:
+            print(f"[WARN] {url}: {error}")
+
+    return None
+
 
 def safe_post(url, payload, timeout=15):
     try:
@@ -108,8 +159,9 @@ def safe_post(url, payload, timeout=15):
             json=payload,
             timeout=timeout,
             headers={
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
             },
         )
 
@@ -123,53 +175,41 @@ def safe_post(url, payload, timeout=15):
         print(f"[WARN] {url}: {error}")
         return None
 
+
 # ==========================================================
-# TRADINGVIEW
+# TRADINGVIEW PRICE / TECHNICAL ANALYSIS
 # ==========================================================
 
 def get_tradingview_market_data():
-
     columns = [
-        "close",
-        "change",
-        "volume",
-        "Recommend.All|5",
-        "Recommend.All|15",
-        "Recommend.All|60",
-        "RSI|15",
-        "EMA20|15",
-        "EMA50|15",
-        "MACD.macd|15",
-        "ATR|15",
-        "ADX|15",
+        "close", "change", "volume",
+        "Recommend.All|5", "Recommend.All|15", "Recommend.All|60",
+        "RSI|5", "RSI|15", "RSI|60",
+        "EMA20|5", "EMA50|5", "EMA20|15", "EMA50|15", "EMA20|60", "EMA50|60",
+        "MACD.macd|5", "MACD.macd|15", "MACD.macd|60",
+        "ATR|15", "ADX|15", "ADX+DI|15", "ADX-DI|15",
     ]
 
     for symbol, screener in TRADINGVIEW_SYMBOLS:
-
         url = f"https://scanner.tradingview.com/{screener}/scan"
-
         payload = {
-            "symbols": {
-                "tickers": [symbol],
-                "query": {"types": []},
-            },
+            "symbols": {"tickers": [symbol], "query": {"types": []}},
             "columns": columns,
         }
 
         response = safe_post(url, payload)
-
         if not response:
             continue
 
         try:
-            data = response.json()
-
-            rows = data.get("data", [])
-
+            rows = response.json().get("data", [])
             if not rows:
+                print(f"[WARN] TradingView empty data for {symbol}")
                 continue
 
-            values = rows[0]["d"]
+            values = rows[0].get("d", [])
+            if not values or values[0] is None:
+                continue
 
             return {
                 "source": "TradingView",
@@ -180,562 +220,748 @@ def get_tradingview_market_data():
                 "recommend_5m": values[3],
                 "recommend_15m": values[4],
                 "recommend_1h": values[5],
-                "rsi_15m": values[6],
-                "ema20_15m": values[7],
-                "ema50_15m": values[8],
-                "macd_15m": values[9],
-                "atr_15m": values[10],
-                "adx_15m": values[11],
+                "rsi_5m": values[6],
+                "rsi_15m": values[7],
+                "rsi_1h": values[8],
+                "ema20_5m": values[9],
+                "ema50_5m": values[10],
+                "ema20_15m": values[11],
+                "ema50_15m": values[12],
+                "ema20_1h": values[13],
+                "ema50_1h": values[14],
+                "macd_5m": values[15],
+                "macd_15m": values[16],
+                "macd_1h": values[17],
+                "atr_15m": values[18],
+                "adx_15m": values[19],
+                "plus_di_15m": values[20],
+                "minus_di_15m": values[21],
             }
 
         except Exception as error:
-            print(f"[WARN] TV parse error: {error}")
+            print(f"[WARN] TradingView parse error for {symbol}: {error}")
 
     return None
 
-# ==========================================================
-# TECHNICAL ANALYSIS
-# ==========================================================
 
 def analyze_technical(tv):
+    price = tv["price"]
+    change = tv.get("change") or 0
+    atr = tv.get("atr_15m") or price * 0.006
 
     score = 0
     confirmations = []
     warnings = []
-
-    change = tv.get("change") or 0
-
     momentum = "NEUTRAL"
 
     if change >= VERY_STRONG_UP_MOVE_PERCENT:
-        score += 45
+        score += 32
         momentum = "VERY STRONG UP"
-        confirmations.append("strong bullish momentum")
-
+        confirmations.append("дуже сильний імпульс вгору")
     elif change >= STRONG_UP_MOVE_PERCENT:
-        score += 30
+        score += 24
         momentum = "STRONG UP"
-
+        confirmations.append("сильний імпульс вгору")
     elif change <= VERY_STRONG_DOWN_MOVE_PERCENT:
-        score -= 45
+        score -= 32
         momentum = "VERY STRONG DOWN"
-
+        confirmations.append("дуже сильний імпульс вниз")
     elif change <= STRONG_DOWN_MOVE_PERCENT:
-        score -= 30
+        score -= 24
         momentum = "STRONG DOWN"
+        confirmations.append("сильний імпульс вниз")
 
-    ema20 = tv.get("ema20_15m")
-    ema50 = tv.get("ema50_15m")
+    for tf, rec in [("5m", tv.get("recommend_5m")), ("15m", tv.get("recommend_15m")), ("1h", tv.get("recommend_1h"))]:
+        if rec is None:
+            continue
+        add_score = int(rec * 20)
+        score += add_score
+        if rec > 0.25:
+            confirmations.append(f"TradingView {tf}: buy bias")
+        elif rec < -0.25:
+            warnings.append(f"TradingView {tf}: sell bias")
 
-    if ema20 and ema50:
-
+    def ema_trend(ema20, ema50, weight):
+        nonlocal score
+        if ema20 is None or ema50 is None:
+            return "UNKNOWN"
         if ema20 > ema50:
-            score += 20
-            trend = "UP"
+            score += weight
+            return "UP"
+        score -= weight
+        return "DOWN"
 
-        else:
-            score -= 20
-            trend = "DOWN"
+    trend_5m = ema_trend(tv.get("ema20_5m"), tv.get("ema50_5m"), 8)
+    trend_15m = ema_trend(tv.get("ema20_15m"), tv.get("ema50_15m"), 14)
+    trend_1h = ema_trend(tv.get("ema20_1h"), tv.get("ema50_1h"), 18)
 
+    if trend_5m == trend_15m == trend_1h == "UP":
+        score += 20
+        trend = "UP"
+        confirmations.append("тренд 5m/15m/1h вверх")
+    elif trend_5m == trend_15m == trend_1h == "DOWN":
+        score -= 20
+        trend = "DOWN"
+        warnings.append("тренд 5m/15m/1h вниз")
+    elif trend_15m == "UP" and trend_1h == "UP":
+        trend = "UP"
+        confirmations.append("тренд 15m/1h вверх")
+    elif trend_15m == "DOWN" and trend_1h == "DOWN":
+        trend = "DOWN"
+        warnings.append("тренд 15m/1h вниз")
     else:
-        trend = "UNKNOWN"
+        trend = "MIXED"
+        warnings.append("тренд змішаний")
 
-    rsi = tv.get("rsi_15m")
-
-    if rsi:
-
-        if rsi > 75:
+    for tf, rsi in [("5m", tv.get("rsi_5m")), ("15m", tv.get("rsi_15m")), ("1h", tv.get("rsi_1h"))]:
+        if rsi is None:
+            continue
+        if rsi > 82:
+            score -= 20
+            warnings.append(f"RSI {tf}: сильна перекупленість")
+        elif rsi > 74:
             score -= 10
-            warnings.append("RSI overbought")
+            warnings.append(f"RSI {tf}: перекупленість")
+        elif rsi < 18:
+            score += 16
+            confirmations.append(f"RSI {tf}: сильна перепроданість")
+        elif rsi < 26:
+            score += 8
+            confirmations.append(f"RSI {tf}: перепроданість")
 
-        elif rsi < 25:
-            score += 10
-            confirmations.append("RSI oversold bounce")
-
-    macd = tv.get("macd_15m")
-
-    if macd:
-
-        if macd > 0:
-            score += 10
-        else:
-            score -= 10
+    for tf, macd, weight in [("5m", tv.get("macd_5m"), 5), ("15m", tv.get("macd_15m"), 9), ("1h", tv.get("macd_1h"), 12)]:
+        if macd is None:
+            continue
+        score += weight if macd > 0 else -weight
 
     adx = tv.get("adx_15m")
+    plus_di = tv.get("plus_di_15m")
+    minus_di = tv.get("minus_di_15m")
 
-    if adx:
-
-        if adx > 25:
-            score += 10
-            confirmations.append("strong trend ADX")
+    if adx is not None:
+        if adx >= 25:
+            confirmations.append(f"ADX 15m: тренд сильний ({round(adx, 2)})")
+            if plus_di is not None and minus_di is not None:
+                score += 10 if plus_di > minus_di else -10
+        elif adx < 18:
+            warnings.append("ADX 15m: слабкий тренд / можливий боковик")
 
     return {
         "score": score,
         "trend": trend,
+        "trend_5m": trend_5m,
+        "trend_15m": trend_15m,
+        "trend_1h": trend_1h,
         "momentum": momentum,
         "change": round(change, 4),
-        "confirmations": confirmations,
-        "warnings": warnings,
-        "rsi_15m": rsi,
-        "ema20_15m": ema20,
-        "ema50_15m": ema50,
-        "macd_15m": macd,
-        "adx_15m": adx,
-        "atr_15m": tv.get("atr_15m"),
+        "rsi_5m": round(tv.get("rsi_5m"), 2) if tv.get("rsi_5m") is not None else None,
+        "rsi_15m": round(tv.get("rsi_15m"), 2) if tv.get("rsi_15m") is not None else None,
+        "rsi_1h": round(tv.get("rsi_1h"), 2) if tv.get("rsi_1h") is not None else None,
+        "ema20_15m": round(tv.get("ema20_15m"), 4) if tv.get("ema20_15m") is not None else None,
+        "ema50_15m": round(tv.get("ema50_15m"), 4) if tv.get("ema50_15m") is not None else None,
+        "macd_15m": round(tv.get("macd_15m"), 4) if tv.get("macd_15m") is not None else None,
+        "recommend_5m": tv.get("recommend_5m"),
+        "recommend_15m": tv.get("recommend_15m"),
+        "recommend_1h": tv.get("recommend_1h"),
+        "adx_15m": round(adx, 2) if adx is not None else None,
+        "atr_15m": round(atr, 4),
+        "confirmations": confirmations[:8],
+        "warnings": warnings[:8],
     }
 
+
 # ==========================================================
-# ORDERFLOW
+# STABLE FREE ORDERFLOW FROM TRADINGVIEW ONLY
 # ==========================================================
 
 def analyze_free_orderflow(tv):
-
     score = 0
     details = []
     warnings = []
 
     change = tv.get("change") or 0
     volume = tv.get("volume") or 0
-
-    recommend_5m = tv.get("recommend_5m") or 0
-    recommend_15m = tv.get("recommend_15m") or 0
-    recommend_1h = tv.get("recommend_1h") or 0
+    rec_5m = tv.get("recommend_5m") or 0
+    rec_15m = tv.get("recommend_15m") or 0
+    rec_1h = tv.get("recommend_1h") or 0
 
     if change >= VERY_STRONG_UP_MOVE_PERCENT:
-        score += 25
-        details.append("very strong bullish momentum")
-
+        score += 22
+        details.append("сильний потік покупців за імпульсом")
     elif change <= VERY_STRONG_DOWN_MOVE_PERCENT:
-        score -= 25
-        warnings.append("very strong bearish momentum")
+        score -= 22
+        warnings.append("сильний потік продавців за імпульсом")
 
-    if (
-        recommend_5m > 0.2
-        and recommend_15m > 0.2
-        and recommend_1h > 0.2
-    ):
-        score += 20
-        details.append("multi timeframe bullish alignment")
-
-    elif (
-        recommend_5m < -0.2
-        and recommend_15m < -0.2
-        and recommend_1h < -0.2
-    ):
-        score -= 20
-        warnings.append("multi timeframe bearish alignment")
+    if rec_5m > 0.2 and rec_15m > 0.2 and rec_1h > 0.2:
+        score += 18
+        details.append("підтвердження orderflow на 5m/15m/1h")
+    elif rec_5m < -0.2 and rec_15m < -0.2 and rec_1h < -0.2:
+        score -= 18
+        warnings.append("ведмеже підтвердження orderflow на 5m/15m/1h")
 
     if volume and volume > 0:
-
-        details.append(f"TV volume {round(volume, 2)}")
-
+        details.append(f"обсяг TradingView: {round(volume, 2)}")
         if abs(change) > 1.5:
-            score += 10 if change > 0 else -10
-            details.append("volume confirms breakout")
+            score += 8 if change > 0 else -8
+            details.append("обсяг підтверджує імпульсний рух")
 
-    bias = "NEUTRAL"
-
+    bias = "НЕЙТРАЛЬНИЙ"
     if score >= 25:
-        bias = "BULLISH ORDERFLOW"
-
+        bias = "БИЧАЧИЙ ORDERFLOW"
     elif score <= -25:
-        bias = "BEARISH ORDERFLOW"
+        bias = "ВЕДМЕЖИЙ ORDERFLOW"
 
     return {
         "score": score,
         "bias": bias,
-        "used_symbol": "TradingView",
+        "used_symbol": "TradingView only",
         "details": details[:7],
         "warnings": warnings[:7],
     }
 
+
 # ==========================================================
-# NEWS
+# MAX FREE NEWS: GDELT + GOOGLE NEWS RSS + RSS + CRYPTOPANIC
 # ==========================================================
 
-def parse_gdelt_date(value):
-
+def parse_date(value):
+    if not value:
+        return None
     try:
-        return datetime.strptime(
-            value[:14],
-            "%Y%m%d%H%M%S"
-        ).replace(tzinfo=timezone.utc)
-
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    try:
+        value = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except Exception:
         return None
 
-def get_gdelt_news():
 
+def parse_gdelt_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def get_gdelt_news():
     news = []
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
     for query in GDELT_QUERIES:
-
         url = (
             "https://api.gdeltproject.org/api/v2/doc/doc"
             f"?query={quote_plus(query)}"
-            "&mode=ArtList"
-            "&format=json"
-            "&maxrecords=50"
-            "&sort=HybridRel"
-            "&timespan=2h"
+            "&mode=ArtList&format=json&maxrecords=50&sort=HybridRel&timespan=2h"
         )
 
-        response = safe_get(url, timeout=20)
-
+        response = safe_get(url, timeout=10, retries=1)
         if not response:
             continue
 
         try:
             data = response.json()
-
             for article in data.get("articles", []):
-
                 title = article.get("title", "")
-
                 if not title:
+                    continue
+
+                published_at = parse_gdelt_date(article.get("seendate"))
+                if published_at and published_at < cutoff:
                     continue
 
                 news.append({
                     "title": title,
-                    "source": article.get("domain", "GDELT"),
-                    "published_at": parse_gdelt_date(
-                        article.get("seendate")
-                    ),
+                    "link": article.get("url", ""),
+                    "source": f"GDELT/{article.get('domain', 'news')}",
+                    "published_at": published_at,
                     "weight": 1.2,
                 })
-
         except Exception as error:
-            print(f"[WARN] GDELT parse: {error}")
+            print(f"[WARN] GDELT parse error: {error}")
 
     return news
 
-def get_rss_news():
 
+def get_google_news_rss():
     news = []
-
     cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
-    for source in NEWS_SOURCES:
-
-        response = safe_get(source["url"])
-
+    for query in GOOGLE_NEWS_QUERIES:
+        url = f"https://news.google.com/rss/search?q={quote_plus(query + ' when:2h')}&hl=en-US&gl=US&ceid=US:en"
+        response = safe_get(url, timeout=10, retries=1)
         if not response:
             continue
 
         try:
             root = ET.fromstring(response.content)
+            for item in root.findall(".//item")[:MAX_ITEMS_PER_FEED]:
+                title = item.findtext("title", "")
+                link = item.findtext("link", "")
+                pub_date = item.findtext("pubDate", "")
+                published_at = parse_date(pub_date)
 
-            items = root.findall(".//item")
-
-            for item in items[:15]:
-
-                title = item.findtext("title")
-
-                pub_date = item.findtext("pubDate")
-
-                if not title:
+                if published_at and published_at < cutoff:
                     continue
 
-                published = None
-
-                try:
-                    published = parsedate_to_datetime(pub_date)
-
-                    if published.tzinfo is None:
-                        published = published.replace(
-                            tzinfo=timezone.utc
-                        )
-
-                except Exception:
-                    pass
-
-                if published and published < cutoff:
-                    continue
-
-                news.append({
-                    "title": title,
-                    "source": source["name"],
-                    "published_at": published,
-                    "weight": source["weight"],
-                })
-
+                if title:
+                    news.append({
+                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                        "link": link,
+                        "source": "Google News RSS",
+                        "published_at": published_at,
+                        "weight": 1.0,
+                    })
         except Exception as error:
-            print(f"[WARN] RSS parse: {error}")
+            print(f"[WARN] Google News RSS parse error: {error}")
 
     return news
 
-def get_all_fresh_news():
+
+def get_item_text(item, tag):
+    text = item.findtext(tag)
+    if text:
+        return text.strip()
+    for child in list(item):
+        if child.tag.lower().endswith(tag.lower()):
+            return (child.text or "").strip()
+    return ""
+
+
+def parse_html_news(source, html):
+    news = []
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        candidates = []
+        for tag in soup.find_all(["a", "h2", "h3"]):
+            text = tag.get_text(" ", strip=True)
+            if not text or len(text) < 18:
+                continue
+            lower = text.lower()
+            if not any(key in lower for key in ["oil", "crude", "brent", "opec", "eia", "inventory", "gas", "energy", "trump", "fed"]):
+                continue
+            href = tag.get("href", "")
+            if href.startswith("/"):
+                base = re.match(r"https?://[^/]+", source["url"])
+                if base:
+                    href = base.group(0) + href
+            candidates.append((text, href))
+
+        for title, link in candidates[:MAX_ITEMS_PER_FEED]:
+            news.append({
+                "title": title,
+                "link": link,
+                "source": source["name"],
+                "published_at": None,
+                "weight": source.get("weight", 1.0) * 0.35,
+            })
+    except Exception as error:
+        print(f"[WARN] HTML parse error {source['name']}: {error}")
+    return news
+
+
+def parse_rss(source):
+    response = safe_get(source["url"], timeout=10, retries=1)
+    if not response:
+        return []
+    if source.get("type") == "html":
+        return parse_html_news(source, response.text)
 
     news = []
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
+    try:
+        root = ET.fromstring(response.content.strip())
+        items = root.findall(".//item")
+        if not items:
+            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
 
-    news.extend(get_gdelt_news())
-    news.extend(get_rss_news())
+        for item in items[:MAX_ITEMS_PER_FEED]:
+            title = get_item_text(item, "title")
+            link = get_item_text(item, "link")
+            if not link:
+                link_node = item.find("{http://www.w3.org/2005/Atom}link")
+                if link_node is not None:
+                    link = link_node.attrib.get("href", "")
 
+            date_text = get_item_text(item, "pubDate") or get_item_text(item, "published") or get_item_text(item, "updated") or get_item_text(item, "dc:date")
+            published_at = parse_date(date_text)
+            if published_at and published_at < cutoff:
+                continue
+
+            if title:
+                news.append({
+                    "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                    "link": link,
+                    "source": source["name"],
+                    "published_at": published_at,
+                    "weight": source.get("weight", 1.0),
+                })
+    except Exception as error:
+        print(f"[WARN] RSS parse error {source['name']}: {error}")
+        return parse_html_news(source, response.text)
     return news
 
+
+def get_cryptopanic_news():
+    if not CRYPTOPANIC_KEY:
+        return []
+
+    url = "https://cryptopanic.com/api/v1/posts/" + f"?auth_token={CRYPTOPANIC_KEY}&filter=hot&public=true"
+    response = safe_get(url, timeout=10, retries=1)
+    if not response:
+        return []
+
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
+    news = []
+    try:
+        data = response.json()
+        for item in data.get("results", [])[:MAX_ITEMS_PER_FEED]:
+            title = item.get("title", "")
+            published_at = parse_date(item.get("published_at"))
+            if published_at and published_at < cutoff:
+                continue
+            if title:
+                news.append({
+                    "title": title,
+                    "link": item.get("url", ""),
+                    "source": "CryptoPanic",
+                    "published_at": published_at,
+                    "weight": 0.7,
+                })
+    except Exception as error:
+        print(f"[WARN] CryptoPanic parse error: {error}")
+    return news
+
+
+def normalize_title(title):
+    title = title.lower()
+    title = re.sub(r"[^a-z0-9а-яіїєґ]+", " ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    return title[:120]
+
+
+def deduplicate_news(news):
+    seen = set()
+    unique = []
+    for item in news:
+        key = normalize_title(item["title"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    unique.sort(key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
+    return unique
+
+
+def get_all_fresh_news():
+    all_news = []
+    all_news.extend(get_gdelt_news())
+    all_news.extend(get_google_news_rss())
+    for source in NEWS_SOURCES:
+        all_news.extend(parse_rss(source))
+    all_news.extend(get_cryptopanic_news())
+    return deduplicate_news(all_news)
+
+
 def keyword_score(title, words):
-
     lower = title.lower()
+    return sum(1 for word in words if word in lower)
 
-    return sum(
-        1 for word in words
-        if word in lower
-    )
+
+def directional_news_adjustment(title):
+    lower = title.lower()
+    if any(word in lower for word in BULLISH_GEO_WORDS):
+        return 7
+    if any(word in lower for word in BEARISH_SUPPLY_WORDS):
+        return -7
+    return 0
+
 
 def analyze_news(news):
-
     bullish = 0
     bearish = 0
+    impact = 0
     breaking = 0
-
     raw_score = 0
-
     important = []
 
     for item in news:
-
         title = item["title"]
-
         weight = item.get("weight", 1.0)
 
-        bull_hits = keyword_score(
-            title,
-            BULLISH_WORDS
-        )
-
-        bear_hits = keyword_score(
-            title,
-            BEARISH_WORDS
-        )
-
-        breaking_hits = keyword_score(
-            title,
-            BREAKING_WORDS
-        )
+        bull_hits = keyword_score(title, BULLISH_WORDS)
+        bear_hits = keyword_score(title, BEARISH_WORDS)
+        impact_hits = keyword_score(title, HIGH_IMPACT_WORDS)
+        breaking_hits = keyword_score(title, BREAKING_WORDS)
+        directional = directional_news_adjustment(title)
 
         if bull_hits:
             bullish += 1
             raw_score += 6 * bull_hits * weight
-
         if bear_hits:
             bearish += 1
             raw_score -= 6 * bear_hits * weight
-
+        if directional > 0:
+            bullish += 1
+            raw_score += directional * weight
+        elif directional < 0:
+            bearish += 1
+            raw_score += directional * weight
+        if impact_hits:
+            impact += 1
+            raw_score += 4 * impact_hits * weight
+            important.append(item)
         if breaking_hits:
             breaking += 1
             raw_score += 7 * breaking_hits * weight
-            important.append(item)
+            if item not in important:
+                important.append(item)
 
     if bullish > bearish:
-        sentiment = "BULLISH"
-
+        sentiment = "БИЧАЧІ"
     elif bearish > bullish:
-        sentiment = "BEARISH"
-
+        sentiment = "ВЕДМЕЖІ"
     else:
-        sentiment = "NEUTRAL"
+        sentiment = "НЕЙТРАЛЬНІ"
 
-    capped_score = int(
-        max(
-            -MAX_NEWS_SCORE,
-            min(MAX_NEWS_SCORE, raw_score)
-        )
-    )
-
+    capped_score = int(max(-MAX_NEWS_SCORE, min(MAX_NEWS_SCORE, raw_score)))
     return {
         "score": capped_score,
         "raw_score": round(raw_score, 2),
         "sentiment": sentiment,
         "bullish": bullish,
         "bearish": bearish,
+        "impact": impact,
         "breaking": breaking,
         "important": important[:8],
         "total": len(news),
     }
 
+
 # ==========================================================
-# SIGNAL ENGINE
+# SIGNAL ENGINE + ENTRY PLAN
 # ==========================================================
 
 def build_signal(tech, news, orderflow):
-
-    score = (
-        tech["score"]
-        + news["score"]
-        + orderflow["score"]
-    )
-
+    score = tech["score"] + news["score"] + orderflow["score"]
+    signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
-    signal_type = "NO TRADE"
 
-    if (
-        tech["momentum"] == "VERY STRONG UP"
-        and score >= 35
-    ):
+    if news["total"] >= 5 and news["score"] >= 60:
+        score += 12
+    if tech["score"] < 0 and news["score"] > 45:
+        score -= 10
+    if tech["score"] > 0 and news["score"] < -45:
+        score += 10
+
+    if tech.get("momentum") == "VERY STRONG UP" and score >= 35:
         signal = "LONG"
-        signal_type = "MOMENTUM LONG"
-
-    elif (
-        tech["momentum"] == "VERY STRONG DOWN"
-        and score <= -35
-    ):
+        signal_type = "ІМПУЛЬСНИЙ LONG / BREAKOUT SCALP"
+    elif tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
         signal = "SHORT"
-        signal_type = "MOMENTUM SHORT"
-
-    elif (
-        score >= 70
-        and tech["trend"] == "UP"
-    ):
+        signal_type = "ІМПУЛЬСНИЙ SHORT / BREAKDOWN SCALP"
+    elif score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10:
         signal = "LONG"
-        signal_type = "TREND LONG"
-
-    elif (
-        score <= -70
-        and tech["trend"] == "DOWN"
-    ):
+        signal_type = "ПІДТВЕРДЖЕНИЙ TREND LONG"
+    elif score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10:
         signal = "SHORT"
-        signal_type = "TREND SHORT"
+        signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
+    elif score >= 70:
+        signal = "LONG"
+        signal_type = "РИЗИКОВИЙ LONG / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
+    elif score <= -70:
+        signal = "SHORT"
+        signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
-    confidence = min(
-        95,
-        max(0, abs(score))
-    )
+    confidence = min(95, max(0, abs(score)))
 
-    return signal, signal_type, score, confidence
+    risk_note = "Нормальний ризик"
+    if "РИЗИКОВИЙ" in signal_type:
+        risk_note = "Підтвердження змішані — зменшити розмір позиції"
+    if tech.get("trend") == "DOWN" and signal == "LONG":
+        risk_note = "Тільки скальп: старший тренд не підтвердив LONG"
+    if tech.get("trend") == "UP" and signal == "SHORT":
+        risk_note = "Тільки скальп: старший тренд не підтвердив SHORT"
 
-# ==========================================================
-# ENTRY / STOP / TP
-# ==========================================================
+    return signal, signal_type, score, confidence, risk_note
 
-def make_trade_plan(signal, price, tech):
 
+def make_trade_plan(signal, signal_type, price, tech):
     atr = tech.get("atr_15m") or price * 0.006
-
     if signal == "NO SIGNAL":
-        return None
+        return {"entry": None, "stop": None, "tp1": None, "tp2": None, "tp3": None, "note": "Не входити. Чекати підтвердження."}
 
     if signal == "LONG":
-
-        return {
-            "entry": round(price, 4),
-            "stop": round(price - atr * 1.3, 4),
-            "tp1": round(price + atr * 1.2, 4),
-            "tp2": round(price + atr * 2.0, 4),
-        }
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            stop = price - atr * 1.1
+            tp1 = price + atr * 0.9
+            tp2 = price + atr * 1.6
+            tp3 = price + atr * 2.4
+            note = "Імпульсний скальп: краще входити на відкаті/ретесті, не після великої свічки."
+        else:
+            stop = price - atr * 1.5
+            tp1 = price + atr * 1.2
+            tp2 = price + atr * 2.0
+            tp3 = price + atr * 3.0
+            note = "Trend long: вхід тільки якщо ціна утримує EMA20/EMA50."
+    else:
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            stop = price + atr * 1.1
+            tp1 = price - atr * 0.9
+            tp2 = price - atr * 1.6
+            tp3 = price - atr * 2.4
+            note = "Імпульсний скальп: краще входити на відкаті/ретесті, не після великої свічки."
+        else:
+            stop = price + atr * 1.5
+            tp1 = price - atr * 1.2
+            tp2 = price - atr * 2.0
+            tp3 = price - atr * 3.0
+            note = "Trend short: вхід тільки якщо ціна відбивається від EMA20/EMA50 вниз."
 
     return {
         "entry": round(price, 4),
-        "stop": round(price + atr * 1.3, 4),
-        "tp1": round(price - atr * 1.2, 4),
-        "tp2": round(price - atr * 2.0, 4),
+        "stop": round(stop, 4),
+        "tp1": round(tp1, 4),
+        "tp2": round(tp2, 4),
+        "tp3": round(tp3, 4),
+        "note": note,
     }
 
-# ==========================================================
-# TELEGRAM
-# ==========================================================
+
+def format_time(dt):
+    if not dt:
+        return "час невідомий"
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
+
 
 def send_telegram(message):
-
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[WARN] Telegram secrets missing")
         return
-
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_TOKEN}/sendMessage"
-    )
-
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
+        "disable_web_page_preview": True,
     }
-
     try:
         requests.post(url, json=payload, timeout=10)
-
     except Exception as error:
-        print(f"[WARN] TG: {error}")
+        print(f"[WARN] Telegram error: {error}")
 
-# ==========================================================
-# MAIN
-# ==========================================================
 
 def main():
-
-    print("START BZU PROFESSIONAL FREE BOT")
-
+    print("START BZU PROFESSIONAL FREE BOT UA")
     tv = get_tradingview_market_data()
-
     if not tv:
-        print("TRADINGVIEW ERROR")
+        print("TRADINGVIEW PRICE ERROR")
         return
 
     fresh_news = get_all_fresh_news()
-
     tech = analyze_technical(tv)
-
     news = analyze_news(fresh_news)
-
     orderflow = analyze_free_orderflow(tv)
-
-    signal, signal_type, score, confidence = build_signal(
-        tech,
-        news,
-        orderflow,
-    )
-
-    plan = make_trade_plan(
-        signal,
-        tv["price"],
-        tech,
-    )
+    signal, signal_type, score, confidence, risk_note = build_signal(tech, news, orderflow)
+    plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
     print(f"SOURCE: {tv['source']}")
     print(f"SYMBOL: {tv['symbol']}")
     print(f"PRICE: {tv['price']}")
     print(f"CHANGE: {tv['change']}")
     print(f"FRESH NEWS COUNT: {news['total']}")
-    print(f"NEWS SCORE: {news['score']}")
+    print(f"NEWS RAW SCORE: {news['raw_score']}")
+    print(f"NEWS CAPPED SCORE: {news['score']}")
     print(f"TECH SCORE: {tech['score']}")
-    print(f"ORDERFLOW SCORE: {orderflow['score']}")
+    print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
+    print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
+    print(f"SIGNAL TYPE: {signal_type}")
     print(f"SIGNAL: {signal}")
 
-    if (
-        signal == "NO SIGNAL"
-        or confidence < MIN_CONFIDENCE_TO_SEND
-    ):
+    if signal == "NO SIGNAL" or confidence < MIN_CONFIDENCE_TO_SEND:
         print("NO SIGNAL")
         return
 
     message = f"""
-<b>BZU SIGNAL BOT</b>
+<b>📊 BZU SIGNAL BOT ULTRA</b>
 
-<b>Signal:</b> {signal}
-<b>Type:</b> {signal_type}
-<b>Confidence:</b> {confidence}%
+<b>Сигнал:</b> {signal}
+<b>Тип сигналу:</b> {signal_type}
+<b>Впевненість:</b> {confidence}%
+<b>Ризик:</b> {risk_note}
 
-<b>Price:</b> {tv['price']}
-<b>Change:</b> {tv['change']}%
-<b>Trend:</b> {tech['trend']}
-<b>Momentum:</b> {tech['momentum']}
+<b>Інструмент:</b> {tv['symbol']}
+<b>Ціна:</b> {tv['price']}
+<b>Зміна:</b> {tv['change']}%
+<b>Імпульс:</b> {tech['momentum']}
 
-<b>Entry:</b> {plan['entry']}
-<b>Stop:</b> {plan['stop']}
+<b>Вхід:</b> {plan['entry']}
+<b>Стоп:</b> {plan['stop']}
 <b>TP1:</b> {plan['tp1']}
 <b>TP2:</b> {plan['tp2']}
+<b>TP3:</b> {plan['tp3']}
+<b>План:</b> {plan['note']}
 
-<b>News sentiment:</b> {news['sentiment']}
-<b>News score:</b> {news['score']}
-<b>Fresh news:</b> {news['total']}
+<b>Тренд:</b> {tech['trend']}
+<b>Тренд 5m:</b> {tech['trend_5m']}
+<b>Тренд 15m:</b> {tech['trend_15m']}
+<b>Тренд 1h:</b> {tech['trend_1h']}
+<b>RSI 5m:</b> {tech['rsi_5m']}
+<b>RSI 15m:</b> {tech['rsi_15m']}
+<b>RSI 1h:</b> {tech['rsi_1h']}
+<b>MACD 15m:</b> {tech['macd_15m']}
+<b>ADX 15m:</b> {tech['adx_15m']}
+<b>ATR 15m:</b> {tech['atr_15m']}
 
 <b>Orderflow:</b> {orderflow['bias']}
+<b>Orderflow score:</b> {orderflow['score']}
 """
 
-    send_telegram(message)
+    if orderflow["details"]:
+        message += "\n<b>Деталі orderflow:</b>"
+        for item in orderflow["details"]:
+            message += f"\n- {item}"
 
+    warnings = tech["warnings"] + orderflow["warnings"]
+    if warnings:
+        message += "\n\n<b>Попередження:</b>"
+        for item in warnings:
+            message += f"\n- {item}"
+
+    message += f"""
+
+<b>Новини:</b> останні {NEWS_LOOKBACK_HOURS} год
+<b>Кількість свіжих новин:</b> {news['total']}
+<b>Настрій новин:</b> {news['sentiment']}
+<b>Bullish:</b> {news['bullish']}
+<b>Bearish:</b> {news['bearish']}
+<b>Impact:</b> {news['impact']}
+<b>Breaking:</b> {news['breaking']}
+<b>News score:</b> {news['score']} / raw {news['raw_score']}
+
+<b>Важливі свіжі новини:</b>
+"""
+
+    if news["important"]:
+        for item in news["important"]:
+            message += f"\n- [{item['source']}] {item['title']} ({format_time(item['published_at'])})"
+    else:
+        message += "\nНемає"
+
+    send_telegram(message.strip())
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
+
 
 if __name__ == "__main__":
     main()
