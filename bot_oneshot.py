@@ -32,7 +32,7 @@ MACRO_SYMBOLS = [
 ]
 
 NEWS_LOOKBACK_HOURS = 2
-MAX_NEWS_SCORE = 90
+MAX_NEWS_SCORE = 45
 MAX_ITEMS_PER_FEED = 15
 MIN_CONFIDENCE_TO_SEND = 55
 
@@ -906,6 +906,7 @@ def analyze_news(news):
     return {
         "score": capped_score,
         "raw_score": round(raw_score, 2),
+        "noise_warning": news_noise_warning(len(news), raw_score, capped_score),
         "sentiment": sentiment,
         "bullish": bullish,
         "bearish": bearish,
@@ -920,13 +921,25 @@ def analyze_news(news):
 # SIGNAL ENGINE + ENTRY PLAN
 # ==========================================================
 
+def news_noise_warning(total_news, raw_score, capped_score):
+    if total_news >= 60 and abs(raw_score) > abs(capped_score) * 4:
+        return "Високий новинний шум: багато заголовків, score обмежено"
+    if total_news < 3:
+        return "Мало свіжих новин: новинне підтвердження слабке"
+    return "Нормально"
+
+
 def build_signal(tech, news, orderflow, macro):
     score = tech["score"] + news["score"] + orderflow["score"] + macro["score"]
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
 
-    if news["total"] >= 5 and news["score"] >= 60:
-        score += 12
+    # News should confirm the trade, not dominate it.
+    # If too many headlines appear in 2h, it may be noisy, so we cap/penalize it.
+    if news["total"] >= 5 and news["score"] >= 35:
+        score += 6
+    if news["total"] >= 60:
+        score -= 8
     if macro["score"] >= 25 and tech["momentum"] in ["STRONG UP", "VERY STRONG UP"]:
         score += 10
     if macro["score"] <= -25 and tech["momentum"] in ["STRONG DOWN", "VERY STRONG DOWN"]:
@@ -952,10 +965,10 @@ def build_signal(tech, news, orderflow, macro):
     elif score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
         signal = "SHORT"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
-    elif score >= 70:
+    elif score >= 90 and (tech.get("trend") in ["UP", "MIXED"]) and orderflow["score"] >= 8:
         signal = "LONG"
         signal_type = "РИЗИКОВИЙ LONG / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
-    elif score <= -70:
+    elif score <= -90 and (tech.get("trend") in ["DOWN", "MIXED"]) and orderflow["score"] <= -8:
         signal = "SHORT"
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
@@ -1127,9 +1140,11 @@ def main():
             message += f"\n- {item}"
 
     if macro["confirmations"]:
-        message += "\n<b>Macro підтвердження:</b>"
+        message += "
+<b>Macro підтвердження:</b>"
         for item in macro["confirmations"]:
-            message += f"\n- {item}"
+            message += f"
+- {item}"
 
     warnings = tech["warnings"] + orderflow["warnings"] + macro["warnings"]
     if warnings:
@@ -1147,6 +1162,7 @@ def main():
 <b>Impact:</b> {news['impact']}
 <b>Breaking:</b> {news['breaking']}
 <b>News score:</b> {news['score']} / raw {news['raw_score']}
+<b>Якість news-score:</b> {news['noise_warning']}
 
 <b>Важливі свіжі новини:</b>
 """
