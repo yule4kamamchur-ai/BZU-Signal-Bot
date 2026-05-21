@@ -37,12 +37,6 @@ MAX_EVENT_SCORE = 50
 MAX_ITEMS_PER_FEED = 15
 MIN_CONFIDENCE_TO_SEND = 55
 
-BINANCE_FAPI = "https://fapi.binance.com"
-PROFILE_SYMBOL = "BZUSDT"
-BYBIT_API = "https://api.bybit.com"
-BYBIT_OI_SYMBOLS = ["BZUSDT", "BTCUSDT", "ETHUSDT"]
-
-
 STRONG_UP_MOVE_PERCENT = 1.2
 VERY_STRONG_UP_MOVE_PERCENT = 1.8
 STRONG_DOWN_MOVE_PERCENT = -1.2
@@ -1263,106 +1257,89 @@ def market_structure_verdict(market):
 
 
 # ==========================================================
-# FREE OPEN INTEREST VIA BYBIT (OPTIONAL)
+# SYNTHETIC OPEN INTEREST PROXY (NO EXTERNAL API)
 # ==========================================================
 
-def get_bybit_open_interest():
-    """Try Bybit public OI. If BZUSDT is unavailable, BTC/ETH are used only as market-risk proxies."""
-    for symbol in BYBIT_OI_SYMBOLS:
-        try:
-            url = f"{BYBIT_API}/v5/market/open-interest"
-            params = {
-                "category": "linear",
-                "symbol": symbol,
-                "intervalTime": "15min",
-                "limit": 5,
-            }
-            response = requests.get(
-                url,
-                params=params,
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            )
-            if response.status_code >= 400:
-                print(f"[WARN] Bybit OI HTTP {response.status_code}: {symbol}")
-                continue
-
-            data = response.json()
-            rows = data.get("result", {}).get("list", [])
-            if len(rows) < 2:
-                print(f"[WARN] Bybit OI empty: {symbol}")
-                continue
-
-            latest = float(rows[0].get("openInterest", 0))
-            previous = float(rows[1].get("openInterest", 0))
-            if previous == 0:
-                continue
-
-            delta_pct = ((latest - previous) / previous) * 100
-            return {
-                "available": True,
-                "symbol": symbol,
-                "latest": latest,
-                "previous": previous,
-                "delta_pct": round(delta_pct, 3),
-            }
-        except Exception as error:
-            print(f"[WARN] Bybit OI error {symbol}: {error}")
-
-    return {
-        "available": False,
-        "symbol": "N/A",
-        "latest": None,
-        "previous": None,
-        "delta_pct": 0,
-    }
-
-
-def analyze_open_interest(oi, tech):
-    if not oi.get("available"):
-        return {
-            "score": 0,
-            "side": "NEUTRAL",
-            "summary": "OI недоступний",
-            "details": "Bybit OI не дав дані; сигнал рахується без OI",
-        }
-
-    delta = oi.get("delta_pct", 0)
+def analyze_synthetic_open_interest(tv, tech, orderflow, market):
+    """
+    Stable replacement for Binance/Bybit OI.
+    It does NOT call blocked exchange APIs. It estimates positioning pressure from:
+    - price momentum
+    - TradingView volume
+    - ATR/volatility regime
+    - orderflow proxy
+    - liquidation-zone logic
+    """
+    price = tv.get("price") or 0
+    change = tech.get("change") or 0
+    volume = tv.get("volume") or 0
+    atr = tech.get("atr_15m") or (price * 0.006 if price else 0)
     momentum = tech.get("momentum", "NEUTRAL")
+    vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
+    liquidation_bias = market.get("liquidation", {}).get("bias", "NEUTRAL")
+    order_score = orderflow.get("score", 0)
+
     score = 0
     side = "NEUTRAL"
-    summary = f"OI {oi['symbol']}: {delta}%"
+    notes = []
 
-    # OI rising + price momentum = real participation.
-    if delta >= 0.5 and momentum in ["STRONG UP", "VERY STRONG UP"]:
-        score = 14
-        side = "LONG"
-        summary += " — LONG BUILDUP"
-    elif delta >= 0.5 and momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
-        score = -14
-        side = "SHORT"
-        summary += " — SHORT BUILDUP"
-    elif delta <= -0.5 and momentum in ["STRONG UP", "VERY STRONG UP"]:
-        score = 4
-        side = "LONG"
-        summary += " — short covering / імпульс може бути коротким"
-    elif delta <= -0.5 and momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
-        score = -4
-        side = "SHORT"
-        summary += " — long liquidation / рух може сповільнитись"
+    # Strong directional move + volume = likely new participation.
+    if momentum in ["STRONG UP", "VERY STRONG UP"]:
+        if volume and abs(change) >= 1.2:
+            score += 12
+            side = "LONG"
+            notes.append("synthetic OI: ймовірний LONG buildup")
+        if liquidation_bias.startswith("SHORT SQUEEZE"):
+            score += 8
+            side = "LONG"
+            notes.append("short squeeze pressure")
+
+    elif momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
+        if volume and abs(change) >= 1.2:
+            score -= 12
+            side = "SHORT"
+            notes.append("synthetic OI: ймовірний SHORT buildup")
+        if liquidation_bias.startswith("LONG LIQUIDATION"):
+            score -= 8
+            side = "SHORT"
+            notes.append("long liquidation pressure")
+
+    # Orderflow confirmation.
+    if order_score >= 20:
+        score += 6
+        side = "LONG" if score > 0 else side
+        notes.append("orderflow підтверджує покупців")
+    elif order_score <= -20:
+        score -= 6
+        side = "SHORT" if score < 0 else side
+        notes.append("orderflow підтверджує продавців")
+
+    # High volatility means continuation is possible but more dangerous.
+    if vol_regime == "HIGH VOLATILITY / BREAKOUT MODE":
+        if score > 0:
+            score += 4
+        elif score < 0:
+            score -= 4
+        notes.append("high volatility participation")
+
+    # If no strong pressure, keep it neutral.
+    if abs(score) < 8:
+        score = 0
+        side = "NEUTRAL"
+        notes.append("synthetic OI нейтральний")
+
+    if side == "LONG":
+        summary = "Synthetic OI: LONG BUILDUP"
+    elif side == "SHORT":
+        summary = "Synthetic OI: SHORT BUILDUP"
     else:
-        summary += " — нейтрально"
-
-    # If proxy is not BZUSDT, reduce score impact.
-    if oi.get("symbol") != "BZUSDT":
-        score = int(score * 0.45)
-        summary += " (proxy, знижена вага)"
+        summary = "Synthetic OI: NEUTRAL"
 
     return {
         "score": score,
         "side": side,
         "summary": summary,
-        "details": f"latest={oi.get('latest')} previous={oi.get('previous')}",
+        "details": "; ".join(notes[:3]),
     }
 
 # ==========================================================
@@ -1463,8 +1440,6 @@ def make_trade_plan(signal, signal_type, price, tech):
         }
 
     if signal == "LONG":
-        if oi_analysis and oi_analysis.get("side") == "SHORT":
-            return "LONG є, але OI/позиціювання проти входу. Краще чекати ретест або пропустити."
         if "ІМПУЛЬСНИЙ" in signal_type:
             stop = price - atr * 1.1
             tp1 = price + atr * 0.9
@@ -1678,7 +1653,7 @@ def send_telegram(message):
 # ==========================================================
 
 def main():
-    print("START BZU PROFESSIONAL FREE BOT UA REPORT")
+    print("START BZU PROFESSIONAL FREE BOT UA STABLE")
 
     tv = get_tradingview_market_data()
     if not tv:
@@ -1695,8 +1670,7 @@ def main():
     macro = analyze_macro_quant(macro_data)
     event_risk = analyze_event_risk(event_items)
     market = analyze_market_structure(tv, tech)
-    oi_data = get_bybit_open_interest()
-    oi_analysis = analyze_open_interest(oi_data, tech)
+    oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
         tech, news, orderflow, macro, event_risk, market, oi_analysis
