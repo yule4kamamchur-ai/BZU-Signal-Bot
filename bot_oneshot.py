@@ -1140,11 +1140,12 @@ def main():
             message += f"\n- {item}"
 
     if macro["confirmations"]:
-        message += "
-<b>Macro підтвердження:</b>"
-        for item in macro["confirmations"]:
-            message += f"
-- {item}"
+
+    message += "\n\n<b>Macro підтвердження:</b>"
+
+    for item in macro["confirmations"]:
+
+        message += f"\n- {item}"
 
     warnings = tech["warnings"] + orderflow["warnings"] + macro["warnings"]
     if warnings:
