@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
@@ -19,20 +20,20 @@ TRADINGVIEW_SYMBOLS = [
     ("NYMEX:BZ1!", "futures"),
 ]
 
-# Безкоштовний macro quant блок через TradingView scanner.
-# Він допомагає зрозуміти загальний режим ринку: risk-on чи risk-off.
 MACRO_SYMBOLS = [
-    ("DXY", "TVC:DXY", "cfd"),          # індекс долара
-    ("US10Y", "TVC:US10Y", "cfd"),      # дохідність 10-річних облігацій США
-    ("VIX", "CBOE:VIX", "cfd"),         # індекс страху
-    ("SPX", "SP:SPX", "cfd"),           # S&P 500
-    ("NDX", "NASDAQ:NDX", "cfd"),       # Nasdaq 100
-    ("BTC", "BINANCE:BTCUSDT", "crypto"), # risk appetite proxy
-    ("UKOIL", "TVC:UKOIL", "cfd"),      # Brent / oil proxy
+    ("DXY", "TVC:DXY", "cfd"),
+    ("US10Y", "TVC:US10Y", "cfd"),
+    ("VIX", "CBOE:VIX", "cfd"),
+    ("SPX", "SP:SPX", "cfd"),
+    ("NDX", "NASDAQ:NDX", "cfd"),
+    ("BTC", "BINANCE:BTCUSDT", "crypto"),
+    ("UKOIL", "TVC:UKOIL", "cfd"),
 ]
 
 NEWS_LOOKBACK_HOURS = 2
+EVENT_LOOKBACK_HOURS = 18
 MAX_NEWS_SCORE = 45
+MAX_EVENT_SCORE = 50
 MAX_ITEMS_PER_FEED = 15
 MIN_CONFIDENCE_TO_SEND = 55
 
@@ -41,12 +42,9 @@ VERY_STRONG_UP_MOVE_PERCENT = 1.8
 STRONG_DOWN_MOVE_PERCENT = -1.2
 VERY_STRONG_DOWN_MOVE_PERCENT = -1.8
 
-# Безкоштовні real-time пошукові запити по нафті / BZ / Brent
 GDELT_QUERIES = [
     '(oil OR crude OR Brent) (Trump OR tariff OR sanctions OR Iran OR Russia OR Ukraine OR war OR Hormuz OR OPEC OR EIA OR inventory OR Fed OR Powell)',
     '(Brent crude OR crude oil OR oil prices) (surge OR rally OR drop OR fall OR supply OR demand OR stockpiles OR sanctions)',
-    '(OPEC OR OPEC+) (cut OR increase OR output OR production OR supply)',
-    '(EIA OR API) (inventory OR stockpiles OR crude draw OR crude build)',
 ]
 
 GOOGLE_NEWS_QUERIES = [
@@ -54,6 +52,15 @@ GOOGLE_NEWS_QUERIES = [
     'oil prices Brent crude breaking news today',
     'crude oil inventory EIA API OPEC',
     'Iran Russia Ukraine Hormuz oil sanctions',
+]
+
+EVENT_QUERIES = [
+    'Fed speech Powell today FOMC oil market',
+    'CPI release today Fed inflation oil market',
+    'NFP jobs report Fed oil market',
+    'EIA crude oil inventories today API crude draw build',
+    'OPEC meeting production cut increase crude oil',
+    'Iran US talks sanctions oil Hormuz Trump',
 ]
 
 NEWS_SOURCES = [
@@ -79,19 +86,19 @@ NEWS_SOURCES = [
         "name": "Energy Intelligence",
         "url": "https://www.energyintel.com/rss-feed",
         "type": "html",
-        "weight": 0.6,
+        "weight": 0.5,
     },
     {
         "name": "CoinDesk",
         "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
         "type": "rss",
-        "weight": 0.4,
+        "weight": 0.35,
     },
     {
         "name": "Cointelegraph",
         "url": "https://cointelegraph.com/rss",
         "type": "rss",
-        "weight": 0.4,
+        "weight": 0.35,
     },
 ]
 
@@ -99,8 +106,8 @@ BULLISH_WORDS = [
     "inventory draw", "crude draw", "stockpiles fell", "stockpiles decline",
     "supply disruption", "supply risk", "supply tight", "opec cut", "opec+ cut",
     "sanctions", "hormuz", "middle east tension", "russia supply", "ukraine attack",
-    "refinery demand", "demand rises", "demand growth", "bullish", "rally",
-    "surge", "higher", "jumps", "rebounds", "rate cut", "fed pause",
+    "demand rises", "demand growth", "bullish", "rally", "surge", "higher",
+    "jumps", "rebounds", "rate cut", "fed pause",
 ]
 
 BEARISH_WORDS = [
@@ -134,13 +141,31 @@ BEARISH_SUPPLY_WORDS = [
     "inventory build", "stockpiles rose", "demand weak", "oversupply",
 ]
 
+EVENT_HIGH_RISK_WORDS = [
+    "fed", "powell", "fomc", "cpi", "nfp", "jobs report", "payrolls",
+    "eia", "api", "inventories", "inventory", "stockpiles",
+    "opec", "opec+", "iran", "us-iran", "sanctions", "hormuz", "trump",
+]
+
+EVENT_LONG_WORDS = [
+    "inventory draw", "crude draw", "larger-than-expected draw",
+    "sanctions", "hormuz", "attack", "strike", "war", "opec cut",
+    "supply risk", "supply disruption", "iran rejects", "talks fail",
+]
+
+EVENT_SHORT_WORDS = [
+    "inventory build", "crude build", "larger-than-expected build",
+    "ceasefire", "peace deal", "sanctions relief", "talks progress",
+    "opec increase", "output increase", "demand weak",
+]
+
 
 def now_utc():
     return datetime.now(timezone.utc)
 
 
-def safe_get(url, timeout=15, retries=2):
-    for attempt in range(retries):
+def safe_get(url, timeout=12, retries=1):
+    for _ in range(retries):
         try:
             response = requests.get(
                 url,
@@ -150,17 +175,13 @@ def safe_get(url, timeout=15, retries=2):
                     "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/html, */*",
                 },
             )
-
             if response.status_code >= 400:
                 print(f"[WARN] HTTP {response.status_code}: {url}")
                 print(response.text[:180])
                 return None
-
             return response
-
         except Exception as error:
             print(f"[WARN] {url}: {error}")
-
     return None
 
 
@@ -176,20 +197,17 @@ def safe_post(url, payload, timeout=15):
                 "Accept": "application/json",
             },
         )
-
         if response.status_code >= 400:
             print(f"[WARN] HTTP {response.status_code}: {url}")
             return None
-
         return response
-
     except Exception as error:
         print(f"[WARN] {url}: {error}")
         return None
 
 
 # ==========================================================
-# TRADINGVIEW PRICE / TECHNICAL ANALYSIS
+# TRADINGVIEW
 # ==========================================================
 
 def get_tradingview_scan(symbol, screener, columns):
@@ -233,7 +251,6 @@ def get_tradingview_market_data():
             continue
 
         try:
-
             return {
                 "source": "TradingView",
                 "symbol": symbol,
@@ -260,7 +277,6 @@ def get_tradingview_market_data():
                 "plus_di_15m": values[20],
                 "minus_di_15m": values[21],
             }
-
         except Exception as error:
             print(f"[WARN] TradingView parse error for {symbol}: {error}")
 
@@ -394,19 +410,13 @@ def analyze_technical(tv):
 
 
 # ==========================================================
-# FREE MACRO QUANT MODEL
+# MACRO QUANT
 # ==========================================================
 
 def get_macro_quant_data():
     columns = [
-        "close",
-        "change",
-        "Recommend.All|15",
-        "Recommend.All|60",
-        "RSI|15",
-        "EMA20|60",
-        "EMA50|60",
-        "MACD.macd|60",
+        "close", "change", "Recommend.All|15", "Recommend.All|60",
+        "RSI|15", "EMA20|60", "EMA50|60", "MACD.macd|60",
     ]
 
     macro = {}
@@ -441,23 +451,14 @@ def analyze_macro_quant(macro):
     confirmations = []
     warnings = []
 
-    dxy = macro.get("DXY", {})
-    us10y = macro.get("US10Y", {})
-    vix = macro.get("VIX", {})
-    spx = macro.get("SPX", {})
-    ndx = macro.get("NDX", {})
-    btc = macro.get("BTC", {})
-    ukoil = macro.get("UKOIL", {})
+    dxy_ch = (macro.get("DXY", {}).get("change", 0) or 0)
+    us10y_ch = (macro.get("US10Y", {}).get("change", 0) or 0)
+    vix_ch = (macro.get("VIX", {}).get("change", 0) or 0)
+    spx_ch = (macro.get("SPX", {}).get("change", 0) or 0)
+    ndx_ch = (macro.get("NDX", {}).get("change", 0) or 0)
+    btc_ch = (macro.get("BTC", {}).get("change", 0) or 0)
+    oil_ch = (macro.get("UKOIL", {}).get("change", 0) or 0)
 
-    dxy_ch = dxy.get("change", 0) or 0
-    us10y_ch = us10y.get("change", 0) or 0
-    vix_ch = vix.get("change", 0) or 0
-    spx_ch = spx.get("change", 0) or 0
-    ndx_ch = ndx.get("change", 0) or 0
-    btc_ch = btc.get("change", 0) or 0
-    oil_ch = ukoil.get("change", 0) or 0
-
-    # DXY: сильний долар часто тисне на ризикові активи й commodities.
     if dxy_ch <= -0.25:
         score += 12
         confirmations.append(f"DXY слабшає ({round(dxy_ch, 2)}%) — підтримка risk-on")
@@ -465,7 +466,6 @@ def analyze_macro_quant(macro):
         score -= 12
         warnings.append(f"DXY росте ({round(dxy_ch, 2)}%) — тиск на ризикові активи")
 
-    # US10Y: ріст yields часто risk-off.
     if us10y_ch >= 1.0:
         score -= 10
         warnings.append(f"US10Y росте ({round(us10y_ch, 2)}%) — risk-off фактор")
@@ -473,7 +473,6 @@ def analyze_macro_quant(macro):
         score += 10
         confirmations.append(f"US10Y падає ({round(us10y_ch, 2)}%) — підтримка risk-on")
 
-    # VIX: страх ринку.
     if vix_ch >= 4.0:
         score -= 18
         warnings.append(f"VIX сильно росте ({round(vix_ch, 2)}%) — ринок у стресі")
@@ -481,7 +480,6 @@ def analyze_macro_quant(macro):
         score += 12
         confirmations.append(f"VIX падає ({round(vix_ch, 2)}%) — risk-on")
 
-    # Акції / Nasdaq як risk appetite.
     if spx_ch > 0.25:
         score += 8
         confirmations.append(f"S&P 500 росте ({round(spx_ch, 2)}%)")
@@ -496,7 +494,6 @@ def analyze_macro_quant(macro):
         score -= 8
         warnings.append(f"Nasdaq падає ({round(ndx_ch, 2)}%)")
 
-    # BTC як проксі risk appetite для crypto-style ф'ючерсів.
     if btc_ch > 0.6:
         score += 8
         confirmations.append(f"BTC росте ({round(btc_ch, 2)}%) — risk appetite")
@@ -504,7 +501,6 @@ def analyze_macro_quant(macro):
         score -= 8
         warnings.append(f"BTC падає ({round(btc_ch, 2)}%) — risk-off")
 
-    # UKOIL/Brent — прямий macro proxy для BZ.
     if oil_ch > 0.5:
         score += 14
         confirmations.append(f"Brent/UKOIL росте ({round(oil_ch, 2)}%)")
@@ -512,7 +508,6 @@ def analyze_macro_quant(macro):
         score -= 14
         warnings.append(f"Brent/UKOIL падає ({round(oil_ch, 2)}%)")
 
-    # Режим ринку
     if score >= 25:
         regime = "RISK-ON / БИЧАЧИЙ MACRO"
     elif score <= -25:
@@ -540,7 +535,7 @@ def analyze_macro_quant(macro):
 
 
 # ==========================================================
-# STABLE FREE ORDERFLOW FROM TRADINGVIEW ONLY
+# ORDERFLOW FROM TRADINGVIEW
 # ==========================================================
 
 def analyze_free_orderflow(tv):
@@ -590,7 +585,7 @@ def analyze_free_orderflow(tv):
 
 
 # ==========================================================
-# MAX FREE NEWS: GDELT + GOOGLE NEWS RSS + RSS + CRYPTOPANIC
+# NEWS / EVENTS
 # ==========================================================
 
 def parse_date(value):
@@ -622,6 +617,40 @@ def parse_gdelt_date(value):
         return None
 
 
+def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
+    news = []
+    cutoff = now_utc() - timedelta(hours=lookback_hours)
+    url = f"https://news.google.com/rss/search?q={quote_plus(query + f' when:{lookback_hours}h')}&hl=en-US&gl=US&ceid=US:en"
+
+    response = safe_get(url, timeout=10, retries=1)
+    if not response:
+        return news
+
+    try:
+        root = ET.fromstring(response.content)
+        for item in root.findall(".//item")[:MAX_ITEMS_PER_FEED]:
+            title = item.findtext("title", "")
+            link = item.findtext("link", "")
+            pub_date = item.findtext("pubDate", "")
+            published_at = parse_date(pub_date)
+
+            if published_at and published_at < cutoff:
+                continue
+
+            if title:
+                news.append({
+                    "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                    "link": link,
+                    "source": source_name,
+                    "published_at": published_at,
+                    "weight": weight,
+                })
+    except Exception as error:
+        print(f"[WARN] Google RSS parse error: {error}")
+
+    return news
+
+
 def get_gdelt_news():
     news = []
     cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
@@ -630,10 +659,12 @@ def get_gdelt_news():
         url = (
             "https://api.gdeltproject.org/api/v2/doc/doc"
             f"?query={quote_plus(query)}"
-            "&mode=ArtList&format=json&maxrecords=50&sort=HybridRel&timespan=2h"
+            "&mode=ArtList&format=json&maxrecords=30&sort=HybridRel&timespan=2h"
         )
 
         response = safe_get(url, timeout=10, retries=1)
+        time.sleep(5)
+
         if not response:
             continue
 
@@ -662,38 +693,17 @@ def get_gdelt_news():
 
 
 def get_google_news_rss():
-    news = []
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
-
+    all_news = []
     for query in GOOGLE_NEWS_QUERIES:
-        url = f"https://news.google.com/rss/search?q={quote_plus(query + ' when:2h')}&hl=en-US&gl=US&ceid=US:en"
-        response = safe_get(url, timeout=10, retries=1)
-        if not response:
-            continue
+        all_news.extend(parse_google_rss(query, NEWS_LOOKBACK_HOURS, "Google News RSS", 1.0))
+    return all_news
 
-        try:
-            root = ET.fromstring(response.content)
-            for item in root.findall(".//item")[:MAX_ITEMS_PER_FEED]:
-                title = item.findtext("title", "")
-                link = item.findtext("link", "")
-                pub_date = item.findtext("pubDate", "")
-                published_at = parse_date(pub_date)
 
-                if published_at and published_at < cutoff:
-                    continue
-
-                if title:
-                    news.append({
-                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
-                        "link": link,
-                        "source": "Google News RSS",
-                        "published_at": published_at,
-                        "weight": 1.0,
-                    })
-        except Exception as error:
-            print(f"[WARN] Google News RSS parse error: {error}")
-
-    return news
+def get_event_news():
+    all_events = []
+    for query in EVENT_QUERIES:
+        all_events.extend(parse_google_rss(query, EVENT_LOOKBACK_HOURS, "Google Event RSS", 1.0))
+    return deduplicate_news(all_events)
 
 
 def get_item_text(item, tag):
@@ -756,13 +766,9 @@ def parse_rss(source):
         for item in items[:MAX_ITEMS_PER_FEED]:
             title = get_item_text(item, "title")
             link = get_item_text(item, "link")
-            if not link:
-                link_node = item.find("{http://www.w3.org/2005/Atom}link")
-                if link_node is not None:
-                    link = link_node.attrib.get("href", "")
-
             date_text = get_item_text(item, "pubDate") or get_item_text(item, "published") or get_item_text(item, "updated") or get_item_text(item, "dc:date")
             published_at = parse_date(date_text)
+
             if published_at and published_at < cutoff:
                 continue
 
@@ -777,6 +783,7 @@ def parse_rss(source):
     except Exception as error:
         print(f"[WARN] RSS parse error {source['name']}: {error}")
         return parse_html_news(source, response.text)
+
     return news
 
 
@@ -821,13 +828,18 @@ def normalize_title(title):
 def deduplicate_news(news):
     seen = set()
     unique = []
+
     for item in news:
         key = normalize_title(item["title"])
         if not key or key in seen:
             continue
         seen.add(key)
         unique.append(item)
-    unique.sort(key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
+
+    unique.sort(
+        key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc),
+        reverse=True,
+    )
     return unique
 
 
@@ -857,79 +869,32 @@ def directional_news_adjustment(title):
 
 def headline_direction(title):
     lower = title.lower()
-    long_reasons = []
-    short_reasons = []
 
-    # LONG for oil/BZ: supply risk, sanctions, war, inventory draw, Hormuz/Iran tension.
-    if any(word in lower for word in [
-        "inventory draw", "crude draw", "stockpiles fell", "stockpile draw",
-        "inventories fell", "supply disruption", "supply risk", "hormuz",
-        "sanctions", "attack", "strike", "war", "escalation", "iran rejects",
-        "uranium", "opec cut", "output cut", "oil rises", "oil rebounds",
-        "crude rebounds", "brent rises", "oil up", "crude rises",
-    ]):
-        long_reasons.append("підтримує LONG: ризик дефіциту/геополітика/запаси")
+    long_hits = keyword_score(lower, BULLISH_WORDS) + keyword_score(lower, EVENT_LONG_WORDS)
+    short_hits = keyword_score(lower, BEARISH_WORDS) + keyword_score(lower, EVENT_SHORT_WORDS)
 
-    # SHORT for oil/BZ: peace deal, sanctions relief, inventory build, oversupply, weak demand.
-    if any(word in lower for word in [
-        "ceasefire", "peace deal", "near deal", "final stage", "sanctions relief",
-        "lift sanctions", "inventory build", "crude build", "stockpiles rose",
-        "inventories rose", "oversupply", "weak demand", "output increase",
-        "oil falls", "oil drops", "crude falls", "wti falls", "brent falls",
-        "oil plunges", "crude plunges",
-    ]):
-        short_reasons.append("підтримує SHORT: деескалація/зростання запасів/слабкий попит")
-
-    # Macro headlines: hawkish Fed / hot CPI can pressure risk assets.
-    if any(word in lower for word in [
-        "hot inflation", "inflation pressures", "hawkish", "rate hike",
-        "yields climb", "dollar rises", "dollar strengthens",
-    ]):
-        short_reasons.append("ризик SHORT: сильний долар/yields/Fed тиснуть на risk assets")
-
-    if any(word in lower for word in [
-        "rate cut", "dovish", "dollar falls", "yields fall", "fed pause",
-    ]):
-        long_reasons.append("підтримує LONG: мʼякший Fed/слабший долар")
-
-    long_score = len(long_reasons)
-    short_score = len(short_reasons)
-
-    if long_score > short_score:
-        return "LONG", "; ".join(long_reasons[:2])
-    if short_score > long_score:
-        return "SHORT", "; ".join(short_reasons[:2])
-    if long_score and short_score:
-        return "MIXED", "змішаний вплив: є аргументи і за LONG, і за SHORT"
-    return "NEUTRAL", "немає чіткого directional edge"
+    if long_hits > short_hits:
+        return "LONG", "заголовок вказує на ризик дефіциту/санкцій/зростання нафти"
+    if short_hits > long_hits:
+        return "SHORT", "заголовок вказує на мирні переговори/санкційне послаблення/надлишок пропозиції"
+    return "MIXED", "заголовок важливий, але напрямок неоднозначний"
 
 
-def summarize_directional_items(items, limit=8):
-    result = []
+def summarize_headline_directions(items, limit=5):
+    summary = []
     for item in items[:limit]:
-        direction, reason = headline_direction(item.get("title", ""))
-        result.append({
-            "source": item.get("source", "news"),
-            "title": item.get("title", ""),
-            "published_at": item.get("published_at"),
-            "direction": direction,
-            "reason": reason,
-        })
-    return result
+        direction, reason = headline_direction(item["title"])
+        summary.append(f"{direction}: {reason}")
+    if not summary:
+        return "Немає важливих заголовків для висновку."
+    long_count = sum(1 for text in summary if text.startswith("LONG"))
+    short_count = sum(1 for text in summary if text.startswith("SHORT"))
 
-
-def directional_conclusion(long_count, short_count, total_count, context="news"):
-    if total_count == 0:
-        return "Новин немає — directional висновок слабкий."
-    if long_count >= short_count * 2 and long_count >= 3:
-        return "Очікування: перевага LONG, але чекати технічне підтвердження/ретест."
-    if short_count >= long_count * 2 and short_count >= 3:
-        return "Очікування: перевага SHORT, але чекати пробій підтримки/підтвердження."
     if long_count > short_count:
-        return "Очікування: помірний LONG, сигнал не ідеальний."
+        return "Перевага новин: LONG. Більше заголовків підтримують ріст/ризик дефіциту."
     if short_count > long_count:
-        return "Очікування: помірний SHORT, сигнал не ідеальний."
-    return "Очікування: змішано/нейтрально, краще не поспішати з входом."
+        return "Перевага новин: SHORT. Більше заголовків підтримують зниження/деескалацію."
+    return "Перевага новин: MIXED. Напрямок неоднозначний."
 
 
 def analyze_news(news):
@@ -939,8 +904,6 @@ def analyze_news(news):
     breaking = 0
     raw_score = 0
     important = []
-    directional_long = 0
-    directional_short = 0
 
     for item in news:
         title = item["title"]
@@ -951,12 +914,6 @@ def analyze_news(news):
         impact_hits = keyword_score(title, HIGH_IMPACT_WORDS)
         breaking_hits = keyword_score(title, BREAKING_WORDS)
         directional = directional_news_adjustment(title)
-        headline_bias, _ = headline_direction(title)
-
-        if headline_bias == "LONG":
-            directional_long += 1
-        elif headline_bias == "SHORT":
-            directional_short += 1
 
         if bull_hits:
             bullish += 1
@@ -988,7 +945,7 @@ def analyze_news(news):
         sentiment = "НЕЙТРАЛЬНІ"
 
     capped_score = int(max(-MAX_NEWS_SCORE, min(MAX_NEWS_SCORE, raw_score)))
-    important = important[:8]
+
     return {
         "score": capped_score,
         "raw_score": round(raw_score, 2),
@@ -998,18 +955,61 @@ def analyze_news(news):
         "bearish": bearish,
         "impact": impact,
         "breaking": breaking,
-        "directional_long": directional_long,
-        "directional_short": directional_short,
-        "directional_conclusion": directional_conclusion(directional_long, directional_short, len(news)),
-        "summary_items": summarize_directional_items(important, limit=8),
-        "important": important,
+        "important": important[:8],
         "total": len(news),
+        "summary": summarize_headline_directions(important, 8),
     }
 
 
-# ==========================================================
-# SIGNAL ENGINE + ENTRY PLAN
-# ==========================================================
+def analyze_event_risk(events):
+    raw_score = 0
+    direction_score = 0
+    important = []
+
+    for item in events:
+        title = item["title"]
+        lower = title.lower()
+
+        if any(word in lower for word in EVENT_HIGH_RISK_WORDS):
+            raw_score -= 8
+            important.append(item)
+
+        long_hits = keyword_score(title, EVENT_LONG_WORDS)
+        short_hits = keyword_score(title, EVENT_SHORT_WORDS)
+
+        if long_hits:
+            direction_score += 7 * long_hits
+        if short_hits:
+            direction_score -= 7 * short_hits
+
+    score = int(max(-MAX_EVENT_SCORE, min(MAX_EVENT_SCORE, raw_score)))
+
+    if abs(score) >= 40:
+        risk = "ДУЖЕ ВИСОКИЙ"
+    elif abs(score) >= 20:
+        risk = "ВИСОКИЙ"
+    elif abs(score) >= 8:
+        risk = "ПІДВИЩЕНИЙ"
+    else:
+        risk = "НОРМАЛЬНИЙ"
+
+    if direction_score > 14:
+        direction = "LONG"
+    elif direction_score < -14:
+        direction = "SHORT"
+    else:
+        direction = "MIXED"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "direction_score": direction_score,
+        "direction": direction,
+        "important": important[:8],
+        "total": len(events),
+        "summary": summarize_headline_directions(important, 8),
+    }
+
 
 def news_noise_warning(total_news, raw_score, capped_score):
     if total_news >= 60 and abs(raw_score) > abs(capped_score) * 4:
@@ -1019,13 +1019,22 @@ def news_noise_warning(total_news, raw_score, capped_score):
     return "Нормально"
 
 
+# ==========================================================
+# SIGNAL ENGINE
+# ==========================================================
+
 def build_signal(tech, news, orderflow, macro, event_risk):
-    score = tech["score"] + news["score"] + orderflow["score"] + macro["score"] + event_risk["score"] + event_risk.get("direction_score", 0)
+    score = (
+        tech["score"]
+        + news["score"]
+        + orderflow["score"]
+        + macro["score"]
+        + event_risk["score"]
+    )
+
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
 
-    # News should confirm the trade, not dominate it.
-    # If too many headlines appear in 2h, it may be noisy, so we cap/penalize it.
     if news["total"] >= 5 and news["score"] >= 35:
         score += 6
     if news["total"] >= 60:
@@ -1034,14 +1043,14 @@ def build_signal(tech, news, orderflow, macro, event_risk):
         score += 10
     if macro["score"] <= -25 and tech["momentum"] in ["STRONG DOWN", "VERY STRONG DOWN"]:
         score -= 10
-    if tech["score"] < 0 and news["score"] > 45:
-        score -= 10
-    if tech["score"] > 0 and news["score"] < -45:
-        score += 10
-    if macro["score"] <= -25 and signal != "SHORT":
-        score -= 12
-    if macro["score"] >= 25 and signal != "LONG":
-        score += 12
+
+    if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        score -= 8
+
+    if event_risk["direction"] == "LONG":
+        score += 8
+    elif event_risk["direction"] == "SHORT":
+        score -= 8
 
     if tech.get("momentum") == "VERY STRONG UP" and score >= 35:
         signal = "LONG"
@@ -1055,10 +1064,10 @@ def build_signal(tech, news, orderflow, macro, event_risk):
     elif score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
         signal = "SHORT"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
-    elif score >= 90 and (tech.get("trend") in ["UP", "MIXED"]) and orderflow["score"] >= 8:
+    elif score >= 90 and tech.get("trend") in ["UP", "MIXED"] and orderflow["score"] >= 8:
         signal = "LONG"
         signal_type = "РИЗИКОВИЙ LONG / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
-    elif score <= -90 and (tech.get("trend") in ["DOWN", "MIXED"]) and orderflow["score"] <= -8:
+    elif score <= -90 and tech.get("trend") in ["DOWN", "MIXED"] and orderflow["score"] <= -8:
         signal = "SHORT"
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
@@ -1067,6 +1076,10 @@ def build_signal(tech, news, orderflow, macro, event_risk):
     risk_note = "Нормальний ризик"
     if "РИЗИКОВИЙ" in signal_type:
         risk_note = "Підтвердження змішані — зменшити розмір позиції"
+    if "ІМПУЛЬСНИЙ" in signal_type:
+        risk_note = "Імпульсний сигнал — краще чекати відкат/ретест"
+    if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        risk_note = "Подієвий ризик високий — краще чекати або зменшити позицію"
     if macro["score"] <= -25 and signal == "LONG":
         risk_note = "Macro risk-off проти LONG — тільки малий обʼєм або пропуск"
     if macro["score"] >= 25 and signal == "SHORT":
@@ -1075,16 +1088,22 @@ def build_signal(tech, news, orderflow, macro, event_risk):
         risk_note = "Тільки скальп: старший тренд не підтвердив LONG"
     if tech.get("trend") == "UP" and signal == "SHORT":
         risk_note = "Тільки скальп: старший тренд не підтвердив SHORT"
-    if event_risk["risk_level"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"] and signal != "NO SIGNAL":
-        risk_note = f"Подієвий ризик {event_risk['risk_level']} — краще чекати або зменшити позицію"
 
     return signal, signal_type, score, confidence, risk_note
 
 
 def make_trade_plan(signal, signal_type, price, tech):
     atr = tech.get("atr_15m") or price * 0.006
+
     if signal == "NO SIGNAL":
-        return {"entry": None, "stop": None, "tp1": None, "tp2": None, "tp3": None, "note": "Не входити. Чекати підтвердження."}
+        return {
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "tp3": None,
+            "note": "Не входити. Чекати підтвердження.",
+        }
 
     if signal == "LONG":
         if "ІМПУЛЬСНИЙ" in signal_type:
@@ -1123,264 +1142,25 @@ def make_trade_plan(signal, signal_type, price, tech):
     }
 
 
+def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk):
+    if signal == "NO SIGNAL":
+        return "Входу немає. Краще чекати підтвердження."
 
-# ==========================================================
-# UPCOMING EVENT RISK MODEL
-# Sources used:
-# - EIA schedule logic: Wednesday 10:30 ET
-# - BLS CPI known release dates / schedule page fallback
-# - FOMC known meeting dates
-# - Google News RSS / GDELT for Powell, Fed, OPEC, Iran/US talks
-# ==========================================================
+    if signal == "LONG":
+        if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+            return "LONG є, але подієвий ризик високий. Краще чекати відкат/ретест або входити малим обсягом."
+        if tech["trend"] == "UP" and orderflow["score"] >= 20 and macro["score"] >= 0:
+            return "LONG підтверджений. Вхід можливий тільки за планом зі стопом."
+        return "LONG ризиковий. Не входити після великої свічки, краще чекати відкат."
 
-FOMC_EVENTS_2026 = [
-    ("FOMC rate decision", "2026-06-17 18:00", "UTC", "HIGH"),
-    ("FOMC rate decision", "2026-07-29 18:00", "UTC", "HIGH"),
-    ("FOMC rate decision", "2026-09-16 18:00", "UTC", "HIGH"),
-    ("FOMC rate decision", "2026-10-28 18:00", "UTC", "HIGH"),
-    ("FOMC rate decision", "2026-12-09 19:00", "UTC", "HIGH"),
-]
+    if signal == "SHORT":
+        if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+            return "SHORT є, але подієвий ризик високий. Краще чекати підтвердження."
+        if tech["trend"] == "DOWN" and orderflow["score"] <= -20 and macro["score"] <= 0:
+            return "SHORT підтверджений. Вхід можливий тільки за планом зі стопом."
+        return "SHORT ризиковий. Краще чекати пробій/ретест."
 
-CPI_EVENTS_2026 = [
-    ("US CPI release", "2026-06-10 12:30", "UTC", "HIGH"),
-    ("US CPI release", "2026-07-15 12:30", "UTC", "HIGH"),
-    ("US CPI release", "2026-08-12 12:30", "UTC", "HIGH"),
-    ("US CPI release", "2026-09-10 12:30", "UTC", "HIGH"),
-    ("US CPI release", "2026-10-15 12:30", "UTC", "HIGH"),
-    ("US CPI release", "2026-11-12 13:30", "UTC", "HIGH"),
-    ("US CPI release", "2026-12-10 13:30", "UTC", "HIGH"),
-]
-
-OPEC_EVENTS_2026 = [
-    ("OPEC Monthly Oil Market Report", "2026-06-11 12:00", "UTC", "HIGH"),
-    ("OPEC Monthly Oil Market Report", "2026-07-13 12:00", "UTC", "HIGH"),
-    ("OPEC Monthly Oil Market Report", "2026-08-12 12:00", "UTC", "HIGH"),
-    ("OPEC Monthly Oil Market Report", "2026-09-11 12:00", "UTC", "HIGH"),
-    ("OPEC Monthly Oil Market Report", "2026-10-13 12:00", "UTC", "HIGH"),
-    ("OPEC Monthly Oil Market Report", "2026-11-12 12:00", "UTC", "HIGH"),
-    ("OPEC Monthly Oil Market Report", "2026-12-11 12:00", "UTC", "HIGH"),
-]
-
-EVENT_NEWS_QUERIES = [
-    "Powell speech today tomorrow Federal Reserve oil dollar",
-    "Fed speaker today Powell speech FOMC market calendar",
-    "EIA crude oil inventories today forecast",
-    "OPEC meeting next oil output decision",
-    "Iran US talks oil sanctions Hormuz today",
-]
-
-
-def parse_event_dt(value):
-    try:
-        return datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-    except Exception:
-        return None
-
-
-def next_wednesday_eia_event():
-    now = now_utc()
-    # EIA Weekly Petroleum Status Report is normally Wednesday 10:30 ET.
-    # During US daylight saving time this is 14:30 UTC; otherwise 15:30 UTC.
-    # For simplicity in May-October use 14:30 UTC.
-    days_ahead = (2 - now.weekday()) % 7  # Monday=0, Wednesday=2
-    event_day = (now + timedelta(days=days_ahead)).date()
-    event_dt = datetime(event_day.year, event_day.month, event_day.day, 14, 30, tzinfo=timezone.utc)
-
-    if event_dt <= now:
-        event_dt = event_dt + timedelta(days=7)
-
-    return {
-        "name": "EIA crude oil inventories",
-        "time": event_dt,
-        "impact": "HIGH",
-        "source": "EIA schedule rule",
-        "note": "Щотижневий звіт EIA по запасах нафти, сильний ризик волатильності для Brent/BZ.",
-    }
-
-
-def next_nfp_event():
-    now = now_utc()
-    # NFP is usually first Friday of each month at 08:30 ET.
-    year = now.year
-    month = now.month
-
-    for _ in range(14):
-        first_day = datetime(year, month, 1, 12, 30, tzinfo=timezone.utc)
-        days_until_friday = (4 - first_day.weekday()) % 7
-        event_dt = first_day + timedelta(days=days_until_friday)
-
-        if event_dt > now:
-            return {
-                "name": "US Nonfarm Payrolls / NFP",
-                "time": event_dt,
-                "impact": "HIGH",
-                "source": "NFP schedule rule",
-                "note": "NFP може різко рухати DXY, yields, risk assets і непрямо BZ.",
-            }
-
-        month += 1
-        if month > 12:
-            month = 1
-            year += 1
-
-    return None
-
-
-def static_future_events():
-    now = now_utc()
-    events = []
-
-    for name, time_text, tz, impact in FOMC_EVENTS_2026 + CPI_EVENTS_2026 + OPEC_EVENTS_2026:
-        event_dt = parse_event_dt(time_text)
-        if event_dt and event_dt > now:
-            events.append({
-                "name": name,
-                "time": event_dt,
-                "impact": impact,
-                "source": "official/known schedule",
-                "note": "Запланована макро/нафтова подія високого впливу.",
-            })
-
-    eia = next_wednesday_eia_event()
-    if eia:
-        events.append(eia)
-
-    nfp = next_nfp_event()
-    if nfp:
-        events.append(nfp)
-
-    events.sort(key=lambda x: x["time"])
-    return events
-
-
-def get_upcoming_event_news():
-    news = []
-    cutoff = now_utc() - timedelta(hours=24)
-
-    for query in EVENT_NEWS_QUERIES:
-        url = f"https://news.google.com/rss/search?q={quote_plus(query + ' when:24h')}&hl=en-US&gl=US&ceid=US:en"
-        response = safe_get(url, timeout=10, retries=1)
-        if not response:
-            continue
-
-        try:
-            root = ET.fromstring(response.content)
-            for item in root.findall(".//item")[:8]:
-                title = item.findtext("title", "")
-                pub_date = item.findtext("pubDate", "")
-                link = item.findtext("link", "")
-                published_at = parse_date(pub_date)
-
-                if published_at and published_at < cutoff:
-                    continue
-
-                if title:
-                    news.append({
-                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
-                        "source": "Google Event RSS",
-                        "link": link,
-                        "published_at": published_at,
-                    })
-        except Exception as error:
-            print(f"[WARN] Event Google RSS parse error: {error}")
-
-    return deduplicate_news(news)
-
-
-def analyze_event_risk():
-    upcoming = static_future_events()
-    event_news = get_upcoming_event_news()
-    now = now_utc()
-
-    score = 0
-    direction_score = 0
-    risk_level = "НИЗЬКИЙ"
-    warnings = []
-    confirmations = []
-    important_upcoming = []
-    event_long = 0
-    event_short = 0
-    analyzed_event_news = []
-
-    for event in upcoming[:10]:
-        hours_to_event = (event["time"] - now).total_seconds() / 3600
-
-        if hours_to_event <= 2:
-            score -= 30
-            warnings.append(f"Через {round(hours_to_event, 1)} год: {event['name']} — дуже високий ризик волатильності")
-            important_upcoming.append(event)
-        elif hours_to_event <= 8:
-            score -= 18
-            warnings.append(f"Сьогодні/скоро: {event['name']} — краще зменшити плече")
-            important_upcoming.append(event)
-        elif hours_to_event <= 24:
-            score -= 10
-            warnings.append(f"Протягом 24 год: {event['name']}")
-            important_upcoming.append(event)
-        elif hours_to_event <= 72:
-            confirmations.append(f"Найближча подія: {event['name']} ({format_time(event['time'])})")
-            important_upcoming.append(event)
-
-    event_keywords = [
-        "powell", "fed", "fomc", "cpi", "nfp", "payrolls", "eia",
-        "inventory", "inventories", "opec", "iran", "us talks",
-        "hormuz", "sanctions", "tariff", "trump",
-    ]
-
-    for item in event_news[:12]:
-        title = item["title"]
-        lower = title.lower()
-        hits = sum(1 for word in event_keywords if word in lower)
-        direction, reason = headline_direction(title)
-
-        if direction == "LONG":
-            event_long += 1
-            direction_score += 8
-        elif direction == "SHORT":
-            event_short += 1
-            direction_score -= 8
-
-        analyzed_event_news.append({
-            "source": item.get("source", "Google Event RSS"),
-            "title": title,
-            "published_at": item.get("published_at"),
-            "direction": direction,
-            "reason": reason,
-        })
-
-        if hits >= 2:
-            score -= 5
-            warnings.append(f"Подієвий headline: {title} | висновок: {direction} — {reason}")
-
-    direction_score = max(-25, min(25, direction_score))
-
-    if score <= -35:
-        risk_level = "ДУЖЕ ВИСОКИЙ"
-    elif score <= -20:
-        risk_level = "ВИСОКИЙ"
-    elif score <= -10:
-        risk_level = "ПІДВИЩЕНИЙ"
-
-    if event_long > event_short:
-        event_conclusion = "Очікування по подіях: більше аргументів за LONG, але через event-risk краще чекати ретест."
-    elif event_short > event_long:
-        event_conclusion = "Очікування по подіях: більше аргументів за SHORT або ризик відкату."
-    else:
-        event_conclusion = "Очікування по подіях: змішано, краще не входити без технічного підтвердження."
-
-    return {
-        "score": score,
-        "direction_score": direction_score,
-        "risk_level": risk_level,
-        "warnings": warnings[:8],
-        "confirmations": confirmations[:5],
-        "events": important_upcoming[:6],
-        "event_news": event_news[:6],
-        "event_news_analysis": analyzed_event_news[:8],
-        "event_long": event_long,
-        "event_short": event_short,
-        "event_conclusion": event_conclusion,
-    }
+    return "Ситуація змішана. Краще не поспішати."
 
 
 def format_time(dt):
@@ -1393,34 +1173,49 @@ def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Telegram secrets missing")
         return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
+        "text": message[:3900],
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=15)
+        print(f"Telegram status: {response.status_code}")
+        print(response.text[:300])
     except Exception as error:
         print(f"[WARN] Telegram error: {error}")
 
 
+# ==========================================================
+# MAIN
+# ==========================================================
+
 def main():
-    print("START BZU PROFESSIONAL FREE BOT UA")
+    print("START BZU PROFESSIONAL FREE BOT UA SHORT")
+
     tv = get_tradingview_market_data()
     if not tv:
         print("TRADINGVIEW PRICE ERROR")
         return
 
     fresh_news = get_all_fresh_news()
+    event_items = get_event_news()
+
     tech = analyze_technical(tv)
     news = analyze_news(fresh_news)
     orderflow = analyze_free_orderflow(tv)
     macro_data = get_macro_quant_data()
     macro = analyze_macro_quant(macro_data)
-    event_risk = analyze_event_risk()
-    signal, signal_type, score, confidence, risk_note = build_signal(tech, news, orderflow, macro, event_risk)
+    event_risk = analyze_event_risk(event_items)
+
+    signal, signal_type, score, confidence, risk_note = build_signal(
+        tech, news, orderflow, macro, event_risk
+    )
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
     print(f"SOURCE: {tv['source']}")
@@ -1433,7 +1228,7 @@ def main():
     print(f"TECH SCORE: {tech['score']}")
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
-    print(f"EVENT RISK: {event_risk['risk_level']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk.get('direction_score', 0)}")
+    print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -1443,11 +1238,23 @@ def main():
         print("NO SIGNAL")
         return
 
+    news_summary = (
+        "Новини підтримують LONG" if news["score"] > 15
+        else "Новини підтримують SHORT" if news["score"] < -15
+        else "Новини нейтральні"
+    )
+
+    event_summary = (
+        "Подієвий ризик високий — краще чекати"
+        if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+        else "Подієвий ризик нормальний"
+    )
+
     message = f"""
 <b>📊 BZU SIGNAL BOT ULTRA</b>
 
 <b>Сигнал:</b> {signal}
-<b>Тип сигналу:</b> {signal_type}
+<b>Тип:</b> {signal_type}
 <b>Впевненість:</b> {confidence}%
 <b>Ризик:</b> {risk_note}
 
@@ -1461,105 +1268,34 @@ def main():
 <b>TP1:</b> {plan['tp1']}
 <b>TP2:</b> {plan['tp2']}
 <b>TP3:</b> {plan['tp3']}
-<b>План:</b> {plan['note']}
 
 <b>Тренд:</b> {tech['trend']}
-<b>Тренд 5m:</b> {tech['trend_5m']}
-<b>Тренд 15m:</b> {tech['trend_15m']}
-<b>Тренд 1h:</b> {tech['trend_1h']}
-<b>RSI 5m:</b> {tech['rsi_5m']}
-<b>RSI 15m:</b> {tech['rsi_15m']}
-<b>RSI 1h:</b> {tech['rsi_1h']}
-<b>MACD 15m:</b> {tech['macd_15m']}
-<b>ADX 15m:</b> {tech['adx_15m']}
-<b>ATR 15m:</b> {tech['atr_15m']}
+<b>5m:</b> {tech['trend_5m']} | <b>15m:</b> {tech['trend_15m']} | <b>1h:</b> {tech['trend_1h']}
+<b>RSI 5m:</b> {tech['rsi_5m']} | <b>RSI 15m:</b> {tech['rsi_15m']} | <b>RSI 1h:</b> {tech['rsi_1h']}
+<b>ADX 15m:</b> {tech['adx_15m']} | <b>ATR 15m:</b> {tech['atr_15m']}
 
-<b>Orderflow:</b> {orderflow['bias']}
-<b>Orderflow score:</b> {orderflow['score']}
+<b>Orderflow:</b> {orderflow['bias']} / {orderflow['score']}
+<b>Macro:</b> {macro['regime']} / {macro['score']}
 
-<b>Macro regime:</b> {macro['regime']}
-<b>Macro score:</b> {macro['score']}
-<b>DXY:</b> {macro['data']['DXY']}%
-<b>US10Y:</b> {macro['data']['US10Y']}%
-<b>VIX:</b> {macro['data']['VIX']}%
-<b>S&P 500:</b> {macro['data']['SPX']}%
-<b>Nasdaq:</b> {macro['data']['NDX']}%
-<b>BTC:</b> {macro['data']['BTC']}%
-<b>UKOIL/Brent:</b> {macro['data']['UKOIL']}%
-
-<b>Event risk:</b> {event_risk['risk_level']}
-<b>Event score:</b> {event_risk['score']}
-<b>Event direction score:</b> {event_risk.get('direction_score', 0)}
-<b>Висновок по подіях:</b> {event_risk['event_conclusion']}
-"""
-
-    if orderflow["details"]:
-        message += "\n<b>Деталі orderflow:</b>"
-        for item in orderflow["details"]:
-            message += f"\n- {item}"
-
-    if macro["confirmations"]:
-        message += "\n\n<b>Macro підтвердження:</b>"
-        for item in macro["confirmations"]:
-            message += f"\n- {item}"
-
-    if event_risk["confirmations"]:
-        message += "\n\n<b>Майбутні події:</b>"
-        for item in event_risk["confirmations"]:
-            message += f"\n- {item}"
-
-    if event_risk["events"]:
-        message += f"\n\n<b>Event risk:</b> {event_risk['risk_level']} / score {event_risk['score']}"
-        for event in event_risk["events"]:
-            message += (
-                f"\n- {event['name']} — {format_time(event['time'])} "
-                f"({event['impact']})"
-            )
-
-    warnings = tech["warnings"] + orderflow["warnings"] + macro["warnings"] + event_risk["warnings"]
-    if warnings:
-        message += "\n\n<b>Попередження:</b>"
-        for item in warnings:
-            message += f"\n- {item}"
-
-    message += f"""
-
-<b>Новини:</b> останні {NEWS_LOOKBACK_HOURS} год
-<b>Кількість свіжих новин:</b> {news['total']}
-<b>Настрій новин:</b> {news['sentiment']}
-<b>Bullish:</b> {news['bullish']}
-<b>Bearish:</b> {news['bearish']}
-<b>Impact:</b> {news['impact']}
-<b>Breaking:</b> {news['breaking']}
+<b>Новини:</b> {news_summary}
 <b>News score:</b> {news['score']} / raw {news['raw_score']}
 <b>Якість news-score:</b> {news['noise_warning']}
-<b>Короткий висновок по новинах:</b> {news['directional_conclusion']}
+<b>Висновок по новинах:</b> {news['summary']}
 
-<b>Важливі свіжі новини з висновком:</b>
+<b>Події:</b> {event_summary}
+<b>Event risk:</b> {event_risk['risk']}
+<b>Event direction:</b> {event_risk['direction']}
+<b>Event score:</b> {event_risk['score']}
+<b>Висновок по подіях:</b> {event_risk['summary']}
+
+<b>Короткий висновок:</b>
+{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk)}
 """
-
-    if news["summary_items"]:
-        for item in news["summary_items"]:
-            message += (
-                f"\n- [{item['source']}] {item['title']} "
-                f"({format_time(item['published_at'])})"
-                f"\n  Висновок: {item['direction']} — {item['reason']}"
-            )
-    else:
-        message += "\nНемає"
-
-    if event_risk["event_news_analysis"]:
-        message += "\n\n<b>Headlines по майбутніх подіях з висновком:</b>"
-        for item in event_risk["event_news_analysis"]:
-            message += (
-                f"\n- [{item['source']}] {item['title']} "
-                f"({format_time(item['published_at'])})"
-                f"\n  Очікування: {item['direction']} — {item['reason']}"
-            )
 
     send_telegram(message.strip())
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
+
 
 if __name__ == "__main__":
     main()
