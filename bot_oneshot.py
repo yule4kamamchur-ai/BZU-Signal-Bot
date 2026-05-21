@@ -26,6 +26,13 @@ NEWS_LOOKBACK_HOURS = 24
 MAX_NEWS_SCORE = 60
 MAX_ITEMS_PER_FEED = 15
 
+# Momentum thresholds from TradingView daily/change field.
+# If BZUSDT.P moves fast, the bot must not ignore it just because EMA/RSI is mixed.
+STRONG_UP_MOVE_PERCENT = 1.2
+VERY_STRONG_UP_MOVE_PERCENT = 1.8
+STRONG_DOWN_MOVE_PERCENT = -1.2
+VERY_STRONG_DOWN_MOVE_PERCENT = -1.8
+
 # RSS/API sources that are usually available from GitHub Actions.
 # Removed broken oilprice.com/rss/oilprices.xml and direct ForexFactory scraping.
 NEWS_SOURCES = [
@@ -531,6 +538,7 @@ def get_macro_events():
 
 def analyze_technical(tv):
     price = tv["price"]
+    change = tv.get("change")
     ema20 = tv["ema20"]
     ema50 = tv["ema50"]
     rsi = tv["rsi"]
@@ -541,6 +549,22 @@ def analyze_technical(tv):
 
     if recommend is not None:
         score += int(recommend * 35)
+
+    momentum = "NEUTRAL"
+
+    if change is not None:
+        if change >= VERY_STRONG_UP_MOVE_PERCENT:
+            score += 45
+            momentum = "VERY STRONG UP"
+        elif change >= STRONG_UP_MOVE_PERCENT:
+            score += 30
+            momentum = "STRONG UP"
+        elif change <= VERY_STRONG_DOWN_MOVE_PERCENT:
+            score -= 45
+            momentum = "VERY STRONG DOWN"
+        elif change <= STRONG_DOWN_MOVE_PERCENT:
+            score -= 30
+            momentum = "STRONG DOWN"
 
     if ema20 is not None and price > ema20:
         score += 15
@@ -574,6 +598,8 @@ def analyze_technical(tv):
         "ema50": round(ema50, 2) if ema50 is not None else None,
         "macd": round(macd, 4) if macd is not None else None,
         "recommend": recommend,
+        "momentum": momentum,
+        "change": round(change, 4) if change is not None else None,
     }
 
 
@@ -588,7 +614,11 @@ def build_signal(tech, news):
     if tech["score"] > 0 and news["score"] < -40:
         score += 20
 
-    if score >= 55:
+    if tech.get("momentum") == "VERY STRONG UP" and score >= 25:
+        signal = "LONG"
+    elif tech.get("momentum") == "VERY STRONG DOWN" and score <= -25:
+        signal = "SHORT"
+    elif score >= 55:
         signal = "LONG"
     elif score <= -55:
         signal = "SHORT"
@@ -648,6 +678,7 @@ def main():
     print(f"NEWS RAW SCORE: {news['raw_score']}")
     print(f"NEWS CAPPED SCORE: {news['score']}")
     print(f"TECH SCORE: {tech['score']}")
+    print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL: {signal}")
 
@@ -665,6 +696,7 @@ def main():
 
 <b>Price:</b> {tv['price']}
 <b>Change:</b> {tv['change']}%
+<b>Momentum:</b> {tech['momentum']}
 
 <b>Trend:</b> {tech['trend']}
 <b>RSI 15m:</b> {tech['rsi']}
@@ -672,6 +704,7 @@ def main():
 <b>EMA20 15m:</b> {tech['ema20']}
 <b>EMA50 15m:</b> {tech['ema50']}
 <b>TradingView Recommend 15m:</b> {tech['recommend']}
+<b>Momentum change:</b> {tech['change']}%
 
 <b>News lookback:</b> last {NEWS_LOOKBACK_HOURS}h
 <b>Fresh news:</b> {news['total']}
