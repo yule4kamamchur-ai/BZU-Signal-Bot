@@ -22,8 +22,8 @@ TRADINGVIEW_SYMBOLS = [
 ]
 
 # Only fresh news will be counted.
-NEWS_LOOKBACK_HOURS = 24
-MAX_NEWS_SCORE = 60
+NEWS_LOOKBACK_HOURS = 2
+MAX_NEWS_SCORE = 80
 MAX_ITEMS_PER_FEED = 15
 
 # Momentum thresholds from TradingView daily/change field.
@@ -131,6 +131,31 @@ BEARISH_WORDS = [
     "tumbles",
     "slides",
     "lower",
+]
+
+BREAKING_WORDS = [
+    "trump",
+    "white house",
+    "president",
+    "tariff",
+    "sanctions",
+    "iran",
+    "russia",
+    "ukraine",
+    "war",
+    "ceasefire",
+    "hormuz",
+    "opec",
+    "opec+",
+    "fed",
+    "powell",
+    "fomc",
+    "cpi",
+    "eia",
+    "inventory",
+    "stockpiles",
+    "breaking",
+    "urgent",
 ]
 
 HIGH_IMPACT_WORDS = [
@@ -503,10 +528,17 @@ def analyze_news(news):
             bearish += 1
             raw_score -= 6 * bear_hits * weight
 
+        breaking_hits = keyword_score(title, BREAKING_WORDS)
+
         if impact_hits:
             impact += 1
             raw_score += 4 * impact_hits * weight
             important.append(item)
+
+        if breaking_hits:
+            raw_score += 8 * breaking_hits * weight
+            if item not in important:
+                important.append(item)
 
     if bullish > bearish:
         sentiment = "BULLISH"
@@ -608,8 +640,11 @@ def build_signal(tech, news):
 
     # Require at least some agreement. If technicals are against the news,
     # confidence is reduced instead of letting news force a signal every time.
+    if news["total"] >= 3 and news["score"] >= 55:
+        score += 20
+
     if tech["score"] < 0 and news["score"] > 40:
-        score -= 20
+        score -= 10
 
     if tech["score"] > 0 and news["score"] < -40:
         score += 20
@@ -706,7 +741,7 @@ def main():
 <b>TradingView Recommend 15m:</b> {tech['recommend']}
 <b>Momentum change:</b> {tech['change']}%
 
-<b>News lookback:</b> last {NEWS_LOOKBACK_HOURS}h
+<b>News lookback:</b> last {NEWS_LOOKBACK_HOURS}h / breaking mode
 <b>Fresh news:</b> {news['total']}
 <b>News Sentiment:</b> {news['sentiment']}
 <b>Bullish:</b> {news['bullish']}
