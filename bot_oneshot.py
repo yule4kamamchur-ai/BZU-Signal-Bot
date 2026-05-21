@@ -1,427 +1,509 @@
-"""
-BZU Signal Bot - NEWS-PRIORITY ULTRA (RSS, no API key needed)
-"""
-
-import requests
+```python
 import os
+import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone, timedelta
-from email.utils import parsedate_to_datetime
-from typing import Tuple, Dict, Optional, List
+from bs4 import BeautifulSoup
 
-TELEGRAM_TOKEN   = "8801978809:AAEtCm3xzMHq5o6NPAkK6h9dy6PJByg-CvI"
-TELEGRAM_CHAT_ID = "832100232"
-INSTRUMENT  = "BZ-USDT-SWAP"
-BAR         = "15m"
-BALANCE     = float(os.environ.get("BALANCE", "5"))
-LEVERAGE    = int(os.environ.get("LEVERAGE", "20"))
-RISK_PCT    = 0.20
-SL_PCT      = 0.018
-TP1_PCT     = 0.030
-TP2_PCT     = 0.055
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
 
-OIL_KEYWORDS = {
-    "bullish": [
-        "production cut", "opec cuts", "supply disruption", "sanctions",
-        "geopolitical risk", "conflict", "embargo", "refinery outage",
-        "pipeline attack", "war", "iran", "russia sanctions",
-        "demand surge", "supply shock", "inventory drop",
-        "geopolitical tensions", "saudi arabia", "supply tightness",
-        "shortage", "tight market", "support",
-    ],
-    "bearish": [
-        "production increase", "opec increases", "abundant supply", "oversupply",
-        "price collapse", "shale boom", "surplus", "high inventory",
-        "recession", "demand destruction", "economic slowdown",
-        "demand weakness", "supply glut", "inventory build",
-        "weak demand", "eia increase", "excess capacity",
-    ]
-}
+INST_ID = "BTC-USDT-SWAP"
 
-RSS_FEEDS = [
-    "https://feeds.reuters.com/reuters/businessNews",
-    "https://www.oilprice.com/rss/main",
-    "https://feeds.bbci.co.uk/news/business/rss.xml",
-    "https://rss.cnn.com/rss/money_news_international.rss",
+CRYPTO_RSS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
+    "https://cointelegraph.com/rss",
+    "https://cryptoslate.com/feed/",
 ]
 
-# ═══════════════════════════════════════════════════════════════
-# 1 - NEWS (RSS, free, real-time)
-# ═══════════════════════════════════════════════════════════════
+OIL_RSS = [
+    "https://www.eia.gov/rss/todayinenergy.xml",
+    "https://oilprice.com/rss/main",
+    "https://oilprice.com/rss/oilprices.xml",
+]
 
-def get_last_hour_news() -> List[Dict]:
-    all_articles = []
-    now = datetime.now(timezone.utc)
-    for feed_url in RSS_FEEDS:
-        try:
-            r = requests.get(feed_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-            root = ET.fromstring(r.content)
-            for item in root.findall(".//item"):
-                title = item.findtext("title") or ""
-                description = item.findtext("description") or ""
-                pub_date = item.findtext("pubDate") or ""
-                link = item.findtext("link") or ""
-                text = f"{title} {description}".lower()
-                oil_related = any(kw in text for kw in [
-                    "oil", "crude", "opec", "brent", "wti", "energy",
-                    "petroleum", "barrel", "refinery", "iran", "saudi"
-                ])
-                if not oil_related:
-                    continue
-                try:
-                    pub_time = parsedate_to_datetime(pub_date)
-                    age_hours = (now - pub_time).total_seconds() / 3600
-                    if age_hours > 24:
-                        continue
-                except Exception:
-                    pass
-                all_articles.append({
-                    "title": title,
-                    "description": description,
-                    "publishedAt": pub_date,
-                    "url": link,
-                    "source": {"name": feed_url.split("/")[2]}
-                })
-        except Exception as e:
-            print(f"[WARN] RSS {feed_url}: {e}")
-    print(f"  RSS: {len(all_articles)} oil news found")
-    return all_articles[:40]
+BULLISH = [
+    "etf", "approval", "buy", "bullish", "surge",
+    "rally", "breakout", "institutional", "accumulation",
+    "rate cut", "fed pause"
+]
+
+BEARISH = [
+    "crash", "sell", "bearish", "lawsuit",
+    "hack", "liquidation", "war", "inflation",
+    "rate hike", "recession"
+]
+
+HIGH_IMPACT = [
+    "fed", "cpi", "fomc", "etf",
+    "sec", "blackrock", "war",
+    "opec", "inventory", "eia"
+]
 
 
-def simple_nlp_sentiment(text: str) -> float:
-    text = text.lower()
-    strong_bullish = ["surge", "soar", "spike", "rally", "jump", "gain", "explode", "positive", "strong", "bullish", "buy"]
-    strong_bearish = ["crash", "plunge", "collapse", "tank", "nosedive", "negative", "weak", "bearish", "sell"]
-    bullish_words  = ["up", "rise", "increase", "support", "cut", "sanctions", "disruption", "embargo", "shortage", "tight", "geopolitical"]
-    bearish_words  = ["fall", "drop", "decline", "down", "lower", "excess", "slowdown", "recession"]
-    sb = sum(1 for w in strong_bullish if w in text)
-    sw = sum(1 for w in strong_bearish if w in text)
-    b  = sum(1 for w in bullish_words  if w in text)
-    s  = sum(1 for w in bearish_words  if w in text)
-    total_score = (sb * 2 + b) - (sw * 2 + s)
-    total_count = (sb + sw) * 2 + b + s
-    if total_count == 0:
-        return 0.0
-    return max(-1.0, min(1.0, total_score / total_count))
-
-
-def analyze_news_sentiment(articles: List[Dict]) -> Dict:
-    if not articles:
-        return {
-            "sentiment": "neutral", "score": 0,
-            "bullish_count": 0, "bearish_count": 0,
-            "top_news": [], "strength": "weak", "total_news": 0
-        }
-    bullish_articles = []
-    bearish_articles = []
-    for article in articles:
-        title = (article.get("title") or "").lower()
-        description = (article.get("description") or "").lower()
-        text = f"{title} {description}"
-        nlp_score  = simple_nlp_sentiment(text)
-        bullish_kw = sum(1 for kw in OIL_KEYWORDS["bullish"] if kw in text)
-        bearish_kw = sum(1 for kw in OIL_KEYWORDS["bearish"] if kw in text)
-        combined   = nlp_score + (bullish_kw - bearish_kw) * 0.15
-        is_breaking = False
-        try:
-            pub_time = parsedate_to_datetime(article.get("publishedAt", ""))
-            age_minutes = (datetime.now(timezone.utc) - pub_time).total_seconds() / 60
-            is_breaking = age_minutes < 30
-        except Exception:
-            pass
-        entry = {
-            "title": article.get("title"),
-            "source": article.get("source", {}).get("name"),
-            "published_at": article.get("publishedAt"),
-            "score": abs(combined),
-            "breaking": is_breaking
-        }
-        if combined > 0.05:
-            bullish_articles.append(entry)
-        elif combined < -0.05:
-            bearish_articles.append(entry)
-    bullish_count = len(bullish_articles)
-    bearish_count = len(bearish_articles)
-    total = bullish_count + bearish_count
-    if bullish_count > bearish_count * 2.5:
-        sentiment = "bullish"
-        strength  = "strong" if bullish_count >= 6 else "moderate"
-    elif bearish_count > bullish_count * 2.5:
-        sentiment = "bearish"
-        strength  = "strong" if bearish_count >= 6 else "moderate"
-    else:
-        sentiment = "neutral"
-        strength  = "weak"
-    top_bullish = sorted(bullish_articles, key=lambda x: (x["breaking"], x["score"]), reverse=True)[:2]
-    top_bearish = sorted(bearish_articles, key=lambda x: (x["breaking"], x["score"]), reverse=True)[:2]
-    return {
-        "sentiment": sentiment, "strength": strength,
-        "score": bullish_count - bearish_count,
-        "bullish_count": bullish_count, "bearish_count": bearish_count,
-        "total_news": total, "top_news": (top_bullish + top_bearish)[:4]
-    }
-
-# ═══════════════════════════════════════════════════════════════
-# 2 - MACRO CALENDAR
-# ═══════════════════════════════════════════════════════════════
-
-def check_macro_events() -> Dict:
-    now = datetime.utcnow()
-    events = []
-    warnings = []
-    if now.weekday() == 2 and 15 <= now.hour <= 16:
-        events.append({"name": "EIA Crude Oil Inventory", "impact": "CRITICAL", "time": "15:30 UTC"})
-    if now.weekday() == 1 and 22 <= now.hour <= 23:
-        events.append({"name": "API Petroleum Status", "impact": "HIGH", "time": "22:30 UTC"})
-    if now.day == 15:
-        events.append({"name": "OPEC Monthly Oil Report", "impact": "CRITICAL", "time": "12:00 UTC"})
-    if now.weekday() == 1 and now.hour >= 12:
-        warnings.append("EIA tomorrow at 15:30 UTC!")
-    return {"events": events, "warnings": warnings, "upcoming": len(events) > 0, "high_impact": len(events) > 0}
-
-# ═══════════════════════════════════════════════════════════════
-# 3 - PRICES
-# ═══════════════════════════════════════════════════════════════
-
-def get_candles_okx() -> Tuple[List[float], List[float]]:
-    url = "https://www.okx.com/api/v5/market/candles"
-    params = {"instId": INSTRUMENT, "bar": BAR, "limit": "50"}
+def safe_get(url, timeout=15):
     try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json().get("data", [])
-        candles = sorted(data, key=lambda x: int(x[0]))
-        return [float(c[4]) for c in candles], [float(c[5]) for c in candles]
+        r = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        r.raise_for_status()
+        return r
     except Exception as e:
-        print(f"[ERROR] OKX: {e}")
-        return [], []
-
-
-def get_binance_price() -> Optional[float]:
-    try:
-        r = requests.get("https://fapi.binance.com/fapi/v1/ticker/price?symbol=BLUSDT", timeout=5)
-        return float(r.json().get("price", 0))
-    except Exception:
+        print(f"[WARN] {url}: {e}")
         return None
 
 
-def get_multi_source_price() -> Dict:
-    closes_okx, _ = get_candles_okx()
-    binance_price  = get_binance_price()
-    prices = {"okx": None, "binance": None, "consensus": None}
-    if closes_okx:
-        prices["okx"] = round(closes_okx[-1], 2)
-    if binance_price:
-        prices["binance"] = round(binance_price, 2)
-    valid = [p for p in [prices["okx"], prices["binance"]] if p]
-    if valid:
-        prices["consensus"] = round(sum(valid) / len(valid), 2)
-    return prices
+# =========================
+# OKX
+# =========================
 
-# ═══════════════════════════════════════════════════════════════
-# 4 - TECHNICAL ANALYSIS
-# ═══════════════════════════════════════════════════════════════
+def get_okx_price():
+    url = f"https://www.okx.com/api/v5/market/ticker?instId={INST_ID}"
 
-def ema(values: List[float], period: int) -> List[float]:
-    if len(values) < period:
-        return values
+    r = safe_get(url)
+    if not r:
+        return None
+
+    data = r.json()["data"][0]
+
+    return {
+        "last": float(data["last"]),
+        "bid": float(data["bidPx"]),
+        "ask": float(data["askPx"]),
+        "vol24h": float(data["vol24h"]),
+    }
+
+
+def get_okx_funding():
+    url = f"https://www.okx.com/api/v5/public/funding-rate?instId={INST_ID}"
+
+    r = safe_get(url)
+    if not r:
+        return 0
+
+    data = r.json()["data"][0]
+    return float(data["fundingRate"])
+
+
+def get_okx_candles():
+    url = f"https://www.okx.com/api/v5/market/candles?instId={INST_ID}&bar=15m&limit=100"
+
+    r = safe_get(url)
+    if not r:
+        return []
+
+    raw = r.json()["data"]
+
+    candles = []
+
+    for c in reversed(raw):
+        candles.append({
+            "close": float(c[4]),
+            "volume": float(c[5]),
+        })
+
+    return candles
+
+
+# =========================
+# INDICATORS
+# =========================
+
+def ema(values, period):
     k = 2 / (period + 1)
-    result = [values[0]]
+
+    result = values[0]
+
     for v in values[1:]:
-        result.append(v * k + result[-1] * (1 - k))
+        result = v * k + result * (1 - k)
+
     return result
 
 
-def rsi(closes: List[float], period: int = 14) -> float:
-    if len(closes) < period + 1:
-        return 50.0
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i-1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-    ag = sum(gains[:period]) / period
-    al = sum(losses[:period]) / period
-    for i in range(period, len(gains)):
-        ag = (ag * (period-1) + gains[i]) / period
-        al = (al * (period-1) + losses[i]) / period
-    if al == 0:
-        return 100.0
-    return round(100 - (100 / (1 + ag / al)), 2)
+def rsi(values, period=14):
+    gains = []
+    losses = []
+
+    for i in range(1, len(values)):
+        diff = values[i] - values[i - 1]
+
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+
+    return 100 - (100 / (1 + rs))
 
 
-def analyze_ta(closes: List[float], volumes: List[float]) -> Dict:
-    if len(closes) < 30:
-        return {"error": "Not enough data"}
-    ef    = ema(closes, 9)[-1]
-    es    = ema(closes, 21)[-1]
-    price = closes[-1]
-    rsi_v = rsi(closes, 14)
-    vol_avg = sum(volumes[-20:]) / 20
-    vol_cur = volumes[-1]
+def macd(values):
+    ema12 = ema(values[-35:], 12)
+    ema26 = ema(values[-35:], 26)
+
+    value = ema12 - ema26
+
+    return value
+
+
+def analyze_technical(candles):
+    closes = [x["close"] for x in candles]
+    volumes = [x["volume"] for x in candles]
+
+    current = closes[-1]
+
+    ema20 = ema(closes[-50:], 20)
+    ema50 = ema(closes[-80:], 50)
+
+    current_rsi = rsi(closes)
+
+    current_macd = macd(closes)
+
+    avg_volume = sum(volumes[-20:]) / 20
+    volume_spike = volumes[-1] > avg_volume * 1.5
+
+    score = 0
+
+    if current > ema20:
+        score += 15
+    else:
+        score -= 15
+
+    if ema20 > ema50:
+        score += 20
+        trend = "UP"
+    else:
+        score -= 20
+        trend = "DOWN"
+
+    if current_rsi < 30:
+        score += 15
+
+    if current_rsi > 70:
+        score -= 15
+
+    if current_macd > 0:
+        score += 15
+    else:
+        score -= 15
+
+    if volume_spike:
+        score += 10
+
     return {
-        "price": round(price, 2), "ema9": round(ef, 2), "ema21": round(es, 2),
-        "rsi": rsi_v, "trend": "UP" if ef > es else "DOWN",
-        "momentum": "STRONG" if abs(ef - es) / es > 0.005 else "WEAK",
-        "vol_ratio": round(vol_cur / vol_avg, 2) if vol_avg > 0 else 1.0
+        "score": score,
+        "trend": trend,
+        "rsi": round(current_rsi, 2),
+        "ema20": round(ema20, 2),
+        "ema50": round(ema50, 2),
+        "macd": round(current_macd, 2),
+        "volume_spike": volume_spike,
     }
 
-# ═══════════════════════════════════════════════════════════════
-# 5 - STRENGTH SCORE
-# ═══════════════════════════════════════════════════════════════
 
-def calculate_strength_score(news_data: Dict, macro_data: Dict, ta_meta: Dict) -> float:
-    score = 0.0
-    details = []
-    if news_data["sentiment"] == "bullish":
-        ns = min(40, news_data["bullish_count"] * 6)
-        score += ns; details.append(f"NEWS:{ns}")
-    elif news_data["sentiment"] == "bearish":
-        ns = min(40, news_data["bearish_count"] * 6)
-        score += ns; details.append(f"NEWS:{ns}")
-    if macro_data["high_impact"]:
-        score += 30; details.append("MACRO:30")
-    if ta_meta.get("trend") == "UP" and news_data["sentiment"] == "bullish":
-        pts = 20 if ta_meta.get("momentum") == "STRONG" else 10
-        score += pts; details.append(f"TA:{pts}")
-    elif ta_meta.get("trend") == "DOWN" and news_data["sentiment"] == "bearish":
-        pts = 20 if ta_meta.get("momentum") == "STRONG" else 10
-        score += pts; details.append(f"TA:{pts}")
-    for article in news_data.get("top_news", []):
-        if article.get("breaking"):
-            score += 10; details.append("BREAKING:10"); break
-    print(f"  Score: {' + '.join(details) or '0'} = {min(100, score)}")
-    return min(100, score)
+# =========================
+# RSS NEWS
+# =========================
 
-# ═══════════════════════════════════════════════════════════════
-# 6 - SIGNAL GENERATION
-# ═══════════════════════════════════════════════════════════════
+def parse_rss(url):
+    r = safe_get(url)
 
-def generate_signal(news_data: Dict, macro_data: Dict, ta_meta: Dict) -> Optional[str]:
-    strength_score = calculate_strength_score(news_data, macro_data, ta_meta)
-    if strength_score >= 70:
-        if news_data["sentiment"] == "bullish": return "LONG"
-        if news_data["sentiment"] == "bearish": return "SHORT"
-    if strength_score >= 50:
-        trend = ta_meta.get("trend", "?")
-        if news_data["sentiment"] == "bullish" and trend == "UP": return "LONG"
-        if news_data["sentiment"] == "bearish" and trend == "DOWN": return "SHORT"
-    return None
+    if not r:
+        return []
 
-# ═══════════════════════════════════════════════════════════════
-# 7 - TELEGRAM
-# ═══════════════════════════════════════════════════════════════
+    news = []
 
-def send_signal(signal: str, news_data: Dict, macro_data: Dict, ta_meta: Dict, prices: Dict):
-    price = prices.get("consensus") or ta_meta["price"]
-    now   = datetime.now(timezone.utc).strftime("%d.%m %H:%M UTC")
-    if signal == "SHORT":
-        sl  = round(price * (1 + SL_PCT), 2)
-        tp1 = round(price * (1 - TP1_PCT), 2)
-        tp2 = round(price * (1 - TP2_PCT), 2)
-        emoji, label = "🔴", "SHORT"
-    else:
-        sl  = round(price * (1 - SL_PCT), 2)
-        tp1 = round(price * (1 + TP1_PCT), 2)
-        tp2 = round(price * (1 + TP2_PCT), 2)
-        emoji, label = "🟢", "LONG"
-    margin   = round(BALANCE * RISK_PCT, 2)
-    position = round(margin * LEVERAGE, 2)
-    top_news_text = ""
-    for i, a in enumerate(news_data.get("top_news", [])[:2], 1):
-        brk = "🔥 " if a.get("breaking") else ""
-        top_news_text += f"  {i}. {brk}{a['title'][:55]}...\n"
-    macro_text = ""
-    if macro_data["high_impact"]:
-        for e in macro_data["events"]:
-            macro_text += f"⚠️ {e['name']}\n"
-    msg = (
-        f"{emoji} *{label}*  |  `{INSTRUMENT}`\n"
-        f"🕐 {now}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 Ціна: ${price}\n"
-        f"🛡 SL: ${sl}  |  🎯 TP1: ${tp1}  |  🎯 TP2: ${tp2}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📰 Новини: *{news_data['sentiment'].upper()}* ({news_data['bullish_count']}↑ {news_data['bearish_count']}↓)\n"
-        f"{top_news_text}"
-        f"📈 TA: {ta_meta['trend']} | EMA: {ta_meta['ema9']}/{ta_meta['ema21']} | RSI: {ta_meta['rsi']}\n"
-        f"{macro_text}"
-        f"💰 Позиція: ${position} (×{LEVERAGE})\n"
-        f"⚠️ СТОП ОДРАЗУ!\n"
-    )
-    send_telegram(msg)
-    print(f"✅ [SIGNAL] {signal} @ ${price}")
-
-
-def send_status(news_data: Dict, macro_data: Dict, ta_meta: Dict, prices: Dict):
-    now = datetime.now(timezone.utc)
-    if now.minute > 2:
-        return
-    price = prices.get("consensus") or ta_meta.get("price", "—")
-    msg = (
-        f"⏳ Чекаємо сигналу | {now.strftime('%d.%m %H:%M UTC')}\n"
-        f"💰 BZU: ${price}  |  {ta_meta.get('trend')}  |  RSI: {ta_meta.get('rsi')}\n"
-        f"📰 Новини: {news_data['sentiment'].upper()} ({news_data['total_news']} новин)\n"
-    )
-    if macro_data["upcoming"]:
-        msg += "⚠️ Макро события\n"
-    send_telegram(msg)
-
-
-def send_telegram(msg: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        r = requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg,
-            "parse_mode": "Markdown"
-        }, timeout=10)
-        if r.status_code == 200:
-            print("✅ Telegram OK")
-        else:
-            print(f"❌ Telegram HTTP {r.status_code}: {r.text}")
-    except Exception as e:
-        print(f"❌ Telegram: {e}")
+        root = ET.fromstring(r.content)
 
-# ═══════════════════════════════════════════════════════════════
+        for item in root.findall(".//item")[:20]:
+            title = item.findtext("title", "")
+            link = item.findtext("link", "")
+
+            if title:
+                news.append({
+                    "title": title,
+                    "link": link
+                })
+
+    except Exception as e:
+        print(f"[WARN] RSS parse error: {e}")
+
+    return news
+
+
+def get_crypto_news():
+    news = []
+
+    for url in CRYPTO_RSS:
+        news += parse_rss(url)
+
+    if CRYPTOPANIC_KEY:
+        cp_url = (
+            "https://cryptopanic.com/api/v1/posts/"
+            f"?auth_token={CRYPTOPANIC_KEY}&currencies=BTC&filter=hot"
+        )
+
+        r = safe_get(cp_url)
+
+        if r:
+            try:
+                data = r.json()
+
+                for item in data.get("results", [])[:20]:
+                    news.append({
+                        "title": item.get("title", ""),
+                        "link": item.get("url", "")
+                    })
+
+            except Exception as e:
+                print(f"[WARN] CryptoPanic error: {e}")
+
+    return news
+
+
+def get_oil_news():
+    news = []
+
+    for url in OIL_RSS:
+        news += parse_rss(url)
+
+    return news
+
+
+# =========================
+# FOREX FACTORY
+# =========================
+
+def get_forex_factory_events():
+    url = "https://www.forexfactory.com/calendar"
+
+    r = safe_get(url)
+
+    if not r:
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    events = []
+
+    keywords = [
+        "CPI",
+        "FOMC",
+        "Interest Rate",
+        "NFP",
+        "Powell",
+        "Inflation",
+        "Fed"
+    ]
+
+    text = soup.get_text(" ", strip=True)
+
+    for k in keywords:
+        if k.lower() in text.lower():
+            events.append(k)
+
+    return events
+
+
+# =========================
+# NEWS ANALYSIS
+# =========================
+
+def analyze_news(news):
+    bullish = 0
+    bearish = 0
+    impact = 0
+
+    important = []
+
+    for n in news:
+        title = n["title"].lower()
+
+        if any(x in title for x in BULLISH):
+            bullish += 1
+
+        if any(x in title for x in BEARISH):
+            bearish += 1
+
+        if any(x in title for x in HIGH_IMPACT):
+            impact += 1
+            important.append(n["title"])
+
+    score = bullish * 6
+    score -= bearish * 6
+    score += impact * 10
+
+    if bullish > bearish:
+        sentiment = "BULLISH"
+    elif bearish > bullish:
+        sentiment = "BEARISH"
+    else:
+        sentiment = "NEUTRAL"
+
+    return {
+        "score": score,
+        "sentiment": sentiment,
+        "bullish": bullish,
+        "bearish": bearish,
+        "impact": impact,
+        "important": important[:5],
+        "total": len(news),
+    }
+
+
+# =========================
+# SIGNAL ENGINE
+# =========================
+
+def build_signal(price, tech, news, funding, forex_events):
+    score = 0
+
+    score += tech["score"]
+    score += news["score"]
+
+    if funding > 0.0008:
+        score -= 10
+
+    if funding < -0.0005:
+        score += 10
+
+    if forex_events:
+        score += 15
+
+    if score >= 55:
+        signal = "LONG"
+
+    elif score <= -55:
+        signal = "SHORT"
+
+    else:
+        signal = "NO SIGNAL"
+
+    confidence = min(95, abs(score))
+
+    return signal, score, confidence
+
+
+# =========================
+# TELEGRAM
+# =========================
+
+def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[WARN] Telegram secrets missing")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": msg,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+
+    try:
+        requests.post(url, json=payload, timeout=10)
+
+    except Exception as e:
+        print(f"[WARN] Telegram error: {e}")
+
+
+# =========================
 # MAIN
-# ═══════════════════════════════════════════════════════════════
+# =========================
+
+def main():
+    print("🚀 START BZU ULTRA BOT")
+
+    ticker = get_okx_price()
+
+    if not ticker:
+        print("❌ OKX error")
+        return
+
+    funding = get_okx_funding()
+
+    candles = get_okx_candles()
+
+    crypto_news = get_crypto_news()
+
+    oil_news = get_oil_news()
+
+    all_news = crypto_news + oil_news
+
+    forex_events = get_forex_factory_events()
+
+    tech = analyze_technical(candles)
+
+    news = analyze_news(all_news)
+
+    signal, score, confidence = build_signal(
+        ticker["last"],
+        tech,
+        news,
+        funding,
+        forex_events
+    )
+
+    print(f"💱 OKX: {ticker['last']}")
+    print(f"📊 Tech score: {tech['score']}")
+    print(f"📰 News score: {news['score']}")
+    print(f"🎯 FINAL SCORE: {score}")
+
+    if signal == "NO SIGNAL":
+        print("⏳ NO SIGNAL")
+        return
+
+    icon = "🟢" if signal == "LONG" else "🔴"
+
+    msg = f"""
+{icon} <b>BZU SIGNAL BOT ULTRA</b>
+
+<b>Signal:</b> {signal}
+<b>Confidence:</b> {confidence}%
+
+<b>OKX Price:</b> {ticker['last']}
+
+<b>Trend:</b> {tech['trend']}
+<b>RSI:</b> {tech['rsi']}
+<b>MACD:</b> {tech['macd']}
+<b>EMA20:</b> {tech['ema20']}
+<b>EMA50:</b> {tech['ema50']}
+
+<b>Funding:</b> {funding}
+
+<b>News Sentiment:</b> {news['sentiment']}
+<b>Bullish:</b> {news['bullish']}
+<b>Bearish:</b> {news['bearish']}
+<b>Impact:</b> {news['impact']}
+
+<b>Forex Factory Events:</b>
+{', '.join(forex_events) if forex_events else 'None'}
+
+<b>Important News:</b>
+"""
+
+    for item in news["important"]:
+        msg += f"\n• {item}"
+
+    send_telegram(msg)
+
+    print("✅ Telegram sent")
+    print("✨ BOT COMPLETE")
+
 
 if __name__ == "__main__":
-    print(f"\n🚀 [START] BZU Signal Bot ULTRA v2.0\n")
-
-    print("📰 Новини (RSS, реальний час)...")
-    articles  = get_last_hour_news()
-    news_data = analyze_news_sentiment(articles)
-    print(f"✅ Sentiment: {news_data['sentiment'].upper()} | {news_data['total_news']} новин")
-    print(f"   Bullish: {news_data['bullish_count']} | Bearish: {news_data['bearish_count']}\n")
-
-    print("📅 Макро-календар...")
-    macro_data = check_macro_events()
-    if macro_data["high_impact"]:
-        for event in macro_data["events"]:
-            print(f"   🔥 {event['name']}")
-    print()
-
-    print("💱 Ціни...")
-    prices = get_multi_source_price()
-    print(f"✅ Consensus: ${prices['consensus']}\n")
-
-    print("📊 Технічний аналіз...")
-    closes, volumes = get_candles_okx()
-    if not closes:
-        print("[ERROR] OKX даних немає")
-        exit(1)
-    ta_meta = analyze_ta(closes, volumes)
-    print(f"✅ {ta_meta['trend']} | RSI: {ta_meta['rsi']}\n")
-
-    print("🎯 Генеруємо сигнал...")
-    signal = generate_signal(news_data, macro_data, ta_meta)
-
-    if signal:
-        print(f"\n✅✅✅ СИГНАЛ: {signal} ✅✅✅\n")
-        send_signal(signal, news_data, macro_data, ta_meta, prices)
-    else:
-        print(f"\n⏳ Сигналу немає\n")
-        send_status(news_data, macro_data, ta_meta, prices)
-
-    print(f"\n✨ [END] Bot completed\n")
+    main()
+```
