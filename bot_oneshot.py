@@ -1134,7 +1134,11 @@ def main():
 <b>UKOIL/Brent:</b> {macro['data']['UKOIL']}%
 """
 
-       if orderflow["details"]:
+           # ============================================
+    # ORDERFLOW DETAILS
+    # ============================================
+
+    if orderflow["details"]:
         message += "\n<b>Деталі orderflow:</b>"
 
         for item in orderflow["details"]:
@@ -1145,11 +1149,9 @@ def main():
     # ============================================
 
     if macro["confirmations"]:
-
         message += "\n\n<b>Macro підтвердження:</b>"
 
         for item in macro["confirmations"]:
-
             message += f"\n- {item}"
 
     # ============================================
@@ -1163,11 +1165,9 @@ def main():
     )
 
     if warnings:
-
         message += "\n\n<b>Попередження:</b>"
 
         for item in warnings:
-
             message += f"\n- {item}"
 
     # ============================================
@@ -1200,8 +1200,11 @@ def main():
             )
 
     else:
-
         message += "\nНемає"
+
+    # ============================================
+    # SEND TELEGRAM
+    # ============================================
 
     send_telegram(message.strip())
 
