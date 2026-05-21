@@ -69,12 +69,9 @@ MACRO_NEWS_QUERIES = [
 ]
 
 NEWS_SOURCES = [
-    {
-        "name": "EIA Today in Energy",
-        "url": "https://www.eia.gov/rss/todayinenergy.xml",
-        "type": "rss",
-        "weight": 1.2,
-    },
+    # EIA RSS is intentionally not used as a direct source on GitHub Actions,
+    # because it often times out. EIA inventory impact is still covered through
+    # Google News RSS queries: "EIA crude oil inventories today API crude draw build".
     {
         "name": "OilPrice",
         "url": "https://oilprice.com/rss/main",
