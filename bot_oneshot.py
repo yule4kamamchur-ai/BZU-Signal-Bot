@@ -42,10 +42,8 @@ VERY_STRONG_UP_MOVE_PERCENT = 1.8
 STRONG_DOWN_MOVE_PERCENT = -1.2
 VERY_STRONG_DOWN_MOVE_PERCENT = -1.8
 
-GDELT_QUERIES = [
-    '(oil OR crude OR Brent) (Trump OR tariff OR sanctions OR Iran OR Russia OR Ukraine OR war OR Hormuz OR OPEC OR EIA OR inventory OR Fed OR Powell)',
-    '(Brent crude OR crude oil OR oil prices) (surge OR rally OR drop OR fall OR supply OR demand OR stockpiles OR sanctions)',
-]
+# GDELT disabled: on GitHub Actions it often gives 429/timeout.
+GDELT_QUERIES = []
 
 GOOGLE_NEWS_QUERIES = [
     'Brent crude oil Trump tariff sanctions OPEC EIA',
@@ -61,6 +59,13 @@ EVENT_QUERIES = [
     'EIA crude oil inventories today API crude draw build',
     'OPEC meeting production cut increase crude oil',
     'Iran US talks sanctions oil Hormuz Trump',
+]
+
+MACRO_NEWS_QUERIES = [
+    'Fed Powell rate cut inflation dollar yields stock market',
+    'DXY dollar yields VIX stocks oil market today',
+    'CPI FOMC NFP Fed speech market reaction',
+    'S&P 500 Nasdaq VIX dollar risk on risk off today',
 ]
 
 NEWS_SOURCES = [
@@ -413,123 +418,102 @@ def analyze_technical(tv):
 # MACRO QUANT
 # ==========================================================
 
-def get_macro_quant_data():
-    columns = [
-        "close", "change", "Recommend.All|15", "Recommend.All|60",
-        "RSI|15", "EMA20|60", "EMA50|60", "MACD.macd|60",
-    ]
+def get_macro_news():
+    """Stable macro layer through Google News RSS instead of TradingView macro symbols.
+    This avoids constant TVC:US10Y / NASDAQ:NDX / UKOIL unavailable warnings on GitHub.
+    """
+    macro_items = []
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
-    macro = {}
+    for query in MACRO_NEWS_QUERIES:
+        macro_items.extend(parse_google_rss(query, 6, "Google Macro RSS", 0.9))
 
-    for name, symbol, screener in MACRO_SYMBOLS:
-        values = get_tradingview_scan(symbol, screener, columns)
-        if not values:
-            print(f"[WARN] Macro data unavailable for {name} / {symbol}")
+    # keep only reasonably fresh macro items
+    filtered = []
+    for item in macro_items:
+        published_at = item.get("published_at")
+        if published_at and published_at < cutoff:
             continue
+        filtered.append(item)
 
-        try:
-            macro[name] = {
-                "symbol": symbol,
-                "price": float(values[0]) if values[0] is not None else None,
-                "change": float(values[1]) if values[1] is not None else 0.0,
-                "recommend_15m": values[2],
-                "recommend_1h": values[3],
-                "rsi_15m": values[4],
-                "ema20_1h": values[5],
-                "ema50_1h": values[6],
-                "macd_1h": values[7],
-            }
-        except Exception as error:
-            print(f"[WARN] Macro parse error {name}: {error}")
+    return deduplicate_news(filtered)
 
-    return macro
+
+def get_macro_quant_data():
+    """Return macro data without unstable TradingView macro scraping."""
+    return {"macro_news": get_macro_news()}
 
 
 def analyze_macro_quant(macro):
+    """Macro regime based on stable headline proxy.
+    It is less granular than live DXY/VIX/US10Y, but much more reliable on GitHub Actions.
+    """
+    items = macro.get("macro_news", []) if isinstance(macro, dict) else []
+
     score = 0
-    regime = "НЕЙТРАЛЬНИЙ"
     confirmations = []
     warnings = []
 
-    dxy_ch = (macro.get("DXY", {}).get("change", 0) or 0)
-    us10y_ch = (macro.get("US10Y", {}).get("change", 0) or 0)
-    vix_ch = (macro.get("VIX", {}).get("change", 0) or 0)
-    spx_ch = (macro.get("SPX", {}).get("change", 0) or 0)
-    ndx_ch = (macro.get("NDX", {}).get("change", 0) or 0)
-    btc_ch = (macro.get("BTC", {}).get("change", 0) or 0)
-    oil_ch = (macro.get("UKOIL", {}).get("change", 0) or 0)
+    risk_on_words = [
+        "rate cut", "cuts", "dovish", "soft landing", "stocks rise", "stocks gain",
+        "nasdaq rises", "s&p 500 rises", "vix falls", "dollar falls", "yields fall",
+        "risk-on", "fed pause", "inflation cools", "cpi cools", "jobs slow",
+    ]
 
-    if dxy_ch <= -0.25:
-        score += 12
-        confirmations.append(f"DXY слабшає ({round(dxy_ch, 2)}%) — підтримка risk-on")
-    elif dxy_ch >= 0.25:
-        score -= 12
-        warnings.append(f"DXY росте ({round(dxy_ch, 2)}%) — тиск на ризикові активи")
+    risk_off_words = [
+        "rate hike", "hawkish", "inflation rises", "hot cpi", "yields rise",
+        "dollar rises", "vix rises", "stocks fall", "stocks drop", "nasdaq falls",
+        "risk-off", "recession", "higher for longer", "tariff", "trade war",
+    ]
 
-    if us10y_ch >= 1.0:
-        score -= 10
-        warnings.append(f"US10Y росте ({round(us10y_ch, 2)}%) — risk-off фактор")
-    elif us10y_ch <= -1.0:
-        score += 10
-        confirmations.append(f"US10Y падає ({round(us10y_ch, 2)}%) — підтримка risk-on")
+    impact_words = [
+        "fed", "powell", "fomc", "cpi", "nfp", "inflation", "yields",
+        "dollar", "vix", "nasdaq", "s&p", "stocks",
+    ]
 
-    if vix_ch >= 4.0:
-        score -= 18
-        warnings.append(f"VIX сильно росте ({round(vix_ch, 2)}%) — ринок у стресі")
-    elif vix_ch <= -3.0:
-        score += 12
-        confirmations.append(f"VIX падає ({round(vix_ch, 2)}%) — risk-on")
+    for item in items[:30]:
+        title = item.get("title", "")
+        lower = title.lower()
+        risk_on_hits = sum(1 for word in risk_on_words if word in lower)
+        risk_off_hits = sum(1 for word in risk_off_words if word in lower)
+        impact_hits = sum(1 for word in impact_words if word in lower)
 
-    if spx_ch > 0.25:
-        score += 8
-        confirmations.append(f"S&P 500 росте ({round(spx_ch, 2)}%)")
-    elif spx_ch < -0.25:
-        score -= 8
-        warnings.append(f"S&P 500 падає ({round(spx_ch, 2)}%)")
+        if risk_on_hits:
+            add = 5 * risk_on_hits + min(4, impact_hits)
+            score += add
+            if len(confirmations) < 5:
+                confirmations.append(f"macro risk-on: {title[:100]}")
 
-    if ndx_ch > 0.35:
-        score += 8
-        confirmations.append(f"Nasdaq росте ({round(ndx_ch, 2)}%)")
-    elif ndx_ch < -0.35:
-        score -= 8
-        warnings.append(f"Nasdaq падає ({round(ndx_ch, 2)}%)")
+        if risk_off_hits:
+            sub = 5 * risk_off_hits + min(4, impact_hits)
+            score -= sub
+            if len(warnings) < 5:
+                warnings.append(f"macro risk-off: {title[:100]}")
 
-    if btc_ch > 0.6:
-        score += 8
-        confirmations.append(f"BTC росте ({round(btc_ch, 2)}%) — risk appetite")
-    elif btc_ch < -0.6:
-        score -= 8
-        warnings.append(f"BTC падає ({round(btc_ch, 2)}%) — risk-off")
+    score = max(-30, min(30, score))
 
-    if oil_ch > 0.5:
-        score += 14
-        confirmations.append(f"Brent/UKOIL росте ({round(oil_ch, 2)}%)")
-    elif oil_ch < -0.5:
-        score -= 14
-        warnings.append(f"Brent/UKOIL падає ({round(oil_ch, 2)}%)")
-
-    if score >= 25:
+    if score >= 20:
         regime = "RISK-ON / БИЧАЧИЙ MACRO"
-    elif score <= -25:
+    elif score <= -20:
         regime = "RISK-OFF / ВЕДМЕЖИЙ MACRO"
-    elif score >= 10:
+    elif score >= 8:
         regime = "ПОМІРНО БИЧАЧИЙ MACRO"
-    elif score <= -10:
+    elif score <= -8:
         regime = "ПОМІРНО ВЕДМЕЖИЙ MACRO"
+    else:
+        regime = "НЕЙТРАЛЬНИЙ"
+
+    if not items:
+        regime = "НЕЙТРАЛЬНИЙ / macro RSS unavailable"
 
     return {
         "score": score,
         "regime": regime,
-        "confirmations": confirmations[:8],
-        "warnings": warnings[:8],
+        "confirmations": confirmations[:5],
+        "warnings": warnings[:5],
         "data": {
-            "DXY": dxy_ch,
-            "US10Y": us10y_ch,
-            "VIX": vix_ch,
-            "SPX": spx_ch,
-            "NDX": ndx_ch,
-            "BTC": btc_ch,
-            "UKOIL": oil_ch,
+            "macro_items": len(items),
+            "source": "Google News RSS macro proxy",
         },
     }
 
@@ -652,45 +636,8 @@ def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
 
 
 def get_gdelt_news():
-    news = []
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
-
-    for query in GDELT_QUERIES:
-        url = (
-            "https://api.gdeltproject.org/api/v2/doc/doc"
-            f"?query={quote_plus(query)}"
-            "&mode=ArtList&format=json&maxrecords=30&sort=HybridRel&timespan=2h"
-        )
-
-        response = safe_get(url, timeout=10, retries=1)
-        time.sleep(5)
-
-        if not response:
-            continue
-
-        try:
-            data = response.json()
-            for article in data.get("articles", []):
-                title = article.get("title", "")
-                if not title:
-                    continue
-
-                published_at = parse_gdelt_date(article.get("seendate"))
-                if published_at and published_at < cutoff:
-                    continue
-
-                news.append({
-                    "title": title,
-                    "link": article.get("url", ""),
-                    "source": f"GDELT/{article.get('domain', 'news')}",
-                    "published_at": published_at,
-                    "weight": 1.2,
-                })
-        except Exception as error:
-            print(f"[WARN] GDELT parse error: {error}")
-
-    return news
-
+    # Disabled intentionally: GDELT often rate-limits GitHub Actions (429/timeout).
+    return []
 
 def get_google_news_rss():
     all_news = []
@@ -845,7 +792,7 @@ def deduplicate_news(news):
 
 def get_all_fresh_news():
     all_news = []
-    all_news.extend(get_gdelt_news())
+    # GDELT disabled for GitHub stability.
     all_news.extend(get_google_news_rss())
     for source in NEWS_SOURCES:
         all_news.extend(parse_rss(source))
@@ -1551,7 +1498,7 @@ def send_telegram(message):
 # ==========================================================
 
 def main():
-    print("START BZU PROFESSIONAL FREE BOT UA STABLE")
+    print("START BZU PROFESSIONAL FREE BOT UA RSS-STABLE")
 
     tv = get_tradingview_market_data()
     if not tv:
