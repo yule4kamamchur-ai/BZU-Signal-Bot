@@ -52,202 +52,63 @@ OIL_KEYWORDS = {
 # 1️⃣  НОВИННИЙ АНАЛІЗ (РОЗШИРЕНИЙ)
 # ═══════════════════════════════════════════════════════════════
 
+import xml.etree.ElementTree as ET
+
+RSS_FEEDS = [
+    "https://feeds.reuters.com/reuters/businessNews",
+    "https://www.oilprice.com/rss/main",
+    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "https://rss.cnn.com/rss/money_news_international.rss",
+]
+
 def get_last_hour_news() -> List[Dict]:
-    """Завантажує новини за останню годину"""
-    api_key = os.environ.get("NEWSAPI_KEY", "")
-    if not api_key:
-        print("[WARN] NEWSAPI_KEY не встановлено")
-        return []
-
-    url = "https://newsapi.org/v2/everything"
-    now = datetime.utcnow()
-    from_date = (now - timedelta(hours=1)).isoformat() + "Z"
-    
-    # РОЗШИРЕНІ ЗАПИТИ
-    queries = [
-        "crude oil price",
-        "OPEC production",
-        "WTI Brent oil",
-        "Iran oil sanctions",
-        "Russia oil embargo",
-        "Middle East conflict",
-        "Refinery outage",
-        "Oil supply disruption",
-        "Energy crisis",
-        "Geopolitical tensions",
-        "Saudi Arabia oil",
-        "US shale production",
-        "EIA inventory report",
-        "Oil demand",
-        "OPEC news"
-    ]
-    
+    """Завантажує новини через RSS — безкоштовно, реальний час"""
     all_articles = []
+    now = datetime.now(timezone.utc)
     
-    for query in queries:
+    for feed_url in RSS_FEEDS:
         try:
-            r = requests.get(url, params={
-                "q": query,
-                "from": from_date,
-                "sortBy": "publishedAt",
-                "language": "en",
-                "apiKey": api_key,
-                "pageSize": 5
-            }, timeout=8)
+            r = requests.get(feed_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            root = ET.fromstring(r.content)
             
-            data = r.json()
-            if data.get("status") == "ok":
-                all_articles.extend(data.get("articles", []))
+            for item in root.findall(".//item"):
+                title = item.findtext("title") or ""
+                description = item.findtext("description") or ""
+                pub_date = item.findtext("pubDate") or ""
+                link = item.findtext("link") or ""
+                
+                # Фільтруємо тільки нафтові новини
+                text = f"{title} {description}".lower()
+                oil_related = any(kw in text for kw in [
+                    "oil", "crude", "opec", "brent", "wti", "energy",
+                    "petroleum", "barrel", "refinery", "iran", "saudi"
+                ])
+                
+                if not oil_related:
+                    continue
+                
+                # Парсимо час
+                try:
+                    from email.utils import parsedate_to_datetime
+                    pub_time = parsedate_to_datetime(pub_date)
+                    age_hours = (now - pub_time).total_seconds() / 3600
+                    if age_hours > 24:
+                        continue
+                except:
+                    pass
+                
+                all_articles.append({
+                    "title": title,
+                    "description": description,
+                    "publishedAt": pub_date,
+                    "url": link,
+                    "source": {"name": feed_url.split("/")[2]}
+                })
         except Exception as e:
-            print(f"[ERROR] NewsAPI query '{query}': {e}")
+            print(f"[WARN] RSS {feed_url}: {e}")
     
-    # Видаляємо дублікати за URL
-    seen = set()
-    unique = []
-    for article in all_articles:
-        url_key = article.get("url")
-        if url_key not in seen:
-            seen.add(url_key)
-            unique.append(article)
-    
-    return unique[:40]
-
-
-def simple_nlp_sentiment(text: str) -> float:
-    """
-    NLP sentiment аналіз (без бібліотек)
-    Повертає: -1.0 (bearish) ... 0.0 (neutral) ... +1.0 (bullish)
-    """
-    text = text.lower()
-    
-    # Посилення слів (2x вплив)
-    strong_bullish = [
-        "surge", "soar", "spike", "rally", "jump", "gain", "explode",
-        "positive", "strong", "bullish", "buy", "bullish trend"
-    ]
-    
-    strong_bearish = [
-        "crash", "plunge", "collapse", "tank", "nosedive",
-        "negative", "weak", "bearish", "sell", "bearish trend"
-    ]
-    
-    # Нормальні слова
-    bullish_words = [
-        "up", "rise", "increase", "support",
-        "cut", "sanctions", "disruption", "embargo",
-        "shortage", "tight", "risk premium", "geopolitical"
-    ]
-    
-    bearish_words = [
-        "fall", "drop", "decline", "down", "lower",
-        "production up", "inventory up", "excess",
-        "slowdown", "recession", "weak"
-    ]
-    
-    # Розраховуємо score
-    strong_bullish_count = sum(1 for word in strong_bullish if word in text)
-    strong_bearish_count = sum(1 for word in strong_bearish if word in text)
-    bullish_count = sum(1 for word in bullish_words if word in text)
-    bearish_count = sum(1 for word in bearish_words if word in text)
-    
-    total_score = (strong_bullish_count * 2 + bullish_count) - (strong_bearish_count * 2 + bearish_count)
-    total_count = (strong_bullish_count + strong_bearish_count) * 2 + bullish_count + bearish_count
-    
-    if total_count == 0:
-        return 0.0
-    
-    normalized = total_score / total_count
-    return max(-1.0, min(1.0, normalized))
-
-
-def analyze_news_sentiment(articles: List[Dict]) -> Dict:
-    """Аналізує новини з NLP sentiment"""
-    if not articles:
-        return {
-            "sentiment": "neutral",
-            "score": 0,
-            "bullish_count": 0,
-            "bearish_count": 0,
-            "top_news": [],
-            "strength": "weak",
-            "total_news": 0
-        }
-    
-    bullish_articles = []
-    bearish_articles = []
-    
-    for article in articles:
-        title = (article.get("title") or "").lower()
-        description = (article.get("description") or "").lower()
-        text = f"{title} {description}"
-        
-        # NLP sentiment (основне)
-        nlp_score = simple_nlp_sentiment(text)
-        
-        # Ключові слова (підтвердження)
-        bullish_kw = sum(1 for keyword in OIL_KEYWORDS["bullish"] if keyword in text)
-        bearish_kw = sum(1 for keyword in OIL_KEYWORDS["bearish"] if keyword in text)
-        
-        # Комбінований score
-        combined_score = nlp_score + (bullish_kw - bearish_kw) * 0.15
-        
-        # Breaking News Detector (< 5 хвилин)
-        is_breaking = False
-        try:
-            pub_time = datetime.fromisoformat(article.get("publishedAt", "").replace("Z", "+00:00"))
-            age_minutes = (datetime.now(timezone.utc) - pub_time).total_seconds() / 60
-            is_breaking = age_minutes < 5
-        except:
-            pass
-        
-        # Сортуємо
-        if combined_score > 0.05:
-            bullish_articles.append({
-                "title": article.get("title"),
-                "source": article.get("source", {}).get("name"),
-                "published_at": article.get("publishedAt"),
-                "score": combined_score,
-                "breaking": is_breaking
-            })
-        elif combined_score < -0.05:
-            bearish_articles.append({
-                "title": article.get("title"),
-                "source": article.get("source", {}).get("name"),
-                "published_at": article.get("publishedAt"),
-                "score": abs(combined_score),
-                "breaking": is_breaking
-            })
-    
-    bullish_count = len(bullish_articles)
-    bearish_count = len(bearish_articles)
-    total = bullish_count + bearish_count
-    
-    # Визначаємо sentiment та силу
-    if bullish_count > bearish_count * 2.5:
-        sentiment = "bullish"
-        strength = "strong" if bullish_count >= 6 else "moderate"
-    elif bearish_count > bullish_count * 2.5:
-        sentiment = "bearish"
-        strength = "strong" if bearish_count >= 6 else "moderate"
-    else:
-        sentiment = "neutral"
-        strength = "weak"
-    
-    # Топ новини
-    top_bullish = sorted(bullish_articles, key=lambda x: (x["breaking"], x["score"]), reverse=True)[:2]
-    top_bearish = sorted(bearish_articles, key=lambda x: (x["breaking"], x["score"]), reverse=True)[:2]
-    top_news = top_bullish + top_bearish
-    
-    return {
-        "sentiment": sentiment,
-        "strength": strength,
-        "score": bullish_count - bearish_count,
-        "bullish_count": bullish_count,
-        "bearish_count": bearish_count,
-        "total_news": total,
-        "top_news": top_news[:4]
-    }
-
+    print(f"  📡 RSS: знайдено {len(all_articles)} нафтових новин")
+    return all_articles[:40]
 
 # ═══════════════════════════════════════════════════════════════
 # 2️⃣  МАКРО КАЛЕНДАР (EIA, OPEC)
