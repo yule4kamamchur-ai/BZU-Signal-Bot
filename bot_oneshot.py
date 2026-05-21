@@ -1134,24 +1134,45 @@ def main():
 <b>UKOIL/Brent:</b> {macro['data']['UKOIL']}%
 """
 
-    if orderflow["details"]:
+       if orderflow["details"]:
         message += "\n<b>Деталі orderflow:</b>"
+
         for item in orderflow["details"]:
             message += f"\n- {item}"
 
+    # ============================================
+    # MACRO CONFIRMATIONS
+    # ============================================
+
     if macro["confirmations"]:
 
-    message += "\n\n<b>Macro підтвердження:</b>"
+        message += "\n\n<b>Macro підтвердження:</b>"
 
-    for item in macro["confirmations"]:
+        for item in macro["confirmations"]:
 
-        message += f"\n- {item}"
-
-    warnings = tech["warnings"] + orderflow["warnings"] + macro["warnings"]
-    if warnings:
-        message += "\n\n<b>Попередження:</b>"
-        for item in warnings:
             message += f"\n- {item}"
+
+    # ============================================
+    # WARNINGS
+    # ============================================
+
+    warnings = (
+        tech["warnings"]
+        + orderflow["warnings"]
+        + macro["warnings"]
+    )
+
+    if warnings:
+
+        message += "\n\n<b>Попередження:</b>"
+
+        for item in warnings:
+
+            message += f"\n- {item}"
+
+    # ============================================
+    # NEWS BLOCK
+    # ============================================
 
     message += f"""
 
@@ -1169,15 +1190,23 @@ def main():
 """
 
     if news["important"]:
+
         for item in news["important"]:
-            message += f"\n- [{item['source']}] {item['title']} ({format_time(item['published_at'])})"
+
+            message += (
+                f"\n- [{item['source']}] "
+                f"{item['title']} "
+                f"({format_time(item['published_at'])})"
+            )
+
     else:
+
         message += "\nНемає"
 
     send_telegram(message.strip())
+
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
-
 
 if __name__ == "__main__":
     main()
