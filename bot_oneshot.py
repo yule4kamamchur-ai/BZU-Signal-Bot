@@ -1,93 +1,203 @@
 import os
+import re
+import time
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
+from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
 
+# TradingView symbols are checked in this order.
+# Your working symbol from the previous run was BINANCE:BZUSDT.P.
 TRADINGVIEW_SYMBOLS = [
     ("BINANCE:BZUSDT.P", "crypto"),
     ("BINANCE:BZUSDT", "crypto"),
-    ("NYMEX:BZ1!", "futures"),
     ("TVC:UKOIL", "cfd"),
+    ("NYMEX:BZ1!", "futures"),
 ]
 
-CRYPTO_RSS = [
-    "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
-    "https://cointelegraph.com/rss",
-    "https://cryptoslate.com/feed/",
+# Only fresh news will be counted.
+NEWS_LOOKBACK_HOURS = 24
+MAX_NEWS_SCORE = 60
+MAX_ITEMS_PER_FEED = 15
+
+# RSS/API sources that are usually available from GitHub Actions.
+# Removed broken oilprice.com/rss/oilprices.xml and direct ForexFactory scraping.
+NEWS_SOURCES = [
+    {
+        "name": "EIA Today in Energy",
+        "url": "https://www.eia.gov/rss/todayinenergy.xml",
+        "type": "rss",
+        "weight": 1.2,
+    },
+    {
+        "name": "OilPrice Main",
+        "url": "https://oilprice.com/rss/main",
+        "type": "rss",
+        "weight": 1.0,
+    },
+    {
+        "name": "Oil & Gas IQ",
+        "url": "https://www.oilandgasiq.com/rss-feeds/articles",
+        "type": "rss",
+        "weight": 0.8,
+    },
+    {
+        "name": "World Oil",
+        "url": "https://www.worldoil.com/rss",
+        "type": "rss",
+        "weight": 0.9,
+    },
+    {
+        "name": "CoinDesk",
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
+        "type": "rss",
+        "weight": 0.7,
+    },
+    {
+        "name": "Cointelegraph",
+        "url": "https://cointelegraph.com/rss",
+        "type": "rss",
+        "weight": 0.7,
+    },
+    {
+        "name": "CryptoSlate",
+        "url": "https://cryptoslate.com/feed/",
+        "type": "rss",
+        "weight": 0.6,
+    },
 ]
 
-OIL_RSS = [
-    "https://www.eia.gov/rss/todayinenergy.xml",
-    "https://oilprice.com/rss/main",
-    "https://oilprice.com/rss/oilprices.xml",
+BULLISH_WORDS = [
+    "inventory draw",
+    "crude draw",
+    "stockpiles fell",
+    "stockpiles decline",
+    "supply disruption",
+    "supply risk",
+    "supply tight",
+    "opec cut",
+    "opec+ cut",
+    "sanctions",
+    "hormuz",
+    "middle east tension",
+    "russia supply",
+    "ukraine attack",
+    "refinery demand",
+    "demand rises",
+    "demand growth",
+    "bullish",
+    "rally",
+    "surge",
+    "higher",
+    "jumps",
+    "rebounds",
+    "rate cut",
+    "fed pause",
 ]
 
-BULLISH = [
-    "etf", "approval", "buy", "bullish", "surge", "rally",
-    "breakout", "institutional", "accumulation", "rate cut",
-    "fed pause", "inventory draw", "crude draw", "supply disruption",
-    "opec cut", "sanctions",
+BEARISH_WORDS = [
+    "inventory build",
+    "crude build",
+    "stockpiles rose",
+    "stockpiles rise",
+    "demand weak",
+    "weak demand",
+    "demand falls",
+    "oversupply",
+    "supply glut",
+    "opec increase",
+    "output hike",
+    "ceasefire",
+    "peace talks",
+    "recession",
+    "rate hike",
+    "inflation rises",
+    "bearish",
+    "falls",
+    "drops",
+    "tumbles",
+    "slides",
+    "lower",
 ]
 
-BEARISH = [
-    "crash", "sell", "bearish", "lawsuit", "hack", "liquidation",
-    "war", "inflation", "rate hike", "recession", "inventory build",
-    "crude build", "demand weak", "opec increase",
+HIGH_IMPACT_WORDS = [
+    "eia",
+    "api",
+    "inventory",
+    "stockpiles",
+    "opec",
+    "opec+",
+    "hormuz",
+    "iran",
+    "russia",
+    "ukraine",
+    "sanctions",
+    "fed",
+    "fomc",
+    "cpi",
+    "powell",
+    "inflation",
+    "interest rate",
 ]
 
-HIGH_IMPACT = [
-    "fed", "cpi", "fomc", "etf", "sec", "blackrock", "war",
-    "opec", "inventory", "eia", "api", "powell", "inflation",
-]
+DUPLICATE_MEMORY_SECONDS = 6 * 60 * 60
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
 
 
 def safe_get(url, timeout=15):
     try:
-        r = requests.get(
+        response = requests.get(
             url,
             timeout=timeout,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+                "Accept": "application/rss+xml, application/xml, text/xml, text/html, application/json, */*",
+            },
         )
 
-        if r.status_code >= 400:
-            print(f"[WARN] HTTP {r.status_code}: {url}")
-            print(r.text[:300])
+        if response.status_code >= 400:
+            print(f"[WARN] HTTP {response.status_code}: {url}")
+            print(response.text[:250])
             return None
 
-        return r
+        return response
 
-    except Exception as e:
-        print(f"[WARN] {url}: {e}")
+    except Exception as error:
+        print(f"[WARN] {url}: {error}")
         return None
 
 
 def safe_post(url, payload, timeout=15):
     try:
-        r = requests.post(
+        response = requests.post(
             url,
             json=payload,
             timeout=timeout,
             headers={
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
         )
 
-        if r.status_code >= 400:
-            print(f"[WARN] HTTP {r.status_code}: {url}")
-            print(r.text[:300])
+        if response.status_code >= 400:
+            print(f"[WARN] HTTP {response.status_code}: {url}")
+            print(response.text[:250])
             return None
 
-        return r
+        return response
 
-    except Exception as e:
-        print(f"[WARN] {url}: {e}")
+    except Exception as error:
+        print(f"[WARN] {url}: {error}")
         return None
 
 
@@ -105,7 +215,6 @@ def get_tradingview_market_data():
 
     for symbol, screener in TRADINGVIEW_SYMBOLS:
         url = f"https://scanner.tradingview.com/{screener}/scan"
-
         payload = {
             "symbols": {
                 "tickers": [symbol],
@@ -115,13 +224,11 @@ def get_tradingview_market_data():
         }
 
         response = safe_post(url, payload)
-
         if not response:
             continue
 
         try:
             data = response.json()
-
             rows = data.get("data", [])
 
             if not rows:
@@ -129,7 +236,6 @@ def get_tradingview_market_data():
                 continue
 
             values = rows[0].get("d", [])
-
             if not values or values[0] is None:
                 print(f"[WARN] TradingView no price for {symbol}")
                 continue
@@ -147,10 +253,235 @@ def get_tradingview_market_data():
                 "macd": values[7],
             }
 
-        except Exception as e:
-            print(f"[WARN] TradingView parse error for {symbol}: {e}")
+        except Exception as error:
+            print(f"[WARN] TradingView parse error for {symbol}: {error}")
 
     return None
+
+
+def parse_date(value):
+    if not value:
+        return None
+
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+
+    try:
+        value = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def get_item_text(item, tag):
+    text = item.findtext(tag)
+    if text:
+        return text.strip()
+
+    for child in list(item):
+        if child.tag.lower().endswith(tag.lower()):
+            return (child.text or "").strip()
+
+    return ""
+
+
+def parse_rss(source):
+    response = safe_get(source["url"])
+    if not response:
+        return []
+
+    news = []
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
+
+    try:
+        root = ET.fromstring(response.content)
+        items = root.findall(".//item")
+
+        if not items:
+            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+
+        for item in items[:MAX_ITEMS_PER_FEED]:
+            title = get_item_text(item, "title")
+            link = get_item_text(item, "link")
+
+            if not link:
+                link_node = item.find("{http://www.w3.org/2005/Atom}link")
+                if link_node is not None:
+                    link = link_node.attrib.get("href", "")
+
+            date_text = (
+                get_item_text(item, "pubDate")
+                or get_item_text(item, "published")
+                or get_item_text(item, "updated")
+                or get_item_text(item, "dc:date")
+            )
+
+            published_at = parse_date(date_text)
+
+            # If RSS has no date, keep only first few headlines but mark as unknown-date.
+            # This avoids losing useful breaking headlines while not over-weighting them.
+            if published_at and published_at < cutoff:
+                continue
+
+            if title:
+                news.append(
+                    {
+                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                        "link": link,
+                        "source": source["name"],
+                        "published_at": published_at,
+                        "weight": source.get("weight", 1.0),
+                    }
+                )
+
+    except Exception as error:
+        print(f"[WARN] RSS parse error {source['name']}: {error}")
+
+    return news
+
+
+def get_cryptopanic_news():
+    if not CRYPTOPANIC_KEY:
+        return []
+
+    url = "https://cryptopanic.com/api/v1/posts/"
+    params = f"?auth_token={CRYPTOPANIC_KEY}&filter=hot&public=true"
+    response = safe_get(url + params)
+
+    if not response:
+        return []
+
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
+    news = []
+
+    try:
+        data = response.json()
+        for item in data.get("results", [])[:MAX_ITEMS_PER_FEED]:
+            title = item.get("title", "")
+            published_at = parse_date(item.get("published_at"))
+
+            if published_at and published_at < cutoff:
+                continue
+
+            if title:
+                news.append(
+                    {
+                        "title": title,
+                        "link": item.get("url", ""),
+                        "source": "CryptoPanic",
+                        "published_at": published_at,
+                        "weight": 0.7,
+                    }
+                )
+
+    except Exception as error:
+        print(f"[WARN] CryptoPanic parse error: {error}")
+
+    return news
+
+
+def get_all_fresh_news():
+    all_news = []
+
+    for source in NEWS_SOURCES:
+        all_news.extend(parse_rss(source))
+
+    all_news.extend(get_cryptopanic_news())
+    return deduplicate_news(all_news)
+
+
+def normalize_title(title):
+    title = title.lower()
+    title = re.sub(r"[^a-z0-9а-яіїєґ]+", " ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    return title[:120]
+
+
+def deduplicate_news(news):
+    seen = set()
+    unique = []
+
+    for item in news:
+        key = normalize_title(item["title"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+
+    unique.sort(
+        key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return unique
+
+
+def keyword_score(title, words):
+    title_lower = title.lower()
+    return sum(1 for word in words if word in title_lower)
+
+
+def analyze_news(news):
+    bullish = 0
+    bearish = 0
+    impact = 0
+    raw_score = 0
+    important = []
+
+    for item in news:
+        title = item["title"]
+        weight = item.get("weight", 1.0)
+
+        bull_hits = keyword_score(title, BULLISH_WORDS)
+        bear_hits = keyword_score(title, BEARISH_WORDS)
+        impact_hits = keyword_score(title, HIGH_IMPACT_WORDS)
+
+        if bull_hits:
+            bullish += 1
+            raw_score += 6 * bull_hits * weight
+
+        if bear_hits:
+            bearish += 1
+            raw_score -= 6 * bear_hits * weight
+
+        if impact_hits:
+            impact += 1
+            raw_score += 4 * impact_hits * weight
+            important.append(item)
+
+    if bullish > bearish:
+        sentiment = "BULLISH"
+    elif bearish > bullish:
+        sentiment = "BEARISH"
+    else:
+        sentiment = "NEUTRAL"
+
+    capped_score = int(max(-MAX_NEWS_SCORE, min(MAX_NEWS_SCORE, raw_score)))
+
+    return {
+        "score": capped_score,
+        "raw_score": round(raw_score, 2),
+        "sentiment": sentiment,
+        "bullish": bullish,
+        "bearish": bearish,
+        "impact": impact,
+        "important": important[:7],
+        "total": len(news),
+    }
+
+
+def get_macro_events():
+    # ForexFactory blocks GitHub Actions with Cloudflare.
+    # To avoid false signals, direct scraping was removed.
+    # Use RSS/news keywords instead: CPI, FOMC, Fed, Powell, inventories, EIA, OPEC.
+    return []
 
 
 def analyze_technical(tv):
@@ -164,7 +495,7 @@ def analyze_technical(tv):
     score = 0
 
     if recommend is not None:
-        score += int(recommend * 40)
+        score += int(recommend * 35)
 
     if ema20 is not None and price > ema20:
         score += 15
@@ -180,15 +511,15 @@ def analyze_technical(tv):
 
     if rsi is not None:
         if rsi < 30:
-            score += 15
+            score += 12
         elif rsi > 70:
-            score -= 15
+            score -= 12
 
     if macd is not None:
         if macd > 0:
-            score += 15
+            score += 12
         else:
-            score -= 15
+            score -= 12
 
     return {
         "score": score,
@@ -201,156 +532,16 @@ def analyze_technical(tv):
     }
 
 
-def parse_rss(url):
-    response = safe_get(url)
+def build_signal(tech, news):
+    score = tech["score"] + news["score"]
 
-    if not response:
-        return []
+    # Require at least some agreement. If technicals are against the news,
+    # confidence is reduced instead of letting news force a signal every time.
+    if tech["score"] < 0 and news["score"] > 40:
+        score -= 20
 
-    news = []
-
-    try:
-        root = ET.fromstring(response.content)
-
-        for item in root.findall(".//item")[:20]:
-            title = item.findtext("title", "")
-            link = item.findtext("link", "")
-
-            if title:
-                news.append({
-                    "title": title,
-                    "link": link,
-                })
-
-    except Exception as e:
-        print(f"[WARN] RSS parse error: {e}")
-
-    return news
-
-
-def get_crypto_news():
-    news = []
-
-    for url in CRYPTO_RSS:
-        news.extend(parse_rss(url))
-
-    if CRYPTOPANIC_KEY:
-        url = (
-            "https://cryptopanic.com/api/v1/posts/"
-            f"?auth_token={CRYPTOPANIC_KEY}&filter=hot"
-        )
-
-        response = safe_get(url)
-
-        if response:
-            try:
-                data = response.json()
-
-                for item in data.get("results", [])[:20]:
-                    title = item.get("title", "")
-                    link = item.get("url", "")
-
-                    if title:
-                        news.append({
-                            "title": title,
-                            "link": link,
-                        })
-
-            except Exception as e:
-                print(f"[WARN] CryptoPanic error: {e}")
-
-    return news
-
-
-def get_oil_news():
-    news = []
-
-    for url in OIL_RSS:
-        news.extend(parse_rss(url))
-
-    return news
-
-
-def get_forex_factory_events():
-    url = "https://www.forexfactory.com/calendar"
-    response = safe_get(url)
-
-    if not response:
-        return []
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    text = soup.get_text(" ", strip=True)
-
-    keywords = [
-        "CPI",
-        "FOMC",
-        "Interest Rate",
-        "NFP",
-        "Powell",
-        "Inflation",
-        "Fed",
-        "Crude Oil Inventories",
-        "EIA",
-    ]
-
-    events = []
-
-    for keyword in keywords:
-        if keyword.lower() in text.lower():
-            events.append(keyword)
-
-    return events
-
-
-def analyze_news(news):
-    bullish = 0
-    bearish = 0
-    impact = 0
-    important = []
-
-    for item in news:
-        title = item["title"].lower()
-
-        if any(word in title for word in BULLISH):
-            bullish += 1
-
-        if any(word in title for word in BEARISH):
-            bearish += 1
-
-        if any(word in title for word in HIGH_IMPACT):
-            impact += 1
-            important.append(item["title"])
-
-    score = bullish * 6
-    score -= bearish * 6
-    score += impact * 10
-
-    if bullish > bearish:
-        sentiment = "BULLISH"
-    elif bearish > bullish:
-        sentiment = "BEARISH"
-    else:
-        sentiment = "NEUTRAL"
-
-    return {
-        "score": score,
-        "sentiment": sentiment,
-        "bullish": bullish,
-        "bearish": bearish,
-        "impact": impact,
-        "important": important[:5],
-        "total": len(news),
-    }
-
-
-def build_signal(tech, news, forex_events):
-    score = 0
-
-    score += tech["score"]
-    score += news["score"]
-
-    if forex_events:
-        score += 15
+    if tech["score"] > 0 and news["score"] < -40:
+        score += 20
 
     if score >= 55:
         signal = "LONG"
@@ -359,9 +550,14 @@ def build_signal(tech, news, forex_events):
     else:
         signal = "NO SIGNAL"
 
-    confidence = min(95, abs(score))
-
+    confidence = min(95, max(0, abs(score)))
     return signal, score, confidence
+
+
+def format_time(dt):
+    if not dt:
+        return "time unknown"
+    return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
 def send_telegram(message):
@@ -370,7 +566,6 @@ def send_telegram(message):
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
@@ -380,41 +575,34 @@ def send_telegram(message):
 
     try:
         requests.post(url, json=payload, timeout=10)
-
-    except Exception as e:
-        print(f"[WARN] Telegram error: {e}")
+    except Exception as error:
+        print(f"[WARN] Telegram error: {error}")
 
 
 def main():
-    print("START BZU TRADINGVIEW SIGNAL BOT")
+    print("START BZU TRADINGVIEW FRESH NEWS BOT")
 
     tv = get_tradingview_market_data()
-
     if not tv:
         print("TRADINGVIEW PRICE ERROR")
         return
 
-    crypto_news = get_crypto_news()
-    oil_news = get_oil_news()
-    all_news = crypto_news + oil_news
-
-    forex_events = get_forex_factory_events()
+    fresh_news = get_all_fresh_news()
+    macro_events = get_macro_events()
 
     tech = analyze_technical(tv)
-    news = analyze_news(all_news)
+    news = analyze_news(fresh_news)
 
-    signal, score, confidence = build_signal(
-        tech=tech,
-        news=news,
-        forex_events=forex_events,
-    )
+    signal, score, confidence = build_signal(tech, news)
 
     print(f"SOURCE: {tv['source']}")
     print(f"SYMBOL: {tv['symbol']}")
     print(f"PRICE: {tv['price']}")
     print(f"CHANGE: {tv['change']}")
+    print(f"FRESH NEWS COUNT: {news['total']}")
+    print(f"NEWS RAW SCORE: {news['raw_score']}")
+    print(f"NEWS CAPPED SCORE: {news['score']}")
     print(f"TECH SCORE: {tech['score']}")
-    print(f"NEWS SCORE: {news['score']}")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL: {signal}")
 
@@ -440,23 +628,24 @@ def main():
 <b>EMA50 15m:</b> {tech['ema50']}
 <b>TradingView Recommend 15m:</b> {tech['recommend']}
 
+<b>News lookback:</b> last {NEWS_LOOKBACK_HOURS}h
+<b>Fresh news:</b> {news['total']}
 <b>News Sentiment:</b> {news['sentiment']}
 <b>Bullish:</b> {news['bullish']}
 <b>Bearish:</b> {news['bearish']}
 <b>Impact:</b> {news['impact']}
-<b>Total news:</b> {news['total']}
+<b>News score:</b> {news['score']} / raw {news['raw_score']}
 
-<b>Forex Factory:</b>
-{', '.join(forex_events) if forex_events else 'None'}
-
-<b>Important News:</b>
+<b>Important fresh news:</b>
 """
 
-    for title in news["important"]:
-        message += f"\n- {title}"
+    if news["important"]:
+        for item in news["important"]:
+            message += f"\n- [{item['source']}] {item['title']} ({format_time(item['published_at'])})"
+    else:
+        message += "\nNone"
 
     send_telegram(message.strip())
-
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
 
