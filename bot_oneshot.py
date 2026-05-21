@@ -23,21 +23,43 @@ OIL_RSS = [
 ]
 
 BULLISH = [
-    "etf", "approval", "buy", "bullish", "surge",
-    "rally", "breakout", "institutional", "accumulation",
-    "rate cut", "fed pause"
+    "etf",
+    "approval",
+    "buy",
+    "bullish",
+    "surge",
+    "rally",
+    "breakout",
+    "institutional",
+    "accumulation",
+    "rate cut",
+    "fed pause",
 ]
 
 BEARISH = [
-    "crash", "sell", "bearish", "lawsuit",
-    "hack", "liquidation", "war", "inflation",
-    "rate hike", "recession"
+    "crash",
+    "sell",
+    "bearish",
+    "lawsuit",
+    "hack",
+    "liquidation",
+    "war",
+    "inflation",
+    "rate hike",
+    "recession",
 ]
 
 HIGH_IMPACT = [
-    "fed", "cpi", "fomc", "etf",
-    "sec", "blackrock", "war",
-    "opec", "inventory", "eia"
+    "fed",
+    "cpi",
+    "fomc",
+    "etf",
+    "sec",
+    "blackrock",
+    "war",
+    "opec",
+    "inventory",
+    "eia",
 ]
 
 
@@ -46,23 +68,28 @@ def safe_get(url, timeout=15):
         r = requests.get(
             url,
             timeout=timeout,
-            headers={"User-Agent": "Mozilla/5.0"}
+            headers={"User-Agent": "Mozilla/5.0"},
         )
+
         r.raise_for_status()
+
         return r
+
     except Exception as e:
         print(f"[WARN] {url}: {e}")
+
         return None
 
 
-# =========================
+# ==========================================
 # OKX
-# =========================
+# ==========================================
 
 def get_okx_price():
     url = f"https://www.okx.com/api/v5/market/ticker?instId={INST_ID}"
 
     r = safe_get(url)
+
     if not r:
         return None
 
@@ -80,17 +107,23 @@ def get_okx_funding():
     url = f"https://www.okx.com/api/v5/public/funding-rate?instId={INST_ID}"
 
     r = safe_get(url)
+
     if not r:
         return 0
 
     data = r.json()["data"][0]
+
     return float(data["fundingRate"])
 
 
 def get_okx_candles():
-    url = f"https://www.okx.com/api/v5/market/candles?instId={INST_ID}&bar=15m&limit=100"
+    url = (
+        f"https://www.okx.com/api/v5/market/candles?"
+        f"instId={INST_ID}&bar=15m&limit=100"
+    )
 
     r = safe_get(url)
+
     if not r:
         return []
 
@@ -99,17 +132,19 @@ def get_okx_candles():
     candles = []
 
     for c in reversed(raw):
-        candles.append({
-            "close": float(c[4]),
-            "volume": float(c[5]),
-        })
+        candles.append(
+            {
+                "close": float(c[4]),
+                "volume": float(c[5]),
+            }
+        )
 
     return candles
 
 
-# =========================
+# ==========================================
 # INDICATORS
-# =========================
+# ==========================================
 
 def ema(values, period):
     k = 2 / (period + 1)
@@ -132,6 +167,7 @@ def rsi(values, period=14):
         if diff >= 0:
             gains.append(diff)
             losses.append(0)
+
         else:
             gains.append(0)
             losses.append(abs(diff))
@@ -151,9 +187,7 @@ def macd(values):
     ema12 = ema(values[-35:], 12)
     ema26 = ema(values[-35:], 26)
 
-    value = ema12 - ema26
-
-    return value
+    return ema12 - ema26
 
 
 def analyze_technical(candles):
@@ -170,6 +204,7 @@ def analyze_technical(candles):
     current_macd = macd(closes)
 
     avg_volume = sum(volumes[-20:]) / 20
+
     volume_spike = volumes[-1] > avg_volume * 1.5
 
     score = 0
@@ -211,9 +246,9 @@ def analyze_technical(candles):
     }
 
 
-# =========================
-# RSS NEWS
-# =========================
+# ==========================================
+# RSS
+# ==========================================
 
 def parse_rss(url):
     r = safe_get(url)
@@ -231,10 +266,12 @@ def parse_rss(url):
             link = item.findtext("link", "")
 
             if title:
-                news.append({
-                    "title": title,
-                    "link": link
-                })
+                news.append(
+                    {
+                        "title": title,
+                        "link": link,
+                    }
+                )
 
     except Exception as e:
         print(f"[WARN] RSS parse error: {e}")
@@ -261,10 +298,12 @@ def get_crypto_news():
                 data = r.json()
 
                 for item in data.get("results", [])[:20]:
-                    news.append({
-                        "title": item.get("title", ""),
-                        "link": item.get("url", "")
-                    })
+                    news.append(
+                        {
+                            "title": item.get("title", ""),
+                            "link": item.get("url", ""),
+                        }
+                    )
 
             except Exception as e:
                 print(f"[WARN] CryptoPanic error: {e}")
@@ -281,9 +320,9 @@ def get_oil_news():
     return news
 
 
-# =========================
+# ==========================================
 # FOREX FACTORY
-# =========================
+# ==========================================
 
 def get_forex_factory_events():
     url = "https://www.forexfactory.com/calendar"
@@ -295,7 +334,7 @@ def get_forex_factory_events():
 
     soup = BeautifulSoup(r.text, "html.parser")
 
-    events = []
+    text = soup.get_text(" ", strip=True)
 
     keywords = [
         "CPI",
@@ -304,10 +343,10 @@ def get_forex_factory_events():
         "NFP",
         "Powell",
         "Inflation",
-        "Fed"
+        "Fed",
     ]
 
-    text = soup.get_text(" ", strip=True)
+    events = []
 
     for k in keywords:
         if k.lower() in text.lower():
@@ -316,9 +355,9 @@ def get_forex_factory_events():
     return events
 
 
-# =========================
+# ==========================================
 # NEWS ANALYSIS
-# =========================
+# ==========================================
 
 def analyze_news(news):
     bullish = 0
@@ -346,8 +385,10 @@ def analyze_news(news):
 
     if bullish > bearish:
         sentiment = "BULLISH"
+
     elif bearish > bullish:
         sentiment = "BEARISH"
+
     else:
         sentiment = "NEUTRAL"
 
@@ -362,9 +403,9 @@ def analyze_news(news):
     }
 
 
-# =========================
+# ==========================================
 # SIGNAL ENGINE
-# =========================
+# ==========================================
 
 def build_signal(price, tech, news, funding, forex_events):
     score = 0
@@ -395,13 +436,14 @@ def build_signal(price, tech, news, funding, forex_events):
     return signal, score, confidence
 
 
-# =========================
+# ==========================================
 # TELEGRAM
-# =========================
+# ==========================================
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Telegram secrets missing")
+
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -410,7 +452,7 @@ def send_telegram(msg):
         "chat_id": TELEGRAM_CHAT_ID,
         "text": msg,
         "parse_mode": "HTML",
-        "disable_web_page_preview": True
+        "disable_web_page_preview": True,
     }
 
     try:
@@ -420,9 +462,9 @@ def send_telegram(msg):
         print(f"[WARN] Telegram error: {e}")
 
 
-# =========================
+# ==========================================
 # MAIN
-# =========================
+# ==========================================
 
 def main():
     print("🚀 START BZU ULTRA BOT")
@@ -430,7 +472,8 @@ def main():
     ticker = get_okx_price()
 
     if not ticker:
-        print("❌ OKX error")
+        print("❌ OKX ERROR")
+
         return
 
     funding = get_okx_funding()
@@ -454,16 +497,17 @@ def main():
         tech,
         news,
         funding,
-        forex_events
+        forex_events,
     )
 
     print(f"💱 OKX: {ticker['last']}")
-    print(f"📊 Tech score: {tech['score']}")
-    print(f"📰 News score: {news['score']}")
+    print(f"📊 TECH SCORE: {tech['score']}")
+    print(f"📰 NEWS SCORE: {news['score']}")
     print(f"🎯 FINAL SCORE: {score}")
 
     if signal == "NO SIGNAL":
         print("⏳ NO SIGNAL")
+
         return
 
     icon = "🟢" if signal == "LONG" else "🔴"
@@ -489,7 +533,7 @@ def main():
 <b>Bearish:</b> {news['bearish']}
 <b>Impact:</b> {news['impact']}
 
-<b>Forex Factory Events:</b>
+<b>Forex Factory:</b>
 {', '.join(forex_events) if forex_events else 'None'}
 
 <b>Important News:</b>
@@ -500,7 +544,7 @@ def main():
 
     send_telegram(msg)
 
-    print("✅ Telegram sent")
+    print("✅ TELEGRAM SENT")
     print("✨ BOT COMPLETE")
 
 
