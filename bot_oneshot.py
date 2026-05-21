@@ -37,6 +37,10 @@ MAX_EVENT_SCORE = 50
 MAX_ITEMS_PER_FEED = 15
 MIN_CONFIDENCE_TO_SEND = 55
 
+BINANCE_FAPI = "https://fapi.binance.com"
+PROFILE_SYMBOL = "BZUSDT"
+
+
 STRONG_UP_MOVE_PERCENT = 1.2
 VERY_STRONG_UP_MOVE_PERCENT = 1.8
 STRONG_DOWN_MOVE_PERCENT = -1.2
@@ -1019,17 +1023,256 @@ def news_noise_warning(total_news, raw_score, capped_score):
     return "Нормально"
 
 
+
+# ==========================================================
+# VOLATILITY REGIME / VOLUME PROFILE / LIQUIDATION HEATMAP LOGIC
+# ==========================================================
+
+def get_free_candles(symbol=PROFILE_SYMBOL, interval="15m", limit=96):
+    """Free best-effort candles. If Binance blocks GitHub, bot continues without them."""
+    url = f"{BINANCE_FAPI}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    response = safe_get(url, timeout=8, retries=1)
+    if not response:
+        return []
+
+    try:
+        raw = response.json()
+        candles = []
+        for row in raw:
+            candles.append({
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]),
+            })
+        return candles
+    except Exception as error:
+        print(f"[WARN] Candle parse error: {error}")
+        return []
+
+
+def analyze_volatility_regime(tv, tech):
+    price = tv.get("price") or 0
+    atr = tech.get("atr_15m") or (price * 0.006 if price else 0)
+    adx = tech.get("adx_15m") or 0
+    change = abs(tech.get("change") or 0)
+    rsi5 = tech.get("rsi_5m") or 50
+    rsi15 = tech.get("rsi_15m") or 50
+
+    atr_pct = (atr / price * 100) if price else 0
+    score = 0
+    regime = "NORMAL"
+    direction_filter = "NEUTRAL"
+    warning = "Нормальна волатильність"
+
+    if atr_pct >= 1.2 or change >= 2.0:
+        regime = "HIGH VOLATILITY / BREAKOUT MODE"
+        score += 8 if tech.get("momentum") in ["STRONG UP", "VERY STRONG UP"] else 0
+        score -= 8 if tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"] else 0
+        warning = "Висока волатильність: краще входити тільки після ретесту"
+    elif atr_pct <= 0.35 and adx < 18:
+        regime = "LOW VOLATILITY / CHOP MODE"
+        score -= 10
+        warning = "Низька волатильність і слабкий тренд: ризик флету"
+    elif adx >= 25:
+        regime = "TREND MODE"
+        if tech.get("trend") == "UP":
+            score += 10
+            direction_filter = "LONG"
+        elif tech.get("trend") == "DOWN":
+            score -= 10
+            direction_filter = "SHORT"
+        warning = "Трендовий режим"
+
+    if rsi5 > 78 or rsi15 > 78:
+        score -= 8
+        warning += "; є ризик перегріву LONG"
+    if rsi5 < 22 or rsi15 < 22:
+        score += 8
+        warning += "; є ризик відскоку проти SHORT"
+
+    return {
+        "score": score,
+        "regime": regime,
+        "atr_pct": round(atr_pct, 3),
+        "direction_filter": direction_filter,
+        "warning": warning,
+    }
+
+
+def analyze_volume_profile(tv, candles):
+    price = tv.get("price") or 0
+    atr = tv.get("atr_15m") or price * 0.006
+
+    # If no real candles are available, use conservative ATR-based proxy zones.
+    if not candles:
+        poc = price
+        hvn = price
+        lvn_below = price - atr * 1.2
+        lvn_above = price + atr * 1.2
+        return {
+            "score": 0,
+            "mode": "ATR proxy profile",
+            "poc": round(poc, 4),
+            "hvn": round(hvn, 4),
+            "lvn_below": round(lvn_below, 4),
+            "lvn_above": round(lvn_above, 4),
+            "bias": "NEUTRAL",
+            "summary": "Реальні свічки недоступні, використано ATR-зони як proxy HVN/LVN",
+        }
+
+    try:
+        lows = [c["low"] for c in candles]
+        highs = [c["high"] for c in candles]
+        min_p, max_p = min(lows), max(highs)
+        bucket = max((max_p - min_p) / 24, price * 0.0015)
+        profile = {}
+
+        for c in candles:
+            typical = (c["high"] + c["low"] + c["close"]) / 3
+            key = round(round((typical - min_p) / bucket) * bucket + min_p, 4)
+            profile[key] = profile.get(key, 0) + c["volume"]
+
+        levels = sorted(profile.items(), key=lambda x: x[0])
+        poc = max(levels, key=lambda x: x[1])[0]
+        avg_vol = sum(v for _, v in levels) / max(len(levels), 1)
+        hvn_levels = [lvl for lvl, vol in levels if vol >= avg_vol * 1.25]
+        lvn_levels = [lvl for lvl, vol in levels if vol <= avg_vol * 0.65]
+
+        lvn_below_candidates = [lvl for lvl in lvn_levels if lvl < price]
+        lvn_above_candidates = [lvl for lvl in lvn_levels if lvl > price]
+        lvn_below = max(lvn_below_candidates) if lvn_below_candidates else price - atr
+        lvn_above = min(lvn_above_candidates) if lvn_above_candidates else price + atr
+        nearest_hvn = min(hvn_levels, key=lambda x: abs(x - price)) if hvn_levels else poc
+
+        score = 0
+        bias = "NEUTRAL"
+        if price > poc and price > nearest_hvn:
+            score += 8
+            bias = "LONG"
+        elif price < poc and price < nearest_hvn:
+            score -= 8
+            bias = "SHORT"
+
+        return {
+            "score": score,
+            "mode": "real volume profile" if candles else "ATR proxy profile",
+            "poc": round(poc, 4),
+            "hvn": round(nearest_hvn, 4),
+            "lvn_below": round(lvn_below, 4),
+            "lvn_above": round(lvn_above, 4),
+            "bias": bias,
+            "summary": f"POC {round(poc,4)}, HVN {round(nearest_hvn,4)}, LVN↓ {round(lvn_below,4)}, LVN↑ {round(lvn_above,4)}",
+        }
+    except Exception as error:
+        print(f"[WARN] Volume profile error: {error}")
+        return {
+            "score": 0,
+            "mode": "profile error",
+            "poc": round(price, 4),
+            "hvn": round(price, 4),
+            "lvn_below": round(price - atr, 4),
+            "lvn_above": round(price + atr, 4),
+            "bias": "NEUTRAL",
+            "summary": "Volume profile unavailable",
+        }
+
+
+def analyze_liquidation_heatmap(tv, tech, volatility):
+    price = tv.get("price") or 0
+    atr = tech.get("atr_15m") or price * 0.006
+    momentum = tech.get("momentum", "NEUTRAL")
+
+    # Approximate liquidation clusters. This is NOT real exchange heatmap,
+    # but useful free logic for likely leverage liquidation zones.
+    long_10x = price * 0.90
+    long_20x = price * 0.95
+    long_50x = price * 0.98
+    short_10x = price * 1.10
+    short_20x = price * 1.05
+    short_50x = price * 1.02
+
+    nearest_long_liq = max([long_10x, long_20x, long_50x])
+    nearest_short_liq = min([short_10x, short_20x, short_50x])
+
+    dist_long_atr = abs(price - nearest_long_liq) / atr if atr else 99
+    dist_short_atr = abs(nearest_short_liq - price) / atr if atr else 99
+
+    score = 0
+    bias = "NEUTRAL"
+    summary = "Ліквідаційні зони далеко"
+
+    if momentum in ["STRONG UP", "VERY STRONG UP"] and dist_short_atr <= 3.5:
+        score += 12
+        bias = "SHORT SQUEEZE RISK / LONG"
+        summary = "Ціна рухається до short-liquidation зони — можливий squeeze вгору"
+    elif momentum in ["STRONG DOWN", "VERY STRONG DOWN"] and dist_long_atr <= 3.5:
+        score -= 12
+        bias = "LONG LIQUIDATION RISK / SHORT"
+        summary = "Ціна рухається до long-liquidation зони — можливий cascade вниз"
+
+    if volatility.get("regime") == "HIGH VOLATILITY / BREAKOUT MODE":
+        if bias.startswith("SHORT SQUEEZE"):
+            score += 6
+        elif bias.startswith("LONG LIQUIDATION"):
+            score -= 6
+
+    return {
+        "score": score,
+        "bias": bias,
+        "nearest_long_liq": round(nearest_long_liq, 4),
+        "nearest_short_liq": round(nearest_short_liq, 4),
+        "dist_long_atr": round(dist_long_atr, 2),
+        "dist_short_atr": round(dist_short_atr, 2),
+        "summary": summary,
+    }
+
+
+def analyze_market_structure(tv, tech):
+    candles = get_free_candles()
+    volatility = analyze_volatility_regime(tv, tech)
+    profile = analyze_volume_profile(tv, candles)
+    liquidation = analyze_liquidation_heatmap(tv, tech, volatility)
+    total_score = volatility["score"] + profile["score"] + liquidation["score"]
+
+    return {
+        "score": total_score,
+        "volatility": volatility,
+        "profile": profile,
+        "liquidation": liquidation,
+        "candles_count": len(candles),
+    }
+
+
+def market_structure_verdict(market):
+    score = market.get("score", 0)
+    if score >= 15:
+        side = "LONG"
+    elif score <= -15:
+        side = "SHORT"
+    else:
+        side = "NEUTRAL"
+
+    reason = (
+        f"volatility {market['volatility']['regime']}, "
+        f"profile {market['profile']['bias']}, "
+        f"liquidation {market['liquidation']['bias']}, score {score}"
+    )
+    return side, reason
+
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
 
-def build_signal(tech, news, orderflow, macro, event_risk):
+def build_signal(tech, news, orderflow, macro, event_risk, market):
     score = (
         tech["score"]
         + news["score"]
         + orderflow["score"]
         + macro["score"]
         + event_risk["score"]
+        + market["score"]
     )
 
     signal_type = "НЕМАЄ УГОДИ"
@@ -1043,6 +1286,13 @@ def build_signal(tech, news, orderflow, macro, event_risk):
         score += 10
     if macro["score"] <= -25 and tech["momentum"] in ["STRONG DOWN", "VERY STRONG DOWN"]:
         score -= 10
+
+    if market["volatility"]["regime"] == "LOW VOLATILITY / CHOP MODE":
+        score -= 8
+    if market["liquidation"]["bias"].startswith("SHORT SQUEEZE"):
+        score += 8
+    if market["liquidation"]["bias"].startswith("LONG LIQUIDATION"):
+        score -= 8
 
     if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
         score -= 8
@@ -1078,6 +1328,8 @@ def build_signal(tech, news, orderflow, macro, event_risk):
         risk_note = "Підтвердження змішані — зменшити розмір позиції"
     if "ІМПУЛЬСНИЙ" in signal_type:
         risk_note = "Імпульсний сигнал — краще чекати відкат/ретест"
+    if market["volatility"]["regime"] == "HIGH VOLATILITY / BREAKOUT MODE" and "ІМПУЛЬСНИЙ" in signal_type:
+        risk_note = "Висока волатильність: тільки відкат/ретест, не доганяти свічку"
     if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
         risk_note = "Подієвий ризик високий — краще чекати або зменшити позицію"
     if macro["score"] <= -25 and signal == "LONG":
@@ -1202,17 +1454,22 @@ def orderflow_verdict(orderflow):
     return side, reason
 
 
-def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk):
+def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None):
     tech_side, _ = tech_verdict(tech)
     news_side, _ = news_verdict(news)
     event_side, _ = event_verdict(event_risk)
     macro_side, _ = macro_verdict(macro)
     order_side, _ = orderflow_verdict(orderflow)
+    market_side = "NEUTRAL"
+    if market:
+        market_side, _ = market_structure_verdict(market)
 
-    long_votes = [tech_side, news_side, event_side, macro_side, order_side].count("LONG")
-    short_votes = [tech_side, news_side, event_side, macro_side, order_side].count("SHORT")
+    long_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("LONG")
+    short_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("SHORT")
 
     if signal == "LONG":
+        if market and market["volatility"]["regime"] == "HIGH VOLATILITY / BREAKOUT MODE":
+            return "LONG є, але режим високої волатильності. Не доганяти рух; чекати відкат/ретест і чіткий стоп."
         if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
             return "Є LONG, але подієвий ризик високий. Не доганяти свічку; краще чекати відкат/ретест або входити мінімальним обсягом."
         if tech.get("trend") == "UP" and orderflow.get("score", 0) >= 20 and macro.get("score", 0) >= 0:
@@ -1220,6 +1477,8 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
         return "LONG ризиковий. Перевага вгору є, але підтвердження не ідеальні."
 
     if signal == "SHORT":
+        if market and market["volatility"]["regime"] == "HIGH VOLATILITY / BREAKOUT MODE":
+            return "SHORT є, але режим високої волатильності. Краще чекати пробій/ретест, бо можливий різкий відскок."
         if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
             return "Є SHORT, але подієвий ризик високий. Краще чекати підтвердження пробою/ретесту."
         if tech.get("trend") == "DOWN" and orderflow.get("score", 0) <= -20 and macro.get("score", 0) <= 0:
@@ -1291,9 +1550,10 @@ def main():
     macro_data = get_macro_quant_data()
     macro = analyze_macro_quant(macro_data)
     event_risk = analyze_event_risk(event_items)
+    market = analyze_market_structure(tv, tech)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
-        tech, news, orderflow, macro, event_risk
+        tech, news, orderflow, macro, event_risk, market
     )
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
@@ -1302,6 +1562,7 @@ def main():
     event_side, event_reason = event_verdict(event_risk)
     macro_side, macro_reason = macro_verdict(macro)
     order_side, order_reason = orderflow_verdict(orderflow)
+    market_side, market_reason = market_structure_verdict(market)
 
     print(f"SOURCE: {tv['source']}")
     print(f"SYMBOL: {tv['symbol']}")
@@ -1314,6 +1575,7 @@ def main():
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
+    print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -1353,6 +1615,8 @@ def main():
 {macro_reason}
 <b>Orderflow:</b> {order_side}
 {order_reason}
+<b>Volatility/Profile/Liquidations:</b> {market_side}
+{market_reason}
 
 <b>Деталі:</b>
 5m: {tech['trend_5m']} | 15m: {tech['trend_15m']} | 1h: {tech['trend_1h']}
@@ -1361,9 +1625,12 @@ ADX 15m: {tech['adx_15m']} | ATR 15m: {tech['atr_15m']}
 Macro regime: {macro['regime']}
 Event risk: {event_risk['risk']}
 News quality: {news['noise_warning']}
+Volatility regime: {market['volatility']['regime']} | ATR%: {market['volatility']['atr_pct']}
+Volume profile: {market['profile']['summary']}
+Liquidation zones: long≈{market['liquidation']['nearest_long_liq']} short≈{market['liquidation']['nearest_short_liq']}
 
 <b>Короткий висновок:</b>
-{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk)}
+{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market)}
 """
 
     send_telegram(message.strip())
