@@ -8,7 +8,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
 
-INST_ID = "BTC-USDT-SWAP"
+INST_ID = "BZU-USDT-SWAP"
 
 
 CRYPTO_RSS = [
@@ -290,7 +290,7 @@ def get_crypto_news():
     if CRYPTOPANIC_KEY:
         cryptopanic_url = (
             "https://cryptopanic.com/api/v1/posts/"
-            f"?auth_token={CRYPTOPANIC_KEY}&currencies=BTC&filter=hot"
+            f"?auth_token={CRYPTOPANIC_KEY}&filter=hot"
         )
 
         response = safe_get(cryptopanic_url)
@@ -471,6 +471,7 @@ def main():
         forex_events=forex_events,
     )
 
+    print(f"INSTRUMENT: {INST_ID}")
     print(f"OKX PRICE: {ticker['last']}")
     print(f"TECH SCORE: {tech['score']}")
     print(f"NEWS SCORE: {news['score']}")
@@ -481,15 +482,16 @@ def main():
         print("NO SIGNAL")
         return
 
-    icon = "LONG" if signal == "LONG" else "SHORT"
-
     message = f"""
 <b>BZU SIGNAL BOT ULTRA</b>
 
-<b>Signal:</b> {icon}
+<b>Instrument:</b> {INST_ID}
+<b>Signal:</b> {signal}
 <b>Confidence:</b> {confidence}%
 
 <b>OKX Price:</b> {ticker['last']}
+<b>Bid:</b> {ticker['bid']}
+<b>Ask:</b> {ticker['ask']}
 
 <b>Trend:</b> {tech['trend']}
 <b>RSI:</b> {tech['rsi']}
