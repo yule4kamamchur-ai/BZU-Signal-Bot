@@ -1,1 +1,6 @@
-run: sed -i 's/"news_count": 0/"total_news": 0/' bot_oneshot.py
+- name: Debug
+        run: grep -n "news_count\|total_news" bot_oneshot.py
+      - name: Fix news_count key
+        run: sed -i 's/"news_count": 0/"total_news": 0/' bot_oneshot.py
+      - name: Run signal bot
+        ...
