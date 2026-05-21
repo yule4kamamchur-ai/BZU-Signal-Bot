@@ -855,6 +855,83 @@ def directional_news_adjustment(title):
     return 0
 
 
+def headline_direction(title):
+    lower = title.lower()
+    long_reasons = []
+    short_reasons = []
+
+    # LONG for oil/BZ: supply risk, sanctions, war, inventory draw, Hormuz/Iran tension.
+    if any(word in lower for word in [
+        "inventory draw", "crude draw", "stockpiles fell", "stockpile draw",
+        "inventories fell", "supply disruption", "supply risk", "hormuz",
+        "sanctions", "attack", "strike", "war", "escalation", "iran rejects",
+        "uranium", "opec cut", "output cut", "oil rises", "oil rebounds",
+        "crude rebounds", "brent rises", "oil up", "crude rises",
+    ]):
+        long_reasons.append("підтримує LONG: ризик дефіциту/геополітика/запаси")
+
+    # SHORT for oil/BZ: peace deal, sanctions relief, inventory build, oversupply, weak demand.
+    if any(word in lower for word in [
+        "ceasefire", "peace deal", "near deal", "final stage", "sanctions relief",
+        "lift sanctions", "inventory build", "crude build", "stockpiles rose",
+        "inventories rose", "oversupply", "weak demand", "output increase",
+        "oil falls", "oil drops", "crude falls", "wti falls", "brent falls",
+        "oil plunges", "crude plunges",
+    ]):
+        short_reasons.append("підтримує SHORT: деескалація/зростання запасів/слабкий попит")
+
+    # Macro headlines: hawkish Fed / hot CPI can pressure risk assets.
+    if any(word in lower for word in [
+        "hot inflation", "inflation pressures", "hawkish", "rate hike",
+        "yields climb", "dollar rises", "dollar strengthens",
+    ]):
+        short_reasons.append("ризик SHORT: сильний долар/yields/Fed тиснуть на risk assets")
+
+    if any(word in lower for word in [
+        "rate cut", "dovish", "dollar falls", "yields fall", "fed pause",
+    ]):
+        long_reasons.append("підтримує LONG: мʼякший Fed/слабший долар")
+
+    long_score = len(long_reasons)
+    short_score = len(short_reasons)
+
+    if long_score > short_score:
+        return "LONG", "; ".join(long_reasons[:2])
+    if short_score > long_score:
+        return "SHORT", "; ".join(short_reasons[:2])
+    if long_score and short_score:
+        return "MIXED", "змішаний вплив: є аргументи і за LONG, і за SHORT"
+    return "NEUTRAL", "немає чіткого directional edge"
+
+
+def summarize_directional_items(items, limit=8):
+    result = []
+    for item in items[:limit]:
+        direction, reason = headline_direction(item.get("title", ""))
+        result.append({
+            "source": item.get("source", "news"),
+            "title": item.get("title", ""),
+            "published_at": item.get("published_at"),
+            "direction": direction,
+            "reason": reason,
+        })
+    return result
+
+
+def directional_conclusion(long_count, short_count, total_count, context="news"):
+    if total_count == 0:
+        return "Новин немає — directional висновок слабкий."
+    if long_count >= short_count * 2 and long_count >= 3:
+        return "Очікування: перевага LONG, але чекати технічне підтвердження/ретест."
+    if short_count >= long_count * 2 and short_count >= 3:
+        return "Очікування: перевага SHORT, але чекати пробій підтримки/підтвердження."
+    if long_count > short_count:
+        return "Очікування: помірний LONG, сигнал не ідеальний."
+    if short_count > long_count:
+        return "Очікування: помірний SHORT, сигнал не ідеальний."
+    return "Очікування: змішано/нейтрально, краще не поспішати з входом."
+
+
 def analyze_news(news):
     bullish = 0
     bearish = 0
@@ -862,6 +939,8 @@ def analyze_news(news):
     breaking = 0
     raw_score = 0
     important = []
+    directional_long = 0
+    directional_short = 0
 
     for item in news:
         title = item["title"]
@@ -872,6 +951,12 @@ def analyze_news(news):
         impact_hits = keyword_score(title, HIGH_IMPACT_WORDS)
         breaking_hits = keyword_score(title, BREAKING_WORDS)
         directional = directional_news_adjustment(title)
+        headline_bias, _ = headline_direction(title)
+
+        if headline_bias == "LONG":
+            directional_long += 1
+        elif headline_bias == "SHORT":
+            directional_short += 1
 
         if bull_hits:
             bullish += 1
@@ -903,6 +988,7 @@ def analyze_news(news):
         sentiment = "НЕЙТРАЛЬНІ"
 
     capped_score = int(max(-MAX_NEWS_SCORE, min(MAX_NEWS_SCORE, raw_score)))
+    important = important[:8]
     return {
         "score": capped_score,
         "raw_score": round(raw_score, 2),
@@ -912,7 +998,11 @@ def analyze_news(news):
         "bearish": bearish,
         "impact": impact,
         "breaking": breaking,
-        "important": important[:8],
+        "directional_long": directional_long,
+        "directional_short": directional_short,
+        "directional_conclusion": directional_conclusion(directional_long, directional_short, len(news)),
+        "summary_items": summarize_directional_items(important, limit=8),
+        "important": important,
         "total": len(news),
     }
 
@@ -930,7 +1020,7 @@ def news_noise_warning(total_news, raw_score, capped_score):
 
 
 def build_signal(tech, news, orderflow, macro, event_risk):
-    score = tech["score"] + news["score"] + orderflow["score"] + macro["score"] + event_risk["score"]
+    score = tech["score"] + news["score"] + orderflow["score"] + macro["score"] + event_risk["score"] + event_risk.get("direction_score", 0)
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
 
@@ -1203,11 +1293,14 @@ def analyze_event_risk():
     now = now_utc()
 
     score = 0
+    direction_score = 0
     risk_level = "НИЗЬКИЙ"
     warnings = []
     confirmations = []
-
     important_upcoming = []
+    event_long = 0
+    event_short = 0
+    analyzed_event_news = []
 
     for event in upcoming[:10]:
         hours_to_event = (event["time"] - now).total_seconds() / 3600
@@ -1235,11 +1328,31 @@ def analyze_event_risk():
     ]
 
     for item in event_news[:12]:
-        title = item["title"].lower()
-        hits = sum(1 for word in event_keywords if word in title)
+        title = item["title"]
+        lower = title.lower()
+        hits = sum(1 for word in event_keywords if word in lower)
+        direction, reason = headline_direction(title)
+
+        if direction == "LONG":
+            event_long += 1
+            direction_score += 8
+        elif direction == "SHORT":
+            event_short += 1
+            direction_score -= 8
+
+        analyzed_event_news.append({
+            "source": item.get("source", "Google Event RSS"),
+            "title": title,
+            "published_at": item.get("published_at"),
+            "direction": direction,
+            "reason": reason,
+        })
+
         if hits >= 2:
             score -= 5
-            warnings.append(f"Подієвий headline: {item['title']}")
+            warnings.append(f"Подієвий headline: {title} | висновок: {direction} — {reason}")
+
+    direction_score = max(-25, min(25, direction_score))
 
     if score <= -35:
         risk_level = "ДУЖЕ ВИСОКИЙ"
@@ -1248,13 +1361,25 @@ def analyze_event_risk():
     elif score <= -10:
         risk_level = "ПІДВИЩЕНИЙ"
 
+    if event_long > event_short:
+        event_conclusion = "Очікування по подіях: більше аргументів за LONG, але через event-risk краще чекати ретест."
+    elif event_short > event_long:
+        event_conclusion = "Очікування по подіях: більше аргументів за SHORT або ризик відкату."
+    else:
+        event_conclusion = "Очікування по подіях: змішано, краще не входити без технічного підтвердження."
+
     return {
         "score": score,
+        "direction_score": direction_score,
         "risk_level": risk_level,
         "warnings": warnings[:8],
         "confirmations": confirmations[:5],
         "events": important_upcoming[:6],
         "event_news": event_news[:6],
+        "event_news_analysis": analyzed_event_news[:8],
+        "event_long": event_long,
+        "event_short": event_short,
+        "event_conclusion": event_conclusion,
     }
 
 
@@ -1308,7 +1433,7 @@ def main():
     print(f"TECH SCORE: {tech['score']}")
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
-    print(f"EVENT RISK: {event_risk['risk_level']} | SCORE: {event_risk['score']}")
+    print(f"EVENT RISK: {event_risk['risk_level']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk.get('direction_score', 0)}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -1364,6 +1489,8 @@ def main():
 
 <b>Event risk:</b> {event_risk['risk_level']}
 <b>Event score:</b> {event_risk['score']}
+<b>Event direction score:</b> {event_risk.get('direction_score', 0)}
+<b>Висновок по подіях:</b> {event_risk['event_conclusion']}
 """
 
     if orderflow["details"]:
@@ -1406,27 +1533,28 @@ def main():
 <b>Breaking:</b> {news['breaking']}
 <b>News score:</b> {news['score']} / raw {news['raw_score']}
 <b>Якість news-score:</b> {news['noise_warning']}
+<b>Короткий висновок по новинах:</b> {news['directional_conclusion']}
 
-<b>Важливі свіжі новини:</b>
+<b>Важливі свіжі новини з висновком:</b>
 """
 
-    if news["important"]:
-        for item in news["important"]:
+    if news["summary_items"]:
+        for item in news["summary_items"]:
             message += (
-                f"\n- [{item['source']}] "
-                f"{item['title']} "
+                f"\n- [{item['source']}] {item['title']} "
                 f"({format_time(item['published_at'])})"
+                f"\n  Висновок: {item['direction']} — {item['reason']}"
             )
     else:
         message += "\nНемає"
 
-    if event_risk["event_news"]:
-        message += "\n\n<b>Headlines по майбутніх подіях:</b>"
-        for item in event_risk["event_news"]:
+    if event_risk["event_news_analysis"]:
+        message += "\n\n<b>Headlines по майбутніх подіях з висновком:</b>"
+        for item in event_risk["event_news_analysis"]:
             message += (
-                f"\n- [{item['source']}] "
-                f"{item['title']} "
+                f"\n- [{item['source']}] {item['title']} "
                 f"({format_time(item['published_at'])})"
+                f"\n  Очікування: {item['direction']} — {item['reason']}"
             )
 
     send_telegram(message.strip())
