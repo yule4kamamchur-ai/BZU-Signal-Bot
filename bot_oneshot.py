@@ -1142,25 +1142,104 @@ def make_trade_plan(signal, signal_type, price, tech):
     }
 
 
+
+def side_from_score(score, long_thr=15, short_thr=-15):
+    if score >= long_thr:
+        return "LONG"
+    if score <= short_thr:
+        return "SHORT"
+    return "NEUTRAL"
+
+
+def tech_verdict(tech):
+    score = tech.get("score", 0)
+    momentum = tech.get("momentum", "NEUTRAL")
+    trend = tech.get("trend", "UNKNOWN")
+
+    if score >= 55 or (momentum in ["STRONG UP", "VERY STRONG UP"] and trend in ["UP", "MIXED"]):
+        side = "LONG"
+    elif score <= -55 or (momentum in ["STRONG DOWN", "VERY STRONG DOWN"] and trend in ["DOWN", "MIXED"]):
+        side = "SHORT"
+    else:
+        side = "NEUTRAL"
+
+    reason = f"trend {trend}, momentum {momentum}, score {score}"
+    return side, reason
+
+
+def news_verdict(news):
+    side = side_from_score(news.get("score", 0), 15, -15)
+    reason = (
+        f"score {news.get('score')}, sentiment {news.get('sentiment')}, "
+        f"bullish {news.get('bullish')}, bearish {news.get('bearish')}, breaking {news.get('breaking')}"
+    )
+    return side, reason
+
+
+def event_verdict(event_risk):
+    direction = event_risk.get("direction", "MIXED")
+    risk = event_risk.get("risk", "НОРМАЛЬНИЙ")
+    score = event_risk.get("score", 0)
+
+    if direction in ["LONG", "SHORT"]:
+        side = direction
+    else:
+        side = "NEUTRAL"
+
+    reason = f"direction {direction}, risk {risk}, score {score}"
+    return side, reason
+
+
+def macro_verdict(macro):
+    side = side_from_score(macro.get("score", 0), 15, -15)
+    reason = f"regime {macro.get('regime')}, score {macro.get('score')}"
+    return side, reason
+
+
+def orderflow_verdict(orderflow):
+    side = side_from_score(orderflow.get("score", 0), 15, -15)
+    reason = f"{orderflow.get('bias')}, score {orderflow.get('score')}"
+    return side, reason
+
+
 def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk):
-    if signal == "NO SIGNAL":
-        return "Входу немає. Краще чекати підтвердження."
+    tech_side, _ = tech_verdict(tech)
+    news_side, _ = news_verdict(news)
+    event_side, _ = event_verdict(event_risk)
+    macro_side, _ = macro_verdict(macro)
+    order_side, _ = orderflow_verdict(orderflow)
+
+    long_votes = [tech_side, news_side, event_side, macro_side, order_side].count("LONG")
+    short_votes = [tech_side, news_side, event_side, macro_side, order_side].count("SHORT")
 
     if signal == "LONG":
-        if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-            return "LONG є, але подієвий ризик високий. Краще чекати відкат/ретест або входити малим обсягом."
-        if tech["trend"] == "UP" and orderflow["score"] >= 20 and macro["score"] >= 0:
-            return "LONG підтверджений. Вхід можливий тільки за планом зі стопом."
-        return "LONG ризиковий. Не входити після великої свічки, краще чекати відкат."
+        if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+            return "Є LONG, але подієвий ризик високий. Не доганяти свічку; краще чекати відкат/ретест або входити мінімальним обсягом."
+        if tech.get("trend") == "UP" and orderflow.get("score", 0) >= 20 and macro.get("score", 0) >= 0:
+            return "LONG достатньо підтверджений. Вхід можливий тільки за планом і зі стопом."
+        return "LONG ризиковий. Перевага вгору є, але підтвердження не ідеальні."
 
     if signal == "SHORT":
-        if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-            return "SHORT є, але подієвий ризик високий. Краще чекати підтвердження."
-        if tech["trend"] == "DOWN" and orderflow["score"] <= -20 and macro["score"] <= 0:
-            return "SHORT підтверджений. Вхід можливий тільки за планом зі стопом."
-        return "SHORT ризиковий. Краще чекати пробій/ретест."
+        if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+            return "Є SHORT, але подієвий ризик високий. Краще чекати підтвердження пробою/ретесту."
+        if tech.get("trend") == "DOWN" and orderflow.get("score", 0) <= -20 and macro.get("score", 0) <= 0:
+            return "SHORT достатньо підтверджений. Вхід можливий тільки за планом і зі стопом."
+        return "SHORT ризиковий. Перевага вниз є, але підтвердження не ідеальні."
 
-    return "Ситуація змішана. Краще не поспішати."
+    if long_votes > short_votes:
+        return "Сигналу на вхід немає. Перевага більше в бік LONG, але підтвердження недостатні — чекати кращий сетап."
+    if short_votes > long_votes:
+        return "Сигналу на вхід немає. Перевага більше в бік SHORT, але підтвердження недостатні — чекати кращий сетап."
+    return "Сигналу на вхід немає. Картина змішана — краще не відкривати позицію."
+
+
+def format_trade_plan(plan):
+    if not plan or plan.get("entry") is None:
+        return "Входу немає — чекати підтвердження."
+    return (
+        f"Вхід: {plan['entry']} | Стоп: {plan['stop']} | "
+        f"TP1: {plan['tp1']} | TP2: {plan['tp2']} | TP3: {plan['tp3']}"
+    )
 
 
 def format_time(dt):
@@ -1196,7 +1275,7 @@ def send_telegram(message):
 # ==========================================================
 
 def main():
-    print("START BZU PROFESSIONAL FREE BOT UA SHORT")
+    print("START BZU PROFESSIONAL FREE BOT UA REPORT")
 
     tv = get_tradingview_market_data()
     if not tv:
@@ -1218,6 +1297,12 @@ def main():
     )
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
+    tech_side, tech_reason = tech_verdict(tech)
+    news_side, news_reason = news_verdict(news)
+    event_side, event_reason = event_verdict(event_risk)
+    macro_side, macro_reason = macro_verdict(macro)
+    order_side, order_reason = orderflow_verdict(orderflow)
+
     print(f"SOURCE: {tv['source']}")
     print(f"SYMBOL: {tv['symbol']}")
     print(f"PRICE: {tv['price']}")
@@ -1234,59 +1319,48 @@ def main():
     print(f"SIGNAL TYPE: {signal_type}")
     print(f"SIGNAL: {signal}")
 
-    if signal == "NO SIGNAL" or confidence < MIN_CONFIDENCE_TO_SEND:
-        print("NO SIGNAL")
-        return
-
-    news_summary = (
-        "Новини підтримують LONG" if news["score"] > 15
-        else "Новини підтримують SHORT" if news["score"] < -15
-        else "Новини нейтральні"
-    )
-
-    event_summary = (
-        "Подієвий ризик високий — краще чекати"
-        if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-        else "Подієвий ризик нормальний"
-    )
+    if signal == "NO SIGNAL":
+        decision = "НЕ ВХОДИТИ"
+    elif "РИЗИКОВИЙ" in signal_type or "ІМПУЛЬСНИЙ" in signal_type:
+        decision = f"{signal}, але обережно"
+    else:
+        decision = signal
 
     message = f"""
 <b>📊 BZU SIGNAL BOT ULTRA</b>
 
+<b>Підсумок:</b> {decision}
 <b>Сигнал:</b> {signal}
 <b>Тип:</b> {signal_type}
 <b>Впевненість:</b> {confidence}%
+<b>Фінальний score:</b> {score}
 <b>Ризик:</b> {risk_note}
 
 <b>Інструмент:</b> {tv['symbol']}
 <b>Ціна:</b> {tv['price']}
-<b>Зміна:</b> {tv['change']}%
+<b>Зміна:</b> {round(tv['change'], 4)}%
 <b>Імпульс:</b> {tech['momentum']}
 
-<b>Вхід:</b> {plan['entry']}
-<b>Стоп:</b> {plan['stop']}
-<b>TP1:</b> {plan['tp1']}
-<b>TP2:</b> {plan['tp2']}
-<b>TP3:</b> {plan['tp3']}
+<b>План:</b> {format_trade_plan(plan)}
 
-<b>Тренд:</b> {tech['trend']}
-<b>5m:</b> {tech['trend_5m']} | <b>15m:</b> {tech['trend_15m']} | <b>1h:</b> {tech['trend_1h']}
-<b>RSI 5m:</b> {tech['rsi_5m']} | <b>RSI 15m:</b> {tech['rsi_15m']} | <b>RSI 1h:</b> {tech['rsi_1h']}
-<b>ADX 15m:</b> {tech['adx_15m']} | <b>ATR 15m:</b> {tech['atr_15m']}
+<b>Теханаліз:</b> {tech_side}
+{tech_reason}
+<b>Новини:</b> {news_side}
+{news_reason}
+<b>Майбутні/подієві новини:</b> {event_side}
+{event_reason}
+<b>Макро:</b> {macro_side}
+{macro_reason}
+<b>Orderflow:</b> {order_side}
+{order_reason}
 
-<b>Orderflow:</b> {orderflow['bias']} / {orderflow['score']}
-<b>Macro:</b> {macro['regime']} / {macro['score']}
-
-<b>Новини:</b> {news_summary}
-<b>News score:</b> {news['score']} / raw {news['raw_score']}
-<b>Якість news-score:</b> {news['noise_warning']}
-<b>Висновок по новинах:</b> {news['summary']}
-
-<b>Події:</b> {event_summary}
-<b>Event risk:</b> {event_risk['risk']}
-<b>Event direction:</b> {event_risk['direction']}
-<b>Event score:</b> {event_risk['score']}
-<b>Висновок по подіях:</b> {event_risk['summary']}
+<b>Деталі:</b>
+5m: {tech['trend_5m']} | 15m: {tech['trend_15m']} | 1h: {tech['trend_1h']}
+RSI 5m: {tech['rsi_5m']} | RSI 15m: {tech['rsi_15m']} | RSI 1h: {tech['rsi_1h']}
+ADX 15m: {tech['adx_15m']} | ATR 15m: {tech['atr_15m']}
+Macro regime: {macro['regime']}
+Event risk: {event_risk['risk']}
+News quality: {news['noise_warning']}
 
 <b>Короткий висновок:</b>
 {final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk)}
