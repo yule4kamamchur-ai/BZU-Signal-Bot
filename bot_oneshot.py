@@ -1424,6 +1424,109 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
 
 
 
+def combined_technical_bias(tech, orderflow, market, oi_analysis):
+    """Separate technical-side decision. Does not include news/event/macro."""
+    tech_side, tech_reason = tech_verdict(tech)
+    order_side, order_reason = orderflow_verdict(orderflow)
+    market_side, market_reason = market_structure_verdict(market)
+    oi_side = oi_analysis.get("side", "NEUTRAL")
+
+    score = (
+        tech.get("score", 0)
+        + orderflow.get("score", 0)
+        + market.get("score", 0)
+        + oi_analysis.get("score", 0)
+    )
+
+    long_votes = [tech_side, order_side, market_side, oi_side].count("LONG")
+    short_votes = [tech_side, order_side, market_side, oi_side].count("SHORT")
+
+    if score >= 80 and long_votes >= 2:
+        side = "STRONG LONG"
+    elif score >= 35:
+        side = "LONG"
+    elif score <= -80 and short_votes >= 2:
+        side = "STRONG SHORT"
+    elif score <= -35:
+        side = "SHORT"
+    else:
+        side = "NEUTRAL"
+
+    reason = (
+        f"trend {tech.get('trend')}, 5m {tech.get('trend_5m')}, "
+        f"15m {tech.get('trend_15m')}, 1h {tech.get('trend_1h')}, "
+        f"momentum {tech.get('momentum')}, orderflow {orderflow.get('bias')}, "
+        f"OI {oi_analysis.get('summary')}, score {score}"
+    )
+
+    return {"side": side, "score": score, "reason": reason}
+
+
+def combined_fundamental_bias(news, event_risk, macro):
+    """Separate news/fundamental-side decision. Does not include technicals."""
+    news_side, news_reason = news_verdict(news)
+    event_side, event_reason = event_verdict(event_risk)
+    macro_side, macro_reason = macro_verdict(macro)
+
+    # Event score is risk penalty, so use direction separately for bias.
+    event_direction_score = 0
+    if event_risk.get("direction") == "LONG":
+        event_direction_score = 18
+    elif event_risk.get("direction") == "SHORT":
+        event_direction_score = -18
+
+    score = news.get("score", 0) + macro.get("score", 0) + event_direction_score
+
+    # High event risk means fundamentals are powerful but dangerous.
+    risk = event_risk.get("risk", "НОРМАЛЬНИЙ")
+
+    if score >= 55:
+        side = "STRONG LONG"
+    elif score >= 20:
+        side = "LONG"
+    elif score <= -55:
+        side = "STRONG SHORT"
+    elif score <= -20:
+        side = "SHORT"
+    else:
+        side = "NEUTRAL"
+
+    reason = (
+        f"news {news_side} score {news.get('score')}, "
+        f"event {event_side} risk {risk}, macro {macro.get('regime')}, "
+        f"fundamental score {score}"
+    )
+
+    return {"side": side, "score": score, "risk": risk, "reason": reason}
+
+
+def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk):
+    tech_side = technical_bias["side"]
+    fund_side = fundamental_bias["side"]
+
+    tech_short = "SHORT" in tech_side
+    tech_long = "LONG" in tech_side
+    fund_short = "SHORT" in fund_side
+    fund_long = "LONG" in fund_side
+
+    if signal == "NO SIGNAL":
+        if tech_long and fund_short:
+            return "КОНФЛІКТ: техніка LONG, фундамент SHORT — НЕ ВХОДИТИ"
+        if tech_short and fund_long:
+            return "КОНФЛІКТ: техніка SHORT, фундамент LONG — НЕ ВХОДИТИ"
+        return "НЕ ВХОДИТИ — підтвердження недостатні"
+
+    if tech_long and fund_long and signal == "LONG":
+        return "LONG підтверджений технікою і фундаментом"
+    if tech_short and fund_short and signal == "SHORT":
+        return "SHORT підтверджений технікою і фундаментом"
+
+    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        return f"{signal}, але подієвий ризик високий — чекати ретест"
+
+    return f"{signal}, але підтвердження змішані"
+
+
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
     if signal == "NO SIGNAL":
         return "NO TRADE"
@@ -1555,31 +1658,35 @@ def main():
     else:
         decision = signal
 
+    technical_bias = combined_technical_bias(tech, orderflow, market, oi_analysis)
+    fundamental_bias = combined_fundamental_bias(news, event_risk, macro)
+    market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk)
+
     message = f"""
 <b>📊 BZU SIGNAL BOT</b>
 
-<b>Підсумок:</b> {decision}
-<b>Якість сетапу:</b> {quality}
-<b>Сигнал:</b> {signal}
-<b>Тип:</b> {signal_type}
+<b>Рішення:</b> {market_decision}
+<b>Якість:</b> {quality}
+<b>Сигнал:</b> {signal} / {signal_type}
 <b>Впевненість:</b> {confidence}%
-<b>Score:</b> {score}
 
 <b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%
-<b>Імпульс:</b> {tech['momentum']}
-
 <b>План:</b> {format_trade_plan(plan)}
 
-<b>Техніка:</b> {tech_side} — {tech['trend']} / 5m {tech['trend_5m']} / 15m {tech['trend_15m']} / 1h {tech['trend_1h']}
-<b>Новини:</b> {news_side} — score {news['score']}, {news['sentiment']}
-<b>Події:</b> {event_side} — ризик {event_risk['risk']}
-<b>Macro:</b> {macro_side} — {macro['regime']}
-<b>Orderflow:</b> {order_side} — {orderflow['bias']}
-<b>OI:</b> {oi_analysis['side']} — {oi_analysis['summary']}
-<b>Volatility:</b> {market['volatility']['regime']}
-<b>Liquidation:</b> {market['liquidation']['bias']}
+<b>TECHNICAL BIAS:</b> {technical_bias['side']}
+{technical_bias['reason']}
 
-<b>Висновок:</b>
+<b>FUNDAMENTAL / NEWS BIAS:</b> {fundamental_bias['side']}
+{fundamental_bias['reason']}
+
+<b>Окремо:</b>
+Новини: {news_side} ({news['sentiment']}, score {news['score']})
+Події: {event_side} (ризик {event_risk['risk']})
+Macro: {macro_side} ({macro['regime']})
+Volatility: {market['volatility']['regime']}
+Liquidation: {market['liquidation']['bias']}
+
+<b>Короткий висновок:</b>
 {final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis)}
 """
 
