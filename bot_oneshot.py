@@ -1021,32 +1021,8 @@ def news_noise_warning(total_news, raw_score, capped_score):
 
 
 # ==========================================================
-# VOLATILITY REGIME / VOLUME PROFILE / LIQUIDATION HEATMAP LOGIC
+# VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
-
-def get_free_candles(symbol=PROFILE_SYMBOL, interval="15m", limit=96):
-    """Free best-effort candles. If Binance blocks GitHub, bot continues without them."""
-    url = f"{BINANCE_FAPI}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    response = safe_get(url, timeout=8, retries=1)
-    if not response:
-        return []
-
-    try:
-        raw = response.json()
-        candles = []
-        for row in raw:
-            candles.append({
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5]),
-            })
-        return candles
-    except Exception as error:
-        print(f"[WARN] Candle parse error: {error}")
-        return []
-
 
 def analyze_volatility_regime(tv, tech):
     price = tv.get("price") or 0
@@ -1095,84 +1071,6 @@ def analyze_volatility_regime(tv, tech):
         "direction_filter": direction_filter,
         "warning": warning,
     }
-
-
-def analyze_volume_profile(tv, candles):
-    price = tv.get("price") or 0
-    atr = tv.get("atr_15m") or price * 0.006
-
-    # If no real candles are available, use conservative ATR-based proxy zones.
-    if not candles:
-        poc = price
-        hvn = price
-        lvn_below = price - atr * 1.2
-        lvn_above = price + atr * 1.2
-        return {
-            "score": 0,
-            "mode": "ATR proxy profile",
-            "poc": round(poc, 4),
-            "hvn": round(hvn, 4),
-            "lvn_below": round(lvn_below, 4),
-            "lvn_above": round(lvn_above, 4),
-            "bias": "NEUTRAL",
-            "summary": "Реальні свічки недоступні, використано ATR-зони як proxy HVN/LVN",
-        }
-
-    try:
-        lows = [c["low"] for c in candles]
-        highs = [c["high"] for c in candles]
-        min_p, max_p = min(lows), max(highs)
-        bucket = max((max_p - min_p) / 24, price * 0.0015)
-        profile = {}
-
-        for c in candles:
-            typical = (c["high"] + c["low"] + c["close"]) / 3
-            key = round(round((typical - min_p) / bucket) * bucket + min_p, 4)
-            profile[key] = profile.get(key, 0) + c["volume"]
-
-        levels = sorted(profile.items(), key=lambda x: x[0])
-        poc = max(levels, key=lambda x: x[1])[0]
-        avg_vol = sum(v for _, v in levels) / max(len(levels), 1)
-        hvn_levels = [lvl for lvl, vol in levels if vol >= avg_vol * 1.25]
-        lvn_levels = [lvl for lvl, vol in levels if vol <= avg_vol * 0.65]
-
-        lvn_below_candidates = [lvl for lvl in lvn_levels if lvl < price]
-        lvn_above_candidates = [lvl for lvl in lvn_levels if lvl > price]
-        lvn_below = max(lvn_below_candidates) if lvn_below_candidates else price - atr
-        lvn_above = min(lvn_above_candidates) if lvn_above_candidates else price + atr
-        nearest_hvn = min(hvn_levels, key=lambda x: abs(x - price)) if hvn_levels else poc
-
-        score = 0
-        bias = "NEUTRAL"
-        if price > poc and price > nearest_hvn:
-            score += 8
-            bias = "LONG"
-        elif price < poc and price < nearest_hvn:
-            score -= 8
-            bias = "SHORT"
-
-        return {
-            "score": score,
-            "mode": "real volume profile" if candles else "ATR proxy profile",
-            "poc": round(poc, 4),
-            "hvn": round(nearest_hvn, 4),
-            "lvn_below": round(lvn_below, 4),
-            "lvn_above": round(lvn_above, 4),
-            "bias": bias,
-            "summary": f"POC {round(poc,4)}, HVN {round(nearest_hvn,4)}, LVN↓ {round(lvn_below,4)}, LVN↑ {round(lvn_above,4)}",
-        }
-    except Exception as error:
-        print(f"[WARN] Volume profile error: {error}")
-        return {
-            "score": 0,
-            "mode": "profile error",
-            "poc": round(price, 4),
-            "hvn": round(price, 4),
-            "lvn_below": round(price - atr, 4),
-            "lvn_above": round(price + atr, 4),
-            "bias": "NEUTRAL",
-            "summary": "Volume profile unavailable",
-        }
 
 
 def analyze_liquidation_heatmap(tv, tech, volatility):
