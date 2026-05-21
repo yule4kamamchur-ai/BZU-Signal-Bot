@@ -1796,6 +1796,102 @@ def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_b
     return f"{signal}, але підтвердження змішані"
 
 
+
+
+def short_bias_label(side):
+    if "STRONG LONG" in side:
+        return "STRONG LONG"
+    if "LONG" in side:
+        return "LONG"
+    if "STRONG SHORT" in side:
+        return "STRONG SHORT"
+    if "SHORT" in side:
+        return "SHORT"
+    return "NEUTRAL"
+
+
+def compact_priority_label(priority, reversal):
+    regime = priority.get("regime", "BALANCED")
+    dominant = priority.get("dominant", "BALANCED")
+    rev = reversal.get("side", "NONE") if reversal else "NONE"
+
+    if rev == "REVERSAL LONG WATCH":
+        return "NEWS > TECH, LONG WATCH"
+    if rev == "REVERSAL SHORT WATCH":
+        return "NEWS > TECH, SHORT WATCH"
+    if dominant in ["FUNDAMENTAL", "EVENT"]:
+        return "NEWS/EVENT PRIORITY"
+    if dominant == "TECHNICAL":
+        return "TECH PRIORITY"
+    return "BALANCED"
+
+
+def decision_confidence(signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal):
+    """Confidence means confidence in the decision, not win-rate.
+    For NO TRADE conflicts we want high confidence if the conflict is clear.
+    """
+    tech_side = technical_bias.get("side", "NEUTRAL")
+    fund_side = fundamental_bias.get("side", "NEUTRAL")
+    tech_score = abs(technical_bias.get("score", 0))
+    fund_score = abs(fundamental_bias.get("score", 0))
+    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    reversal_active = reversal and reversal.get("side") in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]
+
+    if signal == "NO SIGNAL":
+        conflict = (("LONG" in tech_side and "SHORT" in fund_side) or ("SHORT" in tech_side and "LONG" in fund_side))
+        if reversal_active:
+            return min(92, max(75, int(reversal.get("confidence", 0)) + 35))
+        if conflict and event_high:
+            return 88
+        if conflict:
+            return 80
+        return min(75, max(45, int((tech_score + fund_score) / 3)))
+
+    return min(95, max(55, abs(int(score))))
+
+
+def compact_decision_line(market_decision, signal, signal_type, reversal):
+    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
+        return "LONG WATCH — чекати підтвердження"
+    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
+        return "SHORT WATCH — чекати підтвердження"
+    if signal == "NO SIGNAL":
+        return "NO TRADE — чекати"
+    if "РИЗИКОВИЙ" in signal_type:
+        return f"{signal} ризиковий"
+    if "ІМПУЛЬСНИЙ" in signal_type:
+        return f"{signal} імпульсний"
+    return signal
+
+
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary):
+    decision = compact_decision_line("", signal, signal_type, reversal)
+    tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
+    fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
+    priority_label = compact_priority_label(priority, reversal)
+
+    return f"""
+<b>📊 BZU SIGNAL BOT</b>
+
+<b>Рішення:</b> {decision}
+<b>Сигнал:</b> {signal} / {signal_type}
+<b>Якість:</b> {quality} | <b>Впевненість:</b> {confidence}%
+
+<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%
+<b>План:</b> {format_trade_plan(plan)}
+
+<b>TECH:</b> {tech_label} ({technical_bias.get('score')})
+<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})
+<b>Priority:</b> {priority_label}
+<b>Events:</b> {event_risk.get('direction')} / {event_risk.get('risk')}
+<b>Session:</b> {session.get('session')} | <b>Vol:</b> {market['volatility']['regime']}
+<b>Orderflow:</b> {orderflow.get('bias')} | <b>OI:</b> {oi_analysis.get('summary')}
+<b>Reversal:</b> {reversal.get('side')} ({reversal.get('confidence')}%)
+
+<b>Висновок:</b>
+{final_summary}
+""".strip()
+
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
     if signal == "NO SIGNAL":
         return "NO TRADE"
@@ -1937,39 +2033,36 @@ def main():
     fundamental_bias = combined_fundamental_bias(news, event_risk, macro)
     market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
 
-    message = f"""
-<b>📊 BZU SIGNAL BOT</b>
+    # Впевненість тепер означає якість рішення, а не win-rate.
+    # Для NO TRADE у чіткому конфлікті вона може бути високою: бот впевнено каже "не входити".
+    confidence = decision_confidence(
+        signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal
+    )
 
-<b>Рішення:</b> {market_decision}
-<b>Якість:</b> {quality}
-<b>Сигнал:</b> {signal} / {signal_type}
-<b>Впевненість:</b> {confidence}%
+    summary = final_short_summary(
+        signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
+    )
 
-<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%
-<b>План:</b> {format_trade_plan(plan)}
-
-<b>TECHNICAL BIAS:</b> {technical_bias['side']}
-{technical_bias['reason']}
-
-<b>FUNDAMENTAL / NEWS BIAS:</b> {fundamental_bias['side']}
-{fundamental_bias['reason']}
-
-<b>PRIORITY ENGINE:</b> {priority['regime']}
-Домінує: {priority['dominant']} | Tech weight {priority['tech_weight']} | News weight {priority['news_weight']}
-{priority['reason']}
-
-<b>Окремо:</b>
-Новини: {news_side} ({news['sentiment']}, score {news['score']})
-Події: {event_side} (ризик {event_risk['risk']})
-Macro: {macro_side} ({macro['regime']})
-Volatility: {market['volatility']['regime']}
-Liquidation: {market['liquidation']['bias']}
-Session: {session['session']} ({session['breakout_quality']})
-Reversal: {reversal['side']} ({reversal['confidence']}%)
-
-<b>Короткий висновок:</b>
-{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session)}
-"""
+    message = compact_telegram_message(
+        tv=tv,
+        signal=signal,
+        signal_type=signal_type,
+        confidence=confidence,
+        quality=quality,
+        plan=plan,
+        technical_bias=technical_bias,
+        fundamental_bias=fundamental_bias,
+        news=news,
+        event_risk=event_risk,
+        macro=macro,
+        orderflow=orderflow,
+        oi_analysis=oi_analysis,
+        market=market,
+        session=session,
+        reversal=reversal,
+        priority=priority,
+        final_summary=summary,
+    )
 
     send_telegram(message.strip())
     print("TELEGRAM SENT")
