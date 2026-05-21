@@ -1,27 +1,23 @@
 name: BZU Signal Bot
-
 on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 14
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
+      - name: Fix news_count key
+        run: sed -i 's/"news_count": 0/"total_news": 0/g' bot_oneshot.py
       - name: Run signal bot
         env:
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
