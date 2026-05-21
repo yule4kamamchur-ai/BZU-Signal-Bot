@@ -8,10 +8,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
 
-SYMBOL = "BZUSDT"
-
-BINANCE_BASE = "https://fapi.binance.com"
-
+TRADINGVIEW_SYMBOLS = [
+    ("BINANCE:BZUSDT.P", "crypto"),
+    ("BINANCE:BZUSDT", "crypto"),
+    ("NYMEX:BZ1!", "futures"),
+    ("TVC:UKOIL", "cfd"),
+]
 
 CRYPTO_RSS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
@@ -19,216 +21,152 @@ CRYPTO_RSS = [
     "https://cryptoslate.com/feed/",
 ]
 
-
 OIL_RSS = [
     "https://www.eia.gov/rss/todayinenergy.xml",
     "https://oilprice.com/rss/main",
     "https://oilprice.com/rss/oilprices.xml",
 ]
 
-
 BULLISH = [
-    "etf",
-    "approval",
-    "buy",
-    "bullish",
-    "surge",
-    "rally",
-    "breakout",
-    "institutional",
-    "accumulation",
-    "rate cut",
-    "fed pause",
+    "etf", "approval", "buy", "bullish", "surge", "rally",
+    "breakout", "institutional", "accumulation", "rate cut",
+    "fed pause", "inventory draw", "crude draw", "supply disruption",
+    "opec cut", "sanctions",
 ]
-
 
 BEARISH = [
-    "crash",
-    "sell",
-    "bearish",
-    "lawsuit",
-    "hack",
-    "liquidation",
-    "war",
-    "inflation",
-    "rate hike",
-    "recession",
+    "crash", "sell", "bearish", "lawsuit", "hack", "liquidation",
+    "war", "inflation", "rate hike", "recession", "inventory build",
+    "crude build", "demand weak", "opec increase",
 ]
 
-
 HIGH_IMPACT = [
-    "fed",
-    "cpi",
-    "fomc",
-    "etf",
-    "sec",
-    "blackrock",
-    "war",
-    "opec",
-    "inventory",
-    "eia",
+    "fed", "cpi", "fomc", "etf", "sec", "blackrock", "war",
+    "opec", "inventory", "eia", "api", "powell", "inflation",
 ]
 
 
 def safe_get(url, timeout=15):
     try:
-        response = requests.get(
+        r = requests.get(
             url,
             timeout=timeout,
             headers={"User-Agent": "Mozilla/5.0"},
         )
-        response.raise_for_status()
-        return response
-    except Exception as error:
-        print(f"[WARN] {url}: {error}")
+
+        if r.status_code >= 400:
+            print(f"[WARN] HTTP {r.status_code}: {url}")
+            print(r.text[:300])
+            return None
+
+        return r
+
+    except Exception as e:
+        print(f"[WARN] {url}: {e}")
         return None
 
 
-def get_binance_price():
-    url = f"{BINANCE_BASE}/fapi/v1/ticker/price?symbol={SYMBOL}"
-    response = safe_get(url)
-
-    if not response:
-        return None
-
-    data = response.json()
-
-    if "price" not in data:
-        print(f"[ERROR] Binance price response: {data}")
-        return None
-
-    price = float(data["price"])
-
-    return {
-        "last": price,
-        "bid": price,
-        "ask": price,
-    }
-
-
-def get_binance_funding():
-    url = f"{BINANCE_BASE}/fapi/v1/fundingRate?symbol={SYMBOL}&limit=1"
-    response = safe_get(url)
-
-    if not response:
-        return 0.0
-
-    data = response.json()
-
-    if not isinstance(data, list) or len(data) == 0:
-        print(f"[WARN] Funding response: {data}")
-        return 0.0
-
-    return float(data[0].get("fundingRate", 0.0))
-
-
-def get_binance_candles():
-    url = f"{BINANCE_BASE}/fapi/v1/klines?symbol={SYMBOL}&interval=15m&limit=100"
-    response = safe_get(url)
-
-    if not response:
-        return []
-
-    data = response.json()
-
-    if not isinstance(data, list):
-        print(f"[ERROR] Binance candles response: {data}")
-        return []
-
-    candles = []
-
-    for candle in data:
-        candles.append(
-            {
-                "close": float(candle[4]),
-                "volume": float(candle[5]),
-            }
+def safe_post(url, payload, timeout=15):
+    try:
+        r = requests.post(
+            url,
+            json=payload,
+            timeout=timeout,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
         )
 
-    return candles
+        if r.status_code >= 400:
+            print(f"[WARN] HTTP {r.status_code}: {url}")
+            print(r.text[:300])
+            return None
 
+        return r
 
-def ema(values, period):
-    if len(values) < period:
+    except Exception as e:
+        print(f"[WARN] {url}: {e}")
         return None
 
-    multiplier = 2 / (period + 1)
-    result = values[0]
 
-    for value in values[1:]:
-        result = value * multiplier + result * (1 - multiplier)
+def get_tradingview_market_data():
+    columns = [
+        "close",
+        "change",
+        "volume",
+        "Recommend.All|15",
+        "RSI|15",
+        "EMA20|15",
+        "EMA50|15",
+        "MACD.macd|15",
+    ]
 
-    return result
+    for symbol, screener in TRADINGVIEW_SYMBOLS:
+        url = f"https://scanner.tradingview.com/{screener}/scan"
 
-
-def rsi(values, period=14):
-    if len(values) <= period:
-        return None
-
-    gains = []
-    losses = []
-
-    for i in range(1, len(values)):
-        diff = values[i] - values[i - 1]
-
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
-
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-
-    if avg_loss == 0:
-        return 100.0
-
-    rs_value = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs_value))
-
-
-def macd(values):
-    if len(values) < 35:
-        return 0.0
-
-    ema12 = ema(values[-35:], 12)
-    ema26 = ema(values[-35:], 26)
-
-    if ema12 is None or ema26 is None:
-        return 0.0
-
-    return ema12 - ema26
-
-
-def analyze_technical(candles):
-    if len(candles) < 80:
-        return {
-            "score": 0,
-            "trend": "UNKNOWN",
-            "rsi": None,
-            "ema20": None,
-            "ema50": None,
-            "macd": None,
-            "volume_spike": False,
+        payload = {
+            "symbols": {
+                "tickers": [symbol],
+                "query": {"types": []},
+            },
+            "columns": columns,
         }
 
-    closes = [item["close"] for item in candles]
-    volumes = [item["volume"] for item in candles]
+        response = safe_post(url, payload)
 
-    current_price = closes[-1]
+        if not response:
+            continue
 
-    ema20 = ema(closes[-50:], 20)
-    ema50 = ema(closes[-80:], 50)
-    current_rsi = rsi(closes)
-    current_macd = macd(closes)
+        try:
+            data = response.json()
 
-    avg_volume = sum(volumes[-20:]) / 20
-    volume_spike = volumes[-1] > avg_volume * 1.5
+            rows = data.get("data", [])
+
+            if not rows:
+                print(f"[WARN] TradingView empty data for {symbol}")
+                continue
+
+            values = rows[0].get("d", [])
+
+            if not values or values[0] is None:
+                print(f"[WARN] TradingView no price for {symbol}")
+                continue
+
+            return {
+                "source": "TradingView",
+                "symbol": symbol,
+                "price": float(values[0]),
+                "change": values[1],
+                "volume": values[2],
+                "recommend": values[3],
+                "rsi": values[4],
+                "ema20": values[5],
+                "ema50": values[6],
+                "macd": values[7],
+            }
+
+        except Exception as e:
+            print(f"[WARN] TradingView parse error for {symbol}: {e}")
+
+    return None
+
+
+def analyze_technical(tv):
+    price = tv["price"]
+    ema20 = tv["ema20"]
+    ema50 = tv["ema50"]
+    rsi = tv["rsi"]
+    macd = tv["macd"]
+    recommend = tv["recommend"]
 
     score = 0
 
-    if ema20 is not None and current_price > ema20:
+    if recommend is not None:
+        score += int(recommend * 40)
+
+    if ema20 is not None and price > ema20:
         score += 15
     else:
         score -= 15
@@ -240,28 +178,26 @@ def analyze_technical(candles):
         score -= 20
         trend = "DOWN"
 
-    if current_rsi is not None:
-        if current_rsi < 30:
+    if rsi is not None:
+        if rsi < 30:
             score += 15
-        elif current_rsi > 70:
+        elif rsi > 70:
             score -= 15
 
-    if current_macd > 0:
-        score += 15
-    else:
-        score -= 15
-
-    if volume_spike:
-        score += 10
+    if macd is not None:
+        if macd > 0:
+            score += 15
+        else:
+            score -= 15
 
     return {
         "score": score,
         "trend": trend,
-        "rsi": round(current_rsi, 2) if current_rsi is not None else None,
+        "rsi": round(rsi, 2) if rsi is not None else None,
         "ema20": round(ema20, 2) if ema20 is not None else None,
         "ema50": round(ema50, 2) if ema50 is not None else None,
-        "macd": round(current_macd, 2),
-        "volume_spike": volume_spike,
+        "macd": round(macd, 4) if macd is not None else None,
+        "recommend": recommend,
     }
 
 
@@ -281,15 +217,13 @@ def parse_rss(url):
             link = item.findtext("link", "")
 
             if title:
-                news.append(
-                    {
-                        "title": title,
-                        "link": link,
-                    }
-                )
+                news.append({
+                    "title": title,
+                    "link": link,
+                })
 
-    except Exception as error:
-        print(f"[WARN] RSS parse error: {error}")
+    except Exception as e:
+        print(f"[WARN] RSS parse error: {e}")
 
     return news
 
@@ -301,12 +235,12 @@ def get_crypto_news():
         news.extend(parse_rss(url))
 
     if CRYPTOPANIC_KEY:
-        cryptopanic_url = (
+        url = (
             "https://cryptopanic.com/api/v1/posts/"
             f"?auth_token={CRYPTOPANIC_KEY}&filter=hot"
         )
 
-        response = safe_get(cryptopanic_url)
+        response = safe_get(url)
 
         if response:
             try:
@@ -317,15 +251,13 @@ def get_crypto_news():
                     link = item.get("url", "")
 
                     if title:
-                        news.append(
-                            {
-                                "title": title,
-                                "link": link,
-                            }
-                        )
+                        news.append({
+                            "title": title,
+                            "link": link,
+                        })
 
-            except Exception as error:
-                print(f"[WARN] CryptoPanic error: {error}")
+            except Exception as e:
+                print(f"[WARN] CryptoPanic error: {e}")
 
     return news
 
@@ -357,6 +289,8 @@ def get_forex_factory_events():
         "Powell",
         "Inflation",
         "Fed",
+        "Crude Oil Inventories",
+        "EIA",
     ]
 
     events = []
@@ -409,17 +343,11 @@ def analyze_news(news):
     }
 
 
-def build_signal(tech, news, funding, forex_events):
+def build_signal(tech, news, forex_events):
     score = 0
 
     score += tech["score"]
     score += news["score"]
-
-    if funding > 0.0008:
-        score -= 10
-
-    if funding < -0.0005:
-        score += 10
 
     if forex_events:
         score += 15
@@ -452,21 +380,19 @@ def send_telegram(message):
 
     try:
         requests.post(url, json=payload, timeout=10)
-    except Exception as error:
-        print(f"[WARN] Telegram error: {error}")
+
+    except Exception as e:
+        print(f"[WARN] Telegram error: {e}")
 
 
 def main():
-    print("START BZU BINANCE SIGNAL BOT")
+    print("START BZU TRADINGVIEW SIGNAL BOT")
 
-    ticker = get_binance_price()
+    tv = get_tradingview_market_data()
 
-    if not ticker:
-        print("BINANCE PRICE ERROR")
+    if not tv:
+        print("TRADINGVIEW PRICE ERROR")
         return
-
-    funding = get_binance_funding()
-    candles = get_binance_candles()
 
     crypto_news = get_crypto_news()
     oil_news = get_oil_news()
@@ -474,19 +400,19 @@ def main():
 
     forex_events = get_forex_factory_events()
 
-    tech = analyze_technical(candles)
+    tech = analyze_technical(tv)
     news = analyze_news(all_news)
 
     signal, score, confidence = build_signal(
         tech=tech,
         news=news,
-        funding=funding,
         forex_events=forex_events,
     )
 
-    print(f"EXCHANGE: BINANCE FUTURES")
-    print(f"SYMBOL: {SYMBOL}")
-    print(f"PRICE: {ticker['last']}")
+    print(f"SOURCE: {tv['source']}")
+    print(f"SYMBOL: {tv['symbol']}")
+    print(f"PRICE: {tv['price']}")
+    print(f"CHANGE: {tv['change']}")
     print(f"TECH SCORE: {tech['score']}")
     print(f"NEWS SCORE: {news['score']}")
     print(f"FINAL SCORE: {score}")
@@ -499,21 +425,20 @@ def main():
     message = f"""
 <b>BZU SIGNAL BOT ULTRA</b>
 
-<b>Exchange:</b> Binance Futures
-<b>Symbol:</b> {SYMBOL}
+<b>Source:</b> TradingView
+<b>Symbol:</b> {tv['symbol']}
 <b>Signal:</b> {signal}
 <b>Confidence:</b> {confidence}%
 
-<b>Binance Price:</b> {ticker['last']}
+<b>Price:</b> {tv['price']}
+<b>Change:</b> {tv['change']}%
 
 <b>Trend:</b> {tech['trend']}
-<b>RSI:</b> {tech['rsi']}
-<b>MACD:</b> {tech['macd']}
-<b>EMA20:</b> {tech['ema20']}
-<b>EMA50:</b> {tech['ema50']}
-<b>Volume spike:</b> {tech['volume_spike']}
-
-<b>Funding:</b> {funding}
+<b>RSI 15m:</b> {tech['rsi']}
+<b>MACD 15m:</b> {tech['macd']}
+<b>EMA20 15m:</b> {tech['ema20']}
+<b>EMA50 15m:</b> {tech['ema50']}
+<b>TradingView Recommend 15m:</b> {tech['recommend']}
 
 <b>News Sentiment:</b> {news['sentiment']}
 <b>Bullish:</b> {news['bullish']}
