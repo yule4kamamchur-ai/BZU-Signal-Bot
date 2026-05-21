@@ -8,7 +8,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
 
-INST_ID = "BZU-USDT-SWAP"
+SYMBOL = "BZUSDT"
+
+BINANCE_BASE = "https://fapi.binance.com"
 
 
 CRYPTO_RSS = [
@@ -82,49 +84,60 @@ def safe_get(url, timeout=15):
         return None
 
 
-def get_okx_price():
-    url = f"https://www.okx.com/api/v5/market/ticker?instId={INST_ID}"
+def get_binance_price():
+    url = f"{BINANCE_BASE}/fapi/v1/ticker/price?symbol={SYMBOL}"
     response = safe_get(url)
 
     if not response:
         return None
 
-    data = response.json()["data"][0]
+    data = response.json()
+
+    if "price" not in data:
+        print(f"[ERROR] Binance price response: {data}")
+        return None
+
+    price = float(data["price"])
 
     return {
-        "last": float(data["last"]),
-        "bid": float(data["bidPx"]),
-        "ask": float(data["askPx"]),
-        "vol24h": float(data["vol24h"]),
+        "last": price,
+        "bid": price,
+        "ask": price,
     }
 
 
-def get_okx_funding():
-    url = f"https://www.okx.com/api/v5/public/funding-rate?instId={INST_ID}"
+def get_binance_funding():
+    url = f"{BINANCE_BASE}/fapi/v1/fundingRate?symbol={SYMBOL}&limit=1"
     response = safe_get(url)
 
     if not response:
         return 0.0
 
-    data = response.json()["data"][0]
-    return float(data["fundingRate"])
+    data = response.json()
+
+    if not isinstance(data, list) or len(data) == 0:
+        print(f"[WARN] Funding response: {data}")
+        return 0.0
+
+    return float(data[0].get("fundingRate", 0.0))
 
 
-def get_okx_candles():
-    url = (
-        f"https://www.okx.com/api/v5/market/candles?"
-        f"instId={INST_ID}&bar=15m&limit=100"
-    )
-
+def get_binance_candles():
+    url = f"{BINANCE_BASE}/fapi/v1/klines?symbol={SYMBOL}&interval=15m&limit=100"
     response = safe_get(url)
 
     if not response:
         return []
 
-    raw = response.json()["data"]
+    data = response.json()
+
+    if not isinstance(data, list):
+        print(f"[ERROR] Binance candles response: {data}")
+        return []
+
     candles = []
 
-    for candle in reversed(raw):
+    for candle in data:
         candles.append(
             {
                 "close": float(candle[4]),
@@ -444,16 +457,16 @@ def send_telegram(message):
 
 
 def main():
-    print("START BZU ULTRA BOT")
+    print("START BZU BINANCE SIGNAL BOT")
 
-    ticker = get_okx_price()
+    ticker = get_binance_price()
 
     if not ticker:
-        print("OKX ERROR")
+        print("BINANCE PRICE ERROR")
         return
 
-    funding = get_okx_funding()
-    candles = get_okx_candles()
+    funding = get_binance_funding()
+    candles = get_binance_candles()
 
     crypto_news = get_crypto_news()
     oil_news = get_oil_news()
@@ -471,8 +484,9 @@ def main():
         forex_events=forex_events,
     )
 
-    print(f"INSTRUMENT: {INST_ID}")
-    print(f"OKX PRICE: {ticker['last']}")
+    print(f"EXCHANGE: BINANCE FUTURES")
+    print(f"SYMBOL: {SYMBOL}")
+    print(f"PRICE: {ticker['last']}")
     print(f"TECH SCORE: {tech['score']}")
     print(f"NEWS SCORE: {news['score']}")
     print(f"FINAL SCORE: {score}")
@@ -485,13 +499,12 @@ def main():
     message = f"""
 <b>BZU SIGNAL BOT ULTRA</b>
 
-<b>Instrument:</b> {INST_ID}
+<b>Exchange:</b> Binance Futures
+<b>Symbol:</b> {SYMBOL}
 <b>Signal:</b> {signal}
 <b>Confidence:</b> {confidence}%
 
-<b>OKX Price:</b> {ticker['last']}
-<b>Bid:</b> {ticker['bid']}
-<b>Ask:</b> {ticker['ask']}
+<b>Binance Price:</b> {ticker['last']}
 
 <b>Trend:</b> {tech['trend']}
 <b>RSI:</b> {tech['rsi']}
