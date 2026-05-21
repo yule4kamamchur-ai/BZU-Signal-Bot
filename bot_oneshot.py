@@ -1827,70 +1827,151 @@ def compact_priority_label(priority, reversal):
 
 
 def decision_confidence(signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal):
-    """Confidence means confidence in the decision, not win-rate.
-    For NO TRADE conflicts we want high confidence if the conflict is clear.
-    """
+    """Confidence = впевненість у РІШЕННІ бота, не win-rate угоди."""
     tech_side = technical_bias.get("side", "NEUTRAL")
     fund_side = fundamental_bias.get("side", "NEUTRAL")
     tech_score = abs(technical_bias.get("score", 0))
     fund_score = abs(fundamental_bias.get("score", 0))
     event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    reversal_active = reversal and reversal.get("side") in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]
+    dominant = priority.get("dominant", "BALANCED") if priority else "BALANCED"
+    reversal_side = reversal.get("side", "NONE") if reversal else "NONE"
+    reversal_conf = int(reversal.get("confidence", 0)) if reversal else 0
 
-    if signal == "NO SIGNAL":
-        conflict = (("LONG" in tech_side and "SHORT" in fund_side) or ("SHORT" in tech_side and "LONG" in fund_side))
-        if reversal_active:
-            return min(92, max(75, int(reversal.get("confidence", 0)) + 35))
-        if conflict and event_high:
-            return 88
+    conflict = (
+        ("LONG" in tech_side and "SHORT" in fund_side)
+        or ("SHORT" in tech_side and "LONG" in fund_side)
+    )
+
+    if signal in ["LONG", "SHORT"]:
+        base = min(92, max(58, abs(int(score))))
         if conflict:
-            return 80
-        return min(75, max(45, int((tech_score + fund_score) / 3)))
+            base -= 12
+        if event_high and "NEWS-PRIORITY" not in signal_type:
+            base -= 8
+        if "ПІДТВЕРДЖЕНИЙ" in signal_type:
+            base += 6
+        if "РИЗИКОВИЙ" in signal_type:
+            base -= 10
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            base -= 5
+        return max(50, min(95, int(base)))
 
-    return min(95, max(55, abs(int(score))))
+    if reversal_side == "REVERSAL LONG WATCH" or "REVERSAL LONG" in signal_type:
+        base = 68 + min(20, reversal_conf // 3)
+        if dominant in ["FUNDAMENTAL", "EVENT"]:
+            base += 6
+        if event_high:
+            base += 4
+        return max(70, min(90, int(base)))
+
+    if reversal_side == "REVERSAL SHORT WATCH" or "REVERSAL SHORT" in signal_type:
+        base = 68 + min(20, reversal_conf // 3)
+        if dominant in ["FUNDAMENTAL", "EVENT"]:
+            base += 6
+        if event_high:
+            base += 4
+        return max(70, min(90, int(base)))
+
+    if conflict and event_high:
+        return 86
+    if conflict:
+        return 78
+
+    return min(72, max(45, int((tech_score + fund_score) / 4)))
 
 
-def compact_decision_line(market_decision, signal, signal_type, reversal):
-    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "LONG WATCH — чекати підтвердження"
-    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "SHORT WATCH — чекати підтвердження"
-    if signal == "NO SIGNAL":
-        return "NO TRADE — чекати"
-    if "РИЗИКОВИЙ" in signal_type:
-        return f"{signal} ризиковий"
-    if "ІМПУЛЬСНИЙ" in signal_type:
-        return f"{signal} імпульсний"
-    return signal
+def compact_decision_line(market_decision, signal, signal_type, reversal, technical_bias=None, fundamental_bias=None, priority=None):
+    """Returns short trader-style status: TRADE / WATCH / NO TRADE."""
+    tech_side = (technical_bias or {}).get("side", "NEUTRAL")
+    fund_side = (fundamental_bias or {}).get("side", "NEUTRAL")
+    dominant = (priority or {}).get("dominant", "BALANCED")
+    rev_side = reversal.get("side", "NONE") if reversal else "NONE"
+
+    if signal == "LONG":
+        if "РИЗИКОВИЙ" in signal_type:
+            return "TRADE LONG ⚠️ ризиковий"
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            return "TRADE LONG ⚡ імпульс"
+        return "TRADE LONG"
+
+    if signal == "SHORT":
+        if "РИЗИКОВИЙ" in signal_type:
+            return "TRADE SHORT ⚠️ ризиковий"
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            return "TRADE SHORT ⚡ імпульс"
+        return "TRADE SHORT"
+
+    if rev_side == "REVERSAL LONG WATCH" or "REVERSAL LONG" in signal_type:
+        return "WATCH LONG — чекати підтвердження"
+    if rev_side == "REVERSAL SHORT WATCH" or "REVERSAL SHORT" in signal_type:
+        return "WATCH SHORT — чекати підтвердження"
+
+    if dominant in ["FUNDAMENTAL", "EVENT"]:
+        if "LONG" in fund_side and "SHORT" in tech_side:
+            return "WATCH LONG — news priority"
+        if "SHORT" in fund_side and "LONG" in tech_side:
+            return "WATCH SHORT — news priority"
+
+    return "NO TRADE — чекати"
 
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary):
-    decision = compact_decision_line("", signal, signal_type, reversal)
+    decision = compact_decision_line(
+        "", signal, signal_type, reversal,
+        technical_bias=technical_bias,
+        fundamental_bias=fundamental_bias,
+        priority=priority,
+    )
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
-    priority_label = compact_priority_label(priority, reversal)
+
+    if decision.startswith("TRADE"):
+        mode = "TRADE"
+    elif decision.startswith("WATCH"):
+        mode = "WATCH"
+    else:
+        mode = "NO TRADE"
+
+    if priority.get("dominant") in ["FUNDAMENTAL", "EVENT"]:
+        pr = "NEWS"
+    elif priority.get("dominant") == "TECHNICAL":
+        pr = "TECH"
+    else:
+        pr = "BALANCED"
+
+    event_short = f"{event_risk.get('direction')} / {event_risk.get('risk')}"
+    session_short = session.get("session", "-")
+    rev = reversal.get("side", "NONE")
+    if rev == "NONE":
+        rev_text = "немає"
+    elif rev == "REVERSAL LONG WATCH":
+        rev_text = f"LONG watch {reversal.get('confidence', 0)}%"
+    elif rev == "REVERSAL SHORT WATCH":
+        rev_text = f"SHORT watch {reversal.get('confidence', 0)}%"
+    else:
+        rev_text = rev
+
+    short_summary = final_summary.strip().replace("\n", " ")
+    if len(short_summary) > 180:
+        short_summary = short_summary[:177].rstrip() + "..."
 
     return f"""
 <b>📊 BZU SIGNAL BOT</b>
 
 <b>Рішення:</b> {decision}
-<b>Сигнал:</b> {signal} / {signal_type}
-<b>Якість:</b> {quality} | <b>Впевненість:</b> {confidence}%
+<b>Режим:</b> {mode} | <b>Впевненість:</b> {confidence}%
 
 <b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%
 <b>План:</b> {format_trade_plan(plan)}
 
 <b>TECH:</b> {tech_label} ({technical_bias.get('score')})
 <b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})
-<b>Priority:</b> {priority_label}
-<b>Events:</b> {event_risk.get('direction')} / {event_risk.get('risk')}
-<b>Session:</b> {session.get('session')} | <b>Vol:</b> {market['volatility']['regime']}
-<b>Orderflow:</b> {orderflow.get('bias')} | <b>OI:</b> {oi_analysis.get('summary')}
-<b>Reversal:</b> {reversal.get('side')} ({reversal.get('confidence')}%)
+<b>Priority:</b> {pr} | <b>Events:</b> {event_short}
+<b>Session:</b> {session_short} | <b>Reversal:</b> {rev_text}
 
-<b>Висновок:</b>
-{final_summary}
+<b>Висновок:</b> {short_summary}
 """.strip()
+
 
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
     if signal == "NO SIGNAL":
