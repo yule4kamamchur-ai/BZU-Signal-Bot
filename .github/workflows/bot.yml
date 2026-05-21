@@ -1,4 +1,3 @@
-```yaml
 name: BZU Signal Bot - Every 15 Minutes
 
 on:
@@ -26,9 +25,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Test Python
-        run: python --version
-
       - name: Run BZU Signal Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -36,15 +32,8 @@ jobs:
           CRYPTOPANIC_KEY: ${{ secrets.CRYPTOPANIC_KEY }}
           BALANCE: ${{ secrets.BALANCE }}
           LEVERAGE: ${{ secrets.LEVERAGE }}
-        run: |
-          echo "🚀 Starting BZU Signal Bot..."
-          python bot_oneshot.py
+        run: python bot_oneshot.py
 
       - name: Log completion
         if: always()
-        run: |
-          echo "================================="
-          echo "Bot completed at:"
-          date -u
-          echo "================================="
-```
+        run: date -u
