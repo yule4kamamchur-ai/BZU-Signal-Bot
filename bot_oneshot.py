@@ -170,7 +170,7 @@ def analyze_news_sentiment(articles: List[Dict]) -> Dict:
             "bearish_count": 0,
             "top_news": [],
             "strength": "weak",
-            "news_count": 0
+            "total_news": 0
         }
     
     bullish_articles = []
