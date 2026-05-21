@@ -1,3 +1,4 @@
+```yaml
 name: BZU Signal Bot - Every 15 Minutes
 
 on:
@@ -9,10 +10,10 @@ on:
 jobs:
   signal-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -25,16 +26,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
+      - name: Test Python
+        run: python --version
+
       - name: Run BZU Signal Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           CRYPTOPANIC_KEY: ${{ secrets.CRYPTOPANIC_KEY }}
           BALANCE: ${{ secrets.BALANCE }}
           LEVERAGE: ${{ secrets.LEVERAGE }}
-        run: python bot_oneshot.py
+        run: |
+          echo "🚀 Starting BZU Signal Bot..."
+          python bot_oneshot.py
 
       - name: Log completion
         if: always()
-        run: echo "Bot run completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+        run: |
+          echo "================================="
+          echo "Bot completed at:"
+          date -u
+          echo "================================="
+```
