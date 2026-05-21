@@ -39,6 +39,8 @@ MIN_CONFIDENCE_TO_SEND = 55
 
 BINANCE_FAPI = "https://fapi.binance.com"
 PROFILE_SYMBOL = "BZUSDT"
+BYBIT_API = "https://api.bybit.com"
+BYBIT_OI_SYMBOLS = ["BZUSDT", "BTCUSDT", "ETHUSDT"]
 
 
 STRONG_UP_MOVE_PERCENT = 1.2
@@ -1230,18 +1232,17 @@ def analyze_liquidation_heatmap(tv, tech, volatility):
 
 
 def analyze_market_structure(tv, tech):
-    candles = get_free_candles()
+    # Volume Profile is intentionally disabled: Binance candles are often blocked on GitHub runners.
+    # We keep only stable free modules: volatility regime + liquidation zone logic.
     volatility = analyze_volatility_regime(tv, tech)
-    profile = analyze_volume_profile(tv, candles)
     liquidation = analyze_liquidation_heatmap(tv, tech, volatility)
-    total_score = volatility["score"] + profile["score"] + liquidation["score"]
+    total_score = volatility["score"] + liquidation["score"]
 
     return {
         "score": total_score,
         "volatility": volatility,
-        "profile": profile,
         "liquidation": liquidation,
-        "candles_count": len(candles),
+        "candles_count": 0,
     }
 
 
@@ -1256,16 +1257,119 @@ def market_structure_verdict(market):
 
     reason = (
         f"volatility {market['volatility']['regime']}, "
-        f"profile {market['profile']['bias']}, "
         f"liquidation {market['liquidation']['bias']}, score {score}"
     )
     return side, reason
+
+
+# ==========================================================
+# FREE OPEN INTEREST VIA BYBIT (OPTIONAL)
+# ==========================================================
+
+def get_bybit_open_interest():
+    """Try Bybit public OI. If BZUSDT is unavailable, BTC/ETH are used only as market-risk proxies."""
+    for symbol in BYBIT_OI_SYMBOLS:
+        try:
+            url = f"{BYBIT_API}/v5/market/open-interest"
+            params = {
+                "category": "linear",
+                "symbol": symbol,
+                "intervalTime": "15min",
+                "limit": 5,
+            }
+            response = requests.get(
+                url,
+                params=params,
+                timeout=10,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            if response.status_code >= 400:
+                print(f"[WARN] Bybit OI HTTP {response.status_code}: {symbol}")
+                continue
+
+            data = response.json()
+            rows = data.get("result", {}).get("list", [])
+            if len(rows) < 2:
+                print(f"[WARN] Bybit OI empty: {symbol}")
+                continue
+
+            latest = float(rows[0].get("openInterest", 0))
+            previous = float(rows[1].get("openInterest", 0))
+            if previous == 0:
+                continue
+
+            delta_pct = ((latest - previous) / previous) * 100
+            return {
+                "available": True,
+                "symbol": symbol,
+                "latest": latest,
+                "previous": previous,
+                "delta_pct": round(delta_pct, 3),
+            }
+        except Exception as error:
+            print(f"[WARN] Bybit OI error {symbol}: {error}")
+
+    return {
+        "available": False,
+        "symbol": "N/A",
+        "latest": None,
+        "previous": None,
+        "delta_pct": 0,
+    }
+
+
+def analyze_open_interest(oi, tech):
+    if not oi.get("available"):
+        return {
+            "score": 0,
+            "side": "NEUTRAL",
+            "summary": "OI недоступний",
+            "details": "Bybit OI не дав дані; сигнал рахується без OI",
+        }
+
+    delta = oi.get("delta_pct", 0)
+    momentum = tech.get("momentum", "NEUTRAL")
+    score = 0
+    side = "NEUTRAL"
+    summary = f"OI {oi['symbol']}: {delta}%"
+
+    # OI rising + price momentum = real participation.
+    if delta >= 0.5 and momentum in ["STRONG UP", "VERY STRONG UP"]:
+        score = 14
+        side = "LONG"
+        summary += " — LONG BUILDUP"
+    elif delta >= 0.5 and momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
+        score = -14
+        side = "SHORT"
+        summary += " — SHORT BUILDUP"
+    elif delta <= -0.5 and momentum in ["STRONG UP", "VERY STRONG UP"]:
+        score = 4
+        side = "LONG"
+        summary += " — short covering / імпульс може бути коротким"
+    elif delta <= -0.5 and momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
+        score = -4
+        side = "SHORT"
+        summary += " — long liquidation / рух може сповільнитись"
+    else:
+        summary += " — нейтрально"
+
+    # If proxy is not BZUSDT, reduce score impact.
+    if oi.get("symbol") != "BZUSDT":
+        score = int(score * 0.45)
+        summary += " (proxy, знижена вага)"
+
+    return {
+        "score": score,
+        "side": side,
+        "summary": summary,
+        "details": f"latest={oi.get('latest')} previous={oi.get('previous')}",
+    }
 
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
 
-def build_signal(tech, news, orderflow, macro, event_risk, market):
+def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis):
     score = (
         tech["score"]
         + news["score"]
@@ -1273,6 +1377,7 @@ def build_signal(tech, news, orderflow, macro, event_risk, market):
         + macro["score"]
         + event_risk["score"]
         + market["score"]
+        + oi_analysis["score"]
     )
 
     signal_type = "НЕМАЄ УГОДИ"
@@ -1358,6 +1463,8 @@ def make_trade_plan(signal, signal_type, price, tech):
         }
 
     if signal == "LONG":
+        if oi_analysis and oi_analysis.get("side") == "SHORT":
+            return "LONG є, але OI/позиціювання проти входу. Краще чекати ретест або пропустити."
         if "ІМПУЛЬСНИЙ" in signal_type:
             stop = price - atr * 1.1
             tp1 = price + atr * 0.9
@@ -1454,7 +1561,7 @@ def orderflow_verdict(orderflow):
     return side, reason
 
 
-def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None):
+def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None, oi_analysis=None):
     tech_side, _ = tech_verdict(tech)
     news_side, _ = news_verdict(news)
     event_side, _ = event_verdict(event_risk)
@@ -1468,6 +1575,8 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
     short_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("SHORT")
 
     if signal == "LONG":
+        if oi_analysis and oi_analysis.get("side") == "SHORT":
+            return "LONG є, але OI/позиціювання проти входу. Краще чекати ретест або пропустити."
         if market and market["volatility"]["regime"] == "HIGH VOLATILITY / BREAKOUT MODE":
             return "LONG є, але режим високої волатильності. Не доганяти рух; чекати відкат/ретест і чіткий стоп."
         if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
@@ -1477,6 +1586,8 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
         return "LONG ризиковий. Перевага вгору є, але підтвердження не ідеальні."
 
     if signal == "SHORT":
+        if oi_analysis and oi_analysis.get("side") == "LONG":
+            return "SHORT є, але OI/позиціювання проти входу. Краще чекати підтвердження або пропустити."
         if market and market["volatility"]["regime"] == "HIGH VOLATILITY / BREAKOUT MODE":
             return "SHORT є, але режим високої волатильності. Краще чекати пробій/ретест, бо можливий різкий відскок."
         if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
@@ -1491,6 +1602,39 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
         return "Сигналу на вхід немає. Перевага більше в бік SHORT, але підтвердження недостатні — чекати кращий сетап."
     return "Сигналу на вхід немає. Картина змішана — краще не відкривати позицію."
 
+
+
+def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
+    if signal == "NO SIGNAL":
+        return "NO TRADE"
+
+    aligned = 0
+    conflicts = 0
+    target = signal
+
+    components = [
+        tech_verdict(tech)[0],
+        news_verdict(news)[0],
+        event_verdict(event_risk)[0],
+        macro_verdict(macro)[0],
+        orderflow_verdict(orderflow)[0],
+        market_structure_verdict(market)[0],
+        oi_analysis.get("side", "NEUTRAL"),
+    ]
+
+    for side in components:
+        if side == target:
+            aligned += 1
+        elif side in ["LONG", "SHORT"] and side != target:
+            conflicts += 1
+
+    if abs(score) >= 150 and aligned >= 4 and conflicts <= 1 and "РИЗИКОВИЙ" not in signal_type:
+        return "A+"
+    if abs(score) >= 110 and aligned >= 3 and conflicts <= 2:
+        return "A"
+    if abs(score) >= 80 and aligned >= 2:
+        return "B"
+    return "C / ризиковий"
 
 def format_trade_plan(plan):
     if not plan or plan.get("entry") is None:
@@ -1551,9 +1695,11 @@ def main():
     macro = analyze_macro_quant(macro_data)
     event_risk = analyze_event_risk(event_items)
     market = analyze_market_structure(tv, tech)
+    oi_data = get_bybit_open_interest()
+    oi_analysis = analyze_open_interest(oi_data, tech)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
-        tech, news, orderflow, macro, event_risk, market
+        tech, news, orderflow, macro, event_risk, market, oi_analysis
     )
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
@@ -1563,6 +1709,7 @@ def main():
     macro_side, macro_reason = macro_verdict(macro)
     order_side, order_reason = orderflow_verdict(orderflow)
     market_side, market_reason = market_structure_verdict(market)
+    quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
 
     print(f"SOURCE: {tv['source']}")
     print(f"SYMBOL: {tv['symbol']}")
@@ -1576,6 +1723,7 @@ def main():
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
+    print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -1589,48 +1737,31 @@ def main():
         decision = signal
 
     message = f"""
-<b>📊 BZU SIGNAL BOT ULTRA</b>
+<b>📊 BZU SIGNAL BOT</b>
 
 <b>Підсумок:</b> {decision}
+<b>Якість сетапу:</b> {quality}
 <b>Сигнал:</b> {signal}
 <b>Тип:</b> {signal_type}
 <b>Впевненість:</b> {confidence}%
-<b>Фінальний score:</b> {score}
-<b>Ризик:</b> {risk_note}
+<b>Score:</b> {score}
 
-<b>Інструмент:</b> {tv['symbol']}
-<b>Ціна:</b> {tv['price']}
-<b>Зміна:</b> {round(tv['change'], 4)}%
+<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%
 <b>Імпульс:</b> {tech['momentum']}
 
 <b>План:</b> {format_trade_plan(plan)}
 
-<b>Теханаліз:</b> {tech_side}
-{tech_reason}
-<b>Новини:</b> {news_side}
-{news_reason}
-<b>Майбутні/подієві новини:</b> {event_side}
-{event_reason}
-<b>Макро:</b> {macro_side}
-{macro_reason}
-<b>Orderflow:</b> {order_side}
-{order_reason}
-<b>Volatility/Profile/Liquidations:</b> {market_side}
-{market_reason}
+<b>Техніка:</b> {tech_side} — {tech['trend']} / 5m {tech['trend_5m']} / 15m {tech['trend_15m']} / 1h {tech['trend_1h']}
+<b>Новини:</b> {news_side} — score {news['score']}, {news['sentiment']}
+<b>Події:</b> {event_side} — ризик {event_risk['risk']}
+<b>Macro:</b> {macro_side} — {macro['regime']}
+<b>Orderflow:</b> {order_side} — {orderflow['bias']}
+<b>OI:</b> {oi_analysis['side']} — {oi_analysis['summary']}
+<b>Volatility:</b> {market['volatility']['regime']}
+<b>Liquidation:</b> {market['liquidation']['bias']}
 
-<b>Деталі:</b>
-5m: {tech['trend_5m']} | 15m: {tech['trend_15m']} | 1h: {tech['trend_1h']}
-RSI 5m: {tech['rsi_5m']} | RSI 15m: {tech['rsi_15m']} | RSI 1h: {tech['rsi_1h']}
-ADX 15m: {tech['adx_15m']} | ATR 15m: {tech['atr_15m']}
-Macro regime: {macro['regime']}
-Event risk: {event_risk['risk']}
-News quality: {news['noise_warning']}
-Volatility regime: {market['volatility']['regime']} | ATR%: {market['volatility']['atr_pct']}
-Volume profile: {market['profile']['summary']}
-Liquidation zones: long≈{market['liquidation']['nearest_long_liq']} short≈{market['liquidation']['nearest_short_liq']}
-
-<b>Короткий висновок:</b>
-{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market)}
+<b>Висновок:</b>
+{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis)}
 """
 
     send_telegram(message.strip())
