@@ -19,6 +19,18 @@ TRADINGVIEW_SYMBOLS = [
     ("NYMEX:BZ1!", "futures"),
 ]
 
+# Безкоштовний macro quant блок через TradingView scanner.
+# Він допомагає зрозуміти загальний режим ринку: risk-on чи risk-off.
+MACRO_SYMBOLS = [
+    ("DXY", "TVC:DXY", "cfd"),          # індекс долара
+    ("US10Y", "TVC:US10Y", "cfd"),      # дохідність 10-річних облігацій США
+    ("VIX", "CBOE:VIX", "cfd"),         # індекс страху
+    ("SPX", "SP:SPX", "cfd"),           # S&P 500
+    ("NDX", "NASDAQ:NDX", "cfd"),       # Nasdaq 100
+    ("BTC", "BINANCE:BTCUSDT", "crypto"), # risk appetite proxy
+    ("UKOIL", "TVC:UKOIL", "cfd"),      # Brent / oil proxy
+]
+
 NEWS_LOOKBACK_HOURS = 2
 MAX_NEWS_SCORE = 90
 MAX_ITEMS_PER_FEED = 15
@@ -180,6 +192,30 @@ def safe_post(url, payload, timeout=15):
 # TRADINGVIEW PRICE / TECHNICAL ANALYSIS
 # ==========================================================
 
+def get_tradingview_scan(symbol, screener, columns):
+    url = f"https://scanner.tradingview.com/{screener}/scan"
+    payload = {
+        "symbols": {"tickers": [symbol], "query": {"types": []}},
+        "columns": columns,
+    }
+
+    response = safe_post(url, payload)
+    if not response:
+        return None
+
+    try:
+        rows = response.json().get("data", [])
+        if not rows:
+            return None
+        values = rows[0].get("d", [])
+        if not values or values[0] is None:
+            return None
+        return values
+    except Exception as error:
+        print(f"[WARN] TradingView scan parse error for {symbol}: {error}")
+        return None
+
+
 def get_tradingview_market_data():
     columns = [
         "close", "change", "volume",
@@ -191,25 +227,12 @@ def get_tradingview_market_data():
     ]
 
     for symbol, screener in TRADINGVIEW_SYMBOLS:
-        url = f"https://scanner.tradingview.com/{screener}/scan"
-        payload = {
-            "symbols": {"tickers": [symbol], "query": {"types": []}},
-            "columns": columns,
-        }
-
-        response = safe_post(url, payload)
-        if not response:
+        values = get_tradingview_scan(symbol, screener, columns)
+        if not values:
+            print(f"[WARN] TradingView empty data for {symbol}")
             continue
 
         try:
-            rows = response.json().get("data", [])
-            if not rows:
-                print(f"[WARN] TradingView empty data for {symbol}")
-                continue
-
-            values = rows[0].get("d", [])
-            if not values or values[0] is None:
-                continue
 
             return {
                 "source": "TradingView",
@@ -367,6 +390,152 @@ def analyze_technical(tv):
         "atr_15m": round(atr, 4),
         "confirmations": confirmations[:8],
         "warnings": warnings[:8],
+    }
+
+
+# ==========================================================
+# FREE MACRO QUANT MODEL
+# ==========================================================
+
+def get_macro_quant_data():
+    columns = [
+        "close",
+        "change",
+        "Recommend.All|15",
+        "Recommend.All|60",
+        "RSI|15",
+        "EMA20|60",
+        "EMA50|60",
+        "MACD.macd|60",
+    ]
+
+    macro = {}
+
+    for name, symbol, screener in MACRO_SYMBOLS:
+        values = get_tradingview_scan(symbol, screener, columns)
+        if not values:
+            print(f"[WARN] Macro data unavailable for {name} / {symbol}")
+            continue
+
+        try:
+            macro[name] = {
+                "symbol": symbol,
+                "price": float(values[0]) if values[0] is not None else None,
+                "change": float(values[1]) if values[1] is not None else 0.0,
+                "recommend_15m": values[2],
+                "recommend_1h": values[3],
+                "rsi_15m": values[4],
+                "ema20_1h": values[5],
+                "ema50_1h": values[6],
+                "macd_1h": values[7],
+            }
+        except Exception as error:
+            print(f"[WARN] Macro parse error {name}: {error}")
+
+    return macro
+
+
+def analyze_macro_quant(macro):
+    score = 0
+    regime = "НЕЙТРАЛЬНИЙ"
+    confirmations = []
+    warnings = []
+
+    dxy = macro.get("DXY", {})
+    us10y = macro.get("US10Y", {})
+    vix = macro.get("VIX", {})
+    spx = macro.get("SPX", {})
+    ndx = macro.get("NDX", {})
+    btc = macro.get("BTC", {})
+    ukoil = macro.get("UKOIL", {})
+
+    dxy_ch = dxy.get("change", 0) or 0
+    us10y_ch = us10y.get("change", 0) or 0
+    vix_ch = vix.get("change", 0) or 0
+    spx_ch = spx.get("change", 0) or 0
+    ndx_ch = ndx.get("change", 0) or 0
+    btc_ch = btc.get("change", 0) or 0
+    oil_ch = ukoil.get("change", 0) or 0
+
+    # DXY: сильний долар часто тисне на ризикові активи й commodities.
+    if dxy_ch <= -0.25:
+        score += 12
+        confirmations.append(f"DXY слабшає ({round(dxy_ch, 2)}%) — підтримка risk-on")
+    elif dxy_ch >= 0.25:
+        score -= 12
+        warnings.append(f"DXY росте ({round(dxy_ch, 2)}%) — тиск на ризикові активи")
+
+    # US10Y: ріст yields часто risk-off.
+    if us10y_ch >= 1.0:
+        score -= 10
+        warnings.append(f"US10Y росте ({round(us10y_ch, 2)}%) — risk-off фактор")
+    elif us10y_ch <= -1.0:
+        score += 10
+        confirmations.append(f"US10Y падає ({round(us10y_ch, 2)}%) — підтримка risk-on")
+
+    # VIX: страх ринку.
+    if vix_ch >= 4.0:
+        score -= 18
+        warnings.append(f"VIX сильно росте ({round(vix_ch, 2)}%) — ринок у стресі")
+    elif vix_ch <= -3.0:
+        score += 12
+        confirmations.append(f"VIX падає ({round(vix_ch, 2)}%) — risk-on")
+
+    # Акції / Nasdaq як risk appetite.
+    if spx_ch > 0.25:
+        score += 8
+        confirmations.append(f"S&P 500 росте ({round(spx_ch, 2)}%)")
+    elif spx_ch < -0.25:
+        score -= 8
+        warnings.append(f"S&P 500 падає ({round(spx_ch, 2)}%)")
+
+    if ndx_ch > 0.35:
+        score += 8
+        confirmations.append(f"Nasdaq росте ({round(ndx_ch, 2)}%)")
+    elif ndx_ch < -0.35:
+        score -= 8
+        warnings.append(f"Nasdaq падає ({round(ndx_ch, 2)}%)")
+
+    # BTC як проксі risk appetite для crypto-style ф'ючерсів.
+    if btc_ch > 0.6:
+        score += 8
+        confirmations.append(f"BTC росте ({round(btc_ch, 2)}%) — risk appetite")
+    elif btc_ch < -0.6:
+        score -= 8
+        warnings.append(f"BTC падає ({round(btc_ch, 2)}%) — risk-off")
+
+    # UKOIL/Brent — прямий macro proxy для BZ.
+    if oil_ch > 0.5:
+        score += 14
+        confirmations.append(f"Brent/UKOIL росте ({round(oil_ch, 2)}%)")
+    elif oil_ch < -0.5:
+        score -= 14
+        warnings.append(f"Brent/UKOIL падає ({round(oil_ch, 2)}%)")
+
+    # Режим ринку
+    if score >= 25:
+        regime = "RISK-ON / БИЧАЧИЙ MACRO"
+    elif score <= -25:
+        regime = "RISK-OFF / ВЕДМЕЖИЙ MACRO"
+    elif score >= 10:
+        regime = "ПОМІРНО БИЧАЧИЙ MACRO"
+    elif score <= -10:
+        regime = "ПОМІРНО ВЕДМЕЖИЙ MACRO"
+
+    return {
+        "score": score,
+        "regime": regime,
+        "confirmations": confirmations[:8],
+        "warnings": warnings[:8],
+        "data": {
+            "DXY": dxy_ch,
+            "US10Y": us10y_ch,
+            "VIX": vix_ch,
+            "SPX": spx_ch,
+            "NDX": ndx_ch,
+            "BTC": btc_ch,
+            "UKOIL": oil_ch,
+        },
     }
 
 
@@ -751,17 +920,25 @@ def analyze_news(news):
 # SIGNAL ENGINE + ENTRY PLAN
 # ==========================================================
 
-def build_signal(tech, news, orderflow):
-    score = tech["score"] + news["score"] + orderflow["score"]
+def build_signal(tech, news, orderflow, macro):
+    score = tech["score"] + news["score"] + orderflow["score"] + macro["score"]
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
 
     if news["total"] >= 5 and news["score"] >= 60:
         score += 12
+    if macro["score"] >= 25 and tech["momentum"] in ["STRONG UP", "VERY STRONG UP"]:
+        score += 10
+    if macro["score"] <= -25 and tech["momentum"] in ["STRONG DOWN", "VERY STRONG DOWN"]:
+        score -= 10
     if tech["score"] < 0 and news["score"] > 45:
         score -= 10
     if tech["score"] > 0 and news["score"] < -45:
         score += 10
+    if macro["score"] <= -25 and signal != "SHORT":
+        score -= 12
+    if macro["score"] >= 25 and signal != "LONG":
+        score += 12
 
     if tech.get("momentum") == "VERY STRONG UP" and score >= 35:
         signal = "LONG"
@@ -769,10 +946,10 @@ def build_signal(tech, news, orderflow):
     elif tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
         signal = "SHORT"
         signal_type = "ІМПУЛЬСНИЙ SHORT / BREAKDOWN SCALP"
-    elif score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10:
+    elif score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10 and macro["score"] >= 0:
         signal = "LONG"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND LONG"
-    elif score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10:
+    elif score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
         signal = "SHORT"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
     elif score >= 70:
@@ -787,6 +964,10 @@ def build_signal(tech, news, orderflow):
     risk_note = "Нормальний ризик"
     if "РИЗИКОВИЙ" in signal_type:
         risk_note = "Підтвердження змішані — зменшити розмір позиції"
+    if macro["score"] <= -25 and signal == "LONG":
+        risk_note = "Macro risk-off проти LONG — тільки малий обʼєм або пропуск"
+    if macro["score"] >= 25 and signal == "SHORT":
+        risk_note = "Macro risk-on проти SHORT — тільки малий обʼєм або пропуск"
     if tech.get("trend") == "DOWN" and signal == "LONG":
         risk_note = "Тільки скальп: старший тренд не підтвердив LONG"
     if tech.get("trend") == "UP" and signal == "SHORT":
@@ -871,7 +1052,9 @@ def main():
     tech = analyze_technical(tv)
     news = analyze_news(fresh_news)
     orderflow = analyze_free_orderflow(tv)
-    signal, signal_type, score, confidence, risk_note = build_signal(tech, news, orderflow)
+    macro_data = get_macro_quant_data()
+    macro = analyze_macro_quant(macro_data)
+    signal, signal_type, score, confidence, risk_note = build_signal(tech, news, orderflow, macro)
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
     print(f"SOURCE: {tv['source']}")
@@ -883,6 +1066,7 @@ def main():
     print(f"NEWS CAPPED SCORE: {news['score']}")
     print(f"TECH SCORE: {tech['score']}")
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
+    print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -925,6 +1109,16 @@ def main():
 
 <b>Orderflow:</b> {orderflow['bias']}
 <b>Orderflow score:</b> {orderflow['score']}
+
+<b>Macro regime:</b> {macro['regime']}
+<b>Macro score:</b> {macro['score']}
+<b>DXY:</b> {macro['data']['DXY']}%
+<b>US10Y:</b> {macro['data']['US10Y']}%
+<b>VIX:</b> {macro['data']['VIX']}%
+<b>S&P 500:</b> {macro['data']['SPX']}%
+<b>Nasdaq:</b> {macro['data']['NDX']}%
+<b>BTC:</b> {macro['data']['BTC']}%
+<b>UKOIL/Brent:</b> {macro['data']['UKOIL']}%
 """
 
     if orderflow["details"]:
@@ -932,7 +1126,12 @@ def main():
         for item in orderflow["details"]:
             message += f"\n- {item}"
 
-    warnings = tech["warnings"] + orderflow["warnings"]
+    if macro["confirmations"]:
+        message += "\n<b>Macro підтвердження:</b>"
+        for item in macro["confirmations"]:
+            message += f"\n- {item}"
+
+    warnings = tech["warnings"] + orderflow["warnings"] + macro["warnings"]
     if warnings:
         message += "\n\n<b>Попередження:</b>"
         for item in warnings:
