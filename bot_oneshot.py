@@ -1,4 +1,4 @@
-import os
+  import os
 import re
 import time
 import requests
@@ -1187,11 +1187,153 @@ def analyze_synthetic_open_interest(tv, tech, orderflow, market):
         "details": "; ".join(notes[:3]),
     }
 
+
+# ==========================================================
+# SESSION + REVERSAL WATCH LAYER
+# ==========================================================
+
+def analyze_session_context():
+    """Session analysis without any external API. Uses UTC time from GitHub runner."""
+    now = now_utc()
+    hour = now.hour
+
+    if 0 <= hour < 7:
+        session = "ASIA"
+        score = -6
+        note = "Asia session: нижча ліквідність, вищий ризик fake breakout"
+        breakout_quality = "LOW"
+    elif 7 <= hour < 13:
+        session = "LONDON"
+        score = 0
+        note = "London session: можливі liquidity sweep / stop hunt"
+        breakout_quality = "MEDIUM"
+    elif 13 <= hour < 21:
+        session = "NEW YORK"
+        score = 8
+        note = "New York session: найкраща реакція на oil/macro/news"
+        breakout_quality = "HIGH"
+    else:
+        session = "LATE US / TRANSITION"
+        score = -3
+        note = "Пізня сесія: нижча якість continuation-сигналів"
+        breakout_quality = "MEDIUM-LOW"
+
+    return {
+        "session": session,
+        "score": score,
+        "note": note,
+        "breakout_quality": breakout_quality,
+        "utc_hour": hour,
+    }
+
+
+def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
+    """Detects possible reversal setups such as breakdown failure / liquidity sweep.
+
+    This is a watch-layer, not an automatic entry trigger. It improves decision text:
+    - TECH SHORT + FUND LONG + oversold/weak downside = REVERSAL LONG WATCH
+    - TECH LONG + FUND SHORT + overbought/weak upside = REVERSAL SHORT WATCH
+    """
+    score = 0
+    side = "NONE"
+    reasons = []
+
+    price_change = tech.get("change", 0) or 0
+    trend = tech.get("trend", "MIXED")
+    momentum = tech.get("momentum", "NEUTRAL")
+    rsi_5m = tech.get("rsi_5m")
+    rsi_15m = tech.get("rsi_15m")
+    news_score = news.get("score", 0)
+    event_dir = event_risk.get("direction", "NEUTRAL")
+    event_risk_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
+    liq_bias = market.get("liquidation", {}).get("bias", "NEUTRAL")
+    vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
+    oi_side = oi_analysis.get("side", "NEUTRAL")
+    order_score = orderflow.get("score", 0)
+
+    oversold = (rsi_5m is not None and rsi_5m <= 28) or (rsi_15m is not None and rsi_15m <= 32)
+    overbought = (rsi_5m is not None and rsi_5m >= 72) or (rsi_15m is not None and rsi_15m >= 68)
+
+    # Possible breakdown failure / bullish reversal watch.
+    if trend == "DOWN" and news_score >= 30 and event_dir == "LONG":
+        score += 28
+        side = "REVERSAL LONG WATCH"
+        reasons.append("техніка SHORT, але фундамент/події сильно LONG")
+
+        if oversold:
+            score += 14
+            reasons.append("RSI показує перепроданість — можливий squeeze/відскок")
+
+        if momentum in ["NEUTRAL", "STRONG DOWN"] and price_change > -1.0:
+            score += 10
+            reasons.append("падіння слабшає — можливий breakdown failure")
+
+        if liq_bias.startswith("LONG LIQUIDATION") or oi_side == "SHORT":
+            score += 8
+            reasons.append("після long liquidation можливий різкий відскок")
+
+        if session.get("session") in ["LONDON", "NEW YORK"]:
+            score += 6
+            reasons.append(f"{session.get('session')} session може дати reversal після sweep")
+
+    # Possible upside failure / bearish reversal watch.
+    if trend == "UP" and news_score <= -25 and event_dir == "SHORT":
+        score -= 28
+        side = "REVERSAL SHORT WATCH"
+        reasons.append("техніка LONG, але фундамент/події сильно SHORT")
+
+        if overbought:
+            score -= 14
+            reasons.append("RSI показує перекупленість — можливий dump/відкат")
+
+        if momentum in ["NEUTRAL", "STRONG UP"] and price_change < 1.0:
+            score -= 10
+            reasons.append("ріст слабшає — можливий breakout failure")
+
+        if liq_bias.startswith("SHORT SQUEEZE") or oi_side == "LONG":
+            score -= 8
+            reasons.append("після squeeze можливий відкат")
+
+        if session.get("session") in ["LONDON", "NEW YORK"]:
+            score -= 6
+            reasons.append(f"{session.get('session')} session може дати reversal після sweep")
+
+    # Liquidity sweep proxy: extreme RSI + conflict + high event risk.
+    sweep = "NONE"
+    if oversold and news_score > 25 and event_dir == "LONG" and event_risk_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        sweep = "DOWNSIDE SWEEP / LONG WATCH"
+        if side == "NONE":
+            side = "REVERSAL LONG WATCH"
+        score += 10
+        reasons.append("liquidity sweep proxy: перепроданість + bullish event risk")
+    elif overbought and news_score < -20 and event_dir == "SHORT" and event_risk_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        sweep = "UPSIDE SWEEP / SHORT WATCH"
+        if side == "NONE":
+            side = "REVERSAL SHORT WATCH"
+        score -= 10
+        reasons.append("liquidity sweep proxy: перекупленість + bearish event risk")
+
+    confidence = min(95, abs(score))
+    if side == "NONE" or confidence < 30:
+        side = "NONE"
+        confidence = 0
+        if not reasons:
+            reasons.append("reversal setup не підтверджений")
+
+    return {
+        "side": side,
+        "score": score,
+        "confidence": confidence,
+        "sweep": sweep,
+        "reason": "; ".join(reasons[:3]),
+        "volatility": vol_regime,
+    }
+
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
 
-def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis):
+def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal):
     score = (
         tech["score"]
         + news["score"]
@@ -1200,6 +1342,7 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis):
         + event_risk["score"]
         + market["score"]
         + oi_analysis["score"]
+        + session.get("score", 0)
     )
 
     signal_type = "НЕМАЄ УГОДИ"
@@ -1229,7 +1372,14 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis):
     elif event_risk["direction"] == "SHORT":
         score -= 8
 
-    if tech.get("momentum") == "VERY STRONG UP" and score >= 35:
+    # Reversal Watch is not an automatic aggressive entry. It can upgrade a conflict into a watch-signal.
+    if reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
+        signal = "NO SIGNAL"
+        signal_type = "REVERSAL LONG WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
+    elif reversal.get("side") == "REVERSAL SHORT WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) <= -25:
+        signal = "NO SIGNAL"
+        signal_type = "REVERSAL SHORT WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
+    elif tech.get("momentum") == "VERY STRONG UP" and score >= 35:
         signal = "LONG"
         signal_type = "ІМПУЛЬСНИЙ LONG / BREAKOUT SCALP"
     elif tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
@@ -1259,6 +1409,8 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis):
         risk_note = "Висока волатильність: тільки відкат/ретест, не доганяти свічку"
     if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
         risk_note = "Подієвий ризик високий — краще чекати або зменшити позицію"
+    if "REVERSAL" in signal_type:
+        risk_note = "Reversal watch: не входити одразу, чекати підтвердження/ретест"
     if macro["score"] <= -25 and signal == "LONG":
         risk_note = "Macro risk-off проти LONG — тільки малий обʼєм або пропуск"
     if macro["score"] >= 25 and signal == "SHORT":
@@ -1283,6 +1435,11 @@ def make_trade_plan(signal, signal_type, price, tech):
             "tp3": None,
             "note": "Не входити. Чекати підтвердження.",
         }
+
+    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
+        return "Можливий reversal LONG: техніка ще не підтвердила вхід, але фундамент/події проти SHORT. Чекати повернення вище ключового рівня або ретест."
+    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
+        return "Можливий reversal SHORT: техніка ще не підтвердила вхід, але фундамент/події проти LONG. Чекати пробій/ретест."
 
     if signal == "LONG":
         if "ІМПУЛЬСНИЙ" in signal_type:
@@ -1381,7 +1538,7 @@ def orderflow_verdict(orderflow):
     return side, reason
 
 
-def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None, oi_analysis=None):
+def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None, oi_analysis=None, reversal=None, session=None):
     tech_side, _ = tech_verdict(tech)
     news_side, _ = news_verdict(news)
     event_side, _ = event_verdict(event_risk)
@@ -1393,6 +1550,11 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
 
     long_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("LONG")
     short_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("SHORT")
+
+    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
+        return "Можливий reversal LONG: техніка ще не підтвердила вхід, але фундамент/події проти SHORT. Чекати повернення вище ключового рівня або ретест."
+    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
+        return "Можливий reversal SHORT: техніка ще не підтвердила вхід, але фундамент/події проти LONG. Чекати пробій/ретест."
 
     if signal == "LONG":
         if oi_analysis and oi_analysis.get("side") == "SHORT":
@@ -1500,7 +1662,7 @@ def combined_fundamental_bias(news, event_risk, macro):
     return {"side": side, "score": score, "risk": risk, "reason": reason}
 
 
-def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk):
+def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal=None, session=None):
     tech_side = technical_bias["side"]
     fund_side = fundamental_bias["side"]
 
@@ -1508,6 +1670,11 @@ def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_b
     tech_long = "LONG" in tech_side
     fund_short = "SHORT" in fund_side
     fund_long = "LONG" in fund_side
+
+    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
+        return "REVERSAL LONG WATCH: можливий розворот вгору — чекати підтвердження"
+    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
+        return "REVERSAL SHORT WATCH: можливий розворот вниз — чекати підтвердження"
 
     if signal == "NO SIGNAL":
         if tech_long and fund_short:
@@ -1601,7 +1768,7 @@ def send_telegram(message):
 # ==========================================================
 
 def main():
-    print("START BZU PROFESSIONAL FREE BOT UA RSS-STABLE")
+    print("START BZU PROFESSIONAL FREE BOT UA REVERSAL-SESSION")
 
     tv = get_tradingview_market_data()
     if not tv:
@@ -1619,9 +1786,11 @@ def main():
     event_risk = analyze_event_risk(event_items)
     market = analyze_market_structure(tv, tech)
     oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
+    session = analyze_session_context()
+    reversal = analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
-        tech, news, orderflow, macro, event_risk, market, oi_analysis
+        tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal
     )
     plan = make_trade_plan(signal, signal_type, tv["price"], tech)
 
@@ -1646,6 +1815,8 @@ def main():
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
     print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
+    print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
+    print(f"REVERSAL: {reversal['side']} | CONF: {reversal['confidence']} | SWEEP: {reversal['sweep']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
@@ -1660,7 +1831,7 @@ def main():
 
     technical_bias = combined_technical_bias(tech, orderflow, market, oi_analysis)
     fundamental_bias = combined_fundamental_bias(news, event_risk, macro)
-    market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk)
+    market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session)
 
     message = f"""
 <b>📊 BZU SIGNAL BOT</b>
@@ -1685,9 +1856,11 @@ def main():
 Macro: {macro_side} ({macro['regime']})
 Volatility: {market['volatility']['regime']}
 Liquidation: {market['liquidation']['bias']}
+Session: {session['session']} ({session['breakout_quality']})
+Reversal: {reversal['side']} ({reversal['confidence']}%)
 
 <b>Короткий висновок:</b>
-{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis)}
+{final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session)}
 """
 
     send_telegram(message.strip())
