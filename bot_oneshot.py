@@ -1326,21 +1326,102 @@ def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_ana
         "volatility": vol_regime,
     }
 
+
+
+def analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal):
+    """Dynamic priority engine for oil/BZ.
+    In oil, news/event flow can dominate technicals during geopolitical/macro events.
+    In quiet markets, technicals and market structure get higher priority.
+    """
+    event_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
+    event_dir = event_risk.get("direction", "MIXED")
+    news_score = news.get("score", 0)
+    tech_score = tech.get("score", 0)
+    session_name = session.get("session", "UNKNOWN") if session else "UNKNOWN"
+    reversal_side = reversal.get("side", "NONE") if reversal else "NONE"
+
+    regime = "BALANCED"
+    dominant = "BALANCED"
+    tech_weight = 1.0
+    news_weight = 1.0
+    reason = "Техніка і фундамент мають приблизно однакову вагу"
+
+    high_event = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    strong_news = abs(news_score) >= 35
+    clear_event_direction = event_dir in ["LONG", "SHORT"]
+
+    if high_event and strong_news and clear_event_direction:
+        regime = "NEWS / EVENT DOMINANT"
+        dominant = "FUNDAMENTAL"
+        tech_weight = 0.65
+        news_weight = 1.45
+        reason = "Новини/події домінують над технікою: oil сильно реагує на OPEC, Iran, EIA, Fed, sanctions"
+    elif high_event and clear_event_direction:
+        regime = "EVENT RISK DOMINANT"
+        dominant = "EVENT"
+        tech_weight = 0.75
+        news_weight = 1.25
+        reason = "Подієвий ризик високий: технічні сигнали потрібно підтверджувати обережніше"
+    elif abs(news_score) < 15 and event_level in ["НИЗЬКИЙ", "НОРМАЛЬНИЙ", "НЕЙТРАЛЬНИЙ"]:
+        regime = "TECHNICAL DOMINANT"
+        dominant = "TECHNICAL"
+        tech_weight = 1.25
+        news_weight = 0.75
+        reason = "Новинний фон слабкий: техніка має більший пріоритет"
+
+    # Session modifier: New York is where oil/news reactions are most valid.
+    if session_name == "NEW YORK" and dominant in ["FUNDAMENTAL", "EVENT"]:
+        news_weight += 0.15
+        reason += "; New York session підсилює реакцію на oil/macro/news"
+    elif session_name == "ASIA":
+        tech_weight -= 0.10
+        reason += "; Asia session: підвищений ризик фейкових рухів"
+
+    # Reversal watch means technical trend can be late versus news/event flow.
+    if reversal_side in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]:
+        regime += " + REVERSAL WATCH"
+        reason += "; є ознаки можливого розвороту, тому continuation-сигнали треба фільтрувати"
+
+    technical_component = tech_score * tech_weight
+    fundamental_component = (news_score + macro.get("score", 0)) * news_weight
+
+    if event_dir == "LONG":
+        fundamental_component += 18 * news_weight
+    elif event_dir == "SHORT":
+        fundamental_component -= 18 * news_weight
+
+    priority_score = int(technical_component + fundamental_component)
+
+    return {
+        "regime": regime,
+        "dominant": dominant,
+        "tech_weight": round(tech_weight, 2),
+        "news_weight": round(news_weight, 2),
+        "priority_score": priority_score,
+        "reason": reason,
+    }
+
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
 
-def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal):
+def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority=None):
+    if priority is None:
+        priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
+
+    # Base score remains visible for logs, but the signal engine now uses dynamic priority.
+    # When oil is in a high event/news regime, news/events get more weight.
     score = (
-        tech["score"]
-        + news["score"]
+        tech["score"] * priority.get("tech_weight", 1.0)
+        + news["score"] * priority.get("news_weight", 1.0)
         + orderflow["score"]
-        + macro["score"]
+        + macro["score"] * priority.get("news_weight", 1.0)
         + event_risk["score"]
         + market["score"]
         + oi_analysis["score"]
         + session.get("score", 0)
     )
+    score = int(score)
 
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
@@ -1369,29 +1450,46 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     elif event_risk["direction"] == "SHORT":
         score -= 8
 
+    # Dynamic priority: if news/event regime dominates oil, do not blindly follow opposite technical continuation.
+    # It can upgrade conflict into Reversal Watch, or allow a conservative entry only when technicals start confirming.
+    if priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
+        if tech.get("momentum") in ["STRONG UP", "VERY STRONG UP"] and tech.get("trend") in ["UP", "MIXED"] and orderflow.get("score", 0) >= 0:
+            signal = "LONG"
+            signal_type = "NEWS-PRIORITY LONG / EVENT MOMENTUM"
+        elif tech.get("trend") == "DOWN" or tech.get("score", 0) < 0:
+            signal = "NO SIGNAL"
+            signal_type = "REVERSAL LONG WATCH / NEWS PRIORITY"
+    elif priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
+        if tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"] and tech.get("trend") in ["DOWN", "MIXED"] and orderflow.get("score", 0) <= 0:
+            signal = "SHORT"
+            signal_type = "NEWS-PRIORITY SHORT / EVENT MOMENTUM"
+        elif tech.get("trend") == "UP" or tech.get("score", 0) > 0:
+            signal = "NO SIGNAL"
+            signal_type = "REVERSAL SHORT WATCH / NEWS PRIORITY"
+
     # Reversal Watch is not an automatic aggressive entry. It can upgrade a conflict into a watch-signal.
-    if reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
+    if signal == "NO SIGNAL" and reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
         signal = "NO SIGNAL"
         signal_type = "REVERSAL LONG WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-    elif reversal.get("side") == "REVERSAL SHORT WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) <= -25:
+    elif signal == "NO SIGNAL" and reversal.get("side") == "REVERSAL SHORT WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) <= -25:
         signal = "NO SIGNAL"
         signal_type = "REVERSAL SHORT WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-    elif tech.get("momentum") == "VERY STRONG UP" and score >= 35:
+    elif signal == "NO SIGNAL" and tech.get("momentum") == "VERY STRONG UP" and score >= 35:
         signal = "LONG"
         signal_type = "ІМПУЛЬСНИЙ LONG / BREAKOUT SCALP"
-    elif tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
+    elif signal == "NO SIGNAL" and tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
         signal = "SHORT"
         signal_type = "ІМПУЛЬСНИЙ SHORT / BREAKDOWN SCALP"
-    elif score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10 and macro["score"] >= 0:
+    elif signal == "NO SIGNAL" and score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10 and macro["score"] >= 0:
         signal = "LONG"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND LONG"
-    elif score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
+    elif signal == "NO SIGNAL" and score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
         signal = "SHORT"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
-    elif score >= 90 and tech.get("trend") in ["UP", "MIXED"] and orderflow["score"] >= 8:
+    elif signal == "NO SIGNAL" and score >= 90 and tech.get("trend") in ["UP", "MIXED"] and orderflow["score"] >= 8:
         signal = "LONG"
         signal_type = "РИЗИКОВИЙ LONG / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
-    elif score <= -90 and tech.get("trend") in ["DOWN", "MIXED"] and orderflow["score"] <= -8:
+    elif signal == "NO SIGNAL" and score <= -90 and tech.get("trend") in ["DOWN", "MIXED"] and orderflow["score"] <= -8:
         signal = "SHORT"
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
@@ -1408,6 +1506,8 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         risk_note = "Подієвий ризик високий — краще чекати або зменшити позицію"
     if "REVERSAL" in signal_type:
         risk_note = "Reversal watch: не входити одразу, чекати підтвердження/ретест"
+    if "NEWS-PRIORITY" in signal_type:
+        risk_note = "News/event priority: вхід тільки якщо техніка вже почала підтверджувати рух"
     if macro["score"] <= -25 and signal == "LONG":
         risk_note = "Macro risk-off проти LONG — тільки малий обʼєм або пропуск"
     if macro["score"] >= 25 and signal == "SHORT":
@@ -1420,7 +1520,7 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     return signal, signal_type, score, confidence, risk_note
 
 
-def make_trade_plan(signal, signal_type, price, tech):
+def make_trade_plan(signal, signal_type, price, tech, reversal=None):
     atr = tech.get("atr_15m") or price * 0.006
 
     if signal == "NO SIGNAL":
@@ -1659,7 +1759,7 @@ def combined_fundamental_bias(news, event_risk, macro):
     return {"side": side, "score": score, "risk": risk, "reason": reason}
 
 
-def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal=None, session=None):
+def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal=None, session=None, priority=None):
     tech_side = technical_bias["side"]
     fund_side = fundamental_bias["side"]
 
@@ -1667,6 +1767,11 @@ def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_b
     tech_long = "LONG" in tech_side
     fund_short = "SHORT" in fund_side
     fund_long = "LONG" in fund_side
+
+    if priority and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and fund_long and tech_short:
+        return "NEWS/EVENT DOMINANT: техніка SHORT, але фундамент сильний LONG — SHORT не брати, чекати LONG-підтвердження"
+    if priority and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and fund_short and tech_long:
+        return "NEWS/EVENT DOMINANT: техніка LONG, але фундамент сильний SHORT — LONG не брати, чекати SHORT-підтвердження"
 
     if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
         return "REVERSAL LONG WATCH: можливий розворот вгору — чекати підтвердження"
@@ -1785,11 +1890,12 @@ def main():
     oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
     session = analyze_session_context()
     reversal = analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
+    priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
-        tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal
+        tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority
     )
-    plan = make_trade_plan(signal, signal_type, tv["price"], tech)
+    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal)
 
     tech_side, tech_reason = tech_verdict(tech)
     news_side, news_reason = news_verdict(news)
@@ -1813,6 +1919,7 @@ def main():
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
     print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
     print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
+    print(f"PRIORITY: {priority['regime']} | DOMINANT: {priority['dominant']} | P-SCORE: {priority['priority_score']}")
     print(f"REVERSAL: {reversal['side']} | CONF: {reversal['confidence']} | SWEEP: {reversal['sweep']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
@@ -1828,7 +1935,7 @@ def main():
 
     technical_bias = combined_technical_bias(tech, orderflow, market, oi_analysis)
     fundamental_bias = combined_fundamental_bias(news, event_risk, macro)
-    market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session)
+    market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
 
     message = f"""
 <b>📊 BZU SIGNAL BOT</b>
@@ -1846,6 +1953,10 @@ def main():
 
 <b>FUNDAMENTAL / NEWS BIAS:</b> {fundamental_bias['side']}
 {fundamental_bias['reason']}
+
+<b>PRIORITY ENGINE:</b> {priority['regime']}
+Домінує: {priority['dominant']} | Tech weight {priority['tech_weight']} | News weight {priority['news_weight']}
+{priority['reason']}
 
 <b>Окремо:</b>
 Новини: {news_side} ({news['sentiment']}, score {news['score']})
