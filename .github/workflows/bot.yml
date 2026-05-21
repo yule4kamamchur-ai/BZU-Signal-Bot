@@ -1,10 +1,12 @@
-name: BZU Signal Bot - Every 15 Minutes
+name: Сигнальний бот BZU - кожні 15 хвилин
 
 on:
   schedule:
     - cron: '*/15 * * * *'
-
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   signal-bot:
@@ -15,25 +17,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Run BZU Signal Bot
+      - name: Run BZU Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CRYPTOPANIC_KEY: ${{ secrets.CRYPTOPANIC_KEY }}
-          BALANCE: ${{ secrets.BALANCE }}
-          LEVERAGE: ${{ secrets.LEVERAGE }}
         run: python bot_oneshot.py
-
-      - name: Log completion
-        if: always()
-        run: date -u
