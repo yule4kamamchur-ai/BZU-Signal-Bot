@@ -42,18 +42,6 @@ NEWS_SOURCES = [
         "weight": 1.0,
     },
     {
-        "name": "S&P Global Oil",
-        "url": "https://www.spglobal.com/content/spglobal/energy/us/en/rss/oil.xml",
-        "type": "rss",
-        "weight": 1.2,
-    },
-    {
-        "name": "S&P Global Crude Oil",
-        "url": "https://www.spglobal.com/content/spglobal/energy/us/en/rss/oil-crude.xml",
-        "type": "rss",
-        "weight": 1.3,
-    },
-    {
         "name": "Oil & Gas Journal",
         "url": "https://www.ogj.com/__rss/website-scheduled-content.xml?input=%7B%22sectionAlias%22%3A%22general-interest%22%7D",
         "type": "rss",
