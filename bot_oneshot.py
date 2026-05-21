@@ -42,15 +42,27 @@ NEWS_SOURCES = [
         "weight": 1.0,
     },
     {
-        "name": "Oil & Gas IQ",
-        "url": "https://www.oilandgasiq.com/rss-feeds/articles",
+        "name": "S&P Global Oil",
+        "url": "https://www.spglobal.com/content/spglobal/energy/us/en/rss/oil.xml",
         "type": "rss",
-        "weight": 0.8,
+        "weight": 1.2,
     },
     {
-        "name": "World Oil",
-        "url": "https://www.worldoil.com/rss",
+        "name": "S&P Global Crude Oil",
+        "url": "https://www.spglobal.com/content/spglobal/energy/us/en/rss/oil-crude.xml",
         "type": "rss",
+        "weight": 1.3,
+    },
+    {
+        "name": "Oil & Gas Journal",
+        "url": "https://www.ogj.com/__rss/website-scheduled-content.xml?input=%7B%22sectionAlias%22%3A%22general-interest%22%7D",
+        "type": "rss",
+        "weight": 1.0,
+    },
+    {
+        "name": "Energy Intelligence",
+        "url": "https://www.energyintel.com/rss-feed",
+        "type": "html",
         "weight": 0.9,
     },
     {
@@ -293,16 +305,62 @@ def get_item_text(item, tag):
     return ""
 
 
+def parse_html_news(source, html):
+    news = []
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        candidates = []
+
+        for tag in soup.find_all(["a", "h2", "h3"]):
+            text = tag.get_text(" ", strip=True)
+            if not text or len(text) < 18:
+                continue
+
+            lower = text.lower()
+            if not any(key in lower for key in ["oil", "crude", "brent", "opec", "eia", "inventory", "gas", "energy"]):
+                continue
+
+            href = tag.get("href", "")
+            if href.startswith("/"):
+                base = re.match(r"https?://[^/]+", source["url"])
+                if base:
+                    href = base.group(0) + href
+
+            candidates.append((text, href))
+
+        for title, link in candidates[:MAX_ITEMS_PER_FEED]:
+            news.append(
+                {
+                    "title": title,
+                    "link": link,
+                    "source": source["name"],
+                    "published_at": None,
+                    "weight": source.get("weight", 1.0) * 0.5,
+                }
+            )
+
+    except Exception as error:
+        print(f"[WARN] HTML parse error {source['name']}: {error}")
+
+    return news
+
+
 def parse_rss(source):
     response = safe_get(source["url"])
     if not response:
         return []
 
+    if source.get("type") == "html":
+        return parse_html_news(source, response.text)
+
     news = []
     cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
     try:
-        root = ET.fromstring(response.content)
+        content = response.content.strip()
+        root = ET.fromstring(content)
         items = root.findall(".//item")
 
         if not items:
@@ -326,8 +384,6 @@ def parse_rss(source):
 
             published_at = parse_date(date_text)
 
-            # If RSS has no date, keep only first few headlines but mark as unknown-date.
-            # This avoids losing useful breaking headlines while not over-weighting them.
             if published_at and published_at < cutoff:
                 continue
 
@@ -344,6 +400,7 @@ def parse_rss(source):
 
     except Exception as error:
         print(f"[WARN] RSS parse error {source['name']}: {error}")
+        return parse_html_news(source, response.text)
 
     return news
 
