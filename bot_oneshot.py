@@ -1402,15 +1402,173 @@ def analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, se
         "reason": reason,
     }
 
+
+
+# ==========================================================
+# EARLY WARNING / CONTEXT TRUST ENGINE
+# ==========================================================
+
+def analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
+    """
+    Ранній фільтр перед різким рухом.
+    Мета: не чекати великого дампу/пампу, а попередити, коли ціна вже НЕ підтверджує новини.
+    Особливо важливо для Brent/oil: новини можуть бути LONG, але якщо ціна їх ігнорує і техніка продавлюється,
+    пріоритет тимчасово переходить до price action.
+    """
+    price_change = tech.get("change", 0) or 0
+    tech_score = tech.get("score", 0)
+    news_score = news.get("score", 0)
+    trend = tech.get("trend", "MIXED")
+    trend_5m = tech.get("trend_5m", "UNKNOWN")
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    trend_1h = tech.get("trend_1h", "UNKNOWN")
+    momentum = tech.get("momentum", "NEUTRAL")
+    order_score = orderflow.get("score", 0)
+    oi_side = oi_analysis.get("side", "NEUTRAL")
+    vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
+    event_direction = event_risk.get("direction", "MIXED")
+    event_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
+    session_name = session.get("session", "UNKNOWN") if session else "UNKNOWN"
+
+    warning = "NONE"
+    side = "NEUTRAL"
+    score = 0
+    trust = "BALANCED"
+    reason = "Немає раннього попередження"
+
+    bullish_news = news_score >= 30 or event_direction == "LONG"
+    bearish_news = news_score <= -25 or event_direction == "SHORT"
+    high_event = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+
+    # LONG news failure: новини bullish, але ціна не росте / техніка провалюється.
+    long_news_ignored = (
+        bullish_news
+        and tech_score <= -45
+        and trend_5m == "DOWN"
+        and trend_15m == "DOWN"
+        and price_change <= -0.25
+        and order_score <= 5
+    )
+
+    # SHORT news failure: новини bearish, але ціна не падає / техніка вгору.
+    short_news_ignored = (
+        bearish_news
+        and tech_score >= 45
+        and trend_5m == "UP"
+        and trend_15m == "UP"
+        and price_change >= 0.25
+        and order_score >= -5
+    )
+
+    # Early dump before full shock: ще не обвал, але продавлювання вже видно.
+    early_dump = (
+        tech_score <= -55
+        and trend_5m == "DOWN"
+        and trend_15m == "DOWN"
+        and price_change <= -0.35
+        and momentum in ["NEUTRAL", "STRONG DOWN", "VERY STRONG DOWN"]
+    )
+
+    # Early pump before full breakout.
+    early_pump = (
+        tech_score >= 55
+        and trend_5m == "UP"
+        and trend_15m == "UP"
+        and price_change >= 0.35
+        and momentum in ["NEUTRAL", "STRONG UP", "VERY STRONG UP"]
+    )
+
+    if long_news_ignored or early_dump:
+        warning = "EARLY DUMP WARNING"
+        side = "SHORT"
+        score = -35
+        trust = "PRICE ACTION / TECH"
+        reason = "Новини можуть бути LONG, але ціна їх не підтверджує: 5m/15m вниз, покупців не видно"
+        if high_event:
+            reason += "; подієвий ризик високий — не ловити LONG проти падіння"
+        if session_name in ["LONDON", "NEW YORK"]:
+            score -= 6
+            reason += f"; {session_name} може прискорити рух"
+        if vol_regime == "HIGH VOLATILITY / BREAKOUT MODE":
+            score -= 6
+            reason += "; висока волатильність"
+
+    elif short_news_ignored or early_pump:
+        warning = "EARLY PUMP WARNING"
+        side = "LONG"
+        score = 35
+        trust = "PRICE ACTION / TECH"
+        reason = "Новини можуть бути SHORT, але ціна їх не підтверджує: 5m/15m вгору, продавців не видно"
+        if high_event:
+            reason += "; подієвий ризик високий — не шортити проти імпульсу"
+        if session_name in ["LONDON", "NEW YORK"]:
+            score += 6
+            reason += f"; {session_name} може прискорити рух"
+        if vol_regime == "HIGH VOLATILITY / BREAKOUT MODE":
+            score += 6
+            reason += "; висока волатильність"
+
+    # If synthetic OI/orderflow strongly confirms, strengthen warning.
+    if warning == "EARLY DUMP WARNING" and (oi_side == "SHORT" or order_score <= -20):
+        score -= 10
+        reason += "; OI/orderflow підтверджує продавців"
+    elif warning == "EARLY PUMP WARNING" and (oi_side == "LONG" or order_score >= 20):
+        score += 10
+        reason += "; OI/orderflow підтверджує покупців"
+
+    return {
+        "warning": warning,
+        "side": side,
+        "score": score,
+        "trust": trust,
+        "reason": reason,
+    }
+
+
+def decide_current_priority(tech, news, event_risk, orderflow, early_warning):
+    """
+    Кому зараз довіряти більше:
+    - якщо новини сильні, але ціна їх не підтверджує -> TECH/PRICE ACTION
+    - якщо техніка нейтральна, а подія дуже сильна -> NEWS/EVENT
+    - якщо все в один бік -> ALIGNMENT
+    """
+    tech_score = tech.get("score", 0)
+    news_score = news.get("score", 0)
+    event_dir = event_risk.get("direction", "MIXED")
+    order_score = orderflow.get("score", 0)
+
+    if early_warning.get("warning") != "NONE":
+        return "PRICE ACTION", "Новини не підтверджуються ціною — важливіша реакція графіка"
+
+    if abs(news_score) >= 35 and event_dir in ["LONG", "SHORT"] and abs(tech_score) < 45:
+        return "NEWS/EVENT", "Техніка ще не сильна, але новини/події домінують"
+
+    if tech_score >= 55 and news_score >= 20:
+        return "ALIGNMENT LONG", "Техніка і новини підтримують LONG"
+    if tech_score <= -55 and news_score <= -20:
+        return "ALIGNMENT SHORT", "Техніка і новини підтримують SHORT"
+
+    if abs(tech_score) >= 70 and abs(news_score) < 25:
+        return "TECH", "Новини слабкі, тому пріоритет у техніки"
+
+    return "BALANCED", "Ринок змішаний — потрібне підтвердження"
+
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
 
-def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority=None):
+def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority=None, early_warning=None, trust_mode=None):
     if priority is None:
         priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
+    if early_warning is None:
+        early_warning = {"warning": "NONE", "side": "NEUTRAL", "score": 0, "trust": "BALANCED", "reason": ""}
+    if trust_mode is None:
+        trust_mode = "BALANCED"
 
-    # Base score remains visible for logs, but the signal engine now uses dynamic priority.
+    
+    early_warning = analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
+    trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
+# Base score remains visible for logs, but the signal engine now uses dynamic priority.
     # When oil is in a high event/news regime, news/events get more weight.
     score = (
         tech["score"] * priority.get("tech_weight", 1.0)
@@ -1424,8 +1582,21 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     )
     score = int(score)
 
+    # Early warning has priority over stale news direction.
+    if early_warning.get("warning") == "EARLY DUMP WARNING":
+        score += early_warning.get("score", 0)
+    elif early_warning.get("warning") == "EARLY PUMP WARNING":
+        score += early_warning.get("score", 0)
+
     signal_type = "НЕМАЄ УГОДИ"
     signal = "NO SIGNAL"
+
+    if early_warning.get("warning") == "EARLY DUMP WARNING":
+        signal = "NO SIGNAL"
+        signal_type = "УВАГА: МОЖЛИВИЙ ДАМП / ЧЕКАТИ SHORT-ТРИГЕР"
+    elif early_warning.get("warning") == "EARLY PUMP WARNING":
+        signal = "NO SIGNAL"
+        signal_type = "УВАГА: МОЖЛИВИЙ РІСТ / ЧЕКАТИ LONG-ТРИГЕР"
 
     if news["total"] >= 5 and news["score"] >= 35:
         score += 6
@@ -1453,14 +1624,14 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
 
     # Dynamic priority: if news/event regime dominates oil, do not blindly follow opposite technical continuation.
     # It can upgrade conflict into Reversal Watch, or allow a conservative entry only when technicals start confirming.
-    if priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
+    if signal_type == "НЕМАЄ УГОДИ" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
         if tech.get("momentum") in ["STRONG UP", "VERY STRONG UP"] and tech.get("trend") in ["UP", "MIXED"] and orderflow.get("score", 0) >= 0:
             signal = "LONG"
             signal_type = "NEWS-PRIORITY LONG / EVENT MOMENTUM"
         elif tech.get("trend") == "DOWN" or tech.get("score", 0) < 0:
             signal = "NO SIGNAL"
             signal_type = "REVERSAL LONG WATCH / NEWS PRIORITY"
-    elif priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
+    elif signal_type == "НЕМАЄ УГОДИ" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
         if tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"] and tech.get("trend") in ["DOWN", "MIXED"] and orderflow.get("score", 0) <= 0:
             signal = "SHORT"
             signal_type = "NEWS-PRIORITY SHORT / EVENT MOMENTUM"
@@ -1666,6 +1837,67 @@ def orderflow_verdict(orderflow):
     side = side_from_score(orderflow.get("score", 0), 15, -15)
     reason = f"{orderflow.get('bias')}, score {orderflow.get('score')}"
     return side, reason
+
+
+
+def human_signal_label(signal, signal_type, early_warning=None):
+    early_warning = early_warning or {"warning": "NONE", "side": "NEUTRAL"}
+    st = signal_type or ""
+
+    if early_warning.get("warning") == "EARLY DUMP WARNING":
+        return "Увага: можливий дамп — чекаємо SHORT-тригер"
+    if early_warning.get("warning") == "EARLY PUMP WARNING":
+        return "Увага: можливий ріст — чекаємо LONG-тригер"
+
+    if signal == "LONG":
+        return "TRADE LONG"
+    if signal == "SHORT":
+        return "TRADE SHORT"
+
+    if "REVERSAL LONG" in st or "LONG WATCH" in st:
+        return "Чекаємо підтвердження LONG"
+    if "REVERSAL SHORT" in st or "SHORT WATCH" in st:
+        return "Чекаємо підтвердження SHORT"
+
+    return "НЕ ВХОДИТИ — чекати"
+
+
+def human_reversal_label(reversal):
+    side = (reversal or {}).get("side", "NONE")
+    conf = (reversal or {}).get("confidence", 0)
+
+    if side == "REVERSAL LONG WATCH":
+        return f"можливий розворот у LONG ({conf}%)"
+    if side == "REVERSAL SHORT WATCH":
+        return f"можливий розворот у SHORT ({conf}%)"
+    return "немає"
+
+
+def main_driver_override_for_early_warning(driver, early_warning):
+    early_warning = early_warning or {"warning": "NONE"}
+    if early_warning.get("warning") == "EARLY DUMP WARNING":
+        return {
+            "type": "TECH",
+            "side": "SHORT",
+            "title": "Раннє попередження: ціна не підтверджує bullish-новини",
+            "ua_title": "Раннє попередження: можливий дамп",
+            "time_context": "зараз",
+            "expectation": "SHORT може прискоритись; LONG тільки після стабілізації/ретесту",
+            "source": "Технічний аналіз TradingView",
+            "link": "",
+        }
+    if early_warning.get("warning") == "EARLY PUMP WARNING":
+        return {
+            "type": "TECH",
+            "side": "LONG",
+            "title": "Раннє попередження: ціна не підтверджує bearish-новини",
+            "ua_title": "Раннє попередження: можливий ріст",
+            "time_context": "зараз",
+            "expectation": "LONG може прискоритись; SHORT тільки після стабілізації/ретесту",
+            "source": "Технічний аналіз TradingView",
+            "link": "",
+        }
+    return driver
 
 
 def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None, oi_analysis=None, reversal=None, session=None):
@@ -2293,6 +2525,8 @@ def main():
     print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
     print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
     print(f"PRIORITY: {priority['regime']} | DOMINANT: {priority['dominant']} | P-SCORE: {priority['priority_score']}")
+    print(f"TRUST MODE: {trust_mode} | {trust_reason}")
+    print(f"EARLY WARNING: {early_warning['warning']} | SIDE: {early_warning['side']} | {early_warning['reason']}")
     print(f"REVERSAL: {reversal['side']} | CONF: {reversal['confidence']} | SWEEP: {reversal['sweep']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
