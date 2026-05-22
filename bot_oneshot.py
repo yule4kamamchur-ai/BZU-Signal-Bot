@@ -2386,6 +2386,21 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
 
+    # Telegram-level hard safety:
+    # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
+    if "різкий дамп" in decision.lower():
+        final_summary = (
+            "Різкий дамп: технічний продаж зараз домінує. "
+            "LONG по новинах можливий тільки після стабілізації, відскоку і ретесту. "
+            "Не ловити падаючий ринок."
+        )
+    elif "різкий памп" in decision.lower() or "різкий ріст" in decision.lower():
+        final_summary = (
+            "Різкий ріст: покупці зараз домінують. "
+            "SHORT можливий тільки після стабілізації, відкату і ретесту. "
+            "Не шортити сильний імпульс без підтвердження."
+        )
+
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
@@ -2412,7 +2427,11 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     ]
 
     rev_text = compact_reversal_label(reversal)
-    if rev_text != "немає":
+    if "різкий дамп" in decision.lower() and rev_text != "немає":
+        lines.append(f"<b>Reversal:</b> ризик LONG-відскоку пізніше")
+    elif "різкий памп" in decision.lower() and rev_text != "немає":
+        lines.append(f"<b>Reversal:</b> ризик SHORT-відкату пізніше")
+    elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
     lines.extend([
