@@ -33,6 +33,8 @@ MACRO_SYMBOLS = [
 
 NEWS_LOOKBACK_HOURS = 2
 EVENT_LOOKBACK_HOURS = 18
+MACRO_PRIMARY_LOOKBACK_HOURS = 2
+MACRO_FALLBACK_LOOKBACK_HOURS = 6
 MAX_NEWS_SCORE = 45
 MAX_EVENT_SCORE = 50
 MAX_ITEMS_PER_FEED = 15
@@ -417,25 +419,45 @@ def analyze_technical(tv):
 # ==========================================================
 
 def get_macro_news():
-    """Stable macro layer through Google News RSS instead of TradingView macro symbols.
-    This avoids constant TVC:US10Y / NASDAQ:NDX / UKOIL unavailable warnings on GitHub.
+    """Fresh macro layer through Google News RSS.
+
+    Logic:
+    1) First search only the freshest macro headlines from the last 2 hours.
+    2) If too few items are found, expand only to 6 hours.
+    3) Never use stale 24h macro for trading decisions.
+    4) If macro is still quiet, return an empty list and let the macro regime stay NEUTRAL.
     """
-    macro_items = []
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
-    for query in MACRO_NEWS_QUERIES:
-        macro_items.extend(parse_google_rss(query, 6, "Google Macro RSS", 0.9))
+    def fetch_macro_window(hours, weight):
+        items = []
+        cutoff = now_utc() - timedelta(hours=hours)
+        expanded_queries = list(MACRO_NEWS_QUERIES) + [
+            'Fed Powell breaking today dollar yields oil',
+            'Federal Reserve speech today market reaction oil',
+            'US dollar yields VIX stocks now oil market',
+            'CPI FOMC NFP Fed market reaction today',
+            'risk on risk off stocks dollar yields oil now',
+            'Treasury yields dollar oil prices breaking',
+        ]
 
-    # keep only reasonably fresh macro items
-    filtered = []
-    for item in macro_items:
-        published_at = item.get("published_at")
-        if published_at and published_at < cutoff:
-            continue
-        filtered.append(item)
+        for query in expanded_queries:
+            items.extend(parse_google_rss(query, hours, "Google Macro RSS", weight))
 
-    return deduplicate_news(filtered)
+        filtered = []
+        for item in items:
+            published_at = item.get("published_at")
+            if published_at and published_at < cutoff:
+                continue
+            filtered.append(item)
 
+        return deduplicate_news(filtered)
+
+    primary = fetch_macro_window(MACRO_PRIMARY_LOOKBACK_HOURS, 1.0)
+    if len(primary) >= 3:
+        return primary
+
+    fallback = fetch_macro_window(MACRO_FALLBACK_LOOKBACK_HOURS, 0.75)
+    return fallback if len(fallback) >= 3 else primary
 
 def get_macro_quant_data():
     """Return macro data without unstable TradingView macro scraping."""
@@ -502,7 +524,7 @@ def analyze_macro_quant(macro):
         regime = "НЕЙТРАЛЬНИЙ"
 
     if not items:
-        regime = "НЕЙТРАЛЬНИЙ / macro RSS unavailable"
+        regime = "НЕЙТРАЛЬНИЙ"
 
     return {
         "score": score,
@@ -511,7 +533,7 @@ def analyze_macro_quant(macro):
         "warnings": warnings[:5],
         "data": {
             "macro_items": len(items),
-            "source": "Google News RSS macro proxy",
+            "source": "Google News RSS fresh macro proxy 2h/6h",
         },
     }
 
