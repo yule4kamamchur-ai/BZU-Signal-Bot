@@ -1507,6 +1507,20 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         signal = "SHORT"
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
+    # Shock Move Protection:
+    # If price dumps/pumps sharply, do not let bullish/bearish headlines create
+    # an opposite trade before the chart stabilizes. For oil this prevents
+    # catching a falling knife during fast liquidation moves.
+    shock_down = tech.get("change", 0) <= -1.2 and tech.get("score", 0) <= -80
+    shock_up = tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 80
+
+    if shock_down and news.get("score", 0) >= 25 and event_risk.get("direction") == "LONG":
+        signal = "NO SIGNAL"
+        signal_type = "SHOCK DOWN / LONG BLOCKED"
+    elif shock_up and news.get("score", 0) <= -20 and event_risk.get("direction") == "SHORT":
+        signal = "NO SIGNAL"
+        signal_type = "SHOCK UP / SHORT BLOCKED"
+
     confidence = min(95, max(0, abs(score)))
 
     risk_note = "Нормальний ризик"
@@ -1546,6 +1560,11 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None):
             "tp3": None,
             "note": "Входу немає — чекати підтвердження.",
         }
+
+    if "SHOCK DOWN" in signal_type:
+        return "Різкий дамп: технічний продаж зараз домінує. LONG по новинах можливий тільки після стабілізації, відскоку і ретесту."
+    if "SHOCK UP" in signal_type:
+        return "Різкий памп: технічна покупка зараз домінує. SHORT по новинах можливий тільки після слабкості, відкату і ретесту."
 
     if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
         return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
@@ -1661,6 +1680,11 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
 
     long_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("LONG")
     short_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("SHORT")
+
+    if "SHOCK DOWN" in signal_type:
+        return "Різкий дамп: технічний продаж зараз домінує. LONG по новинах можливий тільки після стабілізації, відскоку і ретесту."
+    if "SHOCK UP" in signal_type:
+        return "Різкий памп: технічна покупка зараз домінує. SHORT по новинах можливий тільки після слабкості, відкату і ретесту."
 
     if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
         return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
@@ -1858,6 +1882,11 @@ def compact_reversal_label(reversal):
 
 
 def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
+    if "SHOCK DOWN" in signal_type:
+        return "НЕ ВХОДИТИ — різкий дамп"
+    if "SHOCK UP" in signal_type:
+        return "НЕ ВХОДИТИ — різкий памп"
+
     if signal == "LONG":
         if "EARLY NEWS" in signal_type:
             return "TRADE LONG — раннє підтвердження"
@@ -1997,6 +2026,28 @@ def select_main_driver(tech, news, event_risk, macro, orderflow, market, session
     important_events = event_risk.get("important", []) or []
     important_news = news.get("important", []) or []
 
+    # Shock technical move should become the main driver even if headlines are bullish/bearish.
+    # This avoids showing an EVENT/LONG driver during a fast technical dump.
+    tech_score = tech.get("score", 0)
+    if tech_score <= -120:
+        return {
+            "type": "TECH / SHORT",
+            "summary": "Різкий технічний продаж",
+            "time": "зараз",
+            "expectation": "SHORT домінує зараз; LONG тільки після стабілізації/ретесту",
+            "source": "Технічний аналіз TradingView",
+            "link": "",
+        }
+    if tech_score >= 120:
+        return {
+            "type": "TECH / LONG",
+            "summary": "Різкий технічний памп",
+            "time": "зараз",
+            "expectation": "LONG домінує зараз; SHORT тільки після слабкості/ретесту",
+            "source": "Технічний аналіз TradingView",
+            "link": "",
+        }
+
     if priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") in ["LONG", "SHORT"] and important_events:
         item = important_events[0]
         direction = event_risk.get("direction")
@@ -2040,6 +2091,9 @@ def decision_confidence(signal, signal_type, score, technical_bias, fundamental_
     fund_score = abs(fundamental_bias.get("score", 0))
     event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
     reversal_active = reversal and reversal.get("side") in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]
+
+    if "SHOCK" in signal_type:
+        return 90
 
     if signal in ["LONG", "SHORT"]:
         base = 55 + min(30, abs(int(score)) // 3)
