@@ -415,25 +415,26 @@ def analyze_technical(tv):
 # MACRO QUANT
 # ==========================================================
 
+
 def get_macro_news():
-    """Stable macro layer through Google News RSS instead of TradingView macro symbols.
-    This avoids constant TVC:US10Y / NASDAQ:NDX / UKOIL unavailable warnings on GitHub.
+    """Fresh macro layer through Google News RSS.
+    First tries last 2 hours; if too few headlines, falls back to 6 hours.
+    Never prints "unavailable" in Telegram; quiet macro = NEUTRAL.
     """
     macro_items = []
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
 
     for query in MACRO_NEWS_QUERIES:
-        macro_items.extend(parse_google_rss(query, 6, "Google Macro RSS", 0.9))
+        macro_items.extend(parse_google_rss(query, 2, "Google Macro RSS", 0.9))
 
-    # keep only reasonably fresh macro items
-    filtered = []
-    for item in macro_items:
-        published_at = item.get("published_at")
-        if published_at and published_at < cutoff:
-            continue
-        filtered.append(item)
+    macro_items = deduplicate_news(macro_items)
 
-    return deduplicate_news(filtered)
+    if len(macro_items) < 3:
+        fallback = []
+        for query in MACRO_NEWS_QUERIES:
+            fallback.extend(parse_google_rss(query, 6, "Google Macro RSS", 0.75))
+        macro_items = deduplicate_news(macro_items + fallback)
+
+    return macro_items
 
 
 def get_macro_quant_data():
@@ -501,7 +502,7 @@ def analyze_macro_quant(macro):
         regime = "НЕЙТРАЛЬНИЙ"
 
     if not items:
-        regime = "НЕЙТРАЛЬНИЙ / macro RSS unavailable"
+        regime = "НЕЙТРАЛЬНИЙ"
 
     return {
         "score": score,
@@ -1467,6 +1468,19 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
             signal = "NO SIGNAL"
             signal_type = "REVERSAL SHORT WATCH / NEWS PRIORITY"
 
+
+    # Early confirmation: avoid staying in "watch" forever when news/event is dominant
+    # and the chart starts confirming the same direction.
+    if signal == "NO SIGNAL" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"]:
+        if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
+            if tech.get("score", 0) >= -25 and tech.get("change", 0) > 0.15 and orderflow.get("score", 0) >= 0:
+                signal = "LONG"
+                signal_type = "EARLY NEWS LONG / CONFIRMATION STARTED"
+        elif event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
+            if tech.get("score", 0) <= 25 and tech.get("change", 0) < -0.15 and orderflow.get("score", 0) <= 0:
+                signal = "SHORT"
+                signal_type = "EARLY NEWS SHORT / CONFIRMATION STARTED"
+
     # Reversal Watch is not an automatic aggressive entry. It can upgrade a conflict into a watch-signal.
     if signal == "NO SIGNAL" and reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
         signal = "NO SIGNAL"
@@ -1505,7 +1519,7 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
         risk_note = "Подієвий ризик високий — краще чекати або зменшити позицію"
     if "REVERSAL" in signal_type:
-        risk_note = "Reversal watch: не входити одразу, чекати підтвердження/ретест"
+        risk_note = "Можливий розворот: не входити одразу, чекати підтвердження/ретест"
     if "NEWS-PRIORITY" in signal_type:
         risk_note = "News/event priority: вхід тільки якщо техніка вже почала підтверджувати рух"
     if macro["score"] <= -25 and signal == "LONG":
@@ -1530,13 +1544,13 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None):
             "tp1": None,
             "tp2": None,
             "tp3": None,
-            "note": "Не входити. Чекати підтвердження.",
+            "note": "Входу немає — чекати підтвердження.",
         }
 
     if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "Можливий reversal LONG: техніка ще не підтвердила вхід, але фундамент/події проти SHORT. Чекати повернення вище ключового рівня або ретест."
+        return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
     if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "Можливий reversal SHORT: техніка ще не підтвердила вхід, але фундамент/події проти LONG. Чекати пробій/ретест."
+        return "Можливий розворот у SHORT: новини/події підтримують падіння, але техніка ще не дала повний тригер."
 
     if signal == "LONG":
         if "ІМПУЛЬСНИЙ" in signal_type:
@@ -1649,9 +1663,9 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
     short_votes = [tech_side, news_side, event_side, macro_side, order_side, market_side].count("SHORT")
 
     if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "Можливий reversal LONG: техніка ще не підтвердила вхід, але фундамент/події проти SHORT. Чекати повернення вище ключового рівня або ретест."
+        return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
     if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "Можливий reversal SHORT: техніка ще не підтвердила вхід, але фундамент/події проти LONG. Чекати пробій/ретест."
+        return "Можливий розворот у SHORT: новини/події підтримують падіння, але техніка ще не дала повний тригер."
 
     if signal == "LONG":
         if oi_analysis and oi_analysis.get("side") == "SHORT":
@@ -1798,6 +1812,7 @@ def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_b
 
 
 
+
 def short_bias_label(side):
     if "STRONG LONG" in side:
         return "STRONG LONG"
@@ -1811,18 +1826,11 @@ def short_bias_label(side):
 
 
 def compact_priority_label(priority, reversal):
-    regime = priority.get("regime", "BALANCED")
     dominant = priority.get("dominant", "BALANCED")
-    rev = reversal.get("side", "NONE") if reversal else "NONE"
-
-    if rev == "REVERSAL LONG WATCH":
-        return "NEWS > TECH, чекаємо LONG"
-    if rev == "REVERSAL SHORT WATCH":
-        return "NEWS > TECH, чекаємо SHORT"
     if dominant in ["FUNDAMENTAL", "EVENT"]:
-        return "NEWS/EVENT PRIORITY"
+        return "NEWS/EVENT"
     if dominant == "TECHNICAL":
-        return "TECH PRIORITY"
+        return "TECH"
     return "BALANCED"
 
 
@@ -1830,16 +1838,183 @@ def compact_reversal_label(reversal):
     side = reversal.get("side", "NONE") if reversal else "NONE"
     confidence = reversal.get("confidence", 0) if reversal else 0
     if side == "REVERSAL LONG WATCH":
-        return f"чекаємо LONG-тригер ({confidence}%)"
+        return f"можливий розворот у LONG ({confidence}%)"
     if side == "REVERSAL SHORT WATCH":
-        return f"чекаємо SHORT-тригер ({confidence}%)"
+        return f"можливий розворот у SHORT ({confidence}%)"
     return "немає"
 
 
+def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
+    if signal == "LONG":
+        if "EARLY NEWS" in signal_type:
+            return "TRADE LONG — раннє підтвердження"
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            return "TRADE LONG — імпульсний"
+        if "РИЗИКОВИЙ" in signal_type:
+            return "TRADE LONG — обережно"
+        return "TRADE LONG"
+
+    if signal == "SHORT":
+        if "EARLY NEWS" in signal_type:
+            return "TRADE SHORT — раннє підтвердження"
+        if "ІМПУЛЬСНИЙ" in signal_type:
+            return "TRADE SHORT — імпульсний"
+        if "РИЗИКОВИЙ" in signal_type:
+            return "TRADE SHORT — обережно"
+        return "TRADE SHORT"
+
+    # No active trade: show a human trigger direction, not internal NO SIGNAL/WATCH terms.
+    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
+        return "Чекаємо підтвердження LONG"
+    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
+        return "Чекаємо підтвердження SHORT"
+
+    if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 30:
+        return "Чекаємо тригер по LONG"
+    if event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -20:
+        return "Чекаємо тригер по SHORT"
+
+    return "НЕ ВХОДИТИ — чекати"
+
+
+def driver_time_context(item):
+    title = (item or {}).get("title", "")
+    lower = title.lower()
+    published_at = (item or {}).get("published_at")
+
+    if any(x in lower for x in ["now", "currently", "breaking", "urgent", "live"]):
+        return "зараз"
+    if any(x in lower for x in ["today", "later today", "this morning", "this afternoon", "tonight"]):
+        return "сьогодні"
+    if any(x in lower for x in ["tomorrow"]):
+        return "завтра"
+    if any(x in lower for x in ["this week", "upcoming", "ahead of", "expected", "awaits", "waiting for"]):
+        return "очікується найближчим часом"
+
+    if published_at:
+        try:
+            age_hours = (now_utc() - published_at).total_seconds() / 3600
+            if age_hours <= 2:
+                return "останні 2 год"
+            if age_hours <= 6:
+                return "останні 6 год"
+        except Exception:
+            pass
+
+    return "час не уточнено"
+
+
+def ua_driver_summary(title):
+    lower = (title or "").lower()
+
+    if "iran" in lower or "us-iran" in lower or "u.s.-iran" in lower or "hormuz" in lower:
+        return "Переговори США–Іран / Ормузька протока"
+    if "eia" in lower or "api" in lower or "inventory" in lower or "stockpiles" in lower:
+        return "Запаси нафти EIA/API"
+    if "opec" in lower or "opec+" in lower:
+        return "OPEC/OPEC+: рішення щодо видобутку"
+    if "fed" in lower or "powell" in lower or "fomc" in lower:
+        return "ФРС / Powell: вплив на долар і ризик-апетит"
+    if "cpi" in lower or "inflation" in lower:
+        return "Інфляція США / CPI"
+    if "nfp" in lower or "jobs" in lower or "payrolls" in lower:
+        return "Ринок праці США / NFP"
+    if "sanction" in lower or "tariff" in lower or "trump" in lower:
+        return "Санкції / тарифи / політичні заяви"
+    if "russia" in lower or "ukraine" in lower or "war" in lower:
+        return "Геополітика: війна / ризик постачання"
+    if "oil" in lower or "brent" in lower or "crude" in lower:
+        return "Нафта: свіжий новинний імпульс"
+
+    return BeautifulSoup(title or "Новинний фактор", "html.parser").get_text(" ", strip=True)[:95]
+
+
+def driver_expectation(direction, title, driver_type="NEWS"):
+    lower = (title or "").lower()
+    side = direction if direction in ["LONG", "SHORT"] else "MIXED"
+
+    if side == "LONG":
+        if any(x in lower for x in ["iran", "hormuz", "sanction", "war", "attack", "strike", "supply risk", "disruption"]):
+            return "LONG — ризик дефіциту/перебоїв постачання нафти"
+        if any(x in lower for x in ["draw", "stockpiles fell", "inventory draw"]):
+            return "LONG — запаси зменшуються, це підтримує нафту"
+        if "opec" in lower and any(x in lower for x in ["cut", "cuts", "reduce"]):
+            return "LONG — обмеження видобутку підтримує ціну"
+        return "LONG — новини/події підтримують попит або ризик дефіциту"
+
+    if side == "SHORT":
+        if any(x in lower for x in ["ceasefire", "peace", "deal", "sanctions relief", "talks progress"]):
+            return "SHORT — геополітична премія в ціні може зменшитись"
+        if any(x in lower for x in ["build", "stockpiles rose", "inventory build"]):
+            return "SHORT — запаси ростуть, це тисне на нафту"
+        if "opec" in lower and any(x in lower for x in ["increase", "output hike", "production hike"]):
+            return "SHORT — більша пропозиція може тиснути на ціну"
+        if any(x in lower for x in ["hawkish", "rate hike", "dollar rises", "yields rise"]):
+            return "SHORT — сильний долар/ставки тиснуть на нафту"
+        return "SHORT — новини/події тиснуть на ціну"
+
+    if driver_type == "TECH":
+        return "Очікування залежить від підтвердження 5m/15m"
+    return "MIXED — напрямок новини неоднозначний"
+
+
+def technical_driver_summary(tech, orderflow, market):
+    score = tech.get("score", 0)
+    trend = tech.get("trend", "MIXED")
+    momentum = tech.get("momentum", "NEUTRAL")
+    vol = market.get("volatility", {}).get("regime", "NORMAL")
+
+    if score >= 55:
+        return "TECH / LONG", "Техніка підтримує LONG", "LONG — тренд/імпульс на боці покупців"
+    if score <= -55:
+        if (tech.get("rsi_5m") is not None and tech.get("rsi_5m") < 26) or (tech.get("rsi_15m") is not None and tech.get("rsi_15m") < 30):
+            return "TECH / SHORT", "Техніка вниз, але є перепроданість", "SHORT обережно — можливий відскок"
+        return "TECH / SHORT", "Техніка підтримує SHORT", "SHORT — тренд/імпульс на боці продавців"
+    if momentum in ["STRONG UP", "VERY STRONG UP"]:
+        return "TECH / LONG", "Сильний імпульс вгору", "LONG — краще після відкату/ретесту"
+    if momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
+        return "TECH / SHORT", "Сильний імпульс вниз", "SHORT — краще після відкату/ретесту"
+    if vol == "TREND MODE":
+        return f"TECH / {trend}", f"Трендовий режим: {trend}", "Очікування — рух за трендом після підтвердження"
+    return "TECH / NEUTRAL", "Техніка без чіткого драйвера", "Чекати сильнішого 5m/15m сигналу"
+
+
+def select_main_driver(tech, news, event_risk, macro, orderflow, market, session, priority):
+    # Event/news dominates if priority says so and there is a clear event headline.
+    important_events = event_risk.get("important", []) or []
+    important_news = news.get("important", []) or []
+
+    if priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") in ["LONG", "SHORT"] and important_events:
+        item = important_events[0]
+        direction = event_risk.get("direction")
+        return {
+            "type": f"EVENT / {direction}",
+            "summary": ua_driver_summary(item.get("title", "")),
+            "time": driver_time_context(item),
+            "expectation": driver_expectation(direction, item.get("title", ""), "EVENT"),
+        }
+
+    if abs(news.get("score", 0)) >= 30 and important_news:
+        item = important_news[0]
+        direction = "LONG" if news.get("score", 0) > 0 else "SHORT"
+        return {
+            "type": f"NEWS / {direction}",
+            "summary": ua_driver_summary(item.get("title", "")),
+            "time": driver_time_context(item),
+            "expectation": driver_expectation(direction, item.get("title", ""), "NEWS"),
+        }
+
+    tech_type, tech_summary, tech_expectation = technical_driver_summary(tech, orderflow, market)
+    return {
+        "type": tech_type,
+        "summary": tech_summary,
+        "time": "зараз",
+        "expectation": tech_expectation,
+    }
+
+
 def decision_confidence(signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal):
-    """Confidence means confidence in the decision, not win-rate.
-    For NO TRADE conflicts we want high confidence if the conflict is clear.
-    """
+    """Confidence means confidence in the decision, not win-rate."""
     tech_side = technical_bias.get("side", "NEUTRAL")
     fund_side = fundamental_bias.get("side", "NEUTRAL")
     tech_score = abs(technical_bias.get("score", 0))
@@ -1847,60 +2022,66 @@ def decision_confidence(signal, signal_type, score, technical_bias, fundamental_
     event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
     reversal_active = reversal and reversal.get("side") in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]
 
-    if signal == "NO SIGNAL":
-        conflict = (("LONG" in tech_side and "SHORT" in fund_side) or ("SHORT" in tech_side and "LONG" in fund_side))
-        if reversal_active:
-            return min(92, max(75, int(reversal.get("confidence", 0)) + 35))
-        if conflict and event_high:
-            return 88
-        if conflict:
-            return 80
-        return min(75, max(45, int((tech_score + fund_score) / 3)))
+    if signal in ["LONG", "SHORT"]:
+        base = 55 + min(30, abs(int(score)) // 3)
+        if "EARLY NEWS" in signal_type:
+            base = min(base, 72)
+        if event_high and "EARLY NEWS" not in signal_type:
+            base -= 5
+        return max(55, min(95, int(base)))
 
-    return min(95, max(55, abs(int(score))))
-
-
-def compact_decision_line(market_decision, signal, signal_type, reversal):
-    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "Чекаємо тригер по LONG"
-    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "Чекаємо тригер по SHORT"
-    if signal == "NO SIGNAL":
-        return "НЕ ВХОДИТИ — чекати"
-    if "РИЗИКОВИЙ" in signal_type:
-        return f"{signal} ризиковий"
-    if "ІМПУЛЬСНИЙ" in signal_type:
-        return f"{signal} імпульсний"
-    return signal
+    conflict = (("LONG" in tech_side and "SHORT" in fund_side) or ("SHORT" in tech_side and "LONG" in fund_side))
+    if reversal_active:
+        return min(92, max(75, int(reversal.get("confidence", 0)) + 35))
+    if conflict and event_high:
+        return 88
+    if conflict:
+        return 80
+    return min(78, max(50, int((tech_score + fund_score) / 3)))
 
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary):
-    decision = compact_decision_line("", signal, signal_type, reversal)
+    decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
     priority_label = compact_priority_label(priority, reversal)
+    driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
 
-    return f"""
-<b>📊 BZU SIGNAL BOT</b>
+    lines = [
+        "<b>📊 BZU SIGNAL BOT</b>",
+        "",
+        f"<b>Рішення:</b> {decision}",
+        f"<b>Впевненість:</b> {confidence}%",
+        "",
+        f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
+        "",
+        "<b>Драйвер:</b>",
+        f"{driver['type']}",
+        f"{driver['summary']}",
+        f"<b>Час:</b> {driver['time']}",
+        f"<b>Очікування:</b> {driver['expectation']}",
+        "",
+        f"<b>План:</b> {format_trade_plan(plan)}",
+        "",
+        f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
+        f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",
+        f"<b>Priority:</b> {priority_label}",
+        f"<b>Events:</b> {event_risk.get('direction')} / {event_risk.get('risk')}",
+        f"<b>Session:</b> {session.get('session')}",
+        f"<b>Orderflow:</b> {orderflow.get('bias')}",
+    ]
 
-<b>Рішення:</b> {decision}
-<b>Сигнал:</b> {signal} / {signal_type}
-<b>Впевненість:</b> {confidence}%
+    rev_text = compact_reversal_label(reversal)
+    if rev_text != "немає":
+        lines.append(f"<b>Reversal:</b> {rev_text}")
 
-<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%
-<b>План:</b> {format_trade_plan(plan)}
+    lines.extend([
+        "",
+        f"<b>Висновок:</b> {final_summary}",
+    ])
 
-<b>TECH:</b> {tech_label} ({technical_bias.get('score')})
-<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})
-<b>Priority:</b> {priority_label}
-<b>Events:</b> {event_risk.get('direction')} / {event_risk.get('risk')}
-<b>Session:</b> {session.get('session')} | <b>Vol:</b> {market['volatility']['regime']}
-<b>Orderflow:</b> {orderflow.get('bias')} | <b>OI:</b> {oi_analysis.get('summary')}
-<b>Reversal:</b> {compact_reversal_label(reversal)}
+    return "\n".join(lines).strip()
 
-<b>Висновок:</b>
-{final_summary}
-""".strip()
 
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
     if signal == "NO SIGNAL":
