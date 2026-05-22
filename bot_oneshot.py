@@ -1922,6 +1922,107 @@ def clean_for_tg(value, max_len=140):
     return escape(text)
 
 
+
+def translate_headline_uk(title, max_len=120):
+    """Lightweight deterministic Ukrainian summary for the main driver headline.
+    No external translation API is used, so it remains free and stable on GitHub Actions.
+    """
+    raw = str(title or "").strip()
+    lower = raw.lower()
+
+    # Specific high-impact oil / macro patterns.
+    if "iran" in lower and "hormuz" in lower:
+        summary = "Іран / Ормузька протока: ринок оцінює ризик для поставок нафти"
+    elif "iran" in lower and any(w in lower for w in ["talk", "talks", "deal", "progress", "proposal", "viewpoints"]):
+        if any(w in lower for w in ["reject", "fail", "warn", "strike", "sanction"]):
+            summary = "Переговори США–Іран: ризик ескалації підтримує LONG по нафті"
+        else:
+            summary = "Переговори США–Іран: можливі новини щодо санкцій і нафти"
+    elif "sanction" in lower or "sanctions" in lower:
+        summary = "Санкції: можливий вплив на пропозицію нафти"
+    elif "opec" in lower:
+        if any(w in lower for w in ["cut", "cuts", "deeper", "extend"]):
+            summary = "OPEC/OPEC+: скорочення видобутку підтримує LONG по нафті"
+        elif any(w in lower for w in ["increase", "hike", "output", "production rise"]):
+            summary = "OPEC/OPEC+: збільшення видобутку може тиснути на нафту"
+        else:
+            summary = "OPEC/OPEC+: ринок чекає рішення щодо видобутку"
+    elif "eia" in lower or "api" in lower or "inventory" in lower or "stockpile" in lower:
+        if any(w in lower for w in ["draw", "fell", "drop", "decline"]):
+            summary = "Запаси нафти: скорочення запасів підтримує LONG"
+        elif any(w in lower for w in ["build", "rose", "rise", "increase"]):
+            summary = "Запаси нафти: зростання запасів підтримує SHORT"
+        else:
+            summary = "Запаси нафти: ринок очікує дані EIA/API"
+    elif "powell" in lower or "fed" in lower or "fomc" in lower:
+        if any(w in lower for w in ["rate cut", "dovish", "pause", "cuts"]):
+            summary = "ФРС/Powell: мʼякий сигнал підтримує risk-on"
+        elif any(w in lower for w in ["hawkish", "rate hike", "higher for longer"]):
+            summary = "ФРС/Powell: жорсткий сигнал може тиснути на risk assets"
+        else:
+            summary = "ФРС/Powell: ринок чекає сигнал щодо ставок"
+    elif "cpi" in lower or "inflation" in lower:
+        summary = "CPI/інфляція: очікується вплив на долар, ставки і нафту"
+    elif "nfp" in lower or "jobs" in lower or "payroll" in lower:
+        summary = "NFP/ринок праці США: можливий вплив на Fed і долар"
+    elif "war" in lower or "attack" in lower or "strike" in lower:
+        summary = "Геополітика: ризик ескалації підтримує нафту"
+    elif "oil" in lower or "crude" in lower or "brent" in lower:
+        if any(w in lower for w in ["rise", "rises", "up", "rally", "surge", "rebound"]):
+            summary = "Нафта зростає: ринок реагує на bullish-фактори"
+        elif any(w in lower for w in ["fall", "falls", "down", "drop", "plunge"]):
+            summary = "Нафта падає: ринок реагує на bearish-фактори"
+        else:
+            summary = "Нафта: важлива новина для напрямку ціни"
+    else:
+        # fallback: keep original headline but label it as short summary
+        summary = raw
+
+    summary = re.sub(r"\s+", " ", summary).strip()
+    if len(summary) > max_len:
+        summary = summary[: max_len - 3].rstrip() + "..."
+    return escape(summary)
+
+
+def event_time_context(title, published_at=None):
+    """Approximate event time context from headline words and publication timestamp."""
+    lower = str(title or "").lower()
+    if any(x in lower for x in ["live", "now", "currently", "just", "breaking", "urgent"]):
+        return "зараз"
+    if any(x in lower for x in ["today", "later today", "this afternoon", "tonight"]):
+        return "сьогодні"
+    if "tomorrow" in lower:
+        return "завтра"
+    if any(x in lower for x in ["this week", "week ahead", "upcoming"]):
+        return "цього тижня"
+    if any(x in lower for x in ["ahead of", "await", "awaits", "before", "expected", "set to"]):
+        return "очікується найближчим часом"
+
+    if published_at:
+        try:
+            age_hours = (now_utc() - published_at).total_seconds() / 3600
+            if age_hours <= 2:
+                return "актуально зараз"
+            if age_hours <= 8:
+                return "сьогодні"
+            if age_hours <= 24:
+                return "останні 24 год"
+        except Exception:
+            pass
+
+    return "час не уточнено"
+
+
+def format_driver_line(kind, direction, title=None, published_at=None, fallback=None):
+    translated = translate_headline_uk(title or fallback or "", 125)
+    time_text = event_time_context(title or fallback or "", published_at)
+    direction = direction or "MIXED"
+    kind = kind or "MIXED"
+    if kind in ["EVENT", "NEWS"]:
+        return f"{kind} / {direction}: {translated} | Час: {time_text}"
+    return f"{kind} / {direction}: {translated}"
+
+
 def main_market_driver(tech, news, event_risk, macro, orderflow, market, oi_analysis, session, priority, reversal, technical_bias, fundamental_bias):
     """Return ONE most important current price driver for Telegram.
     Priority order is dynamic: event/news can dominate oil during geopolitical/macro headlines;
@@ -1937,14 +2038,14 @@ def main_market_driver(tech, news, event_risk, macro, orderflow, market, oi_anal
 
     # 1) Very high event risk is usually the strongest oil driver.
     if event_level in ["ДУЖЕ ВИСОКИЙ", "ВИСОКИЙ"] and event_dir in ["LONG", "SHORT"] and event_items:
-        title = clean_for_tg(event_items[0].get("title"), 150)
-        return f"Подія {event_dir}: {title}"
+        item = event_items[0]
+        return format_driver_line("EVENT", event_dir, item.get("title"), item.get("published_at"))
 
     # 2) In news/event dominant regime, use the strongest fresh headline.
     if dominant in ["FUNDAMENTAL", "EVENT"] and abs(news_score) >= 30 and news_items:
         direction = "LONG" if news_score > 0 else "SHORT"
-        title = clean_for_tg(news_items[0].get("title"), 150)
-        return f"Новина {direction}: {title}"
+        item = news_items[0]
+        return format_driver_line("NEWS", direction, item.get("title"), item.get("published_at"))
 
     # 3) Reversal watch is a driver because it changes execution logic.
     if reversal and reversal.get("side") in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]:
@@ -1974,10 +2075,10 @@ def main_market_driver(tech, news, event_risk, macro, orderflow, market, oi_anal
     # 6) Fallback: headline if meaningful, otherwise mixed.
     if news_items and abs(news_score) >= 20:
         direction = "LONG" if news_score > 0 else "SHORT"
-        title = clean_for_tg(news_items[0].get("title"), 150)
-        return f"Новина {direction}: {title}"
+        item = news_items[0]
+        return format_driver_line("NEWS", direction, item.get("title"), item.get("published_at"))
 
-    return "Змішаний ринок: немає одного сильного драйвера"
+    return "MIXED: немає одного сильного драйвера"
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, main_driver, final_summary):
     decision = compact_decision_line("", signal, signal_type, reversal)
