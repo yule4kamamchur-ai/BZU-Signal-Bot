@@ -2013,14 +2013,71 @@ def event_time_context(title, published_at=None):
     return "час не уточнено"
 
 
+def driver_expectation_uk(kind, direction, title=None):
+    """Short Ukrainian explanation of how the main driver can affect price."""
+    lower = str(title or "").lower()
+    direction = direction or "MIXED"
+    kind = kind or "MIXED"
+
+    if direction == "LONG":
+        if any(w in lower for w in ["iran", "hormuz", "sanction", "war", "attack", "strike", "supply disruption"]):
+            return "LONG — ризик дефіциту/перебоїв постачання нафти"
+        if any(w in lower for w in ["inventory draw", "crude draw", "stockpiles fell", "draw"]):
+            return "LONG — запаси нафти зменшуються"
+        if any(w in lower for w in ["opec cut", "cut output", "production cut"]):
+            return "LONG — менша пропозиція нафти"
+        if any(w in lower for w in ["rate cut", "fed pause", "dovish"]):
+            return "LONG — слабший долар / risk-on підтримує нафту"
+        return "LONG — новини/події підтримують зростання"
+
+    if direction == "SHORT":
+        if any(w in lower for w in ["ceasefire", "peace", "deal", "sanctions relief", "talks progress"]):
+            return "SHORT — ризик дефіциту зменшується"
+        if any(w in lower for w in ["inventory build", "crude build", "stockpiles rose", "build"]):
+            return "SHORT — запаси нафти зростають"
+        if any(w in lower for w in ["opec increase", "output increase", "production increase"]):
+            return "SHORT — більша пропозиція нафти"
+        if any(w in lower for w in ["hawkish", "rate hike", "higher for longer", "hot cpi"]):
+            return "SHORT — сильніший долар / ставки тиснуть на нафту"
+        return "SHORT — новини/події підтримують зниження"
+
+    return "MIXED — вплив неоднозначний, потрібне підтвердження"
+
+
+def technical_expectation_uk(direction, tech):
+    trend = tech.get("trend", "UNKNOWN")
+    momentum = tech.get("momentum", "NEUTRAL")
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+
+    if direction == "LONG":
+        if momentum in ["STRONG UP", "VERY STRONG UP"]:
+            return "Очікування: LONG — імпульс вгору, краще чекати відкат/ретест"
+        if trend == "UP":
+            return "Очікування: LONG — тренд вгору, вхід після підтвердження"
+        return "Очікування: LONG — техніка покращується, потрібне підтвердження"
+
+    if direction == "SHORT":
+        if momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
+            return "Очікування: SHORT — імпульс вниз, краще чекати ретест"
+        if trend == "DOWN":
+            if (rsi5 is not None and rsi5 < 25) or (rsi15 is not None and rsi15 < 30):
+                return "Очікування: SHORT, але обережно — ринок перепроданий, можливий відскок"
+            return "Очікування: SHORT — тренд вниз, вхід після ретесту"
+        return "Очікування: SHORT — техніка слабшає, потрібне підтвердження"
+
+    return "Очікування: нейтрально — немає чіткої технічної переваги"
+
+
 def format_driver_line(kind, direction, title=None, published_at=None, fallback=None):
-    translated = translate_headline_uk(title or fallback or "", 125)
+    translated = translate_headline_uk(title or fallback or "", 115)
     time_text = event_time_context(title or fallback or "", published_at)
     direction = direction or "MIXED"
     kind = kind or "MIXED"
+    expectation = driver_expectation_uk(kind, direction, title or fallback or "")
     if kind in ["EVENT", "NEWS"]:
-        return f"{kind} / {direction}: {translated} | Час: {time_text}"
-    return f"{kind} / {direction}: {translated}"
+        return f"{kind} / {direction}: {translated} | Час: {time_text} | Очікування: {expectation}"
+    return f"{kind} / {direction}: {translated} | Очікування: {expectation}"
 
 
 def main_market_driver(tech, news, event_risk, macro, orderflow, market, oi_analysis, session, priority, reversal, technical_bias, fundamental_bias):
@@ -2061,7 +2118,8 @@ def main_market_driver(tech, news, event_risk, macro, orderflow, market, oi_anal
         t15 = tech.get("trend_15m", "?")
         t1h = tech.get("trend_1h", "?")
         momentum = tech.get("momentum", "NEUTRAL")
-        return f"Техніка {direction}: trend {trend}, 5m {t5}, 15m {t15}, 1h {t1h}, momentum {momentum}"
+        tech_expectation = technical_expectation_uk(direction, tech)
+        return f"TECH / {direction}: trend {trend}, 5m {t5}, 15m {t15}, 1h {t1h}, momentum {momentum} | {tech_expectation}"
 
     # 5) Orderflow / liquidation can be the driver when clearly directional.
     if abs(orderflow.get("score", 0)) >= 25:
