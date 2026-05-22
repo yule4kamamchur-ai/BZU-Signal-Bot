@@ -1729,45 +1729,47 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None):
             "tp1": None,
             "tp2": None,
             "tp3": None,
-            "note": "Входу немає — чекати підтвердження.",
+            "note": "Не входити. Чекати підтвердження.",
         }
 
-    if "SHOCK DOWN" in signal_type:
-        return "Різкий дамп: технічний продаж зараз домінує. LONG по новинах можливий тільки після стабілізації, відскоку і ретесту."
-    if "SHOCK UP" in signal_type:
-        return "Різкий памп: технічна покупка зараз домінує. SHORT по новинах можливий тільки після слабкості, відкату і ретесту."
-
-    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
-    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "Можливий розворот у SHORT: новини/події підтримують падіння, але техніка ще не дала повний тригер."
-
+    # Important:
+    # Reversal is a RISK NOTE only. It must never replace the trade plan
+    # when the bot gives TRADE LONG or TRADE SHORT.
     if signal == "LONG":
-        if "ІМПУЛЬСНИЙ" in signal_type:
+        if "ІМПУЛЬСНИЙ" in signal_type or "EARLY" in signal_type:
             stop = price - atr * 1.1
             tp1 = price + atr * 0.9
             tp2 = price + atr * 1.6
             tp3 = price + atr * 2.4
-            note = "Імпульсний скальп: краще входити на відкаті/ретесті, не після великої свічки."
+            note = "LONG: краще входити після відкату/ретесту, не доганяти свічку."
         else:
             stop = price - atr * 1.5
             tp1 = price + atr * 1.2
             tp2 = price + atr * 2.0
             tp3 = price + atr * 3.0
-            note = "Trend long: вхід тільки якщо ціна утримує EMA20/EMA50."
-    else:
-        if "ІМПУЛЬСНИЙ" in signal_type:
+            note = "LONG: вхід тільки якщо ціна утримує підтримку/EMA."
+    elif signal == "SHORT":
+        if "ІМПУЛЬСНИЙ" in signal_type or "EARLY" in signal_type:
             stop = price + atr * 1.1
             tp1 = price - atr * 0.9
             tp2 = price - atr * 1.6
             tp3 = price - atr * 2.4
-            note = "Імпульсний скальп: краще входити на відкаті/ретесті, не після великої свічки."
+            note = "SHORT: краще входити після відкату/ретесту, не доганяти червону свічку."
         else:
             stop = price + atr * 1.5
             tp1 = price - atr * 1.2
             tp2 = price - atr * 2.0
             tp3 = price - atr * 3.0
-            note = "Trend short: вхід тільки якщо ціна відбивається від EMA20/EMA50 вниз."
+            note = "SHORT: вхід тільки після підтвердження продавців/ретесту."
+    else:
+        return {
+            "entry": None,
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "tp3": None,
+            "note": "Не входити. Чекати підтвердження.",
+        }
 
     return {
         "entry": round(price, 4),
@@ -1777,7 +1779,6 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None):
         "tp3": round(tp3, 4),
         "note": note,
     }
-
 
 
 def side_from_score(score, long_thr=15, short_thr=-15):
@@ -1904,42 +1905,34 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
     tech_side, _ = tech_verdict(tech)
     news_side, _ = news_verdict(news)
     event_side, _ = event_verdict(event_risk)
-    macro_side, _ = macro_verdict(macro)
-    order_side, _ = orderflow_verdict(orderflow)
 
     st = signal_type or ""
     reversal_side = (reversal or {}).get("side", "NONE")
     event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
 
-    # Absolute priority for shock/early-warning modes.
-    if "різкий дамп" in st.lower() or "можливий дамп" in st.lower() or "ДАМП" in st:
+    if "SHOCK DOWN" in st:
         return (
             "Різкий дамп: технічний продаж зараз домінує. "
             "LONG по новинах можливий тільки після стабілізації, відскоку і ретесту. "
             "Не ловити падаючий ринок."
         )
-
-    if "можливий ріст" in st.lower() or "різкий памп" in st.lower() or "ПАМП" in st or "РІСТ" in st:
+    if "SHOCK UP" in st:
         return (
             "Різкий ріст: покупці зараз домінують. "
-            "SHORT по новинах можливий тільки після стабілізації, відкату і ретесту. "
+            "SHORT можливий тільки після стабілізації, відкату і ретесту. "
             "Не шортити сильний імпульс без підтвердження."
         )
 
-    # Actual TRADE signals must dominate the final text.
     if signal == "SHORT":
         if reversal_side == "REVERSAL LONG WATCH" or news_side == "LONG" or event_side == "LONG":
             return (
                 "SHORT зараз має перевагу через сильний технічний продаж. "
-                "Але bullish-новини/події можуть дати різкий LONG-відскок — краще не доганяти рух, "
-                "а входити тільки після ретесту або підтвердження продавців."
+                "Але bullish-новини/події можуть дати різкий LONG-відскок — "
+                "вхід тільки після ретесту або підтвердження продавців."
             )
         if event_high:
-            return (
-                "SHORT є, але подієвий ризик високий. Вхід тільки після ретесту/підтвердження, "
-                "не після великої червоної свічки."
-            )
-        return "SHORT підтверджений технікою. Вхід можливий тільки зі стопом і після ретесту/підтвердження."
+            return "SHORT є, але подієвий ризик високий. Вхід тільки після ретесту/підтвердження."
+        return "SHORT підтверджений технікою. Вхід тільки зі стопом."
 
     if signal == "LONG":
         if reversal_side == "REVERSAL SHORT WATCH" or news_side == "SHORT" or event_side == "SHORT":
@@ -1948,13 +1941,9 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
                 "Краще чекати ретест і не доганяти свічку."
             )
         if event_high:
-            return (
-                "LONG є, але подієвий ризик високий. Не доганяти рух; краще чекати відкат/ретест "
-                "або входити мінімальним обсягом."
-            )
-        return "LONG підтверджений. Вхід можливий тільки зі стопом і після ретесту/підтвердження."
+            return "LONG є, але подієвий ризик високий. Не доганяти рух; краще чекати відкат/ретест."
+        return "LONG підтверджений. Вхід тільки зі стопом."
 
-    # No active trade: reversal watch can be main only if there is no shock/early warning.
     if reversal_side == "REVERSAL LONG WATCH":
         return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
     if reversal_side == "REVERSAL SHORT WATCH":
@@ -1964,11 +1953,6 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
         return "Техніка за SHORT, але новини/події за LONG. Краще не входити до підтвердження."
     if tech_side == "LONG" and news_side == "SHORT":
         return "Техніка за LONG, але новини/події за SHORT. Краще не входити до підтвердження."
-
-    if tech_side == "LONG" or news_side == "LONG" or event_side == "LONG":
-        return "Перевага більше в бік LONG, але підтвердження недостатні — чекати кращий сетап."
-    if tech_side == "SHORT" or news_side == "SHORT" or event_side == "SHORT":
-        return "Перевага більше в бік SHORT, але підтвердження недостатні — чекати кращий сетап."
 
     return "Сигналу на вхід немає. Ринок змішаний — краще чекати."
 
@@ -2379,6 +2363,17 @@ def reversal_display_label(signal, reversal):
     return "немає"
 
 
+def reversal_risk_note(signal, reversal):
+    side = (reversal or {}).get("side", "NONE")
+    conf = (reversal or {}).get("confidence", 0)
+
+    if signal == "SHORT" and side == "REVERSAL LONG WATCH":
+        return f"Ризик: можливий LONG-відскок пізніше ({conf}%)"
+    if signal == "LONG" and side == "REVERSAL SHORT WATCH":
+        return f"Ризик: можливий SHORT-відкат пізніше ({conf}%)"
+    return ""
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
@@ -2426,11 +2421,15 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Orderflow:</b> {orderflow.get('bias')}",
     ]
 
+    risk_text = reversal_risk_note(signal, reversal)
     rev_text = compact_reversal_label(reversal)
-    if "різкий дамп" in decision.lower() and rev_text != "немає":
-        lines.append(f"<b>Reversal:</b> ризик LONG-відскоку пізніше")
+
+    if risk_text:
+        lines.append(f"<b>{risk_text}</b>")
+    elif "різкий дамп" in decision.lower() and rev_text != "немає":
+        lines.append("<b>Ризик:</b> можливий LONG-відскок пізніше")
     elif "різкий памп" in decision.lower() and rev_text != "немає":
-        lines.append(f"<b>Reversal:</b> ризик SHORT-відкату пізніше")
+        lines.append("<b>Ризик:</b> можливий SHORT-відкат пізніше")
     elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
