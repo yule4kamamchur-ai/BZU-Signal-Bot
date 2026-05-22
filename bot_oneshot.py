@@ -2530,6 +2530,9 @@ def main():
     print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
     print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
     print(f"PRIORITY: {priority['regime']} | DOMINANT: {priority['dominant']} | P-SCORE: {priority['priority_score']}")
+    if "trust_mode" not in locals():
+        early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
+        trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
     print(f"TRUST MODE: {trust_mode} | {trust_reason}")
     print(f"EARLY WARNING: {early_warning['warning']} | SIDE: {early_warning['side']} | {early_warning['reason']}")
     print(f"REVERSAL: {reversal['side']} | CONF: {reversal['confidence']} | SWEEP: {reversal['sweep']}")
