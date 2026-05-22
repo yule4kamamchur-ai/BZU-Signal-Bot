@@ -1907,8 +1907,24 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
     macro_side, _ = macro_verdict(macro)
     order_side, _ = orderflow_verdict(orderflow)
 
+    st = signal_type or ""
     reversal_side = (reversal or {}).get("side", "NONE")
     event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+
+    # Absolute priority for shock/early-warning modes.
+    if "різкий дамп" in st.lower() or "можливий дамп" in st.lower() or "ДАМП" in st:
+        return (
+            "Різкий дамп: технічний продаж зараз домінує. "
+            "LONG по новинах можливий тільки після стабілізації, відскоку і ретесту. "
+            "Не ловити падаючий ринок."
+        )
+
+    if "можливий ріст" in st.lower() or "різкий памп" in st.lower() or "ПАМП" in st or "РІСТ" in st:
+        return (
+            "Різкий ріст: покупці зараз домінують. "
+            "SHORT по новинах можливий тільки після стабілізації, відкату і ретесту. "
+            "Не шортити сильний імпульс без підтвердження."
+        )
 
     # Actual TRADE signals must dominate the final text.
     if signal == "SHORT":
@@ -1938,7 +1954,7 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
             )
         return "LONG підтверджений. Вхід можливий тільки зі стопом і після ретесту/підтвердження."
 
-    # No active trade: then reversal watch can be the main message.
+    # No active trade: reversal watch can be main only if there is no shock/early warning.
     if reversal_side == "REVERSAL LONG WATCH":
         return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
     if reversal_side == "REVERSAL SHORT WATCH":
