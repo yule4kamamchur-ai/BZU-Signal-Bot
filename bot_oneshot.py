@@ -1689,6 +1689,19 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
             return "SHORT достатньо підтверджений. Вхід можливий тільки за планом і зі стопом."
         return "SHORT ризиковий. Перевага вниз є, але підтвердження не ідеальні."
 
+    # No-trade / trigger-wait summary should follow the dominant news/event direction,
+    # not raw vote count. This avoids confusing text like "waiting LONG" but
+    # "bias SHORT" when tech is still late against strong oil headlines.
+    if signal == "NO SIGNAL":
+        if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 30:
+            if tech_side == "SHORT":
+                return "Новини/події підтримують LONG, але техніка ще SHORT — чекаємо 5m/15m підтвердження або ретест."
+            return "LONG переважає по новинах/подіях, але повного технічного тригера ще немає — чекаємо підтвердження."
+        if event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -20:
+            if tech_side == "LONG":
+                return "Новини/події підтримують SHORT, але техніка ще LONG — чекаємо 5m/15m підтвердження або ретест."
+            return "SHORT переважає по новинах/подіях, але повного технічного тригера ще немає — чекаємо підтвердження."
+
     if long_votes > short_votes:
         return "Сигналу на вхід немає. Перевага більше в бік LONG, але підтвердження недостатні — чекати кращий сетап."
     if short_votes > long_votes:
@@ -1992,6 +2005,8 @@ def select_main_driver(tech, news, event_risk, macro, orderflow, market, session
             "summary": ua_driver_summary(item.get("title", "")),
             "time": driver_time_context(item),
             "expectation": driver_expectation(direction, item.get("title", ""), "EVENT"),
+            "source": item.get("source", ""),
+            "link": item.get("link", ""),
         }
 
     if abs(news.get("score", 0)) >= 30 and important_news:
@@ -2002,6 +2017,8 @@ def select_main_driver(tech, news, event_risk, macro, orderflow, market, session
             "summary": ua_driver_summary(item.get("title", "")),
             "time": driver_time_context(item),
             "expectation": driver_expectation(direction, item.get("title", ""), "NEWS"),
+            "source": item.get("source", ""),
+            "link": item.get("link", ""),
         }
 
     tech_type, tech_summary, tech_expectation = technical_driver_summary(tech, orderflow, market)
@@ -2010,6 +2027,8 @@ def select_main_driver(tech, news, event_risk, macro, orderflow, market, session
         "summary": tech_summary,
         "time": "зараз",
         "expectation": tech_expectation,
+        "source": "Технічний аналіз TradingView",
+        "link": "",
     }
 
 
@@ -2040,6 +2059,18 @@ def decision_confidence(signal, signal_type, score, technical_bias, fundamental_
     return min(78, max(50, int((tech_score + fund_score) / 3)))
 
 
+
+def format_driver_source(driver):
+    link = (driver or {}).get("link") or ""
+    source = (driver or {}).get("source") or ""
+    if link and link.startswith("http"):
+        label = source if source else "відкрити новину"
+        return f'<a href="{link}">{label}</a>'
+    if source:
+        return source
+    return "не вказано"
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
@@ -2060,6 +2091,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"{driver['summary']}",
         f"<b>Час:</b> {driver['time']}",
         f"<b>Очікування:</b> {driver['expectation']}",
+        f"<b>Джерело:</b> {format_driver_source(driver)}",
         "",
         f"<b>План:</b> {format_trade_plan(plan)}",
         "",
