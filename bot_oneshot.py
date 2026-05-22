@@ -2434,11 +2434,16 @@ def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro,
     return "C / ризиковий"
 
 def format_trade_plan(plan):
-    if not plan or plan.get("entry") is None:
+    if isinstance(plan, str):
+        return plan
+    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
         return "Входу немає — чекати підтвердження."
     return (
-        f"Вхід: {plan['entry']} | Стоп: {plan['stop']} | "
-        f"TP1: {plan['tp1']} | TP2: {plan['tp2']} | TP3: {plan['tp3']}"
+        f"Вхід: {plan.get('entry')} | "
+        f"Стоп: {plan.get('stop')} | "
+        f"TP1: {plan.get('tp1')} | "
+        f"TP2: {plan.get('tp2')} | "
+        f"TP3: {plan.get('tp3')}"
     )
 
 
