@@ -1566,7 +1566,7 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         trust_mode = "BALANCED"
 
     
-    early_warning = analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
+    early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
     trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
 # Base score remains visible for logs, but the signal engine now uses dynamic priority.
     # When oil is in a high event/news regime, news/events get more weight.
