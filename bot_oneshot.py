@@ -2825,7 +2825,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Очікування:</b> {driver['expectation']}",
         f"<b>Джерело:</b> {format_driver_source(driver)}",
         "",
-        f"<b>План:</b> {format_trade_plan(plan) if show_trade_plan else "чекати відкат/ретест, входу зараз немає"}",
+        f"<b>План:</b> {format_trade_plan(plan) if show_trade_plan else 'чекати відкат/ретест, входу зараз немає'}",
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
         f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
