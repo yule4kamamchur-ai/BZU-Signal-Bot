@@ -1713,11 +1713,6 @@ def position_management_note(signal, plan, tech, news, event_risk, reversal):
 
 def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority=None, early_warning=None, trust_mode=None):
 
-    if weekend is None:
-        weekend = {"active": False, "score": 0}
-    if cross_market is None:
-        cross_market = {"score": 0}
-
     if priority is None:
         priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
     if early_warning is None:
@@ -1852,13 +1847,7 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         signal = "NO SIGNAL"
         signal_type = "SHOCK UP / SHORT BLOCKED"
 
-        # Weekend mode: do not allow weak/risky trades on Saturday/Sunday.
-    if weekend and weekend.get("active") and signal in ["LONG", "SHORT"]:
-        if "ПІДТВЕРДЖЕНИЙ" not in signal_type and abs(score) < 140:
-            signal = "NO SIGNAL"
-            signal_type = "WEEKEND MODE / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-
-    confidence = min(95, max(0, abs(score)))
+        confidence = min(95, max(0, abs(score)))
 
     risk_note = "Нормальний ризик"
     if "РИЗИКОВИЙ" in signal_type:
