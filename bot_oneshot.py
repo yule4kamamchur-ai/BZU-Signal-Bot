@@ -1871,6 +1871,8 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     if tech.get("trend") == "UP" and signal == "SHORT":
         risk_note = "Тільки скальп: старший тренд не підтвердив SHORT"
 
+    confidence = min(95, max(0, abs(score)))
+
     return signal, signal_type, score, confidence, risk_note
 
 
