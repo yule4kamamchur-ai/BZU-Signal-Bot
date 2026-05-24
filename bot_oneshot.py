@@ -100,13 +100,13 @@ NEWS_SOURCES = [
         "name": "CoinDesk",
         "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
         "type": "rss",
-        "weight": 0.35,
+        "weight": 0.18,
     },
     {
         "name": "Cointelegraph",
         "url": "https://cointelegraph.com/rss",
         "type": "rss",
-        "weight": 0.35,
+        "weight": 0.18,
     },
 ]
 
@@ -632,6 +632,8 @@ def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
                 if "Reuters" in clean_title or "reuters.com" in link:
                     item_weight = max(weight, 1.25)
                     item_source = "Reuters via Google News"
+                if "CoinDesk" in clean_title or "Cointelegraph" in clean_title:
+                    item_weight = min(item_weight, 0.35)
                 news.append({
                     "title": clean_title,
                     "link": link,
@@ -2481,10 +2483,31 @@ def technical_driver_summary(tech, orderflow, market):
     return "TECH / NEUTRAL", "Техніка без чіткого драйвера", "Чекати сильнішого 5m/15m сигналу"
 
 
+
+def news_source_quality(source, title=""):
+    s = (source or "").lower()
+    t = (title or "").lower()
+    if "reuters" in s or "reuters" in t:
+        return 1.35
+    if any(x in s for x in ["cnbc", "oilprice", "eia", "opec", "financial times", "wsj", "investing"]):
+        return 1.15
+    if any(x in s for x in ["coindesk", "cointelegraph", "cryptopanic"]):
+        return 0.35
+    return 1.0
+
+
+def is_low_priority_oil_driver(item):
+    source = (item or {}).get("source", "")
+    title = (item or {}).get("title", "")
+    return news_source_quality(source, title) < 0.6
+
 def select_main_driver(tech, news, event_risk, macro, orderflow, market, session, priority):
     # Event/news dominates if priority says so and there is a clear event headline.
-    important_events = event_risk.get("important", []) or []
-    important_news = news.get("important", []) or []
+    important_events_raw = event_risk.get("important", []) or []
+    important_news_raw = news.get("important", []) or []
+
+    important_events = [x for x in important_events_raw if not is_low_priority_oil_driver(x)] or important_events_raw
+    important_news = [x for x in important_news_raw if not is_low_priority_oil_driver(x)] or important_news_raw
 
     # Shock technical move should become the main driver even if headlines are bullish/bearish.
     # This avoids showing an EVENT/LONG driver during a fast technical dump.
@@ -2638,7 +2661,7 @@ def analyze_late_entry_risk(signal, tech, market):
 
     if late and vol == "HIGH VOLATILITY / BREAKOUT MODE":
         penalty -= 5
-        note += " Волатильність висока."
+        note += ""
 
     return {"late": late, "label": label, "note": note, "penalty": penalty}
 
@@ -2660,15 +2683,15 @@ def apply_expansion_targets(plan, signal, tech, market):
     if risk <= 0:
         return plan
 
-    # Wider targets in expansion mode: 1.2R / 2R / 3R
+    # Wider targets in expansion/news breakout mode: 1.5R / 2.5R / 4R
     if signal == "LONG":
-        plan["tp1"] = round(entry + risk * 1.2, 4)
-        plan["tp2"] = round(entry + risk * 2.0, 4)
-        plan["tp3"] = round(entry + risk * 3.0, 4)
+        plan["tp1"] = round(entry + risk * 1.5, 4)
+        plan["tp2"] = round(entry + risk * 2.5, 4)
+        plan["tp3"] = round(entry + risk * 4.0, 4)
     elif signal == "SHORT":
-        plan["tp1"] = round(entry - risk * 1.2, 4)
-        plan["tp2"] = round(entry - risk * 2.0, 4)
-        plan["tp3"] = round(entry - risk * 3.0, 4)
+        plan["tp1"] = round(entry - risk * 1.5, 4)
+        plan["tp2"] = round(entry - risk * 2.5, 4)
+        plan["tp3"] = round(entry - risk * 4.0, 4)
 
     plan["expansion"] = True
     return plan
@@ -2678,6 +2701,8 @@ def probability_note(probability, late_entry):
     if probability is None:
         return "немає входу"
     if late_entry and late_entry.get("late"):
+        if probability < 50:
+            return f"{probability}% — краще чекати відкат"
         return f"{probability}% — ризик пізнього входу"
     return f"{probability}%"
 
@@ -2761,6 +2786,12 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry)
+
+    if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
+        if signal == "LONG":
+            decision = "LONG перегрітий — чекати відкат"
+        elif signal == "SHORT":
+            decision = "SHORT перегрітий — чекати відкат"
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
