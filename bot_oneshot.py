@@ -1712,6 +1712,12 @@ def position_management_note(signal, plan, tech, news, event_risk, reversal):
 # ==========================================================
 
 def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority=None, early_warning=None, trust_mode=None):
+
+    if weekend is None:
+        weekend = {"active": False, "score": 0}
+    if cross_market is None:
+        cross_market = {"score": 0}
+
     if priority is None:
         priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
     if early_warning is None:
