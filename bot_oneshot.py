@@ -2811,7 +2811,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
     if late_entry and late_entry.get("late"):
-        lines.append(f"<b>Вхід:</b> {late_entry.get("note")}")
+        lines.append(f"<b>Вхід:</b> {late_entry.get('note')}")
     if pos_note:
         lines.append(f"<b>Позиція:</b> {pos_note}")
 
