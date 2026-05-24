@@ -2612,7 +2612,76 @@ def reversal_risk_note(signal, reversal):
 
 
 
-def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None):
+
+def analyze_late_entry_risk(signal, tech, market):
+    """Detects when the move is already too extended for a clean entry."""
+    change = abs(tech.get("change", 0) or 0)
+    rsi5 = tech.get("rsi_5m") or 50
+    rsi15 = tech.get("rsi_15m") or 50
+    vol = market.get("volatility", {}).get("regime", "NORMAL") if market else "NORMAL"
+
+    late = False
+    label = ""
+    note = ""
+    penalty = 0
+
+    if signal == "LONG" and (change >= 2.0 or rsi5 >= 76 or rsi15 >= 72):
+        late = True
+        label = "LONG активний — пізній вхід"
+        note = "Рух уже частково реалізований. Не доганяти свічку; краще чекати відкат/ретест."
+        penalty = -12
+    elif signal == "SHORT" and (change >= 2.0 or rsi5 <= 24 or rsi15 <= 28):
+        late = True
+        label = "SHORT активний — пізній вхід"
+        note = "Рух уже частково реалізований. Не доганяти падіння; краще чекати відкат/ретест."
+        penalty = -12
+
+    if late and vol == "HIGH VOLATILITY / BREAKOUT MODE":
+        penalty -= 5
+        note += " Волатильність висока."
+
+    return {"late": late, "label": label, "note": note, "penalty": penalty}
+
+
+def apply_expansion_targets(plan, signal, tech, market):
+    """Widen targets/stops when volatility expands or move is already large."""
+    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
+        return plan
+
+    change = abs(tech.get("change", 0) or 0)
+    vol = market.get("volatility", {}).get("regime", "NORMAL") if market else "NORMAL"
+
+    if change < 2.0 and vol != "HIGH VOLATILITY / BREAKOUT MODE":
+        return plan
+
+    entry = float(plan["entry"])
+    stop = float(plan["stop"])
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return plan
+
+    # Wider targets in expansion mode: 1.2R / 2R / 3R
+    if signal == "LONG":
+        plan["tp1"] = round(entry + risk * 1.2, 4)
+        plan["tp2"] = round(entry + risk * 2.0, 4)
+        plan["tp3"] = round(entry + risk * 3.0, 4)
+    elif signal == "SHORT":
+        plan["tp1"] = round(entry - risk * 1.2, 4)
+        plan["tp2"] = round(entry - risk * 2.0, 4)
+        plan["tp3"] = round(entry - risk * 3.0, 4)
+
+    plan["expansion"] = True
+    return plan
+
+
+def probability_note(probability, late_entry):
+    if probability is None:
+        return "немає входу"
+    if late_entry and late_entry.get("late"):
+        return f"{probability}% — ризик пізнього входу"
+    return f"{probability}%"
+
+def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None, late_entry=None):
     """Human-friendly probability estimate for Telegram.
     This is NOT a guarantee. It is a normalized bot estimate based on alignment/risk.
     """
@@ -2668,6 +2737,8 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
 
     if weekend and weekend.get("active"):
         prob -= 5
+    if late_entry and late_entry.get("late"):
+        prob += late_entry.get("penalty", -10)
 
     # Quality adjustment.
     q = str(quality or "")
@@ -2681,13 +2752,15 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     # Keep realistic range.
     return int(max(35, min(82, round(prob))))
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note=''):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
+    if late_entry and late_entry.get("late"):
+        decision = late_entry.get("label") or decision
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend)
+    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry)
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -2709,7 +2782,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "",
         f"<b>Рішення:</b> {decision}",
         f"<b>Впевненість:</b> {confidence}%",
-        f"<b>Ймовірність угоди:</b> {trade_probability}%" if trade_probability is not None else "<b>Ймовірність угоди:</b> немає входу",
+        f"<b>Ймовірність угоди:</b> {probability_note(trade_probability, late_entry)}",
         "",
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
         "",
@@ -2737,6 +2810,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
+    if late_entry and late_entry.get("late"):
+        lines.append(f"<b>Вхід:</b> {late_entry.get("note")}")
     if pos_note:
         lines.append(f"<b>Позиція:</b> {pos_note}")
 
@@ -2860,6 +2935,10 @@ def main():
     plan = adjust_plan_for_rr(plan, signal)
     rr = rr_metrics(plan)
     chase = analyze_chase_protection(signal, tech, market)
+    
+    late_entry = analyze_late_entry_risk(signal, tech, market)
+    plan = apply_expansion_targets(plan, signal, tech, market)
+    rr = rr_metrics(plan)
     pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
 
     tech_side, tech_reason = tech_verdict(tech)
@@ -2943,7 +3022,8 @@ def main():
         cross_market=cross_market,
         rr=rr,
         chase=chase,
-        pos_note=pos_note
+        pos_note=pos_note,
+        late_entry=late_entry
     )
 
     send_telegram(message.strip())
