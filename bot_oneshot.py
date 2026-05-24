@@ -2786,6 +2786,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
         if signal == "LONG":
@@ -2824,7 +2825,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Очікування:</b> {driver['expectation']}",
         f"<b>Джерело:</b> {format_driver_source(driver)}",
         "",
-        f"<b>План:</b> {format_trade_plan(plan)}",
+        f"<b>План:</b> {format_trade_plan(plan) if show_trade_plan else "чекати відкат/ретест, входу зараз немає"}",
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
         f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
@@ -2885,6 +2886,15 @@ def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro,
     if abs(score) >= 80 and aligned >= 2:
         return "B"
     return "C / ризиковий"
+
+
+def should_show_trade_plan(signal, trade_probability, late_entry=None):
+    """Show entry/SL/TP only for high-quality setups."""
+    if signal not in ["LONG", "SHORT"]:
+        return False
+    if late_entry and late_entry.get("late") and (trade_probability or 0) < 65:
+        return False
+    return (trade_probability or 0) >= 65
 
 def format_trade_plan(plan):
     if isinstance(plan, str):
