@@ -46,6 +46,9 @@ VERY_STRONG_DOWN_MOVE_PERCENT = -1.8
 GDELT_QUERIES = []
 
 GOOGLE_NEWS_QUERIES = [
+    'site:reuters.com oil Brent crude OPEC EIA Iran sanctions Hormuz',
+    'site:reuters.com/business/energy oil prices Brent crude',
+    'site:reuters.com Fed Powell dollar yields oil market',
     'Brent crude oil Trump tariff sanctions OPEC EIA',
     'oil prices Brent crude breaking news today',
     'crude oil inventory EIA API OPEC',
@@ -53,6 +56,9 @@ GOOGLE_NEWS_QUERIES = [
 ]
 
 EVENT_QUERIES = [
+    'site:reuters.com EIA crude inventories oil stockpiles',
+    'site:reuters.com OPEC meeting oil production cut increase',
+    'site:reuters.com Iran US talks sanctions oil Hormuz',
     'Fed speech Powell today FOMC oil market',
     'CPI release today Fed inflation oil market',
     'NFP jobs report Fed oil market',
@@ -620,12 +626,18 @@ def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
                 continue
 
             if title:
+                clean_title = BeautifulSoup(title, "html.parser").get_text(" ", strip=True)
+                item_weight = weight
+                item_source = source_name
+                if "Reuters" in clean_title or "reuters.com" in link:
+                    item_weight = max(weight, 1.25)
+                    item_source = "Reuters via Google News"
                 news.append({
-                    "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                    "title": clean_title,
                     "link": link,
-                    "source": source_name,
+                    "source": item_source,
                     "published_at": published_at,
-                    "weight": weight,
+                    "weight": item_weight,
                 })
     except Exception as error:
         print(f"[WARN] Google RSS parse error: {error}")
@@ -2599,12 +2611,83 @@ def reversal_risk_note(signal, reversal):
     return ""
 
 
+
+def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None):
+    """Human-friendly probability estimate for Telegram.
+    This is NOT a guarantee. It is a normalized bot estimate based on alignment/risk.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return None
+
+    prob = 50
+
+    # Confidence contribution, but capped so it does not become unrealistic.
+    try:
+        prob += min(18, max(0, (int(confidence) - 50) * 0.45))
+    except Exception:
+        pass
+
+    target = signal
+    tech_side = technical_bias.get("side", "NEUTRAL")
+    fund_side = fundamental_bias.get("side", "NEUTRAL")
+    event_side = event_risk.get("direction", "MIXED")
+    order_score = orderflow.get("score", 0)
+
+    if tech_side == target:
+        prob += 8
+    elif tech_side in ["LONG", "SHORT"] and tech_side != target:
+        prob -= 10
+
+    if fund_side == target:
+        prob += 7
+    elif fund_side in ["LONG", "SHORT"] and fund_side != target:
+        prob -= 9
+
+    if event_side == target:
+        prob += 5
+    elif event_side in ["LONG", "SHORT"] and event_side != target:
+        prob -= 8
+
+    if target == "LONG" and order_score >= 15:
+        prob += 5
+    elif target == "SHORT" and order_score <= -15:
+        prob += 5
+    elif abs(order_score) < 10:
+        prob -= 3
+
+    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        prob -= 7
+
+    if (reversal or {}).get("side") == "REVERSAL LONG WATCH" and target == "SHORT":
+        prob -= 6
+    if (reversal or {}).get("side") == "REVERSAL SHORT WATCH" and target == "LONG":
+        prob -= 6
+
+    if chase and chase.get("extended"):
+        prob -= 6
+
+    if weekend and weekend.get("active"):
+        prob -= 5
+
+    # Quality adjustment.
+    q = str(quality or "")
+    if "A+" in q:
+        prob += 5
+    elif q == "A":
+        prob += 3
+    elif q.startswith("C"):
+        prob -= 5
+
+    # Keep realistic range.
+    return int(max(35, min(82, round(prob))))
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note=''):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
+    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend)
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -2626,6 +2709,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "",
         f"<b>Рішення:</b> {decision}",
         f"<b>Впевненість:</b> {confidence}%",
+        f"<b>Ймовірність угоди:</b> {trade_probability}%" if trade_probability is not None else "<b>Ймовірність угоди:</b> немає входу",
         "",
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
         "",
@@ -2639,12 +2723,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>План:</b> {format_trade_plan(plan)}",
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
-        f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",
-        f"<b>Priority:</b> {priority_label}",
-        f"<b>Events:</b> {event_risk.get('direction')} / {event_risk.get('risk')}",
-        f"<b>Session:</b> {session.get('session')}",
-        f"<b>Orderflow:</b> {orderflow.get('bias')}",
-    ]
+        f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
 
     risk_text = reversal_risk_note(signal, reversal)
     rev_text = compact_reversal_label(reversal)
@@ -2658,14 +2737,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
-    if rr and rr.get("rr1") is not None:
-        lines.append(f"<b>RR:</b> {rr.get('note')}")
-    if chase and chase.get("extended"):
-        lines.append(f"<b>Вхід:</b> {chase.get('reason')}")
-    if weekend and weekend.get("active"):
-        lines.append(f"<b>Weekend:</b> {weekend.get('note')}")
-    if cross_market:
-        lines.append(f"<b>Cross-market:</b> {cross_market.get('bias')} — {cross_market.get('note')}")
     if pos_note:
         lines.append(f"<b>Позиція:</b> {pos_note}")
 
