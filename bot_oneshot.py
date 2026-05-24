@@ -2636,6 +2636,59 @@ def reversal_risk_note(signal, reversal):
 
 
 
+
+def analyze_exhaustion_cooling(signal, tech, tv=None):
+    """Detects post-pump/dump cooling phase using available TradingView data.
+    No candle history required: uses change, RSI, EMA stretch, and momentum.
+    """
+    price = (tv or {}).get("price") if isinstance(tv, dict) else None
+    price = price or 0
+    change = tech.get("change", 0) or 0
+    rsi5 = tech.get("rsi_5m") or 50
+    rsi15 = tech.get("rsi_15m") or 50
+    ema20 = tech.get("ema20_15m")
+    momentum = tech.get("momentum", "NEUTRAL")
+
+    active = False
+    side = "NEUTRAL"
+    note = ""
+    stretch_pct = 0
+
+    if price and ema20:
+        try:
+            stretch_pct = abs(price - ema20) / price * 100
+        except Exception:
+            stretch_pct = 0
+
+    if signal == "LONG" and change >= 2.5:
+        active = True
+        side = "LONG_OVEREXTENDED"
+        note = "Ринок після сильного імпульсу охолоджується. Новий LONG краще шукати після ретесту або консолідації."
+    elif signal == "SHORT" and change <= -2.5:
+        active = True
+        side = "SHORT_OVEREXTENDED"
+        note = "Ринок після сильного падіння охолоджується. Новий SHORT краще шукати після ретесту або консолідації."
+
+    if signal == "LONG" and (rsi5 >= 76 or rsi15 >= 72 or stretch_pct >= 1.2):
+        active = True
+        side = "LONG_OVEREXTENDED"
+        note = "LONG перегрітий: ціна сильно відірвалась від середньої. Краще чекати відкат/ретест."
+    elif signal == "SHORT" and (rsi5 <= 24 or rsi15 <= 28 or stretch_pct >= 1.2):
+        active = True
+        side = "SHORT_OVEREXTENDED"
+        note = "SHORT перегрітий: ціна сильно відірвалась від середньої. Краще чекати відкат/ретест."
+
+    # If momentum is already neutral after a large move, cooling is more likely.
+    if active and momentum == "NEUTRAL":
+        note = note.replace("Краще чекати", "Momentum слабшає. Краще чекати")
+
+    return {
+        "active": active,
+        "side": side,
+        "note": note,
+        "stretch_pct": round(stretch_pct, 2),
+    }
+
 def analyze_late_entry_risk(signal, tech, market):
     """Detects when the move is already too extended for a clean entry."""
     change = abs(tech.get("change", 0) or 0)
@@ -2777,7 +2830,7 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     # Keep realistic range.
     return int(max(35, min(82, round(prob))))
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
@@ -2789,6 +2842,11 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
+        if signal == "LONG":
+            decision = "LONG перегрітий — чекати відкат"
+        elif signal == "SHORT":
+            decision = "SHORT перегрітий — чекати відкат"
+    if cooling and cooling.get("active"):
         if signal == "LONG":
             decision = "LONG перегрітий — чекати відкат"
         elif signal == "SHORT":
@@ -2842,7 +2900,9 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
-    if late_entry and late_entry.get("late"):
+    if cooling and cooling.get("active"):
+        lines.append(f"<b>Вхід:</b> {cooling.get('note')}")
+    elif late_entry and late_entry.get("late"):
         lines.append(f"<b>Вхід:</b> {late_entry.get('note')}")
     if pos_note:
         lines.append(f"<b>Позиція:</b> {pos_note}")
@@ -2978,6 +3038,8 @@ def main():
     chase = analyze_chase_protection(signal, tech, market)
     
     late_entry = analyze_late_entry_risk(signal, tech, market)
+    
+    cooling = analyze_exhaustion_cooling(signal, tech, tv)
     plan = apply_expansion_targets(plan, signal, tech, market)
     rr = rr_metrics(plan)
     pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
@@ -3064,7 +3126,8 @@ def main():
         rr=rr,
         chase=chase,
         pos_note=pos_note,
-        late_entry=late_entry
+        late_entry=late_entry,
+        cooling=cooling
     )
 
     send_telegram(message.strip())
