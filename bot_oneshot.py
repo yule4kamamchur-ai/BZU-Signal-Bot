@@ -979,6 +979,259 @@ def news_noise_warning(total_news, raw_score, capped_score):
 
 
 
+
+
+# ==========================================================
+# REAL PRICE ACTION + SMC STRUCTURE
+# ==========================================================
+
+OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
+
+
+def get_real_candles(inst_id=OKX_INST_ID, bar="15m", limit=120):
+    """Free public OHLC candles. OKX is used as a stable fallback source.
+    Returns candles oldest -> newest.
+    """
+    url = f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
+    response = safe_get(url, timeout=10, retries=1)
+    if not response:
+        return []
+
+    try:
+        rows = response.json().get("data", [])
+        candles = []
+        for row in rows:
+            candles.append({
+                "ts": int(row[0]),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "volume": float(row[5]) if row[5] is not None else 0.0,
+            })
+        candles.sort(key=lambda x: x["ts"])
+        return candles
+    except Exception as error:
+        print(f"[WARN] real candles parse error: {error}")
+        return []
+
+
+def detect_swing_points(candles, lookback=2):
+    swings_high = []
+    swings_low = []
+    if not candles or len(candles) < lookback * 2 + 5:
+        return swings_high, swings_low
+
+    for i in range(lookback, len(candles) - lookback):
+        current = candles[i]
+        left = candles[i - lookback:i]
+        right = candles[i + 1:i + 1 + lookback]
+
+        if all(current["high"] > c["high"] for c in left + right):
+            swings_high.append({"idx": i, "price": current["high"], "ts": current["ts"]})
+        if all(current["low"] < c["low"] for c in left + right):
+            swings_low.append({"idx": i, "price": current["low"], "ts": current["ts"]})
+
+    return swings_high, swings_low
+
+
+def detect_fvg(candles):
+    """Simple 3-candle FVG / imbalance detection."""
+    if not candles or len(candles) < 5:
+        return {"side": "NONE", "zone": None, "note": "FVG немає"}
+
+    recent = candles[-12:]
+    last_fvg = None
+
+    for i in range(2, len(recent)):
+        c0 = recent[i - 2]
+        c2 = recent[i]
+
+        # Bullish FVG: high of candle 1 below low of candle 3
+        if c0["high"] < c2["low"]:
+            last_fvg = {
+                "side": "LONG",
+                "zone": (round(c0["high"], 4), round(c2["low"], 4)),
+                "note": "bullish imbalance / FVG нижче ціни",
+            }
+
+        # Bearish FVG: low of candle 1 above high of candle 3
+        if c0["low"] > c2["high"]:
+            last_fvg = {
+                "side": "SHORT",
+                "zone": (round(c2["high"], 4), round(c0["low"], 4)),
+                "note": "bearish imbalance / FVG вище ціни",
+            }
+
+    return last_fvg or {"side": "NONE", "zone": None, "note": "FVG немає"}
+
+
+def analyze_smc_structure(candles):
+    """Real price action + SMC structure:
+    - BOS / CHoCH
+    - liquidity sweep
+    - FVG / imbalance
+    - structure bias
+    """
+    if not candles or len(candles) < 30:
+        return {
+            "available": False,
+            "score": 0,
+            "bias": "NEUTRAL",
+            "phase": "NO DATA",
+            "bos": "NONE",
+            "choch": "NONE",
+            "sweep": "NONE",
+            "fvg": {"side": "NONE", "zone": None, "note": "FVG немає"},
+            "summary": "real price action недоступний",
+        }
+
+    swings_high, swings_low = detect_swing_points(candles, lookback=2)
+    last = candles[-1]
+    prev = candles[-2]
+    recent = candles[-20:]
+
+    recent_high = max(c["high"] for c in recent[:-1])
+    recent_low = min(c["low"] for c in recent[:-1])
+    close = last["close"]
+
+    last_swing_high = swings_high[-1]["price"] if swings_high else recent_high
+    last_swing_low = swings_low[-1]["price"] if swings_low else recent_low
+
+    # Simple ATR from real candles
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i]["high"]
+        l = candles[i]["low"]
+        pc = candles[i - 1]["close"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    atr = sum(trs[-14:]) / min(14, len(trs)) if trs else max(close * 0.006, 0.01)
+
+    score = 0
+    notes = []
+    bos = "NONE"
+    choch = "NONE"
+    sweep = "NONE"
+
+    # BOS: close beyond recent structure.
+    if close > last_swing_high:
+        bos = "BOS LONG"
+        score += 24
+        notes.append("BOS LONG: закриття вище swing high")
+    elif close < last_swing_low:
+        bos = "BOS SHORT"
+        score -= 24
+        notes.append("BOS SHORT: закриття нижче swing low")
+
+    # Liquidity sweep: wick takes high/low but close returns back.
+    if last["high"] > recent_high and close < recent_high:
+        sweep = "UPSIDE SWEEP / SHORT RISK"
+        score -= 18
+        notes.append("зняли ліквідність зверху — ризик SHORT-відкату")
+    elif last["low"] < recent_low and close > recent_low:
+        sweep = "DOWNSIDE SWEEP / LONG RISK"
+        score += 18
+        notes.append("зняли ліквідність знизу — ризик LONG-відскоку")
+
+    # CHoCH approximation: previous candle broke one way, current close reverses through midpoint/structure.
+    mid = (recent_high + recent_low) / 2
+    if prev["low"] <= recent_low + atr * 0.15 and close > mid:
+        choch = "CHoCH LONG"
+        score += 16
+        notes.append("CHoCH LONG: після sweep ціна повернулась у діапазон")
+    elif prev["high"] >= recent_high - atr * 0.15 and close < mid:
+        choch = "CHoCH SHORT"
+        score -= 16
+        notes.append("CHoCH SHORT: після sweep ціна повернулась у діапазон")
+
+    fvg = detect_fvg(candles)
+    if fvg.get("side") == "LONG":
+        score += 6
+    elif fvg.get("side") == "SHORT":
+        score -= 6
+
+    # Impulse / cooling from real candles
+    last_body = abs(last["close"] - last["open"])
+    last_range = max(last["high"] - last["low"], 1e-9)
+    body_ratio = last_body / last_range
+
+    if last["close"] > last["open"] and body_ratio >= 0.60:
+        score += 8
+        notes.append("сильна bullish candle")
+    elif last["close"] < last["open"] and body_ratio >= 0.60:
+        score -= 8
+        notes.append("сильна bearish candle")
+
+    if score >= 22:
+        bias = "LONG"
+    elif score <= -22:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    if bos != "NONE":
+        phase = "BREAKOUT / BOS"
+    elif choch != "NONE":
+        phase = "REVERSAL / CHoCH"
+    elif sweep != "NONE":
+        phase = "LIQUIDITY SWEEP"
+    else:
+        phase = "RANGE / WAIT"
+
+    return {
+        "available": True,
+        "score": int(score),
+        "bias": bias,
+        "phase": phase,
+        "bos": bos,
+        "choch": choch,
+        "sweep": sweep,
+        "fvg": fvg,
+        "swing_high": round(last_swing_high, 4),
+        "swing_low": round(last_swing_low, 4),
+        "atr": round(atr, 4),
+        "summary": "; ".join(notes[:3]) if notes else "SMC структура нейтральна",
+    }
+
+
+def smc_probability_adjustment(signal, smc):
+    if not smc or not smc.get("available") or signal not in ["LONG", "SHORT"]:
+        return 0
+
+    bias = smc.get("bias", "NEUTRAL")
+    phase = smc.get("phase", "")
+    sweep = smc.get("sweep", "NONE")
+
+    adjust = 0
+    if bias == signal:
+        adjust += 8
+    elif bias in ["LONG", "SHORT"] and bias != signal:
+        adjust -= 12
+
+    if signal == "LONG" and sweep.startswith("UPSIDE SWEEP"):
+        adjust -= 8
+    if signal == "SHORT" and sweep.startswith("DOWNSIDE SWEEP"):
+        adjust -= 8
+
+    if phase == "RANGE / WAIT":
+        adjust -= 4
+
+    return adjust
+
+
+def smc_short_text(smc):
+    if not smc or not smc.get("available"):
+        return ""
+    phase = smc.get("phase", "RANGE / WAIT")
+    bias = smc.get("bias", "NEUTRAL")
+    if phase == "BREAKOUT / BOS":
+        return f"Структура: {bias} підтверджений BOS"
+    if phase == "REVERSAL / CHoCH":
+        return f"Структура: можливий розворот {bias}"
+    if phase == "LIQUIDITY SWEEP":
+        return "Структура: liquidity sweep — чекати підтвердження"
+    return "Структура: діапазон — краще чекати"
+
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
@@ -2759,7 +3012,7 @@ def probability_note(probability, late_entry):
         return f"{probability}% — ризик пізнього входу"
     return f"{probability}%"
 
-def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None, late_entry=None):
+def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None, late_entry=None, smc=None):
     """Human-friendly probability estimate for Telegram.
     This is NOT a guarantee. It is a normalized bot estimate based on alignment/risk.
     """
@@ -2818,6 +3071,8 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     if late_entry and late_entry.get("late"):
         prob += late_entry.get("penalty", -10)
 
+    prob += smc_probability_adjustment(signal, smc)
+
     # Quality adjustment.
     q = str(quality or "")
     if "A+" in q:
@@ -2830,7 +3085,7 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     # Keep realistic range.
     return int(max(35, min(82, round(prob))))
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
@@ -2838,7 +3093,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry)
+    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
@@ -3014,6 +3269,12 @@ def main():
     event_items = get_event_news()
 
     tech = analyze_technical(tv)
+    
+    real_candles = get_real_candles()
+    smc = analyze_smc_structure(real_candles)
+    if smc.get('available'):
+        tech['score'] += int(smc.get('score', 0))
+        tech.setdefault('confirmations', []).append('SMC: ' + smc.get('summary', ''))
     news = analyze_news(fresh_news)
     orderflow = analyze_free_orderflow(tv)
     macro_data = get_macro_quant_data()
@@ -3060,6 +3321,7 @@ def main():
     print(f"NEWS RAW SCORE: {news['raw_score']}")
     print(f"NEWS CAPPED SCORE: {news['score']}")
     print(f"TECH SCORE: {tech['score']}")
+    print(f"SMC STRUCTURE: {smc.get('phase')} | {smc.get('bias')} | SCORE: {smc.get('score')} | {smc.get('summary')}")
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
@@ -3127,6 +3389,7 @@ def main():
         chase=chase,
         pos_note=pos_note,
         late_entry=late_entry,
+        smc=smc,
         cooling=cooling
     )
 
