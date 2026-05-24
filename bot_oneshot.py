@@ -1553,6 +1553,160 @@ def decide_current_priority(tech, news, event_risk, orderflow, early_warning):
 
     return "BALANCED", "Ринок змішаний — потрібне підтвердження"
 
+
+# ==========================================================
+# WEEKEND / RR / CHASE / POSITION / CROSS-MARKET HELPERS
+# ==========================================================
+
+def analyze_weekend_mode():
+    wd = now_utc().weekday()
+    if wd == 5:
+        return {"active": True, "label": "СУБОТА", "score": -18, "note": "Вихідний: нижча ліквідність, сигнали менш надійні."}
+    if wd == 6:
+        return {"active": True, "label": "НЕДІЛЯ", "score": -22, "note": "Вихідний: краще відкривати тільки дуже сильні сетапи."}
+    return {"active": False, "label": "РОБОЧИЙ ДЕНЬ", "score": 0, "note": "Звичайний торговий день."}
+
+
+def get_cross_market_data():
+    result = {}
+    for name, symbol, screener in [
+        ("BTC", "BINANCE:BTCUSDT", "crypto"),
+        ("DXY", "TVC:DXY", "cfd"),
+        ("SPX", "SP:SPX", "cfd"),
+        ("GOLD", "TVC:GOLD", "cfd"),
+    ]:
+        values = get_tradingview_scan(symbol, screener, ["close", "change", "Recommend.All|15"])
+        if not values:
+            continue
+        try:
+            result[name] = {
+                "price": float(values[0]) if values[0] is not None else None,
+                "change": float(values[1]) if values[1] is not None else 0.0,
+                "rec15": float(values[2]) if values[2] is not None else 0.0,
+            }
+        except Exception:
+            pass
+    return result
+
+
+def analyze_cross_market(cross, tech):
+    if not cross:
+        return {"score": 0, "bias": "NEUTRAL", "note": "нейтрально", "data": {}}
+
+    btc = cross.get("BTC", {}).get("change", 0) or 0
+    dxy = cross.get("DXY", {}).get("change", 0) or 0
+    spx = cross.get("SPX", {}).get("change", 0) or 0
+    gold = cross.get("GOLD", {}).get("change", 0) or 0
+    oil = tech.get("change", 0) or 0
+
+    score = 0
+    notes = []
+
+    if oil < -0.5 and btc < -0.4 and spx < -0.2:
+        score -= 10
+        notes.append("oil/BTC/SPX слабкі — risk-off")
+    if oil > 0.5 and btc < -0.4:
+        score += 6
+        notes.append("oil росте проти BTC — oil/news драйвер")
+    if dxy > 0.15:
+        score -= 6
+        notes.append("DXY росте — тиск на ризик")
+    elif dxy < -0.15:
+        score += 5
+        notes.append("DXY слабшає — легше для commodities")
+    if gold > 0.4 and btc < 0:
+        score -= 3
+        notes.append("gold strong/BTC weak — захисний режим")
+
+    if score >= 8:
+        bias = "LONG SUPPORT"
+    elif score <= -8:
+        bias = "SHORT PRESSURE"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "score": score,
+        "bias": bias,
+        "note": "; ".join(notes[:2]) if notes else "нейтрально",
+        "data": {"BTC": round(btc, 2), "DXY": round(dxy, 2), "SPX": round(spx, 2), "GOLD": round(gold, 2)},
+    }
+
+
+def adjust_plan_for_rr(plan, signal):
+    # SMC HYBRID plan already includes liquidity + minimum RR targets.
+    if isinstance(plan, dict) and str(plan.get("method", "")).startswith("SMC HYBRID"):
+        return plan
+    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
+        return plan
+    entry = float(plan["entry"])
+    stop = float(plan["stop"])
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return plan
+    if signal == "LONG":
+        plan["tp1"] = round(entry + risk * 1.0, 4)
+        plan["tp2"] = round(entry + risk * 1.5, 4)
+        plan["tp3"] = round(entry + risk * 2.0, 4)
+    elif signal == "SHORT":
+        plan["tp1"] = round(entry - risk * 1.0, 4)
+        plan["tp2"] = round(entry - risk * 1.5, 4)
+        plan["tp3"] = round(entry - risk * 2.0, 4)
+    return plan
+
+
+def rr_metrics(plan):
+    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
+        return {"rr1": None, "rr2": None, "ok": True, "note": ""}
+    entry = float(plan["entry"])
+    stop = float(plan["stop"])
+    tp1 = float(plan["tp1"])
+    tp2 = float(plan["tp2"])
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return {"rr1": None, "rr2": None, "ok": False, "note": "RR помилка"}
+    rr1 = abs(tp1 - entry) / risk
+    rr2 = abs(tp2 - entry) / risk
+    return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.0 or rr2 >= 1.4, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
+
+
+def analyze_chase_protection(signal, tech, market):
+    change = abs(tech.get("change", 0) or 0)
+    rsi5 = tech.get("rsi_5m") or 50
+    rsi15 = tech.get("rsi_15m") or 50
+    vol = market.get("volatility", {}).get("regime", "NORMAL")
+    extended = False
+    reason = ""
+
+    if signal == "LONG" and (change >= 1.4 or rsi5 >= 72 or rsi15 >= 68):
+        extended = True
+        reason = "LONG після сильного росту — краще чекати відкат/ретест."
+    elif signal == "SHORT" and (change >= 1.4 or rsi5 <= 28 or rsi15 <= 32):
+        extended = True
+        reason = "SHORT після сильного падіння — краще чекати відкат/ретест."
+
+    if extended and vol == "HIGH VOLATILITY / BREAKOUT MODE":
+        reason += " Висока волатильність підсилює ризик відскоку."
+
+    return {"extended": extended, "reason": reason}
+
+
+def position_management_note(signal, plan, tech, news, event_risk, reversal):
+    rev_side = (reversal or {}).get("side", "NONE")
+    if signal == "LONG":
+        if rev_side == "REVERSAL SHORT WATCH" or tech.get("trend") == "DOWN":
+            return "Якщо вже в LONG: стоп обовʼязково; при слабкості 5m/15m краще скоротити або вийти."
+        return "Якщо вже в LONG: після TP1 частково фіксувати і підтягнути стоп."
+    if signal == "SHORT":
+        if rev_side == "REVERSAL LONG WATCH" or event_risk.get("direction") == "LONG":
+            return "Якщо вже в SHORT: стоп обовʼязково; bullish-новини можуть дати різкий відскок."
+        return "Якщо вже в SHORT: після TP1 частково фіксувати і підтягнути стоп."
+    if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 30:
+        return "Якщо вже в LONG: тримати тільки зі стопом; якщо техніка не підтвердить — скоротити/вийти."
+    if event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -20:
+        return "Якщо вже в SHORT: тримати тільки зі стопом; якщо техніка не підтвердить — скоротити/вийти."
+    return "Якщо вже в позиції: не усереднювати; чекати підтвердження або виходити при зламі сетапу."
+
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
@@ -1692,6 +1846,12 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         signal = "NO SIGNAL"
         signal_type = "SHOCK UP / SHORT BLOCKED"
 
+        # Weekend mode: do not allow weak/risky trades on Saturday/Sunday.
+    if weekend and weekend.get("active") and signal in ["LONG", "SHORT"]:
+        if "ПІДТВЕРДЖЕНИЙ" not in signal_type and abs(score) < 140:
+            signal = "NO SIGNAL"
+            signal_type = "WEEKEND MODE / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
+
     confidence = min(95, max(0, abs(score)))
 
     risk_note = "Нормальний ризик"
@@ -1719,48 +1879,105 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     return signal, signal_type, score, confidence, risk_note
 
 
-def make_trade_plan(signal, signal_type, price, tech, reversal=None):
+
+def liquidity_buffer(atr, price, session=None, event_risk=None):
+    """Dynamic buffer around likely liquidity zones.
+    Wider during NY/event risk; smaller during quieter sessions.
+    """
+    buffer = atr * 0.22
+    session_name = (session or {}).get("session", "")
+    event_level = (event_risk or {}).get("risk", "")
+
+    if session_name == "NEW YORK":
+        buffer *= 1.25
+    elif session_name == "ASIA":
+        buffer *= 0.85
+
+    if event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        buffer *= 1.25
+
+    # Minimum micro-buffer so stop is not exactly on the obvious level.
+    return max(buffer, price * 0.0008)
+
+
+def estimate_liquidity_levels(price, tech):
+    """Approximate SMC-style liquidity levels using available free data.
+    Since we do not have full candle history, this estimates likely swing/liquidity zones
+    from ATR and EMA15 levels.
+    """
     atr = tech.get("atr_15m") or price * 0.006
+    ema20 = tech.get("ema20_15m")
+    ema50 = tech.get("ema50_15m")
 
-    if signal == "NO SIGNAL":
-        return {
-            "entry": None,
-            "stop": None,
-            "tp1": None,
-            "tp2": None,
-            "tp3": None,
-            "note": "Не входити. Чекати підтвердження.",
-        }
+    # Local estimated liquidity pools.
+    recent_low = price - atr * 0.85
+    recent_high = price + atr * 0.85
 
-    # Important:
-    # Reversal is a RISK NOTE only. It must never replace the trade plan
-    # when the bot gives TRADE LONG or TRADE SHORT.
+    if ema20:
+        if ema20 < price:
+            recent_low = min(recent_low, ema20 - atr * 0.20)
+        elif ema20 > price:
+            recent_high = max(recent_high, ema20 + atr * 0.20)
+
+    if ema50:
+        if ema50 < price:
+            recent_low = min(recent_low, ema50 - atr * 0.25)
+        elif ema50 > price:
+            recent_high = max(recent_high, ema50 + atr * 0.25)
+
+    # Wider liquidity targets.
+    lower_liquidity_1 = price - atr * 1.25
+    lower_liquidity_2 = price - atr * 1.90
+    lower_liquidity_3 = price - atr * 2.70
+
+    upper_liquidity_1 = price + atr * 1.25
+    upper_liquidity_2 = price + atr * 1.90
+    upper_liquidity_3 = price + atr * 2.70
+
+    return {
+        "recent_low": recent_low,
+        "recent_high": recent_high,
+        "lower_liquidity_1": lower_liquidity_1,
+        "lower_liquidity_2": lower_liquidity_2,
+        "lower_liquidity_3": lower_liquidity_3,
+        "upper_liquidity_1": upper_liquidity_1,
+        "upper_liquidity_2": upper_liquidity_2,
+        "upper_liquidity_3": upper_liquidity_3,
+    }
+
+
+def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None):
+    """Liquidity + ATR + RR hybrid.
+    Stop:
+      LONG  -> below estimated liquidity low + buffer
+      SHORT -> above estimated liquidity high + buffer
+    TP:
+      Uses liquidity targets, but never less than RR 1.0 / 1.5 / 2.0
+    """
+    atr = tech.get("atr_15m") or price * 0.006
+    levels = estimate_liquidity_levels(price, tech)
+    buffer = liquidity_buffer(atr, price, session, event_risk)
+
     if signal == "LONG":
-        if "ІМПУЛЬСНИЙ" in signal_type or "EARLY" in signal_type:
-            stop = price - atr * 1.1
-            tp1 = price + atr * 0.9
-            tp2 = price + atr * 1.6
-            tp3 = price + atr * 2.4
-            note = "LONG: краще входити після відкату/ретесту, не доганяти свічку."
-        else:
-            stop = price - atr * 1.5
-            tp1 = price + atr * 1.2
-            tp2 = price + atr * 2.0
-            tp3 = price + atr * 3.0
-            note = "LONG: вхід тільки якщо ціна утримує підтримку/EMA."
+        stop = levels["recent_low"] - buffer
+        risk = max(price - stop, atr * 0.75)
+
+        tp1 = max(levels["upper_liquidity_1"], price + risk * 1.0)
+        tp2 = max(levels["upper_liquidity_2"], price + risk * 1.5)
+        tp3 = max(levels["upper_liquidity_3"], price + risk * 2.0)
+
+        note = "SMC hybrid LONG: стоп нижче liquidity low/EMA-зони з ATR-буфером; TP по ліквідності + RR."
+
     elif signal == "SHORT":
-        if "ІМПУЛЬСНИЙ" in signal_type or "EARLY" in signal_type:
-            stop = price + atr * 1.1
-            tp1 = price - atr * 0.9
-            tp2 = price - atr * 1.6
-            tp3 = price - atr * 2.4
-            note = "SHORT: краще входити після відкату/ретесту, не доганяти червону свічку."
-        else:
-            stop = price + atr * 1.5
-            tp1 = price - atr * 1.2
-            tp2 = price - atr * 2.0
-            tp3 = price - atr * 3.0
-            note = "SHORT: вхід тільки після підтвердження продавців/ретесту."
+        stop = levels["recent_high"] + buffer
+        risk = max(stop - price, atr * 0.75)
+
+        tp1 = min(levels["lower_liquidity_1"], price - risk * 1.0)
+        tp2 = min(levels["lower_liquidity_2"], price - risk * 1.5)
+        tp3 = min(levels["lower_liquidity_3"], price - risk * 2.0)
+
+        note = "SMC hybrid SHORT: стоп вище liquidity high/EMA-зони з ATR-буфером; TP по ліквідності + RR."
+
     else:
         return {
             "entry": None,
@@ -1769,6 +1986,7 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None):
             "tp2": None,
             "tp3": None,
             "note": "Не входити. Чекати підтвердження.",
+            "method": "NO TRADE",
         }
 
     return {
@@ -1778,7 +1996,17 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None):
         "tp2": round(tp2, 4),
         "tp3": round(tp3, 4),
         "note": note,
+        "method": "SMC HYBRID / Liquidity + ATR + RR",
     }
+
+
+def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None):
+    """Main plan generator.
+    Uses SMC-style hybrid logic:
+    - Stop behind estimated liquidity/swing zone, not just random ATR.
+    - TP targets use liquidity zones and minimum RR.
+    """
+    return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk)
 
 
 def side_from_score(score, long_thr=15, short_thr=-15):
@@ -2374,7 +2602,7 @@ def reversal_risk_note(signal, reversal):
     return ""
 
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note=''):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
@@ -2432,6 +2660,17 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         lines.append("<b>Ризик:</b> можливий SHORT-відкат пізніше")
     elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
+
+    if rr and rr.get("rr1") is not None:
+        lines.append(f"<b>RR:</b> {rr.get('note')}")
+    if chase and chase.get("extended"):
+        lines.append(f"<b>Вхід:</b> {chase.get('reason')}")
+    if weekend and weekend.get("active"):
+        lines.append(f"<b>Weekend:</b> {weekend.get('note')}")
+    if cross_market:
+        lines.append(f"<b>Cross-market:</b> {cross_market.get('bias')} — {cross_market.get('note')}")
+    if pos_note:
+        lines.append(f"<b>Позиція:</b> {pos_note}")
 
     lines.extend([
         "",
@@ -2539,13 +2778,21 @@ def main():
     market = analyze_market_structure(tv, tech)
     oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
     session = analyze_session_context()
+    
+    weekend = analyze_weekend_mode()
+    cross_data = get_cross_market_data()
+    cross_market = analyze_cross_market(cross_data, tech)
     reversal = analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
     priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
-        tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority
+        tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority, weekend, cross_market
     )
-    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal)
+    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
+    plan = adjust_plan_for_rr(plan, signal)
+    rr = rr_metrics(plan)
+    chase = analyze_chase_protection(signal, tech, market)
+    pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
 
     tech_side, tech_reason = tech_verdict(tech)
     news_side, news_reason = news_verdict(news)
@@ -2569,6 +2816,8 @@ def main():
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
     print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
     print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
+    print(f"WEEKEND: {weekend['label']} | {weekend['note']}")
+    print(f"CROSS-MARKET: {cross_market['bias']} | SCORE: {cross_market['score']} | {cross_market['note']}")
     print(f"PRIORITY: {priority['regime']} | DOMINANT: {priority['dominant']} | P-SCORE: {priority['priority_score']}")
     if "trust_mode" not in locals():
         early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
@@ -2622,6 +2871,11 @@ def main():
         reversal=reversal,
         priority=priority,
         final_summary=summary,
+        weekend=weekend,
+        cross_market=cross_market,
+        rr=rr,
+        chase=chase,
+        pos_note=pos_note
     )
 
     send_telegram(message.strip())
