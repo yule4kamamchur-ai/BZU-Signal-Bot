@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import time
 import requests
 import xml.etree.ElementTree as ET
@@ -13,9 +12,6 @@ from urllib.parse import quote_plus
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
-SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", "last_signal.json")
-SIGNAL_MEMORY_LIMIT = int(os.getenv("SIGNAL_MEMORY_LIMIT", "3"))
-
 
 TRADINGVIEW_SYMBOLS = [
     ("BINANCE:BZUSDT.P", "crypto"),
@@ -174,173 +170,6 @@ EVENT_SHORT_WORDS = [
 
 def now_utc():
     return datetime.now(timezone.utc)
-
-
-# ==========================================================
-# LIGHT SIGNAL MEMORY (LAST 1-3 SIGNALS)
-# ==========================================================
-
-def load_signal_memory(path=SIGNAL_MEMORY_FILE):
-    """Load last signals from a tiny local JSON file.
-    Safe for GitHub Actions: if the file is missing/corrupt, returns empty history.
-    """
-    try:
-        if not path or not os.path.exists(path):
-            return []
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            data = data.get("signals", [])
-        if not isinstance(data, list):
-            return []
-        return data[-SIGNAL_MEMORY_LIMIT:]
-    except Exception as error:
-        print(f"[WARN] signal memory load error: {error}")
-        return []
-
-
-def save_signal_memory(snapshot, path=SIGNAL_MEMORY_FILE):
-    """Save only the last few compact signal snapshots.
-    It does not store full news/candles, so it does not overload the bot.
-    """
-    try:
-        history = load_signal_memory(path)
-        history.append(snapshot)
-        history = history[-SIGNAL_MEMORY_LIMIT:]
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"signals": history}, f, ensure_ascii=False, indent=2)
-    except Exception as error:
-        print(f"[WARN] signal memory save error: {error}")
-
-
-def infer_memory_direction(signal, signal_type, summary, technical_bias, fundamental_bias, reversal=None):
-    """Infer market direction for memory even when internal signal is neutral.
-    This prevents confusing states like NO SIGNAL with high confidence.
-    """
-    if signal in ["LONG", "SHORT"]:
-        return signal
-
-    text = f"{signal_type} {summary}".upper()
-    if "LONG" in text and "SHORT" not in text:
-        return "LONG"
-    if "SHORT" in text and "LONG" not in text:
-        return "SHORT"
-
-    if isinstance(reversal, dict):
-        rev_side = str(reversal.get("side", "")).upper()
-        if "LONG" in rev_side and "SHORT" not in rev_side:
-            return "LONG"
-        if "SHORT" in rev_side and "LONG" not in rev_side:
-            return "SHORT"
-
-    fund_side = fundamental_bias.get("side", "NEUTRAL") if isinstance(fundamental_bias, dict) else "NEUTRAL"
-    tech_side = technical_bias.get("side", "NEUTRAL") if isinstance(technical_bias, dict) else "NEUTRAL"
-    fund_score = abs(fundamental_bias.get("score", 0)) if isinstance(fundamental_bias, dict) else 0
-    tech_score = abs(technical_bias.get("score", 0)) if isinstance(technical_bias, dict) else 0
-
-    if fund_side in ["LONG", "SHORT"] and fund_score >= tech_score:
-        return fund_side
-    if tech_side in ["LONG", "SHORT"]:
-        return tech_side
-    return "NEUTRAL"
-
-
-def build_signal_snapshot(tv, signal, signal_type, direction, confidence, trade_probability, technical_bias, fundamental_bias, smc=None, reversal=None):
-    return {
-        "ts": now_utc().isoformat(),
-        "price": round(float(tv.get("price", 0)), 4),
-        "change": round(float(tv.get("change", 0) or 0), 4),
-        "signal": signal,
-        "signal_type": signal_type,
-        "direction": direction,
-        "confidence": int(confidence or 0),
-        "entry_quality": int(trade_probability or 0),
-        "tech_score": int(technical_bias.get("score", 0)) if isinstance(technical_bias, dict) else 0,
-        "news_score": int(fundamental_bias.get("score", 0)) if isinstance(fundamental_bias, dict) else 0,
-        "smc_bias": (smc or {}).get("bias", "NEUTRAL") if isinstance(smc, dict) else "NEUTRAL",
-        "reversal": (reversal or {}).get("side", "NONE") if isinstance(reversal, dict) else "NONE",
-    }
-
-
-def analyze_signal_memory(history, current):
-    """Light context filter: continuation/reversal/whipsaw awareness.
-    It changes entry quality only slightly, so old signals cannot dominate the current market.
-    """
-    result = {
-        "available": False,
-        "adjust": 0,
-        "context_text": "",
-        "no_entry_reason": "",
-        "status": "NEW",
-    }
-    if not history:
-        return result
-
-    prev = history[-1]
-    result["available"] = True
-    prev_dir = prev.get("direction", "NEUTRAL")
-    curr_dir = current.get("direction", "NEUTRAL")
-    prev_price = float(prev.get("price", 0) or 0)
-    curr_price = float(current.get("price", 0) or 0)
-    prev_quality = int(prev.get("entry_quality", 0) or 0)
-    curr_quality = int(current.get("entry_quality", 0) or 0)
-
-    move_pct = ((curr_price - prev_price) / prev_price * 100) if prev_price else 0
-    flip = prev_dir in ["LONG", "SHORT"] and curr_dir in ["LONG", "SHORT"] and prev_dir != curr_dir
-    same = prev_dir == curr_dir and curr_dir in ["LONG", "SHORT"]
-
-    # Several direction changes in the last 3 signals = noisy market.
-    dirs = [x.get("direction", "NEUTRAL") for x in history[-3:]] + [curr_dir]
-    flips_count = 0
-    clean_dirs = [d for d in dirs if d in ["LONG", "SHORT"]]
-    for a, b in zip(clean_dirs, clean_dirs[1:]):
-        if a != b:
-            flips_count += 1
-
-    if same:
-        if (curr_dir == "LONG" and move_pct > 0) or (curr_dir == "SHORT" and move_pct < 0):
-            result["adjust"] += 5
-            result["status"] = "CONTINUATION_CONFIRMED"
-            result["context_text"] = f"Було: {prev_dir} {prev.get('confidence', 0)}% по {prev_price}. Зараз: {curr_dir} {current.get('confidence', 0)}% по {curr_price}. Контекст: продовження підтверджується ціною."
-        else:
-            result["adjust"] -= 4
-            result["status"] = "CONTINUATION_WEAK"
-            result["context_text"] = f"Було: {prev_dir} {prev.get('confidence', 0)}% по {prev_price}. Зараз: {curr_dir} {current.get('confidence', 0)}% по {curr_price}. Контекст: напрямок той самий, але ціна ще не підтвердила."
-            result["no_entry_reason"] = "попередній напрямок ще не підтверджений ціною"
-
-    elif flip:
-        # If previous direction failed by price, a reversal is more credible, otherwise be careful.
-        previous_failed = (prev_dir == "LONG" and move_pct < -0.15) or (prev_dir == "SHORT" and move_pct > 0.15)
-        if previous_failed:
-            result["adjust"] += 4
-            result["status"] = "REVERSAL_CONFIRMED_BY_PRICE"
-            result["context_text"] = f"Було: {prev_dir} {prev.get('confidence', 0)}% по {prev_price}. Зараз: {curr_dir} {current.get('confidence', 0)}% по {curr_price}. Контекст: попередній напрямок не підтвердився, можливий розворот."
-        else:
-            result["adjust"] -= 8
-            result["status"] = "FLIP_NEEDS_CONFIRMATION"
-            result["context_text"] = f"Було: {prev_dir} {prev.get('confidence', 0)}% по {prev_price}. Зараз: {curr_dir} {current.get('confidence', 0)}% по {curr_price}. Контекст: зміна напрямку без чіткого підтвердження."
-            result["no_entry_reason"] = "напрямок змінився від попереднього сигналу — потрібен ретест/підтвердження"
-
-    else:
-        result["context_text"] = f"Попередній сигнал: {prev_dir} {prev.get('confidence', 0)}% по {prev_price}. Зараз: {curr_dir} {current.get('confidence', 0)}%."
-
-    if flips_count >= 2:
-        result["adjust"] -= 6
-        result["status"] = "WHIPSAW_RISK"
-        result["no_entry_reason"] = "останні сигнали часто змінювали напрямок — ризик шуму/whipsaw"
-
-    # Do not let memory dominate: cap adjustment.
-    result["adjust"] = max(-10, min(7, int(result["adjust"])))
-    return result
-
-
-def apply_memory_to_trade_probability(trade_probability, memory_context):
-    if trade_probability is None:
-        return None
-    if not memory_context or not memory_context.get("available"):
-        return trade_probability
-    adjusted = int(trade_probability) + int(memory_context.get("adjust", 0))
-    return max(0, min(82, adjusted))
 
 
 def safe_get(url, timeout=12, retries=1):
@@ -3612,7 +3441,7 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     prob = cap_countertrend_probability(prob, signal, tech or {}, smc)
     return int(max(30, min(82, round(prob))))
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, memory_context=None):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
@@ -3621,7 +3450,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
-    trade_probability = apply_memory_to_trade_probability(trade_probability, memory_context)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
@@ -3700,19 +3528,13 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
         f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
 
-    if memory_context and memory_context.get("available") and memory_context.get("context_text"):
-        lines.append(f"<b>Контекст:</b> {memory_context.get('context_text')}")
-
     smc_note = smc_conflict_note(smc)
     if smc_note:
         lines.append(f"<b>{smc_note}</b>")
 
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
     if no_entry_active:
-        reason_text = no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry, cooling)
-        if memory_context and memory_context.get("no_entry_reason"):
-            reason_text = f"{reason_text}; {memory_context.get('no_entry_reason')}"
-        lines.append(f"<b>Чому не входити зараз:</b> {reason_text}")
+        lines.append(f"<b>Чому не входити зараз:</b> {no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry, cooling)}")
 
     risk_text = reversal_risk_note(signal, reversal)
     rev_text = compact_reversal_label(reversal)
@@ -3945,18 +3767,6 @@ def main():
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
     )
 
-    memory_history = load_signal_memory()
-    raw_trade_probability = estimate_trade_probability(
-        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
-        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
-    )
-    memory_direction = infer_memory_direction(signal, signal_type, summary, technical_bias, fundamental_bias, reversal)
-    current_memory_snapshot = build_signal_snapshot(
-        tv, signal, signal_type, memory_direction, confidence, raw_trade_probability,
-        technical_bias, fundamental_bias, smc, reversal
-    )
-    memory_context = analyze_signal_memory(memory_history, current_memory_snapshot)
-
     reversal_label = reversal_display_label(signal, reversal)
     message = compact_telegram_message(
         tv=tv,
@@ -3985,14 +3795,8 @@ def main():
         late_entry=late_entry,
         smc=smc,
         cooling=cooling,
-        tech=tech,
-        memory_context=memory_context
+        tech=tech
     )
-
-    adjusted_trade_probability = apply_memory_to_trade_probability(raw_trade_probability, memory_context)
-    current_memory_snapshot["entry_quality"] = int(adjusted_trade_probability or 0)
-    current_memory_snapshot["memory_status"] = memory_context.get("status", "NEW") if isinstance(memory_context, dict) else "NEW"
-    save_signal_memory(current_memory_snapshot)
 
     send_telegram(message.strip())
     print("TELEGRAM SENT")
