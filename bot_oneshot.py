@@ -3330,7 +3330,7 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     prob = cap_countertrend_probability(prob, signal, tech or {}, smc)
     return int(max(30, min(82, round(prob))))
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
@@ -3646,7 +3646,8 @@ def main():
         pos_note=pos_note,
         late_entry=late_entry,
         smc=smc,
-        cooling=cooling
+        cooling=cooling,
+        tech=tech
     )
 
     send_telegram(message.strip())
