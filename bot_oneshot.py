@@ -3371,8 +3371,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
         f"<b>Рішення:</b> {decision}",
-        # Bias = ймовірний напрямок ринку, а не якість входу
-        f"<b>Напрямок ринку (Bias):</b> {confidence}%",
+        f"<b>Напрямок ринку:</b> {signal} ({confidence}%)",
         # Якість входу = наскільки хороший поточний сетап для входу
         f"<b>Якість входу:</b> {probability_note(trade_probability, late_entry)}",
         "",
