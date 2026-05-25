@@ -1473,6 +1473,80 @@ def cap_countertrend_probability(probability, signal, tech, smc):
 
     return probability
 
+
+def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
+    """Protects from late continuation entries after an already extended dump/pump.
+
+    Main idea:
+    - Do not allow 5/5 SHORT after a sharp dump unless price action confirms continuation.
+    - Do not allow 5/5 LONG after a sharp pump unless price action confirms continuation.
+    - If news/events are against the continuation, force WAIT/RETEST.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return {"active": False, "cap": None, "reason": ""}
+
+    tech = tech or {}
+    smc = smc or {}
+    news = news or {}
+    event_risk = event_risk or {}
+
+    change = tech.get("change", 0) or 0
+    momentum = tech.get("momentum", "NEUTRAL")
+
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("absorption", "NONE")
+
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    strong_dump = change <= -1.0 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
+    strong_pump = change >= 1.0 or momentum in ["STRONG UP", "VERY STRONG UP"]
+
+    short_confirmed = (
+        smc_bias == "SHORT"
+        or bos == "BOS SHORT"
+        or vol_bias == "SHORT"
+        or absorption == "BEARISH ABSORPTION"
+    )
+    long_confirmed = (
+        smc_bias == "LONG"
+        or bos == "BOS LONG"
+        or vol_bias == "LONG"
+        or absorption == "BULLISH ABSORPTION"
+    )
+
+    # SHORT after a dump is dangerous if structure/volume did not confirm continuation.
+    if signal == "SHORT" and strong_dump:
+        if not short_confirmed:
+            cap = 54
+            reason = "SHORT після сильного дампу без SMC/BOS/volume підтвердження — ризик відскоку"
+            if news_score >= 35 or event_side == "LONG" or long_confirmed or choch == "CHoCH LONG":
+                cap = 49
+                reason = "SHORT запізнений: дамп уже був, bullish-новини/відскок проти входу"
+            return {"active": True, "cap": cap, "reason": reason}
+
+    # LONG after a pump is dangerous if structure/volume did not confirm continuation.
+    if signal == "LONG" and strong_pump:
+        if not long_confirmed:
+            cap = 54
+            reason = "LONG після сильного пампу без SMC/BOS/volume підтвердження — ризик відкату"
+            if news_score <= -35 or event_side == "SHORT" or short_confirmed or choch == "CHoCH SHORT":
+                cap = 49
+                reason = "LONG запізнений: памп уже був, bearish-фактори/відкат проти входу"
+            return {"active": True, "cap": cap, "reason": reason}
+
+    return {"active": False, "cap": None, "reason": ""}
+
+
+def extension_exhaustion_reason(signal, tech, smc, news=None, event_risk=None):
+    info = extension_exhaustion_filter(signal, tech, smc, news, event_risk)
+    return info.get("reason", "") if info.get("active") else ""
+
+
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
@@ -3269,10 +3343,10 @@ def entry_quality_scale(probability, late_entry=None):
     if late_entry and late_entry.get("late"):
         suffix = " — пізній вхід, краще чекати відкат"
 
-    if probability < 45:
-        return f"1/5 — дуже слабкий сетап ({probability}%){suffix}"
+    if probability < 50:
+        return f"0/5 — немає входу ({probability}%){suffix}"
     if probability < 55:
-        return f"2/5 — слабкий сетап ({probability}%){suffix}"
+        return f"1/5 — дуже слабкий сетап ({probability}%){suffix}"
     if probability < 65:
         return f"3/5 — середній сетап ({probability}%){suffix}"
     if probability < 75:
@@ -3308,7 +3382,7 @@ def smc_conflict_note(smc):
     return "SMC: нейтрально / чекати підтвердження."
 
 
-def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None):
+def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None, tech=None):
     """Short explanation why Telegram says there is no entry now."""
     reasons = []
 
@@ -3334,6 +3408,10 @@ def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news
     smc_note = smc_conflict_note(smc)
     if "змішано" in smc_note:
         reasons.append("SMC змішаний")
+
+    exhaustion_reason = extension_exhaustion_reason(signal, tech or {}, smc, news, event_risk)
+    if exhaustion_reason:
+        reasons.append(exhaustion_reason)
 
     if late_entry and late_entry.get("late"):
         reasons.append("пізній вхід після імпульсу")
@@ -3439,6 +3517,13 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
 
     # Keep realistic range.
     prob = cap_countertrend_probability(prob, signal, tech or {}, smc)
+
+    # Anti-late-continuation filter:
+    # prevents strong 5/5 entries after an extended move without SMC/BOS/volume confirmation.
+    exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
+    if exhaustion.get("active") and exhaustion.get("cap") is not None:
+        prob = min(prob, int(exhaustion["cap"]))
+
     return int(max(30, min(82, round(prob))))
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
@@ -3450,7 +3535,14 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
+    exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+
+    if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
+        if signal == "SHORT":
+            decision = "SHORT запізнений — чекати ретест"
+        elif signal == "LONG":
+            decision = "LONG запізнений — чекати ретест"
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
         if signal == "LONG":
@@ -3534,7 +3626,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
     if no_entry_active:
-        lines.append(f"<b>Чому не входити зараз:</b> {no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry, cooling)}")
+        lines.append(f"<b>Чому не входити зараз:</b> {no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry, cooling, tech)}")
 
     risk_text = reversal_risk_note(signal, reversal)
     rev_text = compact_reversal_label(reversal)
