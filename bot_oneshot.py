@@ -3367,11 +3367,39 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
             "Не шортити сильний імпульс без підтвердження."
         )
 
+    # Direction label for the user.
+    # It must show the real market direction (LONG/SHORT), not the internal signal value.
+    # Example: signal can be "НЕЙТРАЛЬНО", while decision is "Чекаємо підтвердження LONG".
+    decision_upper = str(decision).upper()
+    driver_text = f"{driver.get('type', '')} {driver.get('expectation', '')} {driver.get('summary', '')}".upper()
+
+    if signal in ["LONG", "SHORT"]:
+        market_bias = signal
+    elif "LONG" in decision_upper:
+        market_bias = "LONG"
+    elif "SHORT" in decision_upper:
+        market_bias = "SHORT"
+    elif "LONG" in driver_text and "SHORT" not in driver_text:
+        market_bias = "LONG"
+    elif "SHORT" in driver_text and "LONG" not in driver_text:
+        market_bias = "SHORT"
+    elif fundamental_bias.get("side") in ["LONG", "SHORT"] and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
+        market_bias = fundamental_bias.get("side")
+    elif technical_bias.get("side") in ["LONG", "SHORT"]:
+        market_bias = technical_bias.get("side")
+    else:
+        market_bias = "НЕЙТРАЛЬНО"
+
+    if market_bias in ["LONG", "SHORT"]:
+        market_bias_text = f"{market_bias} ({confidence}%)"
+    else:
+        market_bias_text = "НЕЙТРАЛЬНО"
+
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
         f"<b>Рішення:</b> {decision}",
-        f"<b>Напрямок ринку:</b> {market_bias} ({confidence}%)",
+        f"<b>Напрямок ринку:</b> {market_bias_text}",
         # Якість входу = наскільки хороший поточний сетап для входу
         f"<b>Якість входу:</b> {probability_note(trade_probability, late_entry)}",
         "",
