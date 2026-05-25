@@ -2252,13 +2252,13 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         score += early_warning.get("score", 0)
 
     signal_type = "НЕМАЄ УГОДИ"
-    signal = "NO SIGNAL"
+    signal = "НЕЙТРАЛЬНО"
 
     if early_warning.get("warning") == "EARLY DUMP WARNING":
-        signal = "NO SIGNAL"
+        signal = "НЕЙТРАЛЬНО"
         signal_type = "УВАГА: МОЖЛИВИЙ ДАМП / ЧЕКАТИ SHORT-ТРИГЕР"
     elif early_warning.get("warning") == "EARLY PUMP WARNING":
-        signal = "NO SIGNAL"
+        signal = "НЕЙТРАЛЬНО"
         signal_type = "УВАГА: МОЖЛИВИЙ РІСТ / ЧЕКАТИ LONG-ТРИГЕР"
 
     if news["total"] >= 5 and news["score"] >= 35:
@@ -2292,20 +2292,20 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
             signal = "LONG"
             signal_type = "NEWS-PRIORITY LONG / EVENT MOMENTUM"
         elif tech.get("trend") == "DOWN" or tech.get("score", 0) < 0:
-            signal = "NO SIGNAL"
+            signal = "НЕЙТРАЛЬНО"
             signal_type = "REVERSAL LONG WATCH / NEWS PRIORITY"
     elif signal_type == "НЕМАЄ УГОДИ" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
         if tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"] and tech.get("trend") in ["DOWN", "MIXED"] and orderflow.get("score", 0) <= 0:
             signal = "SHORT"
             signal_type = "NEWS-PRIORITY SHORT / EVENT MOMENTUM"
         elif tech.get("trend") == "UP" or tech.get("score", 0) > 0:
-            signal = "NO SIGNAL"
+            signal = "НЕЙТРАЛЬНО"
             signal_type = "REVERSAL SHORT WATCH / NEWS PRIORITY"
 
 
     # Early confirmation: avoid staying in "watch" forever when news/event is dominant
     # and the chart starts confirming the same direction.
-    if signal == "NO SIGNAL" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"]:
+    if signal == "НЕЙТРАЛЬНО" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"]:
         if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
             if tech.get("score", 0) >= -25 and tech.get("change", 0) > 0.15 and orderflow.get("score", 0) >= 0:
                 signal = "LONG"
@@ -2316,28 +2316,28 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
                 signal_type = "EARLY NEWS SHORT / CONFIRMATION STARTED"
 
     # Reversal Watch is not an automatic aggressive entry. It can upgrade a conflict into a watch-signal.
-    if signal == "NO SIGNAL" and reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
-        signal = "NO SIGNAL"
+    if signal == "НЕЙТРАЛЬНО" and reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
+        signal = "НЕЙТРАЛЬНО"
         signal_type = "REVERSAL LONG WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-    elif signal == "NO SIGNAL" and reversal.get("side") == "REVERSAL SHORT WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) <= -25:
-        signal = "NO SIGNAL"
+    elif signal == "НЕЙТРАЛЬНО" and reversal.get("side") == "REVERSAL SHORT WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) <= -25:
+        signal = "НЕЙТРАЛЬНО"
         signal_type = "REVERSAL SHORT WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-    elif signal == "NO SIGNAL" and tech.get("momentum") == "VERY STRONG UP" and score >= 35:
+    elif signal == "НЕЙТРАЛЬНО" and tech.get("momentum") == "VERY STRONG UP" and score >= 35:
         signal = "LONG"
         signal_type = "ІМПУЛЬСНИЙ LONG / BREAKOUT SCALP"
-    elif signal == "NO SIGNAL" and tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
+    elif signal == "НЕЙТРАЛЬНО" and tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
         signal = "SHORT"
         signal_type = "ІМПУЛЬСНИЙ SHORT / BREAKDOWN SCALP"
-    elif signal == "NO SIGNAL" and score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10 and macro["score"] >= 0:
+    elif signal == "НЕЙТРАЛЬНО" and score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10 and macro["score"] >= 0:
         signal = "LONG"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND LONG"
-    elif signal == "NO SIGNAL" and score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
+    elif signal == "НЕЙТРАЛЬНО" and score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
         signal = "SHORT"
         signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
-    elif signal == "NO SIGNAL" and score >= 90 and tech.get("trend") in ["UP", "MIXED"] and orderflow["score"] >= 8:
+    elif signal == "НЕЙТРАЛЬНО" and score >= 90 and tech.get("trend") in ["UP", "MIXED"] and orderflow["score"] >= 8:
         signal = "LONG"
         signal_type = "РИЗИКОВИЙ LONG / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
-    elif signal == "NO SIGNAL" and score <= -90 and tech.get("trend") in ["DOWN", "MIXED"] and orderflow["score"] <= -8:
+    elif signal == "НЕЙТРАЛЬНО" and score <= -90 and tech.get("trend") in ["DOWN", "MIXED"] and orderflow["score"] <= -8:
         signal = "SHORT"
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
@@ -2349,10 +2349,10 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     shock_up = tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 80
 
     if shock_down and news.get("score", 0) >= 25 and event_risk.get("direction") == "LONG":
-        signal = "NO SIGNAL"
+        signal = "НЕЙТРАЛЬНО"
         signal_type = "SHOCK DOWN / LONG BLOCKED"
     elif shock_up and news.get("score", 0) <= -20 and event_risk.get("direction") == "SHORT":
-        signal = "NO SIGNAL"
+        signal = "НЕЙТРАЛЬНО"
         signal_type = "SHOCK UP / SHORT BLOCKED"
 
         confidence = min(95, max(0, abs(score)))
@@ -2785,7 +2785,7 @@ def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_b
     if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
         return "REVERSAL SHORT WATCH: можливий розворот вниз — чекати підтвердження"
 
-    if signal == "NO SIGNAL":
+    if signal == "НЕЙТРАЛЬНО":
         if tech_long and fund_short:
             return "КОНФЛІКТ: техніка LONG, фундамент SHORT — НЕ ВХОДИТИ"
         if tech_short and fund_long:
@@ -2861,7 +2861,7 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
             return "TRADE SHORT — обережно"
         return "TRADE SHORT"
 
-    # No active trade: show a human trigger direction, not internal NO SIGNAL/WATCH terms.
+    # No active trade: show a human trigger direction, not internal НЕЙТРАЛЬНО/WATCH terms.
     if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
         return "Чекаємо підтвердження LONG"
     if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
@@ -3371,7 +3371,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
         f"<b>Рішення:</b> {decision}",
-        f"<b>Напрямок ринку:</b> {signal} ({confidence}%)",
+        f"<b>Напрямок ринку:</b> {("LONG" if confidence >= 55 and news_score >= tech_score else "SHORT" if confidence >= 55 and tech_score < news_score else "НЕЙТРАЛЬНО")} ({confidence}%)",
         # Якість входу = наскільки хороший поточний сетап для входу
         f"<b>Якість входу:</b> {probability_note(trade_probability, late_entry)}",
         "",
@@ -3417,7 +3417,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
 
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
-    if signal == "NO SIGNAL":
+    if signal == "НЕЙТРАЛЬНО":
         return "NO TRADE"
 
     aligned = 0
@@ -3541,7 +3541,7 @@ def main():
     )
     current_truth_filter = price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow)
     if current_truth_filter.get('blocked'):
-        signal = 'NO SIGNAL'
+        signal = 'НЕЙТРАЛЬНО'
         signal_type = 'НЕ ВХОДИТИ — ціна не підтвердила новини'
         risk_note = current_truth_filter.get('reason')
         confidence = min(confidence, 50)
@@ -3599,7 +3599,7 @@ def main():
     print(f"SIGNAL: {signal}")
     print(f"PRICE ACTION FILTER: {current_truth_filter.get('mode')} | {current_truth_filter.get('reason')}")
 
-    if signal == "NO SIGNAL":
+    if signal == "НЕЙТРАЛЬНО":
         decision = "НЕ ВХОДИТИ"
     elif "РИЗИКОВИЙ" in signal_type or "ІМПУЛЬСНИЙ" in signal_type:
         decision = f"{signal}, але обережно"
