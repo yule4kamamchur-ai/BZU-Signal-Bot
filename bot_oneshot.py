@@ -3253,6 +3253,117 @@ def probability_note(probability, late_entry):
         return f"{probability}% — ризик пізнього входу"
     return f"{probability}%"
 
+
+def entry_quality_scale(probability, late_entry=None):
+    """User-friendly entry quality scale for Telegram.
+    This separates market direction from actual entry quality.
+    """
+    if probability is None:
+        return "0/5 — немає входу"
+    try:
+        probability = int(probability)
+    except Exception:
+        return "0/5 — немає входу"
+
+    suffix = ""
+    if late_entry and late_entry.get("late"):
+        suffix = " — пізній вхід, краще чекати відкат"
+
+    if probability < 45:
+        return f"1/5 — дуже слабкий сетап ({probability}%){suffix}"
+    if probability < 55:
+        return f"2/5 — слабкий сетап ({probability}%){suffix}"
+    if probability < 65:
+        return f"3/5 — середній сетап ({probability}%){suffix}"
+    if probability < 75:
+        return f"4/5 — добрий сетап ({probability}%){suffix}"
+    return f"5/5 — сильний сетап ({probability}%){suffix}"
+
+
+def smc_conflict_note(smc):
+    """Explain mixed SMC signals instead of showing contradictory BOS/volume silently."""
+    if not smc or not isinstance(smc, dict) or not smc.get("available"):
+        return ""
+
+    bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    summary = str(smc.get("summary", "")).lower()
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("absorption", "NONE")
+
+    long_structure = bias == "LONG" or bos == "BOS LONG" or choch == "CHoCH LONG"
+    short_structure = bias == "SHORT" or bos == "BOS SHORT" or choch == "CHoCH SHORT"
+
+    bearish_candle = "bearish candle" in summary or "продавців" in summary or absorption == "BEARISH ABSORPTION"
+    bullish_candle = "bullish candle" in summary or "покупців" in summary or absorption == "BULLISH ABSORPTION"
+
+    if long_structure and (vol_bias == "SHORT" or bearish_candle):
+        return "SMC: змішано — структура LONG, але обсяг/свічка проти. LONG ще не підтверджений."
+    if short_structure and (vol_bias == "LONG" or bullish_candle):
+        return "SMC: змішано — структура SHORT, але обсяг/свічка проти. SHORT ще не підтверджений."
+    if bias in ["LONG", "SHORT"]:
+        return f"SMC: {bias} підтвердження структури."
+    return "SMC: нейтрально / чекати підтвердження."
+
+
+def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None):
+    """Short explanation why Telegram says there is no entry now."""
+    reasons = []
+
+    if signal not in ["LONG", "SHORT"] or trade_probability is None:
+        reasons.append("немає повного торгового сигналу")
+    elif trade_probability < 55:
+        reasons.append("якість сетапу нижче робочого рівня")
+
+    tech_side = technical_bias.get("side", "NEUTRAL") if isinstance(technical_bias, dict) else "NEUTRAL"
+    tech_score = technical_bias.get("score", 0) if isinstance(technical_bias, dict) else 0
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    if market_bias in ["LONG", "SHORT"]:
+        if tech_side not in [market_bias, "NEUTRAL"]:
+            reasons.append("техніка проти напрямку")
+        elif tech_side == "NEUTRAL" or abs(tech_score) < 20:
+            reasons.append("техніка ще не підтвердила")
+
+        if abs(news_score) >= 35 and event_side == market_bias and (tech_side == "NEUTRAL" or abs(tech_score) < 20):
+            reasons.append("новини сильніші за price action")
+
+    smc_note = smc_conflict_note(smc)
+    if "змішано" in smc_note:
+        reasons.append("SMC змішаний")
+
+    if late_entry and late_entry.get("late"):
+        reasons.append("пізній вхід після імпульсу")
+    if cooling and cooling.get("active"):
+        reasons.append("потрібне охолодження/ретест")
+
+    if not reasons:
+        reasons.append("чекати ретест або підтвердження ціною")
+
+    # Deduplicate, keep short.
+    unique = []
+    for r in reasons:
+        if r not in unique:
+            unique.append(r)
+    return "; ".join(unique[:3])
+
+
+def compact_final_summary_text(final_summary, market_bias, trade_probability):
+    """Keep Telegram conclusion short and actionable."""
+    if trade_probability is None:
+        if market_bias in ["LONG", "SHORT"]:
+            return f"{market_bias} bias є, але входу ще немає — чекати підтвердження."
+        return "Сигнал не підтверджений — краще чекати."
+
+    if trade_probability < 55:
+        return "Сетап слабкий — чекати ретест/підтвердження."
+    if market_bias in ["LONG", "SHORT"]:
+        return f"{market_bias} сценарій активний, але працювати тільки зі стопом."
+    return "Перевага нечітка — не поспішати з входом."
+
 def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None, late_entry=None, smc=None, tech=None):
     """Human-friendly probability estimate for Telegram.
     This is NOT a guarantee. It is a normalized bot estimate based on alignment/risk.
@@ -3401,7 +3512,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Рішення:</b> {decision}",
         f"<b>Напрямок ринку:</b> {market_bias_text}",
         # Якість входу = наскільки хороший поточний сетап для входу
-        f"<b>Якість входу:</b> {probability_note(trade_probability, late_entry)}",
+        f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry)}",
         "",
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
         "",
@@ -3416,6 +3527,14 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
         f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
+
+    smc_note = smc_conflict_note(smc)
+    if smc_note:
+        lines.append(f"<b>{smc_note}</b>")
+
+    no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
+    if no_entry_active:
+        lines.append(f"<b>Чому не входити зараз:</b> {no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry, cooling)}")
 
     risk_text = reversal_risk_note(signal, reversal)
     rev_text = compact_reversal_label(reversal)
@@ -3438,7 +3557,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     lines.extend([
         "",
-        f"<b>Висновок:</b> {final_summary}",
+        f"<b>Висновок:</b> {compact_final_summary_text(final_summary, market_bias, trade_probability)}",
     ])
 
     return "\n".join(lines).strip()
