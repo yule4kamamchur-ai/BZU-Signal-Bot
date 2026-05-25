@@ -3371,7 +3371,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
         f"<b>Рішення:</b> {decision}",
-        f"<b>Напрямок ринку:</b> {("LONG" if confidence >= 55 and news_score >= tech_score else "SHORT" if confidence >= 55 and tech_score < news_score else "НЕЙТРАЛЬНО")} ({confidence}%)",
+        f"<b>Напрямок ринку:</b> {market_bias} ({confidence}%)",
         # Якість входу = наскільки хороший поточний сетап для входу
         f"<b>Якість входу:</b> {probability_note(trade_probability, late_entry)}",
         "",
