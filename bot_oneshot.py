@@ -2626,7 +2626,7 @@ def rr_metrics(plan):
         return {"rr1": None, "rr2": None, "ok": False, "note": "RR помилка"}
     rr1 = abs(tp1 - entry) / risk
     rr2 = abs(tp2 - entry) / risk
-    return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.0 or rr2 >= 1.4, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
+    return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.2 or rr2 >= 1.8, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
 
 
 def analyze_chase_protection(signal, tech, market):
@@ -2902,37 +2902,82 @@ def estimate_liquidity_levels(price, tech):
     }
 
 
+def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
+    """Adaptive TP multipliers.
+
+    Early confirmation = a bit more conservative.
+    Confirmed BOS/trend/news alignment = wider targets.
+    This avoids tiny scalping TPs while keeping TP1 realistic.
+    """
+    st = (signal_type or "").upper()
+    tech = tech or {}
+    session = session or {}
+    event_risk = event_risk or {}
+
+    rr1, rr2, rr3 = 1.35, 2.15, 3.20
+
+    # Early reversal / watch entries are less mature, so TP1 is not too far.
+    if "EARLY" in st or "REVERSAL" in st or "WATCH" in st:
+        rr1, rr2, rr3 = 1.25, 2.00, 3.00
+
+    # Strong confirmed trend gets wider expansion targets.
+    if "BOS" in st or "BREAKOUT" in st or abs(tech.get("score", 0) or 0) >= 85:
+        rr1, rr2, rr3 = 1.50, 2.40, 3.60
+
+    # High-impact event/news can extend moves, but keep TP1 reachable.
+    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        rr2 += 0.25
+        rr3 += 0.45
+
+    # New York usually has better follow-through for oil/macro.
+    if session.get("session") == "NEW YORK":
+        rr2 += 0.15
+        rr3 += 0.25
+
+    return rr1, rr2, rr3
+
+
 def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None):
-    """Liquidity + ATR + RR hybrid.
+    """SMC + ATR + RR hybrid plan.
+
     Stop:
-      LONG  -> below estimated liquidity low + buffer
-      SHORT -> above estimated liquidity high + buffer
+      LONG  -> below estimated liquidity low / EMA zone + ATR buffer
+      SHORT -> above estimated liquidity high / EMA zone + ATR buffer
+
     TP:
-      Uses liquidity targets, but never less than RR 1.0 / 1.5 / 2.0
+      Uses liquidity targets, but now with wider adaptive RR:
+      early/reversal: about 1.25R / 2R / 3R
+      confirmed trend: about 1.5R / 2.4R / 3.6R
+
+    This is better than pure Smart Money or pure ATR alone:
+      - pure SMC levels can be too subjective or too far;
+      - pure ATR can be too mechanical and too small;
+      - hybrid keeps stop behind structure and targets realistic expansion.
     """
     atr = tech.get("atr_15m") or price * 0.006
     levels = estimate_liquidity_levels(price, tech)
     buffer = liquidity_buffer(atr, price, session, event_risk)
+    rr1, rr2, rr3 = tp_rr_multipliers(signal_type, tech, session, event_risk)
 
     if signal == "LONG":
         stop = levels["recent_low"] - buffer
-        risk = max(price - stop, atr * 0.75)
+        risk = max(price - stop, atr * 0.90)
 
-        tp1 = max(levels["upper_liquidity_1"], price + risk * 1.0)
-        tp2 = max(levels["upper_liquidity_2"], price + risk * 1.5)
-        tp3 = max(levels["upper_liquidity_3"], price + risk * 2.0)
+        tp1 = max(levels["upper_liquidity_1"], price + risk * rr1)
+        tp2 = max(levels["upper_liquidity_2"], price + risk * rr2)
+        tp3 = max(levels["upper_liquidity_3"], price + risk * rr3)
 
-        note = "SMC hybrid LONG: стоп нижче liquidity low/EMA-зони з ATR-буфером; TP по ліквідності + RR."
+        note = "SMC hybrid LONG: стоп нижче liquidity/EMA-зони; TP ширші по ліквідності + adaptive RR."
 
     elif signal == "SHORT":
         stop = levels["recent_high"] + buffer
-        risk = max(stop - price, atr * 0.75)
+        risk = max(stop - price, atr * 0.90)
 
-        tp1 = min(levels["lower_liquidity_1"], price - risk * 1.0)
-        tp2 = min(levels["lower_liquidity_2"], price - risk * 1.5)
-        tp3 = min(levels["lower_liquidity_3"], price - risk * 2.0)
+        tp1 = min(levels["lower_liquidity_1"], price - risk * rr1)
+        tp2 = min(levels["lower_liquidity_2"], price - risk * rr2)
+        tp3 = min(levels["lower_liquidity_3"], price - risk * rr3)
 
-        note = "SMC hybrid SHORT: стоп вище liquidity high/EMA-зони з ATR-буфером; TP по ліквідності + RR."
+        note = "SMC hybrid SHORT: стоп вище liquidity/EMA-зони; TP ширші по ліквідності + adaptive RR."
 
     else:
         return {
@@ -2951,8 +2996,11 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         "tp1": round(tp1, 4),
         "tp2": round(tp2, 4),
         "tp3": round(tp3, 4),
+        "rr1": rr1,
+        "rr2": rr2,
+        "rr3": rr3,
         "note": note,
-        "method": "SMC HYBRID / Liquidity + ATR + RR",
+        "method": "SMC HYBRID / Liquidity + ATR + Adaptive RR",
     }
 
 
