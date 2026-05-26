@@ -3974,6 +3974,12 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
 
+    tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
+    fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
+    priority_label = compact_priority_label(priority, reversal)
+    driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
+    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
+    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
     if local_warning:
         if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
             decision = "TRADE LONG — 3m підтверджує вхід"
@@ -3983,12 +3989,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
             decision = "LONG слабшає — чекати відкат"
         elif signal == "SHORT":
             decision = "SHORT слабшає — чекати відскок"
-    tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
-    fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
-    priority_label = compact_priority_label(priority, reversal)
-    driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
-    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
@@ -4084,6 +4084,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry)}",
         "",
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
+        f"<b>{global_trend_text(tech or {}, market_bias)}</b>",
+        f"<b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
         "",
         "<b>Драйвер:</b>",
         f"{driver['type']}",
@@ -4372,7 +4374,7 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
 
 
 def local_3m_status_text(micro, signal=None):
-    """Human-readable local 3m trend/status."""
+    """Human-readable local 3m trend/status for Telegram."""
     if not micro or not micro.get("available"):
         return "Локально 3m: дані недоступні"
 
@@ -4397,8 +4399,9 @@ def local_3m_status_text(micro, signal=None):
     return "Локально 3m: нейтрально"
 
 
+
 def global_trend_text(tech, market_bias):
-    """Human-readable global 15m/1h trend."""
+    """Human-readable global 15m/1h trend for Telegram."""
     tech = tech or {}
     trend_15m = tech.get("trend_15m", "UNKNOWN")
     trend_1h = tech.get("trend_1h", "UNKNOWN")
@@ -4407,11 +4410,10 @@ def global_trend_text(tech, market_bias):
         return "Глобально: LONG"
     if trend_15m == "DOWN" and trend_1h == "DOWN":
         return "Глобально: SHORT"
-
     if market_bias in ["LONG", "SHORT"]:
         return f"Глобально: {market_bias}"
-
     return "Глобально: змішано"
+
 
 
 def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech):
