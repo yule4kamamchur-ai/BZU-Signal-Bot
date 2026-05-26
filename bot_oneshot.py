@@ -4367,6 +4367,21 @@ def format_time(dt):
         return "час невідомий"
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
+
+def dedupe_telegram_blocks(message):
+    """Remove duplicated identical paragraphs from Telegram message."""
+    parts = [p.strip() for p in message.split("\\n\\n") if p.strip()]
+    seen = set()
+    clean = []
+    for part in parts:
+        key = re.sub(r"\\s+", " ", part).strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(part)
+    return "\\n\\n".join(clean)
+
+
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Telegram secrets missing")
@@ -4810,10 +4825,10 @@ def main():
     )
 
     position_note = position_follow_note(signal_memory, tv["price"], tech)
-    if position_note:
+    if position_note and position_note not in message:
         message = message.strip() + "\n\n" + position_note
 
-    if previous_signal_note:
+    if previous_signal_note and previous_signal_note not in message:
         message = message.strip() + "\n\n" + previous_signal_note
 
     current_quality_percent = estimate_trade_probability(
@@ -4834,13 +4849,6 @@ def main():
     )
     save_signal_memory(updated_memory)
 
-    position_note = position_follow_note(signal_memory, tv["price"], tech)
-    if position_note:
-        message = message.strip() + "\n\n" + position_note
-
-    if previous_signal_note:
-        message = message.strip() + "\n\n" + previous_signal_note
-
     current_quality_percent = estimate_trade_probability(
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
@@ -4860,6 +4868,7 @@ def main():
     )
     save_signal_memory(updated_memory)
 
+    message = dedupe_telegram_blocks(message.strip())
     send_telegram(message.strip())
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
