@@ -429,6 +429,7 @@ def build_current_signal_memory(signal, signal_type, price, confidence, quality_
         "trend_15m": tech.get("trend_15m"),
         "trend_1h": tech.get("trend_1h"),
         "micro_3m": micro.get("bias"),
+        "micro_3m_state": micro.get("state"),
     }
 
 
@@ -4408,44 +4409,132 @@ def send_telegram(message):
 # ==========================================================
 
 def analyze_micro_structure(candles):
-    """3m microstructure filter."""
-    if not candles or len(candles) < 20:
-        return {"available": False, "bias": "NEUTRAL", "score": 0}
+    """3m local movement state.
 
-    recent = candles[-15:]
+    This is not the main trend.
+    It describes what is happening locally:
+    - LONG_STRENGTHENING
+    - LONG_COOLING
+    - SHORT_STRENGTHENING
+    - SHORT_COOLING
+    - RANGE
+    """
+    if not candles or len(candles) < 30:
+        return {
+            "available": False,
+            "bias": "NEUTRAL",
+            "state": "NO DATA",
+            "score": 0,
+            "note": "3m data unavailable",
+        }
+
+    recent = candles[-24:]
     last = candles[-1]
+    prev = candles[-2]
 
-    highs = [c["high"] for c in recent[:-1]]
-    lows = [c["low"] for c in recent[:-1]]
+    closes = [c["close"] for c in recent]
+    highs = [c["high"] for c in recent]
+    lows = [c["low"] for c in recent]
 
-    recent_high = max(highs)
-    recent_low = min(lows)
+    recent_high = max(highs[:-1])
+    recent_low = min(lows[:-1])
+
+    last4 = sum(closes[-4:]) / 4
+    prev4 = sum(closes[-8:-4]) / 4
+    first4 = sum(closes[:4]) / 4
+
+    avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
+    last_vol = last.get("volume", 0) or 0
+    vol_ratio = last_vol / avg_vol if avg_vol else 1.0
+
+    # Candle body
+    candle_range = max(last["high"] - last["low"], 1e-9)
+    body = last["close"] - last["open"]
+    body_ratio = abs(body) / candle_range
+    close_location = (last["close"] - last["low"]) / candle_range
+
+    # Local structure: last highs/lows
+    last_highs = highs[-8:]
+    last_lows = lows[-8:]
+    lower_highs = last_highs[-1] < max(last_highs[:-1]) and max(last_highs[-4:]) < max(last_highs[:4])
+    higher_lows = min(last_lows[-4:]) > min(last_lows[:4])
+
+    total_move_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else 0
+    short_momentum = last4 < prev4
+    long_momentum = last4 > prev4
 
     score = 0
+    notes = []
 
     if last["close"] > recent_high:
-        score += 22
+        score += 24
+        notes.append("пробій локального high")
     elif last["close"] < recent_low:
-        score -= 22
+        score -= 24
+        notes.append("пробій локального low")
 
-    if last["close"] > last["open"]:
+    if long_momentum:
+        score += 10
+        notes.append("короткий імпульс вгору")
+    elif short_momentum:
+        score -= 10
+        notes.append("короткий імпульс вниз")
+
+    if body > 0 and body_ratio >= 0.55 and close_location >= 0.60:
         score += 8
-    else:
+        notes.append("зелена сильна 3m свічка")
+    elif body < 0 and body_ratio >= 0.55 and close_location <= 0.40:
         score -= 8
+        notes.append("червона сильна 3m свічка")
 
-    if score >= 18:
+    if vol_ratio >= 1.5:
+        if body > 0:
+            score += 8
+            notes.append("обсяг за покупців")
+        elif body < 0:
+            score -= 8
+            notes.append("обсяг за продавців")
+
+    if higher_lows:
+        score += 5
+    if lower_highs:
+        score -= 5
+
+    # State detection
+    if score >= 20:
         bias = "LONG"
-    elif score <= -18:
+        state = "LONG_STRENGTHENING"
+    elif score <= -20:
         bias = "SHORT"
+        state = "SHORT_STRENGTHENING"
     else:
         bias = "NEUTRAL"
+        state = "RANGE"
+
+        # Important: neutral is often not neutral after a strong move.
+        if total_move_pct >= 0.45 and short_momentum and lower_highs:
+            state = "LONG_COOLING"
+            notes.append("LONG охолоджується після імпульсу")
+        elif total_move_pct >= 0.45 and short_momentum:
+            state = "LONG_PAUSE"
+            notes.append("пауза після LONG імпульсу")
+        elif total_move_pct <= -0.45 and long_momentum and higher_lows:
+            state = "SHORT_COOLING"
+            notes.append("SHORT охолоджується після падіння")
+        elif total_move_pct <= -0.45 and long_momentum:
+            state = "SHORT_PAUSE"
+            notes.append("пауза після SHORT імпульсу")
 
     return {
         "available": True,
         "bias": bias,
+        "state": state,
         "score": int(score),
-        "note": f"3m {bias}"
+        "note": "; ".join(notes[:3]) if notes else "3m боковик",
+        "vol_ratio": round(vol_ratio, 2),
+        "move_pct": round(total_move_pct, 3),
     }
+
 
 def micro_structure_text(micro):
     """Human-readable 3m warning for Telegram."""
@@ -4556,29 +4645,45 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
     }
 
 def local_3m_status_text(micro, signal=None):
-    """Human-readable local 3m trend/status for Telegram."""
+    """Human-readable local 3m movement state."""
     if not micro or not micro.get("available"):
         return "Локально 3m: дані недоступні"
 
     bias = micro.get("bias", "NEUTRAL")
+    state = micro.get("state", "RANGE")
     score = micro.get("score", 0)
 
-    if signal == "LONG" and bias == "LONG":
-        return f"Локально 3m: LONG посилюється — покупці активні ({score})"
-    if signal == "SHORT" and bias == "SHORT":
-        return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
+    if state == "LONG_STRENGTHENING":
+        if signal == "LONG":
+            return f"Локально 3m: LONG посилюється — покупці активні ({score})"
+        return f"Локально 3m: покупці активні ({score})"
+
+    if state == "SHORT_STRENGTHENING":
+        if signal == "SHORT":
+            return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
+        if signal == "LONG":
+            return f"Локально 3m: LONG слабшає — продавці активні ({score})"
+        return f"Локально 3m: продавці активні ({score})"
+
+    if state == "LONG_COOLING":
+        return f"Локально 3m: LONG охолоджується — краще чекати ретест ({score})"
+
+    if state == "LONG_PAUSE":
+        return f"Локально 3m: пауза після LONG імпульсу ({score})"
+
+    if state == "SHORT_COOLING":
+        return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
+
+    if state == "SHORT_PAUSE":
+        return f"Локально 3m: пауза після SHORT імпульсу ({score})"
 
     if signal == "LONG" and bias == "SHORT":
         return f"Локально 3m: LONG слабшає — можливий відкат вниз ({score})"
     if signal == "SHORT" and bias == "LONG":
         return f"Локально 3m: SHORT слабшає — можливий відскок вгору ({score})"
 
-    if bias == "LONG":
-        return f"Локально 3m: покупці активні ({score})"
-    if bias == "SHORT":
-        return f"Локально 3m: продавці активні ({score})"
+    return "Локально 3m: боковик / немає чіткого входу"
 
-    return "Локально 3m: нейтрально"
 
 def global_trend_text(tech, market_bias):
     """Human-readable global 15m/1h trend for Telegram."""
@@ -4595,16 +4700,43 @@ def global_trend_text(tech, market_bias):
     return "Глобально: змішано"
 
 def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech):
-    """Adjust confidence/quality by local 3m timing.
-
-    15m/1h = main direction.
-    3m = timing.
-    If 3m goes against signal -> reduce confidence.
-    If 3m agrees with signal -> increase confidence and entry quality.
-    """
+    """Adjust confidence/quality by local 3m timing and state."""
     micro = (tech or {}).get("micro_3m") or {}
     if signal not in ["LONG", "SHORT"] or not micro.get("available"):
         return confidence, trade_probability, ""
+
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    micro_score = micro.get("score", 0) or 0
+
+    # Against main signal = reduce
+    if signal == "LONG" and (micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "LONG_PAUSE"]):
+        confidence = min(confidence, 62)
+        if trade_probability is not None:
+            trade_probability = min(trade_probability, 58)
+        return confidence, trade_probability, "LONG охолоджується на 3m — краще чекати ретест"
+
+    if signal == "SHORT" and (micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "SHORT_PAUSE"]):
+        confidence = min(confidence, 62)
+        if trade_probability is not None:
+            trade_probability = min(trade_probability, 58)
+        return confidence, trade_probability, "SHORT охолоджується на 3m — краще чекати ретест"
+
+    # Same direction = boost
+    if signal == "LONG" and micro_state == "LONG_STRENGTHENING":
+        confidence = min(95, confidence + 6)
+        if trade_probability is not None:
+            trade_probability = max(trade_probability, 66 if micro_score < 30 else 70)
+        return confidence, trade_probability, "3m підтверджує LONG — покупці активні"
+
+    if signal == "SHORT" and micro_state == "SHORT_STRENGTHENING":
+        confidence = min(95, confidence + 6)
+        if trade_probability is not None:
+            trade_probability = max(trade_probability, 66 if micro_score > -30 else 70)
+        return confidence, trade_probability, "3m підтверджує SHORT — продавці активні"
+
+    return confidence, trade_probability, ""
+
 
     micro_bias = micro.get("bias", "NEUTRAL")
     micro_score = micro.get("score", 0) or 0
