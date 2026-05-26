@@ -1781,6 +1781,149 @@ def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_
 
 
 
+def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event_risk, smc, entry_watch):
+    """ENTRY WATCH should not be shown as 0/5 when the setup has a real directional reason.
+
+    This does NOT allow a trade. It only makes the displayed quality fair:
+    - strong news + neutral/not-opposite tech = at least 2/5 watch;
+    - strong news + mild technical support = at least 3/5 watch;
+    - if tech is strongly against direction, no floor is applied.
+    """
+    if signal not in ["LONG", "SHORT"] or trade_probability is None:
+        return trade_probability
+    if not entry_watch or not entry_watch.get("active"):
+        return trade_probability
+
+    tech = tech or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    smc = smc or {}
+
+    tech_score = tech.get("score", 0) or 0
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+
+    if signal == "LONG":
+        tech_strong_against = tech_score <= -55 or smc_bias == "SHORT" or bos == "BOS SHORT" or vol_bias == "SHORT"
+        news_support = news_score >= 45 or event_side == "LONG"
+        mild_tech_support = tech_score >= 15 or smc_bias == "LONG" or bos == "BOS LONG" or vol_bias == "LONG"
+
+        if news_support and not tech_strong_against:
+            trade_probability = max(trade_probability, 52)  # 2/5 watch
+        if news_support and mild_tech_support and not tech_strong_against:
+            trade_probability = max(trade_probability, 58)  # 3/5 watch
+
+    elif signal == "SHORT":
+        tech_strong_against = tech_score >= 55 or smc_bias == "LONG" or bos == "BOS LONG" or vol_bias == "LONG"
+        news_support = news_score <= -45 or event_side == "SHORT"
+        mild_tech_support = tech_score <= -15 or smc_bias == "SHORT" or bos == "BOS SHORT" or vol_bias == "SHORT"
+
+        if news_support and not tech_strong_against:
+            trade_probability = max(trade_probability, 52)
+        if news_support and mild_tech_support and not tech_strong_against:
+            trade_probability = max(trade_probability, 58)
+
+    # ENTRY WATCH is still not a confirmed trade.
+    return min(trade_probability, 64)
+
+
+
+def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, event_risk, smc, orderflow=None):
+    """Fair quality floor for real TRADE setups.
+
+    Difference from ENTRY WATCH:
+    - WATCH can be 2/5–3/5 without full structure confirmation.
+    - TRADE needs confirmation: BOS/SMC/volume/orderflow/EMA trend.
+    - If confirmation exists + news supports + tech is not against, quality can become 4/5–5/5.
+    """
+    if signal not in ["LONG", "SHORT"] or trade_probability is None:
+        return trade_probability
+
+    tech = tech or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+
+    tech_score = tech.get("score", 0) or 0
+    trend_5m = tech.get("trend_5m", "UNKNOWN")
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    trend_1h = tech.get("trend_1h", "UNKNOWN")
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    phase = smc.get("phase", "")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("absorption", "NONE")
+    order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
+
+    if signal == "LONG":
+        strong_against = (
+            tech_score <= -55
+            or bos == "BOS SHORT"
+            or smc_bias == "SHORT"
+            or vol_bias == "SHORT"
+            or absorption == "BEARISH ABSORPTION"
+        )
+        news_support = news_score >= 45 or event_side == "LONG"
+        tech_support = tech_score >= 35 or (trend_5m == "UP" and trend_15m == "UP") or order_score >= 15
+        structure_confirmed = (
+            bos == "BOS LONG"
+            or smc_bias == "LONG"
+            or vol_bias == "LONG"
+            or absorption == "BULLISH ABSORPTION"
+            or phase == "BREAKOUT / BOS"
+        )
+
+        if strong_against:
+            return min(trade_probability, 54)
+
+        if news_support and structure_confirmed and tech_score >= 0:
+            trade_probability = max(trade_probability, 66)  # 4/5 working trade
+        if news_support and structure_confirmed and tech_support:
+            trade_probability = max(trade_probability, 72)  # strong 4/5
+        if news_support and structure_confirmed and tech_support and trend_1h == "UP":
+            trade_probability = max(trade_probability, 76)  # 5/5 confirmed
+
+    elif signal == "SHORT":
+        strong_against = (
+            tech_score >= 55
+            or bos == "BOS LONG"
+            or smc_bias == "LONG"
+            or vol_bias == "LONG"
+            or absorption == "BULLISH ABSORPTION"
+        )
+        news_support = news_score <= -45 or event_side == "SHORT"
+        tech_support = tech_score <= -35 or (trend_5m == "DOWN" and trend_15m == "DOWN") or order_score <= -15
+        structure_confirmed = (
+            bos == "BOS SHORT"
+            or smc_bias == "SHORT"
+            or vol_bias == "SHORT"
+            or absorption == "BEARISH ABSORPTION"
+            or phase == "BREAKOUT / BOS"
+        )
+
+        if strong_against:
+            return min(trade_probability, 54)
+
+        if news_support and structure_confirmed and tech_score <= 0:
+            trade_probability = max(trade_probability, 66)
+        if news_support and structure_confirmed and tech_support:
+            trade_probability = max(trade_probability, 72)
+        if news_support and structure_confirmed and tech_support and trend_1h == "DOWN":
+            trade_probability = max(trade_probability, 76)
+
+    return min(trade_probability, 82)
+
+
+
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
@@ -3783,7 +3926,13 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+
+    if show_trade_plan and signal in ["LONG", "SHORT"] and not str(decision).startswith("TRADE"):
+        decision = f"TRADE {signal} — підтверджений вхід"
     entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
+    trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
+    trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
         if signal == "SHORT":
