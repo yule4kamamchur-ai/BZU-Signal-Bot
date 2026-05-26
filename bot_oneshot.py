@@ -432,6 +432,96 @@ def build_current_signal_memory(signal, signal_type, price, confidence, quality_
     }
 
 
+
+
+
+def position_follow_note(memory, current_price, tech=None):
+    """Position follow-up based on last actionable signal in 4-signal memory.
+
+    This does not open a new trade. It helps manage a position if the user
+    already entered on a previous 3/5, 4/5, or 5/5 signal.
+    """
+    tech = tech or {}
+    history = get_signal_history(memory)
+
+    if not history:
+        return ""
+
+    # Find the last real LONG/SHORT signal with an entry price.
+    last_trade = None
+    for item in reversed(history):
+        if item.get("signal") in ["LONG", "SHORT"] and item.get("price"):
+            last_trade = item
+            break
+
+    if not last_trade:
+        return ""
+
+    side = last_trade.get("signal")
+    entry = float(last_trade.get("entry") or last_trade.get("price"))
+    stop = last_trade.get("stop")
+    tp1 = last_trade.get("tp1")
+    tp2 = last_trade.get("tp2")
+    tp3 = last_trade.get("tp3")
+
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+
+    diff_pct = ((current_price - entry) / entry) * 100 if entry else 0
+
+    def reached_long(level):
+        return level is not None and current_price >= float(level)
+
+    def reached_short(level):
+        return level is not None and current_price <= float(level)
+
+    def broken_long(level):
+        return level is not None and current_price <= float(level)
+
+    def broken_short(level):
+        return level is not None and current_price >= float(level)
+
+    if side == "LONG":
+        if broken_long(stop):
+            return "<b>Супровід:</b> LONG зламався — ціна біля/нижче стопу"
+        if reached_long(tp3):
+            return "<b>Супровід:</b> LONG дійшов до TP3 — краще фіксувати основну частину"
+        if reached_long(tp2):
+            return "<b>Супровід:</b> LONG дійшов до TP2 — підтягнути стоп і зафіксувати частину"
+        if reached_long(tp1):
+            return "<b>Супровід:</b> LONG дійшов до TP1 — частково фіксувати і підтягнути стоп"
+        if micro_bias == "SHORT" and diff_pct > 0:
+            return "<b>Супровід:</b> LONG у плюсі, але 3m слабшає — обережно, підтягнути стоп"
+        if micro_bias == "SHORT" and diff_pct <= 0:
+            return "<b>Супровід:</b> LONG слабшає — не додавати, чекати підтвердження"
+        if diff_pct >= 0.25:
+            return "<b>Супровід:</b> LONG тримається"
+        if diff_pct <= -0.25:
+            return "<b>Супровід:</b> LONG під тиском — контролювати стоп"
+        return "<b>Супровід:</b> LONG без сильного руху — чекати підтвердження"
+
+    if side == "SHORT":
+        if broken_short(stop):
+            return "<b>Супровід:</b> SHORT зламався — ціна біля/вище стопу"
+        if reached_short(tp3):
+            return "<b>Супровід:</b> SHORT дійшов до TP3 — краще фіксувати основну частину"
+        if reached_short(tp2):
+            return "<b>Супровід:</b> SHORT дійшов до TP2 — підтягнути стоп і зафіксувати частину"
+        if reached_short(tp1):
+            return "<b>Супровід:</b> SHORT дійшов до TP1 — частково фіксувати і підтягнути стоп"
+        if micro_bias == "LONG" and diff_pct < 0:
+            return "<b>Супровід:</b> SHORT у плюсі, але 3m слабшає — обережно, підтягнути стоп"
+        if micro_bias == "LONG" and diff_pct >= 0:
+            return "<b>Супровід:</b> SHORT слабшає — не додавати, чекати підтвердження"
+        if diff_pct <= -0.25:
+            return "<b>Супровід:</b> SHORT тримається"
+        if diff_pct >= 0.25:
+            return "<b>Супровід:</b> SHORT під тиском — контролювати стоп"
+        return "<b>Супровід:</b> SHORT без сильного руху — чекати підтвердження"
+
+    return ""
+
+
 # ==========================================================
 # TRADINGVIEW
 # ==========================================================
@@ -4719,6 +4809,10 @@ def main():
         tech=tech
     )
 
+    position_note = position_follow_note(signal_memory, tv["price"], tech)
+    if position_note:
+        message = message.strip() + "\n\n" + position_note
+
     if previous_signal_note:
         message = message.strip() + "\n\n" + previous_signal_note
 
@@ -4739,6 +4833,10 @@ def main():
         )
     )
     save_signal_memory(updated_memory)
+
+    position_note = position_follow_note(signal_memory, tv["price"], tech)
+    if position_note:
+        message = message.strip() + "\n\n" + position_note
 
     if previous_signal_note:
         message = message.strip() + "\n\n" + previous_signal_note
