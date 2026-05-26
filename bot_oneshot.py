@@ -211,25 +211,47 @@ def safe_post(url, payload, timeout=15):
         return None
 
 
+
 # ==========================================================
 # SIGNAL MEMORY
 # ==========================================================
 
 SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", "last_signal.json")
+SIGNAL_MEMORY_LIMIT = 4
 
 
 def load_signal_memory():
+    """Read signal memory from local JSON file.
+
+    Supports both old format:
+      {"signal": "LONG", "price": 95.0}
+    and new format:
+      {"history": [{...}, {...}]}
+    """
     try:
         if not os.path.exists(SIGNAL_MEMORY_FILE):
-            return {}
+            return {"history": []}
+
         with open(SIGNAL_MEMORY_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
+            data = json.load(file)
+
+        if isinstance(data, dict) and "history" in data and isinstance(data["history"], list):
+            data["history"] = data["history"][-SIGNAL_MEMORY_LIMIT:]
+            return data
+
+        # Old single-signal format migration
+        if isinstance(data, dict) and data.get("signal"):
+            return {"history": [data]}
+
+        return {"history": []}
+
     except Exception as error:
         print(f"[WARN] signal memory read error: {error}")
-        return {}
+        return {"history": []}
 
 
 def save_signal_memory(data):
+    """Save signal memory to local JSON file."""
     try:
         with open(SIGNAL_MEMORY_FILE, "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
@@ -237,56 +259,151 @@ def save_signal_memory(data):
         print(f"[WARN] signal memory save error: {error}")
 
 
+def get_signal_history(memory):
+    if not memory:
+        return []
+    if isinstance(memory, dict) and isinstance(memory.get("history"), list):
+        return memory.get("history", [])[-SIGNAL_MEMORY_LIMIT:]
+    if isinstance(memory, dict) and memory.get("signal"):
+        return [memory]
+    return []
+
+
+def get_last_signal(memory):
+    history = get_signal_history(memory)
+    return history[-1] if history else {}
+
+
+def append_signal_memory(memory, current_signal):
+    history = get_signal_history(memory)
+    history.append(current_signal)
+    history = history[-SIGNAL_MEMORY_LIMIT:]
+
+    return {
+        "updated_at": now_utc().isoformat(),
+        "limit": SIGNAL_MEMORY_LIMIT,
+        "history": history,
+    }
+
+
 def evaluate_previous_signal(memory, current_price):
-    if not memory or not memory.get("signal") or not memory.get("price"):
+    """Short human-readable evaluation of the last 4 signals."""
+    history = get_signal_history(memory)
+    if not history:
         return ""
 
-    prev_signal = memory.get("signal")
-    if prev_signal not in ["LONG", "SHORT"]:
+    valid = [item for item in history if item.get("signal") in ["LONG", "SHORT"] and item.get("price")]
+    if not valid:
         return ""
 
-    prev_price = float(memory.get("price"))
-    diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
+    results = []
+    long_failed = 0
+    short_failed = 0
+    long_ok = 0
+    short_ok = 0
 
-    if prev_signal == "LONG":
-        if diff_pct >= 0.35:
-            result = "попередній LONG спрацював"
-        elif diff_pct <= -0.35:
-            result = "попередній LONG не підтвердився"
-        else:
-            result = "попередній LONG ще без результату"
-    else:
-        if diff_pct <= -0.35:
-            result = "попередній SHORT спрацював"
-        elif diff_pct >= 0.35:
-            result = "попередній SHORT не підтвердився"
-        else:
-            result = "попередній SHORT ще без результату"
+    for item in valid:
+        prev_signal = item.get("signal")
+        prev_price = float(item.get("price"))
+        diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
 
-    return f"<b>Памʼять:</b> {result} | було {prev_signal} від {round(prev_price, 4)}, зараз {round(current_price, 4)} ({round(diff_pct, 2)}%)"
+        if prev_signal == "LONG":
+            if diff_pct >= 0.35:
+                long_ok += 1
+            elif diff_pct <= -0.35:
+                long_failed += 1
+
+        if prev_signal == "SHORT":
+            if diff_pct <= -0.35:
+                short_ok += 1
+            elif diff_pct >= 0.35:
+                short_failed += 1
+
+    last = valid[-1]
+    last_signal = last.get("signal")
+    last_price = float(last.get("price"))
+    last_diff = ((current_price - last_price) / last_price) * 100 if last_price else 0
+
+    if long_failed >= 2:
+        results.append("останні LONG не підтверджуються")
+    elif long_ok >= 2:
+        results.append("LONG сценарій підтверджується")
+
+    if short_failed >= 2:
+        results.append("останні SHORT не підтверджуються")
+    elif short_ok >= 2:
+        results.append("SHORT сценарій підтверджується")
+
+    if not results:
+        if last_signal == "LONG":
+            if last_diff >= 0.35:
+                results.append("попередній LONG спрацював")
+            elif last_diff <= -0.35:
+                results.append("попередній LONG не підтвердився")
+            else:
+                results.append("попередній LONG ще без результату")
+        elif last_signal == "SHORT":
+            if last_diff <= -0.35:
+                results.append("попередній SHORT спрацював")
+            elif last_diff >= 0.35:
+                results.append("попередній SHORT не підтвердився")
+            else:
+                results.append("попередній SHORT ще без результату")
+
+    return f"<b>Памʼять 1г:</b> {'; '.join(results)}"
 
 
 def memory_confidence_adjustment(signal, memory, current_price):
-    if not memory or signal not in ["LONG", "SHORT"]:
+    """Adjust confidence using last 4 signals.
+
+    Main goal:
+    - avoid repeating LONG if last LONG signals failed;
+    - avoid repeating SHORT if last SHORT signals failed;
+    - support reversal if opposite direction clearly worked.
+    """
+    if signal not in ["LONG", "SHORT"]:
         return 0
 
-    prev_signal = memory.get("signal")
-    prev_price = memory.get("price")
-
-    if prev_signal not in ["LONG", "SHORT"] or not prev_price:
+    history = get_signal_history(memory)
+    valid = [item for item in history if item.get("signal") in ["LONG", "SHORT"] and item.get("price")]
+    if not valid:
         return 0
 
-    prev_price = float(prev_price)
-    diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
+    same_failed = 0
+    same_ok = 0
+    opposite_failed = 0
 
-    if signal == "LONG" and prev_signal == "LONG" and diff_pct <= -0.35:
-        return -12
-    if signal == "SHORT" and prev_signal == "SHORT" and diff_pct >= 0.35:
-        return -12
-    if signal == "SHORT" and prev_signal == "LONG" and diff_pct <= -0.35:
+    for item in valid:
+        prev_signal = item.get("signal")
+        prev_price = float(item.get("price"))
+        diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
+
+        if signal == prev_signal:
+            if signal == "LONG":
+                if diff_pct <= -0.35:
+                    same_failed += 1
+                elif diff_pct >= 0.35:
+                    same_ok += 1
+            elif signal == "SHORT":
+                if diff_pct >= 0.35:
+                    same_failed += 1
+                elif diff_pct <= -0.35:
+                    same_ok += 1
+
+        if signal != prev_signal:
+            if prev_signal == "LONG" and diff_pct <= -0.35:
+                opposite_failed += 1
+            elif prev_signal == "SHORT" and diff_pct >= 0.35:
+                opposite_failed += 1
+
+    if same_failed >= 2:
+        return -16
+    if same_failed == 1:
+        return -8
+    if same_ok >= 2:
         return 8
-    if signal == "LONG" and prev_signal == "SHORT" and diff_pct >= 0.35:
-        return 8
+    if opposite_failed >= 2:
+        return 10
 
     return 0
 
@@ -4609,15 +4726,41 @@ def main():
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
     )
-    save_signal_memory(build_current_signal_memory(
-        signal=signal,
-        signal_type=signal_type,
-        price=tv["price"],
-        confidence=confidence,
-        quality_percent=current_quality_percent,
-        plan=plan,
-        tech=tech,
-    ))
+    updated_memory = append_signal_memory(
+        signal_memory,
+        build_current_signal_memory(
+            signal=signal,
+            signal_type=signal_type,
+            price=tv["price"],
+            confidence=confidence,
+            quality_percent=current_quality_percent,
+            plan=plan,
+            tech=tech,
+        )
+    )
+    save_signal_memory(updated_memory)
+
+    if previous_signal_note:
+        message = message.strip() + "\n\n" + previous_signal_note
+
+    current_quality_percent = estimate_trade_probability(
+        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
+        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
+    )
+
+    updated_memory = append_signal_memory(
+        signal_memory,
+        build_current_signal_memory(
+            signal=signal,
+            signal_type=signal_type,
+            price=tv["price"],
+            confidence=confidence,
+            quality_percent=current_quality_percent,
+            plan=plan,
+            tech=tech,
+        )
+    )
+    save_signal_memory(updated_memory)
 
     send_telegram(message.strip())
     print("TELEGRAM SENT")
