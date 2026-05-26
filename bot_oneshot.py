@@ -1073,7 +1073,7 @@ def analyze_real_volume_confirmation(candles):
     Detects:
     - volume spike
     - bullish/bearish impulse with volume
-    - absorption: large volume but weak close/progress
+    - поглинання: large volume but weak close/progress
     """
     if not candles or len(candles) < 25:
         return {
@@ -1081,7 +1081,7 @@ def analyze_real_volume_confirmation(candles):
             "score": 0,
             "bias": "NEUTRAL",
             "spike": False,
-            "absorption": "NONE",
+            "поглинання": "NONE",
             "note": "volume data unavailable",
         }
 
@@ -1096,7 +1096,7 @@ def analyze_real_volume_confirmation(candles):
             "score": 0,
             "bias": "NEUTRAL",
             "spike": False,
-            "absorption": "NONE",
+            "поглинання": "NONE",
             "note": "volume average unavailable",
         }
 
@@ -1111,7 +1111,7 @@ def analyze_real_volume_confirmation(candles):
     score = 0
     bias = "NEUTRAL"
     spike = vol_ratio >= 1.6
-    absorption = "NONE"
+    поглинання = "NONE"
     notes = []
 
     if spike:
@@ -1129,15 +1129,15 @@ def analyze_real_volume_confirmation(candles):
 
     # Absorption: large volume, but price cannot close in direction of the wick/attempt.
     if spike and last["high"] > max(c["high"] for c in recent[-10:]) and close_location <= 0.45:
-        absorption = "BEARISH ABSORPTION"
+        поглинання = "BEARISH ABSORPTION"
         score -= 14
         bias = "SHORT"
-        notes.append("absorption зверху: покупців поглинули")
+        notes.append("поглинання зверху: покупців поглинули")
     elif spike and last["low"] < min(c["low"] for c in recent[-10:]) and close_location >= 0.55:
-        absorption = "BULLISH ABSORPTION"
+        поглинання = "BULLISH ABSORPTION"
         score += 14
         bias = "LONG"
-        notes.append("absorption знизу: продавців поглинули")
+        notes.append("поглинання знизу: продавців поглинули")
 
     # High volume doji / weak body = caution
     if spike and body_ratio <= 0.25:
@@ -1153,13 +1153,13 @@ def analyze_real_volume_confirmation(candles):
         "bias": bias,
         "spike": spike,
         "vol_ratio": round(vol_ratio, 2),
-        "absorption": absorption,
+        "поглинання": поглинання,
         "note": "; ".join(notes[:3]) if notes else "volume neutral",
     }
 
 def analyze_smc_structure(candles):
     """Real price action + SMC structure:
-    - BOS / CHoCH
+    - пробій структури / ознака розвороту
     - liquidity sweep
     - FVG / imbalance
     - structure bias
@@ -1204,15 +1204,15 @@ def analyze_smc_structure(candles):
     choch = "NONE"
     sweep = "NONE"
 
-    # BOS: close beyond recent structure.
+    # пробій структури: close beyond recent structure.
     if close > last_swing_high:
-        bos = "BOS LONG"
+        bos = "пробій структури LONG"
         score += 24
-        notes.append("BOS LONG: закриття вище swing high")
+        notes.append("пробій структури LONG: закриття вище swing high")
     elif close < last_swing_low:
-        bos = "BOS SHORT"
+        bos = "пробій структури SHORT"
         score -= 24
-        notes.append("BOS SHORT: закриття нижче swing low")
+        notes.append("пробій структури SHORT: закриття нижче swing low")
 
     # Liquidity sweep: wick takes high/low but close returns back.
     if last["high"] > recent_high and close < recent_high:
@@ -1224,16 +1224,16 @@ def analyze_smc_structure(candles):
         score += 18
         notes.append("зняли ліквідність знизу — ризик LONG-відскоку")
 
-    # CHoCH approximation: previous candle broke one way, current close reverses through midpoint/structure.
+    # ознака розвороту approximation: previous candle broke one way, current close reverses through midpoint/structure.
     mid = (recent_high + recent_low) / 2
     if prev["low"] <= recent_low + atr * 0.15 and close > mid:
-        choch = "CHoCH LONG"
+        choch = "ознака розвороту LONG"
         score += 16
-        notes.append("CHoCH LONG: після sweep ціна повернулась у діапазон")
+        notes.append("ознака розвороту LONG: після sweep ціна повернулась у діапазон")
     elif prev["high"] >= recent_high - atr * 0.15 and close < mid:
-        choch = "CHoCH SHORT"
+        choch = "ознака розвороту SHORT"
         score -= 16
-        notes.append("CHoCH SHORT: після sweep ціна повернулась у діапазон")
+        notes.append("ознака розвороту SHORT: після sweep ціна повернулась у діапазон")
 
     fvg = detect_fvg(candles)
     if fvg.get("side") == "LONG":
@@ -1247,22 +1247,22 @@ def analyze_smc_structure(candles):
         if volume_confirmation.get("note") and volume_confirmation.get("note") != "volume neutral":
             notes.append(volume_confirmation.get("note"))
 
-    # Fake BOS protection: BOS without volume confirmation is weaker.
-    if bos == "BOS LONG" and volume_confirmation.get("available"):
+    # Fake пробій структури protection: пробій структури without volume confirmation is weaker.
+    if bos == "пробій структури LONG" and volume_confirmation.get("available"):
         if not volume_confirmation.get("spike") and volume_confirmation.get("bias") != "LONG":
             score -= 8
-            notes.append("BOS LONG без сильного обсягу — ризик fake breakout")
+            notes.append("пробій структури LONG без сильного обсягу — ризик fake breakout")
         elif volume_confirmation.get("bias") == "LONG":
             score += 6
-            notes.append("BOS LONG підтверджений обсягом")
+            notes.append("пробій структури LONG підтверджений обсягом")
 
-    if bos == "BOS SHORT" and volume_confirmation.get("available"):
+    if bos == "пробій структури SHORT" and volume_confirmation.get("available"):
         if not volume_confirmation.get("spike") and volume_confirmation.get("bias") != "SHORT":
             score += 8
-            notes.append("BOS SHORT без сильного обсягу — ризик fake breakdown")
+            notes.append("пробій структури SHORT без сильного обсягу — ризик fake breakdown")
         elif volume_confirmation.get("bias") == "SHORT":
             score -= 6
-            notes.append("BOS SHORT підтверджений обсягом")
+            notes.append("пробій структури SHORT підтверджений обсягом")
 
     # Impulse / cooling from real candles
     last_body = abs(last["close"] - last["open"])
@@ -1284,9 +1284,9 @@ def analyze_smc_structure(candles):
         bias = "NEUTRAL"
 
     if bos != "NONE":
-        phase = "BREAKOUT / BOS"
+        phase = "BREAKOUT / пробій структури"
     elif choch != "NONE":
-        phase = "REVERSAL / CHoCH"
+        phase = "REVERSAL / ознака розвороту"
     elif sweep != "NONE":
         phase = "LIQUIDITY SWEEP"
     else:
@@ -1334,9 +1334,9 @@ def smc_probability_adjustment(signal, smc):
     elif volume.get("bias") in ["LONG", "SHORT"] and volume.get("bias") != signal:
         adjust -= 8
 
-    if signal == "LONG" and volume.get("absorption") == "BEARISH ABSORPTION":
+    if signal == "LONG" and volume.get("поглинання") == "BEARISH ABSORPTION":
         adjust -= 10
-    if signal == "SHORT" and volume.get("absorption") == "BULLISH ABSORPTION":
+    if signal == "SHORT" and volume.get("поглинання") == "BULLISH ABSORPTION":
         adjust -= 10
 
     if phase == "RANGE / WAIT":
@@ -1351,21 +1351,21 @@ def smc_short_text(smc):
     phase = smc.get("phase", "RANGE / WAIT")
     bias = smc.get("bias", "NEUTRAL")
     volume = smc.get("volume", {}) if isinstance(smc, dict) else {}
-    absorption = volume.get("absorption", "NONE")
+    поглинання = volume.get("поглинання", "NONE")
     vol_bias = volume.get("bias", "NEUTRAL")
 
-    if absorption == "BEARISH ABSORPTION":
-        return "Структура: absorption зверху — ризик відкату"
-    if absorption == "BULLISH ABSORPTION":
-        return "Структура: absorption знизу — ризик відскоку"
+    if поглинання == "BEARISH ABSORPTION":
+        return "Структура: поглинання зверху — ризик відкату"
+    if поглинання == "BULLISH ABSORPTION":
+        return "Структура: поглинання знизу — ризик відскоку"
 
     vol_note = ""
     if volume.get("spike") and vol_bias in ["LONG", "SHORT"]:
         vol_note = " + volume"
 
-    if phase == "BREAKOUT / BOS":
-        return f"Структура: {bias} BOS{vol_note}"
-    if phase == "REVERSAL / CHoCH":
+    if phase == "BREAKOUT / пробій структури":
+        return f"Структура: {bias} пробій структури{vol_note}"
+    if phase == "REVERSAL / ознака розвороту":
         return f"Структура: можливий розворот {bias}{vol_note}"
     if phase == "LIQUIDITY SWEEP":
         return "Структура: liquidity sweep — чекати підтвердження"
@@ -1396,18 +1396,18 @@ def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
     strong_pump = change >= 1.2 or momentum in ["STRONG UP", "VERY STRONG UP"]
 
     bearish_structure = (
-        smc_bias == "SHORT" or bos == "BOS SHORT" or
+        smc_bias == "SHORT" or bos == "пробій структури SHORT" or
         (trend_5m == "DOWN" and trend_15m == "DOWN") or
         order_score <= -20 or vol_bias == "SHORT"
     )
     bullish_structure = (
-        smc_bias == "LONG" or bos == "BOS LONG" or
+        smc_bias == "LONG" or bos == "пробій структури LONG" or
         (trend_5m == "UP" and trend_15m == "UP") or
         order_score >= 20 or vol_bias == "LONG"
     )
 
-    bullish_reclaim = choch == "CHoCH LONG" or bos == "BOS LONG" or vol_bias == "LONG" or (smc_phase == "REVERSAL / CHoCH" and smc_bias == "LONG")
-    bearish_reclaim = choch == "CHoCH SHORT" or bos == "BOS SHORT" or vol_bias == "SHORT" or (smc_phase == "REVERSAL / CHoCH" and smc_bias == "SHORT")
+    bullish_reclaim = choch == "ознака розвороту LONG" or bos == "пробій структури LONG" or vol_bias == "LONG" or (smc_phase == "REVERSAL / ознака розвороту" and smc_bias == "LONG")
+    bearish_reclaim = choch == "ознака розвороту SHORT" or bos == "пробій структури SHORT" or vol_bias == "SHORT" or (smc_phase == "REVERSAL / ознака розвороту" and smc_bias == "SHORT")
 
     if signal == "LONG" and strong_dump and bearish_structure and not bullish_reclaim:
         return {
@@ -1463,8 +1463,8 @@ def cap_countertrend_probability(probability, signal, tech, smc):
     strong_dump = change <= -1.2 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
     strong_pump = change >= 1.2 or momentum in ["STRONG UP", "VERY STRONG UP"]
 
-    has_long_reclaim = bos == "BOS LONG" or choch == "CHoCH LONG" or vol_bias == "LONG"
-    has_short_reclaim = bos == "BOS SHORT" or choch == "CHoCH SHORT" or vol_bias == "SHORT"
+    has_long_reclaim = bos == "пробій структури LONG" or choch == "ознака розвороту LONG" or vol_bias == "LONG"
+    has_short_reclaim = bos == "пробій структури SHORT" or choch == "ознака розвороту SHORT" or vol_bias == "SHORT"
 
     if signal == "LONG" and strong_dump and smc_bias != "LONG" and not has_long_reclaim:
         return min(probability, 42)
@@ -1498,7 +1498,7 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
     choch = smc.get("choch", "NONE")
     volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
     vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("absorption", "NONE")
+    поглинання = volume.get("поглинання", "NONE")
 
     news_score = news.get("score", 0) if isinstance(news, dict) else 0
     event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
@@ -1508,23 +1508,23 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
 
     short_confirmed = (
         smc_bias == "SHORT"
-        or bos == "BOS SHORT"
+        or bos == "пробій структури SHORT"
         or vol_bias == "SHORT"
-        or absorption == "BEARISH ABSORPTION"
+        or поглинання == "BEARISH ABSORPTION"
     )
     long_confirmed = (
         smc_bias == "LONG"
-        or bos == "BOS LONG"
+        or bos == "пробій структури LONG"
         or vol_bias == "LONG"
-        or absorption == "BULLISH ABSORPTION"
+        or поглинання == "BULLISH ABSORPTION"
     )
 
     # SHORT after a dump is dangerous if structure/volume did not confirm continuation.
     if signal == "SHORT" and strong_dump:
         if not short_confirmed:
             cap = 54
-            reason = "SHORT після сильного дампу без SMC/BOS/volume підтвердження — ризик відскоку"
-            if news_score >= 35 or event_side == "LONG" or long_confirmed or choch == "CHoCH LONG":
+            reason = "SHORT після сильного дампу без SMC/пробій структури/volume підтвердження — ризик відскоку"
+            if news_score >= 35 or event_side == "LONG" or long_confirmed or choch == "ознака розвороту LONG":
                 cap = 49
                 reason = "SHORT запізнений: дамп уже був, bullish-новини/відскок проти входу"
             return {"active": True, "cap": cap, "reason": reason}
@@ -1533,8 +1533,8 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
     if signal == "LONG" and strong_pump:
         if not long_confirmed:
             cap = 54
-            reason = "LONG після сильного пампу без SMC/BOS/volume підтвердження — ризик відкату"
-            if news_score <= -35 or event_side == "SHORT" or short_confirmed or choch == "CHoCH SHORT":
+            reason = "LONG після сильного пампу без SMC/пробій структури/volume підтвердження — ризик відкату"
+            if news_score <= -35 or event_side == "SHORT" or short_confirmed or choch == "ознака розвороту SHORT":
                 cap = 49
                 reason = "LONG запізнений: памп уже був, bearish-фактори/відкат проти входу"
             return {"active": True, "cap": cap, "reason": reason}
@@ -1570,7 +1570,7 @@ def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
     sweep = smc.get("sweep", "NONE")
     volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
     vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("absorption", "NONE")
+    поглинання = volume.get("поглинання", "NONE")
 
     score = 0
     side = "NONE"
@@ -1595,13 +1595,13 @@ def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
         if news_score >= 35 or event_side == "LONG":
             score += 14
             reasons.append("bullish news/event підтримує відскок")
-        if sweep.startswith("DOWNSIDE") or choch == "CHoCH LONG":
+        if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
             score += 18
-            reasons.append("sweep/CHoCH LONG")
-        if absorption == "BULLISH ABSORPTION" or vol_bias == "LONG":
+            reasons.append("sweep/ознака розвороту LONG")
+        if поглинання == "BULLISH ABSORPTION" or vol_bias == "LONG":
             score += 16
-            reasons.append("обсяг/absorption за покупців")
-        if bos == "BOS LONG" or smc_bias == "LONG":
+            reasons.append("обсяг/поглинання за покупців")
+        if bos == "пробій структури LONG" or smc_bias == "LONG":
             score += 16
             reasons.append("SMC підтверджує LONG")
         if oversold:
@@ -1613,7 +1613,7 @@ def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
         if ema_reclaim_strong_long:
             score += 6
             reasons.append("EMA reclaim посилюється")
-        if bos == "BOS SHORT" or smc_bias == "SHORT" or vol_bias == "SHORT":
+        if bos == "пробій структури SHORT" or smc_bias == "SHORT" or vol_bias == "SHORT":
             score -= 14
             reasons.append("частина структури ще bearish")
 
@@ -1624,13 +1624,13 @@ def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
         if news_score <= -35 or event_side == "SHORT":
             score += 14
             reasons.append("bearish news/event підтримує відкат")
-        if sweep.startswith("UPSIDE") or choch == "CHoCH SHORT":
+        if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
             score += 18
-            reasons.append("sweep/CHoCH SHORT")
-        if absorption == "BEARISH ABSORPTION" or vol_bias == "SHORT":
+            reasons.append("sweep/ознака розвороту SHORT")
+        if поглинання == "BEARISH ABSORPTION" or vol_bias == "SHORT":
             score += 16
-            reasons.append("обсяг/absorption за продавців")
-        if bos == "BOS SHORT" or smc_bias == "SHORT":
+            reasons.append("обсяг/поглинання за продавців")
+        if bos == "пробій структури SHORT" or smc_bias == "SHORT":
             score += 16
             reasons.append("SMC підтверджує SHORT")
         if overbought:
@@ -1642,7 +1642,7 @@ def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
         if ema_reject_strong_short:
             score += 6
             reasons.append("EMA reject посилюється")
-        if bos == "BOS LONG" or smc_bias == "LONG" or vol_bias == "LONG":
+        if bos == "пробій структури LONG" or smc_bias == "LONG" or vol_bias == "LONG":
             score -= 14
             reasons.append("частина структури ще bullish")
 
@@ -1737,9 +1737,9 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
         invalid = round(invalid, 4)
 
         text = (
-            f"ENTRY WATCH LONG — вхід не по ринку. "
-            f"Тригер: закріплення вище {trigger} або ретест/утримання {pullback_zone}. "
-            f"Скасування: нижче {invalid}."
+            f"Готуємось до LONG — не входити по ринку. "
+            f"Умова входу: закріплення вище {trigger} або ретест/утримання {pullback_zone}. "
+            f"Сценарій скасовується: нижче {invalid}."
         )
 
     else:
@@ -1754,9 +1754,9 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
         invalid = round(invalid, 4)
 
         text = (
-            f"ENTRY WATCH SHORT — вхід не по ринку. "
-            f"Тригер: закріплення нижче {trigger} або ретест/утримання {pullback_zone}. "
-            f"Скасування: вище {invalid}."
+            f"Готуємось до SHORT — не входити по ринку. "
+            f"Умова входу: закріплення нижче {trigger} або ретест/утримання {pullback_zone}. "
+            f"Сценарій скасовується: вище {invalid}."
         )
 
     return {
@@ -1782,7 +1782,7 @@ def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_
 
 
 def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event_risk, smc, entry_watch):
-    """ENTRY WATCH should not be shown as 0/5 when the setup has a real directional reason.
+    """ГОТУЄМОСЬ should not be shown as 0/5 when the setup has a real directional reason.
 
     This does NOT allow a trade. It only makes the displayed quality fair:
     - strong news + neutral/not-opposite tech = at least 2/5 watch;
@@ -1808,9 +1808,9 @@ def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event
     vol_bias = volume.get("bias", "NEUTRAL")
 
     if signal == "LONG":
-        tech_strong_against = tech_score <= -55 or smc_bias == "SHORT" or bos == "BOS SHORT" or vol_bias == "SHORT"
+        tech_strong_against = tech_score <= -55 or smc_bias == "SHORT" or bos == "пробій структури SHORT" or vol_bias == "SHORT"
         news_support = news_score >= 45 or event_side == "LONG"
-        mild_tech_support = tech_score >= 15 or smc_bias == "LONG" or bos == "BOS LONG" or vol_bias == "LONG"
+        mild_tech_support = tech_score >= 15 or smc_bias == "LONG" or bos == "пробій структури LONG" or vol_bias == "LONG"
 
         if news_support and not tech_strong_against:
             trade_probability = max(trade_probability, 52)  # 2/5 watch
@@ -1818,16 +1818,16 @@ def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event
             trade_probability = max(trade_probability, 58)  # 3/5 watch
 
     elif signal == "SHORT":
-        tech_strong_against = tech_score >= 55 or smc_bias == "LONG" or bos == "BOS LONG" or vol_bias == "LONG"
+        tech_strong_against = tech_score >= 55 or smc_bias == "LONG" or bos == "пробій структури LONG" or vol_bias == "LONG"
         news_support = news_score <= -45 or event_side == "SHORT"
-        mild_tech_support = tech_score <= -15 or smc_bias == "SHORT" or bos == "BOS SHORT" or vol_bias == "SHORT"
+        mild_tech_support = tech_score <= -15 or smc_bias == "SHORT" or bos == "пробій структури SHORT" or vol_bias == "SHORT"
 
         if news_support and not tech_strong_against:
             trade_probability = max(trade_probability, 52)
         if news_support and mild_tech_support and not tech_strong_against:
             trade_probability = max(trade_probability, 58)
 
-    # ENTRY WATCH is still not a confirmed trade.
+    # ГОТУЄМОСЬ is still not a confirmed trade.
     return min(trade_probability, 64)
 
 
@@ -1835,9 +1835,9 @@ def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event
 def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, event_risk, smc, orderflow=None):
     """Fair quality floor for real TRADE setups.
 
-    Difference from ENTRY WATCH:
+    Difference from ГОТУЄМОСЬ:
     - WATCH can be 2/5–3/5 without full structure confirmation.
-    - TRADE needs confirmation: BOS/SMC/volume/orderflow/EMA trend.
+    - TRADE needs confirmation: пробій структури/SMC/volume/orderflow/EMA trend.
     - If confirmation exists + news supports + tech is not against, quality can become 4/5–5/5.
     """
     if signal not in ["LONG", "SHORT"] or trade_probability is None:
@@ -1861,25 +1861,25 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     phase = smc.get("phase", "")
     volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
     vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("absorption", "NONE")
+    поглинання = volume.get("поглинання", "NONE")
     order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
 
     if signal == "LONG":
         strong_against = (
             tech_score <= -55
-            or bos == "BOS SHORT"
+            or bos == "пробій структури SHORT"
             or smc_bias == "SHORT"
             or vol_bias == "SHORT"
-            or absorption == "BEARISH ABSORPTION"
+            or поглинання == "BEARISH ABSORPTION"
         )
         news_support = news_score >= 45 or event_side == "LONG"
         tech_support = tech_score >= 35 or (trend_5m == "UP" and trend_15m == "UP") or order_score >= 15
         structure_confirmed = (
-            bos == "BOS LONG"
+            bos == "пробій структури LONG"
             or smc_bias == "LONG"
             or vol_bias == "LONG"
-            or absorption == "BULLISH ABSORPTION"
-            or phase == "BREAKOUT / BOS"
+            or поглинання == "BULLISH ABSORPTION"
+            or phase == "BREAKOUT / пробій структури"
         )
 
         if strong_against:
@@ -1895,19 +1895,19 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     elif signal == "SHORT":
         strong_against = (
             tech_score >= 55
-            or bos == "BOS LONG"
+            or bos == "пробій структури LONG"
             or smc_bias == "LONG"
             or vol_bias == "LONG"
-            or absorption == "BULLISH ABSORPTION"
+            or поглинання == "BULLISH ABSORPTION"
         )
         news_support = news_score <= -45 or event_side == "SHORT"
         tech_support = tech_score <= -35 or (trend_5m == "DOWN" and trend_15m == "DOWN") or order_score <= -15
         structure_confirmed = (
-            bos == "BOS SHORT"
+            bos == "пробій структури SHORT"
             or smc_bias == "SHORT"
             or vol_bias == "SHORT"
-            or absorption == "BEARISH ABSORPTION"
-            or phase == "BREAKOUT / BOS"
+            or поглинання == "BEARISH ABSORPTION"
+            or phase == "BREAKOUT / пробій структури"
         )
 
         if strong_against:
@@ -2906,7 +2906,7 @@ def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
     """Adaptive TP multipliers.
 
     Early confirmation = a bit more conservative.
-    Confirmed BOS/trend/news alignment = wider targets.
+    Confirmed пробій структури/trend/news alignment = wider targets.
     This avoids tiny scalping TPs while keeping TP1 realistic.
     """
     st = (signal_type or "").upper()
@@ -2921,7 +2921,7 @@ def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
         rr1, rr2, rr3 = 1.25, 2.00, 3.00
 
     # Strong confirmed trend gets wider expansion targets.
-    if "BOS" in st or "BREAKOUT" in st or abs(tech.get("score", 0) or 0) >= 85:
+    if "пробій структури" in st or "BREAKOUT" in st or abs(tech.get("score", 0) or 0) >= 85:
         rr1, rr2, rr3 = 1.50, 2.40, 3.60
 
     # High-impact event/news can extend moves, but keep TP1 reachable.
@@ -3088,9 +3088,9 @@ def human_signal_label(signal, signal_type, early_warning=None):
         return "TRADE SHORT"
 
     if "STRUCTURE SHORT WATCH" in st:
-        return "ГОТУЄМОСЬ ДО SHORT — SMC/3m проти LONG"
+        return "LONG слабшає — можливий відкат вниз"
     if "STRUCTURE LONG WATCH" in st:
-        return "ГОТУЄМОСЬ ДО LONG — SMC/3m проти SHORT"
+        return "SHORT слабшає — можливий відскок вгору"
     if "LONG СКАСОВАНО" in st:
         return "LONG скасовано — чекати новий тригер"
     if "SHORT СКАСОВАНО" in st:
@@ -3352,7 +3352,7 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
 
     if signal == "LONG":
         if "EARLY NEWS" in signal_type:
-            return "TRADE LONG — робочий вхід"
+            return "TRADE LONG — можна входити"
         if "ІМПУЛЬСНИЙ" in signal_type:
             return "TRADE LONG — імпульсний"
         if "РИЗИКОВИЙ" in signal_type:
@@ -3361,7 +3361,7 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
 
     if signal == "SHORT":
         if "EARLY NEWS" in signal_type:
-            return "TRADE SHORT — робочий вхід"
+            return "TRADE SHORT — можна входити"
         if "ІМПУЛЬСНИЙ" in signal_type:
             return "TRADE SHORT — імпульсний"
         if "РИЗИКОВИЙ" in signal_type:
@@ -3777,18 +3777,18 @@ def entry_quality_scale(probability, late_entry=None):
         suffix = " — пізній вхід, краще чекати відкат"
 
     if probability < 50:
-        return f"0/5 — немає входу ({probability}%){suffix}"
+        return f"0/5 — не входити ({probability}%){suffix}"
     if probability < 55:
-        return f"2/5 — спостерігаємо, входу ще немає ({probability}%){suffix}"
+        return f"2/5 — тільки спостерігати ({probability}%){suffix}"
     if probability < 65:
         return f"3/5 — готуємось до входу ({probability}%){suffix}"
     if probability < 75:
-        return f"4/5 — робочий вхід, тільки зі стопом ({probability}%){suffix}"
-    return f"5/5 — найкращий підтверджений вхід ({probability}%){suffix}"
+        return f"4/5 — можна входити, тільки зі стопом ({probability}%){suffix}"
+    return f"5/5 — найкращий вхід ({probability}%){suffix}"
 
 
 def smc_conflict_note(smc):
-    """Explain mixed SMC signals instead of showing contradictory BOS/volume silently."""
+    """Explain mixed SMC signals instead of showing contradictory пробій структури/volume silently."""
     if not smc or not isinstance(smc, dict) or not smc.get("available"):
         return ""
 
@@ -3798,13 +3798,13 @@ def smc_conflict_note(smc):
     summary = str(smc.get("summary", "")).lower()
     volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
     vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("absorption", "NONE")
+    поглинання = volume.get("поглинання", "NONE")
 
-    long_structure = bias == "LONG" or bos == "BOS LONG" or choch == "CHoCH LONG"
-    short_structure = bias == "SHORT" or bos == "BOS SHORT" or choch == "CHoCH SHORT"
+    long_structure = bias == "LONG" or bos == "пробій структури LONG" or choch == "ознака розвороту LONG"
+    short_structure = bias == "SHORT" or bos == "пробій структури SHORT" or choch == "ознака розвороту SHORT"
 
-    bearish_candle = "bearish candle" in summary or "продавців" in summary or absorption == "BEARISH ABSORPTION"
-    bullish_candle = "bullish candle" in summary or "покупців" in summary or absorption == "BULLISH ABSORPTION"
+    bearish_candle = "bearish candle" in summary or "продавців" in summary or поглинання == "BEARISH ABSORPTION"
+    bullish_candle = "bullish candle" in summary or "покупців" in summary or поглинання == "BULLISH ABSORPTION"
 
     if long_structure and (vol_bias == "SHORT" or bearish_candle):
         return "SMC: змішано — структура LONG, але обсяг/свічка проти. LONG ще не підтверджений."
@@ -3812,7 +3812,7 @@ def smc_conflict_note(smc):
         return "SMC: змішано — структура SHORT, але обсяг/свічка проти. SHORT ще не підтверджений."
     if bias in ["LONG", "SHORT"]:
         return f"SMC: {bias} підтвердження структури."
-    return "SMC: нейтрально / чекати підтвердження."
+    return "Структура: ще без чіткого підтвердження."
 
 
 def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None, tech=None):
@@ -3876,7 +3876,7 @@ def compact_final_summary_text(final_summary, market_bias, trade_probability):
         return "Сигнал не підтверджений — краще чекати."
 
     if trade_probability < 55:
-        return "Сетап слабкий — чекати ретест/підтвердження."
+        return "Сигнал слабкий — краще чекати."
     if market_bias in ["LONG", "SHORT"]:
         return f"{market_bias} сценарій активний, але працювати тільки зі стопом."
     return "Перевага нечітка — не поспішати з входом."
@@ -3958,12 +3958,12 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     prob = cap_countertrend_probability(prob, signal, tech or {}, smc)
 
     # Anti-late-continuation filter:
-    # prevents strong 5/5 entries after an extended move without SMC/BOS/volume confirmation.
+    # prevents strong 5/5 entries after an extended move without SMC/пробій структури/volume confirmation.
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     if exhaustion.get("active") and exhaustion.get("cap") is not None:
         prob = min(prob, int(exhaustion["cap"]))
 
-    # Early reversal is only a WATCH until SMC/BOS/volume fully confirms it.
+    # Early reversal is only a WATCH until SMC/пробій структури/volume fully confirms it.
     early = early_reversal_engine({}, tech or {}, smc, news, event_risk)
     if early.get("active") and early.get("side") == signal and early.get("quality_cap") is not None:
         prob = min(prob, int(early["quality_cap"]))
@@ -4013,14 +4013,14 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
         if signal == "LONG":
-            decision = "ENTRY WATCH LONG — тільки після ретесту/утримання"
+            decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
         elif signal == "SHORT":
-            decision = "ENTRY WATCH SHORT — тільки після ретесту/утримання"
+            decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
     if cooling and cooling.get("active"):
         if signal == "LONG":
-            decision = "ENTRY WATCH LONG — тільки після ретесту/утримання"
+            decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
         elif signal == "SHORT":
-            decision = "ENTRY WATCH SHORT — тільки після ретесту/утримання"
+            decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -4256,15 +4256,17 @@ def analyze_micro_structure(candles):
 
 
 def micro_structure_text(micro):
+    """Human-readable 3m warning for Telegram."""
     if not micro or not micro.get("available"):
         return ""
-    if micro.get("bias") == "LONG":
-        return f"<b>MICRO 3m:</b> LONG тригер ({micro.get('score')})"
-    if micro.get("bias") == "SHORT":
-        return f"<b>MICRO 3m:</b> SHORT тригер ({micro.get('score')})"
+    bias = micro.get("bias", "NEUTRAL")
+    score = micro.get("score", 0)
+
+    if bias == "SHORT":
+        return f"<b>3m:</b> LONG слабшає — можливий відкат вниз ({score})"
+    if bias == "LONG":
+        return f"<b>3m:</b> SHORT слабшає — можливий відскок вгору ({score})"
     return ""
-
-
 
 def structure_override_engine(signal, signal_type, confidence, score, tech, smc, micro, news, event_risk):
     """SMC/price action override.
@@ -4300,14 +4302,14 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
 
     structure_short = (
         smc_bias == "SHORT"
-        or bos == "BOS SHORT"
-        or choch == "CHoCH SHORT"
+        or bos == "пробій структури SHORT"
+        or choch == "ознака розвороту SHORT"
         or smc_score <= -22
     )
     structure_long = (
         smc_bias == "LONG"
-        or bos == "BOS LONG"
-        or choch == "CHoCH LONG"
+        or bos == "пробій структури LONG"
+        or choch == "ознака розвороту LONG"
         or smc_score >= 22
     )
 
@@ -4319,7 +4321,7 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
             return {
                 "active": True,
                 "signal": "SHORT",
-                "signal_type": "STRUCTURE SHORT WATCH / NEWS INVALIDATED",
+                "signal_type": "LONG СЛАБШАЄ / МОЖЛИВИЙ ВІДКАТ ВНИЗ",
                 "confidence": min(68, max(55, abs(smc_score) + abs(micro_score))),
                 "score": -abs(max(abs(score), abs(smc_score) + abs(micro_score) + 20)),
                 "reason": "LONG скасовано: SMC/3m структура вже показує SHORT",
@@ -4338,7 +4340,7 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
             return {
                 "active": True,
                 "signal": "LONG",
-                "signal_type": "STRUCTURE LONG WATCH / NEWS INVALIDATED",
+                "signal_type": "SHORT СЛАБШАЄ / МОЖЛИВИЙ ВІДСКОК ВГОРУ",
                 "confidence": min(68, max(55, abs(smc_score) + abs(micro_score))),
                 "score": abs(max(abs(score), abs(smc_score) + abs(micro_score) + 20)),
                 "reason": "SHORT скасовано: SMC/3m структура вже показує LONG",
@@ -4460,7 +4462,7 @@ def main():
     print(f"NEWS CAPPED SCORE: {news['score']}")
     print(f"TECH SCORE: {tech['score']}")
     print(f"SMC STRUCTURE: {smc.get('phase')} | {smc.get('bias')} | SCORE: {smc.get('score')} | {smc.get('summary')}")
-    print(f"SMC VOLUME: {smc.get('volume', {}).get('bias', 'NEUTRAL')} | {smc.get('volume', {}).get('absorption', 'NONE')} | {smc.get('volume', {}).get('note', '')}")
+    print(f"SMC VOLUME: {smc.get('volume', {}).get('bias', 'NEUTRAL')} | {smc.get('volume', {}).get('поглинання', 'NONE')} | {smc.get('volume', {}).get('note', '')}")
     print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
