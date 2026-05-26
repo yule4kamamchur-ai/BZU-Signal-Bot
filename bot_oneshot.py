@@ -3087,6 +3087,14 @@ def human_signal_label(signal, signal_type, early_warning=None):
     if signal == "SHORT":
         return "TRADE SHORT"
 
+    if "STRUCTURE SHORT WATCH" in st:
+        return "ГОТУЄМОСЬ ДО SHORT — SMC/3m проти LONG"
+    if "STRUCTURE LONG WATCH" in st:
+        return "ГОТУЄМОСЬ ДО LONG — SMC/3m проти SHORT"
+    if "LONG СКАСОВАНО" in st:
+        return "LONG скасовано — чекати новий тригер"
+    if "SHORT СКАСОВАНО" in st:
+        return "SHORT скасовано — чекати новий тригер"
     if "REVERSAL LONG" in st or "LONG WATCH" in st:
         return "Чекаємо підтвердження LONG"
     if "REVERSAL SHORT" in st or "SHORT WATCH" in st:
@@ -4083,6 +4091,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if smc_note:
         lines.append(f"<b>{smc_note}</b>")
 
+    micro_line = micro_structure_text((tech or {}).get("micro_3m"))
+    if micro_line:
+        lines.append(micro_line)
+
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
 
     risk_text = reversal_risk_note(signal, reversal)
@@ -4214,9 +4226,20 @@ def main():
     
     real_candles = get_real_candles()
     smc = analyze_smc_structure(real_candles)
+
+    micro_candles = get_real_candles(bar="3m", limit=160)
+    micro = analyze_micro_structure(micro_candles)
+    tech["micro_3m"] = micro
+
     if smc.get('available'):
         tech['score'] += int(smc.get('score', 0))
         tech.setdefault('confirmations', []).append('SMC: ' + smc.get('summary', ''))
+
+    # 3m is a micro-trigger only. It has small weight, but can override false news bias with SMC.
+    if micro.get("available"):
+        tech['score'] += int(max(-18, min(18, micro.get("score", 0))))
+        tech.setdefault('confirmations', []).append('MICRO 3m: ' + micro.get('note', ''))
+
     news = analyze_news(fresh_news)
     orderflow = analyze_free_orderflow(tv)
     macro_data = get_macro_quant_data()
@@ -4235,6 +4258,15 @@ def main():
     signal, signal_type, score, confidence, risk_note = build_signal(
         tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority, weekend, cross_market
     )
+
+    structure_override = structure_override_engine(signal, signal_type, confidence, score, tech, smc, micro, news, event_risk)
+    if structure_override.get("active"):
+        signal = structure_override["signal"]
+        signal_type = structure_override["signal_type"]
+        confidence = structure_override["confidence"]
+        score = structure_override["score"]
+        risk_note = structure_override.get("reason", risk_note)
+
     current_truth_filter = price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow)
     if current_truth_filter.get('blocked'):
         signal = 'НЕЙТРАЛЬНО'
