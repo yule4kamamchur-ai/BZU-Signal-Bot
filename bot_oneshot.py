@@ -1770,16 +1770,14 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
 
 
 def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch):
-    """Telegram plan text. TRADE only if confirmed; otherwise conditional entry watch."""
+    """Telegram plan text. TRADE only if confirmed; otherwise conditional preparation."""
     if show_trade_plan:
         return format_trade_plan(plan)
 
     if entry_watch and entry_watch.get("active"):
         return entry_watch.get("text")
 
-    return "WAIT — немає якісного входу; чекати новий тригер"
-
-
+    return "WAIT — немає якісного входу; чекати нову умову"
 
 def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event_risk, smc, entry_watch):
     """ГОТУЄМОСЬ should not be shown as 0/5 when the setup has a real directional reason.
@@ -3974,11 +3972,22 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
+
+    if local_warning:
+        if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
+            decision = "TRADE LONG — 3m підтверджує вхід"
+        elif "підтверджує SHORT" in local_warning and trade_probability is not None and trade_probability >= 65:
+            decision = "TRADE SHORT — 3m підтверджує вхід"
+        elif signal == "LONG":
+            decision = "LONG слабшає — чекати відкат"
+        elif signal == "SHORT":
+            decision = "SHORT слабшає — чекати відскок"
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
     priority_label = compact_priority_label(priority, reversal)
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
+    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
@@ -4090,10 +4099,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     smc_note = smc_conflict_note(smc)
     if smc_note:
         lines.append(f"<b>{smc_note}</b>")
-
-    micro_line = micro_structure_text((tech or {}).get("micro_3m"))
-    if micro_line:
-        lines.append(micro_line)
 
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
 
@@ -4362,6 +4367,100 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
         "score": score,
         "reason": "",
     }
+
+
+
+def local_3m_status_text(micro, signal=None):
+    """Human-readable local 3m trend/status."""
+    if not micro or not micro.get("available"):
+        return "Локально 3m: дані недоступні"
+
+    bias = micro.get("bias", "NEUTRAL")
+    score = micro.get("score", 0)
+
+    if signal == "LONG" and bias == "LONG":
+        return f"Локально 3m: LONG посилюється — покупці активні ({score})"
+    if signal == "SHORT" and bias == "SHORT":
+        return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
+
+    if signal == "LONG" and bias == "SHORT":
+        return f"Локально 3m: LONG слабшає — можливий відкат вниз ({score})"
+    if signal == "SHORT" and bias == "LONG":
+        return f"Локально 3m: SHORT слабшає — можливий відскок вгору ({score})"
+
+    if bias == "LONG":
+        return f"Локально 3m: покупці активні ({score})"
+    if bias == "SHORT":
+        return f"Локально 3m: продавці активні ({score})"
+
+    return "Локально 3m: нейтрально"
+
+
+def global_trend_text(tech, market_bias):
+    """Human-readable global 15m/1h trend."""
+    tech = tech or {}
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    trend_1h = tech.get("trend_1h", "UNKNOWN")
+
+    if trend_15m == "UP" and trend_1h == "UP":
+        return "Глобально: LONG"
+    if trend_15m == "DOWN" and trend_1h == "DOWN":
+        return "Глобально: SHORT"
+
+    if market_bias in ["LONG", "SHORT"]:
+        return f"Глобально: {market_bias}"
+
+    return "Глобально: змішано"
+
+
+def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech):
+    """Adjust confidence/quality by local 3m timing.
+
+    15m/1h = main direction.
+    3m = timing.
+    If 3m goes against signal -> reduce confidence.
+    If 3m agrees with signal -> increase confidence and entry quality.
+    """
+    micro = (tech or {}).get("micro_3m") or {}
+    if signal not in ["LONG", "SHORT"] or not micro.get("available"):
+        return confidence, trade_probability, ""
+
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_score = micro.get("score", 0) or 0
+
+    # 3m against main signal = caution
+    if signal == "LONG" and micro_bias == "SHORT":
+        confidence = min(confidence, 58)
+        if trade_probability is not None:
+            trade_probability = min(trade_probability, 54)
+        return confidence, trade_probability, "LONG слабшає на 3m — не входити по ринку"
+
+    if signal == "SHORT" and micro_bias == "LONG":
+        confidence = min(confidence, 58)
+        if trade_probability is not None:
+            trade_probability = min(trade_probability, 54)
+        return confidence, trade_probability, "SHORT слабшає на 3m — не входити по ринку"
+
+    # 3m agrees with main signal = better timing
+    if signal == "LONG" and micro_bias == "LONG":
+        confidence = min(95, confidence + 6)
+        if trade_probability is not None:
+            if micro_score >= 30:
+                trade_probability = max(trade_probability, 68)
+            else:
+                trade_probability = max(trade_probability, 62)
+        return confidence, trade_probability, "3m підтверджує LONG — покупці активні"
+
+    if signal == "SHORT" and micro_bias == "SHORT":
+        confidence = min(95, confidence + 6)
+        if trade_probability is not None:
+            if micro_score <= -30:
+                trade_probability = max(trade_probability, 68)
+            else:
+                trade_probability = max(trade_probability, 62)
+        return confidence, trade_probability, "3m підтверджує SHORT — продавці активні"
+
+    return confidence, trade_probability, ""
 
 
 # ==========================================================
