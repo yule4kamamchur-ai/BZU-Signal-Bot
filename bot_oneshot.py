@@ -4036,8 +4036,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         lines.append(f"<b>{smc_note}</b>")
 
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
-    if no_entry_active:
-        lines.append(f"<b>Чому не входити зараз:</b> {no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry, cooling, tech)}")
 
     risk_text = reversal_risk_note(signal, reversal)
     rev_text = compact_reversal_label(reversal)
