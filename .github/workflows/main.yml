@@ -6,7 +6,7 @@ name: BZU Auto Bot
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   run-bot:
@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -33,3 +35,14 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CRYPTOPANIC_KEY: ${{ secrets.CRYPTOPANIC_KEY }}
         run: python bot_oneshot.py
+
+      - name: Save signal memory
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add last_signal.json
+
+          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update last signal memory"
+
+          git push
