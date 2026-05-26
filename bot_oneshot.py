@@ -1683,6 +1683,103 @@ def early_reversal_text(early):
     return f"<b>Early reversal:</b> слабкий {side} watch ({score}%)"
 
 
+def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
+    """Creates a forward-looking conditional entry plan.
+
+    This is the mode the user wants:
+    - not "price already moved";
+    - but "prepare entry IF trigger confirms".
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return {"active": False, "side": "NONE", "text": "", "trigger": None, "invalid": None}
+
+    tv = tv or {}
+    tech = tech or {}
+    smc = smc or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    early_reversal = early_reversal or {}
+
+    price = tv.get("price") or 0
+    atr = tech.get("atr_15m") or smc.get("atr") or (price * 0.006 if price else 0)
+    if not price or not atr:
+        return {"active": False, "side": "NONE", "text": "", "trigger": None, "invalid": None}
+
+    swing_high = smc.get("swing_high")
+    swing_low = smc.get("swing_low")
+    ema20 = tech.get("ema20_15m")
+    tech_side = "LONG" if (tech.get("score", 0) or 0) >= 35 else "SHORT" if (tech.get("score", 0) or 0) <= -35 else "NEUTRAL"
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    probability = trade_probability or 0
+    has_reason = (
+        probability >= 50
+        or (early_reversal.get("active") and early_reversal.get("side") == signal)
+        or tech_side == signal
+        or (signal == "LONG" and news_score >= 35)
+        or (signal == "SHORT" and news_score <= -35)
+        or event_side == signal
+    )
+    if not has_reason:
+        return {"active": False, "side": "NONE", "text": "", "trigger": None, "invalid": None}
+
+    # Avoid far-away triggers. The trigger must be close enough to be useful.
+    if signal == "LONG":
+        raw_trigger = max(price + atr * 0.12, swing_high if swing_high and swing_high > price else price + atr * 0.12)
+        if raw_trigger > price * 1.012:
+            raw_trigger = price + atr * 0.18
+
+        pullback_zone = ema20 if ema20 and ema20 < price else price - atr * 0.35
+        invalid = swing_low if swing_low and swing_low < price else price - atr * 0.65
+        trigger = round(raw_trigger, 4)
+        pullback_zone = round(pullback_zone, 4)
+        invalid = round(invalid, 4)
+
+        text = (
+            f"ENTRY WATCH LONG — вхід не по ринку. "
+            f"Тригер: закріплення вище {trigger} або ретест/утримання {pullback_zone}. "
+            f"Скасування: нижче {invalid}."
+        )
+
+    else:
+        raw_trigger = min(price - atr * 0.12, swing_low if swing_low and swing_low < price else price - atr * 0.12)
+        if raw_trigger < price * 0.988:
+            raw_trigger = price - atr * 0.18
+
+        pullback_zone = ema20 if ema20 and ema20 > price else price + atr * 0.35
+        invalid = swing_high if swing_high and swing_high > price else price + atr * 0.65
+        trigger = round(raw_trigger, 4)
+        pullback_zone = round(pullback_zone, 4)
+        invalid = round(invalid, 4)
+
+        text = (
+            f"ENTRY WATCH SHORT — вхід не по ринку. "
+            f"Тригер: закріплення нижче {trigger} або ретест/утримання {pullback_zone}. "
+            f"Скасування: вище {invalid}."
+        )
+
+    return {
+        "active": True,
+        "side": signal,
+        "text": text,
+        "trigger": trigger,
+        "retest": pullback_zone,
+        "invalid": invalid,
+    }
+
+
+def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch):
+    """Telegram plan text. TRADE only if confirmed; otherwise conditional entry watch."""
+    if show_trade_plan:
+        return format_trade_plan(plan)
+
+    if entry_watch and entry_watch.get("active"):
+        return entry_watch.get("text")
+
+    return "WAIT — немає якісного входу; чекати новий тригер"
+
+
 
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
@@ -3483,12 +3580,12 @@ def entry_quality_scale(probability, late_entry=None):
     if probability < 50:
         return f"0/5 — немає входу ({probability}%){suffix}"
     if probability < 55:
-        return f"1/5 — дуже слабкий сетап ({probability}%){suffix}"
+        return f"2/5 — ранній watch, вхід тільки по тригеру ({probability}%){suffix}"
     if probability < 65:
-        return f"3/5 — середній сетап ({probability}%){suffix}"
+        return f"3/5 — ENTRY WATCH, чекати тригер ({probability}%){suffix}"
     if probability < 75:
-        return f"4/5 — добрий сетап ({probability}%){suffix}"
-    return f"5/5 — сильний сетап ({probability}%){suffix}"
+        return f"4/5 — робочий сетап, тільки зі стопом ({probability}%){suffix}"
+    return f"5/5 — сильний підтверджений сетап ({probability}%){suffix}"
 
 
 def smc_conflict_note(smc):
@@ -3526,7 +3623,9 @@ def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news
     if signal not in ["LONG", "SHORT"] or trade_probability is None:
         reasons.append("немає повного торгового сигналу")
     elif trade_probability < 55:
-        reasons.append("якість сетапу нижче робочого рівня")
+        reasons.append("вхід тільки по тригеру, не по ринку")
+    elif trade_probability < 65:
+        reasons.append("є watch-сигнал, але ще немає повного підтвердження")
 
     tech_side = technical_bias.get("side", "NEUTRAL") if isinstance(technical_bias, dict) else "NEUTRAL"
     tech_score = technical_bias.get("score", 0) if isinstance(technical_bias, dict) else 0
@@ -3684,29 +3783,39 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+    entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
         if signal == "SHORT":
-            decision = "SHORT запізнений — чекати ретест"
+            decision = "ENTRY WATCH SHORT — чекати тригер"
         elif signal == "LONG":
-            decision = "LONG запізнений — чекати ретест"
+            decision = "ENTRY WATCH LONG — чекати тригер"
 
     if early_reversal.get("active") and early_reversal.get("side") == signal and trade_probability is not None and trade_probability < 65:
         if signal == "LONG":
-            decision = "Ранній LONG watch — чекати підтвердження"
+            decision = "ENTRY WATCH LONG — чекати тригер"
         elif signal == "SHORT":
-            decision = "Ранній SHORT watch — чекати підтвердження"
+            decision = "ENTRY WATCH SHORT — чекати тригер"
+
+    # Never show TRADE if the setup is not confirmed.
+    if trade_probability is not None and trade_probability < 65 and str(decision).startswith("TRADE"):
+        if signal == "LONG":
+            decision = "ENTRY WATCH LONG — чекати тригер"
+        elif signal == "SHORT":
+            decision = "ENTRY WATCH SHORT — чекати тригер"
+        else:
+            decision = "НЕ ВХОДИТИ — чекати тригер"
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
         if signal == "LONG":
-            decision = "LONG перегрітий — чекати відкат"
+            decision = "ENTRY WATCH LONG — тільки після ретесту/утримання"
         elif signal == "SHORT":
-            decision = "SHORT перегрітий — чекати відкат"
+            decision = "ENTRY WATCH SHORT — тільки після ретесту/утримання"
     if cooling and cooling.get("active"):
         if signal == "LONG":
-            decision = "LONG перегрітий — чекати відкат"
+            decision = "ENTRY WATCH LONG — тільки після ретесту/утримання"
         elif signal == "SHORT":
-            decision = "SHORT перегрітий — чекати відкат"
+            decision = "ENTRY WATCH SHORT — тільки після ретесту/утримання"
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -3768,7 +3877,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Очікування:</b> {driver['expectation']}",
         f"<b>Джерело:</b> {format_driver_source(driver)}",
         "",
-        f"<b>План:</b> {format_trade_plan(plan) if show_trade_plan else 'WAIT RETEST — чекати відкат/ретест, входу зараз немає'}",
+        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
         f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
