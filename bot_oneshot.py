@@ -3993,13 +3993,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif rev_text != "немає":
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
-    if cooling and cooling.get("active"):
-    elif late_entry and late_entry.get("late"):
-    if pos_note:
 
-    lines.extend([
-        "",
-    ])
 
     return "\n".join(lines).strip()
 
