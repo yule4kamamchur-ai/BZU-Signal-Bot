@@ -1547,6 +1547,143 @@ def extension_exhaustion_reason(signal, tech, smc, news=None, event_risk=None):
     return info.get("reason", "") if info.get("active") else ""
 
 
+def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
+    """Detect early reversal after strong dump/pump. It is a WATCH layer, not an entry trigger."""
+    tech = tech or {}
+    smc = smc or {}
+    news = news or {}
+    event_risk = event_risk or {}
+
+    price = tv.get("price") if isinstance(tv, dict) else None
+    change = tech.get("change", 0) or 0
+    momentum = tech.get("momentum", "NEUTRAL")
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+    ema20 = tech.get("ema20_15m")
+    ema50 = tech.get("ema50_15m")
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    sweep = smc.get("sweep", "NONE")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("absorption", "NONE")
+
+    score = 0
+    side = "NONE"
+    reasons = []
+
+    strong_dump = change <= -1.0 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
+    strong_pump = change >= 1.0 or momentum in ["STRONG UP", "VERY STRONG UP"]
+
+    oversold = (rsi5 is not None and rsi5 <= 30) or (rsi15 is not None and rsi15 <= 35)
+    overbought = (rsi5 is not None and rsi5 >= 70) or (rsi15 is not None and rsi15 >= 66)
+
+    ema_reclaim_long = bool(price and ema20 and price > ema20)
+    ema_reclaim_strong_long = bool(price and ema20 and ema50 and price > ema20 and ema20 >= ema50 * 0.998)
+
+    ema_reject_short = bool(price and ema20 and price < ema20)
+    ema_reject_strong_short = bool(price and ema20 and ema50 and price < ema20 and ema20 <= ema50 * 1.002)
+
+    if strong_dump:
+        side = "LONG"
+        score += 12
+        reasons.append("після сильного дампу шукаємо розворот")
+        if news_score >= 35 or event_side == "LONG":
+            score += 14
+            reasons.append("bullish news/event підтримує відскок")
+        if sweep.startswith("DOWNSIDE") or choch == "CHoCH LONG":
+            score += 18
+            reasons.append("sweep/CHoCH LONG")
+        if absorption == "BULLISH ABSORPTION" or vol_bias == "LONG":
+            score += 16
+            reasons.append("обсяг/absorption за покупців")
+        if bos == "BOS LONG" or smc_bias == "LONG":
+            score += 16
+            reasons.append("SMC підтверджує LONG")
+        if oversold:
+            score += 8
+            reasons.append("перепроданість після дампу")
+        if ema_reclaim_long:
+            score += 10
+            reasons.append("ціна вище EMA20")
+        if ema_reclaim_strong_long:
+            score += 6
+            reasons.append("EMA reclaim посилюється")
+        if bos == "BOS SHORT" or smc_bias == "SHORT" or vol_bias == "SHORT":
+            score -= 14
+            reasons.append("частина структури ще bearish")
+
+    elif strong_pump:
+        side = "SHORT"
+        score += 12
+        reasons.append("після сильного пампу шукаємо відкат")
+        if news_score <= -35 or event_side == "SHORT":
+            score += 14
+            reasons.append("bearish news/event підтримує відкат")
+        if sweep.startswith("UPSIDE") or choch == "CHoCH SHORT":
+            score += 18
+            reasons.append("sweep/CHoCH SHORT")
+        if absorption == "BEARISH ABSORPTION" or vol_bias == "SHORT":
+            score += 16
+            reasons.append("обсяг/absorption за продавців")
+        if bos == "BOS SHORT" or smc_bias == "SHORT":
+            score += 16
+            reasons.append("SMC підтверджує SHORT")
+        if overbought:
+            score += 8
+            reasons.append("перекупленість після пампу")
+        if ema_reject_short:
+            score += 10
+            reasons.append("ціна нижче EMA20")
+        if ema_reject_strong_short:
+            score += 6
+            reasons.append("EMA reject посилюється")
+        if bos == "BOS LONG" or smc_bias == "LONG" or vol_bias == "LONG":
+            score -= 14
+            reasons.append("частина структури ще bullish")
+
+    if side == "NONE" or score < 28:
+        return {"active": False, "side": "NONE", "score": int(score), "stage": "NONE", "quality_cap": None, "reason": "", "reasons": reasons[:4]}
+
+    if score >= 64:
+        stage = "EARLY CONFIRMATION"
+        quality_cap = 64
+    elif score >= 48:
+        stage = "REVERSAL WATCH"
+        quality_cap = 56
+    else:
+        stage = "WEAK REVERSAL WATCH"
+        quality_cap = 49
+
+    return {
+        "active": True,
+        "side": side,
+        "score": int(score),
+        "stage": stage,
+        "quality_cap": quality_cap,
+        "reason": "; ".join(reasons[:3]),
+        "reasons": reasons[:5],
+    }
+
+
+def early_reversal_text(early):
+    if not early or not early.get("active"):
+        return ""
+    side = early.get("side", "NONE")
+    stage = early.get("stage", "REVERSAL WATCH")
+    score = early.get("score", 0)
+    if stage == "EARLY CONFIRMATION":
+        return f"<b>Early reversal:</b> {side} раннє підтвердження ({score}%)"
+    if stage == "REVERSAL WATCH":
+        return f"<b>Early reversal:</b> можливий {side} розворот ({score}%)"
+    return f"<b>Early reversal:</b> слабкий {side} watch ({score}%)"
+
+
+
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
@@ -3413,6 +3550,10 @@ def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news
     if exhaustion_reason:
         reasons.append(exhaustion_reason)
 
+    early = early_reversal_engine({}, tech or {}, smc, news, event_risk)
+    if early.get("active") and early.get("side") == signal and (trade_probability or 0) < 65:
+        reasons.append("ранній розворот ще без повного підтвердження")
+
     if late_entry and late_entry.get("late"):
         reasons.append("пізній вхід після імпульсу")
     if cooling and cooling.get("active"):
@@ -3524,6 +3665,11 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     if exhaustion.get("active") and exhaustion.get("cap") is not None:
         prob = min(prob, int(exhaustion["cap"]))
 
+    # Early reversal is only a WATCH until SMC/BOS/volume fully confirms it.
+    early = early_reversal_engine({}, tech or {}, smc, news, event_risk)
+    if early.get("active") and early.get("side") == signal and early.get("quality_cap") is not None:
+        prob = min(prob, int(early["quality_cap"]))
+
     return int(max(30, min(82, round(prob))))
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
@@ -3536,6 +3682,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
+    early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
@@ -3543,6 +3690,12 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
             decision = "SHORT запізнений — чекати ретест"
         elif signal == "LONG":
             decision = "LONG запізнений — чекати ретест"
+
+    if early_reversal.get("active") and early_reversal.get("side") == signal and trade_probability is not None and trade_probability < 65:
+        if signal == "LONG":
+            decision = "Ранній LONG watch — чекати підтвердження"
+        elif signal == "SHORT":
+            decision = "Ранній SHORT watch — чекати підтвердження"
 
     if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
         if signal == "LONG":
