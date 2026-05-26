@@ -4207,6 +4207,63 @@ def send_telegram(message):
         print(f"[WARN] Telegram error: {error}")
 
 
+
+
+# ==========================================================
+# MICRO 3M STRUCTURE
+# ==========================================================
+
+def analyze_micro_structure(candles):
+    """3m microstructure filter."""
+    if not candles or len(candles) < 20:
+        return {"available": False, "bias": "NEUTRAL", "score": 0}
+
+    recent = candles[-15:]
+    last = candles[-1]
+
+    highs = [c["high"] for c in recent[:-1]]
+    lows = [c["low"] for c in recent[:-1]]
+
+    recent_high = max(highs)
+    recent_low = min(lows)
+
+    score = 0
+
+    if last["close"] > recent_high:
+        score += 22
+    elif last["close"] < recent_low:
+        score -= 22
+
+    if last["close"] > last["open"]:
+        score += 8
+    else:
+        score -= 8
+
+    if score >= 18:
+        bias = "LONG"
+    elif score <= -18:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "note": f"3m {bias}"
+    }
+
+
+
+def micro_structure_text(micro):
+    if not micro or not micro.get("available"):
+        return ""
+    if micro.get("bias") == "LONG":
+        return f"<b>MICRO 3m:</b> LONG тригер ({micro.get('score')})"
+    if micro.get("bias") == "SHORT":
+        return f"<b>MICRO 3m:</b> SHORT тригер ({micro.get('score')})"
+    return ""
+
 # ==========================================================
 # MAIN
 # ==========================================================
