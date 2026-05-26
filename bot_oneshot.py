@@ -4264,6 +4264,104 @@ def micro_structure_text(micro):
         return f"<b>MICRO 3m:</b> SHORT тригер ({micro.get('score')})"
     return ""
 
+
+
+def structure_override_engine(signal, signal_type, confidence, score, tech, smc, micro, news, event_risk):
+    """SMC/price action override.
+
+    News can create the bias, but confirmed structure should cancel the opposite setup.
+    This prevents LONG watch while SMC/3m already shows SHORT, and vice versa.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return {
+            "active": False,
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "score": score,
+            "reason": "",
+        }
+
+    tech = tech or {}
+    smc = smc or {}
+    micro = micro or {}
+    news = news or {}
+    event_risk = event_risk or {}
+
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    smc_score = smc.get("score", 0) or 0
+
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_score = micro.get("score", 0) or 0
+
+    tech_score = tech.get("score", 0) or 0
+
+    structure_short = (
+        smc_bias == "SHORT"
+        or bos == "BOS SHORT"
+        or choch == "CHoCH SHORT"
+        or smc_score <= -22
+    )
+    structure_long = (
+        smc_bias == "LONG"
+        or bos == "BOS LONG"
+        or choch == "CHoCH LONG"
+        or smc_score >= 22
+    )
+
+    micro_short = micro_bias == "SHORT" and micro_score <= -18
+    micro_long = micro_bias == "LONG" and micro_score >= 18
+
+    if signal == "LONG" and structure_short:
+        if micro_short or tech_score <= -35:
+            return {
+                "active": True,
+                "signal": "SHORT",
+                "signal_type": "STRUCTURE SHORT WATCH / NEWS INVALIDATED",
+                "confidence": min(68, max(55, abs(smc_score) + abs(micro_score))),
+                "score": -abs(max(abs(score), abs(smc_score) + abs(micro_score) + 20)),
+                "reason": "LONG скасовано: SMC/3m структура вже показує SHORT",
+            }
+        return {
+            "active": True,
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "LONG СКАСОВАНО / ЧЕКАТИ НОВИЙ ТРИГЕР",
+            "confidence": min(confidence, 50),
+            "score": 0,
+            "reason": "LONG скасовано: SMC проти сценарію",
+        }
+
+    if signal == "SHORT" and structure_long:
+        if micro_long or tech_score >= 35:
+            return {
+                "active": True,
+                "signal": "LONG",
+                "signal_type": "STRUCTURE LONG WATCH / NEWS INVALIDATED",
+                "confidence": min(68, max(55, abs(smc_score) + abs(micro_score))),
+                "score": abs(max(abs(score), abs(smc_score) + abs(micro_score) + 20)),
+                "reason": "SHORT скасовано: SMC/3m структура вже показує LONG",
+            }
+        return {
+            "active": True,
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "SHORT СКАСОВАНО / ЧЕКАТИ НОВИЙ ТРИГЕР",
+            "confidence": min(confidence, 50),
+            "score": 0,
+            "reason": "SHORT скасовано: SMC проти сценарію",
+        }
+
+    return {
+        "active": False,
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "score": score,
+        "reason": "",
+    }
+
+
 # ==========================================================
 # MAIN
 # ==========================================================
