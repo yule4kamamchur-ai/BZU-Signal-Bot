@@ -3344,7 +3344,7 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
 
     if signal == "LONG":
         if "EARLY NEWS" in signal_type:
-            return "TRADE LONG — раннє підтвердження"
+            return "TRADE LONG — робочий вхід"
         if "ІМПУЛЬСНИЙ" in signal_type:
             return "TRADE LONG — імпульсний"
         if "РИЗИКОВИЙ" in signal_type:
@@ -3353,7 +3353,7 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
 
     if signal == "SHORT":
         if "EARLY NEWS" in signal_type:
-            return "TRADE SHORT — раннє підтвердження"
+            return "TRADE SHORT — робочий вхід"
         if "ІМПУЛЬСНИЙ" in signal_type:
             return "TRADE SHORT — імпульсний"
         if "РИЗИКОВИЙ" in signal_type:
@@ -3771,12 +3771,12 @@ def entry_quality_scale(probability, late_entry=None):
     if probability < 50:
         return f"0/5 — немає входу ({probability}%){suffix}"
     if probability < 55:
-        return f"2/5 — ранній watch, вхід тільки по тригеру ({probability}%){suffix}"
+        return f"2/5 — спостерігаємо, входу ще немає ({probability}%){suffix}"
     if probability < 65:
-        return f"3/5 — ENTRY WATCH, чекати тригер ({probability}%){suffix}"
+        return f"3/5 — готуємось до входу ({probability}%){suffix}"
     if probability < 75:
-        return f"4/5 — робочий сетап, тільки зі стопом ({probability}%){suffix}"
-    return f"5/5 — сильний підтверджений сетап ({probability}%){suffix}"
+        return f"4/5 — робочий вхід, тільки зі стопом ({probability}%){suffix}"
+    return f"5/5 — найкращий підтверджений вхід ({probability}%){suffix}"
 
 
 def smc_conflict_note(smc):
@@ -3984,22 +3984,22 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
         if signal == "SHORT":
-            decision = "ENTRY WATCH SHORT — чекати тригер"
+            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
         elif signal == "LONG":
-            decision = "ENTRY WATCH LONG — чекати тригер"
+            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
 
     if early_reversal.get("active") and early_reversal.get("side") == signal and trade_probability is not None and trade_probability < 65:
         if signal == "LONG":
-            decision = "ENTRY WATCH LONG — чекати тригер"
+            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
         elif signal == "SHORT":
-            decision = "ENTRY WATCH SHORT — чекати тригер"
+            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
 
     # Never show TRADE if the setup is not confirmed.
     if trade_probability is not None and trade_probability < 65 and str(decision).startswith("TRADE"):
         if signal == "LONG":
-            decision = "ENTRY WATCH LONG — чекати тригер"
+            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
         elif signal == "SHORT":
-            decision = "ENTRY WATCH SHORT — чекати тригер"
+            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
         else:
             decision = "НЕ ВХОДИТИ — чекати тригер"
 
