@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import requests
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
@@ -208,6 +209,111 @@ def safe_post(url, payload, timeout=15):
     except Exception as error:
         print(f"[WARN] {url}: {error}")
         return None
+
+
+# ==========================================================
+# SIGNAL MEMORY
+# ==========================================================
+
+SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", "last_signal.json")
+
+
+def load_signal_memory():
+    try:
+        if not os.path.exists(SIGNAL_MEMORY_FILE):
+            return {}
+        with open(SIGNAL_MEMORY_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception as error:
+        print(f"[WARN] signal memory read error: {error}")
+        return {}
+
+
+def save_signal_memory(data):
+    try:
+        with open(SIGNAL_MEMORY_FILE, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+    except Exception as error:
+        print(f"[WARN] signal memory save error: {error}")
+
+
+def evaluate_previous_signal(memory, current_price):
+    if not memory or not memory.get("signal") or not memory.get("price"):
+        return ""
+
+    prev_signal = memory.get("signal")
+    if prev_signal not in ["LONG", "SHORT"]:
+        return ""
+
+    prev_price = float(memory.get("price"))
+    diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
+
+    if prev_signal == "LONG":
+        if diff_pct >= 0.35:
+            result = "попередній LONG спрацював"
+        elif diff_pct <= -0.35:
+            result = "попередній LONG не підтвердився"
+        else:
+            result = "попередній LONG ще без результату"
+    else:
+        if diff_pct <= -0.35:
+            result = "попередній SHORT спрацював"
+        elif diff_pct >= 0.35:
+            result = "попередній SHORT не підтвердився"
+        else:
+            result = "попередній SHORT ще без результату"
+
+    return f"<b>Памʼять:</b> {result} | було {prev_signal} від {round(prev_price, 4)}, зараз {round(current_price, 4)} ({round(diff_pct, 2)}%)"
+
+
+def memory_confidence_adjustment(signal, memory, current_price):
+    if not memory or signal not in ["LONG", "SHORT"]:
+        return 0
+
+    prev_signal = memory.get("signal")
+    prev_price = memory.get("price")
+
+    if prev_signal not in ["LONG", "SHORT"] or not prev_price:
+        return 0
+
+    prev_price = float(prev_price)
+    diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
+
+    if signal == "LONG" and prev_signal == "LONG" and diff_pct <= -0.35:
+        return -12
+    if signal == "SHORT" and prev_signal == "SHORT" and diff_pct >= 0.35:
+        return -12
+    if signal == "SHORT" and prev_signal == "LONG" and diff_pct <= -0.35:
+        return 8
+    if signal == "LONG" and prev_signal == "SHORT" and diff_pct >= 0.35:
+        return 8
+
+    return 0
+
+
+def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None):
+    plan = plan or {}
+    tech = tech or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    return {
+        "time": now_utc().isoformat(),
+        "signal": signal,
+        "signal_type": signal_type,
+        "price": round(float(price), 4),
+        "confidence": int(confidence) if confidence is not None else None,
+        "quality_percent": int(quality_percent) if quality_percent is not None else None,
+        "entry": plan.get("entry") if isinstance(plan, dict) else None,
+        "stop": plan.get("stop") if isinstance(plan, dict) else None,
+        "tp1": plan.get("tp1") if isinstance(plan, dict) else None,
+        "tp2": plan.get("tp2") if isinstance(plan, dict) else None,
+        "tp3": plan.get("tp3") if isinstance(plan, dict) else None,
+        "change": tech.get("change"),
+        "trend_15m": tech.get("trend_15m"),
+        "trend_1h": tech.get("trend_1h"),
+        "micro_3m": micro.get("bias"),
+    }
+
 
 # ==========================================================
 # TRADINGVIEW
@@ -4327,6 +4433,9 @@ def main():
         print("TRADINGVIEW PRICE ERROR")
         return
 
+    signal_memory = load_signal_memory()
+    previous_signal_note = evaluate_previous_signal(signal_memory, tv["price"])
+
     fresh_news = get_all_fresh_news()
     event_items = get_event_news()
 
@@ -4374,6 +4483,12 @@ def main():
         confidence = structure_override["confidence"]
         score = structure_override["score"]
         risk_note = structure_override.get("reason", risk_note)
+
+    memory_adj = memory_confidence_adjustment(signal, signal_memory, tv["price"])
+    if memory_adj:
+        score += memory_adj
+        confidence = max(35, min(95, confidence + memory_adj))
+        print(f"MEMORY ADJUSTMENT: {memory_adj}")
 
     current_truth_filter = price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow)
     if current_truth_filter.get('blocked'):
@@ -4486,6 +4601,23 @@ def main():
         cooling=cooling,
         tech=tech
     )
+
+    if previous_signal_note:
+        message = message.strip() + "\n\n" + previous_signal_note
+
+    current_quality_percent = estimate_trade_probability(
+        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
+        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
+    )
+    save_signal_memory(build_current_signal_memory(
+        signal=signal,
+        signal_type=signal_type,
+        price=tv["price"],
+        confidence=confidence,
+        quality_percent=current_quality_percent,
+        plan=plan,
+        tech=tech,
+    ))
 
     send_telegram(message.strip())
     print("TELEGRAM SENT")
