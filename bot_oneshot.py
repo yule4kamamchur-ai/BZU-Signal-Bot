@@ -8,7 +8,6 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
 
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
@@ -167,10 +166,8 @@ EVENT_SHORT_WORDS = [
     "opec increase", "output increase", "demand weak",
 ]
 
-
 def now_utc():
     return datetime.now(timezone.utc)
-
 
 def safe_get(url, timeout=12, retries=1):
     for _ in range(retries):
@@ -192,7 +189,6 @@ def safe_get(url, timeout=12, retries=1):
             print(f"[WARN] {url}: {error}")
     return None
 
-
 def safe_post(url, payload, timeout=15):
     try:
         response = requests.post(
@@ -212,7 +208,6 @@ def safe_post(url, payload, timeout=15):
     except Exception as error:
         print(f"[WARN] {url}: {error}")
         return None
-
 
 # ==========================================================
 # TRADINGVIEW
@@ -240,7 +235,6 @@ def get_tradingview_scan(symbol, screener, columns):
     except Exception as error:
         print(f"[WARN] TradingView scan parse error for {symbol}: {error}")
         return None
-
 
 def get_tradingview_market_data():
     columns = [
@@ -289,7 +283,6 @@ def get_tradingview_market_data():
             print(f"[WARN] TradingView parse error for {symbol}: {error}")
 
     return None
-
 
 def analyze_technical(tv):
     price = tv["price"]
@@ -416,11 +409,9 @@ def analyze_technical(tv):
         "warnings": warnings[:8],
     }
 
-
 # ==========================================================
 # MACRO QUANT
 # ==========================================================
-
 
 def get_macro_news():
     """Fresh macro layer through Google News RSS.
@@ -442,11 +433,9 @@ def get_macro_news():
 
     return macro_items
 
-
 def get_macro_quant_data():
     """Return macro data without unstable TradingView macro scraping."""
     return {"macro_news": get_macro_news()}
-
 
 def analyze_macro_quant(macro):
     """Macro regime based on stable headline proxy.
@@ -521,7 +510,6 @@ def analyze_macro_quant(macro):
         },
     }
 
-
 # ==========================================================
 # ORDERFLOW FROM TRADINGVIEW
 # ==========================================================
@@ -571,7 +559,6 @@ def analyze_free_orderflow(tv):
         "warnings": warnings[:7],
     }
 
-
 # ==========================================================
 # NEWS / EVENTS
 # ==========================================================
@@ -595,7 +582,6 @@ def parse_date(value):
     except Exception:
         return None
 
-
 def parse_gdelt_date(value):
     if not value:
         return None
@@ -603,7 +589,6 @@ def parse_gdelt_date(value):
         return datetime.strptime(value[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
     except Exception:
         return None
-
 
 def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
     news = []
@@ -646,7 +631,6 @@ def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
 
     return news
 
-
 def get_gdelt_news():
     # Disabled intentionally: GDELT often rate-limits GitHub Actions (429/timeout).
     return []
@@ -657,13 +641,11 @@ def get_google_news_rss():
         all_news.extend(parse_google_rss(query, NEWS_LOOKBACK_HOURS, "Google News RSS", 1.0))
     return all_news
 
-
 def get_event_news():
     all_events = []
     for query in EVENT_QUERIES:
         all_events.extend(parse_google_rss(query, EVENT_LOOKBACK_HOURS, "Google Event RSS", 1.0))
     return deduplicate_news(all_events)
-
 
 def get_item_text(item, tag):
     text = item.findtext(tag)
@@ -673,7 +655,6 @@ def get_item_text(item, tag):
         if child.tag.lower().endswith(tag.lower()):
             return (child.text or "").strip()
     return ""
-
 
 def parse_html_news(source, html):
     news = []
@@ -705,7 +686,6 @@ def parse_html_news(source, html):
     except Exception as error:
         print(f"[WARN] HTML parse error {source['name']}: {error}")
     return news
-
 
 def parse_rss(source):
     response = safe_get(source["url"], timeout=10, retries=1)
@@ -745,7 +725,6 @@ def parse_rss(source):
 
     return news
 
-
 def get_cryptopanic_news():
     if not CRYPTOPANIC_KEY:
         return []
@@ -776,13 +755,11 @@ def get_cryptopanic_news():
         print(f"[WARN] CryptoPanic parse error: {error}")
     return news
 
-
 def normalize_title(title):
     title = title.lower()
     title = re.sub(r"[^a-z0-9а-яіїєґ]+", " ", title)
     title = re.sub(r"\s+", " ", title).strip()
     return title[:120]
-
 
 def deduplicate_news(news):
     seen = set()
@@ -801,7 +778,6 @@ def deduplicate_news(news):
     )
     return unique
 
-
 def get_all_fresh_news():
     all_news = []
     # GDELT disabled for GitHub stability.
@@ -811,11 +787,9 @@ def get_all_fresh_news():
     all_news.extend(get_cryptopanic_news())
     return deduplicate_news(all_news)
 
-
 def keyword_score(title, words):
     lower = title.lower()
     return sum(1 for word in words if word in lower)
-
 
 def directional_news_adjustment(title):
     lower = title.lower()
@@ -824,7 +798,6 @@ def directional_news_adjustment(title):
     if any(word in lower for word in BEARISH_SUPPLY_WORDS):
         return -7
     return 0
-
 
 def headline_direction(title):
     lower = title.lower()
@@ -837,7 +810,6 @@ def headline_direction(title):
     if short_hits > long_hits:
         return "SHORT", "заголовок вказує на мирні переговори/санкційне послаблення/надлишок пропозиції"
     return "MIXED", "заголовок важливий, але напрямок неоднозначний"
-
 
 def summarize_headline_directions(items, limit=5):
     summary = []
@@ -854,7 +826,6 @@ def summarize_headline_directions(items, limit=5):
     if short_count > long_count:
         return "Перевага новин: SHORT. Більше заголовків підтримують зниження/деескалацію."
     return "Перевага новин: MIXED. Напрямок неоднозначний."
-
 
 def analyze_news(news):
     bullish = 0
@@ -919,7 +890,6 @@ def analyze_news(news):
         "summary": summarize_headline_directions(important, 8),
     }
 
-
 def analyze_event_risk(events):
     raw_score = 0
     direction_score = 0
@@ -969,7 +939,6 @@ def analyze_event_risk(events):
         "summary": summarize_headline_directions(important, 8),
     }
 
-
 def news_noise_warning(total_news, raw_score, capped_score):
     if total_news >= 60 and abs(raw_score) > abs(capped_score) * 4:
         return "Високий новинний шум: багато заголовків, score обмежено"
@@ -977,16 +946,11 @@ def news_noise_warning(total_news, raw_score, capped_score):
         return "Мало свіжих новин: новинне підтвердження слабке"
     return "Нормально"
 
-
-
-
-
 # ==========================================================
 # REAL PRICE ACTION + SMC STRUCTURE
 # ==========================================================
 
 OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-
 
 def get_real_candles(inst_id=OKX_INST_ID, bar="15m", limit=120):
     """Free public OHLC candles. OKX is used as a stable fallback source.
@@ -1015,7 +979,6 @@ def get_real_candles(inst_id=OKX_INST_ID, bar="15m", limit=120):
         print(f"[WARN] real candles parse error: {error}")
         return []
 
-
 def detect_swing_points(candles, lookback=2):
     swings_high = []
     swings_low = []
@@ -1033,7 +996,6 @@ def detect_swing_points(candles, lookback=2):
             swings_low.append({"idx": i, "price": current["low"], "ts": current["ts"]})
 
     return swings_high, swings_low
-
 
 def detect_fvg(candles):
     """Simple 3-candle FVG / imbalance detection."""
@@ -1064,9 +1026,6 @@ def detect_fvg(candles):
             }
 
     return last_fvg or {"side": "NONE", "zone": None, "note": "FVG немає"}
-
-
-
 
 def analyze_real_volume_confirmation(candles):
     """Real volume confirmation from OKX candles.
@@ -1308,7 +1267,6 @@ def analyze_smc_structure(candles):
         "summary": "; ".join(notes[:3]) if notes else "SMC структура нейтральна",
     }
 
-
 def smc_probability_adjustment(signal, smc):
     if not smc or not smc.get("available") or signal not in ["LONG", "SHORT"]:
         return 0
@@ -1344,7 +1302,6 @@ def smc_probability_adjustment(signal, smc):
 
     return adjust
 
-
 def smc_short_text(smc):
     if not smc or not smc.get("available"):
         return ""
@@ -1370,8 +1327,6 @@ def smc_short_text(smc):
     if phase == "LIQUIDITY SWEEP":
         return "Структура: liquidity sweep — чекати підтвердження"
     return "Структура: діапазон — краще чекати"
-
-
 
 def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
     """Price action must dominate news after strong dumps/pumps."""
@@ -1447,7 +1402,6 @@ def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
 
     return {"blocked": False, "penalty": 0, "bonus": 0, "reason": "", "mode": "NEUTRAL"}
 
-
 def cap_countertrend_probability(probability, signal, tech, smc):
     if probability is None or signal not in ["LONG", "SHORT"]:
         return probability
@@ -1472,7 +1426,6 @@ def cap_countertrend_probability(probability, signal, tech, smc):
         return min(probability, 42)
 
     return probability
-
 
 def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
     """Protects from late continuation entries after an already extended dump/pump.
@@ -1541,11 +1494,9 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
 
     return {"active": False, "cap": None, "reason": ""}
 
-
 def extension_exhaustion_reason(signal, tech, smc, news=None, event_risk=None):
     info = extension_exhaustion_filter(signal, tech, smc, news, event_risk)
     return info.get("reason", "") if info.get("active") else ""
-
 
 def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
     """Detect early reversal after strong dump/pump. It is a WATCH layer, not an entry trigger."""
@@ -1669,7 +1620,6 @@ def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
         "reasons": reasons[:5],
     }
 
-
 def early_reversal_text(early):
     if not early or not early.get("active"):
         return ""
@@ -1681,7 +1631,6 @@ def early_reversal_text(early):
     if stage == "REVERSAL WATCH":
         return f"<b>Early reversal:</b> можливий {side} розворот ({score}%)"
     return f"<b>Early reversal:</b> слабкий {side} watch ({score}%)"
-
 
 def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
     """Creates a forward-looking conditional entry plan.
@@ -1768,7 +1717,6 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
         "invalid": invalid,
     }
 
-
 def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch):
     """Telegram plan text. TRADE only if confirmed; otherwise conditional preparation."""
     if show_trade_plan:
@@ -1827,8 +1775,6 @@ def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event
 
     # ГОТУЄМОСЬ is still not a confirmed trade.
     return min(trade_probability, 64)
-
-
 
 def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, event_risk, smc, orderflow=None):
     """Fair quality floor for real TRADE setups.
@@ -1920,8 +1866,6 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
 
     return min(trade_probability, 82)
 
-
-
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
@@ -1974,7 +1918,6 @@ def analyze_volatility_regime(tv, tech):
         "warning": warning,
     }
 
-
 def analyze_liquidation_heatmap(tv, tech, volatility):
     price = tv.get("price") or 0
     atr = tech.get("atr_15m") or price * 0.006
@@ -2024,7 +1967,6 @@ def analyze_liquidation_heatmap(tv, tech, volatility):
         "summary": summary,
     }
 
-
 def analyze_market_structure(tv, tech):
     # Volume Profile is intentionally disabled: Binance candles are often blocked on GitHub runners.
     # We keep only stable free modules: volatility regime + liquidation zone logic.
@@ -2038,7 +1980,6 @@ def analyze_market_structure(tv, tech):
         "liquidation": liquidation,
         "candles_count": 0,
     }
-
 
 def market_structure_verdict(market):
     score = market.get("score", 0)
@@ -2054,7 +1995,6 @@ def market_structure_verdict(market):
         f"liquidation {market['liquidation']['bias']}, score {score}"
     )
     return side, reason
-
 
 # ==========================================================
 # SYNTHETIC OPEN INTEREST PROXY (NO EXTERNAL API)
@@ -2142,7 +2082,6 @@ def analyze_synthetic_open_interest(tv, tech, orderflow, market):
         "details": "; ".join(notes[:3]),
     }
 
-
 # ==========================================================
 # SESSION + REVERSAL WATCH LAYER
 # ==========================================================
@@ -2180,7 +2119,6 @@ def analyze_session_context():
         "breakout_quality": breakout_quality,
         "utc_hour": hour,
     }
-
 
 def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
     """Detects possible reversal setups such as breakdown failure / liquidity sweep.
@@ -2284,8 +2222,6 @@ def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_ana
         "volatility": vol_regime,
     }
 
-
-
 def analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal):
     """Dynamic priority engine for oil/BZ.
     In oil, news/event flow can dominate technicals during geopolitical/macro events.
@@ -2358,8 +2294,6 @@ def analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, se
         "priority_score": priority_score,
         "reason": reason,
     }
-
-
 
 # ==========================================================
 # EARLY WARNING / CONTEXT TRUST ENGINE
@@ -2481,7 +2415,6 @@ def analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_anal
         "reason": reason,
     }
 
-
 def decide_current_priority(tech, news, event_risk, orderflow, early_warning):
     """
     Кому зараз довіряти більше:
@@ -2510,7 +2443,6 @@ def decide_current_priority(tech, news, event_risk, orderflow, early_warning):
 
     return "BALANCED", "Ринок змішаний — потрібне підтвердження"
 
-
 # ==========================================================
 # WEEKEND / RR / CHASE / POSITION / CROSS-MARKET HELPERS
 # ==========================================================
@@ -2522,7 +2454,6 @@ def analyze_weekend_mode():
     if wd == 6:
         return {"active": True, "label": "НЕДІЛЯ", "score": -22, "note": "Вихідний: краще відкривати тільки дуже сильні сетапи."}
     return {"active": False, "label": "РОБОЧИЙ ДЕНЬ", "score": 0, "note": "Звичайний торговий день."}
-
 
 def get_cross_market_data():
     result = {}
@@ -2544,7 +2475,6 @@ def get_cross_market_data():
         except Exception:
             pass
     return result
-
 
 def analyze_cross_market(cross, tech):
     if not cross:
@@ -2589,7 +2519,6 @@ def analyze_cross_market(cross, tech):
         "data": {"BTC": round(btc, 2), "DXY": round(dxy, 2), "SPX": round(spx, 2), "GOLD": round(gold, 2)},
     }
 
-
 def adjust_plan_for_rr(plan, signal):
     # SMC HYBRID plan already includes liquidity + minimum RR targets.
     if isinstance(plan, dict) and str(plan.get("method", "")).startswith("SMC HYBRID"):
@@ -2611,7 +2540,6 @@ def adjust_plan_for_rr(plan, signal):
         plan["tp3"] = round(entry - risk * 2.0, 4)
     return plan
 
-
 def rr_metrics(plan):
     if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
         return {"rr1": None, "rr2": None, "ok": True, "note": ""}
@@ -2625,7 +2553,6 @@ def rr_metrics(plan):
     rr1 = abs(tp1 - entry) / risk
     rr2 = abs(tp2 - entry) / risk
     return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.2 or rr2 >= 1.8, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
-
 
 def analyze_chase_protection(signal, tech, market):
     change = abs(tech.get("change", 0) or 0)
@@ -2646,7 +2573,6 @@ def analyze_chase_protection(signal, tech, market):
         reason += " Висока волатильність підсилює ризик відскоку."
 
     return {"extended": extended, "reason": reason}
-
 
 def position_management_note(signal, plan, tech, news, event_risk, reversal):
     rev_side = (reversal or {}).get("side", "NONE")
@@ -2751,7 +2677,6 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
             signal = "НЕЙТРАЛЬНО"
             signal_type = "REVERSAL SHORT WATCH / NEWS PRIORITY"
 
-
     # Early confirmation: avoid staying in "watch" forever when news/event is dominant
     # and the chart starts confirming the same direction.
     if signal == "НЕЙТРАЛЬНО" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"]:
@@ -2832,8 +2757,6 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
 
     return signal, signal_type, score, confidence, risk_note
 
-
-
 def liquidity_buffer(atr, price, session=None, event_risk=None):
     """Dynamic buffer around likely liquidity zones.
     Wider during NY/event risk; smaller during quieter sessions.
@@ -2852,7 +2775,6 @@ def liquidity_buffer(atr, price, session=None, event_risk=None):
 
     # Minimum micro-buffer so stop is not exactly on the obvious level.
     return max(buffer, price * 0.0008)
-
 
 def estimate_liquidity_levels(price, tech):
     """Approximate SMC-style liquidity levels using available free data.
@@ -2899,7 +2821,6 @@ def estimate_liquidity_levels(price, tech):
         "upper_liquidity_3": upper_liquidity_3,
     }
 
-
 def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
     """Adaptive TP multipliers.
 
@@ -2933,7 +2854,6 @@ def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
         rr3 += 0.25
 
     return rr1, rr2, rr3
-
 
 def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None):
     """SMC + ATR + RR hybrid plan.
@@ -3001,7 +2921,6 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         "method": "SMC HYBRID / Liquidity + ATR + Adaptive RR",
     }
 
-
 def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None):
     """Main plan generator.
     Uses SMC-style hybrid logic:
@@ -3010,14 +2929,12 @@ def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=Non
     """
     return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk)
 
-
 def side_from_score(score, long_thr=15, short_thr=-15):
     if score >= long_thr:
         return "LONG"
     if score <= short_thr:
         return "SHORT"
     return "NEUTRAL"
-
 
 def tech_verdict(tech):
     score = tech.get("score", 0)
@@ -3034,7 +2951,6 @@ def tech_verdict(tech):
     reason = f"trend {trend}, momentum {momentum}, score {score}"
     return side, reason
 
-
 def news_verdict(news):
     side = side_from_score(news.get("score", 0), 15, -15)
     reason = (
@@ -3042,7 +2958,6 @@ def news_verdict(news):
         f"bullish {news.get('bullish')}, bearish {news.get('bearish')}, breaking {news.get('breaking')}"
     )
     return side, reason
-
 
 def event_verdict(event_risk):
     direction = event_risk.get("direction", "MIXED")
@@ -3057,19 +2972,15 @@ def event_verdict(event_risk):
     reason = f"direction {direction}, risk {risk}, score {score}"
     return side, reason
 
-
 def macro_verdict(macro):
     side = side_from_score(macro.get("score", 0), 15, -15)
     reason = f"regime {macro.get('regime')}, score {macro.get('score')}"
     return side, reason
 
-
 def orderflow_verdict(orderflow):
     side = side_from_score(orderflow.get("score", 0), 15, -15)
     reason = f"{orderflow.get('bias')}, score {orderflow.get('score')}"
     return side, reason
-
-
 
 def human_signal_label(signal, signal_type, early_warning=None):
     early_warning = early_warning or {"warning": "NONE", "side": "NEUTRAL"}
@@ -3100,7 +3011,6 @@ def human_signal_label(signal, signal_type, early_warning=None):
 
     return "НЕ ВХОДИТИ — чекати"
 
-
 def human_reversal_label(reversal):
     side = (reversal or {}).get("side", "NONE")
     conf = (reversal or {}).get("confidence", 0)
@@ -3110,7 +3020,6 @@ def human_reversal_label(reversal):
     if side == "REVERSAL SHORT WATCH":
         return f"можливий розворот у SHORT ({conf}%)"
     return "немає"
-
 
 def main_driver_override_for_early_warning(driver, early_warning):
     early_warning = early_warning or {"warning": "NONE"}
@@ -3137,7 +3046,6 @@ def main_driver_override_for_early_warning(driver, early_warning):
             "link": "",
         }
     return driver
-
 
 def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None, oi_analysis=None, reversal=None, session=None):
     tech_side, _ = tech_verdict(tech)
@@ -3194,7 +3102,6 @@ def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event
 
     return "Сигналу на вхід немає. Ринок змішаний — краще чекати."
 
-
 def combined_technical_bias(tech, orderflow, market, oi_analysis):
     """Separate technical-side decision. Does not include news/event/macro."""
     tech_side, tech_reason = tech_verdict(tech)
@@ -3231,7 +3138,6 @@ def combined_technical_bias(tech, orderflow, market, oi_analysis):
     )
 
     return {"side": side, "score": score, "reason": reason}
-
 
 def combined_fundamental_bias(news, event_risk, macro):
     """Separate news/fundamental-side decision. Does not include technicals."""
@@ -3270,7 +3176,6 @@ def combined_fundamental_bias(news, event_risk, macro):
 
     return {"side": side, "score": score, "risk": risk, "reason": reason}
 
-
 def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal=None, session=None, priority=None):
     tech_side = technical_bias["side"]
     fund_side = fundamental_bias["side"]
@@ -3307,10 +3212,6 @@ def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_b
 
     return f"{signal}, але підтвердження змішані"
 
-
-
-
-
 def short_bias_label(side):
     if "STRONG LONG" in side:
         return "STRONG LONG"
@@ -3322,7 +3223,6 @@ def short_bias_label(side):
         return "SHORT"
     return "NEUTRAL"
 
-
 def compact_priority_label(priority, reversal):
     dominant = priority.get("dominant", "BALANCED")
     if dominant in ["FUNDAMENTAL", "EVENT"]:
@@ -3330,7 +3230,6 @@ def compact_priority_label(priority, reversal):
     if dominant == "TECHNICAL":
         return "TECH"
     return "BALANCED"
-
 
 def compact_reversal_label(reversal):
     side = reversal.get("side", "NONE") if reversal else "NONE"
@@ -3340,7 +3239,6 @@ def compact_reversal_label(reversal):
     if side == "REVERSAL SHORT WATCH":
         return f"можливий розворот у SHORT ({confidence}%)"
     return "немає"
-
 
 def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
     if "SHOCK DOWN" in signal_type:
@@ -3379,7 +3277,6 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
 
     return "НЕ ВХОДИТИ — чекати"
 
-
 def driver_time_context(item):
     title = (item or {}).get("title", "")
     lower = title.lower()
@@ -3406,7 +3303,6 @@ def driver_time_context(item):
 
     return "час не уточнено"
 
-
 def ua_driver_summary(title):
     lower = (title or "").lower()
 
@@ -3430,7 +3326,6 @@ def ua_driver_summary(title):
         return "Нафта: свіжий новинний імпульс"
 
     return BeautifulSoup(title or "Новинний фактор", "html.parser").get_text(" ", strip=True)[:95]
-
 
 def driver_expectation(direction, title, driver_type="NEWS"):
     lower = (title or "").lower()
@@ -3460,7 +3355,6 @@ def driver_expectation(direction, title, driver_type="NEWS"):
         return "Очікування залежить від підтвердження 5m/15m"
     return "MIXED — напрямок новини неоднозначний"
 
-
 def technical_driver_summary(tech, orderflow, market):
     score = tech.get("score", 0)
     trend = tech.get("trend", "MIXED")
@@ -3481,8 +3375,6 @@ def technical_driver_summary(tech, orderflow, market):
         return f"TECH / {trend}", f"Трендовий режим: {trend}", "Очікування — рух за трендом після підтвердження"
     return "TECH / NEUTRAL", "Техніка без чіткого драйвера", "Чекати сильнішого 5m/15m сигналу"
 
-
-
 def news_source_quality(source, title=""):
     s = (source or "").lower()
     t = (title or "").lower()
@@ -3493,7 +3385,6 @@ def news_source_quality(source, title=""):
     if any(x in s for x in ["coindesk", "cointelegraph", "cryptopanic"]):
         return 0.35
     return 1.0
-
 
 def is_low_priority_oil_driver(item):
     source = (item or {}).get("source", "")
@@ -3564,7 +3455,6 @@ def select_main_driver(tech, news, event_risk, macro, orderflow, market, session
         "link": "",
     }
 
-
 def decision_confidence(signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal):
     """Confidence means confidence in the decision, not win-rate."""
     tech_side = technical_bias.get("side", "NEUTRAL")
@@ -3594,8 +3484,6 @@ def decision_confidence(signal, signal_type, score, technical_bias, fundamental_
         return 80
     return min(78, max(50, int((tech_score + fund_score) / 3)))
 
-
-
 def format_driver_source(driver):
     link = (driver or {}).get("link") or ""
     source = (driver or {}).get("source") or ""
@@ -3605,7 +3493,6 @@ def format_driver_source(driver):
     if source:
         return source
     return "не вказано"
-
 
 def reversal_display_label(signal, reversal):
     side = (reversal or {}).get("side", "NONE")
@@ -3621,7 +3508,6 @@ def reversal_display_label(signal, reversal):
         return f"можливий розворот у SHORT ({conf}%)"
     return "немає"
 
-
 def reversal_risk_note(signal, reversal):
     side = (reversal or {}).get("side", "NONE")
     conf = (reversal or {}).get("confidence", 0)
@@ -3631,10 +3517,6 @@ def reversal_risk_note(signal, reversal):
     if signal == "LONG" and side == "REVERSAL SHORT WATCH":
         return f"Ризик: можливий SHORT-відкат пізніше ({conf}%)"
     return ""
-
-
-
-
 
 def analyze_exhaustion_cooling(signal, tech, tv=None):
     """Detects post-pump/dump cooling phase using available TradingView data.
@@ -3717,7 +3599,6 @@ def analyze_late_entry_risk(signal, tech, market):
 
     return {"late": late, "label": label, "note": note, "penalty": penalty}
 
-
 def apply_expansion_targets(plan, signal, tech, market):
     """Widen targets/stops when volatility expands or move is already large."""
     if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
@@ -3748,7 +3629,6 @@ def apply_expansion_targets(plan, signal, tech, market):
     plan["expansion"] = True
     return plan
 
-
 def probability_note(probability, late_entry):
     if probability is None:
         return "немає входу"
@@ -3757,7 +3637,6 @@ def probability_note(probability, late_entry):
             return f"{probability}% — краще чекати відкат"
         return f"{probability}% — ризик пізнього входу"
     return f"{probability}%"
-
 
 def entry_quality_scale(probability, late_entry=None):
     """User-friendly entry quality scale for Telegram.
@@ -3783,7 +3662,6 @@ def entry_quality_scale(probability, late_entry=None):
     if probability < 75:
         return f"4/5 — можна входити, тільки зі стопом ({probability}%){suffix}"
     return f"5/5 — найкращий вхід ({probability}%){suffix}"
-
 
 def smc_conflict_note(smc):
     """Explain mixed SMC signals instead of showing contradictory пробій структури/volume silently."""
@@ -3811,7 +3689,6 @@ def smc_conflict_note(smc):
     if bias in ["LONG", "SHORT"]:
         return f"SMC: {bias} підтвердження структури."
     return "Структура: ще без чіткого підтвердження."
-
 
 def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None, tech=None):
     """Short explanation why Telegram says there is no entry now."""
@@ -3864,7 +3741,6 @@ def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news
         if r not in unique:
             unique.append(r)
     return "; ".join(unique[:3])
-
 
 def compact_final_summary_text(final_summary, market_bias, trade_probability):
     """Keep Telegram conclusion short and actionable."""
@@ -4118,19 +3994,14 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         lines.append(f"<b>Reversal:</b> {rev_text}")
 
     if cooling and cooling.get("active"):
-        lines.append(f"<b>Вхід:</b> {cooling.get('note')}")
     elif late_entry and late_entry.get("late"):
-        lines.append(f"<b>Вхід:</b> {late_entry.get('note')}")
     if pos_note:
-        lines.append(f"<b>Позиція:</b> {pos_note}")
 
     lines.extend([
         "",
-        f"<b>Висновок:</b> {compact_final_summary_text(final_summary, market_bias, trade_probability)}",
     ])
 
     return "\n".join(lines).strip()
-
 
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
     if signal == "НЕЙТРАЛЬНО":
@@ -4164,7 +4035,6 @@ def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro,
         return "B"
     return "C / ризиковий"
 
-
 def should_show_trade_plan(signal, trade_probability, late_entry=None):
     """Show entry/SL/TP only for high-quality setups."""
     if signal not in ["LONG", "SHORT"]:
@@ -4179,19 +4049,16 @@ def format_trade_plan(plan):
     if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
         return "Входу немає — чекати підтвердження."
     return (
-        f"Вхід: {plan.get('entry')} | "
         f"Стоп: {plan.get('stop')} | "
         f"TP1: {plan.get('tp1')} | "
         f"TP2: {plan.get('tp2')} | "
         f"TP3: {plan.get('tp3')}"
     )
 
-
 def format_time(dt):
     if not dt:
         return "час невідомий"
     return dt.strftime("%Y-%m-%d %H:%M UTC")
-
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -4213,9 +4080,6 @@ def send_telegram(message):
         print(response.text[:300])
     except Exception as error:
         print(f"[WARN] Telegram error: {error}")
-
-
-
 
 # ==========================================================
 # MICRO 3M STRUCTURE
@@ -4260,8 +4124,6 @@ def analyze_micro_structure(candles):
         "score": int(score),
         "note": f"3m {bias}"
     }
-
-
 
 def micro_structure_text(micro):
     """Human-readable 3m warning for Telegram."""
@@ -4371,8 +4233,6 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
         "reason": "",
     }
 
-
-
 def local_3m_status_text(micro, signal=None):
     """Human-readable local 3m trend/status for Telegram."""
     if not micro or not micro.get("available"):
@@ -4398,8 +4258,6 @@ def local_3m_status_text(micro, signal=None):
 
     return "Локально 3m: нейтрально"
 
-
-
 def global_trend_text(tech, market_bias):
     """Human-readable global 15m/1h trend for Telegram."""
     tech = tech or {}
@@ -4413,8 +4271,6 @@ def global_trend_text(tech, market_bias):
     if market_bias in ["LONG", "SHORT"]:
         return f"Глобально: {market_bias}"
     return "Глобально: змішано"
-
-
 
 def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech):
     """Adjust confidence/quality by local 3m timing.
@@ -4464,7 +4320,6 @@ def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech
         return confidence, trade_probability, "3m підтверджує SHORT — продавці активні"
 
     return confidence, trade_probability, ""
-
 
 # ==========================================================
 # MAIN
@@ -4641,7 +4496,6 @@ def main():
     send_telegram(message.strip())
     print("TELEGRAM SENT")
     print("BOT COMPLETE")
-
 
 if __name__ == "__main__":
     main()
