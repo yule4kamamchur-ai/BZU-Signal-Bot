@@ -863,6 +863,11 @@ def analyze_macro_quant(macro):
 # ==========================================================
 
 def analyze_free_orderflow(tv):
+    """TradingView-based orderflow proxy.
+
+    This is not real bid/ask delta or order book imbalance. It estimates
+    directional participation from change, volume and TradingView ratings.
+    """
     score = 0
     details = []
     warnings = []
@@ -888,7 +893,7 @@ def analyze_free_orderflow(tv):
         warnings.append("ведмеже підтвердження orderflow на 5m/15m/1h")
 
     if volume and volume > 0:
-        details.append(f"обсяг TradingView: {round(volume, 2)}")
+        details.append(f"обсяг TradingView proxy: {round(volume, 2)}")
         if abs(change) > 1.5:
             score += 8 if change > 0 else -8
             details.append("обсяг підтверджує імпульсний рух")
@@ -902,7 +907,7 @@ def analyze_free_orderflow(tv):
     return {
         "score": score,
         "bias": bias,
-        "used_symbol": "TradingView only",
+        "used_symbol": "TradingView proxy only",
         "details": details[:7],
         "warnings": warnings[:7],
     }
@@ -1193,27 +1198,33 @@ def analyze_news(news):
         breaking_hits = keyword_score(title, BREAKING_WORDS)
         directional = directional_news_adjustment(title)
 
+        item_score = 0
+
         if bull_hits:
             bullish += 1
-            raw_score += 6 * bull_hits * weight
+            item_score += 6 * bull_hits * weight
         if bear_hits:
             bearish += 1
-            raw_score -= 6 * bear_hits * weight
+            item_score -= 6 * bear_hits * weight
         if directional > 0:
             bullish += 1
-            raw_score += directional * weight
+            item_score += directional * weight
         elif directional < 0:
             bearish += 1
-            raw_score += directional * weight
+            item_score += directional * weight
         if impact_hits:
             impact += 1
-            raw_score += 4 * impact_hits * weight
             important.append(item)
         if breaking_hits:
             breaking += 1
-            raw_score += 7 * breaking_hits * weight
             if item not in important:
                 important.append(item)
+
+        # Impact/breaking words mean the headline is important, not bullish.
+        # They amplify an already directional headline without changing its side.
+        if item_score:
+            importance_multiplier = 1.0 + min(0.55, 0.12 * impact_hits + 0.08 * breaking_hits)
+            raw_score += item_score * importance_multiplier
 
     if bullish > bearish:
         sentiment = "БИЧАЧІ"
@@ -4386,6 +4397,7 @@ def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, m
 
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
+    raw_tech = tech or {}
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
@@ -4394,16 +4406,26 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
     priority_label = compact_priority_label(priority, reversal)
-    driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
-    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
+    driver = select_main_driver(raw_tech or technical_bias, news, event_risk, macro, orderflow, market, session, priority)
+    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, raw_tech)
+    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, raw_tech)
     final_guard = final_signal_sanity_guard(
-        signal, signal_type, confidence, tech or {}, smc or {}, (tech or {}).get("micro_3m") or {}, trade_probability
+        signal, signal_type, confidence, raw_tech, smc or {}, raw_tech.get("micro_3m") or {}, trade_probability
     )
     if final_guard.get("reason"):
         signal = final_guard["signal"]
         signal_type = final_guard["signal_type"]
         confidence = final_guard["confidence"]
+        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk)
+        plan = adjust_plan_for_rr(plan, signal)
+        plan = apply_expansion_targets(plan, signal, raw_tech, market)
+        quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
+        trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, raw_tech)
+        local_warning = ""
+        confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, raw_tech)
+        decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
+        if late_entry and late_entry.get("late"):
+            decision = late_entry.get("label") or decision
 
     if local_warning:
         if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
@@ -5017,44 +5039,6 @@ def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech
 
     return confidence, trade_probability, ""
 
-
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_score = micro.get("score", 0) or 0
-
-    # 3m against main signal = caution
-    if signal == "LONG" and micro_bias == "SHORT":
-        confidence = min(confidence, 58)
-        if trade_probability is not None:
-            trade_probability = min(trade_probability, 54)
-        return confidence, trade_probability, "LONG слабшає на 3m — не входити по ринку"
-
-    if signal == "SHORT" and micro_bias == "LONG":
-        confidence = min(confidence, 58)
-        if trade_probability is not None:
-            trade_probability = min(trade_probability, 54)
-        return confidence, trade_probability, "SHORT слабшає на 3m — не входити по ринку"
-
-    # 3m agrees with main signal = better timing
-    if signal == "LONG" and micro_bias == "LONG":
-        confidence = min(95, confidence + 6)
-        if trade_probability is not None:
-            if micro_score >= 30:
-                trade_probability = max(trade_probability, 68)
-            else:
-                trade_probability = max(trade_probability, 62)
-        return confidence, trade_probability, "3m підтверджує LONG — покупці активні"
-
-    if signal == "SHORT" and micro_bias == "SHORT":
-        confidence = min(95, confidence + 6)
-        if trade_probability is not None:
-            if micro_score <= -30:
-                trade_probability = max(trade_probability, 68)
-            else:
-                trade_probability = max(trade_probability, 62)
-        return confidence, trade_probability, "3m підтверджує SHORT — продавці активні"
-
-    return confidence, trade_probability, ""
-
 # ==========================================================
 # MAIN
 # ==========================================================
@@ -5174,7 +5158,7 @@ def main():
     print(f"TECH SCORE: {tech['score']}")
     print(f"SMC STRUCTURE: {smc.get('phase')} | {smc.get('bias')} | SCORE: {smc.get('score')} | {smc.get('summary')}")
     print(f"SMC VOLUME: {smc.get('volume', {}).get('bias', 'NEUTRAL')} | {smc.get('volume', {}).get('поглинання', 'NONE')} | {smc.get('volume', {}).get('note', '')}")
-    print(f"ORDERFLOW SCORE: {orderflow['score']} | {orderflow['bias']}")
+    print(f"ORDERFLOW PROXY SCORE: {orderflow['score']} | {orderflow['bias']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
@@ -5211,6 +5195,38 @@ def main():
     confidence = decision_confidence(
         signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal
     )
+
+    pre_message_probability = estimate_trade_probability(
+        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
+        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
+    )
+    confidence, pre_message_probability, _ = apply_local_3m_confidence_filter(
+        signal, confidence, pre_message_probability, tech
+    )
+    message_guard = final_signal_sanity_guard(
+        signal, signal_type, confidence, tech, smc, tech.get("micro_3m") or {}, pre_message_probability
+    )
+    if message_guard.get("reason"):
+        signal = message_guard["signal"]
+        signal_type = message_guard["signal_type"]
+        confidence = message_guard["confidence"]
+        if signal == "LONG":
+            score = abs(score) if score else abs(technical_bias.get("score", 0))
+        elif signal == "SHORT":
+            score = -abs(score) if score else -abs(technical_bias.get("score", 0))
+        else:
+            score = 0
+        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
+        plan = adjust_plan_for_rr(plan, signal)
+        plan = apply_expansion_targets(plan, signal, tech, market)
+        rr = rr_metrics(plan)
+        chase = analyze_chase_protection(signal, tech, market)
+        late_entry = analyze_late_entry_risk(signal, tech, market)
+        cooling = analyze_exhaustion_cooling(signal, tech, tv)
+        pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
+        quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
+        market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
+        print("FINAL SANITY GUARD:", message_guard.get("reason"))
 
     summary = final_short_summary(
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
