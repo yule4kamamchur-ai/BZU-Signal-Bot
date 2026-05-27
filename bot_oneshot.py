@@ -394,9 +394,56 @@ def update_signal_journal_results(journal, current_price):
     journal["signals"] = updated[-SIGNAL_JOURNAL_LIMIT:]
     return journal, changed
 
-def build_signal_journal_entry(signal, signal_type, price, confidence, quality_percent, plan=None, tech=None, news=None, event_risk=None, orderflow=None, late_entry=None, cooling=None):
+def build_pattern_tags(signal, signal_type, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None):
+    tags = []
+    tech = tech or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    orderflow = orderflow or {}
+    smc = smc or {}
+
+    news_score = news.get("score", 0) or 0
+    event_side = event_risk.get("direction", "MIXED")
+    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trades_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    smc_bias = smc.get("bias", "NEUTRAL")
+
+    if "SHOCK DOWN" in str(signal_type):
+        tags.append("shock_down")
+    if "SHOCK UP" in str(signal_type):
+        tags.append("shock_up")
+    if signal == "SHORT" and (event_side == "LONG" or news_score >= 35):
+        tags.append("news_against")
+    if signal == "LONG" and (event_side == "SHORT" or news_score <= -35):
+        tags.append("news_against")
+    if event_high:
+        tags.append("event_high")
+    if signal in ["LONG", "SHORT"] and book_bias in ["LONG", "SHORT"] and book_bias != signal:
+        tags.append("book_against")
+    if signal in ["LONG", "SHORT"] and trades_bias in ["LONG", "SHORT"] and trades_bias != signal:
+        tags.append("trades_against")
+    if signal in ["LONG", "SHORT"] and liquidity_bias in ["LONG", "SHORT"] and liquidity_bias != signal:
+        tags.append("liquidity_against")
+    if micro.get("state") == "RANGE":
+        tags.append("3m_range")
+    if signal in ["LONG", "SHORT"] and micro.get("bias") in ["LONG", "SHORT"] and micro.get("bias") != signal:
+        tags.append("3m_against")
+    if signal in ["LONG", "SHORT"] and smc_bias not in [signal]:
+        tags.append("structure_unconfirmed")
+    if late_entry and late_entry.get("late"):
+        tags.append("late_entry")
+    if cooling and cooling.get("active"):
+        tags.append("cooling")
+
+    return sorted(set(tags))
+
+def build_signal_journal_entry(signal, signal_type, price, confidence, quality_percent, plan=None, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None):
     plan = plan if isinstance(plan, dict) else {}
     no_entry = signal not in ["LONG", "SHORT"] or quality_percent is None or quality_percent < 65
+    tags = build_pattern_tags(signal, signal_type, tech, news, event_risk, orderflow, smc, late_entry, cooling)
     return {
         "id": now_utc().strftime("%Y%m%d%H%M%S"),
         "time": now_utc().isoformat(),
@@ -417,6 +464,7 @@ def build_signal_journal_entry(signal, signal_type, price, confidence, quality_p
         "orderflow_score": (orderflow or {}).get("score"),
         "late_entry": bool((late_entry or {}).get("late")),
         "cooling": bool((cooling or {}).get("active")),
+        "tags": tags,
         "result_status": None,
         "result_note": None,
     }
@@ -454,6 +502,55 @@ def signal_journal_stats_text(journal, hours=24):
     return (
         f"<b>Статистика {hours}г:</b> сигналів {len(evaluated)}, "
         f"хороших {good}, поганих {bad}, не входити врятувало {saved}, пропущено рухів {missed}"
+    )
+
+def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4):
+    if not current_tags:
+        return ""
+
+    important_tags = [
+        "shock_down", "shock_up", "news_against", "book_against",
+        "trades_against", "liquidity_against", "3m_range",
+        "3m_against", "structure_unconfirmed", "late_entry",
+        "cooling", "event_high",
+    ]
+    current_set = set(current_tags)
+    selected = [tag for tag in important_tags if tag in current_set][:5]
+    if not selected:
+        return ""
+
+    matches = []
+    for item in (journal or {}).get("signals", []):
+        if not item.get("result_status"):
+            continue
+        item_tags = set(item.get("tags") or [])
+        if all(tag in item_tags for tag in selected):
+            if current_signal in ["LONG", "SHORT"] and item.get("signal") != current_signal:
+                continue
+            matches.append(item)
+
+    if len(matches) < min_matches:
+        return ""
+
+    good = sum(1 for x in matches if x.get("result_status") == "GOOD")
+    bad = sum(1 for x in matches if x.get("result_status") == "BAD")
+    saved = sum(1 for x in matches if x.get("result_status") == "NO_ENTRY_SAVED")
+    missed = sum(1 for x in matches if x.get("result_status") == "MISSED_MOVE")
+    no_entry_good = sum(1 for x in matches if x.get("result_status") == "GOOD_NO_ENTRY")
+
+    if saved + no_entry_good >= max(good + missed, bad):
+        conclusion = "частіше краще чекати"
+    elif good > bad:
+        conclusion = "частіше напрямок відпрацьовував"
+    elif bad > good:
+        conclusion = "частіше було проти сигналу"
+    else:
+        conclusion = "статистика змішана"
+
+    return (
+        f"<b>Схожі ситуації:</b> {len(matches)} | "
+        f"добре {good}, погано {bad}, чекати врятувало {saved + no_entry_good}, "
+        f"пропущено {missed}. Висновок: {conclusion}."
     )
 
 
@@ -1791,7 +1888,15 @@ def merge_market_microstructure(orderflow, order_book, liquidity_proxy):
     orderflow["liquidity_proxy"] = liquidity_proxy
     return orderflow
 
-def microstructure_text(orderflow):
+def side_vs_signal_text(component_side, signal):
+    if signal not in ["LONG", "SHORT"] or component_side not in ["LONG", "SHORT"]:
+        return ""
+    target = "лонгу" if signal == "LONG" else "шорту"
+    if component_side == signal:
+        return f"за {target}"
+    return f"проти {target}"
+
+def microstructure_text(orderflow, signal=None):
     orderflow = orderflow or {}
     trade_flow = orderflow.get("real_flow") or {}
     book = orderflow.get("order_book") or {}
@@ -1800,6 +1905,9 @@ def microstructure_text(orderflow):
     lines = []
     if book.get("available"):
         text = book.get("note", "без явної переваги")
+        relation = side_vs_signal_text(book.get("bias"), signal)
+        if relation:
+            text = f"{relation}, {text}"
         if book.get("wall"):
             text += f"; {book.get('wall')}"
         lines.append("Стакан: " + text)
@@ -1811,11 +1919,17 @@ def microstructure_text(orderflow):
             note = "покупці активні"
         else:
             note = "без явної переваги"
+        relation = side_vs_signal_text(trade_flow.get("bias"), signal)
+        if relation:
+            note = f"{relation}, {note}"
         lines.append("Угоди: " + note)
     if liquidity.get("available"):
         note = liquidity.get("note", "без явного вибивання")
         if note.lower().startswith("ліквідність:"):
             note = note.split(":", 1)[1].strip()
+        relation = side_vs_signal_text(liquidity.get("bias"), signal)
+        if relation:
+            note = f"{relation}, {note}"
         lines.append("Ліквідність: " + note)
 
     return "\n".join(f"<b>{line}</b>" for line in lines[:3])
@@ -5250,7 +5364,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
 
-    micro_text = microstructure_text(orderflow)
+    micro_text = microstructure_text(orderflow, signal)
     if micro_text:
         lines.append(f"<b>{micro_text}</b>")
 
@@ -6011,11 +6125,16 @@ def main():
         news=news,
         event_risk=event_risk,
         orderflow=orderflow,
+        smc=smc,
         late_entry=late_entry,
         cooling=cooling,
     )
+    pattern_note = pattern_stats_text(signal_journal, current_journal_entry.get("tags"), signal)
     signal_journal = append_signal_journal(signal_journal, current_journal_entry)
     save_signal_journal(signal_journal)
+
+    if pattern_note and pattern_note not in message:
+        message = message.strip() + "\n\n" + pattern_note
 
     if journal_stats_note and journal_stats_note not in message:
         message = message.strip() + "\n\n" + journal_stats_note
