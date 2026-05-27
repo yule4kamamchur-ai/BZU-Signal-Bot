@@ -6211,13 +6211,21 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if calendar_text:
         compact_reasons.append(calendar_text.replace("Календар: ", "календар "))
 
+    top_decision = decision
+    if market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("НЕ ВХОДИТИ"):
+        top_decision = top_decision.replace("НЕ ВХОДИТИ — ", "")
+    elif market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("Зараз не входити — "):
+        top_decision = top_decision.replace("Зараз не входити — ", "")
+    elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
+        top_decision = top_decision.replace("Чекати ", "")
+
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>{market_mode['status']}</b> | <b>Режим:</b> {market_mode['mode']}",
-        f"<b>Тактика:</b> {market_mode['aggression']}; {market_mode['priority']}",
+        f"<b>{market_mode['status']}</b> — {top_decision}",
+        f"<b>Режим:</b> {market_mode['mode']}",
         "",
-        f"<b>Рішення:</b> {decision}",
-        f"<b>Ринок:</b> {market_bias_text} | <b>Вхід:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
+        f"<b>Ринок:</b> {market_bias_text}",
+        f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
         f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
