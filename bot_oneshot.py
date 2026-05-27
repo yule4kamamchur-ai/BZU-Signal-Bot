@@ -1642,6 +1642,78 @@ def smc_short_text(smc):
         return "Структура: liquidity sweep — чекати підтвердження"
     return "Структура: діапазон — краще чекати"
 
+
+def price_structure_priority_override(signal, signal_type, confidence, score, tech, smc, news, event_risk, micro=None):
+    """Price action beats news when chart is clearly opposite."""
+    tech = tech or {}
+    smc = smc or {}
+    micro = micro or {}
+
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+    momentum = tech.get("momentum", "NEUTRAL")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    smc_score = smc.get("score", 0) or 0
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+
+    strong_chart_short = (
+        tech_score <= -70
+        or smc_bias == "SHORT"
+        or smc_score <= -22
+        or micro_bias == "SHORT"
+        or micro_state == "SHORT_STRENGTHENING"
+        or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
+        or change <= -0.65
+    )
+
+    strong_chart_long = (
+        tech_score >= 70
+        or smc_bias == "LONG"
+        or smc_score >= 22
+        or micro_bias == "LONG"
+        or micro_state == "LONG_STRENGTHENING"
+        or momentum in ["STRONG UP", "VERY STRONG UP"]
+        or change >= 0.65
+    )
+
+    if signal == "LONG" and strong_chart_short:
+        if smc_bias == "SHORT" or micro_bias == "SHORT" or tech_score <= -80:
+            return {
+                "signal": "SHORT",
+                "signal_type": "PRICE ACTION SHORT / NEWS CONFLICT",
+                "confidence": max(55, min(72, abs(tech_score) if abs(tech_score) < 72 else 72)),
+                "score": -abs(max(abs(score), abs(tech_score), abs(smc_score))),
+                "reason": "графік сильніший за LONG-новини",
+            }
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "LONG BLOCKED / PRICE ACTION SHORT",
+            "confidence": min(confidence, 50),
+            "score": 0,
+            "reason": "LONG скасовано: графік проти",
+        }
+
+    if signal == "SHORT" and strong_chart_long:
+        if smc_bias == "LONG" or micro_bias == "LONG" or tech_score >= 80:
+            return {
+                "signal": "LONG",
+                "signal_type": "PRICE ACTION LONG / NEWS CONFLICT",
+                "confidence": max(55, min(72, abs(tech_score) if abs(tech_score) < 72 else 72)),
+                "score": abs(max(abs(score), abs(tech_score), abs(smc_score))),
+                "reason": "графік сильніший за SHORT-новини",
+            }
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "SHORT BLOCKED / PRICE ACTION LONG",
+            "confidence": min(confidence, 50),
+            "score": 0,
+            "reason": "SHORT скасовано: графік проти",
+        }
+
+    return {"signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
+
+
 def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
     """Price action must dominate news after strong dumps/pumps."""
     if signal not in ["LONG", "SHORT"]:
@@ -4409,29 +4481,12 @@ def send_telegram(message):
 # ==========================================================
 
 def analyze_micro_structure(candles):
-    """3m local movement state.
-
-    This is not the main trend.
-    It describes what is happening locally:
-    - LONG_STRENGTHENING
-    - LONG_COOLING
-    - SHORT_STRENGTHENING
-    - SHORT_COOLING
-    - RANGE
-    """
+    """3m local movement state: trend, cooling, or range."""
     if not candles or len(candles) < 30:
-        return {
-            "available": False,
-            "bias": "NEUTRAL",
-            "state": "NO DATA",
-            "score": 0,
-            "note": "3m data unavailable",
-        }
+        return {"available": False, "bias": "NEUTRAL", "state": "NO DATA", "score": 0, "note": "3m data unavailable"}
 
     recent = candles[-24:]
     last = candles[-1]
-    prev = candles[-2]
-
     closes = [c["close"] for c in recent]
     highs = [c["high"] for c in recent]
     lows = [c["low"] for c in recent]
@@ -4441,25 +4496,36 @@ def analyze_micro_structure(candles):
 
     last4 = sum(closes[-4:]) / 4
     prev4 = sum(closes[-8:-4]) / 4
-    first4 = sum(closes[:4]) / 4
+    first6 = sum(closes[:6]) / 6
+    last6 = sum(closes[-6:]) / 6
 
     avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
     last_vol = last.get("volume", 0) or 0
     vol_ratio = last_vol / avg_vol if avg_vol else 1.0
 
-    # Candle body
     candle_range = max(last["high"] - last["low"], 1e-9)
     body = last["close"] - last["open"]
     body_ratio = abs(body) / candle_range
     close_location = (last["close"] - last["low"]) / candle_range
 
-    # Local structure: last highs/lows
-    last_highs = highs[-8:]
-    last_lows = lows[-8:]
-    lower_highs = last_highs[-1] < max(last_highs[:-1]) and max(last_highs[-4:]) < max(last_highs[:4])
-    higher_lows = min(last_lows[-4:]) > min(last_lows[:4])
+    lower_high_count = 0
+    lower_low_count = 0
+    higher_high_count = 0
+    higher_low_count = 0
+
+    for i in range(-8, -1):
+        if highs[i] < highs[i - 1]:
+            lower_high_count += 1
+        if lows[i] < lows[i - 1]:
+            lower_low_count += 1
+        if highs[i] > highs[i - 1]:
+            higher_high_count += 1
+        if lows[i] > lows[i - 1]:
+            higher_low_count += 1
 
     total_move_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else 0
+    drift_pct = ((last6 - first6) / first6) * 100 if first6 else 0
+
     short_momentum = last4 < prev4
     long_momentum = last4 > prev4
 
@@ -4480,12 +4546,26 @@ def analyze_micro_structure(candles):
         score -= 10
         notes.append("короткий імпульс вниз")
 
-    if body > 0 and body_ratio >= 0.55 and close_location >= 0.60:
-        score += 8
-        notes.append("зелена сильна 3m свічка")
-    elif body < 0 and body_ratio >= 0.55 and close_location <= 0.40:
-        score -= 8
-        notes.append("червона сильна 3m свічка")
+    if lower_high_count >= 4 and lower_low_count >= 3:
+        score -= 18
+        notes.append("3m послідовне зниження")
+    elif higher_high_count >= 4 and higher_low_count >= 3:
+        score += 18
+        notes.append("3m послідовний ріст")
+
+    if drift_pct <= -0.35:
+        score -= 14
+        notes.append("3m ціна сповзає вниз")
+    elif drift_pct >= 0.35:
+        score += 14
+        notes.append("3m ціна підтискається вгору")
+
+    if body > 0 and body_ratio >= 0.50 and close_location >= 0.58:
+        score += 7
+        notes.append("зелена 3m свічка")
+    elif body < 0 and body_ratio >= 0.50 and close_location <= 0.42:
+        score -= 7
+        notes.append("червона 3m свічка")
 
     if vol_ratio >= 1.5:
         if body > 0:
@@ -4495,35 +4575,21 @@ def analyze_micro_structure(candles):
             score -= 8
             notes.append("обсяг за продавців")
 
-    if higher_lows:
-        score += 5
-    if lower_highs:
-        score -= 5
-
-    # State detection
-    if score >= 20:
+    if score >= 18:
         bias = "LONG"
         state = "LONG_STRENGTHENING"
-    elif score <= -20:
+    elif score <= -18:
         bias = "SHORT"
         state = "SHORT_STRENGTHENING"
     else:
         bias = "NEUTRAL"
         state = "RANGE"
-
-        # Important: neutral is often not neutral after a strong move.
-        if total_move_pct >= 0.45 and short_momentum and lower_highs:
+        if total_move_pct >= 0.35 and short_momentum:
             state = "LONG_COOLING"
             notes.append("LONG охолоджується після імпульсу")
-        elif total_move_pct >= 0.45 and short_momentum:
-            state = "LONG_PAUSE"
-            notes.append("пауза після LONG імпульсу")
-        elif total_move_pct <= -0.45 and long_momentum and higher_lows:
+        elif total_move_pct <= -0.35 and long_momentum:
             state = "SHORT_COOLING"
             notes.append("SHORT охолоджується після падіння")
-        elif total_move_pct <= -0.45 and long_momentum:
-            state = "SHORT_PAUSE"
-            notes.append("пауза після SHORT імпульсу")
 
     return {
         "available": True,
@@ -4533,6 +4599,7 @@ def analyze_micro_structure(candles):
         "note": "; ".join(notes[:3]) if notes else "3m боковик",
         "vol_ratio": round(vol_ratio, 2),
         "move_pct": round(total_move_pct, 3),
+        "drift_pct": round(drift_pct, 3),
     }
 
 
@@ -4654,34 +4721,15 @@ def local_3m_status_text(micro, signal=None):
     score = micro.get("score", 0)
 
     if state == "LONG_STRENGTHENING":
-        if signal == "LONG":
-            return f"Локально 3m: LONG посилюється — покупці активні ({score})"
-        return f"Локально 3m: покупці активні ({score})"
-
+        return f"Локально 3m: LONG посилюється — покупці активні ({score})"
     if state == "SHORT_STRENGTHENING":
-        if signal == "SHORT":
-            return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
         if signal == "LONG":
             return f"Локально 3m: LONG слабшає — продавці активні ({score})"
-        return f"Локально 3m: продавці активні ({score})"
-
+        return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
     if state == "LONG_COOLING":
         return f"Локально 3m: LONG охолоджується — краще чекати ретест ({score})"
-
-    if state == "LONG_PAUSE":
-        return f"Локально 3m: пауза після LONG імпульсу ({score})"
-
     if state == "SHORT_COOLING":
         return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
-
-    if state == "SHORT_PAUSE":
-        return f"Локально 3m: пауза після SHORT імпульсу ({score})"
-
-    if signal == "LONG" and bias == "SHORT":
-        return f"Локально 3m: LONG слабшає — можливий відкат вниз ({score})"
-    if signal == "SHORT" and bias == "LONG":
-        return f"Локально 3m: SHORT слабшає — можливий відскок вгору ({score})"
-
     return "Локально 3m: боковик / немає чіткого входу"
 
 
@@ -4843,6 +4891,17 @@ def main():
         score += memory_adj
         confidence = max(35, min(95, confidence + memory_adj))
         print(f"MEMORY ADJUSTMENT: {memory_adj}")
+
+    price_override = price_structure_priority_override(
+        signal, signal_type, confidence, score, tech, smc, news, event_risk, micro
+    )
+    if price_override.get("reason"):
+        signal = price_override["signal"]
+        signal_type = price_override["signal_type"]
+        confidence = price_override["confidence"]
+        score = price_override["score"]
+        risk_note = price_override.get("reason", risk_note)
+        print("PRICE STRUCTURE OVERRIDE:", risk_note)
 
     current_truth_filter = price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow)
     if current_truth_filter.get('blocked'):
