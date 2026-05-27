@@ -7309,7 +7309,12 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     }
 
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None):
+def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None):
+    """Finalize display state before Telegram formatting.
+
+    Telegram formatting must not change a signal. All final probability,
+    no-chase, event-block, chart-context and plan visibility decisions happen here.
+    """
     raw_tech = tech or {}
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
@@ -7322,24 +7327,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     driver = select_main_driver(raw_tech or technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, raw_tech)
     confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, raw_tech)
-    final_guard = final_signal_sanity_guard(
-        signal, signal_type, confidence, raw_tech, smc or {}, raw_tech.get("micro_3m") or {}, trade_probability
-    )
-    if final_guard.get("reason"):
-        signal = final_guard["signal"]
-        signal_type = final_guard["signal_type"]
-        confidence = final_guard["confidence"]
-        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk)
-        plan = adjust_plan_for_rr(plan, signal)
-        plan = apply_expansion_targets(plan, signal, raw_tech, market)
-        quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
-        local_warning = ""
-        trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, raw_tech)
-        local_warning = ""
-        confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, raw_tech)
-        decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
-        if late_entry and late_entry.get("late"):
-            decision = late_entry.get("label") or decision
 
     counterflow_watch = counterflow_scalp_watch(raw_tech, orderflow, news, event_risk, smc)
     should_use_fast_flow = (
@@ -7451,8 +7438,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         event_risk, market, session, late_entry, cooling
     )
 
-    # Telegram-level hard safety:
-    # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
+    # Message-level conclusion safety is computed before formatting.
     if "різкий дамп" in decision.lower():
         final_summary = (
             "Різкий дамп: технічний продаж зараз домінує. "
@@ -7465,6 +7451,39 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
             "SHORT можливий тільки після стабілізації, відкату і ретесту. "
             "Не шортити сильний імпульс без підтвердження."
         )
+
+    return {
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "quality": quality,
+        "plan": plan,
+        "trade_probability": trade_probability,
+        "decision": decision,
+        "show_trade_plan": show_trade_plan,
+        "entry_watch": entry_watch,
+        "event_block": event_block,
+        "market_mode": market_mode,
+        "final_summary": final_summary,
+    }
+
+
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None, trade_probability=None, decision=None, show_trade_plan=None, entry_watch=None, event_block=None, market_mode=None):
+    """Format Telegram text only. It must not change signal, plan or quality."""
+    raw_tech = tech or {}
+    decision = decision if decision is not None else human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
+    trade_probability = trade_probability if trade_probability is not None else None
+    show_trade_plan = bool(show_trade_plan)
+    entry_watch = entry_watch or {"active": False}
+    event_block = event_block or {"blocked": False, "reason": ""}
+    market_mode = market_mode or market_mode_engine(
+        signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
+        event_risk, market, session, late_entry, cooling
+    )
+
+    tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
+    fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
+    driver = select_main_driver(raw_tech or technical_bias, news, event_risk, macro, orderflow, market, session, priority)
 
     # Direction label for the user.
     # It must show the real market direction (LONG/SHORT), not the internal signal value.
@@ -8399,11 +8418,50 @@ def main():
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
     )
 
-    current_quality_for_lock = estimate_trade_probability(
-        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
-        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
+    message_state = prepare_message_state(
+        tv=tv,
+        signal=signal,
+        signal_type=signal_type,
+        confidence=confidence,
+        quality=quality,
+        plan=plan,
+        technical_bias=technical_bias,
+        fundamental_bias=fundamental_bias,
+        news=news,
+        event_risk=event_risk,
+        macro=macro,
+        orderflow=orderflow,
+        oi_analysis=oi_analysis,
+        market=market,
+        session=session,
+        reversal=reversal,
+        priority=priority,
+        final_summary=summary,
+        weekend=weekend,
+        cross_market=cross_market,
+        rr=rr,
+        chase=chase,
+        pos_note=pos_note,
+        late_entry=late_entry,
+        smc=smc,
+        cooling=cooling,
+        tech=tech,
+        chart_context=chart_context,
     )
-    current_quality_for_lock = apply_chart_context_probability(signal, current_quality_for_lock, chart_context)
+    signal = message_state["signal"]
+    signal_type = message_state["signal_type"]
+    confidence = message_state["confidence"]
+    quality = message_state["quality"]
+    plan = message_state["plan"]
+    summary = message_state["final_summary"]
+    trade_probability = message_state["trade_probability"]
+    show_trade_plan = message_state["show_trade_plan"]
+    entry_watch = message_state["entry_watch"]
+    event_block = message_state["event_block"]
+    market_mode = message_state["market_mode"]
+    decision_text = message_state["decision"]
+
+    current_quality_for_lock = trade_probability
     locked_plan = reuse_locked_trade_plan(signal_memory, signal, tv["price"])
     if locked_plan and trade_setup_level(current_quality_for_lock) >= 4:
         plan = locked_plan
@@ -8438,7 +8496,13 @@ def main():
         smc=smc,
         cooling=cooling,
         tech=tech,
-        chart_context=chart_context
+        chart_context=chart_context,
+        trade_probability=trade_probability,
+        decision=decision_text,
+        show_trade_plan=show_trade_plan,
+        entry_watch=entry_watch,
+        event_block=event_block,
+        market_mode=market_mode
     )
 
     show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
@@ -8449,11 +8513,7 @@ def main():
     if show_memory_in_telegram and previous_signal_note and previous_signal_note not in message:
         message = message.strip() + "\n\n" + previous_signal_note
 
-    current_quality_percent = estimate_trade_probability(
-        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
-        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
-    )
-    current_quality_percent = apply_chart_context_probability(signal, current_quality_percent, chart_context)
+    current_quality_percent = trade_probability
     journal_market_direction = infer_market_direction(
         signal,
         signal_type,
