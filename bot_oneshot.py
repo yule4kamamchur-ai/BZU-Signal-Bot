@@ -3289,6 +3289,135 @@ def exhaustion_reversal_guard(signal, signal_type, confidence, score, tech, smc,
 
     return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
 
+
+def post_move_decay_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news=None, event_risk=None):
+    """Yulia-style decay after a big dump/pump.
+
+    Purpose: stop the bot from showing SHORT 85-95% after the sell move is
+    already mature and the tape starts to stabilize. In that phase the correct
+    message is not a fresh SHORT entry, but WAIT / possible retest / possible
+    LONG bounce after confirmation. Mirror logic for late LONG after a pump.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
+
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    change = tech.get("change", 0) or 0
+    momentum = tech.get("momentum", "NEUTRAL")
+    tech_score = tech.get("score", 0) or 0
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+
+    micro_state = micro.get("state", "RANGE")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_score = micro.get("score", 0) or 0
+    fast_move_pct = micro.get("fast_move_pct", 0) or 0
+    lower_low_count = micro.get("lower_low_count", 0) or 0
+    lower_close_count = micro.get("lower_close_count", 0) or 0
+    red_count = micro.get("red_count", 0) or 0
+
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    flow_long = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "LONG")
+    flow_short = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "SHORT")
+
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    strong_dump = change <= -1.8 or momentum == "VERY STRONG DOWN"
+    strong_pump = change >= 1.8 or momentum == "VERY STRONG UP"
+
+    fresh_short_continuation = (
+        bos == "пробій структури SHORT"
+        or (micro_state == "SHORT_STRENGTHENING" and micro_score <= -45 and fast_move_pct <= -0.35 and flow_long == 0)
+        or (lower_low_count >= 5 and lower_close_count >= 7 and flow_long == 0 and vol_bias == "SHORT")
+    )
+    fresh_long_continuation = (
+        bos == "пробій структури LONG"
+        or (micro_state == "LONG_STRENGTHENING" and micro_score >= 45 and fast_move_pct >= 0.35 and flow_short == 0)
+        or (choch == "ознака розвороту LONG" and vol_bias == "LONG")
+    )
+
+    seller_weakening = (
+        micro_state in ["SHORT_COOLING", "RANGE"]
+        or micro_bias == "LONG"
+        or flow_long >= 1
+        or book_bias == "LONG"
+        or (rsi5 is not None and rsi5 <= 30)
+        or (rsi15 is not None and rsi15 <= 34)
+        or news_score >= 25
+        or event_side == "LONG"
+    )
+    buyer_weakening = (
+        micro_state in ["LONG_COOLING", "RANGE"]
+        or micro_bias == "SHORT"
+        or flow_short >= 1
+        or book_bias == "SHORT"
+        or (rsi5 is not None and rsi5 >= 70)
+        or (rsi15 is not None and rsi15 >= 66)
+        or news_score <= -25
+        or event_side == "SHORT"
+    )
+
+    if signal == "SHORT" and strong_dump and seller_weakening and not fresh_short_continuation:
+        # Do not print SHORT 90% after the dump. It is a mature move now.
+        new_conf = min(64, max(52, int((confidence or 55) - 24)))
+        return {
+            "active": True,
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "НЕ ВХОДИТИ — SHORT ПІЗНО / ПІСЛЯ ДАМПУ Є СТАБІЛІЗАЦІЯ",
+            "confidence": new_conf,
+            "score": 0,
+            "reason": "не доганяти SHORT: падіння вже реалізоване, є ознаки стабілізації/відкупу",
+        }
+
+    if signal == "LONG" and strong_pump and buyer_weakening and not fresh_long_continuation:
+        new_conf = min(64, max(52, int((confidence or 55) - 24)))
+        return {
+            "active": True,
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "НЕ ВХОДИТИ — LONG ПІЗНО / ПІСЛЯ ПАМПУ Є ОХОЛОДЖЕННЯ",
+            "confidence": new_conf,
+            "score": 0,
+            "reason": "не доганяти LONG: ріст вже реалізований, є ознаки охолодження/продажу",
+        }
+
+    # Cap exaggerated confidence when flow contradicts the trend.
+    if signal == "SHORT" and strong_dump and flow_long >= 1 and confidence and confidence > 74:
+        return {
+            "active": True,
+            "signal": signal,
+            "signal_type": "SHORT МОЖЛИВИЙ, АЛЕ НЕ ГНАТИСЯ — ЧЕКАТИ РЕТЕСТ",
+            "confidence": min(confidence, 72),
+            "score": min(score, -60),
+            "reason": "стакан/ліквідність не дають ставити SHORT вище 72% після дампу",
+        }
+
+    if signal == "LONG" and strong_pump and flow_short >= 1 and confidence and confidence > 74:
+        return {
+            "active": True,
+            "signal": signal,
+            "signal_type": "LONG МОЖЛИВИЙ, АЛЕ НЕ ГНАТИСЯ — ЧЕКАТИ РЕТЕСТ",
+            "confidence": min(confidence, 72),
+            "score": max(score, 60),
+            "reason": "стакан/ліквідність не дають ставити LONG вище 72% після пампу",
+        }
+
+    return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
+
 def cap_countertrend_probability(probability, signal, tech, smc):
     if probability is None or signal not in ["LONG", "SHORT"]:
         return probability
@@ -7686,6 +7815,15 @@ def main():
         score = scalp_reversal.get("score", score)
         risk_note = scalp_reversal.get("reason", risk_note)
         print(f"SCALP REVERSAL TRIGGER: {signal} | {risk_note}")
+
+    decay_guard = post_move_decay_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news, event_risk)
+    if decay_guard.get("active"):
+        signal = decay_guard["signal"]
+        signal_type = decay_guard["signal_type"]
+        confidence = decay_guard["confidence"]
+        score = decay_guard["score"]
+        risk_note = decay_guard.get("reason", risk_note)
+        print("POST MOVE DECAY GUARD:", risk_note)
 
     plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
     plan = adjust_plan_for_rr(plan, signal)
