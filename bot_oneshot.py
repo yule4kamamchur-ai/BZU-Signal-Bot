@@ -5893,6 +5893,114 @@ def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, m
         "reason": "",
     }
 
+def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderflow, news, event_risk, market, session, late_entry=None, cooling=None):
+    """Human market mode + strategy layer for Telegram.
+
+    This does not replace the signal. It explains how aggressively the signal
+    may be traded in the current regime.
+    """
+    signal_type = str(signal_type or "")
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    event_risk = event_risk or {}
+    market = market or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    prob = trade_probability or 0
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+    trend = tech.get("trend", "MIXED")
+    micro_state = micro.get("state", "RANGE")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
+    volatility = market.get("volatility", {}).get("regime", "NORMAL")
+
+    has_entry = signal in ["LONG", "SHORT"] and prob >= 65
+    has_watch = signal in ["LONG", "SHORT"] and 50 <= prob < 65
+
+    if "СКАЛЬП" in signal_type:
+        side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
+        status = "СКАЛЬП" if prob >= 55 else "ЧЕКАТИ"
+        return {
+            "status": status,
+            "mode": f"скальп {side_text}",
+            "strategy": "короткий швидкий вхід, малий стоп, фіксація швидше; не тримати як трендову угоду",
+            "priority": "3m + SMC + стакан/угоди важливіші за новини",
+            "aggression": "агресивно, але тільки малим ризиком",
+        }
+
+    if calendar_active or event_high:
+        if has_entry and "РАННІЙ" in signal_type:
+            status = "ВХІД Є"
+        elif has_entry:
+            status = "ЧЕКАТИ"
+        else:
+            status = "ВХОДУ НЕМАЄ" if prob < 50 else "ЧЕКАТИ"
+        return {
+            "status": status,
+            "mode": "новинний ризик",
+            "strategy": "вхід тільки після реакції ціни; під EIA/Fed/OPEC не відкривати агресивно",
+            "priority": "календар і новини > графік; підтвердження ціни обовʼязкове",
+            "aggression": "обережно",
+        }
+
+    if volatility == "LOW VOLATILITY / CHOP MODE" or (micro_state == "RANGE" and abs(tech_score) < 45):
+        return {
+            "status": "ВХОДУ НЕМАЄ" if prob < 55 else "ЧЕКАТИ",
+            "mode": "боковик",
+            "strategy": "не брати середину діапазону; чекати пробій або відскок від краю",
+            "priority": "рівні + 3m; новини лише як фільтр",
+            "aggression": "не агресивно",
+        }
+
+    if signal in ["LONG", "SHORT"]:
+        direction = "лонг" if signal == "LONG" else "шорт"
+        aligned_trend = (
+            (signal == "LONG" and (trend == "UP" or tech_score >= 55 or micro_bias == "LONG" or smc_bias == "LONG")) or
+            (signal == "SHORT" and (trend == "DOWN" or tech_score <= -55 or micro_bias == "SHORT" or smc_bias == "SHORT"))
+        )
+        if aligned_trend:
+            status = "ВХІД Є" if has_entry else ("ЧЕКАТИ" if has_watch else "ВХОДУ НЕМАЄ")
+            aggression = "агресивний " + direction if has_entry and not (late_entry and late_entry.get("late")) else "обережний " + direction
+            if late_entry and late_entry.get("late"):
+                status = "ВХОДУ НЕМАЄ"
+                aggression = "не доганяти рух"
+            return {
+                "status": status,
+                "mode": f"трендовий {direction}",
+                "strategy": "працювати за трендом; найкраще після ретесту або раннього підтвердження 3m",
+                "priority": "графік + SMC + 3m > новини, якщо новини не проти руху",
+                "aggression": aggression,
+            }
+
+    if "SHOCK DOWN" in signal_type:
+        return {
+            "status": "ВХОДУ НЕМАЄ",
+            "mode": "різкий дамп",
+            "strategy": "шорт не доганяти; чекати ретест для шорту або скальп-відскок тільки після підтвердження",
+            "priority": "ціна і 3m > новини; для скальпу потрібен відкуп",
+            "aggression": "не агресивно",
+        }
+    if "SHOCK UP" in signal_type:
+        return {
+            "status": "ВХОДУ НЕМАЄ",
+            "mode": "різкий памп",
+            "strategy": "лонг не доганяти; чекати ретест для лонгу або скальп-відкат тільки після підтвердження",
+            "priority": "ціна і 3m > новини; для скальпу потрібен продаж",
+            "aggression": "не агресивно",
+        }
+
+    return {
+        "status": "ЧЕКАТИ" if prob >= 50 else "ВХОДУ НЕМАЄ",
+        "mode": "змішаний ринок",
+        "strategy": "чекати, поки графік, 3m і структура зійдуться в один бік",
+        "priority": "баланс: графік + новини + стакан",
+        "aggression": "не агресивно",
+    }
+
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     raw_tech = tech or {}
@@ -5990,6 +6098,11 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if event_block.get("blocked"):
         decision = "Зараз не входити — високий новинний ризик"
 
+    market_mode = market_mode_engine(
+        signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
+        event_risk, market, session, late_entry, cooling
+    )
+
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
     if "різкий дамп" in decision.lower():
@@ -6062,6 +6175,12 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
+        "",
+        f"<b>{market_mode['status']}</b>",
+        f"<b>Режим:</b> {market_mode['mode']}",
+        f"<b>Стратегія:</b> {market_mode['strategy']}",
+        f"<b>Пріоритет:</b> {market_mode['priority']}",
+        f"<b>Агресивність:</b> {market_mode['aggression']}",
         "",
         f"<b>Рішення:</b> {decision}",
         f"<b>Ринок:</b> {market_bias_text}",
