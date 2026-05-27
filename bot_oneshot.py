@@ -1334,6 +1334,360 @@ def get_real_candles(inst_id=OKX_INST_ID, bar="15m", limit=120):
         print(f"[WARN] real candles parse error: {error}")
         return []
 
+def get_okx_recent_trades(inst_id=OKX_INST_ID, limit=100):
+    """Recent public trades from OKX for a more realistic flow proxy."""
+    url = f"https://www.okx.com/api/v5/market/trades?instId={inst_id}&limit={limit}"
+    response = safe_get(url, timeout=10, retries=1)
+    if not response:
+        return []
+
+    try:
+        rows = response.json().get("data", [])
+        trades = []
+        for row in rows:
+            trades.append({
+                "px": float(row.get("px", 0) or 0),
+                "sz": float(row.get("sz", 0) or 0),
+                "side": str(row.get("side", "")).lower(),
+                "ts": int(row.get("ts", 0) or 0),
+            })
+        return trades
+    except Exception as error:
+        print(f"[WARN] OKX trades parse error: {error}")
+        return []
+
+def analyze_okx_trade_flow(trades):
+    """Buy/sell trade imbalance from public OKX prints.
+
+    This is still a proxy, but it is closer to real flow than TradingView ratings.
+    """
+    if not trades:
+        return {
+            "available": False,
+            "score": 0,
+            "bias": "NEUTRAL",
+            "note": "OKX trades unavailable",
+            "buy_volume": 0,
+            "sell_volume": 0,
+            "delta_pct": 0,
+        }
+
+    buy_volume = sum(t["sz"] for t in trades if t.get("side") == "buy")
+    sell_volume = sum(t["sz"] for t in trades if t.get("side") == "sell")
+    total = buy_volume + sell_volume
+    delta_pct = ((buy_volume - sell_volume) / total * 100) if total else 0
+
+    score = 0
+    if delta_pct >= 18:
+        score = 16
+        bias = "LONG"
+        note = "останні угоди більше за покупців"
+    elif delta_pct <= -18:
+        score = -16
+        bias = "SHORT"
+        note = "останні угоди більше за продавців"
+    elif delta_pct >= 8:
+        score = 8
+        bias = "LONG"
+        note = "легка перевага покупців"
+    elif delta_pct <= -8:
+        score = -8
+        bias = "SHORT"
+        note = "легка перевага продавців"
+    else:
+        bias = "NEUTRAL"
+        note = "останні угоди без явної переваги"
+
+    return {
+        "available": True,
+        "score": score,
+        "bias": bias,
+        "note": note,
+        "buy_volume": round(buy_volume, 4),
+        "sell_volume": round(sell_volume, 4),
+        "delta_pct": round(delta_pct, 2),
+    }
+
+def get_okx_order_book(inst_id=OKX_INST_ID, depth=50):
+    """Public OKX order book snapshot."""
+    url = f"https://www.okx.com/api/v5/market/books?instId={inst_id}&sz={depth}"
+    response = safe_get(url, timeout=10, retries=1)
+    if not response:
+        return {"bids": [], "asks": []}
+
+    try:
+        data = response.json().get("data", [])
+        if not data:
+            return {"bids": [], "asks": []}
+        book = data[0]
+        bids = [(float(x[0]), float(x[1])) for x in book.get("bids", []) if len(x) >= 2]
+        asks = [(float(x[0]), float(x[1])) for x in book.get("asks", []) if len(x) >= 2]
+        return {"bids": bids, "asks": asks}
+    except Exception as error:
+        print(f"[WARN] OKX order book parse error: {error}")
+        return {"bids": [], "asks": []}
+
+def analyze_order_book_pressure(book, price=None):
+    """Order book pressure and nearby walls.
+
+    This is a snapshot, not a guarantee. It helps explain short-term pressure:
+    more bids below price = buyers support, more asks above price = sellers pressure.
+    """
+    bids = (book or {}).get("bids", [])
+    asks = (book or {}).get("asks", [])
+    if not bids or not asks:
+        return {
+            "available": False,
+            "score": 0,
+            "bias": "NEUTRAL",
+            "note": "Стакан недоступний",
+            "wall": "",
+            "imbalance_pct": 0,
+        }
+
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
+    mid = price or ((best_bid + best_ask) / 2)
+    near_pct = 0.004
+    lower = mid * (1 - near_pct)
+    upper = mid * (1 + near_pct)
+
+    near_bids = [(p, s) for p, s in bids if p >= lower]
+    near_asks = [(p, s) for p, s in asks if p <= upper]
+    bid_volume = sum(s for _, s in near_bids)
+    ask_volume = sum(s for _, s in near_asks)
+    total = bid_volume + ask_volume
+    imbalance_pct = ((bid_volume - ask_volume) / total * 100) if total else 0
+
+    biggest_bid = max(near_bids, key=lambda x: x[1]) if near_bids else None
+    biggest_ask = max(near_asks, key=lambda x: x[1]) if near_asks else None
+
+    wall = ""
+    if biggest_ask and biggest_bid:
+        if biggest_ask[1] > biggest_bid[1] * 1.7:
+            wall = f"стіна продавців біля {round(biggest_ask[0], 4)}"
+        elif biggest_bid[1] > biggest_ask[1] * 1.7:
+            wall = f"стіна покупців біля {round(biggest_bid[0], 4)}"
+    elif biggest_ask:
+        wall = f"найбільша стіна продавців біля {round(biggest_ask[0], 4)}"
+    elif biggest_bid:
+        wall = f"найбільша стіна покупців біля {round(biggest_bid[0], 4)}"
+
+    if imbalance_pct >= 18:
+        score = 12
+        bias = "LONG"
+        note = "покупці тримають ціну"
+    elif imbalance_pct <= -18:
+        score = -12
+        bias = "SHORT"
+        note = "продавці тиснуть зверху"
+    elif imbalance_pct >= 8:
+        score = 6
+        bias = "LONG"
+        note = "легка перевага покупців"
+    elif imbalance_pct <= -8:
+        score = -6
+        bias = "SHORT"
+        note = "легка перевага продавців"
+    else:
+        score = 0
+        bias = "NEUTRAL"
+        note = "стакан без явної переваги"
+
+    return {
+        "available": True,
+        "score": score,
+        "bias": bias,
+        "note": note,
+        "wall": wall,
+        "imbalance_pct": round(imbalance_pct, 2),
+        "bid_volume": round(bid_volume, 4),
+        "ask_volume": round(ask_volume, 4),
+    }
+
+def analyze_liquidity_proxy(candles, trade_flow=None, order_book=None):
+    """Liquidation/stop-run proxy from candles, volume, trades and book pressure."""
+    if not candles or len(candles) < 25:
+        return {"available": False, "score": 0, "bias": "NEUTRAL", "note": "Ліквідність: мало даних"}
+
+    recent = candles[-20:]
+    last = candles[-1]
+    prev = candles[-2]
+    avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
+    vol_ratio = (last.get("volume", 0) or 0) / avg_vol if avg_vol else 1
+    body = last["close"] - last["open"]
+    candle_range = max(last["high"] - last["low"], 1e-9)
+    close_pos = (last["close"] - last["low"]) / candle_range
+    move_pct = ((last["close"] - prev["close"]) / prev["close"] * 100) if prev["close"] else 0
+
+    trade_bias = (trade_flow or {}).get("bias", "NEUTRAL")
+    book_bias = (order_book or {}).get("bias", "NEUTRAL")
+    note = "Ліквідність: без явного вибивання"
+    score = 0
+    bias = "NEUTRAL"
+
+    if move_pct <= -0.45 and vol_ratio >= 1.35 and body < 0:
+        bias = "SHORT"
+        score = -14
+        note = "можливе вибивання лонгів"
+        if close_pos <= 0.25:
+            score -= 4
+        if trade_bias == "SHORT" or book_bias == "SHORT":
+            score -= 4
+    elif move_pct >= 0.45 and vol_ratio >= 1.35 and body > 0:
+        bias = "LONG"
+        score = 14
+        note = "можливий шорт-сквіз"
+        if close_pos >= 0.75:
+            score += 4
+        if trade_bias == "LONG" or book_bias == "LONG":
+            score += 4
+
+    # Sweep and reclaim: stops may have been taken, but continuation is not clean.
+    prev_low = min(c["low"] for c in recent[:-1])
+    prev_high = max(c["high"] for c in recent[:-1])
+    if last["low"] < prev_low and last["close"] > prev_low:
+        bias = "LONG"
+        score = max(score, 8)
+        note = "зняли ліквідність знизу — можливий відскок"
+    elif last["high"] > prev_high and last["close"] < prev_high:
+        bias = "SHORT"
+        score = min(score, -8)
+        note = "зняли ліквідність зверху — можливий відкат"
+
+    return {
+        "available": True,
+        "score": score,
+        "bias": bias,
+        "note": note,
+        "vol_ratio": round(vol_ratio, 2),
+        "move_pct": round(move_pct, 3),
+    }
+
+def merge_orderflow_proxy(orderflow, trade_flow):
+    orderflow = orderflow or {}
+    trade_flow = trade_flow or {}
+    if not trade_flow.get("available"):
+        orderflow["real_flow"] = trade_flow
+        return orderflow
+
+    score = int(orderflow.get("score", 0) or 0) + int(trade_flow.get("score", 0) or 0)
+    orderflow["score"] = score
+    if score >= 25:
+        orderflow["bias"] = "БИЧАЧИЙ ORDERFLOW"
+    elif score <= -25:
+        orderflow["bias"] = "ВЕДМЕЖИЙ ORDERFLOW"
+    else:
+        orderflow["bias"] = "НЕЙТРАЛЬНИЙ"
+    orderflow["real_flow"] = trade_flow
+    if trade_flow.get("note"):
+        orderflow.setdefault("details", []).append("OKX trades: " + trade_flow["note"])
+    return orderflow
+
+def merge_market_microstructure(orderflow, order_book, liquidity_proxy):
+    orderflow = orderflow or {}
+    order_book = order_book or {}
+    liquidity_proxy = liquidity_proxy or {}
+
+    score = int(orderflow.get("score", 0) or 0)
+    if order_book.get("available"):
+        score += int(order_book.get("score", 0) or 0)
+        if order_book.get("note"):
+            orderflow.setdefault("details", []).append("Стакан: " + order_book["note"])
+    if liquidity_proxy.get("available"):
+        score += int(liquidity_proxy.get("score", 0) or 0)
+        if liquidity_proxy.get("note"):
+            orderflow.setdefault("details", []).append("Ліквідність: " + liquidity_proxy["note"])
+
+    orderflow["score"] = score
+    if score >= 25:
+        orderflow["bias"] = "БИЧАЧИЙ ORDERFLOW"
+    elif score <= -25:
+        orderflow["bias"] = "ВЕДМЕЖИЙ ORDERFLOW"
+    else:
+        orderflow["bias"] = "НЕЙТРАЛЬНИЙ"
+    orderflow["order_book"] = order_book
+    orderflow["liquidity_proxy"] = liquidity_proxy
+    return orderflow
+
+def microstructure_text(orderflow):
+    orderflow = orderflow or {}
+    trade_flow = orderflow.get("real_flow") or {}
+    book = orderflow.get("order_book") or {}
+    liquidity = orderflow.get("liquidity_proxy") or {}
+
+    parts = []
+    if book.get("available"):
+        text = "Стакан: " + book.get("note", "без явної переваги")
+        if book.get("wall"):
+            text += f", {book.get('wall')}"
+        parts.append(text)
+    if trade_flow.get("available"):
+        parts.append("Угоди OKX: " + trade_flow.get("note", "без явної переваги"))
+    if liquidity.get("available"):
+        note = liquidity.get("note", "без явного вибивання")
+        if note.lower().startswith("ліквідність:"):
+            parts.append(note)
+        else:
+            parts.append("Ліквідність: " + note)
+
+    return " | ".join(parts[:3])
+
+def quick_backtest_smoke(candles, lookback=80):
+    """Small health-check backtest for GitHub logs.
+
+    It is not a trading system. It only checks whether recent momentum signals
+    had follow-through on the same OKX 15m data.
+    """
+    if not candles or len(candles) < 40:
+        return {"available": False, "summary": "Backtest: not enough candles"}
+
+    sample = candles[-lookback:]
+    wins = 0
+    losses = 0
+    signals = 0
+
+    for i in range(25, len(sample) - 5):
+        window = sample[i - 20:i]
+        close = sample[i]["close"]
+        avg20 = sum(c["close"] for c in window) / len(window)
+        prev = sample[i - 3:i]
+        next_candles = sample[i + 1:i + 6]
+
+        long_setup = close > avg20 and all(prev[j]["close"] <= prev[j + 1]["close"] for j in range(len(prev) - 1))
+        short_setup = close < avg20 and all(prev[j]["close"] >= prev[j + 1]["close"] for j in range(len(prev) - 1))
+
+        if not long_setup and not short_setup:
+            continue
+
+        signals += 1
+        if long_setup:
+            tp = close * 1.004
+            sl = close * 0.997
+            hit_tp = any(c["high"] >= tp for c in next_candles)
+            hit_sl = any(c["low"] <= sl for c in next_candles)
+        else:
+            tp = close * 0.996
+            sl = close * 1.003
+            hit_tp = any(c["low"] <= tp for c in next_candles)
+            hit_sl = any(c["high"] >= sl for c in next_candles)
+
+        if hit_tp and not hit_sl:
+            wins += 1
+        elif hit_sl and not hit_tp:
+            losses += 1
+
+    total = wins + losses
+    winrate = round(wins / total * 100, 1) if total else 0
+    return {
+        "available": True,
+        "signals": signals,
+        "wins": wins,
+        "losses": losses,
+        "winrate": winrate,
+        "summary": f"Backtest smoke: {wins}/{total} wins, winrate {winrate}% ({signals} setups)",
+    }
+
 def detect_swing_points(candles, lookback=2):
     swings_high = []
     swings_low = []
@@ -2986,6 +3340,36 @@ def rr_metrics(plan):
     rr2 = abs(tp2 - entry) / risk
     return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.2 or rr2 >= 1.8, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
 
+def news_event_trade_block(signal, trade_probability, event_risk, news, session=None):
+    """Hard caution layer for futures during dangerous news/event regimes."""
+    if signal not in ["LONG", "SHORT"]:
+        return {"blocked": False, "reason": ""}
+
+    event_level = (event_risk or {}).get("risk", "НОРМАЛЬНИЙ")
+    event_side = (event_risk or {}).get("direction", "MIXED")
+    news_score = (news or {}).get("score", 0)
+    session_name = (session or {}).get("session", "")
+
+    event_high = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    news_against = (
+        (signal == "LONG" and (event_side == "SHORT" or news_score <= -35)) or
+        (signal == "SHORT" and (event_side == "LONG" or news_score >= 35))
+    )
+
+    if event_high and news_against and (trade_probability or 0) < 75:
+        return {
+            "blocked": True,
+            "reason": "Новинний ризик проти входу. Для фʼючів краще чекати підтвердження після реакції ціни.",
+        }
+
+    if event_high and session_name == "NEW YORK" and (trade_probability or 0) < 65:
+        return {
+            "blocked": True,
+            "reason": "Високий новинний ризик у NY-сесію. Без сильного підтвердження не входити.",
+        }
+
+    return {"blocked": False, "reason": ""}
+
 def analyze_chase_protection(signal, tech, market):
     change = abs(tech.get("change", 0) or 0)
     rsi5 = tech.get("rsi_5m") or 50
@@ -4565,6 +4949,9 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
     trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
     trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
+    event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
+    if event_block.get("blocked"):
+        trade_probability = min(trade_probability or 0, 54)
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
@@ -4602,6 +4989,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     simple_decision = simple_decision_text(signal, trade_probability, late_entry, cooling)
     if simple_decision:
         decision = simple_decision
+    if event_block.get("blocked"):
+        decision = "Зараз не входити — високий новинний ризик"
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -4670,6 +5059,13 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     if conflict_note:
         lines.insert(12, f"<b>Конфлікт:</b> {conflict_note}")
+
+    if event_block.get("blocked"):
+        lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
+
+    micro_text = microstructure_text(orderflow)
+    if micro_text:
+        lines.append(f"<b>{micro_text}</b>")
 
     smc_note = smc_conflict_note(smc)
     if smc_note:
@@ -5187,6 +5583,7 @@ def main():
     tech = analyze_technical(tv)
     
     real_candles = get_real_candles()
+    backtest_smoke = quick_backtest_smoke(real_candles)
     smc = analyze_smc_structure(real_candles)
 
     micro_candles = get_real_candles(bar="3m", limit=160)
@@ -5204,6 +5601,13 @@ def main():
 
     news = analyze_news(fresh_news)
     orderflow = analyze_free_orderflow(tv)
+    okx_trades = get_okx_recent_trades(limit=100)
+    real_trade_flow = analyze_okx_trade_flow(okx_trades)
+    orderflow = merge_orderflow_proxy(orderflow, real_trade_flow)
+    okx_book = get_okx_order_book(depth=50)
+    order_book_pressure = analyze_order_book_pressure(okx_book, tv["price"])
+    liquidity_proxy = analyze_liquidity_proxy(real_candles, real_trade_flow, order_book_pressure)
+    orderflow = merge_market_microstructure(orderflow, order_book_pressure, liquidity_proxy)
     macro_data = get_macro_quant_data()
     macro = analyze_macro_quant(macro_data)
     event_risk = analyze_event_risk(event_items)
@@ -5285,7 +5689,11 @@ def main():
     print(f"TECH SCORE: {tech['score']}")
     print(f"SMC STRUCTURE: {smc.get('phase')} | {smc.get('bias')} | SCORE: {smc.get('score')} | {smc.get('summary')}")
     print(f"SMC VOLUME: {smc.get('volume', {}).get('bias', 'NEUTRAL')} | {smc.get('volume', {}).get('поглинання', 'NONE')} | {smc.get('volume', {}).get('note', '')}")
+    print(backtest_smoke.get("summary", "Backtest smoke unavailable"))
     print(f"ORDERFLOW PROXY SCORE: {orderflow['score']} | {orderflow['bias']}")
+    print(f"OKX TRADE FLOW: {real_trade_flow['bias']} | DELTA: {real_trade_flow['delta_pct']}% | {real_trade_flow['note']}")
+    print(f"OKX BOOK: {order_book_pressure['bias']} | IMBALANCE: {order_book_pressure['imbalance_pct']}% | {order_book_pressure['note']} | {order_book_pressure.get('wall', '')}")
+    print(f"LIQUIDITY PROXY: {liquidity_proxy['bias']} | SCORE: {liquidity_proxy['score']} | {liquidity_proxy['note']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
