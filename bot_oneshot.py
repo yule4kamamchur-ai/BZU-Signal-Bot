@@ -3648,6 +3648,9 @@ def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_
     if show_trade_plan:
         return format_trade_plan(plan)
 
+    if trade_probability is None or trade_probability < 55:
+        return "Входу немає — чекати якість мінімум 3/5."
+
     if entry_watch and entry_watch.get("active"):
         watch_plan = format_watch_plan(signal, plan, entry_watch)
         return watch_plan or entry_watch.get("text")
@@ -6233,18 +6236,6 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     has_entry = signal in ["LONG", "SHORT"] and prob >= 65
     has_watch = signal in ["LONG", "SHORT"] and 50 <= prob < 65
 
-    scalp_prep = scalp_preparation_signal({}, tech, smc, orderflow, news, event_risk)
-    if scalp_prep.get("active") and "СКАЛЬП" not in signal_type and not has_entry and not has_watch:
-        scalp_side = scalp_prep.get("side")
-        scalp_mode = "скальп лонг-відскок" if scalp_side == "LONG" else "скальп шорт-відкат"
-        return {
-            "status": "СКАЛЬП ГОТУЄТЬСЯ",
-            "mode": scalp_mode,
-            "strategy": "це ще не вхід; чекати підтвердження 3m і потоку",
-            "priority": "3m + стакан/угоди + структура",
-            "aggression": "поки не входити",
-        }
-
     if "СКАЛЬП" in signal_type:
         side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
         status = "СКАЛЬП" if prob >= 55 else "ЧЕКАТИ"
@@ -6500,7 +6491,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         market_bias_text = "змішано"
 
     calendar_text = economic_calendar_text(event_risk)
-    scalp_prep = scalp_preparation_signal(tv, raw_tech, smc, orderflow, news, event_risk)
     compact_reasons = [
         f"графік {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
         f"новини {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",
@@ -6515,18 +6505,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         top_decision = top_decision.replace("Зараз не входити — ", "")
     elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
         top_decision = top_decision.replace("Чекати ", "")
-    if market_mode.get("status") == "СКАЛЬП ГОТУЄТЬСЯ":
-        if "лонг" in str(market_mode.get("mode", "")):
-            top_decision = "можливий LONG-відскок — чекати підтвердження"
-        elif "шорт" in str(market_mode.get("mode", "")):
-            top_decision = "можливий SHORT-відкат — чекати підтвердження"
-        else:
-            top_decision = "можливий скальп — чекати підтвердження"
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
         f"<b>{market_mode['status']}</b> — {top_decision}",
-        f"<b>Режим:</b> {market_mode['mode']}",
         "",
         f"<b>Ринок:</b> {market_bias_text}",
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
@@ -6534,20 +6516,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
-
-    if (
-        scalp_prep.get("active")
-        and "СКАЛЬП" not in str(signal_type)
-        and market_mode.get("status") != "СКАЛЬП ГОТУЄТЬСЯ"
-    ):
-        detail = scalp_prep.get("reason")
-        text = scalp_prep.get("text")
-        scalp_side = scalp_prep.get("side")
-        if signal in ["LONG", "SHORT"] and scalp_side in ["LONG", "SHORT"] and scalp_side != signal:
-            risk_side = "шорту" if signal == "SHORT" else "лонгу"
-            lines.append(f"<b>Ризик для {risk_side}:</b> {text}" + (f" — {detail}" if detail else ""))
-        else:
-            lines.append(f"<b>Скальп готується:</b> {text}" + (f" — {detail}" if detail else ""))
 
     if conflict_note:
         lines.append(f"<b>Конфлікт:</b> {conflict_note}")
