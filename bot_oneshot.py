@@ -4612,9 +4612,9 @@ def send_telegram(message):
 def analyze_micro_structure(candles):
     """3m local movement state.
 
-    Goal:
-    - not to show 'боковик' during a clear stair-step selloff
-    - use 3m as entry timing, not as global trend
+    This version is stricter:
+    if the last 3m candles are stair-stepping down, it must show SHORT,
+    not 'боковик'.
     """
     if not candles or len(candles) < 30:
         return {
@@ -4626,11 +4626,17 @@ def analyze_micro_structure(candles):
         }
 
     recent = candles[-24:]
+    fast = candles[-12:]
+    last8 = candles[-8:]
     last = candles[-1]
 
     closes = [c["close"] for c in recent]
     highs = [c["high"] for c in recent]
     lows = [c["low"] for c in recent]
+
+    fast_closes = [c["close"] for c in fast]
+    fast_highs = [c["high"] for c in fast]
+    fast_lows = [c["low"] for c in fast]
 
     recent_high = max(highs[:-1])
     recent_low = min(lows[:-1])
@@ -4639,6 +4645,10 @@ def analyze_micro_structure(candles):
     prev4 = sum(closes[-8:-4]) / 4
     first6 = sum(closes[:6]) / 6
     last6 = sum(closes[-6:]) / 6
+
+    fast_start = fast_closes[0]
+    fast_end = fast_closes[-1]
+    fast_move_pct = ((fast_end - fast_start) / fast_start) * 100 if fast_start else 0
 
     avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
     last_vol = last.get("volume", 0) or 0
@@ -4649,20 +4659,30 @@ def analyze_micro_structure(candles):
     body_ratio = abs(body) / candle_range
     close_location = (last["close"] - last["low"]) / candle_range
 
+    # Structure counters
     lower_high_count = 0
     lower_low_count = 0
     higher_high_count = 0
     higher_low_count = 0
+    lower_close_count = 0
+    higher_close_count = 0
 
-    for i in range(-8, -1):
-        if highs[i] < highs[i - 1]:
+    for i in range(1, len(fast)):
+        if fast_highs[i] < fast_highs[i - 1]:
             lower_high_count += 1
-        if lows[i] < lows[i - 1]:
+        if fast_lows[i] < fast_lows[i - 1]:
             lower_low_count += 1
-        if highs[i] > highs[i - 1]:
+        if fast_highs[i] > fast_highs[i - 1]:
             higher_high_count += 1
-        if lows[i] > lows[i - 1]:
+        if fast_lows[i] > fast_lows[i - 1]:
             higher_low_count += 1
+        if fast_closes[i] < fast_closes[i - 1]:
+            lower_close_count += 1
+        if fast_closes[i] > fast_closes[i - 1]:
+            higher_close_count += 1
+
+    red_count = sum(1 for c in last8 if c["close"] < c["open"])
+    green_count = sum(1 for c in last8 if c["close"] > c["open"])
 
     total_move_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else 0
     drift_pct = ((last6 - first6) / first6) * 100 if first6 else 0
@@ -4673,6 +4693,7 @@ def analyze_micro_structure(candles):
     score = 0
     notes = []
 
+    # Local breakout/breakdown
     if last["close"] > recent_high:
         score += 24
         notes.append("пробій локального high")
@@ -4680,36 +4701,58 @@ def analyze_micro_structure(candles):
         score -= 24
         notes.append("пробій локального low")
 
+    # Immediate 12-candle direction — this is the main fix
+    if fast_move_pct <= -0.35:
+        score -= 28
+        notes.append("3m швидко йде вниз")
+    elif fast_move_pct >= 0.35:
+        score += 28
+        notes.append("3m швидко йде вгору")
+
+    # Stair-step structure
+    if lower_high_count >= 5 or lower_close_count >= 7:
+        score -= 24
+        notes.append("3m lower highs / lower closes")
+    if lower_low_count >= 4:
+        score -= 14
+        notes.append("3m оновлює lows")
+
+    if higher_high_count >= 5 or higher_close_count >= 7:
+        score += 24
+        notes.append("3m higher highs / higher closes")
+    if higher_low_count >= 4:
+        score += 14
+        notes.append("3m утримує higher lows")
+
+    # Candle balance
+    if red_count >= 5:
+        score -= 12
+        notes.append("більшість останніх 3m свічок червоні")
+    elif green_count >= 5:
+        score += 12
+        notes.append("більшість останніх 3m свічок зелені")
+
+    # Short-term momentum
     if long_momentum:
         score += 8
-        notes.append("короткий імпульс вгору")
     elif short_momentum:
         score -= 8
-        notes.append("короткий імпульс вниз")
 
-    # This is the important part for your screenshot:
-    # lower highs + lower lows = local SHORT, even without a new low on the last candle.
-    if lower_high_count >= 4 and lower_low_count >= 3:
-        score -= 24
-        notes.append("3m послідовне зниження")
-    elif higher_high_count >= 4 and higher_low_count >= 3:
-        score += 24
-        notes.append("3m послідовний ріст")
-
-    if drift_pct <= -0.25:
-        score -= 18
+    # Drift
+    if drift_pct <= -0.22:
+        score -= 12
         notes.append("3m ціна сповзає вниз")
-    elif drift_pct >= 0.25:
-        score += 18
+    elif drift_pct >= 0.22:
+        score += 12
         notes.append("3m ціна підтискається вгору")
 
+    # Last candle
     if body > 0 and body_ratio >= 0.50 and close_location >= 0.58:
         score += 6
-        notes.append("зелена 3m свічка")
     elif body < 0 and body_ratio >= 0.50 and close_location <= 0.42:
         score -= 6
-        notes.append("червона 3m свічка")
 
+    # Volume
     if vol_ratio >= 1.5:
         if body > 0:
             score += 8
@@ -4718,6 +4761,7 @@ def analyze_micro_structure(candles):
             score -= 8
             notes.append("обсяг за продавців")
 
+    # Very strict directional classification
     if score >= 18:
         bias = "LONG"
         state = "LONG_STRENGTHENING"
@@ -4727,6 +4771,7 @@ def analyze_micro_structure(candles):
     else:
         bias = "NEUTRAL"
         state = "RANGE"
+
         if total_move_pct >= 0.30 and short_momentum:
             state = "LONG_COOLING"
             notes.append("LONG охолоджується після імпульсу")
@@ -4742,11 +4787,12 @@ def analyze_micro_structure(candles):
         "note": "; ".join(notes[:3]) if notes else "3m боковик",
         "vol_ratio": round(vol_ratio, 2),
         "move_pct": round(total_move_pct, 3),
+        "fast_move_pct": round(fast_move_pct, 3),
         "drift_pct": round(drift_pct, 3),
         "lower_high_count": lower_high_count,
         "lower_low_count": lower_low_count,
-        "higher_high_count": higher_high_count,
-        "higher_low_count": higher_low_count,
+        "lower_close_count": lower_close_count,
+        "red_count": red_count,
     }
 
 
@@ -4863,7 +4909,6 @@ def local_3m_status_text(micro, signal=None):
     if not micro or not micro.get("available"):
         return "Локально 3m: дані недоступні"
 
-    bias = micro.get("bias", "NEUTRAL")
     state = micro.get("state", "RANGE")
     score = micro.get("score", 0)
 
@@ -4883,7 +4928,7 @@ def local_3m_status_text(micro, signal=None):
     if state == "SHORT_COOLING":
         return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
 
-    return "Локально 3m: боковик / немає чіткого входу"
+    return f"Локально 3m: боковик / немає чіткого входу ({score})"
 
 
 def global_trend_text(tech, market_bias):
