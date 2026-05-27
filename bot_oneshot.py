@@ -3086,6 +3086,131 @@ def early_reversal_text(early):
         return f"<b>Early reversal:</b> можливий {side} розворот ({score}%)"
     return f"<b>Early reversal:</b> слабкий {side} watch ({score}%)"
 
+def reversal_scalp_signal(tv, tech, smc, orderflow, news=None, event_risk=None, session=None):
+    """Very early scalp trigger after a sharp dump/pump.
+
+    This is not a normal trend entry. It only fires when the move is already
+    stretched and there are first signs that price is being bought/sold back.
+    """
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    change = tech.get("change", 0) or 0
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+    news_score = news.get("score", 0) or 0
+    event_side = event_risk.get("direction", "MIXED")
+    calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
+    session_name = (session or {}).get("session", "")
+
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_score = micro.get("score", 0) or 0
+
+    sweep = smc.get("sweep", "NONE")
+    choch = smc.get("choch", "NONE")
+    bos = smc.get("bos", "NONE")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("поглинання", "NONE")
+
+    def build(side):
+        is_long = side == "LONG"
+        score = 0
+        reasons = []
+
+        if is_long:
+            if change > -0.9:
+                return None
+            if change <= -4.2:
+                return None
+            if (rsi5 is not None and rsi5 <= 31) or (rsi15 is not None and rsi15 <= 35):
+                score += 12
+                reasons.append("RSI перепроданий")
+            if micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG" or micro_score >= -8:
+                score += 18
+                reasons.append("3m показує перший відкуп")
+            if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
+                score += 20
+                reasons.append("зняли низ і ціна повертається")
+            if book_bias == "LONG" or trade_bias == "LONG" or liquidity_bias == "LONG":
+                score += 14
+                reasons.append("покупці почали тримати ціну")
+            if vol_bias == "LONG" or absorption == "BULLISH ABSORPTION" or smc_bias == "LONG" or bos == "пробій структури LONG":
+                score += 16
+                reasons.append("структура/обсяг за відскок")
+            if news_score >= 25 or event_side == "LONG":
+                score += 8
+                reasons.append("новини підтримують відскок")
+            if micro_state == "SHORT_STRENGTHENING" and trade_bias != "LONG" and book_bias != "LONG":
+                score -= 18
+                reasons.append("3m ще продавлює вниз")
+            if smc_bias == "SHORT" and vol_bias == "SHORT" and trade_bias != "LONG":
+                score -= 14
+                reasons.append("структура ще за продавців")
+        else:
+            if change < 0.9:
+                return None
+            if change >= 4.2:
+                return None
+            if (rsi5 is not None and rsi5 >= 69) or (rsi15 is not None and rsi15 >= 65):
+                score += 12
+                reasons.append("RSI перекуплений")
+            if micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"] or micro_bias == "SHORT" or micro_score <= 8:
+                score += 18
+                reasons.append("3m показує перший продаж")
+            if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
+                score += 20
+                reasons.append("зняли верх і ціна повертається")
+            if book_bias == "SHORT" or trade_bias == "SHORT" or liquidity_bias == "SHORT":
+                score += 14
+                reasons.append("продавці почали тиснути")
+            if vol_bias == "SHORT" or absorption == "BEARISH ABSORPTION" or smc_bias == "SHORT" or bos == "пробій структури SHORT":
+                score += 16
+                reasons.append("структура/обсяг за відкат")
+            if news_score <= -25 or event_side == "SHORT":
+                score += 8
+                reasons.append("новини підтримують відкат")
+            if micro_state == "LONG_STRENGTHENING" and trade_bias != "SHORT" and book_bias != "SHORT":
+                score -= 18
+                reasons.append("3m ще тисне вгору")
+            if smc_bias == "LONG" and vol_bias == "LONG" and trade_bias != "SHORT":
+                score -= 14
+                reasons.append("структура ще за покупців")
+
+        required = 52
+        if session_name == "ASIA":
+            required += 6
+        if calendar_active:
+            required += 8
+
+        if score < required:
+            return None
+
+        confidence = min(78, max(58, score))
+        return {
+            "active": True,
+            "side": side,
+            "score": confidence if is_long else -confidence,
+            "confidence": confidence,
+            "signal_type": f"СКАЛЬП {side} / РІЗКИЙ ВІДСКОК" if is_long else f"СКАЛЬП {side} / РІЗКИЙ ВІДКАТ",
+            "reason": ("скальп лонг: " if is_long else "скальп шорт: ") + ", ".join(reasons[:3]),
+        }
+
+    long_setup = build("LONG")
+    short_setup = build("SHORT")
+    if long_setup and short_setup:
+        return long_setup if abs(long_setup["score"]) >= abs(short_setup["score"]) else short_setup
+    return long_setup or short_setup or {"active": False, "side": "NONE", "reason": "скальп-відскок ще не підтверджений"}
+
 def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
     """Creates a forward-looking conditional entry plan.
 
@@ -4909,6 +5034,10 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
         return "РАННІЙ LONG — можна входити зараз"
     if "РАННІЙ" in signal_type and signal == "SHORT":
         return "РАННІЙ SHORT — можна входити зараз"
+    if "СКАЛЬП" in signal_type and signal == "LONG":
+        return "СКАЛЬП LONG — ранній відскок"
+    if "СКАЛЬП" in signal_type and signal == "SHORT":
+        return "СКАЛЬП SHORT — ранній відкат"
 
     if signal == "LONG":
         if "EARLY NEWS" in signal_type:
@@ -5716,6 +5845,14 @@ def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, m
         or change >= 0.45
     )
 
+    if "СКАЛЬП" in str(signal_type) and signal in ["LONG", "SHORT"]:
+        return {
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "reason": "",
+        }
+
     if signal == "LONG" and chart_short and low_quality:
         return {
             "signal": "НЕЙТРАЛЬНО",
@@ -5848,6 +5985,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         decision = simple_decision
     if "РАННІЙ" in str(signal_type) and signal in ["LONG", "SHORT"] and trade_probability is not None and trade_probability >= 65:
         decision = f"РАННІЙ {signal} — можна входити зараз"
+    if "СКАЛЬП" in str(signal_type) and signal in ["LONG", "SHORT"] and trade_probability is not None and trade_probability >= 55:
+        decision = f"СКАЛЬП {signal} — рання точка, тільки зі стопом"
     if event_block.get("blocked"):
         decision = "Зараз не входити — високий новинний ризик"
 
@@ -6562,6 +6701,15 @@ def main():
         score = early_entry.get("score", score)
         risk_note = early_entry.get("reason", risk_note)
         print(f"EARLY ENTRY TRIGGER: {signal} | {risk_note}")
+
+    scalp_reversal = reversal_scalp_signal(tv, tech, smc, orderflow, news, event_risk, session)
+    if scalp_reversal.get("active"):
+        signal = scalp_reversal["side"]
+        signal_type = scalp_reversal["signal_type"]
+        confidence = max(confidence, scalp_reversal.get("confidence", confidence))
+        score = scalp_reversal.get("score", score)
+        risk_note = scalp_reversal.get("reason", risk_note)
+        print(f"SCALP REVERSAL TRIGGER: {signal} | {risk_note}")
 
     plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
     plan = adjust_plan_for_rr(plan, signal)
