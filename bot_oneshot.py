@@ -3619,15 +3619,40 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
         "invalid": invalid,
     }
 
+def format_watch_plan(signal, plan, entry_watch):
+    """Show a useful preparation plan for 2/5-3/5 setups without saying enter now."""
+    if signal not in ["LONG", "SHORT"] or not entry_watch or not entry_watch.get("active"):
+        return ""
+    if not plan or not isinstance(plan, dict) or plan.get("stop") is None:
+        return entry_watch.get("text", "")
+
+    if signal == "LONG":
+        direction_text = "Лонг"
+        trigger_text = f"вище {entry_watch.get('trigger')}"
+        retest_text = f"відкат біля {entry_watch.get('retest')}"
+        invalid_text = f"нижче {entry_watch.get('invalid')}"
+    else:
+        direction_text = "Шорт"
+        trigger_text = f"нижче {entry_watch.get('trigger')}"
+        retest_text = f"відкат біля {entry_watch.get('retest')}"
+        invalid_text = f"вище {entry_watch.get('invalid')}"
+
+    return (
+        f"Не входити без тригера. {direction_text}: зона {trigger_text} або {retest_text}. "
+        f"Стоп: {plan.get('stop')} | TP1: {plan.get('tp1')} | TP2: {plan.get('tp2')} | "
+        f"TP3: {plan.get('tp3')} | Скасування: {invalid_text}."
+    )
+
 def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch):
     """Telegram plan text. TRADE only if confirmed; otherwise conditional preparation."""
     if show_trade_plan:
         return format_trade_plan(plan)
 
     if entry_watch and entry_watch.get("active"):
-        return entry_watch.get("text")
+        watch_plan = format_watch_plan(signal, plan, entry_watch)
+        return watch_plan or entry_watch.get("text")
 
-    return "WAIT — немає якісного входу; чекати нову умову"
+    return "Чекати — немає якісного входу; чекати нову умову"
 
 def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event_risk, smc, entry_watch):
     """ГОТУЄМОСЬ should not be shown as 0/5 when the setup has a real directional reason.
@@ -6209,10 +6234,12 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     has_watch = signal in ["LONG", "SHORT"] and 50 <= prob < 65
 
     scalp_prep = scalp_preparation_signal({}, tech, smc, orderflow, news, event_risk)
-    if scalp_prep.get("active") and "СКАЛЬП" not in signal_type and not has_entry:
+    if scalp_prep.get("active") and "СКАЛЬП" not in signal_type and not has_entry and not has_watch:
+        scalp_side = scalp_prep.get("side")
+        scalp_mode = "скальп лонг-відскок" if scalp_side == "LONG" else "скальп шорт-відкат"
         return {
             "status": "СКАЛЬП ГОТУЄТЬСЯ",
-            "mode": scalp_prep.get("text", "можливий відскок"),
+            "mode": scalp_mode,
             "strategy": "це ще не вхід; чекати підтвердження 3m і потоку",
             "priority": "3m + стакан/угоди + структура",
             "aggression": "поки не входити",
@@ -6488,6 +6515,13 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         top_decision = top_decision.replace("Зараз не входити — ", "")
     elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
         top_decision = top_decision.replace("Чекати ", "")
+    if market_mode.get("status") == "СКАЛЬП ГОТУЄТЬСЯ":
+        if "лонг" in str(market_mode.get("mode", "")):
+            top_decision = "можливий LONG-відскок — чекати підтвердження"
+        elif "шорт" in str(market_mode.get("mode", "")):
+            top_decision = "можливий SHORT-відкат — чекати підтвердження"
+        else:
+            top_decision = "можливий скальп — чекати підтвердження"
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
@@ -6501,10 +6535,19 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
 
-    if scalp_prep.get("active") and "СКАЛЬП" not in str(signal_type):
+    if (
+        scalp_prep.get("active")
+        and "СКАЛЬП" not in str(signal_type)
+        and market_mode.get("status") != "СКАЛЬП ГОТУЄТЬСЯ"
+    ):
         detail = scalp_prep.get("reason")
         text = scalp_prep.get("text")
-        lines.append(f"<b>{scalp_prep.get('status')}:</b> {text}" + (f" — {detail}" if detail else ""))
+        scalp_side = scalp_prep.get("side")
+        if signal in ["LONG", "SHORT"] and scalp_side in ["LONG", "SHORT"] and scalp_side != signal:
+            risk_side = "шорту" if signal == "SHORT" else "лонгу"
+            lines.append(f"<b>Ризик для {risk_side}:</b> {text}" + (f" — {detail}" if detail else ""))
+        else:
+            lines.append(f"<b>Скальп готується:</b> {text}" + (f" — {detail}" if detail else ""))
 
     if conflict_note:
         lines.append(f"<b>Конфлікт:</b> {conflict_note}")
@@ -6586,6 +6629,7 @@ def format_trade_plan(plan):
     if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
         return "Входу немає — чекати підтвердження."
     return (
+        f"Вхід: {plan.get('entry')} | "
         f"Стоп: {plan.get('stop')} | "
         f"TP1: {plan.get('tp1')} | "
         f"TP2: {plan.get('tp2')} | "
