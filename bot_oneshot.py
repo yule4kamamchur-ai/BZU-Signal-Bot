@@ -510,10 +510,14 @@ def signal_journal_stats_text(journal, hours=24):
     bad = sum(1 for x in evaluated if x.get("result_status") == "BAD")
     saved = sum(1 for x in evaluated if x.get("result_status") == "NO_ENTRY_SAVED")
     missed = sum(1 for x in evaluated if x.get("result_status") == "MISSED_MOVE")
+    waited_ok = sum(1 for x in evaluated if x.get("result_status") == "GOOD_NO_ENTRY")
+    flat = sum(1 for x in evaluated if x.get("result_status") == "FLAT")
+    skipped = sum(1 for x in evaluated if x.get("result_status") == "SKIPPED")
 
     return (
-        f"<b>Статистика {hours}г:</b> сигналів {len(evaluated)}, "
-        f"хороших {good}, поганих {bad}, не входити врятувало {saved}, пропущено рухів {missed}"
+        f"<b>Статистика {hours}г:</b> оцінено {len(evaluated)} | "
+        f"вхід ок {good}, погано {bad}, чекати було правильно {saved + waited_ok}, "
+        f"пропущено рух {missed}, без сильного руху {flat}, без напрямку {skipped}"
     )
 
 def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4):
@@ -549,6 +553,8 @@ def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4
     saved = sum(1 for x in matches if x.get("result_status") == "NO_ENTRY_SAVED")
     missed = sum(1 for x in matches if x.get("result_status") == "MISSED_MOVE")
     no_entry_good = sum(1 for x in matches if x.get("result_status") == "GOOD_NO_ENTRY")
+    flat = sum(1 for x in matches if x.get("result_status") == "FLAT")
+    skipped = sum(1 for x in matches if x.get("result_status") == "SKIPPED")
 
     if saved + no_entry_good >= max(good + missed, bad):
         conclusion = "частіше краще чекати"
@@ -561,8 +567,9 @@ def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4
 
     return (
         f"<b>Схожі ситуації:</b> {len(matches)} | "
-        f"добре {good}, погано {bad}, чекати врятувало {saved + no_entry_good}, "
-        f"пропущено {missed}. Висновок: {conclusion}."
+        f"вхід ок {good}, погано {bad}, чекати було правильно {saved + no_entry_good}, "
+        f"пропущено {missed}, без сильного руху {flat}, без напрямку {skipped}. "
+        f"Висновок: {conclusion}."
     )
 
 
@@ -5360,11 +5367,16 @@ def probability_note(probability, late_entry):
         return f"{probability}% — ризик пізнього входу"
     return f"{probability}%"
 
-def entry_quality_scale(probability, late_entry=None):
+def entry_quality_scale(probability, late_entry=None, signal_type=""):
     """User-friendly entry quality scale for Telegram.
     This separates market direction from actual entry quality.
     """
+    signal_type = str(signal_type or "")
     if probability is None:
+        if "SHOCK DOWN" in signal_type:
+            return "0/5 — шорт уже пізно, не доганяти падіння"
+        if "SHOCK UP" in signal_type:
+            return "0/5 — лонг уже пізно, не доганяти імпульс"
         return "0/5 — немає входу"
     try:
         probability = int(probability)
@@ -5881,7 +5893,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Рішення:</b> {decision}",
         f"<b>Ринок:</b> {market_bias_text}",
         # Якість входу = наскільки хороший поточний сетап для входу
-        f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry)}",
+        f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
         "",
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
         f"<b>{global_trend_text(tech or {}, market_bias)}</b>",
