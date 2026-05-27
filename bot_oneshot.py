@@ -3796,6 +3796,114 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
 
     return min(trade_probability, 82)
 
+def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=None):
+    """Detect when fast 3m/orderflow flips against the larger move.
+
+    This is not a full trade confirmation. It prevents Telegram from showing
+    0/5 when buyers/sellers are clearly appearing on the fast tape.
+    """
+    tech = tech or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    smc = smc or {}
+
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    micro_score = micro.get("score", 0) or 0
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trades_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    def build(side):
+        is_long = side == "LONG"
+        score = 0
+        reasons = []
+        if is_long:
+            if change <= -1.2:
+                score += 10
+                reasons.append("після падіння")
+            if micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING" or micro_score >= 35:
+                score += 18
+                reasons.append("3m лонг")
+            if book_bias == "LONG":
+                score += 9
+                reasons.append("стакан лонг")
+            if trades_bias == "LONG":
+                score += 9
+                reasons.append("угоди лонг")
+            if liquidity_bias == "LONG":
+                score += 5
+            if smc_bias == "LONG":
+                score += 8
+                reasons.append("структура лонг")
+            if news_score >= 20 or event_side == "LONG":
+                score += 4
+            if tech_score <= -90 and smc_bias != "LONG":
+                score -= 8
+        else:
+            if change >= 1.2:
+                score += 10
+                reasons.append("після росту")
+            if micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING" or micro_score <= -35:
+                score += 18
+                reasons.append("3m шорт")
+            if book_bias == "SHORT":
+                score += 9
+                reasons.append("стакан шорт")
+            if trades_bias == "SHORT":
+                score += 9
+                reasons.append("угоди шорт")
+            if liquidity_bias == "SHORT":
+                score += 5
+            if smc_bias == "SHORT":
+                score += 8
+                reasons.append("структура шорт")
+            if news_score <= -20 or event_side == "SHORT":
+                score += 4
+            if tech_score >= 90 and smc_bias != "SHORT":
+                score -= 8
+
+        if score < 28:
+            return None
+
+        triple_flow = (
+            (micro_bias == side or (is_long and micro_score >= 35) or ((not is_long) and micro_score <= -35))
+            and book_bias == side
+            and trades_bias == side
+        )
+
+        probability = 52
+        if triple_flow:
+            probability = 58
+        elif score >= 38:
+            probability = 58
+        if score >= 50 and smc_bias == side:
+            probability = 64
+
+        text = "можливий LONG-відскок" if is_long else "можливий SHORT-відкат"
+        return {
+            "active": True,
+            "side": side,
+            "probability": probability,
+            "confidence": min(80, max(55, probability + 10)),
+            "signal_type": f"{text.upper()} / ЧЕКАТИ",
+            "decision": f"ЧЕКАТИ — {text}",
+            "reason": ", ".join(reasons[:3]),
+        }
+
+    candidates = [x for x in [build("LONG"), build("SHORT")] if x]
+    if not candidates:
+        return {"active": False}
+    candidates.sort(key=lambda item: item.get("probability", 0), reverse=True)
+    return candidates[0]
+
 # ==========================================================
 # VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
 # ==========================================================
@@ -6343,12 +6451,25 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         plan = adjust_plan_for_rr(plan, signal)
         plan = apply_expansion_targets(plan, signal, raw_tech, market)
         quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
+        local_warning = ""
         trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, raw_tech)
         local_warning = ""
         confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, raw_tech)
         decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
         if late_entry and late_entry.get("late"):
             decision = late_entry.get("label") or decision
+
+    counterflow_watch = counterflow_scalp_watch(raw_tech, orderflow, news, event_risk, smc)
+    if signal not in ["LONG", "SHORT"] and counterflow_watch.get("active"):
+        signal = counterflow_watch["side"]
+        signal_type = counterflow_watch["signal_type"]
+        confidence = max(confidence, counterflow_watch.get("confidence", confidence))
+        trade_probability = counterflow_watch.get("probability", trade_probability)
+        decision = counterflow_watch.get("decision", decision)
+        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk)
+        plan = adjust_plan_for_rr(plan, signal)
+        plan = apply_expansion_targets(plan, signal, raw_tech, market)
+        quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
 
     if local_warning:
         if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
@@ -6368,6 +6489,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
     trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
     trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
+    if counterflow_watch.get("active") and counterflow_watch.get("side") == signal:
+        trade_probability = max(trade_probability or 0, min(counterflow_watch.get("probability", 0), 64))
     event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
     if event_block.get("blocked"):
         trade_probability = min(trade_probability or 0, 54)
@@ -6489,6 +6612,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         market_bias_text = f"{simple_direction_word(market_bias)} ({confidence}%)"
     else:
         market_bias_text = "змішано"
+    if "LONG-ВІДСКОК" in str(signal_type):
+        market_bias_text = f"можливий лонг-відскок ({trade_probability}%)"
+    elif "SHORT-ВІДКАТ" in str(signal_type):
+        market_bias_text = f"можливий шорт-відкат ({trade_probability}%)"
 
     calendar_text = economic_calendar_text(event_risk)
     compact_reasons = [
@@ -6503,6 +6630,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         top_decision = top_decision.replace("НЕ ВХОДИТИ — ", "")
     elif market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("Зараз не входити — "):
         top_decision = top_decision.replace("Зараз не входити — ", "")
+    elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("ЧЕКАТИ — "):
+        top_decision = top_decision.replace("ЧЕКАТИ — ", "")
     elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
         top_decision = top_decision.replace("Чекати ", "")
 
