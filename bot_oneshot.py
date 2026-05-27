@@ -1,4 +1,4 @@
-import os
+чimport os
 import re
 import time
 import json
@@ -1490,12 +1490,36 @@ def get_google_news_rss():
         all_news.extend(parse_google_rss(query, NEWS_LOOKBACK_HOURS, "Google News RSS", 1.0))
     return all_news
 
+def is_future_news_item(item):
+    title = str((item or {}).get("title", "")).lower()
+    if not title:
+        return False
+
+    future_markers = [
+        "tomorrow",
+        "next week",
+        "next month",
+    ]
+    already_happened_markers = [
+        "today",
+        "released",
+        "reported",
+        "after",
+        "following",
+    ]
+
+    return (
+        any(marker in title for marker in future_markers)
+        and not any(marker in title for marker in already_happened_markers)
+    )
+
 def get_event_news():
     all_events = []
     for query in EVENT_QUERIES:
         all_events.extend(parse_google_rss(query, EVENT_LOOKBACK_HOURS, "Google Event RSS", 1.0))
     all_events.extend(get_fed_official_rss_events())
     all_events.extend(get_opec_official_events())
+    all_events = [item for item in all_events if not is_future_news_item(item)]
     return deduplicate_news(all_events)
 
 def eastern_tz():
@@ -1510,13 +1534,19 @@ def calendar_time_status(event_time, now=None):
         return "час невідомий", False
 
     minutes = int((event_time - now).total_seconds() / 60)
+    event_date_et = event_time.astimezone(eastern_tz()).date()
+    today_et = now.astimezone(eastern_tz()).date()
+
+    # Do not show or score tomorrow/upcoming calendar events today.
+    # They are context for another session, not a tradable current catalyst.
+    if event_date_et != today_et:
+        return "", False
+
     if -120 <= minutes <= 180:
         return "зараз / близько до виходу", True
     if 180 < minutes <= 24 * 60:
         hours = max(1, round(minutes / 60))
-        return f"через {hours} год", True
-    if 24 * 60 < minutes <= 42 * 60:
-        return "завтра", True
+        return f"сьогодні через {hours} год", True
     if -6 * 60 <= minutes < -120:
         return "вийшло сьогодні", True
     return "", False
@@ -1572,7 +1602,11 @@ def extract_eia_release_time(text):
     return hour, minute
 
 def get_eia_calendar_event():
-    """Official EIA WPSR calendar. Fallback: Wednesday 10:30 ET."""
+    """Official EIA WPSR calendar.
+
+    If the official date cannot be parsed, keep EIA inactive. A guessed
+    Wednesday release is worse than no calendar signal during holiday weeks.
+    """
     now = now_utc()
     text = ""
     for url in [EIA_WPSR_URL, EIA_WPSR_SCHEDULE_URL]:
@@ -1594,9 +1628,17 @@ def get_eia_calendar_event():
             release_time = extract_eia_release_time(text[idx:idx + 220])
 
     if not release_date:
-        today_et = now.astimezone(eastern_tz()).date()
-        release_date = next_weekday_date(today_et, 2)
-        release_time = (10, 30)
+        return {
+            "name": "EIA",
+            "title": "EIA запаси нафти",
+            "time": None,
+            "status": "час не підтверджено",
+            "active": False,
+            "hard_block": False,
+            "minutes_to_event": None,
+            "risk": "HIGH",
+            "source": "EIA official unavailable",
+        }
 
     event_time = calendar_dt_to_utc(release_date, release_time[0], release_time[1])
     status, active = calendar_time_status(event_time, now)
@@ -1983,6 +2025,7 @@ def get_all_fresh_news():
     for source in NEWS_SOURCES:
         all_news.extend(parse_rss(source))
     all_news.extend(get_cryptopanic_news())
+    all_news = [item for item in all_news if not is_future_news_item(item)]
     return deduplicate_news(all_news)
 
 def keyword_score(title, words):
@@ -4703,7 +4746,7 @@ def analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, se
     """
     event_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
     event_dir = event_risk.get("direction", "MIXED")
-    news_score = news.get("score", 0)
+    news_score = news.get("original_score", news.get("score", 0))
     tech_score = tech.get("score", 0)
     session_name = session.get("session", "UNKNOWN") if session else "UNKNOWN"
     reversal_side = reversal.get("side", "NONE") if reversal else "NONE"
@@ -4782,7 +4825,7 @@ def analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_anal
     """
     price_change = tech.get("change", 0) or 0
     tech_score = tech.get("score", 0)
-    news_score = news.get("score", 0)
+    news_score = news.get("original_score", news.get("score", 0))
     trend = tech.get("trend", "MIXED")
     trend_5m = tech.get("trend_5m", "UNKNOWN")
     trend_15m = tech.get("trend_15m", "UNKNOWN")
@@ -4791,7 +4834,7 @@ def analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_anal
     order_score = orderflow.get("score", 0)
     oi_side = oi_analysis.get("side", "NEUTRAL")
     vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
-    event_direction = event_risk.get("direction", "MIXED")
+    event_direction = event_risk.get("original_direction", event_risk.get("direction", "MIXED"))
     event_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
     session_name = session.get("session", "UNKNOWN") if session else "UNKNOWN"
 
@@ -4916,6 +4959,124 @@ def decide_current_priority(tech, news, event_risk, orderflow, early_warning):
         return "TECH", "Новини слабкі, тому пріоритет у техніки"
 
     return "BALANCED", "Ринок змішаний — потрібне підтвердження"
+
+def price_reaction_side(tech, orderflow=None):
+    """Return the side confirmed by current price action.
+
+    News is only fuel. It becomes directional only when price, trend or local
+    3m/orderflow confirm the same side.
+    """
+    tech = tech or {}
+    orderflow = orderflow or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+    trend_5m = tech.get("trend_5m", "UNKNOWN")
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    momentum = tech.get("momentum", "NEUTRAL")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    order_score = orderflow.get("score", 0) or 0
+
+    chart_long = (
+        tech_score >= 45
+        or (trend_5m == "UP" and trend_15m == "UP" and change >= 0.15)
+        or momentum in ["STRONG UP", "VERY STRONG UP"]
+        or micro_bias == "LONG"
+        or micro_state == "LONG_STRENGTHENING"
+        or order_score >= 18
+    )
+    chart_short = (
+        tech_score <= -45
+        or (trend_5m == "DOWN" and trend_15m == "DOWN" and change <= -0.15)
+        or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
+        or micro_bias == "SHORT"
+        or micro_state == "SHORT_STRENGTHENING"
+        or order_score <= -18
+    )
+
+    if chart_long and not chart_short:
+        return "LONG"
+    if chart_short and not chart_long:
+        return "SHORT"
+    return "NEUTRAL"
+
+def apply_price_reaction_to_news(news, event_risk, tech, orderflow=None):
+    """Treat news/events as fuel, not as standalone direction.
+
+    Bullish news + falling price is not a LONG signal. It means the market is
+    ignoring bullish fuel, so signal priority should move back to price action.
+    Same for bearish news when price is rising.
+    """
+    news = dict(news or {})
+    event_risk = dict(event_risk or {})
+
+    original_news_score = news.get("score", 0) or 0
+    original_event_direction = event_risk.get("direction", "MIXED")
+    price_side = price_reaction_side(tech, orderflow)
+
+    news["original_score"] = original_news_score
+    event_risk["original_direction"] = original_event_direction
+    news["price_reaction_side"] = price_side
+    event_risk["price_reaction_side"] = price_side
+
+    bullish_fuel = original_news_score >= 30 or original_event_direction == "LONG"
+    bearish_fuel = original_news_score <= -25 or original_event_direction == "SHORT"
+
+    if bullish_fuel and price_side == "SHORT":
+        if news.get("score", 0) > 0:
+            news["score"] = 0
+        if event_risk.get("direction") == "LONG":
+            event_risk["direction"] = "MIXED"
+            event_risk["direction_score"] = 0
+        news["fuel_status"] = "BULLISH_NEWS_IGNORED_BY_PRICE"
+        event_risk["fuel_status"] = "BULLISH_EVENT_IGNORED_BY_PRICE"
+        news["summary"] = "Bullish news ignored by price action: priority is price action."
+        return news, event_risk
+
+    if bearish_fuel and price_side == "LONG":
+        if news.get("score", 0) < 0:
+            news["score"] = 0
+        if event_risk.get("direction") == "SHORT":
+            event_risk["direction"] = "MIXED"
+            event_risk["direction_score"] = 0
+        news["fuel_status"] = "BEARISH_NEWS_IGNORED_BY_PRICE"
+        event_risk["fuel_status"] = "BEARISH_EVENT_IGNORED_BY_PRICE"
+        news["summary"] = "Bearish news ignored by price action: priority is price action."
+        return news, event_risk
+
+    if bullish_fuel and price_side != "LONG":
+        if news.get("score", 0) > 15:
+            news["score"] = 15
+        if event_risk.get("direction") == "LONG":
+            event_risk["direction"] = "MIXED"
+            event_risk["direction_score"] = 0
+        news["fuel_status"] = "BULLISH_NEWS_WAITING_FOR_PRICE_CONFIRMATION"
+        event_risk["fuel_status"] = "BULLISH_EVENT_WAITING_FOR_PRICE_CONFIRMATION"
+        return news, event_risk
+
+    if bearish_fuel and price_side != "SHORT":
+        if news.get("score", 0) < -15:
+            news["score"] = -15
+        if event_risk.get("direction") == "SHORT":
+            event_risk["direction"] = "MIXED"
+            event_risk["direction_score"] = 0
+        news["fuel_status"] = "BEARISH_NEWS_WAITING_FOR_PRICE_CONFIRMATION"
+        event_risk["fuel_status"] = "BEARISH_EVENT_WAITING_FOR_PRICE_CONFIRMATION"
+        return news, event_risk
+
+    if bullish_fuel and price_side == "LONG":
+        news["fuel_status"] = "BULLISH_NEWS_CONFIRMED_BY_PRICE"
+        event_risk["fuel_status"] = "BULLISH_EVENT_CONFIRMED_BY_PRICE"
+    elif bearish_fuel and price_side == "SHORT":
+        news["fuel_status"] = "BEARISH_NEWS_CONFIRMED_BY_PRICE"
+        event_risk["fuel_status"] = "BEARISH_EVENT_CONFIRMED_BY_PRICE"
+    else:
+        news["fuel_status"] = "NO_DIRECTIONAL_NEWS_FUEL"
+        event_risk["fuel_status"] = "NO_DIRECTIONAL_EVENT_FUEL"
+
+    return news, event_risk
 
 # ==========================================================
 # WEEKEND / RR / CHASE / POSITION / CROSS-MARKET HELPERS
@@ -7740,6 +7901,7 @@ def main():
     event_risk = analyze_event_risk(event_items)
     economic_calendar = analyze_economic_calendar()
     event_risk = merge_calendar_into_event_risk(event_risk, economic_calendar)
+    news, event_risk = apply_price_reaction_to_news(news, event_risk, tech, orderflow)
     market = analyze_market_structure(tv, tech)
     oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
     session = analyze_session_context()
