@@ -3169,7 +3169,6 @@ def reversal_scalp_signal(tv, tech, smc, orderflow, news=None, event_risk=None, 
     event_side = event_risk.get("direction", "MIXED")
     calendar = (event_risk.get("calendar") or {})
     calendar_active = bool(calendar.get("active"))
-    calendar_hard_block = bool(calendar.get("hard_block"))
     session_name = (session or {}).get("session", "")
 
     book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
@@ -4315,15 +4314,11 @@ def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, even
             required = 5
         if session_name == "ASIA":
             required = 7
-        if calendar_active or event_high:
-            required = 7
 
         hard_news_against = (
             (is_long and event_side == "SHORT" and news_score <= -35) or
             ((not is_long) and event_side == "LONG" and news_score >= 35)
         )
-        if hard_news_against and (calendar_active or event_high) and count < 8:
-            return None
 
         if count >= required and score_ok and trend_ok and early_move_ok and rsi_ok and (micro_ok or smc_ok or order_ok):
             confidence = min(82, 58 + count * 3 + (5 if smc_ok else 0) + (4 if micro_ok else 0))
@@ -4369,42 +4364,7 @@ def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, even
     return best
 
 def news_event_trade_block(signal, trade_probability, event_risk, news, session=None):
-    """Hard caution layer for futures during dangerous news/event regimes."""
-    if signal not in ["LONG", "SHORT"]:
-        return {"blocked": False, "reason": ""}
-
-    event_level = (event_risk or {}).get("risk", "НОРМАЛЬНИЙ")
-    event_side = (event_risk or {}).get("direction", "MIXED")
-    calendar = (event_risk or {}).get("calendar", {}) or {}
-    news_score = (news or {}).get("score", 0)
-    session_name = (session or {}).get("session", "")
-
-    event_high = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    calendar_active = bool(calendar.get("active"))
-    calendar_hard_block = bool(calendar.get("hard_block"))
-    news_against = (
-        (signal == "LONG" and (event_side == "SHORT" or news_score <= -35)) or
-        (signal == "SHORT" and (event_side == "LONG" or news_score >= 35))
-    )
-
-    if calendar_hard_block and (trade_probability or 0) < 68:
-        return {
-            "blocked": True,
-            "reason": "подія EIA/Fed/OPEC вже близько — входити тільки після реакції ціни",
-        }
-
-    if event_high and news_against and (trade_probability or 0) < 75:
-        return {
-            "blocked": True,
-            "reason": "новини проти входу — краще чекати реакцію ціни",
-        }
-
-    if event_high and session_name == "NEW YORK" and (trade_probability or 0) < 65:
-        return {
-            "blocked": True,
-            "reason": "високий ризик у NY-сесію — без сильного підтвердження не входити",
-        }
-
+    """News/calendar is a caution layer, not a hard entry ban."""
     return {"blocked": False, "reason": ""}
 
 def analyze_chase_protection(signal, tech, market):
@@ -6000,19 +5960,21 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
             "aggression": "агресивно, але тільки малим ризиком",
         }
 
-    if calendar_hard_block or event_high:
-        if has_entry and "РАННІЙ" in signal_type:
-            status = "ВХІД Є"
+    if calendar_active or event_high:
+        if "СКАЛЬП" in signal_type:
+            status = "СКАЛЬП" if prob >= 55 else "ЧЕКАТИ"
         elif has_entry:
+            status = "ВХІД Є"
+        elif has_watch:
             status = "ЧЕКАТИ"
         else:
-            status = "ВХОДУ НЕМАЄ" if prob < 50 else "ЧЕКАТИ"
+            status = "ВХОДУ НЕМАЄ"
         return {
             "status": status,
-            "mode": "новинний ризик",
-            "strategy": "вхід тільки після реакції ціни",
-            "priority": "календар і новини > графік; підтвердження ціни обовʼязкове",
-            "aggression": "обережно",
+            "mode": "новинна торгівля",
+            "strategy": "можна входити по новинах, якщо ціна вже підтвердила напрям",
+            "priority": "новини + реакція ціни; для скальпу 3m/стакан важливіші",
+            "aggression": "дозволено, але тільки зі стопом",
         }
 
     if volatility == "LOW VOLATILITY / CHOP MODE" or (micro_state == "RANGE" and abs(tech_score) < 45):
