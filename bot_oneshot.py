@@ -4351,9 +4351,52 @@ def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, m
     }
 
 
+
+def force_no_fake_long_short(signal, signal_type, confidence, tech, trade_probability=None):
+    """Hard final Telegram override.
+
+    If TECH is SHORT and price change is negative, Telegram must not say:
+    'Чекаємо тригер по LONG'.
+    If TECH is LONG and price change is positive, Telegram must not say:
+    'Чекаємо тригер по SHORT'.
+
+    This is intentionally simple and strict.
+    """
+    tech = tech or {}
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+
+    # LONG is blocked when chart is clearly short or falling.
+    if signal == "LONG" and tech_score <= -35 and change < -0.25:
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "LONG BLOCKED BY TECH SHORT",
+            "confidence": min(confidence, 50),
+            "blocked": True,
+        }
+
+    # SHORT is blocked when chart is clearly long or rising.
+    if signal == "SHORT" and tech_score >= 35 and change > 0.25:
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "SHORT BLOCKED BY TECH LONG",
+            "confidence": min(confidence, 50),
+            "blocked": True,
+        }
+
+    return {
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "blocked": False,
+    }
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
+    if "BLOCKED BY TECH" in signal_type:
+        plan_text = "WAIT — графік проти напрямку; якісного входу немає"
     if late_entry and late_entry.get("late"):
         decision = late_entry.get("label") or decision
 
@@ -4363,6 +4406,15 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
     confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
+    hard_final = force_no_fake_long_short(signal, signal_type, confidence, tech or {}, trade_probability)
+    if hard_final.get("blocked"):
+        signal = hard_final["signal"]
+        signal_type = hard_final["signal_type"]
+        confidence = hard_final["confidence"]
+        trade_probability = 0
+    if signal == "НЕЙТРАЛЬНО" and "BLOCKED BY TECH" in signal_type:
+        market_bias = "НЕЙТРАЛЬНО"
+
     final_guard = final_signal_sanity_guard(
         signal, signal_type, confidence, tech or {}, smc or {}, (tech or {}).get("micro_3m") or {}, trade_probability
     )
@@ -4928,6 +4980,10 @@ def local_3m_status_text(micro, signal=None):
     if state == "SHORT_COOLING":
         return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
 
+    if score <= -8:
+        return f"Локально 3m: продавці активні, але SHORT ще слабкий ({score})"
+    if score >= 8:
+        return f"Локально 3m: покупці активні, але LONG ще слабкий ({score})"
     return f"Локально 3m: боковик / немає чіткого входу ({score})"
 
 
