@@ -4275,6 +4275,82 @@ def hard_no_long_when_chart_short(signal, signal_type, confidence, score, tech, 
     }
 
 
+def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, micro=None, trade_probability=None):
+    """Final guard before Telegram.
+
+    Prevents:
+    - waiting for LONG while chart is already SHORT
+    - waiting for SHORT while chart is already LONG
+    """
+    tech = tech or {}
+    smc = smc or {}
+    micro = micro or {}
+
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+    smc_bias = smc.get("bias", "NEUTRAL")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+
+    low_quality = trade_probability is None or trade_probability < 55
+
+    chart_short = (
+        tech_score <= -35
+        or smc_bias == "SHORT"
+        or micro_bias == "SHORT"
+        or micro_state == "SHORT_STRENGTHENING"
+        or change <= -0.45
+    )
+
+    chart_long = (
+        tech_score >= 35
+        or smc_bias == "LONG"
+        or micro_bias == "LONG"
+        or micro_state == "LONG_STRENGTHENING"
+        or change >= 0.45
+    )
+
+    if signal == "LONG" and chart_short and low_quality:
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "LONG BLOCKED / CHART SHORT",
+            "confidence": min(confidence, 50),
+            "reason": "графік SHORT, LONG не підтверджений",
+        }
+
+    if signal == "SHORT" and chart_long and low_quality:
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "SHORT BLOCKED / CHART LONG",
+            "confidence": min(confidence, 50),
+            "reason": "графік LONG, SHORT не підтверджений",
+        }
+
+    # If chart is strongly opposite, allow direction switch only as prepare/watch, not blind trade.
+    if signal == "LONG" and (tech_score <= -60 or smc_bias == "SHORT" or micro_bias == "SHORT"):
+        return {
+            "signal": "SHORT",
+            "signal_type": "PRICE ACTION SHORT / NEWS CONFLICT",
+            "confidence": max(55, min(72, abs(tech_score))),
+            "reason": "графік сильніший за LONG-новини",
+        }
+
+    if signal == "SHORT" and (tech_score >= 60 or smc_bias == "LONG" or micro_bias == "LONG"):
+        return {
+            "signal": "LONG",
+            "signal_type": "PRICE ACTION LONG / NEWS CONFLICT",
+            "confidence": max(55, min(72, abs(tech_score))),
+            "reason": "графік сильніший за SHORT-новини",
+        }
+
+    return {
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "reason": "",
+    }
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
@@ -4287,6 +4363,14 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
     trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
     confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
+    final_guard = final_signal_sanity_guard(
+        signal, signal_type, confidence, tech or {}, smc or {}, (tech or {}).get("micro_3m") or {}, trade_probability
+    )
+    if final_guard.get("reason"):
+        signal = final_guard["signal"]
+        signal_type = final_guard["signal_type"]
+        confidence = final_guard["confidence"]
+
     if local_warning:
         if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
             decision = "TRADE LONG — 3m підтверджує вхід"
@@ -4526,12 +4610,24 @@ def send_telegram(message):
 # ==========================================================
 
 def analyze_micro_structure(candles):
-    """3m local movement state: trend, cooling, or range."""
+    """3m local movement state.
+
+    Goal:
+    - not to show 'боковик' during a clear stair-step selloff
+    - use 3m as entry timing, not as global trend
+    """
     if not candles or len(candles) < 30:
-        return {"available": False, "bias": "NEUTRAL", "state": "NO DATA", "score": 0, "note": "3m data unavailable"}
+        return {
+            "available": False,
+            "bias": "NEUTRAL",
+            "state": "NO DATA",
+            "score": 0,
+            "note": "3m data unavailable",
+        }
 
     recent = candles[-24:]
     last = candles[-1]
+
     closes = [c["close"] for c in recent]
     highs = [c["high"] for c in recent]
     lows = [c["low"] for c in recent]
@@ -4585,31 +4681,33 @@ def analyze_micro_structure(candles):
         notes.append("пробій локального low")
 
     if long_momentum:
-        score += 10
+        score += 8
         notes.append("короткий імпульс вгору")
     elif short_momentum:
-        score -= 10
+        score -= 8
         notes.append("короткий імпульс вниз")
 
+    # This is the important part for your screenshot:
+    # lower highs + lower lows = local SHORT, even without a new low on the last candle.
     if lower_high_count >= 4 and lower_low_count >= 3:
-        score -= 18
+        score -= 24
         notes.append("3m послідовне зниження")
     elif higher_high_count >= 4 and higher_low_count >= 3:
-        score += 18
+        score += 24
         notes.append("3m послідовний ріст")
 
-    if drift_pct <= -0.35:
-        score -= 14
+    if drift_pct <= -0.25:
+        score -= 18
         notes.append("3m ціна сповзає вниз")
-    elif drift_pct >= 0.35:
-        score += 14
+    elif drift_pct >= 0.25:
+        score += 18
         notes.append("3m ціна підтискається вгору")
 
     if body > 0 and body_ratio >= 0.50 and close_location >= 0.58:
-        score += 7
+        score += 6
         notes.append("зелена 3m свічка")
     elif body < 0 and body_ratio >= 0.50 and close_location <= 0.42:
-        score -= 7
+        score -= 6
         notes.append("червона 3m свічка")
 
     if vol_ratio >= 1.5:
@@ -4629,10 +4727,10 @@ def analyze_micro_structure(candles):
     else:
         bias = "NEUTRAL"
         state = "RANGE"
-        if total_move_pct >= 0.35 and short_momentum:
+        if total_move_pct >= 0.30 and short_momentum:
             state = "LONG_COOLING"
             notes.append("LONG охолоджується після імпульсу")
-        elif total_move_pct <= -0.35 and long_momentum:
+        elif total_move_pct <= -0.30 and long_momentum:
             state = "SHORT_COOLING"
             notes.append("SHORT охолоджується після падіння")
 
@@ -4645,6 +4743,10 @@ def analyze_micro_structure(candles):
         "vol_ratio": round(vol_ratio, 2),
         "move_pct": round(total_move_pct, 3),
         "drift_pct": round(drift_pct, 3),
+        "lower_high_count": lower_high_count,
+        "lower_low_count": lower_low_count,
+        "higher_high_count": higher_high_count,
+        "higher_low_count": higher_low_count,
     }
 
 
@@ -4757,7 +4859,7 @@ def structure_override_engine(signal, signal_type, confidence, score, tech, smc,
     }
 
 def local_3m_status_text(micro, signal=None):
-    """Human-readable local 3m movement state."""
+    """Human-readable 3m state."""
     if not micro or not micro.get("available"):
         return "Локально 3m: дані недоступні"
 
@@ -4766,15 +4868,21 @@ def local_3m_status_text(micro, signal=None):
     score = micro.get("score", 0)
 
     if state == "LONG_STRENGTHENING":
+        if signal == "SHORT":
+            return f"Локально 3m: SHORT слабшає — покупці активні ({score})"
         return f"Локально 3m: LONG посилюється — покупці активні ({score})"
+
     if state == "SHORT_STRENGTHENING":
         if signal == "LONG":
             return f"Локально 3m: LONG слабшає — продавці активні ({score})"
         return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
+
     if state == "LONG_COOLING":
         return f"Локально 3m: LONG охолоджується — краще чекати ретест ({score})"
+
     if state == "SHORT_COOLING":
         return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
+
     return "Локально 3m: боковик / немає чіткого входу"
 
 
