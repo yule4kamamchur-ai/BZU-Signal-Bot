@@ -7004,6 +7004,39 @@ def separate_position_text(pos_note):
     return "тримати/закрити за умовами: " + pos_note
 
 
+def display_header_from_action(action_text, signal, top_decision, market_mode):
+    if action_text == "вхід зараз":
+        return market_mode.get("status", "ВХІД Є"), top_decision
+
+    if action_text == "чекати ретест":
+        if signal in ["LONG", "SHORT"]:
+            return "ЧЕКАТИ", f"чекати ретест для {signal}"
+        return "ЧЕКАТИ", "чекати підтвердження"
+
+    return "ВХОДУ НЕМАЄ", "не входити — чекати новий сигнал"
+
+
+def plan_text_from_action(action_text, signal, trade_probability, show_trade_plan, plan, entry_watch):
+    if action_text == "вхід зараз":
+        return proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)
+
+    if action_text == "чекати ретест":
+        if isinstance(plan, dict) and plan.get("entry") is not None:
+            prefix = "Орієнтир після підтвердження"
+            if plan.get("locked"):
+                prefix = "Зафіксований орієнтир після підтвердження"
+            return (
+                f"{prefix}: Вхід: {plan.get('entry')} | "
+                f"Стоп: {plan.get('stop')} | "
+                f"TP1: {plan.get('tp1')} | "
+                f"TP2: {plan.get('tp2')} | "
+                f"TP3: {plan.get('tp3')}"
+            )
+        return "Входу зараз немає — чекати ретест/3m підтвердження."
+
+    return "Входу немає — чекати підтвердження."
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     raw_tech = tech or {}
     local_warning = ""
@@ -7145,6 +7178,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         signal, trade_probability, event_block, late_entry, cooling, exhaustion, local_warning
     )
     position_text = separate_position_text(pos_note)
+    plan_text = plan_text_from_action(action_text, signal, trade_probability, show_trade_plan, plan, entry_watch)
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -7238,16 +7272,18 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
         top_decision = top_decision.replace("Чекати ", "")
 
+    display_status, display_decision = display_header_from_action(action_text, signal, top_decision, market_mode)
+
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>{market_mode['status']}</b> — {top_decision}",
+        f"<b>{display_status}</b> — {display_decision}",
         f"<b>Дія:</b> {action_text}",
         f"<b>Позиція:</b> {position_text}",
         "",
         f"<b>Ринок:</b> {market_bias_text}",
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
         f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
+        f"<b>План:</b> {plan_text}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
 
