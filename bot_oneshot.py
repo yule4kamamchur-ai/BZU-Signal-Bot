@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -66,6 +67,17 @@ EVENT_QUERIES = [
     'OPEC meeting production cut increase crude oil',
     'Iran US talks sanctions oil Hormuz Trump',
 ]
+
+OFFICIAL_FED_RSS_FEEDS = [
+    ("Fed Monetary Policy", "https://www.federalreserve.gov/feeds/press_monetary.xml", 1.25),
+    ("Fed Powell", "https://www.federalreserve.gov/feeds/s_t_powell.xml", 1.15),
+    ("Fed Speeches", "https://www.federalreserve.gov/feeds/speeches.xml", 0.75),
+]
+
+EIA_WPSR_URL = "https://www.eia.gov/petroleum/supply/weekly/index.php"
+EIA_WPSR_SCHEDULE_URL = "https://www.eia.gov/petroleum/supply/weekly/schedule.php"
+FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+OPEC_PRESS_URL = "https://www.opec.org/press-releases.html"
 
 MACRO_NEWS_QUERIES = [
     'Fed Powell rate cut inflation dollar yields stock market',
@@ -1272,7 +1284,326 @@ def get_event_news():
     all_events = []
     for query in EVENT_QUERIES:
         all_events.extend(parse_google_rss(query, EVENT_LOOKBACK_HOURS, "Google Event RSS", 1.0))
+    all_events.extend(get_fed_official_rss_events())
+    all_events.extend(get_opec_official_events())
     return deduplicate_news(all_events)
+
+def eastern_tz():
+    return ZoneInfo("America/New_York")
+
+def calendar_dt_to_utc(date_obj, hour=10, minute=30):
+    return datetime(date_obj.year, date_obj.month, date_obj.day, hour, minute, tzinfo=eastern_tz()).astimezone(timezone.utc)
+
+def calendar_time_status(event_time, now=None):
+    now = now or now_utc()
+    if not event_time:
+        return "час невідомий", False
+
+    minutes = int((event_time - now).total_seconds() / 60)
+    if -120 <= minutes <= 180:
+        return "зараз / близько до виходу", True
+    if 180 < minutes <= 24 * 60:
+        hours = max(1, round(minutes / 60))
+        return f"через {hours} год", True
+    if 24 * 60 < minutes <= 42 * 60:
+        return "завтра", True
+    if -6 * 60 <= minutes < -120:
+        return "вийшло сьогодні", True
+    return "", False
+
+def parse_month_date(date_text, default_year=None):
+    default_year = default_year or now_utc().year
+    clean = re.sub(r"[^A-Za-z0-9, ]+", "", str(date_text or "")).strip()
+    for fmt in ["%B %d, %Y", "%b %d, %Y"]:
+        try:
+            return datetime.strptime(clean, fmt).date()
+        except Exception:
+            pass
+    for fmt in ["%B %d", "%b %d"]:
+        try:
+            parsed = datetime.strptime(clean, fmt)
+            return parsed.replace(year=default_year).date()
+        except Exception:
+            pass
+    return None
+
+def next_weekday_date(start_date, weekday):
+    days = (weekday - start_date.weekday()) % 7
+    return start_date + timedelta(days=days)
+
+def extract_eia_release_time(text):
+    text = text or ""
+    match = re.search(r"at\s+(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", text, re.I)
+    if not match:
+        return 10, 30
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    ampm = match.group(3).upper()
+    if ampm == "P" and hour != 12:
+        hour += 12
+    if ampm == "A" and hour == 12:
+        hour = 0
+    return hour, minute
+
+def get_eia_calendar_event():
+    """Official EIA WPSR calendar. Fallback: Wednesday 10:30 ET."""
+    now = now_utc()
+    text = ""
+    for url in [EIA_WPSR_URL, EIA_WPSR_SCHEDULE_URL]:
+        response = safe_get(url, timeout=8, retries=1)
+        if response:
+            text += "\n" + BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True)
+
+    release_date = None
+    release_time = (10, 30)
+    next_match = re.search(r"Next Release Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text)
+    if next_match:
+        release_date = parse_month_date(next_match.group(1))
+
+    # Holiday schedule text often says "released on Thursday, May 28, 2026, at 12:00 P.M."
+    if release_date:
+        around_date = release_date.strftime("%B %d, %Y").replace(" 0", " ")
+        idx = text.find(around_date)
+        if idx >= 0:
+            release_time = extract_eia_release_time(text[idx:idx + 220])
+
+    if not release_date:
+        today_et = now.astimezone(eastern_tz()).date()
+        release_date = next_weekday_date(today_et, 2)
+        release_time = (10, 30)
+
+    event_time = calendar_dt_to_utc(release_date, release_time[0], release_time[1])
+    status, active = calendar_time_status(event_time, now)
+    return {
+        "name": "EIA",
+        "title": "EIA запаси нафти",
+        "time": event_time,
+        "status": status,
+        "active": active,
+        "risk": "HIGH",
+        "source": "EIA official",
+    }
+
+def parse_fomc_calendar_events():
+    response = safe_get(FED_FOMC_CALENDAR_URL, timeout=8, retries=1)
+    if not response:
+        return []
+
+    text = BeautifulSoup(response.text, "html.parser").get_text("\n", strip=True)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    month_map = {
+        "January": 1, "February": 2, "March": 3, "April": 4, "Apr/May": 5,
+        "May": 5, "June": 6, "July": 7, "August": 8, "September": 9,
+        "October": 10, "November": 11, "December": 12,
+    }
+    current_year = str(now_utc().year)
+    in_year = False
+    current_month = None
+    events = []
+
+    for line in lines:
+        if re.fullmatch(rf"{current_year}\s+FOMC Meetings", line):
+            in_year = True
+            continue
+        if in_year and re.fullmatch(r"\d{4}\s+FOMC Meetings", line) and current_year not in line:
+            break
+        if not in_year:
+            continue
+
+        if line in month_map:
+            current_month = month_map[line]
+            continue
+
+        match = re.fullmatch(r"(\d{1,2})(?:-(\d{1,2}))?\*?(?:\s+\(notation vote\))?", line)
+        if current_month and match:
+            day = int(match.group(2) or match.group(1))
+            try:
+                event_time = calendar_dt_to_utc(datetime(now_utc().year, current_month, day).date(), 14, 0)
+                status, active = calendar_time_status(event_time)
+                events.append({
+                    "name": "Fed",
+                    "title": "Fed / FOMC рішення",
+                    "time": event_time,
+                    "status": status,
+                    "active": active,
+                    "risk": "HIGH",
+                    "source": "Fed official calendar",
+                })
+            except Exception:
+                pass
+
+        minutes_match = re.search(r"Released\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", line)
+        if minutes_match:
+            release_date = parse_month_date(minutes_match.group(1))
+            if release_date:
+                event_time = calendar_dt_to_utc(release_date, 14, 0)
+                status, active = calendar_time_status(event_time)
+                events.append({
+                    "name": "Fed",
+                    "title": "Fed minutes",
+                    "time": event_time,
+                    "status": status,
+                    "active": active,
+                    "risk": "MEDIUM",
+                    "source": "Fed official calendar",
+                })
+
+    return events
+
+def get_fed_official_rss_events():
+    events = []
+    cutoff = now_utc() - timedelta(hours=EVENT_LOOKBACK_HOURS)
+    for source_name, url, weight in OFFICIAL_FED_RSS_FEEDS:
+        response = safe_get(url, timeout=8, retries=1)
+        if not response:
+            continue
+        try:
+            root = ET.fromstring(response.content.strip())
+            for item in root.findall(".//item")[:MAX_ITEMS_PER_FEED]:
+                title = get_item_text(item, "title")
+                date_text = get_item_text(item, "pubDate") or get_item_text(item, "published") or get_item_text(item, "updated")
+                published_at = parse_date(date_text)
+                if published_at and published_at < cutoff:
+                    continue
+                if title:
+                    events.append({
+                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
+                        "link": get_item_text(item, "link"),
+                        "source": source_name,
+                        "published_at": published_at,
+                        "weight": weight,
+                    })
+        except Exception as error:
+            print(f"[WARN] Fed RSS parse error {source_name}: {error}")
+    return events
+
+def get_opec_official_events():
+    response = safe_get(OPEC_PRESS_URL, timeout=8, retries=1)
+    if not response:
+        return []
+    events = []
+    try:
+        soup = BeautifulSoup(response.text, "html.parser")
+        current_year = str(now_utc().year)
+        for link in soup.find_all("a"):
+            title = link.get_text(" ", strip=True)
+            lower = title.lower()
+            if len(title) < 18:
+                continue
+            if not any(key in lower for key in ["opec", "opec+", "production", "output", "oil", "crude", "ministerial"]):
+                continue
+            if current_year not in title and not any(key in lower for key in ["today", "meeting", "ministerial"]):
+                continue
+            href = link.get("href", "")
+            if href.startswith("/"):
+                href = "https://www.opec.org" + href
+            events.append({
+                "title": title,
+                "link": href,
+                "source": "OPEC official",
+                "published_at": None,
+                "weight": 1.0,
+            })
+            if len(events) >= 4:
+                break
+    except Exception as error:
+            print(f"[WARN] OPEC official parse error: {error}")
+    return events
+
+def get_opec_calendar_events():
+    events = []
+    items = parse_google_rss(
+        "site:opec.org OPEC OPEC+ meeting production oil today upcoming",
+        72,
+        "OPEC official calendar",
+        1.1,
+    )
+    for item in items[:3]:
+        status = "свіжа офіційна новина"
+        if item.get("published_at"):
+            age_hours = (now_utc() - item["published_at"]).total_seconds() / 3600
+            if age_hours <= 6:
+                status = "останні 6 год"
+            elif age_hours <= 24:
+                status = "сьогодні"
+            else:
+                status = "найближчі дні"
+        events.append({
+            "name": "OPEC",
+            "title": "OPEC/OPEC+",
+            "time": item.get("published_at"),
+            "status": status,
+            "active": True,
+            "risk": "HIGH",
+            "source": "OPEC official / Google RSS",
+        })
+    return events
+
+def analyze_economic_calendar():
+    """Free official calendar layer for oil futures risk."""
+    calendar_events = []
+    try:
+        calendar_events.append(get_eia_calendar_event())
+    except Exception as error:
+        print(f"[WARN] EIA calendar error: {error}")
+    try:
+        calendar_events.extend(parse_fomc_calendar_events())
+    except Exception as error:
+        print(f"[WARN] Fed calendar error: {error}")
+    try:
+        calendar_events.extend(get_opec_calendar_events())
+    except Exception as error:
+        print(f"[WARN] OPEC calendar error: {error}")
+
+    active_events = [event for event in calendar_events if event.get("active")]
+    score = 0
+    for event in active_events:
+        if event.get("risk") == "HIGH":
+            score -= 16
+        elif event.get("risk") == "MEDIUM":
+            score -= 10
+
+    if abs(score) >= 24:
+        risk = "ВИСОКИЙ"
+    elif abs(score) >= 12:
+        risk = "ПІДВИЩЕНИЙ"
+    else:
+        risk = "НОРМАЛЬНИЙ"
+
+    return {
+        "active": bool(active_events),
+        "score": score,
+        "risk": risk,
+        "events": active_events[:4],
+        "all_events": calendar_events[:12],
+    }
+
+def merge_calendar_into_event_risk(event_risk, calendar):
+    event_risk = dict(event_risk or {})
+    calendar = calendar or {}
+    event_risk["calendar"] = calendar
+    if not calendar.get("active"):
+        return event_risk
+
+    event_risk["score"] = int(max(-MAX_EVENT_SCORE, min(MAX_EVENT_SCORE, event_risk.get("score", 0) + calendar.get("score", 0))))
+    if abs(event_risk["score"]) >= 40:
+        event_risk["risk"] = "ДУЖЕ ВИСОКИЙ"
+    elif abs(event_risk["score"]) >= 20:
+        event_risk["risk"] = "ВИСОКИЙ"
+    elif abs(event_risk["score"]) >= 8:
+        event_risk["risk"] = "ПІДВИЩЕНИЙ"
+
+    important = list(event_risk.get("important", []) or [])
+    for event in calendar.get("events", []):
+        important.append({
+            "title": f"{event.get('title')} — {event.get('status')}",
+            "link": "",
+            "source": event.get("source", "official calendar"),
+            "published_at": event.get("time"),
+            "weight": 1.0,
+        })
+    event_risk["important"] = important[:8]
+    return event_risk
 
 def get_item_text(item, tag):
     text = item.findtext(tag)
@@ -3204,6 +3535,39 @@ def analyze_session_context():
         "utc_hour": hour,
     }
 
+def session_telegram_text(session):
+    name = (session or {}).get("session", "UNKNOWN")
+    if name == "ASIA":
+        return "Сесія: ASIA — обережно, нижча ліквідність"
+    if name == "LONDON":
+        return "Сесія: LONDON — можливі різкі вибивання"
+    if name == "NEW YORK":
+        return "Сесія: NEW YORK — новини рухають сильніше"
+    if name == "LATE US / TRANSITION":
+        return "Сесія: пізня US — якість входів нижча"
+    return ""
+
+def economic_calendar_text(event_risk):
+    calendar = (event_risk or {}).get("calendar") or {}
+    events = calendar.get("events") or []
+    if not events:
+        return ""
+
+    parts = []
+    for event in events[:2]:
+        name = event.get("name", "Подія")
+        status = event.get("status") or "скоро"
+        if name == "EIA":
+            parts.append(f"EIA запаси — {status}")
+        elif name == "Fed":
+            parts.append(f"Fed — {status}")
+        elif name == "OPEC":
+            parts.append(f"OPEC — {status}")
+        else:
+            parts.append(f"{event.get('title', name)} — {status}")
+
+    return "Календар: " + "; ".join(parts) + " — обережно"
+
 def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
     """Detects possible reversal setups such as breakdown failure / liquidity sweep.
 
@@ -3645,14 +4009,22 @@ def news_event_trade_block(signal, trade_probability, event_risk, news, session=
 
     event_level = (event_risk or {}).get("risk", "НОРМАЛЬНИЙ")
     event_side = (event_risk or {}).get("direction", "MIXED")
+    calendar = (event_risk or {}).get("calendar", {}) or {}
     news_score = (news or {}).get("score", 0)
     session_name = (session or {}).get("session", "")
 
     event_high = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    calendar_active = bool(calendar.get("active"))
     news_against = (
         (signal == "LONG" and (event_side == "SHORT" or news_score <= -35)) or
         (signal == "SHORT" and (event_side == "LONG" or news_score >= 35))
     )
+
+    if calendar_active and (trade_probability or 0) < 68:
+        return {
+            "blocked": True,
+            "reason": "поруч важлива подія EIA/Fed/OPEC — входити тільки після реакції ціни",
+        }
 
     if event_high and news_against and (trade_probability or 0) < 75:
         return {
@@ -5371,6 +5743,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
         f"<b>{global_trend_text(tech or {}, market_bias)}</b>",
         f"<b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
+        f"<b>{session_telegram_text(session)}</b>",
         "",
         f"<b>Головна причина:</b> {main_reason}",
         "",
@@ -5378,6 +5751,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "",
         f"<b>Графік:</b> {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
         f"<b>Новини:</b> {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",    ]
+
+    calendar_text = economic_calendar_text(event_risk)
+    if calendar_text:
+        lines.append(f"<b>{calendar_text}</b>")
 
     if conflict_note:
         lines.insert(12, f"<b>Конфлікт:</b> {conflict_note}")
@@ -5937,6 +6314,8 @@ def main():
     macro_data = get_macro_quant_data()
     macro = analyze_macro_quant(macro_data)
     event_risk = analyze_event_risk(event_items)
+    economic_calendar = analyze_economic_calendar()
+    event_risk = merge_calendar_into_event_risk(event_risk, economic_calendar)
     market = analyze_market_structure(tv, tech)
     oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
     session = analyze_session_context()
@@ -6022,6 +6401,7 @@ def main():
     print(f"LIQUIDITY PROXY: {liquidity_proxy['bias']} | SCORE: {liquidity_proxy['score']} | {liquidity_proxy['note']}")
     print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
     print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
+    print(f"ECONOMIC CALENDAR: {economic_calendar['risk']} | ACTIVE: {economic_calendar['active']} | EVENTS: {len(economic_calendar.get('events', []))}")
     print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
     print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
     print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
