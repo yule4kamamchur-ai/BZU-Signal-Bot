@@ -7452,7 +7452,7 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
             "Не шортити сильний імпульс без підтвердження."
         )
 
-    return {
+    state = {
         "signal": signal,
         "signal_type": signal_type,
         "confidence": confidence,
@@ -7466,11 +7466,138 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         "market_mode": market_mode,
         "final_summary": final_summary,
     }
+    state["final_decision"] = build_final_decision(
+        tv=tv,
+        state=state,
+        technical_bias=technical_bias,
+        fundamental_bias=fundamental_bias,
+        event_risk=event_risk,
+        orderflow=orderflow,
+        smc=smc,
+        tech=raw_tech,
+        chart_context=chart_context,
+        late_entry=late_entry,
+    )
+    return state
 
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None, trade_probability=None, decision=None, show_trade_plan=None, entry_watch=None, event_block=None, market_mode=None):
+def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk, orderflow=None, smc=None, tech=None, chart_context=None, late_entry=None):
+    """Single source of truth for final market direction vs actual entry.
+
+    market_side can be LONG/SHORT even when entry_side is None. That is the key
+    separation: direction is not the same as a fresh trade.
+    """
+    state = state or {}
+    tech = tech or {}
+    chart_context = chart_context or {}
+    late_entry = late_entry or {}
+    signal = state.get("signal", "НЕЙТРАЛЬНО")
+    signal_type = state.get("signal_type", "")
+    trade_probability = state.get("trade_probability")
+    confidence = state.get("confidence")
+    show_trade_plan = bool(state.get("show_trade_plan"))
+    plan = state.get("plan")
+    entry_watch = state.get("entry_watch") or {}
+    market_mode = state.get("market_mode") or {}
+    event_block = state.get("event_block") or {}
+    decision_text = state.get("decision", "")
+
+    market_side = infer_market_direction(
+        signal,
+        signal_type,
+        tech=tech,
+        technical_bias=technical_bias,
+        fundamental_bias=fundamental_bias,
+    )
+    if market_side not in ["LONG", "SHORT"] and chart_context.get("side") in ["LONG", "SHORT"]:
+        market_side = chart_context.get("side")
+
+    has_trade_entry = (
+        signal in ["LONG", "SHORT"]
+        and show_trade_plan
+        and trade_probability is not None
+        and trade_probability >= 55
+        and not event_block.get("blocked")
+    )
+    entry_side = signal if has_trade_entry else None
+
+    if event_block.get("blocked"):
+        entry_status = "NO_ENTRY"
+        entry_status_text = "ВХОДУ НЕМАЄ"
+    elif has_trade_entry and trade_probability >= 75:
+        entry_status = "CONFIRMED_ENTRY"
+        entry_status_text = "ВХІД Є"
+    elif has_trade_entry and trade_probability >= 65:
+        entry_status = "MAIN_ENTRY"
+        entry_status_text = "ВХІД Є"
+    elif has_trade_entry:
+        entry_status = "RISKY_ENTRY"
+        entry_status_text = "РИЗИКОВАНИЙ ВХІД"
+    elif chart_context.get("stage") == "SETUP_FORMING":
+        entry_status = "WATCH"
+        entry_status_text = "ЧЕКАТИ"
+    else:
+        entry_status = "NO_ENTRY"
+        entry_status_text = "ВХОДУ НЕМАЄ"
+
+    if chart_context.get("stage") == "LATE_NO_CHASE" or late_entry.get("late"):
+        entry_timing = "LATE"
+    elif chart_context.get("stage") == "TRIGGER":
+        entry_timing = "EARLY_TRIGGER"
+    elif chart_context.get("stage") == "SETUP_FORMING":
+        entry_timing = "FORMING"
+    elif "СКАЛЬП" in str(signal_type):
+        entry_timing = "SCALP"
+    elif has_trade_entry:
+        entry_timing = "NORMAL"
+    else:
+        entry_timing = "WAIT"
+
+    stage = chart_context.get("stage") or entry_timing
+    quality_text = entry_quality_scale(trade_probability, late_entry, signal_type)
+    plan_text = proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)
+
+    market_text = "змішано"
+    if market_side in ["LONG", "SHORT"]:
+        market_text = f"{simple_direction_word(market_side)} ({confidence}%)"
+
+    reasons = [
+        f"графік {simple_bias_label(short_bias_label((technical_bias or {}).get('side', 'NEUTRAL')))} ({(technical_bias or {}).get('score')})",
+        f"новини {simple_bias_label(short_bias_label((fundamental_bias or {}).get('side', 'NEUTRAL')))} ({(fundamental_bias or {}).get('score')})",
+    ]
+    calendar_text = economic_calendar_text(event_risk)
+    if calendar_text:
+        reasons.append(calendar_text.replace("Календар: ", "календар "))
+
+    warnings = []
+    if late_entry.get("late") or chart_context.get("stage") == "LATE_NO_CHASE":
+        warnings.append("рух пізній, потрібен ретест або нова база")
+    if event_block.get("blocked"):
+        warnings.append(event_block.get("reason", "високий новинний ризик"))
+
+    return {
+        "market_side": market_side,
+        "market_text": market_text,
+        "entry_side": entry_side,
+        "entry_status": entry_status,
+        "entry_status_text": entry_status_text,
+        "entry_timing": entry_timing,
+        "stage": stage,
+        "confidence": confidence,
+        "quality_percent": trade_probability,
+        "quality_text": quality_text,
+        "decision_text": decision_text,
+        "plan_text": plan_text,
+        "chart_text": chart_context_message(chart_context),
+        "reasons": reasons[:3],
+        "warnings": warnings,
+    }
+
+
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None, trade_probability=None, decision=None, show_trade_plan=None, entry_watch=None, event_block=None, market_mode=None, final_decision=None):
     """Format Telegram text only. It must not change signal, plan or quality."""
     raw_tech = tech or {}
+    final_decision = final_decision or {}
     decision = decision if decision is not None else human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     trade_probability = trade_probability if trade_probability is not None else None
     show_trade_plan = bool(show_trade_plan)
@@ -7552,7 +7679,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if calendar_text:
         compact_reasons.append(calendar_text.replace("Календар: ", "календар "))
 
-    top_decision = decision
+    top_decision = final_decision.get("decision_text") or decision
     if market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("НЕ ВХОДИТИ"):
         top_decision = top_decision.replace("НЕ ВХОДИТИ — ", "")
     elif market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("Зараз не входити — "):
@@ -7562,18 +7689,24 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
         top_decision = top_decision.replace("Чекати ", "")
 
+    status_text = final_decision.get("entry_status_text") or market_mode.get("status")
+    market_text = final_decision.get("market_text") or market_bias_text
+    quality_text = final_decision.get("quality_text") or entry_quality_scale(trade_probability, late_entry, signal_type)
+    plan_text = final_decision.get("plan_text") or proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)
+    reasons = final_decision.get("reasons") or compact_reasons[:3]
+
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>{market_mode['status']}</b> — {top_decision}",
+        f"<b>{status_text}</b> — {top_decision}",
         "",
-        f"<b>Ринок:</b> {market_bias_text}",
-        f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
+        f"<b>Ринок:</b> {market_text}",
+        f"<b>Якість входу:</b> {quality_text}",
         f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)}",
-        f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
+        f"<b>План:</b> {plan_text}",
+        f"<b>Причини:</b> " + " | ".join(reasons),
     ]
 
-    chart_line = chart_context_message(chart_context)
+    chart_line = final_decision.get("chart_text") or chart_context_message(chart_context)
     if chart_line:
         lines.insert(6, f"<b>Графік:</b> {chart_line}")
 
@@ -8460,6 +8593,7 @@ def main():
     event_block = message_state["event_block"]
     market_mode = message_state["market_mode"]
     decision_text = message_state["decision"]
+    final_decision = message_state["final_decision"]
 
     current_quality_for_lock = trade_probability
     locked_plan = reuse_locked_trade_plan(signal_memory, signal, tv["price"])
@@ -8502,7 +8636,8 @@ def main():
         show_trade_plan=show_trade_plan,
         entry_watch=entry_watch,
         event_block=event_block,
-        market_mode=market_mode
+        market_mode=market_mode,
+        final_decision=final_decision
     )
 
     show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
@@ -8513,8 +8648,8 @@ def main():
     if show_memory_in_telegram and previous_signal_note and previous_signal_note not in message:
         message = message.strip() + "\n\n" + previous_signal_note
 
-    current_quality_percent = trade_probability
-    journal_market_direction = infer_market_direction(
+    current_quality_percent = final_decision.get("quality_percent")
+    journal_market_direction = final_decision.get("market_side") or infer_market_direction(
         signal,
         signal_type,
         tech=tech,
@@ -8538,6 +8673,11 @@ def main():
         cooling=cooling,
         market_direction=journal_market_direction,
     )
+    current_journal_entry["entry_status"] = final_decision.get("entry_status")
+    current_journal_entry["entry_timing"] = final_decision.get("entry_timing")
+    current_journal_entry["decision_stage"] = final_decision.get("stage")
+    current_journal_entry["entry_side"] = final_decision.get("entry_side")
+    current_journal_entry["decision_text"] = final_decision.get("decision_text")
     pattern_note = pattern_stats_text(signal_journal, current_journal_entry.get("tags"), journal_market_direction)
     signal_journal = append_signal_journal(signal_journal, current_journal_entry)
     save_signal_journal(signal_journal)
