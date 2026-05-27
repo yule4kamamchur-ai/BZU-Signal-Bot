@@ -3746,7 +3746,9 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             or vol_bias == "SHORT"
             or поглинання == "BEARISH ABSORPTION"
         )
-        news_support = news_score >= 45 or event_side == "LONG"
+        news_support = news_score >= 35 or event_side == "LONG"
+        news_against = news_score <= -30 or event_side == "SHORT"
+        news_ok = not news_against
         tech_support = tech_score >= 35 or (trend_5m == "UP" and trend_15m == "UP") or order_score >= 15
         structure_confirmed = (
             bos == "пробій структури LONG"
@@ -3759,11 +3761,11 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
         if strong_against:
             return min(trade_probability, 54)
 
-        if news_support and structure_confirmed and tech_score >= 0:
+        if news_ok and structure_confirmed and tech_score >= 0:
             trade_probability = max(trade_probability, 66)  # 4/5 working trade
-        if news_support and structure_confirmed and tech_support:
+        if news_ok and structure_confirmed and tech_support:
             trade_probability = max(trade_probability, 72)  # strong 4/5
-        if news_support and structure_confirmed and tech_support and trend_1h == "UP":
+        if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP":
             trade_probability = max(trade_probability, 76)  # 5/5 confirmed
 
     elif signal == "SHORT":
@@ -3774,7 +3776,9 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             or vol_bias == "LONG"
             or поглинання == "BULLISH ABSORPTION"
         )
-        news_support = news_score <= -45 or event_side == "SHORT"
+        news_support = news_score <= -35 or event_side == "SHORT"
+        news_against = news_score >= 30 or event_side == "LONG"
+        news_ok = not news_against
         tech_support = tech_score <= -35 or (trend_5m == "DOWN" and trend_15m == "DOWN") or order_score <= -15
         structure_confirmed = (
             bos == "пробій структури SHORT"
@@ -3787,11 +3791,11 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
         if strong_against:
             return min(trade_probability, 54)
 
-        if news_support and structure_confirmed and tech_score <= 0:
+        if news_ok and structure_confirmed and tech_score <= 0:
             trade_probability = max(trade_probability, 66)
-        if news_support and structure_confirmed and tech_support:
+        if news_ok and structure_confirmed and tech_support:
             trade_probability = max(trade_probability, 72)
-        if news_support and structure_confirmed and tech_support and trend_1h == "DOWN":
+        if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN":
             trade_probability = max(trade_probability, 76)
 
     return min(trade_probability, 82)
@@ -3814,6 +3818,8 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
     micro_score = micro.get("score", 0) or 0
     tech_score = tech.get("score", 0) or 0
     change = tech.get("change", 0) or 0
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    trend_1h = tech.get("trend_1h", "UNKNOWN")
     book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
     trades_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
     liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
@@ -3825,6 +3831,9 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
         is_long = side == "LONG"
         score = 0
         reasons = []
+        news_against = (news_score <= -30 or event_side == "SHORT") if is_long else (news_score >= 30 or event_side == "LONG")
+        news_support = (news_score >= 35 or event_side == "LONG") if is_long else (news_score <= -35 or event_side == "SHORT")
+        news_ok = not news_against
         if is_long:
             if change <= -1.2:
                 score += 10
@@ -3843,8 +3852,9 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
             if smc_bias == "LONG":
                 score += 8
                 reasons.append("структура лонг")
-            if news_score >= 20 or event_side == "LONG":
+            if news_support:
                 score += 4
+                reasons.append("новини не проти лонгу")
             if tech_score <= -90 and smc_bias != "LONG":
                 score -= 8
         else:
@@ -3865,8 +3875,9 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
             if smc_bias == "SHORT":
                 score += 8
                 reasons.append("структура шорт")
-            if news_score <= -20 or event_side == "SHORT":
+            if news_support:
                 score += 4
+                reasons.append("новини не проти шорту")
             if tech_score >= 90 and smc_bias != "SHORT":
                 score -= 8
 
@@ -3879,22 +3890,60 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
             and trades_bias == side
         )
 
+        htf_same = (
+            (is_long and trend_15m == "UP" and trend_1h == "UP") or
+            ((not is_long) and trend_15m == "DOWN" and trend_1h == "DOWN")
+        )
+        htf_one_same = (
+            (is_long and (trend_15m == "UP" or trend_1h == "UP")) or
+            ((not is_long) and (trend_15m == "DOWN" or trend_1h == "DOWN"))
+        )
+        htf_opposite = (
+            (is_long and trend_15m == "DOWN" and trend_1h == "DOWN") or
+            ((not is_long) and trend_15m == "UP" and trend_1h == "UP")
+        )
+
         probability = 52
         if triple_flow:
             probability = 58
         elif score >= 38:
             probability = 58
+        if triple_flow and htf_same:
+            probability = 66
+        elif triple_flow and htf_one_same and not htf_opposite:
+            probability = 62
         if score >= 50 and smc_bias == side:
             probability = 64
+        if triple_flow and smc_bias == side and not htf_opposite:
+            probability = max(probability, 66)
+        elif triple_flow and smc_bias == side and htf_opposite:
+            probability = max(probability, 62)
+        if triple_flow and htf_same and smc_bias == side:
+            probability = 72
+        if triple_flow and htf_same and smc_bias == side and news_ok:
+            probability = 76
+        if news_against and probability >= 66:
+            probability = 64
 
-        text = "можливий LONG-відскок" if is_long else "можливий SHORT-відкат"
+        if probability >= 66:
+            text = "ранній LONG" if is_long else "ранній SHORT"
+            signal_type = f"РАННІЙ {side} / ВХІД ЗАРАЗ"
+            decision = f"РАННІЙ {side} — можна входити зараз"
+        elif htf_opposite:
+            text = "можливий LONG-відскок" if is_long else "можливий SHORT-відкат"
+            signal_type = f"{text.upper()} / ЧЕКАТИ"
+            decision = f"ЧЕКАТИ — {text}"
+        else:
+            text = "можливий LONG" if is_long else "можливий SHORT"
+            signal_type = f"МОЖЛИВИЙ {side} / РАННІЙ СЕТАП"
+            decision = f"ЧЕКАТИ — {text}"
         return {
             "active": True,
             "side": side,
             "probability": probability,
             "confidence": min(80, max(55, probability + 10)),
-            "signal_type": f"{text.upper()} / ЧЕКАТИ",
-            "decision": f"ЧЕКАТИ — {text}",
+            "signal_type": signal_type,
+            "decision": decision,
             "reason": ", ".join(reasons[:3]),
         }
 
@@ -6460,12 +6509,23 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
             decision = late_entry.get("label") or decision
 
     counterflow_watch = counterflow_scalp_watch(raw_tech, orderflow, news, event_risk, smc)
-    if signal not in ["LONG", "SHORT"] and counterflow_watch.get("active"):
+    should_use_fast_flow = (
+        counterflow_watch.get("active")
+        and (
+            signal not in ["LONG", "SHORT"]
+            or (
+                counterflow_watch.get("side") != signal
+                and (trade_probability is None or trade_probability < 65)
+            )
+        )
+    )
+    if should_use_fast_flow:
         signal = counterflow_watch["side"]
         signal_type = counterflow_watch["signal_type"]
         confidence = max(confidence, counterflow_watch.get("confidence", confidence))
         trade_probability = counterflow_watch.get("probability", trade_probability)
         decision = counterflow_watch.get("decision", decision)
+        local_warning = ""
         plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk)
         plan = adjust_plan_for_rr(plan, signal)
         plan = apply_expansion_targets(plan, signal, raw_tech, market)
@@ -6490,7 +6550,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
     trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
     if counterflow_watch.get("active") and counterflow_watch.get("side") == signal:
-        trade_probability = max(trade_probability or 0, min(counterflow_watch.get("probability", 0), 64))
+        trade_probability = max(trade_probability or 0, counterflow_watch.get("probability", 0))
     event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
     if event_block.get("blocked"):
         trade_probability = min(trade_probability or 0, 54)
