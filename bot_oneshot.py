@@ -1888,13 +1888,10 @@ def merge_market_microstructure(orderflow, order_book, liquidity_proxy):
     orderflow["liquidity_proxy"] = liquidity_proxy
     return orderflow
 
-def side_vs_signal_text(component_side, signal):
-    if signal not in ["LONG", "SHORT"] or component_side not in ["LONG", "SHORT"]:
+def component_direction_text(component_side):
+    if component_side not in ["LONG", "SHORT"]:
         return ""
-    target = "лонгу" if signal == "LONG" else "шорту"
-    if component_side == signal:
-        return f"за {target}"
-    return f"проти {target}"
+    return "за лонг" if component_side == "LONG" else "за шорт"
 
 def microstructure_text(orderflow, signal=None):
     orderflow = orderflow or {}
@@ -1905,9 +1902,9 @@ def microstructure_text(orderflow, signal=None):
     lines = []
     if book.get("available"):
         text = book.get("note", "без явної переваги")
-        relation = side_vs_signal_text(book.get("bias"), signal)
+        relation = component_direction_text(book.get("bias"))
         if relation:
-            text = f"{relation}, {text}"
+            text = f"{relation} — {text}"
         if book.get("wall"):
             text += f"; {book.get('wall')}"
         lines.append("Стакан: " + text)
@@ -1919,17 +1916,17 @@ def microstructure_text(orderflow, signal=None):
             note = "покупці активні"
         else:
             note = "без явної переваги"
-        relation = side_vs_signal_text(trade_flow.get("bias"), signal)
+        relation = component_direction_text(trade_flow.get("bias"))
         if relation:
-            note = f"{relation}, {note}"
+            note = f"{relation} — {note}"
         lines.append("Угоди: " + note)
     if liquidity.get("available"):
         note = liquidity.get("note", "без явного вибивання")
         if note.lower().startswith("ліквідність:"):
             note = note.split(":", 1)[1].strip()
-        relation = side_vs_signal_text(liquidity.get("bias"), signal)
+        relation = component_direction_text(liquidity.get("bias"))
         if relation:
-            note = f"{relation}, {note}"
+            note = f"{relation} — {note}"
         lines.append("Ліквідність: " + note)
 
     return "\n".join(f"<b>{line}</b>" for line in lines[:3])
