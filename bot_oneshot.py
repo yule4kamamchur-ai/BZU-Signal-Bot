@@ -216,7 +216,7 @@ def safe_post(url, payload, timeout=15):
 # SIGNAL MEMORY
 # ==========================================================
 
-SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", "last_signal.json")
+SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
 SIGNAL_MEMORY_LIMIT = 4
 
 
@@ -251,10 +251,27 @@ def load_signal_memory():
 
 
 def save_signal_memory(data):
-    """Save signal memory to local JSON file."""
+    """Save signal memory to local JSON file.
+
+    Uses atomic replace + .bak copy so the memory file is less likely to be
+    corrupted if GitHub Actions stops the job during write.
+    """
     try:
-        with open(SIGNAL_MEMORY_FILE, "w", encoding="utf-8") as file:
+        memory_dir = os.path.dirname(os.path.abspath(SIGNAL_MEMORY_FILE)) or "."
+        os.makedirs(memory_dir, exist_ok=True)
+
+        tmp_file = SIGNAL_MEMORY_FILE + ".tmp"
+        bak_file = SIGNAL_MEMORY_FILE + ".bak"
+
+        with open(tmp_file, "w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False, indent=2)
+
+        os.replace(tmp_file, SIGNAL_MEMORY_FILE)
+
+        with open(bak_file, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+
+        print(f"MEMORY SAVED: {SIGNAL_MEMORY_FILE}")
     except Exception as error:
         print(f"[WARN] signal memory save error: {error}")
 
@@ -435,6 +452,23 @@ def build_current_signal_memory(signal, signal_type, price, confidence, quality_
 
 
 
+def memory_status_note(memory, current_price):
+    """Always return a Telegram-visible memory line.
+
+    Before this function, memory was silent when history was empty, so the user
+    could not see whether memory worked or whether it simply had no data.
+    """
+    history = get_signal_history(memory)
+    if not history:
+        return "<b>Памʼять 1г:</b> ще немає попередніх сигналів для оцінки"
+
+    note = evaluate_previous_signal(memory, current_price)
+    if note:
+        return note
+
+    return "<b>Памʼять 1г:</b> історія є, але немає LONG/SHORT сигналів для оцінки"
+
+
 
 def position_follow_note(memory, current_price, tech=None):
     """Position follow-up based on last actionable signal in 4-signal memory.
@@ -446,7 +480,7 @@ def position_follow_note(memory, current_price, tech=None):
     history = get_signal_history(memory)
 
     if not history:
-        return ""
+        return "<b>Супровід:</b> активної позиції в памʼяті ще немає"
 
     # Find the last real LONG/SHORT signal with an entry price.
     last_trade = None
@@ -456,7 +490,7 @@ def position_follow_note(memory, current_price, tech=None):
             break
 
     if not last_trade:
-        return ""
+        return "<b>Супровід:</b> активної LONG/SHORT позиції в памʼяті немає"
 
     side = last_trade.get("signal")
     entry = float(last_trade.get("entry") or last_trade.get("price"))
@@ -4275,35 +4309,24 @@ def hard_no_long_when_chart_short(signal, signal_type, confidence, score, tech, 
     }
 
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
-    """Final Telegram message.
+def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, micro=None, trade_probability=None):
+    """Final guard before Telegram.
 
-    IMPORTANT:
-    This function is the final gate. It prevents fake LONG/SHORT text after all other logic.
-    If chart is SHORT and price is falling, Telegram will not say "Чекаємо LONG".
+    Prevents:
+    - waiting for LONG while chart is already SHORT
+    - waiting for SHORT while chart is already LONG
     """
-
     tech = tech or {}
     smc = smc or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro = micro or {}
 
-    tech_score = technical_bias.get("score", tech.get("score", 0)) if isinstance(technical_bias, dict) else tech.get("score", 0)
-    news_score = fundamental_bias.get("score", news.get("score", 0)) if isinstance(fundamental_bias, dict) else news.get("score", 0)
-    change = tech.get("change", tv.get("change", 0)) or 0
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
     smc_bias = smc.get("bias", "NEUTRAL")
     micro_bias = micro.get("bias", "NEUTRAL")
     micro_state = micro.get("state", "RANGE")
 
-    # First calculate normal probability.
-    trade_probability = estimate_trade_probability(
-        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
-        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
-    )
-
-    # 3m can improve or weaken quality.
-    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(
-        signal, confidence, trade_probability, tech or {}
-    )
+    low_quality = trade_probability is None or trade_probability < 55
 
     chart_short = (
         tech_score <= -35
@@ -4321,131 +4344,168 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         or change >= 0.45
     )
 
-    blocked_by_chart = False
-
-    # HARD RULE 1: no LONG waiting if chart is short/falling and quality is weak.
-    if signal == "LONG" and chart_short and (trade_probability is None or trade_probability < 65):
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "LONG BLOCKED BY CHART SHORT"
-        confidence = min(confidence, 50)
-        trade_probability = 0
-        blocked_by_chart = True
-        decision = "НЕ ВХОДИТИ — графік SHORT, LONG не підтверджений"
-
-    # HARD RULE 2: no SHORT waiting if chart is long/rising and quality is weak.
-    elif signal == "SHORT" and chart_long and (trade_probability is None or trade_probability < 65):
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHORT BLOCKED BY CHART LONG"
-        confidence = min(confidence, 50)
-        trade_probability = 0
-        blocked_by_chart = True
-        decision = "НЕ ВХОДИТИ — графік LONG, SHORT не підтверджений"
-
-    # HARD RULE 3: if chart strongly opposes news, switch to graph direction as WATCH, not fake news direction.
-    elif signal == "LONG" and (tech_score <= -70 or smc_bias == "SHORT" or micro_bias == "SHORT"):
-        signal = "SHORT"
-        signal_type = "PRICE ACTION SHORT / NEWS CONFLICT"
-        confidence = max(55, min(72, abs(int(tech_score))))
-        trade_probability = min(trade_probability or 0, 58)
-        decision = "ГОТУЄМОСЬ ДО SHORT — графік сильніший за новини"
-
-    elif signal == "SHORT" and (tech_score >= 70 or smc_bias == "LONG" or micro_bias == "LONG"):
-        signal = "LONG"
-        signal_type = "PRICE ACTION LONG / NEWS CONFLICT"
-        confidence = max(55, min(72, abs(int(tech_score))))
-        trade_probability = min(trade_probability or 0, 58)
-        decision = "ГОТУЄМОСЬ ДО LONG — графік сильніший за новини"
-
-    else:
-        decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
-
-        # If there is no entry quality, never show TRADE.
-        if trade_probability is not None and trade_probability < 65 and str(decision).startswith("TRADE"):
-            if signal == "LONG":
-                decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
-            elif signal == "SHORT":
-                decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
-            else:
-                decision = "НЕ ВХОДИТИ — чекати"
-
-        if late_entry and late_entry.get("late") and trade_probability is not None and trade_probability < 65:
-            if signal == "LONG":
-                decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
-            elif signal == "SHORT":
-                decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
-
-        if cooling and cooling.get("active") and trade_probability is not None and trade_probability < 65:
-            if signal == "LONG":
-                decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
-            elif signal == "SHORT":
-                decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
-
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
-    early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
-    entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
-
-    # Driver also must respect hard chart block.
-    driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-    if blocked_by_chart:
-        driver = {
-            "type": "TECH / SHORT" if chart_short else "TECH / LONG",
-            "side": "SHORT" if chart_short else "LONG",
-            "summary": "Графік проти новинного сценарію",
-            "time": "зараз",
-            "expectation": "Чекати нову умову; не входити проти графіка",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
+    if signal == "LONG" and chart_short and low_quality:
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "LONG BLOCKED / CHART SHORT",
+            "confidence": min(confidence, 50),
+            "reason": "графік SHORT, LONG не підтверджений",
         }
-    elif "PRICE ACTION SHORT" in signal_type:
-        driver = {
-            "type": "TECH / SHORT",
-            "side": "SHORT",
-            "summary": "Графік сильніший за LONG-новини",
-            "time": "зараз",
-            "expectation": "SHORT-сценарій активний; LONG тільки після стабілізації",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
+
+    if signal == "SHORT" and chart_long and low_quality:
+        return {
+            "signal": "НЕЙТРАЛЬНО",
+            "signal_type": "SHORT BLOCKED / CHART LONG",
+            "confidence": min(confidence, 50),
+            "reason": "графік LONG, SHORT не підтверджений",
         }
-    elif "PRICE ACTION LONG" in signal_type:
-        driver = {
-            "type": "TECH / LONG",
-            "side": "LONG",
-            "summary": "Графік сильніший за SHORT-новини",
-            "time": "зараз",
-            "expectation": "LONG-сценарій активний; SHORT тільки після слабкості",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
+
+    # If chart is strongly opposite, allow direction switch only as prepare/watch, not blind trade.
+    if signal == "LONG" and (tech_score <= -60 or smc_bias == "SHORT" or micro_bias == "SHORT"):
+        return {
+            "signal": "SHORT",
+            "signal_type": "PRICE ACTION SHORT / NEWS CONFLICT",
+            "confidence": max(55, min(72, abs(tech_score))),
+            "reason": "графік сильніший за LONG-новини",
         }
+
+    if signal == "SHORT" and (tech_score >= 60 or smc_bias == "LONG" or micro_bias == "LONG"):
+        return {
+            "signal": "LONG",
+            "signal_type": "PRICE ACTION LONG / NEWS CONFLICT",
+            "confidence": max(55, min(72, abs(tech_score))),
+            "reason": "графік сильніший за SHORT-новини",
+        }
+
+    return {
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "reason": "",
+    }
+
+
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
+    local_warning = ""
+    decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
+    if late_entry and late_entry.get("late"):
+        decision = late_entry.get("label") or decision
 
     tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
     fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
+    priority_label = compact_priority_label(priority, reversal)
+    driver = select_main_driver(technical_bias, news, event_risk, macro, orderflow, market, session, priority)
+    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, tech)
+    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech or {})
+    final_guard = final_signal_sanity_guard(
+        signal, signal_type, confidence, tech or {}, smc or {}, (tech or {}).get("micro_3m") or {}, trade_probability
+    )
+    if final_guard.get("reason"):
+        signal = final_guard["signal"]
+        signal_type = final_guard["signal_type"]
+        confidence = final_guard["confidence"]
 
-    # Direction label:
-    # Do not take direction from news if chart blocked the setup.
-    if blocked_by_chart:
-        market_bias = "НЕЙТРАЛЬНО"
-    elif signal in ["LONG", "SHORT"]:
+    if local_warning:
+        if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
+            decision = "TRADE LONG — 3m підтверджує вхід"
+        elif "підтверджує SHORT" in local_warning and trade_probability is not None and trade_probability >= 65:
+            decision = "TRADE SHORT — 3m підтверджує вхід"
+        elif signal == "LONG":
+            decision = "LONG слабшає — чекати відкат"
+        elif signal == "SHORT":
+            decision = "SHORT слабшає — чекати відскок"
+    exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
+    early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+
+    if show_trade_plan and signal in ["LONG", "SHORT"] and not str(decision).startswith("TRADE"):
+        decision = f"TRADE {signal} — підтверджений вхід"
+    entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
+    trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
+    trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+
+    if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
+        if signal == "SHORT":
+            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
+        elif signal == "LONG":
+            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
+
+    if early_reversal.get("active") and early_reversal.get("side") == signal and trade_probability is not None and trade_probability < 65:
+        if signal == "LONG":
+            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
+        elif signal == "SHORT":
+            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
+
+    # Never show TRADE if the setup is not confirmed.
+    if trade_probability is not None and trade_probability < 65 and str(decision).startswith("TRADE"):
+        if signal == "LONG":
+            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
+        elif signal == "SHORT":
+            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
+        else:
+            decision = "НЕ ВХОДИТИ — чекати тригер"
+
+    if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
+        if signal == "LONG":
+            decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
+        elif signal == "SHORT":
+            decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
+    if cooling and cooling.get("active"):
+        if signal == "LONG":
+            decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
+        elif signal == "SHORT":
+            decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
+
+    # Telegram-level hard safety:
+    # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
+    if "різкий дамп" in decision.lower():
+        final_summary = (
+            "Різкий дамп: технічний продаж зараз домінує. "
+            "LONG по новинах можливий тільки після стабілізації, відскоку і ретесту. "
+            "Не ловити падаючий ринок."
+        )
+    elif "різкий памп" in decision.lower() or "різкий ріст" in decision.lower():
+        final_summary = (
+            "Різкий ріст: покупці зараз домінують. "
+            "SHORT можливий тільки після стабілізації, відкату і ретесту. "
+            "Не шортити сильний імпульс без підтвердження."
+        )
+
+    # Direction label for the user.
+    # It must show the real market direction (LONG/SHORT), not the internal signal value.
+    # Example: signal can be "НЕЙТРАЛЬНО", while decision is "Чекаємо підтвердження LONG".
+    decision_upper = str(decision).upper()
+    driver_text = f"{driver.get('type', '')} {driver.get('expectation', '')} {driver.get('summary', '')}".upper()
+
+    if signal in ["LONG", "SHORT"]:
         market_bias = signal
-    elif chart_short and tech_score <= -55:
-        market_bias = "SHORT"
-    elif chart_long and tech_score >= 55:
+    elif "LONG" in decision_upper:
         market_bias = "LONG"
+    elif "SHORT" in decision_upper:
+        market_bias = "SHORT"
+    elif "LONG" in driver_text and "SHORT" not in driver_text:
+        market_bias = "LONG"
+    elif "SHORT" in driver_text and "LONG" not in driver_text:
+        market_bias = "SHORT"
+    elif fundamental_bias.get("side") in ["LONG", "SHORT"] and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
+        market_bias = fundamental_bias.get("side")
+    elif technical_bias.get("side") in ["LONG", "SHORT"]:
+        market_bias = technical_bias.get("side")
     else:
         market_bias = "НЕЙТРАЛЬНО"
 
-    market_bias_text = f"{market_bias} ({confidence}%)" if market_bias in ["LONG", "SHORT"] else "НЕЙТРАЛЬНО"
-
-    # Plan:
-    if blocked_by_chart:
-        plan_text = "WAIT — графік проти напрямку; якісного входу немає"
+    if market_bias in ["LONG", "SHORT"]:
+        market_bias_text = f"{market_bias} ({confidence}%)"
     else:
-        plan_text = proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)
+        market_bias_text = "НЕЙТРАЛЬНО"
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
         f"<b>Рішення:</b> {decision}",
         f"<b>Напрямок ринку:</b> {market_bias_text}",
+        # Якість входу = наскільки хороший поточний сетап для входу
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry)}",
         "",
         f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
@@ -4453,24 +4513,38 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
         "",
         "<b>Драйвер:</b>",
-        f"{driver.get('type', '')}",
-        f"{driver.get('summary', '')}",
-        f"<b>Час:</b> {driver.get('time', 'зараз')}",
-        f"<b>Очікування:</b> {driver.get('expectation', '')}",
+        f"{driver['type']}",
+        f"{driver['summary']}",
+        f"<b>Час:</b> {driver['time']}",
+        f"<b>Очікування:</b> {driver['expectation']}",
         f"<b>Джерело:</b> {format_driver_source(driver)}",
         "",
-        f"<b>План:</b> {plan_text}",
+        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
-        f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",
-    ]
+        f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
 
-    smc_note = smc_conflict_note(smc) or smc_short_text(smc)
+    smc_note = smc_conflict_note(smc)
     if smc_note:
         lines.append(f"<b>{smc_note}</b>")
 
-    return "\n".join(lines).strip()
+    no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
 
+    risk_text = reversal_risk_note(signal, reversal)
+    rev_text = compact_reversal_label(reversal)
+
+    if risk_text:
+        lines.append(f"<b>{risk_text}</b>")
+    elif "різкий дамп" in decision.lower() and rev_text != "немає":
+        lines.append("<b>Ризик:</b> можливий LONG-відскок пізніше")
+    elif "різкий памп" in decision.lower() and rev_text != "немає":
+        lines.append("<b>Ризик:</b> можливий SHORT-відкат пізніше")
+    elif rev_text != "немає":
+        lines.append(f"<b>Reversal:</b> {rev_text}")
+
+
+
+    return "\n".join(lines).strip()
 
 def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
     if signal == "НЕЙТРАЛЬНО":
@@ -4572,10 +4646,18 @@ def send_telegram(message):
 def analyze_micro_structure(candles):
     """3m local movement state.
 
-    Uses the latest 12 candles more heavily so clear intraday selling is not shown as боковик.
+    This version is stricter:
+    if the last 3m candles are stair-stepping down, it must show SHORT,
+    not 'боковик'.
     """
     if not candles or len(candles) < 30:
-        return {"available": False, "bias": "NEUTRAL", "state": "NO DATA", "score": 0, "note": "3m data unavailable"}
+        return {
+            "available": False,
+            "bias": "NEUTRAL",
+            "state": "NO DATA",
+            "score": 0,
+            "note": "3m data unavailable",
+        }
 
     recent = candles[-24:]
     fast = candles[-12:]
@@ -4601,8 +4683,6 @@ def analyze_micro_structure(candles):
     fast_start = fast_closes[0]
     fast_end = fast_closes[-1]
     fast_move_pct = ((fast_end - fast_start) / fast_start) * 100 if fast_start else 0
-    total_move_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else 0
-    drift_pct = ((last6 - first6) / first6) * 100 if first6 else 0
 
     avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
     last_vol = last.get("volume", 0) or 0
@@ -4613,6 +4693,7 @@ def analyze_micro_structure(candles):
     body_ratio = abs(body) / candle_range
     close_location = (last["close"] - last["low"]) / candle_range
 
+    # Structure counters
     lower_high_count = 0
     lower_low_count = 0
     higher_high_count = 0
@@ -4637,12 +4718,16 @@ def analyze_micro_structure(candles):
     red_count = sum(1 for c in last8 if c["close"] < c["open"])
     green_count = sum(1 for c in last8 if c["close"] > c["open"])
 
+    total_move_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else 0
+    drift_pct = ((last6 - first6) / first6) * 100 if first6 else 0
+
     short_momentum = last4 < prev4
     long_momentum = last4 > prev4
 
     score = 0
     notes = []
 
+    # Local breakout/breakdown
     if last["close"] > recent_high:
         score += 24
         notes.append("пробій локального high")
@@ -4650,58 +4735,58 @@ def analyze_micro_structure(candles):
         score -= 24
         notes.append("пробій локального low")
 
-    # Latest 12 candles are the main local timing.
-    if fast_move_pct <= -0.25:
+    # Immediate 12-candle direction — this is the main fix
+    if fast_move_pct <= -0.35:
         score -= 28
         notes.append("3m швидко йде вниз")
-    elif fast_move_pct >= 0.25:
+    elif fast_move_pct >= 0.35:
         score += 28
         notes.append("3m швидко йде вгору")
 
-    if lower_high_count >= 4:
-        score -= 20
-        notes.append("3m lower highs")
-    if lower_low_count >= 3:
+    # Stair-step structure
+    if lower_high_count >= 5 or lower_close_count >= 7:
+        score -= 24
+        notes.append("3m lower highs / lower closes")
+    if lower_low_count >= 4:
         score -= 14
-        notes.append("3m lower lows")
-    if lower_close_count >= 6:
-        score -= 18
-        notes.append("3m lower closes")
+        notes.append("3m оновлює lows")
 
-    if higher_high_count >= 4:
-        score += 20
-        notes.append("3m higher highs")
-    if higher_low_count >= 3:
+    if higher_high_count >= 5 or higher_close_count >= 7:
+        score += 24
+        notes.append("3m higher highs / higher closes")
+    if higher_low_count >= 4:
         score += 14
-        notes.append("3m higher lows")
-    if higher_close_count >= 6:
-        score += 18
-        notes.append("3m higher closes")
+        notes.append("3m утримує higher lows")
 
+    # Candle balance
     if red_count >= 5:
         score -= 12
-        notes.append("більшість 3m свічок червоні")
+        notes.append("більшість останніх 3m свічок червоні")
     elif green_count >= 5:
         score += 12
-        notes.append("більшість 3m свічок зелені")
+        notes.append("більшість останніх 3m свічок зелені")
 
-    if short_momentum:
-        score -= 8
-    elif long_momentum:
+    # Short-term momentum
+    if long_momentum:
         score += 8
+    elif short_momentum:
+        score -= 8
 
-    if drift_pct <= -0.18:
+    # Drift
+    if drift_pct <= -0.22:
         score -= 12
         notes.append("3m ціна сповзає вниз")
-    elif drift_pct >= 0.18:
+    elif drift_pct >= 0.22:
         score += 12
         notes.append("3m ціна підтискається вгору")
 
+    # Last candle
     if body > 0 and body_ratio >= 0.50 and close_location >= 0.58:
         score += 6
     elif body < 0 and body_ratio >= 0.50 and close_location <= 0.42:
         score -= 6
 
+    # Volume
     if vol_ratio >= 1.5:
         if body > 0:
             score += 8
@@ -4710,6 +4795,7 @@ def analyze_micro_structure(candles):
             score -= 8
             notes.append("обсяг за продавців")
 
+    # Very strict directional classification
     if score >= 18:
         bias = "LONG"
         state = "LONG_STRENGTHENING"
@@ -4719,6 +4805,7 @@ def analyze_micro_structure(candles):
     else:
         bias = "NEUTRAL"
         state = "RANGE"
+
         if total_move_pct >= 0.30 and short_momentum:
             state = "LONG_COOLING"
             notes.append("LONG охолоджується після імпульсу")
@@ -4875,10 +4962,6 @@ def local_3m_status_text(micro, signal=None):
     if state == "SHORT_COOLING":
         return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
 
-    if score <= -8:
-        return f"Локально 3m: продавці активні, але SHORT ще слабкий ({score})"
-    if score >= 8:
-        return f"Локально 3m: покупці активні, але LONG ще слабкий ({score})"
     return f"Локально 3m: боковик / немає чіткого входу ({score})"
 
 
@@ -4985,7 +5068,7 @@ def main():
         return
 
     signal_memory = load_signal_memory()
-    previous_signal_note = evaluate_previous_signal(signal_memory, tv["price"])
+    previous_signal_note = memory_status_note(signal_memory, tv["price"])
 
     fresh_news = get_all_fresh_news()
     event_items = get_event_news()
