@@ -3725,7 +3725,7 @@ def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_
         watch_plan = format_watch_plan(signal, plan, entry_watch)
         return watch_plan or entry_watch.get("text")
 
-    return "Чекати — немає якісного входу; чекати нову умову"
+    return "Входу немає — чекати нову умову або підтвердження структури"
 
 def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event_risk, smc, entry_watch):
     """ГОТУЄМОСЬ should not be shown as 0/5 when the setup has a real directional reason.
@@ -5203,6 +5203,27 @@ def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
 
     return rr1, rr2, rr3
 
+def enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3):
+    """Keep TP levels separated enough to avoid tiny, clustered targets.
+
+    Targets are still based on SMC/liquidity + RR, but each next TP must be at
+    least 0.45 ATR from the previous one. This prevents TP1/TP2 from being too
+    close during low-volatility or compressed liquidity conditions.
+    """
+    atr = atr or price * 0.006
+    min_gap = max(atr * 0.45, price * 0.0025)
+
+    if signal == "LONG":
+        tp1 = max(tp1, price + min_gap)
+        tp2 = max(tp2, tp1 + min_gap)
+        tp3 = max(tp3, tp2 + min_gap)
+    elif signal == "SHORT":
+        tp1 = min(tp1, price - min_gap)
+        tp2 = min(tp2, tp1 - min_gap)
+        tp3 = min(tp3, tp2 - min_gap)
+
+    return tp1, tp2, tp3
+
 def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None):
     """SMC + ATR + RR hybrid plan.
 
@@ -5255,6 +5276,8 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
             "note": "Не входити. Чекати підтвердження.",
             "method": "NO TRADE",
         }
+
+    tp1, tp2, tp3 = enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3)
 
     return {
         "entry": round(price, 4),
@@ -6118,10 +6141,10 @@ def entry_quality_scale(probability, late_entry=None, signal_type=""):
     if probability < 55:
         return f"2/5 — тільки спостерігати ({probability}%){suffix}"
     if probability < 65:
-        return f"3/5 — чекати підтвердження ({probability}%){suffix}"
+        return f"3/5 — ризикований вхід ({probability}%){suffix}"
     if probability < 75:
-        return f"4/5 — можна входити, тільки зі стопом ({probability}%){suffix}"
-    return f"5/5 — найкращий вхід ({probability}%){suffix}"
+        return f"4/5 — основний вхід ({probability}%){suffix}"
+    return f"5/5 — підтверджений вхід ({probability}%){suffix}"
 
 def simple_decision_text(signal, trade_probability, late_entry=None, cooling=None):
     if signal not in ["LONG", "SHORT"]:
@@ -6139,12 +6162,12 @@ def simple_decision_text(signal, trade_probability, late_entry=None, cooling=Non
     if trade_probability < 65:
         if cooling and cooling.get("active"):
             return f"{direction.capitalize()} можливий, але чекати відкат"
-        return f"Чекати {direction} — потрібне підтвердження"
+        return f"Ризикований {direction} — потрібне підтвердження"
 
     if trade_probability < 75:
-        return f"Можна пробувати {direction}, тільки зі стопом"
+        return f"Основний {direction} — тільки зі стопом"
 
-    return f"Сильний сигнал на {direction}, тільки зі стопом"
+    return f"Підтверджений {direction} — тільки зі стопом"
 
 def smc_conflict_note(smc):
     """Explain mixed SMC signals instead of showing contradictory пробій структури/volume silently."""
@@ -6481,12 +6504,24 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
     volatility = market.get("volatility", {}).get("regime", "NORMAL")
 
-    has_entry = signal in ["LONG", "SHORT"] and prob >= 65
-    has_watch = signal in ["LONG", "SHORT"] and 50 <= prob < 65
+    has_confirmed_entry = signal in ["LONG", "SHORT"] and prob >= 75
+    has_main_entry = signal in ["LONG", "SHORT"] and 65 <= prob < 75
+    has_risky_entry = signal in ["LONG", "SHORT"] and 55 <= prob < 65
+    has_entry = has_confirmed_entry or has_main_entry
+    has_watch = has_risky_entry
+
+    def entry_status():
+        if has_confirmed_entry:
+            return "ПІДТВЕРДЖЕНИЙ ВХІД"
+        if has_main_entry:
+            return "ОСНОВНИЙ ВХІД"
+        if has_risky_entry:
+            return "РИЗИКОВАНИЙ ВХІД"
+        return "ВХОДУ НЕМАЄ"
 
     if "СКАЛЬП" in signal_type:
         side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
-        status = "СКАЛЬП" if prob >= 55 else "ЧЕКАТИ"
+        status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
         return {
             "status": status,
             "mode": f"скальп {side_text}",
@@ -6497,7 +6532,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
 
     if calendar_active or event_high:
         if "СКАЛЬП" in signal_type:
-            status = "СКАЛЬП" if prob >= 55 else "ЧЕКАТИ"
+            status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
         elif has_entry:
             status = "ВХІД Є"
         elif has_watch:
@@ -6528,7 +6563,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
             (signal == "SHORT" and (trend == "DOWN" or tech_score <= -55 or micro_bias == "SHORT" or smc_bias == "SHORT"))
         )
         if aligned_trend:
-            status = "ВХІД Є" if has_entry else ("ЧЕКАТИ" if has_watch else "ВХОДУ НЕМАЄ")
+            status = entry_status()
             aggression = "агресивний " + direction if has_entry and not (late_entry and late_entry.get("late")) else "обережний " + direction
             if late_entry and late_entry.get("late"):
                 status = "ВХОДУ НЕМАЄ"
@@ -6559,7 +6594,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
         }
 
     return {
-        "status": "ЧЕКАТИ" if prob >= 50 else "ВХОДУ НЕМАЄ",
+        "status": entry_status() if signal in ["LONG", "SHORT"] else "ВХОДУ НЕМАЄ",
         "mode": "змішаний ринок",
         "strategy": "чекати, поки графік, 3m і структура зійдуться в один бік",
         "priority": "баланс: графік + новини + стакан",
@@ -6636,7 +6671,12 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     if show_trade_plan and signal in ["LONG", "SHORT"] and not str(decision).startswith("TRADE"):
-        decision = f"TRADE {signal} — підтверджений вхід"
+        if trade_probability is not None and trade_probability >= 75:
+            decision = f"TRADE {signal} — підтверджений вхід"
+        elif trade_probability is not None and trade_probability >= 65:
+            decision = f"TRADE {signal} — основний вхід"
+        elif trade_probability is not None and trade_probability >= 55:
+            decision = f"РИЗИКОВАНИЙ {signal} — тільки зі стопом"
     entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
     trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
     trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
@@ -6649,22 +6689,22 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
         if signal == "SHORT":
-            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
+            decision = "РИЗИКОВАНИЙ SHORT — потрібен тригер"
         elif signal == "LONG":
-            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
+            decision = "РИЗИКОВАНИЙ LONG — потрібен тригер"
 
     if early_reversal.get("active") and early_reversal.get("side") == signal and trade_probability is not None and trade_probability < 65:
         if signal == "LONG":
-            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
+            decision = "РИЗИКОВАНИЙ LONG — потрібен тригер"
         elif signal == "SHORT":
-            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
+            decision = "РИЗИКОВАНИЙ SHORT — потрібен тригер"
 
     # Never show TRADE if the setup is not confirmed.
     if trade_probability is not None and trade_probability < 65 and str(decision).startswith("TRADE"):
         if signal == "LONG":
-            decision = "ГОТУЄМОСЬ ДО LONG — чекати тригер"
+            decision = "РИЗИКОВАНИЙ LONG — потрібен тригер"
         elif signal == "SHORT":
-            decision = "ГОТУЄМОСЬ ДО SHORT — чекати тригер"
+            decision = "РИЗИКОВАНИЙ SHORT — потрібен тригер"
         else:
             decision = "НЕ ВХОДИТИ — чекати тригер"
 
@@ -6864,20 +6904,27 @@ def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro,
     return "C / ризиковий"
 
 def should_show_trade_plan(signal, trade_probability, late_entry=None):
-    """Show entry/SL/TP only for high-quality setups."""
+    """Show entry/SL/TP for 3/5+ setups.
+
+    3/5 = ризикований вхід, so the plan is allowed but must be treated as
+    aggressive/conditional. 4/5 and 5/5 are locked by memory after first signal.
+    """
     if signal not in ["LONG", "SHORT"]:
         return False
-    if late_entry and late_entry.get("late") and (trade_probability or 0) < 65:
+    if trade_probability is None:
         return False
-    return (trade_probability or 0) >= 65
+    if late_entry and late_entry.get("late") and (trade_probability or 0) < 55:
+        return False
+    return (trade_probability or 0) >= 55
 
 def format_trade_plan(plan):
     if isinstance(plan, str):
         return plan
     if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
         return "Входу немає — чекати підтвердження."
+    prefix = "🔒 Зафіксований план: " if plan.get("locked") else ""
     return (
-        f"Вхід: {plan.get('entry')} | "
+        f"{prefix}Вхід: {plan.get('entry')} | "
         f"Стоп: {plan.get('stop')} | "
         f"TP1: {plan.get('tp1')} | "
         f"TP2: {plan.get('tp2')} | "
@@ -7309,6 +7356,58 @@ def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech
 # MAIN
 # ==========================================================
 
+def trade_setup_level(probability):
+    try:
+        p = int(probability)
+    except Exception:
+        return 0
+    if p >= 75:
+        return 5
+    if p >= 65:
+        return 4
+    if p >= 55:
+        return 3
+    return 0
+
+def is_stop_or_tp3_broken(side, price, plan):
+    if not plan or not isinstance(plan, dict):
+        return True
+    stop = safe_float(plan.get("stop"))
+    tp3 = safe_float(plan.get("tp3"))
+    if side == "LONG":
+        return (stop is not None and price <= stop) or (tp3 is not None and price >= tp3)
+    if side == "SHORT":
+        return (stop is not None and price >= stop) or (tp3 is not None and price <= tp3)
+    return True
+
+def reuse_locked_trade_plan(memory, signal, current_price):
+    """Reuse the first 4/5 or 5/5 plan until stop/TP3/invalidation.
+
+    This prevents repainting TP/SL after an основний/підтверджений вхід was
+    already sent. 3/5 remains flexible because it is only a risky early entry.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return None
+    for item in reversed(get_signal_history(memory)):
+        if item.get("signal") != signal:
+            continue
+        if trade_setup_level(item.get("quality_percent")) < 4:
+            continue
+        plan = {
+            "entry": item.get("entry") or item.get("price"),
+            "stop": item.get("stop"),
+            "tp1": item.get("tp1"),
+            "tp2": item.get("tp2"),
+            "tp3": item.get("tp3"),
+            "method": "LOCKED FROM FIRST 4/5–5/5 SIGNAL",
+            "locked": True,
+            "note": "TP/SL зафіксовані з першого основного/підтвердженого сигналу",
+        }
+        if all(plan.get(k) is not None for k in ["entry", "stop", "tp1", "tp2", "tp3"]):
+            if not is_stop_or_tp3_broken(signal, current_price, plan):
+                return plan
+    return None
+
 def main():
     print("START BZU PROFESSIONAL FREE BOT UA REVERSAL-SESSION")
 
@@ -7534,6 +7633,15 @@ def main():
     summary = final_short_summary(
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
     )
+
+    current_quality_for_lock = estimate_trade_probability(
+        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
+        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
+    )
+    locked_plan = reuse_locked_trade_plan(signal_memory, signal, tv["price"])
+    if locked_plan and trade_setup_level(current_quality_for_lock) >= 4:
+        plan = locked_plan
+        print("LOCKED PLAN REUSED: TP/SL unchanged from first 4/5–5/5 signal")
 
     reversal_label = reversal_display_label(signal, reversal)
     message = compact_telegram_message(
