@@ -36,13 +36,13 @@ jobs:
           CRYPTOPANIC_KEY: ${{ secrets.CRYPTOPANIC_KEY }}
         run: python bot_oneshot.py
 
-      - name: Save signal memory
+      - name: Save signal memory and journal
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add last_signal.json
+          git add last_signal.json signal_journal.json
 
-          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update last signal memory"
+          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update signal memory and journal"
 
           git push
