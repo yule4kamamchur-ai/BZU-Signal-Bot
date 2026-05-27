@@ -7710,21 +7710,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if chart_line:
         lines.insert(6, f"<b>Графік:</b> {chart_line}")
 
-    if conflict_note:
-        lines.append(f"<b>Конфлікт:</b> {conflict_note}")
-
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
-
-    micro_text = microstructure_compact_text(orderflow)
-    smc_note = smc_compact_text(smc)
-    flow_parts = []
-    if micro_text:
-        flow_parts.append(micro_text)
-    if smc_note:
-        flow_parts.append(smc_note)
-    if flow_parts:
-        lines.append("<b>" + " | ".join(flow_parts[:2]) + "</b>")
 
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
 
