@@ -3275,6 +3275,94 @@ def reversal_scalp_signal(tv, tech, smc, orderflow, news=None, event_risk=None, 
         return long_setup if abs(long_setup["score"]) >= abs(short_setup["score"]) else short_setup
     return long_setup or short_setup or {"active": False, "side": "NONE", "reason": "скальп-відскок ще не підтверджений"}
 
+def scalp_preparation_signal(tv, tech, smc, orderflow, news=None, event_risk=None):
+    """Ukrainian pre-signal: scalp is forming, but entry is not confirmed yet."""
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    change = tech.get("change", 0) or 0
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+    micro_state = micro.get("state", "RANGE")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_score = micro.get("score", 0) or 0
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    sweep = smc.get("sweep", "NONE")
+    choch = smc.get("choch", "NONE")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("поглинання", "NONE")
+    news_score = news.get("score", 0) or 0
+    event_side = event_risk.get("direction", "MIXED")
+
+    if change <= -0.9:
+        score = 0
+        reasons = []
+        if (rsi5 is not None and rsi5 <= 34) or (rsi15 is not None and rsi15 <= 38):
+            score += 10
+            reasons.append("після сильного падіння є перепроданість")
+        if micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG" or micro_score >= 18:
+            score += 16
+            reasons.append("3m почав відкуповувати")
+        if book_bias == "LONG" or trade_bias == "LONG" or liquidity_bias == "LONG":
+            score += 12
+            reasons.append("покупці зʼявились у потоці")
+        if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
+            score += 14
+            reasons.append("є ознака зняття низу")
+        if vol_bias == "LONG" or absorption == "BULLISH ABSORPTION":
+            score += 12
+            reasons.append("обсяг за відкуп")
+        if news_score >= 25 or event_side == "LONG":
+            score += 6
+            reasons.append("новини підтримують відскок")
+        if score >= 22:
+            return {
+                "active": True,
+                "side": "LONG",
+                "status": "СКАЛЬП ГОТУЄТЬСЯ",
+                "text": "можливий LONG-відскок",
+                "reason": ", ".join(reasons[:2]),
+            }
+
+    if change >= 0.9:
+        score = 0
+        reasons = []
+        if (rsi5 is not None and rsi5 >= 66) or (rsi15 is not None and rsi15 >= 62):
+            score += 10
+            reasons.append("після сильного росту є перекупленість")
+        if micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"] or micro_bias == "SHORT" or micro_score <= -18:
+            score += 16
+            reasons.append("3m почав продавати")
+        if book_bias == "SHORT" or trade_bias == "SHORT" or liquidity_bias == "SHORT":
+            score += 12
+            reasons.append("продавці зʼявились у потоці")
+        if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
+            score += 14
+            reasons.append("є ознака зняття верху")
+        if vol_bias == "SHORT" or absorption == "BEARISH ABSORPTION":
+            score += 12
+            reasons.append("обсяг за продаж")
+        if news_score <= -25 or event_side == "SHORT":
+            score += 6
+            reasons.append("новини підтримують відкат")
+        if score >= 22:
+            return {
+                "active": True,
+                "side": "SHORT",
+                "status": "СКАЛЬП ГОТУЄТЬСЯ",
+                "text": "можливий SHORT-відкат",
+                "reason": ", ".join(reasons[:2]),
+            }
+
+    return {"active": False, "side": "NONE", "status": "", "text": "", "reason": ""}
+
 def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
     """Creates a forward-looking conditional entry plan.
 
@@ -5949,6 +6037,16 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     has_entry = signal in ["LONG", "SHORT"] and prob >= 65
     has_watch = signal in ["LONG", "SHORT"] and 50 <= prob < 65
 
+    scalp_prep = scalp_preparation_signal({}, tech, smc, orderflow, news, event_risk)
+    if scalp_prep.get("active") and "СКАЛЬП" not in signal_type and not has_entry:
+        return {
+            "status": "СКАЛЬП ГОТУЄТЬСЯ",
+            "mode": scalp_prep.get("text", "можливий відскок"),
+            "strategy": "це ще не вхід; чекати підтвердження 3m і потоку",
+            "priority": "3m + стакан/угоди + структура",
+            "aggression": "поки не входити",
+        }
+
     if "СКАЛЬП" in signal_type:
         side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
         status = "СКАЛЬП" if prob >= 55 else "ЧЕКАТИ"
@@ -6204,6 +6302,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         market_bias_text = "змішано"
 
     calendar_text = economic_calendar_text(event_risk)
+    scalp_prep = scalp_preparation_signal(tv, raw_tech, smc, orderflow, news, event_risk)
     compact_reasons = [
         f"графік {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
         f"новини {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",
@@ -6230,6 +6329,11 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
+
+    if scalp_prep.get("active") and "СКАЛЬП" not in str(signal_type):
+        detail = scalp_prep.get("reason")
+        text = scalp_prep.get("text")
+        lines.append(f"<b>{scalp_prep.get('status')}:</b> {text}" + (f" — {detail}" if detail else ""))
 
     if conflict_note:
         lines.append(f"<b>Конфлікт:</b> {conflict_note}")
