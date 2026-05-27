@@ -5530,6 +5530,77 @@ def news_event_trade_block(signal, trade_probability, event_risk, news, session=
     """News/calendar is a caution layer, not a hard entry ban."""
     return {"blocked": False, "reason": ""}
 
+def empty_trade_guards():
+    return {"blocks": [], "warnings": [], "reasons": []}
+
+def add_trade_guard(guards, block=None, warning=None, reason=None):
+    guards = guards or empty_trade_guards()
+    for key, value in [("blocks", block), ("warnings", warning), ("reasons", reason)]:
+        if not value:
+            continue
+        guards.setdefault(key, [])
+        if value not in guards[key]:
+            guards[key].append(value)
+    return guards
+
+def collect_entry_guards(signal, news=None, event_risk=None, smc=None, late_entry=None, chart_context=None, price_truth_filter=None, extra_guards=None):
+    """Entry guards block/caution the entry without rewriting market direction."""
+    guards = empty_trade_guards()
+    if extra_guards:
+        for block in extra_guards.get("blocks", []):
+            add_trade_guard(guards, block=block)
+        for warning in extra_guards.get("warnings", []):
+            add_trade_guard(guards, warning=warning)
+        for reason in extra_guards.get("reasons", []):
+            add_trade_guard(guards, reason=reason)
+
+    if signal not in ["LONG", "SHORT"]:
+        return guards
+
+    news = news or {}
+    event_risk = event_risk or {}
+    smc = smc or {}
+    late_entry = late_entry or {}
+    chart_context = chart_context or {}
+    price_truth_filter = price_truth_filter or {}
+
+    if late_entry.get("late") or (chart_context.get("stage") == "LATE_NO_CHASE" and chart_context.get("side") == signal):
+        add_trade_guard(
+            guards,
+            block="late_entry",
+            warning=late_entry.get("note") or chart_context.get("note") or "рух уже пізній",
+            reason="пізній вхід",
+        )
+
+    news_score = news.get("score", 0) or 0
+    event_side = event_risk.get("direction", "MIXED")
+    if (signal == "LONG" and news_score <= -35) or (signal == "SHORT" and news_score >= 35):
+        add_trade_guard(guards, block="news_conflict", warning="новини проти сигналу", reason="news conflict")
+    if (signal == "LONG" and event_side == "SHORT") or (signal == "SHORT" and event_side == "LONG"):
+        add_trade_guard(guards, block="news_risk", warning="подієвий напрям проти сигналу", reason="event/news conflict")
+    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"] or (event_risk.get("calendar") or {}).get("hard_block"):
+        add_trade_guard(guards, block="event_risk", warning="високий подієвий ризик", reason="event risk")
+
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    smc_conflict = (
+        (signal == "LONG" and (smc_bias == "SHORT" or bos == "пробій структури SHORT" or choch == "ознака розвороту SHORT"))
+        or (signal == "SHORT" and (smc_bias == "LONG" or bos == "пробій структури LONG" or choch == "ознака розвороту LONG"))
+    )
+    if smc_conflict:
+        add_trade_guard(guards, block="smc_conflict", warning="SMC структура проти сигналу", reason="SMC conflict")
+
+    if price_truth_filter.get("blocked"):
+        add_trade_guard(
+            guards,
+            block="news_conflict",
+            warning=price_truth_filter.get("reason") or "ціна не підтвердила новини",
+            reason=price_truth_filter.get("mode") or "price/news conflict",
+        )
+
+    return guards
+
 def analyze_chase_protection(signal, tech, market):
     change = abs(tech.get("change", 0) or 0)
     rsi5 = tech.get("rsi_5m") or 50
@@ -5582,25 +5653,11 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     
     early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
     trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
-# Base score remains visible for logs, but the signal engine now uses dynamic priority.
-    # When oil is in a high event/news regime, news/events get more weight.
-    score = (
-        tech["score"] * priority.get("tech_weight", 1.0)
-        + news["score"] * priority.get("news_weight", 1.0)
-        + orderflow["score"]
-        + macro["score"] * priority.get("news_weight", 1.0)
-        + event_risk["score"]
-        + market["score"]
-        + oi_analysis["score"]
-        + session.get("score", 0)
+    scoring = scoring_center(
+        tech, news, orderflow, macro, event_risk, market, oi_analysis,
+        session=session, priority=priority, early_warning=early_warning
     )
-    score = int(score)
-
-    # Early warning has priority over stale news direction.
-    if early_warning.get("warning") == "EARLY DUMP WARNING":
-        score += early_warning.get("score", 0)
-    elif early_warning.get("warning") == "EARLY PUMP WARNING":
-        score += early_warning.get("score", 0)
+    score = scoring["score"]
 
     signal_type = "НЕМАЄ УГОДИ"
     signal = "НЕЙТРАЛЬНО"
@@ -5611,30 +5668,6 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     elif early_warning.get("warning") == "EARLY PUMP WARNING":
         signal = "НЕЙТРАЛЬНО"
         signal_type = "УВАГА: МОЖЛИВИЙ РІСТ / ЧЕКАТИ LONG-ТРИГЕР"
-
-    if news["total"] >= 5 and news["score"] >= 35:
-        score += 6
-    if news["total"] >= 60:
-        score -= 8
-    if macro["score"] >= 25 and tech["momentum"] in ["STRONG UP", "VERY STRONG UP"]:
-        score += 10
-    if macro["score"] <= -25 and tech["momentum"] in ["STRONG DOWN", "VERY STRONG DOWN"]:
-        score -= 10
-
-    if market["volatility"]["regime"] == "LOW VOLATILITY / CHOP MODE":
-        score -= 8
-    if market["liquidation"]["bias"].startswith("SHORT SQUEEZE"):
-        score += 8
-    if market["liquidation"]["bias"].startswith("LONG LIQUIDATION"):
-        score -= 8
-
-    if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        score -= 8
-
-    if event_risk["direction"] == "LONG":
-        score += 8
-    elif event_risk["direction"] == "SHORT":
-        score -= 8
 
     # Dynamic priority: if news/event regime dominates oil, do not blindly follow opposite technical continuation.
     # It can upgrade conflict into Reversal Watch, or allow a conservative entry only when technicals start confirming.
@@ -5956,6 +5989,79 @@ def side_from_score(score, long_thr=15, short_thr=-15):
         return "SHORT"
     return "NEUTRAL"
 
+def scoring_center(tech=None, news=None, orderflow=None, macro=None, event_risk=None, market=None, oi_analysis=None, session=None, priority=None, early_warning=None):
+    """Single score aggregator for direction/bias calculations."""
+    tech = tech or {}
+    news = news or {}
+    orderflow = orderflow or {}
+    macro = macro or {}
+    event_risk = event_risk or {}
+    market = market or {}
+    oi_analysis = oi_analysis or {}
+    session = session or {}
+    priority = priority or {}
+    early_warning = early_warning or {}
+
+    tech_weight = priority.get("tech_weight", 1.0)
+    news_weight = priority.get("news_weight", 1.0)
+
+    components = {
+        "tech": tech.get("score", 0) * tech_weight,
+        "news": news.get("score", 0) * news_weight,
+        "orderflow": orderflow.get("score", 0),
+        "macro": macro.get("score", 0) * news_weight,
+        "event_risk": event_risk.get("score", 0),
+        "market": market.get("score", 0),
+        "oi": oi_analysis.get("score", 0),
+        "session": session.get("score", 0),
+    }
+
+    adjustments = {}
+    if early_warning.get("warning") in ["EARLY DUMP WARNING", "EARLY PUMP WARNING"]:
+        adjustments["early_warning"] = early_warning.get("score", 0)
+    if news.get("total", 0) >= 5 and news.get("score", 0) >= 35:
+        adjustments["news_density_bullish"] = 6
+    if news.get("total", 0) >= 60:
+        adjustments["news_noise_penalty"] = -8
+    if macro.get("score", 0) >= 25 and tech.get("momentum") in ["STRONG UP", "VERY STRONG UP"]:
+        adjustments["macro_trend_long"] = 10
+    if macro.get("score", 0) <= -25 and tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"]:
+        adjustments["macro_trend_short"] = -10
+    if (market.get("volatility") or {}).get("regime") == "LOW VOLATILITY / CHOP MODE":
+        adjustments["low_volatility"] = -8
+    if (market.get("liquidation") or {}).get("bias", "").startswith("SHORT SQUEEZE"):
+        adjustments["short_squeeze"] = 8
+    if (market.get("liquidation") or {}).get("bias", "").startswith("LONG LIQUIDATION"):
+        adjustments["long_liquidation"] = -8
+    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        adjustments["event_risk_penalty"] = -8
+    if event_risk.get("direction") == "LONG":
+        adjustments["event_direction"] = 8
+    elif event_risk.get("direction") == "SHORT":
+        adjustments["event_direction"] = -8
+
+    technical_score = int(
+        tech.get("score", 0)
+        + orderflow.get("score", 0)
+        + market.get("score", 0)
+        + oi_analysis.get("score", 0)
+    )
+    event_direction_score = 0
+    if event_risk.get("direction") == "LONG":
+        event_direction_score = 18
+    elif event_risk.get("direction") == "SHORT":
+        event_direction_score = -18
+    fundamental_score = int(news.get("score", 0) + macro.get("score", 0) + event_direction_score)
+
+    total = sum(components.values()) + sum(adjustments.values())
+    return {
+        "score": int(total),
+        "components": {k: int(v) for k, v in components.items()},
+        "adjustments": {k: int(v) for k, v in adjustments.items()},
+        "technical_score": technical_score,
+        "fundamental_score": fundamental_score,
+    }
+
 def tech_verdict(tech):
     score = tech.get("score", 0)
     momentum = tech.get("momentum", "NEUTRAL")
@@ -6129,12 +6235,9 @@ def combined_technical_bias(tech, orderflow, market, oi_analysis):
     market_side, market_reason = market_structure_verdict(market)
     oi_side = oi_analysis.get("side", "NEUTRAL")
 
-    score = (
-        tech.get("score", 0)
-        + orderflow.get("score", 0)
-        + market.get("score", 0)
-        + oi_analysis.get("score", 0)
-    )
+    score = scoring_center(
+        tech=tech, orderflow=orderflow, market=market, oi_analysis=oi_analysis
+    )["technical_score"]
 
     long_votes = [tech_side, order_side, market_side, oi_side].count("LONG")
     short_votes = [tech_side, order_side, market_side, oi_side].count("SHORT")
@@ -6165,14 +6268,8 @@ def combined_fundamental_bias(news, event_risk, macro):
     event_side, event_reason = event_verdict(event_risk)
     macro_side, macro_reason = macro_verdict(macro)
 
-    # Event score is risk penalty, so use direction separately for bias.
-    event_direction_score = 0
-    if event_risk.get("direction") == "LONG":
-        event_direction_score = 18
-    elif event_risk.get("direction") == "SHORT":
-        event_direction_score = -18
-
-    score = news.get("score", 0) + macro.get("score", 0) + event_direction_score
+    # Event score is risk penalty, so the scoring center uses direction separately for bias.
+    score = scoring_center(news=news, macro=macro, event_risk=event_risk)["fundamental_score"]
 
     # High event risk means fundamentals are powerful but dangerous.
     risk = event_risk.get("risk", "НОРМАЛЬНИЙ")
@@ -7309,13 +7406,14 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     }
 
 
-def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None):
+def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None, guard_state=None):
     """Finalize display state before Telegram formatting.
 
     Telegram formatting must not change a signal. All final probability,
     no-chase, event-block, chart-context and plan visibility decisions happen here.
     """
     raw_tech = tech or {}
+    guard_state = guard_state or empty_trade_guards()
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
     if late_entry and late_entry.get("late"):
@@ -7362,7 +7460,13 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
             decision = "SHORT слабшає — чекати відскок"
     exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
     early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+    guard_state = collect_entry_guards(
+        signal, news, event_risk, smc, late_entry, chart_context,
+        extra_guards=guard_state
+    )
+    if guard_state.get("blocks"):
+        trade_probability = min(trade_probability or 0, 54)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry, guard_state)
 
     if show_trade_plan and signal in ["LONG", "SHORT"] and not str(decision).startswith("TRADE"):
         if trade_probability is not None and trade_probability >= 75:
@@ -7380,7 +7484,7 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
     event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
     if event_block.get("blocked"):
         trade_probability = min(trade_probability or 0, 54)
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry, guard_state)
 
     if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
         if signal == "SHORT":
@@ -7423,6 +7527,8 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         decision = f"СКАЛЬП {signal} — рання точка, тільки зі стопом"
     if event_block.get("blocked"):
         decision = "Зараз не входити — високий новинний ризик"
+    if guard_state.get("blocks"):
+        decision = "Зараз не входити — " + (guard_state.get("warnings") or ["є блок входу"])[0]
     if chart_context and chart_context.get("side") == signal:
         trade_probability = apply_chart_context_probability(signal, trade_probability, chart_context)
         if chart_context.get("stage") == "TRIGGER" and trade_probability is not None:
@@ -7431,7 +7537,10 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
             decision = f"ГОТУЄМОСЬ ДО {signal} — чекати тригер"
         elif chart_context.get("stage") == "LATE_NO_CHASE":
             decision = f"{signal} пізно — не доганяти рух"
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+    if guard_state.get("blocks"):
+        trade_probability = min(trade_probability or 0, 54)
+        decision = "Зараз не входити — " + (guard_state.get("warnings") or ["є блок входу"])[0]
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry, guard_state)
 
     market_mode = market_mode_engine(
         signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
@@ -7463,6 +7572,7 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         "show_trade_plan": show_trade_plan,
         "entry_watch": entry_watch,
         "event_block": event_block,
+        "guard_state": guard_state,
         "market_mode": market_mode,
         "final_summary": final_summary,
     }
@@ -7477,11 +7587,12 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         tech=raw_tech,
         chart_context=chart_context,
         late_entry=late_entry,
+        guard_state=guard_state,
     )
     return state
 
 
-def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk, orderflow=None, smc=None, tech=None, chart_context=None, late_entry=None):
+def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk, orderflow=None, smc=None, tech=None, chart_context=None, late_entry=None, guard_state=None):
     """Single source of truth for final market direction vs actual entry.
 
     market_side can be LONG/SHORT even when entry_side is None. That is the key
@@ -7500,6 +7611,7 @@ def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk
     entry_watch = state.get("entry_watch") or {}
     market_mode = state.get("market_mode") or {}
     event_block = state.get("event_block") or {}
+    guard_state = guard_state or state.get("guard_state") or empty_trade_guards()
     decision_text = state.get("decision", "")
 
     market_side = infer_market_direction(
@@ -7518,10 +7630,14 @@ def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk
         and trade_probability is not None
         and trade_probability >= 55
         and not event_block.get("blocked")
+        and not guard_state.get("blocks")
     )
     entry_side = signal if has_trade_entry else None
 
-    if event_block.get("blocked"):
+    if guard_state.get("blocks"):
+        entry_status = "NO_ENTRY"
+        entry_status_text = "ВХОДУ НЕМАЄ"
+    elif event_block.get("blocked"):
         entry_status = "NO_ENTRY"
         entry_status_text = "ВХОДУ НЕМАЄ"
     elif has_trade_entry and trade_probability >= 75:
@@ -7556,6 +7672,9 @@ def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk
     stage = chart_context.get("stage") or entry_timing
     quality_text = entry_quality_scale(trade_probability, late_entry, signal_type)
     plan_text = proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)
+    if guard_state.get("blocks"):
+        quality_text = "0/5 — вхід заблоковано: " + (guard_state.get("warnings") or ["є блок входу"])[0]
+        plan_text = "Входу немає — чекати підтвердження/ретест."
 
     market_text = "змішано"
     if market_side in ["LONG", "SHORT"]:
@@ -7574,6 +7693,9 @@ def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk
         warnings.append("рух пізній, потрібен ретест або нова база")
     if event_block.get("blocked"):
         warnings.append(event_block.get("reason", "високий новинний ризик"))
+    for warning in guard_state.get("warnings", []):
+        if warning not in warnings:
+            warnings.append(warning)
 
     return {
         "market_side": market_side,
@@ -7591,6 +7713,7 @@ def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk
         "chart_text": chart_context_message(chart_context),
         "reasons": reasons[:3],
         "warnings": warnings,
+        "blocks": guard_state.get("blocks", []),
     }
 
 
@@ -7715,6 +7838,9 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
+    if final_decision.get("blocks"):
+        guard_warning = "; ".join(final_decision.get("warnings", [])[:2]) or "є блок входу"
+        lines.append(f"<b>Блоки входу:</b> {', '.join(final_decision.get('blocks', []))} — {guard_warning}")
 
     micro_text = microstructure_compact_text(orderflow)
     smc_note = smc_compact_text(smc)
@@ -7776,7 +7902,7 @@ def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro,
         return "B"
     return "C / ризиковий"
 
-def should_show_trade_plan(signal, trade_probability, late_entry=None):
+def should_show_trade_plan(signal, trade_probability, late_entry=None, guard_state=None):
     """Show entry/SL/TP for 3/5+ setups.
 
     3/5 = ризикований вхід, so the plan is allowed but must be treated as
@@ -7787,6 +7913,8 @@ def should_show_trade_plan(signal, trade_probability, late_entry=None):
     if trade_probability is None:
         return False
     if late_entry and late_entry.get("late"):
+        return False
+    if guard_state and guard_state.get("blocks"):
         return False
     return (trade_probability or 0) >= 55
 
@@ -8346,14 +8474,19 @@ def main():
     signal, signal_type, score, confidence, risk_note = build_signal(
         tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority, weekend, cross_market
     )
+    guard_state = empty_trade_guards()
 
     structure_override = structure_override_engine(signal, signal_type, confidence, score, tech, smc, micro, news, event_risk)
     if structure_override.get("active"):
-        signal = structure_override["signal"]
-        signal_type = structure_override["signal_type"]
-        confidence = structure_override["confidence"]
-        score = structure_override["score"]
+        add_trade_guard(
+            guard_state,
+            block="smc_conflict",
+            warning=structure_override.get("reason") or "SMC/3m структура проти сигналу",
+            reason=structure_override.get("reason"),
+        )
+        confidence = min(confidence, structure_override.get("confidence", confidence))
         risk_note = structure_override.get("reason", risk_note)
+        print("SMC STRUCTURE GUARD:", risk_note)
 
     memory_adj = memory_confidence_adjustment(signal, signal_memory, tv["price"])
     if memory_adj:
@@ -8365,17 +8498,24 @@ def main():
         signal, signal_type, confidence, score, tech, smc, news, event_risk, micro
     )
     if price_override.get("reason"):
-        signal = price_override["signal"]
-        signal_type = price_override["signal_type"]
-        confidence = price_override["confidence"]
-        score = price_override["score"]
+        add_trade_guard(
+            guard_state,
+            block="news_conflict",
+            warning=price_override.get("reason") or "ціна проти новинного сценарію",
+            reason=price_override.get("reason"),
+        )
+        confidence = min(confidence, price_override.get("confidence", confidence))
         risk_note = price_override.get("reason", risk_note)
-        print("PRICE STRUCTURE OVERRIDE:", risk_note)
+        print("PRICE STRUCTURE GUARD:", risk_note)
 
     current_truth_filter = price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow)
     if current_truth_filter.get('blocked'):
-        signal = 'НЕЙТРАЛЬНО'
-        signal_type = 'НЕ ВХОДИТИ — ціна не підтвердила новини'
+        add_trade_guard(
+            guard_state,
+            block="news_conflict",
+            warning=current_truth_filter.get("reason") or "ціна не підтвердила новини",
+            reason=current_truth_filter.get("mode"),
+        )
         risk_note = current_truth_filter.get('reason')
         confidence = min(confidence, 50)
     elif current_truth_filter.get('bonus'):
@@ -8384,10 +8524,13 @@ def main():
 
     yulia_guard = exhaustion_reversal_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news, event_risk)
     if yulia_guard.get("active"):
-        signal = yulia_guard["signal"]
-        signal_type = yulia_guard["signal_type"]
-        confidence = yulia_guard["confidence"]
-        score = yulia_guard["score"]
+        add_trade_guard(
+            guard_state,
+            block="late_entry",
+            warning=yulia_guard.get("reason") or "не доганяти рух",
+            reason=yulia_guard.get("signal_type"),
+        )
+        confidence = min(confidence, yulia_guard.get("confidence", confidence))
         risk_note = yulia_guard.get("reason", risk_note)
         print("EXHAUSTION REVERSAL GUARD:", risk_note)
 
@@ -8411,10 +8554,13 @@ def main():
 
     decay_guard = post_move_decay_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news, event_risk)
     if decay_guard.get("active"):
-        signal = decay_guard["signal"]
-        signal_type = decay_guard["signal_type"]
-        confidence = decay_guard["confidence"]
-        score = decay_guard["score"]
+        add_trade_guard(
+            guard_state,
+            block="late_entry",
+            warning=decay_guard.get("reason") or "рух уже пізній",
+            reason=decay_guard.get("signal_type"),
+        )
+        confidence = min(confidence, decay_guard.get("confidence", confidence))
         risk_note = decay_guard.get("reason", risk_note)
         print("POST MOVE DECAY GUARD:", risk_note)
 
@@ -8434,8 +8580,12 @@ def main():
             risk_note = chart_context.get("note", risk_note)
             print("FORWARD CHART SETUP:", risk_note)
         elif chart_stage == "LATE_NO_CHASE" and signal == chart_side:
-            signal = "НЕЙТРАЛЬНО"
-            signal_type = f"{chart_side} НАПРЯМ Є / ВХІД ПІЗНІЙ — ЧЕКАТИ РЕТЕСТ"
+            add_trade_guard(
+                guard_state,
+                block="late_entry",
+                warning=chart_context.get("note") or "рух уже пізній",
+                reason="chart LATE_NO_CHASE",
+            )
             confidence = min(confidence, 78)
             risk_note = chart_context.get("note", risk_note)
             print("FORWARD CHART NO CHASE:", risk_note)
@@ -8446,6 +8596,11 @@ def main():
     chase = analyze_chase_protection(signal, tech, market)
     
     late_entry = analyze_late_entry_risk(signal, tech, market, chart_context)
+    guard_state = collect_entry_guards(
+        signal, news, event_risk, smc, late_entry, chart_context,
+        price_truth_filter=current_truth_filter,
+        extra_guards=guard_state,
+    )
     
     cooling = analyze_exhaustion_cooling(signal, tech, tv)
     plan = apply_expansion_targets(plan, signal, tech, market)
@@ -8495,6 +8650,7 @@ def main():
     print(f"FINAL SCORE: {score}")
     print(f"SIGNAL TYPE: {signal_type}")
     print(f"SIGNAL: {signal}")
+    print(f"ENTRY GUARDS: blocks={guard_state.get('blocks')} warnings={guard_state.get('warnings')}")
     print(f"PRICE ACTION FILTER: {current_truth_filter.get('mode')} | {current_truth_filter.get('reason')}")
 
     if signal == "НЕЙТРАЛЬНО":
@@ -8526,26 +8682,15 @@ def main():
         signal, signal_type, confidence, tech, smc, tech.get("micro_3m") or {}, pre_message_probability
     )
     if message_guard.get("reason"):
-        signal = message_guard["signal"]
-        signal_type = message_guard["signal_type"]
-        confidence = message_guard["confidence"]
-        if signal == "LONG":
-            score = abs(score) if score else abs(technical_bias.get("score", 0))
-        elif signal == "SHORT":
-            score = -abs(score) if score else -abs(technical_bias.get("score", 0))
-        else:
-            score = 0
-        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
-        plan = adjust_plan_for_rr(plan, signal)
-        plan = apply_expansion_targets(plan, signal, tech, market)
-        rr = rr_metrics(plan)
-        chase = analyze_chase_protection(signal, tech, market)
-        late_entry = analyze_late_entry_risk(signal, tech, market, chart_context)
-        cooling = analyze_exhaustion_cooling(signal, tech, tv)
-        pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
-        quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
-        market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
-        print("FINAL SANITY GUARD:", message_guard.get("reason"))
+        add_trade_guard(
+            guard_state,
+            block="smc_conflict",
+            warning=message_guard.get("reason"),
+            reason=message_guard.get("signal_type"),
+        )
+        confidence = min(confidence, message_guard["confidence"])
+        show_guard_reason = message_guard.get("reason")
+        print("FINAL SANITY GUARD:", show_guard_reason)
 
     summary = final_short_summary(
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
@@ -8580,6 +8725,7 @@ def main():
         cooling=cooling,
         tech=tech,
         chart_context=chart_context,
+        guard_state=guard_state,
     )
     signal = message_state["signal"]
     signal_type = message_state["signal_type"]
