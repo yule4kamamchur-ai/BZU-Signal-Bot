@@ -135,7 +135,10 @@ BEARISH_WORDS = [
     "demand weak", "weak demand", "demand falls", "oversupply", "supply glut",
     "opec increase", "output hike", "ceasefire", "peace talks", "recession",
     "rate hike", "inflation rises", "bearish", "falls", "drops", "tumbles",
-    "slides", "lower",
+    "slides", "lower", "peace agreement", "peace deal", "memorandum of understanding",
+    "mou", "us-iran agreement", "u.s.-iran agreement", "iran deal",
+    "sanctions relief", "sanctions lifted", "sanctions easing", "talks progress",
+    "initial details", "framework agreement",
 ]
 
 BREAKING_WORDS = [
@@ -176,7 +179,10 @@ EVENT_LONG_WORDS = [
 EVENT_SHORT_WORDS = [
     "inventory build", "crude build", "larger-than-expected build",
     "ceasefire", "peace deal", "sanctions relief", "talks progress",
-    "opec increase", "output increase", "demand weak",
+    "opec increase", "output increase", "demand weak", "peace agreement",
+    "memorandum of understanding", "mou", "us-iran agreement",
+    "u.s.-iran agreement", "iran deal", "sanctions lifted",
+    "sanctions easing", "initial details", "framework agreement",
 ]
 
 def now_utc():
@@ -923,6 +929,105 @@ def memory_confidence_adjustment(signal, memory, current_price):
         return 10
 
     return 0
+
+def signal_flip_guard(signal, signal_type, confidence, score, memory, current_price, tech=None, smc=None):
+    """Block unprofessional instant LONG<->SHORT flips while price is flat.
+
+    If the last actionable signal was the opposite side and price has barely
+    moved since then, a new opposite message is allowed only with clear chart
+    confirmation. Otherwise the bot should say no entry and wait.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return {
+            "blocked": False,
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "score": score,
+            "reason": "",
+        }
+
+    last = get_last_signal(memory)
+    last_signal = last.get("signal")
+    if last_signal not in ["LONG", "SHORT"] or last_signal == signal:
+        return {
+            "blocked": False,
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "score": score,
+            "reason": "",
+        }
+
+    last_price = safe_float(last.get("price"))
+    if not last_price or not current_price:
+        return {
+            "blocked": False,
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "score": score,
+            "reason": "",
+        }
+
+    created = parse_iso_datetime(last.get("time"))
+    age_minutes = 999
+    if created:
+        age_minutes = (now_utc() - created).total_seconds() / 60
+
+    diff_pct = ((float(current_price) - last_price) / last_price) * 100
+    flat_since_last = abs(diff_pct) < 0.30 and age_minutes <= 90
+    if not flat_since_last:
+        return {
+            "blocked": False,
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "score": score,
+            "reason": "",
+        }
+
+    tech = tech or {}
+    smc = smc or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    tech_score = tech.get("score", 0) or 0
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    smc_bias = smc.get("bias", "NEUTRAL")
+
+    clear_confirmation = (
+        (signal == "LONG" and (
+            tech_score >= 75
+            or smc_bias == "LONG"
+            or micro_bias == "LONG"
+            or micro_state == "LONG_STRENGTHENING"
+        ))
+        or
+        (signal == "SHORT" and (
+            tech_score <= -75
+            or smc_bias == "SHORT"
+            or micro_bias == "SHORT"
+            or micro_state == "SHORT_STRENGTHENING"
+        ))
+    )
+    if clear_confirmation:
+        return {
+            "blocked": False,
+            "signal": signal,
+            "signal_type": signal_type,
+            "confidence": confidence,
+            "score": score,
+            "reason": "",
+        }
+
+    return {
+        "blocked": True,
+        "signal": "НЕЙТРАЛЬНО",
+        "signal_type": "FLIP BLOCKED / ЦІНА НЕ ПІДТВЕРДИЛА НОВИЙ НАПРЯМ",
+        "confidence": min(confidence or 55, 58),
+        "score": 0,
+        "reason": f"попередній {last_signal} ще не відпрацював: ціна змінилась лише {round(diff_pct, 3)}%",
+    }
 
 
 def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None):
@@ -5043,20 +5148,29 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
     # Shock Move Protection:
-    # If price dumps/pumps sharply, do not let bullish/bearish headlines create
-    # an opposite trade before the chart stabilizes. For oil this prevents
-    # catching a falling knife during fast liquidation moves.
-    shock_down = tech.get("change", 0) <= -1.2 and tech.get("score", 0) <= -80
-    shock_up = tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 80
+    # If price dumps/pumps sharply, the message must be about the chart first.
+    # News can explain context, but it must not create an opposite entry before
+    # stabilization/retest.
+    shock_down = (
+        tech.get("change", 0) <= -2.0
+        or (tech.get("change", 0) <= -1.2 and tech.get("score", 0) <= -70)
+        or (tech.get("momentum") == "VERY STRONG DOWN" and tech.get("score", 0) <= -65)
+    )
+    shock_up = (
+        tech.get("change", 0) >= 2.0
+        or (tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 70)
+        or (tech.get("momentum") == "VERY STRONG UP" and tech.get("score", 0) >= 65)
+    )
 
-    if shock_down and news.get("score", 0) >= 25 and event_risk.get("direction") == "LONG":
+    if shock_down:
         signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHOCK DOWN / LONG BLOCKED"
-    elif shock_up and news.get("score", 0) <= -20 and event_risk.get("direction") == "SHORT":
+        signal_type = "SHOCK DOWN / NO CHASE"
+    elif shock_up:
         signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHOCK UP / SHORT BLOCKED"
+        signal_type = "SHOCK UP / NO CHASE"
 
-        confidence = min(95, max(0, abs(score)))
+    if "SHOCK" in signal_type:
+        confidence = min(95, max(55, abs(score)))
 
     risk_note = "Нормальний ризик"
     if "РИЗИКОВИЙ" in signal_type:
@@ -5936,17 +6050,9 @@ def technical_reason_text(signal, technical_bias, smc=None, tech=None):
     return "перевага нечітка — краще чекати"
 
 def signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk):
-    if signal not in ["LONG", "SHORT"]:
-        return ""
-
-    opposite = "SHORT" if signal == "LONG" else "LONG"
-    driver_direction = driver_side(driver)
-    fund_side = (fundamental_bias or {}).get("side", "NEUTRAL")
-    event_side = (event_risk or {}).get("direction", "MIXED")
-
-    if driver_direction == opposite or opposite in fund_side or event_side == opposite:
-        news_direction = simple_direction_word(opposite)
-        return f"новини за {news_direction}, але ціна {simple_opposite_action(signal)} — зараз важливіший графік"
+    # Do not show a separate disagreement block in Telegram. It was too noisy
+    # and could mislabel the real news direction. Disagreements are handled by the
+    # signal/priority engines and reflected in the decision, reasons and plan.
     return ""
 
 def align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc=None, tech=None):
@@ -6519,6 +6625,23 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
             return "РИЗИКОВАНИЙ ВХІД"
         return "ВХОДУ НЕМАЄ"
 
+    if "SHOCK DOWN" in signal_type:
+        return {
+            "status": "ВХОДУ НЕМАЄ",
+            "mode": "різкий дамп",
+            "strategy": "шорт не доганяти; чекати ретест для шорту або скальп-відскок тільки після підтвердження",
+            "priority": "ціна і 3m > новини; для скальпу потрібен відкуп",
+            "aggression": "не агресивно",
+        }
+    if "SHOCK UP" in signal_type:
+        return {
+            "status": "ВХОДУ НЕМАЄ",
+            "mode": "різкий памп",
+            "strategy": "лонг не доганяти; чекати ретест для лонгу або скальп-відкат тільки після підтвердження",
+            "priority": "ціна і 3m > новини; для скальпу потрібен продаж",
+            "aggression": "не агресивно",
+        }
+
     if "СКАЛЬП" in signal_type:
         side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
         status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
@@ -6575,23 +6698,6 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
                 "priority": "графік + SMC + 3m > новини, якщо новини не проти руху",
                 "aggression": aggression,
             }
-
-    if "SHOCK DOWN" in signal_type:
-        return {
-            "status": "ВХОДУ НЕМАЄ",
-            "mode": "різкий дамп",
-            "strategy": "шорт не доганяти; чекати ретест для шорту або скальп-відскок тільки після підтвердження",
-            "priority": "ціна і 3m > новини; для скальпу потрібен відкуп",
-            "aggression": "не агресивно",
-        }
-    if "SHOCK UP" in signal_type:
-        return {
-            "status": "ВХОДУ НЕМАЄ",
-            "mode": "різкий памп",
-            "strategy": "лонг не доганяти; чекати ретест для лонгу або скальп-відкат тільки після підтвердження",
-            "priority": "ціна і 3m > новини; для скальпу потрібен продаж",
-            "aggression": "не агресивно",
-        }
 
     return {
         "status": entry_status() if signal in ["LONG", "SHORT"] else "ВХОДУ НЕМАЄ",
@@ -6836,9 +6942,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
-
-    if conflict_note:
-        lines.append(f"<b>Конфлікт:</b> {conflict_note}")
 
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
@@ -7629,6 +7732,25 @@ def main():
         quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
         market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
         print("FINAL SANITY GUARD:", message_guard.get("reason"))
+
+    flip_guard = signal_flip_guard(signal, signal_type, confidence, score, signal_memory, tv["price"], tech, smc)
+    if flip_guard.get("blocked"):
+        signal = flip_guard["signal"]
+        signal_type = flip_guard["signal_type"]
+        confidence = flip_guard["confidence"]
+        score = flip_guard["score"]
+        risk_note = flip_guard.get("reason", risk_note)
+        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
+        plan = adjust_plan_for_rr(plan, signal)
+        plan = apply_expansion_targets(plan, signal, tech, market)
+        rr = rr_metrics(plan)
+        chase = analyze_chase_protection(signal, tech, market)
+        late_entry = analyze_late_entry_risk(signal, tech, market)
+        cooling = analyze_exhaustion_cooling(signal, tech, tv)
+        pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
+        quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
+        market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
+        print("SIGNAL FLIP BLOCKED:", flip_guard.get("reason"))
 
     summary = final_short_summary(
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
