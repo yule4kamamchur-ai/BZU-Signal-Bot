@@ -4002,6 +4002,139 @@ def rr_metrics(plan):
     rr2 = abs(tp2 - entry) / risk
     return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.2 or rr2 >= 1.8, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
 
+def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market=None, session=None):
+    """Early LONG/SHORT trigger before the move becomes a late chase.
+
+    Goal: catch the first quality continuation/breakdown moment, not the move
+    after it already travelled too far. It still blocks weak entries near major
+    calendar/news risk.
+    """
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    price = (tv or {}).get("price")
+    change = tech.get("change", 0) or 0
+    abs_change = abs(change)
+    tech_score = tech.get("score", 0) or 0
+    trend_5m = tech.get("trend_5m", "UNKNOWN")
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    trend_1h = tech.get("trend_1h", "UNKNOWN")
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+    ema20 = tech.get("ema20_15m")
+    order_score = orderflow.get("score", 0) or 0
+    news_score = news.get("score", 0) or 0
+    event_side = event_risk.get("direction", "MIXED")
+    calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
+    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
+    session_name = (session or {}).get("session", "")
+    volatility = (market or {}).get("volatility", {}).get("regime", "NORMAL")
+
+    if abs_change >= 1.65:
+        return {"active": False, "side": "NONE", "reason": "рух уже запізний"}
+    if volatility == "LOW VOLATILITY / CHOP MODE":
+        return {"active": False, "side": "NONE", "reason": "боковик, ранній вхід слабкий"}
+
+    def side_setup(side):
+        is_long = side == "LONG"
+        score_ok = tech_score >= 42 if is_long else tech_score <= -42
+        trend_ok = (
+            trend_5m == "UP" and trend_15m == "UP"
+            if is_long else
+            trend_5m == "DOWN" and trend_15m == "DOWN"
+        )
+        micro_ok = (
+            micro.get("bias") == "LONG" or micro.get("state") == "LONG_STRENGTHENING"
+            if is_long else
+            micro.get("bias") == "SHORT" or micro.get("state") == "SHORT_STRENGTHENING"
+        )
+        smc_ok = (
+            smc.get("bias") == "LONG" or smc.get("bos") == "пробій структури LONG"
+            if is_long else
+            smc.get("bias") == "SHORT" or smc.get("bos") == "пробій структури SHORT"
+        )
+        order_ok = order_score >= 6 if is_long else order_score <= -6
+        price_ema_ok = True
+        if price and ema20:
+            price_ema_ok = price > ema20 if is_long else price < ema20
+        rsi_ok = True
+        if rsi5 is not None and rsi15 is not None:
+            rsi_ok = (rsi5 < 74 and rsi15 < 70) if is_long else (rsi5 > 26 and rsi15 > 30)
+        early_move_ok = (0.12 <= change <= 1.25) if is_long else (-1.25 <= change <= -0.12)
+        not_against_1h = trend_1h != ("DOWN" if is_long else "UP")
+
+        confirmations = [
+            score_ok,
+            trend_ok,
+            micro_ok,
+            smc_ok,
+            order_ok,
+            price_ema_ok,
+            early_move_ok,
+            rsi_ok,
+            not_against_1h,
+        ]
+        count = sum(1 for item in confirmations if item)
+        required = 6
+        if session_name == "ASIA":
+            required = 7
+        if calendar_active or event_high:
+            required = 7
+
+        hard_news_against = (
+            (is_long and event_side == "SHORT" and news_score <= -35) or
+            ((not is_long) and event_side == "LONG" and news_score >= 35)
+        )
+        if hard_news_against and (calendar_active or event_high) and count < 8:
+            return None
+
+        if count >= required and score_ok and trend_ok and early_move_ok and rsi_ok and (micro_ok or smc_ok or order_ok):
+            confidence = min(82, 58 + count * 3 + (5 if smc_ok else 0) + (4 if micro_ok else 0))
+            if hard_news_against:
+                confidence -= 7
+            label = "ранній лонг" if is_long else "ранній шорт"
+            details = []
+            if trend_ok:
+                details.append("5m/15m уже в один бік")
+            if micro_ok:
+                details.append("3m підтверджує")
+            if smc_ok:
+                details.append("структура підтверджує")
+            if order_ok:
+                details.append("угоди/стакан допомагають")
+            return {
+                "active": True,
+                "side": side,
+                "score": confidence if is_long else -confidence,
+                "confidence": confidence,
+                "signal_type": f"РАННІЙ {side} / ВХІД ЗАРАЗ",
+                "reason": f"{label}: " + ", ".join(details[:3]),
+                "confirmations": count,
+            }
+        return None
+
+    candidates = []
+    for side in ["LONG", "SHORT"]:
+        result = side_setup(side)
+        if result:
+            candidates.append(result)
+
+    if not candidates:
+        return {"active": False, "side": "NONE", "reason": "ранній вхід ще не підтверджений"}
+
+    candidates.sort(key=lambda item: abs(item.get("score", 0)), reverse=True)
+    best = candidates[0]
+
+    # Do not flip a strong confirmed signal unless early setup is clearly stronger.
+    if signal in ["LONG", "SHORT"] and signal != best["side"] and abs(tech_score) < 70:
+        return {"active": False, "side": "NONE", "reason": "ранній сигнал конфліктує з основним"}
+
+    return best
+
 def news_event_trade_block(signal, trade_probability, event_risk, news, session=None):
     """Hard caution layer for futures during dangerous news/event regimes."""
     if signal not in ["LONG", "SHORT"]:
@@ -4731,6 +4864,10 @@ def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
         return "НЕ ВХОДИТИ — різкий дамп"
     if "SHOCK UP" in signal_type:
         return "НЕ ВХОДИТИ — різкий памп"
+    if "РАННІЙ" in signal_type and signal == "LONG":
+        return "РАННІЙ LONG — можна входити зараз"
+    if "РАННІЙ" in signal_type and signal == "SHORT":
+        return "РАННІЙ SHORT — можна входити зараз"
 
     if signal == "LONG":
         if "EARLY NEWS" in signal_type:
@@ -5408,6 +5545,10 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     elif abs(order_score) < 10:
         prob -= 3
 
+    early_entry = early_entry_signal({}, signal, "", tech or {}, smc or {}, orderflow, news, event_risk, market)
+    if early_entry.get("active") and early_entry.get("side") == signal:
+        prob += 8
+
     if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
         prob -= 7
 
@@ -5659,6 +5800,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     simple_decision = simple_decision_text(signal, trade_probability, late_entry, cooling)
     if simple_decision:
         decision = simple_decision
+    if "РАННІЙ" in str(signal_type) and signal in ["LONG", "SHORT"] and trade_probability is not None and trade_probability >= 65:
+        decision = f"РАННІЙ {signal} — можна входити зараз"
     if event_block.get("blocked"):
         decision = "Зараз не входити — високий новинний ризик"
 
@@ -6364,6 +6507,16 @@ def main():
     elif current_truth_filter.get('bonus'):
         score += current_truth_filter.get('bonus', 0)
         confidence = min(95, max(0, abs(score)))
+
+    early_entry = early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market, session)
+    if early_entry.get("active"):
+        signal = early_entry["side"]
+        signal_type = early_entry["signal_type"]
+        confidence = max(confidence, early_entry.get("confidence", confidence))
+        score = early_entry.get("score", score)
+        risk_note = early_entry.get("reason", risk_note)
+        print(f"EARLY ENTRY TRIGGER: {signal} | {risk_note}")
+
     plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
     plan = adjust_plan_for_rr(plan, signal)
     rr = rr_metrics(plan)
