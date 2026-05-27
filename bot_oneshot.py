@@ -4038,10 +4038,13 @@ def format_watch_plan(signal, plan, entry_watch):
         f"TP3: {fnum(tp3)} | Скасування: {invalid_text}."
     )
 
-def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch):
+def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry=None):
     """Telegram plan text. TRADE only if confirmed; otherwise conditional preparation."""
     if show_trade_plan:
         return format_trade_plan(plan)
+
+    if late_entry and late_entry.get("late"):
+        return "Входу немає — рух уже пізній, чекати відкат/ретест або нову базу."
 
     if trade_probability is None or trade_probability < 55:
         return "Входу немає — чекати якість мінімум 3/5."
@@ -6514,11 +6517,34 @@ def analyze_late_entry_risk(signal, tech, market):
         note = "Рух уже частково реалізований. Не доганяти падіння; краще чекати відкат/ретест."
         penalty = -12
 
+    very_late = late and change >= 3.0
+    if very_late:
+        penalty -= 18
+        if signal == "LONG":
+            label = "LONG пізно — не доганяти памп"
+            note = "Рух уже занадто великий. Новий LONG тільки після відкату/ретесту."
+        elif signal == "SHORT":
+            label = "SHORT пізно — не доганяти дамп"
+            note = "Рух уже занадто великий. Новий SHORT тільки після відкату/ретесту."
+
     if late and vol == "HIGH VOLATILITY / BREAKOUT MODE":
         penalty -= 5
         note += ""
 
-    return {"late": late, "label": label, "note": note, "penalty": penalty}
+    return {"late": late, "very_late": very_late, "label": label, "note": note, "penalty": penalty}
+
+def apply_late_entry_no_chase_filter(signal, trade_probability, tech, late_entry=None):
+    """A strong move can confirm direction but must not create a fresh entry."""
+    if signal not in ["LONG", "SHORT"] or trade_probability is None:
+        return trade_probability
+    if not late_entry or not late_entry.get("late"):
+        return trade_probability
+
+    change = abs((tech or {}).get("change", 0) or 0)
+    cap = 54
+    if late_entry.get("very_late") or change >= 3.0:
+        cap = 49
+    return min(trade_probability, cap)
 
 def apply_expansion_targets(plan, signal, tech, market):
     """Widen targets/stops when volatility expands or move is already large."""
@@ -6575,6 +6601,9 @@ def entry_quality_scale(probability, late_entry=None, signal_type=""):
     except Exception:
         return "0/5 — немає входу"
 
+    if late_entry and late_entry.get("very_late"):
+        return f"0/5 — напрям є, але вхід пізній ({probability}%)"
+
     suffix = ""
     if late_entry and late_entry.get("late"):
         suffix = " — пізній вхід, краще чекати відкат"
@@ -6594,6 +6623,11 @@ def simple_decision_text(signal, trade_probability, late_entry=None, cooling=Non
         return None
 
     direction = simple_direction_word(signal)
+    if late_entry and late_entry.get("very_late"):
+        return f"{direction.capitalize()} підтверджений, але зараз не входити — чекати відкат"
+    if late_entry and late_entry.get("late") and trade_probability is not None and trade_probability < 55:
+        return f"{direction.capitalize()} вже йде — зараз не входити"
+
     if trade_probability is None:
         return f"Можливий {direction}, але сигналу на вхід немає"
 
@@ -6768,6 +6802,10 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
         prob -= 5
     if late_entry and late_entry.get("late"):
         prob += late_entry.get("penalty", -10)
+        if late_entry.get("very_late"):
+            prob = min(prob, 49)
+        else:
+            prob = min(prob, 54)
 
     prob += smc_probability_adjustment(signal, smc)
     truth_filter = price_action_truth_filter(signal, tech or {}, smc, news, event_risk, orderflow)
@@ -6974,6 +7012,15 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
         }
 
     if calendar_active or event_high:
+        if late_entry and late_entry.get("late"):
+            status = "ВХОДУ НЕМАЄ"
+            return {
+                "status": status,
+                "mode": "пізній рух",
+                "strategy": "напрям підтверджений, але новий вхід тільки після відкату/ретесту",
+                "priority": "ціна + 3m; не доганяти імпульс",
+                "aggression": "не входити по ринку",
+            }
         if "СКАЛЬП" in signal_type:
             status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
         elif has_entry:
@@ -7125,6 +7172,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
     if counterflow_watch.get("active") and counterflow_watch.get("side") == signal:
         trade_probability = max(trade_probability or 0, counterflow_watch.get("probability", 0))
+    trade_probability = apply_late_entry_no_chase_filter(signal, trade_probability, tech or {}, late_entry)
     event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
     if event_block.get("blocked"):
         trade_probability = min(trade_probability or 0, 54)
@@ -7276,7 +7324,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Ринок:</b> {market_bias_text}",
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
         f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
+        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
 
@@ -7356,7 +7404,7 @@ def should_show_trade_plan(signal, trade_probability, late_entry=None):
         return False
     if trade_probability is None:
         return False
-    if late_entry and late_entry.get("late") and (trade_probability or 0) < 55:
+    if late_entry and late_entry.get("late"):
         return False
     return (trade_probability or 0) >= 55
 
