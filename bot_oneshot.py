@@ -218,6 +218,9 @@ def safe_post(url, payload, timeout=15):
 
 SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
 SIGNAL_MEMORY_LIMIT = 4
+SIGNAL_JOURNAL_FILE = os.getenv("SIGNAL_JOURNAL_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "signal_journal.json"))
+SIGNAL_JOURNAL_LIMIT = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "300") or 300)
+SIGNAL_JOURNAL_EVAL_MINUTES = int(os.getenv("SIGNAL_JOURNAL_EVAL_MINUTES", "60") or 60)
 
 
 def load_signal_memory():
@@ -274,6 +277,184 @@ def save_signal_memory(data):
         print(f"MEMORY SAVED: {SIGNAL_MEMORY_FILE}")
     except Exception as error:
         print(f"[WARN] signal memory save error: {error}")
+
+def load_signal_journal():
+    try:
+        if not os.path.exists(SIGNAL_JOURNAL_FILE):
+            return {"signals": []}
+        with open(SIGNAL_JOURNAL_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        if isinstance(data, dict) and isinstance(data.get("signals"), list):
+            data["signals"] = data["signals"][-SIGNAL_JOURNAL_LIMIT:]
+            return data
+        return {"signals": []}
+    except Exception as error:
+        print(f"[WARN] signal journal read error: {error}")
+        return {"signals": []}
+
+def save_signal_journal(data):
+    try:
+        journal_dir = os.path.dirname(os.path.abspath(SIGNAL_JOURNAL_FILE)) or "."
+        os.makedirs(journal_dir, exist_ok=True)
+        data = data or {"signals": []}
+        data["signals"] = (data.get("signals") or [])[-SIGNAL_JOURNAL_LIMIT:]
+        data["updated_at"] = now_utc().isoformat()
+
+        tmp_file = SIGNAL_JOURNAL_FILE + ".tmp"
+        bak_file = SIGNAL_JOURNAL_FILE + ".bak"
+        with open(tmp_file, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, SIGNAL_JOURNAL_FILE)
+        with open(bak_file, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+        print(f"JOURNAL SAVED: {SIGNAL_JOURNAL_FILE}")
+    except Exception as error:
+        print(f"[WARN] signal journal save error: {error}")
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+def evaluate_journal_entry(entry, current_price, current_time=None):
+    if not entry or entry.get("result_status"):
+        return entry
+
+    created = parse_iso_datetime(entry.get("time"))
+    if not created:
+        return entry
+
+    current_time = current_time or now_utc()
+    age_minutes = (current_time - created).total_seconds() / 60
+    if age_minutes < SIGNAL_JOURNAL_EVAL_MINUTES:
+        return entry
+
+    signal = entry.get("signal")
+    price = float(entry.get("price") or 0)
+    quality = entry.get("quality_percent")
+    no_entry = bool(entry.get("no_entry"))
+    if signal not in ["LONG", "SHORT"] or price <= 0:
+        entry["result_status"] = "SKIPPED"
+        entry["result_note"] = "сигнал був без лонг/шорт напрямку"
+        entry["evaluated_at"] = current_time.isoformat()
+        return entry
+
+    diff_pct = ((current_price - price) / price) * 100
+    entry["result_price"] = current_price
+    entry["result_diff_pct"] = round(diff_pct, 3)
+    entry["evaluated_at"] = current_time.isoformat()
+
+    moved_with_signal = (signal == "LONG" and diff_pct >= 0.35) or (signal == "SHORT" and diff_pct <= -0.35)
+    moved_against_signal = (signal == "LONG" and diff_pct <= -0.35) or (signal == "SHORT" and diff_pct >= 0.35)
+
+    if no_entry:
+        if moved_against_signal:
+            entry["result_status"] = "NO_ENTRY_SAVED"
+            entry["result_note"] = "добре, що не входили — ціна пішла проти напрямку"
+        elif moved_with_signal:
+            entry["result_status"] = "MISSED_MOVE"
+            entry["result_note"] = "рух пішов у правильний бік, але бот не давав входу"
+        else:
+            entry["result_status"] = "GOOD_NO_ENTRY"
+            entry["result_note"] = "правильно чекали — сильного руху не було"
+        return entry
+
+    if moved_with_signal:
+        entry["result_status"] = "GOOD"
+        entry["result_note"] = "сигнал пішов у правильний бік"
+    elif moved_against_signal:
+        entry["result_status"] = "BAD"
+        entry["result_note"] = "сигнал пішов проти напрямку"
+    else:
+        entry["result_status"] = "FLAT"
+        entry["result_note"] = "через 1г сильного руху не було"
+
+    return entry
+
+def update_signal_journal_results(journal, current_price):
+    journal = journal or {"signals": []}
+    updated = []
+    changed = False
+    current_time = now_utc()
+
+    for entry in journal.get("signals", []):
+        before = entry.get("result_status")
+        evaluated = evaluate_journal_entry(entry, current_price, current_time)
+        if evaluated.get("result_status") != before:
+            changed = True
+        updated.append(evaluated)
+
+    journal["signals"] = updated[-SIGNAL_JOURNAL_LIMIT:]
+    return journal, changed
+
+def build_signal_journal_entry(signal, signal_type, price, confidence, quality_percent, plan=None, tech=None, news=None, event_risk=None, orderflow=None, late_entry=None, cooling=None):
+    plan = plan if isinstance(plan, dict) else {}
+    no_entry = signal not in ["LONG", "SHORT"] or quality_percent is None or quality_percent < 65
+    return {
+        "id": now_utc().strftime("%Y%m%d%H%M%S"),
+        "time": now_utc().isoformat(),
+        "signal": signal,
+        "signal_type": signal_type,
+        "price": price,
+        "confidence": confidence,
+        "quality_percent": quality_percent,
+        "no_entry": no_entry,
+        "entry": plan.get("entry"),
+        "stop": plan.get("stop"),
+        "tp1": plan.get("tp1"),
+        "tp2": plan.get("tp2"),
+        "tp3": plan.get("tp3"),
+        "tech_score": (tech or {}).get("score"),
+        "news_score": (news or {}).get("score"),
+        "event_direction": (event_risk or {}).get("direction"),
+        "orderflow_score": (orderflow or {}).get("score"),
+        "late_entry": bool((late_entry or {}).get("late")),
+        "cooling": bool((cooling or {}).get("active")),
+        "result_status": None,
+        "result_note": None,
+    }
+
+def append_signal_journal(journal, entry):
+    signals = (journal or {}).get("signals", [])
+    signals.append(entry)
+    return {
+        "updated_at": now_utc().isoformat(),
+        "limit": SIGNAL_JOURNAL_LIMIT,
+        "signals": signals[-SIGNAL_JOURNAL_LIMIT:],
+    }
+
+def signal_journal_stats_text(journal, hours=24):
+    signals = (journal or {}).get("signals", [])
+    if not signals:
+        return ""
+
+    cutoff = now_utc() - timedelta(hours=hours)
+    recent = []
+    for item in signals:
+        dt = parse_iso_datetime(item.get("time"))
+        if dt and dt >= cutoff:
+            recent.append(item)
+
+    evaluated = [x for x in recent if x.get("result_status")]
+    if len(evaluated) < 3:
+        return ""
+
+    good = sum(1 for x in evaluated if x.get("result_status") == "GOOD")
+    bad = sum(1 for x in evaluated if x.get("result_status") == "BAD")
+    saved = sum(1 for x in evaluated if x.get("result_status") == "NO_ENTRY_SAVED")
+    missed = sum(1 for x in evaluated if x.get("result_status") == "MISSED_MOVE")
+
+    return (
+        f"<b>Статистика {hours}г:</b> сигналів {len(evaluated)}, "
+        f"хороших {good}, поганих {bad}, не входити врятувало {saved}, пропущено рухів {missed}"
+    )
 
 
 def get_signal_history(memory):
@@ -5576,6 +5757,9 @@ def main():
 
     signal_memory = load_signal_memory()
     previous_signal_note = memory_status_note(signal_memory, tv["price"])
+    signal_journal = load_signal_journal()
+    signal_journal, _ = update_signal_journal_results(signal_journal, tv["price"])
+    journal_stats_note = signal_journal_stats_text(signal_journal)
 
     fresh_news = get_all_fresh_news()
     event_items = get_event_news()
@@ -5809,6 +5993,26 @@ def main():
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
     )
+
+    current_journal_entry = build_signal_journal_entry(
+        signal=signal,
+        signal_type=signal_type,
+        price=tv["price"],
+        confidence=confidence,
+        quality_percent=current_quality_percent,
+        plan=plan,
+        tech=tech,
+        news=news,
+        event_risk=event_risk,
+        orderflow=orderflow,
+        late_entry=late_entry,
+        cooling=cooling,
+    )
+    signal_journal = append_signal_journal(signal_journal, current_journal_entry)
+    save_signal_journal(signal_journal)
+
+    if journal_stats_note and journal_stats_note not in message:
+        message = message.strip() + "\n\n" + journal_stats_note
 
     updated_memory = append_signal_memory(
         signal_memory,
