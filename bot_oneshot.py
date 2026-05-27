@@ -1989,6 +1989,52 @@ def keyword_score(title, words):
     lower = title.lower()
     return sum(1 for word in words if word in lower)
 
+NEWS_CONTEXT_RULES = [
+    (["sanctions lifted", "sanctions relief", "waives sanctions", "ease sanctions", "removes sanctions"], "SHORT", 18),
+    (["new sanctions", "fresh sanctions", "tightens sanctions", "sanctions imposed"], "LONG", 18),
+    (["ceasefire talks fail", "talks collapse", "deal rejected", "hormuz threat", "supply disruption"], "LONG", 18),
+    (["ceasefire deal", "peace deal", "talks progress", "de-escalation"], "SHORT", 16),
+    (["opec cut", "opec+ cut", "output cut", "production cut"], "LONG", 18),
+    (["opec increase", "output increase", "production increase", "supply increase"], "SHORT", 18),
+    (["crude draw", "inventory draw", "stockpiles fell"], "LONG", 16),
+    (["crude build", "inventory build", "stockpiles rose"], "SHORT", 16),
+]
+
+def contextual_headline_score(title):
+    """Score news by phrases first, then keywords.
+
+    Oil headlines often invert meaning: "sanctions lifted" is bearish even
+    though the word "sanctions" alone looks bullish.
+    """
+    lower = title.lower()
+    long_score = 0
+    short_score = 0
+    matched = False
+
+    for phrases, side, points in NEWS_CONTEXT_RULES:
+        if any(phrase in lower for phrase in phrases):
+            matched = True
+            if side == "LONG":
+                long_score += points
+            else:
+                short_score += points
+
+    bull_hits = keyword_score(lower, BULLISH_WORDS)
+    bear_hits = keyword_score(lower, BEARISH_WORDS)
+
+    # Context phrases dominate; keywords become a small extra only.
+    keyword_weight = 2 if matched else 6
+    long_score += bull_hits * keyword_weight
+    short_score += bear_hits * keyword_weight
+
+    return {
+        "long_score": long_score,
+        "short_score": short_score,
+        "bull_hits": bull_hits,
+        "bear_hits": bear_hits,
+        "matched_context": matched,
+    }
+
 def directional_news_adjustment(title):
     lower = title.lower()
     if any(word in lower for word in BULLISH_GEO_WORDS):
@@ -1998,10 +2044,9 @@ def directional_news_adjustment(title):
     return 0
 
 def headline_direction(title):
-    lower = title.lower()
-
-    long_hits = keyword_score(lower, BULLISH_WORDS) + keyword_score(lower, EVENT_LONG_WORDS)
-    short_hits = keyword_score(lower, BEARISH_WORDS) + keyword_score(lower, EVENT_SHORT_WORDS)
+    context = contextual_headline_score(title)
+    long_hits = context["long_score"] + keyword_score(title.lower(), EVENT_LONG_WORDS)
+    short_hits = context["short_score"] + keyword_score(title.lower(), EVENT_SHORT_WORDS)
 
     if long_hits > short_hits:
         return "LONG", "заголовок вказує на ризик дефіциту/санкцій/зростання нафти"
@@ -2037,20 +2082,21 @@ def analyze_news(news):
         title = item["title"]
         weight = item.get("weight", 1.0)
 
-        bull_hits = keyword_score(title, BULLISH_WORDS)
-        bear_hits = keyword_score(title, BEARISH_WORDS)
+        context = contextual_headline_score(title)
+        bull_hits = context["bull_hits"]
+        bear_hits = context["bear_hits"]
         impact_hits = keyword_score(title, HIGH_IMPACT_WORDS)
         breaking_hits = keyword_score(title, BREAKING_WORDS)
         directional = directional_news_adjustment(title)
 
         item_score = 0
 
-        if bull_hits:
+        if context["long_score"] > context["short_score"]:
             bullish += 1
-            item_score += 6 * bull_hits * weight
-        if bear_hits:
+            item_score += (context["long_score"] - context["short_score"]) * weight
+        elif context["short_score"] > context["long_score"]:
             bearish += 1
-            item_score -= 6 * bear_hits * weight
+            item_score -= (context["short_score"] - context["long_score"]) * weight
         if directional > 0:
             bullish += 1
             item_score += directional * weight
@@ -2536,13 +2582,13 @@ def smc_compact_text(smc):
     return "Структура: без підтвердження"
 
 def quick_backtest_smoke(candles, lookback=80):
-    """Small health-check backtest for GitHub logs.
+    """Small signal health-check for GitHub logs.
 
     It is not a trading system. It only checks whether recent momentum signals
     had follow-through on the same OKX 15m data.
     """
     if not candles or len(candles) < 40:
-        return {"available": False, "summary": "Backtest: not enough candles"}
+        return {"available": False, "summary": "Signal health-check: not enough candles"}
 
     sample = candles[-lookback:]
     wins = 0
@@ -2587,7 +2633,7 @@ def quick_backtest_smoke(candles, lookback=80):
         "wins": wins,
         "losses": losses,
         "winrate": winrate,
-        "summary": f"Backtest smoke: {wins}/{total} wins, winrate {winrate}% ({signals} setups)",
+        "summary": f"Signal health-check: {wins}/{total} wins, winrate {winrate}% ({signals} simple setups)",
     }
 
 def detect_swing_points(candles, lookback=2):
@@ -3626,21 +3672,45 @@ def format_watch_plan(signal, plan, entry_watch):
     if not plan or not isinstance(plan, dict) or plan.get("stop") is None:
         return entry_watch.get("text", "")
 
+    def fnum(value):
+        try:
+            return round(float(value), 4)
+        except Exception:
+            return value
+
+    trigger = safe_float(entry_watch.get("trigger"))
+    retest = safe_float(entry_watch.get("retest"))
+    stop = safe_float(plan.get("stop"))
+    if not trigger or not stop:
+        return entry_watch.get("text", "")
+
     if signal == "LONG":
         direction_text = "Лонг"
-        trigger_text = f"вище {entry_watch.get('trigger')}"
-        retest_text = f"відкат біля {entry_watch.get('retest')}"
+        trigger_text = f"вище {fnum(trigger)}"
+        retest_text = f"відкат біля {fnum(retest)}"
         invalid_text = f"нижче {entry_watch.get('invalid')}"
+        if stop >= trigger:
+            stop = min(safe_float(entry_watch.get("invalid")) or stop, trigger * 0.995)
+        risk = max(trigger - stop, trigger * 0.0025)
+        tp1 = trigger + risk * 1.0
+        tp2 = trigger + risk * 1.5
+        tp3 = trigger + risk * 2.2
     else:
         direction_text = "Шорт"
-        trigger_text = f"нижче {entry_watch.get('trigger')}"
-        retest_text = f"відкат біля {entry_watch.get('retest')}"
+        trigger_text = f"нижче {fnum(trigger)}"
+        retest_text = f"відкат біля {fnum(retest)}"
         invalid_text = f"вище {entry_watch.get('invalid')}"
+        if stop <= trigger:
+            stop = max(safe_float(entry_watch.get("invalid")) or stop, trigger * 1.005)
+        risk = max(stop - trigger, trigger * 0.0025)
+        tp1 = trigger - risk * 1.0
+        tp2 = trigger - risk * 1.5
+        tp3 = trigger - risk * 2.2
 
     return (
         f"Не входити без тригера. {direction_text}: зона {trigger_text} або {retest_text}. "
-        f"Стоп: {plan.get('stop')} | TP1: {plan.get('tp1')} | TP2: {plan.get('tp2')} | "
-        f"TP3: {plan.get('tp3')} | Скасування: {invalid_text}."
+        f"Стоп: {fnum(stop)} | TP1: {fnum(tp1)} | TP2: {fnum(tp2)} | "
+        f"TP3: {fnum(tp3)} | Скасування: {invalid_text}."
     )
 
 def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch):
@@ -5010,7 +5080,28 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
     if tech.get("trend") == "UP" and signal == "SHORT":
         risk_note = "Тільки скальп: старший тренд не підтвердив SHORT"
 
-    confidence = min(95, max(0, abs(score)))
+    # Confidence is not the raw score. Raw score can be inflated by correlated
+    # indicators, so confidence is based on independent agreement/conflict.
+    aligned_sources = 0
+    conflict_sources = 0
+    if signal in ["LONG", "SHORT"]:
+        component_sides = [
+            side_from_score(tech.get("score", 0), 35, -35),
+            side_from_score(news.get("score", 0), 20, -20),
+            side_from_score(orderflow.get("score", 0), 15, -15),
+            side_from_score(macro.get("score", 0), 20, -20),
+            event_risk.get("direction", "MIXED"),
+            oi_analysis.get("side", "NEUTRAL"),
+        ]
+        for side in component_sides:
+            if side == signal:
+                aligned_sources += 1
+            elif side in ["LONG", "SHORT"] and side != signal:
+                conflict_sources += 1
+        confidence = 52 + aligned_sources * 7 - conflict_sources * 8 + min(12, abs(score) // 12)
+        confidence = min(88, max(45, int(confidence)))
+    else:
+        confidence = min(82, max(45, 55 + abs(score) // 6))
 
     return signal, signal_type, score, confidence, risk_note
 
@@ -7315,7 +7406,7 @@ def main():
         confidence = min(confidence, 50)
     elif current_truth_filter.get('bonus'):
         score += current_truth_filter.get('bonus', 0)
-        confidence = min(95, max(0, abs(score)))
+        confidence = min(88, confidence + min(6, abs(current_truth_filter.get('bonus', 0))))
 
     early_entry = early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market, session)
     if early_entry.get("active"):
