@@ -453,20 +453,16 @@ def build_current_signal_memory(signal, signal_type, price, confidence, quality_
 
 
 def memory_status_note(memory, current_price):
-    """Always return a Telegram-visible memory line.
-
-    Before this function, memory was silent when history was empty, so the user
-    could not see whether memory worked or whether it simply had no data.
-    """
+    """Return memory follow-up only when there is a useful trade history note."""
     history = get_signal_history(memory)
     if not history:
-        return "<b>Памʼять 1г:</b> ще немає попередніх сигналів для оцінки"
+        return ""
 
     note = evaluate_previous_signal(memory, current_price)
     if note:
         return note
 
-    return "<b>Памʼять 1г:</b> історія є, але немає LONG/SHORT сигналів для оцінки"
+    return ""
 
 
 
@@ -480,7 +476,7 @@ def position_follow_note(memory, current_price, tech=None):
     history = get_signal_history(memory)
 
     if not history:
-        return "<b>Супровід:</b> активної позиції в памʼяті ще немає"
+        return ""
 
     # Find the last real LONG/SHORT signal with an entry price.
     last_trade = None
@@ -490,7 +486,7 @@ def position_follow_note(memory, current_price, tech=None):
             break
 
     if not last_trade:
-        return "<b>Супровід:</b> активної LONG/SHORT позиції в памʼяті немає"
+        return ""
 
     side = last_trade.get("signal")
     entry = float(last_trade.get("entry") or last_trade.get("price"))
@@ -3930,6 +3926,76 @@ def format_driver_source(driver):
         return source
     return "не вказано"
 
+def driver_side(driver):
+    text = f"{(driver or {}).get('type', '')} {(driver or {}).get('expectation', '')}".upper()
+    has_long = "LONG" in text
+    has_short = "SHORT" in text
+    if has_long and not has_short:
+        return "LONG"
+    if has_short and not has_long:
+        return "SHORT"
+    return "NEUTRAL"
+
+def technical_reason_text(signal, technical_bias, smc=None, tech=None):
+    tech_side = short_bias_label((technical_bias or {}).get("side", "NEUTRAL"))
+    tech_score = (technical_bias or {}).get("score", 0)
+    smc_bias = (smc or {}).get("bias", "NEUTRAL")
+    micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+
+    parts = []
+    if signal in ["LONG", "SHORT"]:
+        if signal in tech_side:
+            parts.append("TECH")
+        if smc_bias == signal:
+            parts.append("SMC")
+        if micro_bias == signal:
+            parts.append("3m")
+
+    if parts:
+        return f"{'/'.join(parts)} за {signal} (TECH {tech_score})"
+    if "LONG" in tech_side or "SHORT" in tech_side:
+        return f"TECH {tech_side} ({tech_score}) задає напрямок"
+    if signal in ["LONG", "SHORT"]:
+        return f"{signal} сценарій активний, але чекати підтвердження"
+    return "перевага нечітка — краще чекати"
+
+def signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk):
+    if signal not in ["LONG", "SHORT"]:
+        return ""
+
+    opposite = "SHORT" if signal == "LONG" else "LONG"
+    driver_direction = driver_side(driver)
+    fund_side = (fundamental_bias or {}).get("side", "NEUTRAL")
+    event_side = (event_risk or {}).get("direction", "MIXED")
+
+    if driver_direction == opposite or opposite in fund_side or event_side == opposite:
+        return f"{opposite} новини/події проти {signal}, але ціна їх не підтверджує — пріоритет у price action"
+    return ""
+
+def align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc=None, tech=None):
+    conflict = signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk)
+    if not conflict:
+        return driver
+
+    if signal == "SHORT":
+        summary = "Сильний технічний продаж перекриває LONG-новини"
+        expectation = "SHORT — не входити по ринку, чекати ретест/утримання або закріплення нижче рівня"
+    elif signal == "LONG":
+        summary = "Сильний технічний попит перекриває SHORT-новини"
+        expectation = "LONG — не входити по ринку, чекати ретест/утримання або закріплення вище рівня"
+    else:
+        return driver
+
+    return {
+        "type": f"TECH / {signal}",
+        "summary": summary,
+        "time": "зараз",
+        "expectation": expectation,
+        "source": "Price action / SMC / 3m",
+        "link": "",
+    }
+
 def reversal_display_label(signal, reversal):
     side = (reversal or {}).get("side", "NONE")
     conf = (reversal or {}).get("confidence", 0)
@@ -4498,6 +4564,9 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     # It must show the real market direction (LONG/SHORT), not the internal signal value.
     # Example: signal can be "НЕЙТРАЛЬНО", while decision is "Чекаємо підтвердження LONG".
     decision_upper = str(decision).upper()
+    conflict_note = signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk)
+    driver = align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc, tech)
+    main_reason = technical_reason_text(signal, technical_bias, smc, tech) if signal in ["LONG", "SHORT"] else driver.get("summary", "перевага нечітка — краще чекати")
     driver_text = f"{driver.get('type', '')} {driver.get('expectation', '')} {driver.get('summary', '')}".upper()
 
     if signal in ["LONG", "SHORT"]:
@@ -4534,17 +4603,15 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>{global_trend_text(tech or {}, market_bias)}</b>",
         f"<b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
         "",
-        "<b>Драйвер:</b>",
-        f"{driver['type']}",
-        f"{driver['summary']}",
-        f"<b>Час:</b> {driver['time']}",
-        f"<b>Очікування:</b> {driver['expectation']}",
-        f"<b>Джерело:</b> {format_driver_source(driver)}",
+        f"<b>Головна причина:</b> {main_reason}",
         "",
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         "",
         f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
         f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
+
+    if conflict_note:
+        lines.insert(12, f"<b>Конфлікт:</b> {conflict_note}")
 
     smc_note = smc_conflict_note(smc)
     if smc_note:
