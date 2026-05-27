@@ -335,9 +335,164 @@ def parse_iso_datetime(value):
     except Exception:
         return None
 
-def evaluate_journal_entry(entry, current_price, current_time=None):
-    if not entry or entry.get("result_status"):
+def safe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+def candle_time(candle):
+    ts = (candle or {}).get("ts")
+    if ts is None:
+        return None
+    try:
+        ts = int(ts)
+        if ts > 10_000_000_000:
+            ts = ts / 1000
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except Exception:
+        return None
+
+def candles_after_time(candles, created, lookback_minutes=20):
+    if not candles or not created:
+        return []
+    start_time = created - timedelta(minutes=lookback_minutes)
+    selected = []
+    for candle in candles:
+        ctime = candle_time(candle)
+        if ctime and ctime >= start_time:
+            selected.append(candle)
+    return selected
+
+def evaluate_tp_sl_journal_entry(entry, candles, current_price, current_time=None):
+    """Evaluate actionable journal entries using stored entry/SL/TP levels."""
+    if not entry:
         return entry
+    if entry.get("result_status") and entry.get("result_status") not in ["ACTIVE", "ENTRY_NOT_TRIGGERED"]:
+        return entry
+
+    signal = entry.get("signal")
+    if signal not in ["LONG", "SHORT"]:
+        return None
+
+    no_entry = bool(entry.get("no_entry"))
+    if no_entry:
+        return None
+
+    created = parse_iso_datetime(entry.get("time"))
+    if not created:
+        return None
+
+    current_time = current_time or now_utc()
+    age_minutes = (current_time - created).total_seconds() / 60
+    if age_minutes < SIGNAL_JOURNAL_EVAL_MINUTES:
+        return entry
+
+    signal_price = safe_float(entry.get("price"))
+    entry_price = safe_float(entry.get("entry")) or signal_price
+    stop = safe_float(entry.get("stop"))
+    tp1 = safe_float(entry.get("tp1"))
+    tp2 = safe_float(entry.get("tp2"))
+    tp3 = safe_float(entry.get("tp3"))
+    if not entry_price or not stop:
+        return None
+
+    watch_candles = candles_after_time(candles, created)
+    if not watch_candles:
+        return None
+
+    activated = bool(signal_price and abs(entry_price - signal_price) / signal_price <= 0.0025)
+    activated_at = created.isoformat() if activated else None
+    best_tp = 0
+    best_tp_price = None
+    stopped = False
+    stopped_after_tp = False
+
+    def hit_entry(candle):
+        return candle.get("low", 0) <= entry_price <= candle.get("high", 0)
+
+    def hit_stop(candle):
+        return candle.get("low", 0) <= stop if signal == "LONG" else candle.get("high", 0) >= stop
+
+    def hit_tp(candle, level):
+        if not level:
+            return False
+        return candle.get("high", 0) >= level if signal == "LONG" else candle.get("low", 0) <= level
+
+    for candle in watch_candles:
+        if not activated and hit_entry(candle):
+            activated = True
+            ctime = candle_time(candle)
+            activated_at = ctime.isoformat() if ctime else current_time.isoformat()
+
+        if not activated:
+            continue
+
+        # Conservative for same-candle ambiguity: stop first if no TP was hit yet.
+        stop_hit = hit_stop(candle)
+        tp_hits = []
+        for idx, level in [(1, tp1), (2, tp2), (3, tp3)]:
+            if hit_tp(candle, level):
+                tp_hits.append((idx, level))
+
+        if stop_hit and not tp_hits and best_tp == 0:
+            stopped = True
+            break
+
+        if tp_hits:
+            idx, level = max(tp_hits, key=lambda x: x[0])
+            if idx > best_tp:
+                best_tp = idx
+                best_tp_price = level
+
+        if stop_hit:
+            stopped = True
+            stopped_after_tp = best_tp > 0
+            break
+
+    entry["entry_activated"] = activated
+    entry["entry_activated_at"] = activated_at
+    entry["evaluated_at"] = current_time.isoformat()
+    entry["result_price"] = current_price
+    if signal_price:
+        entry["result_diff_pct"] = round(((current_price - signal_price) / signal_price) * 100, 3)
+
+    if not activated:
+        entry["result_status"] = "ENTRY_NOT_TRIGGERED"
+        entry["result_note"] = "вхід не активувався"
+        return entry
+
+    if best_tp >= 3:
+        entry["result_status"] = "TP3"
+        entry["result_note"] = "TP3 взято"
+    elif best_tp == 2:
+        entry["result_status"] = "TP2"
+        entry["result_note"] = "TP2 взято" + ("; потім був стоп" if stopped_after_tp else "")
+    elif best_tp == 1:
+        entry["result_status"] = "TP1"
+        entry["result_note"] = "TP1 взято" + ("; потім був стоп" if stopped_after_tp else "")
+    elif stopped:
+        entry["result_status"] = "STOP"
+        entry["result_note"] = "стоп вибило"
+    else:
+        entry["result_status"] = "ACTIVE"
+        entry["result_note"] = "угода ще активна"
+
+    entry["best_tp"] = best_tp
+    entry["best_tp_price"] = best_tp_price
+    return entry
+
+def evaluate_journal_entry(entry, current_price, current_time=None, candles=None):
+    if not entry:
+        return entry
+    if entry.get("result_status") and entry.get("result_status") not in ["ACTIVE", "ENTRY_NOT_TRIGGERED"]:
+        return entry
+
+    tp_sl_result = evaluate_tp_sl_journal_entry(entry, candles or [], current_price, current_time)
+    if isinstance(tp_sl_result, dict) and tp_sl_result.get("result_status"):
+        return tp_sl_result
 
     created = parse_iso_datetime(entry.get("time"))
     if not created:
@@ -418,7 +573,7 @@ def infer_market_direction(signal, signal_type=None, tech=None, technical_bias=N
         return "LONG"
     return "NEUTRAL"
 
-def update_signal_journal_results(journal, current_price):
+def update_signal_journal_results(journal, current_price, candles=None):
     journal = journal or {"signals": []}
     updated = []
     changed = False
@@ -426,7 +581,7 @@ def update_signal_journal_results(journal, current_price):
 
     for entry in journal.get("signals", []):
         before = entry.get("result_status")
-        evaluated = evaluate_journal_entry(entry, current_price, current_time)
+        evaluated = evaluate_journal_entry(entry, current_price, current_time, candles)
         if evaluated.get("result_status") != before:
             changed = True
         updated.append(evaluated)
@@ -539,6 +694,12 @@ def signal_journal_stats_text(journal, hours=24):
 
     good = sum(1 for x in evaluated if x.get("result_status") == "GOOD")
     bad = sum(1 for x in evaluated if x.get("result_status") == "BAD")
+    tp1 = sum(1 for x in evaluated if x.get("result_status") == "TP1")
+    tp2 = sum(1 for x in evaluated if x.get("result_status") == "TP2")
+    tp3 = sum(1 for x in evaluated if x.get("result_status") == "TP3")
+    stop = sum(1 for x in evaluated if x.get("result_status") == "STOP")
+    active = sum(1 for x in evaluated if x.get("result_status") == "ACTIVE")
+    not_triggered = sum(1 for x in evaluated if x.get("result_status") == "ENTRY_NOT_TRIGGERED")
     saved = sum(1 for x in evaluated if x.get("result_status") == "NO_ENTRY_SAVED")
     missed = sum(1 for x in evaluated if x.get("result_status") == "MISSED_MOVE")
     waited_ok = sum(1 for x in evaluated if x.get("result_status") == "GOOD_NO_ENTRY")
@@ -547,8 +708,9 @@ def signal_journal_stats_text(journal, hours=24):
 
     return (
         f"<b>Статистика {hours}г:</b> оцінено {len(evaluated)} | "
-        f"вхід ок {good}, погано {bad}, чекати було правильно {saved + waited_ok}, "
-        f"пропущено рух {missed}, без сильного руху {flat}, без напрямку {skipped}"
+        f"TP1/2/3 {tp1}/{tp2}/{tp3}, стоп {stop}, активні {active}, "
+        f"не актив. {not_triggered}, напрям ок {good}, погано {bad}, "
+        f"чекати ок {saved + waited_ok}, пропущено {missed}, флет {flat}, без напр. {skipped}"
     )
 
 def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4):
@@ -582,13 +744,22 @@ def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4
 
     good = sum(1 for x in matches if x.get("result_status") == "GOOD")
     bad = sum(1 for x in matches if x.get("result_status") == "BAD")
+    tp1 = sum(1 for x in matches if x.get("result_status") == "TP1")
+    tp2 = sum(1 for x in matches if x.get("result_status") == "TP2")
+    tp3 = sum(1 for x in matches if x.get("result_status") == "TP3")
+    stop = sum(1 for x in matches if x.get("result_status") == "STOP")
     saved = sum(1 for x in matches if x.get("result_status") == "NO_ENTRY_SAVED")
     missed = sum(1 for x in matches if x.get("result_status") == "MISSED_MOVE")
     no_entry_good = sum(1 for x in matches if x.get("result_status") == "GOOD_NO_ENTRY")
     flat = sum(1 for x in matches if x.get("result_status") == "FLAT")
     skipped = sum(1 for x in matches if x.get("result_status") == "SKIPPED")
 
-    if saved + no_entry_good >= max(good + missed, bad):
+    tp_total = tp1 + tp2 + tp3
+    if tp_total > stop and tp_total >= max(1, missed):
+        conclusion = "схожі входи частіше брали тейк"
+    elif stop > tp_total:
+        conclusion = "схожі входи часто били стоп"
+    elif saved + no_entry_good >= max(good + missed, bad):
         conclusion = "частіше краще чекати"
     elif good > bad:
         conclusion = "частіше напрямок відпрацьовував"
@@ -599,7 +770,7 @@ def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4
 
     return (
         f"<b>Схожі ситуації:</b> {len(matches)} | "
-        f"вхід ок {good}, погано {bad}, чекати було правильно {saved + no_entry_good}, "
+        f"TP {tp_total}, стоп {stop}, вхід ок {good}, погано {bad}, чекати було правильно {saved + no_entry_good}, "
         f"пропущено {missed}, без сильного руху {flat}, без напрямку {skipped}. "
         f"Висновок: {conclusion}."
     )
@@ -6857,8 +7028,6 @@ def main():
     signal_memory = load_signal_memory()
     previous_signal_note = memory_status_note(signal_memory, tv["price"])
     signal_journal = load_signal_journal()
-    signal_journal, _ = update_signal_journal_results(signal_journal, tv["price"])
-    journal_stats_note = signal_journal_stats_text(signal_journal)
 
     fresh_news = get_all_fresh_news()
     event_items = get_event_news()
@@ -6866,6 +7035,8 @@ def main():
     tech = analyze_technical(tv)
     
     real_candles = get_real_candles()
+    signal_journal, _ = update_signal_journal_results(signal_journal, tv["price"], real_candles)
+    journal_stats_note = signal_journal_stats_text(signal_journal)
     backtest_smoke = quick_backtest_smoke(real_candles)
     smc = analyze_smc_structure(real_candles)
 
