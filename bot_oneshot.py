@@ -1657,28 +1657,33 @@ def price_structure_priority_override(signal, signal_type, confidence, score, te
     micro_bias = micro.get("bias", "NEUTRAL")
     micro_state = micro.get("state", "RANGE")
 
+    # Strong enough to block opposite news/event bias.
+    # Important: if TECH is already SHORT and 3m does not confirm LONG,
+    # the bot must not keep saying "wait LONG".
     strong_chart_short = (
-        tech_score <= -70
+        tech_score <= -55
         or smc_bias == "SHORT"
-        or smc_score <= -22
+        or smc_score <= -18
         or micro_bias == "SHORT"
         or micro_state == "SHORT_STRENGTHENING"
         or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-        or change <= -0.65
+        or (change <= -0.45 and micro_bias != "LONG")
     )
 
     strong_chart_long = (
-        tech_score >= 70
+        tech_score >= 55
         or smc_bias == "LONG"
-        or smc_score >= 22
+        or smc_score >= 18
         or micro_bias == "LONG"
         or micro_state == "LONG_STRENGTHENING"
         or momentum in ["STRONG UP", "VERY STRONG UP"]
-        or change >= 0.65
+        or (change >= 0.45 and micro_bias != "SHORT")
     )
 
     if signal == "LONG" and strong_chart_short:
-        if smc_bias == "SHORT" or micro_bias == "SHORT" or tech_score <= -80:
+        # If chart is clearly SHORT, convert to SHORT-watch.
+        # If it is only conflict, block LONG into neutral.
+        if smc_bias == "SHORT" or micro_bias == "SHORT" or tech_score <= -55 or (change <= -0.45 and micro_bias != "LONG"):
             return {
                 "signal": "SHORT",
                 "signal_type": "PRICE ACTION SHORT / NEWS CONFLICT",
@@ -1695,7 +1700,7 @@ def price_structure_priority_override(signal, signal_type, confidence, score, te
         }
 
     if signal == "SHORT" and strong_chart_long:
-        if smc_bias == "LONG" or micro_bias == "LONG" or tech_score >= 80:
+        if smc_bias == "LONG" or micro_bias == "LONG" or tech_score >= 55 or (change >= 0.45 and micro_bias != "SHORT"):
             return {
                 "signal": "LONG",
                 "signal_type": "PRICE ACTION LONG / NEWS CONFLICT",
