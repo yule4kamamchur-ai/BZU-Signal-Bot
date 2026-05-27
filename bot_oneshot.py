@@ -2118,9 +2118,9 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
         invalid = round(invalid, 4)
 
         text = (
-            f"Готуємось до LONG — не входити по ринку. "
-            f"Умова входу: закріплення вище {trigger} або ретест/утримання {pullback_zone}. "
-            f"Сценарій скасовується: нижче {invalid}."
+            f"Зараз не входити. "
+            f"Ріст можна брати тільки якщо ціна закріпиться вище {trigger} або втримає відкат біля {pullback_zone}. "
+            f"Скасування: нижче {invalid}."
         )
 
     else:
@@ -2135,9 +2135,9 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
         invalid = round(invalid, 4)
 
         text = (
-            f"Готуємось до SHORT — не входити по ринку. "
-            f"Умова входу: закріплення нижче {trigger} або ретест/утримання {pullback_zone}. "
-            f"Сценарій скасовується: вище {invalid}."
+            f"Зараз не входити. "
+            f"Падіння можна брати тільки якщо ціна закріпиться нижче {trigger} або втримає відкат біля {pullback_zone}. "
+            f"Скасування: вище {invalid}."
         )
 
     return {
@@ -3936,28 +3936,56 @@ def driver_side(driver):
         return "SHORT"
     return "NEUTRAL"
 
+def simple_direction_word(signal):
+    if signal == "LONG":
+        return "ріст"
+    if signal == "SHORT":
+        return "падіння"
+    return "рух"
+
+def simple_opposite_action(signal):
+    if signal == "LONG":
+        return "не падає"
+    if signal == "SHORT":
+        return "не росте"
+    return "не підтверджує"
+
+def simple_bias_label(side):
+    side = side or "NEUTRAL"
+    if "STRONG LONG" in side:
+        return "сильний ріст"
+    if "LONG" in side:
+        return "ріст"
+    if "STRONG SHORT" in side:
+        return "сильне падіння"
+    if "SHORT" in side:
+        return "падіння"
+    return "нейтрально"
+
 def technical_reason_text(signal, technical_bias, smc=None, tech=None):
     tech_side = short_bias_label((technical_bias or {}).get("side", "NEUTRAL"))
     tech_score = (technical_bias or {}).get("score", 0)
     smc_bias = (smc or {}).get("bias", "NEUTRAL")
     micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
     micro_bias = micro.get("bias", "NEUTRAL")
+    direction = simple_direction_word(signal)
 
     parts = []
     if signal in ["LONG", "SHORT"]:
         if signal in tech_side:
-            parts.append("TECH")
+            parts.append("графік")
         if smc_bias == signal:
-            parts.append("SMC")
+            parts.append("структура")
         if micro_bias == signal:
             parts.append("3m")
 
     if parts:
-        return f"{'/'.join(parts)} за {signal} (TECH {tech_score})"
+        verb = "показують" if len(parts) > 1 else "показує"
+        return f"{', '.join(parts)} {verb} {direction} ({tech_score})"
     if "LONG" in tech_side or "SHORT" in tech_side:
-        return f"TECH {tech_side} ({tech_score}) задає напрямок"
+        return f"графік задає напрямок ({tech_score})"
     if signal in ["LONG", "SHORT"]:
-        return f"{signal} сценарій активний, але чекати підтвердження"
+        return f"можливий рух на {direction}, але треба підтвердження"
     return "перевага нечітка — краще чекати"
 
 def signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk):
@@ -3970,7 +3998,8 @@ def signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event
     event_side = (event_risk or {}).get("direction", "MIXED")
 
     if driver_direction == opposite or opposite in fund_side or event_side == opposite:
-        return f"{opposite} новини/події проти {signal}, але ціна їх не підтверджує — пріоритет у price action"
+        news_direction = simple_direction_word(opposite)
+        return f"новини за {news_direction}, але ціна {simple_opposite_action(signal)} — зараз важливіший графік"
     return ""
 
 def align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc=None, tech=None):
@@ -3979,20 +4008,20 @@ def align_driver_with_final_signal(driver, signal, technical_bias, fundamental_b
         return driver
 
     if signal == "SHORT":
-        summary = "Сильний технічний продаж перекриває LONG-новини"
-        expectation = "SHORT — не входити по ринку, чекати ретест/утримання або закріплення нижче рівня"
+        summary = "Графік показує падіння, хоча новини за ріст"
+        expectation = "Не входити по ринку. Чекати відкат або пробій нижче рівня"
     elif signal == "LONG":
-        summary = "Сильний технічний попит перекриває SHORT-новини"
-        expectation = "LONG — не входити по ринку, чекати ретест/утримання або закріплення вище рівня"
+        summary = "Графік показує ріст, хоча новини за падіння"
+        expectation = "Не входити по ринку. Чекати відкат або пробій вище рівня"
     else:
         return driver
 
     return {
-        "type": f"TECH / {signal}",
+        "type": f"Графік / {simple_direction_word(signal)}",
         "summary": summary,
         "time": "зараз",
         "expectation": expectation,
-        "source": "Price action / SMC / 3m",
+        "source": "Графік / структура / 3m",
         "link": "",
     }
 
@@ -4160,10 +4189,33 @@ def entry_quality_scale(probability, late_entry=None):
     if probability < 55:
         return f"2/5 — тільки спостерігати ({probability}%){suffix}"
     if probability < 65:
-        return f"3/5 — готуємось до входу ({probability}%){suffix}"
+        return f"3/5 — чекати підтвердження ({probability}%){suffix}"
     if probability < 75:
         return f"4/5 — можна входити, тільки зі стопом ({probability}%){suffix}"
     return f"5/5 — найкращий вхід ({probability}%){suffix}"
+
+def simple_decision_text(signal, trade_probability, late_entry=None, cooling=None):
+    if signal not in ["LONG", "SHORT"]:
+        return None
+
+    direction = simple_direction_word(signal)
+    if trade_probability is None:
+        return f"Можливий {direction}, але сигналу на вхід немає"
+
+    if trade_probability < 50:
+        if late_entry and late_entry.get("late"):
+            return f"{direction.capitalize()} вже йде — зараз не входити"
+        return f"Можливий {direction}, але зараз не входити"
+
+    if trade_probability < 65:
+        if cooling and cooling.get("active"):
+            return f"{direction.capitalize()} можливий, але чекати відкат"
+        return f"Чекати {direction} — потрібне підтвердження"
+
+    if trade_probability < 75:
+        return f"Можна пробувати {direction}, тільки зі стопом"
+
+    return f"Сильний сигнал на {direction}, тільки зі стопом"
 
 def smc_conflict_note(smc):
     """Explain mixed SMC signals instead of showing contradictory пробій структури/volume silently."""
@@ -4185,11 +4237,13 @@ def smc_conflict_note(smc):
     bullish_candle = "bullish candle" in summary or "покупців" in summary or поглинання == "BULLISH ABSORPTION"
 
     if long_structure and (vol_bias == "SHORT" or bearish_candle):
-        return "SMC: змішано — структура LONG, але обсяг/свічка проти. LONG ще не підтверджений."
+        return "Структура змішана: напрямок вгору є, але свічка/обсяг проти. Ріст ще не підтверджений."
     if short_structure and (vol_bias == "LONG" or bullish_candle):
-        return "SMC: змішано — структура SHORT, але обсяг/свічка проти. SHORT ще не підтверджений."
-    if bias in ["LONG", "SHORT"]:
-        return f"SMC: {bias} підтвердження структури."
+        return "Структура змішана: напрямок вниз є, але свічка/обсяг проти. Падіння ще не підтверджене."
+    if bias == "LONG":
+        return "Структура підтверджує ріст."
+    if bias == "SHORT":
+        return "Структура підтверджує падіння."
     return "Структура: ще без чіткого підтвердження."
 
 def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None, tech=None):
@@ -4545,6 +4599,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         elif signal == "SHORT":
             decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
 
+    simple_decision = simple_decision_text(signal, trade_probability, late_entry, cooling)
+    if simple_decision:
+        decision = simple_decision
+
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
     if "різкий дамп" in decision.lower():
@@ -4587,15 +4645,15 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         market_bias = "НЕЙТРАЛЬНО"
 
     if market_bias in ["LONG", "SHORT"]:
-        market_bias_text = f"{market_bias} ({confidence}%)"
+        market_bias_text = f"{simple_direction_word(market_bias)} ({confidence}%)"
     else:
-        market_bias_text = "НЕЙТРАЛЬНО"
+        market_bias_text = "змішано"
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
         "",
         f"<b>Рішення:</b> {decision}",
-        f"<b>Напрямок ринку:</b> {market_bias_text}",
+        f"<b>Ринок:</b> {market_bias_text}",
         # Якість входу = наскільки хороший поточний сетап для входу
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry)}",
         "",
@@ -4607,8 +4665,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         "",
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         "",
-        f"<b>TECH:</b> {tech_label} ({technical_bias.get('score')})",
-        f"<b>NEWS:</b> {fund_label} ({fundamental_bias.get('score')})",    ]
+        f"<b>Графік:</b> {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
+        f"<b>Новини:</b> {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",    ]
 
     if conflict_note:
         lines.insert(12, f"<b>Конфлікт:</b> {conflict_note}")
@@ -5037,19 +5095,19 @@ def local_3m_status_text(micro, signal=None):
 
     if state == "LONG_STRENGTHENING":
         if signal == "SHORT":
-            return f"Локально 3m: SHORT слабшає — покупці активні ({score})"
-        return f"Локально 3m: LONG посилюється — покупці активні ({score})"
+            return f"Локально 3m: падіння слабшає — покупці активні ({score})"
+        return f"Локально 3m: ріст посилюється — покупці активні ({score})"
 
     if state == "SHORT_STRENGTHENING":
         if signal == "LONG":
-            return f"Локально 3m: LONG слабшає — продавці активні ({score})"
-        return f"Локально 3m: SHORT посилюється — продавці активні ({score})"
+            return f"Локально 3m: ріст слабшає — продавці активні ({score})"
+        return f"Локально 3m: падіння посилюється — продавці активні ({score})"
 
     if state == "LONG_COOLING":
-        return f"Локально 3m: LONG охолоджується — краще чекати ретест ({score})"
+        return f"Локально 3m: ріст охолоджується — краще чекати ретест ({score})"
 
     if state == "SHORT_COOLING":
-        return f"Локально 3m: SHORT охолоджується — можливий відскок ({score})"
+        return f"Локально 3m: падіння охолоджується — можливий відскок ({score})"
 
     return f"Локально 3m: боковик / немає чіткого входу ({score})"
 
@@ -5061,12 +5119,14 @@ def global_trend_text(tech, market_bias):
     trend_1h = tech.get("trend_1h", "UNKNOWN")
 
     if trend_15m == "UP" and trend_1h == "UP":
-        return "Глобально: LONG"
+        return "Загалом: ріст"
     if trend_15m == "DOWN" and trend_1h == "DOWN":
-        return "Глобально: SHORT"
-    if market_bias in ["LONG", "SHORT"]:
-        return f"Глобально: {market_bias}"
-    return "Глобально: змішано"
+        return "Загалом: падіння"
+    if market_bias == "LONG":
+        return "Загалом: ріст"
+    if market_bias == "SHORT":
+        return "Загалом: падіння"
+    return "Загалом: змішано"
 
 def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech):
     """Adjust confidence/quality by local 3m timing and state."""
