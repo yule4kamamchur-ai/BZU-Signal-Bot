@@ -3905,6 +3905,202 @@ def scalp_preparation_signal(tv, tech, smc, orderflow, news=None, event_risk=Non
 
     return {"active": False, "side": "NONE", "status": "", "text": "", "reason": ""}
 
+def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_risk=None, candles=None):
+    """Forward-looking chart layer.
+
+    It separates direction from entry timing:
+    - SETUP_FORMING: direction is forming, prepare only;
+    - TRIGGER: fresh break/retest with SMC/flow/news confirmation;
+    - LATE_NO_CHASE: direction is valid, but new entry is late.
+    """
+    tv = tv or {}
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    candles = candles or []
+
+    price = safe_float(tv.get("price"))
+    if not price:
+        return {
+            "available": False,
+            "side": "NEUTRAL",
+            "stage": "WAIT",
+            "status": "Графік: дані недоступні",
+            "note": "",
+            "quality_bonus": 0,
+            "late_override": False,
+            "no_chase": False,
+        }
+
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    micro_bias = micro.get("bias", "NEUTRAL")
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+
+    side = price_reaction_side(tech, orderflow)
+    if side not in ["LONG", "SHORT"]:
+        if smc_bias in ["LONG", "SHORT"]:
+            side = smc_bias
+        elif micro_bias in ["LONG", "SHORT"]:
+            side = micro_bias
+        elif tech_score >= 45:
+            side = "LONG"
+        elif tech_score <= -45:
+            side = "SHORT"
+        else:
+            side = "NEUTRAL"
+
+    if side not in ["LONG", "SHORT"]:
+        return {
+            "available": bool(candles),
+            "side": "NEUTRAL",
+            "stage": "WAIT",
+            "status": "Графік: чекати напрям",
+            "note": "немає чіткої бази/тригера",
+            "quality_bonus": 0,
+            "late_override": False,
+            "no_chase": False,
+        }
+
+    recent = candles[-18:] if len(candles) >= 18 else candles
+    base = candles[-12:-2] if len(candles) >= 14 else recent[:-2]
+    prev = candles[-2] if len(candles) >= 2 else {}
+    last = candles[-1] if candles else {}
+
+    base_high = max((c.get("high", price) for c in base), default=price)
+    base_low = min((c.get("low", price) for c in base), default=price)
+    recent_high = max((c.get("high", price) for c in recent[:-1]), default=price)
+    recent_low = min((c.get("low", price) for c in recent[:-1]), default=price)
+    base_width_pct = ((base_high - base_low) / price * 100) if price else 0
+    base_ok = bool(base) and 0.18 <= base_width_pct <= 1.4
+
+    last_close = safe_float(last.get("close")) or price
+    prev_close = safe_float(prev.get("close")) or price
+    last_high = safe_float(last.get("high")) or price
+    last_low = safe_float(last.get("low")) or price
+
+    if side == "LONG":
+        fresh_break = base_ok and prev_close <= base_high and last_close > base_high
+        retest_ok = base_ok and last_low <= base_high <= last_high and last_close >= base_high
+        local_trigger = last_close > recent_high
+        trigger_level = round(base_high, 4)
+        invalid_level = round(base_low, 4)
+        extended = change >= 2.0
+        very_extended = change >= 3.0
+    else:
+        fresh_break = base_ok and prev_close >= base_low and last_close < base_low
+        retest_ok = base_ok and last_low <= base_low <= last_high and last_close <= base_low
+        local_trigger = last_close < recent_low
+        trigger_level = round(base_low, 4)
+        invalid_level = round(base_high, 4)
+        extended = change <= -2.0
+        very_extended = change <= -3.0
+
+    smc_support = (
+        smc_bias == side
+        or (side == "LONG" and smc.get("bos") == "пробій структури LONG")
+        or (side == "SHORT" and smc.get("bos") == "пробій структури SHORT")
+        or (side == "LONG" and volume.get("bias") == "LONG")
+        or (side == "SHORT" and volume.get("bias") == "SHORT")
+    )
+    micro_support = micro_bias == side
+    flow_support = side in [book_bias, trade_bias, liquidity_bias] or (
+        side == "LONG" and orderflow.get("score", 0) >= 15
+    ) or (
+        side == "SHORT" and orderflow.get("score", 0) <= -15
+    )
+    news_support = (
+        (side == "LONG" and (news.get("score", 0) or 0) >= 20)
+        or (side == "SHORT" and (news.get("score", 0) or 0) <= -20)
+        or event_risk.get("direction") == side
+    )
+
+    confirmation = sum(1 for ok in [smc_support, micro_support, flow_support, news_support] if ok)
+    new_structure = fresh_break or retest_ok or (local_trigger and confirmation >= 2)
+
+    if new_structure and confirmation >= 2:
+        stage = "TRIGGER"
+        status = f"Графік: ранній {simple_direction_word(side)} — тригер є"
+        note = "нова база/ретест + підтвердження SMC/потоку/новин"
+        quality_bonus = 8
+        late_override = True
+        no_chase = False
+    elif base_ok and confirmation >= 1:
+        stage = "SETUP_FORMING"
+        status = f"Графік: готується {simple_direction_word(side)}"
+        note = "є база, але ще потрібен пробій або ретест"
+        quality_bonus = 3
+        late_override = False
+        no_chase = False
+    elif very_extended or (extended and not new_structure):
+        stage = "LATE_NO_CHASE"
+        status = f"Графік: {simple_direction_word(side)} пізній — не доганяти"
+        note = "напрям є, але нової бази/ретесту для входу немає"
+        quality_bonus = 0
+        late_override = False
+        no_chase = True
+    else:
+        stage = "WAIT"
+        status = f"Графік: {simple_direction_word(side)} тільки під наглядом"
+        note = "чекати ранній тригер від 3m/SMC"
+        quality_bonus = 0
+        late_override = False
+        no_chase = False
+
+    return {
+        "available": bool(candles),
+        "side": side,
+        "stage": stage,
+        "status": status,
+        "note": note,
+        "trigger": trigger_level,
+        "invalid": invalid_level,
+        "base_high": round(base_high, 4),
+        "base_low": round(base_low, 4),
+        "confirmation": confirmation,
+        "smc_support": smc_support,
+        "micro_support": micro_support,
+        "flow_support": flow_support,
+        "news_support": news_support,
+        "quality_bonus": quality_bonus,
+        "late_override": late_override,
+        "no_chase": no_chase,
+        "new_structure": new_structure,
+    }
+
+def chart_context_message(chart_context):
+    if not chart_context or not chart_context.get("available"):
+        return ""
+    text = chart_context.get("status", "")
+    note = chart_context.get("note", "")
+    trigger = chart_context.get("trigger")
+    invalid = chart_context.get("invalid")
+    if trigger and invalid:
+        return f"{text}; тригер {trigger}, скасування {invalid}. {note}"
+    return f"{text}. {note}".strip()
+
+def apply_chart_context_probability(signal, probability, chart_context):
+    if signal not in ["LONG", "SHORT"] or probability is None:
+        return probability
+    if not chart_context or chart_context.get("side") != signal:
+        return probability
+
+    stage = chart_context.get("stage")
+    if stage == "TRIGGER":
+        return min(82, max(probability, 65 + chart_context.get("quality_bonus", 0)))
+    if stage == "SETUP_FORMING":
+        return min(probability, 54)
+    if stage == "LATE_NO_CHASE":
+        return min(probability, 49)
+    return probability
+
 def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
     """Creates a forward-looking conditional entry plan.
 
@@ -6494,8 +6690,18 @@ def analyze_exhaustion_cooling(signal, tech, tv=None):
         "stretch_pct": round(stretch_pct, 2),
     }
 
-def analyze_late_entry_risk(signal, tech, market):
+def analyze_late_entry_risk(signal, tech, market, chart_context=None):
     """Detects when the move is already too extended for a clean entry."""
+    chart_context = chart_context or {}
+    if chart_context.get("late_override") and chart_context.get("side") == signal:
+        return {
+            "late": False,
+            "very_late": False,
+            "label": "",
+            "note": "є нова структура/ретест, вхід не вважається погонею",
+            "penalty": 0,
+        }
+
     change = abs(tech.get("change", 0) or 0)
     rsi5 = tech.get("rsi_5m") or 50
     rsi15 = tech.get("rsi_15m") or 50
@@ -6506,12 +6712,12 @@ def analyze_late_entry_risk(signal, tech, market):
     note = ""
     penalty = 0
 
-    if signal == "LONG" and (change >= 2.0 or rsi5 >= 76 or rsi15 >= 72):
+    if signal == "LONG" and (change >= 2.0 or rsi5 >= 76 or rsi15 >= 72 or (chart_context.get("no_chase") and chart_context.get("side") == "LONG")):
         late = True
         label = "LONG активний — пізній вхід"
         note = "Рух уже частково реалізований. Не доганяти свічку; краще чекати відкат/ретест."
         penalty = -12
-    elif signal == "SHORT" and (change >= 2.0 or rsi5 <= 24 or rsi15 <= 28):
+    elif signal == "SHORT" and (change >= 2.0 or rsi5 <= 24 or rsi15 <= 28 or (chart_context.get("no_chase") and chart_context.get("side") == "SHORT")):
         late = True
         label = "SHORT активний — пізній вхід"
         note = "Рух уже частково реалізований. Не доганяти падіння; краще чекати відкат/ретест."
@@ -6533,9 +6739,11 @@ def analyze_late_entry_risk(signal, tech, market):
 
     return {"late": late, "very_late": very_late, "label": label, "note": note, "penalty": penalty}
 
-def apply_late_entry_no_chase_filter(signal, trade_probability, tech, late_entry=None):
+def apply_late_entry_no_chase_filter(signal, trade_probability, tech, late_entry=None, chart_context=None):
     """A strong move can confirm direction but must not create a fresh entry."""
     if signal not in ["LONG", "SHORT"] or trade_probability is None:
+        return trade_probability
+    if chart_context and chart_context.get("late_override") and chart_context.get("side") == signal:
         return trade_probability
     if not late_entry or not late_entry.get("late"):
         return trade_probability
@@ -7092,7 +7300,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     }
 
 
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
+def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None):
     raw_tech = tech or {}
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
@@ -7172,7 +7380,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
     if counterflow_watch.get("active") and counterflow_watch.get("side") == signal:
         trade_probability = max(trade_probability or 0, counterflow_watch.get("probability", 0))
-    trade_probability = apply_late_entry_no_chase_filter(signal, trade_probability, tech or {}, late_entry)
+    trade_probability = apply_late_entry_no_chase_filter(signal, trade_probability, tech or {}, late_entry, chart_context)
     event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
     if event_block.get("blocked"):
         trade_probability = min(trade_probability or 0, 54)
@@ -7219,6 +7427,15 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         decision = f"СКАЛЬП {signal} — рання точка, тільки зі стопом"
     if event_block.get("blocked"):
         decision = "Зараз не входити — високий новинний ризик"
+    if chart_context and chart_context.get("side") == signal:
+        trade_probability = apply_chart_context_probability(signal, trade_probability, chart_context)
+        if chart_context.get("stage") == "TRIGGER" and trade_probability is not None:
+            decision = f"РАННІЙ {signal} — є тригер графіка"
+        elif chart_context.get("stage") == "SETUP_FORMING":
+            decision = f"ГОТУЄМОСЬ ДО {signal} — чекати тригер"
+        elif chart_context.get("stage") == "LATE_NO_CHASE":
+            decision = f"{signal} пізно — не доганяти рух"
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     market_mode = market_mode_engine(
         signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
@@ -7327,6 +7544,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
+
+    chart_line = chart_context_message(chart_context)
+    if chart_line:
+        lines.insert(6, f"<b>Графік:</b> {chart_line}")
 
     if conflict_note:
         lines.append(f"<b>Конфлікт:</b> {conflict_note}")
@@ -7959,6 +8180,7 @@ def main():
     cross_market = analyze_cross_market(cross_data, tech)
     reversal = analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
     priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
+    chart_context = analyze_forward_chart_context(tv, tech, smc, orderflow, news, event_risk, real_candles)
 
     signal, signal_type, score, confidence, risk_note = build_signal(
         tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority, weekend, cross_market
@@ -8035,12 +8257,34 @@ def main():
         risk_note = decay_guard.get("reason", risk_note)
         print("POST MOVE DECAY GUARD:", risk_note)
 
+    if chart_context.get("side") in ["LONG", "SHORT"]:
+        chart_side = chart_context["side"]
+        chart_stage = chart_context.get("stage")
+        if chart_stage == "TRIGGER" and signal not in ["LONG", "SHORT"]:
+            signal = chart_side
+            signal_type = f"РАННІЙ {chart_side} / ГРАФІК + SMC + ПОТІК"
+            confidence = max(confidence, 68 + chart_context.get("quality_bonus", 0))
+            score = abs(score) if chart_side == "LONG" else -abs(score)
+            risk_note = chart_context.get("note", risk_note)
+            print("FORWARD CHART TRIGGER:", risk_note)
+        elif chart_stage == "SETUP_FORMING" and signal == chart_side:
+            signal_type = f"ГОТУЄМОСЬ ДО {chart_side} / ЧЕКАТИ ТРИГЕР ГРАФІКА"
+            confidence = min(confidence, 72)
+            risk_note = chart_context.get("note", risk_note)
+            print("FORWARD CHART SETUP:", risk_note)
+        elif chart_stage == "LATE_NO_CHASE" and signal == chart_side:
+            signal = "НЕЙТРАЛЬНО"
+            signal_type = f"{chart_side} НАПРЯМ Є / ВХІД ПІЗНІЙ — ЧЕКАТИ РЕТЕСТ"
+            confidence = min(confidence, 78)
+            risk_note = chart_context.get("note", risk_note)
+            print("FORWARD CHART NO CHASE:", risk_note)
+
     plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
     plan = adjust_plan_for_rr(plan, signal)
     rr = rr_metrics(plan)
     chase = analyze_chase_protection(signal, tech, market)
     
-    late_entry = analyze_late_entry_risk(signal, tech, market)
+    late_entry = analyze_late_entry_risk(signal, tech, market, chart_context)
     
     cooling = analyze_exhaustion_cooling(signal, tech, tv)
     plan = apply_expansion_targets(plan, signal, tech, market)
@@ -8079,6 +8323,7 @@ def main():
     print(f"WEEKEND: {weekend['label']} | {weekend['note']}")
     print(f"CROSS-MARKET: {cross_market['bias']} | SCORE: {cross_market['score']} | {cross_market['note']}")
     print(f"PRIORITY: {priority['regime']} | DOMINANT: {priority['dominant']} | P-SCORE: {priority['priority_score']}")
+    print(f"FORWARD CHART: {chart_context.get('stage')} | {chart_context.get('side')} | {chart_context.get('status')} | {chart_context.get('note')}")
     if "trust_mode" not in locals():
         early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
         trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
@@ -8112,6 +8357,7 @@ def main():
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
     )
+    pre_message_probability = apply_chart_context_probability(signal, pre_message_probability, chart_context)
     confidence, pre_message_probability, _ = apply_local_3m_confidence_filter(
         signal, confidence, pre_message_probability, tech
     )
@@ -8133,7 +8379,7 @@ def main():
         plan = apply_expansion_targets(plan, signal, tech, market)
         rr = rr_metrics(plan)
         chase = analyze_chase_protection(signal, tech, market)
-        late_entry = analyze_late_entry_risk(signal, tech, market)
+        late_entry = analyze_late_entry_risk(signal, tech, market, chart_context)
         cooling = analyze_exhaustion_cooling(signal, tech, tv)
         pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
         quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
@@ -8148,6 +8394,7 @@ def main():
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
     )
+    current_quality_for_lock = apply_chart_context_probability(signal, current_quality_for_lock, chart_context)
     locked_plan = reuse_locked_trade_plan(signal_memory, signal, tv["price"])
     if locked_plan and trade_setup_level(current_quality_for_lock) >= 4:
         plan = locked_plan
@@ -8181,7 +8428,8 @@ def main():
         late_entry=late_entry,
         smc=smc,
         cooling=cooling,
-        tech=tech
+        tech=tech,
+        chart_context=chart_context
     )
 
     show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
@@ -8196,6 +8444,7 @@ def main():
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
     )
+    current_quality_percent = apply_chart_context_probability(signal, current_quality_percent, chart_context)
     journal_market_direction = infer_market_direction(
         signal,
         signal_type,
