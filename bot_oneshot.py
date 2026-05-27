@@ -1350,6 +1350,22 @@ def calendar_time_status(event_time, now=None):
         return "вийшло сьогодні", True
     return "", False
 
+def calendar_minutes_to_event(event_time, now=None):
+    if not event_time:
+        return None
+    now = now or now_utc()
+    try:
+        return int((event_time - now).total_seconds() / 60)
+    except Exception:
+        return None
+
+def is_calendar_hard_block(event_time, now=None):
+    """Hard risk only near the event, not many hours before it."""
+    minutes = calendar_minutes_to_event(event_time, now)
+    if minutes is None:
+        return False
+    return -60 <= minutes <= 90
+
 def parse_month_date(date_text, default_year=None):
     default_year = default_year or now_utc().year
     clean = re.sub(r"[^A-Za-z0-9, ]+", "", str(date_text or "")).strip()
@@ -1413,12 +1429,15 @@ def get_eia_calendar_event():
 
     event_time = calendar_dt_to_utc(release_date, release_time[0], release_time[1])
     status, active = calendar_time_status(event_time, now)
+    minutes_to = calendar_minutes_to_event(event_time, now)
     return {
         "name": "EIA",
         "title": "EIA запаси нафти",
         "time": event_time,
         "status": status,
         "active": active,
+        "hard_block": is_calendar_hard_block(event_time, now),
+        "minutes_to_event": minutes_to,
         "risk": "HIGH",
         "source": "EIA official",
     }
@@ -1459,12 +1478,15 @@ def parse_fomc_calendar_events():
             try:
                 event_time = calendar_dt_to_utc(datetime(now_utc().year, current_month, day).date(), 14, 0)
                 status, active = calendar_time_status(event_time)
+                minutes_to = calendar_minutes_to_event(event_time)
                 events.append({
                     "name": "Fed",
                     "title": "Fed / FOMC рішення",
                     "time": event_time,
                     "status": status,
                     "active": active,
+                    "hard_block": is_calendar_hard_block(event_time),
+                    "minutes_to_event": minutes_to,
                     "risk": "HIGH",
                     "source": "Fed official calendar",
                 })
@@ -1477,12 +1499,15 @@ def parse_fomc_calendar_events():
             if release_date:
                 event_time = calendar_dt_to_utc(release_date, 14, 0)
                 status, active = calendar_time_status(event_time)
+                minutes_to = calendar_minutes_to_event(event_time)
                 events.append({
                     "name": "Fed",
                     "title": "Fed minutes",
                     "time": event_time,
                     "status": status,
                     "active": active,
+                    "hard_block": is_calendar_hard_block(event_time),
+                    "minutes_to_event": minutes_to,
                     "risk": "MEDIUM",
                     "source": "Fed official calendar",
                 })
@@ -1573,6 +1598,8 @@ def get_opec_calendar_events():
             "time": item.get("published_at"),
             "status": status,
             "active": True,
+            "hard_block": True,
+            "minutes_to_event": 0,
             "risk": "HIGH",
             "source": "OPEC official / Google RSS",
         })
@@ -1595,8 +1622,9 @@ def analyze_economic_calendar():
         print(f"[WARN] OPEC calendar error: {error}")
 
     active_events = [event for event in calendar_events if event.get("active")]
+    blocking_events = [event for event in active_events if event.get("hard_block")]
     score = 0
-    for event in active_events:
+    for event in blocking_events:
         if event.get("risk") == "HIGH":
             score -= 16
         elif event.get("risk") == "MEDIUM":
@@ -1611,9 +1639,11 @@ def analyze_economic_calendar():
 
     return {
         "active": bool(active_events),
+        "hard_block": bool(blocking_events),
         "score": score,
         "risk": risk,
         "events": active_events[:4],
+        "blocking_events": blocking_events[:4],
         "all_events": calendar_events[:12],
     }
 
@@ -2300,6 +2330,39 @@ def microstructure_text(orderflow, signal=None):
         lines.append("Ліквідність: " + note)
 
     return "\n".join(f"<b>{line}</b>" for line in lines[:3])
+
+def microstructure_compact_text(orderflow):
+    orderflow = orderflow or {}
+    book = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trades = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity = (orderflow.get("liquidity_proxy") or {}).get("note", "спокійно")
+
+    def side_text(side):
+        if side == "LONG":
+            return "лонг"
+        if side == "SHORT":
+            return "шорт"
+        return "нейтр."
+
+    if not (
+        (orderflow.get("order_book") or {}).get("available")
+        or (orderflow.get("real_flow") or {}).get("available")
+        or (orderflow.get("liquidity_proxy") or {}).get("available")
+    ):
+        return ""
+    return f"Потік: стакан {side_text(book)}, угоди {side_text(trades)}, ліквідність {liquidity}"
+
+def smc_compact_text(smc):
+    if not smc or not isinstance(smc, dict) or not smc.get("available"):
+        return ""
+    note = smc_conflict_note(smc)
+    if "змішана" in note:
+        return "Структура: змішана"
+    if smc.get("bias") == "LONG":
+        return "Структура: лонг"
+    if smc.get("bias") == "SHORT":
+        return "Структура: шорт"
+    return "Структура: без підтвердження"
 
 def quick_backtest_smoke(candles, lookback=80):
     """Small health-check backtest for GitHub logs.
@@ -3104,7 +3167,9 @@ def reversal_scalp_signal(tv, tech, smc, orderflow, news=None, event_risk=None, 
     rsi15 = tech.get("rsi_15m")
     news_score = news.get("score", 0) or 0
     event_side = event_risk.get("direction", "MIXED")
-    calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
+    calendar = (event_risk.get("calendar") or {})
+    calendar_active = bool(calendar.get("active"))
+    calendar_hard_block = bool(calendar.get("hard_block"))
     session_name = (session or {}).get("session", "")
 
     book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
@@ -3730,7 +3795,9 @@ def economic_calendar_text(event_risk):
         else:
             parts.append(f"{event.get('title', name)} — {status}")
 
-    return "Календар: " + "; ".join(parts) + " — обережно"
+    hard = bool(calendar.get("hard_block"))
+    suffix = " — чекати реакцію" if hard else " — просто мати на увазі"
+    return "Календар: " + "; ".join(parts) + suffix
 
 def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
     """Detects possible reversal setups such as breakdown failure / liquidity sweep.
@@ -4314,15 +4381,16 @@ def news_event_trade_block(signal, trade_probability, event_risk, news, session=
 
     event_high = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
     calendar_active = bool(calendar.get("active"))
+    calendar_hard_block = bool(calendar.get("hard_block"))
     news_against = (
         (signal == "LONG" and (event_side == "SHORT" or news_score <= -35)) or
         (signal == "SHORT" and (event_side == "LONG" or news_score >= 35))
     )
 
-    if calendar_active and (trade_probability or 0) < 68:
+    if calendar_hard_block and (trade_probability or 0) < 68:
         return {
             "blocked": True,
-            "reason": "поруч важлива подія EIA/Fed/OPEC — входити тільки після реакції ціни",
+            "reason": "подія EIA/Fed/OPEC вже близько — входити тільки після реакції ціни",
         }
 
     if event_high and news_against and (trade_probability or 0) < 75:
@@ -5932,7 +6000,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
             "aggression": "агресивно, але тільки малим ризиком",
         }
 
-    if calendar_active or event_high:
+    if calendar_hard_block or event_high:
         if has_entry and "РАННІЙ" in signal_type:
             status = "ВХІД Є"
         elif has_entry:
@@ -5942,7 +6010,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
         return {
             "status": status,
             "mode": "новинний ризик",
-            "strategy": "вхід тільки після реакції ціни; під EIA/Fed/OPEC не відкривати агресивно",
+            "strategy": "вхід тільки після реакції ціни",
             "priority": "календар і новини > графік; підтвердження ціни обовʼязкове",
             "aggression": "обережно",
         }
@@ -6173,50 +6241,41 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     else:
         market_bias_text = "змішано"
 
+    calendar_text = economic_calendar_text(event_risk)
+    compact_reasons = [
+        f"графік {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
+        f"новини {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",
+    ]
+    if calendar_text:
+        compact_reasons.append(calendar_text.replace("Календар: ", "календар "))
+
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
-        "",
-        f"<b>{market_mode['status']}</b>",
-        f"<b>Режим:</b> {market_mode['mode']}",
-        f"<b>Стратегія:</b> {market_mode['strategy']}",
-        f"<b>Пріоритет:</b> {market_mode['priority']}",
-        f"<b>Агресивність:</b> {market_mode['aggression']}",
+        f"<b>{market_mode['status']}</b> | <b>Режим:</b> {market_mode['mode']}",
+        f"<b>Тактика:</b> {market_mode['aggression']}; {market_mode['priority']}",
         "",
         f"<b>Рішення:</b> {decision}",
-        f"<b>Ринок:</b> {market_bias_text}",
-        # Якість входу = наскільки хороший поточний сетап для входу
-        f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
-        "",
-        f"<b>Ціна:</b> {tv['price']} | <b>Зміна:</b> {round(tv['change'], 4)}%",
-        f"<b>{global_trend_text(tech or {}, market_bias)}</b>",
-        f"<b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>{session_telegram_text(session)}</b>",
-        "",
-        f"<b>Головна причина:</b> {main_reason}",
-        "",
+        f"<b>Ринок:</b> {market_bias_text} | <b>Вхід:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
+        f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
         f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
-        "",
-        f"<b>Графік:</b> {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
-        f"<b>Новини:</b> {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",    ]
-
-    calendar_text = economic_calendar_text(event_risk)
-    if calendar_text:
-        lines.append(f"<b>{calendar_text}</b>")
+        f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
+    ]
 
     if conflict_note:
-        lines.insert(12, f"<b>Конфлікт:</b> {conflict_note}")
+        lines.append(f"<b>Конфлікт:</b> {conflict_note}")
 
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
 
-    micro_context = signal if signal in ["LONG", "SHORT"] else market_bias
-    micro_text = microstructure_text(orderflow, micro_context)
+    micro_text = microstructure_compact_text(orderflow)
+    smc_note = smc_compact_text(smc)
+    flow_parts = []
     if micro_text:
-        lines.append(micro_text)
-
-    smc_note = smc_conflict_note(smc)
+        flow_parts.append(micro_text)
     if smc_note:
-        lines.append(f"<b>{smc_note}</b>")
+        flow_parts.append(smc_note)
+    if flow_parts:
+        lines.append("<b>" + " | ".join(flow_parts[:2]) + "</b>")
 
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
 
@@ -6970,11 +7029,12 @@ def main():
         tech=tech
     )
 
+    show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
     position_note = position_follow_note(signal_memory, tv["price"], tech) if "position_follow_note" in globals() else ""
-    if position_note and position_note not in message:
+    if show_memory_in_telegram and position_note and position_note not in message:
         message = message.strip() + "\n\n" + position_note
 
-    if previous_signal_note and previous_signal_note not in message:
+    if show_memory_in_telegram and previous_signal_note and previous_signal_note not in message:
         message = message.strip() + "\n\n" + previous_signal_note
 
     current_quality_percent = estimate_trade_probability(
@@ -7009,10 +7069,12 @@ def main():
     signal_journal = append_signal_journal(signal_journal, current_journal_entry)
     save_signal_journal(signal_journal)
 
-    if pattern_note and pattern_note not in message:
+    show_stats_in_telegram = os.getenv("SHOW_STATS_IN_TELEGRAM", "0") == "1"
+
+    if show_stats_in_telegram and pattern_note and pattern_note not in message:
         message = message.strip() + "\n\n" + pattern_note
 
-    if journal_stats_note and journal_stats_note not in message:
+    if show_stats_in_telegram and journal_stats_note and journal_stats_note not in message:
         message = message.strip() + "\n\n" + journal_stats_note
 
     updated_memory = append_signal_memory(
