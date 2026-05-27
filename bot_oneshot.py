@@ -6976,6 +6976,34 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
     }
 
 
+def separate_action_text(signal, trade_probability, event_block=None, late_entry=None, cooling=None, exhaustion=None, local_warning=""):
+    """Short user action line independent from 3/5, 4/5, 5/5 quality."""
+    event_block = event_block or {}
+    exhaustion = exhaustion or {}
+
+    if event_block.get("blocked"):
+        return "не входити"
+    if signal not in ["LONG", "SHORT"] or trade_probability is None:
+        return "не входити"
+    if trade_probability < 55:
+        return "не входити"
+    if (
+        trade_probability < 65
+        or (late_entry and late_entry.get("late"))
+        or (cooling and cooling.get("active"))
+        or exhaustion.get("active")
+        or local_warning
+    ):
+        return "чекати ретест"
+    return "вхід зараз"
+
+
+def separate_position_text(pos_note):
+    if not pos_note:
+        return "тримати/закрити за умовами: якщо позиція є — тільки зі стопом; без позиції чекати нового сигналу"
+    return "тримати/закрити за умовами: " + pos_note
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     raw_tech = tech or {}
     local_warning = ""
@@ -7113,6 +7141,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
         event_risk, market, session, late_entry, cooling
     )
+    action_text = separate_action_text(
+        signal, trade_probability, event_block, late_entry, cooling, exhaustion, local_warning
+    )
+    position_text = separate_position_text(pos_note)
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -7209,6 +7241,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
         f"<b>{market_mode['status']}</b> — {top_decision}",
+        f"<b>Дія:</b> {action_text}",
+        f"<b>Позиція:</b> {position_text}",
         "",
         f"<b>Ринок:</b> {market_bias_text}",
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
