@@ -135,10 +135,7 @@ BEARISH_WORDS = [
     "demand weak", "weak demand", "demand falls", "oversupply", "supply glut",
     "opec increase", "output hike", "ceasefire", "peace talks", "recession",
     "rate hike", "inflation rises", "bearish", "falls", "drops", "tumbles",
-    "slides", "lower", "peace agreement", "peace deal", "memorandum of understanding",
-    "mou", "us-iran agreement", "u.s.-iran agreement", "iran deal",
-    "sanctions relief", "sanctions lifted", "sanctions easing", "talks progress",
-    "initial details", "framework agreement",
+    "slides", "lower",
 ]
 
 BREAKING_WORDS = [
@@ -179,10 +176,7 @@ EVENT_LONG_WORDS = [
 EVENT_SHORT_WORDS = [
     "inventory build", "crude build", "larger-than-expected build",
     "ceasefire", "peace deal", "sanctions relief", "talks progress",
-    "opec increase", "output increase", "demand weak", "peace agreement",
-    "memorandum of understanding", "mou", "us-iran agreement",
-    "u.s.-iran agreement", "iran deal", "sanctions lifted",
-    "sanctions easing", "initial details", "framework agreement",
+    "opec increase", "output increase", "demand weak",
 ]
 
 def now_utc():
@@ -930,105 +924,6 @@ def memory_confidence_adjustment(signal, memory, current_price):
 
     return 0
 
-def signal_flip_guard(signal, signal_type, confidence, score, memory, current_price, tech=None, smc=None):
-    """Block unprofessional instant LONG<->SHORT flips while price is flat.
-
-    If the last actionable signal was the opposite side and price has barely
-    moved since then, a new opposite message is allowed only with clear chart
-    confirmation. Otherwise the bot should say no entry and wait.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return {
-            "blocked": False,
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "score": score,
-            "reason": "",
-        }
-
-    last = get_last_signal(memory)
-    last_signal = last.get("signal")
-    if last_signal not in ["LONG", "SHORT"] or last_signal == signal:
-        return {
-            "blocked": False,
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "score": score,
-            "reason": "",
-        }
-
-    last_price = safe_float(last.get("price"))
-    if not last_price or not current_price:
-        return {
-            "blocked": False,
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "score": score,
-            "reason": "",
-        }
-
-    created = parse_iso_datetime(last.get("time"))
-    age_minutes = 999
-    if created:
-        age_minutes = (now_utc() - created).total_seconds() / 60
-
-    diff_pct = ((float(current_price) - last_price) / last_price) * 100
-    flat_since_last = abs(diff_pct) < 0.30 and age_minutes <= 90
-    if not flat_since_last:
-        return {
-            "blocked": False,
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "score": score,
-            "reason": "",
-        }
-
-    tech = tech or {}
-    smc = smc or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    tech_score = tech.get("score", 0) or 0
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    smc_bias = smc.get("bias", "NEUTRAL")
-
-    clear_confirmation = (
-        (signal == "LONG" and (
-            tech_score >= 75
-            or smc_bias == "LONG"
-            or micro_bias == "LONG"
-            or micro_state == "LONG_STRENGTHENING"
-        ))
-        or
-        (signal == "SHORT" and (
-            tech_score <= -75
-            or smc_bias == "SHORT"
-            or micro_bias == "SHORT"
-            or micro_state == "SHORT_STRENGTHENING"
-        ))
-    )
-    if clear_confirmation:
-        return {
-            "blocked": False,
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "score": score,
-            "reason": "",
-        }
-
-    return {
-        "blocked": True,
-        "signal": "НЕЙТРАЛЬНО",
-        "signal_type": "FLIP BLOCKED / ЦІНА НЕ ПІДТВЕРДИЛА НОВИЙ НАПРЯМ",
-        "confidence": min(confidence or 55, 58),
-        "score": 0,
-        "reason": f"попередній {last_signal} ще не відпрацював: ціна змінилась лише {round(diff_pct, 3)}%",
-    }
-
 
 def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None):
     plan = plan or {}
@@ -1676,34 +1571,8 @@ def extract_eia_release_time(text):
         hour = 0
     return hour, minute
 
-def find_eia_release_time_for_date(text, release_date):
-    if not text or not release_date:
-        return None
-
-    date_text = release_date.strftime("%B %d, %Y").replace(" 0", " ")
-    for match in re.finditer(re.escape(date_text), text):
-        start = max(0, match.start() - 180)
-        end = min(len(text), match.end() + 260)
-        segment = text[start:end]
-        time_match = re.search(r"(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", segment, re.I)
-        if not time_match:
-            continue
-        hour = int(time_match.group(1))
-        minute = int(time_match.group(2))
-        ampm = time_match.group(3).upper()
-        if ampm == "P" and hour != 12:
-            hour += 12
-        if ampm == "A" and hour == 12:
-            hour = 0
-        return hour, minute
-    return None
-
 def get_eia_calendar_event():
-    """Official EIA WPSR calendar.
-
-    Do not invent a Wednesday release when the official EIA page is unavailable:
-    holiday weeks shift WPSR, and a fake fallback can incorrectly block trades.
-    """
+    """Official EIA WPSR calendar. Fallback: Wednesday 10:30 ET."""
     now = now_utc()
     text = ""
     for url in [EIA_WPSR_URL, EIA_WPSR_SCHEDULE_URL]:
@@ -1719,22 +1588,15 @@ def get_eia_calendar_event():
 
     # Holiday schedule text often says "released on Thursday, May 28, 2026, at 12:00 P.M."
     if release_date:
-        official_time = find_eia_release_time_for_date(text, release_date)
-        if official_time:
-            release_time = official_time
+        around_date = release_date.strftime("%B %d, %Y").replace(" 0", " ")
+        idx = text.find(around_date)
+        if idx >= 0:
+            release_time = extract_eia_release_time(text[idx:idx + 220])
 
     if not release_date:
-        return {
-            "name": "EIA",
-            "title": "EIA запаси нафти",
-            "time": None,
-            "status": "офіційний час не підтверджено",
-            "active": False,
-            "hard_block": False,
-            "minutes_to_event": None,
-            "risk": "HIGH",
-            "source": EIA_WPSR_URL,
-        }
+        today_et = now.astimezone(eastern_tz()).date()
+        release_date = next_weekday_date(today_et, 2)
+        release_time = (10, 30)
 
     event_time = calendar_dt_to_utc(release_date, release_time[0], release_time[1])
     status, active = calendar_time_status(event_time, now)
@@ -1748,7 +1610,7 @@ def get_eia_calendar_event():
         "hard_block": is_calendar_hard_block(event_time, now),
         "minutes_to_event": minutes_to,
         "risk": "HIGH",
-        "source": EIA_WPSR_URL,
+        "source": "EIA official",
     }
 
 def parse_fomc_calendar_events():
@@ -3133,7 +2995,6 @@ def price_structure_priority_override(signal, signal_type, confidence, score, te
     tech_score = tech.get("score", 0) or 0
     change = tech.get("change", 0) or 0
     momentum = tech.get("momentum", "NEUTRAL")
-    post_retest = tech.get("post_shock_retest") if isinstance(tech.get("post_shock_retest"), dict) else {}
     smc_bias = smc.get("bias", "NEUTRAL")
     smc_score = smc.get("score", 0) or 0
     micro_bias = micro.get("bias", "NEUTRAL")
@@ -3255,7 +3116,33 @@ def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
             "mode": "BLOCK_SHORT_AFTER_PUMP",
         }
 
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
+    flow_long_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "LONG")
+    flow_short_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "SHORT")
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_state = micro.get("state", "RANGE")
+    micro_bias = micro.get("bias", "NEUTRAL")
+
+    if signal == "SHORT" and strong_dump and flow_long_count >= 2 and micro_bias == "LONG":
+        return {
+            "blocked": True,
+            "penalty": -30,
+            "bonus": 0,
+            "reason": "SHORT не брати: падіння вже було, 3m і стакан/угоди показують відкуп",
+            "mode": "BLOCK_CHASE_SHORT_AFTER_DUMP_WITH_BID",
+        }
+
     if signal == "SHORT" and strong_dump and bearish_structure:
+        if flow_long_count >= 2 or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG":
+            return {
+                "blocked": False,
+                "penalty": -18,
+                "bonus": 0,
+                "reason": "SHORT continuation слабкий: після дампу є відкуп/охолодження продавців",
+                "mode": "WEAK_SHORT_AFTER_DUMP_COUNTERFLOW",
+            }
         return {
             "blocked": False,
             "penalty": 0,
@@ -3274,6 +3161,133 @@ def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
         }
 
     return {"blocked": False, "penalty": 0, "bonus": 0, "reason": "", "mode": "NEUTRAL"}
+
+
+def exhaustion_reversal_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news=None, event_risk=None):
+    """Yulia-style market reading: do not chase a move after exhaustion.
+
+    When a sharp dump has already happened and fast 3m/orderflow start buying,
+    the bot should stop printing a fresh SHORT as if it is a new entry. It should
+    either say no entry or switch to a risky LONG-bounce watch. Mirror logic for
+    a sharp pump.
+    """
+    if signal not in ["LONG", "SHORT"]:
+        return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
+
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    news = news or {}
+    event_risk = event_risk or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+
+    change = tech.get("change", 0) or 0
+    momentum = tech.get("momentum", "NEUTRAL")
+    rsi5 = tech.get("rsi_5m")
+    rsi15 = tech.get("rsi_15m")
+
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    micro_score = micro.get("score", 0) or 0
+    lower_low_count = micro.get("lower_low_count", 0) or 0
+
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
+    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
+    flow_long_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "LONG")
+    flow_short_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "SHORT")
+
+    sweep = smc.get("sweep", "NONE")
+    choch = smc.get("choch", "NONE")
+    bos = smc.get("bos", "NONE")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    vol_bias = volume.get("bias", "NEUTRAL")
+    absorption = volume.get("поглинання", "NONE")
+
+    news_score = news.get("score", 0) if isinstance(news, dict) else 0
+    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
+
+    strong_dump = change <= -1.6 or momentum == "VERY STRONG DOWN"
+    strong_pump = change >= 1.6 or momentum == "VERY STRONG UP"
+
+    # What the user visually called: падіння вже було, низ викупили, 3m/стакан/угоди LONG.
+    long_bounce_evidence = 0
+    long_reasons = []
+    if micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG" or micro_score >= 18:
+        long_bounce_evidence += 2
+        long_reasons.append("3m почав відкуповувати")
+    if flow_long_count >= 2 or (book_bias == "LONG" and trade_bias == "LONG"):
+        long_bounce_evidence += 2
+        long_reasons.append("стакан/угоди за покупців")
+    if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
+        long_bounce_evidence += 2
+        long_reasons.append("зняли низ / є CHOCH LONG")
+    if vol_bias == "LONG" or absorption == "BULLISH ABSORPTION":
+        long_bounce_evidence += 2
+        long_reasons.append("обсяг показує відкуп")
+    if (rsi5 is not None and rsi5 <= 34) or (rsi15 is not None and rsi15 <= 38):
+        long_bounce_evidence += 1
+        long_reasons.append("перепроданість після дампу")
+    if lower_low_count <= 1 and micro_state != "SHORT_STRENGTHENING":
+        long_bounce_evidence += 1
+        long_reasons.append("немає продовження нових low")
+    if news_score >= 25 or event_side == "LONG":
+        long_bounce_evidence += 1
+
+    short_continuation_confirmed = (
+        bos == "пробій структури SHORT"
+        or (smc_bias == "SHORT" and vol_bias == "SHORT" and flow_long_count == 0)
+        or (micro_state == "SHORT_STRENGTHENING" and micro_score <= -35 and flow_long_count == 0)
+    )
+
+    short_reversal_evidence = 0
+    short_reasons = []
+    if micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"] or micro_bias == "SHORT" or micro_score <= -18:
+        short_reversal_evidence += 2
+        short_reasons.append("3m почав продавати")
+    if flow_short_count >= 2 or (book_bias == "SHORT" and trade_bias == "SHORT"):
+        short_reversal_evidence += 2
+        short_reasons.append("стакан/угоди за продавців")
+    if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
+        short_reversal_evidence += 2
+        short_reasons.append("зняли верх / є CHOCH SHORT")
+    if vol_bias == "SHORT" or absorption == "BEARISH ABSORPTION":
+        short_reversal_evidence += 2
+        short_reasons.append("обсяг показує продаж")
+    if (rsi5 is not None and rsi5 >= 66) or (rsi15 is not None and rsi15 >= 62):
+        short_reversal_evidence += 1
+        short_reasons.append("перекупленість після пампу")
+
+    long_continuation_confirmed = (
+        bos == "пробій структури LONG"
+        or (smc_bias == "LONG" and vol_bias == "LONG" and flow_short_count == 0)
+        or (micro_state == "LONG_STRENGTHENING" and micro_score >= 35 and flow_short_count == 0)
+    )
+
+    if signal == "SHORT" and strong_dump and long_bounce_evidence >= 4 and not short_continuation_confirmed:
+        new_conf = max(56, min(68, 52 + long_bounce_evidence * 3))
+        return {
+            "active": True,
+            "signal": "LONG" if long_bounce_evidence >= 5 else "НЕЙТРАЛЬНО",
+            "signal_type": "РИЗИКОВАНИЙ LONG-ВІДСКОК ПІСЛЯ ДАМПУ" if long_bounce_evidence >= 5 else "SHORT ЗАБОРОНЕНО / ПІСЛЯ ДАМПУ Є ВІДКУП",
+            "confidence": new_conf if long_bounce_evidence >= 5 else min(confidence, 54),
+            "score": new_conf if long_bounce_evidence >= 5 else 0,
+            "reason": "не доганяти SHORT: " + ", ".join(long_reasons[:3]),
+        }
+
+    if signal == "LONG" and strong_pump and short_reversal_evidence >= 4 and not long_continuation_confirmed:
+        new_conf = max(56, min(68, 52 + short_reversal_evidence * 3))
+        return {
+            "active": True,
+            "signal": "SHORT" if short_reversal_evidence >= 5 else "НЕЙТРАЛЬНО",
+            "signal_type": "РИЗИКОВАНИЙ SHORT-ВІДКАТ ПІСЛЯ ПАМПУ" if short_reversal_evidence >= 5 else "LONG ЗАБОРОНЕНО / ПІСЛЯ ПАМПУ Є ПРОДАЖ",
+            "confidence": new_conf if short_reversal_evidence >= 5 else min(confidence, 54),
+            "score": -new_conf if short_reversal_evidence >= 5 else 0,
+            "reason": "не доганяти LONG: " + ", ".join(short_reasons[:3]),
+        }
+
+    return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
 
 def cap_countertrend_probability(probability, signal, tech, smc):
     if probability is None or signal not in ["LONG", "SHORT"]:
@@ -3318,7 +3332,6 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
 
     change = tech.get("change", 0) or 0
     momentum = tech.get("momentum", "NEUTRAL")
-    post_retest = tech.get("post_shock_retest") if isinstance(tech.get("post_shock_retest"), dict) else {}
 
     smc_bias = smc.get("bias", "NEUTRAL")
     bos = smc.get("bos", "NONE")
@@ -3348,14 +3361,6 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
 
     # SHORT after a dump is dangerous if structure/volume did not confirm continuation.
     if signal == "SHORT" and strong_dump:
-        if post_retest.get("active") and post_retest.get("side") == "SHORT":
-            if post_retest.get("trigger_ready"):
-                return {"active": False, "cap": None, "reason": ""}
-            return {
-                "active": True,
-                "cap": 64,
-                "reason": "SHORT не доганяємо: є відкат після дампу, потрібен 3m-тригер",
-            }
         if not short_confirmed:
             cap = 54
             reason = "SHORT після сильного дампу без SMC/пробій структури/volume підтвердження — ризик відскоку"
@@ -3366,14 +3371,6 @@ def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
 
     # LONG after a pump is dangerous if structure/volume did not confirm continuation.
     if signal == "LONG" and strong_pump:
-        if post_retest.get("active") and post_retest.get("side") == "LONG":
-            if post_retest.get("trigger_ready"):
-                return {"active": False, "cap": None, "reason": ""}
-            return {
-                "active": True,
-                "cap": 64,
-                "reason": "LONG не доганяємо: є відкат після пампу, потрібен 3m-тригер",
-            }
         if not long_confirmed:
             cap = 54
             reason = "LONG після сильного пампу без SMC/пробій структури/volume підтвердження — ризик відкату"
@@ -5033,168 +5030,11 @@ def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, even
 
     return best
 
-def analyze_post_shock_retest(tv, tech, smc, orderflow, news, event_risk, candles=None, micro_candles=None):
-    """Detect a tradable pullback after a shock move.
-
-    This fills the gap between:
-    - "do not chase the dump/pump"; and
-    - "there is already a retest, give me a trade plan".
-    """
-    tv = tv or {}
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    price = safe_float(tv.get("price"))
-    if not price:
-        return {"active": False, "side": "NONE", "reason": "немає ціни"}
-
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    tech_score = tech.get("score", 0) or 0
-    order_score = orderflow.get("score", 0) or 0
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    source_candles = micro_candles if micro_candles and len(micro_candles) >= 24 else candles
-    if not source_candles or len(source_candles) < 20:
-        return {"active": False, "side": "NONE", "reason": "мало свічок для ретесту"}
-
-    recent = source_candles[-48:] if len(source_candles) >= 48 else source_candles[-24:]
-    highs = [c["high"] for c in recent]
-    lows = [c["low"] for c in recent]
-    closes = [c["close"] for c in recent]
-    last = recent[-1]
-    atr = tech.get("atr_15m") or smc.get("atr") or price * 0.006
-
-    def retest_payload(side, impulse_extreme, impulse_anchor, retracement, bounce_pct, trigger_ready, notes):
-        confidence = 58
-        if trigger_ready:
-            confidence += 8
-        if side == "SHORT":
-            if tech_score <= -55:
-                confidence += 5
-            if order_score <= -10:
-                confidence += 4
-            if news_score <= -25 or event_side == "SHORT":
-                confidence += 4
-            if news_score >= 35 or event_side == "LONG":
-                confidence -= 6
-            signal_type = "SHORT RETEST AFTER DUMP / ВХІД НА ВІДКАТІ"
-            reason = "після дампу є відкат у sell-зону"
-        else:
-            if tech_score >= 55:
-                confidence += 5
-            if order_score >= 10:
-                confidence += 4
-            if news_score >= 25 or event_side == "LONG":
-                confidence += 4
-            if news_score <= -35 or event_side == "SHORT":
-                confidence -= 6
-            signal_type = "LONG RETEST AFTER PUMP / ВХІД НА ВІДКАТІ"
-            reason = "після пампу є відкат у buy-зону"
-
-        return {
-            "active": True,
-            "side": side,
-            "signal_type": signal_type,
-            "confidence": max(55, min(76, int(confidence))),
-            "score": -72 if side == "SHORT" else 72,
-            "trigger_ready": bool(trigger_ready),
-            "reason": reason + (": " + ", ".join(notes[:2]) if notes else ""),
-            "shock_extreme": round(impulse_extreme, 4),
-            "shock_anchor": round(impulse_anchor, 4),
-            "retrace_pct": round(retracement * 100, 1),
-            "bounce_pct": round(bounce_pct, 3),
-            "suggested_entry": round(price, 4),
-            "suggested_stop": round(
-                (price + atr * 0.55) if side == "SHORT" else (price - atr * 0.55),
-                4,
-            ),
-        }
-
-    # Dump -> pullback -> possible SHORT continuation.
-    dump_context = change <= -1.8 or momentum == "VERY STRONG DOWN" or tech_score <= -90
-    if dump_context:
-        low_idx = min(range(len(recent)), key=lambda i: lows[i])
-        impulse_low = lows[low_idx]
-        pre_high = max(highs[:low_idx + 1]) if low_idx >= 1 else max(highs)
-        impulse_range = max(pre_high - impulse_low, atr, price * 0.003)
-        retracement = (price - impulse_low) / impulse_range
-        bounce_pct = ((price - impulse_low) / impulse_low) * 100 if impulse_low else 0
-        retest_zone = 0.24 <= retracement <= 0.82 and bounce_pct >= 0.35
-
-        last_bearish = last["close"] < last["open"] and last["close"] <= (last["low"] + (last["high"] - last["low"]) * 0.55)
-        failed_push = len(closes) >= 3 and closes[-1] <= max(closes[-3:]) and last["high"] <= max(highs[-5:])
-        trigger_ready = (
-            micro.get("bias") == "SHORT"
-            or micro.get("state") == "SHORT_STRENGTHENING"
-            or micro.get("score", 0) <= -12
-            or order_score <= -12
-            or smc.get("bias") == "SHORT"
-            or smc.get("bos") == "пробій структури SHORT"
-            or last_bearish
-            or failed_push
-        )
-        if retest_zone:
-            notes = []
-            notes.append(f"відкат {round(retracement * 100, 1)}% від імпульсу")
-            if trigger_ready:
-                notes.append("є локальне підтвердження продавців")
-            else:
-                notes.append("чекати слабкість 3m")
-            return retest_payload("SHORT", impulse_low, pre_high, retracement, bounce_pct, trigger_ready, notes)
-
-    # Pump -> pullback -> possible LONG continuation.
-    pump_context = change >= 1.8 or momentum == "VERY STRONG UP" or tech_score >= 90
-    if pump_context:
-        high_idx = max(range(len(recent)), key=lambda i: highs[i])
-        impulse_high = highs[high_idx]
-        pre_low = min(lows[:high_idx + 1]) if high_idx >= 1 else min(lows)
-        impulse_range = max(impulse_high - pre_low, atr, price * 0.003)
-        retracement = (impulse_high - price) / impulse_range
-        pullback_pct = ((impulse_high - price) / impulse_high) * 100 if impulse_high else 0
-        retest_zone = 0.24 <= retracement <= 0.82 and pullback_pct >= 0.35
-
-        last_bullish = last["close"] > last["open"] and last["close"] >= (last["low"] + (last["high"] - last["low"]) * 0.45)
-        failed_dump = len(closes) >= 3 and closes[-1] >= min(closes[-3:]) and last["low"] >= min(lows[-5:])
-        trigger_ready = (
-            micro.get("bias") == "LONG"
-            or micro.get("state") == "LONG_STRENGTHENING"
-            or micro.get("score", 0) >= 12
-            or order_score >= 12
-            or smc.get("bias") == "LONG"
-            or smc.get("bos") == "пробій структури LONG"
-            or last_bullish
-            or failed_dump
-        )
-        if retest_zone:
-            notes = []
-            notes.append(f"відкат {round(retracement * 100, 1)}% від імпульсу")
-            if trigger_ready:
-                notes.append("є локальне підтвердження покупців")
-            else:
-                notes.append("чекати силу 3m")
-            return retest_payload("LONG", impulse_high, pre_low, retracement, pullback_pct, trigger_ready, notes)
-
-    return {"active": False, "side": "NONE", "reason": "ретест після імпульсу не підтверджений"}
-
 def news_event_trade_block(signal, trade_probability, event_risk, news, session=None):
     """News/calendar is a caution layer, not a hard entry ban."""
     return {"blocked": False, "reason": ""}
 
 def analyze_chase_protection(signal, tech, market):
-    post_retest = tech.get("post_shock_retest") if isinstance(tech, dict) else {}
-    if (
-        isinstance(post_retest, dict)
-        and post_retest.get("active")
-        and post_retest.get("side") == signal
-    ):
-        return {"extended": False, "reason": "Є відкат/ретест — це не chase імпульсу."}
-
     change = abs(tech.get("change", 0) or 0)
     rsi5 = tech.get("rsi_5m") or 50
     rsi15 = tech.get("rsi_15m") or 50
@@ -5356,29 +5196,20 @@ def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, 
         signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
 
     # Shock Move Protection:
-    # If price dumps/pumps sharply, the message must be about the chart first.
-    # News can explain context, but it must not create an opposite entry before
-    # stabilization/retest.
-    shock_down = (
-        tech.get("change", 0) <= -2.0
-        or (tech.get("change", 0) <= -1.2 and tech.get("score", 0) <= -70)
-        or (tech.get("momentum") == "VERY STRONG DOWN" and tech.get("score", 0) <= -65)
-    )
-    shock_up = (
-        tech.get("change", 0) >= 2.0
-        or (tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 70)
-        or (tech.get("momentum") == "VERY STRONG UP" and tech.get("score", 0) >= 65)
-    )
+    # If price dumps/pumps sharply, do not let bullish/bearish headlines create
+    # an opposite trade before the chart stabilizes. For oil this prevents
+    # catching a falling knife during fast liquidation moves.
+    shock_down = tech.get("change", 0) <= -1.2 and tech.get("score", 0) <= -80
+    shock_up = tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 80
 
-    if shock_down:
+    if shock_down and news.get("score", 0) >= 25 and event_risk.get("direction") == "LONG":
         signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHOCK DOWN / NO CHASE"
-    elif shock_up:
+        signal_type = "SHOCK DOWN / LONG BLOCKED"
+    elif shock_up and news.get("score", 0) <= -20 and event_risk.get("direction") == "SHORT":
         signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHOCK UP / NO CHASE"
+        signal_type = "SHOCK UP / SHORT BLOCKED"
 
-    if "SHOCK" in signal_type:
-        confidence = min(95, max(55, abs(score)))
+        confidence = min(95, max(0, abs(score)))
 
     risk_note = "Нормальний ризик"
     if "РИЗИКОВИЙ" in signal_type:
@@ -5934,10 +5765,6 @@ def compact_reversal_label(reversal):
     return "немає"
 
 def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
-    if "RETEST AFTER DUMP" in signal_type and signal == "SHORT":
-        return "РИЗИКОВАНИЙ SHORT — вхід на відкаті"
-    if "RETEST AFTER PUMP" in signal_type and signal == "LONG":
-        return "РИЗИКОВАНИЙ LONG — вхід на відкаті"
     if "SHOCK DOWN" in signal_type:
         return "НЕ ВХОДИТИ — різкий дамп"
     if "SHOCK UP" in signal_type:
@@ -6262,9 +6089,17 @@ def technical_reason_text(signal, technical_bias, smc=None, tech=None):
     return "перевага нечітка — краще чекати"
 
 def signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk):
-    # Do not show a separate disagreement block in Telegram. It was too noisy
-    # and could mislabel the real news direction. Disagreements are handled by the
-    # signal/priority engines and reflected in the decision, reasons and plan.
+    if signal not in ["LONG", "SHORT"]:
+        return ""
+
+    opposite = "SHORT" if signal == "LONG" else "LONG"
+    driver_direction = driver_side(driver)
+    fund_side = (fundamental_bias or {}).get("side", "NEUTRAL")
+    event_side = (event_risk or {}).get("direction", "MIXED")
+
+    if driver_direction == opposite or opposite in fund_side or event_side == opposite:
+        news_direction = simple_direction_word(opposite)
+        return f"новини за {news_direction}, але ціна {simple_opposite_action(signal)} — зараз важливіший графік"
     return ""
 
 def align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc=None, tech=None):
@@ -6318,19 +6153,6 @@ def analyze_exhaustion_cooling(signal, tech, tv=None):
     """Detects post-pump/dump cooling phase using available TradingView data.
     No candle history required: uses change, RSI, EMA stretch, and momentum.
     """
-    post_retest = tech.get("post_shock_retest") if isinstance(tech, dict) else {}
-    if (
-        isinstance(post_retest, dict)
-        and post_retest.get("active")
-        and post_retest.get("side") == signal
-    ):
-        return {
-            "active": False,
-            "side": "NEUTRAL",
-            "note": "Відкат/ретест уже є — можна оцінювати вхід по 3m.",
-            "stretch_pct": 0,
-        }
-
     price = (tv or {}).get("price") if isinstance(tv, dict) else None
     price = price or 0
     change = tech.get("change", 0) or 0
@@ -6381,19 +6203,6 @@ def analyze_exhaustion_cooling(signal, tech, tv=None):
 
 def analyze_late_entry_risk(signal, tech, market):
     """Detects when the move is already too extended for a clean entry."""
-    post_retest = tech.get("post_shock_retest") if isinstance(tech, dict) else {}
-    if (
-        isinstance(post_retest, dict)
-        and post_retest.get("active")
-        and post_retest.get("side") == signal
-    ):
-        return {
-            "late": False,
-            "label": "",
-            "note": "Це не chase після імпульсу: є відкат/ретест.",
-            "penalty": 0,
-        }
-
     change = abs(tech.get("change", 0) or 0)
     rsi5 = tech.get("rsi_5m") or 50
     rsi15 = tech.get("rsi_15m") or 50
@@ -6670,17 +6479,6 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
     if late_entry and late_entry.get("late"):
         prob += late_entry.get("penalty", -10)
 
-    post_retest = (tech or {}).get("post_shock_retest") if isinstance(tech or {}, dict) else {}
-    if (
-        isinstance(post_retest, dict)
-        and post_retest.get("active")
-        and post_retest.get("side") == target
-    ):
-        if post_retest.get("trigger_ready"):
-            prob = max(prob + 6, 66)
-        else:
-            prob = max(prob + 3, 58)
-
     prob += smc_probability_adjustment(signal, smc)
     truth_filter = price_action_truth_filter(signal, tech or {}, smc, news, event_risk, orderflow)
     prob += truth_filter.get('penalty', 0)
@@ -6874,43 +6672,7 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
             return "РИЗИКОВАНИЙ ВХІД"
         return "ВХОДУ НЕМАЄ"
 
-    if "SHOCK DOWN" in signal_type:
-        return {
-            "status": "ВХОДУ НЕМАЄ",
-            "mode": "різкий дамп",
-            "strategy": "шорт не доганяти; чекати ретест для шорту або скальп-відскок тільки після підтвердження",
-            "priority": "ціна і 3m > новини; для скальпу потрібен відкуп",
-            "aggression": "не агресивно",
-        }
-    if "SHOCK UP" in signal_type:
-        return {
-            "status": "ВХОДУ НЕМАЄ",
-            "mode": "різкий памп",
-            "strategy": "лонг не доганяти; чекати ретест для лонгу або скальп-відкат тільки після підтвердження",
-            "priority": "ціна і 3m > новини; для скальпу потрібен продаж",
-            "aggression": "не агресивно",
-        }
-
-    if "RETEST AFTER DUMP" in signal_type and signal == "SHORT":
-        status = entry_status() if prob >= 65 else "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ЧЕКАТИ"
-        return {
-            "status": status,
-            "mode": "відкат після дампу",
-            "strategy": "працювати тільки від sell-зони; якщо 3m не слабшає — не входити",
-            "priority": "графік і 3m > новини; це ретест, не chase",
-            "aggression": "обережний шорт",
-        }
-    if "RETEST AFTER PUMP" in signal_type and signal == "LONG":
-        status = entry_status() if prob >= 65 else "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ЧЕКАТИ"
-        return {
-            "status": status,
-            "mode": "відкат після пампу",
-            "strategy": "працювати тільки від buy-зони; якщо 3m не посилюється — не входити",
-            "priority": "графік і 3m > новини; це ретест, не chase",
-            "aggression": "обережний лонг",
-        }
-
-    if "СКАЛЬП" in signal_type:
+    if "LONG-ВІДСКОК" in signal_type or "SHORT-ВІДКАТ" in signal_type or "СКАЛЬП" in signal_type:
         side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
         status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
         return {
@@ -6967,6 +6729,23 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
                 "aggression": aggression,
             }
 
+    if "SHOCK DOWN" in signal_type:
+        return {
+            "status": "ВХОДУ НЕМАЄ",
+            "mode": "різкий дамп",
+            "strategy": "шорт не доганяти; чекати ретест для шорту або скальп-відскок тільки після підтвердження",
+            "priority": "ціна і 3m > новини; для скальпу потрібен відкуп",
+            "aggression": "не агресивно",
+        }
+    if "SHOCK UP" in signal_type:
+        return {
+            "status": "ВХОДУ НЕМАЄ",
+            "mode": "різкий памп",
+            "strategy": "лонг не доганяти; чекати ретест для лонгу або скальп-відкат тільки після підтвердження",
+            "priority": "ціна і 3m > новини; для скальпу потрібен продаж",
+            "aggression": "не агресивно",
+        }
+
     return {
         "status": entry_status() if signal in ["LONG", "SHORT"] else "ВХОДУ НЕМАЄ",
         "mode": "змішаний ринок",
@@ -6974,67 +6753,6 @@ def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderf
         "priority": "баланс: графік + новини + стакан",
         "aggression": "не агресивно",
     }
-
-
-def separate_action_text(signal, trade_probability, event_block=None, late_entry=None, cooling=None, exhaustion=None, local_warning=""):
-    """Short user action line independent from 3/5, 4/5, 5/5 quality."""
-    event_block = event_block or {}
-    exhaustion = exhaustion or {}
-
-    if event_block.get("blocked"):
-        return "не входити"
-    if signal not in ["LONG", "SHORT"] or trade_probability is None:
-        return "не входити"
-    if trade_probability < 55:
-        return "не входити"
-    if (
-        trade_probability < 65
-        or (late_entry and late_entry.get("late"))
-        or (cooling and cooling.get("active"))
-        or exhaustion.get("active")
-        or local_warning
-    ):
-        return "чекати ретест"
-    return "вхід зараз"
-
-
-def separate_position_text(pos_note):
-    if not pos_note:
-        return "тримати/закрити за умовами: якщо позиція є — тільки зі стопом; без позиції чекати нового сигналу"
-    return "тримати/закрити за умовами: " + pos_note
-
-
-def display_header_from_action(action_text, signal, top_decision, market_mode):
-    if action_text == "вхід зараз":
-        return market_mode.get("status", "ВХІД Є"), top_decision
-
-    if action_text == "чекати ретест":
-        if signal in ["LONG", "SHORT"]:
-            return "ЧЕКАТИ", f"чекати ретест для {signal}"
-        return "ЧЕКАТИ", "чекати підтвердження"
-
-    return "ВХОДУ НЕМАЄ", "не входити — чекати новий сигнал"
-
-
-def plan_text_from_action(action_text, signal, trade_probability, show_trade_plan, plan, entry_watch):
-    if action_text == "вхід зараз":
-        return proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)
-
-    if action_text == "чекати ретест":
-        if isinstance(plan, dict) and plan.get("entry") is not None:
-            prefix = "Орієнтир після підтвердження"
-            if plan.get("locked"):
-                prefix = "Зафіксований орієнтир після підтвердження"
-            return (
-                f"{prefix}: Вхід: {plan.get('entry')} | "
-                f"Стоп: {plan.get('stop')} | "
-                f"TP1: {plan.get('tp1')} | "
-                f"TP2: {plan.get('tp2')} | "
-                f"TP3: {plan.get('tp3')}"
-            )
-        return "Входу зараз немає — чекати ретест/3m підтвердження."
-
-    return "Входу немає — чекати підтвердження."
 
 
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
@@ -7093,13 +6811,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
 
     if local_warning:
-        post_retest = raw_tech.get("post_shock_retest") if isinstance(raw_tech.get("post_shock_retest"), dict) else {}
-        if post_retest.get("active") and post_retest.get("side") == signal:
-            if signal == "SHORT":
-                decision = "РИЗИКОВАНИЙ SHORT — вхід на відкаті" if trade_probability and trade_probability >= 55 else "ГОТУЄМОСЬ ДО SHORT — відкат у зоні"
-            elif signal == "LONG":
-                decision = "РИЗИКОВАНИЙ LONG — вхід на відкаті" if trade_probability and trade_probability >= 55 else "ГОТУЄМОСЬ ДО LONG — відкат у зоні"
-        elif "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
+        if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
             decision = "TRADE LONG — 3m підтверджує вхід"
         elif "підтверджує SHORT" in local_warning and trade_probability is not None and trade_probability >= 65:
             decision = "TRADE SHORT — 3m підтверджує вхід"
@@ -7174,11 +6886,6 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
         event_risk, market, session, late_entry, cooling
     )
-    action_text = separate_action_text(
-        signal, trade_probability, event_block, late_entry, cooling, exhaustion, local_warning
-    )
-    position_text = separate_position_text(pos_note)
-    plan_text = plan_text_from_action(action_text, signal, trade_probability, show_trade_plan, plan, entry_watch)
 
     # Telegram-level hard safety:
     # If the displayed decision is "різкий дамп/памп", the conclusion must NOT be a reversal headline.
@@ -7272,20 +6979,19 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
         top_decision = top_decision.replace("Чекати ", "")
 
-    display_status, display_decision = display_header_from_action(action_text, signal, top_decision, market_mode)
-
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>{display_status}</b> — {display_decision}",
-        f"<b>Дія:</b> {action_text}",
-        f"<b>Позиція:</b> {position_text}",
+        f"<b>{market_mode['status']}</b> — {top_decision}",
         "",
         f"<b>Ринок:</b> {market_bias_text}",
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
         f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>План:</b> {plan_text}",
+        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
+
+    if conflict_note:
+        lines.append(f"<b>Конфлікт:</b> {conflict_note}")
 
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
@@ -7908,10 +7614,6 @@ def main():
     market = analyze_market_structure(tv, tech)
     oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
     session = analyze_session_context()
-    post_shock_retest = analyze_post_shock_retest(
-        tv, tech, smc, orderflow, news, event_risk, real_candles, micro_candles
-    )
-    tech["post_shock_retest"] = post_shock_retest
     
     weekend = analyze_weekend_mode()
     cross_data = get_cross_market_data()
@@ -7958,6 +7660,15 @@ def main():
         score += current_truth_filter.get('bonus', 0)
         confidence = min(88, confidence + min(6, abs(current_truth_filter.get('bonus', 0))))
 
+    yulia_guard = exhaustion_reversal_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news, event_risk)
+    if yulia_guard.get("active"):
+        signal = yulia_guard["signal"]
+        signal_type = yulia_guard["signal_type"]
+        confidence = yulia_guard["confidence"]
+        score = yulia_guard["score"]
+        risk_note = yulia_guard.get("reason", risk_note)
+        print("EXHAUSTION REVERSAL GUARD:", risk_note)
+
     early_entry = early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market, session)
     if early_entry.get("active"):
         signal = early_entry["side"]
@@ -7975,22 +7686,6 @@ def main():
         score = scalp_reversal.get("score", score)
         risk_note = scalp_reversal.get("reason", risk_note)
         print(f"SCALP REVERSAL TRIGGER: {signal} | {risk_note}")
-
-    post_shock_retest = tech.get("post_shock_retest") or {}
-    if (
-        post_shock_retest.get("active")
-        and (
-            signal == "НЕЙТРАЛЬНО"
-            or "SHOCK" in str(signal_type)
-            or signal == post_shock_retest.get("side")
-        )
-    ):
-        signal = post_shock_retest["side"]
-        signal_type = post_shock_retest["signal_type"]
-        confidence = max(confidence, post_shock_retest.get("confidence", confidence))
-        score = post_shock_retest.get("score", score)
-        risk_note = post_shock_retest.get("reason", risk_note)
-        print(f"POST-SHOCK RETEST TRIGGER: {signal} | {risk_note}")
 
     plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
     plan = adjust_plan_for_rr(plan, signal)
@@ -8041,7 +7736,6 @@ def main():
         trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
     print(f"TRUST MODE: {trust_mode} | {trust_reason}")
     print(f"EARLY WARNING: {early_warning['warning']} | SIDE: {early_warning['side']} | {early_warning['reason']}")
-    print(f"POST-SHOCK RETEST: {post_shock_retest.get('active')} | SIDE: {post_shock_retest.get('side')} | {post_shock_retest.get('reason')}")
     print(f"REVERSAL: {reversal['side']} | CONF: {reversal['confidence']} | SWEEP: {reversal['sweep']}")
     print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
     print(f"FINAL SCORE: {score}")
@@ -8097,25 +7791,6 @@ def main():
         quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
         market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
         print("FINAL SANITY GUARD:", message_guard.get("reason"))
-
-    flip_guard = signal_flip_guard(signal, signal_type, confidence, score, signal_memory, tv["price"], tech, smc)
-    if flip_guard.get("blocked"):
-        signal = flip_guard["signal"]
-        signal_type = flip_guard["signal_type"]
-        confidence = flip_guard["confidence"]
-        score = flip_guard["score"]
-        risk_note = flip_guard.get("reason", risk_note)
-        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
-        plan = adjust_plan_for_rr(plan, signal)
-        plan = apply_expansion_targets(plan, signal, tech, market)
-        rr = rr_metrics(plan)
-        chase = analyze_chase_protection(signal, tech, market)
-        late_entry = analyze_late_entry_risk(signal, tech, market)
-        cooling = analyze_exhaustion_cooling(signal, tech, tv)
-        pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
-        quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
-        market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
-        print("SIGNAL FLIP BLOCKED:", flip_guard.get("reason"))
 
     summary = final_short_summary(
         signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
