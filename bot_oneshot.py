@@ -5317,6 +5317,9 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     main_reason = technical_reason_text(signal, technical_bias, smc, tech) if signal in ["LONG", "SHORT"] else driver.get("summary", "перевага нечітка — краще чекати")
     driver_text = f"{driver.get('type', '')} {driver.get('expectation', '')} {driver.get('summary', '')}".upper()
 
+    technical_side_raw = technical_bias.get("side", "NEUTRAL")
+    fundamental_side_raw = fundamental_bias.get("side", "NEUTRAL")
+
     if signal in ["LONG", "SHORT"]:
         market_bias = signal
     elif "LONG" in decision_upper:
@@ -5327,10 +5330,14 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         market_bias = "LONG"
     elif "SHORT" in driver_text and "LONG" not in driver_text:
         market_bias = "SHORT"
-    elif fundamental_bias.get("side") in ["LONG", "SHORT"] and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
-        market_bias = fundamental_bias.get("side")
-    elif technical_bias.get("side") in ["LONG", "SHORT"]:
-        market_bias = technical_bias.get("side")
+    elif "LONG" in fundamental_side_raw and "SHORT" not in fundamental_side_raw and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
+        market_bias = "LONG"
+    elif "SHORT" in fundamental_side_raw and "LONG" not in fundamental_side_raw and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
+        market_bias = "SHORT"
+    elif "LONG" in technical_side_raw and "SHORT" not in technical_side_raw:
+        market_bias = "LONG"
+    elif "SHORT" in technical_side_raw and "LONG" not in technical_side_raw:
+        market_bias = "SHORT"
     else:
         market_bias = "НЕЙТРАЛЬНО"
 
@@ -5364,7 +5371,8 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
 
-    micro_text = microstructure_text(orderflow, signal)
+    micro_context = signal if signal in ["LONG", "SHORT"] else market_bias
+    micro_text = microstructure_text(orderflow, micro_context)
     if micro_text:
         lines.append(f"<b>{micro_text}</b>")
 
