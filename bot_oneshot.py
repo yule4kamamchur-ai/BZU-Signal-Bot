@@ -4235,6 +4235,46 @@ def estimate_trade_probability(signal, confidence, quality, technical_bias, fund
 
     return int(max(30, min(82, round(prob))))
 
+
+def hard_no_long_when_chart_short(signal, signal_type, confidence, score, tech, trade_probability=None):
+    """Final safety guard before Telegram.
+
+    If chart is SHORT and price is falling, bot must not say "wait LONG".
+    Especially when entry quality is 0/5.
+    """
+    tech = tech or {}
+    tech_score = tech.get("score", 0) or 0
+    change = tech.get("change", 0) or 0
+
+    if signal == "LONG" and tech_score <= -35 and change < -0.25:
+        if trade_probability is None or trade_probability < 55:
+            return {
+                "signal": "НЕЙТРАЛЬНО",
+                "signal_type": "LONG BLOCKED / TECH SHORT",
+                "confidence": min(confidence, 50),
+                "score": 0,
+                "reason": "LONG не давати: графік SHORT і якість входу низька",
+            }
+
+    if signal == "SHORT" and tech_score >= 35 and change > 0.25:
+        if trade_probability is None or trade_probability < 55:
+            return {
+                "signal": "НЕЙТРАЛЬНО",
+                "signal_type": "SHORT BLOCKED / TECH LONG",
+                "confidence": min(confidence, 50),
+                "score": 0,
+                "reason": "SHORT не давати: графік LONG і якість входу низька",
+            }
+
+    return {
+        "signal": signal,
+        "signal_type": signal_type,
+        "confidence": confidence,
+        "score": score,
+        "reason": "",
+    }
+
+
 def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None):
     local_warning = ""
     decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
@@ -5020,7 +5060,7 @@ def main():
         tech=tech
     )
 
-    position_note = position_follow_note(signal_memory, tv["price"], tech)
+    position_note = position_follow_note(signal_memory, tv["price"], tech) if "position_follow_note" in globals() else ""
     if position_note and position_note not in message:
         message = message.strip() + "\n\n" + position_note
 
