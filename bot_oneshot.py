@@ -349,10 +349,12 @@ def evaluate_journal_entry(entry, current_price, current_time=None):
         return entry
 
     signal = entry.get("signal")
+    market_direction = entry.get("market_direction")
+    eval_direction = signal if signal in ["LONG", "SHORT"] else market_direction
     price = float(entry.get("price") or 0)
     quality = entry.get("quality_percent")
     no_entry = bool(entry.get("no_entry"))
-    if signal not in ["LONG", "SHORT"] or price <= 0:
+    if eval_direction not in ["LONG", "SHORT"] or price <= 0:
         entry["result_status"] = "SKIPPED"
         entry["result_note"] = "сигнал був без лонг/шорт напрямку"
         entry["evaluated_at"] = current_time.isoformat()
@@ -363,8 +365,8 @@ def evaluate_journal_entry(entry, current_price, current_time=None):
     entry["result_diff_pct"] = round(diff_pct, 3)
     entry["evaluated_at"] = current_time.isoformat()
 
-    moved_with_signal = (signal == "LONG" and diff_pct >= 0.35) or (signal == "SHORT" and diff_pct <= -0.35)
-    moved_against_signal = (signal == "LONG" and diff_pct <= -0.35) or (signal == "SHORT" and diff_pct >= 0.35)
+    moved_with_signal = (eval_direction == "LONG" and diff_pct >= 0.35) or (eval_direction == "SHORT" and diff_pct <= -0.35)
+    moved_against_signal = (eval_direction == "LONG" and diff_pct <= -0.35) or (eval_direction == "SHORT" and diff_pct >= 0.35)
 
     if no_entry:
         if moved_against_signal:
@@ -390,6 +392,32 @@ def evaluate_journal_entry(entry, current_price, current_time=None):
 
     return entry
 
+def infer_market_direction(signal, signal_type=None, tech=None, technical_bias=None, fundamental_bias=None):
+    if signal in ["LONG", "SHORT"]:
+        return signal
+
+    signal_type = str(signal_type or "").upper()
+    if "SHOCK DOWN" in signal_type:
+        return "SHORT"
+    if "SHOCK UP" in signal_type:
+        return "LONG"
+
+    tech = tech or {}
+    tech_score = tech.get("score", 0) or 0
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    tech_side = (technical_bias or {}).get("side", "")
+    fund_side = (fundamental_bias or {}).get("side", "")
+
+    if tech_score <= -45 or micro.get("bias") == "SHORT" or "SHORT" in str(tech_side):
+        return "SHORT"
+    if tech_score >= 45 or micro.get("bias") == "LONG" or "LONG" in str(tech_side):
+        return "LONG"
+    if "SHORT" in str(fund_side) and "LONG" not in str(fund_side):
+        return "SHORT"
+    if "LONG" in str(fund_side) and "SHORT" not in str(fund_side):
+        return "LONG"
+    return "NEUTRAL"
+
 def update_signal_journal_results(journal, current_price):
     journal = journal or {"signals": []}
     updated = []
@@ -406,7 +434,7 @@ def update_signal_journal_results(journal, current_price):
     journal["signals"] = updated[-SIGNAL_JOURNAL_LIMIT:]
     return journal, changed
 
-def build_pattern_tags(signal, signal_type, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None):
+def build_pattern_tags(signal, signal_type, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None, market_direction=None):
     tags = []
     tech = tech or {}
     news = news or {}
@@ -422,28 +450,29 @@ def build_pattern_tags(signal, signal_type, tech=None, news=None, event_risk=Non
     trades_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
     liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
     smc_bias = smc.get("bias", "NEUTRAL")
+    direction = signal if signal in ["LONG", "SHORT"] else market_direction
 
     if "SHOCK DOWN" in str(signal_type):
         tags.append("shock_down")
     if "SHOCK UP" in str(signal_type):
         tags.append("shock_up")
-    if signal == "SHORT" and (event_side == "LONG" or news_score >= 35):
+    if direction == "SHORT" and (event_side == "LONG" or news_score >= 35):
         tags.append("news_against")
-    if signal == "LONG" and (event_side == "SHORT" or news_score <= -35):
+    if direction == "LONG" and (event_side == "SHORT" or news_score <= -35):
         tags.append("news_against")
     if event_high:
         tags.append("event_high")
-    if signal in ["LONG", "SHORT"] and book_bias in ["LONG", "SHORT"] and book_bias != signal:
+    if direction in ["LONG", "SHORT"] and book_bias in ["LONG", "SHORT"] and book_bias != direction:
         tags.append("book_against")
-    if signal in ["LONG", "SHORT"] and trades_bias in ["LONG", "SHORT"] and trades_bias != signal:
+    if direction in ["LONG", "SHORT"] and trades_bias in ["LONG", "SHORT"] and trades_bias != direction:
         tags.append("trades_against")
-    if signal in ["LONG", "SHORT"] and liquidity_bias in ["LONG", "SHORT"] and liquidity_bias != signal:
+    if direction in ["LONG", "SHORT"] and liquidity_bias in ["LONG", "SHORT"] and liquidity_bias != direction:
         tags.append("liquidity_against")
     if micro.get("state") == "RANGE":
         tags.append("3m_range")
-    if signal in ["LONG", "SHORT"] and micro.get("bias") in ["LONG", "SHORT"] and micro.get("bias") != signal:
+    if direction in ["LONG", "SHORT"] and micro.get("bias") in ["LONG", "SHORT"] and micro.get("bias") != direction:
         tags.append("3m_against")
-    if signal in ["LONG", "SHORT"] and smc_bias not in [signal]:
+    if direction in ["LONG", "SHORT"] and smc_bias not in [direction]:
         tags.append("structure_unconfirmed")
     if late_entry and late_entry.get("late"):
         tags.append("late_entry")
@@ -452,14 +481,16 @@ def build_pattern_tags(signal, signal_type, tech=None, news=None, event_risk=Non
 
     return sorted(set(tags))
 
-def build_signal_journal_entry(signal, signal_type, price, confidence, quality_percent, plan=None, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None):
+def build_signal_journal_entry(signal, signal_type, price, confidence, quality_percent, plan=None, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None, market_direction=None):
     plan = plan if isinstance(plan, dict) else {}
     no_entry = signal not in ["LONG", "SHORT"] or quality_percent is None or quality_percent < 65
-    tags = build_pattern_tags(signal, signal_type, tech, news, event_risk, orderflow, smc, late_entry, cooling)
+    market_direction = market_direction or infer_market_direction(signal, signal_type, tech)
+    tags = build_pattern_tags(signal, signal_type, tech, news, event_risk, orderflow, smc, late_entry, cooling, market_direction)
     return {
         "id": now_utc().strftime("%Y%m%d%H%M%S"),
         "time": now_utc().isoformat(),
         "signal": signal,
+        "market_direction": market_direction,
         "signal_type": signal_type,
         "price": price,
         "confidence": confidence,
@@ -541,7 +572,8 @@ def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4
             continue
         item_tags = set(item.get("tags") or [])
         if all(tag in item_tags for tag in selected):
-            if current_signal in ["LONG", "SHORT"] and item.get("signal") != current_signal:
+            item_direction = item.get("signal") if item.get("signal") in ["LONG", "SHORT"] else item.get("market_direction")
+            if current_signal in ["LONG", "SHORT"] and item_direction != current_signal:
                 continue
             matches.append(item)
 
@@ -4041,14 +4073,14 @@ def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, even
     session_name = (session or {}).get("session", "")
     volatility = (market or {}).get("volatility", {}).get("regime", "NORMAL")
 
-    if abs_change >= 1.65:
+    if abs_change >= 1.85:
         return {"active": False, "side": "NONE", "reason": "рух уже запізний"}
     if volatility == "LOW VOLATILITY / CHOP MODE":
         return {"active": False, "side": "NONE", "reason": "боковик, ранній вхід слабкий"}
 
     def side_setup(side):
         is_long = side == "LONG"
-        score_ok = tech_score >= 42 if is_long else tech_score <= -42
+        score_ok = tech_score >= 36 if is_long else tech_score <= -36
         trend_ok = (
             trend_5m == "UP" and trend_15m == "UP"
             if is_long else
@@ -4064,14 +4096,14 @@ def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, even
             if is_long else
             smc.get("bias") == "SHORT" or smc.get("bos") == "пробій структури SHORT"
         )
-        order_ok = order_score >= 6 if is_long else order_score <= -6
+        order_ok = order_score >= 3 if is_long else order_score <= -3
         price_ema_ok = True
         if price and ema20:
             price_ema_ok = price > ema20 if is_long else price < ema20
         rsi_ok = True
         if rsi5 is not None and rsi15 is not None:
             rsi_ok = (rsi5 < 74 and rsi15 < 70) if is_long else (rsi5 > 26 and rsi15 > 30)
-        early_move_ok = (0.12 <= change <= 1.25) if is_long else (-1.25 <= change <= -0.12)
+        early_move_ok = (0.10 <= change <= 1.45) if is_long else (-1.45 <= change <= -0.10)
         not_against_1h = trend_1h != ("DOWN" if is_long else "UP")
 
         confirmations = [
@@ -4087,6 +4119,8 @@ def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, even
         ]
         count = sum(1 for item in confirmations if item)
         required = 6
+        if (micro_ok and smc_ok and trend_ok and score_ok and early_move_ok and rsi_ok):
+            required = 5
         if session_name == "ASIA":
             required = 7
         if calendar_active or event_high:
@@ -6680,6 +6714,13 @@ def main():
         signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
         orderflow, market, reversal, chase, weekend, late_entry, smc, tech
     )
+    journal_market_direction = infer_market_direction(
+        signal,
+        signal_type,
+        tech=tech,
+        technical_bias=technical_bias,
+        fundamental_bias=fundamental_bias,
+    )
 
     current_journal_entry = build_signal_journal_entry(
         signal=signal,
@@ -6695,8 +6736,9 @@ def main():
         smc=smc,
         late_entry=late_entry,
         cooling=cooling,
+        market_direction=journal_market_direction,
     )
-    pattern_note = pattern_stats_text(signal_journal, current_journal_entry.get("tags"), signal)
+    pattern_note = pattern_stats_text(signal_journal, current_journal_entry.get("tags"), journal_market_direction)
     signal_journal = append_signal_journal(signal_journal, current_journal_entry)
     save_signal_journal(signal_journal)
 
