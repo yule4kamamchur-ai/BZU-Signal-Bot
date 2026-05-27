@@ -5316,8 +5316,19 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
 
     technical_side_raw = technical_bias.get("side", "NEUTRAL")
     fundamental_side_raw = fundamental_bias.get("side", "NEUTRAL")
+    tech_short = "SHORT" in technical_side_raw and "LONG" not in technical_side_raw
+    tech_long = "LONG" in technical_side_raw and "SHORT" not in technical_side_raw
+    fund_long = "LONG" in fundamental_side_raw and "SHORT" not in fundamental_side_raw
+    fund_short = "SHORT" in fundamental_side_raw and "LONG" not in fundamental_side_raw
+    shock_conflict = (
+        signal == "НЕЙТРАЛЬНО"
+        and ("SHOCK DOWN" in str(signal_type) or "SHOCK UP" in str(signal_type))
+        and ((tech_short and fund_long) or (tech_long and fund_short))
+    )
 
-    if signal in ["LONG", "SHORT"]:
+    if shock_conflict:
+        market_bias = "CONFLICT"
+    elif signal in ["LONG", "SHORT"]:
         market_bias = signal
     elif "LONG" in decision_upper:
         market_bias = "LONG"
@@ -5327,18 +5338,24 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         market_bias = "LONG"
     elif "SHORT" in driver_text and "LONG" not in driver_text:
         market_bias = "SHORT"
-    elif "LONG" in fundamental_side_raw and "SHORT" not in fundamental_side_raw and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
+    elif fund_long and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
         market_bias = "LONG"
-    elif "SHORT" in fundamental_side_raw and "LONG" not in fundamental_side_raw and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
+    elif fund_short and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
         market_bias = "SHORT"
-    elif "LONG" in technical_side_raw and "SHORT" not in technical_side_raw:
+    elif tech_long:
         market_bias = "LONG"
-    elif "SHORT" in technical_side_raw and "LONG" not in technical_side_raw:
+    elif tech_short:
         market_bias = "SHORT"
     else:
         market_bias = "НЕЙТРАЛЬНО"
 
-    if market_bias in ["LONG", "SHORT"]:
+    if shock_conflict:
+        market_bias_text = "конфлікт"
+        if "SHOCK DOWN" in str(signal_type):
+            main_reason = "графік різко впав, але покупці почали відкуповувати"
+        elif "SHOCK UP" in str(signal_type):
+            main_reason = "графік різко виріс, але продавці можуть повернути тиск"
+    elif market_bias in ["LONG", "SHORT"]:
         market_bias_text = f"{simple_direction_word(market_bias)} ({confidence}%)"
     else:
         market_bias_text = "змішано"
@@ -5371,7 +5388,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     micro_context = signal if signal in ["LONG", "SHORT"] else market_bias
     micro_text = microstructure_text(orderflow, micro_context)
     if micro_text:
-        lines.append(f"<b>{micro_text}</b>")
+        lines.append(micro_text)
 
     smc_note = smc_conflict_note(smc)
     if smc_note:
