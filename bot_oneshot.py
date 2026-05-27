@@ -1689,7 +1689,7 @@ def analyze_order_book_pressure(book, price=None):
 def analyze_liquidity_proxy(candles, trade_flow=None, order_book=None):
     """Liquidation/stop-run proxy from candles, volume, trades and book pressure."""
     if not candles or len(candles) < 25:
-        return {"available": False, "score": 0, "bias": "NEUTRAL", "note": "Ліквідність: мало даних"}
+        return {"available": False, "score": 0, "bias": "NEUTRAL", "note": "мало даних"}
 
     recent = candles[-20:]
     last = candles[-1]
@@ -1703,14 +1703,14 @@ def analyze_liquidity_proxy(candles, trade_flow=None, order_book=None):
 
     trade_bias = (trade_flow or {}).get("bias", "NEUTRAL")
     book_bias = (order_book or {}).get("bias", "NEUTRAL")
-    note = "Ліквідність: без явного вибивання"
+    note = "спокійно"
     score = 0
     bias = "NEUTRAL"
 
     if move_pct <= -0.45 and vol_ratio >= 1.35 and body < 0:
         bias = "SHORT"
         score = -14
-        note = "можливе вибивання лонгів"
+        note = "вибивають лонги"
         if close_pos <= 0.25:
             score -= 4
         if trade_bias == "SHORT" or book_bias == "SHORT":
@@ -1730,11 +1730,11 @@ def analyze_liquidity_proxy(candles, trade_flow=None, order_book=None):
     if last["low"] < prev_low and last["close"] > prev_low:
         bias = "LONG"
         score = max(score, 8)
-        note = "зняли ліквідність знизу — можливий відскок"
+        note = "зняли знизу, можливий відскок"
     elif last["high"] > prev_high and last["close"] < prev_high:
         bias = "SHORT"
         score = min(score, -8)
-        note = "зняли ліквідність зверху — можливий відкат"
+        note = "зняли зверху, можливий відкат"
 
     return {
         "available": True,
@@ -1797,22 +1797,28 @@ def microstructure_text(orderflow):
     book = orderflow.get("order_book") or {}
     liquidity = orderflow.get("liquidity_proxy") or {}
 
-    parts = []
+    lines = []
     if book.get("available"):
-        text = "Стакан: " + book.get("note", "без явної переваги")
+        text = book.get("note", "без явної переваги")
         if book.get("wall"):
-            text += f", {book.get('wall')}"
-        parts.append(text)
+            text += f"; {book.get('wall')}"
+        lines.append("Стакан: " + text)
     if trade_flow.get("available"):
-        parts.append("Угоди OKX: " + trade_flow.get("note", "без явної переваги"))
+        note = trade_flow.get("note", "без явної переваги")
+        if "продавців" in note:
+            note = "продавці активні"
+        elif "покупців" in note:
+            note = "покупці активні"
+        else:
+            note = "без явної переваги"
+        lines.append("Угоди: " + note)
     if liquidity.get("available"):
         note = liquidity.get("note", "без явного вибивання")
         if note.lower().startswith("ліквідність:"):
-            parts.append(note)
-        else:
-            parts.append("Ліквідність: " + note)
+            note = note.split(":", 1)[1].strip()
+        lines.append("Ліквідність: " + note)
 
-    return " | ".join(parts[:3])
+    return "\n".join(f"<b>{line}</b>" for line in lines[:3])
 
 def quick_backtest_smoke(candles, lookback=80):
     """Small health-check backtest for GitHub logs.
@@ -3540,13 +3546,13 @@ def news_event_trade_block(signal, trade_probability, event_risk, news, session=
     if event_high and news_against and (trade_probability or 0) < 75:
         return {
             "blocked": True,
-            "reason": "Новинний ризик проти входу. Для фʼючів краще чекати підтвердження після реакції ціни.",
+            "reason": "новини проти входу — краще чекати реакцію ціни",
         }
 
     if event_high and session_name == "NEW YORK" and (trade_probability or 0) < 65:
         return {
             "blocked": True,
-            "reason": "Високий новинний ризик у NY-сесію. Без сильного підтвердження не входити.",
+            "reason": "високий ризик у NY-сесію — без сильного підтвердження не входити",
         }
 
     return {"blocked": False, "reason": ""}
