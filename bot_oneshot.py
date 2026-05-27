@@ -4079,6 +4079,7 @@ def chart_context_message(chart_context):
     if not chart_context or not chart_context.get("available"):
         return ""
     text = chart_context.get("status", "")
+    text = re.sub(r"^\s*Графік:\s*", "", text).strip()
     note = chart_context.get("note", "")
     trigger = chart_context.get("trigger")
     invalid = chart_context.get("invalid")
@@ -4234,10 +4235,16 @@ def format_watch_plan(signal, plan, entry_watch):
         f"TP3: {fnum(tp3)} | Скасування: {invalid_text}."
     )
 
-def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry=None):
+def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry=None, chart_context=None):
     """Telegram plan text. TRADE only if confirmed; otherwise conditional preparation."""
     if show_trade_plan:
         return format_trade_plan(plan)
+
+    if chart_context and chart_context.get("stage") == "LATE_NO_CHASE":
+        return "Входу немає — рух уже пізній, чекати відкат/ретест або нову базу."
+
+    if chart_context and chart_context.get("stage") == "SETUP_FORMING":
+        return "Входу немає — напрям готується, чекати пробій/ретест і підтвердження 3m."
 
     if late_entry and late_entry.get("late"):
         return "Входу немає — рух уже пізній, чекати відкат/ретест або нову базу."
@@ -6811,6 +6818,8 @@ def entry_quality_scale(probability, late_entry=None, signal_type=""):
 
     if late_entry and late_entry.get("very_late"):
         return f"0/5 — напрям є, але вхід пізній ({probability}%)"
+    if "ВХІД ПІЗНІЙ" in signal_type or "НЕ ДОГАНЯТИ" in signal_type:
+        return f"0/5 — напрям є, але вхід пізній ({probability}%)"
 
     suffix = ""
     if late_entry and late_entry.get("late"):
@@ -7541,7 +7550,7 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
         f"<b>Ринок:</b> {market_bias_text}",
         f"<b>Якість входу:</b> {entry_quality_scale(trade_probability, late_entry, signal_type)}",
         f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry)}",
+        f"<b>План:</b> {proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)}",
         f"<b>Причини:</b> " + " | ".join(compact_reasons[:3]),
     ]
 
