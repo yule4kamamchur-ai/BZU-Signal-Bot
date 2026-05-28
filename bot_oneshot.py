@@ -1013,6 +1013,8 @@ def position_break_reasons(side, current_price, trade, tech=None, smc=None, orde
     swing_low = safe_float(smc.get("swing_low"))
     swing_high = safe_float(smc.get("swing_high"))
     flow_bias = orderflow_verdict(orderflow)[0] if isinstance(orderflow, dict) else "NEUTRAL"
+    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
+    local_side = local_move_direction(local_move)
 
     result_pct = signed_position_pct(side, entry, current_price)
     reasons = []
@@ -1032,6 +1034,13 @@ def position_break_reasons(side, current_price, trade, tech=None, smc=None, orde
             reasons.append("структура RANGE/WAIT, а 3m продавці активні")
         if result_pct < 0 and flow_bias == "SHORT":
             reasons.append("потік/стакан перейшов проти LONG")
+        if -0.12 <= result_pct <= 0.18 and (
+            micro_bias == "SHORT"
+            or trend_15m == "DOWN"
+            or flow_bias == "SHORT"
+            or local_side == "SHORT"
+        ):
+            reasons.append("ціна повернулась майже до входу, підтвердження LONG втрачено")
 
     elif side == "SHORT":
         if stop is not None and current_price >= stop:
@@ -1048,6 +1057,13 @@ def position_break_reasons(side, current_price, trade, tech=None, smc=None, orde
             reasons.append("структура RANGE/WAIT, а 3m покупці активні")
         if result_pct < 0 and flow_bias == "LONG":
             reasons.append("потік/стакан перейшов проти SHORT")
+        if -0.12 <= result_pct <= 0.18 and (
+            micro_bias == "LONG"
+            or trend_15m == "UP"
+            or flow_bias == "LONG"
+            or local_side == "LONG"
+        ):
+            reasons.append("ціна повернулась майже до входу, підтвердження SHORT втрачено")
 
     return reasons[:3]
 
@@ -1225,11 +1241,19 @@ def signed_position_pct(side, entry, current_price):
     return diff if side == "LONG" else -diff
 
 
-def position_recommendation(side, result_pct, current_price, trade, tech=None):
+def position_recommendation(side, result_pct, current_price, trade, tech=None, validity=None):
     tech = tech or {}
+    validity = validity or {}
     tp1 = safe_float((trade or {}).get("tp1"))
     micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
     micro_bias = micro.get("bias", "NEUTRAL")
+
+    if validity.get("action") == "EXIT":
+        return "актуальність втрачена — краще закрити біля входу"
+    if validity.get("action") == "PROTECT":
+        return "актуальність під питанням — захистити позицію"
+    if validity.get("action") == "HOLD_TIGHT":
+        return "ще актуально, але тільки зі стопом біля входу"
 
     reached_tp1 = (
         side == "LONG" and tp1 is not None and current_price >= tp1
@@ -1243,6 +1267,130 @@ def position_recommendation(side, result_pct, current_price, trade, tech=None):
     if result_pct > 0:
         return "утримувати обережно, стоп підтягувати"
     return "утримувати тільки якщо 15m не зламається"
+
+
+def position_profit_pullback_note(side, current_price, trade, candles=None):
+    """Review whether a position is still worth holding after price returns near entry."""
+    if side not in ["LONG", "SHORT"] or not current_price or not trade:
+        return ""
+
+    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
+    if not entry:
+        return ""
+
+    created = parse_iso_datetime((trade or {}).get("time"))
+    start_ms = int(created.timestamp() * 1000) if created else None
+    relevant = []
+    for candle in candles or []:
+        ts = safe_float(candle.get("ts"))
+        if start_ms is None or (ts is not None and ts >= start_ms):
+            relevant.append(candle)
+
+    if not relevant:
+        return ""
+
+    if side == "LONG":
+        best_price = max(safe_float(c.get("high")) or entry for c in relevant)
+    else:
+        best_price = min(safe_float(c.get("low")) or entry for c in relevant)
+
+    best_pct = signed_position_pct(side, entry, best_price)
+    current_pct = signed_position_pct(side, entry, current_price)
+    if best_pct <= 0:
+        return ""
+
+    giveback_pct = max(0, best_pct - current_pct)
+    giveback_ratio = giveback_pct / best_pct if best_pct else 0
+
+    if best_pct >= 0.45 and current_pct <= 0.18:
+        return (
+            f"<b>Актуальність позиції:</b> ціна повернулась майже до входу після руху в плюс. "
+            f"Перевірити підтвердження заново: якщо 3m/15m або стакан не підтримують {side}, краще закрити біля входу або залишити тільки зі стопом у б/у."
+        )
+    if best_pct >= 0.60 and giveback_ratio >= 0.65:
+        return (
+            f"<b>Актуальність позиції:</b> більшість руху в плюс уже втрачена. "
+            f"{side} тримати тільки якщо знову є підтвердження; інакше краще вийти/підтягнути стоп у б/у."
+        )
+    return ""
+
+
+def position_validity_review(side, current_price, trade, tech=None, smc=None, orderflow=None, candles=None):
+    """Action-oriented review when price is back near the entry."""
+    if side not in ["LONG", "SHORT"] or not current_price or not trade:
+        return {"action": "HOLD", "text": ""}
+
+    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
+    if not entry:
+        return {"action": "HOLD", "text": ""}
+
+    current_pct = signed_position_pct(side, entry, current_price)
+    if current_pct > 0.28 or current_pct < -0.18:
+        return {"action": "HOLD", "text": ""}
+
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    trend_15m = tech.get("trend_15m") or tech.get("trend")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    flow_bias = orderflow_verdict(orderflow)[0] if isinstance(orderflow, dict) else "NEUTRAL"
+    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
+    local_side = local_move_direction(local_move)
+
+    if side == "LONG":
+        support = [
+            micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING",
+            trend_15m == "UP",
+            smc_bias == "LONG" or "LONG" in bos or "LONG" in choch,
+            flow_bias == "LONG",
+            local_side == "LONG",
+        ]
+        against = [
+            micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING",
+            trend_15m == "DOWN",
+            smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch,
+            flow_bias == "SHORT",
+            local_side == "SHORT",
+        ]
+    else:
+        support = [
+            micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING",
+            trend_15m == "DOWN",
+            smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch,
+            flow_bias == "SHORT",
+            local_side == "SHORT",
+        ]
+        against = [
+            micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING",
+            trend_15m == "UP",
+            smc_bias == "LONG" or "LONG" in bos or "LONG" in choch,
+            flow_bias == "LONG",
+            local_side == "LONG",
+        ]
+
+    support_count = sum(1 for item in support if item)
+    against_count = sum(1 for item in against if item)
+    near_entry_text = "ціна майже біля входу"
+
+    if against_count >= 2 and support_count < 2:
+        return {
+            "action": "EXIT",
+            "text": f"<b>Актуальність {side}:</b> слабка — {near_entry_text}, підтвердження зникло. Краще закрити біля входу / не чекати дальній стоп.",
+        }
+    if support_count >= 2 and against_count <= 1:
+        return {
+            "action": "HOLD_TIGHT",
+            "text": f"<b>Актуальність {side}:</b> ще є, але {near_entry_text}. Тримати тільки поки 3m/15m підтверджують, стоп підтягнути ближче до входу.",
+        }
+    return {
+        "action": "PROTECT",
+        "text": f"<b>Актуальність {side}:</b> під питанням — {near_entry_text}. Не додавати; або частково вийти, або стоп у б/у/малий плюс.",
+    }
 
 
 def breakeven_note(side, current_price, trade):
@@ -1386,7 +1534,7 @@ def early_opposite_pullback_warning(position_side, tech=None, smc=None, orderflo
     )
 
 
-def build_position_follow_message(tv, memory, tech, news, event_risk, smc, orderflow):
+def build_position_follow_message(tv, memory, tech, news, event_risk, smc, orderflow, candles=None):
     trade = last_actionable_trade(memory)
     if not trade:
         return ""
@@ -1409,7 +1557,9 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
     micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
     micro_side = micro.get("bias", "NEUTRAL")
 
-    recommendation = position_recommendation(side, result_pct, current_price, trade, tech)
+    validity_review = position_validity_review(side, current_price, trade, tech, smc, orderflow, candles)
+    recommendation = position_recommendation(side, result_pct, current_price, trade, tech, validity_review)
+    pullback_note = position_profit_pullback_note(side, current_price, trade, candles)
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
@@ -1427,6 +1577,10 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
         f"<b>Зона ліквідності:</b> {liquidity_caution_text(side, trade, smc, orderflow)}",
         f"<b>Стоп у б/у:</b> {breakeven_note(side, current_price, trade)}",
     ]
+    if pullback_note:
+        lines.append(pullback_note)
+    if validity_review.get("text"):
+        lines.append(validity_review["text"])
     opposite_warning = early_opposite_pullback_warning(side, tech, smc, orderflow)
     if opposite_warning:
         lines.append(opposite_warning)
@@ -9775,7 +9929,7 @@ def main():
         and market_supports_position(position_trade.get("signal"), tv["price"], position_trade, tech, smc, orderflow)
     )
     if position_active:
-        follow_message = build_position_follow_message(tv, signal_memory, tech, news, event_risk, smc, orderflow)
+        follow_message = build_position_follow_message(tv, signal_memory, tech, news, event_risk, smc, orderflow, real_candles)
         if follow_message:
             message = follow_message
     elif position_trade:
