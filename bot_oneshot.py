@@ -1313,6 +1313,79 @@ def order_book_follow_text(book):
     return "без чіткої переваги"
 
 
+def early_opposite_pullback_warning(position_side, tech=None, smc=None, orderflow=None):
+    """Warn about an early opposite setup while an existing 4/5+ trade is followed.
+
+    This is not a flip instruction. It tells the user to protect the active
+    position and only consider the opposite side after trigger/retest confirms.
+    """
+    if position_side not in ["LONG", "SHORT"]:
+        return ""
+
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    opposite = "SHORT" if position_side == "LONG" else "LONG"
+
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
+    micro_score = micro.get("score", 0) or 0
+    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
+    local_side = local_move_direction(local_move)
+    trend_5m = tech.get("trend_5m", "UNKNOWN")
+    trend_15m = tech.get("trend_15m", "UNKNOWN")
+    trend_1h = tech.get("trend_1h", "UNKNOWN")
+    tech_score = tech.get("score", 0) or 0
+
+    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    vol_bias = volume.get("bias", "NEUTRAL")
+
+    order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
+    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
+    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
+
+    if opposite == "SHORT":
+        local_ok = local_move.get("pullback_after_pump") or (local_side == "SHORT" and not local_move.get("bounce_after_dump"))
+        micro_ok = micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING" or micro_score <= -18
+        structure_ok = smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch or vol_bias == "SHORT"
+        flow_ok = order_score <= -8 or book_bias == "SHORT" or trade_bias == "SHORT"
+        trend_ok = trend_5m == "DOWN" and trend_15m == "DOWN"
+        full_trend_ok = trend_ok and trend_1h == "DOWN"
+        tech_ok = tech_score <= -35
+        blocked = local_move.get("bounce_after_dump")
+        note = local_move.get("note", "відкат від high")
+    else:
+        local_ok = local_move.get("bounce_after_dump") or (local_side == "LONG" and not local_move.get("pullback_after_pump"))
+        micro_ok = micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING" or micro_score >= 18
+        structure_ok = smc_bias == "LONG" or "LONG" in bos or "LONG" in choch or vol_bias == "LONG"
+        flow_ok = order_score >= 8 or book_bias == "LONG" or trade_bias == "LONG"
+        trend_ok = trend_5m == "UP" and trend_15m == "UP"
+        full_trend_ok = trend_ok and trend_1h == "UP"
+        tech_ok = tech_score >= 35
+        blocked = local_move.get("pullback_after_pump")
+        note = local_move.get("note", "відскок від low")
+
+    if blocked or not (local_ok and micro_ok and (structure_ok or flow_ok)):
+        return ""
+
+    quality = "3/5"
+    if structure_ok and flow_ok and (trend_ok or tech_ok):
+        quality = "4/5"
+    if structure_ok and flow_ok and full_trend_ok and tech_ok:
+        quality = "5/5"
+
+    action = "підтягнути стоп / частково зафіксувати" if position_side == "LONG" else "підтягнути стоп / частково зафіксувати"
+    return (
+        f"<b>Ранній {opposite}-відкат:</b> формується {quality} — {note}; "
+        f"активний {position_side} спочатку захистити: {action}. "
+        f"{opposite} тільки після тригера/ретесту, не перевертатись по ринку."
+    )
+
+
 def build_position_follow_message(tv, memory, tech, news, event_risk, smc, orderflow):
     trade = last_actionable_trade(memory)
     if not trade:
@@ -1354,6 +1427,9 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
         f"<b>Зона ліквідності:</b> {liquidity_caution_text(side, trade, smc, orderflow)}",
         f"<b>Стоп у б/у:</b> {breakeven_note(side, current_price, trade)}",
     ]
+    opposite_warning = early_opposite_pullback_warning(side, tech, smc, orderflow)
+    if opposite_warning:
+        lines.append(opposite_warning)
     news_warning = pre_news_warning_text(event_risk)
     if news_warning:
         lines.append(news_warning)
@@ -5003,14 +5079,14 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     local_from_high = local_move.get("from_high_pct", 0) or 0
     local_from_low = local_move.get("from_low_pct", 0) or 0
     local_short_confirmed = (
-        local_move.get("available")
-        and local_from_high <= -0.35
+        (local_move.get("pullback_after_pump") or (local_move.get("available") and local_from_high <= -0.35))
+        and not local_move.get("bounce_after_dump")
         and (micro_bias == "SHORT" or order_score <= -8)
         and (smc_bias == "SHORT" or vol_bias == "SHORT" or order_score <= -15)
     )
     local_long_confirmed = (
-        local_move.get("available")
-        and local_from_low >= 0.35
+        (local_move.get("bounce_after_dump") or (local_move.get("available") and local_from_low >= 0.35))
+        and not local_move.get("pullback_after_pump")
         and (micro_bias == "LONG" or order_score >= 8)
         and (smc_bias == "LONG" or vol_bias == "LONG" or order_score >= 15)
     )
@@ -5042,7 +5118,7 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = max(trade_probability, 66)  # 4/5 working trade
         if news_ok and structure_confirmed and tech_support:
             trade_probability = max(trade_probability, 72)  # strong 4/5
-        if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP":
+        if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP" and not local_move.get("pullback_after_pump"):
             trade_probability = max(trade_probability, 76)  # 5/5 confirmed
         if news_ok and local_long_confirmed:
             trade_probability = max(trade_probability, 66)
@@ -5075,7 +5151,7 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = max(trade_probability, 66)
         if news_ok and structure_confirmed and tech_support:
             trade_probability = max(trade_probability, 72)
-        if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN":
+        if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN" and not local_move.get("bounce_after_dump"):
             trade_probability = max(trade_probability, 76)
         if news_ok and local_short_confirmed:
             trade_probability = max(trade_probability, 66)
