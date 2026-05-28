@@ -128,6 +128,10 @@ BULLISH_WORDS = [
     "sanctions", "hormuz", "middle east tension", "russia supply", "ukraine attack",
     "demand rises", "demand growth", "bullish", "rally", "surge", "higher",
     "jumps", "rebounds", "rate cut", "fed pause",
+    "запаси впали", "скорочення запасів", "санкції", "ормуз", "атака",
+    "удар", "ескалація", "перебої постачання", "риски поставок",
+    "запасы упали", "сокращение запасов", "санкции", "атака",
+    "эскалация", "перебои поставок",
 ]
 
 BEARISH_WORDS = [
@@ -136,6 +140,12 @@ BEARISH_WORDS = [
     "opec increase", "output hike", "ceasefire", "peace talks", "recession",
     "rate hike", "inflation rises", "bearish", "falls", "drops", "tumbles",
     "slides", "lower",
+    "cease-fire", "truce", "framework agreement", "framework deal",
+    "припинення вогню", "перемир'я", "перемир’я", "мирна угода",
+    "рамкова угода", "рамкової угоди", "погодили положення",
+    "продовження режиму припинення", "мирні переговори",
+    "прекращение огня", "перемирие", "мирное соглашение",
+    "рамочное соглашение", "согласовали положения", "мирные переговоры",
 ]
 
 BREAKING_WORDS = [
@@ -143,28 +153,54 @@ BREAKING_WORDS = [
     "russia", "ukraine", "war", "ceasefire", "hormuz", "opec", "opec+",
     "fed", "powell", "fomc", "cpi", "eia", "api", "inventory",
     "stockpiles", "breaking", "urgent",
+    "cease-fire", "truce", "framework agreement", "framework deal",
+    "трамп", "білий дім", "сша", "іран", "росія", "україна",
+    "війна", "припинення вогню", "перемир'я", "перемир’я",
+    "ормуз", "терміново", "важливо",
+    "трамп", "белый дом", "сша", "иран", "россия", "украина",
+    "война", "прекращение огня", "перемирие", "срочно",
 ]
 
 HIGH_IMPACT_WORDS = [
     "eia", "api", "inventory", "stockpiles", "opec", "opec+", "hormuz",
     "iran", "russia", "ukraine", "sanctions", "fed", "fomc", "cpi",
     "powell", "inflation", "interest rate", "tariff", "trump",
+    "u.s.-iran", "us-iran", "ceasefire", "cease-fire", "truce",
+    "framework agreement", "framework deal",
+    "сша", "іран", "росія", "україна", "санкції", "ормуз",
+    "припинення вогню", "перемир'я", "перемир’я", "трамп",
+    "фрс", "інфляція", "ставка", "тариф",
+    "иран", "россия", "украина", "санкции", "прекращение огня",
+    "перемирие", "инфляция", "ставка",
 ]
 
 BULLISH_GEO_WORDS = [
     "attack", "missile", "strike", "war", "sanctions", "hormuz", "escalation",
     "embargo", "supply disruption", "shutdown", "blocked",
+    "атака", "ракета", "удар", "війна", "санкції", "ормуз",
+    "ескалація", "ембарго", "перебої постачання", "заблоковано",
+    "война", "эскалация", "перебои поставок", "заблокирован",
 ]
 
 BEARISH_SUPPLY_WORDS = [
     "ceasefire", "peace", "deal", "output increase", "supply increase",
     "inventory build", "stockpiles rose", "demand weak", "oversupply",
+    "cease-fire", "truce", "framework agreement", "framework deal",
+    "припинення вогню", "перемир'я", "перемир’я", "мир", "угода",
+    "рамкова угода", "рамкової угоди", "збільшення видобутку",
+    "слабкий попит", "надлишок пропозиції",
+    "прекращение огня", "перемирие", "мир", "соглашение",
+    "рамочное соглашение", "слабый спрос", "избыток предложения",
 ]
 
 EVENT_HIGH_RISK_WORDS = [
     "fed", "powell", "fomc", "cpi", "nfp", "jobs report", "payrolls",
     "eia", "api", "inventories", "inventory", "stockpiles",
     "opec", "opec+", "iran", "us-iran", "sanctions", "hormuz", "trump",
+    "u.s.-iran", "ceasefire", "cease-fire", "truce",
+    "припинення вогню", "перемир'я", "перемир’я", "сша",
+    "іран", "санкції", "ормуз", "трамп", "фрс", "інфляція",
+    "прекращение огня", "перемирие", "иран", "санкции",
 ]
 
 EVENT_LONG_WORDS = [
@@ -177,6 +213,14 @@ EVENT_SHORT_WORDS = [
     "inventory build", "crude build", "larger-than-expected build",
     "ceasefire", "peace deal", "sanctions relief", "talks progress",
     "opec increase", "output increase", "demand weak",
+    "cease-fire", "truce", "framework agreement", "framework deal",
+    "припинення вогню", "перемир'я", "перемир’я", "мирна угода",
+    "рамкова угода", "рамкової угоди", "погодили положення",
+    "продовження режиму припинення", "послаблення санкцій",
+    "прогрес переговорів", "мирні переговори",
+    "прекращение огня", "перемирие", "мирное соглашение",
+    "рамочное соглашение", "согласовали положения",
+    "смягчение санкций", "прогресс переговоров",
 ]
 
 def now_utc():
@@ -2871,19 +2915,37 @@ def get_all_fresh_news():
     all_news = [item for item in all_news if not is_future_news_item(item)]
     return deduplicate_news(all_news)
 
+def normalize_news_text(text):
+    return (
+        (text or "")
+        .lower()
+        .replace("’", "'")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("ё", "е")
+    )
+
 def keyword_score(title, words):
-    lower = title.lower()
-    return sum(1 for word in words if word in lower)
+    lower = normalize_news_text(title)
+    return sum(1 for word in words if normalize_news_text(word) in lower)
 
 NEWS_CONTEXT_RULES = [
     (["sanctions lifted", "sanctions relief", "waives sanctions", "ease sanctions", "removes sanctions"], "SHORT", 18),
     (["new sanctions", "fresh sanctions", "tightens sanctions", "sanctions imposed"], "LONG", 18),
     (["ceasefire talks fail", "talks collapse", "deal rejected", "hormuz threat", "supply disruption"], "LONG", 18),
-    (["ceasefire deal", "peace deal", "talks progress", "de-escalation"], "SHORT", 16),
+    (["ceasefire deal", "cease-fire deal", "truce", "peace deal", "talks progress", "de-escalation", "framework agreement", "framework deal"], "SHORT", 16),
     (["opec cut", "opec+ cut", "output cut", "production cut"], "LONG", 18),
     (["opec increase", "output increase", "production increase", "supply increase"], "SHORT", 18),
     (["crude draw", "inventory draw", "stockpiles fell"], "LONG", 16),
     (["crude build", "inventory build", "stockpiles rose"], "SHORT", 16),
+    (["нові санкції", "посилення санкцій", "санкції запроваджено"], "LONG", 18),
+    (["новые санкции", "усиление санкций", "санкции введены"], "LONG", 18),
+    (["припинення вогню зірвалось", "переговори провалились", "угоду відхилили", "загроза ормузу"], "LONG", 18),
+    (["прекращение огня сорвалось", "переговоры провалились", "соглашение отклонили", "угроза ормуза"], "LONG", 18),
+    (["припинення вогню", "перемир'я", "мирна угода", "рамкова угода", "рамкової угоди", "погодили положення", "прогрес переговорів", "деескалація"], "SHORT", 16),
+    (["прекращение огня", "перемирие", "мирное соглашение", "рамочное соглашение", "согласовали положения", "прогресс переговоров", "деэскалация"], "SHORT", 16),
+    (["послаблення санкцій", "скасування санкцій", "зняли санкції"], "SHORT", 18),
+    (["смягчение санкций", "отмена санкций", "сняли санкции"], "SHORT", 18),
 ]
 
 def contextual_headline_score(title):
@@ -2892,7 +2954,7 @@ def contextual_headline_score(title):
     Oil headlines often invert meaning: "sanctions lifted" is bearish even
     though the word "sanctions" alone looks bullish.
     """
-    lower = title.lower()
+    lower = normalize_news_text(title)
     long_score = 0
     short_score = 0
     matched = False
@@ -2922,7 +2984,7 @@ def contextual_headline_score(title):
     }
 
 def directional_news_adjustment(title):
-    lower = title.lower()
+    lower = normalize_news_text(title)
     if any(word in lower for word in BULLISH_GEO_WORDS):
         return 7
     if any(word in lower for word in BEARISH_SUPPLY_WORDS):
@@ -2931,8 +2993,8 @@ def directional_news_adjustment(title):
 
 def headline_direction(title):
     context = contextual_headline_score(title)
-    long_hits = context["long_score"] + keyword_score(title.lower(), EVENT_LONG_WORDS)
-    short_hits = context["short_score"] + keyword_score(title.lower(), EVENT_SHORT_WORDS)
+    long_hits = context["long_score"] + keyword_score(title, EVENT_LONG_WORDS)
+    short_hits = context["short_score"] + keyword_score(title, EVENT_SHORT_WORDS)
 
     if long_hits > short_hits:
         return "LONG", "заголовок вказує на ризик дефіциту/санкцій/зростання нафти"
@@ -6342,6 +6404,30 @@ def apply_price_reaction_to_news(news, event_risk, tech, orderflow=None):
 
     bullish_fuel = original_news_score >= 30 or original_event_direction == "LONG"
     bearish_fuel = original_news_score <= -25 or original_event_direction == "SHORT"
+    important_neutral_fuel = (
+        abs(original_news_score) < 15
+        and price_side in ["LONG", "SHORT"]
+        and (
+            news.get("impact", 0) > 0
+            or news.get("breaking", 0) > 0
+            or bool(news.get("important"))
+            or bool(event_risk.get("important"))
+        )
+    )
+
+    if important_neutral_fuel:
+        reaction_score = 22 if price_side == "LONG" else -22
+        news["score"] = reaction_score
+        news["fuel_status"] = f"HIGH_IMPACT_NEUTRAL_NEWS_CONFIRMED_BY_PRICE_{price_side}"
+        event_risk["fuel_status"] = f"HIGH_IMPACT_NEUTRAL_EVENT_CONFIRMED_BY_PRICE_{price_side}"
+        news["summary"] = (
+            f"High-impact headline was text-neutral, but price confirmed {price_side}; "
+            "treating market reaction as the news direction."
+        )
+        if original_event_direction == "MIXED":
+            event_risk["direction"] = price_side
+            event_risk["direction_score"] = 12 if price_side == "LONG" else -12
+        return news, event_risk
 
     if bullish_fuel and price_side == "SHORT":
         if news.get("score", 0) > 0:
