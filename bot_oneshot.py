@@ -970,7 +970,7 @@ def memory_status_note(memory, current_price):
 
 
 
-def last_actionable_trade(memory):
+def last_actionable_trade(memory, include_closed=False):
     """Last 4/5 or 5/5 trade from memory.
 
     The user treats 4/5 and 5/5 as real entries, so weaker watch signals must
@@ -981,6 +981,8 @@ def last_actionable_trade(memory):
         return None
 
     for item in reversed(history):
+        if item.get("position_closed") and not include_closed:
+            continue
         if item.get("signal") not in ["LONG", "SHORT"] or not item.get("price"):
             continue
         if trade_setup_level(item.get("quality_percent")) >= 4:
@@ -1121,6 +1123,220 @@ def apply_position_follow_header(message, memory, current_price, tech=None):
     detail = re.sub(r"<[^>]+>", "", note).replace("Супровід:", "").strip()
     lines[1] = f"<b>СУПРОВІД {side}</b> — {detail}"
     return "\n".join(lines)
+
+
+def follow_side_word(side):
+    if side == "LONG":
+        return "лонг"
+    if side == "SHORT":
+        return "шорт"
+    return "нейтрально"
+
+
+def timeframe_side_text(value):
+    if value == "UP":
+        return "лонг"
+    if value == "DOWN":
+        return "шорт"
+    return "нейтрально"
+
+
+def smc_side_text(smc):
+    smc = smc or {}
+    side = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    if side in ["LONG", "SHORT"]:
+        return follow_side_word(side)
+    if "LONG" in bos or "LONG" in choch:
+        return "лонг"
+    if "SHORT" in bos or "SHORT" in choch:
+        return "шорт"
+    return "нейтрально"
+
+
+def signed_position_pct(side, entry, current_price):
+    if not entry:
+        return 0
+    diff = ((current_price - entry) / entry) * 100
+    return diff if side == "LONG" else -diff
+
+
+def position_recommendation(side, result_pct, current_price, trade, tech=None):
+    tech = tech or {}
+    tp1 = safe_float((trade or {}).get("tp1"))
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+
+    reached_tp1 = (
+        side == "LONG" and tp1 is not None and current_price >= tp1
+    ) or (
+        side == "SHORT" and tp1 is not None and current_price <= tp1
+    )
+    if reached_tp1:
+        return "утримувати залишок, частину можна зафіксувати"
+    if result_pct > 0 and micro_bias == side:
+        return "утримувати, напрям ще підтримується"
+    if result_pct > 0:
+        return "утримувати обережно, стоп підтягувати"
+    return "утримувати тільки якщо 15m не зламається"
+
+
+def breakeven_note(side, current_price, trade):
+    tp1 = safe_float((trade or {}).get("tp1"))
+    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
+    if not tp1 or not entry:
+        return "поки ні — немає TP1 у плані"
+    reached_tp1 = (
+        side == "LONG" and current_price >= tp1
+    ) or (
+        side == "SHORT" and current_price <= tp1
+    )
+    if reached_tp1:
+        return f"так — після TP1 стоп бажано в б/у біля {round(entry, 4)} або трохи в плюс"
+    return "ще ні — б/у тільки після TP1 або сильного закриття 15m у плюс"
+
+
+def liquidity_caution_text(side, trade, smc=None, orderflow=None):
+    smc = smc or {}
+    orderflow = orderflow or {}
+    book = orderflow.get("order_book") or {}
+    liquidity = orderflow.get("liquidity_proxy") or {}
+    tp1 = safe_float((trade or {}).get("tp1"))
+    tp2 = safe_float((trade or {}).get("tp2"))
+    swing_high = safe_float(smc.get("swing_high"))
+    swing_low = safe_float(smc.get("swing_low"))
+    wall_price = safe_float(book.get("accumulation_price"))
+    wall_side = book.get("accumulation_side", "NEUTRAL")
+
+    zones = []
+    if side == "LONG":
+        if tp1:
+            zones.append(f"TP1 {round(tp1, 4)}")
+        if wall_price and wall_side == "SHORT":
+            zones.append(f"стіна продавців {round(wall_price, 4)}")
+        if swing_high:
+            zones.append(f"swing high {round(swing_high, 4)}")
+    elif side == "SHORT":
+        if tp1:
+            zones.append(f"TP1 {round(tp1, 4)}")
+        if wall_price and wall_side == "LONG":
+            zones.append(f"стіна покупців {round(wall_price, 4)}")
+        if swing_low:
+            zones.append(f"swing low {round(swing_low, 4)}")
+
+    base = ", ".join(zones[:3]) if zones else "біля найближчого TP/SMC-рівня"
+    note = liquidity.get("note")
+    if note and note != "спокійно":
+        return f"{base}; ліквідність: {note}"
+    return base
+
+
+def build_position_follow_message(tv, memory, tech, news, event_risk, smc, orderflow):
+    trade = last_actionable_trade(memory)
+    if not trade:
+        return ""
+
+    side = trade.get("signal")
+    current_price = safe_float((tv or {}).get("price"))
+    entry = safe_float(trade.get("entry")) or safe_float(trade.get("price"))
+    stop = safe_float(trade.get("stop"))
+    tp1 = safe_float(trade.get("tp1"))
+    tp2 = safe_float(trade.get("tp2"))
+    tp3 = safe_float(trade.get("tp3"))
+    if not side or not current_price or not entry:
+        return ""
+
+    leverage = safe_float(os.getenv("POSITION_LEVERAGE", "10")) or 10
+    result_pct = signed_position_pct(side, entry, current_price)
+    leveraged_pct = result_pct * leverage
+    news_side, _ = news_verdict(news or {})
+    book = (orderflow or {}).get("order_book") or {}
+    book_side = book.get("bias", "NEUTRAL")
+    book_price = book.get("accumulation_price")
+    book_wall = book.get("wall") or "накопичення не видно"
+    micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
+    micro_side = micro.get("bias", "NEUTRAL")
+
+    recommendation = position_recommendation(side, result_pct, current_price, trade, tech)
+
+    lines = [
+        "<b>📊 BZU SIGNAL BOT</b>",
+        f"<b>СУПРОВІД {side}</b> — {recommendation}",
+        "",
+        f"<b>Результат:</b> {round(result_pct, 3)}% по ціні (~{round(leveraged_pct, 2)}% з {int(leverage)}x)",
+        f"<b>Позиція:</b> Вхід {round(entry, 4)} | Стоп {round(stop, 4) if stop else '—'} | TP1 {round(tp1, 4) if tp1 else '—'} | TP2 {round(tp2, 4) if tp2 else '—'} | TP3 {round(tp3, 4) if tp3 else '—'}",
+        f"<b>Новини:</b> {follow_side_word(news_side)} ({(news or {}).get('score', 0)})",
+        f"<b>3хв:</b> {follow_side_word(micro_side)} ({micro.get('score', 0)})",
+        f"<b>15 хв:</b> {timeframe_side_text((tech or {}).get('trend_15m'))}",
+        f"<b>1 година:</b> {timeframe_side_text((tech or {}).get('trend_1h'))}",
+        f"<b>Структура:</b> {smc_side_text(smc)} — {(smc or {}).get('phase', 'NO DATA')}",
+        f"<b>Стакан:</b> {follow_side_word(book_side)}; {book_wall}" + (f"; накопичення {book_price}" if book_price else ""),
+        f"<b>Зона ліквідності:</b> {liquidity_caution_text(side, trade, smc, orderflow)}",
+        f"<b>Стоп у б/у:</b> {breakeven_note(side, current_price, trade)}",
+    ]
+    news_warning = pre_news_warning_text(event_risk)
+    if news_warning:
+        lines.append(news_warning)
+    return "\n".join(lines).strip()
+
+
+def position_close_reason(side, current_price, trade, tech=None):
+    tech = tech or {}
+    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
+    stop = safe_float((trade or {}).get("stop"))
+    tp1 = safe_float((trade or {}).get("tp1"))
+    result_pct = signed_position_pct(side, entry, current_price) if entry else 0
+
+    stopped = (
+        side == "LONG" and stop is not None and current_price <= stop
+    ) or (
+        side == "SHORT" and stop is not None and current_price >= stop
+    )
+    reached_tp1 = (
+        side == "LONG" and tp1 is not None and current_price >= tp1
+    ) or (
+        side == "SHORT" and tp1 is not None and current_price <= tp1
+    )
+    if stopped:
+        return "стоп або зона зламу пробита", "НЕУСПІХ"
+    if reached_tp1 or result_pct > 0:
+        return "напрям зламався після руху в плюс", "УСПІХ/ЧАСТКОВИЙ УСПІХ"
+    return "ринок чітко пішов не в напрямку позиції", "НЕУСПІХ"
+
+
+def close_last_actionable_trade(memory, current_price, tech=None):
+    history = get_signal_history(memory)
+    for item in reversed(history):
+        if item.get("position_closed"):
+            continue
+        if item.get("signal") not in ["LONG", "SHORT"] or trade_setup_level(item.get("quality_percent")) < 4:
+            continue
+        reason, status = position_close_reason(item.get("signal"), current_price, item, tech)
+        item["position_closed"] = True
+        item["closed_at"] = now_utc().isoformat()
+        item["closed_price"] = current_price
+        item["close_reason"] = reason
+        item["close_status"] = status
+        item["close_result_pct"] = round(signed_position_pct(item.get("signal"), safe_float(item.get("entry")) or safe_float(item.get("price")), current_price), 3)
+        return {
+            "updated_at": now_utc().isoformat(),
+            "limit": SIGNAL_MEMORY_LIMIT,
+            "history": history[-SIGNAL_MEMORY_LIMIT:],
+        }, item
+    return memory, None
+
+
+def build_position_close_message(closed_trade):
+    if not closed_trade:
+        return ""
+    side = closed_trade.get("signal")
+    return "\n".join([
+        "<b>📊 BZU SIGNAL BOT</b>",
+        f"<b>СУПРОВІД {side} ЗАВЕРШЕНО</b> — {closed_trade.get('close_reason')}",
+        f"<b>Висновок:</b> {closed_trade.get('close_status')} | результат {closed_trade.get('close_result_pct')}% по ціні",
+        f"<b>Ціна закриття/зламу:</b> {closed_trade.get('closed_price')}",
+    ]).strip()
 
 
 # ==========================================================
@@ -1637,6 +1853,45 @@ def is_calendar_hard_block(event_time, now=None):
         return False
     return -60 <= minutes <= 90
 
+def is_calendar_pre_news_alert(event):
+    """Alert exactly in the final hour before scheduled important news."""
+    if not event or event.get("risk") not in ["HIGH", "MEDIUM"]:
+        return False
+    if not event.get("time"):
+        return False
+    minutes = event.get("minutes_to_event")
+    if minutes is None:
+        minutes = calendar_minutes_to_event(event.get("time"))
+    return minutes is not None and 0 <= minutes <= 60
+
+def calendar_event_time_text(event):
+    event_time = event.get("time") if isinstance(event, dict) else None
+    if not event_time:
+        return "час невідомий"
+    try:
+        return event_time.astimezone(eastern_tz()).strftime("%H:%M ET")
+    except Exception:
+        return "час невідомий"
+
+def pre_news_warning_text(event_risk):
+    calendar = (event_risk or {}).get("calendar") or {}
+    events = calendar.get("alert_events") or []
+    if not events:
+        return ""
+
+    parts = []
+    for event in events[:2]:
+        minutes = event.get("minutes_to_event")
+        title = event.get("title") or event.get("name") or "важлива новина"
+        when = f"через {minutes} хв" if minutes is not None else event.get("status", "скоро")
+        parts.append(f"{title} — {when}, {calendar_event_time_text(event)}")
+
+    return (
+        "<b>Важливі новини:</b> " + "; ".join(parts) +
+        ". За 60 хв до виходу краще не відкривати нову угоду без сильного тригера; "
+        "активну позицію вести зі стопом."
+    )
+
 def parse_month_date(date_text, default_year=None):
     default_year = default_year or now_utc().year
     clean = re.sub(r"[^A-Za-z0-9, ]+", "", str(date_text or "")).strip()
@@ -1906,6 +2161,7 @@ def analyze_economic_calendar():
 
     active_events = [event for event in calendar_events if event.get("active")]
     blocking_events = [event for event in active_events if event.get("hard_block")]
+    alert_events = [event for event in calendar_events if is_calendar_pre_news_alert(event)]
     score = 0
     for event in blocking_events:
         if event.get("risk") == "HIGH":
@@ -1927,6 +2183,7 @@ def analyze_economic_calendar():
         "risk": risk,
         "events": active_events[:4],
         "blocking_events": blocking_events[:4],
+        "alert_events": alert_events[:4],
         "all_events": calendar_events[:12],
     }
 
@@ -1953,6 +2210,14 @@ def merge_calendar_into_event_risk(event_risk, calendar):
             "source": event.get("source", "official calendar"),
             "published_at": event.get("time"),
             "weight": 1.0,
+        })
+    for event in calendar.get("alert_events", []):
+        important.append({
+            "title": f"ВАЖЛИВО ЗА 60 ХВ: {event.get('title')} — {event.get('status')}",
+            "link": "",
+            "source": event.get("source", "official calendar"),
+            "published_at": event.get("time"),
+            "weight": 1.25,
         })
     event_risk["important"] = important[:8]
     return event_risk
@@ -2450,6 +2715,8 @@ def analyze_order_book_pressure(book, price=None):
             "bias": "NEUTRAL",
             "note": "Стакан недоступний",
             "wall": "",
+            "accumulation_price": None,
+            "accumulation_side": "NEUTRAL",
             "imbalance_pct": 0,
         }
 
@@ -2471,15 +2738,25 @@ def analyze_order_book_pressure(book, price=None):
     biggest_ask = max(near_asks, key=lambda x: x[1]) if near_asks else None
 
     wall = ""
+    accumulation_price = None
+    accumulation_side = "NEUTRAL"
     if biggest_ask and biggest_bid:
         if biggest_ask[1] > biggest_bid[1] * 1.7:
             wall = f"стіна продавців біля {round(biggest_ask[0], 4)}"
+            accumulation_price = biggest_ask[0]
+            accumulation_side = "SHORT"
         elif biggest_bid[1] > biggest_ask[1] * 1.7:
             wall = f"стіна покупців біля {round(biggest_bid[0], 4)}"
+            accumulation_price = biggest_bid[0]
+            accumulation_side = "LONG"
     elif biggest_ask:
         wall = f"найбільша стіна продавців біля {round(biggest_ask[0], 4)}"
+        accumulation_price = biggest_ask[0]
+        accumulation_side = "SHORT"
     elif biggest_bid:
         wall = f"найбільша стіна покупців біля {round(biggest_bid[0], 4)}"
+        accumulation_price = biggest_bid[0]
+        accumulation_side = "LONG"
 
     if imbalance_pct >= 18:
         score = 12
@@ -2508,6 +2785,8 @@ def analyze_order_book_pressure(book, price=None):
         "bias": bias,
         "note": note,
         "wall": wall,
+        "accumulation_price": round(accumulation_price, 4) if accumulation_price is not None else None,
+        "accumulation_side": accumulation_side,
         "imbalance_pct": round(imbalance_pct, 2),
         "bid_volume": round(bid_volume, 4),
         "ask_volume": round(ask_volume, 4),
@@ -5843,23 +6122,27 @@ def liquidity_buffer(atr, price, session=None, event_risk=None):
     # Minimum micro-buffer so stop is not exactly on the obvious level.
     return max(buffer, price * 0.0008)
 
-def min_15m_trade_distance(price, atr, session=None, event_risk=None):
-    """Minimum practical 15m distance for stop/targets.
+def risk_15m_bounds(price, atr, session=None, event_risk=None):
+    """Practical 15m risk bounds.
 
-    Brent can move through tiny micro levels quickly on 15m, so the plan should
-    not use scalp-sized stops or clustered TPs.
+    SMC gives invalidation zones, but with 10x leverage a far swing can make the
+    loss too large. Keep the stop technical, but cap the absolute risk so the
+    trade remains a 15m/intraday setup.
     """
     atr = atr or price * 0.006
-    distance = max(atr * 1.35, price * 0.0065)
+    min_distance = max(atr * 0.55, price * 0.0028)
+    max_distance = max(atr * 1.05, price * 0.0055)
     session_name = (session or {}).get("session", "")
     event_level = (event_risk or {}).get("risk", "")
 
     if session_name == "NEW YORK":
-        distance *= 1.08
+        min_distance *= 1.05
+        max_distance *= 1.08
     if event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        distance *= 1.12
+        min_distance *= 1.08
+        max_distance *= 1.12
 
-    return distance
+    return min_distance, max_distance
 
 def estimate_liquidity_levels(price, tech, smc=None):
     """Approximate SMC-style liquidity levels using available free data.
@@ -5944,9 +6227,9 @@ def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
     if "EARLY" in st or "REVERSAL" in st or "WATCH" in st:
         rr1, rr2, rr3 = 2.00, 2.80, 4.00
 
-    # Strong confirmed trend gets wider expansion targets.
+    # Strong confirmed trend gets wider TP2/TP3, while TP1 stays near 2R.
     if "пробій структури" in st or "BREAKOUT" in st or abs(tech.get("score", 0) or 0) >= 85:
-        rr1, rr2, rr3 = 2.20, 3.40, 5.00
+        rr1, rr2, rr3 = 2.00, 3.20, 4.80
 
     # High-impact event/news can extend moves, but keep TP1 reachable.
     if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
@@ -5991,7 +6274,7 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
     TP:
       Uses liquidity targets, but now with wider adaptive RR:
       early/reversal: at least 2R to TP1
-      confirmed trend: wider 2.2R / 3.4R / 5R
+      confirmed trend: TP1 near 2R, wider TP2/TP3
 
     This is better than pure Smart Money or pure ATR alone:
       - pure SMC levels can be too subjective or too far;
@@ -6002,28 +6285,34 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
     atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
     levels = estimate_liquidity_levels(price, tech, smc)
     buffer = liquidity_buffer(atr, price, session, event_risk)
-    min_stop_distance = min_15m_trade_distance(price, atr, session, event_risk)
+    min_stop_distance, max_stop_distance = risk_15m_bounds(price, atr, session, event_risk)
     rr1, rr2, rr3 = tp_rr_multipliers(signal_type, tech, session, event_risk)
 
     if signal == "LONG":
-        stop = min(levels["recent_low"] - buffer, price - min_stop_distance)
+        raw_smc_stop = levels["recent_low"] - buffer
+        raw_risk = price - raw_smc_stop
+        stop_distance = min(max(raw_risk, min_stop_distance), max_stop_distance)
+        stop = price - stop_distance
         risk = max(price - stop, min_stop_distance)
 
         tp1 = max(levels["upper_liquidity_1"], price + risk * rr1)
         tp2 = max(levels["upper_liquidity_2"], price + risk * rr2)
         tp3 = max(levels["upper_liquidity_3"], price + risk * rr3)
 
-        note = f"SMC hybrid LONG: стоп нижче swing/liquidity/EMA-зони; TP від SMC-цілей + RR мінімум 1:2. SMC: {smc.get('phase', 'NO DATA')}."
+        note = f"15m SMC LONG: стоп за ближчою invalidation-зоною з лімітом ризику; TP від RR 1:2 і SMC-цілей. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
 
     elif signal == "SHORT":
-        stop = max(levels["recent_high"] + buffer, price + min_stop_distance)
+        raw_smc_stop = levels["recent_high"] + buffer
+        raw_risk = raw_smc_stop - price
+        stop_distance = min(max(raw_risk, min_stop_distance), max_stop_distance)
+        stop = price + stop_distance
         risk = max(stop - price, min_stop_distance)
 
         tp1 = min(levels["lower_liquidity_1"], price - risk * rr1)
         tp2 = min(levels["lower_liquidity_2"], price - risk * rr2)
         tp3 = min(levels["lower_liquidity_3"], price - risk * rr3)
 
-        note = f"SMC hybrid SHORT: стоп вище swing/liquidity/EMA-зони; TP від SMC-цілей + RR мінімум 1:2. SMC: {smc.get('phase', 'NO DATA')}."
+        note = f"15m SMC SHORT: стоп за ближчою invalidation-зоною з лімітом ризику; TP від RR 1:2 і SMC-цілей. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
 
     else:
         return {
@@ -7823,6 +8112,10 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     if event_block.get("blocked"):
         lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
 
+    news_warning = pre_news_warning_text(event_risk)
+    if news_warning:
+        lines.append(news_warning)
+
     no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
 
     risk_text = reversal_risk_note(signal, reversal)
@@ -8737,17 +9030,21 @@ def main():
         final_decision=final_decision
     )
 
-    message = apply_position_follow_header(message, signal_memory, tv["price"], tech)
-
     show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
     position_trade = last_actionable_trade(signal_memory)
     position_active = bool(
         position_trade
         and market_supports_position(position_trade.get("signal"), tv["price"], position_trade, tech)
     )
-    position_note = position_follow_note(signal_memory, tv["price"], tech) if position_active else ""
-    if position_note and position_note not in message:
-        message = message.strip() + "\n\n" + position_note
+    if position_active:
+        follow_message = build_position_follow_message(tv, signal_memory, tech, news, event_risk, smc, orderflow)
+        if follow_message:
+            message = follow_message
+    elif position_trade:
+        signal_memory, closed_trade = close_last_actionable_trade(signal_memory, tv["price"], tech)
+        close_message = build_position_close_message(closed_trade)
+        if close_message:
+            message = close_message + "\n\n" + message
 
     if show_memory_in_telegram and previous_signal_note and previous_signal_note not in message:
         message = message.strip() + "\n\n" + previous_signal_note
