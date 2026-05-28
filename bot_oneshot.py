@@ -4775,6 +4775,38 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
     tech_score = tech.get("score", 0) or 0
     change = tech.get("change", 0) or 0
     local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
+    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
+    micro_from_high = micro_local_move.get("from_high_pct", 0) or 0
+    micro_from_low = micro_local_move.get("from_low_pct", 0) or 0
+    micro_bars_since_high = micro_local_move.get("bars_since_high")
+    micro_bars_since_low = micro_local_move.get("bars_since_low")
+    micro_fast_momentum = micro_local_move.get("fast_local_momentum", "FLAT")
+    fast_bounce_after_dump = (
+        micro_local_move.get("available")
+        and (
+            micro_local_move.get("bounce_after_dump")
+            or (
+                micro_from_high <= -0.45
+                and micro_from_low >= 0.22
+                and micro_bars_since_low is not None
+                and 1 <= micro_bars_since_low <= 12
+                and micro_fast_momentum == "UP"
+            )
+        )
+    )
+    fast_pullback_after_pump = (
+        micro_local_move.get("available")
+        and (
+            micro_local_move.get("pullback_after_pump")
+            or (
+                micro_from_low >= 0.45
+                and micro_from_high <= -0.22
+                and micro_bars_since_high is not None
+                and 1 <= micro_bars_since_high <= 12
+                and micro_fast_momentum == "DOWN"
+            )
+        )
+    )
 
     side = price_reaction_side(tech, orderflow)
     if side not in ["LONG", "SHORT"]:
@@ -4794,11 +4826,12 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
     bars_since_high = local_move.get("bars_since_high")
     bars_since_low = local_move.get("bars_since_low")
     local_short_rejection = (
-        (local_move.get("pullback_after_pump") and not local_move.get("bounce_after_dump"))
+        ((local_move.get("pullback_after_pump") or fast_pullback_after_pump) and not local_move.get("bounce_after_dump") and not fast_bounce_after_dump)
         or (
             local_move.get("available")
             and local_from_high <= -0.35
             and not local_move.get("bounce_after_dump")
+            and not fast_bounce_after_dump
             and bars_since_high is not None
             and 1 <= bars_since_high <= 24
             and (
@@ -4810,11 +4843,11 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         )
     )
     local_long_reclaim = (
-        (local_move.get("bounce_after_dump") and not local_move.get("pullback_after_pump"))
+        ((local_move.get("bounce_after_dump") or fast_bounce_after_dump) and not fast_pullback_after_pump)
         or (
             local_move.get("available")
             and local_from_low >= 0.35
-            and not local_move.get("pullback_after_pump")
+            and not fast_pullback_after_pump
             and bars_since_low is not None
             and 1 <= bars_since_low <= 24
             and (
@@ -4898,13 +4931,17 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         (side == "SHORT" and local_short_rejection)
         or (side == "LONG" and local_long_reclaim)
     )
+    fast_local_reversal = (
+        (side == "LONG" and fast_bounce_after_dump)
+        or (side == "SHORT" and fast_pullback_after_pump)
+    )
 
     confirmation = sum(1 for ok in [smc_support, micro_support, flow_support, news_support, local_support] if ok)
     new_structure = (
         fresh_break
         or retest_ok
         or (local_trigger and confirmation >= 2)
-        or (local_support and micro_support and (smc_support or flow_support))
+        or (local_support and micro_support and (smc_support or flow_support or fast_local_reversal))
     )
     if fresh_break:
         trigger_event = (
@@ -4928,7 +4965,12 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         )
         trigger_kind = "LOCAL_BREAK"
     elif local_support:
-        trigger_event = local_move.get("note", "локальна структура підтвердила напрям")
+        if side == "LONG" and fast_bounce_after_dump:
+            trigger_event = micro_local_move.get("note") or "3m відскок від low після дампу"
+        elif side == "SHORT" and fast_pullback_after_pump:
+            trigger_event = micro_local_move.get("note") or "3m відкат від high після росту"
+        else:
+            trigger_event = local_move.get("note", "локальна структура підтвердила напрям")
         trigger_kind = "LOCAL_REVERSAL"
     else:
         trigger_event = "тригер ще не підтверджений"
@@ -5273,24 +5315,58 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     micro_bias = micro.get("bias", "NEUTRAL")
     micro_state = micro.get("state", "RANGE")
     local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
+    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
     local_from_high = local_move.get("from_high_pct", 0) or 0
     local_from_low = local_move.get("from_low_pct", 0) or 0
+    micro_from_high = micro_local_move.get("from_high_pct", 0) or 0
+    micro_from_low = micro_local_move.get("from_low_pct", 0) or 0
+    micro_bars_since_high = micro_local_move.get("bars_since_high")
+    micro_bars_since_low = micro_local_move.get("bars_since_low")
+    micro_fast_momentum = micro_local_move.get("fast_local_momentum", "FLAT")
+    fast_bounce_after_dump = (
+        micro_local_move.get("available")
+        and (
+            micro_local_move.get("bounce_after_dump")
+            or (
+                micro_from_high <= -0.45
+                and micro_from_low >= 0.22
+                and micro_bars_since_low is not None
+                and 1 <= micro_bars_since_low <= 12
+                and micro_fast_momentum == "UP"
+            )
+        )
+    )
+    fast_pullback_after_pump = (
+        micro_local_move.get("available")
+        and (
+            micro_local_move.get("pullback_after_pump")
+            or (
+                micro_from_low >= 0.45
+                and micro_from_high <= -0.22
+                and micro_bars_since_high is not None
+                and 1 <= micro_bars_since_high <= 12
+                and micro_fast_momentum == "DOWN"
+            )
+        )
+    )
+    effective_bounce_after_dump = bool(local_move.get("bounce_after_dump") or fast_bounce_after_dump)
+    effective_pullback_after_pump = bool(local_move.get("pullback_after_pump") or fast_pullback_after_pump)
     local_short_confirmed = (
-        (local_move.get("pullback_after_pump") or (local_move.get("available") and local_from_high <= -0.35))
-        and not local_move.get("bounce_after_dump")
+        (effective_pullback_after_pump or (local_move.get("available") and local_from_high <= -0.35))
+        and not effective_bounce_after_dump
         and (micro_bias == "SHORT" or order_score <= -8)
         and (smc_bias == "SHORT" or vol_bias == "SHORT" or order_score <= -15)
     )
     local_long_confirmed = (
-        (local_move.get("bounce_after_dump") or (local_move.get("available") and local_from_low >= 0.35))
-        and not local_move.get("pullback_after_pump")
+        (effective_bounce_after_dump or (local_move.get("available") and local_from_low >= 0.35) or (micro_local_move.get("available") and micro_from_low >= 0.22))
+        and not fast_pullback_after_pump
         and (micro_bias == "LONG" or order_score >= 8)
         and (smc_bias == "LONG" or vol_bias == "LONG" or order_score >= 15)
     )
 
     if signal == "LONG":
-        first_long_bounce = bool(local_move.get("bounce_after_dump"))
-        long_rebound_against = local_move.get("pullback_after_pump") or micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"]
+        first_long_bounce = bool(effective_bounce_after_dump)
+        long_rebound_against = (effective_pullback_after_pump and not effective_bounce_after_dump) or micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"]
         strong_long_continuation = (
             bos == "пробій структури LONG"
             and order_score >= 15
@@ -5326,7 +5402,7 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = max(trade_probability, 66)  # 4/5 working trade
         if news_ok and structure_confirmed and tech_support:
             trade_probability = max(trade_probability, 72)  # strong 4/5
-        if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP" and not local_move.get("pullback_after_pump"):
+        if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP" and not effective_pullback_after_pump:
             trade_probability = max(trade_probability, 76)  # 5/5 confirmed
         if news_ok and local_long_confirmed:
             trade_probability = max(trade_probability, 58 if first_long_bounce else 66)
@@ -5334,8 +5410,8 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = min(trade_probability, 64)
 
     elif signal == "SHORT":
-        first_short_pullback = bool(local_move.get("pullback_after_pump"))
-        short_rebound_against = local_move.get("bounce_after_dump") or micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"]
+        first_short_pullback = bool(effective_pullback_after_pump)
+        short_rebound_against = effective_bounce_after_dump or micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"]
         strong_short_continuation = (
             bos == "пробій структури SHORT"
             and order_score <= -15
@@ -5372,7 +5448,7 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = max(trade_probability, 66)
         if news_ok and structure_confirmed and tech_support:
             trade_probability = max(trade_probability, 72)
-        if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN" and not local_move.get("bounce_after_dump"):
+        if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN" and not effective_bounce_after_dump:
             trade_probability = max(trade_probability, 76)
         if news_ok and local_short_confirmed:
             trade_probability = max(trade_probability, 58 if first_short_pullback else 66)
@@ -5401,6 +5477,28 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
     micro_score = micro.get("score", 0) or 0
     tech_score = tech.get("score", 0) or 0
     change = tech.get("change", 0) or 0
+    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
+    micro_from_high = micro_local_move.get("from_high_pct", 0) or 0
+    micro_from_low = micro_local_move.get("from_low_pct", 0) or 0
+    micro_bars_since_high = micro_local_move.get("bars_since_high")
+    micro_bars_since_low = micro_local_move.get("bars_since_low")
+    micro_fast_momentum = micro_local_move.get("fast_local_momentum", "FLAT")
+    fast_bounce_after_dump = (
+        micro_local_move.get("available")
+        and micro_from_high <= -0.45
+        and micro_from_low >= 0.22
+        and micro_bars_since_low is not None
+        and 1 <= micro_bars_since_low <= 12
+        and micro_fast_momentum == "UP"
+    )
+    fast_pullback_after_pump = (
+        micro_local_move.get("available")
+        and micro_from_low >= 0.45
+        and micro_from_high <= -0.22
+        and micro_bars_since_high is not None
+        and 1 <= micro_bars_since_high <= 12
+        and micro_fast_momentum == "DOWN"
+    )
     trend_15m = tech.get("trend_15m", "UNKNOWN")
     trend_1h = tech.get("trend_1h", "UNKNOWN")
     book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
@@ -5418,9 +5516,12 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
         news_support = (news_score >= 35 or event_side == "LONG") if is_long else (news_score <= -35 or event_side == "SHORT")
         news_ok = not news_against
         if is_long:
-            if change <= -1.2:
+            if change <= -1.2 or fast_bounce_after_dump:
                 score += 10
-                reasons.append("після падіння")
+                reasons.append("після падіння/відскоку")
+            if fast_bounce_after_dump:
+                score += 12
+                reasons.append("3m відскок від low")
             if micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING" or micro_score >= 35:
                 score += 18
                 reasons.append("3m лонг")
@@ -5441,9 +5542,12 @@ def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=Non
             if tech_score <= -90 and smc_bias != "LONG":
                 score -= 8
         else:
-            if change >= 1.2:
+            if change >= 1.2 or fast_pullback_after_pump:
                 score += 10
-                reasons.append("після росту")
+                reasons.append("після росту/відкату")
+            if fast_pullback_after_pump:
+                score += 12
+                reasons.append("3m відкат від high")
             if micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING" or micro_score <= -35:
                 score += 18
                 reasons.append("3m шорт")
@@ -8679,15 +8783,22 @@ def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk
         f"новини {simple_bias_label(short_bias_label((fundamental_bias or {}).get('side', 'NEUTRAL')))} ({(fundamental_bias or {}).get('score')})",
     ]
     local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    if local_move.get("available") and "без сильного" not in str(local_move.get("note", "")):
+    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
+    reason_local_move = local_move
+    if micro_local_move.get("available"):
+        micro_local_side = local_move_direction(micro_local_move)
         local_side = local_move_direction(local_move)
+        if micro_local_side in ["LONG", "SHORT"] and market_side in ["LONG", "SHORT"] and micro_local_side == market_side and micro_local_side != local_side:
+            reason_local_move = micro_local_move
+    if reason_local_move.get("available") and "без сильного" not in str(reason_local_move.get("note", "")):
+        local_side = local_move_direction(reason_local_move)
         if local_side in ["LONG", "SHORT"] and market_side in ["LONG", "SHORT"]:
             prefix = f"локально за {market_side}" if local_side == market_side else f"локально проти {market_side}"
         elif local_side in ["LONG", "SHORT"]:
             prefix = f"локально {local_side}"
         else:
             prefix = "локально"
-        reasons.append(f"{prefix}: {local_move.get('note', '')}")
+        reasons.append(f"{prefix}: {reason_local_move.get('note', '')}")
     calendar_text = economic_calendar_text(event_risk)
     if calendar_text:
         reasons.append(calendar_text.replace("Календар: ", "календар "))
@@ -9599,6 +9710,7 @@ def main():
     micro_candles = get_real_candles(bar="3m", limit=160)
     micro = analyze_micro_structure(micro_candles)
     tech["micro_3m"] = micro
+    tech["micro_local_move"] = analyze_local_price_move(micro_candles, tv["price"], lookback=48)
 
     if smc.get('available'):
         tech['score'] += int(smc.get('score', 0))
