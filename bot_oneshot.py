@@ -4754,22 +4754,27 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
             if side == "LONG"
             else f"ціна закрилась нижче {round(trigger_level, 4)}"
         )
+        trigger_kind = "BREAKOUT"
     elif retest_ok:
         trigger_event = (
             f"ціна протестувала {round(trigger_level, 4)} і втрималась вище"
             if side == "LONG"
             else f"ціна протестувала {round(trigger_level, 4)} як опір і лишилась нижче"
         )
+        trigger_kind = "RETEST"
     elif local_trigger:
         trigger_event = (
             f"ціна оновила локальний high {round(recent_high, 4)}"
             if side == "LONG"
             else f"ціна оновила локальний low {round(recent_low, 4)}"
         )
+        trigger_kind = "LOCAL_BREAK"
     elif local_support:
         trigger_event = local_move.get("note", "локальна структура підтвердила напрям")
+        trigger_kind = "LOCAL_REVERSAL"
     else:
         trigger_event = "тригер ще не підтверджений"
+        trigger_kind = "NONE"
 
     if new_structure and confirmation >= 2:
         stage = "TRIGGER"
@@ -4820,6 +4825,7 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         "no_chase": no_chase,
         "new_structure": new_structure,
         "trigger_event": trigger_event,
+        "trigger_kind": trigger_kind,
     }
 
 def chart_context_message(chart_context):
@@ -4842,6 +4848,10 @@ def apply_chart_context_probability(signal, probability, chart_context):
 
     stage = chart_context.get("stage")
     if stage == "TRIGGER":
+        if chart_context.get("trigger_kind") == "LOCAL_REVERSAL":
+            return min(64, max(probability, 58))
+        if chart_context.get("trigger_kind") == "LOCAL_BREAK":
+            return min(66, max(probability, 60))
         return min(82, max(probability, 65 + chart_context.get("quality_bonus", 0)))
     if stage == "SETUP_FORMING":
         return min(probability, 54)
@@ -5118,6 +5128,7 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     )
 
     if signal == "LONG":
+        first_long_bounce = bool(local_move.get("bounce_after_dump"))
         long_rebound_against = local_move.get("pullback_after_pump") or micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"]
         strong_long_continuation = (
             bos == "пробій структури LONG"
@@ -5157,9 +5168,12 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
         if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP" and not local_move.get("pullback_after_pump"):
             trade_probability = max(trade_probability, 76)  # 5/5 confirmed
         if news_ok and local_long_confirmed:
-            trade_probability = max(trade_probability, 66)
+            trade_probability = max(trade_probability, 58 if first_long_bounce else 66)
+        if first_long_bounce and not strong_long_continuation:
+            trade_probability = min(trade_probability, 64)
 
     elif signal == "SHORT":
+        first_short_pullback = bool(local_move.get("pullback_after_pump"))
         short_rebound_against = local_move.get("bounce_after_dump") or micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"]
         strong_short_continuation = (
             bos == "пробій структури SHORT"
@@ -5200,8 +5214,10 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
         if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN" and not local_move.get("bounce_after_dump"):
             trade_probability = max(trade_probability, 76)
         if news_ok and local_short_confirmed:
-            trade_probability = max(trade_probability, 66)
+            trade_probability = max(trade_probability, 58 if first_short_pullback else 66)
         if short_rebound_against:
+            trade_probability = min(trade_probability, 64)
+        if first_short_pullback and not strong_short_continuation:
             trade_probability = min(trade_probability, 64)
 
     return min(trade_probability, 82)
