@@ -991,12 +991,75 @@ def last_actionable_trade(memory, include_closed=False):
     return None
 
 
-def market_supports_position(side, current_price, trade, tech=None):
+def position_break_reasons(side, current_price, trade, tech=None, smc=None, orderflow=None):
+    """Reasons to stop position follow-up before the hard stop is reached."""
+    tech = tech or {}
+    smc = smc or {}
+    orderflow = orderflow or {}
+    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
+    stop = safe_float((trade or {}).get("stop"))
+    if not side or not entry or not current_price:
+        return ["немає даних для супроводу"]
+
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_bias = micro.get("bias", "NEUTRAL")
+    micro_score = micro.get("score", 0) or 0
+    trend_15m = tech.get("trend_15m") or tech.get("trend")
+    trend_1h = tech.get("trend_1h")
+    smc_bias = smc.get("bias", "NEUTRAL")
+    bos = smc.get("bos", "NONE")
+    choch = smc.get("choch", "NONE")
+    phase = smc.get("phase", "")
+    swing_low = safe_float(smc.get("swing_low"))
+    swing_high = safe_float(smc.get("swing_high"))
+    flow_bias = orderflow_verdict(orderflow)[0] if isinstance(orderflow, dict) else "NEUTRAL"
+
+    result_pct = signed_position_pct(side, entry, current_price)
+    reasons = []
+
+    if side == "LONG":
+        if stop is not None and current_price <= stop:
+            reasons.append("ціна дійшла до стопу або нижче")
+        if smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch:
+            reasons.append("SMC структура розвернулась проти LONG")
+        if swing_low and current_price < swing_low:
+            reasons.append(f"ціна нижче swing low {round(swing_low, 4)}")
+        if result_pct < 0 and micro_bias == "SHORT" and trend_1h == "DOWN" and smc_bias != "LONG":
+            reasons.append("3m і 1 година проти LONG, структура не підтримує")
+        if result_pct < 0 and trend_15m == "DOWN":
+            reasons.append("15m зламався проти LONG")
+        if result_pct < 0 and phase == "RANGE / WAIT" and micro_bias == "SHORT" and micro_score <= -25:
+            reasons.append("структура RANGE/WAIT, а 3m продавці активні")
+        if result_pct < 0 and flow_bias == "SHORT":
+            reasons.append("потік/стакан перейшов проти LONG")
+
+    elif side == "SHORT":
+        if stop is not None and current_price >= stop:
+            reasons.append("ціна дійшла до стопу або вище")
+        if smc_bias == "LONG" or "LONG" in bos or "LONG" in choch:
+            reasons.append("SMC структура розвернулась проти SHORT")
+        if swing_high and current_price > swing_high:
+            reasons.append(f"ціна вище swing high {round(swing_high, 4)}")
+        if result_pct < 0 and micro_bias == "LONG" and trend_1h == "UP" and smc_bias != "SHORT":
+            reasons.append("3m і 1 година проти SHORT, структура не підтримує")
+        if result_pct < 0 and trend_15m == "UP":
+            reasons.append("15m зламався проти SHORT")
+        if result_pct < 0 and phase == "RANGE / WAIT" and micro_bias == "LONG" and micro_score >= 25:
+            reasons.append("структура RANGE/WAIT, а 3m покупці активні")
+        if result_pct < 0 and flow_bias == "LONG":
+            reasons.append("потік/стакан перейшов проти SHORT")
+
+    return reasons[:3]
+
+
+def market_supports_position(side, current_price, trade, tech=None, smc=None, orderflow=None):
     """Keep following while price/structure still support the saved position."""
     tech = tech or {}
     entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
     stop = safe_float((trade or {}).get("stop"))
     if not side or not entry:
+        return False
+    if position_break_reasons(side, current_price, trade, tech, smc, orderflow):
         return False
 
     micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
@@ -1098,14 +1161,14 @@ def position_follow_note(memory, current_price, tech=None):
     return ""
 
 
-def apply_position_follow_header(message, memory, current_price, tech=None):
+def apply_position_follow_header(message, memory, current_price, tech=None, smc=None, orderflow=None):
     """Turn WAIT/NO ENTRY header into position-management header if a trade is active."""
     last_trade = last_actionable_trade(memory)
     if not last_trade or not message:
         return message
 
     side = last_trade.get("signal")
-    if not market_supports_position(side, current_price, last_trade, tech):
+    if not market_supports_position(side, current_price, last_trade, tech, smc, orderflow):
         return message
 
     note = position_follow_note(memory, current_price)
@@ -1297,7 +1360,7 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
     return "\n".join(lines).strip()
 
 
-def position_close_reason(side, current_price, trade, tech=None):
+def position_close_reason(side, current_price, trade, tech=None, smc=None, orderflow=None):
     tech = tech or {}
     entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
     stop = safe_float((trade or {}).get("stop"))
@@ -1315,26 +1378,34 @@ def position_close_reason(side, current_price, trade, tech=None):
         side == "SHORT" and tp1 is not None and current_price <= tp1
     )
     if stopped:
-        return "стоп або зона зламу пробита", "НЕУСПІХ"
+        return "стоп або зона зламу пробита", "НЕГАТИВНИЙ ВХІД"
+
+    break_reasons = position_break_reasons(side, current_price, trade, tech, smc, orderflow)
+    if break_reasons:
+        status = "УСПІШНИЙ / ЧАСТКОВО УСПІШНИЙ" if (reached_tp1 or result_pct > 0) else "НЕГАТИВНИЙ ВХІД"
+        return "; ".join(break_reasons[:2]), status
+
     if reached_tp1 or result_pct > 0:
-        return "напрям зламався після руху в плюс", "УСПІХ/ЧАСТКОВИЙ УСПІХ"
-    return "ринок чітко пішов не в напрямку позиції", "НЕУСПІХ"
+        return "напрям зламався після руху в плюс", "УСПІШНИЙ / ЧАСТКОВО УСПІШНИЙ"
+    return "ринок чітко пішов не в напрямку позиції", "НЕГАТИВНИЙ ВХІД"
 
 
-def close_last_actionable_trade(memory, current_price, tech=None):
+def close_last_actionable_trade(memory, current_price, tech=None, smc=None, orderflow=None):
     history = get_signal_history(memory)
     for item in reversed(history):
         if item.get("position_closed"):
             continue
         if item.get("signal") not in ["LONG", "SHORT"] or trade_setup_level(item.get("quality_percent")) < 4:
             continue
-        reason, status = position_close_reason(item.get("signal"), current_price, item, tech)
+        reason, status = position_close_reason(item.get("signal"), current_price, item, tech, smc, orderflow)
         item["position_closed"] = True
         item["closed_at"] = now_utc().isoformat()
         item["closed_price"] = current_price
         item["close_reason"] = reason
         item["close_status"] = status
         item["close_result_pct"] = round(signed_position_pct(item.get("signal"), safe_float(item.get("entry")) or safe_float(item.get("price")), current_price), 3)
+        leverage = safe_float(os.getenv("POSITION_LEVERAGE", "10")) or 10
+        item["close_leveraged_pct"] = round(item["close_result_pct"] * leverage, 2)
         return {
             "updated_at": now_utc().isoformat(),
             "limit": SIGNAL_MEMORY_LIMIT,
@@ -1347,11 +1418,16 @@ def build_position_close_message(closed_trade):
     if not closed_trade:
         return ""
     side = closed_trade.get("signal")
+    entry = safe_float(closed_trade.get("entry")) or safe_float(closed_trade.get("price"))
+    stop = safe_float(closed_trade.get("stop"))
+    closed_price = safe_float(closed_trade.get("closed_price"))
     return "\n".join([
         "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>СУПРОВІД {side} ЗАВЕРШЕНО</b> — {closed_trade.get('close_reason')}",
-        f"<b>Висновок:</b> {closed_trade.get('close_status')} | результат {closed_trade.get('close_result_pct')}% по ціні",
-        f"<b>Ціна закриття/зламу:</b> {closed_trade.get('closed_price')}",
+        f"<b>УГОДУ {side} ЗАКРИТО</b> — злам структури",
+        f"<b>Висновок:</b> {closed_trade.get('close_status')}",
+        f"<b>Результат:</b> {closed_trade.get('close_result_pct')}% по ціні (~{closed_trade.get('close_leveraged_pct')}% з 10x)",
+        f"<b>Рівні:</b> Вхід {round(entry, 4) if entry else '—'} | Закриття/злам {round(closed_price, 4) if closed_price else '—'} | Стоп {round(stop, 4) if stop else '—'}",
+        f"<b>Причина:</b> {closed_trade.get('close_reason')}",
     ]).strip()
 
 
@@ -9050,14 +9126,14 @@ def main():
     position_trade = last_actionable_trade(signal_memory)
     position_active = bool(
         position_trade
-        and market_supports_position(position_trade.get("signal"), tv["price"], position_trade, tech)
+        and market_supports_position(position_trade.get("signal"), tv["price"], position_trade, tech, smc, orderflow)
     )
     if position_active:
         follow_message = build_position_follow_message(tv, signal_memory, tech, news, event_risk, smc, orderflow)
         if follow_message:
             message = follow_message
     elif position_trade:
-        signal_memory, closed_trade = close_last_actionable_trade(signal_memory, tv["price"], tech)
+        signal_memory, closed_trade = close_last_actionable_trade(signal_memory, tv["price"], tech, smc, orderflow)
         close_message = build_position_close_message(closed_trade)
         if close_message:
             message = close_message + "\n\n" + message
