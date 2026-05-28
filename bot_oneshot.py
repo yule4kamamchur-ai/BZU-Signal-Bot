@@ -5319,6 +5319,8 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
             raw_trigger = price + atr * 0.18
 
         pullback_zone = ema20 if ema20 and ema20 < price else price - atr * 0.35
+        if pullback_zone < price * 0.988:
+            pullback_zone = price - atr * 0.45
         invalid = swing_low if swing_low and swing_low < price else price - atr * 0.65
         trigger = round(raw_trigger, 4)
         pullback_zone = round(pullback_zone, 4)
@@ -5336,6 +5338,8 @@ def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, ear
             raw_trigger = price - atr * 0.18
 
         pullback_zone = ema20 if ema20 and ema20 > price else price + atr * 0.35
+        if pullback_zone > price * 1.012:
+            pullback_zone = price + atr * 0.45
         invalid = swing_high if swing_high and swing_high > price else price + atr * 0.65
         trigger = round(raw_trigger, 4)
         pullback_zone = round(pullback_zone, 4)
@@ -5377,8 +5381,8 @@ def format_watch_plan(signal, plan, entry_watch):
 
     if signal == "LONG":
         direction_text = "Лонг"
-        trigger_text = f"вище {fnum(trigger)}"
-        retest_text = f"відкат біля {fnum(retest)}"
+        trigger_text = f"закріплення вище {fnum(trigger)}"
+        retest_text = f"відкат до підтримки {fnum(retest)} з відкупом"
         invalid_text = f"нижче {entry_watch.get('invalid')}"
         if stop >= trigger:
             stop = min(safe_float(entry_watch.get("invalid")) or stop, trigger * 0.995)
@@ -5388,8 +5392,8 @@ def format_watch_plan(signal, plan, entry_watch):
         tp3 = trigger + risk * 4.5
     else:
         direction_text = "Шорт"
-        trigger_text = f"нижче {fnum(trigger)}"
-        retest_text = f"відкат біля {fnum(retest)}"
+        trigger_text = f"закріплення нижче {fnum(trigger)}"
+        retest_text = f"відкат до опору {fnum(retest)} з продавцями"
         invalid_text = f"вище {entry_watch.get('invalid')}"
         if stop <= trigger:
             stop = max(safe_float(entry_watch.get("invalid")) or stop, trigger * 1.005)
@@ -5399,7 +5403,7 @@ def format_watch_plan(signal, plan, entry_watch):
         tp3 = trigger - risk * 4.5
 
     return (
-        f"Не входити без тригера. {direction_text}: зона {trigger_text} або {retest_text}. "
+        f"Не входити без тригера. {direction_text}: {trigger_text} або {retest_text}. "
         f"Стоп: {fnum(stop)} | TP1: {fnum(tp1)} | TP2: {fnum(tp2)} | "
         f"TP3: {fnum(tp3)} | Скасування: {invalid_text}."
     )
@@ -9074,7 +9078,11 @@ def simplified_chart_entry_text(signal, entry_watch=None, chart_context=None, tv
     entry_watch = entry_watch or {}
     chart_context = chart_context or {}
     price = safe_float((tv or {}).get("price"))
-    trigger = safe_float(entry_watch.get("trigger")) or safe_float(chart_context.get("trigger"))
+    trigger_kind = chart_context.get("trigger_kind")
+    if trigger_kind == "CONTINUATION_RETEST":
+        trigger = safe_float(chart_context.get("trigger")) or safe_float(entry_watch.get("trigger"))
+    else:
+        trigger = safe_float(entry_watch.get("trigger")) or safe_float(chart_context.get("trigger"))
     retest = safe_float(entry_watch.get("retest"))
     invalid = safe_float(entry_watch.get("invalid")) or safe_float(chart_context.get("invalid"))
 
@@ -9086,10 +9094,29 @@ def simplified_chart_entry_text(signal, entry_watch=None, chart_context=None, tv
     if not invalid and price:
         invalid = price - abs(price) * 0.0035 if signal == "LONG" else price + abs(price) * 0.0035
 
-    return (
-        f"чекаємо на ретест ціни {fnum(trigger)}, або відкат від ціни {fnum(retest)}, "
-        f"або утримання ціни {fnum(invalid)}, для входу в позицію"
-    )
+    if signal == "LONG":
+        trigger_text = (
+            f"утримання вище {fnum(trigger)}"
+            if price and trigger and price >= trigger
+            else f"пробій і закріплення вище {fnum(trigger)}"
+        )
+        retest_text = f"відкат до підтримки {fnum(retest)} з відкупом"
+        invalid_text = f"Скасування сценарію нижче {fnum(invalid)}"
+    elif signal == "SHORT":
+        trigger_text = (
+            f"утримання нижче {fnum(trigger)}"
+            if price and trigger and price <= trigger
+            else f"пробій і закріплення нижче {fnum(trigger)}"
+        )
+        if trigger_kind == "CONTINUATION_RETEST":
+            retest_text = f"новий відскок до опору {fnum(retest)} і відмова рости"
+        else:
+            retest_text = f"відкат до опору {fnum(retest)} з появою продавців"
+        invalid_text = f"Скасування сценарію вище {fnum(invalid)}"
+    else:
+        return "тригер графіка не визначений"
+
+    return f"{trigger_text}; або {retest_text}. {invalid_text}."
 
 
 def confirmed_chart_entry_text(signal, entry_watch=None, chart_context=None, tv=None):
