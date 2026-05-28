@@ -4996,6 +4996,21 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
             )
         )
     )
+    short_continuation_after_retest = (
+        local_move.get("available")
+        and local_from_low >= 0.60
+        and local_from_high <= -0.75
+        and not fast_bounce_after_dump
+        and bars_since_high is not None
+        and 1 <= bars_since_high <= 28
+        and (
+            tech_score <= -80
+            or micro_bias == "SHORT"
+            or micro_fast_momentum == "DOWN"
+            or smc_bias == "SHORT"
+            or orderflow.get("score", 0) <= -12
+        )
+    )
     local_long_reclaim = (
         ((local_move.get("bounce_after_dump") or fast_bounce_after_dump) and not fast_pullback_after_pump)
         or (
@@ -5012,6 +5027,25 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
             )
         )
     )
+    long_continuation_after_retest = (
+        local_move.get("available")
+        and local_from_high <= -0.60
+        and local_from_low >= 0.75
+        and not fast_pullback_after_pump
+        and bars_since_low is not None
+        and 1 <= bars_since_low <= 28
+        and (
+            tech_score >= 80
+            or micro_bias == "LONG"
+            or micro_fast_momentum == "UP"
+            or smc_bias == "LONG"
+            or orderflow.get("score", 0) >= 12
+        )
+    )
+    if short_continuation_after_retest:
+        local_short_rejection = True
+    if long_continuation_after_retest:
+        local_long_reclaim = True
     if local_short_rejection:
         side = "SHORT"
     elif local_long_reclaim:
@@ -5081,6 +5115,10 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         or (side == "SHORT" and (news.get("score", 0) or 0) <= -20)
         or event_risk.get("direction") == side
     )
+    trend_support = (
+        (side == "LONG" and tech_score >= 70)
+        or (side == "SHORT" and tech_score <= -70)
+    )
     local_support = (
         (side == "SHORT" and local_short_rejection)
         or (side == "LONG" and local_long_reclaim)
@@ -5090,10 +5128,15 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         or (side == "SHORT" and fast_pullback_after_pump)
     )
 
-    confirmation = sum(1 for ok in [smc_support, micro_support, flow_support, news_support, local_support] if ok)
+    continuation_after_retest = (
+        (side == "SHORT" and short_continuation_after_retest)
+        or (side == "LONG" and long_continuation_after_retest)
+    )
+    confirmation = sum(1 for ok in [smc_support, micro_support, flow_support, news_support, local_support, trend_support] if ok)
     new_structure = (
         fresh_break
         or retest_ok
+        or continuation_after_retest
         or (local_trigger and confirmation >= 2)
         or (local_support and micro_support and (smc_support or flow_support or fast_local_reversal))
     )
@@ -5119,13 +5162,22 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         )
         trigger_kind = "LOCAL_BREAK"
     elif local_support:
-        if side == "LONG" and fast_bounce_after_dump:
+        if continuation_after_retest:
+            trigger_event = (
+                f"ціна відбилась/ретестнула high {round(local_move.get('post_low_high') or recent_high, 4)} і продовжила вниз"
+                if side == "SHORT"
+                else f"ціна відбилась/ретестнула low {round(local_move.get('post_high_low') or recent_low, 4)} і продовжила вгору"
+            )
+            trigger_kind = "CONTINUATION_RETEST"
+        elif side == "LONG" and fast_bounce_after_dump:
             trigger_event = micro_local_move.get("note") or "3m відскок від low після дампу"
+            trigger_kind = "LOCAL_REVERSAL"
         elif side == "SHORT" and fast_pullback_after_pump:
             trigger_event = micro_local_move.get("note") or "3m відкат від high після росту"
+            trigger_kind = "LOCAL_REVERSAL"
         else:
             trigger_event = local_move.get("note", "локальна структура підтвердила напрям")
-        trigger_kind = "LOCAL_REVERSAL"
+            trigger_kind = "LOCAL_REVERSAL"
     else:
         trigger_event = "тригер ще не підтверджений"
         trigger_kind = "NONE"
@@ -5174,6 +5226,7 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         "micro_support": micro_support,
         "flow_support": flow_support,
         "news_support": news_support,
+        "trend_support": trend_support,
         "quality_bonus": quality_bonus,
         "late_override": late_override,
         "no_chase": no_chase,
@@ -5205,6 +5258,8 @@ def apply_chart_context_probability(signal, probability, chart_context):
     if chart_side != signal:
         return min(probability, 54)
     if stage == "TRIGGER":
+        if chart_context.get("trigger_kind") == "CONTINUATION_RETEST":
+            return min(72, max(probability, 62))
         if chart_context.get("trigger_kind") == "LOCAL_REVERSAL":
             return min(64, max(probability, 58))
         if chart_context.get("trigger_kind") == "LOCAL_BREAK":
@@ -8825,7 +8880,7 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
             decision = f"{signal} пізно — не доганяти рух"
         elif chart_context.get("stage") == "WAIT" and signal in ["LONG", "SHORT"]:
             decision = f"ЧЕКАТИ — графік ще не дав тригер {signal}"
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
+    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry, chart_context)
 
     market_mode = market_mode_engine(
         signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
@@ -9357,7 +9412,7 @@ def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro,
         return "B"
     return "C / ризиковий"
 
-def should_show_trade_plan(signal, trade_probability, late_entry=None):
+def should_show_trade_plan(signal, trade_probability, late_entry=None, chart_context=None):
     """Show entry/SL/TP for 3/5+ setups.
 
     3/5 = ризикований вхід, so the plan is allowed but must be treated as
@@ -9367,7 +9422,13 @@ def should_show_trade_plan(signal, trade_probability, late_entry=None):
         return False
     if trade_probability is None:
         return False
-    if late_entry and late_entry.get("late"):
+    continuation_trigger = (
+        chart_context
+        and chart_context.get("stage") == "TRIGGER"
+        and chart_context.get("trigger_kind") == "CONTINUATION_RETEST"
+        and chart_context.get("side") == signal
+    )
+    if late_entry and late_entry.get("late") and not continuation_trigger:
         return False
     return (trade_probability or 0) >= 55
 
