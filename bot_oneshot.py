@@ -1549,13 +1549,17 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
     if not side or not current_price or not entry:
         return ""
 
-    leverage = safe_float(os.getenv("POSITION_LEVERAGE", "10")) or 10
     result_pct = signed_position_pct(side, entry, current_price)
-    leveraged_pct = result_pct * leverage
     news_side, _ = news_verdict(news or {})
     book = (orderflow or {}).get("order_book") or {}
     micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
     micro_side = micro.get("bias", "NEUTRAL")
+    if abs(result_pct) <= 0.15:
+        position_state = f"майже біля входу ({round(result_pct, 3)}%) — треба повторно перевірити, чи позиція ще актуальна"
+    elif result_pct > 0:
+        position_state = f"у плюсі ({round(result_pct, 3)}%) — можна тримати тільки поки підтвердження не зникло"
+    else:
+        position_state = f"проти входу ({round(result_pct, 3)}%) — не чекати дальній стоп без підтвердження"
 
     validity_review = position_validity_review(side, current_price, trade, tech, smc, orderflow, candles)
     recommendation = position_recommendation(side, result_pct, current_price, trade, tech, validity_review)
@@ -1566,7 +1570,7 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
         f"<b>СУПРОВІД {side}</b> — {recommendation}",
         "",
         f"<b>Поточна ціна:</b> {round(current_price, 4)}",
-        f"<b>Результат:</b> {round(result_pct, 3)}% по ціні (~{round(leveraged_pct, 2)}% з {int(leverage)}x)",
+        f"<b>Стан позиції:</b> {position_state}",
         f"<b>Позиція:</b> Вхід {round(entry, 4)} | Стоп {round(stop, 4) if stop else '—'} | TP1 {round(tp1, 4) if tp1 else '—'} | TP2 {round(tp2, 4) if tp2 else '—'} | TP3 {round(tp3, 4) if tp3 else '—'}",
         f"<b>Новини:</b> {follow_side_word(news_side)} ({(news or {}).get('score', 0)})",
         f"<b>3хв:</b> {follow_side_word(micro_side)} ({micro.get('score', 0)})",
@@ -4997,10 +5001,13 @@ def chart_context_message(chart_context):
 def apply_chart_context_probability(signal, probability, chart_context):
     if signal not in ["LONG", "SHORT"] or probability is None:
         return probability
-    if not chart_context or chart_context.get("side") != signal:
+    if not chart_context or not chart_context.get("available"):
         return probability
 
+    chart_side = chart_context.get("side")
     stage = chart_context.get("stage")
+    if chart_side != signal:
+        return min(probability, 54)
     if stage == "TRIGGER":
         if chart_context.get("trigger_kind") == "LOCAL_REVERSAL":
             return min(64, max(probability, 58))
@@ -5011,7 +5018,7 @@ def apply_chart_context_probability(signal, probability, chart_context):
         return min(probability, 54)
     if stage == "LATE_NO_CHASE":
         return min(probability, 49)
-    return probability
+    return min(probability, 54)
 
 def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
     """Creates a forward-looking conditional entry plan.
@@ -8522,14 +8529,18 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         decision = f"СКАЛЬП {signal} — рання точка, тільки зі стопом"
     if event_block.get("blocked"):
         decision = "Зараз не входити — високий новинний ризик"
-    if chart_context and chart_context.get("side") == signal:
+    if chart_context:
         trade_probability = apply_chart_context_probability(signal, trade_probability, chart_context)
-        if chart_context.get("stage") == "TRIGGER" and trade_probability is not None:
+        if chart_context.get("side") != signal and signal in ["LONG", "SHORT"]:
+            decision = f"ЧЕКАТИ — графік не підтвердив {signal}"
+        elif chart_context.get("stage") == "TRIGGER" and trade_probability is not None:
             decision = f"РАННІЙ {signal} — є тригер графіка"
         elif chart_context.get("stage") == "SETUP_FORMING":
             decision = f"ГОТУЄМОСЬ ДО {signal} — чекати тригер"
         elif chart_context.get("stage") == "LATE_NO_CHASE":
             decision = f"{signal} пізно — не доганяти рух"
+        elif chart_context.get("stage") == "WAIT" and signal in ["LONG", "SHORT"]:
+            decision = f"ЧЕКАТИ — графік ще не дав тригер {signal}"
     show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
 
     market_mode = market_mode_engine(
