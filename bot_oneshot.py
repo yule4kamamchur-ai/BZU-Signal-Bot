@@ -91,6 +91,12 @@ NEWS_SOURCES = [
     # because it often times out. EIA inventory impact is still covered through
     # Google News RSS queries: "EIA crude oil inventories today API crude draw build".
     {
+        "name": "TSTA Markets Telegram",
+        "url": "https://t.me/s/tstamarkets",
+        "type": "telegram",
+        "weight": 1.15,
+    },
+    {
         "name": "OilPrice",
         "url": "https://oilprice.com/rss/main",
         "type": "rss",
@@ -2277,6 +2283,21 @@ def parse_gdelt_date(value):
     except Exception:
         return None
 
+def is_market_relevant_news_text(text):
+    lower = normalize_news_text(text)
+    keys = [
+        "oil", "crude", "brent", "ukoil", "bz", "opec", "eia", "api",
+        "inventory", "stockpiles", "gas", "energy", "trump", "fed",
+        "powell", "fomc", "cpi", "iran", "hormuz", "sanctions",
+        "ceasefire", "cease-fire", "truce", "tariff",
+        "нафта", "брент", "опек", "запаси", "трамп", "фрс",
+        "інфляція", "іран", "сша", "ормуз", "санкції", "тариф",
+        "припинення вогню", "перемир'я", "рамкова угода",
+        "нефть", "запасы", "иран", "сша", "санкции",
+        "прекращение огня", "перемирие", "рамочное соглашение",
+    ]
+    return any(key in lower for key in keys)
+
 def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
     news = []
     cutoff = now_utc() - timedelta(hours=lookback_hours)
@@ -2783,6 +2804,49 @@ def get_item_text(item, tag):
             return (child.text or "").strip()
     return ""
 
+def parse_telegram_channel_news(source, html):
+    news = []
+    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        messages = soup.select(".tgme_widget_message")
+
+        for message in messages[-MAX_ITEMS_PER_FEED * 2:]:
+            text_node = message.select_one(".tgme_widget_message_text")
+            if not text_node:
+                continue
+
+            title = text_node.get_text(" ", strip=True)
+            title = re.sub(r"\s+", " ", title).strip()
+            if not title or len(title) < 12:
+                continue
+            if not is_market_relevant_news_text(title):
+                continue
+
+            time_node = message.select_one("time")
+            published_at = parse_date(time_node.get("datetime")) if time_node else None
+            if published_at and published_at < cutoff:
+                continue
+
+            link_node = message.select_one("a.tgme_widget_message_date")
+            link = link_node.get("href", "") if link_node else source["url"]
+
+            news.append({
+                "title": title,
+                "link": link,
+                "source": source["name"],
+                "published_at": published_at,
+                "weight": source.get("weight", 1.0),
+            })
+
+        news.sort(
+            key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc),
+            reverse=True,
+        )
+    except Exception as error:
+        print(f"[WARN] Telegram parse error {source['name']}: {error}")
+    return news[:MAX_ITEMS_PER_FEED]
+
 def parse_html_news(source, html):
     news = []
     try:
@@ -2792,8 +2856,7 @@ def parse_html_news(source, html):
             text = tag.get_text(" ", strip=True)
             if not text or len(text) < 18:
                 continue
-            lower = text.lower()
-            if not any(key in lower for key in ["oil", "crude", "brent", "opec", "eia", "inventory", "gas", "energy", "trump", "fed"]):
+            if not is_market_relevant_news_text(text):
                 continue
             href = tag.get("href", "")
             if href.startswith("/"):
@@ -2818,6 +2881,8 @@ def parse_rss(source):
     response = safe_get(source["url"], timeout=10, retries=1)
     if not response:
         return []
+    if source.get("type") == "telegram":
+        return parse_telegram_channel_news(source, response.text)
     if source.get("type") == "html":
         return parse_html_news(source, response.text)
 
@@ -7731,6 +7796,8 @@ def news_source_quality(source, title=""):
     t = (title or "").lower()
     if "reuters" in s or "reuters" in t:
         return 1.35
+    if "tsta markets" in s or "t.me/s/tstamarkets" in t:
+        return 1.2
     if any(x in s for x in ["cnbc", "oilprice", "eia", "opec", "financial times", "wsj", "investing"]):
         return 1.15
     if any(x in s for x in ["coindesk", "cointelegraph", "cryptopanic"]):
