@@ -975,11 +975,21 @@ def memory_confidence_adjustment(signal, memory, current_price):
     return 0
 
 
+ACTIONABLE_ENTRY_STATUSES = {"CONFIRMED_ENTRY", "MAIN_ENTRY"}
+
+
 def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None, entry_status=None, entry_side=None):
     plan = plan or {}
     tech = tech or {}
     micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
     quality_value = safe_float(quality_percent)
+    actionable_entry = (
+        signal in ["LONG", "SHORT"]
+        and entry_side == signal
+        and entry_status in ACTIONABLE_ENTRY_STATUSES
+        and quality_value is not None
+        and quality_value >= 65
+    )
 
     return {
         "time": now_utc().isoformat(),
@@ -995,12 +1005,28 @@ def build_current_signal_memory(signal, signal_type, price, confidence, quality_
         "tp3": plan.get("tp3") if isinstance(plan, dict) else None,
         "entry_status": entry_status,
         "entry_side": entry_side,
-        "actionable_entry": signal in ["LONG", "SHORT"] and quality_value is not None and quality_value >= 65,
+        "actionable_entry": actionable_entry,
         "change": tech.get("change"),
         "trend_15m": tech.get("trend_15m"),
         "trend_1h": tech.get("trend_1h"),
         "micro_3m": micro.get("bias"),
         "micro_3m_state": micro.get("state"),
+    }
+
+
+def locked_position_plan(trade):
+    """Return the original plan for an active position without making it a new entry."""
+    if not trade:
+        return {}
+    return {
+        "entry": trade.get("entry") or trade.get("price"),
+        "stop": trade.get("stop"),
+        "tp1": trade.get("tp1"),
+        "tp2": trade.get("tp2"),
+        "tp3": trade.get("tp3"),
+        "method": "LOCKED ACTIVE POSITION",
+        "locked": True,
+        "note": "TP/SL збережені з першого основного/підтвердженого входу",
     }
 
 
@@ -1031,14 +1057,31 @@ def last_actionable_trade(memory, include_closed=False):
         return None
 
     for item in reversed(history):
-        if item.get("position_closed") and not include_closed:
-            continue
-        if item.get("signal") not in ["LONG", "SHORT"] or not item.get("price"):
-            continue
-        if trade_setup_level(item.get("quality_percent")) >= 4:
+        if is_actionable_trade_item(item, include_closed=include_closed):
             return item
 
     return None
+
+
+def is_actionable_trade_item(item, include_closed=False):
+    if not item:
+        return False
+    if item.get("position_closed") and not include_closed:
+        return False
+    signal = item.get("signal")
+    if signal not in ["LONG", "SHORT"] or not item.get("price"):
+        return False
+    if trade_setup_level(item.get("quality_percent")) < 4:
+        return False
+
+    entry_status = item.get("entry_status")
+    entry_side = item.get("entry_side")
+    if entry_status is None and entry_side is None:
+        return True
+    return (
+        item.get("actionable_entry") is True
+        or (entry_status in ACTIONABLE_ENTRY_STATUSES and entry_side == signal)
+    )
 
 
 def position_break_reasons(side, current_price, trade, tech=None, smc=None, orderflow=None):
@@ -1679,9 +1722,7 @@ def position_close_reason(side, current_price, trade, tech=None, smc=None, order
 def close_last_actionable_trade(memory, current_price, tech=None, smc=None, orderflow=None):
     history = get_signal_history(memory)
     for item in reversed(history):
-        if item.get("position_closed"):
-            continue
-        if item.get("signal") not in ["LONG", "SHORT"] or trade_setup_level(item.get("quality_percent")) < 4:
+        if not is_actionable_trade_item(item):
             continue
         reason, status = position_close_reason(item.get("signal"), current_price, item, tech, smc, orderflow)
         item["position_closed"] = True
@@ -9913,45 +9954,6 @@ def trade_setup_level(probability):
         return 3
     return 0
 
-def is_stop_or_tp3_broken(side, price, plan):
-    if not plan or not isinstance(plan, dict):
-        return True
-    stop = safe_float(plan.get("stop"))
-    tp3 = safe_float(plan.get("tp3"))
-    if side == "LONG":
-        return (stop is not None and price <= stop) or (tp3 is not None and price >= tp3)
-    if side == "SHORT":
-        return (stop is not None and price >= stop) or (tp3 is not None and price <= tp3)
-    return True
-
-def reuse_locked_trade_plan(memory, signal, current_price):
-    """Reuse the first 4/5 or 5/5 plan until stop/TP3/invalidation.
-
-    This prevents repainting TP/SL after an основний/підтверджений вхід was
-    already sent. 3/5 remains flexible because it is only a risky early entry.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return None
-    for item in reversed(get_signal_history(memory)):
-        if item.get("signal") != signal:
-            continue
-        if trade_setup_level(item.get("quality_percent")) < 4:
-            continue
-        plan = {
-            "entry": item.get("entry") or item.get("price"),
-            "stop": item.get("stop"),
-            "tp1": item.get("tp1"),
-            "tp2": item.get("tp2"),
-            "tp3": item.get("tp3"),
-            "method": "LOCKED FROM FIRST 4/5–5/5 SIGNAL",
-            "locked": True,
-            "note": "TP/SL зафіксовані з першого основного/підтвердженого сигналу",
-        }
-        if all(plan.get(k) is not None for k in ["entry", "stop", "tp1", "tp2", "tp3"]):
-            if not is_stop_or_tp3_broken(signal, current_price, plan):
-                return plan
-    return None
-
 def main():
     print("START BZU PROFESSIONAL FREE BOT UA REVERSAL-SESSION")
 
@@ -10270,12 +10272,6 @@ def main():
     decision_text = message_state["decision"]
     final_decision = message_state["final_decision"]
 
-    current_quality_for_lock = trade_probability
-    locked_plan = reuse_locked_trade_plan(signal_memory, signal, tv["price"])
-    if locked_plan and trade_setup_level(current_quality_for_lock) >= 4:
-        plan = locked_plan
-        print("LOCKED PLAN REUSED: TP/SL unchanged from first 4/5–5/5 signal")
-
     reversal_label = reversal_display_label(signal, reversal)
     message = compact_telegram_message(
         tv=tv,
@@ -10335,6 +10331,14 @@ def main():
         message = message.strip() + "\n\n" + previous_signal_note
 
     current_quality_percent = final_decision.get("quality_percent")
+    storage_entry_status = final_decision.get("entry_status")
+    storage_entry_side = final_decision.get("entry_side")
+    storage_plan = plan
+    if position_active:
+        storage_entry_status = "FOLLOW"
+        storage_entry_side = None
+        storage_plan = locked_position_plan(position_trade)
+
     journal_market_direction = final_decision.get("market_side") or infer_market_direction(
         signal,
         signal_type,
@@ -10349,7 +10353,7 @@ def main():
         price=tv["price"],
         confidence=confidence,
         quality_percent=current_quality_percent,
-        plan=plan,
+        plan=storage_plan,
         tech=tech,
         news=news,
         event_risk=event_risk,
@@ -10359,10 +10363,13 @@ def main():
         cooling=cooling,
         market_direction=journal_market_direction,
     )
-    current_journal_entry["entry_status"] = final_decision.get("entry_status")
+    if position_active:
+        current_journal_entry["no_entry"] = True
+        current_journal_entry["actionable_entry"] = False
+    current_journal_entry["entry_status"] = storage_entry_status
     current_journal_entry["entry_timing"] = final_decision.get("entry_timing")
     current_journal_entry["decision_stage"] = final_decision.get("stage")
-    current_journal_entry["entry_side"] = final_decision.get("entry_side")
+    current_journal_entry["entry_side"] = storage_entry_side
     current_journal_entry["decision_text"] = final_decision.get("decision_text")
     pattern_note = pattern_stats_text(signal_journal, current_journal_entry.get("tags"), journal_market_direction)
     signal_journal = append_signal_journal(signal_journal, current_journal_entry)
@@ -10384,10 +10391,10 @@ def main():
             price=tv["price"],
             confidence=confidence,
             quality_percent=current_quality_percent,
-            plan=plan,
+            plan=storage_plan,
             tech=tech,
-            entry_status=final_decision.get("entry_status"),
-            entry_side=final_decision.get("entry_side"),
+            entry_status=storage_entry_status,
+            entry_side=storage_entry_side,
         )
     )
     save_signal_memory(updated_memory)
