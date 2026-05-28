@@ -229,7 +229,7 @@ def safe_post(url, payload, timeout=15):
 # ==========================================================
 
 SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
-SIGNAL_MEMORY_LIMIT = 4
+SIGNAL_MEMORY_LIMIT = 12
 SIGNAL_JOURNAL_FILE = os.getenv("SIGNAL_JOURNAL_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "signal_journal.json"))
 SIGNAL_JOURNAL_LIMIT = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "300") or 300)
 SIGNAL_JOURNAL_EVAL_MINUTES = int(os.getenv("SIGNAL_JOURNAL_EVAL_MINUTES", "60") or 60)
@@ -925,10 +925,11 @@ def memory_confidence_adjustment(signal, memory, current_price):
     return 0
 
 
-def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None):
+def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None, entry_status=None, entry_side=None):
     plan = plan or {}
     tech = tech or {}
     micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    quality_value = safe_float(quality_percent)
 
     return {
         "time": now_utc().isoformat(),
@@ -936,12 +937,15 @@ def build_current_signal_memory(signal, signal_type, price, confidence, quality_
         "signal_type": signal_type,
         "price": round(float(price), 4),
         "confidence": int(confidence) if confidence is not None else None,
-        "quality_percent": int(quality_percent) if quality_percent is not None else None,
+        "quality_percent": int(quality_value) if quality_value is not None else None,
         "entry": plan.get("entry") if isinstance(plan, dict) else None,
         "stop": plan.get("stop") if isinstance(plan, dict) else None,
         "tp1": plan.get("tp1") if isinstance(plan, dict) else None,
         "tp2": plan.get("tp2") if isinstance(plan, dict) else None,
         "tp3": plan.get("tp3") if isinstance(plan, dict) else None,
+        "entry_status": entry_status,
+        "entry_side": entry_side,
+        "actionable_entry": signal in ["LONG", "SHORT"] and quality_value is not None and quality_value >= 65,
         "change": tech.get("change"),
         "trend_15m": tech.get("trend_15m"),
         "trend_1h": tech.get("trend_1h"),
@@ -966,24 +970,63 @@ def memory_status_note(memory, current_price):
 
 
 
-def position_follow_note(memory, current_price, tech=None):
-    """Position follow-up based on last actionable signal in 4-signal memory.
+def last_actionable_trade(memory):
+    """Last 4/5 or 5/5 trade from memory.
 
-    This does not open a new trade. It helps manage a position if the user
-    already entered on a previous 3/5, 4/5, or 5/5 signal.
+    The user treats 4/5 and 5/5 as real entries, so weaker watch signals must
+    not replace the trade being managed.
     """
-    tech = tech or {}
     history = get_signal_history(memory)
-
     if not history:
-        return ""
+        return None
 
-    # Find the last real LONG/SHORT signal with an entry price.
-    last_trade = None
     for item in reversed(history):
-        if item.get("signal") in ["LONG", "SHORT"] and item.get("price"):
-            last_trade = item
-            break
+        if item.get("signal") not in ["LONG", "SHORT"] or not item.get("price"):
+            continue
+        if trade_setup_level(item.get("quality_percent")) >= 4:
+            return item
+
+    return None
+
+
+def market_supports_position(side, current_price, trade, tech=None):
+    """Keep following while price/structure still support the saved position."""
+    tech = tech or {}
+    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
+    stop = safe_float((trade or {}).get("stop"))
+    if not side or not entry:
+        return False
+
+    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
+    micro_state = micro.get("state", "")
+    trend_15m = tech.get("trend_15m") or tech.get("trend")
+    trend_1h = tech.get("trend_1h")
+
+    if side == "LONG":
+        if stop is not None and current_price <= stop:
+            return False
+        if trend_15m == "DOWN" and trend_1h == "DOWN":
+            return False
+        if current_price >= entry:
+            return True
+        return micro_state == "LONG_STRENGTHENING" or trend_15m == "UP"
+
+    if side == "SHORT":
+        if stop is not None and current_price >= stop:
+            return False
+        if trend_15m == "UP" and trend_1h == "UP":
+            return False
+        if current_price <= entry:
+            return True
+        return micro_state == "SHORT_STRENGTHENING" or trend_15m == "DOWN"
+
+    return False
+
+
+def position_follow_note(memory, current_price, tech=None):
+    """Position follow-up based on the last 4/5 or 5/5 entry."""
+    tech = tech or {}
+    last_trade = last_actionable_trade(memory)
 
     if not last_trade:
         return ""
@@ -1016,7 +1059,7 @@ def position_follow_note(memory, current_price, tech=None):
         if broken_long(stop):
             return "<b>Супровід:</b> LONG зламався — ціна біля/нижче стопу"
         if reached_long(tp3):
-            return "<b>Супровід:</b> LONG дійшов до TP3 — краще фіксувати основну частину"
+            return "<b>Супровід:</b> LONG вище TP3 — ринок ще в напрямку, вести залишок трейлінг-стопом"
         if reached_long(tp2):
             return "<b>Супровід:</b> LONG дійшов до TP2 — підтягнути стоп і зафіксувати частину"
         if reached_long(tp1):
@@ -1035,7 +1078,7 @@ def position_follow_note(memory, current_price, tech=None):
         if broken_short(stop):
             return "<b>Супровід:</b> SHORT зламався — ціна біля/вище стопу"
         if reached_short(tp3):
-            return "<b>Супровід:</b> SHORT дійшов до TP3 — краще фіксувати основну частину"
+            return "<b>Супровід:</b> SHORT нижче TP3 — ринок ще в напрямку, вести залишок трейлінг-стопом"
         if reached_short(tp2):
             return "<b>Супровід:</b> SHORT дійшов до TP2 — підтягнути стоп і зафіксувати частину"
         if reached_short(tp1):
@@ -1051,6 +1094,33 @@ def position_follow_note(memory, current_price, tech=None):
         return "<b>Супровід:</b> SHORT без сильного руху — чекати підтвердження"
 
     return ""
+
+
+def apply_position_follow_header(message, memory, current_price, tech=None):
+    """Turn WAIT/NO ENTRY header into position-management header if a trade is active."""
+    last_trade = last_actionable_trade(memory)
+    if not last_trade or not message:
+        return message
+
+    side = last_trade.get("signal")
+    if not market_supports_position(side, current_price, last_trade, tech):
+        return message
+
+    note = position_follow_note(memory, current_price)
+    if not side or not note:
+        return message
+
+    lines = message.splitlines()
+    if len(lines) < 2:
+        return message
+
+    current_header = lines[1]
+    if not (current_header.startswith("<b>ЧЕКАТИ</b>") or current_header.startswith("<b>ВХОДУ НЕМАЄ</b>")):
+        return message
+
+    detail = re.sub(r"<[^>]+>", "", note).replace("Супровід:", "").strip()
+    lines[1] = f"<b>СУПРОВІД {side}</b> — {detail}"
+    return "\n".join(lines)
 
 
 # ==========================================================
@@ -4214,9 +4284,9 @@ def format_watch_plan(signal, plan, entry_watch):
         if stop >= trigger:
             stop = min(safe_float(entry_watch.get("invalid")) or stop, trigger * 0.995)
         risk = max(trigger - stop, trigger * 0.0025)
-        tp1 = trigger + risk * 1.0
-        tp2 = trigger + risk * 1.5
-        tp3 = trigger + risk * 2.2
+        tp1 = trigger + risk * 2.0
+        tp2 = trigger + risk * 3.0
+        tp3 = trigger + risk * 4.5
     else:
         direction_text = "Шорт"
         trigger_text = f"нижче {fnum(trigger)}"
@@ -4225,9 +4295,9 @@ def format_watch_plan(signal, plan, entry_watch):
         if stop <= trigger:
             stop = max(safe_float(entry_watch.get("invalid")) or stop, trigger * 1.005)
         risk = max(stop - trigger, trigger * 0.0025)
-        tp1 = trigger - risk * 1.0
-        tp2 = trigger - risk * 1.5
-        tp3 = trigger - risk * 2.2
+        tp1 = trigger - risk * 2.0
+        tp2 = trigger - risk * 3.0
+        tp3 = trigger - risk * 4.5
 
     return (
         f"Не входити без тригера. {direction_text}: зона {trigger_text} або {retest_text}. "
@@ -5372,13 +5442,13 @@ def adjust_plan_for_rr(plan, signal):
     if risk <= 0:
         return plan
     if signal == "LONG":
-        plan["tp1"] = round(entry + risk * 1.0, 4)
-        plan["tp2"] = round(entry + risk * 1.5, 4)
-        plan["tp3"] = round(entry + risk * 2.0, 4)
+        plan["tp1"] = round(entry + risk * 2.0, 4)
+        plan["tp2"] = round(entry + risk * 3.0, 4)
+        plan["tp3"] = round(entry + risk * 4.5, 4)
     elif signal == "SHORT":
-        plan["tp1"] = round(entry - risk * 1.0, 4)
-        plan["tp2"] = round(entry - risk * 1.5, 4)
-        plan["tp3"] = round(entry - risk * 2.0, 4)
+        plan["tp1"] = round(entry - risk * 2.0, 4)
+        plan["tp2"] = round(entry - risk * 3.0, 4)
+        plan["tp3"] = round(entry - risk * 4.5, 4)
     return plan
 
 def rr_metrics(plan):
@@ -5393,7 +5463,7 @@ def rr_metrics(plan):
         return {"rr1": None, "rr2": None, "ok": False, "note": "RR помилка"}
     rr1 = abs(tp1 - entry) / risk
     rr2 = abs(tp2 - entry) / risk
-    return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 1.2 or rr2 >= 1.8, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
+    return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 2.0, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
 
 def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market=None, session=None):
     """Early LONG/SHORT trigger before the move becomes a late chase.
@@ -5773,12 +5843,31 @@ def liquidity_buffer(atr, price, session=None, event_risk=None):
     # Minimum micro-buffer so stop is not exactly on the obvious level.
     return max(buffer, price * 0.0008)
 
-def estimate_liquidity_levels(price, tech):
+def min_15m_trade_distance(price, atr, session=None, event_risk=None):
+    """Minimum practical 15m distance for stop/targets.
+
+    Brent can move through tiny micro levels quickly on 15m, so the plan should
+    not use scalp-sized stops or clustered TPs.
+    """
+    atr = atr or price * 0.006
+    distance = max(atr * 1.35, price * 0.0065)
+    session_name = (session or {}).get("session", "")
+    event_level = (event_risk or {}).get("risk", "")
+
+    if session_name == "NEW YORK":
+        distance *= 1.08
+    if event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
+        distance *= 1.12
+
+    return distance
+
+def estimate_liquidity_levels(price, tech, smc=None):
     """Approximate SMC-style liquidity levels using available free data.
     Since we do not have full candle history, this estimates likely swing/liquidity zones
     from ATR and EMA15 levels.
     """
-    atr = tech.get("atr_15m") or price * 0.006
+    smc = smc or {}
+    atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
     ema20 = tech.get("ema20_15m")
     ema50 = tech.get("ema50_15m")
 
@@ -5797,6 +5886,25 @@ def estimate_liquidity_levels(price, tech):
             recent_low = min(recent_low, ema50 - atr * 0.25)
         elif ema50 > price:
             recent_high = max(recent_high, ema50 + atr * 0.25)
+
+    swing_low = safe_float(smc.get("swing_low"))
+    swing_high = safe_float(smc.get("swing_high"))
+    if swing_low:
+        recent_low = min(recent_low, swing_low)
+    if swing_high:
+        recent_high = max(recent_high, swing_high)
+
+    fvg = smc.get("fvg") if isinstance(smc.get("fvg"), dict) else {}
+    fvg_zone = fvg.get("zone")
+    if isinstance(fvg_zone, (list, tuple)) and len(fvg_zone) == 2:
+        zone_values = [safe_float(value) for value in fvg_zone]
+        zone_values = [value for value in zone_values if value is not None]
+        low_zone = min(zone_values) if zone_values else None
+        high_zone = max(zone_values) if zone_values else None
+        if fvg.get("side") == "LONG" and low_zone and high_zone and high_zone < price:
+            recent_low = min(recent_low, low_zone)
+        elif fvg.get("side") == "SHORT" and low_zone and high_zone and low_zone > price:
+            recent_high = max(recent_high, high_zone)
 
     # Wider liquidity targets.
     lower_liquidity_1 = price - atr * 1.25
@@ -5830,15 +5938,15 @@ def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
     session = session or {}
     event_risk = event_risk or {}
 
-    rr1, rr2, rr3 = 1.35, 2.15, 3.20
+    rr1, rr2, rr3 = 2.00, 3.00, 4.50
 
-    # Early reversal / watch entries are less mature, so TP1 is not too far.
+    # Early reversal / watch entries are less mature, but TP1 still must be 2R.
     if "EARLY" in st or "REVERSAL" in st or "WATCH" in st:
-        rr1, rr2, rr3 = 1.25, 2.00, 3.00
+        rr1, rr2, rr3 = 2.00, 2.80, 4.00
 
     # Strong confirmed trend gets wider expansion targets.
     if "пробій структури" in st or "BREAKOUT" in st or abs(tech.get("score", 0) or 0) >= 85:
-        rr1, rr2, rr3 = 1.50, 2.40, 3.60
+        rr1, rr2, rr3 = 2.20, 3.40, 5.00
 
     # High-impact event/news can extend moves, but keep TP1 reachable.
     if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
@@ -5856,11 +5964,11 @@ def enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3):
     """Keep TP levels separated enough to avoid tiny, clustered targets.
 
     Targets are still based on SMC/liquidity + RR, but each next TP must be at
-    least 0.45 ATR from the previous one. This prevents TP1/TP2 from being too
+    least 0.75 ATR from the previous one. This prevents TP1/TP2 from being too
     close during low-volatility or compressed liquidity conditions.
     """
     atr = atr or price * 0.006
-    min_gap = max(atr * 0.45, price * 0.0025)
+    min_gap = max(atr * 0.75, price * 0.004)
 
     if signal == "LONG":
         tp1 = max(tp1, price + min_gap)
@@ -5873,7 +5981,7 @@ def enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3):
 
     return tp1, tp2, tp3
 
-def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None):
+def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None, smc=None):
     """SMC + ATR + RR hybrid plan.
 
     Stop:
@@ -5882,38 +5990,40 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
 
     TP:
       Uses liquidity targets, but now with wider adaptive RR:
-      early/reversal: about 1.25R / 2R / 3R
-      confirmed trend: about 1.5R / 2.4R / 3.6R
+      early/reversal: at least 2R to TP1
+      confirmed trend: wider 2.2R / 3.4R / 5R
 
     This is better than pure Smart Money or pure ATR alone:
       - pure SMC levels can be too subjective or too far;
       - pure ATR can be too mechanical and too small;
       - hybrid keeps stop behind structure and targets realistic expansion.
     """
-    atr = tech.get("atr_15m") or price * 0.006
-    levels = estimate_liquidity_levels(price, tech)
+    smc = smc or {}
+    atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
+    levels = estimate_liquidity_levels(price, tech, smc)
     buffer = liquidity_buffer(atr, price, session, event_risk)
+    min_stop_distance = min_15m_trade_distance(price, atr, session, event_risk)
     rr1, rr2, rr3 = tp_rr_multipliers(signal_type, tech, session, event_risk)
 
     if signal == "LONG":
-        stop = levels["recent_low"] - buffer
-        risk = max(price - stop, atr * 0.90)
+        stop = min(levels["recent_low"] - buffer, price - min_stop_distance)
+        risk = max(price - stop, min_stop_distance)
 
         tp1 = max(levels["upper_liquidity_1"], price + risk * rr1)
         tp2 = max(levels["upper_liquidity_2"], price + risk * rr2)
         tp3 = max(levels["upper_liquidity_3"], price + risk * rr3)
 
-        note = "SMC hybrid LONG: стоп нижче liquidity/EMA-зони; TP ширші по ліквідності + adaptive RR."
+        note = f"SMC hybrid LONG: стоп нижче swing/liquidity/EMA-зони; TP від SMC-цілей + RR мінімум 1:2. SMC: {smc.get('phase', 'NO DATA')}."
 
     elif signal == "SHORT":
-        stop = levels["recent_high"] + buffer
-        risk = max(stop - price, atr * 0.90)
+        stop = max(levels["recent_high"] + buffer, price + min_stop_distance)
+        risk = max(stop - price, min_stop_distance)
 
         tp1 = min(levels["lower_liquidity_1"], price - risk * rr1)
         tp2 = min(levels["lower_liquidity_2"], price - risk * rr2)
         tp3 = min(levels["lower_liquidity_3"], price - risk * rr3)
 
-        note = "SMC hybrid SHORT: стоп вище liquidity/EMA-зони; TP ширші по ліквідності + adaptive RR."
+        note = f"SMC hybrid SHORT: стоп вище swing/liquidity/EMA-зони; TP від SMC-цілей + RR мінімум 1:2. SMC: {smc.get('phase', 'NO DATA')}."
 
     else:
         return {
@@ -5941,13 +6051,13 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         "method": "SMC HYBRID / Liquidity + ATR + Adaptive RR",
     }
 
-def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None):
+def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None, smc=None):
     """Main plan generator.
     Uses SMC-style hybrid logic:
     - Stop behind estimated liquidity/swing zone, not just random ATR.
     - TP targets use liquidity zones and minimum RR.
     """
-    return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk)
+    return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk, smc)
 
 def side_from_score(score, long_thr=15, short_thr=-15):
     if score >= long_thr:
@@ -6778,15 +6888,15 @@ def apply_expansion_targets(plan, signal, tech, market):
     if risk <= 0:
         return plan
 
-    # Wider targets in expansion/news breakout mode: 1.5R / 2.5R / 4R
+    # Wider targets in expansion/news breakout mode, with TP1 no closer than 2R.
     if signal == "LONG":
-        plan["tp1"] = round(entry + risk * 1.5, 4)
-        plan["tp2"] = round(entry + risk * 2.5, 4)
-        plan["tp3"] = round(entry + risk * 4.0, 4)
+        plan["tp1"] = round(entry + risk * 2.0, 4)
+        plan["tp2"] = round(entry + risk * 3.0, 4)
+        plan["tp3"] = round(entry + risk * 4.5, 4)
     elif signal == "SHORT":
-        plan["tp1"] = round(entry - risk * 1.5, 4)
-        plan["tp2"] = round(entry - risk * 2.5, 4)
-        plan["tp3"] = round(entry - risk * 4.0, 4)
+        plan["tp1"] = round(entry - risk * 2.0, 4)
+        plan["tp2"] = round(entry - risk * 3.0, 4)
+        plan["tp3"] = round(entry - risk * 4.5, 4)
 
     plan["expansion"] = True
     return plan
@@ -7346,7 +7456,7 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         trade_probability = counterflow_watch.get("probability", trade_probability)
         decision = counterflow_watch.get("decision", decision)
         local_warning = ""
-        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk)
+        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk, smc)
         plan = adjust_plan_for_rr(plan, signal)
         plan = apply_expansion_targets(plan, signal, raw_tech, market)
         quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
@@ -8427,7 +8537,7 @@ def main():
             risk_note = chart_context.get("note", risk_note)
             print("FORWARD CHART NO CHASE:", risk_note)
 
-    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
+    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc)
     plan = adjust_plan_for_rr(plan, signal)
     rr = rr_metrics(plan)
     chase = analyze_chase_protection(signal, tech, market)
@@ -8522,7 +8632,7 @@ def main():
             score = -abs(score) if score else -abs(technical_bias.get("score", 0))
         else:
             score = 0
-        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk)
+        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc)
         plan = adjust_plan_for_rr(plan, signal)
         plan = apply_expansion_targets(plan, signal, tech, market)
         rr = rr_metrics(plan)
@@ -8627,9 +8737,16 @@ def main():
         final_decision=final_decision
     )
 
+    message = apply_position_follow_header(message, signal_memory, tv["price"], tech)
+
     show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
-    position_note = position_follow_note(signal_memory, tv["price"], tech) if "position_follow_note" in globals() else ""
-    if show_memory_in_telegram and position_note and position_note not in message:
+    position_trade = last_actionable_trade(signal_memory)
+    position_active = bool(
+        position_trade
+        and market_supports_position(position_trade.get("signal"), tv["price"], position_trade, tech)
+    )
+    position_note = position_follow_note(signal_memory, tv["price"], tech) if position_active else ""
+    if position_note and position_note not in message:
         message = message.strip() + "\n\n" + position_note
 
     if show_memory_in_telegram and previous_signal_note and previous_signal_note not in message:
@@ -8687,6 +8804,8 @@ def main():
             quality_percent=current_quality_percent,
             plan=plan,
             tech=tech,
+            entry_status=final_decision.get("entry_status"),
+            entry_side=final_decision.get("entry_side"),
         )
     )
     save_signal_memory(updated_memory)
