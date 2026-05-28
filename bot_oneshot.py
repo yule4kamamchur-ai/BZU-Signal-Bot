@@ -8114,6 +8114,24 @@ def simplified_chart_entry_text(signal, entry_watch=None, chart_context=None, tv
     )
 
 
+def confirmed_chart_entry_text(signal, entry_watch=None, chart_context=None, tv=None):
+    entry_watch = entry_watch or {}
+    chart_context = chart_context or {}
+    price = safe_float((tv or {}).get("price"))
+    trigger = safe_float(entry_watch.get("trigger")) or safe_float(chart_context.get("trigger"))
+    retest = safe_float(entry_watch.get("retest"))
+
+    if not trigger and price:
+        trigger = price + abs(price) * 0.0015 if signal == "LONG" else price - abs(price) * 0.0015
+    if not retest and price:
+        retest = price - abs(price) * 0.0025 if signal == "LONG" else price + abs(price) * 0.0025
+
+    return (
+        f"ціна закріпилась {fnum(trigger)}, або ціна протестувала {fnum(trigger)}, "
+        f"або відбувся відкат до {fnum(retest)}"
+    )
+
+
 def simplified_plan_entry_text(plan, signal, tv=None):
     plan = plan if isinstance(plan, dict) else {}
     entry = safe_float(plan.get("entry")) or safe_float((tv or {}).get("price"))
@@ -8125,6 +8143,21 @@ def simplified_plan_entry_text(plan, signal, tv=None):
     if tp1 is not None:
         parts.append(f"TP1: {fnum(tp1)}")
     return " | ".join(parts)
+
+
+def confirmed_plan_text(plan, tv=None):
+    plan = plan if isinstance(plan, dict) else {}
+    entry = safe_float(plan.get("entry")) or safe_float((tv or {}).get("price"))
+    stop = safe_float(plan.get("stop"))
+    tp1 = safe_float(plan.get("tp1"))
+    tp2 = safe_float(plan.get("tp2"))
+    tp3 = safe_float(plan.get("tp3"))
+    return (
+        f"Вхід: {fnum(entry)} | Стоп: {fnum(stop) if stop is not None else '—'} | "
+        f"TP1: {fnum(tp1) if tp1 is not None else '—'} | "
+        f"TP2: {fnum(tp2) if tp2 is not None else '—'} | "
+        f"TP3: {fnum(tp3) if tp3 is not None else '—'}"
+    )
 
 
 def simplified_low_quality_message(tv, signal, trade_probability, status_text, market_text, quality_text, reasons, tech, plan, entry_watch, chart_context, event_risk):
@@ -8167,6 +8200,25 @@ def simplified_low_quality_message(tv, signal, trade_probability, status_text, m
     else:
         return ""
 
+    if news_warning:
+        lines.append(news_warning)
+    return "\n".join(lines).strip()
+
+
+def simplified_confirmed_entry_message(tv, signal, trade_probability, market_text, quality_text, reasons, plan, entry_watch, chart_context, event_risk):
+    if signal not in ["LONG", "SHORT"] or trade_probability is None or trade_probability < 65:
+        return ""
+
+    lines = [
+        f"<b>ВХІД Є</b> — {signal}",
+        f"<b>Ринок:</b> {market_text}",
+        f"<b>Якість входу:</b> {quality_text}",
+        f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}%",
+        f"<b>Графік:</b> {confirmed_chart_entry_text(signal, entry_watch, chart_context, tv)}",
+        f"<b>План:</b> {confirmed_plan_text(plan, tv)}",
+        f"<b>Причини:</b> " + " | ".join(reasons or []),
+    ]
+    news_warning = pre_news_warning_text(event_risk)
     if news_warning:
         lines.append(news_warning)
     return "\n".join(lines).strip()
@@ -8289,6 +8341,21 @@ def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan,
     )
     if simplified:
         return simplified
+
+    confirmed = simplified_confirmed_entry_message(
+        tv=tv,
+        signal=signal,
+        trade_probability=trade_probability,
+        market_text=market_text,
+        quality_text=quality_text,
+        reasons=reasons,
+        plan=plan,
+        entry_watch=entry_watch,
+        chart_context=chart_context,
+        event_risk=event_risk,
+    )
+    if confirmed:
+        return confirmed
 
     lines = [
         "<b>📊 BZU SIGNAL BOT</b>",
