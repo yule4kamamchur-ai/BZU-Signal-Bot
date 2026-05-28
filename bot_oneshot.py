@@ -1125,8 +1125,6 @@ def market_supports_position(side, current_price, trade, tech=None, smc=None, or
     stop = safe_float((trade or {}).get("stop"))
     if not side or not entry:
         return False
-    if position_break_reasons(side, current_price, trade, tech, smc, orderflow):
-        return False
 
     micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
     micro_state = micro.get("state", "")
@@ -1136,19 +1134,23 @@ def market_supports_position(side, current_price, trade, tech=None, smc=None, or
     if side == "LONG":
         if stop is not None and current_price <= stop:
             return False
-        if trend_15m == "DOWN" and trend_1h == "DOWN":
-            return False
         if current_price >= entry:
             return True
+        if position_break_reasons(side, current_price, trade, tech, smc, orderflow):
+            return False
+        if trend_15m == "DOWN" and trend_1h == "DOWN":
+            return False
         return micro_state == "LONG_STRENGTHENING" or trend_15m == "UP"
 
     if side == "SHORT":
         if stop is not None and current_price >= stop:
             return False
-        if trend_15m == "UP" and trend_1h == "UP":
-            return False
         if current_price <= entry:
             return True
+        if position_break_reasons(side, current_price, trade, tech, smc, orderflow):
+            return False
+        if trend_15m == "UP" and trend_1h == "UP":
+            return False
         return micro_state == "SHORT_STRENGTHENING" or trend_15m == "DOWN"
 
     return False
