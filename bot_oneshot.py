@@ -6218,30 +6218,36 @@ def risk_15m_bounds(price, atr, session=None, event_risk=None):
     """Practical 15m risk bounds.
 
     SMC gives invalidation zones, but with 10x leverage a far swing can make the
-    loss too large. Keep the stop technical, but cap the absolute risk so the
-    trade remains a 15m/intraday setup.
+    loss too large. Keep the stop technical, but also avoid tiny scalp stops.
+    Target scale: entry 90 -> stop not farther than about 88.5, and TP1 not
+    closer than about 93. Technicals may tighten the stop, but TP1 remains a
+    minimum target.
     """
     atr = atr or price * 0.006
-    min_distance = max(atr * 0.55, price * 0.0028)
-    max_distance = max(atr * 1.05, price * 0.0055)
+    min_stop_distance = max(atr * 0.55, price * 0.006)
+    max_stop_distance = max(atr * 1.00, price * 0.0167)
+    min_tp1_distance = max_stop_distance * 2.0
     session_name = (session or {}).get("session", "")
     event_level = (event_risk or {}).get("risk", "")
 
     if session_name == "NEW YORK":
-        min_distance *= 1.05
-        max_distance *= 1.08
+        min_stop_distance *= 1.05
+        max_stop_distance *= 1.08
+        min_tp1_distance *= 1.08
     if event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        min_distance *= 1.08
-        max_distance *= 1.12
+        min_stop_distance *= 1.08
+        max_stop_distance *= 1.12
+        min_tp1_distance *= 1.12
 
-    return min_distance, max_distance
+    return min_stop_distance, max_stop_distance, min_tp1_distance
 
-def estimate_liquidity_levels(price, tech, smc=None):
+def estimate_liquidity_levels(price, tech, smc=None, orderflow=None):
     """Approximate SMC-style liquidity levels using available free data.
     Since we do not have full candle history, this estimates likely swing/liquidity zones
     from ATR and EMA15 levels.
     """
     smc = smc or {}
+    orderflow = orderflow or {}
     atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
     ema20 = tech.get("ema20_15m")
     ema50 = tech.get("ema50_15m")
@@ -6280,6 +6286,14 @@ def estimate_liquidity_levels(price, tech, smc=None):
             recent_low = min(recent_low, low_zone)
         elif fvg.get("side") == "SHORT" and low_zone and high_zone and low_zone > price:
             recent_high = max(recent_high, high_zone)
+
+    book = orderflow.get("order_book") if isinstance(orderflow.get("order_book"), dict) else {}
+    wall_price = safe_float(book.get("accumulation_price"))
+    wall_side = book.get("accumulation_side", "NEUTRAL")
+    if wall_price and wall_side == "LONG" and wall_price < price:
+        recent_low = min(recent_low, wall_price - atr * 0.15)
+    elif wall_price and wall_side == "SHORT" and wall_price > price:
+        recent_high = max(recent_high, wall_price + atr * 0.15)
 
     # Wider liquidity targets.
     lower_liquidity_1 = price - atr * 1.25
@@ -6356,7 +6370,7 @@ def enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3):
 
     return tp1, tp2, tp3
 
-def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None, smc=None):
+def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None, smc=None, orderflow=None):
     """SMC + ATR + RR hybrid plan.
 
     Stop:
@@ -6375,9 +6389,10 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
     """
     smc = smc or {}
     atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
-    levels = estimate_liquidity_levels(price, tech, smc)
+    orderflow = orderflow or {}
+    levels = estimate_liquidity_levels(price, tech, smc, orderflow)
     buffer = liquidity_buffer(atr, price, session, event_risk)
-    min_stop_distance, max_stop_distance = risk_15m_bounds(price, atr, session, event_risk)
+    min_stop_distance, max_stop_distance, min_tp1_distance = risk_15m_bounds(price, atr, session, event_risk)
     rr1, rr2, rr3 = tp_rr_multipliers(signal_type, tech, session, event_risk)
 
     if signal == "LONG":
@@ -6386,12 +6401,13 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         stop_distance = min(max(raw_risk, min_stop_distance), max_stop_distance)
         stop = price - stop_distance
         risk = max(price - stop, min_stop_distance)
+        min_tp1 = price + min_tp1_distance
 
-        tp1 = max(levels["upper_liquidity_1"], price + risk * rr1)
-        tp2 = max(levels["upper_liquidity_2"], price + risk * rr2)
-        tp3 = max(levels["upper_liquidity_3"], price + risk * rr3)
+        tp1 = max(levels["upper_liquidity_1"], price + risk * rr1, min_tp1)
+        tp2 = max(levels["upper_liquidity_2"], price + risk * rr2, tp1 + risk)
+        tp3 = max(levels["upper_liquidity_3"], price + risk * rr3, tp2 + risk * 1.5)
 
-        note = f"15m SMC LONG: стоп за ближчою invalidation-зоною з лімітом ризику; TP від RR 1:2 і SMC-цілей. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
+        note = f"15m SMC LONG: стоп технічний, але не далі максимуму ризику; TP1 не ближче мінімальної цілі 1:2 від максимуму. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
 
     elif signal == "SHORT":
         raw_smc_stop = levels["recent_high"] + buffer
@@ -6399,12 +6415,13 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         stop_distance = min(max(raw_risk, min_stop_distance), max_stop_distance)
         stop = price + stop_distance
         risk = max(stop - price, min_stop_distance)
+        min_tp1 = price - min_tp1_distance
 
-        tp1 = min(levels["lower_liquidity_1"], price - risk * rr1)
-        tp2 = min(levels["lower_liquidity_2"], price - risk * rr2)
-        tp3 = min(levels["lower_liquidity_3"], price - risk * rr3)
+        tp1 = min(levels["lower_liquidity_1"], price - risk * rr1, min_tp1)
+        tp2 = min(levels["lower_liquidity_2"], price - risk * rr2, tp1 - risk)
+        tp3 = min(levels["lower_liquidity_3"], price - risk * rr3, tp2 - risk * 1.5)
 
-        note = f"15m SMC SHORT: стоп за ближчою invalidation-зоною з лімітом ризику; TP від RR 1:2 і SMC-цілей. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
+        note = f"15m SMC SHORT: стоп технічний, але не далі максимуму ризику; TP1 не ближче мінімальної цілі 1:2 від максимуму. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
 
     else:
         return {
@@ -6418,6 +6435,10 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         }
 
     tp1, tp2, tp3 = enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3)
+    actual_risk = abs(price - stop)
+    actual_rr1 = abs(tp1 - price) / actual_risk if actual_risk else rr1
+    actual_rr2 = abs(tp2 - price) / actual_risk if actual_risk else rr2
+    actual_rr3 = abs(tp3 - price) / actual_risk if actual_risk else rr3
 
     return {
         "entry": round(price, 4),
@@ -6425,20 +6446,20 @@ def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_
         "tp1": round(tp1, 4),
         "tp2": round(tp2, 4),
         "tp3": round(tp3, 4),
-        "rr1": rr1,
-        "rr2": rr2,
-        "rr3": rr3,
+        "rr1": round(actual_rr1, 2),
+        "rr2": round(actual_rr2, 2),
+        "rr3": round(actual_rr3, 2),
         "note": note,
         "method": "SMC HYBRID / Liquidity + ATR + Adaptive RR",
     }
 
-def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None, smc=None):
+def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None, smc=None, orderflow=None):
     """Main plan generator.
     Uses SMC-style hybrid logic:
     - Stop behind estimated liquidity/swing zone, not just random ATR.
     - TP targets use liquidity zones and minimum RR.
     """
-    return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk, smc)
+    return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk, smc, orderflow)
 
 def side_from_score(score, long_thr=15, short_thr=-15):
     if score >= long_thr:
@@ -7837,7 +7858,7 @@ def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, te
         trade_probability = counterflow_watch.get("probability", trade_probability)
         decision = counterflow_watch.get("decision", decision)
         local_warning = ""
-        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk, smc)
+        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk, smc, orderflow)
         plan = adjust_plan_for_rr(plan, signal)
         plan = apply_expansion_targets(plan, signal, raw_tech, market)
         quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
@@ -9093,7 +9114,7 @@ def main():
             risk_note = chart_context.get("note", risk_note)
             print("FORWARD CHART NO CHASE:", risk_note)
 
-    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc)
+    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc, orderflow)
     plan = adjust_plan_for_rr(plan, signal)
     rr = rr_metrics(plan)
     chase = analyze_chase_protection(signal, tech, market)
@@ -9188,7 +9209,7 @@ def main():
             score = -abs(score) if score else -abs(technical_bias.get("score", 0))
         else:
             score = 0
-        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc)
+        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc, orderflow)
         plan = adjust_plan_for_rr(plan, signal)
         plan = apply_expansion_targets(plan, signal, tech, market)
         rr = rr_metrics(plan)
