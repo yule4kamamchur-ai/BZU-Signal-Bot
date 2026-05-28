@@ -1232,6 +1232,24 @@ def liquidity_caution_text(side, trade, smc=None, orderflow=None):
     return base
 
 
+def order_book_follow_text(book):
+    book = book or {}
+    price = safe_float(book.get("accumulation_price"))
+    side = book.get("accumulation_side", "NEUTRAL")
+    bias = book.get("bias", "NEUTRAL")
+    imbalance = book.get("imbalance_pct", 0)
+
+    if price and side == "LONG":
+        return f"підтримка LONG біля {round(price, 4)}"
+    if price and side == "SHORT":
+        return f"опір SHORT біля {round(price, 4)}"
+    if bias == "LONG":
+        return f"перевага покупців ({imbalance}%)"
+    if bias == "SHORT":
+        return f"перевага продавців ({imbalance}%)"
+    return "без чіткої переваги"
+
+
 def build_position_follow_message(tv, memory, tech, news, event_risk, smc, orderflow):
     trade = last_actionable_trade(memory)
     if not trade:
@@ -1252,9 +1270,6 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
     leveraged_pct = result_pct * leverage
     news_side, _ = news_verdict(news or {})
     book = (orderflow or {}).get("order_book") or {}
-    book_side = book.get("bias", "NEUTRAL")
-    book_price = book.get("accumulation_price")
-    book_wall = book.get("wall") or "накопичення не видно"
     micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
     micro_side = micro.get("bias", "NEUTRAL")
 
@@ -1264,6 +1279,7 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
         "<b>📊 BZU SIGNAL BOT</b>",
         f"<b>СУПРОВІД {side}</b> — {recommendation}",
         "",
+        f"<b>Поточна ціна:</b> {round(current_price, 4)}",
         f"<b>Результат:</b> {round(result_pct, 3)}% по ціні (~{round(leveraged_pct, 2)}% з {int(leverage)}x)",
         f"<b>Позиція:</b> Вхід {round(entry, 4)} | Стоп {round(stop, 4) if stop else '—'} | TP1 {round(tp1, 4) if tp1 else '—'} | TP2 {round(tp2, 4) if tp2 else '—'} | TP3 {round(tp3, 4) if tp3 else '—'}",
         f"<b>Новини:</b> {follow_side_word(news_side)} ({(news or {}).get('score', 0)})",
@@ -1271,7 +1287,7 @@ def build_position_follow_message(tv, memory, tech, news, event_risk, smc, order
         f"<b>15 хв:</b> {timeframe_side_text((tech or {}).get('trend_15m'))}",
         f"<b>1 година:</b> {timeframe_side_text((tech or {}).get('trend_1h'))}",
         f"<b>Структура:</b> {smc_side_text(smc)} — {(smc or {}).get('phase', 'NO DATA')}",
-        f"<b>Стакан:</b> {follow_side_word(book_side)}; {book_wall}" + (f"; накопичення {book_price}" if book_price else ""),
+        f"<b>Стакан:</b> {order_book_follow_text(book)}",
         f"<b>Зона ліквідності:</b> {liquidity_caution_text(side, trade, smc, orderflow)}",
         f"<b>Стоп у б/у:</b> {breakeven_note(side, current_price, trade)}",
     ]
