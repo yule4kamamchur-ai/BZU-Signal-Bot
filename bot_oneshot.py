@@ -4636,10 +4636,11 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
     bars_since_high = local_move.get("bars_since_high")
     bars_since_low = local_move.get("bars_since_low")
     local_short_rejection = (
-        local_move.get("pullback_after_pump")
+        (local_move.get("pullback_after_pump") and not local_move.get("bounce_after_dump"))
         or (
             local_move.get("available")
             and local_from_high <= -0.35
+            and not local_move.get("bounce_after_dump")
             and bars_since_high is not None
             and 1 <= bars_since_high <= 24
             and (
@@ -4651,10 +4652,11 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         )
     )
     local_long_reclaim = (
-        local_move.get("bounce_after_dump")
+        (local_move.get("bounce_after_dump") and not local_move.get("pullback_after_pump"))
         or (
             local_move.get("available")
             and local_from_low >= 0.35
+            and not local_move.get("pullback_after_pump")
             and bars_since_low is not None
             and 1 <= bars_since_low <= 24
             and (
@@ -4746,11 +4748,33 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         or (local_trigger and confirmation >= 2)
         or (local_support and micro_support and (smc_support or flow_support))
     )
+    if fresh_break:
+        trigger_event = (
+            f"ціна закрилась вище {round(trigger_level, 4)}"
+            if side == "LONG"
+            else f"ціна закрилась нижче {round(trigger_level, 4)}"
+        )
+    elif retest_ok:
+        trigger_event = (
+            f"ціна протестувала {round(trigger_level, 4)} і втрималась вище"
+            if side == "LONG"
+            else f"ціна протестувала {round(trigger_level, 4)} як опір і лишилась нижче"
+        )
+    elif local_trigger:
+        trigger_event = (
+            f"ціна оновила локальний high {round(recent_high, 4)}"
+            if side == "LONG"
+            else f"ціна оновила локальний low {round(recent_low, 4)}"
+        )
+    elif local_support:
+        trigger_event = local_move.get("note", "локальна структура підтвердила напрям")
+    else:
+        trigger_event = "тригер ще не підтверджений"
 
     if new_structure and confirmation >= 2:
         stage = "TRIGGER"
         status = f"Графік: ранній {simple_direction_word(side)} — тригер є"
-        note = "нова база/ретест або локальний відкат + підтвердження 3m/SMC/потоку"
+        note = trigger_event
         quality_bonus = 8
         late_override = True
         no_chase = False
@@ -4795,6 +4819,7 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
         "late_override": late_override,
         "no_chase": no_chase,
         "new_structure": new_structure,
+        "trigger_event": trigger_event,
     }
 
 def chart_context_message(chart_context):
@@ -5075,6 +5100,7 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
     micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
     micro_bias = micro.get("bias", "NEUTRAL")
+    micro_state = micro.get("state", "RANGE")
     local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
     local_from_high = local_move.get("from_high_pct", 0) or 0
     local_from_low = local_move.get("from_low_pct", 0) or 0
@@ -5092,6 +5118,16 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
     )
 
     if signal == "LONG":
+        long_rebound_against = local_move.get("pullback_after_pump") or micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"]
+        strong_long_continuation = (
+            bos == "пробій структури LONG"
+            and order_score >= 15
+            and trend_5m == "UP"
+            and trend_15m == "UP"
+        )
+        if long_rebound_against and not strong_long_continuation:
+            return min(trade_probability, 54)
+
         strong_against = (
             tech_score <= -55
             or bos == "пробій структури SHORT"
@@ -5124,6 +5160,16 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = max(trade_probability, 66)
 
     elif signal == "SHORT":
+        short_rebound_against = local_move.get("bounce_after_dump") or micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"]
+        strong_short_continuation = (
+            bos == "пробій структури SHORT"
+            and order_score <= -15
+            and trend_5m == "DOWN"
+            and trend_15m == "DOWN"
+        )
+        if short_rebound_against and not strong_short_continuation:
+            return min(trade_probability, 54)
+
         strong_against = (
             tech_score >= 55
             or bos == "пробій структури LONG"
@@ -5155,6 +5201,8 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             trade_probability = max(trade_probability, 76)
         if news_ok and local_short_confirmed:
             trade_probability = max(trade_probability, 66)
+        if short_rebound_against:
+            trade_probability = min(trade_probability, 64)
 
     return min(trade_probability, 82)
 
@@ -8523,16 +8571,21 @@ def confirmed_chart_entry_text(signal, entry_watch=None, chart_context=None, tv=
     price = safe_float((tv or {}).get("price"))
     trigger = safe_float(entry_watch.get("trigger")) or safe_float(chart_context.get("trigger"))
     retest = safe_float(entry_watch.get("retest"))
+    trigger_event = chart_context.get("trigger_event") or chart_context.get("note")
+
+    if trigger_event and "ще не підтверджений" not in str(trigger_event):
+        return str(trigger_event)
 
     if not trigger and price:
         trigger = price + abs(price) * 0.0015 if signal == "LONG" else price - abs(price) * 0.0015
     if not retest and price:
         retest = price - abs(price) * 0.0025 if signal == "LONG" else price + abs(price) * 0.0025
 
-    return (
-        f"ціна закріпилась {fnum(trigger)}, або ціна протестувала {fnum(trigger)}, "
-        f"або відбувся відкат до {fnum(retest)}"
-    )
+    if signal == "LONG":
+        return f"для LONG потрібне закріплення вище {fnum(trigger)} або ретест біля {fnum(retest)}"
+    if signal == "SHORT":
+        return f"для SHORT потрібне закріплення нижче {fnum(trigger)} або ретест біля {fnum(retest)}"
+    return "тригер графіка не визначений"
 
 
 def simplified_plan_entry_text(plan, signal, tv=None):
