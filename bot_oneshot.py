@@ -1930,17 +1930,25 @@ def analyze_local_price_move(candles, price=None, lookback=32):
     prev2 = sum(closes[-4:-2]) / 2 if len(closes) >= 4 else closes[0]
     local_momentum = "DOWN" if last4 < prev4 else "UP" if last4 > prev4 else "FLAT"
     fast_local_momentum = "UP" if last2 > prev2 else "DOWN" if last2 < prev2 else "FLAT"
-
-    bounce_after_dump = (
+    bounced_from_post_high_low = (
         from_high_pct <= -0.60
         and bounce_from_post_high_low_pct >= 0.18
-        and 1 <= bars_since_post_high_low <= 10
+        and 1 <= bars_since_post_high_low <= 14
+    )
+    pulled_back_from_post_low_high = (
+        from_low_pct >= 0.60
+        and pullback_from_post_low_high_pct <= -0.18
+        and 1 <= bars_since_post_low_high <= 14
+    )
+
+    bounce_after_dump = (
+        bounced_from_post_high_low
+        and bars_since_post_high_low <= 10
         and fast_local_momentum == "UP"
     )
     pullback_after_pump = (
-        from_low_pct >= 0.60
-        and pullback_from_post_low_high_pct <= -0.18
-        and 1 <= bars_since_post_low_high <= 10
+        pulled_back_from_post_low_high
+        and bars_since_post_low_high <= 10
         and fast_local_momentum == "DOWN"
     )
 
@@ -1949,6 +1957,18 @@ def analyze_local_price_move(candles, price=None, lookback=32):
         note = f"відскок від low {round(post_high_low, 4)} після дампу на {round(bounce_from_post_high_low_pct, 3)}%"
     elif pullback_after_pump:
         note = f"відкат від high {round(post_low_high, 4)} після росту на {round(abs(pullback_from_post_low_high_pct), 3)}%"
+    elif bounced_from_post_high_low:
+        note = (
+            f"після падіння від high {round(recent_high, 4)} ціна вже відбилась від low "
+            f"{round(post_high_low, 4)} на {round(bounce_from_post_high_low_pct, 3)}%; "
+            "це не свіжий SHORT-відкат"
+        )
+    elif pulled_back_from_post_low_high:
+        note = (
+            f"після росту від low {round(recent_low, 4)} ціна вже відкотилась від high "
+            f"{round(post_low_high, 4)} на {round(abs(pullback_from_post_low_high_pct), 3)}%; "
+            "це не свіжий LONG-відскок"
+        )
     elif from_high_pct <= -0.35 and bars_since_high >= 1:
         note = f"відкат від локального high {round(recent_high, 4)} на {round(abs(from_high_pct), 3)}%"
     elif from_low_pct >= 0.35 and bars_since_low >= 1:
@@ -1970,6 +1990,8 @@ def analyze_local_price_move(candles, price=None, lookback=32):
         "bars_since_post_low_high": bars_since_post_low_high,
         "local_momentum": local_momentum,
         "fast_local_momentum": fast_local_momentum,
+        "bounced_from_post_high_low": bounced_from_post_high_low,
+        "pulled_back_from_post_low_high": pulled_back_from_post_low_high,
         "bounce_after_dump": bounce_after_dump,
         "pullback_after_pump": pullback_after_pump,
         "note": note,
@@ -2015,6 +2037,10 @@ def local_move_direction(local_move):
         return "LONG"
     if local_move.get("pullback_after_pump"):
         return "SHORT"
+    if local_move.get("bounced_from_post_high_low"):
+        return "LONG" if local_move.get("fast_local_momentum") == "UP" else "NEUTRAL"
+    if local_move.get("pulled_back_from_post_low_high"):
+        return "SHORT" if local_move.get("fast_local_momentum") == "DOWN" else "NEUTRAL"
     if from_high <= -0.35 and bars_since_high is not None and bars_since_high >= 1 and momentum == "DOWN":
         return "SHORT"
     if from_low >= 0.35 and bars_since_low is not None and bars_since_low >= 1 and momentum == "UP":
@@ -4826,11 +4852,12 @@ def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_ris
     bars_since_high = local_move.get("bars_since_high")
     bars_since_low = local_move.get("bars_since_low")
     local_short_rejection = (
-        ((local_move.get("pullback_after_pump") or fast_pullback_after_pump) and not local_move.get("bounce_after_dump") and not fast_bounce_after_dump)
+        ((local_move.get("pullback_after_pump") or fast_pullback_after_pump) and not local_move.get("bounce_after_dump") and not local_move.get("bounced_from_post_high_low") and not fast_bounce_after_dump)
         or (
             local_move.get("available")
             and local_from_high <= -0.35
             and not local_move.get("bounce_after_dump")
+            and not local_move.get("bounced_from_post_high_low")
             and not fast_bounce_after_dump
             and bars_since_high is not None
             and 1 <= bars_since_high <= 24
@@ -5349,8 +5376,8 @@ def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, e
             )
         )
     )
-    effective_bounce_after_dump = bool(local_move.get("bounce_after_dump") or fast_bounce_after_dump)
-    effective_pullback_after_pump = bool(local_move.get("pullback_after_pump") or fast_pullback_after_pump)
+    effective_bounce_after_dump = bool(local_move.get("bounce_after_dump") or local_move.get("bounced_from_post_high_low") or fast_bounce_after_dump)
+    effective_pullback_after_pump = bool(local_move.get("pullback_after_pump") or local_move.get("pulled_back_from_post_low_high") or fast_pullback_after_pump)
     local_short_confirmed = (
         (effective_pullback_after_pump or (local_move.get("available") and local_from_high <= -0.35))
         and not effective_bounce_after_dump
