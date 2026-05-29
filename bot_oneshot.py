@@ -263,7 +263,7 @@ def load_state():
         state["active_trade"] = None
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
-    state["version"] = "pro-v2"
+    state["version"] = "pro-v2-intraday-architecture"
     return state
 
 
@@ -275,7 +275,7 @@ def save_state(state):
 
 def load_journal():
     journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
-    journal["version"] = "pro-v2"
+    journal["version"] = "pro-v2-intraday-architecture"
     if "trades" not in journal or not isinstance(journal["trades"], list):
         journal["trades"] = []
     if "signals" not in journal or not isinstance(journal["signals"], list):
@@ -1011,12 +1011,12 @@ def analyze_cvd(trades, candles_3m, price, previous_snapshot=None):
 
 
 def analyze_clusters(trades, book, price):
-    """Cluster / footprint proxy from public trades and order book.
+    """Lightweight cluster / footprint proxy for intraday BZ trading.
 
-    Real cluster charts require tick/footprint data. This proxy groups recent
-    trades into price bins near current price and detects aggressive imbalance
-    zones. It helps avoid entering into absorption walls and finds zones where
-    buyers/sellers clearly defended price.
+    Important: this is NOT a real footprint chart. It uses public OKX trades and
+    the order book as a local microstructure hint. Therefore clusters are a
+    small helper, not a trade blocker. They can warn about a local buyer/seller,
+    but they must not overrule 15m structure, 3m trigger, CVD, or OI.
     """
     if not trades or not price:
         return {"bias": "NEUTRAL", "score": 0, "state": "NO DATA", "zones": [], "note": "кластерних даних мало"}
@@ -1057,22 +1057,23 @@ def analyze_clusters(trades, book, price):
     if top:
         below = top["price"] <= price
         imb = top["imbalance_pct"]
+        # Cluster influence is intentionally capped. It is a warning/helper.
         if below and imb > 0:
-            score += 14
-            state = "BUY_CLUSTER_SUPPORT"
-            notes.append(f"buy-кластер підтримки біля {top['price']}")
+            score += 5
+            state = "LOCAL_BUYER_SUPPORT"
+            notes.append(f"локальний покупець біля {top['price']}")
         elif (not below) and imb < 0:
-            score -= 14
-            state = "SELL_CLUSTER_RESISTANCE"
-            notes.append(f"sell-кластер опору біля {top['price']}")
+            score -= 5
+            state = "LOCAL_SELLER_RESISTANCE"
+            notes.append(f"локальний продавець біля {top['price']}")
         elif below and imb < 0:
-            score -= 8
-            state = "SELL_PRESSURE_BELOW"
-            notes.append("продажі нижче ціни — слабкість")
+            score -= 3
+            state = "LOCAL_SELL_PRESSURE_BELOW"
+            notes.append("локальні продажі нижче ціни")
         elif (not below) and imb > 0:
-            score += 8
-            state = "BUY_PRESSURE_ABOVE"
-            notes.append("покупки вище ціни — імпульсний попит")
+            score += 3
+            state = "LOCAL_BUY_PRESSURE_ABOVE"
+            notes.append("локальні покупки вище ціни")
 
     bids = (book or {}).get("bids") or []
     asks = (book or {}).get("asks") or []
@@ -1081,27 +1082,27 @@ def analyze_clusters(trades, book, price):
         ask_wall = max(asks[:15], key=lambda x: x[1], default=None)
         if bid_wall and ask_wall:
             if bid_wall[1] > ask_wall[1] * 2:
-                score += 5
-                notes.append(f"стінка покупців {round_price(bid_wall[0])}")
+                score += 2
+                notes.append(f"bid-стіна {round_price(bid_wall[0])}")
             elif ask_wall[1] > bid_wall[1] * 2:
-                score -= 5
-                notes.append(f"стінка продавців {round_price(ask_wall[0])}")
+                score -= 2
+                notes.append(f"ask-стіна {round_price(ask_wall[0])}")
 
-    if score >= 10:
+    score = max(-8, min(8, int(score)))
+    if score >= 5:
         bias = "LONG"
-    elif score <= -10:
+    elif score <= -5:
         bias = "SHORT"
     else:
         bias = "NEUTRAL"
 
     return {
         "bias": bias,
-        "score": int(score),
+        "score": score,
         "state": state,
         "zones": zones[:3],
         "note": "; ".join(notes[:3]) if notes else "кластери без явної переваги",
     }
-
 
 def analyze_derivatives(open_interest, funding, price, previous_snapshot=None):
     previous_snapshot = previous_snapshot or {}
@@ -1582,19 +1583,22 @@ def build_context(data, state=None):
     price = price or safe_float(tf15.get("close"))
     atr15 = safe_float(structure.get("atr")) or safe_float(tf15.get("atr")) or (price or 90) * 0.006
 
+    # Intraday architecture for trades lasting a few hours:
+    # 15m/structure/3m are the engine. CVD and OI confirm quality.
+    # 4H is only a background hint; clusters are only a local warning.
     tech_score = (
-        tf4h.get("score", 0) * 1.25
-        + tf1h.get("score", 0) * 0.95
-        + tf15.get("score", 0) * 1.05
-        + tf3.get("score", 0) * 0.50
-        + structure.get("score", 0) * 1.00
-        + flow.get("score", 0) * 0.45
-        + cvd.get("score", 0) * 0.85
-        + clusters.get("score", 0) * 0.70
-        + derivatives.get("score", 0) * 0.95
-        + liquidity.get("score", 0) * 0.75
+        tf15.get("score", 0) * 1.35
+        + structure.get("score", 0) * 1.20
+        + tf3.get("score", 0) * 0.95
+        + tf1h.get("score", 0) * 0.65
+        + cvd.get("score", 0) * 0.80
+        + derivatives.get("score", 0) * 0.60
+        + liquidity.get("score", 0) * 0.70
+        + flow.get("score", 0) * 0.30
+        + clusters.get("score", 0) * 0.25
+        + tf4h.get("score", 0) * 0.18
     )
-    total_score = tech_score + news.get("score", 0) * 0.35 + calendar.get("score", 0) + session.get("score", 0)
+    total_score = tech_score + news.get("score", 0) * 0.30 + calendar.get("score", 0) + session.get("score", 0)
 
     if total_score >= 42:
         bias = "LONG"
@@ -1626,7 +1630,6 @@ def build_context(data, state=None):
         "total_score": int(total_score),
         "bias": bias,
     }
-
 
 def side_score(value, side):
     if side == "LONG":
@@ -1692,10 +1695,11 @@ def entry_confirmations(side, context):
     if calendar.get("active"):
         conflicts.append("важлива новина у найближчу годину")
 
-    if tf4h.get("bias") == side:
-        confirmations.append("4h старший тренд підтримує")
-    elif tf4h.get("bias") == opposite(side):
-        conflicts.append("4h старший тренд проти")
+    # 4H is deliberately NOT a hard conflict for this intraday bot.
+    if tf4h.get("bias") == side and abs(tf4h.get("score", 0)) >= 30:
+        confirmations.append("4h фон підтримує")
+    elif tf4h.get("bias") == opposite(side) and abs(tf4h.get("score", 0)) >= 45:
+        conflicts.append("4h фон проти")
 
     if tf15.get("bias") == side:
         confirmations.append("15m за напрямом")
@@ -1717,20 +1721,10 @@ def entry_confirmations(side, context):
     elif structure.get("bias") == opposite(side):
         conflicts.append("структура проти")
 
-    if flow.get("bias") == side:
-        confirmations.append("угоди/стакан підтримують")
-    elif flow.get("bias") == opposite(side):
-        conflicts.append("потік проти")
-
     if cvd.get("bias") == side:
-        confirmations.append("CVD підтверджує агресію")
+        confirmations.append("CVD підтверджує")
     elif cvd.get("bias") == opposite(side):
         conflicts.append("CVD проти")
-
-    if clusters.get("bias") == side:
-        confirmations.append("кластери підтримують")
-    elif clusters.get("bias") == opposite(side):
-        conflicts.append("кластери проти")
 
     if derivatives.get("bias") == side:
         confirmations.append("OI/Funding підтримує")
@@ -1744,13 +1738,26 @@ def entry_confirmations(side, context):
     if side in liquidity.get("blocks", []):
         conflicts.append("після зняття ліквідності цей напрям не доганяти")
 
+    # Flow and clusters are micro-hints, not blockers.
+    if flow.get("bias") == side:
+        confirmations.append("потік підтримує")
+    elif flow.get("bias") == opposite(side):
+        conflicts.append("потік локально проти")
+
+    if clusters.get("bias") == side:
+        confirmations.append("кластери локально підтримують")
+    elif clusters.get("bias") == opposite(side):
+        if side == "SHORT":
+            conflicts.append("локальний покупець у стакані")
+        else:
+            conflicts.append("локальний продавець у стакані")
+
     if news.get("bias") == side:
         confirmations.append("новини дають паливо")
     elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 28:
         conflicts.append("сильні новини проти")
 
     return confirmations, conflicts
-
 
 def make_plan(side, context):
     price = context["price"]
@@ -1829,11 +1836,9 @@ def evaluate_new_setup(context):
     late, late_reason = is_late_chase(side, context)
     plan = make_plan(side, context)
 
-    score_for_side = side_score(context["total_score"], side)
-    quality = 48 + min(18, score_for_side // 5) + len(confirmations) * 5 - len(conflicts) * 8
-
     tf3 = context["tf3"]
     tf15 = context["tf15"]
+    tf1h = context["tf1h"]
     tf4h = context.get("tf4h") or {}
     structure = context["structure"]
     flow = context["flow"]
@@ -1842,37 +1847,76 @@ def evaluate_new_setup(context):
     derivatives = context.get("derivatives") or {}
     liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
+    news = context.get("news") or {}
+
+    def add_for_block(block, same, opposite_penalty, neutral=0, strong_only=False):
+        bias = block.get("bias")
+        score_abs = abs(block.get("score", 0))
+        if strong_only and score_abs < 10:
+            return 0
+        if bias == side:
+            return same
+        if bias == opposite(side):
+            return -opposite_penalty
+        return neutral
+
+    # Quality is weighted by role, not by raw count of confirmations/conflicts.
+    # 15m/structure/3m are the core. 4H and clusters are small hints only.
+    score_for_side = side_score(context["total_score"], side)
+    quality = 48 + min(12, max(0, score_for_side // 7))
+    quality += add_for_block(tf15, 11, 14)
+    quality += add_for_block(structure, 10, 12)
+    quality += add_for_block(tf3, 10, 12, neutral=-3)
+    quality += add_for_block(tf1h, 5, 5)
+    quality += add_for_block(tf4h, 2, 2)
+    quality += add_for_block(cvd, 8, 9)
+    quality += add_for_block(derivatives, 6, 7)
+    quality += add_for_block(liquidity, 7, 10)
+    quality += add_for_block(flow, 3, 3)
+    quality += add_for_block(clusters, 2, 3)
+
+    if news.get("bias") == side:
+        quality += 3
+    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 28:
+        quality -= 10
+
+    strong_cvd_against = cvd.get("bias") == opposite(side) and abs(cvd.get("score", 0)) >= 18
+    strong_oi_against = derivatives.get("bias") == opposite(side) and abs(derivatives.get("score", 0)) >= 14
+    structure_against = structure.get("bias") == opposite(side)
+    tf15_against = tf15.get("bias") == opposite(side)
 
     trigger_ok = (
         tf3.get("bias") == side
         and tf15.get("bias") in [side, "NEUTRAL"]
-        and structure.get("bias") in [side, "NEUTRAL"]
-        and flow.get("bias") != opposite(side)
-        and cvd.get("bias") != opposite(side)
-        and clusters.get("bias") != opposite(side)
-        and derivatives.get("bias") != opposite(side)
+        and not structure_against
+        and not strong_cvd_against
+        and not strong_oi_against
         and side not in liquidity.get("blocks", [])
     )
-    trend_ok = (
-        tf4h.get("bias") in [side, "NEUTRAL"]
-        and (tf15.get("bias") == side or (tf15.get("bias") == "NEUTRAL" and structure.get("bias") == side))
+    # 4H is not included here. It is background only.
+    trend_ok = tf15.get("bias") == side or (tf15.get("bias") == "NEUTRAL" and structure.get("bias") == side)
+
+    hard_conflict = (
+        "сильні новини проти" in conflicts
+        or side in liquidity.get("blocks", [])
+        or (tf15_against and structure_against)
+        or (strong_cvd_against and strong_oi_against)
     )
-    hard_conflict = len(conflicts) >= 3 or "сильні новини проти" in conflicts
 
     if late:
-        quality = min(quality, 54)
-    if hard_conflict:
-        quality = min(quality, 54)
+        quality = min(quality, 55)
     if calendar.get("active"):
         quality -= 8
         if quality < 75:
             hard_conflict = True
+    if hard_conflict:
+        quality = min(quality, 56)
     if not trigger_ok:
-        quality = min(quality, 61)
+        quality = min(quality, 63)
     if not trend_ok:
-        quality = min(quality, 58)
+        quality = min(quality, 59)
 
-    quality = int(max(0, min(88, quality)))
+    quality = int(max(0, min(92, quality)))
 
     if late:
         return {
@@ -1920,12 +1964,6 @@ def evaluate_new_setup(context):
         "confirmations": confirmations,
         "conflicts": conflicts,
     }
-
-
-# ==========================================================
-# ACTIVE TRADE MANAGEMENT
-# ==========================================================
-
 
 def trade_hit_level(side, price, level):
     if level is None:
@@ -2017,18 +2055,30 @@ def manage_active_trade(trade, context):
             trade.stop_current = min(trade.stop_current, be)
         notes.append(f"стоп у б/у біля {round_price(trade.stop_current)}")
 
-    opposite_votes = 0
-    support_votes = 0
-    for block in [tf3, tf15, context.get("tf4h") or {}, structure, flow, context.get("cvd") or {}, context.get("clusters") or {}, context.get("derivatives") or {}]:
+    # Weighted management pressure for intraday trades.
+    # 3m/15m/structure matter most. 4H and clusters are only small background hints.
+    opposite_votes = 0.0
+    support_votes = 0.0
+    weighted_blocks = [
+        (tf3, 1.20),
+        (tf15, 1.00),
+        (structure, 1.00),
+        (context.get("cvd") or {}, 0.80),
+        (context.get("derivatives") or {}, 0.55),
+        (flow, 0.35),
+        (context.get("clusters") or {}, 0.20),
+        (context.get("tf4h") or {}, 0.20),
+    ]
+    for block, weight in weighted_blocks:
         if block.get("bias") == side:
-            support_votes += 1
+            support_votes += weight
         elif block.get("bias") == opposite(side):
-            opposite_votes += 1
+            opposite_votes += weight
 
     near_entry = abs(current_pct) <= 0.18
     lost_after_profit = best_pct >= 0.38 and giveback_ratio >= 0.62 and current_pct <= 0.18
 
-    if lost_after_profit and opposite_votes >= 2:
+    if lost_after_profit and opposite_votes >= 2.2:
         trade.status = "CLOSED"
         trade.last_action = "EXIT_GIVEBACK"
         return {
@@ -2041,11 +2091,11 @@ def manage_active_trade(trade, context):
             "notes": ["краще закрити біля входу / не чекати дальній стоп"],
         }
 
-    if near_entry and opposite_votes >= 2 and support_votes <= 1:
+    if near_entry and opposite_votes >= 2.2 and support_votes <= 1.2:
         action = "PROTECT_OR_EXIT"
         recommendation = "ціна біля входу, підтвердження слабке: захистити позицію або закрити біля входу"
         notes.append("не усереднювати; чекати нового тригера після виходу")
-    elif current_pct < -0.28 and opposite_votes >= 2:
+    elif current_pct < -0.28 and opposite_votes >= 2.2:
         action = "EXIT_WARNING"
         recommendation = "позиція під тиском, структура проти: краще виходити раніше, не чекати дальній стоп"
         notes.append("злам 3m/структури проти позиції")
@@ -2229,7 +2279,9 @@ def build_new_setup_message(context, setup):
         if reason_items:
             lines.append("")
             lines.append("<b>Причина:</b>")
-            lines.extend([f"❌ {x}" for x in reason_items])
+            for x in reason_items:
+                icon = "⚠️" if ("локаль" in x or "4h фон" in x or "потік локально" in x) else "❌"
+                lines.append(f"{icon} {x}")
         if setup.get("side") in ["LONG", "SHORT"] and plan:
             lines.append("")
             lines.append("<b>Орієнтир:</b>")
