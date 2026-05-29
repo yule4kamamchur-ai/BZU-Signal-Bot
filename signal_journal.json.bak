@@ -1,5 +1,5 @@
 {
-  "version": "pro-v2",
+  "version": "pro-v2-intraday-architecture",
   "trades": [],
   "signals": [
     {
@@ -506,7 +506,183 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-05-29T05:55:27.465666+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 92.01,
+      "quality": 59,
+      "reason": "напрям є, але входу ще немає: бракує 3m/структурного тригера",
+      "plan": {
+        "entry": 92.01,
+        "stop": 92.7001,
+        "tp1": 90.0042,
+        "tp2": 88.9737,
+        "tp3": 87.4095,
+        "risk_pct": 0.75,
+        "rr1": 2.91,
+        "rr2": 4.4,
+        "rr3": 6.67,
+        "invalidation": "15m закриття вище 92.7001 або злам 3m/структури проти SHORT. Стоп не далі 2.12% від входу; TP1 не ближче 2.18%."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "1h підтримує",
+        "CVD підтверджує",
+        "потік підтримує",
+        "новини дають паливо"
+      ],
+      "conflicts": [],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -97,
+        "total_score": -113,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "RANGE",
+          "fast_move_pct": 0.087,
+          "drift_pct": 0.08,
+          "vol_ratio": 0.18,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -24,
+          "trend": "NEUTRAL",
+          "close": 92.01,
+          "ema20": 92.0668,
+          "ema50": 92.4397,
+          "rsi": 46.5,
+          "atr": 0.2857,
+          "slope_pct": 0.044,
+          "move_8_pct": -0.433,
+          "range_atr": 3.5,
+          "note": "ціна нижче EMA20/50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 92.03,
+          "ema20": 92.8392,
+          "ema50": 93.6405,
+          "rsi": 37.8,
+          "atr": 0.7593,
+          "slope_pct": -1.039,
+          "move_8_pct": -0.551,
+          "range_atr": 5.9,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 92.03,
+          "ema20": 94.3483,
+          "ema50": 96.8326,
+          "rsi": 28.8,
+          "atr": 1.7636,
+          "slope_pct": -1.909,
+          "move_8_pct": -2.106,
+          "range_atr": 4.02,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 92.52,
+          "swing_low": 91.62,
+          "recent_high": 92.84,
+          "recent_low": 91.6,
+          "atr": 0.2857,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -54.39,
+          "book_delta_pct": 13.38,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "SHORT",
+          "score": -16,
+          "state": "SELLERS_DOMINATE",
+          "delta": -29169.0,
+          "delta_pct": -54.39,
+          "cvd": -13174.0,
+          "price_move_pct": 0.131,
+          "note": "CVD падає — агресивні продажі"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": -3,
+          "state": "LOCAL_SELL_PRESSURE_BELOW",
+          "zones": [
+            {
+              "price": 92.01,
+              "imbalance_pct": -61.8,
+              "volume": 49982.0
+            },
+            {
+              "price": 91.9364,
+              "imbalance_pct": 95.5,
+              "volume": 2737.0
+            },
+            {
+              "price": 92.0836,
+              "imbalance_pct": -99.3,
+              "volume": 908.0
+            }
+          ],
+          "note": "локальні продажі нижче ціни"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 60382.84,
+          "oi_change_pct": 0.576,
+          "funding_pct": 0,
+          "price_change_pct": 0.054,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.24,
+          "move_1_pct": 0.033,
+          "move_6_pct": 0.011,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "SHORT",
+          "score": -45,
+          "top": "Why Iran will prefer ongoing conflict - The Strategist | ASPI's analysis and commentary site",
+          "total": 17
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-05-29T05:46:03.493831+00:00"
+  "updated_at": "2026-05-29T05:55:27.466289+00:00"
 }
