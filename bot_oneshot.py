@@ -2096,82 +2096,171 @@ def new_active_trade(setup):
 # ==========================================================
 
 
+def _fmt_price(value):
+    value = round_price(value)
+    if value is None:
+        return "-"
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _bias_label(value):
+    value = str(value or "NEUTRAL").upper()
+    if value == "LONG":
+        return "LONG"
+    if value == "SHORT":
+        return "SHORT"
+    return "NEUTRAL"
+
+
+def _score_line(label, block):
+    block = block or {}
+    return f"<b>{label}:</b> {_bias_label(block.get('bias'))} ({block.get('score', 0)})"
+
+
+def _short_list(items, limit=3):
+    out = []
+    for item in items or []:
+        item = str(item).strip()
+        if item and item not in out:
+            out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def price_line(context):
-    return f"<b>Ціна:</b> {round_price(context['price'])} | 24h {round(context.get('change24h', 0), 3)}% | {context.get('source')}"
+    # Clean intraday format: no exchange/source, no extra 24h noise.
+    return f"<b>Ціна:</b> {_fmt_price(context.get('price'))}"
 
 
 def context_lines(context):
-    lines = [
-        f"<b>4h:</b> {side_word(context['tf4h'].get('bias'))} ({context['tf4h'].get('score')}) — {context['tf4h'].get('note')}",
-        f"<b>1h:</b> {side_word(context['tf1h'].get('bias'))} ({context['tf1h'].get('score')}) — {context['tf1h'].get('note')}",
-        f"<b>15m:</b> {side_word(context['tf15'].get('bias'))} ({context['tf15'].get('score')}) — {context['tf15'].get('note')}",
-        f"<b>3m:</b> {side_word(context['tf3'].get('bias'))} ({context['tf3'].get('score')}) — {context['tf3'].get('note')}",
-        f"<b>Структура:</b> {side_word(context['structure'].get('bias'))} — {context['structure'].get('phase')} | {context['structure'].get('note')}",
-        f"<b>Потік:</b> {side_word(context['flow'].get('bias'))} ({context['flow'].get('score')}) — {context['flow'].get('note')}",
-        f"<b>CVD:</b> {side_word(context['cvd'].get('bias'))} ({context['cvd'].get('score')}) — {context['cvd'].get('state')} | {context['cvd'].get('note')}",
-        f"<b>Кластери:</b> {side_word(context['clusters'].get('bias'))} ({context['clusters'].get('score')}) — {context['clusters'].get('state')} | {context['clusters'].get('note')}",
-        f"<b>OI/Funding:</b> {side_word(context['derivatives'].get('bias'))} ({context['derivatives'].get('score')}) — {context['derivatives'].get('state')} | {context['derivatives'].get('note')}",
-        f"<b>Ліквідації:</b> {side_word(context['liquidity'].get('bias'))} ({context['liquidity'].get('score')}) — {context['liquidity'].get('event')} | {context['liquidity'].get('note')}",
-        f"<b>Новини:</b> {side_word(context['news'].get('bias'))} ({context['news'].get('score')}) — {context['news'].get('top')[:150]}",
-    ]
+    # Short dashboard only. Detailed notes stay inside the bot logic, not in Telegram.
+    lines = []
     calendar = context.get("calendar") or {}
     if calendar.get("active"):
-        lines.insert(0, f"<b>Важлива новина:</b> {calendar.get('note')}. Новий вхід тільки після реакції ціни.")
+        lines.append(f"<b>⚠️ Новина:</b> {calendar.get('note')}. Новий вхід тільки після реакції ціни.")
+
+    lines.extend([
+        _score_line("4H", context.get("tf4h")),
+        _score_line("1H", context.get("tf1h")),
+        _score_line("15M", context.get("tf15")),
+        _score_line("3M", context.get("tf3")),
+    ])
+
+    # Extra professional blocks, also short.
+    if context.get("cvd"):
+        lines.append(_score_line("CVD", context.get("cvd")))
+    if context.get("clusters"):
+        lines.append(_score_line("Кластери", context.get("clusters")))
+    if context.get("derivatives"):
+        lines.append(_score_line("OI/Funding", context.get("derivatives")))
+    if context.get("flow"):
+        lines.append(_score_line("Потік", context.get("flow")))
     return lines
 
 
-def plan_text(plan):
+def plan_text(plan, multiline=False):
     if not plan:
         return "плану немає"
+    if multiline:
+        return "\n".join([
+            f"<b>Вхід:</b> {_fmt_price(plan.entry)}",
+            f"<b>Стоп:</b> {_fmt_price(plan.stop)}",
+            f"<b>TP1:</b> {_fmt_price(plan.tp1)}",
+            f"<b>TP2:</b> {_fmt_price(plan.tp2)}",
+            f"<b>TP3:</b> {_fmt_price(plan.tp3)}",
+            f"<b>Ризик:</b> {plan.risk_pct}% | <b>RR:</b> {plan.rr1}/{plan.rr2}/{plan.rr3}",
+        ])
     return (
-        f"Вхід {plan.entry} | Стоп {plan.stop} | TP1 {plan.tp1} | "
-        f"TP2 {plan.tp2} | TP3 {plan.tp3} | ризик {plan.risk_pct}% | RR {plan.rr1}/{plan.rr2}/{plan.rr3}"
+        f"Вхід {_fmt_price(plan.entry)} | Стоп {_fmt_price(plan.stop)} | "
+        f"TP1 {_fmt_price(plan.tp1)} | TP2 {_fmt_price(plan.tp2)} | TP3 {_fmt_price(plan.tp3)} | "
+        f"ризик {plan.risk_pct}% | RR {plan.rr1}/{plan.rr2}/{plan.rr3}"
     )
+
+
+def _compact_title(setup):
+    action = setup.get("action")
+    side = setup.get("side")
+    if action == "ENTRY":
+        return f"ВХІД {side}"
+    if action == "RISKY_ENTRY":
+        return f"РИЗИКОВАНИЙ ВХІД {side}"
+    if action == "WAIT_RETEST":
+        return f"ЧЕКАТИ РЕТЕСТ {side}"
+    if action == "WATCH" and side in ["LONG", "SHORT"]:
+        return f"ЧЕКАТИ {side}"
+    if action == "NO_TRADE":
+        return "ВХОДУ НЕМАЄ"
+    return str(setup.get("title") or "СИГНАЛ")
 
 
 def build_new_setup_message(context, setup):
     plan = setup.get("plan")
+    conflicts = _short_list(setup.get("conflicts"), 3)
+    confirmations = _short_list(setup.get("confirmations"), 3)
+
     lines = [
         "<b>BZU SIGNAL BOT PRO</b>",
-        f"<b>{setup['title']}</b>",
+        "",
+        f"<b>{_compact_title(setup)}</b>",
         "",
         price_line(context),
         f"<b>Якість:</b> {setup['quality']}/100",
-        f"<b>Причина:</b> {setup['reason']}",
     ]
-    if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
-        lines.append(f"<b>План:</b> {plan_text(plan)}")
+
+    if setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
+        if confirmations:
+            lines.append("")
+            lines.append("<b>Підтвердження:</b>")
+            lines.extend([f"✅ {x}" for x in confirmations])
+        if conflicts:
+            lines.append("")
+            lines.append("<b>Ризики:</b>")
+            lines.extend([f"⚠️ {x}" for x in conflicts])
+        lines.append("")
+        lines.append("<b>План:</b>")
+        lines.append(plan_text(plan, multiline=True))
+        lines.append("")
         lines.append(f"<b>Скасування:</b> {plan.invalidation}")
-        if setup["action"] == "RISKY_ENTRY":
-            lines.append("<b>Режим:</b> малий ризик; якщо 3m одразу піде проти — не тримати до дальнього стопу.")
-    elif setup["action"] == "WAIT_RETEST":
-        lines.append(f"<b>Зона:</b> напрям {setup['side']} є, але вхід тільки після відкату/ретесту. Орієнтир плану: {plan_text(plan)}")
-    elif setup["side"] in ["LONG", "SHORT"] and plan:
-        lines.append(f"<b>Що чекати:</b> {setup['side']} тільки після 3m-тригера і підтвердження структури. Орієнтир: {plan_text(plan)}")
+        if setup.get("action") == "RISKY_ENTRY":
+            lines.append("<b>Режим:</b> малий ризик; якщо 3M одразу піде проти — не тримати до дальнього стопу.")
+    else:
+        reason_items = conflicts or _short_list([setup.get("reason")], 1)
+        if reason_items:
+            lines.append("")
+            lines.append("<b>Причина:</b>")
+            lines.extend([f"❌ {x}" for x in reason_items])
+        if setup.get("side") in ["LONG", "SHORT"] and plan:
+            lines.append("")
+            lines.append("<b>Орієнтир:</b>")
+            lines.append(plan_text(plan, multiline=True))
 
-    if setup.get("conflicts"):
-        lines.append("<b>Ризики:</b> " + " | ".join(setup["conflicts"][:3]))
-
-    lines.extend(context_lines(context)[:4])
+    lines.append("")
+    lines.extend(context_lines(context))
     return "\n".join(lines).strip()
 
 
 def build_follow_message(context, trade, result):
     lines = [
         "<b>BZU SIGNAL BOT PRO</b>",
-        f"<b>{result['title']}</b> — {result['recommendation']}",
+        "",
+        f"<b>{result['title']}</b>",
+        f"{result['recommendation']}",
         "",
         price_line(context),
-        f"<b>Стан:</b> від входу {round(result['current_pct'], 3)}% | максимум у плюс {round(result['best_pct'], 3)}%",
-        (
-            f"<b>Позиція:</b> Вхід {round_price(trade.entry)} | Стоп зараз {round_price(trade.stop_current)} "
-            f"| TP1 {round_price(trade.tp1)} | TP2 {round_price(trade.tp2)} | TP3 {round_price(trade.tp3)}"
-        ),
-        f"<b>TP:</b> TP1 {'так' if trade.tp1_hit else 'ні'} | TP2 {'так' if trade.tp2_hit else 'ні'} | TP3 {'так' if trade.tp3_hit else 'ні'}",
+        f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс:</b> {round(result['best_pct'], 3)}%",
+        "",
+        "<b>Позиція:</b>",
+        f"Вхід {_fmt_price(trade.entry)} | Стоп {_fmt_price(trade.stop_current)}",
+        f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
+        f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}",
     ]
     if result.get("notes"):
-        lines.append("<b>Дія:</b> " + " | ".join(result["notes"][:3]))
-    lines.extend(context_lines(context)[:5])
+        lines.append("")
+        lines.append("<b>Дія:</b>")
+        lines.extend([f"⚠️ {x}" for x in _short_list(result.get("notes"), 3)])
+    lines.append("")
+    lines.extend(context_lines(context))
     return "\n".join(lines).strip()
 
 
