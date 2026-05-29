@@ -2775,7 +2775,186 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-05-29T09:30:54.171071+00:00",
+      "type": "WAIT_RETEST",
+      "side": "SHORT",
+      "price": 91.08,
+      "quality": 55,
+      "reason": "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат",
+      "plan": {
+        "entry": 91.08,
+        "stop": 93.0109,
+        "tp1": 89.0945,
+        "tp2": 88.0744,
+        "tp3": 86.526,
+        "risk_pct": 2.12,
+        "rr1": 1.03,
+        "rr2": 1.56,
+        "rr3": 2.36,
+        "invalidation": "15m закриття вище 93.0109 або злам 3m/структури проти SHORT. Стоп не далі 2.12% від входу; TP1 не ближче 2.18%."
+      },
+      "confirmations": [
+        "сильний обсяг",
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "структура підтверджує",
+        "OI/Funding підтримує",
+        "новини дають паливо"
+      ],
+      "conflicts": [
+        "CVD проти",
+        "потік локально проти"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -192,
+        "total_score": -202,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -58,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -1.652,
+          "drift_pct": -0.848,
+          "vol_ratio": 0.21,
+          "note": "3m швидко йде вниз; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 91.07,
+          "ema20": 92.0345,
+          "ema50": 92.2781,
+          "rsi": 34.0,
+          "atr": 0.4479,
+          "slope_pct": -0.494,
+          "move_8_pct": -1.801,
+          "range_atr": 4.96,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -63,
+          "trend": "SHORT",
+          "close": 91.07,
+          "ema20": 92.5645,
+          "ema50": 93.4284,
+          "rsi": 36.6,
+          "atr": 0.7779,
+          "slope_pct": -0.457,
+          "move_8_pct": -1.054,
+          "range_atr": 5.1,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -63,
+          "trend": "SHORT",
+          "close": 91.04,
+          "ema20": 94.0983,
+          "ema50": 96.6646,
+          "rsi": 32.6,
+          "atr": 1.8621,
+          "slope_pct": -1.725,
+          "move_8_pct": -5.058,
+          "range_atr": 3.81,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -32,
+          "phase": "BOS SHORT",
+          "swing_high": 93.07,
+          "swing_low": 91.43,
+          "recent_high": 93.07,
+          "recent_low": 90.85,
+          "atr": 0.4479,
+          "note": "закриття нижче swing low 91.43"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 16,
+          "trade_delta_pct": 25.43,
+          "book_delta_pct": -6.43,
+          "note": "угоди за покупців"
+        },
+        "cvd": {
+          "bias": "LONG",
+          "score": 32,
+          "state": "BULLISH_ABSORPTION",
+          "delta": 3342.0,
+          "delta_pct": 25.43,
+          "cvd": 24951.0,
+          "cvd_change_pct": 15.466,
+          "last_trade_ts": 1780047048336,
+          "price_move_pct": -0.882,
+          "note": "CVD росте; ціна вниз, CVD вгору"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": -3,
+          "state": "LOCAL_SELL_PRESSURE_BELOW",
+          "zones": [
+            {
+              "price": 91.0071,
+              "imbalance_pct": -32.9,
+              "volume": 7086.0
+            },
+            {
+              "price": 91.08,
+              "imbalance_pct": 93.7,
+              "volume": 6056.0
+            }
+          ],
+          "note": "локальні продажі нижче ціни"
+        },
+        "derivatives": {
+          "bias": "SHORT",
+          "score": -18,
+          "state": "SHORT_BUILDUP",
+          "oi": 59855.89,
+          "oi_change_pct": 5.552,
+          "funding_pct": 0,
+          "price_change_pct": -0.546,
+          "note": "ціна падає + OI росте — нові шорти/тиск"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.2,
+          "move_1_pct": 0.022,
+          "move_6_pct": -0.579,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "SHORT",
+          "score": -41,
+          "top": "Indian Oil Corp buys 5 million barrels of crude from West Africa, Middle East, sources say - Reuters",
+          "total": 22
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-05-29T09:15:37.996184+00:00"
+  "updated_at": "2026-05-29T09:30:54.172017+00:00"
 }
