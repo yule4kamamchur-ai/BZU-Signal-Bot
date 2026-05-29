@@ -1864,6 +1864,14 @@ def side_score(value, side):
 
 
 def is_late_chase(side, context):
+    """Anti-chase guard for intraday entries.
+
+    This is intentionally NOT a full Retest Engine.
+    It only blocks fresh market entries when the move has already gone vertical
+    and the risk/reward is likely worse. Direction may still be correct, but
+    the bot should wait for a pullback or a short consolidation instead of
+    chasing the candle.
+    """
     price = context["price"]
     atr15 = context["atr15"]
     tf15 = context["tf15"]
@@ -1873,27 +1881,53 @@ def is_late_chase(side, context):
     ema20 = safe_float(tf15.get("ema20"))
     rsi15 = safe_float(tf15.get("rsi"), 50)
     move_8 = safe_float(tf15.get("move_8_pct"), 0)
+    fast_move_3m = safe_float(tf3.get("fast_move_pct"), 0)
+    drift_3m = safe_float(tf3.get("drift_pct"), 0)
+    score_3m = int(tf3.get("score", 0) or 0)
 
     if not price or not atr15:
         return False, ""
 
     distance_atr = abs(price - ema20) / atr15 if ema20 else 0
+
+    # Strong 3m impulse already happened. For a 15m intraday strategy this is
+    # the classic place where market entries become late/chasing.
+    long_vertical_3m = fast_move_3m >= 0.62 and score_3m >= 34
+    short_vertical_3m = fast_move_3m <= -0.62 and score_3m <= -34
+
+    # Price is stretched away from 15m EMA20 while 3m is already impulsive.
+    long_stretched = distance_atr >= 1.25 and fast_move_3m >= 0.42
+    short_stretched = distance_atr >= 1.25 and fast_move_3m <= -0.42
+
+    # 15m move is already mature. This is not a hard reversal signal, just
+    # a warning not to enter after the candle has done the easy part.
+    mature_15m_long = rsi15 >= 72 and move_8 >= 0.85
+    mature_15m_short = rsi15 <= 28 and move_8 <= -0.85
+
     if side == "LONG":
         if "LONG" in liquidity.get("blocks", []):
             return True, "ліквідність проти: high зняли/памп поглинули, лонг не доганяти"
-        if rsi15 >= 74 and move_8 >= 0.9:
-            return True, "лонг після сильного імпульсу: чекати відкат/ретест"
+        if long_vertical_3m:
+            return True, "3M вже дав різкий імпульс вгору — лонг не доганяти; чекати проторговку або відкат"
+        if long_stretched:
+            return True, "ціна розтягнута від EMA20 після 3M-імпульсу — лонг тільки після охолодження"
+        if mature_15m_long:
+            return True, "лонг після сильного 15M імпульсу: чекати відкат/проторговку"
         if distance_atr >= 1.75 and tf3.get("state") != "LONG_STRENGTHENING":
-            return True, "ціна далеко від EMA20, 3m не підсилює"
+            return True, "ціна далеко від EMA20, 3M не підсилює"
         if structure.get("phase") == "UPSIDE SWEEP":
             return True, "зверху зняли ліквідність, лонг не доганяти"
     else:
         if "SHORT" in liquidity.get("blocks", []):
             return True, "ліквідність проти: low зняли/дамп викупили, шорт не доганяти"
-        if rsi15 <= 26 and move_8 <= -0.9:
-            return True, "шорт після сильного падіння: чекати відкат/ретест"
+        if short_vertical_3m:
+            return True, "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат"
+        if short_stretched:
+            return True, "ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження"
+        if mature_15m_short:
+            return True, "шорт після сильного 15M імпульсу: чекати відкат/проторговку"
         if distance_atr >= 1.75 and tf3.get("state") != "SHORT_STRENGTHENING":
-            return True, "ціна далеко від EMA20, 3m не підсилює"
+            return True, "ціна далеко від EMA20, 3M не підсилює"
         if structure.get("phase") == "DOWNSIDE SWEEP":
             return True, "знизу зняли ліквідність, шорт не доганяти"
     return False, ""
@@ -2532,7 +2566,7 @@ def _compact_title(setup):
     if action == "RISKY_ENTRY":
         return f"РИЗИКОВАНИЙ ВХІД {side}"
     if action == "WAIT_RETEST":
-        return f"ЧЕКАТИ РЕТЕСТ {side}"
+        return f"НЕ ДОГАНЯТИ {side}"
     if action == "WATCH" and side in ["LONG", "SHORT"]:
         return f"ЧЕКАТИ {side}"
     if action == "NO_TRADE":
