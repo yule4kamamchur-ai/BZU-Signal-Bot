@@ -58,6 +58,15 @@ MIN_TP1_DISTANCE_PCT = float(os.getenv("MIN_TP1_DISTANCE_PCT", "2.18") or 2.18)
 MIN_TP2_DISTANCE_PCT = float(os.getenv("MIN_TP2_DISTANCE_PCT", "3.30") or 3.30)
 MIN_TP3_DISTANCE_PCT = float(os.getenv("MIN_TP3_DISTANCE_PCT", "5.00") or 5.00)
 
+# Intraday filters
+# Volume is a bonus only. Low volume must NOT block entries for BZ intraday,
+# because compression often happens before the best impulse move.
+VOLUME_ACTIVE_RATIO = float(os.getenv("VOLUME_ACTIVE_RATIO", "1.30") or 1.30)
+VOLUME_STRONG_RATIO = float(os.getenv("VOLUME_STRONG_RATIO", "1.70") or 1.70)
+CVD_STATE_MAX_AGE_MINUTES = int(os.getenv("CVD_STATE_MAX_AGE_MINUTES", "360") or 360)
+# Reuters is priority, but not the only source. EIA/Fed/OPEC/event headlines remain useful.
+REUTERS_PRIORITY_NEWS = os.getenv("REUTERS_PRIORITY_NEWS", "1").lower() not in ["0", "false", "no"]
+
 
 NEWS_QUERIES = [
     "Brent crude oil Reuters OPEC EIA inventories sanctions Hormuz",
@@ -555,19 +564,36 @@ def ema(values, period):
 
 
 def rsi(values, period=14):
+    """TradingView-style RSI using Wilder/RMA smoothing.
+
+    The previous version used a simple average of the last N gains/losses.
+    TradingView's default RSI uses Wilder smoothing, so this keeps bot RSI
+    closer to the chart the user watches.
+    """
     values = [float(x) for x in values if x is not None]
     if len(values) <= period:
         return 50.0
+
     gains = []
     losses = []
     for i in range(1, len(values)):
         diff = values[i] - values[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(abs(min(diff, 0)))
-    avg_gain = mean(gains[-period:]) if gains[-period:] else 0
-    avg_loss = mean(losses[-period:]) if losses[-period:] else 0
+        gains.append(max(diff, 0.0))
+        losses.append(abs(min(diff, 0.0)))
+
+    if len(gains) < period:
+        return 50.0
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    # Wilder RMA: next = (prev * (period - 1) + current) / period
+    for gain, loss in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+
     if avg_loss == 0:
-        return 100.0
+        return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
@@ -797,6 +823,51 @@ def analyze_structure(candles):
     }
 
 
+def analyze_volume_guard(candles_15m):
+    """Intraday volume context.
+
+    Low volume is NOT a blocker. For BZ, quiet compression often comes right
+    before a strong intraday move. Volume only adds quality when participation
+    is clearly above normal.
+    """
+    if not candles_15m or len(candles_15m) < 23:
+        return {
+            "available": False,
+            "ok": True,
+            "score": 0,
+            "ratio": 1.0,
+            "state": "NO DATA",
+            "note": "обсяг: даних мало",
+        }
+
+    vols = [max(0.0, float(c.volume or 0)) for c in candles_15m]
+    avg20 = mean(vols[-23:-3]) if len(vols[-23:-3]) else 0
+    avg3 = mean(vols[-3:]) if len(vols[-3:]) else 0
+    ratio = (avg3 / avg20) if avg20 else 1.0
+
+    if ratio >= VOLUME_STRONG_RATIO:
+        score = 10
+        state = "STRONG_VOLUME"
+        note = f"обсяг сильний: {round(ratio * 100, 1)}% від середнього 20"
+    elif ratio >= VOLUME_ACTIVE_RATIO:
+        score = 6
+        state = "ACTIVE_VOLUME"
+        note = f"обсяг активний: {round(ratio * 100, 1)}% від середнього 20"
+    else:
+        score = 0
+        state = "LOW_OR_NORMAL_VOLUME" if ratio < 1.0 else "NORMAL_VOLUME"
+        note = f"обсяг без бонусу: {round(ratio * 100, 1)}% від середнього 20"
+
+    return {
+        "available": True,
+        "ok": True,
+        "score": score,
+        "ratio": round(ratio, 3),
+        "state": state,
+        "note": note,
+    }
+
+
 def analyze_micro(candles):
     if not candles or len(candles) < 35:
         return {"available": False, "bias": "NEUTRAL", "score": 0, "state": "NO DATA", "note": "3m недоступний"}
@@ -948,48 +1019,80 @@ def analyze_flow(trades, book, price):
 
 
 def analyze_cvd(trades, candles_3m, price, previous_snapshot=None):
-    """Cumulative Volume Delta proxy from recent OKX trades.
+    """Persistent CVD proxy from OKX public trades.
 
-    OKX public trades do not provide a full historical footprint feed, so this
-    module builds a practical running CVD from recent aggressive buy/sell prints
-    and stores it between bot runs. Divergence is what matters most:
-    - price down but CVD up = absorption / possible LONG reversal
-    - price up but CVD down = distribution / possible SHORT reversal
+    Public trades are limited, so every run adds the current trade delta to the
+    stored CVD in state. To reduce double-counting overlapping trades between
+    15-minute runs, only trades newer than the previous saved trade timestamp
+    are added when timestamps are available.
     """
     previous_snapshot = previous_snapshot or {}
-    buy_vol = sum(t.get("size", 0) for t in trades if t.get("side") == "buy")
-    sell_vol = sum(t.get("size", 0) for t in trades if t.get("side") == "sell")
+    prev_cvd = safe_float(previous_snapshot.get("cvd"), 0) or 0
+    prev_trade_ts = int(previous_snapshot.get("last_trade_ts") or 0)
+    prev_cvd_time = previous_snapshot.get("cvd_time") or previous_snapshot.get("time")
+
+    cvd_stale = False
+    try:
+        if prev_cvd_time:
+            dt = datetime.fromisoformat(str(prev_cvd_time).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_min = (now_utc() - dt.astimezone(timezone.utc)).total_seconds() / 60
+            cvd_stale = age_min > CVD_STATE_MAX_AGE_MINUTES
+    except Exception:
+        cvd_stale = False
+
+    if cvd_stale:
+        prev_cvd = 0
+        prev_trade_ts = 0
+
+    fresh_trades = []
+    for t in trades or []:
+        ts = int(t.get("ts") or 0)
+        if prev_trade_ts and ts and ts <= prev_trade_ts:
+            continue
+        fresh_trades.append(t)
+    if not fresh_trades and trades:
+        fresh_trades = trades
+
+    buy_vol = sum(t.get("size", 0) for t in fresh_trades if t.get("side") == "buy")
+    sell_vol = sum(t.get("size", 0) for t in fresh_trades if t.get("side") == "sell")
     delta = buy_vol - sell_vol
     total = buy_vol + sell_vol
     delta_pct = (delta / total * 100) if total else 0
-    prev_cvd = safe_float(previous_snapshot.get("cvd"), 0) or 0
     cvd_value = prev_cvd + delta
+    last_trade_ts = max([int(t.get("ts") or 0) for t in trades or []] or [prev_trade_ts])
 
     price_move = 0
     if candles_3m and len(candles_3m) >= 10:
         price_move = pct(candles_3m[-1].close, candles_3m[-10].close)
+
+    cvd_change = delta
+    cvd_change_pct = 0
+    if abs(prev_cvd) > 1e-9:
+        cvd_change_pct = cvd_change / abs(prev_cvd) * 100
 
     score = 0
     state = "BALANCED"
     notes = []
 
     if delta_pct >= 18:
-        score += 16
+        score += 14
         state = "BUYERS_DOMINATE"
-        notes.append("CVD росте — агресивні покупки")
+        notes.append("CVD росте")
     elif delta_pct <= -18:
-        score -= 16
+        score -= 14
         state = "SELLERS_DOMINATE"
-        notes.append("CVD падає — агресивні продажі")
+        notes.append("CVD падає")
 
     if price_move <= -0.35 and delta_pct >= 10:
         score += 18
         state = "BULLISH_ABSORPTION"
-        notes.append("ціна вниз, CVD вгору — продавців поглинають")
+        notes.append("ціна вниз, CVD вгору")
     elif price_move >= 0.35 and delta_pct <= -10:
         score -= 18
         state = "BEARISH_ABSORPTION"
-        notes.append("ціна вгору, CVD вниз — покупців розвантажують")
+        notes.append("ціна вгору, CVD вниз")
 
     if score >= 16:
         bias = "LONG"
@@ -1005,6 +1108,8 @@ def analyze_cvd(trades, candles_3m, price, previous_snapshot=None):
         "delta": round(delta, 4),
         "delta_pct": round(delta_pct, 2),
         "cvd": round(cvd_value, 4),
+        "cvd_change_pct": round(cvd_change_pct, 3),
+        "last_trade_ts": last_trade_ts,
         "price_move_pct": round(price_move, 3),
         "note": "; ".join(notes[:3]) if notes else "CVD без явної переваги",
     }
@@ -1348,10 +1453,40 @@ def dedupe_news(items):
 
 
 def get_news():
+    """News feed for the bot.
+
+    Reuters is prioritized, but not exclusive. For oil/BZ intraday trading,
+    official EIA/Fed/OPEC/event headlines can matter even when Reuters has not
+    republished them yet. Reuters items are marked and sorted first.
+    """
     items = []
+
+    if REUTERS_PRIORITY_NEWS:
+        reuters_queries = [
+            "site:reuters.com oil Brent crude OPEC EIA inventories",
+            "site:reuters.com oil prices Brent crude today",
+            "site:reuters.com EIA crude inventories API crude",
+            "site:reuters.com OPEC production cut increase oil",
+            "site:reuters.com Iran sanctions Hormuz oil",
+            "site:reuters.com Fed Powell dollar oil prices",
+        ]
+        for query in reuters_queries:
+            items.extend(parse_google_rss(query, 6))
+
     for query in NEWS_QUERIES:
         items.extend(parse_google_rss(query, 3))
-    return dedupe_news(items)
+
+    out = []
+    for item in dedupe_news(items):
+        title = normalized(item.get("title", ""))
+        link = normalized(item.get("link", ""))
+        is_reuters = "reuters" in title or "reuters.com" in link
+        item["source"] = "Reuters" if is_reuters else item.get("source", "Google News")
+        item["priority"] = 1 if is_reuters else 0
+        out.append(item)
+
+    out.sort(key=lambda x: (x.get("priority", 0), x.get("published_at") or datetime(1970, 1, 1, tzinfo=timezone.utc)), reverse=True)
+    return out
 
 
 def score_news_item(title):
@@ -1569,6 +1704,7 @@ def build_context(data, state=None):
     tf1h = analyze_timeframe(data.get("candles_1h") or [], "1h")
     tf4h = analyze_timeframe(data.get("candles_4h") or [], "4h")
     structure = analyze_structure(data.get("candles_15m") or [])
+    volume_guard = analyze_volume_guard(data.get("candles_15m") or [])
     previous_snapshot = (state or {}).get("last_market_snapshot") or {}
     flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
     cvd = analyze_cvd(data.get("trades") or [], data.get("candles_3m") or [], price, previous_snapshot)
@@ -1597,6 +1733,7 @@ def build_context(data, state=None):
         + flow.get("score", 0) * 0.30
         + clusters.get("score", 0) * 0.25
         + tf4h.get("score", 0) * 0.18
+        + volume_guard.get("score", 0)
     )
     total_score = tech_score + news.get("score", 0) * 0.30 + calendar.get("score", 0) + session.get("score", 0)
 
@@ -1618,6 +1755,7 @@ def build_context(data, state=None):
         "tf1h": tf1h,
         "tf4h": tf4h,
         "structure": structure,
+        "volume_guard": volume_guard,
         "flow": flow,
         "cvd": cvd,
         "clusters": clusters,
@@ -1692,8 +1830,14 @@ def entry_confirmations(side, context):
     confirmations = []
     conflicts = []
 
+    volume_guard = context.get("volume_guard") or {}
+
     if calendar.get("active"):
         conflicts.append("важлива новина у найближчу годину")
+    if volume_guard.get("score", 0) >= 10:
+        confirmations.append("сильний обсяг")
+    elif volume_guard.get("score", 0) >= 6:
+        confirmations.append("активний обсяг")
 
     # 4H is deliberately NOT a hard conflict for this intraday bot.
     if tf4h.get("bias") == side and abs(tf4h.get("score", 0)) >= 30:
@@ -1847,6 +1991,7 @@ def evaluate_new_setup(context):
     derivatives = context.get("derivatives") or {}
     liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
+    volume_guard = context.get("volume_guard") or {}
     news = context.get("news") or {}
 
     def add_for_block(block, same, opposite_penalty, neutral=0, strong_only=False):
@@ -2366,6 +2511,8 @@ def update_market_snapshot(state, context):
         "price": round_price(context.get("price")),
         "oi": derivatives.get("oi"),
         "cvd": cvd.get("cvd"),
+        "cvd_time": iso_now(),
+        "last_trade_ts": cvd.get("last_trade_ts"),
         "bias": context.get("bias"),
         "tech_score": context.get("tech_score"),
         "total_score": context.get("total_score"),
