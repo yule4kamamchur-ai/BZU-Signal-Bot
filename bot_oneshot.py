@@ -887,6 +887,115 @@ def analyze_flow(trades, book, price):
     }
 
 
+def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
+    """Liquidation / stop-run proxy from public data.
+
+    We do not have exchange liquidation feed here, so this uses:
+    - fast candle move
+    - volume spike
+    - candle close location
+    - SMC sweep
+    - trades/book flow
+
+    It is a practical proxy for: long liquidation, short squeeze, high/low sweep,
+    and post-sweep reclaim.
+    """
+    candles = candles_3m if candles_3m and len(candles_3m) >= 25 else candles_15m
+    if not candles or len(candles) < 25 or not price:
+        return {
+            "available": False,
+            "bias": "NEUTRAL",
+            "score": 0,
+            "event": "NO DATA",
+            "blocks": [],
+            "note": "даних для ліквідацій мало",
+        }
+
+    recent = candles[-24:]
+    last = recent[-1]
+    prev = recent[-2]
+    avg_vol = mean([c.volume for c in recent[:-1]]) if len(recent) > 1 else 0
+    vol_ratio = last.volume / avg_vol if avg_vol else 1.0
+    move_1 = pct(last.close, prev.close)
+    move_6 = pct(last.close, recent[-7].close) if len(recent) >= 7 else move_1
+    body = last.close - last.open
+    close_pos = close_location(last)
+    prev_high = max(c.high for c in recent[:-1])
+    prev_low = min(c.low for c in recent[:-1])
+
+    flow_bias = (flow or {}).get("bias", "NEUTRAL")
+    phase = (structure or {}).get("phase", "")
+    score = 0
+    event = "QUIET"
+    blocks = []
+    notes = []
+
+    downside_sweep = last.low < prev_low and last.close > prev_low
+    upside_sweep = last.high > prev_high and last.close < prev_high
+
+    if downside_sweep or phase == "DOWNSIDE SWEEP":
+        event = "DOWNSIDE SWEEP / LONG RECLAIM"
+        score += 18
+        blocks.append("SHORT")
+        notes.append("зняли low і повернулись вище — шорт не доганяти")
+        if flow_bias == "LONG":
+            score += 6
+            notes.append("покупці відкуповують після зняття low")
+
+    elif upside_sweep or phase == "UPSIDE SWEEP":
+        event = "UPSIDE SWEEP / SHORT RECLAIM"
+        score -= 18
+        blocks.append("LONG")
+        notes.append("зняли high і закрились нижче — лонг не доганяти")
+        if flow_bias == "SHORT":
+            score -= 6
+            notes.append("продавці тиснуть після зняття high")
+
+    strong_down = (move_1 <= -0.42 or move_6 <= -0.70) and vol_ratio >= 1.35 and body < 0
+    strong_up = (move_1 >= 0.42 or move_6 >= 0.70) and vol_ratio >= 1.35 and body > 0
+
+    if strong_down:
+        if close_pos <= 0.28 and flow_bias != "LONG":
+            event = "LONG LIQUIDATION"
+            score -= 18
+            notes.append("дамп на обсязі — ймовірно вибивають лонги")
+        elif close_pos >= 0.52 or flow_bias == "LONG":
+            event = "LONG LIQUIDATION ABSORBED"
+            score += 10
+            blocks.append("SHORT")
+            notes.append("дамп викупили — новий шорт тільки після ретесту")
+
+    if strong_up:
+        if close_pos >= 0.72 and flow_bias != "SHORT":
+            event = "SHORT SQUEEZE"
+            score += 18
+            notes.append("памп на обсязі — ймовірно шорт-сквіз")
+        elif close_pos <= 0.48 or flow_bias == "SHORT":
+            event = "SHORT SQUEEZE ABSORBED"
+            score -= 10
+            blocks.append("LONG")
+            notes.append("памп поглинули — новий лонг тільки після ретесту")
+
+    if score >= 12:
+        bias = "LONG"
+    elif score <= -12:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "event": event,
+        "blocks": sorted(set(blocks)),
+        "vol_ratio": round(vol_ratio, 2),
+        "move_1_pct": round(move_1, 3),
+        "move_6_pct": round(move_6, 3),
+        "note": "; ".join(notes[:3]) if notes else "ліквідаційного тиску не видно",
+    }
+
+
 def market_session():
     hour = now_utc().hour
     if 12 <= hour < 20:
@@ -1181,6 +1290,7 @@ def build_context(data):
     tf1h = analyze_timeframe(data.get("candles_1h") or [], "1h")
     structure = analyze_structure(data.get("candles_15m") or [])
     flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
+    liquidity = analyze_liquidations(data.get("candles_3m") or [], data.get("candles_15m") or [], flow, structure, price)
     news_items = get_news()
     news = analyze_news(news_items)
     calendar = analyze_calendar_alerts()
@@ -1195,6 +1305,7 @@ def build_context(data):
         + tf3.get("score", 0) * 0.55
         + structure.get("score", 0) * 1.00
         + flow.get("score", 0) * 0.55
+        + liquidity.get("score", 0) * 0.75
     )
     total_score = tech_score + news.get("score", 0) * 0.35 + calendar.get("score", 0) + session.get("score", 0)
 
@@ -1216,6 +1327,7 @@ def build_context(data):
         "tf1h": tf1h,
         "structure": structure,
         "flow": flow,
+        "liquidity": liquidity,
         "news": news,
         "calendar": calendar,
         "session": session,
@@ -1239,6 +1351,7 @@ def is_late_chase(side, context):
     tf15 = context["tf15"]
     tf3 = context["tf3"]
     structure = context["structure"]
+    liquidity = context.get("liquidity") or {}
     ema20 = safe_float(tf15.get("ema20"))
     rsi15 = safe_float(tf15.get("rsi"), 50)
     move_8 = safe_float(tf15.get("move_8_pct"), 0)
@@ -1248,6 +1361,8 @@ def is_late_chase(side, context):
 
     distance_atr = abs(price - ema20) / atr15 if ema20 else 0
     if side == "LONG":
+        if "LONG" in liquidity.get("blocks", []):
+            return True, "ліквідність проти: high зняли/памп поглинули, лонг не доганяти"
         if rsi15 >= 74 and move_8 >= 0.9:
             return True, "лонг після сильного імпульсу: чекати відкат/ретест"
         if distance_atr >= 1.75 and tf3.get("state") != "LONG_STRENGTHENING":
@@ -1255,6 +1370,8 @@ def is_late_chase(side, context):
         if structure.get("phase") == "UPSIDE SWEEP":
             return True, "зверху зняли ліквідність, лонг не доганяти"
     else:
+        if "SHORT" in liquidity.get("blocks", []):
+            return True, "ліквідність проти: low зняли/дамп викупили, шорт не доганяти"
         if rsi15 <= 26 and move_8 <= -0.9:
             return True, "шорт після сильного падіння: чекати відкат/ретест"
         if distance_atr >= 1.75 and tf3.get("state") != "SHORT_STRENGTHENING":
@@ -1270,13 +1387,15 @@ def entry_confirmations(side, context):
     tf1h = context["tf1h"]
     structure = context["structure"]
     flow = context["flow"]
+    liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
-    if calendar.get("active"):
-        conflicts.append("важлива новина у найближчу годину")
     news = context["news"]
 
     confirmations = []
     conflicts = []
+
+    if calendar.get("active"):
+        conflicts.append("важлива новина у найближчу годину")
 
     if tf15.get("bias") == side:
         confirmations.append("15m за напрямом")
@@ -1302,6 +1421,13 @@ def entry_confirmations(side, context):
         confirmations.append("угоди/стакан підтримують")
     elif flow.get("bias") == opposite(side):
         conflicts.append("потік проти")
+
+    if liquidity.get("bias") == side:
+        confirmations.append("ліквідність підтримує")
+    elif liquidity.get("bias") == opposite(side):
+        conflicts.append("ліквідність проти")
+    if side in liquidity.get("blocks", []):
+        conflicts.append("після зняття ліквідності цей напрям не доганяти")
 
     if news.get("bias") == side:
         confirmations.append("новини дають паливо")
@@ -1395,12 +1521,15 @@ def evaluate_new_setup(context):
     tf15 = context["tf15"]
     structure = context["structure"]
     flow = context["flow"]
+    liquidity = context.get("liquidity") or {}
+    calendar = context.get("calendar") or {}
 
     trigger_ok = (
         tf3.get("bias") == side
         and tf15.get("bias") in [side, "NEUTRAL"]
         and structure.get("bias") in [side, "NEUTRAL"]
         and flow.get("bias") != opposite(side)
+        and side not in liquidity.get("blocks", [])
     )
     trend_ok = tf15.get("bias") == side or (tf15.get("bias") == "NEUTRAL" and structure.get("bias") == side)
     hard_conflict = len(conflicts) >= 3 or "сильні новини проти" in conflicts
@@ -1653,6 +1782,7 @@ def context_lines(context):
         f"<b>3m:</b> {side_word(context['tf3'].get('bias'))} ({context['tf3'].get('score')}) — {context['tf3'].get('note')}",
         f"<b>Структура:</b> {side_word(context['structure'].get('bias'))} — {context['structure'].get('phase')} | {context['structure'].get('note')}",
         f"<b>Потік:</b> {side_word(context['flow'].get('bias'))} ({context['flow'].get('score')}) — {context['flow'].get('note')}",
+        f"<b>Ліквідації:</b> {side_word(context['liquidity'].get('bias'))} ({context['liquidity'].get('score')}) — {context['liquidity'].get('event')} | {context['liquidity'].get('note')}",
         f"<b>Новини:</b> {side_word(context['news'].get('bias'))} ({context['news'].get('score')}) — {context['news'].get('top')[:150]}",
     ]
     calendar = context.get("calendar") or {}
@@ -1866,6 +1996,7 @@ def main():
             "tf1h": context["tf1h"],
             "structure": context["structure"],
             "flow": context["flow"],
+            "liquidity": context["liquidity"],
             "news": {
                 "bias": context["news"]["bias"],
                 "score": context["news"]["score"],
