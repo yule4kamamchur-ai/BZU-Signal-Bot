@@ -1,36 +1,3 @@
-"""
-╔══════════════════════════════════════════════════════════════════════╗
-║          BZU PROFESSIONAL SIGNAL BOT  — VERSION 3.0                 ║
-║          Complete rewrite. Professional trading architecture.        ║
-╠══════════════════════════════════════════════════════════════════════╣
-║  ARCHITECTURE LAYERS (executed in order):                           ║
-║                                                                      ║
-║  L0  Environment / Config                                            ║
-║  L1  Market Data  (OKX REST + fallback)                              ║
-║  L2  Core Indicators  (EMA, RSI, ATR, VWAP, BBands)                 ║
-║  L3  Market Regime  (Trend / Range / Volatile / Breakout)            ║
-║  L4  Multi-TF Trend Alignment  (3m / 15m / 1h)                      ║
-║  L5  Price Structure  (Swing HH/HL/LH/LL, BOS, CHoCH, FVG)         ║
-║  L6  Liquidity Analysis  (sweeps, imbalances, stop clusters)         ║
-║  L7  Order Flow  (delta, book imbalance, large prints)               ║
-║  L8  Fundamental Filter  (news decay, calendar blackout)             ║
-║  L9  Entry Engine  (confluence gate → precise entry zone)            ║
-║  L10 Trade Plan Builder  (entry / stop / TP1-3 with R:R check)       ║
-║  L11 Active Trade Manager  (trailing, partial exit, exit logic)      ║
-║  L12 Message Composer  (Telegram HTML)                               ║
-║  L13 Persistence  (state, journal, atomic writes)                    ║
-╚══════════════════════════════════════════════════════════════════════╝
-
-PROFESSIONAL RULES EMBEDDED IN CODE:
-  • Entry only when REGIME is not CHOPPY and TF alignment >= 2/3
-  • Stop always behind a structural level (swing / FVG edge), never arbitrary ATR multiple
-  • Minimum R:R 2.0 for TP1; 3.0 for TP2; 4.5 for TP3
-  • Late-chase detection: if price > 1.5× ATR from EMA20 → no entry, wait retest
-  • News blackout: if high-impact event within 45 min → quality cap 50
-  • Trailing stop: moves to break-even after TP1, trails 50% of swing after TP2
-  • No new entry in same direction if previous same-direction trade closed at stop
-"""
-
 import html
 import json
 import math
@@ -42,912 +9,1250 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from statistics import mean, stdev
+from statistics import mean
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 import requests
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L0 — ENVIRONMENT / CONFIG
-# ══════════════════════════════════════════════════════════════════════
+# ==========================================================
+# BZU PROFESSIONAL SIGNAL BOT
+# ==========================================================
+# Core idea:
+# 1. Price action is the base.
+# 2. News is fuel/filter, not a standalone trade.
+# 3. If the bot gives an entry, the next runs must manage that trade until
+#    HOLD / PROTECT / EXIT / TP / STOP. A trade is never replaced by WAIT.
+# ==========================================================
 
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-OKX_INST_ID  = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-STATE_FILE   = os.getenv("SIGNAL_MEMORY_FILE",  os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
+OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
+STATE_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
 JOURNAL_FILE = os.getenv("SIGNAL_JOURNAL_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "signal_journal.json"))
 
-LEVERAGE           = float(os.getenv("POSITION_LEVERAGE",   "10")  or 10)
-ENTRY_QUALITY_MIN  = int(os.getenv("ENTRY_QUALITY_MIN",     "72")  or 72)   # strict: all gates must pass
-RISKY_QUALITY_MIN  = int(os.getenv("RISKY_QUALITY_MIN",     "64")  or 64)   # early entry: most gates pass
-MAX_HISTORY        = int(os.getenv("SIGNAL_HISTORY_LIMIT",  "80")  or 80)
-MAX_JOURNAL        = int(os.getenv("SIGNAL_JOURNAL_LIMIT",  "500") or 500)
-REQUEST_TIMEOUT    = int(os.getenv("REQUEST_TIMEOUT",       "12")  or 12)
+LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "10") or 10)
+ENTRY_QUALITY_MIN = int(os.getenv("ENTRY_QUALITY_MIN", "68") or 68)
+RISKY_QUALITY_MIN = int(os.getenv("RISKY_QUALITY_MIN", "62") or 62)
+MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "80") or 80)
+MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "500") or 500)
 
-# Risk / reward thresholds — do NOT loosen these
-MAX_STOP_PCT   = float(os.getenv("MAX_STOP_DISTANCE_PCT",  "2.20") or 2.20)
-MIN_TP1_RR     = float(os.getenv("MIN_TP1_RR",  "2.0") or 2.0)   # minimum reward-to-risk at TP1
-MIN_TP2_RR     = float(os.getenv("MIN_TP2_RR",  "3.0") or 3.0)
-MIN_TP3_RR     = float(os.getenv("MIN_TP3_RR",  "4.5") or 4.5)
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
+UA_TIMEZONE_LABEL = os.getenv("TIMEZONE_LABEL", "UTC")
 
-# Calendar
-IMPORTANT_EVENT_WINDOW_MINUTES = int(os.getenv("IMPORTANT_EVENT_WINDOW_MINUTES", "45") or 45)
-MANUAL_IMPORTANT_EVENTS        = os.getenv("IMPORTANT_EVENTS", "")
-
-EIA_WPSR_URL          = "https://www.eia.gov/petroleum/supply/weekly/index.php"
+EIA_WPSR_URL = "https://www.eia.gov/petroleum/supply/weekly/index.php"
 EIA_WPSR_SCHEDULE_URL = "https://www.eia.gov/petroleum/supply/weekly/schedule.php"
 FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+IMPORTANT_EVENT_WINDOW_MINUTES = int(os.getenv("IMPORTANT_EVENT_WINDOW_MINUTES", "60") or 60)
+MANUAL_IMPORTANT_EVENTS = os.getenv("IMPORTANT_EVENTS", "")
 
-# ── News keyword tables ────────────────────────────────────────────────
-BULLISH_PHRASES = [
-    "inventory draw", "crude draw", "stockpiles fell", "stockpiles decline",
-    "supply disruption", "supply risk", "hormuz", "new sanctions", "fresh sanctions",
-    "opec cut", "production cut", "output cut", "attack on", "strike on",
-    "war escalat", "talks collapse", "talks fail", "запаси впали",
-    "скорочення запасів", "нові санкції", "атака", "удар", "ормуз",
-    "перебої постачання", "pipeline disruption", "force majeure",
-]
-BEARISH_PHRASES = [
-    "inventory build", "crude build", "stockpiles rose", "stockpiles rise",
-    "ceasefire", "cease-fire", "truce", "peace deal", "talks progress",
-    "sanctions relief", "sanctions lifted", "output increase", "production increase",
-    "opec increase", "demand weak", "oversupply", "recession fear", "demand destruction",
-    "запаси зросли", "припинення вогню", "перемир", "мирна угода",
-    "послаблення санкцій", "збільшення видобутку", "слабкий попит",
-    "recessionary", "demand slowdown",
-]
-HIGH_IMPACT_SOURCES = ["reuters", "bloomberg", "ap ", "associated press", "wsj ", "ft ", "financial times"]
-HIGH_IMPACT_TERMS   = [
-    "eia", "api", "opec", "opec+", "fed", "powell", "fomc", "cpi",
-    "iran", "hormuz", "sanctions", "inventory", "stockpiles",
-    "brent", "crude", "tariff", "trump", "nato",
-]
+# BZU is volatile. The trade plan should not use tiny scalp targets.
+# For entry near 92 this gives roughly:
+# LONG  stop not farther than ~90.05, TP1 not closer than ~94.00.
+# SHORT stop not farther than ~93.95, TP1 not closer than ~90.05.
+MAX_STOP_DISTANCE_PCT = float(os.getenv("MAX_STOP_DISTANCE_PCT", "2.12") or 2.12)
+MIN_TP1_DISTANCE_PCT = float(os.getenv("MIN_TP1_DISTANCE_PCT", "2.18") or 2.18)
+MIN_TP2_DISTANCE_PCT = float(os.getenv("MIN_TP2_DISTANCE_PCT", "3.30") or 3.30)
+MIN_TP3_DISTANCE_PCT = float(os.getenv("MIN_TP3_DISTANCE_PCT", "5.00") or 5.00)
+
 
 NEWS_QUERIES = [
-    "Brent crude oil Reuters OPEC EIA inventories",
-    "oil prices Brent crude today energy",
+    "Brent crude oil Reuters OPEC EIA inventories sanctions Hormuz",
+    "oil prices Brent crude today Reuters energy",
     "EIA crude oil inventories API crude draw build",
     "OPEC production cut increase crude oil",
-    "Iran sanctions Hormuz oil supply",
-    "Fed Powell dollar yields oil",
+    "Iran sanctions Hormuz oil supply disruption",
+    "Fed Powell dollar yields oil prices",
 ]
 
+LONG_NEWS_PHRASES = [
+    "inventory draw", "crude draw", "stockpiles fell", "stockpiles decline",
+    "supply disruption", "supply risk", "hormuz", "new sanctions",
+    "fresh sanctions", "opec cut", "production cut", "output cut",
+    "attack", "strike", "war escalates", "talks fail",
+    "запаси впали", "скорочення запасів", "нові санкції", "атака",
+    "удар", "ормуз", "перебої постачання",
+]
 
-# ══════════════════════════════════════════════════════════════════════
-# SHARED DATA STRUCTURES
-# ══════════════════════════════════════════════════════════════════════
+SHORT_NEWS_PHRASES = [
+    "inventory build", "crude build", "stockpiles rose", "stockpiles rise",
+    "ceasefire", "cease-fire", "truce", "peace deal", "talks progress",
+    "sanctions relief", "sanctions lifted", "output increase",
+    "production increase", "opec increase", "demand weak", "oversupply",
+    "запаси зросли", "припинення вогню", "перемир", "мирна угода",
+    "послаблення санкцій", "збільшення видобутку", "слабкий попит",
+]
+
+HIGH_IMPACT_WORDS = [
+    "reuters", "eia", "api", "opec", "opec+", "fed", "powell", "cpi",
+    "fomc", "iran", "hormuz", "sanctions", "inventory", "stockpiles",
+    "brent", "crude", "oil", "tariff", "trump",
+]
+
 
 @dataclass
 class Candle:
-    ts:     int
-    open:   float
-    high:   float
-    low:    float
-    close:  float
+    ts: int
+    open: float
+    high: float
+    low: float
+    close: float
     volume: float = 0.0
 
 
 @dataclass
-class SwingPoint:
-    idx:   int
-    price: float
-    ts:    int
-    kind:  str   # "HH" | "LH" | "HL" | "LL"
-
-
-@dataclass
 class TradePlan:
-    entry:       float
-    stop:        float
-    tp1:         float
-    tp2:         float
-    tp3:         float
-    risk_pct:    float
-    rr1:         float
-    rr2:         float
-    rr3:         float
-    stop_reason: str   # "structural" | "atr-based"
-    tp_method:   str   # "structural" | "rr-based"
+    entry: float
+    stop: float
+    tp1: float
+    tp2: float
+    tp3: float
+    risk_pct: float
+    rr1: float
+    rr2: float
+    rr3: float
+    invalidation: str
 
 
 @dataclass
 class ActiveTrade:
-    id:              str
-    side:            str
-    opened_at:       str
-    entry:           float
-    stop_initial:    float
-    stop_current:    float
-    tp1:             float
-    tp2:             float
-    tp3:             float
-    quality:         int
-    status:          str  = "OPEN"
-    tp1_hit:         bool = False
-    tp2_hit:         bool = False
-    tp3_hit:         bool = False
-    best_price:      float = 0.0
-    last_action:     str  = "OPEN"
-    last_msg_key:    str  = ""
-    consecutive_stops: int = 0
-    notes:           list = field(default_factory=list)
+    id: str
+    side: str
+    opened_at: str
+    entry: float
+    stop_initial: float
+    stop_current: float
+    tp1: float
+    tp2: float
+    tp3: float
+    quality: int
+    status: str = "OPEN"
+    tp1_hit: bool = False
+    tp2_hit: bool = False
+    tp3_hit: bool = False
+    best_price: float = 0.0
+    last_action: str = "OPEN"
+    last_message_key: str = ""
+    notes: list = field(default_factory=list)
 
-
-# ══════════════════════════════════════════════════════════════════════
-# UTILITIES
-# ══════════════════════════════════════════════════════════════════════
 
 def now_utc():
     return datetime.now(timezone.utc)
 
+
 def iso_now():
     return now_utc().isoformat()
+
 
 def eastern_tz():
     return ZoneInfo("America/New_York")
 
-def et_to_utc(date_obj, hour, minute=0):
-    return datetime(date_obj.year, date_obj.month, date_obj.day,
-                    hour, minute, tzinfo=eastern_tz()).astimezone(timezone.utc)
 
-def sf(value, default=None):
+def et_to_utc(date_obj, hour, minute=0):
+    return datetime(date_obj.year, date_obj.month, date_obj.day, hour, minute, tzinfo=eastern_tz()).astimezone(timezone.utc)
+
+
+def safe_float(value, default=None):
     try:
-        return float(value) if value is not None else default
+        if value is None:
+            return default
+        return float(value)
     except Exception:
         return default
 
-def rp(value, decimals=4):
-    return round(float(value), decimals) if value is not None else None
+
+def round_price(value):
+    if value is None:
+        return None
+    return round(float(value), 4)
+
 
 def pct(a, b):
-    return (a - b) / b * 100.0 if b else 0.0
+    if not b:
+        return 0.0
+    return (a - b) / b * 100.0
+
 
 def signed_pct(side, entry, price):
     raw = pct(price, entry)
     return raw if side == "LONG" else -raw
 
-def opp(side):
+
+def side_word(side):
+    if side == "LONG":
+        return "лонг"
+    if side == "SHORT":
+        return "шорт"
+    return "нейтрально"
+
+
+def opposite(side):
     return "SHORT" if side == "LONG" else "LONG"
 
-def side_ua(side):
-    return {"LONG": "лонг", "SHORT": "шорт"}.get(side, "нейтрально")
-
-
-# ══════════════════════════════════════════════════════════════════════
-# L1 — MARKET DATA
-# ══════════════════════════════════════════════════════════════════════
 
 def http_get(url, timeout=REQUEST_TIMEOUT, retries=2):
     headers = {
-        "User-Agent": "Mozilla/5.0 BZU-Signal-Bot/3.0",
-        "Accept": "application/json, application/rss+xml, text/xml, */*",
+        "User-Agent": "Mozilla/5.0 BZU-Signal-Bot/2.0",
+        "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/html, */*",
     }
+    last_error = None
     for attempt in range(max(1, retries)):
         try:
-            r = requests.get(url, headers=headers, timeout=timeout)
-            if r.status_code < 400:
-                return r
-        except Exception as e:
-            pass
-        time.sleep(0.35 * attempt)
+            response = requests.get(url, headers=headers, timeout=timeout)
+            if response.status_code < 400:
+                return response
+            last_error = f"HTTP {response.status_code}"
+        except Exception as error:
+            last_error = str(error)
+        time.sleep(0.4 * attempt)
+    print(f"[WARN] GET failed: {url} | {last_error}")
     return None
+
 
 def http_post(url, payload, timeout=REQUEST_TIMEOUT):
-    headers = {"User-Agent": "Mozilla/5.0 BZU-Signal-Bot/3.0",
-               "Content-Type": "application/json"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 BZU-Signal-Bot/2.0",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        if r.status_code < 400:
-            return r
-    except Exception:
-        pass
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if response.status_code < 400:
+            return response
+        print(f"[WARN] POST HTTP {response.status_code}: {url}")
+    except Exception as error:
+        print(f"[WARN] POST failed: {url} | {error}")
     return None
 
-def _parse_okx_candles(rows):
+
+# ==========================================================
+# STATE
+# ==========================================================
+
+
+def atomic_json_write(path, data):
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp = path + ".tmp"
+    bak = path + ".bak"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    with open(bak, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_json(path, default):
+    try:
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else default
+    except Exception as error:
+        print(f"[WARN] JSON read failed {path}: {error}")
+        return default
+
+
+def load_state():
+    state = load_json(STATE_FILE, {"version": "pro-v2", "active_trade": None, "history": []})
+    if "active_trade" not in state:
+        state["active_trade"] = None
+    if "history" not in state or not isinstance(state["history"], list):
+        state["history"] = []
+    state["version"] = "pro-v2"
+    return state
+
+
+def save_state(state):
+    state["updated_at"] = iso_now()
+    state["history"] = (state.get("history") or [])[-MAX_HISTORY:]
+    atomic_json_write(STATE_FILE, state)
+
+
+def load_journal():
+    journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
+    journal["version"] = "pro-v2"
+    if "trades" not in journal or not isinstance(journal["trades"], list):
+        journal["trades"] = []
+    if "signals" not in journal or not isinstance(journal["signals"], list):
+        journal["signals"] = []
+    return journal
+
+
+def save_journal(journal):
+    journal["updated_at"] = iso_now()
+    journal["trades"] = (journal.get("trades") or [])[-MAX_JOURNAL:]
+    journal["signals"] = (journal.get("signals") or [])[-MAX_JOURNAL:]
+    atomic_json_write(JOURNAL_FILE, journal)
+
+
+def active_trade_from_state(state):
+    raw = (state or {}).get("active_trade")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ActiveTrade(
+            id=str(raw.get("id") or uuid.uuid4().hex[:10]),
+            side=str(raw.get("side")),
+            opened_at=str(raw.get("opened_at") or iso_now()),
+            entry=float(raw.get("entry")),
+            stop_initial=float(raw.get("stop_initial", raw.get("stop_current"))),
+            stop_current=float(raw.get("stop_current", raw.get("stop_initial"))),
+            tp1=float(raw.get("tp1")),
+            tp2=float(raw.get("tp2")),
+            tp3=float(raw.get("tp3")),
+            quality=int(raw.get("quality") or 0),
+            status=str(raw.get("status") or "OPEN"),
+            tp1_hit=bool(raw.get("tp1_hit")),
+            tp2_hit=bool(raw.get("tp2_hit")),
+            tp3_hit=bool(raw.get("tp3_hit")),
+            best_price=float(raw.get("best_price") or raw.get("entry")),
+            last_action=str(raw.get("last_action") or "OPEN"),
+            last_message_key=str(raw.get("last_message_key") or ""),
+            notes=list(raw.get("notes") or []),
+        )
+    except Exception as error:
+        print(f"[WARN] active trade migration failed: {error}")
+        return None
+
+
+def store_active_trade(state, trade):
+    state["active_trade"] = asdict(trade) if trade else None
+
+
+def append_history(state, item):
+    history = state.get("history") or []
+    item["time"] = iso_now()
+    history.append(item)
+    state["history"] = history[-MAX_HISTORY:]
+
+
+# ==========================================================
+# MARKET DATA
+# ==========================================================
+
+
+def parse_okx_candles(rows):
     candles = []
-    for row in (rows or []):
+    for row in rows or []:
         try:
             candles.append(Candle(
-                ts=int(row[0]), open=float(row[1]), high=float(row[2]),
-                low=float(row[3]), close=float(row[4]), volume=float(row[5] or 0),
+                ts=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5] or 0),
             ))
         except Exception:
             continue
     candles.sort(key=lambda c: c.ts)
     return candles
 
-def get_okx_candles(bar="15m", limit=200):
+
+def get_okx_candles(bar="15m", limit=160):
     url = f"https://www.okx.com/api/v5/market/candles?instId={OKX_INST_ID}&bar={bar}&limit={limit}"
-    r = http_get(url)
-    if not r:
+    response = http_get(url)
+    if not response:
         return []
     try:
-        return _parse_okx_candles(r.json().get("data", []))
-    except Exception:
+        data = response.json().get("data", [])
+        return parse_okx_candles(data)
+    except Exception as error:
+        print(f"[WARN] OKX candles parse failed {bar}: {error}")
         return []
+
 
 def get_okx_ticker():
     url = f"https://www.okx.com/api/v5/market/ticker?instId={OKX_INST_ID}"
-    r = http_get(url)
-    if not r:
+    response = http_get(url)
+    if not response:
         return {}
     try:
-        row = r.json().get("data", [{}])[0]
-        last    = float(row.get("last") or 0)
+        rows = response.json().get("data", [])
+        if not rows:
+            return {}
+        row = rows[0]
+        last = float(row.get("last") or row.get("lastSz") or 0)
         open24h = float(row.get("open24h") or 0)
+        change = pct(last, open24h) if open24h else 0
         return {
-            "price":     last,
-            "change24h": pct(last, open24h) if open24h else 0,
-            "volume24h": sf(row.get("volCcy24h"), 0),
-            "source":    "OKX",
+            "price": last,
+            "change24h": change,
+            "volume24h": safe_float(row.get("volCcy24h"), 0),
+            "source": "OKX",
+            "symbol": OKX_INST_ID,
         }
-    except Exception:
+    except Exception as error:
+        print(f"[WARN] OKX ticker parse failed: {error}")
         return {}
 
-def get_okx_trades(limit=150):
+
+def get_okx_trades(limit=120):
     url = f"https://www.okx.com/api/v5/market/trades?instId={OKX_INST_ID}&limit={limit}"
-    r = http_get(url)
-    if not r:
+    response = http_get(url)
+    if not response:
         return []
     try:
-        return [
-            {"price": float(t.get("px") or 0),
-             "size":  float(t.get("sz") or 0),
-             "side":  str(t.get("side") or "").lower(),
-             "ts":    int(t.get("ts") or 0)}
-            for t in r.json().get("data", [])
-        ]
-    except Exception:
+        trades = []
+        for row in response.json().get("data", []):
+            trades.append({
+                "price": float(row.get("px") or 0),
+                "size": float(row.get("sz") or 0),
+                "side": str(row.get("side") or "").lower(),
+                "ts": int(row.get("ts") or 0),
+            })
+        return trades
+    except Exception as error:
+        print(f"[WARN] OKX trades parse failed: {error}")
         return []
+
 
 def get_okx_book(depth=50):
     url = f"https://www.okx.com/api/v5/market/books?instId={OKX_INST_ID}&sz={depth}"
-    r = http_get(url)
-    if not r:
+    response = http_get(url)
+    if not response:
         return {"bids": [], "asks": []}
     try:
-        raw = r.json().get("data", [{}])[0]
-        bids = [(float(x[0]), float(x[1])) for x in raw.get("bids", []) if len(x) >= 2]
-        asks = [(float(x[0]), float(x[1])) for x in raw.get("asks", []) if len(x) >= 2]
+        rows = response.json().get("data", [])
+        if not rows:
+            return {"bids": [], "asks": []}
+        book = rows[0]
+        bids = [(float(x[0]), float(x[1])) for x in book.get("bids", []) if len(x) >= 2]
+        asks = [(float(x[0]), float(x[1])) for x in book.get("asks", []) if len(x) >= 2]
         return {"bids": bids, "asks": asks}
-    except Exception:
+    except Exception as error:
+        print(f"[WARN] OKX book parse failed: {error}")
         return {"bids": [], "asks": []}
 
-def get_tv_fallback():
+
+def get_okx_open_interest():
+    """Current futures/swap open interest from OKX.
+
+    This is used as a derivatives confirmation layer:
+    - price up + OI up = stronger real LONG participation
+    - price down + OI up = stronger real SHORT participation
+    - price moves with OI down = mostly closing/liquidation, do not chase late
+    """
+    url = f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId={OKX_INST_ID}"
+    response = http_get(url, timeout=8, retries=1)
+    if not response:
+        return {}
+    try:
+        rows = response.json().get("data", [])
+        if not rows:
+            return {}
+        row = rows[0]
+        return {
+            "oi": safe_float(row.get("oi"), 0),
+            "oi_ccy": safe_float(row.get("oiCcy"), 0),
+            "ts": int(row.get("ts") or 0),
+            "source": "OKX open interest",
+        }
+    except Exception as error:
+        print(f"[WARN] OKX open interest parse failed: {error}")
+        return {}
+
+
+def get_okx_funding_rate():
+    """Current funding rate from OKX.
+
+    Funding is not a standalone entry. It is a risk/positioning filter:
+    very positive funding warns against chasing LONG; very negative funding warns
+    against chasing SHORT, especially after a squeeze/liquidation move.
+    """
+    url = f"https://www.okx.com/api/v5/public/funding-rate?instId={OKX_INST_ID}"
+    response = http_get(url, timeout=8, retries=1)
+    if not response:
+        return {}
+    try:
+        rows = response.json().get("data", [])
+        if not rows:
+            return {}
+        row = rows[0]
+        return {
+            "funding_rate": safe_float(row.get("fundingRate"), 0),
+            "next_funding_rate": safe_float(row.get("nextFundingRate"), None),
+            "funding_time": int(row.get("fundingTime") or 0),
+            "source": "OKX funding",
+        }
+    except Exception as error:
+        print(f"[WARN] OKX funding parse failed: {error}")
+        return {}
+
+
+def get_tradingview_price_fallback():
     url = "https://scanner.tradingview.com/crypto/scan"
     payload = {
         "symbols": {"tickers": ["BINANCE:BZUSDT.P", "BINANCE:BZUSDT"], "query": {"types": []}},
         "columns": ["close", "change", "volume"],
     }
-    r = http_post(url, payload)
-    if not r:
+    response = http_post(url, payload)
+    if not response:
         return {}
     try:
-        rows = r.json().get("data", [])
+        rows = response.json().get("data", [])
         if not rows:
             return {}
-        v = rows[0].get("d") or []
-        return {"price": float(v[0]), "change24h": sf(v[1], 0),
-                "volume24h": sf(v[2], 0), "source": "TradingView"}
-    except Exception:
+        values = rows[0].get("d") or []
+        return {
+            "price": float(values[0]),
+            "change24h": safe_float(values[1], 0),
+            "volume24h": safe_float(values[2], 0),
+            "source": "TradingView",
+            "symbol": rows[0].get("s", "BINANCE:BZUSDT.P"),
+        }
+    except Exception as error:
+        print(f"[WARN] TradingView fallback parse failed: {error}")
         return {}
 
+
 def collect_market_data():
-    """Gather all raw market data; return structured dict."""
-    c3   = get_okx_candles("3m",  220)
-    c15  = get_okx_candles("15m", 200)
-    c1h  = get_okx_candles("1H",  150)
-    c4h  = get_okx_candles("4H",  100)   # NEW: 4h for macro bias
-    tick = get_okx_ticker() or get_tv_fallback()
-
-    if not tick and c15:
-        tick = {"price": c15[-1].close, "change24h": pct(c15[-1].close, c15[0].open),
-                "volume24h": 0, "source": "candles"}
-
+    candles_3m = get_okx_candles("3m", 220)
+    candles_15m = get_okx_candles("15m", 180)
+    candles_1h = get_okx_candles("1H", 140)
+    candles_4h = get_okx_candles("4H", 140)
+    ticker = get_okx_ticker() or get_tradingview_price_fallback()
+    if not ticker and candles_15m:
+        ticker = {
+            "price": candles_15m[-1].close,
+            "change24h": pct(candles_15m[-1].close, candles_15m[0].open),
+            "volume24h": 0,
+            "source": "OKX candles",
+            "symbol": OKX_INST_ID,
+        }
     return {
-        "ticker":      tick,
-        "candles_3m":  c3,
-        "candles_15m": c15,
-        "candles_1h":  c1h,
-        "candles_4h":  c4h,
-        "trades":      get_okx_trades(),
-        "book":        get_okx_book(),
+        "ticker": ticker,
+        "candles_3m": candles_3m,
+        "candles_15m": candles_15m,
+        "candles_1h": candles_1h,
+        "candles_4h": candles_4h,
+        "trades": get_okx_trades(),
+        "book": get_okx_book(),
+        "open_interest": get_okx_open_interest(),
+        "funding": get_okx_funding_rate(),
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L2 — CORE INDICATORS
-# ══════════════════════════════════════════════════════════════════════
+# ==========================================================
+# INDICATORS / CONTEXT
+# ==========================================================
+
 
 def ema(values, period):
-    vals = [float(x) for x in values if x is not None]
-    if not vals:
+    values = [float(x) for x in values if x is not None]
+    if not values:
         return None
     k = 2 / (period + 1)
-    r = vals[0]
-    for v in vals[1:]:
-        r = v * k + r * (1 - k)
-    return r
+    result = values[0]
+    for value in values[1:]:
+        result = value * k + result * (1 - k)
+    return result
 
-def ema_series(values, period):
-    """Return full EMA series, same length as input."""
-    vals = [float(x) for x in values if x is not None]
-    if not vals:
-        return []
-    k = 2 / (period + 1)
-    out = [vals[0]]
-    for v in vals[1:]:
-        out.append(v * k + out[-1] * (1 - k))
-    return out
 
 def rsi(values, period=14):
-    vals = [float(x) for x in values if x is not None]
-    if len(vals) <= period:
+    values = [float(x) for x in values if x is not None]
+    if len(values) <= period:
         return 50.0
-    gains, losses = [], []
-    for i in range(1, len(vals)):
-        d = vals[i] - vals[i - 1]
-        gains.append(max(d, 0));  losses.append(abs(min(d, 0)))
-    ag = mean(gains[-period:]) if gains[-period:] else 0
-    al = mean(losses[-period:]) if losses[-period:] else 0
-    if al == 0:
+    gains = []
+    losses = []
+    for i in range(1, len(values)):
+        diff = values[i] - values[i - 1]
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
+    avg_gain = mean(gains[-period:]) if gains[-period:] else 0
+    avg_loss = mean(losses[-period:]) if losses[-period:] else 0
+    if avg_loss == 0:
         return 100.0
-    return 100 - (100 / (1 + ag / al))
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
 
 def atr(candles, period=14):
     if not candles or len(candles) < 2:
         return None
     trs = []
     for i in range(1, len(candles)):
-        c, p = candles[i], candles[i - 1]
-        trs.append(max(c.high - c.low, abs(c.high - p.close), abs(c.low - p.close)))
+        c = candles[i]
+        prev = candles[i - 1]
+        trs.append(max(c.high - c.low, abs(c.high - prev.close), abs(c.low - prev.close)))
     sample = trs[-period:]
     return mean(sample) if sample else None
 
-def atr_series(candles, period=14):
-    """ATR at each bar (same length as candles, first period-1 = None)."""
-    if len(candles) < 2:
-        return [None] * len(candles)
-    trs = [None]
-    for i in range(1, len(candles)):
-        c, p = candles[i], candles[i - 1]
-        trs.append(max(c.high - c.low, abs(c.high - p.close), abs(c.low - p.close)))
-    out = [None] * period
-    for i in range(period, len(trs)):
-        sample = [x for x in trs[max(0, i - period + 1): i + 1] if x is not None]
-        out.append(mean(sample) if sample else None)
-    return out
 
-def bollinger(values, period=20, k=2.0):
-    vals = [float(x) for x in values if x is not None]
-    if len(vals) < period:
-        return None, None, None
-    sample = vals[-period:]
-    mid  = mean(sample)
-    try:
-        sd = stdev(sample)
-    except Exception:
-        sd = 0
-    return mid - k * sd, mid, mid + k * sd
-
-def vwap(candles):
-    """Rolling session VWAP using available candles."""
-    num = den = 0.0
-    for c in candles:
-        tp = (c.high + c.low + c.close) / 3
-        num += tp * c.volume
-        den += c.volume
-    return num / den if den else None
-
-def body_ratio(c):
-    rng = max(c.high - c.low, 1e-9)
-    return abs(c.close - c.open) / rng
-
-def close_loc(c):
-    rng = max(c.high - c.low, 1e-9)
-    return (c.close - c.low) / rng
+def slope_pct(values, bars=12):
+    values = [float(v) for v in values if v is not None]
+    if len(values) < bars + 1:
+        return 0.0
+    start = mean(values[-bars - 1:-bars + 2])
+    end = mean(values[-3:])
+    return pct(end, start)
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L3 — MARKET REGIME DETECTION
-# ══════════════════════════════════════════════════════════════════════
-# Regime drives every downstream decision.
-# TREND_UP / TREND_DOWN → entry in trend direction
-# BREAKOUT             → aggressive entries allowed
-# RANGE                → entry only near range edges with confirmation
-# VOLATILE / CHOPPY    → no new entries; manage existing only
+def candle_body_ratio(candle):
+    rng = max(candle.high - candle.low, 1e-9)
+    return abs(candle.close - candle.open) / rng
 
-def detect_regime(candles, label="15m"):
-    """
-    Returns:
-      regime: TREND_UP | TREND_DOWN | RANGE | VOLATILE | CHOPPY | BREAKOUT
-      score:  float  (positive = bullish lean, negative = bearish lean)
-    """
-    if not candles or len(candles) < 60:
-        return {"regime": "INSUFFICIENT_DATA", "score": 0, "note": "мало даних"}
+
+def close_location(candle):
+    rng = max(candle.high - candle.low, 1e-9)
+    return (candle.close - candle.low) / rng
+
+
+def analyze_timeframe(candles, label):
+    if not candles or len(candles) < 30:
+        return {
+            "label": label, "available": False, "bias": "NEUTRAL", "score": 0,
+            "trend": "NO DATA", "note": "даних мало",
+        }
 
     closes = [c.close for c in candles]
-    highs  = [c.high  for c in candles]
-    lows   = [c.low   for c in candles]
-
-    atr14      = atr(candles, 14) or closes[-1] * 0.006
-    atr14_slow = atr(candles[-60:], 28) or atr14  # slower ATR for volatility ratio
-    vol_ratio  = atr14 / atr14_slow if atr14_slow else 1.0
-
-    ema8   = ema_series(closes, 8)
-    ema21  = ema_series(closes, 21)
-    ema55  = ema_series(closes, 55)
-
-    e8_now, e21_now, e55_now = ema8[-1], ema21[-1], ema55[-1]
-
-    # ADX proxy: directional strength via ema slope
-    slope_short = (ema8[-1]  - ema8[-12])  / atr14 if len(ema8)  >= 12 else 0
-    slope_long  = (ema21[-1] - ema21[-20]) / atr14 if len(ema21) >= 20 else 0
-
-    # Choppiness Index proxy: range / sum of |bar moves|
-    recent = candles[-20:]
-    rng20  = max(highs[-20:]) - min(lows[-20:]) if len(highs) >= 20 else 0
-    bar_moves = sum(abs(c.close - c.open) for c in recent) or 1e-9
-    chop = rng20 / bar_moves  # <1.2 = trending; >1.8 = choppy
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    last = candles[-1]
+    ema20 = ema(closes[-60:], 20)
+    ema50 = ema(closes[-80:], 50)
+    rsi14 = rsi(closes, 14)
+    atr14 = atr(candles, 14) or max(last.close * 0.004, 0.01)
+    slope = slope_pct(closes, 12)
+    move_8 = pct(closes[-1], closes[-9]) if len(closes) >= 9 else 0
+    range_20 = max(highs[-20:]) - min(lows[-20:])
+    atr_range = range_20 / atr14 if atr14 else 0
 
     score = 0
-    notes = []
+    reasons = []
 
-    # ── EMA stack alignment ───────────────────────────────────────────
-    if closes[-1] > e8_now > e21_now > e55_now:
-        score += 35; notes.append("EMA стек вгору")
-    elif closes[-1] < e8_now < e21_now < e55_now:
-        score -= 35; notes.append("EMA стек вниз")
-    elif e8_now > e21_now:
-        score += 12
-    elif e8_now < e21_now:
-        score -= 12
+    if ema20 and ema50:
+        if last.close > ema20 > ema50:
+            score += 24
+            reasons.append("ціна вище EMA20/50")
+        elif last.close < ema20 < ema50:
+            score -= 24
+            reasons.append("ціна нижче EMA20/50")
+        elif ema20 > ema50:
+            score += 8
+            reasons.append("EMA20 вище EMA50")
+        elif ema20 < ema50:
+            score -= 8
+            reasons.append("EMA20 нижче EMA50")
 
-    # ── Slope strength ────────────────────────────────────────────────
-    score += int(slope_short * 14)
-    score += int(slope_long  * 8)
+    if slope >= 0.35:
+        score += 18
+        reasons.append("нахил вгору")
+    elif slope <= -0.35:
+        score -= 18
+        reasons.append("нахил вниз")
+    elif slope >= 0.12:
+        score += 8
+    elif slope <= -0.12:
+        score -= 8
 
-    # ── Volatility adjustment ─────────────────────────────────────────
-    if vol_ratio >= 1.8:
-        notes.append(f"волатильність висока x{round(vol_ratio, 1)}")
-    if vol_ratio >= 2.5:
-        return {"regime": "VOLATILE", "score": 0, "vol_ratio": round(vol_ratio, 2),
-                "atr": rp(atr14), "chop": round(chop, 2),
-                "note": f"екстремальна волатильність x{round(vol_ratio, 1)} — немає нових входів"}
+    if move_8 >= 0.45:
+        score += 14
+        reasons.append("імпульс вгору")
+    elif move_8 <= -0.45:
+        score -= 14
+        reasons.append("імпульс вниз")
 
-    # ── Choppiness ───────────────────────────────────────────────────
-    if chop >= 1.85 and abs(slope_short) < 0.35:
-        return {"regime": "CHOPPY", "score": 0, "vol_ratio": round(vol_ratio, 2),
-                "atr": rp(atr14), "chop": round(chop, 2),
-                "note": "ціна рубає боковик — немає нових входів"}
+    if rsi14 >= 76:
+        score -= 10
+        reasons.append("перекупленість")
+    elif rsi14 <= 24:
+        score += 10
+        reasons.append("перепроданість")
 
-    # ── Range detection ───────────────────────────────────────────────
-    range_band = rng20 / (atr14 * 20) if atr14 else 0   # ideally ~1.5-2.5 in trend
-    if range_band < 1.4 and abs(slope_long) < 0.25:
-        notes.append("вузький діапазон/боковик")
-        if score >= 15:
-            regime = "TREND_UP"
-        elif score <= -15:
-            regime = "TREND_DOWN"
-        else:
-            regime = "RANGE"
-        return {"regime": regime, "score": int(score), "vol_ratio": round(vol_ratio, 2),
-                "atr": rp(atr14), "chop": round(chop, 2),
-                "note": "; ".join(notes)}
+    if candle_body_ratio(last) >= 0.55:
+        if last.close > last.open and close_location(last) >= 0.62:
+            score += 7
+        elif last.close < last.open and close_location(last) <= 0.38:
+            score -= 7
 
-    # ── Breakout ──────────────────────────────────────────────────────
-    prev_rng = max(highs[-40:-20]) - min(lows[-40:-20]) if len(highs) >= 40 else rng20
-    if rng20 >= prev_rng * 1.6 and abs(score) >= 20:
-        notes.append("пробій з розширенням діапазону")
-        return {"regime": "BREAKOUT", "score": int(score), "vol_ratio": round(vol_ratio, 2),
-                "atr": rp(atr14), "chop": round(chop, 2),
-                "note": "; ".join(notes)}
+    if atr_range < 2.3:
+        score = int(score * 0.75)
+        reasons.append("стиснення/боковик")
 
-    # ── Standard trend ────────────────────────────────────────────────
-    if score >= 22:
-        regime = "TREND_UP"
-    elif score <= -22:
-        regime = "TREND_DOWN"
+    if score >= 26:
+        bias = "LONG"
+    elif score <= -26:
+        bias = "SHORT"
     else:
-        regime = "RANGE"
+        bias = "NEUTRAL"
+
+    trend = bias
+    if atr_range < 2.0:
+        trend = "RANGE"
 
     return {
-        "regime":    regime,
-        "score":     int(score),
-        "vol_ratio": round(vol_ratio, 2),
-        "atr":       rp(atr14),
-        "chop":      round(chop, 2),
-        "e8":        rp(e8_now),
-        "e21":       rp(e21_now),
-        "e55":       rp(e55_now),
-        "note":      "; ".join(notes) if notes else "стандартний режим",
+        "label": label,
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "trend": trend,
+        "close": last.close,
+        "ema20": round_price(ema20),
+        "ema50": round_price(ema50),
+        "rsi": round(rsi14, 1),
+        "atr": round_price(atr14),
+        "slope_pct": round(slope, 3),
+        "move_8_pct": round(move_8, 3),
+        "range_atr": round(atr_range, 2),
+        "note": "; ".join(reasons[:4]) if reasons else "без сильного перекосу",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L4 — MULTI-TIMEFRAME TREND ALIGNMENT
-# ══════════════════════════════════════════════════════════════════════
+def swing_points(candles, lookback=2):
+    highs = []
+    lows = []
+    if not candles or len(candles) < lookback * 2 + 8:
+        return highs, lows
+    for i in range(lookback, len(candles) - lookback):
+        c = candles[i]
+        left = candles[i - lookback:i]
+        right = candles[i + 1:i + 1 + lookback]
+        if all(c.high > x.high for x in left + right):
+            highs.append({"idx": i, "price": c.high, "ts": c.ts})
+        if all(c.low < x.low for x in left + right):
+            lows.append({"idx": i, "price": c.low, "ts": c.ts})
+    return highs, lows
 
-def tf_bias(candles, label):
-    """Single-TF directional bias with weighted confidence 0-100."""
-    if not candles or len(candles) < 40:
-        return {"label": label, "bias": "NEUTRAL", "confidence": 0,
-                "rsi": 50, "note": "мало даних"}
 
-    closes = [c.close for c in candles]
-    last   = candles[-1]
-    atr14  = atr(candles, 14) or last.close * 0.006
-    rsi14  = rsi(closes, 14)
-    e20    = ema(closes[-80:],  20)
-    e50    = ema(closes[-100:], 50)
-    e200   = ema(closes,        200) if len(closes) >= 200 else None
-    bb_lo, bb_mid, bb_hi = bollinger(closes, 20)
-    vwap_v = vwap(candles[-48:])  # ~12h session proxy
+def analyze_structure(candles):
+    if not candles or len(candles) < 35:
+        return {"available": False, "bias": "NEUTRAL", "score": 0, "phase": "NO DATA", "note": "структура недоступна"}
+
+    recent = candles[-32:]
+    last = recent[-1]
+    prev = recent[-2]
+    highs, lows = swing_points(candles[-80:], 2)
+    recent_high = max(c.high for c in recent[:-1])
+    recent_low = min(c.low for c in recent[:-1])
+    swing_high = highs[-1]["price"] if highs else recent_high
+    swing_low = lows[-1]["price"] if lows else recent_low
+    atr14 = atr(candles, 14) or last.close * 0.005
 
     score = 0
     notes = []
+    phase = "RANGE / WAIT"
 
-    # ── Price vs. EMAs ───────────────────────────────────────────────
-    if e20 and e50:
-        if last.close > e20 > e50:
-            score += 28; notes.append("ціна > EMA20 > EMA50")
-        elif last.close < e20 < e50:
-            score -= 28; notes.append("ціна < EMA20 < EMA50")
-        elif last.close > e20:
-            score += 10
-        elif last.close < e20:
-            score -= 10
+    if last.close > swing_high:
+        score += 32
+        phase = "BOS LONG"
+        notes.append(f"закриття вище swing high {round_price(swing_high)}")
+    elif last.close < swing_low:
+        score -= 32
+        phase = "BOS SHORT"
+        notes.append(f"закриття нижче swing low {round_price(swing_low)}")
 
-    if e200:
-        if last.close > e200:
-            score += 10; notes.append("над EMA200")
-        else:
-            score -= 10; notes.append("під EMA200")
+    if last.high > recent_high and last.close < recent_high:
+        score -= 22
+        phase = "UPSIDE SWEEP"
+        notes.append("зняли ліквідність зверху і закрились нижче")
+    elif last.low < recent_low and last.close > recent_low:
+        score += 22
+        phase = "DOWNSIDE SWEEP"
+        notes.append("зняли ліквідність знизу і повернулись вище")
 
-    # ── VWAP ─────────────────────────────────────────────────────────
-    if vwap_v:
-        if last.close > vwap_v:
+    mid = (recent_high + recent_low) / 2
+    if prev.low <= recent_low + atr14 * 0.15 and last.close > mid:
+        score += 16
+        phase = "CHOCH LONG"
+        notes.append("після зняття low повернення в діапазон")
+    elif prev.high >= recent_high - atr14 * 0.15 and last.close < mid:
+        score -= 16
+        phase = "CHOCH SHORT"
+        notes.append("після зняття high повернення в діапазон")
+
+    last_range = max(last.high - last.low, 1e-9)
+    body = abs(last.close - last.open)
+    if body / last_range >= 0.6:
+        if last.close > last.open:
             score += 8
+            notes.append("сильне bullish-закриття")
         else:
             score -= 8
+            notes.append("сильне bearish-закриття")
 
-    # ── RSI regime ───────────────────────────────────────────────────
-    if 55 <= rsi14 <= 74:
-        score += 10; notes.append(f"RSI {round(rsi14, 1)} бичачий")
-    elif 26 <= rsi14 <= 45:
-        score -= 10; notes.append(f"RSI {round(rsi14, 1)} ведмежий")
-    elif rsi14 >= 80:
-        score -= 8;  notes.append(f"RSI {round(rsi14, 1)} перекупленість")
-    elif rsi14 <= 20:
-        score += 8;  notes.append(f"RSI {round(rsi14, 1)} перепроданість")
-
-    # ── Bollinger position ────────────────────────────────────────────
-    if bb_hi and bb_lo:
-        bb_pct = (last.close - bb_lo) / (bb_hi - bb_lo) if bb_hi != bb_lo else 0.5
-        if bb_pct >= 0.72:
-            score += 8
-        elif bb_pct <= 0.28:
-            score -= 8
-
-    # ── Last candle character ─────────────────────────────────────────
-    br = body_ratio(last)
-    cl = close_loc(last)
-    if br >= 0.60:
-        if last.close > last.open and cl >= 0.65:
-            score += 8; notes.append("сильна бичача свіча")
-        elif last.close < last.open and cl <= 0.35:
-            score -= 8; notes.append("сильна ведмежа свіча")
-
-    # ── Confidence: normalised abs(score) ────────────────────────────
-    confidence = min(100, int(abs(score) * 1.4))
-
-    if score >= 24:
+    if score >= 22:
         bias = "LONG"
-    elif score <= -24:
+    elif score <= -22:
         bias = "SHORT"
     else:
         bias = "NEUTRAL"
 
     return {
-        "label":      label,
-        "bias":       bias,
-        "confidence": confidence,
-        "score":      int(score),
-        "rsi":        round(rsi14, 1),
-        "e20":        rp(e20),
-        "e50":        rp(e50),
-        "vwap":       rp(vwap_v),
-        "atr":        rp(atr14),
-        "note":       "; ".join(notes[:3]) if notes else "нема сильного перекосу",
-    }
-
-def tf_alignment(tf3, tf15, tf1h, tf4h):
-    """
-    Returns:
-      direction: LONG | SHORT | CONFLICT
-      strength:  0-3 (how many TFs agree)
-      macro_ok:  bool (4h is not against)
-    """
-    votes = {"LONG": 0, "SHORT": 0, "NEUTRAL": 0}
-    for tf in [tf3, tf15, tf1h]:
-        votes[tf["bias"]] += 1
-
-    if votes["LONG"] >= 2 and votes["SHORT"] == 0:
-        direction = "LONG"
-    elif votes["SHORT"] >= 2 and votes["LONG"] == 0:
-        direction = "SHORT"
-    elif votes["LONG"] >= 2 and votes["SHORT"] == 1:
-        direction = "LONG"   # majority but one conflict
-    elif votes["SHORT"] >= 2 and votes["LONG"] == 1:
-        direction = "SHORT"
-    else:
-        direction = "CONFLICT"
-
-    strength   = votes.get(direction, 0)
-    macro_bias = tf4h.get("bias", "NEUTRAL")
-    macro_ok   = macro_bias != opp(direction) if direction != "CONFLICT" else False
-
-    return {
-        "direction": direction,
-        "strength":  strength,
-        "macro_ok":  macro_ok,
-        "macro_bias": macro_bias,
-        "votes":     votes,
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "phase": phase,
+        "swing_high": round_price(swing_high),
+        "swing_low": round_price(swing_low),
+        "recent_high": round_price(recent_high),
+        "recent_low": round_price(recent_low),
+        "atr": round_price(atr14),
+        "note": "; ".join(notes[:3]) if notes else "структура без чистого пробою",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L5 — PRICE STRUCTURE (SMC / ICT CONCEPTS)
-# ══════════════════════════════════════════════════════════════════════
-# Uses proper HH/HL/LH/LL chain — NOT simple n-bar lookback.
-# Detects: BOS (Break of Structure), CHoCH (Change of Character),
-#          FVG (Fair Value Gap), OB (Order Block proxy).
+def analyze_micro(candles):
+    if not candles or len(candles) < 35:
+        return {"available": False, "bias": "NEUTRAL", "score": 0, "state": "NO DATA", "note": "3m недоступний"}
+    recent = candles[-28:]
+    fast = candles[-12:]
+    last = candles[-1]
+    closes = [c.close for c in recent]
+    fast_closes = [c.close for c in fast]
+    fast_highs = [c.high for c in fast]
+    fast_lows = [c.low for c in fast]
+    fast_move = pct(fast_closes[-1], fast_closes[0])
+    lower_closes = sum(1 for i in range(1, len(fast_closes)) if fast_closes[i] < fast_closes[i - 1])
+    higher_closes = sum(1 for i in range(1, len(fast_closes)) if fast_closes[i] > fast_closes[i - 1])
+    lower_highs = sum(1 for i in range(1, len(fast_highs)) if fast_highs[i] < fast_highs[i - 1])
+    higher_lows = sum(1 for i in range(1, len(fast_lows)) if fast_lows[i] > fast_lows[i - 1])
+    red = sum(1 for c in fast if c.close < c.open)
+    green = sum(1 for c in fast if c.close > c.open)
+    drift = slope_pct(closes, 10)
+    avg_vol = mean([c.volume for c in recent[:-1]]) if len(recent) > 1 else 0
+    vol_ratio = last.volume / avg_vol if avg_vol else 1
 
-def find_pivot_highs(candles, left=3, right=3):
-    """Return indices of confirmed pivot highs."""
-    pivots = []
-    for i in range(left, len(candles) - right):
-        if all(candles[i].high >= candles[j].high for j in range(i - left, i + right + 1) if j != i):
-            pivots.append(i)
-    return pivots
-
-def find_pivot_lows(candles, left=3, right=3):
-    pivots = []
-    for i in range(left, len(candles) - right):
-        if all(candles[i].low <= candles[j].low for j in range(i - left, i + right + 1) if j != i):
-            pivots.append(i)
-    return pivots
-
-def classify_swings(candles):
-    """
-    Walk pivot highs/lows and label as HH/LH/HL/LL.
-    Returns list of SwingPoint sorted by index.
-    """
-    if len(candles) < 20:
-        return []
-
-    ph = find_pivot_highs(candles, 3, 3)
-    pl = find_pivot_lows(candles,  3, 3)
-
-    all_pivots = (
-        [(i, candles[i].high, "HIGH") for i in ph] +
-        [(i, candles[i].low,  "LOW")  for i in pl]
-    )
-    all_pivots.sort(key=lambda x: x[0])
-
-    swings = []
-    last_high = last_low = None
-
-    for idx, price, kind in all_pivots:
-        if kind == "HIGH":
-            if last_high is None:
-                label = "HH"
-            else:
-                label = "HH" if price > last_high else "LH"
-            last_high = price
-            swings.append(SwingPoint(idx=idx, price=price, ts=candles[idx].ts, kind=label))
-        else:
-            if last_low is None:
-                label = "HL"
-            else:
-                label = "HL" if price > last_low else "LL"
-            last_low = price
-            swings.append(SwingPoint(idx=idx, price=price, ts=candles[idx].ts, kind=label))
-
-    return swings
-
-def detect_fvg(candles, min_size_atr=0.3):
-    """
-    Fair Value Gap = 3-candle pattern where candles[i-2].high < candles[i].low (bullish FVG)
-    or candles[i-2].low > candles[i].high (bearish FVG).
-    Only return recent ones (last 30 bars).
-    """
-    atr14 = atr(candles, 14) or candles[-1].close * 0.005
-    fvgs  = []
-    start = max(2, len(candles) - 30)
-    for i in range(start, len(candles)):
-        c0, c1, c2 = candles[i - 2], candles[i - 1], candles[i]
-        # Bullish FVG
-        if c0.high < c2.low and (c2.low - c0.high) >= atr14 * min_size_atr:
-            fvgs.append({"kind": "BULL", "top": c2.low, "bot": c0.high,
-                         "mid": (c2.low + c0.high) / 2, "idx": i})
-        # Bearish FVG
-        if c0.low > c2.high and (c0.low - c2.high) >= atr14 * min_size_atr:
-            fvgs.append({"kind": "BEAR", "top": c0.low, "bot": c2.high,
-                         "mid": (c0.low + c2.high) / 2, "idx": i})
-    return fvgs[-4:] if fvgs else []
-
-def analyze_structure(candles, label="15m"):
-    if not candles or len(candles) < 40:
-        return {"available": False, "bias": "NEUTRAL", "phase": "NO DATA",
-                "swing_high": None, "swing_low": None,
-                "bos": None, "choch": None, "fvg": [], "note": "мало даних"}
-
-    swings = classify_swings(candles)
-    last   = candles[-1]
-    atr14  = atr(candles, 14) or last.close * 0.006
-    fvgs   = detect_fvg(candles)
-
-    # Get last confirmed swing high/low
-    highs = [s for s in swings if s.kind in ("HH", "LH")]
-    lows  = [s for s in swings if s.kind in ("HL", "LL")]
-    last_sh = highs[-1] if highs else None
-    last_sl = lows[-1]  if lows  else None
-
-    # BOS detection: price closes beyond last swing extreme
-    phase  = "RANGING"
-    bos    = None
-    choch  = None
-    bias   = "NEUTRAL"
-
-    if last_sh and last.close > last_sh.price:
-        bos   = {"side": "LONG",  "level": last_sh.price, "label": last_sh.kind}
-        phase = "BOS_LONG"
-        bias  = "LONG"
-
-    elif last_sl and last.close < last_sl.price:
-        bos   = {"side": "SHORT", "level": last_sl.price, "label": last_sl.kind}
-        phase = "BOS_SHORT"
-        bias  = "SHORT"
-
-    # CHoCH: sequence switch (e.g. was making HH/HL, now LH appears)
-    if len(swings) >= 4:
-        last4 = swings[-4:]
-        last4_kinds = [s.kind for s in last4]
-        if last4_kinds[-1] == "LH" and last4_kinds[-2] in ("HH",):
-            choch = {"side": "SHORT", "note": "LH після HH — можлива зміна напряму"}
-            if bias == "NEUTRAL":
-                bias = "SHORT"; phase = "CHOCH_SHORT"
-        elif last4_kinds[-1] == "HL" and last4_kinds[-2] in ("LL",):
-            choch = {"side": "LONG",  "note": "HL після LL — можлива зміна напряму"}
-            if bias == "NEUTRAL":
-                bias = "LONG";  phase = "CHOCH_LONG"
-
-    # Liquidity sweep proxy
-    recent_high = max(c.high for c in candles[-20:])
-    recent_low  = min(c.low  for c in candles[-20:])
-
-    sweep_up   = last.high > recent_high and last.close < recent_high
-    sweep_down = last.low  < recent_low  and last.close > recent_low
-
-    if sweep_up:
-        phase = "UPSIDE_SWEEP"
-        bias  = "SHORT" if bias == "NEUTRAL" else bias
-    if sweep_down:
-        phase = "DOWNSIDE_SWEEP"
-        bias  = "LONG"  if bias == "NEUTRAL" else bias
-
-    # Key levels
-    swing_high = rp(last_sh.price) if last_sh else rp(recent_high)
-    swing_low  = rp(last_sl.price) if last_sl else rp(recent_low)
-
-    # Swing chain note
-    chain_note = " ".join(s.kind for s in swings[-5:]) if swings else "немає ланцюга"
-
+    score = 0
     notes = []
-    if bos:
-        notes.append(f"BOS {bos['side']} @ {rp(bos['level'])}")
-    if choch:
-        notes.append(choch["note"])
-    if sweep_up:
-        notes.append("зняття high — повернення нижче")
-    if sweep_down:
-        notes.append("зняття low — повернення вище")
-    if fvgs:
-        notes.append(f"{len(fvgs)} FVG зон")
+    if fast_move >= 0.28:
+        score += 26
+        notes.append("3m швидко йде вгору")
+    elif fast_move <= -0.28:
+        score -= 26
+        notes.append("3m швидко йде вниз")
+
+    if higher_closes >= 7 or higher_lows >= 5:
+        score += 22
+        notes.append("3m higher lows/closes")
+    if lower_closes >= 7 or lower_highs >= 5:
+        score -= 22
+        notes.append("3m lower highs/closes")
+
+    if green >= 8:
+        score += 10
+    elif red >= 8:
+        score -= 10
+
+    if drift >= 0.18:
+        score += 10
+    elif drift <= -0.18:
+        score -= 10
+
+    if vol_ratio >= 1.5 and candle_body_ratio(last) >= 0.45:
+        if last.close > last.open:
+            score += 8
+            notes.append("обсяг за покупців")
+        else:
+            score -= 8
+            notes.append("обсяг за продавців")
+
+    if score >= 22:
+        bias = "LONG"
+        state = "LONG_STRENGTHENING"
+    elif score <= -22:
+        bias = "SHORT"
+        state = "SHORT_STRENGTHENING"
+    else:
+        bias = "NEUTRAL"
+        state = "RANGE"
+        total_move = pct(closes[-1], closes[0])
+        if total_move >= 0.45 and drift < 0:
+            state = "LONG_COOLING"
+            notes.append("покупці охолоджуються")
+        elif total_move <= -0.45 and drift > 0:
+            state = "SHORT_COOLING"
+            notes.append("продавці охолоджуються")
 
     return {
-        "available":   True,
-        "bias":        bias,
-        "phase":       phase,
-        "swing_high":  swing_high,
-        "swing_low":   swing_low,
-        "recent_high": rp(recent_high),
-        "recent_low":  rp(recent_low),
-        "bos":         bos,
-        "choch":       choch,
-        "fvg":         fvgs,
-        "chain":       chain_note,
-        "atr":         rp(atr14),
-        "note":        "; ".join(notes) if notes else "чіткої структури немає",
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "state": state,
+        "fast_move_pct": round(fast_move, 3),
+        "drift_pct": round(drift, 3),
+        "vol_ratio": round(vol_ratio, 2),
+        "note": "; ".join(notes[:3]) if notes else "3m без чіткого тригера",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L6 — LIQUIDITY ANALYSIS
-# ══════════════════════════════════════════════════════════════════════
-# Identifies stop clusters, sweep events, post-sweep reclaims.
-# These are HIGH-PROBABILITY entry triggers.
+def analyze_flow(trades, book, price):
+    buy_vol = sum(t["size"] for t in trades if t.get("side") == "buy")
+    sell_vol = sum(t["size"] for t in trades if t.get("side") == "sell")
+    total = buy_vol + sell_vol
+    delta = (buy_vol - sell_vol) / total * 100 if total else 0
 
-def analyze_liquidity(candles_3m, candles_15m, structure):
+    bids = (book or {}).get("bids") or []
+    asks = (book or {}).get("asks") or []
+    near_bid = near_ask = 0
+    wall = ""
+    if bids and asks and price:
+        lower = price * 0.996
+        upper = price * 1.004
+        near_bids = [(p, s) for p, s in bids if p >= lower]
+        near_asks = [(p, s) for p, s in asks if p <= upper]
+        near_bid = sum(s for _, s in near_bids)
+        near_ask = sum(s for _, s in near_asks)
+        biggest_bid = max(near_bids, key=lambda x: x[1]) if near_bids else None
+        biggest_ask = max(near_asks, key=lambda x: x[1]) if near_asks else None
+        if biggest_bid and biggest_ask:
+            if biggest_bid[1] > biggest_ask[1] * 1.8:
+                wall = f"підтримка покупців біля {round_price(biggest_bid[0])}"
+            elif biggest_ask[1] > biggest_bid[1] * 1.8:
+                wall = f"опір продавців біля {round_price(biggest_ask[0])}"
+
+    book_total = near_bid + near_ask
+    book_delta = (near_bid - near_ask) / book_total * 100 if book_total else 0
+    score = 0
+    notes = []
+    if delta >= 18:
+        score += 16
+        notes.append("угоди за покупців")
+    elif delta <= -18:
+        score -= 16
+        notes.append("угоди за продавців")
+    elif delta >= 8:
+        score += 7
+    elif delta <= -8:
+        score -= 7
+
+    if book_delta >= 18:
+        score += 10
+        notes.append("стакан підтримує покупців")
+    elif book_delta <= -18:
+        score -= 10
+        notes.append("стакан тисне продавцями")
+    if wall:
+        notes.append(wall)
+
+    if score >= 15:
+        bias = "LONG"
+    elif score <= -15:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "bias": bias,
+        "score": int(score),
+        "trade_delta_pct": round(delta, 2),
+        "book_delta_pct": round(book_delta, 2),
+        "note": "; ".join(notes[:3]) if notes else "потік без явної переваги",
+    }
+
+
+
+def analyze_cvd(trades, candles_3m, price, previous_snapshot=None):
+    """Cumulative Volume Delta proxy from recent OKX trades.
+
+    OKX public trades do not provide a full historical footprint feed, so this
+    module builds a practical running CVD from recent aggressive buy/sell prints
+    and stores it between bot runs. Divergence is what matters most:
+    - price down but CVD up = absorption / possible LONG reversal
+    - price up but CVD down = distribution / possible SHORT reversal
+    """
+    previous_snapshot = previous_snapshot or {}
+    buy_vol = sum(t.get("size", 0) for t in trades if t.get("side") == "buy")
+    sell_vol = sum(t.get("size", 0) for t in trades if t.get("side") == "sell")
+    delta = buy_vol - sell_vol
+    total = buy_vol + sell_vol
+    delta_pct = (delta / total * 100) if total else 0
+    prev_cvd = safe_float(previous_snapshot.get("cvd"), 0) or 0
+    cvd_value = prev_cvd + delta
+
+    price_move = 0
+    if candles_3m and len(candles_3m) >= 10:
+        price_move = pct(candles_3m[-1].close, candles_3m[-10].close)
+
+    score = 0
+    state = "BALANCED"
+    notes = []
+
+    if delta_pct >= 18:
+        score += 16
+        state = "BUYERS_DOMINATE"
+        notes.append("CVD росте — агресивні покупки")
+    elif delta_pct <= -18:
+        score -= 16
+        state = "SELLERS_DOMINATE"
+        notes.append("CVD падає — агресивні продажі")
+
+    if price_move <= -0.35 and delta_pct >= 10:
+        score += 18
+        state = "BULLISH_ABSORPTION"
+        notes.append("ціна вниз, CVD вгору — продавців поглинають")
+    elif price_move >= 0.35 and delta_pct <= -10:
+        score -= 18
+        state = "BEARISH_ABSORPTION"
+        notes.append("ціна вгору, CVD вниз — покупців розвантажують")
+
+    if score >= 16:
+        bias = "LONG"
+    elif score <= -16:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "bias": bias,
+        "score": int(score),
+        "state": state,
+        "delta": round(delta, 4),
+        "delta_pct": round(delta_pct, 2),
+        "cvd": round(cvd_value, 4),
+        "price_move_pct": round(price_move, 3),
+        "note": "; ".join(notes[:3]) if notes else "CVD без явної переваги",
+    }
+
+
+def analyze_clusters(trades, book, price):
+    """Cluster / footprint proxy from public trades and order book.
+
+    Real cluster charts require tick/footprint data. This proxy groups recent
+    trades into price bins near current price and detects aggressive imbalance
+    zones. It helps avoid entering into absorption walls and finds zones where
+    buyers/sellers clearly defended price.
+    """
+    if not trades or not price:
+        return {"bias": "NEUTRAL", "score": 0, "state": "NO DATA", "zones": [], "note": "кластерних даних мало"}
+
+    bin_size = max(price * 0.0008, 0.01)
+    clusters = {}
+    for t in trades:
+        px = safe_float(t.get("price"), None)
+        size = safe_float(t.get("size"), 0) or 0
+        side = t.get("side")
+        if px is None or abs(px - price) / price > 0.012:
+            continue
+        level = round(round(px / bin_size) * bin_size, 4)
+        row = clusters.setdefault(level, {"buy": 0.0, "sell": 0.0, "total": 0.0})
+        if side == "buy":
+            row["buy"] += size
+        elif side == "sell":
+            row["sell"] += size
+        row["total"] += size
+
+    if not clusters:
+        return {"bias": "NEUTRAL", "score": 0, "state": "NO CLUSTERS", "zones": [], "note": "немає активних кластерів біля ціни"}
+
+    zones = []
+    for level, row in clusters.items():
+        total = row["total"]
+        if total <= 0:
+            continue
+        imbalance = (row["buy"] - row["sell"]) / total * 100
+        if abs(imbalance) >= 22:
+            zones.append({"price": level, "imbalance_pct": round(imbalance, 1), "volume": round(total, 4)})
+    zones.sort(key=lambda x: x["volume"], reverse=True)
+
+    top = zones[0] if zones else None
+    score = 0
+    state = "BALANCED"
+    notes = []
+    if top:
+        below = top["price"] <= price
+        imb = top["imbalance_pct"]
+        if below and imb > 0:
+            score += 14
+            state = "BUY_CLUSTER_SUPPORT"
+            notes.append(f"buy-кластер підтримки біля {top['price']}")
+        elif (not below) and imb < 0:
+            score -= 14
+            state = "SELL_CLUSTER_RESISTANCE"
+            notes.append(f"sell-кластер опору біля {top['price']}")
+        elif below and imb < 0:
+            score -= 8
+            state = "SELL_PRESSURE_BELOW"
+            notes.append("продажі нижче ціни — слабкість")
+        elif (not below) and imb > 0:
+            score += 8
+            state = "BUY_PRESSURE_ABOVE"
+            notes.append("покупки вище ціни — імпульсний попит")
+
+    bids = (book or {}).get("bids") or []
+    asks = (book or {}).get("asks") or []
+    if bids and asks:
+        bid_wall = max(bids[:15], key=lambda x: x[1], default=None)
+        ask_wall = max(asks[:15], key=lambda x: x[1], default=None)
+        if bid_wall and ask_wall:
+            if bid_wall[1] > ask_wall[1] * 2:
+                score += 5
+                notes.append(f"стінка покупців {round_price(bid_wall[0])}")
+            elif ask_wall[1] > bid_wall[1] * 2:
+                score -= 5
+                notes.append(f"стінка продавців {round_price(ask_wall[0])}")
+
+    if score >= 10:
+        bias = "LONG"
+    elif score <= -10:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "bias": bias,
+        "score": int(score),
+        "state": state,
+        "zones": zones[:3],
+        "note": "; ".join(notes[:3]) if notes else "кластери без явної переваги",
+    }
+
+
+def analyze_derivatives(open_interest, funding, price, previous_snapshot=None):
+    previous_snapshot = previous_snapshot or {}
+    oi_value = safe_float((open_interest or {}).get("oi_ccy"), None)
+    if not oi_value:
+        oi_value = safe_float((open_interest or {}).get("oi"), None)
+    prev_oi = safe_float(previous_snapshot.get("oi"), None)
+    prev_price = safe_float(previous_snapshot.get("price"), None)
+    funding_rate = safe_float((funding or {}).get("funding_rate"), 0) or 0
+
+    oi_change = pct(oi_value, prev_oi) if oi_value and prev_oi else 0
+    price_change = pct(price, prev_price) if price and prev_price else 0
+    funding_pct = funding_rate * 100
+
+    score = 0
+    state = "POSITIONING_UNKNOWN"
+    notes = []
+
+    if oi_value and prev_oi and abs(oi_change) >= 0.35 and abs(price_change) >= 0.18:
+        if price_change > 0 and oi_change > 0:
+            score += 18
+            state = "LONG_BUILDUP"
+            notes.append("ціна росте + OI росте — нові лонги/попит")
+        elif price_change < 0 and oi_change > 0:
+            score -= 18
+            state = "SHORT_BUILDUP"
+            notes.append("ціна падає + OI росте — нові шорти/тиск")
+        elif price_change > 0 and oi_change < 0:
+            score += 6
+            state = "SHORTS_CLOSING"
+            notes.append("ріст на падінні OI — шорти закриваються, не доганяти без ретесту")
+        elif price_change < 0 and oi_change < 0:
+            score -= 6
+            state = "LONGS_CLOSING"
+            notes.append("падіння на падінні OI — лонги закриваються, не доганяти без ретесту")
+    else:
+        notes.append("OI ще накопичує історію для порівняння")
+
+    if funding_pct >= 0.035:
+        score -= 6
+        notes.append("funding перегрітий у лонг — лонг не доганяти")
+    elif funding_pct <= -0.035:
+        score += 6
+        notes.append("funding перегрітий у шорт — шорт не доганяти")
+
+    if score >= 12:
+        bias = "LONG"
+    elif score <= -12:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "bias": bias,
+        "score": int(score),
+        "state": state,
+        "oi": round(oi_value, 4) if oi_value is not None else None,
+        "oi_change_pct": round(oi_change, 3),
+        "funding_pct": round(funding_pct, 5),
+        "price_change_pct": round(price_change, 3),
+        "note": "; ".join(notes[:3]),
+    }
+
+def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
+    """Liquidation / stop-run proxy from public data.
+
+    We do not have exchange liquidation feed here, so this uses:
+    - fast candle move
+    - volume spike
+    - candle close location
+    - SMC sweep
+    - trades/book flow
+
+    It is a practical proxy for: long liquidation, short squeeze, high/low sweep,
+    and post-sweep reclaim.
+    """
     candles = candles_3m if candles_3m and len(candles_3m) >= 25 else candles_15m
-    if not candles or len(candles) < 25:
-        return {"available": False, "event": "NO_DATA", "bias": "NEUTRAL",
-                "score": 0, "blocks": [], "note": "мало даних"}
+    if not candles or len(candles) < 25 or not price:
+        return {
+            "available": False,
+            "bias": "NEUTRAL",
+            "score": 0,
+            "event": "NO DATA",
+            "blocks": [],
+            "note": "даних для ліквідацій мало",
+        }
 
-    last  = candles[-1]
-    prev6 = candles[-7:-1]
-    atr14 = atr(candles, 14) or last.close * 0.005
-    avg_vol = mean([c.volume for c in candles[-20:-1]]) or 1
-    vol_now = last.volume / avg_vol
+    recent = candles[-24:]
+    last = recent[-1]
+    prev = recent[-2]
+    avg_vol = mean([c.volume for c in recent[:-1]]) if len(recent) > 1 else 0
+    vol_ratio = last.volume / avg_vol if avg_vol else 1.0
+    move_1 = pct(last.close, prev.close)
+    move_6 = pct(last.close, recent[-7].close) if len(recent) >= 7 else move_1
+    body = last.close - last.open
+    close_pos = close_location(last)
+    prev_high = max(c.high for c in recent[:-1])
+    prev_low = min(c.low for c in recent[:-1])
 
-    recent_high = max(c.high for c in prev6)
-    recent_low  = min(c.low  for c in prev6)
-
-    move1 = pct(last.close, candles[-2].close)
-    move6 = pct(last.close, candles[-7].close) if len(candles) >= 7 else move1
-    cl    = close_loc(last)
-    br    = body_ratio(last)
-
-    phase = structure.get("phase", "") if structure else ""
-
-    score  = 0
-    event  = "QUIET"
+    flow_bias = (flow or {}).get("bias", "NEUTRAL")
+    phase = (structure or {}).get("phase", "")
+    score = 0
+    event = "QUIET"
     blocks = []
-    notes  = []
+    notes = []
 
-    # ── Downside sweep (sweep of lows, reclaim) ───────────────────────
-    swept_low  = last.low  < recent_low  and last.close > recent_low
-    swept_high = last.high > recent_high and last.close < recent_high
+    downside_sweep = last.low < prev_low and last.close > prev_low
+    upside_sweep = last.high > prev_high and last.close < prev_high
 
-    if swept_low or phase == "DOWNSIDE_SWEEP":
-        event = "DOWNSIDE_SWEEP"
-        score += 22
-        blocks.append("SHORT")  # block SHORT — don't short after sweep
-        notes.append("зняли low і повернулись — шорт не актуальний, лонг на ретесті")
+    if downside_sweep or phase == "DOWNSIDE SWEEP":
+        event = "DOWNSIDE SWEEP / LONG RECLAIM"
+        score += 18
+        blocks.append("SHORT")
+        notes.append("зняли low і повернулись вище — шорт не доганяти")
+        if flow_bias == "LONG":
+            score += 6
+            notes.append("покупці відкуповують після зняття low")
 
-    elif swept_high or phase == "UPSIDE_SWEEP":
-        event = "UPSIDE_SWEEP"
-        score -= 22
+    elif upside_sweep or phase == "UPSIDE SWEEP":
+        event = "UPSIDE SWEEP / SHORT RECLAIM"
+        score -= 18
         blocks.append("LONG")
-        notes.append("зняли high і впали — лонг не актуальний, шорт на ретесті")
+        notes.append("зняли high і закрились нижче — лонг не доганяти")
+        if flow_bias == "SHORT":
+            score -= 6
+            notes.append("продавці тиснуть після зняття high")
 
-    # ── Strong move with high volume ─────────────────────────────────
-    if vol_now >= 1.4 and br >= 0.55:
-        if move1 <= -0.40 or move6 <= -0.65:
-            if cl <= 0.28:
-                event = "LONG_LIQ"
-                score -= 16
-                notes.append("дамп на обсязі, закриття в дні — ймовірно вибивають лонги")
-            elif cl >= 0.55:
-                event = "LONG_LIQ_ABSORBED"
-                score += 12
-                blocks.append("SHORT")
-                notes.append("дамп викупили — новий шорт тільки після ретесту")
+    strong_down = (move_1 <= -0.42 or move_6 <= -0.70) and vol_ratio >= 1.35 and body < 0
+    strong_up = (move_1 >= 0.42 or move_6 >= 0.70) and vol_ratio >= 1.35 and body > 0
 
-        if move1 >= 0.40 or move6 >= 0.65:
-            if cl >= 0.72:
-                event = "SHORT_SQUEEZE"
-                score += 16
-                notes.append("памп на обсязі — ймовірно шорт-сквіз")
-            elif cl <= 0.45:
-                event = "SHORT_SQUEEZE_ABSORBED"
-                score -= 12
-                blocks.append("LONG")
-                notes.append("памп поглинули — новий лонг тільки після ретесту")
+    if strong_down:
+        if close_pos <= 0.28 and flow_bias != "LONG":
+            event = "LONG LIQUIDATION"
+            score -= 18
+            notes.append("дамп на обсязі — ймовірно вибивають лонги")
+        elif close_pos >= 0.52 or flow_bias == "LONG":
+            event = "LONG LIQUIDATION ABSORBED"
+            score += 10
+            blocks.append("SHORT")
+            notes.append("дамп викупили — новий шорт тільки після ретесту")
+
+    if strong_up:
+        if close_pos >= 0.72 and flow_bias != "SHORT":
+            event = "SHORT SQUEEZE"
+            score += 18
+            notes.append("памп на обсязі — ймовірно шорт-сквіз")
+        elif close_pos <= 0.48 or flow_bias == "SHORT":
+            event = "SHORT SQUEEZE ABSORBED"
+            score -= 10
+            blocks.append("LONG")
+            notes.append("памп поглинули — новий лонг тільки після ретесту")
 
     if score >= 12:
         bias = "LONG"
@@ -958,83 +1263,32 @@ def analyze_liquidity(candles_3m, candles_15m, structure):
 
     return {
         "available": True,
-        "event":     event,
-        "bias":      bias,
-        "score":     int(score),
-        "blocks":    sorted(set(blocks)),
-        "vol_ratio": round(vol_now, 2),
-        "move1_pct": round(move1, 3),
-        "note":      "; ".join(notes[:3]) if notes else "ліквідаційного тиску немає",
+        "bias": bias,
+        "score": int(score),
+        "event": event,
+        "blocks": sorted(set(blocks)),
+        "vol_ratio": round(vol_ratio, 2),
+        "move_1_pct": round(move_1, 3),
+        "move_6_pct": round(move_6, 3),
+        "note": "; ".join(notes[:3]) if notes else "ліквідаційного тиску не видно",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L7 — ORDER FLOW
-# ══════════════════════════════════════════════════════════════════════
-
-def analyze_flow(trades, book, price):
-    buy_vol  = sum(t["size"] for t in trades if t.get("side") == "buy")
-    sell_vol = sum(t["size"] for t in trades if t.get("side") == "sell")
-    total    = buy_vol + sell_vol or 1
-    delta    = (buy_vol - sell_vol) / total * 100
-
-    bids = (book or {}).get("bids", [])
-    asks = (book or {}).get("asks", [])
-    near_bid = near_ask = 0
-    wall_note = ""
-
-    if bids and asks and price:
-        zone  = price * 0.005
-        nb    = [(p, s) for p, s in bids if p >= price - zone]
-        na    = [(p, s) for p, s in asks if p <= price + zone]
-        near_bid = sum(s for _, s in nb)
-        near_ask = sum(s for _, s in na)
-        if nb and na:
-            bb = max(nb, key=lambda x: x[1])
-            ba = max(na, key=lambda x: x[1])
-            if bb[1] > ba[1] * 2.0:
-                wall_note = f"велика підтримка покупців @ {rp(bb[0])}"
-            elif ba[1] > bb[1] * 2.0:
-                wall_note = f"великий опір продавців @ {rp(ba[0])}"
-
-    book_total = near_bid + near_ask or 1
-    book_delta = (near_bid - near_ask) / book_total * 100
-
-    score = 0
-    notes = []
-    if delta >= 20:
-        score += 18; notes.append("угоди: перевага покупців")
-    elif delta <= -20:
-        score -= 18; notes.append("угоди: перевага продавців")
-    elif delta >= 8:
-        score += 7
-    elif delta <= -8:
-        score -= 7
-
-    if book_delta >= 20:
-        score += 12; notes.append("стакан: покупці домінують")
-    elif book_delta <= -20:
-        score -= 12; notes.append("стакан: продавці домінують")
-
-    if wall_note:
-        notes.append(wall_note)
-
-    bias = "LONG" if score >= 16 else ("SHORT" if score <= -16 else "NEUTRAL")
-
-    return {
-        "bias":        bias,
-        "score":       int(score),
-        "trade_delta": round(delta, 2),
-        "book_delta":  round(book_delta, 2),
-        "note":        "; ".join(notes[:3]) if notes else "потік без явної переваги",
-    }
+def market_session():
+    hour = now_utc().hour
+    if 12 <= hour < 20:
+        return {"name": "NEW YORK / LONDON", "score": 4, "note": "ліквідна сесія"}
+    if 7 <= hour < 12:
+        return {"name": "LONDON", "score": 2, "note": "європейська сесія"}
+    return {"name": "ASIA / QUIET", "score": -3, "note": "тихіша ліквідність"}
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L8 — FUNDAMENTAL FILTER (News + Calendar)
-# ══════════════════════════════════════════════════════════════════════
+# ==========================================================
+# NEWS
+# ==========================================================
 
-def _parse_date(value):
+
+def parse_date(value):
     if not value:
         return None
     try:
@@ -1045,85 +1299,112 @@ def _parse_date(value):
     except Exception:
         return None
 
-def _clean(text):
+
+def clean_text(text):
     text = html.unescape(text or "")
     text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
-def _norm(text):
-    return _clean(text).lower().replace("'", "'").replace("–", "-").replace("—", "-")
 
-def _parse_google_rss(query, hours=4):
-    url = f"https://news.google.com/rss/search?q={quote_plus(query + f' when:{hours}h')}&hl=en-US&gl=US&ceid=US:en"
-    r = http_get(url, timeout=10, retries=1)
-    if not r:
+def normalized(text):
+    return clean_text(text).lower().replace("’", "'").replace("–", "-").replace("—", "-")
+
+
+def parse_google_rss(query, lookback_hours=3):
+    url = f"https://news.google.com/rss/search?q={quote_plus(query + f' when:{lookback_hours}h')}&hl=en-US&gl=US&ceid=US:en"
+    response = http_get(url, timeout=10, retries=1)
+    if not response:
         return []
-    cutoff = now_utc() - timedelta(hours=hours)
-    items  = []
+    cutoff = now_utc() - timedelta(hours=lookback_hours)
+    items = []
     try:
-        root = ET.fromstring(r.content)
+        root = ET.fromstring(response.content)
         for node in root.findall(".//item")[:12]:
-            title = _clean(node.findtext("title", ""))
-            dt    = _parse_date(node.findtext("pubDate", ""))
+            title = clean_text(node.findtext("title", ""))
+            link = node.findtext("link", "") or ""
+            dt = parse_date(node.findtext("pubDate", ""))
             if dt and dt < cutoff:
                 continue
             if title:
-                items.append({"title": title, "published_at": dt})
-    except Exception:
-        pass
+                items.append({"title": title, "link": link, "published_at": dt, "source": "Google News"})
+    except Exception as error:
+        print(f"[WARN] Google RSS parse failed: {error}")
     return items
 
-def get_news():
-    items = []
-    for q in NEWS_QUERIES:
-        items.extend(_parse_google_rss(q, 4))
-    # Deduplicate
-    seen, out = set(), []
+
+def dedupe_news(items):
+    seen = set()
+    out = []
     for item in items:
-        key = re.sub(r"[^a-z0-9]+", " ", _norm(item.get("title", "")))[:110]
-        if key and key not in seen:
-            seen.add(key); out.append(item)
+        key = re.sub(r"[^a-z0-9а-яіїєґ]+", " ", normalized(item.get("title", "")))[:120]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
     out.sort(key=lambda x: x.get("published_at") or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
     return out
 
-def _score_item(title):
-    text    = _norm(title)
-    age_min = 0  # we already filtered to 4h; assume recent
 
-    bull = sum(1 for p in BULLISH_PHRASES if p in text)
-    bear = sum(1 for p in BEARISH_PHRASES if p in text)
-    src  = sum(1 for s in HIGH_IMPACT_SOURCES if s in text)
-    term = sum(1 for t in HIGH_IMPACT_TERMS   if t in text)
-    impact = src * 2 + term
+def get_news():
+    items = []
+    for query in NEWS_QUERIES:
+        items.extend(parse_google_rss(query, 3))
+    return dedupe_news(items)
 
-    raw = (bull - bear) * (10 + min(8, impact))
-    if src >= 1:
-        raw = int(raw * 1.25)
-    return raw, impact
+
+def score_news_item(title):
+    text = normalized(title)
+    long_hits = sum(1 for p in LONG_NEWS_PHRASES if p in text)
+    short_hits = sum(1 for p in SHORT_NEWS_PHRASES if p in text)
+    impact = sum(1 for p in HIGH_IMPACT_WORDS if p in text)
+
+    score = 0
+    if long_hits:
+        score += long_hits * (12 + min(6, impact))
+    if short_hits:
+        score -= short_hits * (12 + min(6, impact))
+    if "reuters" in text:
+        score = int(score * 1.2)
+    return score, impact
+
 
 def analyze_news(items):
-    total_raw = 0
+    raw = 0
     important = []
-    for item in items[:40]:
-        s, imp = _score_item(item.get("title", ""))
-        total_raw += s
-        if imp >= 2 or abs(s) >= 10:
-            important.append({**item, "score": s, "impact": imp})
-
-    score = max(-50, min(50, int(total_raw)))
-    bias  = "LONG" if score >= 20 else ("SHORT" if score <= -20 else "NEUTRAL")
-    top   = important[0]["title"] if important else "свіжого сильного драйвера немає"
-
+    long_count = 0
+    short_count = 0
+    for item in items[:35]:
+        item_score, impact = score_news_item(item.get("title", ""))
+        raw += item_score
+        if item_score > 0:
+            long_count += 1
+        elif item_score < 0:
+            short_count += 1
+        if impact or abs(item_score) >= 12:
+            important.append({**item, "score": item_score})
+    score = max(-45, min(45, int(raw)))
+    if score >= 18:
+        bias = "LONG"
+    elif score <= -18:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+    top = important[0]["title"] if important else "свіжого сильного драйвера немає"
     return {
-        "bias":      bias,
-        "score":     score,
-        "total":     len(items),
+        "bias": bias,
+        "score": score,
+        "raw_score": raw,
+        "total": len(items),
+        "long_count": long_count,
+        "short_count": short_count,
         "important": important[:5],
-        "top":       top,
-        "note":      f"{side_ua(bias)} ({score}); {top[:120]}",
+        "top": top,
+        "note": f"{side_word(bias)} ({score}); {top}",
     }
 
-def _parse_month_date(text):
+
+def parse_month_date(text):
     clean = re.sub(r"[^A-Za-z0-9, ]+", "", str(text or "")).strip()
     for fmt in ["%B %d, %Y", "%b %d, %Y"]:
         try:
@@ -1132,66 +1413,92 @@ def _parse_month_date(text):
             pass
     return None
 
-def _parse_us_time(text, dh=10, dm=30):
-    m = re.search(r"(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", str(text or ""), re.I)
-    if not m:
-        return dh, dm
-    h, mn = int(m.group(1)), int(m.group(2))
-    if m.group(3).upper() == "P" and h != 12:
-        h += 12
-    if m.group(3).upper() == "A" and h == 12:
-        h = 0
-    return h, mn
 
-def _event_status(event_time):
+def parse_us_time(text, default_hour=10, default_minute=30):
+    match = re.search(r"(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", str(text or ""), re.I)
+    if not match:
+        return default_hour, default_minute
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    ampm = match.group(3).upper()
+    if ampm == "P" and hour != 12:
+        hour += 12
+    if ampm == "A" and hour == 12:
+        hour = 0
+    return hour, minute
+
+
+def event_minutes(event_time):
     try:
-        mins = int((event_time - now_utc()).total_seconds() / 60)
-        if 0 <= mins <= IMPORTANT_EVENT_WINDOW_MINUTES:
-            return True, f"через {mins} хв"
-        if -60 <= mins < 0:
-            return True, f"вийшла {abs(mins)} хв тому"
-        return False, ""
+        return int((event_time - now_utc()).total_seconds() / 60)
     except Exception:
+        return None
+
+
+def event_alert_status(event_time):
+    minutes = event_minutes(event_time)
+    if minutes is None:
         return False, ""
+    if 0 <= minutes <= IMPORTANT_EVENT_WINDOW_MINUTES:
+        return True, f"через {minutes} хв"
+    if -45 <= minutes < 0:
+        return True, f"вийшла {abs(minutes)} хв тому"
+    return False, ""
+
 
 def get_eia_event():
     text = ""
     for url in [EIA_WPSR_URL, EIA_WPSR_SCHEDULE_URL]:
-        r = http_get(url, timeout=8, retries=1)
-        if r:
-            text += "\n" + _clean(r.text)
-    m = re.search(r"Next Release Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text)
-    if not m:
+        response = http_get(url, timeout=8, retries=1)
+        if response:
+            text += "\n" + clean_text(response.text)
+    match = re.search(r"Next Release Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text)
+    if not match:
         return None
-    d = _parse_month_date(m.group(1))
-    if not d:
+    release_date = parse_month_date(match.group(1))
+    if not release_date:
         return None
-    idx  = text.find(m.group(1))
-    h, mn = _parse_us_time(text[idx: idx + 260] if idx >= 0 else text, 10, 30)
-    return {"name": "EIA", "title": "EIA crude inventories",
-            "time": et_to_utc(d, h, mn), "risk": "HIGH"}
+    idx = text.find(match.group(1))
+    hour, minute = parse_us_time(text[idx:idx + 260] if idx >= 0 else text, 10, 30)
+    event_time = et_to_utc(release_date, hour, minute)
+    return {
+        "name": "EIA",
+        "title": "EIA crude inventories",
+        "time": event_time,
+        "risk": "HIGH",
+        "source": "EIA official",
+    }
+
 
 def get_fomc_events():
-    r = http_get(FED_FOMC_CALENDAR_URL, timeout=8, retries=1)
-    if not r:
+    response = http_get(FED_FOMC_CALENDAR_URL, timeout=8, retries=1)
+    if not response:
         return []
-    text  = _clean(r.text)
-    year  = now_utc().year
-    months = ("January|February|March|April|May|June|July|August|"
-               "September|October|November|December|Jan|Feb|Mar|Apr|"
-               "Jun|Jul|Aug|Sep|Oct|Nov|Dec")
+    text = clean_text(response.text)
+    year = now_utc().year
     events = []
-    for m in re.finditer(rf"({months})\s+(\d{{1,2}})(?:-(\d{{1,2}}))?", text):
-        raw = f"{m.group(1)} {m.group(3) or m.group(2)}, {year}"
-        d   = _parse_month_date(raw)
-        if not d:
+
+    month_names = (
+        "January|February|March|April|May|June|July|August|September|October|November|December|"
+        "Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+    )
+    for match in re.finditer(rf"({month_names})\s+(\d{{1,2}})(?:-(\d{{1,2}}))?", text):
+        raw = f"{match.group(1)} {match.group(3) or match.group(2)}, {year}"
+        date_obj = parse_month_date(raw)
+        if not date_obj:
             continue
-        et = et_to_utc(d, 14, 0)
-        active, _ = _event_status(et)
+        event_time = et_to_utc(date_obj, 14, 0)
+        active, _ = event_alert_status(event_time)
         if active:
-            events.append({"name": "Fed", "title": "Fed / FOMC decision",
-                           "time": et, "risk": "HIGH"})
-    return events[:2]
+            events.append({
+                "name": "Fed",
+                "title": "Fed / FOMC decision or minutes",
+                "time": event_time,
+                "risk": "HIGH",
+                "source": "Federal Reserve calendar",
+            })
+    return events[:3]
+
 
 def get_manual_events():
     events = []
@@ -1199,900 +1506,860 @@ def get_manual_events():
         parts = [x.strip() for x in chunk.split("|")]
         if len(parts) < 2:
             continue
+        title = parts[0]
         try:
             dt = datetime.fromisoformat(parts[1].replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            events.append({"name": "Manual", "title": parts[0],
-                           "time": dt.astimezone(timezone.utc),
-                           "risk": parts[2] if len(parts) > 2 else "HIGH"})
+            events.append({
+                "name": "Manual",
+                "title": title,
+                "time": dt.astimezone(timezone.utc),
+                "risk": parts[2] if len(parts) > 2 else "HIGH",
+                "source": "IMPORTANT_EVENTS",
+            })
         except Exception:
             continue
     return events
 
-def analyze_calendar():
-    events  = []
-    for fn in [get_eia_event, get_fomc_events, get_manual_events]:
-        try:
-            result = fn()
-            if isinstance(result, list):
-                events.extend(result)
-            elif result:
-                events.append(result)
-        except Exception as e:
-            print(f"[WARN] calendar: {e}")
+
+def analyze_calendar_alerts():
+    events = []
+    try:
+        eia = get_eia_event()
+        if eia:
+            events.append(eia)
+    except Exception as error:
+        print(f"[WARN] EIA calendar failed: {error}")
+    try:
+        events.extend(get_fomc_events())
+    except Exception as error:
+        print(f"[WARN] Fed calendar failed: {error}")
+    events.extend(get_manual_events())
 
     alerts = []
-    for ev in events:
-        active, status = _event_status(ev.get("time"))
+    for event in events:
+        active, status = event_alert_status(event.get("time"))
         if not active:
             continue
-        alerts.append({**ev, "status": status})
+        item = dict(event)
+        item["status"] = status
+        item["minutes_to_event"] = event_minutes(event.get("time"))
+        alerts.append(item)
 
     return {
-        "active":  bool(alerts),
-        "alerts":  alerts[:3],
-        "score":   -15 if alerts else 0,
-        "note":    "; ".join(f"{x['title']} {x['status']}" for x in alerts[:2]) if alerts else "",
+        "active": bool(alerts),
+        "alerts": alerts[:4],
+        "score": -12 if alerts else 0,
+        "note": "; ".join(f"{x['title']} — {x['status']}" for x in alerts[:3]) if alerts else "",
     }
 
-def market_session():
-    h = now_utc().hour
-    if 12 <= h < 20:
-        return {"name": "NY/LONDON OVERLAP", "score": 5,  "liquid": True}
-    if 7  <= h < 12:
-        return {"name": "LONDON",            "score": 3,  "liquid": True}
-    if 20 <= h < 23:
-        return {"name": "NY CLOSE",          "score": 1,  "liquid": True}
-    return     {"name": "ASIA/QUIET",        "score": -3, "liquid": False}
+
+# ==========================================================
+# SETUP ENGINE
+# ==========================================================
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L9 — ENTRY ENGINE (Confluence Gate)
-# ══════════════════════════════════════════════════════════════════════
-# All gates must pass for ENTRY. Failing a gate = WATCH or WAIT.
-#
-# GATE 1: Regime is NOT CHOPPY and NOT VOLATILE
-# GATE 2: TF alignment >= 2/3 (3m + 15m + 1h), macro (4h) not opposed
-# GATE 3: Structure bias matches direction (BOS or CHoCH or FVG retest)
-# GATE 4: NOT a late-chase (price within 1.5 ATR of EMA20)
-# GATE 5: No active liquidity block against direction
-# GATE 6: Calendar blackout not active (or quality capped)
-# GATE 7: Minimum quality score >= threshold
+def build_context(data, state=None):
+    ticker = data.get("ticker") or {}
+    price = safe_float(ticker.get("price"))
+    tf3 = analyze_micro(data.get("candles_3m") or [])
+    tf15 = analyze_timeframe(data.get("candles_15m") or [], "15m")
+    tf1h = analyze_timeframe(data.get("candles_1h") or [], "1h")
+    tf4h = analyze_timeframe(data.get("candles_4h") or [], "4h")
+    structure = analyze_structure(data.get("candles_15m") or [])
+    previous_snapshot = (state or {}).get("last_market_snapshot") or {}
+    flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
+    cvd = analyze_cvd(data.get("trades") or [], data.get("candles_3m") or [], price, previous_snapshot)
+    clusters = analyze_clusters(data.get("trades") or [], data.get("book") or {}, price)
+    derivatives = analyze_derivatives(data.get("open_interest") or {}, data.get("funding") or {}, price, previous_snapshot)
+    liquidity = analyze_liquidations(data.get("candles_3m") or [], data.get("candles_15m") or [], flow, structure, price)
+    news_items = get_news()
+    news = analyze_news(news_items)
+    calendar = analyze_calendar_alerts()
+    session = market_session()
 
-def _gate_report(name, passed, reason=""):
-    return {"gate": name, "passed": passed, "reason": reason}
+    price = price or safe_float(tf15.get("close"))
+    atr15 = safe_float(structure.get("atr")) or safe_float(tf15.get("atr")) or (price or 90) * 0.006
 
-def late_chase_check(side, candles_15m, regime):
-    """True if price has already moved too far; wait for retest."""
-    if not candles_15m or len(candles_15m) < 20:
+    tech_score = (
+        tf4h.get("score", 0) * 1.25
+        + tf1h.get("score", 0) * 0.95
+        + tf15.get("score", 0) * 1.05
+        + tf3.get("score", 0) * 0.50
+        + structure.get("score", 0) * 1.00
+        + flow.get("score", 0) * 0.45
+        + cvd.get("score", 0) * 0.85
+        + clusters.get("score", 0) * 0.70
+        + derivatives.get("score", 0) * 0.95
+        + liquidity.get("score", 0) * 0.75
+    )
+    total_score = tech_score + news.get("score", 0) * 0.35 + calendar.get("score", 0) + session.get("score", 0)
+
+    if total_score >= 42:
+        bias = "LONG"
+    elif total_score <= -42:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "price": price,
+        "change24h": safe_float(ticker.get("change24h"), 0),
+        "source": ticker.get("source", "unknown"),
+        "symbol": ticker.get("symbol", OKX_INST_ID),
+        "atr15": atr15,
+        "tf3": tf3,
+        "tf15": tf15,
+        "tf1h": tf1h,
+        "tf4h": tf4h,
+        "structure": structure,
+        "flow": flow,
+        "cvd": cvd,
+        "clusters": clusters,
+        "derivatives": derivatives,
+        "liquidity": liquidity,
+        "news": news,
+        "calendar": calendar,
+        "session": session,
+        "tech_score": int(tech_score),
+        "total_score": int(total_score),
+        "bias": bias,
+    }
+
+
+def side_score(value, side):
+    if side == "LONG":
+        return value
+    if side == "SHORT":
+        return -value
+    return 0
+
+
+def is_late_chase(side, context):
+    price = context["price"]
+    atr15 = context["atr15"]
+    tf15 = context["tf15"]
+    tf3 = context["tf3"]
+    structure = context["structure"]
+    liquidity = context.get("liquidity") or {}
+    ema20 = safe_float(tf15.get("ema20"))
+    rsi15 = safe_float(tf15.get("rsi"), 50)
+    move_8 = safe_float(tf15.get("move_8_pct"), 0)
+
+    if not price or not atr15:
         return False, ""
-    closes = [c.close for c in candles_15m]
-    last   = candles_15m[-1]
-    e20    = ema(closes[-60:], 20)
-    atr14  = regime.get("atr") or atr(candles_15m, 14) or last.close * 0.006
-    rsi14  = sf(None)  # not needed here, use regime
-    if not e20:
-        return False, ""
-    dist = abs(last.close - e20) / atr14 if atr14 else 0
-    if dist >= 1.5:
-        dir_word = "вгору" if last.close > e20 else "вниз"
-        return True, f"ціна вже пройшла {round(dist, 1)}×ATR {dir_word} від EMA20 — чекати ретест"
+
+    distance_atr = abs(price - ema20) / atr15 if ema20 else 0
+    if side == "LONG":
+        if "LONG" in liquidity.get("blocks", []):
+            return True, "ліквідність проти: high зняли/памп поглинули, лонг не доганяти"
+        if rsi15 >= 74 and move_8 >= 0.9:
+            return True, "лонг після сильного імпульсу: чекати відкат/ретест"
+        if distance_atr >= 1.75 and tf3.get("state") != "LONG_STRENGTHENING":
+            return True, "ціна далеко від EMA20, 3m не підсилює"
+        if structure.get("phase") == "UPSIDE SWEEP":
+            return True, "зверху зняли ліквідність, лонг не доганяти"
+    else:
+        if "SHORT" in liquidity.get("blocks", []):
+            return True, "ліквідність проти: low зняли/дамп викупили, шорт не доганяти"
+        if rsi15 <= 26 and move_8 <= -0.9:
+            return True, "шорт після сильного падіння: чекати відкат/ретест"
+        if distance_atr >= 1.75 and tf3.get("state") != "SHORT_STRENGTHENING":
+            return True, "ціна далеко від EMA20, 3m не підсилює"
+        if structure.get("phase") == "DOWNSIDE SWEEP":
+            return True, "знизу зняли ліквідність, шорт не доганяти"
     return False, ""
 
-def entry_quality(side, tf_align, regime, structure, liquidity, flow,
-                  news, calendar_alert, candles_15m):
-    """
-    Compute quality 0-100.
-    Quality is a GATE-based score — it does NOT artificially inflate.
-    """
-    gates  = []
-    score  = 42   # base
 
-    # GATE 1: Regime
-    bad_regime = regime.get("regime") in ("CHOPPY", "VOLATILE", "INSUFFICIENT_DATA")
-    gates.append(_gate_report("REGIME", not bad_regime,
-                               regime.get("regime") if bad_regime else "OK"))
-    if bad_regime:
-        return 0, gates, "режим не підходить для входу"
-
-    # GATE 2: TF Alignment
-    direction = tf_align["direction"]
-    align_ok  = direction == side and tf_align["strength"] >= 2
-    macro_ok  = tf_align["macro_ok"]
-    gates.append(_gate_report("TF_ALIGNMENT", align_ok,
-                               f"strength={tf_align['strength']}, macro={'OK' if macro_ok else 'ПРОТИ'}"))
-    if not align_ok:
-        score -= 18
-    if not macro_ok:
-        score -= 10
-
-    # GATE 3: Structure
-    struct_ok = structure.get("bias") in (side, "NEUTRAL") and structure.get("available")
-    gates.append(_gate_report("STRUCTURE", struct_ok, structure.get("phase", "")))
-    if struct_ok and structure.get("bias") == side:
-        score += 16
-    elif not struct_ok:
-        score -= 14
-
-    # BOS/CHoCH bonus
-    bos = structure.get("bos")
-    choch = structure.get("choch")
-    if bos and bos.get("side") == side:
-        score += 10
-    if choch and choch.get("side") == side:
-        score += 8
-
-    # FVG retest bonus
-    fvgs = structure.get("fvg", [])
-    last_price = candles_15m[-1].close if candles_15m else 0
-    fvg_kind = "BULL" if side == "LONG" else "BEAR"
-    fvg_in_zone = any(
-        f["kind"] == fvg_kind and f["bot"] <= last_price <= f["top"]
-        for f in fvgs
-    ) if fvgs and last_price else False
-    if fvg_in_zone:
-        score += 8
-        gates.append(_gate_report("FVG_RETEST", True, "ціна у зоні FVG — підвищений шанс відскоку"))
-    else:
-        gates.append(_gate_report("FVG_RETEST", False, "FVG зони немає або ціна не у ній"))
-
-    # GATE 4: Late chase
-    late, late_reason = late_chase_check(side, candles_15m, regime)
-    gates.append(_gate_report("NO_LATE_CHASE", not late, late_reason))
-    if late:
-        score = min(score, 55)
-
-    # GATE 5: Liquidity
-    liq_blocked = side in liquidity.get("blocks", [])
-    gates.append(_gate_report("LIQUIDITY", not liq_blocked,
-                               liquidity.get("event", "")))
-    if liq_blocked:
-        score = min(score, 50)
-    elif liquidity.get("bias") == side:
-        score += 8
-
-    # GATE 6: Flow
-    flow_ok = flow.get("bias") != opp(side)
-    gates.append(_gate_report("FLOW", flow_ok, flow.get("note", "")))
-    if flow.get("bias") == side:
-        score += 8
-    elif not flow_ok:
-        score -= 8
-
-    # GATE 7: News
-    news_ok = news.get("bias") != opp(side) or abs(news.get("score", 0)) < 25
-    gates.append(_gate_report("NEWS", news_ok, news.get("top", "")[:80]))
-    if news.get("bias") == side and abs(news.get("score", 0)) >= 20:
-        score += 6
-    elif not news_ok:
-        score -= 10
-
-    # GATE 8: Calendar
-    cal_active = calendar_alert.get("active")
-    gates.append(_gate_report("CALENDAR", not cal_active, calendar_alert.get("note", "")))
-    if cal_active:
-        score -= 12
-        score = min(score, 58)
-
-    # Session bonus
-    session = market_session()
-    if session["liquid"]:
-        score += 4
-
-    final = int(max(0, min(92, score)))
-    fail_reasons = [g["reason"] for g in gates if not g["passed"] and g["reason"]]
-    reason = "; ".join(fail_reasons[:3]) if fail_reasons else "всі умови виконані"
-    return final, gates, reason
-
-
-def evaluate_setup(context):
-    """
-    Master entry evaluator. Returns action, side, quality, plan, gates.
-    Actions: ENTRY | RISKY_ENTRY | WATCH | WAIT_RETEST | NO_TRADE
-    """
-    regime    = context["regime"]
-    tf_align  = context["tf_align"]
+def entry_confirmations(side, context):
+    tf3 = context["tf3"]
+    tf15 = context["tf15"]
+    tf1h = context["tf1h"]
+    tf4h = context.get("tf4h") or {}
     structure = context["structure"]
-    liquidity = context["liquidity"]
-    flow      = context["flow"]
-    news      = context["news"]
-    calendar  = context["calendar"]
-    c15       = context["candles_15m"]
+    flow = context["flow"]
+    cvd = context.get("cvd") or {}
+    clusters = context.get("clusters") or {}
+    derivatives = context.get("derivatives") or {}
+    liquidity = context.get("liquidity") or {}
+    calendar = context.get("calendar") or {}
+    news = context["news"]
 
-    direction = tf_align["direction"]
-    if direction == "CONFLICT" or not context.get("price"):
-        return {
-            "action":    "NO_TRADE",
-            "side":      "NEUTRAL",
-            "quality":   0,
-            "title":     "ВХОДУ НЕМАЄ",
-            "reason":    "ТФ-конфлікт або немає ціни",
-            "plan":      None,
-            "gates":     [],
-        }
+    confirmations = []
+    conflicts = []
 
-    side = direction
+    if calendar.get("active"):
+        conflicts.append("важлива новина у найближчу годину")
 
-    # Block entry if regime is unfavorable
-    if regime.get("regime") in ("CHOPPY", "VOLATILE"):
-        return {
-            "action":  "NO_TRADE",
-            "side":    side,
-            "quality": 0,
-            "title":   f"НЕМАЄ ВХОДУ — {regime['regime']}",
-            "reason":  regime.get("note", ""),
-            "plan":    None,
-            "gates":   [],
-        }
+    if tf4h.get("bias") == side:
+        confirmations.append("4h старший тренд підтримує")
+    elif tf4h.get("bias") == opposite(side):
+        conflicts.append("4h старший тренд проти")
 
-    quality, gates, reason = entry_quality(
-        side, tf_align, regime, structure, liquidity, flow, news, calendar, c15
+    if tf15.get("bias") == side:
+        confirmations.append("15m за напрямом")
+    elif tf15.get("bias") == opposite(side):
+        conflicts.append("15m проти")
+
+    if tf1h.get("bias") == side:
+        confirmations.append("1h підтримує")
+    elif tf1h.get("bias") == opposite(side):
+        conflicts.append("1h проти")
+
+    if tf3.get("bias") == side:
+        confirmations.append("3m дав тригер")
+    elif tf3.get("bias") == opposite(side):
+        conflicts.append("3m проти")
+
+    if structure.get("bias") == side:
+        confirmations.append("структура підтверджує")
+    elif structure.get("bias") == opposite(side):
+        conflicts.append("структура проти")
+
+    if flow.get("bias") == side:
+        confirmations.append("угоди/стакан підтримують")
+    elif flow.get("bias") == opposite(side):
+        conflicts.append("потік проти")
+
+    if cvd.get("bias") == side:
+        confirmations.append("CVD підтверджує агресію")
+    elif cvd.get("bias") == opposite(side):
+        conflicts.append("CVD проти")
+
+    if clusters.get("bias") == side:
+        confirmations.append("кластери підтримують")
+    elif clusters.get("bias") == opposite(side):
+        conflicts.append("кластери проти")
+
+    if derivatives.get("bias") == side:
+        confirmations.append("OI/Funding підтримує")
+    elif derivatives.get("bias") == opposite(side):
+        conflicts.append("OI/Funding проти")
+
+    if liquidity.get("bias") == side:
+        confirmations.append("ліквідність підтримує")
+    elif liquidity.get("bias") == opposite(side):
+        conflicts.append("ліквідність проти")
+    if side in liquidity.get("blocks", []):
+        conflicts.append("після зняття ліквідності цей напрям не доганяти")
+
+    if news.get("bias") == side:
+        confirmations.append("новини дають паливо")
+    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 28:
+        conflicts.append("сильні новини проти")
+
+    return confirmations, conflicts
+
+
+def make_plan(side, context):
+    price = context["price"]
+    atr15 = context["atr15"] or price * 0.006
+    structure = context["structure"]
+    swing_low = safe_float(structure.get("swing_low")) or price - atr15
+    swing_high = safe_float(structure.get("swing_high")) or price + atr15
+
+    min_risk = max(atr15 * 1.15, price * 0.0075)
+    max_risk = price * (MAX_STOP_DISTANCE_PCT / 100)
+    buffer = max(atr15 * 0.18, price * 0.0012)
+    min_tp1_distance = price * (MIN_TP1_DISTANCE_PCT / 100)
+    min_tp2_distance = price * (MIN_TP2_DISTANCE_PCT / 100)
+    min_tp3_distance = price * (MIN_TP3_DISTANCE_PCT / 100)
+
+    if side == "LONG":
+        raw_stop = min(swing_low - buffer, price - min_risk)
+        risk = min(max(price - raw_stop, min_risk), max_risk)
+        stop = price - risk
+        technical_tp1 = max(swing_high, price + atr15 * 1.8)
+        technical_tp2 = max(structure.get("recent_high") or technical_tp1, price + atr15 * 2.6)
+        tp1 = max(technical_tp1, price + min_tp1_distance)
+        tp2 = max(technical_tp2, price + min_tp2_distance, tp1 + atr15 * 0.9)
+        tp3 = max(price + min_tp3_distance, tp2 + atr15 * 1.2)
+        invalidation = (
+            f"15m закриття нижче {round_price(stop)} або злам 3m/структури проти LONG. "
+            f"Стоп не далі {MAX_STOP_DISTANCE_PCT}% від входу; TP1 не ближче {MIN_TP1_DISTANCE_PCT}%."
+        )
+    else:
+        raw_stop = max(swing_high + buffer, price + min_risk)
+        risk = min(max(raw_stop - price, min_risk), max_risk)
+        stop = price + risk
+        technical_tp1 = min(swing_low, price - atr15 * 1.8)
+        technical_tp2 = min(structure.get("recent_low") or technical_tp1, price - atr15 * 2.6)
+        tp1 = min(technical_tp1, price - min_tp1_distance)
+        tp2 = min(technical_tp2, price - min_tp2_distance, tp1 - atr15 * 0.9)
+        tp3 = min(price - min_tp3_distance, tp2 - atr15 * 1.2)
+        invalidation = (
+            f"15m закриття вище {round_price(stop)} або злам 3m/структури проти SHORT. "
+            f"Стоп не далі {MAX_STOP_DISTANCE_PCT}% від входу; TP1 не ближче {MIN_TP1_DISTANCE_PCT}%."
+        )
+
+    risk_pct = abs(stop - price) / price * 100 if price else 0
+    reward1_pct = abs(tp1 - price) / price * 100 if price else 0
+    reward2_pct = abs(tp2 - price) / price * 100 if price else 0
+    reward3_pct = abs(tp3 - price) / price * 100 if price else 0
+    return TradePlan(
+        entry=round_price(price),
+        stop=round_price(stop),
+        tp1=round_price(tp1),
+        tp2=round_price(tp2),
+        tp3=round_price(tp3),
+        risk_pct=round(risk_pct, 3),
+        rr1=round(reward1_pct / risk_pct, 2) if risk_pct else 0,
+        rr2=round(reward2_pct / risk_pct, 2) if risk_pct else 0,
+        rr3=round(reward3_pct / risk_pct, 2) if risk_pct else 0,
+        invalidation=invalidation,
     )
 
-    # Late chase → WAIT_RETEST
-    late_gate = next((g for g in gates if g["gate"] == "NO_LATE_CHASE"), None)
-    if late_gate and not late_gate["passed"]:
-        plan = build_plan(side, context)
+
+def evaluate_new_setup(context):
+    side = context["bias"]
+    if side not in ["LONG", "SHORT"] or not context.get("price"):
         return {
-            "action":  "WAIT_RETEST",
-            "side":    side,
-            "quality": quality,
-            "title":   f"ЧЕКАТИ — {side} НЕ ДОГАНЯТИ",
-            "reason":  late_gate["reason"],
-            "plan":    plan,
-            "gates":   gates,
+            "action": "NO_TRADE",
+            "side": "NEUTRAL",
+            "quality": 0,
+            "title": "ВХОДУ НЕМАЄ",
+            "reason": "перевага нечітка, немає професійного входу",
+            "plan": None,
+            "confirmations": [],
+            "conflicts": [],
         }
 
-    plan = build_plan(side, context)
+    confirmations, conflicts = entry_confirmations(side, context)
+    late, late_reason = is_late_chase(side, context)
+    plan = make_plan(side, context)
 
-    if plan and quality >= ENTRY_QUALITY_MIN:
-        all_critical_pass = all(
-            g["passed"] for g in gates
-            if g["gate"] in ("REGIME", "TF_ALIGNMENT", "NO_LATE_CHASE", "LIQUIDITY")
-        )
-        if all_critical_pass:
-            return {
-                "action":  "ENTRY",
-                "side":    side,
-                "quality": quality,
-                "title":   f"ВХІД — {side}",
-                "reason":  reason,
-                "plan":    plan,
-                "gates":   gates,
-            }
+    score_for_side = side_score(context["total_score"], side)
+    quality = 48 + min(18, score_for_side // 5) + len(confirmations) * 5 - len(conflicts) * 8
 
-    if plan and quality >= RISKY_QUALITY_MIN:
+    tf3 = context["tf3"]
+    tf15 = context["tf15"]
+    tf4h = context.get("tf4h") or {}
+    structure = context["structure"]
+    flow = context["flow"]
+    cvd = context.get("cvd") or {}
+    clusters = context.get("clusters") or {}
+    derivatives = context.get("derivatives") or {}
+    liquidity = context.get("liquidity") or {}
+    calendar = context.get("calendar") or {}
+
+    trigger_ok = (
+        tf3.get("bias") == side
+        and tf15.get("bias") in [side, "NEUTRAL"]
+        and structure.get("bias") in [side, "NEUTRAL"]
+        and flow.get("bias") != opposite(side)
+        and cvd.get("bias") != opposite(side)
+        and clusters.get("bias") != opposite(side)
+        and derivatives.get("bias") != opposite(side)
+        and side not in liquidity.get("blocks", [])
+    )
+    trend_ok = (
+        tf4h.get("bias") in [side, "NEUTRAL"]
+        and (tf15.get("bias") == side or (tf15.get("bias") == "NEUTRAL" and structure.get("bias") == side))
+    )
+    hard_conflict = len(conflicts) >= 3 or "сильні новини проти" in conflicts
+
+    if late:
+        quality = min(quality, 54)
+    if hard_conflict:
+        quality = min(quality, 54)
+    if calendar.get("active"):
+        quality -= 8
+        if quality < 75:
+            hard_conflict = True
+    if not trigger_ok:
+        quality = min(quality, 61)
+    if not trend_ok:
+        quality = min(quality, 58)
+
+    quality = int(max(0, min(88, quality)))
+
+    if late:
         return {
-            "action":  "RISKY_ENTRY",
-            "side":    side,
+            "action": "WAIT_RETEST",
+            "side": side,
             "quality": quality,
-            "title":   f"РИЗИКОВАНИЙ ВХІД — {side}",
-            "reason":  reason,
-            "plan":    plan,
-            "gates":   gates,
+            "title": f"ЧЕКАТИ — {side} НЕ ДОГАНЯТИ",
+            "reason": late_reason,
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+        }
+
+    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        return {
+            "action": "ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": f"ВХІД Є — {side}",
+            "reason": "сигнал підтверджений: " + " | ".join(confirmations[:4]),
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+        }
+
+    if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        return {
+            "action": "RISKY_ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": f"РИЗИКОВАНИЙ ВХІД — {side}",
+            "reason": "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4]),
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
         }
 
     return {
-        "action":  "WATCH",
-        "side":    side,
+        "action": "WATCH",
+        "side": side,
         "quality": quality,
-        "title":   f"ЧЕКАТИ — ГОТУЄМОСЬ ДО {side}",
-        "reason":  reason,
-        "plan":    plan,
-        "gates":   gates,
+        "title": f"ЧЕКАТИ — ГОТУЄМОСЬ ДО {side}",
+        "reason": "напрям є, але входу ще немає: " + ("; ".join(conflicts[:3]) if conflicts else "бракує 3m/структурного тригера"),
+        "plan": plan,
+        "confirmations": confirmations,
+        "conflicts": conflicts,
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L10 — TRADE PLAN BUILDER
-# ══════════════════════════════════════════════════════════════════════
-# Stop is ALWAYS behind a structural level.
-# TP is set by R:R (minimum) or structural target (whichever is farther).
-
-def build_plan(side, context):
-    price     = context["price"]
-    atr14     = sf(context["regime"].get("atr")) or price * 0.006
-    structure = context["structure"]
-    c15       = context["candles_15m"]
-
-    if not price or not atr14:
-        return None
-
-    swing_high = sf(structure.get("swing_high")) or price + atr14 * 3
-    swing_low  = sf(structure.get("swing_low"))  or price - atr14 * 3
-    recent_hi  = sf(structure.get("recent_high")) or swing_high
-    recent_lo  = sf(structure.get("recent_low"))  or swing_low
-
-    buf = max(atr14 * 0.20, price * 0.0014)
-    max_risk = price * (MAX_STOP_PCT / 100)
-    min_risk = atr14 * 1.10
-
-    if side == "LONG":
-        # Stop: below swing low with buffer; cap at MAX_STOP_PCT
-        raw_stop = swing_low - buf
-        risk     = max(min_risk, min(price - raw_stop, max_risk))
-        stop     = price - risk
-        stop_reason = "structural (swing low)"
-
-        # TP: structural targets first, then R:R floor
-        tp1_struct = max(recent_hi, price + atr14 * 2.0)
-        tp2_struct = swing_high
-        tp1 = max(tp1_struct, price + risk * MIN_TP1_RR)
-        tp2 = max(tp2_struct, price + risk * MIN_TP2_RR, tp1 + atr14 * 0.8)
-        tp3 = max(price + risk * MIN_TP3_RR, tp2 + atr14 * 1.0)
-
-    else:  # SHORT
-        raw_stop = swing_high + buf
-        risk     = max(min_risk, min(raw_stop - price, max_risk))
-        stop     = price + risk
-        stop_reason = "structural (swing high)"
-
-        tp1_struct = min(recent_lo, price - atr14 * 2.0)
-        tp2_struct = swing_low
-        tp1 = min(tp1_struct, price - risk * MIN_TP1_RR)
-        tp2 = min(tp2_struct, price - risk * MIN_TP2_RR, tp1 - atr14 * 0.8)
-        tp3 = min(price - risk * MIN_TP3_RR, tp2 - atr14 * 1.0)
-
-    risk_pct = abs(stop - price) / price * 100
-    rr1 = abs(tp1 - price) / abs(stop - price) if abs(stop - price) else 0
-    rr2 = abs(tp2 - price) / abs(stop - price) if abs(stop - price) else 0
-    rr3 = abs(tp3 - price) / abs(stop - price) if abs(stop - price) else 0
-
-    # Validate R:R — if structural TPs don't reach minimum, use R:R-based
-    tp_method = "structural" if (rr1 >= MIN_TP1_RR and rr2 >= MIN_TP2_RR) else "rr-based"
-
-    return TradePlan(
-        entry=rp(price), stop=rp(stop),
-        tp1=rp(tp1), tp2=rp(tp2), tp3=rp(tp3),
-        risk_pct=round(risk_pct, 3),
-        rr1=round(rr1, 2), rr2=round(rr2, 2), rr3=round(rr3, 2),
-        stop_reason=stop_reason, tp_method=tp_method,
-    )
+# ==========================================================
+# ACTIVE TRADE MANAGEMENT
+# ==========================================================
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L11 — ACTIVE TRADE MANAGER
-# ══════════════════════════════════════════════════════════════════════
-# Professional exit logic:
-#  - Stop: structural (hard stop behind swing)
-#  - After TP1: stop moves to break-even
-#  - After TP2: trailing stop = 50% of last swing range
-#  - Momentum exit: if 3m + structure flip against position and price
-#    gives back > 60% of best profit → early exit
-
-def _hit(side, price, level, direction="target"):
-    """Check if price has reached a level (target or stop)."""
+def trade_hit_level(side, price, level):
     if level is None:
         return False
-    if direction == "stop":
-        return price <= level if side == "LONG" else price >= level
     return price >= level if side == "LONG" else price <= level
 
-def _best(side, trade, current):
+
+def trade_hit_stop(side, price, stop):
+    if stop is None:
+        return False
+    return price <= stop if side == "LONG" else price >= stop
+
+
+def best_trade_price(side, trade, current_price):
+    if not trade.best_price:
+        return current_price
     if side == "LONG":
-        return max(trade.best_price or current, current)
-    return min(trade.best_price or current, current)
+        return max(trade.best_price, current_price)
+    return min(trade.best_price, current_price)
 
-def manage_trade(trade, context):
-    """
-    Returns dict with: closed bool, action, title, recommendation, pct fields, notes.
-    Mutates trade in place.
-    """
+
+def active_trade_message_key(trade, action):
+    return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{round_price(trade.stop_current)}"
+
+
+def manage_active_trade(trade, context):
     price = context["price"]
-    side  = trade.side
-    tf3   = context["tf3"]
-    tf15  = context["tf15"]
+    side = trade.side
+    tf3 = context["tf3"]
+    tf15 = context["tf15"]
     structure = context["structure"]
-    flow  = context["flow"]
+    flow = context["flow"]
 
-    trade.best_price = _best(side, trade, price)
+    trade.best_price = best_trade_price(side, trade, price)
     current_pct = signed_pct(side, trade.entry, price)
-    best_pct    = signed_pct(side, trade.entry, trade.best_price)
-    giveback    = max(0, best_pct - current_pct)
-    giveback_r  = giveback / best_pct if best_pct > 0.01 else 0
+    best_pct = signed_pct(side, trade.entry, trade.best_price)
+    giveback = max(0, best_pct - current_pct)
+    giveback_ratio = giveback / best_pct if best_pct > 0 else 0
 
-    notes  = []
+    notes = []
     action = "HOLD"
+    title = f"СУПРОВІД {side}"
+    recommendation = "утримувати, поки 3m/15m не ламаються"
 
-    # ── Hard stop ────────────────────────────────────────────────────
-    if _hit(side, price, trade.stop_current, "stop"):
-        trade.status      = "CLOSED"
+    if trade_hit_stop(side, price, trade.stop_current):
+        trade.status = "CLOSED"
         trade.last_action = "STOP"
         return {
-            "closed": True, "action": "STOP",
-            "title":  f"УГОДУ {side} ЗУПИНЕНО — СТОП",
-            "recommendation": "стоп пробитий — сценарій анульований",
-            "current_pct": current_pct, "best_pct": best_pct,
-            "notes": [f"ціна {rp(price)} | стоп {rp(trade.stop_current)}"],
+            "closed": True,
+            "action": "STOP",
+            "title": f"УГОДУ {side} ЗАКРИТО — STOP",
+            "recommendation": "стоп/зона зламу пробита, сценарій закрито",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": [f"ціна {round_price(price)} проти стопу {round_price(trade.stop_current)}"],
         }
 
-    # ── TP3 ───────────────────────────────────────────────────────────
-    if _hit(side, price, trade.tp3):
-        trade.tp3_hit = True; trade.status = "CLOSED"; trade.last_action = "TP3"
+    if trade_hit_level(side, price, trade.tp3):
+        trade.tp3_hit = True
+        trade.status = "CLOSED"
+        trade.last_action = "TP3"
         return {
-            "closed": True, "action": "TP3",
-            "title":  f"УГОДУ {side} ЗАКРИТО — ПОВНА ЦІЛЬ",
-            "recommendation": "TP3 досягнуто — повне закриття",
-            "current_pct": current_pct, "best_pct": best_pct,
-            "notes": [f"TP3 {rp(trade.tp3)} досягнуто"],
+            "closed": True,
+            "action": "TP3",
+            "title": f"УГОДУ {side} ЗАКРИТО — TP3",
+            "recommendation": "основна ціль виконана, сценарій закрито",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": [f"TP3 {round_price(trade.tp3)} взято"],
         }
 
-    # ── TP2: trail to TP1 ─────────────────────────────────────────────
-    if not trade.tp2_hit and _hit(side, price, trade.tp2):
+    if trade_hit_level(side, price, trade.tp2):
         trade.tp2_hit = True
-        action = "TP2_TRAIL"
-        notes.append("TP2 досягнуто — зафіксувати 50%, стоп → TP1")
+        action = "TP2_PROTECT"
+        recommendation = "TP2 взято: зафіксувати ще частину, залишок вести трейлінгом"
         if side == "LONG":
             trade.stop_current = max(trade.stop_current, trade.tp1)
         else:
             trade.stop_current = min(trade.stop_current, trade.tp1)
-        notes.append(f"стоп перенесено → {rp(trade.stop_current)}")
-
-    # ── TP1: move to break-even ────────────────────────────────────────
-    elif not trade.tp1_hit and _hit(side, price, trade.tp1):
+        notes.append(f"стоп підтягнути до TP1 {round_price(trade.tp1)}")
+    elif trade_hit_level(side, price, trade.tp1):
         trade.tp1_hit = True
-        action = "TP1_BE"
-        notes.append("TP1 досягнуто — зафіксувати 30-40%, стоп → б/у")
-        be = trade.entry * (1.0010 if side == "LONG" else 0.9990)
+        action = "TP1_PROTECT"
+        recommendation = "TP1 взято: частково фіксувати, стоп у б/у або малий плюс"
+        be = trade.entry * (1.0008 if side == "LONG" else 0.9992)
         if side == "LONG":
             trade.stop_current = max(trade.stop_current, be)
         else:
             trade.stop_current = min(trade.stop_current, be)
-        notes.append(f"стоп у б/у → {rp(trade.stop_current)}")
+        notes.append(f"стоп у б/у біля {round_price(trade.stop_current)}")
 
-    # ── Momentum exit (early) ─────────────────────────────────────────
-    opp_votes = sum(
-        1 for b in [tf3, tf15, structure, flow]
-        if b.get("bias") == opp(side)
-    )
-    if best_pct >= 0.40 and giveback_r >= 0.60 and opp_votes >= 2:
-        trade.status = "CLOSED"; trade.last_action = "EXIT_MOM"
+    opposite_votes = 0
+    support_votes = 0
+    for block in [tf3, tf15, context.get("tf4h") or {}, structure, flow, context.get("cvd") or {}, context.get("clusters") or {}, context.get("derivatives") or {}]:
+        if block.get("bias") == side:
+            support_votes += 1
+        elif block.get("bias") == opposite(side):
+            opposite_votes += 1
+
+    near_entry = abs(current_pct) <= 0.18
+    lost_after_profit = best_pct >= 0.38 and giveback_ratio >= 0.62 and current_pct <= 0.18
+
+    if lost_after_profit and opposite_votes >= 2:
+        trade.status = "CLOSED"
+        trade.last_action = "EXIT_GIVEBACK"
         return {
-            "closed": True, "action": "EXIT",
-            "title":  f"УГОДУ {side} ЗАКРИТО — ВТРАТА МОМЕНТУ",
-            "recommendation": "прибуток майже відданий, підтвердження зникло — вихід біля входу",
-            "current_pct": current_pct, "best_pct": best_pct,
-            "notes": [f"віддали {round(giveback, 3)}% з {round(best_pct, 3)}% максимуму"],
+            "closed": True,
+            "action": "EXIT",
+            "title": f"УГОДУ {side} ЗАКРИТО — АКТУАЛЬНІСТЬ ВТРАЧЕНА",
+            "recommendation": "рух у плюс майже віддали назад, підтвердження зникло",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": ["краще закрити біля входу / не чекати дальній стоп"],
         }
 
-    # ── Under pressure ───────────────────────────────────────────────
-    if current_pct < -0.30 and opp_votes >= 2 and action == "HOLD":
-        action = "EXIT_WARN"
-        notes.append("позиція під тиском + структура проти — розглянути ранній вихід")
-
-    # ── Protect ──────────────────────────────────────────────────────
-    elif current_pct > 0 and tf3.get("bias") == opp(side) and action == "HOLD":
+    if near_entry and opposite_votes >= 2 and support_votes <= 1:
+        action = "PROTECT_OR_EXIT"
+        recommendation = "ціна біля входу, підтвердження слабке: захистити позицію або закрити біля входу"
+        notes.append("не усереднювати; чекати нового тригера після виходу")
+    elif current_pct < -0.28 and opposite_votes >= 2:
+        action = "EXIT_WARNING"
+        recommendation = "позиція під тиском, структура проти: краще виходити раніше, не чекати дальній стоп"
+        notes.append("злам 3m/структури проти позиції")
+    elif current_pct > 0 and tf3.get("bias") == opposite(side):
         action = "PROTECT"
-        notes.append("3m слабшає — підтягнути стоп, не віддавати прибуток")
+        recommendation = "позиція у плюсі, але 3m слабшає: підтягнути стоп"
+        notes.append("прибуток не віддавати назад")
+    elif action == "HOLD":
+        if current_pct > 0:
+            recommendation = "утримувати, напрям ще працює"
+        else:
+            recommendation = "тримати тільки поки 15m/3m не зламаються; стоп обов'язковий"
 
     trade.last_action = action
-    rec_map = {
-        "HOLD":       "утримувати: тренд активний, стоп на місці",
-        "TP1_BE":     "TP1 взято: часткова фіксація, стоп у б/у",
-        "TP2_TRAIL":  "TP2 взято: фіксувати 50%, трейлінг-стоп за TP1",
-        "EXIT_WARN":  "позиція під тиском — вихід до дальнього стопу",
-        "PROTECT":    "підтягнути стоп — прибуток захистити",
-    }
-
+    key = active_trade_message_key(trade, action)
+    trade.last_message_key = key
     return {
-        "closed": False, "action": action,
-        "title":  f"СУПРОВІД {side}",
-        "recommendation": rec_map.get(action, "утримувати"),
-        "current_pct": current_pct, "best_pct": best_pct,
+        "closed": False,
+        "action": action,
+        "title": title,
+        "recommendation": recommendation,
+        "current_pct": current_pct,
+        "best_pct": best_pct,
         "notes": notes,
     }
 
-def make_active_trade(setup):
+
+def new_active_trade(setup):
     plan = setup["plan"]
     return ActiveTrade(
         id=uuid.uuid4().hex[:10],
         side=setup["side"],
         opened_at=iso_now(),
-        entry=plan.entry, stop_initial=plan.stop, stop_current=plan.stop,
-        tp1=plan.tp1, tp2=plan.tp2, tp3=plan.tp3,
+        entry=plan.entry,
+        stop_initial=plan.stop,
+        stop_current=plan.stop,
+        tp1=plan.tp1,
+        tp2=plan.tp2,
+        tp3=plan.tp3,
         quality=setup["quality"],
         best_price=plan.entry,
         notes=[setup["reason"]],
     )
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L12 — MESSAGE COMPOSER
-# ══════════════════════════════════════════════════════════════════════
+# ==========================================================
+# MESSAGES
+# ==========================================================
 
-def _price_line(context):
-    chg = round(context.get("change24h", 0), 3)
-    sign = "+" if chg >= 0 else ""
-    return f"<b>Ціна:</b> <code>{rp(context['price'])}</code> ({sign}{chg}%) | {context.get('source', 'OKX')}"
 
-def _plan_text(plan):
+def price_line(context):
+    return f"<b>Ціна:</b> {round_price(context['price'])} | 24h {round(context.get('change24h', 0), 3)}% | {context.get('source')}"
+
+
+def context_lines(context):
+    lines = [
+        f"<b>4h:</b> {side_word(context['tf4h'].get('bias'))} ({context['tf4h'].get('score')}) — {context['tf4h'].get('note')}",
+        f"<b>1h:</b> {side_word(context['tf1h'].get('bias'))} ({context['tf1h'].get('score')}) — {context['tf1h'].get('note')}",
+        f"<b>15m:</b> {side_word(context['tf15'].get('bias'))} ({context['tf15'].get('score')}) — {context['tf15'].get('note')}",
+        f"<b>3m:</b> {side_word(context['tf3'].get('bias'))} ({context['tf3'].get('score')}) — {context['tf3'].get('note')}",
+        f"<b>Структура:</b> {side_word(context['structure'].get('bias'))} — {context['structure'].get('phase')} | {context['structure'].get('note')}",
+        f"<b>Потік:</b> {side_word(context['flow'].get('bias'))} ({context['flow'].get('score')}) — {context['flow'].get('note')}",
+        f"<b>CVD:</b> {side_word(context['cvd'].get('bias'))} ({context['cvd'].get('score')}) — {context['cvd'].get('state')} | {context['cvd'].get('note')}",
+        f"<b>Кластери:</b> {side_word(context['clusters'].get('bias'))} ({context['clusters'].get('score')}) — {context['clusters'].get('state')} | {context['clusters'].get('note')}",
+        f"<b>OI/Funding:</b> {side_word(context['derivatives'].get('bias'))} ({context['derivatives'].get('score')}) — {context['derivatives'].get('state')} | {context['derivatives'].get('note')}",
+        f"<b>Ліквідації:</b> {side_word(context['liquidity'].get('bias'))} ({context['liquidity'].get('score')}) — {context['liquidity'].get('event')} | {context['liquidity'].get('note')}",
+        f"<b>Новини:</b> {side_word(context['news'].get('bias'))} ({context['news'].get('score')}) — {context['news'].get('top')[:150]}",
+    ]
+    calendar = context.get("calendar") or {}
+    if calendar.get("active"):
+        lines.insert(0, f"<b>Важлива новина:</b> {calendar.get('note')}. Новий вхід тільки після реакції ціни.")
+    return lines
+
+
+def plan_text(plan):
     if not plan:
         return "плану немає"
     return (
-        f"Вхід <code>{plan.entry}</code> | Стоп <code>{plan.stop}</code> ({plan.risk_pct}%) | "
-        f"TP1 <code>{plan.tp1}</code> | TP2 <code>{plan.tp2}</code> | TP3 <code>{plan.tp3}</code> | "
-        f"RR {plan.rr1}/{plan.rr2}/{plan.rr3} | стоп: {plan.stop_reason}"
+        f"Вхід {plan.entry} | Стоп {plan.stop} | TP1 {plan.tp1} | "
+        f"TP2 {plan.tp2} | TP3 {plan.tp3} | ризик {plan.risk_pct}% | RR {plan.rr1}/{plan.rr2}/{plan.rr3}"
     )
 
-def _context_summary(context):
-    r  = context["regime"]
-    tf = context["tf_align"]
-    s  = context["structure"]
-    li = context["liquidity"]
-    fl = context["flow"]
-    n  = context["news"]
-    tf3  = context["tf3"]
-    tf15 = context["tf15"]
-    tf1h = context["tf1h"]
-    tf4h = context["tf4h"]
-    lines = [
-        f"<b>Режим:</b> {r.get('regime')} | ATR {r.get('atr')} | vol×{r.get('vol_ratio','')}",
-        f"<b>ТФ:</b> 3m {side_ua(tf3['bias'])} | 15m {side_ua(tf15['bias'])} | 1h {side_ua(tf1h['bias'])} | 4h {side_ua(tf4h['bias'])}",
-        f"<b>Структура:</b> {s.get('phase')} | {s.get('chain','')} | {s.get('note','')}",
-        f"<b>Ліквідність:</b> {li.get('event')} — {li.get('note','')}",
-        f"<b>Потік:</b> δ={fl.get('trade_delta')}% / книга δ={fl.get('book_delta')}% — {fl.get('note','')}",
-        f"<b>Новини:</b> {side_ua(n['bias'])} ({n['score']}) — {n['top'][:100]}",
-    ]
-    cal = context.get("calendar", {})
-    if cal.get("active"):
-        lines.insert(0, f"⚠️ <b>Подія:</b> {cal.get('note')} — утримуватись від входів до виходу даних")
-    return lines
 
-def _gate_summary(gates):
-    if not gates:
-        return ""
-    icons = {True: "✅", False: "❌"}
-    parts = []
-    for g in gates:
-        label = g["gate"].replace("_", " ")
-        parts.append(f"{icons[g['passed']]} {label}")
-    return "<b>Гейти:</b> " + " | ".join(parts)
-
-def build_entry_message(context, setup):
-    plan  = setup.get("plan")
+def build_new_setup_message(context, setup):
+    plan = setup.get("plan")
     lines = [
-        "<b>🛢 BZU SIGNAL BOT v3</b>",
+        "<b>BZU SIGNAL BOT PRO</b>",
         f"<b>{setup['title']}</b>",
         "",
-        _price_line(context),
+        price_line(context),
         f"<b>Якість:</b> {setup['quality']}/100",
         f"<b>Причина:</b> {setup['reason']}",
     ]
-    if plan and setup["action"] in ("ENTRY", "RISKY_ENTRY"):
-        lines.append(f"<b>План:</b> {_plan_text(plan)}")
+    if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
+        lines.append(f"<b>План:</b> {plan_text(plan)}")
+        lines.append(f"<b>Скасування:</b> {plan.invalidation}")
         if setup["action"] == "RISKY_ENTRY":
-            lines.append("⚠️ <i>Ризикований вхід: менший розмір; якщо одразу йде проти — не тримати до дальнього стопу</i>")
-    elif plan:
-        lines.append(f"<b>Орієнтир:</b> {_plan_text(plan)}")
+            lines.append("<b>Режим:</b> малий ризик; якщо 3m одразу піде проти — не тримати до дальнього стопу.")
+    elif setup["action"] == "WAIT_RETEST":
+        lines.append(f"<b>Зона:</b> напрям {setup['side']} є, але вхід тільки після відкату/ретесту. Орієнтир плану: {plan_text(plan)}")
+    elif setup["side"] in ["LONG", "SHORT"] and plan:
+        lines.append(f"<b>Що чекати:</b> {setup['side']} тільки після 3m-тригера і підтвердження структури. Орієнтир: {plan_text(plan)}")
 
-    lines.append(_gate_summary(setup.get("gates", [])))
-    lines.append("")
-    lines.extend(_context_summary(context)[:5])
+    if setup.get("conflicts"):
+        lines.append("<b>Ризики:</b> " + " | ".join(setup["conflicts"][:3]))
+
+    lines.extend(context_lines(context)[:4])
     return "\n".join(lines).strip()
+
 
 def build_follow_message(context, trade, result):
     lines = [
-        "<b>🛢 BZU SIGNAL BOT v3</b>",
+        "<b>BZU SIGNAL BOT PRO</b>",
         f"<b>{result['title']}</b> — {result['recommendation']}",
         "",
-        _price_line(context),
-        (f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | "
-         f"Макс: {round(result['best_pct'], 3)}%"),
-        (f"<b>Позиція:</b> Вхід {rp(trade.entry)} | Стоп {rp(trade.stop_current)} | "
-         f"TP1 {rp(trade.tp1)} {'✅' if trade.tp1_hit else '○'} | "
-         f"TP2 {rp(trade.tp2)} {'✅' if trade.tp2_hit else '○'} | "
-         f"TP3 {rp(trade.tp3)} {'✅' if trade.tp3_hit else '○'}"),
+        price_line(context),
+        f"<b>Стан:</b> від входу {round(result['current_pct'], 3)}% | максимум у плюс {round(result['best_pct'], 3)}%",
+        (
+            f"<b>Позиція:</b> Вхід {round_price(trade.entry)} | Стоп зараз {round_price(trade.stop_current)} "
+            f"| TP1 {round_price(trade.tp1)} | TP2 {round_price(trade.tp2)} | TP3 {round_price(trade.tp3)}"
+        ),
+        f"<b>TP:</b> TP1 {'так' if trade.tp1_hit else 'ні'} | TP2 {'так' if trade.tp2_hit else 'ні'} | TP3 {'так' if trade.tp3_hit else 'ні'}",
     ]
     if result.get("notes"):
         lines.append("<b>Дія:</b> " + " | ".join(result["notes"][:3]))
-    lines.extend(_context_summary(context)[:4])
+    lines.extend(context_lines(context)[:5])
     return "\n".join(lines).strip()
 
 
-# ══════════════════════════════════════════════════════════════════════
-# L13 — PERSISTENCE (State + Journal)
-# ══════════════════════════════════════════════════════════════════════
-
-def atomic_write(path, data):
-    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-def load_json(path, default):
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            return d if isinstance(d, dict) else default
-    except Exception:
-        pass
-    return default
-
-def load_state():
-    s = load_json(STATE_FILE, {"version": "v3", "active_trade": None, "history": [], "last_stop_side": None})
-    s.setdefault("active_trade", None)
-    s.setdefault("history", [])
-    s.setdefault("last_stop_side", None)
-    return s
-
-def save_state(s):
-    s["updated_at"] = iso_now()
-    s["history"] = (s.get("history") or [])[-MAX_HISTORY:]
-    atomic_write(STATE_FILE, s)
-
-def load_journal():
-    j = load_json(JOURNAL_FILE, {"version": "v3", "trades": [], "signals": []})
-    j.setdefault("trades",  [])
-    j.setdefault("signals", [])
-    return j
-
-def save_journal(j):
-    j["updated_at"] = iso_now()
-    j["trades"]  = (j.get("trades")  or [])[-MAX_JOURNAL:]
-    j["signals"] = (j.get("signals") or [])[-MAX_JOURNAL:]
-    atomic_write(JOURNAL_FILE, j)
-
-def trade_from_state(state):
-    raw = (state or {}).get("active_trade")
-    if not isinstance(raw, dict):
-        return None
-    try:
-        return ActiveTrade(
-            id=str(raw.get("id") or uuid.uuid4().hex[:10]),
-            side=str(raw["side"]),
-            opened_at=str(raw.get("opened_at") or iso_now()),
-            entry=float(raw["entry"]),
-            stop_initial=float(raw.get("stop_initial", raw["entry"])),
-            stop_current=float(raw.get("stop_current", raw["entry"])),
-            tp1=float(raw["tp1"]), tp2=float(raw["tp2"]), tp3=float(raw["tp3"]),
-            quality=int(raw.get("quality") or 0),
-            status=str(raw.get("status") or "OPEN"),
-            tp1_hit=bool(raw.get("tp1_hit")),
-            tp2_hit=bool(raw.get("tp2_hit")),
-            tp3_hit=bool(raw.get("tp3_hit")),
-            best_price=float(raw.get("best_price") or raw["entry"]),
-            last_action=str(raw.get("last_action") or "OPEN"),
-            last_msg_key=str(raw.get("last_msg_key") or ""),
-            consecutive_stops=int(raw.get("consecutive_stops") or 0),
-            notes=list(raw.get("notes") or []),
-        )
-    except Exception as e:
-        print(f"[WARN] trade migration: {e}")
-        return None
-
-def store_trade(state, trade):
-    state["active_trade"] = asdict(trade) if trade else None
-
-def append_history(state, item):
-    h = state.get("history") or []
-    item["time"] = iso_now()
-    h.append(item)
-    state["history"] = h[-MAX_HISTORY:]
-
-def journal_closed_trade(trade, result, context):
+def build_closed_trade_journal_item(trade, result, context):
     return {
-        "id":          trade.id,
-        "opened_at":   trade.opened_at,
-        "closed_at":   iso_now(),
-        "side":        trade.side,
-        "entry":       trade.entry,
-        "close_price": rp(context["price"]),
-        "stop_initial":trade.stop_initial,
-        "tp1": trade.tp1, "tp2": trade.tp2, "tp3": trade.tp3,
-        "quality":     trade.quality,
-        "result":      result["action"],
-        "result_pct":  round(result["current_pct"], 3),
+        "id": trade.id,
+        "opened_at": trade.opened_at,
+        "closed_at": iso_now(),
+        "side": trade.side,
+        "entry": trade.entry,
+        "close_price": round_price(context["price"]),
+        "stop_initial": trade.stop_initial,
+        "stop_final": round_price(trade.stop_current),
+        "tp1": trade.tp1,
+        "tp2": trade.tp2,
+        "tp3": trade.tp3,
+        "quality": trade.quality,
+        "result_action": result["action"],
+        "result_pct": round(result["current_pct"], 3),
         "leveraged_pct": round(result["current_pct"] * LEVERAGE, 2),
-        "best_pct":    round(result["best_pct"], 3),
-        "notes":       result.get("notes", []),
+        "best_pct": round(result["best_pct"], 3),
+        "notes": result.get("notes", []),
     }
 
-
-# ══════════════════════════════════════════════════════════════════════
-# TELEGRAM
-# ══════════════════════════════════════════════════════════════════════
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[WARN] Telegram не налаштований. Повідомлення:")
+        print("[WARN] Telegram token/chat missing. Message:")
         print(message)
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message[:3900],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message[:4000],
-                  "parse_mode": "HTML", "disable_web_page_preview": True},
-            timeout=15,
-        )
-        print(f"Telegram: {r.status_code}")
-    except Exception as e:
-        print(f"[WARN] Telegram: {e}")
+        response = requests.post(url, json=payload, timeout=15)
+        print(f"Telegram status: {response.status_code}")
+        print(response.text[:300])
+    except Exception as error:
+        print(f"[WARN] Telegram send failed: {error}")
 
 
-# ══════════════════════════════════════════════════════════════════════
-# BUILD CONTEXT
-# ══════════════════════════════════════════════════════════════════════
-
-def build_context(data):
-    """Assemble all layers into a single context dict."""
-    tick  = data.get("ticker") or {}
-    price = sf(tick.get("price"))
-
-    c3   = data.get("candles_3m")  or []
-    c15  = data.get("candles_15m") or []
-    c1h  = data.get("candles_1h")  or []
-    c4h  = data.get("candles_4h")  or []
-
-    # L3
-    regime = detect_regime(c15, "15m")
-
-    # L4
-    tf3  = tf_bias(c3,  "3m")
-    tf15 = tf_bias(c15, "15m")
-    tf1h = tf_bias(c1h, "1h")
-    tf4h = tf_bias(c4h, "4h")
-    align = tf_alignment(tf3, tf15, tf1h, tf4h)
-
-    # L5
-    structure = analyze_structure(c15, "15m")
-
-    # L6
-    flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
-
-    # L7
-    liquidity = analyze_liquidity(c3, c15, structure)
-
-    # L8
-    news_items = get_news()
-    news       = analyze_news(news_items)
-    calendar   = analyze_calendar()
-    session    = market_session()
-
-    price = price or sf(tf15.get("e20")) or 90.0
-
-    return {
-        "price":       price,
-        "change24h":   sf(tick.get("change24h"), 0),
-        "source":      tick.get("source", "OKX"),
-        "regime":      regime,
-        "tf3":         tf3,
-        "tf15":        tf15,
-        "tf1h":        tf1h,
-        "tf4h":        tf4h,
-        "tf_align":    align,
-        "structure":   structure,
-        "flow":        flow,
-        "liquidity":   liquidity,
-        "news":        news,
-        "calendar":    calendar,
-        "session":     session,
-        "candles_15m": c15,
+def update_market_snapshot(state, context):
+    derivatives = context.get("derivatives") or {}
+    cvd = context.get("cvd") or {}
+    state["last_market_snapshot"] = {
+        "time": iso_now(),
+        "price": round_price(context.get("price")),
+        "oi": derivatives.get("oi"),
+        "cvd": cvd.get("cvd"),
+        "bias": context.get("bias"),
+        "tech_score": context.get("tech_score"),
+        "total_score": context.get("total_score"),
     }
 
 
-# ══════════════════════════════════════════════════════════════════════
+# ==========================================================
 # MAIN
-# ══════════════════════════════════════════════════════════════════════
+# ==========================================================
+
 
 def main():
-    print("═" * 60)
-    print("  BZU SIGNAL BOT v3 — START")
-    print("═" * 60)
-
-    state   = load_state()
+    print("START BZU SIGNAL BOT PRO")
+    state = load_state()
     journal = load_journal()
 
-    data    = collect_market_data()
-    context = build_context(data)
-
+    data = collect_market_data()
+    context = build_context(data, state)
     if not context.get("price"):
-        print("[ERROR] Немає ціни — вихід")
+        print("NO PRICE DATA")
         return
 
-    regime_name = context["regime"].get("regime", "?")
-    align_dir   = context["tf_align"]["direction"]
-    print(f"Ціна: {context['price']} | Режим: {regime_name} | ТФ: {align_dir}")
-    print(f"3m {context['tf3']['bias']} | 15m {context['tf15']['bias']} | "
-          f"1h {context['tf1h']['bias']} | 4h {context['tf4h']['bias']}")
-    print(f"Структура: {context['structure']['phase']} | "
-          f"Ліквідність: {context['liquidity']['event']} | "
-          f"Новини: {context['news']['bias']}")
+    print(f"PRICE {context['price']} | BIAS {context['bias']} | TECH {context['tech_score']} | TOTAL {context['total_score']}")
+    print(f"4h {context['tf4h'].get('bias')} {context['tf4h'].get('score')} | 15m {context['tf15'].get('bias')} {context['tf15'].get('score')} | 3m {context['tf3'].get('bias')} {context['tf3'].get('score')}")
+    print(f"STRUCTURE {context['structure'].get('phase')} {context['structure'].get('bias')} | CVD {context['cvd'].get('bias')} | CLUSTERS {context['clusters'].get('bias')} | OI {context['derivatives'].get('bias')} | NEWS {context['news'].get('bias')}")
 
-    # ── Active trade management ───────────────────────────────────────
-    active = trade_from_state(state)
+    active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
-        result  = manage_trade(active, context)
+        result = manage_active_trade(active, context)
         message = build_follow_message(context, active, result)
-
-        if result["closed"]:
-            journal["trades"].append(journal_closed_trade(active, result, context))
+        if result.get("closed"):
+            journal["trades"].append(build_closed_trade_journal_item(active, result, context))
             append_history(state, {
-                "type":       "TRADE_CLOSED",
-                "side":       active.side,
-                "action":     result["action"],
-                "price":      rp(context["price"]),
+                "type": "TRADE_CLOSED",
+                "side": active.side,
+                "action": result["action"],
+                "price": round_price(context["price"]),
                 "result_pct": round(result["current_pct"], 3),
             })
-            if result["action"] == "STOP":
-                state["last_stop_side"] = active.side
-            store_trade(state, None)
+            store_active_trade(state, None)
         else:
-            store_trade(state, active)
+            store_active_trade(state, active)
             append_history(state, {
-                "type":         "FOLLOW",
-                "side":         active.side,
-                "action":       result["action"],
-                "price":        rp(context["price"]),
-                "result_pct":   round(result["current_pct"], 3),
-                "stop_current": rp(active.stop_current),
+                "type": "FOLLOW",
+                "side": active.side,
+                "action": result["action"],
+                "price": round_price(context["price"]),
+                "result_pct": round(result["current_pct"], 3),
+                "stop_current": round_price(active.stop_current),
             })
-
         journal["signals"].append({
-            "time":   iso_now(),
-            "type":   "FOLLOW" if not result["closed"] else "CLOSE",
-            "side":   active.side,
+            "time": iso_now(),
+            "type": "FOLLOW" if not result.get("closed") else "CLOSE",
+            "side": active.side,
             "action": result["action"],
-            "price":  rp(context["price"]),
-            "regime": regime_name,
+            "price": round_price(context["price"]),
+            "quality": active.quality,
+            "context_bias": context["bias"],
+            "tech_score": context["tech_score"],
+            "total_score": context["total_score"],
         })
-
+        update_market_snapshot(state, context)
         save_state(state)
         save_journal(journal)
         send_telegram(message)
-        print(f"ACTIVE TRADE MANAGED: {result['action']}")
+        print("BOT COMPLETE: ACTIVE TRADE MANAGED")
         return
 
-    # ── New setup evaluation ──────────────────────────────────────────
-    setup   = evaluate_setup(context)
-    message = build_entry_message(context, setup)
+    setup = evaluate_new_setup(context)
+    message = build_new_setup_message(context, setup)
 
-    if setup["action"] in ("ENTRY", "RISKY_ENTRY"):
-        active = make_active_trade(setup)
-        store_trade(state, active)
-        state["last_stop_side"] = None   # reset on new entry
+    if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
+        active = new_active_trade(setup)
+        store_active_trade(state, active)
         append_history(state, {
-            "type":    "ENTRY",
-            "side":    setup["side"],
-            "action":  setup["action"],
-            "price":   rp(context["price"]),
+            "type": "ENTRY",
+            "side": setup["side"],
+            "action": setup["action"],
+            "price": round_price(context["price"]),
             "quality": setup["quality"],
-            "stop":    active.stop_current,
-            "tp1":     active.tp1,
+            "entry": active.entry,
+            "stop": active.stop_current,
+            "tp1": active.tp1,
+            "tp2": active.tp2,
+            "tp3": active.tp3,
         })
     else:
-        store_trade(state, None)
+        store_active_trade(state, None)
         append_history(state, {
-            "type":    setup["action"],
-            "side":    setup["side"],
-            "price":   rp(context["price"]),
+            "type": setup["action"],
+            "side": setup["side"],
+            "price": round_price(context["price"]),
             "quality": setup["quality"],
-            "reason":  setup["reason"],
+            "reason": setup["reason"],
         })
 
     journal["signals"].append({
-        "time":    iso_now(),
-        "type":    setup["action"],
-        "side":    setup["side"],
-        "price":   rp(context["price"]),
+        "time": iso_now(),
+        "type": setup["action"],
+        "side": setup["side"],
+        "price": round_price(context["price"]),
         "quality": setup["quality"],
-        "reason":  setup["reason"],
-        "plan":    asdict(setup["plan"]) if setup.get("plan") else None,
-        "gates":   setup.get("gates", []),
-        "regime":  regime_name,
-        "tf_align": context["tf_align"],
-        "structure_phase": context["structure"]["phase"],
-        "news_bias": context["news"]["bias"],
-        "news_score": context["news"]["score"],
+        "reason": setup["reason"],
+        "plan": asdict(setup["plan"]) if setup.get("plan") else None,
+        "confirmations": setup.get("confirmations", []),
+        "conflicts": setup.get("conflicts", []),
+        "context": {
+            "bias": context["bias"],
+            "tech_score": context["tech_score"],
+            "total_score": context["total_score"],
+            "tf3": context["tf3"],
+            "tf15": context["tf15"],
+            "tf1h": context["tf1h"],
+            "tf4h": context["tf4h"],
+            "structure": context["structure"],
+            "flow": context["flow"],
+            "cvd": context["cvd"],
+            "clusters": context["clusters"],
+            "derivatives": context["derivatives"],
+            "liquidity": context["liquidity"],
+            "news": {
+                "bias": context["news"]["bias"],
+                "score": context["news"]["score"],
+                "top": context["news"]["top"],
+                "total": context["news"]["total"],
+            },
+            "calendar": context["calendar"],
+        },
     })
 
+    update_market_snapshot(state, context)
     save_state(state)
     save_journal(journal)
     send_telegram(message)
-    print(f"SETUP: {setup['action']} {setup['side']} | якість {setup['quality']}/100")
-    print("═" * 60)
+    print("BOT COMPLETE")
 
 
 if __name__ == "__main__":
