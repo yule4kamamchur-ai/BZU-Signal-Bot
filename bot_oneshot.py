@@ -2223,6 +2223,51 @@ def manage_active_trade(trade, context):
     near_entry = abs(current_pct) <= 0.18
     lost_after_profit = best_pct >= 0.38 and giveback_ratio >= 0.62 and current_pct <= 0.18
 
+    # Intraday early-exit logic.
+    # For trades that should last only a few hours, do not wait for the formal stop
+    # if 3m has already broken against the position and order-flow/CVD confirms it.
+    tf3_against = tf3.get("bias") == opposite(side) and abs(int(tf3.get("score", 0) or 0)) >= 35
+    flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 10
+    cvd_block = context.get("cvd") or {}
+    cvd_against = cvd_block.get("bias") == opposite(side) and abs(int(cvd_block.get("score", 0) or 0)) >= 10
+    structure_against = structure.get("bias") == opposite(side)
+
+    if side == "LONG":
+        stop_distance_pct = max(0.0, (price - trade.stop_current) / trade.entry * 100) if trade.entry else 99.0
+    else:
+        stop_distance_pct = max(0.0, (trade.stop_current - price) / trade.entry * 100) if trade.entry else 99.0
+
+    near_stop = stop_distance_pct <= 0.30
+    clearly_losing = current_pct <= -0.30
+
+    if tf3_against and (flow_against or cvd_against) and (near_stop or clearly_losing):
+        trade.status = "CLOSED"
+        trade.last_action = "EXIT_LOCAL_BREAK"
+        reasons = ["3M зламався проти позиції"]
+        if flow_against:
+            reasons.append("потік проти")
+        if cvd_against:
+            reasons.append("CVD проти")
+        if near_stop:
+            reasons.append("ціна близько до стопу")
+        return {
+            "closed": True,
+            "action": "EXIT_LOCAL_BREAK",
+            "title": f"{side} ЗАКРИТИ — ЛОКАЛЬНИЙ ЗЛАМ",
+            "recommendation": "закрити біля поточної / не чекати дальній стоп",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": reasons[:4],
+        }
+
+    if tf3_against and (near_stop or clearly_losing):
+        action = "EXIT_WARNING"
+        title = f"{side} ПІД ЗАГРОЗОЮ"
+        recommendation = "3M вже проти позиції: захистити або закрити, не усереднювати"
+        notes.append("3M зламався проти позиції")
+        if near_stop:
+            notes.append("ціна близько до стопу")
+
     if lost_after_profit and opposite_votes >= 2.2:
         trade.status = "CLOSED"
         trade.last_action = "EXIT_GIVEBACK"
@@ -2236,15 +2281,17 @@ def manage_active_trade(trade, context):
             "notes": ["краще закрити біля входу / не чекати дальній стоп"],
         }
 
-    if near_entry and opposite_votes >= 2.2 and support_votes <= 1.2:
+    if action == "HOLD" and near_entry and opposite_votes >= 2.2 and support_votes <= 1.2:
         action = "PROTECT_OR_EXIT"
+        title = f"{side} ПІД ЗАГРОЗОЮ"
         recommendation = "ціна біля входу, підтвердження слабке: захистити позицію або закрити біля входу"
         notes.append("не усереднювати; чекати нового тригера після виходу")
-    elif current_pct < -0.28 and opposite_votes >= 2.2:
+    elif action == "HOLD" and current_pct < -0.28 and opposite_votes >= 2.2:
         action = "EXIT_WARNING"
-        recommendation = "позиція під тиском, структура проти: краще виходити раніше, не чекати дальній стоп"
+        title = f"{side} ПІД ЗАГРОЗОЮ"
+        recommendation = "позиція під тиском: краще виходити раніше, не чекати дальній стоп"
         notes.append("злам 3m/структури проти позиції")
-    elif current_pct > 0 and tf3.get("bias") == opposite(side):
+    elif action == "HOLD" and current_pct > 0 and tf3.get("bias") == opposite(side):
         action = "PROTECT"
         recommendation = "позиція у плюсі, але 3m слабшає: підтягнути стоп"
         notes.append("прибуток не віддавати назад")
