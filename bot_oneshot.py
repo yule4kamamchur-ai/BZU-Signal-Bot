@@ -1,2303 +1,881 @@
+import html
+import json
+import math
 import os
 import re
 import time
-import json
-import requests
+import uuid
 import xml.etree.ElementTree as ET
-from bs4 import BeautifulSoup
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
+from statistics import mean
 from urllib.parse import quote_plus
-from zoneinfo import ZoneInfo
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_KEY", "")
+import requests
 
-TRADINGVIEW_SYMBOLS = [
-    ("BINANCE:BZUSDT.P", "crypto"),
-    ("BINANCE:BZUSDT", "crypto"),
-    ("TVC:UKOIL", "cfd"),
-    ("NYMEX:BZ1!", "futures"),
+
+# ==========================================================
+# BZU PROFESSIONAL SIGNAL BOT
+# ==========================================================
+# Core idea:
+# 1. Price action is the base.
+# 2. News is fuel/filter, not a standalone trade.
+# 3. If the bot gives an entry, the next runs must manage that trade until
+#    HOLD / PROTECT / EXIT / TP / STOP. A trade is never replaced by WAIT.
+# ==========================================================
+
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
+STATE_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
+JOURNAL_FILE = os.getenv("SIGNAL_JOURNAL_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "signal_journal.json"))
+
+LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "10") or 10)
+ENTRY_QUALITY_MIN = int(os.getenv("ENTRY_QUALITY_MIN", "68") or 68)
+RISKY_QUALITY_MIN = int(os.getenv("RISKY_QUALITY_MIN", "62") or 62)
+MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "80") or 80)
+MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "500") or 500)
+
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
+UA_TIMEZONE_LABEL = os.getenv("TIMEZONE_LABEL", "UTC")
+
+
+NEWS_QUERIES = [
+    "Brent crude oil Reuters OPEC EIA inventories sanctions Hormuz",
+    "oil prices Brent crude today Reuters energy",
+    "EIA crude oil inventories API crude draw build",
+    "OPEC production cut increase crude oil",
+    "Iran sanctions Hormuz oil supply disruption",
+    "Fed Powell dollar yields oil prices",
 ]
 
-MACRO_SYMBOLS = [
-    ("DXY", "TVC:DXY", "cfd"),
-    ("US10Y", "TVC:US10Y", "cfd"),
-    ("VIX", "CBOE:VIX", "cfd"),
-    ("SPX", "SP:SPX", "cfd"),
-    ("NDX", "NASDAQ:NDX", "cfd"),
-    ("BTC", "BINANCE:BTCUSDT", "crypto"),
-    ("UKOIL", "TVC:UKOIL", "cfd"),
-]
-
-NEWS_LOOKBACK_HOURS = 2
-EVENT_LOOKBACK_HOURS = 18
-MAX_NEWS_SCORE = 45
-MAX_EVENT_SCORE = 50
-MAX_ITEMS_PER_FEED = 15
-MIN_CONFIDENCE_TO_SEND = 55
-
-STRONG_UP_MOVE_PERCENT = 1.2
-VERY_STRONG_UP_MOVE_PERCENT = 1.8
-STRONG_DOWN_MOVE_PERCENT = -1.2
-VERY_STRONG_DOWN_MOVE_PERCENT = -1.8
-
-# GDELT disabled: on GitHub Actions it often gives 429/timeout.
-GDELT_QUERIES = []
-
-GOOGLE_NEWS_QUERIES = [
-    'site:reuters.com oil Brent crude OPEC EIA Iran sanctions Hormuz',
-    'site:reuters.com/business/energy oil prices Brent crude',
-    'site:reuters.com Fed Powell dollar yields oil market',
-    'Brent crude oil Trump tariff sanctions OPEC EIA',
-    'oil prices Brent crude breaking news today',
-    'crude oil inventory EIA API OPEC',
-    'Iran Russia Ukraine Hormuz oil sanctions',
-]
-
-EVENT_QUERIES = [
-    'site:reuters.com EIA crude inventories oil stockpiles',
-    'site:reuters.com OPEC meeting oil production cut increase',
-    'site:reuters.com Iran US talks sanctions oil Hormuz',
-    'Fed speech Powell today FOMC oil market',
-    'CPI release today Fed inflation oil market',
-    'NFP jobs report Fed oil market',
-    'EIA crude oil inventories today API crude draw build',
-    'OPEC meeting production cut increase crude oil',
-    'Iran US talks sanctions oil Hormuz Trump',
-]
-
-OFFICIAL_FED_RSS_FEEDS = [
-    ("Fed Monetary Policy", "https://www.federalreserve.gov/feeds/press_monetary.xml", 1.25),
-    ("Fed Powell", "https://www.federalreserve.gov/feeds/s_t_powell.xml", 1.15),
-    ("Fed Speeches", "https://www.federalreserve.gov/feeds/speeches.xml", 0.75),
-]
-
-EIA_WPSR_URL = "https://www.eia.gov/petroleum/supply/weekly/index.php"
-EIA_WPSR_SCHEDULE_URL = "https://www.eia.gov/petroleum/supply/weekly/schedule.php"
-FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
-OPEC_PRESS_URL = "https://www.opec.org/press-releases.html"
-
-MACRO_NEWS_QUERIES = [
-    'Fed Powell rate cut inflation dollar yields stock market',
-    'DXY dollar yields VIX stocks oil market today',
-    'CPI FOMC NFP Fed speech market reaction',
-    'S&P 500 Nasdaq VIX dollar risk on risk off today',
-]
-
-NEWS_SOURCES = [
-    # EIA RSS is intentionally not used as a direct source on GitHub Actions,
-    # because it often times out. EIA inventory impact is still covered through
-    # Google News RSS queries: "EIA crude oil inventories today API crude draw build".
-    {
-        "name": "TSTA Markets Telegram",
-        "url": "https://t.me/s/tstamarkets",
-        "type": "telegram",
-        "weight": 1.15,
-    },
-    {
-        "name": "OilPrice",
-        "url": "https://oilprice.com/rss/main",
-        "type": "rss",
-        "weight": 1.0,
-    },
-    {
-        "name": "Oil & Gas Journal",
-        "url": "https://www.ogj.com/__rss/website-scheduled-content.xml?input=%7B%22sectionAlias%22%3A%22general-interest%22%7D",
-        "type": "rss",
-        "weight": 1.0,
-    },
-    {
-        "name": "Energy Intelligence",
-        "url": "https://www.energyintel.com/rss-feed",
-        "type": "html",
-        "weight": 0.5,
-    },
-    {
-        "name": "CoinDesk",
-        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
-        "type": "rss",
-        "weight": 0.18,
-    },
-    {
-        "name": "Cointelegraph",
-        "url": "https://cointelegraph.com/rss",
-        "type": "rss",
-        "weight": 0.18,
-    },
-]
-
-BULLISH_WORDS = [
+LONG_NEWS_PHRASES = [
     "inventory draw", "crude draw", "stockpiles fell", "stockpiles decline",
-    "supply disruption", "supply risk", "supply tight", "opec cut", "opec+ cut",
-    "sanctions", "hormuz", "middle east tension", "russia supply", "ukraine attack",
-    "demand rises", "demand growth", "bullish", "rally", "surge", "higher",
-    "jumps", "rebounds", "rate cut", "fed pause",
-    "запаси впали", "скорочення запасів", "санкції", "ормуз", "атака",
-    "удар", "ескалація", "перебої постачання", "риски поставок",
-    "запасы упали", "сокращение запасов", "санкции", "атака",
-    "эскалация", "перебои поставок",
+    "supply disruption", "supply risk", "hormuz", "new sanctions",
+    "fresh sanctions", "opec cut", "production cut", "output cut",
+    "attack", "strike", "war escalates", "talks fail",
+    "запаси впали", "скорочення запасів", "нові санкції", "атака",
+    "удар", "ормуз", "перебої постачання",
 ]
 
-BEARISH_WORDS = [
+SHORT_NEWS_PHRASES = [
     "inventory build", "crude build", "stockpiles rose", "stockpiles rise",
-    "demand weak", "weak demand", "demand falls", "oversupply", "supply glut",
-    "opec increase", "output hike", "ceasefire", "peace talks", "recession",
-    "rate hike", "inflation rises", "bearish", "falls", "drops", "tumbles",
-    "slides", "lower",
-    "cease-fire", "truce", "framework agreement", "framework deal",
-    "припинення вогню", "перемир'я", "перемир’я", "мирна угода",
-    "рамкова угода", "рамкової угоди", "погодили положення",
-    "продовження режиму припинення", "мирні переговори",
-    "прекращение огня", "перемирие", "мирное соглашение",
-    "рамочное соглашение", "согласовали положения", "мирные переговоры",
-]
-
-BREAKING_WORDS = [
-    "trump", "white house", "president", "tariff", "sanctions", "iran",
-    "russia", "ukraine", "war", "ceasefire", "hormuz", "opec", "opec+",
-    "fed", "powell", "fomc", "cpi", "eia", "api", "inventory",
-    "stockpiles", "breaking", "urgent",
-    "cease-fire", "truce", "framework agreement", "framework deal",
-    "трамп", "білий дім", "сша", "іран", "росія", "україна",
-    "війна", "припинення вогню", "перемир'я", "перемир’я",
-    "ормуз", "терміново", "важливо",
-    "трамп", "белый дом", "сша", "иран", "россия", "украина",
-    "война", "прекращение огня", "перемирие", "срочно",
+    "ceasefire", "cease-fire", "truce", "peace deal", "talks progress",
+    "sanctions relief", "sanctions lifted", "output increase",
+    "production increase", "opec increase", "demand weak", "oversupply",
+    "запаси зросли", "припинення вогню", "перемир", "мирна угода",
+    "послаблення санкцій", "збільшення видобутку", "слабкий попит",
 ]
 
 HIGH_IMPACT_WORDS = [
-    "eia", "api", "inventory", "stockpiles", "opec", "opec+", "hormuz",
-    "iran", "russia", "ukraine", "sanctions", "fed", "fomc", "cpi",
-    "powell", "inflation", "interest rate", "tariff", "trump",
-    "u.s.-iran", "us-iran", "ceasefire", "cease-fire", "truce",
-    "framework agreement", "framework deal",
-    "сша", "іран", "росія", "україна", "санкції", "ормуз",
-    "припинення вогню", "перемир'я", "перемир’я", "трамп",
-    "фрс", "інфляція", "ставка", "тариф",
-    "иран", "россия", "украина", "санкции", "прекращение огня",
-    "перемирие", "инфляция", "ставка",
+    "reuters", "eia", "api", "opec", "opec+", "fed", "powell", "cpi",
+    "fomc", "iran", "hormuz", "sanctions", "inventory", "stockpiles",
+    "brent", "crude", "oil", "tariff", "trump",
 ]
 
-BULLISH_GEO_WORDS = [
-    "attack", "missile", "strike", "war", "sanctions", "hormuz", "escalation",
-    "embargo", "supply disruption", "shutdown", "blocked",
-    "атака", "ракета", "удар", "війна", "санкції", "ормуз",
-    "ескалація", "ембарго", "перебої постачання", "заблоковано",
-    "война", "эскалация", "перебои поставок", "заблокирован",
-]
 
-BEARISH_SUPPLY_WORDS = [
-    "ceasefire", "peace", "deal", "output increase", "supply increase",
-    "inventory build", "stockpiles rose", "demand weak", "oversupply",
-    "cease-fire", "truce", "framework agreement", "framework deal",
-    "припинення вогню", "перемир'я", "перемир’я", "мир", "угода",
-    "рамкова угода", "рамкової угоди", "збільшення видобутку",
-    "слабкий попит", "надлишок пропозиції",
-    "прекращение огня", "перемирие", "мир", "соглашение",
-    "рамочное соглашение", "слабый спрос", "избыток предложения",
-]
+@dataclass
+class Candle:
+    ts: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
 
-EVENT_HIGH_RISK_WORDS = [
-    "fed", "powell", "fomc", "cpi", "nfp", "jobs report", "payrolls",
-    "eia", "api", "inventories", "inventory", "stockpiles",
-    "opec", "opec+", "iran", "us-iran", "sanctions", "hormuz", "trump",
-    "u.s.-iran", "ceasefire", "cease-fire", "truce",
-    "припинення вогню", "перемир'я", "перемир’я", "сша",
-    "іран", "санкції", "ормуз", "трамп", "фрс", "інфляція",
-    "прекращение огня", "перемирие", "иран", "санкции",
-]
 
-EVENT_LONG_WORDS = [
-    "inventory draw", "crude draw", "larger-than-expected draw",
-    "sanctions", "hormuz", "attack", "strike", "war", "opec cut",
-    "supply risk", "supply disruption", "iran rejects", "talks fail",
-]
+@dataclass
+class TradePlan:
+    entry: float
+    stop: float
+    tp1: float
+    tp2: float
+    tp3: float
+    risk_pct: float
+    rr1: float
+    rr2: float
+    rr3: float
+    invalidation: str
 
-EVENT_SHORT_WORDS = [
-    "inventory build", "crude build", "larger-than-expected build",
-    "ceasefire", "peace deal", "sanctions relief", "talks progress",
-    "opec increase", "output increase", "demand weak",
-    "cease-fire", "truce", "framework agreement", "framework deal",
-    "припинення вогню", "перемир'я", "перемир’я", "мирна угода",
-    "рамкова угода", "рамкової угоди", "погодили положення",
-    "продовження режиму припинення", "послаблення санкцій",
-    "прогрес переговорів", "мирні переговори",
-    "прекращение огня", "перемирие", "мирное соглашение",
-    "рамочное соглашение", "согласовали положения",
-    "смягчение санкций", "прогресс переговоров",
-]
+
+@dataclass
+class ActiveTrade:
+    id: str
+    side: str
+    opened_at: str
+    entry: float
+    stop_initial: float
+    stop_current: float
+    tp1: float
+    tp2: float
+    tp3: float
+    quality: int
+    status: str = "OPEN"
+    tp1_hit: bool = False
+    tp2_hit: bool = False
+    tp3_hit: bool = False
+    best_price: float = 0.0
+    last_action: str = "OPEN"
+    last_message_key: str = ""
+    notes: list = field(default_factory=list)
+
 
 def now_utc():
     return datetime.now(timezone.utc)
 
-def safe_get(url, timeout=12, retries=1):
-    for _ in range(retries):
-        try:
-            response = requests.get(
-                url,
-                timeout=timeout,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-                    "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/html, */*",
-                },
-            )
-            if response.status_code >= 400:
-                print(f"[WARN] HTTP {response.status_code}: {url}")
-                print(response.text[:180])
-                return None
-            return response
-        except Exception as error:
-            print(f"[WARN] {url}: {error}")
-    return None
 
-def safe_post(url, payload, timeout=15):
-    try:
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
-        if response.status_code >= 400:
-            print(f"[WARN] HTTP {response.status_code}: {url}")
-            return None
-        return response
-    except Exception as error:
-        print(f"[WARN] {url}: {error}")
-        return None
+def iso_now():
+    return now_utc().isoformat()
 
 
-
-# ==========================================================
-# SIGNAL MEMORY
-# ==========================================================
-
-SIGNAL_MEMORY_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
-SIGNAL_MEMORY_LIMIT = 12
-SIGNAL_JOURNAL_FILE = os.getenv("SIGNAL_JOURNAL_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "signal_journal.json"))
-SIGNAL_JOURNAL_LIMIT = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "300") or 300)
-SIGNAL_JOURNAL_EVAL_MINUTES = int(os.getenv("SIGNAL_JOURNAL_EVAL_MINUTES", "60") or 60)
-
-
-def load_signal_memory():
-    """Read signal memory from local JSON file.
-
-    Supports both old format:
-      {"signal": "LONG", "price": 95.0}
-    and new format:
-      {"history": [{...}, {...}]}
-    """
-    try:
-        if not os.path.exists(SIGNAL_MEMORY_FILE):
-            return {"history": []}
-
-        with open(SIGNAL_MEMORY_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-
-        if isinstance(data, dict) and "history" in data and isinstance(data["history"], list):
-            data["history"] = data["history"][-SIGNAL_MEMORY_LIMIT:]
-            return data
-
-        # Old single-signal format migration
-        if isinstance(data, dict) and data.get("signal"):
-            return {"history": [data]}
-
-        return {"history": []}
-
-    except Exception as error:
-        print(f"[WARN] signal memory read error: {error}")
-        return {"history": []}
-
-
-def save_signal_memory(data):
-    """Save signal memory to local JSON file.
-
-    Uses atomic replace + .bak copy so the memory file is less likely to be
-    corrupted if GitHub Actions stops the job during write.
-    """
-    try:
-        memory_dir = os.path.dirname(os.path.abspath(SIGNAL_MEMORY_FILE)) or "."
-        os.makedirs(memory_dir, exist_ok=True)
-
-        tmp_file = SIGNAL_MEMORY_FILE + ".tmp"
-        bak_file = SIGNAL_MEMORY_FILE + ".bak"
-
-        with open(tmp_file, "w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
-
-        os.replace(tmp_file, SIGNAL_MEMORY_FILE)
-
-        with open(bak_file, "w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
-
-        print(f"MEMORY SAVED: {SIGNAL_MEMORY_FILE}")
-    except Exception as error:
-        print(f"[WARN] signal memory save error: {error}")
-
-def load_signal_journal():
-    try:
-        if not os.path.exists(SIGNAL_JOURNAL_FILE):
-            return {"signals": []}
-        with open(SIGNAL_JOURNAL_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        if isinstance(data, dict) and isinstance(data.get("signals"), list):
-            data["signals"] = data["signals"][-SIGNAL_JOURNAL_LIMIT:]
-            return data
-        return {"signals": []}
-    except Exception as error:
-        print(f"[WARN] signal journal read error: {error}")
-        return {"signals": []}
-
-def save_signal_journal(data):
-    try:
-        journal_dir = os.path.dirname(os.path.abspath(SIGNAL_JOURNAL_FILE)) or "."
-        os.makedirs(journal_dir, exist_ok=True)
-        data = data or {"signals": []}
-        data["signals"] = (data.get("signals") or [])[-SIGNAL_JOURNAL_LIMIT:]
-        data["updated_at"] = now_utc().isoformat()
-
-        tmp_file = SIGNAL_JOURNAL_FILE + ".tmp"
-        bak_file = SIGNAL_JOURNAL_FILE + ".bak"
-        with open(tmp_file, "w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, SIGNAL_JOURNAL_FILE)
-        with open(bak_file, "w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
-        print(f"JOURNAL SAVED: {SIGNAL_JOURNAL_FILE}")
-    except Exception as error:
-        print(f"[WARN] signal journal save error: {error}")
-
-def parse_iso_datetime(value):
-    if not value:
-        return None
-    try:
-        normalized = str(value).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-def safe_float(value):
+def safe_float(value, default=None):
     try:
         if value is None:
-            return None
+            return default
         return float(value)
     except Exception:
+        return default
+
+
+def round_price(value):
+    if value is None:
         return None
+    return round(float(value), 4)
 
-def candle_time(candle):
-    ts = (candle or {}).get("ts")
-    if ts is None:
-        return None
-    try:
-        ts = int(ts)
-        if ts > 10_000_000_000:
-            ts = ts / 1000
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except Exception:
-        return None
 
-def candles_after_time(candles, created, lookback_minutes=20):
-    if not candles or not created:
-        return []
-    start_time = created - timedelta(minutes=lookback_minutes)
-    selected = []
-    for candle in candles:
-        ctime = candle_time(candle)
-        if ctime and ctime >= start_time:
-            selected.append(candle)
-    return selected
+def pct(a, b):
+    if not b:
+        return 0.0
+    return (a - b) / b * 100.0
 
-def evaluate_tp_sl_journal_entry(entry, candles, current_price, current_time=None):
-    """Evaluate actionable journal entries using stored entry/SL/TP levels."""
-    if not entry:
-        return entry
-    if entry.get("result_status") and entry.get("result_status") not in ["ACTIVE", "ENTRY_NOT_TRIGGERED"]:
-        return entry
 
-    signal = entry.get("signal")
-    if signal not in ["LONG", "SHORT"]:
-        return None
+def signed_pct(side, entry, price):
+    raw = pct(price, entry)
+    return raw if side == "LONG" else -raw
 
-    no_entry = bool(entry.get("no_entry"))
-    if no_entry:
-        return None
 
-    created = parse_iso_datetime(entry.get("time"))
-    if not created:
-        return None
+def side_word(side):
+    if side == "LONG":
+        return "лонг"
+    if side == "SHORT":
+        return "шорт"
+    return "нейтрально"
 
-    current_time = current_time or now_utc()
-    age_minutes = (current_time - created).total_seconds() / 60
-    if age_minutes < SIGNAL_JOURNAL_EVAL_MINUTES:
-        return entry
 
-    signal_price = safe_float(entry.get("price"))
-    entry_price = safe_float(entry.get("entry")) or signal_price
-    stop = safe_float(entry.get("stop"))
-    tp1 = safe_float(entry.get("tp1"))
-    tp2 = safe_float(entry.get("tp2"))
-    tp3 = safe_float(entry.get("tp3"))
-    if not entry_price or not stop:
-        return None
+def opposite(side):
+    return "SHORT" if side == "LONG" else "LONG"
 
-    watch_candles = candles_after_time(candles, created)
-    if not watch_candles:
-        return None
 
-    activated = bool(signal_price and abs(entry_price - signal_price) / signal_price <= 0.0025)
-    activated_at = created.isoformat() if activated else None
-    best_tp = 0
-    best_tp_price = None
-    stopped = False
-    stopped_after_tp = False
-
-    def hit_entry(candle):
-        return candle.get("low", 0) <= entry_price <= candle.get("high", 0)
-
-    def hit_stop(candle):
-        return candle.get("low", 0) <= stop if signal == "LONG" else candle.get("high", 0) >= stop
-
-    def hit_tp(candle, level):
-        if not level:
-            return False
-        return candle.get("high", 0) >= level if signal == "LONG" else candle.get("low", 0) <= level
-
-    for candle in watch_candles:
-        if not activated and hit_entry(candle):
-            activated = True
-            ctime = candle_time(candle)
-            activated_at = ctime.isoformat() if ctime else current_time.isoformat()
-
-        if not activated:
-            continue
-
-        # Conservative for same-candle ambiguity: stop first if no TP was hit yet.
-        stop_hit = hit_stop(candle)
-        tp_hits = []
-        for idx, level in [(1, tp1), (2, tp2), (3, tp3)]:
-            if hit_tp(candle, level):
-                tp_hits.append((idx, level))
-
-        if stop_hit and not tp_hits and best_tp == 0:
-            stopped = True
-            break
-
-        if tp_hits:
-            idx, level = max(tp_hits, key=lambda x: x[0])
-            if idx > best_tp:
-                best_tp = idx
-                best_tp_price = level
-
-        if stop_hit:
-            stopped = True
-            stopped_after_tp = best_tp > 0
-            break
-
-    entry["entry_activated"] = activated
-    entry["entry_activated_at"] = activated_at
-    entry["evaluated_at"] = current_time.isoformat()
-    entry["result_price"] = current_price
-    if signal_price:
-        entry["result_diff_pct"] = round(((current_price - signal_price) / signal_price) * 100, 3)
-
-    if not activated:
-        entry["result_status"] = "ENTRY_NOT_TRIGGERED"
-        entry["result_note"] = "вхід не активувався"
-        return entry
-
-    if best_tp >= 3:
-        entry["result_status"] = "TP3"
-        entry["result_note"] = "TP3 взято"
-    elif best_tp == 2:
-        entry["result_status"] = "TP2"
-        entry["result_note"] = "TP2 взято" + ("; потім був стоп" if stopped_after_tp else "")
-    elif best_tp == 1:
-        entry["result_status"] = "TP1"
-        entry["result_note"] = "TP1 взято" + ("; потім був стоп" if stopped_after_tp else "")
-    elif stopped:
-        entry["result_status"] = "STOP"
-        entry["result_note"] = "стоп вибило"
-    else:
-        entry["result_status"] = "ACTIVE"
-        entry["result_note"] = "угода ще активна"
-
-    entry["best_tp"] = best_tp
-    entry["best_tp_price"] = best_tp_price
-    return entry
-
-def evaluate_journal_entry(entry, current_price, current_time=None, candles=None):
-    if not entry:
-        return entry
-    if entry.get("result_status") and entry.get("result_status") not in ["ACTIVE", "ENTRY_NOT_TRIGGERED"]:
-        return entry
-
-    tp_sl_result = evaluate_tp_sl_journal_entry(entry, candles or [], current_price, current_time)
-    if isinstance(tp_sl_result, dict) and tp_sl_result.get("result_status"):
-        return tp_sl_result
-
-    created = parse_iso_datetime(entry.get("time"))
-    if not created:
-        return entry
-
-    current_time = current_time or now_utc()
-    age_minutes = (current_time - created).total_seconds() / 60
-    if age_minutes < SIGNAL_JOURNAL_EVAL_MINUTES:
-        return entry
-
-    signal = entry.get("signal")
-    market_direction = entry.get("market_direction")
-    eval_direction = signal if signal in ["LONG", "SHORT"] else market_direction
-    price = float(entry.get("price") or 0)
-    quality = entry.get("quality_percent")
-    no_entry = bool(entry.get("no_entry"))
-    if eval_direction not in ["LONG", "SHORT"] or price <= 0:
-        entry["result_status"] = "SKIPPED"
-        entry["result_note"] = "сигнал був без лонг/шорт напрямку"
-        entry["evaluated_at"] = current_time.isoformat()
-        return entry
-
-    diff_pct = ((current_price - price) / price) * 100
-    entry["result_price"] = current_price
-    entry["result_diff_pct"] = round(diff_pct, 3)
-    entry["evaluated_at"] = current_time.isoformat()
-
-    moved_with_signal = (eval_direction == "LONG" and diff_pct >= 0.35) or (eval_direction == "SHORT" and diff_pct <= -0.35)
-    moved_against_signal = (eval_direction == "LONG" and diff_pct <= -0.35) or (eval_direction == "SHORT" and diff_pct >= 0.35)
-
-    if no_entry:
-        if moved_against_signal:
-            entry["result_status"] = "NO_ENTRY_SAVED"
-            entry["result_note"] = "добре, що не входили — ціна пішла проти напрямку"
-        elif moved_with_signal:
-            entry["result_status"] = "MISSED_MOVE"
-            entry["result_note"] = "рух пішов у правильний бік, але бот не давав входу"
-        else:
-            entry["result_status"] = "GOOD_NO_ENTRY"
-            entry["result_note"] = "правильно чекали — сильного руху не було"
-        return entry
-
-    if moved_with_signal:
-        entry["result_status"] = "GOOD"
-        entry["result_note"] = "сигнал пішов у правильний бік"
-    elif moved_against_signal:
-        entry["result_status"] = "BAD"
-        entry["result_note"] = "сигнал пішов проти напрямку"
-    else:
-        entry["result_status"] = "FLAT"
-        entry["result_note"] = "через 1г сильного руху не було"
-
-    return entry
-
-def infer_market_direction(signal, signal_type=None, tech=None, technical_bias=None, fundamental_bias=None):
-    if signal in ["LONG", "SHORT"]:
-        return signal
-
-    signal_type = str(signal_type or "").upper()
-    if "SHOCK DOWN" in signal_type:
-        return "SHORT"
-    if "SHOCK UP" in signal_type:
-        return "LONG"
-
-    tech = tech or {}
-    tech_score = tech.get("score", 0) or 0
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    tech_side = (technical_bias or {}).get("side", "")
-    fund_side = (fundamental_bias or {}).get("side", "")
-
-    if tech_score <= -45 or micro.get("bias") == "SHORT" or "SHORT" in str(tech_side):
-        return "SHORT"
-    if tech_score >= 45 or micro.get("bias") == "LONG" or "LONG" in str(tech_side):
-        return "LONG"
-    if "SHORT" in str(fund_side) and "LONG" not in str(fund_side):
-        return "SHORT"
-    if "LONG" in str(fund_side) and "SHORT" not in str(fund_side):
-        return "LONG"
-    return "NEUTRAL"
-
-def update_signal_journal_results(journal, current_price, candles=None):
-    journal = journal or {"signals": []}
-    updated = []
-    changed = False
-    current_time = now_utc()
-
-    for entry in journal.get("signals", []):
-        before = entry.get("result_status")
-        evaluated = evaluate_journal_entry(entry, current_price, current_time, candles)
-        if evaluated.get("result_status") != before:
-            changed = True
-        updated.append(evaluated)
-
-    journal["signals"] = updated[-SIGNAL_JOURNAL_LIMIT:]
-    return journal, changed
-
-def build_pattern_tags(signal, signal_type, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None, market_direction=None):
-    tags = []
-    tech = tech or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    orderflow = orderflow or {}
-    smc = smc or {}
-
-    news_score = news.get("score", 0) or 0
-    event_side = event_risk.get("direction", "MIXED")
-    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trades_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    direction = signal if signal in ["LONG", "SHORT"] else market_direction
-
-    if "SHOCK DOWN" in str(signal_type):
-        tags.append("shock_down")
-    if "SHOCK UP" in str(signal_type):
-        tags.append("shock_up")
-    if direction == "SHORT" and (event_side == "LONG" or news_score >= 35):
-        tags.append("news_against")
-    if direction == "LONG" and (event_side == "SHORT" or news_score <= -35):
-        tags.append("news_against")
-    if event_high:
-        tags.append("event_high")
-    if direction in ["LONG", "SHORT"] and book_bias in ["LONG", "SHORT"] and book_bias != direction:
-        tags.append("book_against")
-    if direction in ["LONG", "SHORT"] and trades_bias in ["LONG", "SHORT"] and trades_bias != direction:
-        tags.append("trades_against")
-    if direction in ["LONG", "SHORT"] and liquidity_bias in ["LONG", "SHORT"] and liquidity_bias != direction:
-        tags.append("liquidity_against")
-    if micro.get("state") == "RANGE":
-        tags.append("3m_range")
-    if direction in ["LONG", "SHORT"] and micro.get("bias") in ["LONG", "SHORT"] and micro.get("bias") != direction:
-        tags.append("3m_against")
-    if direction in ["LONG", "SHORT"] and smc_bias not in [direction]:
-        tags.append("structure_unconfirmed")
-    if late_entry and late_entry.get("late"):
-        tags.append("late_entry")
-    if cooling and cooling.get("active"):
-        tags.append("cooling")
-
-    return sorted(set(tags))
-
-def build_signal_journal_entry(signal, signal_type, price, confidence, quality_percent, plan=None, tech=None, news=None, event_risk=None, orderflow=None, smc=None, late_entry=None, cooling=None, market_direction=None):
-    plan = plan if isinstance(plan, dict) else {}
-    no_entry = signal not in ["LONG", "SHORT"] or quality_percent is None or quality_percent < 65
-    market_direction = market_direction or infer_market_direction(signal, signal_type, tech)
-    tags = build_pattern_tags(signal, signal_type, tech, news, event_risk, orderflow, smc, late_entry, cooling, market_direction)
-    return {
-        "id": now_utc().strftime("%Y%m%d%H%M%S"),
-        "time": now_utc().isoformat(),
-        "signal": signal,
-        "market_direction": market_direction,
-        "signal_type": signal_type,
-        "price": price,
-        "confidence": confidence,
-        "quality_percent": quality_percent,
-        "no_entry": no_entry,
-        "entry": plan.get("entry"),
-        "stop": plan.get("stop"),
-        "tp1": plan.get("tp1"),
-        "tp2": plan.get("tp2"),
-        "tp3": plan.get("tp3"),
-        "tech_score": (tech or {}).get("score"),
-        "news_score": (news or {}).get("score"),
-        "event_direction": (event_risk or {}).get("direction"),
-        "orderflow_score": (orderflow or {}).get("score"),
-        "late_entry": bool((late_entry or {}).get("late")),
-        "cooling": bool((cooling or {}).get("active")),
-        "tags": tags,
-        "result_status": None,
-        "result_note": None,
+def http_get(url, timeout=REQUEST_TIMEOUT, retries=2):
+    headers = {
+        "User-Agent": "Mozilla/5.0 BZU-Signal-Bot/2.0",
+        "Accept": "application/json, application/rss+xml, application/xml, text/xml, text/html, */*",
     }
-
-def append_signal_journal(journal, entry):
-    signals = (journal or {}).get("signals", [])
-    signals.append(entry)
-    return {
-        "updated_at": now_utc().isoformat(),
-        "limit": SIGNAL_JOURNAL_LIMIT,
-        "signals": signals[-SIGNAL_JOURNAL_LIMIT:],
-    }
-
-def signal_journal_stats_text(journal, hours=24):
-    signals = (journal or {}).get("signals", [])
-    if not signals:
-        return ""
-
-    cutoff = now_utc() - timedelta(hours=hours)
-    recent = []
-    for item in signals:
-        dt = parse_iso_datetime(item.get("time"))
-        if dt and dt >= cutoff:
-            recent.append(item)
-
-    evaluated = [x for x in recent if x.get("result_status")]
-    if len(evaluated) < 3:
-        return ""
-
-    good = sum(1 for x in evaluated if x.get("result_status") == "GOOD")
-    bad = sum(1 for x in evaluated if x.get("result_status") == "BAD")
-    tp1 = sum(1 for x in evaluated if x.get("result_status") == "TP1")
-    tp2 = sum(1 for x in evaluated if x.get("result_status") == "TP2")
-    tp3 = sum(1 for x in evaluated if x.get("result_status") == "TP3")
-    stop = sum(1 for x in evaluated if x.get("result_status") == "STOP")
-    active = sum(1 for x in evaluated if x.get("result_status") == "ACTIVE")
-    not_triggered = sum(1 for x in evaluated if x.get("result_status") == "ENTRY_NOT_TRIGGERED")
-    saved = sum(1 for x in evaluated if x.get("result_status") == "NO_ENTRY_SAVED")
-    missed = sum(1 for x in evaluated if x.get("result_status") == "MISSED_MOVE")
-    waited_ok = sum(1 for x in evaluated if x.get("result_status") == "GOOD_NO_ENTRY")
-    flat = sum(1 for x in evaluated if x.get("result_status") == "FLAT")
-    skipped = sum(1 for x in evaluated if x.get("result_status") == "SKIPPED")
-
-    return (
-        f"<b>Статистика {hours}г:</b> оцінено {len(evaluated)} | "
-        f"TP1/2/3 {tp1}/{tp2}/{tp3}, стоп {stop}, активні {active}, "
-        f"не актив. {not_triggered}, напрям ок {good}, погано {bad}, "
-        f"чекати ок {saved + waited_ok}, пропущено {missed}, флет {flat}, без напр. {skipped}"
-    )
-
-def pattern_stats_text(journal, current_tags, current_signal=None, min_matches=4):
-    if not current_tags:
-        return ""
-
-    important_tags = [
-        "shock_down", "shock_up", "news_against", "book_against",
-        "trades_against", "liquidity_against", "3m_range",
-        "3m_against", "structure_unconfirmed", "late_entry",
-        "cooling", "event_high",
-    ]
-    current_set = set(current_tags)
-    selected = [tag for tag in important_tags if tag in current_set][:5]
-    if not selected:
-        return ""
-
-    matches = []
-    for item in (journal or {}).get("signals", []):
-        if not item.get("result_status"):
-            continue
-        item_tags = set(item.get("tags") or [])
-        if all(tag in item_tags for tag in selected):
-            item_direction = item.get("signal") if item.get("signal") in ["LONG", "SHORT"] else item.get("market_direction")
-            if current_signal in ["LONG", "SHORT"] and item_direction != current_signal:
-                continue
-            matches.append(item)
-
-    if len(matches) < min_matches:
-        return ""
-
-    good = sum(1 for x in matches if x.get("result_status") == "GOOD")
-    bad = sum(1 for x in matches if x.get("result_status") == "BAD")
-    tp1 = sum(1 for x in matches if x.get("result_status") == "TP1")
-    tp2 = sum(1 for x in matches if x.get("result_status") == "TP2")
-    tp3 = sum(1 for x in matches if x.get("result_status") == "TP3")
-    stop = sum(1 for x in matches if x.get("result_status") == "STOP")
-    saved = sum(1 for x in matches if x.get("result_status") == "NO_ENTRY_SAVED")
-    missed = sum(1 for x in matches if x.get("result_status") == "MISSED_MOVE")
-    no_entry_good = sum(1 for x in matches if x.get("result_status") == "GOOD_NO_ENTRY")
-    flat = sum(1 for x in matches if x.get("result_status") == "FLAT")
-    skipped = sum(1 for x in matches if x.get("result_status") == "SKIPPED")
-
-    tp_total = tp1 + tp2 + tp3
-    if tp_total > stop and tp_total >= max(1, missed):
-        conclusion = "схожі входи частіше брали тейк"
-    elif stop > tp_total:
-        conclusion = "схожі входи часто били стоп"
-    elif saved + no_entry_good >= max(good + missed, bad):
-        conclusion = "частіше краще чекати"
-    elif good > bad:
-        conclusion = "частіше напрямок відпрацьовував"
-    elif bad > good:
-        conclusion = "частіше було проти сигналу"
-    else:
-        conclusion = "статистика змішана"
-
-    return (
-        f"<b>Схожі ситуації:</b> {len(matches)} | "
-        f"TP {tp_total}, стоп {stop}, вхід ок {good}, погано {bad}, чекати було правильно {saved + no_entry_good}, "
-        f"пропущено {missed}, без сильного руху {flat}, без напрямку {skipped}. "
-        f"Висновок: {conclusion}."
-    )
-
-
-def get_signal_history(memory):
-    if not memory:
-        return []
-    if isinstance(memory, dict) and isinstance(memory.get("history"), list):
-        return memory.get("history", [])[-SIGNAL_MEMORY_LIMIT:]
-    if isinstance(memory, dict) and memory.get("signal"):
-        return [memory]
-    return []
-
-
-def get_last_signal(memory):
-    history = get_signal_history(memory)
-    return history[-1] if history else {}
-
-
-def append_signal_memory(memory, current_signal):
-    history = get_signal_history(memory)
-    history.append(current_signal)
-    history = history[-SIGNAL_MEMORY_LIMIT:]
-
-    return {
-        "updated_at": now_utc().isoformat(),
-        "limit": SIGNAL_MEMORY_LIMIT,
-        "history": history,
-    }
-
-
-def evaluate_previous_signal(memory, current_price):
-    """Short human-readable evaluation of the last 4 signals."""
-    history = get_signal_history(memory)
-    if not history:
-        return ""
-
-    valid = [item for item in history if item.get("signal") in ["LONG", "SHORT"] and item.get("price")]
-    if not valid:
-        return ""
-
-    results = []
-    long_failed = 0
-    short_failed = 0
-    long_ok = 0
-    short_ok = 0
-
-    for item in valid:
-        prev_signal = item.get("signal")
-        prev_price = float(item.get("price"))
-        diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
-
-        if prev_signal == "LONG":
-            if diff_pct >= 0.35:
-                long_ok += 1
-            elif diff_pct <= -0.35:
-                long_failed += 1
-
-        if prev_signal == "SHORT":
-            if diff_pct <= -0.35:
-                short_ok += 1
-            elif diff_pct >= 0.35:
-                short_failed += 1
-
-    last = valid[-1]
-    last_signal = last.get("signal")
-    last_price = float(last.get("price"))
-    last_diff = ((current_price - last_price) / last_price) * 100 if last_price else 0
-
-    if long_failed >= 2:
-        results.append("останні LONG не підтверджуються")
-    elif long_ok >= 2:
-        results.append("LONG сценарій підтверджується")
-
-    if short_failed >= 2:
-        results.append("останні SHORT не підтверджуються")
-    elif short_ok >= 2:
-        results.append("SHORT сценарій підтверджується")
-
-    if not results:
-        if last_signal == "LONG":
-            if last_diff >= 0.35:
-                results.append("попередній LONG спрацював")
-            elif last_diff <= -0.35:
-                results.append("попередній LONG не підтвердився")
-            else:
-                results.append("попередній LONG ще без результату")
-        elif last_signal == "SHORT":
-            if last_diff <= -0.35:
-                results.append("попередній SHORT спрацював")
-            elif last_diff >= 0.35:
-                results.append("попередній SHORT не підтвердився")
-            else:
-                results.append("попередній SHORT ще без результату")
-
-    return f"<b>Памʼять 1г:</b> {'; '.join(results)}"
-
-
-def memory_confidence_adjustment(signal, memory, current_price):
-    """Adjust confidence using last 4 signals.
-
-    Main goal:
-    - avoid repeating LONG if last LONG signals failed;
-    - avoid repeating SHORT if last SHORT signals failed;
-    - support reversal if opposite direction clearly worked.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return 0
-
-    history = get_signal_history(memory)
-    valid = [item for item in history if item.get("signal") in ["LONG", "SHORT"] and item.get("price")]
-    if not valid:
-        return 0
-
-    same_failed = 0
-    same_ok = 0
-    opposite_failed = 0
-
-    for item in valid:
-        prev_signal = item.get("signal")
-        prev_price = float(item.get("price"))
-        diff_pct = ((current_price - prev_price) / prev_price) * 100 if prev_price else 0
-
-        if signal == prev_signal:
-            if signal == "LONG":
-                if diff_pct <= -0.35:
-                    same_failed += 1
-                elif diff_pct >= 0.35:
-                    same_ok += 1
-            elif signal == "SHORT":
-                if diff_pct >= 0.35:
-                    same_failed += 1
-                elif diff_pct <= -0.35:
-                    same_ok += 1
-
-        if signal != prev_signal:
-            if prev_signal == "LONG" and diff_pct <= -0.35:
-                opposite_failed += 1
-            elif prev_signal == "SHORT" and diff_pct >= 0.35:
-                opposite_failed += 1
-
-    if same_failed >= 2:
-        return -16
-    if same_failed == 1:
-        return -8
-    if same_ok >= 2:
-        return 8
-    if opposite_failed >= 2:
-        return 10
-
-    return 0
-
-
-ACTIONABLE_ENTRY_STATUSES = {"CONFIRMED_ENTRY", "MAIN_ENTRY"}
-
-
-def build_current_signal_memory(signal, signal_type, price, confidence, quality_percent=None, plan=None, tech=None, entry_status=None, entry_side=None):
-    plan = plan or {}
-    tech = tech or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    quality_value = safe_float(quality_percent)
-    actionable_entry = (
-        signal in ["LONG", "SHORT"]
-        and entry_side == signal
-        and entry_status in ACTIONABLE_ENTRY_STATUSES
-        and quality_value is not None
-        and quality_value >= 65
-    )
-
-    return {
-        "time": now_utc().isoformat(),
-        "signal": signal,
-        "signal_type": signal_type,
-        "price": round(float(price), 4),
-        "confidence": int(confidence) if confidence is not None else None,
-        "quality_percent": int(quality_value) if quality_value is not None else None,
-        "entry": plan.get("entry") if isinstance(plan, dict) else None,
-        "stop": plan.get("stop") if isinstance(plan, dict) else None,
-        "tp1": plan.get("tp1") if isinstance(plan, dict) else None,
-        "tp2": plan.get("tp2") if isinstance(plan, dict) else None,
-        "tp3": plan.get("tp3") if isinstance(plan, dict) else None,
-        "entry_status": entry_status,
-        "entry_side": entry_side,
-        "actionable_entry": actionable_entry,
-        "change": tech.get("change"),
-        "trend_15m": tech.get("trend_15m"),
-        "trend_1h": tech.get("trend_1h"),
-        "micro_3m": micro.get("bias"),
-        "micro_3m_state": micro.get("state"),
-    }
-
-
-def locked_position_plan(trade):
-    """Return the original plan for an active position without making it a new entry."""
-    if not trade:
-        return {}
-    return {
-        "entry": trade.get("entry") or trade.get("price"),
-        "stop": trade.get("stop"),
-        "tp1": trade.get("tp1"),
-        "tp2": trade.get("tp2"),
-        "tp3": trade.get("tp3"),
-        "method": "LOCKED ACTIVE POSITION",
-        "locked": True,
-        "note": "TP/SL збережені з першого основного/підтвердженого входу",
-    }
-
-
-
-
-def memory_status_note(memory, current_price):
-    """Return memory follow-up only when there is a useful trade history note."""
-    history = get_signal_history(memory)
-    if not history:
-        return ""
-
-    note = evaluate_previous_signal(memory, current_price)
-    if note:
-        return note
-
-    return ""
-
-
-
-def last_actionable_trade(memory, include_closed=False):
-    """Last 4/5 or 5/5 trade from memory.
-
-    The user treats 4/5 and 5/5 as real entries, so weaker watch signals must
-    not replace the trade being managed.
-    """
-    history = get_signal_history(memory)
-    if not history:
-        return None
-
-    for item in reversed(history):
-        if is_actionable_trade_item(item, include_closed=include_closed):
-            return item
-
+    last_error = None
+    for attempt in range(max(1, retries)):
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            if response.status_code < 400:
+                return response
+            last_error = f"HTTP {response.status_code}"
+        except Exception as error:
+            last_error = str(error)
+        time.sleep(0.4 * attempt)
+    print(f"[WARN] GET failed: {url} | {last_error}")
     return None
 
 
-def is_actionable_trade_item(item, include_closed=False):
-    if not item:
-        return False
-    if item.get("position_closed") and not include_closed:
-        return False
-    signal = item.get("signal")
-    if signal not in ["LONG", "SHORT"] or not item.get("price"):
-        return False
-    if trade_setup_level(item.get("quality_percent")) < 4:
-        return False
-
-    entry_status = item.get("entry_status")
-    entry_side = item.get("entry_side")
-    if entry_status is None and entry_side is None:
-        return True
-    return (
-        item.get("actionable_entry") is True
-        or (entry_status in ACTIONABLE_ENTRY_STATUSES and entry_side == signal)
-    )
-
-
-def position_break_reasons(side, current_price, trade, tech=None, smc=None, orderflow=None):
-    """Reasons to stop position follow-up before the hard stop is reached."""
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
-    stop = safe_float((trade or {}).get("stop"))
-    if not side or not entry or not current_price:
-        return ["немає даних для супроводу"]
-
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_score = micro.get("score", 0) or 0
-    trend_15m = tech.get("trend_15m") or tech.get("trend")
-    trend_1h = tech.get("trend_1h")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    phase = smc.get("phase", "")
-    swing_low = safe_float(smc.get("swing_low"))
-    swing_high = safe_float(smc.get("swing_high"))
-    flow_bias = orderflow_verdict(orderflow)[0] if isinstance(orderflow, dict) else "NEUTRAL"
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    local_side = local_move_direction(local_move)
-
-    result_pct = signed_position_pct(side, entry, current_price)
-    reasons = []
-
-    if side == "LONG":
-        if stop is not None and current_price <= stop:
-            reasons.append("ціна дійшла до стопу або нижче")
-        if smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch:
-            reasons.append("SMC структура розвернулась проти LONG")
-        if swing_low and current_price < swing_low:
-            reasons.append(f"ціна нижче swing low {round(swing_low, 4)}")
-        if result_pct < 0 and micro_bias == "SHORT" and trend_1h == "DOWN" and smc_bias != "LONG":
-            reasons.append("3m і 1 година проти LONG, структура не підтримує")
-        if result_pct < 0 and trend_15m == "DOWN":
-            reasons.append("15m зламався проти LONG")
-        if result_pct < 0 and phase == "RANGE / WAIT" and micro_bias == "SHORT" and micro_score <= -25:
-            reasons.append("структура RANGE/WAIT, а 3m продавці активні")
-        if result_pct < 0 and flow_bias == "SHORT":
-            reasons.append("потік/стакан перейшов проти LONG")
-        if -0.12 <= result_pct <= 0.18 and (
-            micro_bias == "SHORT"
-            or trend_15m == "DOWN"
-            or flow_bias == "SHORT"
-            or local_side == "SHORT"
-        ):
-            reasons.append("ціна повернулась майже до входу, підтвердження LONG втрачено")
-
-    elif side == "SHORT":
-        if stop is not None and current_price >= stop:
-            reasons.append("ціна дійшла до стопу або вище")
-        if smc_bias == "LONG" or "LONG" in bos or "LONG" in choch:
-            reasons.append("SMC структура розвернулась проти SHORT")
-        if swing_high and current_price > swing_high:
-            reasons.append(f"ціна вище swing high {round(swing_high, 4)}")
-        if result_pct < 0 and micro_bias == "LONG" and trend_1h == "UP" and smc_bias != "SHORT":
-            reasons.append("3m і 1 година проти SHORT, структура не підтримує")
-        if result_pct < 0 and trend_15m == "UP":
-            reasons.append("15m зламався проти SHORT")
-        if result_pct < 0 and phase == "RANGE / WAIT" and micro_bias == "LONG" and micro_score >= 25:
-            reasons.append("структура RANGE/WAIT, а 3m покупці активні")
-        if result_pct < 0 and flow_bias == "LONG":
-            reasons.append("потік/стакан перейшов проти SHORT")
-        if -0.12 <= result_pct <= 0.18 and (
-            micro_bias == "LONG"
-            or trend_15m == "UP"
-            or flow_bias == "LONG"
-            or local_side == "LONG"
-        ):
-            reasons.append("ціна повернулась майже до входу, підтвердження SHORT втрачено")
-
-    return reasons[:3]
-
-
-def market_supports_position(side, current_price, trade, tech=None, smc=None, orderflow=None):
-    """Keep following while price/structure still support the saved position."""
-    tech = tech or {}
-    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
-    stop = safe_float((trade or {}).get("stop"))
-    if not side or not entry:
-        return False
-
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_state = micro.get("state", "")
-    trend_15m = tech.get("trend_15m") or tech.get("trend")
-    trend_1h = tech.get("trend_1h")
-
-    if side == "LONG":
-        if stop is not None and current_price <= stop:
-            return False
-        if current_price >= entry:
-            return True
-        if position_break_reasons(side, current_price, trade, tech, smc, orderflow):
-            return False
-        if trend_15m == "DOWN" and trend_1h == "DOWN":
-            return False
-        return micro_state == "LONG_STRENGTHENING" or trend_15m == "UP"
-
-    if side == "SHORT":
-        if stop is not None and current_price >= stop:
-            return False
-        if current_price <= entry:
-            return True
-        if position_break_reasons(side, current_price, trade, tech, smc, orderflow):
-            return False
-        if trend_15m == "UP" and trend_1h == "UP":
-            return False
-        return micro_state == "SHORT_STRENGTHENING" or trend_15m == "DOWN"
-
-    return False
-
-
-def position_follow_note(memory, current_price, tech=None):
-    """Position follow-up based on the last 4/5 or 5/5 entry."""
-    tech = tech or {}
-    last_trade = last_actionable_trade(memory)
-
-    if not last_trade:
-        return ""
-
-    side = last_trade.get("signal")
-    entry = float(last_trade.get("entry") or last_trade.get("price"))
-    stop = last_trade.get("stop")
-    tp1 = last_trade.get("tp1")
-    tp2 = last_trade.get("tp2")
-    tp3 = last_trade.get("tp3")
-
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-
-    diff_pct = ((current_price - entry) / entry) * 100 if entry else 0
-
-    def reached_long(level):
-        return level is not None and current_price >= float(level)
-
-    def reached_short(level):
-        return level is not None and current_price <= float(level)
-
-    def broken_long(level):
-        return level is not None and current_price <= float(level)
-
-    def broken_short(level):
-        return level is not None and current_price >= float(level)
-
-    if side == "LONG":
-        if broken_long(stop):
-            return "<b>Супровід:</b> LONG зламався — ціна біля/нижче стопу"
-        if reached_long(tp3):
-            return "<b>Супровід:</b> LONG вище TP3 — ринок ще в напрямку, вести залишок трейлінг-стопом"
-        if reached_long(tp2):
-            return "<b>Супровід:</b> LONG дійшов до TP2 — підтягнути стоп і зафіксувати частину"
-        if reached_long(tp1):
-            return "<b>Супровід:</b> LONG дійшов до TP1 — частково фіксувати і підтягнути стоп"
-        if micro_bias == "SHORT" and diff_pct > 0:
-            return "<b>Супровід:</b> LONG у плюсі, але 3m слабшає — обережно, підтягнути стоп"
-        if micro_bias == "SHORT" and diff_pct <= 0:
-            return "<b>Супровід:</b> LONG слабшає — не додавати, чекати підтвердження"
-        if diff_pct >= 0.25:
-            return "<b>Супровід:</b> LONG тримається"
-        if diff_pct <= -0.25:
-            return "<b>Супровід:</b> LONG під тиском — контролювати стоп"
-        return "<b>Супровід:</b> LONG без сильного руху — чекати підтвердження"
-
-    if side == "SHORT":
-        if broken_short(stop):
-            return "<b>Супровід:</b> SHORT зламався — ціна біля/вище стопу"
-        if reached_short(tp3):
-            return "<b>Супровід:</b> SHORT нижче TP3 — ринок ще в напрямку, вести залишок трейлінг-стопом"
-        if reached_short(tp2):
-            return "<b>Супровід:</b> SHORT дійшов до TP2 — підтягнути стоп і зафіксувати частину"
-        if reached_short(tp1):
-            return "<b>Супровід:</b> SHORT дійшов до TP1 — частково фіксувати і підтягнути стоп"
-        if micro_bias == "LONG" and diff_pct < 0:
-            return "<b>Супровід:</b> SHORT у плюсі, але 3m слабшає — обережно, підтягнути стоп"
-        if micro_bias == "LONG" and diff_pct >= 0:
-            return "<b>Супровід:</b> SHORT слабшає — не додавати, чекати підтвердження"
-        if diff_pct <= -0.25:
-            return "<b>Супровід:</b> SHORT тримається"
-        if diff_pct >= 0.25:
-            return "<b>Супровід:</b> SHORT під тиском — контролювати стоп"
-        return "<b>Супровід:</b> SHORT без сильного руху — чекати підтвердження"
-
-    return ""
-
-
-def apply_position_follow_header(message, memory, current_price, tech=None, smc=None, orderflow=None):
-    """Turn WAIT/NO ENTRY header into position-management header if a trade is active."""
-    last_trade = last_actionable_trade(memory)
-    if not last_trade or not message:
-        return message
-
-    side = last_trade.get("signal")
-    if not market_supports_position(side, current_price, last_trade, tech, smc, orderflow):
-        return message
-
-    note = position_follow_note(memory, current_price)
-    if not side or not note:
-        return message
-
-    lines = message.splitlines()
-    if len(lines) < 2:
-        return message
-
-    current_header = lines[1]
-    if not (current_header.startswith("<b>ЧЕКАТИ</b>") or current_header.startswith("<b>ВХОДУ НЕМАЄ</b>")):
-        return message
-
-    detail = re.sub(r"<[^>]+>", "", note).replace("Супровід:", "").strip()
-    lines[1] = f"<b>СУПРОВІД {side}</b> — {detail}"
-    return "\n".join(lines)
-
-
-def follow_side_word(side):
-    if side == "LONG":
-        return "лонг"
-    if side == "SHORT":
-        return "шорт"
-    return "нейтрально"
-
-
-def timeframe_side_text(value):
-    if value == "UP":
-        return "лонг"
-    if value == "DOWN":
-        return "шорт"
-    return "нейтрально"
-
-
-def smc_side_text(smc):
-    smc = smc or {}
-    side = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    if side in ["LONG", "SHORT"]:
-        return follow_side_word(side)
-    if "LONG" in bos or "LONG" in choch:
-        return "лонг"
-    if "SHORT" in bos or "SHORT" in choch:
-        return "шорт"
-    return "нейтрально"
-
-
-def signed_position_pct(side, entry, current_price):
-    if not entry:
-        return 0
-    diff = ((current_price - entry) / entry) * 100
-    return diff if side == "LONG" else -diff
-
-
-def position_recommendation(side, result_pct, current_price, trade, tech=None, validity=None):
-    tech = tech or {}
-    validity = validity or {}
-    tp1 = safe_float((trade or {}).get("tp1"))
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-
-    if validity.get("action") == "EXIT":
-        return "актуальність втрачена — краще закрити біля входу"
-    if validity.get("action") == "PROTECT":
-        return "актуальність під питанням — захистити позицію"
-    if validity.get("action") == "HOLD_TIGHT":
-        return "ще актуально, але тільки зі стопом біля входу"
-
-    reached_tp1 = (
-        side == "LONG" and tp1 is not None and current_price >= tp1
-    ) or (
-        side == "SHORT" and tp1 is not None and current_price <= tp1
-    )
-    if reached_tp1:
-        return "утримувати залишок, частину можна зафіксувати"
-    if result_pct > 0 and micro_bias == side:
-        return "утримувати, напрям ще підтримується"
-    if result_pct > 0:
-        return "утримувати обережно, стоп підтягувати"
-    return "утримувати тільки якщо 15m не зламається"
-
-
-def position_profit_pullback_note(side, current_price, trade, candles=None):
-    """Review whether a position is still worth holding after price returns near entry."""
-    if side not in ["LONG", "SHORT"] or not current_price or not trade:
-        return ""
-
-    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
-    if not entry:
-        return ""
-
-    created = parse_iso_datetime((trade or {}).get("time"))
-    start_ms = int(created.timestamp() * 1000) if created else None
-    relevant = []
-    for candle in candles or []:
-        ts = safe_float(candle.get("ts"))
-        if start_ms is None or (ts is not None and ts >= start_ms):
-            relevant.append(candle)
-
-    if not relevant:
-        return ""
-
-    if side == "LONG":
-        best_price = max(safe_float(c.get("high")) or entry for c in relevant)
-    else:
-        best_price = min(safe_float(c.get("low")) or entry for c in relevant)
-
-    best_pct = signed_position_pct(side, entry, best_price)
-    current_pct = signed_position_pct(side, entry, current_price)
-    if best_pct <= 0:
-        return ""
-
-    giveback_pct = max(0, best_pct - current_pct)
-    giveback_ratio = giveback_pct / best_pct if best_pct else 0
-
-    if best_pct >= 0.45 and current_pct <= 0.18:
-        return (
-            f"<b>Актуальність позиції:</b> ціна повернулась майже до входу після руху в плюс. "
-            f"Перевірити підтвердження заново: якщо 3m/15m або стакан не підтримують {side}, краще закрити біля входу або залишити тільки зі стопом у б/у."
-        )
-    if best_pct >= 0.60 and giveback_ratio >= 0.65:
-        return (
-            f"<b>Актуальність позиції:</b> більшість руху в плюс уже втрачена. "
-            f"{side} тримати тільки якщо знову є підтвердження; інакше краще вийти/підтягнути стоп у б/у."
-        )
-    return ""
-
-
-def position_validity_review(side, current_price, trade, tech=None, smc=None, orderflow=None, candles=None):
-    """Action-oriented review when price is back near the entry."""
-    if side not in ["LONG", "SHORT"] or not current_price or not trade:
-        return {"action": "HOLD", "text": ""}
-
-    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
-    if not entry:
-        return {"action": "HOLD", "text": ""}
-
-    current_pct = signed_position_pct(side, entry, current_price)
-    if current_pct > 0.28 or current_pct < -0.18:
-        return {"action": "HOLD", "text": ""}
-
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    trend_15m = tech.get("trend_15m") or tech.get("trend")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    flow_bias = orderflow_verdict(orderflow)[0] if isinstance(orderflow, dict) else "NEUTRAL"
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    local_side = local_move_direction(local_move)
-
-    if side == "LONG":
-        support = [
-            micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING",
-            trend_15m == "UP",
-            smc_bias == "LONG" or "LONG" in bos or "LONG" in choch,
-            flow_bias == "LONG",
-            local_side == "LONG",
-        ]
-        against = [
-            micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING",
-            trend_15m == "DOWN",
-            smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch,
-            flow_bias == "SHORT",
-            local_side == "SHORT",
-        ]
-    else:
-        support = [
-            micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING",
-            trend_15m == "DOWN",
-            smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch,
-            flow_bias == "SHORT",
-            local_side == "SHORT",
-        ]
-        against = [
-            micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING",
-            trend_15m == "UP",
-            smc_bias == "LONG" or "LONG" in bos or "LONG" in choch,
-            flow_bias == "LONG",
-            local_side == "LONG",
-        ]
-
-    support_count = sum(1 for item in support if item)
-    against_count = sum(1 for item in against if item)
-    near_entry_text = "ціна майже біля входу"
-
-    if against_count >= 2 and support_count < 2:
-        return {
-            "action": "EXIT",
-            "text": f"<b>Актуальність {side}:</b> слабка — {near_entry_text}, підтвердження зникло. Краще закрити біля входу / не чекати дальній стоп.",
-        }
-    if support_count >= 2 and against_count <= 1:
-        return {
-            "action": "HOLD_TIGHT",
-            "text": f"<b>Актуальність {side}:</b> ще є, але {near_entry_text}. Тримати тільки поки 3m/15m підтверджують, стоп підтягнути ближче до входу.",
-        }
-    return {
-        "action": "PROTECT",
-        "text": f"<b>Актуальність {side}:</b> під питанням — {near_entry_text}. Не додавати; або частково вийти, або стоп у б/у/малий плюс.",
+def http_post(url, payload, timeout=REQUEST_TIMEOUT):
+    headers = {
+        "User-Agent": "Mozilla/5.0 BZU-Signal-Bot/2.0",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
-
-
-def breakeven_note(side, current_price, trade):
-    tp1 = safe_float((trade or {}).get("tp1"))
-    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
-    if not tp1 or not entry:
-        return "поки ні — немає TP1 у плані"
-    reached_tp1 = (
-        side == "LONG" and current_price >= tp1
-    ) or (
-        side == "SHORT" and current_price <= tp1
-    )
-    if reached_tp1:
-        return f"так — після TP1 стоп бажано в б/у біля {round(entry, 4)} або трохи в плюс"
-    return "ще ні — б/у тільки після TP1 або сильного закриття 15m у плюс"
-
-
-def liquidity_caution_text(side, trade, smc=None, orderflow=None):
-    smc = smc or {}
-    orderflow = orderflow or {}
-    book = orderflow.get("order_book") or {}
-    liquidity = orderflow.get("liquidity_proxy") or {}
-    tp1 = safe_float((trade or {}).get("tp1"))
-    tp2 = safe_float((trade or {}).get("tp2"))
-    swing_high = safe_float(smc.get("swing_high"))
-    swing_low = safe_float(smc.get("swing_low"))
-    wall_price = safe_float(book.get("accumulation_price"))
-    wall_side = book.get("accumulation_side", "NEUTRAL")
-
-    zones = []
-    if side == "LONG":
-        if tp1:
-            zones.append(f"TP1 {round(tp1, 4)}")
-        if wall_price and wall_side == "SHORT":
-            zones.append(f"стіна продавців {round(wall_price, 4)}")
-        if swing_high:
-            zones.append(f"swing high {round(swing_high, 4)}")
-    elif side == "SHORT":
-        if tp1:
-            zones.append(f"TP1 {round(tp1, 4)}")
-        if wall_price and wall_side == "LONG":
-            zones.append(f"стіна покупців {round(wall_price, 4)}")
-        if swing_low:
-            zones.append(f"swing low {round(swing_low, 4)}")
-
-    base = ", ".join(zones[:3]) if zones else "біля найближчого TP/SMC-рівня"
-    note = liquidity.get("note")
-    if note and note != "спокійно":
-        return f"{base}; ліквідність: {note}"
-    return base
-
-
-def order_book_follow_text(book):
-    book = book or {}
-    price = safe_float(book.get("accumulation_price"))
-    side = book.get("accumulation_side", "NEUTRAL")
-    bias = book.get("bias", "NEUTRAL")
-    imbalance = book.get("imbalance_pct", 0)
-
-    if price and side == "LONG":
-        return f"підтримка LONG біля {round(price, 4)}"
-    if price and side == "SHORT":
-        return f"опір SHORT біля {round(price, 4)}"
-    if bias == "LONG":
-        return f"перевага покупців ({imbalance}%)"
-    if bias == "SHORT":
-        return f"перевага продавців ({imbalance}%)"
-    return "без чіткої переваги"
-
-
-def early_opposite_pullback_warning(position_side, tech=None, smc=None, orderflow=None):
-    """Warn about an early opposite setup while an existing 4/5+ trade is followed.
-
-    This is not a flip instruction. It tells the user to protect the active
-    position and only consider the opposite side after trigger/retest confirms.
-    """
-    if position_side not in ["LONG", "SHORT"]:
-        return ""
-
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    opposite = "SHORT" if position_side == "LONG" else "LONG"
-
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    micro_score = micro.get("score", 0) or 0
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    local_side = local_move_direction(local_move)
-    trend_5m = tech.get("trend_5m", "UNKNOWN")
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    trend_1h = tech.get("trend_1h", "UNKNOWN")
-    tech_score = tech.get("score", 0) or 0
-
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    vol_bias = volume.get("bias", "NEUTRAL")
-
-    order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
-
-    if opposite == "SHORT":
-        local_ok = local_move.get("pullback_after_pump") or (local_side == "SHORT" and not local_move.get("bounce_after_dump"))
-        micro_ok = micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING" or micro_score <= -18
-        structure_ok = smc_bias == "SHORT" or "SHORT" in bos or "SHORT" in choch or vol_bias == "SHORT"
-        flow_ok = order_score <= -8 or book_bias == "SHORT" or trade_bias == "SHORT"
-        trend_ok = trend_5m == "DOWN" and trend_15m == "DOWN"
-        full_trend_ok = trend_ok and trend_1h == "DOWN"
-        tech_ok = tech_score <= -35
-        blocked = local_move.get("bounce_after_dump")
-        note = local_move.get("note", "відкат від high")
-    else:
-        local_ok = local_move.get("bounce_after_dump") or (local_side == "LONG" and not local_move.get("pullback_after_pump"))
-        micro_ok = micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING" or micro_score >= 18
-        structure_ok = smc_bias == "LONG" or "LONG" in bos or "LONG" in choch or vol_bias == "LONG"
-        flow_ok = order_score >= 8 or book_bias == "LONG" or trade_bias == "LONG"
-        trend_ok = trend_5m == "UP" and trend_15m == "UP"
-        full_trend_ok = trend_ok and trend_1h == "UP"
-        tech_ok = tech_score >= 35
-        blocked = local_move.get("pullback_after_pump")
-        note = local_move.get("note", "відскок від low")
-
-    if blocked or not (local_ok and micro_ok and (structure_ok or flow_ok)):
-        return ""
-
-    quality = "3/5"
-    if structure_ok and flow_ok and (trend_ok or tech_ok):
-        quality = "4/5"
-    if structure_ok and flow_ok and full_trend_ok and tech_ok:
-        quality = "5/5"
-
-    action = "підтягнути стоп / частково зафіксувати" if position_side == "LONG" else "підтягнути стоп / частково зафіксувати"
-    return (
-        f"<b>Ранній {opposite}-відкат:</b> формується {quality} — {note}; "
-        f"активний {position_side} спочатку захистити: {action}. "
-        f"{opposite} тільки після тригера/ретесту, не перевертатись по ринку."
-    )
-
-
-def build_position_follow_message(tv, memory, tech, news, event_risk, smc, orderflow, candles=None):
-    trade = last_actionable_trade(memory)
-    if not trade:
-        return ""
-
-    side = trade.get("signal")
-    current_price = safe_float((tv or {}).get("price"))
-    entry = safe_float(trade.get("entry")) or safe_float(trade.get("price"))
-    stop = safe_float(trade.get("stop"))
-    tp1 = safe_float(trade.get("tp1"))
-    tp2 = safe_float(trade.get("tp2"))
-    tp3 = safe_float(trade.get("tp3"))
-    if not side or not current_price or not entry:
-        return ""
-
-    result_pct = signed_position_pct(side, entry, current_price)
-    news_side, _ = news_verdict(news or {})
-    book = (orderflow or {}).get("order_book") or {}
-    micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
-    micro_side = micro.get("bias", "NEUTRAL")
-    if abs(result_pct) <= 0.15:
-        position_state = f"майже біля входу ({round(result_pct, 3)}%) — треба повторно перевірити, чи позиція ще актуальна"
-    elif result_pct > 0:
-        position_state = f"у плюсі ({round(result_pct, 3)}%) — можна тримати тільки поки підтвердження не зникло"
-    else:
-        position_state = f"проти входу ({round(result_pct, 3)}%) — не чекати дальній стоп без підтвердження"
-
-    validity_review = position_validity_review(side, current_price, trade, tech, smc, orderflow, candles)
-    recommendation = position_recommendation(side, result_pct, current_price, trade, tech, validity_review)
-    pullback_note = position_profit_pullback_note(side, current_price, trade, candles)
-
-    lines = [
-        "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>СУПРОВІД {side}</b> — {recommendation}",
-        "",
-        f"<b>Поточна ціна:</b> {round(current_price, 4)}",
-        f"<b>Стан позиції:</b> {position_state}",
-        f"<b>Позиція:</b> Вхід {round(entry, 4)} | Стоп {round(stop, 4) if stop else '—'} | TP1 {round(tp1, 4) if tp1 else '—'} | TP2 {round(tp2, 4) if tp2 else '—'} | TP3 {round(tp3, 4) if tp3 else '—'}",
-        f"<b>Новини:</b> {follow_side_word(news_side)} ({(news or {}).get('score', 0)})",
-        f"<b>3хв:</b> {follow_side_word(micro_side)} ({micro.get('score', 0)})",
-        f"<b>15 хв:</b> {timeframe_side_text((tech or {}).get('trend_15m'))}",
-        f"<b>1 година:</b> {timeframe_side_text((tech or {}).get('trend_1h'))}",
-        f"<b>Структура:</b> {smc_side_text(smc)} — {(smc or {}).get('phase', 'NO DATA')}",
-        f"<b>Стакан:</b> {order_book_follow_text(book)}",
-        f"<b>Зона ліквідності:</b> {liquidity_caution_text(side, trade, smc, orderflow)}",
-        f"<b>Стоп у б/у:</b> {breakeven_note(side, current_price, trade)}",
-    ]
-    if pullback_note:
-        lines.append(pullback_note)
-    if validity_review.get("text"):
-        lines.append(validity_review["text"])
-    opposite_warning = early_opposite_pullback_warning(side, tech, smc, orderflow)
-    if opposite_warning:
-        lines.append(opposite_warning)
-    news_warning = pre_news_warning_text(event_risk)
-    if news_warning:
-        lines.append(news_warning)
-    return "\n".join(lines).strip()
-
-
-def position_close_reason(side, current_price, trade, tech=None, smc=None, orderflow=None):
-    tech = tech or {}
-    entry = safe_float((trade or {}).get("entry")) or safe_float((trade or {}).get("price"))
-    stop = safe_float((trade or {}).get("stop"))
-    tp1 = safe_float((trade or {}).get("tp1"))
-    result_pct = signed_position_pct(side, entry, current_price) if entry else 0
-
-    stopped = (
-        side == "LONG" and stop is not None and current_price <= stop
-    ) or (
-        side == "SHORT" and stop is not None and current_price >= stop
-    )
-    reached_tp1 = (
-        side == "LONG" and tp1 is not None and current_price >= tp1
-    ) or (
-        side == "SHORT" and tp1 is not None and current_price <= tp1
-    )
-    if stopped:
-        return "стоп або зона зламу пробита", "НЕГАТИВНИЙ ВХІД"
-
-    break_reasons = position_break_reasons(side, current_price, trade, tech, smc, orderflow)
-    if break_reasons:
-        status = "УСПІШНИЙ / ЧАСТКОВО УСПІШНИЙ" if (reached_tp1 or result_pct > 0) else "НЕГАТИВНИЙ ВХІД"
-        return "; ".join(break_reasons[:2]), status
-
-    if reached_tp1 or result_pct > 0:
-        return "напрям зламався після руху в плюс", "УСПІШНИЙ / ЧАСТКОВО УСПІШНИЙ"
-    return "ринок чітко пішов не в напрямку позиції", "НЕГАТИВНИЙ ВХІД"
-
-
-def close_last_actionable_trade(memory, current_price, tech=None, smc=None, orderflow=None):
-    history = get_signal_history(memory)
-    for item in reversed(history):
-        if not is_actionable_trade_item(item):
-            continue
-        reason, status = position_close_reason(item.get("signal"), current_price, item, tech, smc, orderflow)
-        item["position_closed"] = True
-        item["closed_at"] = now_utc().isoformat()
-        item["closed_price"] = current_price
-        item["close_reason"] = reason
-        item["close_status"] = status
-        item["close_result_pct"] = round(signed_position_pct(item.get("signal"), safe_float(item.get("entry")) or safe_float(item.get("price")), current_price), 3)
-        leverage = safe_float(os.getenv("POSITION_LEVERAGE", "10")) or 10
-        item["close_leveraged_pct"] = round(item["close_result_pct"] * leverage, 2)
-        return {
-            "updated_at": now_utc().isoformat(),
-            "limit": SIGNAL_MEMORY_LIMIT,
-            "history": history[-SIGNAL_MEMORY_LIMIT:],
-        }, item
-    return memory, None
-
-
-def build_position_close_message(closed_trade):
-    if not closed_trade:
-        return ""
-    side = closed_trade.get("signal")
-    entry = safe_float(closed_trade.get("entry")) or safe_float(closed_trade.get("price"))
-    stop = safe_float(closed_trade.get("stop"))
-    closed_price = safe_float(closed_trade.get("closed_price"))
-    return "\n".join([
-        "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>УГОДУ {side} ЗАКРИТО</b> — злам структури",
-        f"<b>Висновок:</b> {closed_trade.get('close_status')}",
-        f"<b>Результат:</b> {closed_trade.get('close_result_pct')}% по ціні (~{closed_trade.get('close_leveraged_pct')}% з 10x)",
-        f"<b>Рівні:</b> Вхід {round(entry, 4) if entry else '—'} | Закриття/злам {round(closed_price, 4) if closed_price else '—'} | Стоп {round(stop, 4) if stop else '—'}",
-        f"<b>Причина:</b> {closed_trade.get('close_reason')}",
-    ]).strip()
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if response.status_code < 400:
+            return response
+        print(f"[WARN] POST HTTP {response.status_code}: {url}")
+    except Exception as error:
+        print(f"[WARN] POST failed: {url} | {error}")
+    return None
 
 
 # ==========================================================
-# TRADINGVIEW
+# STATE
 # ==========================================================
 
-def get_tradingview_scan(symbol, screener, columns):
-    url = f"https://scanner.tradingview.com/{screener}/scan"
-    payload = {
-        "symbols": {"tickers": [symbol], "query": {"types": []}},
-        "columns": columns,
-    }
 
-    response = safe_post(url, payload)
-    if not response:
+def atomic_json_write(path, data):
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp = path + ".tmp"
+    bak = path + ".bak"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    with open(bak, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_json(path, default):
+    try:
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else default
+    except Exception as error:
+        print(f"[WARN] JSON read failed {path}: {error}")
+        return default
+
+
+def load_state():
+    state = load_json(STATE_FILE, {"version": "pro-v2", "active_trade": None, "history": []})
+    if "active_trade" not in state:
+        state["active_trade"] = None
+    if "history" not in state or not isinstance(state["history"], list):
+        state["history"] = []
+    state["version"] = "pro-v2"
+    return state
+
+
+def save_state(state):
+    state["updated_at"] = iso_now()
+    state["history"] = (state.get("history") or [])[-MAX_HISTORY:]
+    atomic_json_write(STATE_FILE, state)
+
+
+def load_journal():
+    journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
+    journal["version"] = "pro-v2"
+    if "trades" not in journal or not isinstance(journal["trades"], list):
+        journal["trades"] = []
+    if "signals" not in journal or not isinstance(journal["signals"], list):
+        journal["signals"] = []
+    return journal
+
+
+def save_journal(journal):
+    journal["updated_at"] = iso_now()
+    journal["trades"] = (journal.get("trades") or [])[-MAX_JOURNAL:]
+    journal["signals"] = (journal.get("signals") or [])[-MAX_JOURNAL:]
+    atomic_json_write(JOURNAL_FILE, journal)
+
+
+def active_trade_from_state(state):
+    raw = (state or {}).get("active_trade")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ActiveTrade(
+            id=str(raw.get("id") or uuid.uuid4().hex[:10]),
+            side=str(raw.get("side")),
+            opened_at=str(raw.get("opened_at") or iso_now()),
+            entry=float(raw.get("entry")),
+            stop_initial=float(raw.get("stop_initial", raw.get("stop_current"))),
+            stop_current=float(raw.get("stop_current", raw.get("stop_initial"))),
+            tp1=float(raw.get("tp1")),
+            tp2=float(raw.get("tp2")),
+            tp3=float(raw.get("tp3")),
+            quality=int(raw.get("quality") or 0),
+            status=str(raw.get("status") or "OPEN"),
+            tp1_hit=bool(raw.get("tp1_hit")),
+            tp2_hit=bool(raw.get("tp2_hit")),
+            tp3_hit=bool(raw.get("tp3_hit")),
+            best_price=float(raw.get("best_price") or raw.get("entry")),
+            last_action=str(raw.get("last_action") or "OPEN"),
+            last_message_key=str(raw.get("last_message_key") or ""),
+            notes=list(raw.get("notes") or []),
+        )
+    except Exception as error:
+        print(f"[WARN] active trade migration failed: {error}")
         return None
 
+
+def store_active_trade(state, trade):
+    state["active_trade"] = asdict(trade) if trade else None
+
+
+def append_history(state, item):
+    history = state.get("history") or []
+    item["time"] = iso_now()
+    history.append(item)
+    state["history"] = history[-MAX_HISTORY:]
+
+
+# ==========================================================
+# MARKET DATA
+# ==========================================================
+
+
+def parse_okx_candles(rows):
+    candles = []
+    for row in rows or []:
+        try:
+            candles.append(Candle(
+                ts=int(row[0]),
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5] or 0),
+            ))
+        except Exception:
+            continue
+    candles.sort(key=lambda c: c.ts)
+    return candles
+
+
+def get_okx_candles(bar="15m", limit=160):
+    url = f"https://www.okx.com/api/v5/market/candles?instId={OKX_INST_ID}&bar={bar}&limit={limit}"
+    response = http_get(url)
+    if not response:
+        return []
+    try:
+        data = response.json().get("data", [])
+        return parse_okx_candles(data)
+    except Exception as error:
+        print(f"[WARN] OKX candles parse failed {bar}: {error}")
+        return []
+
+
+def get_okx_ticker():
+    url = f"https://www.okx.com/api/v5/market/ticker?instId={OKX_INST_ID}"
+    response = http_get(url)
+    if not response:
+        return {}
     try:
         rows = response.json().get("data", [])
         if not rows:
-            return None
-        values = rows[0].get("d", [])
-        if not values or values[0] is None:
-            return None
-        return values
+            return {}
+        row = rows[0]
+        last = float(row.get("last") or row.get("lastSz") or 0)
+        open24h = float(row.get("open24h") or 0)
+        change = pct(last, open24h) if open24h else 0
+        return {
+            "price": last,
+            "change24h": change,
+            "volume24h": safe_float(row.get("volCcy24h"), 0),
+            "source": "OKX",
+            "symbol": OKX_INST_ID,
+        }
     except Exception as error:
-        print(f"[WARN] TradingView scan parse error for {symbol}: {error}")
-        return None
+        print(f"[WARN] OKX ticker parse failed: {error}")
+        return {}
 
-def get_tradingview_market_data():
-    columns = [
-        "close", "change", "volume",
-        "Recommend.All|5", "Recommend.All|15", "Recommend.All|60",
-        "RSI|5", "RSI|15", "RSI|60",
-        "EMA20|5", "EMA50|5", "EMA20|15", "EMA50|15", "EMA20|60", "EMA50|60",
-        "MACD.macd|5", "MACD.macd|15", "MACD.macd|60",
-        "ATR|15", "ADX|15", "ADX+DI|15", "ADX-DI|15",
-    ]
 
-    for symbol, screener in TRADINGVIEW_SYMBOLS:
-        values = get_tradingview_scan(symbol, screener, columns)
-        if not values:
-            print(f"[WARN] TradingView empty data for {symbol}")
-            continue
+def get_okx_trades(limit=120):
+    url = f"https://www.okx.com/api/v5/market/trades?instId={OKX_INST_ID}&limit={limit}"
+    response = http_get(url)
+    if not response:
+        return []
+    try:
+        trades = []
+        for row in response.json().get("data", []):
+            trades.append({
+                "price": float(row.get("px") or 0),
+                "size": float(row.get("sz") or 0),
+                "side": str(row.get("side") or "").lower(),
+                "ts": int(row.get("ts") or 0),
+            })
+        return trades
+    except Exception as error:
+        print(f"[WARN] OKX trades parse failed: {error}")
+        return []
 
-        try:
-            return {
-                "source": "TradingView",
-                "symbol": symbol,
-                "price": float(values[0]),
-                "change": values[1],
-                "volume": values[2],
-                "recommend_5m": values[3],
-                "recommend_15m": values[4],
-                "recommend_1h": values[5],
-                "rsi_5m": values[6],
-                "rsi_15m": values[7],
-                "rsi_1h": values[8],
-                "ema20_5m": values[9],
-                "ema50_5m": values[10],
-                "ema20_15m": values[11],
-                "ema50_15m": values[12],
-                "ema20_1h": values[13],
-                "ema50_1h": values[14],
-                "macd_5m": values[15],
-                "macd_15m": values[16],
-                "macd_1h": values[17],
-                "atr_15m": values[18],
-                "adx_15m": values[19],
-                "plus_di_15m": values[20],
-                "minus_di_15m": values[21],
-            }
-        except Exception as error:
-            print(f"[WARN] TradingView parse error for {symbol}: {error}")
 
-    return None
+def get_okx_book(depth=50):
+    url = f"https://www.okx.com/api/v5/market/books?instId={OKX_INST_ID}&sz={depth}"
+    response = http_get(url)
+    if not response:
+        return {"bids": [], "asks": []}
+    try:
+        rows = response.json().get("data", [])
+        if not rows:
+            return {"bids": [], "asks": []}
+        book = rows[0]
+        bids = [(float(x[0]), float(x[1])) for x in book.get("bids", []) if len(x) >= 2]
+        asks = [(float(x[0]), float(x[1])) for x in book.get("asks", []) if len(x) >= 2]
+        return {"bids": bids, "asks": asks}
+    except Exception as error:
+        print(f"[WARN] OKX book parse failed: {error}")
+        return {"bids": [], "asks": []}
 
-def analyze_technical(tv):
-    price = tv["price"]
-    change = tv.get("change") or 0
-    atr = tv.get("atr_15m") or price * 0.006
 
-    score = 0
-    confirmations = []
-    warnings = []
-    momentum = "NEUTRAL"
+def get_tradingview_price_fallback():
+    url = "https://scanner.tradingview.com/crypto/scan"
+    payload = {
+        "symbols": {"tickers": ["BINANCE:BZUSDT.P", "BINANCE:BZUSDT"], "query": {"types": []}},
+        "columns": ["close", "change", "volume"],
+    }
+    response = http_post(url, payload)
+    if not response:
+        return {}
+    try:
+        rows = response.json().get("data", [])
+        if not rows:
+            return {}
+        values = rows[0].get("d") or []
+        return {
+            "price": float(values[0]),
+            "change24h": safe_float(values[1], 0),
+            "volume24h": safe_float(values[2], 0),
+            "source": "TradingView",
+            "symbol": rows[0].get("s", "BINANCE:BZUSDT.P"),
+        }
+    except Exception as error:
+        print(f"[WARN] TradingView fallback parse failed: {error}")
+        return {}
 
-    if change >= VERY_STRONG_UP_MOVE_PERCENT:
-        score += 32
-        momentum = "VERY STRONG UP"
-        confirmations.append("дуже сильний імпульс вгору")
-    elif change >= STRONG_UP_MOVE_PERCENT:
-        score += 24
-        momentum = "STRONG UP"
-        confirmations.append("сильний імпульс вгору")
-    elif change <= VERY_STRONG_DOWN_MOVE_PERCENT:
-        score -= 32
-        momentum = "VERY STRONG DOWN"
-        confirmations.append("дуже сильний імпульс вниз")
-    elif change <= STRONG_DOWN_MOVE_PERCENT:
-        score -= 24
-        momentum = "STRONG DOWN"
-        confirmations.append("сильний імпульс вниз")
 
-    for tf, rec in [("5m", tv.get("recommend_5m")), ("15m", tv.get("recommend_15m")), ("1h", tv.get("recommend_1h"))]:
-        if rec is None:
-            continue
-        add_score = int(rec * 20)
-        score += add_score
-        if rec > 0.25:
-            confirmations.append(f"TradingView {tf}: buy bias")
-        elif rec < -0.25:
-            warnings.append(f"TradingView {tf}: sell bias")
-
-    def ema_trend(ema20, ema50, weight):
-        nonlocal score
-        if ema20 is None or ema50 is None:
-            return "UNKNOWN"
-        if ema20 > ema50:
-            score += weight
-            return "UP"
-        score -= weight
-        return "DOWN"
-
-    trend_5m = ema_trend(tv.get("ema20_5m"), tv.get("ema50_5m"), 8)
-    trend_15m = ema_trend(tv.get("ema20_15m"), tv.get("ema50_15m"), 14)
-    trend_1h = ema_trend(tv.get("ema20_1h"), tv.get("ema50_1h"), 18)
-
-    if trend_5m == trend_15m == trend_1h == "UP":
-        score += 20
-        trend = "UP"
-        confirmations.append("тренд 5m/15m/1h вверх")
-    elif trend_5m == trend_15m == trend_1h == "DOWN":
-        score -= 20
-        trend = "DOWN"
-        warnings.append("тренд 5m/15m/1h вниз")
-    elif trend_15m == "UP" and trend_1h == "UP":
-        trend = "UP"
-        confirmations.append("тренд 15m/1h вверх")
-    elif trend_15m == "DOWN" and trend_1h == "DOWN":
-        trend = "DOWN"
-        warnings.append("тренд 15m/1h вниз")
-    else:
-        trend = "MIXED"
-        warnings.append("тренд змішаний")
-
-    for tf, rsi in [("5m", tv.get("rsi_5m")), ("15m", tv.get("rsi_15m")), ("1h", tv.get("rsi_1h"))]:
-        if rsi is None:
-            continue
-        if rsi > 82:
-            score -= 20
-            warnings.append(f"RSI {tf}: сильна перекупленість")
-        elif rsi > 74:
-            score -= 10
-            warnings.append(f"RSI {tf}: перекупленість")
-        elif rsi < 18:
-            score += 16
-            confirmations.append(f"RSI {tf}: сильна перепроданість")
-        elif rsi < 26:
-            score += 8
-            confirmations.append(f"RSI {tf}: перепроданість")
-
-    for tf, macd, weight in [("5m", tv.get("macd_5m"), 5), ("15m", tv.get("macd_15m"), 9), ("1h", tv.get("macd_1h"), 12)]:
-        if macd is None:
-            continue
-        score += weight if macd > 0 else -weight
-
-    adx = tv.get("adx_15m")
-    plus_di = tv.get("plus_di_15m")
-    minus_di = tv.get("minus_di_15m")
-
-    if adx is not None:
-        if adx >= 25:
-            confirmations.append(f"ADX 15m: тренд сильний ({round(adx, 2)})")
-            if plus_di is not None and minus_di is not None:
-                score += 10 if plus_di > minus_di else -10
-        elif adx < 18:
-            warnings.append("ADX 15m: слабкий тренд / можливий боковик")
-
+def collect_market_data():
+    candles_3m = get_okx_candles("3m", 220)
+    candles_15m = get_okx_candles("15m", 180)
+    candles_1h = get_okx_candles("1H", 140)
+    ticker = get_okx_ticker() or get_tradingview_price_fallback()
+    if not ticker and candles_15m:
+        ticker = {
+            "price": candles_15m[-1].close,
+            "change24h": pct(candles_15m[-1].close, candles_15m[0].open),
+            "volume24h": 0,
+            "source": "OKX candles",
+            "symbol": OKX_INST_ID,
+        }
     return {
-        "score": score,
-        "trend": trend,
-        "trend_5m": trend_5m,
-        "trend_15m": trend_15m,
-        "trend_1h": trend_1h,
-        "momentum": momentum,
-        "change": round(change, 4),
-        "rsi_5m": round(tv.get("rsi_5m"), 2) if tv.get("rsi_5m") is not None else None,
-        "rsi_15m": round(tv.get("rsi_15m"), 2) if tv.get("rsi_15m") is not None else None,
-        "rsi_1h": round(tv.get("rsi_1h"), 2) if tv.get("rsi_1h") is not None else None,
-        "ema20_15m": round(tv.get("ema20_15m"), 4) if tv.get("ema20_15m") is not None else None,
-        "ema50_15m": round(tv.get("ema50_15m"), 4) if tv.get("ema50_15m") is not None else None,
-        "macd_15m": round(tv.get("macd_15m"), 4) if tv.get("macd_15m") is not None else None,
-        "recommend_5m": tv.get("recommend_5m"),
-        "recommend_15m": tv.get("recommend_15m"),
-        "recommend_1h": tv.get("recommend_1h"),
-        "adx_15m": round(adx, 2) if adx is not None else None,
-        "atr_15m": round(atr, 4),
-        "confirmations": confirmations[:8],
-        "warnings": warnings[:8],
+        "ticker": ticker,
+        "candles_3m": candles_3m,
+        "candles_15m": candles_15m,
+        "candles_1h": candles_1h,
+        "trades": get_okx_trades(),
+        "book": get_okx_book(),
     }
 
-def analyze_local_price_move(candles, price=None, lookback=32):
-    """Local move from the recent 15m high/low.
 
-    TradingView "change" can stay green after a strong morning pump, even when
-    price is already falling from the local high. This layer catches that
-    intraday rejection so early SHORT/ LONG pullback logic does not wait for
-    the daily change to flip red.
-    """
-    candles = candles or []
-    recent = candles[-lookback:] if len(candles) >= lookback else candles[:]
-    if len(recent) < 6:
+# ==========================================================
+# INDICATORS / CONTEXT
+# ==========================================================
+
+
+def ema(values, period):
+    values = [float(x) for x in values if x is not None]
+    if not values:
+        return None
+    k = 2 / (period + 1)
+    result = values[0]
+    for value in values[1:]:
+        result = value * k + result * (1 - k)
+    return result
+
+
+def rsi(values, period=14):
+    values = [float(x) for x in values if x is not None]
+    if len(values) <= period:
+        return 50.0
+    gains = []
+    losses = []
+    for i in range(1, len(values)):
+        diff = values[i] - values[i - 1]
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
+    avg_gain = mean(gains[-period:]) if gains[-period:] else 0
+    avg_loss = mean(losses[-period:]) if losses[-period:] else 0
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def atr(candles, period=14):
+    if not candles or len(candles) < 2:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        c = candles[i]
+        prev = candles[i - 1]
+        trs.append(max(c.high - c.low, abs(c.high - prev.close), abs(c.low - prev.close)))
+    sample = trs[-period:]
+    return mean(sample) if sample else None
+
+
+def slope_pct(values, bars=12):
+    values = [float(v) for v in values if v is not None]
+    if len(values) < bars + 1:
+        return 0.0
+    start = mean(values[-bars - 1:-bars + 2])
+    end = mean(values[-3:])
+    return pct(end, start)
+
+
+def candle_body_ratio(candle):
+    rng = max(candle.high - candle.low, 1e-9)
+    return abs(candle.close - candle.open) / rng
+
+
+def close_location(candle):
+    rng = max(candle.high - candle.low, 1e-9)
+    return (candle.close - candle.low) / rng
+
+
+def analyze_timeframe(candles, label):
+    if not candles or len(candles) < 30:
         return {
-            "available": False,
-            "from_high_pct": 0,
-            "from_low_pct": 0,
-            "bars_since_high": None,
-            "bars_since_low": None,
-            "recent_high": None,
-            "recent_low": None,
-            "note": "локальних 15m даних мало",
+            "label": label, "available": False, "bias": "NEUTRAL", "score": 0,
+            "trend": "NO DATA", "note": "даних мало",
         }
 
-    current = safe_float(price) or safe_float(recent[-1].get("close"))
-    if not current:
-        return {
-            "available": False,
-            "from_high_pct": 0,
-            "from_low_pct": 0,
-            "bars_since_high": None,
-            "bars_since_low": None,
-            "recent_high": None,
-            "recent_low": None,
-            "note": "локальна ціна недоступна",
-        }
+    closes = [c.close for c in candles]
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    last = candles[-1]
+    ema20 = ema(closes[-60:], 20)
+    ema50 = ema(closes[-80:], 50)
+    rsi14 = rsi(closes, 14)
+    atr14 = atr(candles, 14) or max(last.close * 0.004, 0.01)
+    slope = slope_pct(closes, 12)
+    move_8 = pct(closes[-1], closes[-9]) if len(closes) >= 9 else 0
+    range_20 = max(highs[-20:]) - min(lows[-20:])
+    atr_range = range_20 / atr14 if atr14 else 0
 
-    highs = [safe_float(c.get("high")) or current for c in recent]
-    lows = [safe_float(c.get("low")) or current for c in recent]
-    closes = [safe_float(c.get("close")) or current for c in recent]
-    recent_high = max(highs)
-    recent_low = min(lows)
-    high_index = highs.index(recent_high)
-    low_index = lows.index(recent_low)
-    bars_since_high = len(recent) - 1 - high_index
-    bars_since_low = len(recent) - 1 - low_index
-    from_high_pct = ((current - recent_high) / recent_high * 100) if recent_high else 0
-    from_low_pct = ((current - recent_low) / recent_low * 100) if recent_low else 0
+    score = 0
+    reasons = []
 
-    post_high_lows = lows[high_index:] if high_index < len(lows) else lows
-    post_high_low = min(post_high_lows) if post_high_lows else recent_low
-    post_high_low_index = high_index + post_high_lows.index(post_high_low) if post_high_lows else low_index
-    bars_since_post_high_low = len(recent) - 1 - post_high_low_index
-    bounce_from_post_high_low_pct = ((current - post_high_low) / post_high_low * 100) if post_high_low else 0
+    if ema20 and ema50:
+        if last.close > ema20 > ema50:
+            score += 24
+            reasons.append("ціна вище EMA20/50")
+        elif last.close < ema20 < ema50:
+            score -= 24
+            reasons.append("ціна нижче EMA20/50")
+        elif ema20 > ema50:
+            score += 8
+            reasons.append("EMA20 вище EMA50")
+        elif ema20 < ema50:
+            score -= 8
+            reasons.append("EMA20 нижче EMA50")
 
-    post_low_highs = highs[low_index:] if low_index < len(highs) else highs
-    post_low_high = max(post_low_highs) if post_low_highs else recent_high
-    post_low_high_index = low_index + post_low_highs.index(post_low_high) if post_low_highs else high_index
-    bars_since_post_low_high = len(recent) - 1 - post_low_high_index
-    pullback_from_post_low_high_pct = ((current - post_low_high) / post_low_high * 100) if post_low_high else 0
+    if slope >= 0.35:
+        score += 18
+        reasons.append("нахил вгору")
+    elif slope <= -0.35:
+        score -= 18
+        reasons.append("нахил вниз")
+    elif slope >= 0.12:
+        score += 8
+    elif slope <= -0.12:
+        score -= 8
 
-    last4 = sum(closes[-4:]) / 4
-    prev4 = sum(closes[-8:-4]) / 4 if len(closes) >= 8 else closes[0]
-    last2 = sum(closes[-2:]) / 2
-    prev2 = sum(closes[-4:-2]) / 2 if len(closes) >= 4 else closes[0]
-    local_momentum = "DOWN" if last4 < prev4 else "UP" if last4 > prev4 else "FLAT"
-    fast_local_momentum = "UP" if last2 > prev2 else "DOWN" if last2 < prev2 else "FLAT"
-    bounced_from_post_high_low = (
-        from_high_pct <= -0.60
-        and bounce_from_post_high_low_pct >= 0.18
-        and 1 <= bars_since_post_high_low <= 14
-    )
-    pulled_back_from_post_low_high = (
-        from_low_pct >= 0.60
-        and pullback_from_post_low_high_pct <= -0.18
-        and 1 <= bars_since_post_low_high <= 14
-    )
+    if move_8 >= 0.45:
+        score += 14
+        reasons.append("імпульс вгору")
+    elif move_8 <= -0.45:
+        score -= 14
+        reasons.append("імпульс вниз")
 
-    bounce_after_dump = (
-        bounced_from_post_high_low
-        and bars_since_post_high_low <= 10
-        and fast_local_momentum == "UP"
-    )
-    pullback_after_pump = (
-        pulled_back_from_post_low_high
-        and bars_since_post_low_high <= 10
-        and fast_local_momentum == "DOWN"
-    )
+    if rsi14 >= 76:
+        score -= 10
+        reasons.append("перекупленість")
+    elif rsi14 <= 24:
+        score += 10
+        reasons.append("перепроданість")
 
-    note = "локально без сильного відхилення"
-    if bounce_after_dump:
-        note = f"відскок від low {round(post_high_low, 4)} після дампу на {round(bounce_from_post_high_low_pct, 3)}%"
-    elif pullback_after_pump:
-        note = f"відкат від high {round(post_low_high, 4)} після росту на {round(abs(pullback_from_post_low_high_pct), 3)}%"
-    elif bounced_from_post_high_low:
-        note = (
-            f"після падіння від high {round(recent_high, 4)} ціна вже відбилась від low "
-            f"{round(post_high_low, 4)} на {round(bounce_from_post_high_low_pct, 3)}%; "
-            "це не свіжий SHORT-відкат"
-        )
-    elif pulled_back_from_post_low_high:
-        note = (
-            f"після росту від low {round(recent_low, 4)} ціна вже відкотилась від high "
-            f"{round(post_low_high, 4)} на {round(abs(pullback_from_post_low_high_pct), 3)}%; "
-            "це не свіжий LONG-відскок"
-        )
-    elif from_high_pct <= -0.35 and bars_since_high >= 1:
-        note = f"відкат від локального high {round(recent_high, 4)} на {round(abs(from_high_pct), 3)}%"
-    elif from_low_pct >= 0.35 and bars_since_low >= 1:
-        note = f"відскок від локального low {round(recent_low, 4)} на {round(from_low_pct, 3)}%"
+    if candle_body_ratio(last) >= 0.55:
+        if last.close > last.open and close_location(last) >= 0.62:
+            score += 7
+        elif last.close < last.open and close_location(last) <= 0.38:
+            score -= 7
+
+    if atr_range < 2.3:
+        score = int(score * 0.75)
+        reasons.append("стиснення/боковик")
+
+    if score >= 26:
+        bias = "LONG"
+    elif score <= -26:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    trend = bias
+    if atr_range < 2.0:
+        trend = "RANGE"
+
+    return {
+        "label": label,
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "trend": trend,
+        "close": last.close,
+        "ema20": round_price(ema20),
+        "ema50": round_price(ema50),
+        "rsi": round(rsi14, 1),
+        "atr": round_price(atr14),
+        "slope_pct": round(slope, 3),
+        "move_8_pct": round(move_8, 3),
+        "range_atr": round(atr_range, 2),
+        "note": "; ".join(reasons[:4]) if reasons else "без сильного перекосу",
+    }
+
+
+def swing_points(candles, lookback=2):
+    highs = []
+    lows = []
+    if not candles or len(candles) < lookback * 2 + 8:
+        return highs, lows
+    for i in range(lookback, len(candles) - lookback):
+        c = candles[i]
+        left = candles[i - lookback:i]
+        right = candles[i + 1:i + 1 + lookback]
+        if all(c.high > x.high for x in left + right):
+            highs.append({"idx": i, "price": c.high, "ts": c.ts})
+        if all(c.low < x.low for x in left + right):
+            lows.append({"idx": i, "price": c.low, "ts": c.ts})
+    return highs, lows
+
+
+def analyze_structure(candles):
+    if not candles or len(candles) < 35:
+        return {"available": False, "bias": "NEUTRAL", "score": 0, "phase": "NO DATA", "note": "структура недоступна"}
+
+    recent = candles[-32:]
+    last = recent[-1]
+    prev = recent[-2]
+    highs, lows = swing_points(candles[-80:], 2)
+    recent_high = max(c.high for c in recent[:-1])
+    recent_low = min(c.low for c in recent[:-1])
+    swing_high = highs[-1]["price"] if highs else recent_high
+    swing_low = lows[-1]["price"] if lows else recent_low
+    atr14 = atr(candles, 14) or last.close * 0.005
+
+    score = 0
+    notes = []
+    phase = "RANGE / WAIT"
+
+    if last.close > swing_high:
+        score += 32
+        phase = "BOS LONG"
+        notes.append(f"закриття вище swing high {round_price(swing_high)}")
+    elif last.close < swing_low:
+        score -= 32
+        phase = "BOS SHORT"
+        notes.append(f"закриття нижче swing low {round_price(swing_low)}")
+
+    if last.high > recent_high and last.close < recent_high:
+        score -= 22
+        phase = "UPSIDE SWEEP"
+        notes.append("зняли ліквідність зверху і закрились нижче")
+    elif last.low < recent_low and last.close > recent_low:
+        score += 22
+        phase = "DOWNSIDE SWEEP"
+        notes.append("зняли ліквідність знизу і повернулись вище")
+
+    mid = (recent_high + recent_low) / 2
+    if prev.low <= recent_low + atr14 * 0.15 and last.close > mid:
+        score += 16
+        phase = "CHOCH LONG"
+        notes.append("після зняття low повернення в діапазон")
+    elif prev.high >= recent_high - atr14 * 0.15 and last.close < mid:
+        score -= 16
+        phase = "CHOCH SHORT"
+        notes.append("після зняття high повернення в діапазон")
+
+    last_range = max(last.high - last.low, 1e-9)
+    body = abs(last.close - last.open)
+    if body / last_range >= 0.6:
+        if last.close > last.open:
+            score += 8
+            notes.append("сильне bullish-закриття")
+        else:
+            score -= 8
+            notes.append("сильне bearish-закриття")
+
+    if score >= 22:
+        bias = "LONG"
+    elif score <= -22:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
 
     return {
         "available": True,
-        "from_high_pct": round(from_high_pct, 3),
-        "from_low_pct": round(from_low_pct, 3),
-        "bars_since_high": bars_since_high,
-        "bars_since_low": bars_since_low,
-        "recent_high": round(recent_high, 4),
-        "recent_low": round(recent_low, 4),
-        "post_high_low": round(post_high_low, 4),
-        "post_low_high": round(post_low_high, 4),
-        "bounce_from_post_high_low_pct": round(bounce_from_post_high_low_pct, 3),
-        "pullback_from_post_low_high_pct": round(pullback_from_post_low_high_pct, 3),
-        "bars_since_post_high_low": bars_since_post_high_low,
-        "bars_since_post_low_high": bars_since_post_low_high,
-        "local_momentum": local_momentum,
-        "fast_local_momentum": fast_local_momentum,
-        "bounced_from_post_high_low": bounced_from_post_high_low,
-        "pulled_back_from_post_low_high": pulled_back_from_post_low_high,
-        "bounce_after_dump": bounce_after_dump,
-        "pullback_after_pump": pullback_after_pump,
-        "note": note,
-    }
-
-def apply_local_move_to_technical(tech, local_move):
-    """Lightly adjust technical context with the local high/low rejection."""
-    tech = tech or {}
-    local_move = local_move or {}
-    tech["local_move"] = local_move
-    if not local_move.get("available"):
-        return tech
-
-    from_high = local_move.get("from_high_pct", 0) or 0
-    from_low = local_move.get("from_low_pct", 0) or 0
-    bars_since_high = local_move.get("bars_since_high")
-    bars_since_low = local_move.get("bars_since_low")
-
-    local_side = local_move_direction(local_move)
-    if local_side == "SHORT" and from_high <= -0.35 and bars_since_high is not None and bars_since_high <= 24:
-        tech["score"] = tech.get("score", 0) - 8
-        tech.setdefault("warnings", []).append("локально ціна відкотилась від high")
-    elif local_side == "LONG" and from_low >= 0.35 and bars_since_low is not None and bars_since_low <= 24:
-        tech["score"] = tech.get("score", 0) + 8
-        tech.setdefault("confirmations", []).append("локально ціна відскочила від low після дампу")
-
-    tech["confirmations"] = tech.get("confirmations", [])[:8]
-    tech["warnings"] = tech.get("warnings", [])[:8]
-    return tech
-
-def local_move_direction(local_move):
-    """Return the short-term direction implied by local high/low rejection."""
-    local_move = local_move or {}
-    if not local_move.get("available"):
-        return "NEUTRAL"
-    from_high = local_move.get("from_high_pct", 0) or 0
-    from_low = local_move.get("from_low_pct", 0) or 0
-    bars_since_high = local_move.get("bars_since_high")
-    bars_since_low = local_move.get("bars_since_low")
-    momentum = local_move.get("local_momentum", "FLAT")
-
-    if local_move.get("bounce_after_dump"):
-        return "LONG"
-    if local_move.get("pullback_after_pump"):
-        return "SHORT"
-    if local_move.get("bounced_from_post_high_low"):
-        return "LONG" if local_move.get("fast_local_momentum") == "UP" else "NEUTRAL"
-    if local_move.get("pulled_back_from_post_low_high"):
-        return "SHORT" if local_move.get("fast_local_momentum") == "DOWN" else "NEUTRAL"
-    if from_high <= -0.35 and bars_since_high is not None and bars_since_high >= 1 and momentum == "DOWN":
-        return "SHORT"
-    if from_low >= 0.35 and bars_since_low is not None and bars_since_low >= 1 and momentum == "UP":
-        return "LONG"
-    return "NEUTRAL"
-
-# ==========================================================
-# MACRO QUANT
-# ==========================================================
-
-def get_macro_news():
-    """Fresh macro layer through Google News RSS.
-    First tries last 2 hours; if too few headlines, falls back to 6 hours.
-    Never prints "unavailable" in Telegram; quiet macro = NEUTRAL.
-    """
-    macro_items = []
-
-    for query in MACRO_NEWS_QUERIES:
-        macro_items.extend(parse_google_rss(query, 2, "Google Macro RSS", 0.9))
-
-    macro_items = deduplicate_news(macro_items)
-
-    if len(macro_items) < 3:
-        fallback = []
-        for query in MACRO_NEWS_QUERIES:
-            fallback.extend(parse_google_rss(query, 6, "Google Macro RSS", 0.75))
-        macro_items = deduplicate_news(macro_items + fallback)
-
-    return macro_items
-
-def get_macro_quant_data():
-    """Return macro data without unstable TradingView macro scraping."""
-    return {"macro_news": get_macro_news()}
-
-def analyze_macro_quant(macro):
-    """Macro regime based on stable headline proxy.
-    It is less granular than live DXY/VIX/US10Y, but much more reliable on GitHub Actions.
-    """
-    items = macro.get("macro_news", []) if isinstance(macro, dict) else []
-
-    score = 0
-    confirmations = []
-    warnings = []
-
-    risk_on_words = [
-        "rate cut", "cuts", "dovish", "soft landing", "stocks rise", "stocks gain",
-        "nasdaq rises", "s&p 500 rises", "vix falls", "dollar falls", "yields fall",
-        "risk-on", "fed pause", "inflation cools", "cpi cools", "jobs slow",
-    ]
-
-    risk_off_words = [
-        "rate hike", "hawkish", "inflation rises", "hot cpi", "yields rise",
-        "dollar rises", "vix rises", "stocks fall", "stocks drop", "nasdaq falls",
-        "risk-off", "recession", "higher for longer", "tariff", "trade war",
-    ]
-
-    impact_words = [
-        "fed", "powell", "fomc", "cpi", "nfp", "inflation", "yields",
-        "dollar", "vix", "nasdaq", "s&p", "stocks",
-    ]
-
-    for item in items[:30]:
-        title = item.get("title", "")
-        lower = title.lower()
-        risk_on_hits = sum(1 for word in risk_on_words if word in lower)
-        risk_off_hits = sum(1 for word in risk_off_words if word in lower)
-        impact_hits = sum(1 for word in impact_words if word in lower)
-
-        if risk_on_hits:
-            add = 5 * risk_on_hits + min(4, impact_hits)
-            score += add
-            if len(confirmations) < 5:
-                confirmations.append(f"macro risk-on: {title[:100]}")
-
-        if risk_off_hits:
-            sub = 5 * risk_off_hits + min(4, impact_hits)
-            score -= sub
-            if len(warnings) < 5:
-                warnings.append(f"macro risk-off: {title[:100]}")
-
-    score = max(-30, min(30, score))
-
-    if score >= 20:
-        regime = "RISK-ON / БИЧАЧИЙ MACRO"
-    elif score <= -20:
-        regime = "RISK-OFF / ВЕДМЕЖИЙ MACRO"
-    elif score >= 8:
-        regime = "ПОМІРНО БИЧАЧИЙ MACRO"
-    elif score <= -8:
-        regime = "ПОМІРНО ВЕДМЕЖИЙ MACRO"
-    else:
-        regime = "НЕЙТРАЛЬНИЙ"
-
-    if not items:
-        regime = "НЕЙТРАЛЬНИЙ"
-
-    return {
-        "score": score,
-        "regime": regime,
-        "confirmations": confirmations[:5],
-        "warnings": warnings[:5],
-        "data": {
-            "macro_items": len(items),
-            "source": "Google News RSS macro proxy",
-        },
-    }
-
-# ==========================================================
-# ORDERFLOW FROM TRADINGVIEW
-# ==========================================================
-
-def analyze_free_orderflow(tv):
-    """TradingView-based orderflow proxy.
-
-    This is not real bid/ask delta or order book imbalance. It estimates
-    directional participation from change, volume and TradingView ratings.
-    """
-    score = 0
-    details = []
-    warnings = []
-
-    change = tv.get("change") or 0
-    volume = tv.get("volume") or 0
-    rec_5m = tv.get("recommend_5m") or 0
-    rec_15m = tv.get("recommend_15m") or 0
-    rec_1h = tv.get("recommend_1h") or 0
-
-    if change >= VERY_STRONG_UP_MOVE_PERCENT:
-        score += 22
-        details.append("сильний потік покупців за імпульсом")
-    elif change <= VERY_STRONG_DOWN_MOVE_PERCENT:
-        score -= 22
-        warnings.append("сильний потік продавців за імпульсом")
-
-    if rec_5m > 0.2 and rec_15m > 0.2 and rec_1h > 0.2:
-        score += 18
-        details.append("підтвердження orderflow на 5m/15m/1h")
-    elif rec_5m < -0.2 and rec_15m < -0.2 and rec_1h < -0.2:
-        score -= 18
-        warnings.append("ведмеже підтвердження orderflow на 5m/15m/1h")
-
-    if volume and volume > 0:
-        details.append(f"обсяг TradingView proxy: {round(volume, 2)}")
-        if abs(change) > 1.5:
-            score += 8 if change > 0 else -8
-            details.append("обсяг підтверджує імпульсний рух")
-
-    bias = "НЕЙТРАЛЬНИЙ"
-    if score >= 25:
-        bias = "БИЧАЧИЙ ORDERFLOW"
-    elif score <= -25:
-        bias = "ВЕДМЕЖИЙ ORDERFLOW"
-
-    return {
-        "score": score,
         "bias": bias,
-        "used_symbol": "TradingView proxy only",
-        "details": details[:7],
-        "warnings": warnings[:7],
+        "score": int(score),
+        "phase": phase,
+        "swing_high": round_price(swing_high),
+        "swing_low": round_price(swing_low),
+        "recent_high": round_price(recent_high),
+        "recent_low": round_price(recent_low),
+        "atr": round_price(atr14),
+        "note": "; ".join(notes[:3]) if notes else "структура без чистого пробою",
     }
 
+
+def analyze_micro(candles):
+    if not candles or len(candles) < 35:
+        return {"available": False, "bias": "NEUTRAL", "score": 0, "state": "NO DATA", "note": "3m недоступний"}
+    recent = candles[-28:]
+    fast = candles[-12:]
+    last = candles[-1]
+    closes = [c.close for c in recent]
+    fast_closes = [c.close for c in fast]
+    fast_highs = [c.high for c in fast]
+    fast_lows = [c.low for c in fast]
+    fast_move = pct(fast_closes[-1], fast_closes[0])
+    lower_closes = sum(1 for i in range(1, len(fast_closes)) if fast_closes[i] < fast_closes[i - 1])
+    higher_closes = sum(1 for i in range(1, len(fast_closes)) if fast_closes[i] > fast_closes[i - 1])
+    lower_highs = sum(1 for i in range(1, len(fast_highs)) if fast_highs[i] < fast_highs[i - 1])
+    higher_lows = sum(1 for i in range(1, len(fast_lows)) if fast_lows[i] > fast_lows[i - 1])
+    red = sum(1 for c in fast if c.close < c.open)
+    green = sum(1 for c in fast if c.close > c.open)
+    drift = slope_pct(closes, 10)
+    avg_vol = mean([c.volume for c in recent[:-1]]) if len(recent) > 1 else 0
+    vol_ratio = last.volume / avg_vol if avg_vol else 1
+
+    score = 0
+    notes = []
+    if fast_move >= 0.28:
+        score += 26
+        notes.append("3m швидко йде вгору")
+    elif fast_move <= -0.28:
+        score -= 26
+        notes.append("3m швидко йде вниз")
+
+    if higher_closes >= 7 or higher_lows >= 5:
+        score += 22
+        notes.append("3m higher lows/closes")
+    if lower_closes >= 7 or lower_highs >= 5:
+        score -= 22
+        notes.append("3m lower highs/closes")
+
+    if green >= 8:
+        score += 10
+    elif red >= 8:
+        score -= 10
+
+    if drift >= 0.18:
+        score += 10
+    elif drift <= -0.18:
+        score -= 10
+
+    if vol_ratio >= 1.5 and candle_body_ratio(last) >= 0.45:
+        if last.close > last.open:
+            score += 8
+            notes.append("обсяг за покупців")
+        else:
+            score -= 8
+            notes.append("обсяг за продавців")
+
+    if score >= 22:
+        bias = "LONG"
+        state = "LONG_STRENGTHENING"
+    elif score <= -22:
+        bias = "SHORT"
+        state = "SHORT_STRENGTHENING"
+    else:
+        bias = "NEUTRAL"
+        state = "RANGE"
+        total_move = pct(closes[-1], closes[0])
+        if total_move >= 0.45 and drift < 0:
+            state = "LONG_COOLING"
+            notes.append("покупці охолоджуються")
+        elif total_move <= -0.45 and drift > 0:
+            state = "SHORT_COOLING"
+            notes.append("продавці охолоджуються")
+
+    return {
+        "available": True,
+        "bias": bias,
+        "score": int(score),
+        "state": state,
+        "fast_move_pct": round(fast_move, 3),
+        "drift_pct": round(drift, 3),
+        "vol_ratio": round(vol_ratio, 2),
+        "note": "; ".join(notes[:3]) if notes else "3m без чіткого тригера",
+    }
+
+
+def analyze_flow(trades, book, price):
+    buy_vol = sum(t["size"] for t in trades if t.get("side") == "buy")
+    sell_vol = sum(t["size"] for t in trades if t.get("side") == "sell")
+    total = buy_vol + sell_vol
+    delta = (buy_vol - sell_vol) / total * 100 if total else 0
+
+    bids = (book or {}).get("bids") or []
+    asks = (book or {}).get("asks") or []
+    near_bid = near_ask = 0
+    wall = ""
+    if bids and asks and price:
+        lower = price * 0.996
+        upper = price * 1.004
+        near_bids = [(p, s) for p, s in bids if p >= lower]
+        near_asks = [(p, s) for p, s in asks if p <= upper]
+        near_bid = sum(s for _, s in near_bids)
+        near_ask = sum(s for _, s in near_asks)
+        biggest_bid = max(near_bids, key=lambda x: x[1]) if near_bids else None
+        biggest_ask = max(near_asks, key=lambda x: x[1]) if near_asks else None
+        if biggest_bid and biggest_ask:
+            if biggest_bid[1] > biggest_ask[1] * 1.8:
+                wall = f"підтримка покупців біля {round_price(biggest_bid[0])}"
+            elif biggest_ask[1] > biggest_bid[1] * 1.8:
+                wall = f"опір продавців біля {round_price(biggest_ask[0])}"
+
+    book_total = near_bid + near_ask
+    book_delta = (near_bid - near_ask) / book_total * 100 if book_total else 0
+    score = 0
+    notes = []
+    if delta >= 18:
+        score += 16
+        notes.append("угоди за покупців")
+    elif delta <= -18:
+        score -= 16
+        notes.append("угоди за продавців")
+    elif delta >= 8:
+        score += 7
+    elif delta <= -8:
+        score -= 7
+
+    if book_delta >= 18:
+        score += 10
+        notes.append("стакан підтримує покупців")
+    elif book_delta <= -18:
+        score -= 10
+        notes.append("стакан тисне продавцями")
+    if wall:
+        notes.append(wall)
+
+    if score >= 15:
+        bias = "LONG"
+    elif score <= -15:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "bias": bias,
+        "score": int(score),
+        "trade_delta_pct": round(delta, 2),
+        "book_delta_pct": round(book_delta, 2),
+        "note": "; ".join(notes[:3]) if notes else "потік без явної переваги",
+    }
+
+
+def market_session():
+    hour = now_utc().hour
+    if 12 <= hour < 20:
+        return {"name": "NEW YORK / LONDON", "score": 4, "note": "ліквідна сесія"}
+    if 7 <= hour < 12:
+        return {"name": "LONDON", "score": 2, "note": "європейська сесія"}
+    return {"name": "ASIA / QUIET", "score": -3, "note": "тихіша ліквідність"}
+
+
 # ==========================================================
-# NEWS / EVENTS
+# NEWS
 # ==========================================================
+
 
 def parse_date(value):
     if not value:
@@ -2308,8101 +886,796 @@ def parse_date(value):
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except Exception:
-        pass
-    try:
-        value = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
         return None
 
-def parse_gdelt_date(value):
-    if not value:
-        return None
-    try:
-        return datetime.strptime(value[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-    except Exception:
-        return None
 
-def is_market_relevant_news_text(text):
-    lower = normalize_news_text(text)
-    keys = [
-        "oil", "crude", "brent", "ukoil", "bz", "opec", "eia", "api",
-        "inventory", "stockpiles", "gas", "energy", "trump", "fed",
-        "powell", "fomc", "cpi", "iran", "hormuz", "sanctions",
-        "ceasefire", "cease-fire", "truce", "tariff",
-        "нафта", "брент", "опек", "запаси", "трамп", "фрс",
-        "інфляція", "іран", "сша", "ормуз", "санкції", "тариф",
-        "припинення вогню", "перемир'я", "рамкова угода",
-        "нефть", "запасы", "иран", "сша", "санкции",
-        "прекращение огня", "перемирие", "рамочное соглашение",
-    ]
-    return any(key in lower for key in keys)
+def clean_text(text):
+    text = html.unescape(text or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
-def parse_google_rss(query, lookback_hours, source_name, weight=1.0):
-    news = []
-    cutoff = now_utc() - timedelta(hours=lookback_hours)
+
+def normalized(text):
+    return clean_text(text).lower().replace("’", "'").replace("–", "-").replace("—", "-")
+
+
+def parse_google_rss(query, lookback_hours=3):
     url = f"https://news.google.com/rss/search?q={quote_plus(query + f' when:{lookback_hours}h')}&hl=en-US&gl=US&ceid=US:en"
-
-    response = safe_get(url, timeout=10, retries=1)
+    response = http_get(url, timeout=10, retries=1)
     if not response:
-        return news
-
+        return []
+    cutoff = now_utc() - timedelta(hours=lookback_hours)
+    items = []
     try:
         root = ET.fromstring(response.content)
-        for item in root.findall(".//item")[:MAX_ITEMS_PER_FEED]:
-            title = item.findtext("title", "")
-            link = item.findtext("link", "")
-            pub_date = item.findtext("pubDate", "")
-            published_at = parse_date(pub_date)
-
-            if published_at and published_at < cutoff:
-                continue
-
-            if title:
-                clean_title = BeautifulSoup(title, "html.parser").get_text(" ", strip=True)
-                item_weight = weight
-                item_source = source_name
-                if "Reuters" in clean_title or "reuters.com" in link:
-                    item_weight = max(weight, 1.25)
-                    item_source = "Reuters via Google News"
-                if "CoinDesk" in clean_title or "Cointelegraph" in clean_title:
-                    item_weight = min(item_weight, 0.35)
-                news.append({
-                    "title": clean_title,
-                    "link": link,
-                    "source": item_source,
-                    "published_at": published_at,
-                    "weight": item_weight,
-                })
-    except Exception as error:
-        print(f"[WARN] Google RSS parse error: {error}")
-
-    return news
-
-def get_gdelt_news():
-    # Disabled intentionally: GDELT often rate-limits GitHub Actions (429/timeout).
-    return []
-
-def get_google_news_rss():
-    all_news = []
-    for query in GOOGLE_NEWS_QUERIES:
-        all_news.extend(parse_google_rss(query, NEWS_LOOKBACK_HOURS, "Google News RSS", 1.0))
-    return all_news
-
-def is_future_news_item(item):
-    title = str((item or {}).get("title", "")).lower()
-    if not title:
-        return False
-
-    future_markers = [
-        "tomorrow",
-        "next week",
-        "next month",
-    ]
-    already_happened_markers = [
-        "today",
-        "released",
-        "reported",
-        "after",
-        "following",
-    ]
-
-    return (
-        any(marker in title for marker in future_markers)
-        and not any(marker in title for marker in already_happened_markers)
-    )
-
-def get_event_news():
-    all_events = []
-    for query in EVENT_QUERIES:
-        all_events.extend(parse_google_rss(query, EVENT_LOOKBACK_HOURS, "Google Event RSS", 1.0))
-    all_events.extend(get_fed_official_rss_events())
-    all_events.extend(get_opec_official_events())
-    all_events = [item for item in all_events if not is_future_news_item(item)]
-    return deduplicate_news(all_events)
-
-def eastern_tz():
-    return ZoneInfo("America/New_York")
-
-def calendar_dt_to_utc(date_obj, hour=10, minute=30):
-    return datetime(date_obj.year, date_obj.month, date_obj.day, hour, minute, tzinfo=eastern_tz()).astimezone(timezone.utc)
-
-def calendar_time_status(event_time, now=None):
-    now = now or now_utc()
-    if not event_time:
-        return "час невідомий", False
-
-    minutes = int((event_time - now).total_seconds() / 60)
-    event_date_et = event_time.astimezone(eastern_tz()).date()
-    today_et = now.astimezone(eastern_tz()).date()
-
-    # Do not show or score tomorrow/upcoming calendar events today.
-    # They are context for another session, not a tradable current catalyst.
-    if event_date_et != today_et:
-        return "", False
-
-    if -120 <= minutes <= 180:
-        return "зараз / близько до виходу", True
-    if 180 < minutes <= 24 * 60:
-        hours = max(1, round(minutes / 60))
-        return f"сьогодні через {hours} год", True
-    if -6 * 60 <= minutes < -120:
-        return "вийшло сьогодні", True
-    return "", False
-
-def calendar_minutes_to_event(event_time, now=None):
-    if not event_time:
-        return None
-    now = now or now_utc()
-    try:
-        return int((event_time - now).total_seconds() / 60)
-    except Exception:
-        return None
-
-def is_calendar_hard_block(event_time, now=None):
-    """Hard risk only near the event, not many hours before it."""
-    minutes = calendar_minutes_to_event(event_time, now)
-    if minutes is None:
-        return False
-    return -60 <= minutes <= 90
-
-def is_calendar_pre_news_alert(event):
-    """Alert exactly in the final hour before scheduled important news."""
-    if not event or event.get("risk") not in ["HIGH", "MEDIUM"]:
-        return False
-    if not event.get("time"):
-        return False
-    minutes = event.get("minutes_to_event")
-    if minutes is None:
-        minutes = calendar_minutes_to_event(event.get("time"))
-    return minutes is not None and 0 <= minutes <= 60
-
-def calendar_event_time_text(event):
-    event_time = event.get("time") if isinstance(event, dict) else None
-    if not event_time:
-        return "час невідомий"
-    try:
-        return event_time.astimezone(eastern_tz()).strftime("%H:%M ET")
-    except Exception:
-        return "час невідомий"
-
-def pre_news_warning_text(event_risk):
-    calendar = (event_risk or {}).get("calendar") or {}
-    events = calendar.get("alert_events") or []
-    if not events:
-        return ""
-
-    parts = []
-    for event in events[:2]:
-        minutes = event.get("minutes_to_event")
-        title = event.get("title") or event.get("name") or "важлива новина"
-        when = f"через {minutes} хв" if minutes is not None else event.get("status", "скоро")
-        parts.append(f"{title} — {when}, {calendar_event_time_text(event)}")
-
-    return (
-        "<b>Важливі новини:</b> " + "; ".join(parts) +
-        ". За 60 хв до виходу краще не відкривати нову угоду без сильного тригера; "
-        "активну позицію вести зі стопом."
-    )
-
-def parse_month_date(date_text, default_year=None):
-    default_year = default_year or now_utc().year
-    clean = re.sub(r"[^A-Za-z0-9, ]+", "", str(date_text or "")).strip()
-    for fmt in ["%B %d, %Y", "%b %d, %Y"]:
-        try:
-            return datetime.strptime(clean, fmt).date()
-        except Exception:
-            pass
-    for fmt in ["%B %d", "%b %d"]:
-        try:
-            parsed = datetime.strptime(clean, fmt)
-            return parsed.replace(year=default_year).date()
-        except Exception:
-            pass
-    return None
-
-def next_weekday_date(start_date, weekday):
-    days = (weekday - start_date.weekday()) % 7
-    return start_date + timedelta(days=days)
-
-def extract_eia_release_time(text):
-    text = text or ""
-    match = re.search(r"at\s+(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", text, re.I)
-    if not match:
-        return 10, 30
-    hour = int(match.group(1))
-    minute = int(match.group(2))
-    ampm = match.group(3).upper()
-    if ampm == "P" and hour != 12:
-        hour += 12
-    if ampm == "A" and hour == 12:
-        hour = 0
-    return hour, minute
-
-def get_eia_calendar_event():
-    """Official EIA WPSR calendar.
-
-    If the official date cannot be parsed, keep EIA inactive. A guessed
-    Wednesday release is worse than no calendar signal during holiday weeks.
-    """
-    now = now_utc()
-    text = ""
-    for url in [EIA_WPSR_URL, EIA_WPSR_SCHEDULE_URL]:
-        response = safe_get(url, timeout=8, retries=1)
-        if response:
-            text += "\n" + BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True)
-
-    release_date = None
-    release_time = (10, 30)
-    next_match = re.search(r"Next Release Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text)
-    if next_match:
-        release_date = parse_month_date(next_match.group(1))
-
-    # Holiday schedule text often says "released on Thursday, May 28, 2026, at 12:00 P.M."
-    if release_date:
-        around_date = release_date.strftime("%B %d, %Y").replace(" 0", " ")
-        idx = text.find(around_date)
-        if idx >= 0:
-            release_time = extract_eia_release_time(text[idx:idx + 220])
-
-    if not release_date:
-        return {
-            "name": "EIA",
-            "title": "EIA запаси нафти",
-            "time": None,
-            "status": "час не підтверджено",
-            "active": False,
-            "hard_block": False,
-            "minutes_to_event": None,
-            "risk": "HIGH",
-            "source": "EIA official unavailable",
-        }
-
-    event_time = calendar_dt_to_utc(release_date, release_time[0], release_time[1])
-    status, active = calendar_time_status(event_time, now)
-    minutes_to = calendar_minutes_to_event(event_time, now)
-    return {
-        "name": "EIA",
-        "title": "EIA запаси нафти",
-        "time": event_time,
-        "status": status,
-        "active": active,
-        "hard_block": is_calendar_hard_block(event_time, now),
-        "minutes_to_event": minutes_to,
-        "risk": "HIGH",
-        "source": "EIA official",
-    }
-
-def parse_fomc_calendar_events():
-    response = safe_get(FED_FOMC_CALENDAR_URL, timeout=8, retries=1)
-    if not response:
-        return []
-
-    text = BeautifulSoup(response.text, "html.parser").get_text("\n", strip=True)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    month_map = {
-        "January": 1, "February": 2, "March": 3, "April": 4, "Apr/May": 5,
-        "May": 5, "June": 6, "July": 7, "August": 8, "September": 9,
-        "October": 10, "November": 11, "December": 12,
-    }
-    current_year = str(now_utc().year)
-    in_year = False
-    current_month = None
-    events = []
-
-    for line in lines:
-        if re.fullmatch(rf"{current_year}\s+FOMC Meetings", line):
-            in_year = True
-            continue
-        if in_year and re.fullmatch(r"\d{4}\s+FOMC Meetings", line) and current_year not in line:
-            break
-        if not in_year:
-            continue
-
-        if line in month_map:
-            current_month = month_map[line]
-            continue
-
-        match = re.fullmatch(r"(\d{1,2})(?:-(\d{1,2}))?\*?(?:\s+\(notation vote\))?", line)
-        if current_month and match:
-            day = int(match.group(2) or match.group(1))
-            try:
-                event_time = calendar_dt_to_utc(datetime(now_utc().year, current_month, day).date(), 14, 0)
-                status, active = calendar_time_status(event_time)
-                minutes_to = calendar_minutes_to_event(event_time)
-                events.append({
-                    "name": "Fed",
-                    "title": "Fed / FOMC рішення",
-                    "time": event_time,
-                    "status": status,
-                    "active": active,
-                    "hard_block": is_calendar_hard_block(event_time),
-                    "minutes_to_event": minutes_to,
-                    "risk": "HIGH",
-                    "source": "Fed official calendar",
-                })
-            except Exception:
-                pass
-
-        minutes_match = re.search(r"Released\s+([A-Za-z]+\s+\d{1,2},\s+\d{4})", line)
-        if minutes_match:
-            release_date = parse_month_date(minutes_match.group(1))
-            if release_date:
-                event_time = calendar_dt_to_utc(release_date, 14, 0)
-                status, active = calendar_time_status(event_time)
-                minutes_to = calendar_minutes_to_event(event_time)
-                events.append({
-                    "name": "Fed",
-                    "title": "Fed minutes",
-                    "time": event_time,
-                    "status": status,
-                    "active": active,
-                    "hard_block": is_calendar_hard_block(event_time),
-                    "minutes_to_event": minutes_to,
-                    "risk": "MEDIUM",
-                    "source": "Fed official calendar",
-                })
-
-    return events
-
-def get_fed_official_rss_events():
-    events = []
-    cutoff = now_utc() - timedelta(hours=EVENT_LOOKBACK_HOURS)
-    for source_name, url, weight in OFFICIAL_FED_RSS_FEEDS:
-        response = safe_get(url, timeout=8, retries=1)
-        if not response:
-            continue
-        try:
-            root = ET.fromstring(response.content.strip())
-            for item in root.findall(".//item")[:MAX_ITEMS_PER_FEED]:
-                title = get_item_text(item, "title")
-                date_text = get_item_text(item, "pubDate") or get_item_text(item, "published") or get_item_text(item, "updated")
-                published_at = parse_date(date_text)
-                if published_at and published_at < cutoff:
-                    continue
-                if title:
-                    events.append({
-                        "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
-                        "link": get_item_text(item, "link"),
-                        "source": source_name,
-                        "published_at": published_at,
-                        "weight": weight,
-                    })
-        except Exception as error:
-            print(f"[WARN] Fed RSS parse error {source_name}: {error}")
-    return events
-
-def get_opec_official_events():
-    response = safe_get(OPEC_PRESS_URL, timeout=8, retries=1)
-    if not response:
-        return []
-    events = []
-    try:
-        soup = BeautifulSoup(response.text, "html.parser")
-        current_year = str(now_utc().year)
-        for link in soup.find_all("a"):
-            title = link.get_text(" ", strip=True)
-            lower = title.lower()
-            if len(title) < 18:
-                continue
-            if not any(key in lower for key in ["opec", "opec+", "production", "output", "oil", "crude", "ministerial"]):
-                continue
-            if current_year not in title and not any(key in lower for key in ["today", "meeting", "ministerial"]):
-                continue
-            href = link.get("href", "")
-            if href.startswith("/"):
-                href = "https://www.opec.org" + href
-            events.append({
-                "title": title,
-                "link": href,
-                "source": "OPEC official",
-                "published_at": None,
-                "weight": 1.0,
-            })
-            if len(events) >= 4:
-                break
-    except Exception as error:
-            print(f"[WARN] OPEC official parse error: {error}")
-    return events
-
-def get_opec_calendar_events():
-    events = []
-    items = parse_google_rss(
-        "site:opec.org OPEC OPEC+ meeting production oil today upcoming",
-        72,
-        "OPEC official calendar",
-        1.1,
-    )
-    for item in items[:3]:
-        status = "свіжа офіційна новина"
-        if item.get("published_at"):
-            age_hours = (now_utc() - item["published_at"]).total_seconds() / 3600
-            if age_hours <= 6:
-                status = "останні 6 год"
-            elif age_hours <= 24:
-                status = "сьогодні"
-            else:
-                status = "найближчі дні"
-        events.append({
-            "name": "OPEC",
-            "title": "OPEC/OPEC+",
-            "time": item.get("published_at"),
-            "status": status,
-            "active": True,
-            "hard_block": True,
-            "minutes_to_event": 0,
-            "risk": "HIGH",
-            "source": "OPEC official / Google RSS",
-        })
-    return events
-
-def analyze_economic_calendar():
-    """Free official calendar layer for oil futures risk."""
-    calendar_events = []
-    try:
-        calendar_events.append(get_eia_calendar_event())
-    except Exception as error:
-        print(f"[WARN] EIA calendar error: {error}")
-    try:
-        calendar_events.extend(parse_fomc_calendar_events())
-    except Exception as error:
-        print(f"[WARN] Fed calendar error: {error}")
-    try:
-        calendar_events.extend(get_opec_calendar_events())
-    except Exception as error:
-        print(f"[WARN] OPEC calendar error: {error}")
-
-    active_events = [event for event in calendar_events if event.get("active")]
-    blocking_events = [event for event in active_events if event.get("hard_block")]
-    alert_events = [event for event in calendar_events if is_calendar_pre_news_alert(event)]
-    score = 0
-    for event in blocking_events:
-        if event.get("risk") == "HIGH":
-            score -= 16
-        elif event.get("risk") == "MEDIUM":
-            score -= 10
-
-    if abs(score) >= 24:
-        risk = "ВИСОКИЙ"
-    elif abs(score) >= 12:
-        risk = "ПІДВИЩЕНИЙ"
-    else:
-        risk = "НОРМАЛЬНИЙ"
-
-    return {
-        "active": bool(active_events),
-        "hard_block": bool(blocking_events),
-        "score": score,
-        "risk": risk,
-        "events": active_events[:4],
-        "blocking_events": blocking_events[:4],
-        "alert_events": alert_events[:4],
-        "all_events": calendar_events[:12],
-    }
-
-def merge_calendar_into_event_risk(event_risk, calendar):
-    event_risk = dict(event_risk or {})
-    calendar = calendar or {}
-    event_risk["calendar"] = calendar
-    if not calendar.get("active"):
-        return event_risk
-
-    event_risk["score"] = int(max(-MAX_EVENT_SCORE, min(MAX_EVENT_SCORE, event_risk.get("score", 0) + calendar.get("score", 0))))
-    if abs(event_risk["score"]) >= 40:
-        event_risk["risk"] = "ДУЖЕ ВИСОКИЙ"
-    elif abs(event_risk["score"]) >= 20:
-        event_risk["risk"] = "ВИСОКИЙ"
-    elif abs(event_risk["score"]) >= 8:
-        event_risk["risk"] = "ПІДВИЩЕНИЙ"
-
-    important = list(event_risk.get("important", []) or [])
-    for event in calendar.get("events", []):
-        important.append({
-            "title": f"{event.get('title')} — {event.get('status')}",
-            "link": "",
-            "source": event.get("source", "official calendar"),
-            "published_at": event.get("time"),
-            "weight": 1.0,
-        })
-    for event in calendar.get("alert_events", []):
-        important.append({
-            "title": f"ВАЖЛИВО ЗА 60 ХВ: {event.get('title')} — {event.get('status')}",
-            "link": "",
-            "source": event.get("source", "official calendar"),
-            "published_at": event.get("time"),
-            "weight": 1.25,
-        })
-    event_risk["important"] = important[:8]
-    return event_risk
-
-def get_item_text(item, tag):
-    text = item.findtext(tag)
-    if text:
-        return text.strip()
-    for child in list(item):
-        if child.tag.lower().endswith(tag.lower()):
-            return (child.text or "").strip()
-    return ""
-
-def parse_telegram_channel_news(source, html):
-    news = []
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        messages = soup.select(".tgme_widget_message")
-
-        for message in messages[-MAX_ITEMS_PER_FEED * 2:]:
-            text_node = message.select_one(".tgme_widget_message_text")
-            if not text_node:
-                continue
-
-            title = text_node.get_text(" ", strip=True)
-            title = re.sub(r"\s+", " ", title).strip()
-            if not title or len(title) < 12:
-                continue
-            if not is_market_relevant_news_text(title):
-                continue
-
-            time_node = message.select_one("time")
-            published_at = parse_date(time_node.get("datetime")) if time_node else None
-            if published_at and published_at < cutoff:
-                continue
-
-            link_node = message.select_one("a.tgme_widget_message_date")
-            link = link_node.get("href", "") if link_node else source["url"]
-
-            news.append({
-                "title": title,
-                "link": link,
-                "source": source["name"],
-                "published_at": published_at,
-                "weight": source.get("weight", 1.0),
-            })
-
-        news.sort(
-            key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc),
-            reverse=True,
-        )
-    except Exception as error:
-        print(f"[WARN] Telegram parse error {source['name']}: {error}")
-    return news[:MAX_ITEMS_PER_FEED]
-
-def parse_html_news(source, html):
-    news = []
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        candidates = []
-        for tag in soup.find_all(["a", "h2", "h3"]):
-            text = tag.get_text(" ", strip=True)
-            if not text or len(text) < 18:
-                continue
-            if not is_market_relevant_news_text(text):
-                continue
-            href = tag.get("href", "")
-            if href.startswith("/"):
-                base = re.match(r"https?://[^/]+", source["url"])
-                if base:
-                    href = base.group(0) + href
-            candidates.append((text, href))
-
-        for title, link in candidates[:MAX_ITEMS_PER_FEED]:
-            news.append({
-                "title": title,
-                "link": link,
-                "source": source["name"],
-                "published_at": None,
-                "weight": source.get("weight", 1.0) * 0.35,
-            })
-    except Exception as error:
-        print(f"[WARN] HTML parse error {source['name']}: {error}")
-    return news
-
-def parse_rss(source):
-    response = safe_get(source["url"], timeout=10, retries=1)
-    if not response:
-        return []
-    if source.get("type") == "telegram":
-        return parse_telegram_channel_news(source, response.text)
-    if source.get("type") == "html":
-        return parse_html_news(source, response.text)
-
-    news = []
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
-    try:
-        root = ET.fromstring(response.content.strip())
-        items = root.findall(".//item")
-        if not items:
-            items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
-
-        for item in items[:MAX_ITEMS_PER_FEED]:
-            title = get_item_text(item, "title")
-            link = get_item_text(item, "link")
-            date_text = get_item_text(item, "pubDate") or get_item_text(item, "published") or get_item_text(item, "updated") or get_item_text(item, "dc:date")
-            published_at = parse_date(date_text)
-
-            if published_at and published_at < cutoff:
-                continue
-
-            if title:
-                news.append({
-                    "title": BeautifulSoup(title, "html.parser").get_text(" ", strip=True),
-                    "link": link,
-                    "source": source["name"],
-                    "published_at": published_at,
-                    "weight": source.get("weight", 1.0),
-                })
-    except Exception as error:
-        print(f"[WARN] RSS parse error {source['name']}: {error}")
-        return parse_html_news(source, response.text)
-
-    return news
-
-def get_cryptopanic_news():
-    if not CRYPTOPANIC_KEY:
-        return []
-
-    url = "https://cryptopanic.com/api/v1/posts/" + f"?auth_token={CRYPTOPANIC_KEY}&filter=hot&public=true"
-    response = safe_get(url, timeout=10, retries=1)
-    if not response:
-        return []
-
-    cutoff = now_utc() - timedelta(hours=NEWS_LOOKBACK_HOURS)
-    news = []
-    try:
-        data = response.json()
-        for item in data.get("results", [])[:MAX_ITEMS_PER_FEED]:
-            title = item.get("title", "")
-            published_at = parse_date(item.get("published_at"))
-            if published_at and published_at < cutoff:
+        for node in root.findall(".//item")[:12]:
+            title = clean_text(node.findtext("title", ""))
+            link = node.findtext("link", "") or ""
+            dt = parse_date(node.findtext("pubDate", ""))
+            if dt and dt < cutoff:
                 continue
             if title:
-                news.append({
-                    "title": title,
-                    "link": item.get("url", ""),
-                    "source": "CryptoPanic",
-                    "published_at": published_at,
-                    "weight": 0.7,
-                })
+                items.append({"title": title, "link": link, "published_at": dt, "source": "Google News"})
     except Exception as error:
-        print(f"[WARN] CryptoPanic parse error: {error}")
-    return news
+        print(f"[WARN] Google RSS parse failed: {error}")
+    return items
 
-def normalize_title(title):
-    title = title.lower()
-    title = re.sub(r"[^a-z0-9а-яіїєґ]+", " ", title)
-    title = re.sub(r"\s+", " ", title).strip()
-    return title[:120]
 
-def deduplicate_news(news):
+def dedupe_news(items):
     seen = set()
-    unique = []
-
-    for item in news:
-        key = normalize_title(item["title"])
+    out = []
+    for item in items:
+        key = re.sub(r"[^a-z0-9а-яіїєґ]+", " ", normalized(item.get("title", "")))[:120]
         if not key or key in seen:
             continue
         seen.add(key)
-        unique.append(item)
+        out.append(item)
+    out.sort(key=lambda x: x.get("published_at") or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
+    return out
 
-    unique.sort(
-        key=lambda x: x["published_at"] or datetime(1970, 1, 1, tzinfo=timezone.utc),
-        reverse=True,
-    )
-    return unique
 
-def get_all_fresh_news():
-    all_news = []
-    # GDELT disabled for GitHub stability.
-    all_news.extend(get_google_news_rss())
-    for source in NEWS_SOURCES:
-        all_news.extend(parse_rss(source))
-    all_news.extend(get_cryptopanic_news())
-    all_news = [item for item in all_news if not is_future_news_item(item)]
-    return deduplicate_news(all_news)
+def get_news():
+    items = []
+    for query in NEWS_QUERIES:
+        items.extend(parse_google_rss(query, 3))
+    return dedupe_news(items)
 
-def normalize_news_text(text):
-    return (
-        (text or "")
-        .lower()
-        .replace("’", "'")
-        .replace("–", "-")
-        .replace("—", "-")
-        .replace("ё", "е")
-    )
 
-def keyword_score(title, words):
-    lower = normalize_news_text(title)
-    return sum(1 for word in words if normalize_news_text(word) in lower)
+def score_news_item(title):
+    text = normalized(title)
+    long_hits = sum(1 for p in LONG_NEWS_PHRASES if p in text)
+    short_hits = sum(1 for p in SHORT_NEWS_PHRASES if p in text)
+    impact = sum(1 for p in HIGH_IMPACT_WORDS if p in text)
 
-NEWS_CONTEXT_RULES = [
-    (["sanctions lifted", "sanctions relief", "waives sanctions", "ease sanctions", "removes sanctions"], "SHORT", 18),
-    (["new sanctions", "fresh sanctions", "tightens sanctions", "sanctions imposed"], "LONG", 18),
-    (["ceasefire talks fail", "talks collapse", "deal rejected", "hormuz threat", "supply disruption"], "LONG", 18),
-    (["ceasefire deal", "cease-fire deal", "truce", "peace deal", "talks progress", "de-escalation", "framework agreement", "framework deal"], "SHORT", 16),
-    (["opec cut", "opec+ cut", "output cut", "production cut"], "LONG", 18),
-    (["opec increase", "output increase", "production increase", "supply increase"], "SHORT", 18),
-    (["crude draw", "inventory draw", "stockpiles fell"], "LONG", 16),
-    (["crude build", "inventory build", "stockpiles rose"], "SHORT", 16),
-    (["нові санкції", "посилення санкцій", "санкції запроваджено"], "LONG", 18),
-    (["новые санкции", "усиление санкций", "санкции введены"], "LONG", 18),
-    (["припинення вогню зірвалось", "переговори провалились", "угоду відхилили", "загроза ормузу"], "LONG", 18),
-    (["прекращение огня сорвалось", "переговоры провалились", "соглашение отклонили", "угроза ормуза"], "LONG", 18),
-    (["припинення вогню", "перемир'я", "мирна угода", "рамкова угода", "рамкової угоди", "погодили положення", "прогрес переговорів", "деескалація"], "SHORT", 16),
-    (["прекращение огня", "перемирие", "мирное соглашение", "рамочное соглашение", "согласовали положения", "прогресс переговоров", "деэскалация"], "SHORT", 16),
-    (["послаблення санкцій", "скасування санкцій", "зняли санкції"], "SHORT", 18),
-    (["смягчение санкций", "отмена санкций", "сняли санкции"], "SHORT", 18),
-]
+    score = 0
+    if long_hits:
+        score += long_hits * (12 + min(6, impact))
+    if short_hits:
+        score -= short_hits * (12 + min(6, impact))
+    if "reuters" in text:
+        score = int(score * 1.2)
+    return score, impact
 
-def contextual_headline_score(title):
-    """Score news by phrases first, then keywords.
 
-    Oil headlines often invert meaning: "sanctions lifted" is bearish even
-    though the word "sanctions" alone looks bullish.
-    """
-    lower = normalize_news_text(title)
-    long_score = 0
-    short_score = 0
-    matched = False
-
-    for phrases, side, points in NEWS_CONTEXT_RULES:
-        if any(phrase in lower for phrase in phrases):
-            matched = True
-            if side == "LONG":
-                long_score += points
-            else:
-                short_score += points
-
-    bull_hits = keyword_score(lower, BULLISH_WORDS)
-    bear_hits = keyword_score(lower, BEARISH_WORDS)
-
-    # Context phrases dominate; keywords become a small extra only.
-    keyword_weight = 2 if matched else 6
-    long_score += bull_hits * keyword_weight
-    short_score += bear_hits * keyword_weight
-
+def analyze_news(items):
+    raw = 0
+    important = []
+    long_count = 0
+    short_count = 0
+    for item in items[:35]:
+        item_score, impact = score_news_item(item.get("title", ""))
+        raw += item_score
+        if item_score > 0:
+            long_count += 1
+        elif item_score < 0:
+            short_count += 1
+        if impact or abs(item_score) >= 12:
+            important.append({**item, "score": item_score})
+    score = max(-45, min(45, int(raw)))
+    if score >= 18:
+        bias = "LONG"
+    elif score <= -18:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+    top = important[0]["title"] if important else "свіжого сильного драйвера немає"
     return {
-        "long_score": long_score,
-        "short_score": short_score,
-        "bull_hits": bull_hits,
-        "bear_hits": bear_hits,
-        "matched_context": matched,
+        "bias": bias,
+        "score": score,
+        "raw_score": raw,
+        "total": len(items),
+        "long_count": long_count,
+        "short_count": short_count,
+        "important": important[:5],
+        "top": top,
+        "note": f"{side_word(bias)} ({score}); {top}",
     }
 
-def directional_news_adjustment(title):
-    lower = normalize_news_text(title)
-    if any(word in lower for word in BULLISH_GEO_WORDS):
-        return 7
-    if any(word in lower for word in BEARISH_SUPPLY_WORDS):
-        return -7
+
+# ==========================================================
+# SETUP ENGINE
+# ==========================================================
+
+
+def build_context(data):
+    ticker = data.get("ticker") or {}
+    price = safe_float(ticker.get("price"))
+    tf3 = analyze_micro(data.get("candles_3m") or [])
+    tf15 = analyze_timeframe(data.get("candles_15m") or [], "15m")
+    tf1h = analyze_timeframe(data.get("candles_1h") or [], "1h")
+    structure = analyze_structure(data.get("candles_15m") or [])
+    flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
+    news_items = get_news()
+    news = analyze_news(news_items)
+    session = market_session()
+
+    price = price or safe_float(tf15.get("close"))
+    atr15 = safe_float(structure.get("atr")) or safe_float(tf15.get("atr")) or (price or 90) * 0.006
+
+    tech_score = (
+        tf15.get("score", 0) * 1.15
+        + tf1h.get("score", 0) * 0.85
+        + tf3.get("score", 0) * 0.55
+        + structure.get("score", 0) * 1.00
+        + flow.get("score", 0) * 0.55
+    )
+    total_score = tech_score + news.get("score", 0) * 0.35 + session.get("score", 0)
+
+    if total_score >= 42:
+        bias = "LONG"
+    elif total_score <= -42:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "price": price,
+        "change24h": safe_float(ticker.get("change24h"), 0),
+        "source": ticker.get("source", "unknown"),
+        "symbol": ticker.get("symbol", OKX_INST_ID),
+        "atr15": atr15,
+        "tf3": tf3,
+        "tf15": tf15,
+        "tf1h": tf1h,
+        "structure": structure,
+        "flow": flow,
+        "news": news,
+        "session": session,
+        "tech_score": int(tech_score),
+        "total_score": int(total_score),
+        "bias": bias,
+    }
+
+
+def side_score(value, side):
+    if side == "LONG":
+        return value
+    if side == "SHORT":
+        return -value
     return 0
 
-def headline_direction(title):
-    context = contextual_headline_score(title)
-    long_hits = context["long_score"] + keyword_score(title, EVENT_LONG_WORDS)
-    short_hits = context["short_score"] + keyword_score(title, EVENT_SHORT_WORDS)
 
-    if long_hits > short_hits:
-        return "LONG", "заголовок вказує на ризик дефіциту/санкцій/зростання нафти"
-    if short_hits > long_hits:
-        return "SHORT", "заголовок вказує на мирні переговори/санкційне послаблення/надлишок пропозиції"
-    return "MIXED", "заголовок важливий, але напрямок неоднозначний"
+def is_late_chase(side, context):
+    price = context["price"]
+    atr15 = context["atr15"]
+    tf15 = context["tf15"]
+    tf3 = context["tf3"]
+    structure = context["structure"]
+    ema20 = safe_float(tf15.get("ema20"))
+    rsi15 = safe_float(tf15.get("rsi"), 50)
+    move_8 = safe_float(tf15.get("move_8_pct"), 0)
 
-def summarize_headline_directions(items, limit=5):
-    summary = []
-    for item in items[:limit]:
-        direction, reason = headline_direction(item["title"])
-        summary.append(f"{direction}: {reason}")
-    if not summary:
-        return "Немає важливих заголовків для висновку."
-    long_count = sum(1 for text in summary if text.startswith("LONG"))
-    short_count = sum(1 for text in summary if text.startswith("SHORT"))
+    if not price or not atr15:
+        return False, ""
 
-    if long_count > short_count:
-        return "Перевага новин: LONG. Більше заголовків підтримують ріст/ризик дефіциту."
-    if short_count > long_count:
-        return "Перевага новин: SHORT. Більше заголовків підтримують зниження/деескалацію."
-    return "Перевага новин: MIXED. Напрямок неоднозначний."
-
-def analyze_news(news):
-    bullish = 0
-    bearish = 0
-    impact = 0
-    breaking = 0
-    raw_score = 0
-    important = []
-
-    for item in news:
-        title = item["title"]
-        weight = item.get("weight", 1.0)
-
-        context = contextual_headline_score(title)
-        bull_hits = context["bull_hits"]
-        bear_hits = context["bear_hits"]
-        impact_hits = keyword_score(title, HIGH_IMPACT_WORDS)
-        breaking_hits = keyword_score(title, BREAKING_WORDS)
-        directional = directional_news_adjustment(title)
-
-        item_score = 0
-
-        if context["long_score"] > context["short_score"]:
-            bullish += 1
-            item_score += (context["long_score"] - context["short_score"]) * weight
-        elif context["short_score"] > context["long_score"]:
-            bearish += 1
-            item_score -= (context["short_score"] - context["long_score"]) * weight
-        if directional > 0:
-            bullish += 1
-            item_score += directional * weight
-        elif directional < 0:
-            bearish += 1
-            item_score += directional * weight
-        if impact_hits:
-            impact += 1
-            important.append(item)
-        if breaking_hits:
-            breaking += 1
-            if item not in important:
-                important.append(item)
-
-        # Impact/breaking words mean the headline is important, not bullish.
-        # They amplify an already directional headline without changing its side.
-        if item_score:
-            importance_multiplier = 1.0 + min(0.55, 0.12 * impact_hits + 0.08 * breaking_hits)
-            raw_score += item_score * importance_multiplier
-
-    if bullish > bearish:
-        sentiment = "БИЧАЧІ"
-    elif bearish > bullish:
-        sentiment = "ВЕДМЕЖІ"
+    distance_atr = abs(price - ema20) / atr15 if ema20 else 0
+    if side == "LONG":
+        if rsi15 >= 74 and move_8 >= 0.9:
+            return True, "лонг після сильного імпульсу: чекати відкат/ретест"
+        if distance_atr >= 1.75 and tf3.get("state") != "LONG_STRENGTHENING":
+            return True, "ціна далеко від EMA20, 3m не підсилює"
+        if structure.get("phase") == "UPSIDE SWEEP":
+            return True, "зверху зняли ліквідність, лонг не доганяти"
     else:
-        sentiment = "НЕЙТРАЛЬНІ"
+        if rsi15 <= 26 and move_8 <= -0.9:
+            return True, "шорт після сильного падіння: чекати відкат/ретест"
+        if distance_atr >= 1.75 and tf3.get("state") != "SHORT_STRENGTHENING":
+            return True, "ціна далеко від EMA20, 3m не підсилює"
+        if structure.get("phase") == "DOWNSIDE SWEEP":
+            return True, "знизу зняли ліквідність, шорт не доганяти"
+    return False, ""
 
-    capped_score = int(max(-MAX_NEWS_SCORE, min(MAX_NEWS_SCORE, raw_score)))
 
-    return {
-        "score": capped_score,
-        "raw_score": round(raw_score, 2),
-        "noise_warning": news_noise_warning(len(news), raw_score, capped_score),
-        "sentiment": sentiment,
-        "bullish": bullish,
-        "bearish": bearish,
-        "impact": impact,
-        "breaking": breaking,
-        "important": important[:8],
-        "total": len(news),
-        "summary": summarize_headline_directions(important, 8),
-    }
+def entry_confirmations(side, context):
+    tf3 = context["tf3"]
+    tf15 = context["tf15"]
+    tf1h = context["tf1h"]
+    structure = context["structure"]
+    flow = context["flow"]
+    news = context["news"]
 
-def analyze_event_risk(events):
-    raw_score = 0
-    direction_score = 0
-    important = []
+    confirmations = []
+    conflicts = []
 
-    for item in events:
-        title = item["title"]
-        lower = title.lower()
+    if tf15.get("bias") == side:
+        confirmations.append("15m за напрямом")
+    elif tf15.get("bias") == opposite(side):
+        conflicts.append("15m проти")
 
-        if any(word in lower for word in EVENT_HIGH_RISK_WORDS):
-            raw_score -= 8
-            important.append(item)
+    if tf1h.get("bias") == side:
+        confirmations.append("1h підтримує")
+    elif tf1h.get("bias") == opposite(side):
+        conflicts.append("1h проти")
 
-        long_hits = keyword_score(title, EVENT_LONG_WORDS)
-        short_hits = keyword_score(title, EVENT_SHORT_WORDS)
+    if tf3.get("bias") == side:
+        confirmations.append("3m дав тригер")
+    elif tf3.get("bias") == opposite(side):
+        conflicts.append("3m проти")
 
-        if long_hits:
-            direction_score += 7 * long_hits
-        if short_hits:
-            direction_score -= 7 * short_hits
+    if structure.get("bias") == side:
+        confirmations.append("структура підтверджує")
+    elif structure.get("bias") == opposite(side):
+        conflicts.append("структура проти")
 
-    score = int(max(-MAX_EVENT_SCORE, min(MAX_EVENT_SCORE, raw_score)))
+    if flow.get("bias") == side:
+        confirmations.append("угоди/стакан підтримують")
+    elif flow.get("bias") == opposite(side):
+        conflicts.append("потік проти")
 
-    if abs(score) >= 40:
-        risk = "ДУЖЕ ВИСОКИЙ"
-    elif abs(score) >= 20:
-        risk = "ВИСОКИЙ"
-    elif abs(score) >= 8:
-        risk = "ПІДВИЩЕНИЙ"
+    if news.get("bias") == side:
+        confirmations.append("новини дають паливо")
+    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 28:
+        conflicts.append("сильні новини проти")
+
+    return confirmations, conflicts
+
+
+def make_plan(side, context):
+    price = context["price"]
+    atr15 = context["atr15"] or price * 0.006
+    structure = context["structure"]
+    swing_low = safe_float(structure.get("swing_low")) or price - atr15
+    swing_high = safe_float(structure.get("swing_high")) or price + atr15
+
+    min_risk = max(atr15 * 0.65, price * 0.0035)
+    max_risk = max(atr15 * 1.45, price * 0.0125)
+    buffer = max(atr15 * 0.18, price * 0.0012)
+
+    if side == "LONG":
+        raw_stop = min(swing_low - buffer, price - min_risk)
+        risk = min(max(price - raw_stop, min_risk), max_risk)
+        stop = price - risk
+        tp1 = price + risk * 1.25
+        tp2 = price + risk * 2.05
+        tp3 = price + risk * 3.10
+        invalidation = f"15m закриття нижче {round_price(stop)} або злам 3m/структури проти LONG"
     else:
-        risk = "НОРМАЛЬНИЙ"
-
-    if direction_score > 14:
-        direction = "LONG"
-    elif direction_score < -14:
-        direction = "SHORT"
-    else:
-        direction = "MIXED"
-
-    return {
-        "score": score,
-        "risk": risk,
-        "direction_score": direction_score,
-        "direction": direction,
-        "important": important[:8],
-        "total": len(events),
-        "summary": summarize_headline_directions(important, 8),
-    }
-
-def news_noise_warning(total_news, raw_score, capped_score):
-    if total_news >= 60 and abs(raw_score) > abs(capped_score) * 4:
-        return "Високий новинний шум: багато заголовків, score обмежено"
-    if total_news < 3:
-        return "Мало свіжих новин: новинне підтвердження слабке"
-    return "Нормально"
-
-# ==========================================================
-# REAL PRICE ACTION + SMC STRUCTURE
-# ==========================================================
-
-OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-
-def get_real_candles(inst_id=OKX_INST_ID, bar="15m", limit=120):
-    """Free public OHLC candles. OKX is used as a stable fallback source.
-    Returns candles oldest -> newest.
-    """
-    url = f"https://www.okx.com/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
-    response = safe_get(url, timeout=10, retries=1)
-    if not response:
-        return []
-
-    try:
-        rows = response.json().get("data", [])
-        candles = []
-        for row in rows:
-            candles.append({
-                "ts": int(row[0]),
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5]) if row[5] is not None else 0.0,
-            })
-        candles.sort(key=lambda x: x["ts"])
-        return candles
-    except Exception as error:
-        print(f"[WARN] real candles parse error: {error}")
-        return []
-
-def get_okx_recent_trades(inst_id=OKX_INST_ID, limit=100):
-    """Recent public trades from OKX for a more realistic flow proxy."""
-    url = f"https://www.okx.com/api/v5/market/trades?instId={inst_id}&limit={limit}"
-    response = safe_get(url, timeout=10, retries=1)
-    if not response:
-        return []
-
-    try:
-        rows = response.json().get("data", [])
-        trades = []
-        for row in rows:
-            trades.append({
-                "px": float(row.get("px", 0) or 0),
-                "sz": float(row.get("sz", 0) or 0),
-                "side": str(row.get("side", "")).lower(),
-                "ts": int(row.get("ts", 0) or 0),
-            })
-        return trades
-    except Exception as error:
-        print(f"[WARN] OKX trades parse error: {error}")
-        return []
-
-def analyze_okx_trade_flow(trades):
-    """Buy/sell trade imbalance from public OKX prints.
-
-    This is still a proxy, but it is closer to real flow than TradingView ratings.
-    """
-    if not trades:
-        return {
-            "available": False,
-            "score": 0,
-            "bias": "NEUTRAL",
-            "note": "OKX trades unavailable",
-            "buy_volume": 0,
-            "sell_volume": 0,
-            "delta_pct": 0,
-        }
-
-    buy_volume = sum(t["sz"] for t in trades if t.get("side") == "buy")
-    sell_volume = sum(t["sz"] for t in trades if t.get("side") == "sell")
-    total = buy_volume + sell_volume
-    delta_pct = ((buy_volume - sell_volume) / total * 100) if total else 0
-
-    score = 0
-    if delta_pct >= 18:
-        score = 16
-        bias = "LONG"
-        note = "останні угоди більше за покупців"
-    elif delta_pct <= -18:
-        score = -16
-        bias = "SHORT"
-        note = "останні угоди більше за продавців"
-    elif delta_pct >= 8:
-        score = 8
-        bias = "LONG"
-        note = "легка перевага покупців"
-    elif delta_pct <= -8:
-        score = -8
-        bias = "SHORT"
-        note = "легка перевага продавців"
-    else:
-        bias = "NEUTRAL"
-        note = "останні угоди без явної переваги"
-
-    return {
-        "available": True,
-        "score": score,
-        "bias": bias,
-        "note": note,
-        "buy_volume": round(buy_volume, 4),
-        "sell_volume": round(sell_volume, 4),
-        "delta_pct": round(delta_pct, 2),
-    }
-
-def get_okx_order_book(inst_id=OKX_INST_ID, depth=50):
-    """Public OKX order book snapshot."""
-    url = f"https://www.okx.com/api/v5/market/books?instId={inst_id}&sz={depth}"
-    response = safe_get(url, timeout=10, retries=1)
-    if not response:
-        return {"bids": [], "asks": []}
-
-    try:
-        data = response.json().get("data", [])
-        if not data:
-            return {"bids": [], "asks": []}
-        book = data[0]
-        bids = [(float(x[0]), float(x[1])) for x in book.get("bids", []) if len(x) >= 2]
-        asks = [(float(x[0]), float(x[1])) for x in book.get("asks", []) if len(x) >= 2]
-        return {"bids": bids, "asks": asks}
-    except Exception as error:
-        print(f"[WARN] OKX order book parse error: {error}")
-        return {"bids": [], "asks": []}
-
-def analyze_order_book_pressure(book, price=None):
-    """Order book pressure and nearby walls.
-
-    This is a snapshot, not a guarantee. It helps explain short-term pressure:
-    more bids below price = buyers support, more asks above price = sellers pressure.
-    """
-    bids = (book or {}).get("bids", [])
-    asks = (book or {}).get("asks", [])
-    if not bids or not asks:
-        return {
-            "available": False,
-            "score": 0,
-            "bias": "NEUTRAL",
-            "note": "Стакан недоступний",
-            "wall": "",
-            "accumulation_price": None,
-            "accumulation_side": "NEUTRAL",
-            "imbalance_pct": 0,
-        }
-
-    best_bid = bids[0][0]
-    best_ask = asks[0][0]
-    mid = price or ((best_bid + best_ask) / 2)
-    near_pct = 0.004
-    lower = mid * (1 - near_pct)
-    upper = mid * (1 + near_pct)
-
-    near_bids = [(p, s) for p, s in bids if p >= lower]
-    near_asks = [(p, s) for p, s in asks if p <= upper]
-    bid_volume = sum(s for _, s in near_bids)
-    ask_volume = sum(s for _, s in near_asks)
-    total = bid_volume + ask_volume
-    imbalance_pct = ((bid_volume - ask_volume) / total * 100) if total else 0
-
-    biggest_bid = max(near_bids, key=lambda x: x[1]) if near_bids else None
-    biggest_ask = max(near_asks, key=lambda x: x[1]) if near_asks else None
-
-    wall = ""
-    accumulation_price = None
-    accumulation_side = "NEUTRAL"
-    if biggest_ask and biggest_bid:
-        if biggest_ask[1] > biggest_bid[1] * 1.7:
-            wall = f"стіна продавців біля {round(biggest_ask[0], 4)}"
-            accumulation_price = biggest_ask[0]
-            accumulation_side = "SHORT"
-        elif biggest_bid[1] > biggest_ask[1] * 1.7:
-            wall = f"стіна покупців біля {round(biggest_bid[0], 4)}"
-            accumulation_price = biggest_bid[0]
-            accumulation_side = "LONG"
-    elif biggest_ask:
-        wall = f"найбільша стіна продавців біля {round(biggest_ask[0], 4)}"
-        accumulation_price = biggest_ask[0]
-        accumulation_side = "SHORT"
-    elif biggest_bid:
-        wall = f"найбільша стіна покупців біля {round(biggest_bid[0], 4)}"
-        accumulation_price = biggest_bid[0]
-        accumulation_side = "LONG"
-
-    if imbalance_pct >= 18:
-        score = 12
-        bias = "LONG"
-        note = "покупці тримають ціну"
-    elif imbalance_pct <= -18:
-        score = -12
-        bias = "SHORT"
-        note = "продавці тиснуть зверху"
-    elif imbalance_pct >= 8:
-        score = 6
-        bias = "LONG"
-        note = "легка перевага покупців"
-    elif imbalance_pct <= -8:
-        score = -6
-        bias = "SHORT"
-        note = "легка перевага продавців"
-    else:
-        score = 0
-        bias = "NEUTRAL"
-        note = "стакан без явної переваги"
-
-    return {
-        "available": True,
-        "score": score,
-        "bias": bias,
-        "note": note,
-        "wall": wall,
-        "accumulation_price": round(accumulation_price, 4) if accumulation_price is not None else None,
-        "accumulation_side": accumulation_side,
-        "imbalance_pct": round(imbalance_pct, 2),
-        "bid_volume": round(bid_volume, 4),
-        "ask_volume": round(ask_volume, 4),
-    }
-
-def analyze_liquidity_proxy(candles, trade_flow=None, order_book=None):
-    """Liquidation/stop-run proxy from candles, volume, trades and book pressure."""
-    if not candles or len(candles) < 25:
-        return {"available": False, "score": 0, "bias": "NEUTRAL", "note": "мало даних"}
-
-    recent = candles[-20:]
-    last = candles[-1]
-    prev = candles[-2]
-    avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
-    vol_ratio = (last.get("volume", 0) or 0) / avg_vol if avg_vol else 1
-    body = last["close"] - last["open"]
-    candle_range = max(last["high"] - last["low"], 1e-9)
-    close_pos = (last["close"] - last["low"]) / candle_range
-    move_pct = ((last["close"] - prev["close"]) / prev["close"] * 100) if prev["close"] else 0
-
-    trade_bias = (trade_flow or {}).get("bias", "NEUTRAL")
-    book_bias = (order_book or {}).get("bias", "NEUTRAL")
-    note = "спокійно"
-    score = 0
-    bias = "NEUTRAL"
-
-    if move_pct <= -0.45 and vol_ratio >= 1.35 and body < 0:
-        bias = "SHORT"
-        score = -14
-        note = "вибивають лонги"
-        if close_pos <= 0.25:
-            score -= 4
-        if trade_bias == "SHORT" or book_bias == "SHORT":
-            score -= 4
-    elif move_pct >= 0.45 and vol_ratio >= 1.35 and body > 0:
-        bias = "LONG"
-        score = 14
-        note = "можливий шорт-сквіз"
-        if close_pos >= 0.75:
-            score += 4
-        if trade_bias == "LONG" or book_bias == "LONG":
-            score += 4
-
-    # Sweep and reclaim: stops may have been taken, but continuation is not clean.
-    prev_low = min(c["low"] for c in recent[:-1])
-    prev_high = max(c["high"] for c in recent[:-1])
-    if last["low"] < prev_low and last["close"] > prev_low:
-        bias = "LONG"
-        score = max(score, 8)
-        note = "зняли знизу, можливий відскок"
-    elif last["high"] > prev_high and last["close"] < prev_high:
-        bias = "SHORT"
-        score = min(score, -8)
-        note = "зняли зверху, можливий відкат"
-
-    return {
-        "available": True,
-        "score": score,
-        "bias": bias,
-        "note": note,
-        "vol_ratio": round(vol_ratio, 2),
-        "move_pct": round(move_pct, 3),
-    }
-
-def merge_orderflow_proxy(orderflow, trade_flow):
-    orderflow = orderflow or {}
-    trade_flow = trade_flow or {}
-    if not trade_flow.get("available"):
-        orderflow["real_flow"] = trade_flow
-        return orderflow
-
-    score = int(orderflow.get("score", 0) or 0) + int(trade_flow.get("score", 0) or 0)
-    orderflow["score"] = score
-    if score >= 25:
-        orderflow["bias"] = "БИЧАЧИЙ ORDERFLOW"
-    elif score <= -25:
-        orderflow["bias"] = "ВЕДМЕЖИЙ ORDERFLOW"
-    else:
-        orderflow["bias"] = "НЕЙТРАЛЬНИЙ"
-    orderflow["real_flow"] = trade_flow
-    if trade_flow.get("note"):
-        orderflow.setdefault("details", []).append("OKX trades: " + trade_flow["note"])
-    return orderflow
-
-def merge_market_microstructure(orderflow, order_book, liquidity_proxy):
-    orderflow = orderflow or {}
-    order_book = order_book or {}
-    liquidity_proxy = liquidity_proxy or {}
-
-    score = int(orderflow.get("score", 0) or 0)
-    if order_book.get("available"):
-        score += int(order_book.get("score", 0) or 0)
-        if order_book.get("note"):
-            orderflow.setdefault("details", []).append("Стакан: " + order_book["note"])
-    if liquidity_proxy.get("available"):
-        score += int(liquidity_proxy.get("score", 0) or 0)
-        if liquidity_proxy.get("note"):
-            orderflow.setdefault("details", []).append("Ліквідність: " + liquidity_proxy["note"])
-
-    orderflow["score"] = score
-    if score >= 25:
-        orderflow["bias"] = "БИЧАЧИЙ ORDERFLOW"
-    elif score <= -25:
-        orderflow["bias"] = "ВЕДМЕЖИЙ ORDERFLOW"
-    else:
-        orderflow["bias"] = "НЕЙТРАЛЬНИЙ"
-    orderflow["order_book"] = order_book
-    orderflow["liquidity_proxy"] = liquidity_proxy
-    return orderflow
-
-def component_direction_text(component_side):
-    if component_side not in ["LONG", "SHORT"]:
-        return ""
-    return "за лонг" if component_side == "LONG" else "за шорт"
-
-def microstructure_text(orderflow, signal=None):
-    orderflow = orderflow or {}
-    trade_flow = orderflow.get("real_flow") or {}
-    book = orderflow.get("order_book") or {}
-    liquidity = orderflow.get("liquidity_proxy") or {}
-
-    lines = []
-    if book.get("available"):
-        text = book.get("note", "без явної переваги")
-        relation = component_direction_text(book.get("bias"))
-        if relation:
-            text = f"{relation} — {text}"
-        if book.get("wall"):
-            text += f"; {book.get('wall')}"
-        lines.append("Стакан: " + text)
-    if trade_flow.get("available"):
-        note = trade_flow.get("note", "без явної переваги")
-        if "продавців" in note:
-            note = "продавці активні"
-        elif "покупців" in note:
-            note = "покупці активні"
-        else:
-            note = "без явної переваги"
-        relation = component_direction_text(trade_flow.get("bias"))
-        if relation:
-            note = f"{relation} — {note}"
-        lines.append("Угоди: " + note)
-    if liquidity.get("available"):
-        note = liquidity.get("note", "без явного вибивання")
-        if note.lower().startswith("ліквідність:"):
-            note = note.split(":", 1)[1].strip()
-        relation = component_direction_text(liquidity.get("bias"))
-        if relation:
-            note = f"{relation} — {note}"
-        lines.append("Ліквідність: " + note)
-
-    return "\n".join(f"<b>{line}</b>" for line in lines[:3])
-
-def microstructure_compact_text(orderflow):
-    orderflow = orderflow or {}
-    book = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trades = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity = (orderflow.get("liquidity_proxy") or {}).get("note", "спокійно")
-
-    def side_text(side):
-        if side == "LONG":
-            return "лонг"
-        if side == "SHORT":
-            return "шорт"
-        return "нейтр."
-
-    if not (
-        (orderflow.get("order_book") or {}).get("available")
-        or (orderflow.get("real_flow") or {}).get("available")
-        or (orderflow.get("liquidity_proxy") or {}).get("available")
-    ):
-        return ""
-    return f"Потік: стакан {side_text(book)}, угоди {side_text(trades)}, ліквідність {liquidity}"
-
-def smc_compact_text(smc):
-    if not smc or not isinstance(smc, dict) or not smc.get("available"):
-        return ""
-    note = smc_conflict_note(smc)
-    if "змішана" in note:
-        return "Структура: змішана"
-    if smc.get("bias") == "LONG":
-        return "Структура: лонг"
-    if smc.get("bias") == "SHORT":
-        return "Структура: шорт"
-    return "Структура: без підтвердження"
-
-def quick_backtest_smoke(candles, lookback=80):
-    """Small signal health-check for GitHub logs.
-
-    It is not a trading system. It only checks whether recent momentum signals
-    had follow-through on the same OKX 15m data.
-    """
-    if not candles or len(candles) < 40:
-        return {"available": False, "summary": "Signal health-check: not enough candles"}
-
-    sample = candles[-lookback:]
-    wins = 0
-    losses = 0
-    signals = 0
-
-    for i in range(25, len(sample) - 5):
-        window = sample[i - 20:i]
-        close = sample[i]["close"]
-        avg20 = sum(c["close"] for c in window) / len(window)
-        prev = sample[i - 3:i]
-        next_candles = sample[i + 1:i + 6]
-
-        long_setup = close > avg20 and all(prev[j]["close"] <= prev[j + 1]["close"] for j in range(len(prev) - 1))
-        short_setup = close < avg20 and all(prev[j]["close"] >= prev[j + 1]["close"] for j in range(len(prev) - 1))
-
-        if not long_setup and not short_setup:
-            continue
-
-        signals += 1
-        if long_setup:
-            tp = close * 1.004
-            sl = close * 0.997
-            hit_tp = any(c["high"] >= tp for c in next_candles)
-            hit_sl = any(c["low"] <= sl for c in next_candles)
-        else:
-            tp = close * 0.996
-            sl = close * 1.003
-            hit_tp = any(c["low"] <= tp for c in next_candles)
-            hit_sl = any(c["high"] >= sl for c in next_candles)
-
-        if hit_tp and not hit_sl:
-            wins += 1
-        elif hit_sl and not hit_tp:
-            losses += 1
-
-    total = wins + losses
-    winrate = round(wins / total * 100, 1) if total else 0
-    return {
-        "available": True,
-        "signals": signals,
-        "wins": wins,
-        "losses": losses,
-        "winrate": winrate,
-        "summary": f"Signal health-check: {wins}/{total} wins, winrate {winrate}% ({signals} simple setups)",
-    }
-
-def detect_swing_points(candles, lookback=2):
-    swings_high = []
-    swings_low = []
-    if not candles or len(candles) < lookback * 2 + 5:
-        return swings_high, swings_low
-
-    for i in range(lookback, len(candles) - lookback):
-        current = candles[i]
-        left = candles[i - lookback:i]
-        right = candles[i + 1:i + 1 + lookback]
-
-        if all(current["high"] > c["high"] for c in left + right):
-            swings_high.append({"idx": i, "price": current["high"], "ts": current["ts"]})
-        if all(current["low"] < c["low"] for c in left + right):
-            swings_low.append({"idx": i, "price": current["low"], "ts": current["ts"]})
-
-    return swings_high, swings_low
-
-def detect_fvg(candles):
-    """Simple 3-candle FVG / imbalance detection."""
-    if not candles or len(candles) < 5:
-        return {"side": "NONE", "zone": None, "note": "FVG немає"}
-
-    recent = candles[-12:]
-    last_fvg = None
-
-    for i in range(2, len(recent)):
-        c0 = recent[i - 2]
-        c2 = recent[i]
-
-        # Bullish FVG: high of candle 1 below low of candle 3
-        if c0["high"] < c2["low"]:
-            last_fvg = {
-                "side": "LONG",
-                "zone": (round(c0["high"], 4), round(c2["low"], 4)),
-                "note": "bullish imbalance / FVG нижче ціни",
-            }
-
-        # Bearish FVG: low of candle 1 above high of candle 3
-        if c0["low"] > c2["high"]:
-            last_fvg = {
-                "side": "SHORT",
-                "zone": (round(c2["high"], 4), round(c0["low"], 4)),
-                "note": "bearish imbalance / FVG вище ціни",
-            }
-
-    return last_fvg or {"side": "NONE", "zone": None, "note": "FVG немає"}
-
-def analyze_real_volume_confirmation(candles):
-    """Real volume confirmation from OKX candles.
-    Detects:
-    - volume spike
-    - bullish/bearish impulse with volume
-    - поглинання: large volume but weak close/progress
-    """
-    if not candles or len(candles) < 25:
-        return {
-            "available": False,
-            "score": 0,
-            "bias": "NEUTRAL",
-            "spike": False,
-            "поглинання": "NONE",
-            "note": "volume data unavailable",
-        }
-
-    recent = candles[-21:-1]
-    last = candles[-1]
-    avg_vol = sum(c.get("volume", 0) for c in recent) / max(1, len(recent))
-    last_vol = last.get("volume", 0) or 0
-
-    if avg_vol <= 0:
-        return {
-            "available": False,
-            "score": 0,
-            "bias": "NEUTRAL",
-            "spike": False,
-            "поглинання": "NONE",
-            "note": "volume average unavailable",
-        }
-
-    vol_ratio = last_vol / avg_vol
-    candle_range = max(last["high"] - last["low"], 1e-9)
-    body = last["close"] - last["open"]
-    body_ratio = abs(body) / candle_range
-
-    # Close location inside candle: 1 = close near high, 0 = close near low.
-    close_location = (last["close"] - last["low"]) / candle_range
-
-    score = 0
-    bias = "NEUTRAL"
-    spike = vol_ratio >= 1.6
-    поглинання = "NONE"
-    notes = []
-
-    if spike:
-        notes.append(f"volume spike x{round(vol_ratio, 2)}")
-
-    # Strong candle + strong volume = continuation confirmation.
-    if spike and body > 0 and body_ratio >= 0.55 and close_location >= 0.65:
-        score += 16
-        bias = "LONG"
-        notes.append("обсяг підтверджує покупців")
-    elif spike and body < 0 and body_ratio >= 0.55 and close_location <= 0.35:
-        score -= 16
-        bias = "SHORT"
-        notes.append("обсяг підтверджує продавців")
-
-    # Absorption: large volume, but price cannot close in direction of the wick/attempt.
-    if spike and last["high"] > max(c["high"] for c in recent[-10:]) and close_location <= 0.45:
-        поглинання = "BEARISH ABSORPTION"
-        score -= 14
-        bias = "SHORT"
-        notes.append("поглинання зверху: покупців поглинули")
-    elif spike and last["low"] < min(c["low"] for c in recent[-10:]) and close_location >= 0.55:
-        поглинання = "BULLISH ABSORPTION"
-        score += 14
-        bias = "LONG"
-        notes.append("поглинання знизу: продавців поглинули")
-
-    # High volume doji / weak body = caution
-    if spike and body_ratio <= 0.25:
-        notes.append("великий обсяг без прогресу — можливий розворот/пауза")
-        if close_location > 0.55:
-            score += 4
-        elif close_location < 0.45:
-            score -= 4
-
-    return {
-        "available": True,
-        "score": int(score),
-        "bias": bias,
-        "spike": spike,
-        "vol_ratio": round(vol_ratio, 2),
-        "поглинання": поглинання,
-        "note": "; ".join(notes[:3]) if notes else "volume neutral",
-    }
-
-def analyze_smc_structure(candles):
-    """Real price action + SMC structure:
-    - пробій структури / ознака розвороту
-    - liquidity sweep
-    - FVG / imbalance
-    - structure bias
-    """
-    if not candles or len(candles) < 30:
-        return {
-            "available": False,
-            "score": 0,
-            "bias": "NEUTRAL",
-            "phase": "NO DATA",
-            "bos": "NONE",
-            "choch": "NONE",
-            "sweep": "NONE",
-            "fvg": {"side": "NONE", "zone": None, "note": "FVG немає"},
-            "summary": "real price action недоступний",
-        }
-
-    swings_high, swings_low = detect_swing_points(candles, lookback=2)
-    last = candles[-1]
-    prev = candles[-2]
-    recent = candles[-20:]
-
-    recent_high = max(c["high"] for c in recent[:-1])
-    recent_low = min(c["low"] for c in recent[:-1])
-    close = last["close"]
-
-    last_swing_high = swings_high[-1]["price"] if swings_high else recent_high
-    last_swing_low = swings_low[-1]["price"] if swings_low else recent_low
-
-    # Simple ATR from real candles
-    trs = []
-    for i in range(1, len(candles)):
-        h = candles[i]["high"]
-        l = candles[i]["low"]
-        pc = candles[i - 1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    atr = sum(trs[-14:]) / min(14, len(trs)) if trs else max(close * 0.006, 0.01)
-
-    score = 0
-    notes = []
-    bos = "NONE"
-    choch = "NONE"
-    sweep = "NONE"
-
-    # пробій структури: close beyond recent structure.
-    if close > last_swing_high:
-        bos = "пробій структури LONG"
-        score += 24
-        notes.append("пробій структури LONG: закриття вище swing high")
-    elif close < last_swing_low:
-        bos = "пробій структури SHORT"
-        score -= 24
-        notes.append("пробій структури SHORT: закриття нижче swing low")
-
-    # Liquidity sweep: wick takes high/low but close returns back.
-    if last["high"] > recent_high and close < recent_high:
-        sweep = "UPSIDE SWEEP / SHORT RISK"
-        score -= 18
-        notes.append("зняли ліквідність зверху — ризик SHORT-відкату")
-    elif last["low"] < recent_low and close > recent_low:
-        sweep = "DOWNSIDE SWEEP / LONG RISK"
-        score += 18
-        notes.append("зняли ліквідність знизу — ризик LONG-відскоку")
-
-    # ознака розвороту approximation: previous candle broke one way, current close reverses through midpoint/structure.
-    mid = (recent_high + recent_low) / 2
-    if prev["low"] <= recent_low + atr * 0.15 and close > mid:
-        choch = "ознака розвороту LONG"
-        score += 16
-        notes.append("ознака розвороту LONG: після sweep ціна повернулась у діапазон")
-    elif prev["high"] >= recent_high - atr * 0.15 and close < mid:
-        choch = "ознака розвороту SHORT"
-        score -= 16
-        notes.append("ознака розвороту SHORT: після sweep ціна повернулась у діапазон")
-
-    fvg = detect_fvg(candles)
-    if fvg.get("side") == "LONG":
-        score += 6
-    elif fvg.get("side") == "SHORT":
-        score -= 6
-
-    volume_confirmation = analyze_real_volume_confirmation(candles)
-    if volume_confirmation.get("available"):
-        score += int(volume_confirmation.get("score", 0))
-        if volume_confirmation.get("note") and volume_confirmation.get("note") != "volume neutral":
-            notes.append(volume_confirmation.get("note"))
-
-    # Fake пробій структури protection: пробій структури without volume confirmation is weaker.
-    if bos == "пробій структури LONG" and volume_confirmation.get("available"):
-        if not volume_confirmation.get("spike") and volume_confirmation.get("bias") != "LONG":
-            score -= 8
-            notes.append("пробій структури LONG без сильного обсягу — ризик fake breakout")
-        elif volume_confirmation.get("bias") == "LONG":
-            score += 6
-            notes.append("пробій структури LONG підтверджений обсягом")
-
-    if bos == "пробій структури SHORT" and volume_confirmation.get("available"):
-        if not volume_confirmation.get("spike") and volume_confirmation.get("bias") != "SHORT":
-            score += 8
-            notes.append("пробій структури SHORT без сильного обсягу — ризик fake breakdown")
-        elif volume_confirmation.get("bias") == "SHORT":
-            score -= 6
-            notes.append("пробій структури SHORT підтверджений обсягом")
-
-    # Impulse / cooling from real candles
-    last_body = abs(last["close"] - last["open"])
-    last_range = max(last["high"] - last["low"], 1e-9)
-    body_ratio = last_body / last_range
-
-    if last["close"] > last["open"] and body_ratio >= 0.60:
-        score += 8
-        notes.append("сильна bullish candle")
-    elif last["close"] < last["open"] and body_ratio >= 0.60:
-        score -= 8
-        notes.append("сильна bearish candle")
-
-    if score >= 22:
-        bias = "LONG"
-    elif score <= -22:
-        bias = "SHORT"
-    else:
-        bias = "NEUTRAL"
-
-    if bos != "NONE":
-        phase = "BREAKOUT / пробій структури"
-    elif choch != "NONE":
-        phase = "REVERSAL / ознака розвороту"
-    elif sweep != "NONE":
-        phase = "LIQUIDITY SWEEP"
-    else:
-        phase = "RANGE / WAIT"
-
-    return {
-        "available": True,
-        "score": int(score),
-        "bias": bias,
-        "phase": phase,
-        "bos": bos,
-        "choch": choch,
-        "sweep": sweep,
-        "fvg": fvg,
-        "volume": volume_confirmation,
-        "swing_high": round(last_swing_high, 4),
-        "swing_low": round(last_swing_low, 4),
-        "atr": round(atr, 4),
-        "summary": "; ".join(notes[:3]) if notes else "SMC структура нейтральна",
-    }
-
-def smc_probability_adjustment(signal, smc):
-    if not smc or not smc.get("available") or signal not in ["LONG", "SHORT"]:
-        return 0
-
-    bias = smc.get("bias", "NEUTRAL")
-    phase = smc.get("phase", "")
-    sweep = smc.get("sweep", "NONE")
-    volume = smc.get("volume", {}) if isinstance(smc, dict) else {}
-
-    adjust = 0
-    if bias == signal:
-        adjust += 8
-    elif bias in ["LONG", "SHORT"] and bias != signal:
-        adjust -= 12
-
-    if signal == "LONG" and sweep.startswith("UPSIDE SWEEP"):
-        adjust -= 8
-    if signal == "SHORT" and sweep.startswith("DOWNSIDE SWEEP"):
-        adjust -= 8
-
-    if volume.get("bias") == signal:
-        adjust += 6
-    elif volume.get("bias") in ["LONG", "SHORT"] and volume.get("bias") != signal:
-        adjust -= 8
-
-    if signal == "LONG" and volume.get("поглинання") == "BEARISH ABSORPTION":
-        adjust -= 10
-    if signal == "SHORT" and volume.get("поглинання") == "BULLISH ABSORPTION":
-        adjust -= 10
-
-    if phase == "RANGE / WAIT":
-        adjust -= 4
-
-    return adjust
-
-def smc_short_text(smc):
-    if not smc or not smc.get("available"):
-        return ""
-    phase = smc.get("phase", "RANGE / WAIT")
-    bias = smc.get("bias", "NEUTRAL")
-    volume = smc.get("volume", {}) if isinstance(smc, dict) else {}
-    поглинання = volume.get("поглинання", "NONE")
-    vol_bias = volume.get("bias", "NEUTRAL")
-
-    if поглинання == "BEARISH ABSORPTION":
-        return "Структура: поглинання зверху — ризик відкату"
-    if поглинання == "BULLISH ABSORPTION":
-        return "Структура: поглинання знизу — ризик відскоку"
-
-    vol_note = ""
-    if volume.get("spike") and vol_bias in ["LONG", "SHORT"]:
-        vol_note = " + volume"
-
-    if phase == "BREAKOUT / пробій структури":
-        return f"Структура: {bias} пробій структури{vol_note}"
-    if phase == "REVERSAL / ознака розвороту":
-        return f"Структура: можливий розворот {bias}{vol_note}"
-    if phase == "LIQUIDITY SWEEP":
-        return "Структура: liquidity sweep — чекати підтвердження"
-    return "Структура: діапазон — краще чекати"
-
-
-def price_structure_priority_override(signal, signal_type, confidence, score, tech, smc, news, event_risk, micro=None):
-    """Price action beats news when chart is clearly opposite."""
-    tech = tech or {}
-    smc = smc or {}
-    micro = micro or {}
-
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    smc_score = smc.get("score", 0) or 0
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-
-    # Strong enough to block opposite news/event bias.
-    # Important: if TECH is already SHORT and 3m does not confirm LONG,
-    # the bot must not keep saying "wait LONG".
-    strong_chart_short = (
-        tech_score <= -55
-        or smc_bias == "SHORT"
-        or smc_score <= -18
-        or micro_bias == "SHORT"
-        or micro_state == "SHORT_STRENGTHENING"
-        or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-        or (change <= -0.45 and micro_bias != "LONG")
+        raw_stop = max(swing_high + buffer, price + min_risk)
+        risk = min(max(raw_stop - price, min_risk), max_risk)
+        stop = price + risk
+        tp1 = price - risk * 1.25
+        tp2 = price - risk * 2.05
+        tp3 = price - risk * 3.10
+        invalidation = f"15m закриття вище {round_price(stop)} або злам 3m/структури проти SHORT"
+
+    risk_pct = abs(stop - price) / price * 100 if price else 0
+    return TradePlan(
+        entry=round_price(price),
+        stop=round_price(stop),
+        tp1=round_price(tp1),
+        tp2=round_price(tp2),
+        tp3=round_price(tp3),
+        risk_pct=round(risk_pct, 3),
+        rr1=1.25,
+        rr2=2.05,
+        rr3=3.10,
+        invalidation=invalidation,
     )
 
-    strong_chart_long = (
-        tech_score >= 55
-        or smc_bias == "LONG"
-        or smc_score >= 18
-        or micro_bias == "LONG"
-        or micro_state == "LONG_STRENGTHENING"
-        or momentum in ["STRONG UP", "VERY STRONG UP"]
-        or (change >= 0.45 and micro_bias != "SHORT")
-    )
 
-    if signal == "LONG" and strong_chart_short:
-        # If chart is clearly SHORT, convert to SHORT-watch.
-        # If it is only conflict, block LONG into neutral.
-        if smc_bias == "SHORT" or micro_bias == "SHORT" or tech_score <= -55 or (change <= -0.45 and micro_bias != "LONG"):
-            return {
-                "signal": "SHORT",
-                "signal_type": "PRICE ACTION SHORT / NEWS CONFLICT",
-                "confidence": max(55, min(72, abs(tech_score) if abs(tech_score) < 72 else 72)),
-                "score": -abs(max(abs(score), abs(tech_score), abs(smc_score))),
-                "reason": "графік сильніший за LONG-новини",
-            }
+def evaluate_new_setup(context):
+    side = context["bias"]
+    if side not in ["LONG", "SHORT"] or not context.get("price"):
         return {
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "LONG BLOCKED / PRICE ACTION SHORT",
-            "confidence": min(confidence, 50),
-            "score": 0,
-            "reason": "LONG скасовано: графік проти",
-        }
-
-    if signal == "SHORT" and strong_chart_long:
-        if smc_bias == "LONG" or micro_bias == "LONG" or tech_score >= 55 or (change >= 0.45 and micro_bias != "SHORT"):
-            return {
-                "signal": "LONG",
-                "signal_type": "PRICE ACTION LONG / NEWS CONFLICT",
-                "confidence": max(55, min(72, abs(tech_score) if abs(tech_score) < 72 else 72)),
-                "score": abs(max(abs(score), abs(tech_score), abs(smc_score))),
-                "reason": "графік сильніший за SHORT-новини",
-            }
-        return {
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "SHORT BLOCKED / PRICE ACTION LONG",
-            "confidence": min(confidence, 50),
-            "score": 0,
-            "reason": "SHORT скасовано: графік проти",
-        }
-
-    return {"signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
-
-
-def price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow):
-    """Price action must dominate news after strong dumps/pumps."""
-    if signal not in ["LONG", "SHORT"]:
-        return {"blocked": False, "penalty": 0, "bonus": 0, "reason": "", "mode": "NEUTRAL"}
-
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    trend_5m = tech.get("trend_5m", "UNKNOWN")
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    smc_bias = (smc or {}).get("bias", "NEUTRAL")
-    smc_phase = (smc or {}).get("phase", "NO DATA")
-    bos = (smc or {}).get("bos", "NONE")
-    choch = (smc or {}).get("choch", "NONE")
-    volume = (smc or {}).get("volume", {}) if isinstance(smc, dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_dir = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    strong_dump = change <= -1.2 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-    strong_pump = change >= 1.2 or momentum in ["STRONG UP", "VERY STRONG UP"]
-
-    bearish_structure = (
-        smc_bias == "SHORT" or bos == "пробій структури SHORT" or
-        (trend_5m == "DOWN" and trend_15m == "DOWN") or
-        order_score <= -20 or vol_bias == "SHORT"
-    )
-    bullish_structure = (
-        smc_bias == "LONG" or bos == "пробій структури LONG" or
-        (trend_5m == "UP" and trend_15m == "UP") or
-        order_score >= 20 or vol_bias == "LONG"
-    )
-
-    bullish_reclaim = choch == "ознака розвороту LONG" or bos == "пробій структури LONG" or vol_bias == "LONG" or (smc_phase == "REVERSAL / ознака розвороту" and smc_bias == "LONG")
-    bearish_reclaim = choch == "ознака розвороту SHORT" or bos == "пробій структури SHORT" or vol_bias == "SHORT" or (smc_phase == "REVERSAL / ознака розвороту" and smc_bias == "SHORT")
-
-    if signal == "LONG" and strong_dump and bearish_structure and not bullish_reclaim:
-        return {
-            "blocked": True,
-            "penalty": -28,
-            "bonus": 0,
-            "reason": "LONG не підтверджений: після дампу структура ще bearish, новини не підтверджені ціною",
-            "mode": "BLOCK_LONG_AFTER_DUMP",
-        }
-
-    if signal == "SHORT" and strong_pump and bullish_structure and not bearish_reclaim:
-        return {
-            "blocked": True,
-            "penalty": -28,
-            "bonus": 0,
-            "reason": "SHORT не підтверджений: після пампу структура ще bullish, новини не підтверджені ціною",
-            "mode": "BLOCK_SHORT_AFTER_PUMP",
-        }
-
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL") if isinstance(orderflow, dict) else "NEUTRAL"
-    flow_long_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "LONG")
-    flow_short_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "SHORT")
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_state = micro.get("state", "RANGE")
-    micro_bias = micro.get("bias", "NEUTRAL")
-
-    if signal == "SHORT" and strong_dump and flow_long_count >= 2 and micro_bias == "LONG":
-        return {
-            "blocked": True,
-            "penalty": -30,
-            "bonus": 0,
-            "reason": "SHORT не брати: падіння вже було, 3m і стакан/угоди показують відкуп",
-            "mode": "BLOCK_CHASE_SHORT_AFTER_DUMP_WITH_BID",
-        }
-
-    if signal == "SHORT" and strong_dump and bearish_structure:
-        if flow_long_count >= 2 or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG":
-            return {
-                "blocked": False,
-                "penalty": -18,
-                "bonus": 0,
-                "reason": "SHORT continuation слабкий: після дампу є відкуп/охолодження продавців",
-                "mode": "WEAK_SHORT_AFTER_DUMP_COUNTERFLOW",
-            }
-        return {
-            "blocked": False,
-            "penalty": 0,
-            "bonus": 12 if not (news_score >= 30 or event_dir == "LONG") else 8,
-            "reason": "SHORT continuation: структура і momentum підтверджують продавців",
-            "mode": "SHORT_CONTINUATION_CONFIRMED",
-        }
-
-    if signal == "LONG" and strong_pump and bullish_structure:
-        return {
-            "blocked": False,
-            "penalty": 0,
-            "bonus": 8,
-            "reason": "LONG continuation: структура і momentum підтверджують покупців",
-            "mode": "LONG_CONTINUATION_CONFIRMED",
-        }
-
-    return {"blocked": False, "penalty": 0, "bonus": 0, "reason": "", "mode": "NEUTRAL"}
-
-
-def exhaustion_reversal_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news=None, event_risk=None):
-    """Yulia-style market reading: do not chase a move after exhaustion.
-
-    When a sharp dump has already happened and fast 3m/orderflow start buying,
-    the bot should stop printing a fresh SHORT as if it is a new entry. It should
-    either say no entry or switch to a risky LONG-bounce watch. Mirror logic for
-    a sharp pump.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
-
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    rsi5 = tech.get("rsi_5m")
-    rsi15 = tech.get("rsi_15m")
-
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    micro_score = micro.get("score", 0) or 0
-    lower_low_count = micro.get("lower_low_count", 0) or 0
-
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    flow_long_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "LONG")
-    flow_short_count = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "SHORT")
-
-    sweep = smc.get("sweep", "NONE")
-    choch = smc.get("choch", "NONE")
-    bos = smc.get("bos", "NONE")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("поглинання", "NONE")
-
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    strong_dump = change <= -1.6 or momentum == "VERY STRONG DOWN"
-    strong_pump = change >= 1.6 or momentum == "VERY STRONG UP"
-
-    # What the user visually called: падіння вже було, низ викупили, 3m/стакан/угоди LONG.
-    long_bounce_evidence = 0
-    long_reasons = []
-    if micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG" or micro_score >= 18:
-        long_bounce_evidence += 2
-        long_reasons.append("3m почав відкуповувати")
-    if flow_long_count >= 2 or (book_bias == "LONG" and trade_bias == "LONG"):
-        long_bounce_evidence += 2
-        long_reasons.append("стакан/угоди за покупців")
-    if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
-        long_bounce_evidence += 2
-        long_reasons.append("зняли низ / є CHOCH LONG")
-    if vol_bias == "LONG" or absorption == "BULLISH ABSORPTION":
-        long_bounce_evidence += 2
-        long_reasons.append("обсяг показує відкуп")
-    if (rsi5 is not None and rsi5 <= 34) or (rsi15 is not None and rsi15 <= 38):
-        long_bounce_evidence += 1
-        long_reasons.append("перепроданість після дампу")
-    if lower_low_count <= 1 and micro_state != "SHORT_STRENGTHENING":
-        long_bounce_evidence += 1
-        long_reasons.append("немає продовження нових low")
-    if news_score >= 25 or event_side == "LONG":
-        long_bounce_evidence += 1
-
-    short_continuation_confirmed = (
-        bos == "пробій структури SHORT"
-        or (smc_bias == "SHORT" and vol_bias == "SHORT" and flow_long_count == 0)
-        or (micro_state == "SHORT_STRENGTHENING" and micro_score <= -35 and flow_long_count == 0)
-    )
-
-    short_reversal_evidence = 0
-    short_reasons = []
-    if micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"] or micro_bias == "SHORT" or micro_score <= -18:
-        short_reversal_evidence += 2
-        short_reasons.append("3m почав продавати")
-    if flow_short_count >= 2 or (book_bias == "SHORT" and trade_bias == "SHORT"):
-        short_reversal_evidence += 2
-        short_reasons.append("стакан/угоди за продавців")
-    if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
-        short_reversal_evidence += 2
-        short_reasons.append("зняли верх / є CHOCH SHORT")
-    if vol_bias == "SHORT" or absorption == "BEARISH ABSORPTION":
-        short_reversal_evidence += 2
-        short_reasons.append("обсяг показує продаж")
-    if (rsi5 is not None and rsi5 >= 66) or (rsi15 is not None and rsi15 >= 62):
-        short_reversal_evidence += 1
-        short_reasons.append("перекупленість після пампу")
-
-    long_continuation_confirmed = (
-        bos == "пробій структури LONG"
-        or (smc_bias == "LONG" and vol_bias == "LONG" and flow_short_count == 0)
-        or (micro_state == "LONG_STRENGTHENING" and micro_score >= 35 and flow_short_count == 0)
-    )
-
-    if signal == "SHORT" and strong_dump and long_bounce_evidence >= 4 and not short_continuation_confirmed:
-        new_conf = max(56, min(68, 52 + long_bounce_evidence * 3))
-        return {
-            "active": True,
-            "signal": "LONG" if long_bounce_evidence >= 5 else "НЕЙТРАЛЬНО",
-            "signal_type": "РИЗИКОВАНИЙ LONG-ВІДСКОК ПІСЛЯ ДАМПУ" if long_bounce_evidence >= 5 else "SHORT ЗАБОРОНЕНО / ПІСЛЯ ДАМПУ Є ВІДКУП",
-            "confidence": new_conf if long_bounce_evidence >= 5 else min(confidence, 54),
-            "score": new_conf if long_bounce_evidence >= 5 else 0,
-            "reason": "не доганяти SHORT: " + ", ".join(long_reasons[:3]),
-        }
-
-    if signal == "LONG" and strong_pump and short_reversal_evidence >= 4 and not long_continuation_confirmed:
-        new_conf = max(56, min(68, 52 + short_reversal_evidence * 3))
-        return {
-            "active": True,
-            "signal": "SHORT" if short_reversal_evidence >= 5 else "НЕЙТРАЛЬНО",
-            "signal_type": "РИЗИКОВАНИЙ SHORT-ВІДКАТ ПІСЛЯ ПАМПУ" if short_reversal_evidence >= 5 else "LONG ЗАБОРОНЕНО / ПІСЛЯ ПАМПУ Є ПРОДАЖ",
-            "confidence": new_conf if short_reversal_evidence >= 5 else min(confidence, 54),
-            "score": -new_conf if short_reversal_evidence >= 5 else 0,
-            "reason": "не доганяти LONG: " + ", ".join(short_reasons[:3]),
-        }
-
-    return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
-
-
-def post_move_decay_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news=None, event_risk=None):
-    """Yulia-style decay after a big dump/pump.
-
-    Purpose: stop the bot from showing SHORT 85-95% after the sell move is
-    already mature and the tape starts to stabilize. In that phase the correct
-    message is not a fresh SHORT entry, but WAIT / possible retest / possible
-    LONG bounce after confirmation. Mirror logic for late LONG after a pump.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
-
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    tech_score = tech.get("score", 0) or 0
-    rsi5 = tech.get("rsi_5m")
-    rsi15 = tech.get("rsi_15m")
-
-    micro_state = micro.get("state", "RANGE")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_score = micro.get("score", 0) or 0
-    fast_move_pct = micro.get("fast_move_pct", 0) or 0
-    lower_low_count = micro.get("lower_low_count", 0) or 0
-    lower_close_count = micro.get("lower_close_count", 0) or 0
-    red_count = micro.get("red_count", 0) or 0
-
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    flow_long = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "LONG")
-    flow_short = sum(1 for x in [book_bias, trade_bias, liquidity_bias] if x == "SHORT")
-
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    strong_dump = change <= -1.8 or momentum == "VERY STRONG DOWN"
-    strong_pump = change >= 1.8 or momentum == "VERY STRONG UP"
-
-    fresh_short_continuation = (
-        bos == "пробій структури SHORT"
-        or (micro_state == "SHORT_STRENGTHENING" and micro_score <= -45 and fast_move_pct <= -0.35 and flow_long == 0)
-        or (lower_low_count >= 5 and lower_close_count >= 7 and flow_long == 0 and vol_bias == "SHORT")
-    )
-    fresh_long_continuation = (
-        bos == "пробій структури LONG"
-        or (micro_state == "LONG_STRENGTHENING" and micro_score >= 45 and fast_move_pct >= 0.35 and flow_short == 0)
-        or (choch == "ознака розвороту LONG" and vol_bias == "LONG")
-    )
-
-    seller_weakening = (
-        micro_state in ["SHORT_COOLING", "RANGE"]
-        or micro_bias == "LONG"
-        or flow_long >= 1
-        or book_bias == "LONG"
-        or (rsi5 is not None and rsi5 <= 30)
-        or (rsi15 is not None and rsi15 <= 34)
-        or news_score >= 25
-        or event_side == "LONG"
-    )
-    buyer_weakening = (
-        micro_state in ["LONG_COOLING", "RANGE"]
-        or micro_bias == "SHORT"
-        or flow_short >= 1
-        or book_bias == "SHORT"
-        or (rsi5 is not None and rsi5 >= 70)
-        or (rsi15 is not None and rsi15 >= 66)
-        or news_score <= -25
-        or event_side == "SHORT"
-    )
-
-    if signal == "SHORT" and strong_dump and seller_weakening and not fresh_short_continuation:
-        # Do not print SHORT 90% after the dump. It is a mature move now.
-        new_conf = min(64, max(52, int((confidence or 55) - 24)))
-        return {
-            "active": True,
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "НЕ ВХОДИТИ — SHORT ПІЗНО / ПІСЛЯ ДАМПУ Є СТАБІЛІЗАЦІЯ",
-            "confidence": new_conf,
-            "score": 0,
-            "reason": "не доганяти SHORT: падіння вже реалізоване, є ознаки стабілізації/відкупу",
-        }
-
-    if signal == "LONG" and strong_pump and buyer_weakening and not fresh_long_continuation:
-        new_conf = min(64, max(52, int((confidence or 55) - 24)))
-        return {
-            "active": True,
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "НЕ ВХОДИТИ — LONG ПІЗНО / ПІСЛЯ ПАМПУ Є ОХОЛОДЖЕННЯ",
-            "confidence": new_conf,
-            "score": 0,
-            "reason": "не доганяти LONG: ріст вже реалізований, є ознаки охолодження/продажу",
-        }
-
-    # Cap exaggerated confidence when flow contradicts the trend.
-    if signal == "SHORT" and strong_dump and flow_long >= 1 and confidence and confidence > 74:
-        return {
-            "active": True,
-            "signal": signal,
-            "signal_type": "SHORT МОЖЛИВИЙ, АЛЕ НЕ ГНАТИСЯ — ЧЕКАТИ РЕТЕСТ",
-            "confidence": min(confidence, 72),
-            "score": min(score, -60),
-            "reason": "стакан/ліквідність не дають ставити SHORT вище 72% після дампу",
-        }
-
-    if signal == "LONG" and strong_pump and flow_short >= 1 and confidence and confidence > 74:
-        return {
-            "active": True,
-            "signal": signal,
-            "signal_type": "LONG МОЖЛИВИЙ, АЛЕ НЕ ГНАТИСЯ — ЧЕКАТИ РЕТЕСТ",
-            "confidence": min(confidence, 72),
-            "score": max(score, 60),
-            "reason": "стакан/ліквідність не дають ставити LONG вище 72% після пампу",
-        }
-
-    return {"active": False, "signal": signal, "signal_type": signal_type, "confidence": confidence, "score": score, "reason": ""}
-
-def cap_countertrend_probability(probability, signal, tech, smc):
-    if probability is None or signal not in ["LONG", "SHORT"]:
-        return probability
-
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    smc_bias = (smc or {}).get("bias", "NEUTRAL")
-    bos = (smc or {}).get("bos", "NONE")
-    choch = (smc or {}).get("choch", "NONE")
-    volume = (smc or {}).get("volume", {}) if isinstance(smc, dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-
-    strong_dump = change <= -1.2 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-    strong_pump = change >= 1.2 or momentum in ["STRONG UP", "VERY STRONG UP"]
-
-    has_long_reclaim = bos == "пробій структури LONG" or choch == "ознака розвороту LONG" or vol_bias == "LONG"
-    has_short_reclaim = bos == "пробій структури SHORT" or choch == "ознака розвороту SHORT" or vol_bias == "SHORT"
-
-    if signal == "LONG" and strong_dump and smc_bias != "LONG" and not has_long_reclaim:
-        return min(probability, 42)
-    if signal == "SHORT" and strong_pump and smc_bias != "SHORT" and not has_short_reclaim:
-        return min(probability, 42)
-
-    return probability
-
-def extension_exhaustion_filter(signal, tech, smc, news=None, event_risk=None):
-    """Protects from late continuation entries after an already extended dump/pump.
-
-    Main idea:
-    - Do not allow 5/5 SHORT after a sharp dump unless price action confirms continuation.
-    - Do not allow 5/5 LONG after a sharp pump unless price action confirms continuation.
-    - If news/events are against the continuation, force WAIT/RETEST.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return {"active": False, "cap": None, "reason": ""}
-
-    tech = tech or {}
-    smc = smc or {}
-    news = news or {}
-    event_risk = event_risk or {}
-
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    поглинання = volume.get("поглинання", "NONE")
-
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    strong_dump = change <= -1.0 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-    strong_pump = change >= 1.0 or momentum in ["STRONG UP", "VERY STRONG UP"]
-
-    short_confirmed = (
-        smc_bias == "SHORT"
-        or bos == "пробій структури SHORT"
-        or vol_bias == "SHORT"
-        or поглинання == "BEARISH ABSORPTION"
-    )
-    long_confirmed = (
-        smc_bias == "LONG"
-        or bos == "пробій структури LONG"
-        or vol_bias == "LONG"
-        or поглинання == "BULLISH ABSORPTION"
-    )
-
-    # SHORT after a dump is dangerous if structure/volume did not confirm continuation.
-    if signal == "SHORT" and strong_dump:
-        if not short_confirmed:
-            cap = 54
-            reason = "SHORT після сильного дампу без SMC/пробій структури/volume підтвердження — ризик відскоку"
-            if news_score >= 35 or event_side == "LONG" or long_confirmed or choch == "ознака розвороту LONG":
-                cap = 49
-                reason = "SHORT запізнений: дамп уже був, bullish-новини/відскок проти входу"
-            return {"active": True, "cap": cap, "reason": reason}
-
-    # LONG after a pump is dangerous if structure/volume did not confirm continuation.
-    if signal == "LONG" and strong_pump:
-        if not long_confirmed:
-            cap = 54
-            reason = "LONG після сильного пампу без SMC/пробій структури/volume підтвердження — ризик відкату"
-            if news_score <= -35 or event_side == "SHORT" or short_confirmed or choch == "ознака розвороту SHORT":
-                cap = 49
-                reason = "LONG запізнений: памп уже був, bearish-фактори/відкат проти входу"
-            return {"active": True, "cap": cap, "reason": reason}
-
-    return {"active": False, "cap": None, "reason": ""}
-
-def extension_exhaustion_reason(signal, tech, smc, news=None, event_risk=None):
-    info = extension_exhaustion_filter(signal, tech, smc, news, event_risk)
-    return info.get("reason", "") if info.get("active") else ""
-
-def early_reversal_engine(tv, tech, smc, news=None, event_risk=None):
-    """Detect early reversal after strong dump/pump. It is a WATCH layer, not an entry trigger."""
-    tech = tech or {}
-    smc = smc or {}
-    news = news or {}
-    event_risk = event_risk or {}
-
-    price = tv.get("price") if isinstance(tv, dict) else None
-    change = tech.get("change", 0) or 0
-    momentum = tech.get("momentum", "NEUTRAL")
-    rsi5 = tech.get("rsi_5m")
-    rsi15 = tech.get("rsi_15m")
-    ema20 = tech.get("ema20_15m")
-    ema50 = tech.get("ema50_15m")
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    sweep = smc.get("sweep", "NONE")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    поглинання = volume.get("поглинання", "NONE")
-
-    score = 0
-    side = "NONE"
-    reasons = []
-
-    strong_dump = change <= -1.0 or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-    strong_pump = change >= 1.0 or momentum in ["STRONG UP", "VERY STRONG UP"]
-
-    oversold = (rsi5 is not None and rsi5 <= 30) or (rsi15 is not None and rsi15 <= 35)
-    overbought = (rsi5 is not None and rsi5 >= 70) or (rsi15 is not None and rsi15 >= 66)
-
-    ema_reclaim_long = bool(price and ema20 and price > ema20)
-    ema_reclaim_strong_long = bool(price and ema20 and ema50 and price > ema20 and ema20 >= ema50 * 0.998)
-
-    ema_reject_short = bool(price and ema20 and price < ema20)
-    ema_reject_strong_short = bool(price and ema20 and ema50 and price < ema20 and ema20 <= ema50 * 1.002)
-
-    if strong_dump:
-        side = "LONG"
-        score += 12
-        reasons.append("після сильного дампу шукаємо розворот")
-        if news_score >= 35 or event_side == "LONG":
-            score += 14
-            reasons.append("bullish news/event підтримує відскок")
-        if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
-            score += 18
-            reasons.append("sweep/ознака розвороту LONG")
-        if поглинання == "BULLISH ABSORPTION" or vol_bias == "LONG":
-            score += 16
-            reasons.append("обсяг/поглинання за покупців")
-        if bos == "пробій структури LONG" or smc_bias == "LONG":
-            score += 16
-            reasons.append("SMC підтверджує LONG")
-        if oversold:
-            score += 8
-            reasons.append("перепроданість після дампу")
-        if ema_reclaim_long:
-            score += 10
-            reasons.append("ціна вище EMA20")
-        if ema_reclaim_strong_long:
-            score += 6
-            reasons.append("EMA reclaim посилюється")
-        if bos == "пробій структури SHORT" or smc_bias == "SHORT" or vol_bias == "SHORT":
-            score -= 14
-            reasons.append("частина структури ще bearish")
-
-    elif strong_pump:
-        side = "SHORT"
-        score += 12
-        reasons.append("після сильного пампу шукаємо відкат")
-        if news_score <= -35 or event_side == "SHORT":
-            score += 14
-            reasons.append("bearish news/event підтримує відкат")
-        if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
-            score += 18
-            reasons.append("sweep/ознака розвороту SHORT")
-        if поглинання == "BEARISH ABSORPTION" or vol_bias == "SHORT":
-            score += 16
-            reasons.append("обсяг/поглинання за продавців")
-        if bos == "пробій структури SHORT" or smc_bias == "SHORT":
-            score += 16
-            reasons.append("SMC підтверджує SHORT")
-        if overbought:
-            score += 8
-            reasons.append("перекупленість після пампу")
-        if ema_reject_short:
-            score += 10
-            reasons.append("ціна нижче EMA20")
-        if ema_reject_strong_short:
-            score += 6
-            reasons.append("EMA reject посилюється")
-        if bos == "пробій структури LONG" or smc_bias == "LONG" or vol_bias == "LONG":
-            score -= 14
-            reasons.append("частина структури ще bullish")
-
-    if side == "NONE" or score < 28:
-        return {"active": False, "side": "NONE", "score": int(score), "stage": "NONE", "quality_cap": None, "reason": "", "reasons": reasons[:4]}
-
-    if score >= 64:
-        stage = "EARLY CONFIRMATION"
-        quality_cap = 64
-    elif score >= 48:
-        stage = "REVERSAL WATCH"
-        quality_cap = 56
-    else:
-        stage = "WEAK REVERSAL WATCH"
-        quality_cap = 49
-
-    return {
-        "active": True,
-        "side": side,
-        "score": int(score),
-        "stage": stage,
-        "quality_cap": quality_cap,
-        "reason": "; ".join(reasons[:3]),
-        "reasons": reasons[:5],
-    }
-
-def early_reversal_text(early):
-    if not early or not early.get("active"):
-        return ""
-    side = early.get("side", "NONE")
-    stage = early.get("stage", "REVERSAL WATCH")
-    score = early.get("score", 0)
-    if stage == "EARLY CONFIRMATION":
-        return f"<b>Early reversal:</b> {side} раннє підтвердження ({score}%)"
-    if stage == "REVERSAL WATCH":
-        return f"<b>Early reversal:</b> можливий {side} розворот ({score}%)"
-    return f"<b>Early reversal:</b> слабкий {side} watch ({score}%)"
-
-def reversal_scalp_signal(tv, tech, smc, orderflow, news=None, event_risk=None, session=None):
-    """Very early scalp trigger after a sharp dump/pump.
-
-    This is not a normal trend entry. It only fires when the move is already
-    stretched and there are first signs that price is being bought/sold back.
-    """
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    change = tech.get("change", 0) or 0
-    rsi5 = tech.get("rsi_5m")
-    rsi15 = tech.get("rsi_15m")
-    news_score = news.get("score", 0) or 0
-    event_side = event_risk.get("direction", "MIXED")
-    calendar = (event_risk.get("calendar") or {})
-    calendar_active = bool(calendar.get("active"))
-    session_name = (session or {}).get("session", "")
-
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_score = micro.get("score", 0) or 0
-
-    sweep = smc.get("sweep", "NONE")
-    choch = smc.get("choch", "NONE")
-    bos = smc.get("bos", "NONE")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("поглинання", "NONE")
-
-    def build(side):
-        is_long = side == "LONG"
-        score = 0
-        reasons = []
-
-        if is_long:
-            if change > -0.9:
-                return None
-            if change <= -4.2:
-                return None
-            if (rsi5 is not None and rsi5 <= 31) or (rsi15 is not None and rsi15 <= 35):
-                score += 12
-                reasons.append("RSI перепроданий")
-            if micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG" or micro_score >= -8:
-                score += 18
-                reasons.append("3m показує перший відкуп")
-            if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
-                score += 20
-                reasons.append("зняли низ і ціна повертається")
-            if book_bias == "LONG" or trade_bias == "LONG" or liquidity_bias == "LONG":
-                score += 14
-                reasons.append("покупці почали тримати ціну")
-            if vol_bias == "LONG" or absorption == "BULLISH ABSORPTION" or smc_bias == "LONG" or bos == "пробій структури LONG":
-                score += 16
-                reasons.append("структура/обсяг за відскок")
-            if news_score >= 25 or event_side == "LONG":
-                score += 8
-                reasons.append("новини підтримують відскок")
-            if micro_state == "SHORT_STRENGTHENING" and trade_bias != "LONG" and book_bias != "LONG":
-                score -= 18
-                reasons.append("3m ще продавлює вниз")
-            if smc_bias == "SHORT" and vol_bias == "SHORT" and trade_bias != "LONG":
-                score -= 14
-                reasons.append("структура ще за продавців")
-        else:
-            if change < 0.9:
-                return None
-            if change >= 4.2:
-                return None
-            if (rsi5 is not None and rsi5 >= 69) or (rsi15 is not None and rsi15 >= 65):
-                score += 12
-                reasons.append("RSI перекуплений")
-            if micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"] or micro_bias == "SHORT" or micro_score <= 8:
-                score += 18
-                reasons.append("3m показує перший продаж")
-            if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
-                score += 20
-                reasons.append("зняли верх і ціна повертається")
-            if book_bias == "SHORT" or trade_bias == "SHORT" or liquidity_bias == "SHORT":
-                score += 14
-                reasons.append("продавці почали тиснути")
-            if vol_bias == "SHORT" or absorption == "BEARISH ABSORPTION" or smc_bias == "SHORT" or bos == "пробій структури SHORT":
-                score += 16
-                reasons.append("структура/обсяг за відкат")
-            if news_score <= -25 or event_side == "SHORT":
-                score += 8
-                reasons.append("новини підтримують відкат")
-            if micro_state == "LONG_STRENGTHENING" and trade_bias != "SHORT" and book_bias != "SHORT":
-                score -= 18
-                reasons.append("3m ще тисне вгору")
-            if smc_bias == "LONG" and vol_bias == "LONG" and trade_bias != "SHORT":
-                score -= 14
-                reasons.append("структура ще за покупців")
-
-        required = 52
-        if session_name == "ASIA":
-            required += 6
-        if calendar_active:
-            required += 8
-
-        if score < required:
-            return None
-
-        confidence = min(78, max(58, score))
-        return {
-            "active": True,
-            "side": side,
-            "score": confidence if is_long else -confidence,
-            "confidence": confidence,
-            "signal_type": f"СКАЛЬП {side} / РІЗКИЙ ВІДСКОК" if is_long else f"СКАЛЬП {side} / РІЗКИЙ ВІДКАТ",
-            "reason": ("скальп лонг: " if is_long else "скальп шорт: ") + ", ".join(reasons[:3]),
-        }
-
-    long_setup = build("LONG")
-    short_setup = build("SHORT")
-    if long_setup and short_setup:
-        return long_setup if abs(long_setup["score"]) >= abs(short_setup["score"]) else short_setup
-    return long_setup or short_setup or {"active": False, "side": "NONE", "reason": "скальп-відскок ще не підтверджений"}
-
-def scalp_preparation_signal(tv, tech, smc, orderflow, news=None, event_risk=None):
-    """Ukrainian pre-signal: scalp is forming, but entry is not confirmed yet."""
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    change = tech.get("change", 0) or 0
-    rsi5 = tech.get("rsi_5m")
-    rsi15 = tech.get("rsi_15m")
-    micro_state = micro.get("state", "RANGE")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_score = micro.get("score", 0) or 0
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    sweep = smc.get("sweep", "NONE")
-    choch = smc.get("choch", "NONE")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    absorption = volume.get("поглинання", "NONE")
-    news_score = news.get("score", 0) or 0
-    event_side = event_risk.get("direction", "MIXED")
-
-    if change <= -0.9:
-        score = 0
-        reasons = []
-        if (rsi5 is not None and rsi5 <= 34) or (rsi15 is not None and rsi15 <= 38):
-            score += 10
-            reasons.append("після сильного падіння є перепроданість")
-        if micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"] or micro_bias == "LONG" or micro_score >= 18:
-            score += 16
-            reasons.append("3m почав відкуповувати")
-        if book_bias == "LONG" or trade_bias == "LONG" or liquidity_bias == "LONG":
-            score += 12
-            reasons.append("покупці зʼявились у потоці")
-        if sweep.startswith("DOWNSIDE") or choch == "ознака розвороту LONG":
-            score += 14
-            reasons.append("є ознака зняття низу")
-        if vol_bias == "LONG" or absorption == "BULLISH ABSORPTION":
-            score += 12
-            reasons.append("обсяг за відкуп")
-        if news_score >= 25 or event_side == "LONG":
-            score += 6
-            reasons.append("новини підтримують відскок")
-        if score >= 22:
-            return {
-                "active": True,
-                "side": "LONG",
-                "status": "СКАЛЬП ГОТУЄТЬСЯ",
-                "text": "можливий LONG-відскок",
-                "reason": ", ".join(reasons[:2]),
-            }
-
-    if change >= 0.9:
-        score = 0
-        reasons = []
-        if (rsi5 is not None and rsi5 >= 66) or (rsi15 is not None and rsi15 >= 62):
-            score += 10
-            reasons.append("після сильного росту є перекупленість")
-        if micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"] or micro_bias == "SHORT" or micro_score <= -18:
-            score += 16
-            reasons.append("3m почав продавати")
-        if book_bias == "SHORT" or trade_bias == "SHORT" or liquidity_bias == "SHORT":
-            score += 12
-            reasons.append("продавці зʼявились у потоці")
-        if sweep.startswith("UPSIDE") or choch == "ознака розвороту SHORT":
-            score += 14
-            reasons.append("є ознака зняття верху")
-        if vol_bias == "SHORT" or absorption == "BEARISH ABSORPTION":
-            score += 12
-            reasons.append("обсяг за продаж")
-        if news_score <= -25 or event_side == "SHORT":
-            score += 6
-            reasons.append("новини підтримують відкат")
-        if score >= 22:
-            return {
-                "active": True,
-                "side": "SHORT",
-                "status": "СКАЛЬП ГОТУЄТЬСЯ",
-                "text": "можливий SHORT-відкат",
-                "reason": ", ".join(reasons[:2]),
-            }
-
-    return {"active": False, "side": "NONE", "status": "", "text": "", "reason": ""}
-
-def analyze_forward_chart_context(tv, tech, smc, orderflow, news=None, event_risk=None, candles=None):
-    """Forward-looking chart layer.
-
-    It separates direction from entry timing:
-    - SETUP_FORMING: direction is forming, prepare only;
-    - TRIGGER: fresh break/retest with SMC/flow/news confirmation;
-    - LATE_NO_CHASE: direction is valid, but new entry is late.
-    """
-    tv = tv or {}
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    candles = candles or []
-
-    price = safe_float(tv.get("price"))
-    if not price:
-        return {
-            "available": False,
+            "action": "NO_TRADE",
             "side": "NEUTRAL",
-            "stage": "WAIT",
-            "status": "Графік: дані недоступні",
-            "note": "",
-            "quality_bonus": 0,
-            "late_override": False,
-            "no_chase": False,
+            "quality": 0,
+            "title": "ВХОДУ НЕМАЄ",
+            "reason": "перевага нечітка, немає професійного входу",
+            "plan": None,
+            "confirmations": [],
+            "conflicts": [],
         }
 
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trade_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
-    micro_from_high = micro_local_move.get("from_high_pct", 0) or 0
-    micro_from_low = micro_local_move.get("from_low_pct", 0) or 0
-    micro_bars_since_high = micro_local_move.get("bars_since_high")
-    micro_bars_since_low = micro_local_move.get("bars_since_low")
-    micro_fast_momentum = micro_local_move.get("fast_local_momentum", "FLAT")
-    fast_bounce_after_dump = (
-        micro_local_move.get("available")
-        and (
-            micro_local_move.get("bounce_after_dump")
-            or (
-                micro_from_high <= -0.45
-                and micro_from_low >= 0.22
-                and micro_bars_since_low is not None
-                and 1 <= micro_bars_since_low <= 12
-                and micro_fast_momentum == "UP"
-            )
-        )
-    )
-    fast_pullback_after_pump = (
-        micro_local_move.get("available")
-        and (
-            micro_local_move.get("pullback_after_pump")
-            or (
-                micro_from_low >= 0.45
-                and micro_from_high <= -0.22
-                and micro_bars_since_high is not None
-                and 1 <= micro_bars_since_high <= 12
-                and micro_fast_momentum == "DOWN"
-            )
-        )
-    )
+    confirmations, conflicts = entry_confirmations(side, context)
+    late, late_reason = is_late_chase(side, context)
+    plan = make_plan(side, context)
 
-    side = price_reaction_side(tech, orderflow)
-    if side not in ["LONG", "SHORT"]:
-        if smc_bias in ["LONG", "SHORT"]:
-            side = smc_bias
-        elif micro_bias in ["LONG", "SHORT"]:
-            side = micro_bias
-        elif tech_score >= 45:
-            side = "LONG"
-        elif tech_score <= -45:
-            side = "SHORT"
-        else:
-            side = "NEUTRAL"
+    score_for_side = side_score(context["total_score"], side)
+    quality = 48 + min(18, score_for_side // 5) + len(confirmations) * 5 - len(conflicts) * 8
 
-    local_from_high = local_move.get("from_high_pct", 0) or 0
-    local_from_low = local_move.get("from_low_pct", 0) or 0
-    bars_since_high = local_move.get("bars_since_high")
-    bars_since_low = local_move.get("bars_since_low")
-    local_short_rejection = (
-        ((local_move.get("pullback_after_pump") or fast_pullback_after_pump) and not local_move.get("bounce_after_dump") and not local_move.get("bounced_from_post_high_low") and not fast_bounce_after_dump)
-        or (
-            local_move.get("available")
-            and local_from_high <= -0.35
-            and not local_move.get("bounce_after_dump")
-            and not local_move.get("bounced_from_post_high_low")
-            and not fast_bounce_after_dump
-            and bars_since_high is not None
-            and 1 <= bars_since_high <= 24
-            and (
-                micro_bias == "SHORT"
-                or smc_bias == "SHORT"
-                or orderflow.get("score", 0) <= -8
-                or volume.get("bias") == "SHORT"
-            )
-        )
-    )
-    short_continuation_after_retest = (
-        local_move.get("available")
-        and local_from_low >= 0.60
-        and local_from_high <= -0.75
-        and not fast_bounce_after_dump
-        and bars_since_high is not None
-        and 1 <= bars_since_high <= 28
-        and (
-            tech_score <= -80
-            or micro_bias == "SHORT"
-            or micro_fast_momentum == "DOWN"
-            or smc_bias == "SHORT"
-            or orderflow.get("score", 0) <= -12
-        )
-    )
-    local_long_reclaim = (
-        ((local_move.get("bounce_after_dump") or fast_bounce_after_dump) and not fast_pullback_after_pump)
-        or (
-            local_move.get("available")
-            and local_from_low >= 0.35
-            and not fast_pullback_after_pump
-            and bars_since_low is not None
-            and 1 <= bars_since_low <= 24
-            and (
-                micro_bias == "LONG"
-                or smc_bias == "LONG"
-                or orderflow.get("score", 0) >= 8
-                or volume.get("bias") == "LONG"
-            )
-        )
-    )
-    long_continuation_after_retest = (
-        local_move.get("available")
-        and local_from_high <= -0.60
-        and local_from_low >= 0.75
-        and not fast_pullback_after_pump
-        and bars_since_low is not None
-        and 1 <= bars_since_low <= 28
-        and (
-            tech_score >= 80
-            or micro_bias == "LONG"
-            or micro_fast_momentum == "UP"
-            or smc_bias == "LONG"
-            or orderflow.get("score", 0) >= 12
-        )
-    )
-    if short_continuation_after_retest:
-        local_short_rejection = True
-    if long_continuation_after_retest:
-        local_long_reclaim = True
-    if local_short_rejection:
-        side = "SHORT"
-    elif local_long_reclaim:
-        side = "LONG"
+    tf3 = context["tf3"]
+    tf15 = context["tf15"]
+    structure = context["structure"]
+    flow = context["flow"]
 
-    if side not in ["LONG", "SHORT"]:
+    trigger_ok = (
+        tf3.get("bias") == side
+        and tf15.get("bias") in [side, "NEUTRAL"]
+        and structure.get("bias") in [side, "NEUTRAL"]
+        and flow.get("bias") != opposite(side)
+    )
+    trend_ok = tf15.get("bias") == side or (tf15.get("bias") == "NEUTRAL" and structure.get("bias") == side)
+    hard_conflict = len(conflicts) >= 3 or "сильні новини проти" in conflicts
+
+    if late:
+        quality = min(quality, 54)
+    if hard_conflict:
+        quality = min(quality, 54)
+    if not trigger_ok:
+        quality = min(quality, 61)
+    if not trend_ok:
+        quality = min(quality, 58)
+
+    quality = int(max(0, min(88, quality)))
+
+    if late:
         return {
-            "available": bool(candles),
-            "side": "NEUTRAL",
-            "stage": "WAIT",
-            "status": "Графік: чекати напрям",
-            "note": "немає чіткої бази/тригера",
-            "quality_bonus": 0,
-            "late_override": False,
-            "no_chase": False,
-        }
-
-    recent = candles[-18:] if len(candles) >= 18 else candles
-    base = candles[-12:-2] if len(candles) >= 14 else recent[:-2]
-    prev = candles[-2] if len(candles) >= 2 else {}
-    last = candles[-1] if candles else {}
-
-    base_high = max((c.get("high", price) for c in base), default=price)
-    base_low = min((c.get("low", price) for c in base), default=price)
-    recent_high = max((c.get("high", price) for c in recent[:-1]), default=price)
-    recent_low = min((c.get("low", price) for c in recent[:-1]), default=price)
-    base_width_pct = ((base_high - base_low) / price * 100) if price else 0
-    base_ok = bool(base) and 0.18 <= base_width_pct <= 1.4
-
-    last_close = safe_float(last.get("close")) or price
-    prev_close = safe_float(prev.get("close")) or price
-    last_high = safe_float(last.get("high")) or price
-    last_low = safe_float(last.get("low")) or price
-
-    if side == "LONG":
-        fresh_break = base_ok and prev_close <= base_high and last_close > base_high
-        retest_ok = base_ok and last_low <= base_high <= last_high and last_close >= base_high
-        local_trigger = last_close > recent_high
-        trigger_level = round(base_high, 4)
-        invalid_level = round(base_low, 4)
-        extended = change >= 2.0
-        very_extended = change >= 3.0
-    else:
-        fresh_break = base_ok and prev_close >= base_low and last_close < base_low
-        retest_ok = base_ok and last_low <= base_low <= last_high and last_close <= base_low
-        local_trigger = last_close < recent_low
-        trigger_level = round(base_low, 4)
-        invalid_level = round(base_high, 4)
-        extended = change <= -2.0
-        very_extended = change <= -3.0
-
-    smc_support = (
-        smc_bias == side
-        or (side == "LONG" and smc.get("bos") == "пробій структури LONG")
-        or (side == "SHORT" and smc.get("bos") == "пробій структури SHORT")
-        or (side == "LONG" and volume.get("bias") == "LONG")
-        or (side == "SHORT" and volume.get("bias") == "SHORT")
-    )
-    micro_support = micro_bias == side
-    flow_support = side in [book_bias, trade_bias, liquidity_bias] or (
-        side == "LONG" and orderflow.get("score", 0) >= 15
-    ) or (
-        side == "SHORT" and orderflow.get("score", 0) <= -15
-    )
-    news_support = (
-        (side == "LONG" and (news.get("score", 0) or 0) >= 20)
-        or (side == "SHORT" and (news.get("score", 0) or 0) <= -20)
-        or event_risk.get("direction") == side
-    )
-    trend_support = (
-        (side == "LONG" and tech_score >= 70)
-        or (side == "SHORT" and tech_score <= -70)
-    )
-    local_support = (
-        (side == "SHORT" and local_short_rejection)
-        or (side == "LONG" and local_long_reclaim)
-    )
-    fast_local_reversal = (
-        (side == "LONG" and fast_bounce_after_dump)
-        or (side == "SHORT" and fast_pullback_after_pump)
-    )
-
-    continuation_after_retest = (
-        (side == "SHORT" and short_continuation_after_retest)
-        or (side == "LONG" and long_continuation_after_retest)
-    )
-    confirmation = sum(1 for ok in [smc_support, micro_support, flow_support, news_support, local_support, trend_support] if ok)
-    new_structure = (
-        fresh_break
-        or retest_ok
-        or continuation_after_retest
-        or (local_trigger and confirmation >= 2)
-        or (local_support and micro_support and (smc_support or flow_support or fast_local_reversal))
-    )
-    if fresh_break:
-        trigger_event = (
-            f"ціна закрилась вище {round(trigger_level, 4)}"
-            if side == "LONG"
-            else f"ціна закрилась нижче {round(trigger_level, 4)}"
-        )
-        trigger_kind = "BREAKOUT"
-    elif retest_ok:
-        trigger_event = (
-            f"ціна протестувала {round(trigger_level, 4)} і втрималась вище"
-            if side == "LONG"
-            else f"ціна протестувала {round(trigger_level, 4)} як опір і лишилась нижче"
-        )
-        trigger_kind = "RETEST"
-    elif local_trigger:
-        trigger_event = (
-            f"ціна оновила локальний high {round(recent_high, 4)}"
-            if side == "LONG"
-            else f"ціна оновила локальний low {round(recent_low, 4)}"
-        )
-        trigger_kind = "LOCAL_BREAK"
-    elif local_support:
-        if continuation_after_retest:
-            trigger_event = (
-                f"ціна відбилась/ретестнула high {round(local_move.get('post_low_high') or recent_high, 4)} і продовжила вниз"
-                if side == "SHORT"
-                else f"ціна відбилась/ретестнула low {round(local_move.get('post_high_low') or recent_low, 4)} і продовжила вгору"
-            )
-            trigger_kind = "CONTINUATION_RETEST"
-        elif side == "LONG" and fast_bounce_after_dump:
-            trigger_event = micro_local_move.get("note") or "3m відскок від low після дампу"
-            trigger_kind = "LOCAL_REVERSAL"
-        elif side == "SHORT" and fast_pullback_after_pump:
-            trigger_event = micro_local_move.get("note") or "3m відкат від high після росту"
-            trigger_kind = "LOCAL_REVERSAL"
-        else:
-            trigger_event = local_move.get("note", "локальна структура підтвердила напрям")
-            trigger_kind = "LOCAL_REVERSAL"
-    else:
-        trigger_event = "тригер ще не підтверджений"
-        trigger_kind = "NONE"
-
-    if new_structure and confirmation >= 2:
-        stage = "TRIGGER"
-        status = f"Графік: ранній {simple_direction_word(side)} — тригер є"
-        note = trigger_event
-        quality_bonus = 8
-        late_override = True
-        no_chase = False
-    elif base_ok and confirmation >= 1:
-        stage = "SETUP_FORMING"
-        status = f"Графік: готується {simple_direction_word(side)}"
-        note = "є база, але ще потрібен пробій або ретест"
-        quality_bonus = 3
-        late_override = False
-        no_chase = False
-    elif very_extended or (extended and not new_structure):
-        stage = "LATE_NO_CHASE"
-        status = f"Графік: {simple_direction_word(side)} пізній — не доганяти"
-        note = "напрям є, але нової бази/ретесту для входу немає"
-        quality_bonus = 0
-        late_override = False
-        no_chase = True
-    else:
-        stage = "WAIT"
-        status = f"Графік: {simple_direction_word(side)} тільки під наглядом"
-        note = "чекати ранній тригер від 3m/SMC"
-        quality_bonus = 0
-        late_override = False
-        no_chase = False
-
-    return {
-        "available": bool(candles),
-        "side": side,
-        "stage": stage,
-        "status": status,
-        "note": note,
-        "trigger": trigger_level,
-        "invalid": invalid_level,
-        "base_high": round(base_high, 4),
-        "base_low": round(base_low, 4),
-        "confirmation": confirmation,
-        "smc_support": smc_support,
-        "micro_support": micro_support,
-        "flow_support": flow_support,
-        "news_support": news_support,
-        "trend_support": trend_support,
-        "quality_bonus": quality_bonus,
-        "late_override": late_override,
-        "no_chase": no_chase,
-        "new_structure": new_structure,
-        "trigger_event": trigger_event,
-        "trigger_kind": trigger_kind,
-    }
-
-def chart_context_message(chart_context):
-    if not chart_context or not chart_context.get("available"):
-        return ""
-    text = chart_context.get("status", "")
-    text = re.sub(r"^\s*Графік:\s*", "", text).strip()
-    note = chart_context.get("note", "")
-    trigger = chart_context.get("trigger")
-    invalid = chart_context.get("invalid")
-    if trigger and invalid:
-        return f"{text}; тригер {trigger}, скасування {invalid}. {note}"
-    return f"{text}. {note}".strip()
-
-def apply_chart_context_probability(signal, probability, chart_context):
-    if signal not in ["LONG", "SHORT"] or probability is None:
-        return probability
-    if not chart_context or not chart_context.get("available"):
-        return probability
-
-    chart_side = chart_context.get("side")
-    stage = chart_context.get("stage")
-    if chart_side != signal:
-        return min(probability, 54)
-    if stage == "TRIGGER":
-        if chart_context.get("trigger_kind") == "CONTINUATION_RETEST":
-            return min(72, max(probability, 62))
-        if chart_context.get("trigger_kind") == "LOCAL_REVERSAL":
-            return min(64, max(probability, 58))
-        if chart_context.get("trigger_kind") == "LOCAL_BREAK":
-            return min(66, max(probability, 60))
-        return min(82, max(probability, 65 + chart_context.get("quality_bonus", 0)))
-    if stage == "SETUP_FORMING":
-        return min(probability, 54)
-    if stage == "LATE_NO_CHASE":
-        return min(probability, 49)
-    return min(probability, 54)
-
-def proactive_entry_watch(signal, tv, tech, smc, news=None, event_risk=None, early_reversal=None, trade_probability=None):
-    """Creates a forward-looking conditional entry plan.
-
-    This is the mode the user wants:
-    - not "price already moved";
-    - but "prepare entry IF trigger confirms".
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return {"active": False, "side": "NONE", "text": "", "trigger": None, "invalid": None}
-
-    tv = tv or {}
-    tech = tech or {}
-    smc = smc or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    early_reversal = early_reversal or {}
-
-    price = tv.get("price") or 0
-    atr = tech.get("atr_15m") or smc.get("atr") or (price * 0.006 if price else 0)
-    if not price or not atr:
-        return {"active": False, "side": "NONE", "text": "", "trigger": None, "invalid": None}
-
-    swing_high = smc.get("swing_high")
-    swing_low = smc.get("swing_low")
-    ema20 = tech.get("ema20_15m")
-    tech_side = "LONG" if (tech.get("score", 0) or 0) >= 35 else "SHORT" if (tech.get("score", 0) or 0) <= -35 else "NEUTRAL"
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    probability = trade_probability or 0
-    has_reason = (
-        probability >= 50
-        or (early_reversal.get("active") and early_reversal.get("side") == signal)
-        or tech_side == signal
-        or (signal == "LONG" and news_score >= 35)
-        or (signal == "SHORT" and news_score <= -35)
-        or event_side == signal
-    )
-    if not has_reason:
-        return {"active": False, "side": "NONE", "text": "", "trigger": None, "invalid": None}
-
-    # Avoid far-away triggers. The trigger must be close enough to be useful.
-    if signal == "LONG":
-        raw_trigger = max(price + atr * 0.12, swing_high if swing_high and swing_high > price else price + atr * 0.12)
-        if raw_trigger > price * 1.012:
-            raw_trigger = price + atr * 0.18
-
-        pullback_zone = ema20 if ema20 and ema20 < price else price - atr * 0.35
-        if pullback_zone < price * 0.988:
-            pullback_zone = price - atr * 0.45
-        invalid = swing_low if swing_low and swing_low < price else price - atr * 0.65
-        trigger = round(raw_trigger, 4)
-        pullback_zone = round(pullback_zone, 4)
-        invalid = round(invalid, 4)
-
-        text = (
-            f"Зараз не входити. "
-            f"Лонг можна брати тільки якщо ціна закріпиться вище {trigger} або втримає відкат біля {pullback_zone}. "
-            f"Скасування: нижче {invalid}."
-        )
-
-    else:
-        raw_trigger = min(price - atr * 0.12, swing_low if swing_low and swing_low < price else price - atr * 0.12)
-        if raw_trigger < price * 0.988:
-            raw_trigger = price - atr * 0.18
-
-        pullback_zone = ema20 if ema20 and ema20 > price else price + atr * 0.35
-        if pullback_zone > price * 1.012:
-            pullback_zone = price + atr * 0.45
-        invalid = swing_high if swing_high and swing_high > price else price + atr * 0.65
-        trigger = round(raw_trigger, 4)
-        pullback_zone = round(pullback_zone, 4)
-        invalid = round(invalid, 4)
-
-        text = (
-            f"Зараз не входити. "
-            f"Шорт можна брати тільки якщо ціна закріпиться нижче {trigger} або втримає відкат біля {pullback_zone}. "
-            f"Скасування: вище {invalid}."
-        )
-
-    return {
-        "active": True,
-        "side": signal,
-        "text": text,
-        "trigger": trigger,
-        "retest": pullback_zone,
-        "invalid": invalid,
-    }
-
-def format_watch_plan(signal, plan, entry_watch):
-    """Show a useful preparation plan for 2/5-3/5 setups without saying enter now."""
-    if signal not in ["LONG", "SHORT"] or not entry_watch or not entry_watch.get("active"):
-        return ""
-    if not plan or not isinstance(plan, dict) or plan.get("stop") is None:
-        return entry_watch.get("text", "")
-
-    def fnum(value):
-        try:
-            return round(float(value), 4)
-        except Exception:
-            return value
-
-    trigger = safe_float(entry_watch.get("trigger"))
-    retest = safe_float(entry_watch.get("retest"))
-    stop = safe_float(plan.get("stop"))
-    if not trigger or not stop:
-        return entry_watch.get("text", "")
-
-    if signal == "LONG":
-        direction_text = "Лонг"
-        trigger_text = f"закріплення вище {fnum(trigger)}"
-        retest_text = f"відкат до підтримки {fnum(retest)} з відкупом"
-        invalid_text = f"нижче {entry_watch.get('invalid')}"
-        if stop >= trigger:
-            stop = min(safe_float(entry_watch.get("invalid")) or stop, trigger * 0.995)
-        risk = max(trigger - stop, trigger * 0.0025)
-        tp1 = trigger + risk * 2.0
-        tp2 = trigger + risk * 3.0
-        tp3 = trigger + risk * 4.5
-    else:
-        direction_text = "Шорт"
-        trigger_text = f"закріплення нижче {fnum(trigger)}"
-        retest_text = f"відкат до опору {fnum(retest)} з продавцями"
-        invalid_text = f"вище {entry_watch.get('invalid')}"
-        if stop <= trigger:
-            stop = max(safe_float(entry_watch.get("invalid")) or stop, trigger * 1.005)
-        risk = max(stop - trigger, trigger * 0.0025)
-        tp1 = trigger - risk * 2.0
-        tp2 = trigger - risk * 3.0
-        tp3 = trigger - risk * 4.5
-
-    return (
-        f"Не входити без тригера. {direction_text}: {trigger_text} або {retest_text}. "
-        f"Стоп: {fnum(stop)} | TP1: {fnum(tp1)} | TP2: {fnum(tp2)} | "
-        f"TP3: {fnum(tp3)} | Скасування: {invalid_text}."
-    )
-
-def proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry=None, chart_context=None):
-    """Telegram plan text. TRADE only if confirmed; otherwise conditional preparation."""
-    if show_trade_plan:
-        return format_trade_plan(plan)
-
-    if chart_context and chart_context.get("stage") == "LATE_NO_CHASE":
-        return "Входу немає — рух уже пізній, чекати відкат/ретест або нову базу."
-
-    if chart_context and chart_context.get("stage") == "SETUP_FORMING":
-        return "Входу немає — напрям готується, чекати пробій/ретест і підтвердження 3m."
-
-    if late_entry and late_entry.get("late"):
-        return "Входу немає — рух уже пізній, чекати відкат/ретест або нову базу."
-
-    if trade_probability is None or trade_probability < 55:
-        return "Входу немає — чекати якість мінімум 3/5."
-
-    if entry_watch and entry_watch.get("active"):
-        watch_plan = format_watch_plan(signal, plan, entry_watch)
-        return watch_plan or entry_watch.get("text")
-
-    return "Входу немає — чекати нову умову або підтвердження структури"
-
-def apply_entry_watch_quality_floor(signal, trade_probability, tech, news, event_risk, smc, entry_watch):
-    """ГОТУЄМОСЬ should not be shown as 0/5 when the setup has a real directional reason.
-
-    This does NOT allow a trade. It only makes the displayed quality fair:
-    - strong news + neutral/not-opposite tech = at least 2/5 watch;
-    - strong news + mild technical support = at least 3/5 watch;
-    - if tech is strongly against direction, no floor is applied.
-    """
-    if signal not in ["LONG", "SHORT"] or trade_probability is None:
-        return trade_probability
-    if not entry_watch or not entry_watch.get("active"):
-        return trade_probability
-
-    tech = tech or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    smc = smc or {}
-
-    tech_score = tech.get("score", 0) or 0
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    local_side = local_move_direction(tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {})
-
-    if signal == "LONG":
-        tech_strong_against = (
-            tech_score <= -55
-            or smc_bias == "SHORT"
-            or bos == "пробій структури SHORT"
-            or vol_bias == "SHORT"
-            or local_side == "SHORT"
-        )
-        news_support = news_score >= 45 or event_side == "LONG"
-        mild_tech_support = tech_score >= 15 or smc_bias == "LONG" or bos == "пробій структури LONG" or vol_bias == "LONG" or local_side == "LONG"
-
-        if news_support and not tech_strong_against:
-            trade_probability = max(trade_probability, 52)  # 2/5 watch
-        if news_support and mild_tech_support and not tech_strong_against:
-            trade_probability = max(trade_probability, 58)  # 3/5 watch
-
-    elif signal == "SHORT":
-        tech_strong_against = (
-            tech_score >= 55
-            or smc_bias == "LONG"
-            or bos == "пробій структури LONG"
-            or vol_bias == "LONG"
-            or local_side == "LONG"
-        )
-        news_support = news_score <= -45 or event_side == "SHORT"
-        mild_tech_support = tech_score <= -15 or smc_bias == "SHORT" or bos == "пробій структури SHORT" or vol_bias == "SHORT" or local_side == "SHORT"
-
-        if news_support and not tech_strong_against:
-            trade_probability = max(trade_probability, 52)
-        if news_support and mild_tech_support and not tech_strong_against:
-            trade_probability = max(trade_probability, 58)
-
-    # ГОТУЄМОСЬ is still not a confirmed trade.
-    return min(trade_probability, 64)
-
-def apply_confirmed_trade_quality_floor(signal, trade_probability, tech, news, event_risk, smc, orderflow=None):
-    """Fair quality floor for real TRADE setups.
-
-    Difference from ГОТУЄМОСЬ:
-    - WATCH can be 2/5–3/5 without full structure confirmation.
-    - TRADE needs confirmation: пробій структури/SMC/volume/orderflow/EMA trend.
-    - If confirmation exists + news supports + tech is not against, quality can become 4/5–5/5.
-    """
-    if signal not in ["LONG", "SHORT"] or trade_probability is None:
-        return trade_probability
-
-    tech = tech or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-
-    tech_score = tech.get("score", 0) or 0
-    trend_5m = tech.get("trend_5m", "UNKNOWN")
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    trend_1h = tech.get("trend_1h", "UNKNOWN")
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    phase = smc.get("phase", "")
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    поглинання = volume.get("поглинання", "NONE")
-    order_score = orderflow.get("score", 0) if isinstance(orderflow, dict) else 0
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
-    local_from_high = local_move.get("from_high_pct", 0) or 0
-    local_from_low = local_move.get("from_low_pct", 0) or 0
-    micro_from_high = micro_local_move.get("from_high_pct", 0) or 0
-    micro_from_low = micro_local_move.get("from_low_pct", 0) or 0
-    micro_bars_since_high = micro_local_move.get("bars_since_high")
-    micro_bars_since_low = micro_local_move.get("bars_since_low")
-    micro_fast_momentum = micro_local_move.get("fast_local_momentum", "FLAT")
-    fast_bounce_after_dump = (
-        micro_local_move.get("available")
-        and (
-            micro_local_move.get("bounce_after_dump")
-            or (
-                micro_from_high <= -0.45
-                and micro_from_low >= 0.22
-                and micro_bars_since_low is not None
-                and 1 <= micro_bars_since_low <= 12
-                and micro_fast_momentum == "UP"
-            )
-        )
-    )
-    fast_pullback_after_pump = (
-        micro_local_move.get("available")
-        and (
-            micro_local_move.get("pullback_after_pump")
-            or (
-                micro_from_low >= 0.45
-                and micro_from_high <= -0.22
-                and micro_bars_since_high is not None
-                and 1 <= micro_bars_since_high <= 12
-                and micro_fast_momentum == "DOWN"
-            )
-        )
-    )
-    effective_bounce_after_dump = bool(local_move.get("bounce_after_dump") or local_move.get("bounced_from_post_high_low") or fast_bounce_after_dump)
-    effective_pullback_after_pump = bool(local_move.get("pullback_after_pump") or local_move.get("pulled_back_from_post_low_high") or fast_pullback_after_pump)
-    local_short_confirmed = (
-        (effective_pullback_after_pump or (local_move.get("available") and local_from_high <= -0.35))
-        and not effective_bounce_after_dump
-        and (micro_bias == "SHORT" or order_score <= -8)
-        and (smc_bias == "SHORT" or vol_bias == "SHORT" or order_score <= -15)
-    )
-    local_long_confirmed = (
-        (effective_bounce_after_dump or (local_move.get("available") and local_from_low >= 0.35) or (micro_local_move.get("available") and micro_from_low >= 0.22))
-        and not fast_pullback_after_pump
-        and (micro_bias == "LONG" or order_score >= 8)
-        and (smc_bias == "LONG" or vol_bias == "LONG" or order_score >= 15)
-    )
-
-    if signal == "LONG":
-        first_long_bounce = bool(effective_bounce_after_dump)
-        long_rebound_against = (effective_pullback_after_pump and not effective_bounce_after_dump) or micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "SHORT_STRENGTHENING"]
-        strong_long_continuation = (
-            bos == "пробій структури LONG"
-            and order_score >= 15
-            and trend_5m == "UP"
-            and trend_15m == "UP"
-        )
-        if long_rebound_against and not strong_long_continuation:
-            return min(trade_probability, 54)
-
-        strong_against = (
-            tech_score <= -55
-            or bos == "пробій структури SHORT"
-            or smc_bias == "SHORT"
-            or vol_bias == "SHORT"
-            or поглинання == "BEARISH ABSORPTION"
-        )
-        news_support = news_score >= 35 or event_side == "LONG"
-        news_against = news_score <= -30 or event_side == "SHORT"
-        news_ok = not news_against
-        tech_support = tech_score >= 35 or (trend_5m == "UP" and trend_15m == "UP") or order_score >= 15
-        structure_confirmed = (
-            bos == "пробій структури LONG"
-            or smc_bias == "LONG"
-            or vol_bias == "LONG"
-            or поглинання == "BULLISH ABSORPTION"
-            or phase == "BREAKOUT / пробій структури"
-        )
-
-        if strong_against and not local_long_confirmed:
-            return min(trade_probability, 54)
-
-        if news_ok and structure_confirmed and tech_score >= 0:
-            trade_probability = max(trade_probability, 66)  # 4/5 working trade
-        if news_ok and structure_confirmed and tech_support:
-            trade_probability = max(trade_probability, 72)  # strong 4/5
-        if news_ok and structure_confirmed and tech_support and trend_15m == "UP" and trend_1h == "UP" and not effective_pullback_after_pump:
-            trade_probability = max(trade_probability, 76)  # 5/5 confirmed
-        if news_ok and local_long_confirmed:
-            trade_probability = max(trade_probability, 58 if first_long_bounce else 66)
-        if first_long_bounce and not strong_long_continuation:
-            trade_probability = min(trade_probability, 64)
-
-    elif signal == "SHORT":
-        first_short_pullback = bool(effective_pullback_after_pump)
-        short_rebound_against = effective_bounce_after_dump or micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "LONG_STRENGTHENING"]
-        strong_short_continuation = (
-            bos == "пробій структури SHORT"
-            and order_score <= -15
-            and trend_5m == "DOWN"
-            and trend_15m == "DOWN"
-        )
-        if short_rebound_against and not strong_short_continuation:
-            return min(trade_probability, 54)
-
-        strong_against = (
-            tech_score >= 55
-            or bos == "пробій структури LONG"
-            or smc_bias == "LONG"
-            or vol_bias == "LONG"
-            or поглинання == "BULLISH ABSORPTION"
-        )
-        news_support = news_score <= -35 or event_side == "SHORT"
-        news_against = news_score >= 30 or event_side == "LONG"
-        news_ok = not news_against
-        tech_support = tech_score <= -35 or (trend_5m == "DOWN" and trend_15m == "DOWN") or order_score <= -15
-        structure_confirmed = (
-            bos == "пробій структури SHORT"
-            or smc_bias == "SHORT"
-            or vol_bias == "SHORT"
-            or поглинання == "BEARISH ABSORPTION"
-            or phase == "BREAKOUT / пробій структури"
-            or local_short_confirmed
-        )
-
-        if strong_against and not local_short_confirmed:
-            return min(trade_probability, 54)
-
-        if news_ok and structure_confirmed and tech_score <= 0:
-            trade_probability = max(trade_probability, 66)
-        if news_ok and structure_confirmed and tech_support:
-            trade_probability = max(trade_probability, 72)
-        if news_ok and structure_confirmed and tech_support and trend_15m == "DOWN" and trend_1h == "DOWN" and not effective_bounce_after_dump:
-            trade_probability = max(trade_probability, 76)
-        if news_ok and local_short_confirmed:
-            trade_probability = max(trade_probability, 58 if first_short_pullback else 66)
-        if short_rebound_against:
-            trade_probability = min(trade_probability, 64)
-        if first_short_pullback and not strong_short_continuation:
-            trade_probability = min(trade_probability, 64)
-
-    return min(trade_probability, 82)
-
-def counterflow_scalp_watch(tech, orderflow, news=None, event_risk=None, smc=None):
-    """Detect when fast 3m/orderflow flips against the larger move.
-
-    This is not a full trade confirmation. It prevents Telegram from showing
-    0/5 when buyers/sellers are clearly appearing on the fast tape.
-    """
-    tech = tech or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    smc = smc or {}
-
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    micro_score = micro.get("score", 0) or 0
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
-    micro_from_high = micro_local_move.get("from_high_pct", 0) or 0
-    micro_from_low = micro_local_move.get("from_low_pct", 0) or 0
-    micro_bars_since_high = micro_local_move.get("bars_since_high")
-    micro_bars_since_low = micro_local_move.get("bars_since_low")
-    micro_fast_momentum = micro_local_move.get("fast_local_momentum", "FLAT")
-    fast_bounce_after_dump = (
-        micro_local_move.get("available")
-        and micro_from_high <= -0.45
-        and micro_from_low >= 0.22
-        and micro_bars_since_low is not None
-        and 1 <= micro_bars_since_low <= 12
-        and micro_fast_momentum == "UP"
-    )
-    fast_pullback_after_pump = (
-        micro_local_move.get("available")
-        and micro_from_low >= 0.45
-        and micro_from_high <= -0.22
-        and micro_bars_since_high is not None
-        and 1 <= micro_bars_since_high <= 12
-        and micro_fast_momentum == "DOWN"
-    )
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    trend_1h = tech.get("trend_1h", "UNKNOWN")
-    book_bias = (orderflow.get("order_book") or {}).get("bias", "NEUTRAL")
-    trades_bias = (orderflow.get("real_flow") or {}).get("bias", "NEUTRAL")
-    liquidity_bias = (orderflow.get("liquidity_proxy") or {}).get("bias", "NEUTRAL")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    def build(side):
-        is_long = side == "LONG"
-        score = 0
-        reasons = []
-        news_against = (news_score <= -30 or event_side == "SHORT") if is_long else (news_score >= 30 or event_side == "LONG")
-        news_support = (news_score >= 35 or event_side == "LONG") if is_long else (news_score <= -35 or event_side == "SHORT")
-        news_ok = not news_against
-        if is_long:
-            if change <= -1.2 or fast_bounce_after_dump:
-                score += 10
-                reasons.append("після падіння/відскоку")
-            if fast_bounce_after_dump:
-                score += 12
-                reasons.append("3m відскок від low")
-            if micro_bias == "LONG" or micro_state == "LONG_STRENGTHENING" or micro_score >= 35:
-                score += 18
-                reasons.append("3m лонг")
-            if book_bias == "LONG":
-                score += 9
-                reasons.append("стакан лонг")
-            if trades_bias == "LONG":
-                score += 9
-                reasons.append("угоди лонг")
-            if liquidity_bias == "LONG":
-                score += 5
-            if smc_bias == "LONG":
-                score += 8
-                reasons.append("структура лонг")
-            if news_support:
-                score += 4
-                reasons.append("новини не проти лонгу")
-            if tech_score <= -90 and smc_bias != "LONG":
-                score -= 8
-        else:
-            if change >= 1.2 or fast_pullback_after_pump:
-                score += 10
-                reasons.append("після росту/відкату")
-            if fast_pullback_after_pump:
-                score += 12
-                reasons.append("3m відкат від high")
-            if micro_bias == "SHORT" or micro_state == "SHORT_STRENGTHENING" or micro_score <= -35:
-                score += 18
-                reasons.append("3m шорт")
-            if book_bias == "SHORT":
-                score += 9
-                reasons.append("стакан шорт")
-            if trades_bias == "SHORT":
-                score += 9
-                reasons.append("угоди шорт")
-            if liquidity_bias == "SHORT":
-                score += 5
-            if smc_bias == "SHORT":
-                score += 8
-                reasons.append("структура шорт")
-            if news_support:
-                score += 4
-                reasons.append("новини не проти шорту")
-            if tech_score >= 90 and smc_bias != "SHORT":
-                score -= 8
-
-        if score < 28:
-            return None
-
-        triple_flow = (
-            (micro_bias == side or (is_long and micro_score >= 35) or ((not is_long) and micro_score <= -35))
-            and book_bias == side
-            and trades_bias == side
-        )
-
-        htf_same = (
-            (is_long and trend_15m == "UP" and trend_1h == "UP") or
-            ((not is_long) and trend_15m == "DOWN" and trend_1h == "DOWN")
-        )
-        htf_one_same = (
-            (is_long and (trend_15m == "UP" or trend_1h == "UP")) or
-            ((not is_long) and (trend_15m == "DOWN" or trend_1h == "DOWN"))
-        )
-        htf_opposite = (
-            (is_long and trend_15m == "DOWN" and trend_1h == "DOWN") or
-            ((not is_long) and trend_15m == "UP" and trend_1h == "UP")
-        )
-
-        probability = 52
-        if triple_flow:
-            probability = 58
-        elif score >= 38:
-            probability = 58
-        if triple_flow and htf_same:
-            probability = 66
-        elif triple_flow and htf_one_same and not htf_opposite:
-            probability = 62
-        if score >= 50 and smc_bias == side:
-            probability = 64
-        if triple_flow and smc_bias == side and not htf_opposite:
-            probability = max(probability, 66)
-        elif triple_flow and smc_bias == side and htf_opposite:
-            probability = max(probability, 62)
-        if triple_flow and htf_same and smc_bias == side:
-            probability = 72
-        if triple_flow and htf_same and smc_bias == side and news_ok:
-            probability = 76
-        if news_against and probability >= 66:
-            probability = 64
-
-        if probability >= 66:
-            text = "ранній LONG" if is_long else "ранній SHORT"
-            signal_type = f"РАННІЙ {side} / ВХІД ЗАРАЗ"
-            decision = f"РАННІЙ {side} — можна входити зараз"
-        elif htf_opposite:
-            text = "можливий LONG-відскок" if is_long else "можливий SHORT-відкат"
-            signal_type = f"{text.upper()} / ЧЕКАТИ"
-            decision = f"ЧЕКАТИ — {text}"
-        else:
-            text = "можливий LONG" if is_long else "можливий SHORT"
-            signal_type = f"МОЖЛИВИЙ {side} / РАННІЙ СЕТАП"
-            decision = f"ЧЕКАТИ — {text}"
-        return {
-            "active": True,
+            "action": "WAIT_RETEST",
             "side": side,
-            "probability": probability,
-            "confidence": min(80, max(55, probability + 10)),
-            "signal_type": signal_type,
-            "decision": decision,
-            "reason": ", ".join(reasons[:3]),
+            "quality": quality,
+            "title": f"ЧЕКАТИ — {side} НЕ ДОГАНЯТИ",
+            "reason": late_reason,
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
         }
 
-    candidates = [x for x in [build("LONG"), build("SHORT")] if x]
-    if not candidates:
-        return {"active": False}
-    candidates.sort(key=lambda item: item.get("probability", 0), reverse=True)
-    return candidates[0]
+    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        return {
+            "action": "ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": f"ВХІД Є — {side}",
+            "reason": "сигнал підтверджений: " + " | ".join(confirmations[:4]),
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+        }
 
-# ==========================================================
-# VOLATILITY REGIME / LIQUIDATION HEATMAP LOGIC / SYNTHETIC OI
-# ==========================================================
-
-def analyze_volatility_regime(tv, tech):
-    price = tv.get("price") or 0
-    atr = tech.get("atr_15m") or (price * 0.006 if price else 0)
-    adx = tech.get("adx_15m") or 0
-    change = abs(tech.get("change") or 0)
-    rsi5 = tech.get("rsi_5m") or 50
-    rsi15 = tech.get("rsi_15m") or 50
-
-    atr_pct = (atr / price * 100) if price else 0
-    score = 0
-    regime = "NORMAL"
-    direction_filter = "NEUTRAL"
-    warning = "Нормальна волатильність"
-
-    if atr_pct >= 1.2 or change >= 2.0:
-        regime = "HIGH VOLATILITY / BREAKOUT MODE"
-        score += 8 if tech.get("momentum") in ["STRONG UP", "VERY STRONG UP"] else 0
-        score -= 8 if tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"] else 0
-        warning = "Висока волатильність: краще входити тільки після ретесту"
-    elif atr_pct <= 0.35 and adx < 18:
-        regime = "LOW VOLATILITY / CHOP MODE"
-        score -= 10
-        warning = "Низька волатильність і слабкий тренд: ризик флету"
-    elif adx >= 25:
-        regime = "TREND MODE"
-        if tech.get("trend") == "UP":
-            score += 10
-            direction_filter = "LONG"
-        elif tech.get("trend") == "DOWN":
-            score -= 10
-            direction_filter = "SHORT"
-        warning = "Трендовий режим"
-
-    if rsi5 > 78 or rsi15 > 78:
-        score -= 8
-        warning += "; є ризик перегріву LONG"
-    if rsi5 < 22 or rsi15 < 22:
-        score += 8
-        warning += "; є ризик відскоку проти SHORT"
+    if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        return {
+            "action": "RISKY_ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": f"РИЗИКОВАНИЙ ВХІД — {side}",
+            "reason": "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4]),
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+        }
 
     return {
-        "score": score,
-        "regime": regime,
-        "atr_pct": round(atr_pct, 3),
-        "direction_filter": direction_filter,
-        "warning": warning,
-    }
-
-def analyze_liquidation_heatmap(tv, tech, volatility):
-    price = tv.get("price") or 0
-    atr = tech.get("atr_15m") or price * 0.006
-    momentum = tech.get("momentum", "NEUTRAL")
-
-    # Approximate liquidation clusters. This is NOT real exchange heatmap,
-    # but useful free logic for likely leverage liquidation zones.
-    long_10x = price * 0.90
-    long_20x = price * 0.95
-    long_50x = price * 0.98
-    short_10x = price * 1.10
-    short_20x = price * 1.05
-    short_50x = price * 1.02
-
-    nearest_long_liq = max([long_10x, long_20x, long_50x])
-    nearest_short_liq = min([short_10x, short_20x, short_50x])
-
-    dist_long_atr = abs(price - nearest_long_liq) / atr if atr else 99
-    dist_short_atr = abs(nearest_short_liq - price) / atr if atr else 99
-
-    score = 0
-    bias = "NEUTRAL"
-    summary = "Ліквідаційні зони далеко"
-
-    if momentum in ["STRONG UP", "VERY STRONG UP"] and dist_short_atr <= 3.5:
-        score += 12
-        bias = "SHORT SQUEEZE RISK / LONG"
-        summary = "Ціна рухається до short-liquidation зони — можливий squeeze вгору"
-    elif momentum in ["STRONG DOWN", "VERY STRONG DOWN"] and dist_long_atr <= 3.5:
-        score -= 12
-        bias = "LONG LIQUIDATION RISK / SHORT"
-        summary = "Ціна рухається до long-liquidation зони — можливий cascade вниз"
-
-    if volatility.get("regime") == "HIGH VOLATILITY / BREAKOUT MODE":
-        if bias.startswith("SHORT SQUEEZE"):
-            score += 6
-        elif bias.startswith("LONG LIQUIDATION"):
-            score -= 6
-
-    return {
-        "score": score,
-        "bias": bias,
-        "nearest_long_liq": round(nearest_long_liq, 4),
-        "nearest_short_liq": round(nearest_short_liq, 4),
-        "dist_long_atr": round(dist_long_atr, 2),
-        "dist_short_atr": round(dist_short_atr, 2),
-        "summary": summary,
-    }
-
-def analyze_market_structure(tv, tech):
-    # Volume Profile is intentionally disabled: Binance candles are often blocked on GitHub runners.
-    # We keep only stable free modules: volatility regime + liquidation zone logic.
-    volatility = analyze_volatility_regime(tv, tech)
-    liquidation = analyze_liquidation_heatmap(tv, tech, volatility)
-    total_score = volatility["score"] + liquidation["score"]
-
-    return {
-        "score": total_score,
-        "volatility": volatility,
-        "liquidation": liquidation,
-        "candles_count": 0,
-    }
-
-def market_structure_verdict(market):
-    score = market.get("score", 0)
-    if score >= 15:
-        side = "LONG"
-    elif score <= -15:
-        side = "SHORT"
-    else:
-        side = "NEUTRAL"
-
-    reason = (
-        f"volatility {market['volatility']['regime']}, "
-        f"liquidation {market['liquidation']['bias']}, score {score}"
-    )
-    return side, reason
-
-# ==========================================================
-# SYNTHETIC OPEN INTEREST PROXY (NO EXTERNAL API)
-# ==========================================================
-
-def analyze_synthetic_open_interest(tv, tech, orderflow, market):
-    """
-    Stable replacement for Binance/Bybit OI.
-    It does NOT call blocked exchange APIs. It estimates positioning pressure from:
-    - price momentum
-    - TradingView volume
-    - ATR/volatility regime
-    - orderflow proxy
-    - liquidation-zone logic
-    """
-    price = tv.get("price") or 0
-    change = tech.get("change") or 0
-    volume = tv.get("volume") or 0
-    atr = tech.get("atr_15m") or (price * 0.006 if price else 0)
-    momentum = tech.get("momentum", "NEUTRAL")
-    vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
-    liquidation_bias = market.get("liquidation", {}).get("bias", "NEUTRAL")
-    order_score = orderflow.get("score", 0)
-
-    score = 0
-    side = "NEUTRAL"
-    notes = []
-
-    # Strong directional move + volume = likely new participation.
-    if momentum in ["STRONG UP", "VERY STRONG UP"]:
-        if volume and abs(change) >= 1.2:
-            score += 12
-            side = "LONG"
-            notes.append("synthetic OI: ймовірний LONG buildup")
-        if liquidation_bias.startswith("SHORT SQUEEZE"):
-            score += 8
-            side = "LONG"
-            notes.append("short squeeze pressure")
-
-    elif momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
-        if volume and abs(change) >= 1.2:
-            score -= 12
-            side = "SHORT"
-            notes.append("synthetic OI: ймовірний SHORT buildup")
-        if liquidation_bias.startswith("LONG LIQUIDATION"):
-            score -= 8
-            side = "SHORT"
-            notes.append("long liquidation pressure")
-
-    # Orderflow confirmation.
-    if order_score >= 20:
-        score += 6
-        side = "LONG" if score > 0 else side
-        notes.append("orderflow підтверджує покупців")
-    elif order_score <= -20:
-        score -= 6
-        side = "SHORT" if score < 0 else side
-        notes.append("orderflow підтверджує продавців")
-
-    # High volatility means continuation is possible but more dangerous.
-    if vol_regime == "HIGH VOLATILITY / BREAKOUT MODE":
-        if score > 0:
-            score += 4
-        elif score < 0:
-            score -= 4
-        notes.append("high volatility participation")
-
-    # If no strong pressure, keep it neutral.
-    if abs(score) < 8:
-        score = 0
-        side = "NEUTRAL"
-        notes.append("synthetic OI нейтральний")
-
-    if side == "LONG":
-        summary = "Synthetic OI: LONG BUILDUP"
-    elif side == "SHORT":
-        summary = "Synthetic OI: SHORT BUILDUP"
-    else:
-        summary = "Synthetic OI: NEUTRAL"
-
-    return {
-        "score": score,
+        "action": "WATCH",
         "side": side,
-        "summary": summary,
-        "details": "; ".join(notes[:3]),
-    }
-
-# ==========================================================
-# SESSION + REVERSAL WATCH LAYER
-# ==========================================================
-
-def analyze_session_context():
-    """Session analysis without any external API. Uses UTC time from GitHub runner."""
-    now = now_utc()
-    hour = now.hour
-
-    if 0 <= hour < 7:
-        session = "ASIA"
-        score = -6
-        note = "Asia session: нижча ліквідність, вищий ризик fake breakout"
-        breakout_quality = "LOW"
-    elif 7 <= hour < 13:
-        session = "LONDON"
-        score = 0
-        note = "London session: можливі liquidity sweep / stop hunt"
-        breakout_quality = "MEDIUM"
-    elif 13 <= hour < 21:
-        session = "NEW YORK"
-        score = 8
-        note = "New York session: найкраща реакція на oil/macro/news"
-        breakout_quality = "HIGH"
-    else:
-        session = "LATE US / TRANSITION"
-        score = -3
-        note = "Пізня сесія: нижча якість continuation-сигналів"
-        breakout_quality = "MEDIUM-LOW"
-
-    return {
-        "session": session,
-        "score": score,
-        "note": note,
-        "breakout_quality": breakout_quality,
-        "utc_hour": hour,
-    }
-
-def session_telegram_text(session):
-    name = (session or {}).get("session", "UNKNOWN")
-    if name == "ASIA":
-        return "Сесія: ASIA — обережно, нижча ліквідність"
-    if name == "LONDON":
-        return "Сесія: LONDON — можливі різкі вибивання"
-    if name == "NEW YORK":
-        return "Сесія: NEW YORK — новини рухають сильніше"
-    if name == "LATE US / TRANSITION":
-        return "Сесія: пізня US — якість входів нижча"
-    return ""
-
-def economic_calendar_text(event_risk):
-    calendar = (event_risk or {}).get("calendar") or {}
-    events = calendar.get("events") or []
-    if not events:
-        return ""
-
-    parts = []
-    for event in events[:2]:
-        name = event.get("name", "Подія")
-        status = event.get("status") or "скоро"
-        if name == "EIA":
-            parts.append(f"EIA запаси — {status}")
-        elif name == "Fed":
-            parts.append(f"Fed — {status}")
-        elif name == "OPEC":
-            parts.append(f"OPEC — {status}")
-        else:
-            parts.append(f"{event.get('title', name)} — {status}")
-
-    hard = bool(calendar.get("hard_block"))
-    suffix = " — чекати реакцію" if hard else " — просто мати на увазі"
-    return "Календар: " + "; ".join(parts) + suffix
-
-def analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
-    """Detects possible reversal setups such as breakdown failure / liquidity sweep.
-
-    This is a watch-layer, not an automatic entry trigger. It improves decision text:
-    - TECH SHORT + FUND LONG + oversold/weak downside = REVERSAL LONG WATCH
-    - TECH LONG + FUND SHORT + overbought/weak upside = REVERSAL SHORT WATCH
-    """
-    score = 0
-    side = "NONE"
-    reasons = []
-
-    price_change = tech.get("change", 0) or 0
-    trend = tech.get("trend", "MIXED")
-    momentum = tech.get("momentum", "NEUTRAL")
-    rsi_5m = tech.get("rsi_5m")
-    rsi_15m = tech.get("rsi_15m")
-    news_score = news.get("score", 0)
-    event_dir = event_risk.get("direction", "NEUTRAL")
-    event_risk_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
-    liq_bias = market.get("liquidation", {}).get("bias", "NEUTRAL")
-    vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
-    oi_side = oi_analysis.get("side", "NEUTRAL")
-    order_score = orderflow.get("score", 0)
-
-    oversold = (rsi_5m is not None and rsi_5m <= 28) or (rsi_15m is not None and rsi_15m <= 32)
-    overbought = (rsi_5m is not None and rsi_5m >= 72) or (rsi_15m is not None and rsi_15m >= 68)
-
-    # Possible breakdown failure / bullish reversal watch.
-    if trend == "DOWN" and news_score >= 30 and event_dir == "LONG":
-        score += 28
-        side = "REVERSAL LONG WATCH"
-        reasons.append("техніка SHORT, але фундамент/події сильно LONG")
-
-        if oversold:
-            score += 14
-            reasons.append("RSI показує перепроданість — можливий squeeze/відскок")
-
-        if momentum in ["NEUTRAL", "STRONG DOWN"] and price_change > -1.0:
-            score += 10
-            reasons.append("падіння слабшає — можливий breakdown failure")
-
-        if liq_bias.startswith("LONG LIQUIDATION") or oi_side == "SHORT":
-            score += 8
-            reasons.append("після long liquidation можливий різкий відскок")
-
-        if session.get("session") in ["LONDON", "NEW YORK"]:
-            score += 6
-            reasons.append(f"{session.get('session')} session може дати reversal після sweep")
-
-    # Possible upside failure / bearish reversal watch.
-    if trend == "UP" and news_score <= -25 and event_dir == "SHORT":
-        score -= 28
-        side = "REVERSAL SHORT WATCH"
-        reasons.append("техніка LONG, але фундамент/події сильно SHORT")
-
-        if overbought:
-            score -= 14
-            reasons.append("RSI показує перекупленість — можливий dump/відкат")
-
-        if momentum in ["NEUTRAL", "STRONG UP"] and price_change < 1.0:
-            score -= 10
-            reasons.append("ріст слабшає — можливий breakout failure")
-
-        if liq_bias.startswith("SHORT SQUEEZE") or oi_side == "LONG":
-            score -= 8
-            reasons.append("після squeeze можливий відкат")
-
-        if session.get("session") in ["LONDON", "NEW YORK"]:
-            score -= 6
-            reasons.append(f"{session.get('session')} session може дати reversal після sweep")
-
-    # Liquidity sweep proxy: extreme RSI + conflict + high event risk.
-    sweep = "NONE"
-    if oversold and news_score > 25 and event_dir == "LONG" and event_risk_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        sweep = "DOWNSIDE SWEEP / LONG WATCH"
-        if side == "NONE":
-            side = "REVERSAL LONG WATCH"
-        score += 10
-        reasons.append("liquidity sweep proxy: перепроданість + bullish event risk")
-    elif overbought and news_score < -20 and event_dir == "SHORT" and event_risk_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        sweep = "UPSIDE SWEEP / SHORT WATCH"
-        if side == "NONE":
-            side = "REVERSAL SHORT WATCH"
-        score -= 10
-        reasons.append("liquidity sweep proxy: перекупленість + bearish event risk")
-
-    confidence = min(95, abs(score))
-    if side == "NONE" or confidence < 30:
-        side = "NONE"
-        confidence = 0
-        if not reasons:
-            reasons.append("reversal setup не підтверджений")
-
-    return {
-        "side": side,
-        "score": score,
-        "confidence": confidence,
-        "sweep": sweep,
-        "reason": "; ".join(reasons[:3]),
-        "volatility": vol_regime,
-    }
-
-def analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal):
-    """Dynamic priority engine for oil/BZ.
-    In oil, news/event flow can dominate technicals during geopolitical/macro events.
-    In quiet markets, technicals and market structure get higher priority.
-    """
-    event_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
-    event_dir = event_risk.get("direction", "MIXED")
-    news_score = news.get("original_score", news.get("score", 0))
-    tech_score = tech.get("score", 0)
-    session_name = session.get("session", "UNKNOWN") if session else "UNKNOWN"
-    reversal_side = reversal.get("side", "NONE") if reversal else "NONE"
-
-    regime = "BALANCED"
-    dominant = "BALANCED"
-    tech_weight = 1.0
-    news_weight = 1.0
-    reason = "Техніка і фундамент мають приблизно однакову вагу"
-
-    high_event = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    strong_news = abs(news_score) >= 35
-    clear_event_direction = event_dir in ["LONG", "SHORT"]
-
-    if high_event and strong_news and clear_event_direction:
-        regime = "NEWS / EVENT DOMINANT"
-        dominant = "FUNDAMENTAL"
-        tech_weight = 0.65
-        news_weight = 1.45
-        reason = "Новини/події домінують над технікою: oil сильно реагує на OPEC, Iran, EIA, Fed, sanctions"
-    elif high_event and clear_event_direction:
-        regime = "EVENT RISK DOMINANT"
-        dominant = "EVENT"
-        tech_weight = 0.75
-        news_weight = 1.25
-        reason = "Подієвий ризик високий: технічні сигнали потрібно підтверджувати обережніше"
-    elif abs(news_score) < 15 and event_level in ["НИЗЬКИЙ", "НОРМАЛЬНИЙ", "НЕЙТРАЛЬНИЙ"]:
-        regime = "TECHNICAL DOMINANT"
-        dominant = "TECHNICAL"
-        tech_weight = 1.25
-        news_weight = 0.75
-        reason = "Новинний фон слабкий: техніка має більший пріоритет"
-
-    # Session modifier: New York is where oil/news reactions are most valid.
-    if session_name == "NEW YORK" and dominant in ["FUNDAMENTAL", "EVENT"]:
-        news_weight += 0.15
-        reason += "; New York session підсилює реакцію на oil/macro/news"
-    elif session_name == "ASIA":
-        tech_weight -= 0.10
-        reason += "; Asia session: підвищений ризик фейкових рухів"
-
-    # Reversal watch means technical trend can be late versus news/event flow.
-    if reversal_side in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]:
-        regime += " + REVERSAL WATCH"
-        reason += "; є ознаки можливого розвороту, тому continuation-сигнали треба фільтрувати"
-
-    technical_component = tech_score * tech_weight
-    fundamental_component = (news_score + macro.get("score", 0)) * news_weight
-
-    if event_dir == "LONG":
-        fundamental_component += 18 * news_weight
-    elif event_dir == "SHORT":
-        fundamental_component -= 18 * news_weight
-
-    priority_score = int(technical_component + fundamental_component)
-
-    return {
-        "regime": regime,
-        "dominant": dominant,
-        "tech_weight": round(tech_weight, 2),
-        "news_weight": round(news_weight, 2),
-        "priority_score": priority_score,
-        "reason": reason,
-    }
-
-# ==========================================================
-# EARLY WARNING / CONTEXT TRUST ENGINE
-# ==========================================================
-
-def analyze_early_warning(tv, tech, news, event_risk, orderflow, market, oi_analysis, session):
-    """
-    Ранній фільтр перед різким рухом.
-    Мета: не чекати великого дампу/пампу, а попередити, коли ціна вже НЕ підтверджує новини.
-    Особливо важливо для Brent/oil: новини можуть бути LONG, але якщо ціна їх ігнорує і техніка продавлюється,
-    пріоритет тимчасово переходить до price action.
-    """
-    price_change = tech.get("change", 0) or 0
-    tech_score = tech.get("score", 0)
-    news_score = news.get("original_score", news.get("score", 0))
-    trend = tech.get("trend", "MIXED")
-    trend_5m = tech.get("trend_5m", "UNKNOWN")
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    trend_1h = tech.get("trend_1h", "UNKNOWN")
-    momentum = tech.get("momentum", "NEUTRAL")
-    order_score = orderflow.get("score", 0)
-    oi_side = oi_analysis.get("side", "NEUTRAL")
-    vol_regime = market.get("volatility", {}).get("regime", "NORMAL")
-    event_direction = event_risk.get("original_direction", event_risk.get("direction", "MIXED"))
-    event_level = event_risk.get("risk", "НОРМАЛЬНИЙ")
-    session_name = session.get("session", "UNKNOWN") if session else "UNKNOWN"
-
-    warning = "NONE"
-    side = "NEUTRAL"
-    score = 0
-    trust = "BALANCED"
-    reason = "Немає раннього попередження"
-
-    bullish_news = news_score >= 30 or event_direction == "LONG"
-    bearish_news = news_score <= -25 or event_direction == "SHORT"
-    high_event = event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-
-    # LONG news failure: новини bullish, але ціна не росте / техніка провалюється.
-    long_news_ignored = (
-        bullish_news
-        and tech_score <= -45
-        and trend_5m == "DOWN"
-        and trend_15m == "DOWN"
-        and price_change <= -0.25
-        and order_score <= 5
-    )
-
-    # SHORT news failure: новини bearish, але ціна не падає / техніка вгору.
-    short_news_ignored = (
-        bearish_news
-        and tech_score >= 45
-        and trend_5m == "UP"
-        and trend_15m == "UP"
-        and price_change >= 0.25
-        and order_score >= -5
-    )
-
-    # Early dump before full shock: ще не обвал, але продавлювання вже видно.
-    early_dump = (
-        tech_score <= -55
-        and trend_5m == "DOWN"
-        and trend_15m == "DOWN"
-        and price_change <= -0.35
-        and momentum in ["NEUTRAL", "STRONG DOWN", "VERY STRONG DOWN"]
-    )
-
-    # Early pump before full breakout.
-    early_pump = (
-        tech_score >= 55
-        and trend_5m == "UP"
-        and trend_15m == "UP"
-        and price_change >= 0.35
-        and momentum in ["NEUTRAL", "STRONG UP", "VERY STRONG UP"]
-    )
-
-    if long_news_ignored or early_dump:
-        warning = "EARLY DUMP WARNING"
-        side = "SHORT"
-        score = -35
-        trust = "PRICE ACTION / TECH"
-        reason = "Новини можуть бути LONG, але ціна їх не підтверджує: 5m/15m вниз, покупців не видно"
-        if high_event:
-            reason += "; подієвий ризик високий — не ловити LONG проти падіння"
-        if session_name in ["LONDON", "NEW YORK"]:
-            score -= 6
-            reason += f"; {session_name} може прискорити рух"
-        if vol_regime == "HIGH VOLATILITY / BREAKOUT MODE":
-            score -= 6
-            reason += "; висока волатильність"
-
-    elif short_news_ignored or early_pump:
-        warning = "EARLY PUMP WARNING"
-        side = "LONG"
-        score = 35
-        trust = "PRICE ACTION / TECH"
-        reason = "Новини можуть бути SHORT, але ціна їх не підтверджує: 5m/15m вгору, продавців не видно"
-        if high_event:
-            reason += "; подієвий ризик високий — не шортити проти імпульсу"
-        if session_name in ["LONDON", "NEW YORK"]:
-            score += 6
-            reason += f"; {session_name} може прискорити рух"
-        if vol_regime == "HIGH VOLATILITY / BREAKOUT MODE":
-            score += 6
-            reason += "; висока волатильність"
-
-    # If synthetic OI/orderflow strongly confirms, strengthen warning.
-    if warning == "EARLY DUMP WARNING" and (oi_side == "SHORT" or order_score <= -20):
-        score -= 10
-        reason += "; OI/orderflow підтверджує продавців"
-    elif warning == "EARLY PUMP WARNING" and (oi_side == "LONG" or order_score >= 20):
-        score += 10
-        reason += "; OI/orderflow підтверджує покупців"
-
-    return {
-        "warning": warning,
-        "side": side,
-        "score": score,
-        "trust": trust,
-        "reason": reason,
-    }
-
-def decide_current_priority(tech, news, event_risk, orderflow, early_warning):
-    """
-    Кому зараз довіряти більше:
-    - якщо новини сильні, але ціна їх не підтверджує -> TECH/PRICE ACTION
-    - якщо техніка нейтральна, а подія дуже сильна -> NEWS/EVENT
-    - якщо все в один бік -> ALIGNMENT
-    """
-    tech_score = tech.get("score", 0)
-    news_score = news.get("score", 0)
-    event_dir = event_risk.get("direction", "MIXED")
-    order_score = orderflow.get("score", 0)
-
-    if early_warning.get("warning") != "NONE":
-        return "PRICE ACTION", "Новини не підтверджуються ціною — важливіша реакція графіка"
-
-    if abs(news_score) >= 35 and event_dir in ["LONG", "SHORT"] and abs(tech_score) < 45:
-        return "NEWS/EVENT", "Техніка ще не сильна, але новини/події домінують"
-
-    if tech_score >= 55 and news_score >= 20:
-        return "ALIGNMENT LONG", "Техніка і новини підтримують LONG"
-    if tech_score <= -55 and news_score <= -20:
-        return "ALIGNMENT SHORT", "Техніка і новини підтримують SHORT"
-
-    if abs(tech_score) >= 70 and abs(news_score) < 25:
-        return "TECH", "Новини слабкі, тому пріоритет у техніки"
-
-    return "BALANCED", "Ринок змішаний — потрібне підтвердження"
-
-def price_reaction_side(tech, orderflow=None):
-    """Return the side confirmed by current price action.
-
-    News is only fuel. It becomes directional only when price, trend or local
-    3m/orderflow confirm the same side.
-    """
-    tech = tech or {}
-    orderflow = orderflow or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-    trend_5m = tech.get("trend_5m", "UNKNOWN")
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    momentum = tech.get("momentum", "NEUTRAL")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    order_score = orderflow.get("score", 0) or 0
-
-    chart_long = (
-        tech_score >= 45
-        or (trend_5m == "UP" and trend_15m == "UP" and change >= 0.15)
-        or momentum in ["STRONG UP", "VERY STRONG UP"]
-        or micro_bias == "LONG"
-        or micro_state == "LONG_STRENGTHENING"
-        or order_score >= 18
-    )
-    chart_short = (
-        tech_score <= -45
-        or (trend_5m == "DOWN" and trend_15m == "DOWN" and change <= -0.15)
-        or momentum in ["STRONG DOWN", "VERY STRONG DOWN"]
-        or micro_bias == "SHORT"
-        or micro_state == "SHORT_STRENGTHENING"
-        or order_score <= -18
-    )
-
-    if chart_long and not chart_short:
-        return "LONG"
-    if chart_short and not chart_long:
-        return "SHORT"
-    return "NEUTRAL"
-
-def apply_price_reaction_to_news(news, event_risk, tech, orderflow=None):
-    """Treat news/events as fuel, not as standalone direction.
-
-    Bullish news + falling price is not a LONG signal. It means the market is
-    ignoring bullish fuel, so signal priority should move back to price action.
-    Same for bearish news when price is rising.
-    """
-    news = dict(news or {})
-    event_risk = dict(event_risk or {})
-
-    original_news_score = news.get("score", 0) or 0
-    original_event_direction = event_risk.get("direction", "MIXED")
-    price_side = price_reaction_side(tech, orderflow)
-
-    news["original_score"] = original_news_score
-    event_risk["original_direction"] = original_event_direction
-    news["price_reaction_side"] = price_side
-    event_risk["price_reaction_side"] = price_side
-
-    bullish_fuel = original_news_score >= 30 or original_event_direction == "LONG"
-    bearish_fuel = original_news_score <= -25 or original_event_direction == "SHORT"
-    important_neutral_fuel = (
-        abs(original_news_score) < 15
-        and price_side in ["LONG", "SHORT"]
-        and (
-            news.get("impact", 0) > 0
-            or news.get("breaking", 0) > 0
-            or bool(news.get("important"))
-            or bool(event_risk.get("important"))
-        )
-    )
-
-    if important_neutral_fuel:
-        reaction_score = 22 if price_side == "LONG" else -22
-        news["score"] = reaction_score
-        news["fuel_status"] = f"HIGH_IMPACT_NEUTRAL_NEWS_CONFIRMED_BY_PRICE_{price_side}"
-        event_risk["fuel_status"] = f"HIGH_IMPACT_NEUTRAL_EVENT_CONFIRMED_BY_PRICE_{price_side}"
-        news["summary"] = (
-            f"High-impact headline was text-neutral, but price confirmed {price_side}; "
-            "treating market reaction as the news direction."
-        )
-        if original_event_direction == "MIXED":
-            event_risk["direction"] = price_side
-            event_risk["direction_score"] = 12 if price_side == "LONG" else -12
-        return news, event_risk
-
-    if bullish_fuel and price_side == "SHORT":
-        if news.get("score", 0) > 0:
-            news["score"] = 0
-        if event_risk.get("direction") == "LONG":
-            event_risk["direction"] = "MIXED"
-            event_risk["direction_score"] = 0
-        news["fuel_status"] = "BULLISH_NEWS_IGNORED_BY_PRICE"
-        event_risk["fuel_status"] = "BULLISH_EVENT_IGNORED_BY_PRICE"
-        news["summary"] = "Bullish news ignored by price action: priority is price action."
-        return news, event_risk
-
-    if bearish_fuel and price_side == "LONG":
-        if news.get("score", 0) < 0:
-            news["score"] = 0
-        if event_risk.get("direction") == "SHORT":
-            event_risk["direction"] = "MIXED"
-            event_risk["direction_score"] = 0
-        news["fuel_status"] = "BEARISH_NEWS_IGNORED_BY_PRICE"
-        event_risk["fuel_status"] = "BEARISH_EVENT_IGNORED_BY_PRICE"
-        news["summary"] = "Bearish news ignored by price action: priority is price action."
-        return news, event_risk
-
-    if bullish_fuel and price_side != "LONG":
-        if news.get("score", 0) > 15:
-            news["score"] = 15
-        if event_risk.get("direction") == "LONG":
-            event_risk["direction"] = "MIXED"
-            event_risk["direction_score"] = 0
-        news["fuel_status"] = "BULLISH_NEWS_WAITING_FOR_PRICE_CONFIRMATION"
-        event_risk["fuel_status"] = "BULLISH_EVENT_WAITING_FOR_PRICE_CONFIRMATION"
-        return news, event_risk
-
-    if bearish_fuel and price_side != "SHORT":
-        if news.get("score", 0) < -15:
-            news["score"] = -15
-        if event_risk.get("direction") == "SHORT":
-            event_risk["direction"] = "MIXED"
-            event_risk["direction_score"] = 0
-        news["fuel_status"] = "BEARISH_NEWS_WAITING_FOR_PRICE_CONFIRMATION"
-        event_risk["fuel_status"] = "BEARISH_EVENT_WAITING_FOR_PRICE_CONFIRMATION"
-        return news, event_risk
-
-    if bullish_fuel and price_side == "LONG":
-        news["fuel_status"] = "BULLISH_NEWS_CONFIRMED_BY_PRICE"
-        event_risk["fuel_status"] = "BULLISH_EVENT_CONFIRMED_BY_PRICE"
-    elif bearish_fuel and price_side == "SHORT":
-        news["fuel_status"] = "BEARISH_NEWS_CONFIRMED_BY_PRICE"
-        event_risk["fuel_status"] = "BEARISH_EVENT_CONFIRMED_BY_PRICE"
-    else:
-        news["fuel_status"] = "NO_DIRECTIONAL_NEWS_FUEL"
-        event_risk["fuel_status"] = "NO_DIRECTIONAL_EVENT_FUEL"
-
-    return news, event_risk
-
-# ==========================================================
-# WEEKEND / RR / CHASE / POSITION / CROSS-MARKET HELPERS
-# ==========================================================
-
-def analyze_weekend_mode():
-    wd = now_utc().weekday()
-    if wd == 5:
-        return {"active": True, "label": "СУБОТА", "score": -18, "note": "Вихідний: нижча ліквідність, сигнали менш надійні."}
-    if wd == 6:
-        return {"active": True, "label": "НЕДІЛЯ", "score": -22, "note": "Вихідний: краще відкривати тільки дуже сильні сетапи."}
-    return {"active": False, "label": "РОБОЧИЙ ДЕНЬ", "score": 0, "note": "Звичайний торговий день."}
-
-def get_cross_market_data():
-    result = {}
-    for name, symbol, screener in [
-        ("BTC", "BINANCE:BTCUSDT", "crypto"),
-        ("DXY", "TVC:DXY", "cfd"),
-        ("SPX", "SP:SPX", "cfd"),
-        ("GOLD", "TVC:GOLD", "cfd"),
-    ]:
-        values = get_tradingview_scan(symbol, screener, ["close", "change", "Recommend.All|15"])
-        if not values:
-            continue
-        try:
-            result[name] = {
-                "price": float(values[0]) if values[0] is not None else None,
-                "change": float(values[1]) if values[1] is not None else 0.0,
-                "rec15": float(values[2]) if values[2] is not None else 0.0,
-            }
-        except Exception:
-            pass
-    return result
-
-def analyze_cross_market(cross, tech):
-    if not cross:
-        return {"score": 0, "bias": "NEUTRAL", "note": "нейтрально", "data": {}}
-
-    btc = cross.get("BTC", {}).get("change", 0) or 0
-    dxy = cross.get("DXY", {}).get("change", 0) or 0
-    spx = cross.get("SPX", {}).get("change", 0) or 0
-    gold = cross.get("GOLD", {}).get("change", 0) or 0
-    oil = tech.get("change", 0) or 0
-
-    score = 0
-    notes = []
-
-    if oil < -0.5 and btc < -0.4 and spx < -0.2:
-        score -= 10
-        notes.append("oil/BTC/SPX слабкі — risk-off")
-    if oil > 0.5 and btc < -0.4:
-        score += 6
-        notes.append("oil росте проти BTC — oil/news драйвер")
-    if dxy > 0.15:
-        score -= 6
-        notes.append("DXY росте — тиск на ризик")
-    elif dxy < -0.15:
-        score += 5
-        notes.append("DXY слабшає — легше для commodities")
-    if gold > 0.4 and btc < 0:
-        score -= 3
-        notes.append("gold strong/BTC weak — захисний режим")
-
-    if score >= 8:
-        bias = "LONG SUPPORT"
-    elif score <= -8:
-        bias = "SHORT PRESSURE"
-    else:
-        bias = "NEUTRAL"
-
-    return {
-        "score": score,
-        "bias": bias,
-        "note": "; ".join(notes[:2]) if notes else "нейтрально",
-        "data": {"BTC": round(btc, 2), "DXY": round(dxy, 2), "SPX": round(spx, 2), "GOLD": round(gold, 2)},
-    }
-
-def adjust_plan_for_rr(plan, signal):
-    # SMC HYBRID plan already includes liquidity + minimum RR targets.
-    if isinstance(plan, dict) and str(plan.get("method", "")).startswith("SMC HYBRID"):
-        return plan
-    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
-        return plan
-    entry = float(plan["entry"])
-    stop = float(plan["stop"])
-    risk = abs(entry - stop)
-    if risk <= 0:
-        return plan
-    if signal == "LONG":
-        plan["tp1"] = round(entry + risk * 2.0, 4)
-        plan["tp2"] = round(entry + risk * 3.0, 4)
-        plan["tp3"] = round(entry + risk * 4.5, 4)
-    elif signal == "SHORT":
-        plan["tp1"] = round(entry - risk * 2.0, 4)
-        plan["tp2"] = round(entry - risk * 3.0, 4)
-        plan["tp3"] = round(entry - risk * 4.5, 4)
-    return plan
-
-def rr_metrics(plan):
-    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
-        return {"rr1": None, "rr2": None, "ok": True, "note": ""}
-    entry = float(plan["entry"])
-    stop = float(plan["stop"])
-    tp1 = float(plan["tp1"])
-    tp2 = float(plan["tp2"])
-    risk = abs(entry - stop)
-    if risk <= 0:
-        return {"rr1": None, "rr2": None, "ok": False, "note": "RR помилка"}
-    rr1 = abs(tp1 - entry) / risk
-    rr2 = abs(tp2 - entry) / risk
-    return {"rr1": round(rr1, 2), "rr2": round(rr2, 2), "ok": rr1 >= 2.0, "note": f"RR1 {round(rr1,2)} / RR2 {round(rr2,2)}"}
-
-def early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market=None, session=None):
-    """Early LONG/SHORT trigger before the move becomes a late chase.
-
-    Goal: catch the first quality continuation/breakdown moment, not the move
-    after it already travelled too far. It still blocks weak entries near major
-    calendar/news risk.
-    """
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    news = news or {}
-    event_risk = event_risk or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    price = (tv or {}).get("price")
-    change = tech.get("change", 0) or 0
-    abs_change = abs(change)
-    tech_score = tech.get("score", 0) or 0
-    trend_5m = tech.get("trend_5m", "UNKNOWN")
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    trend_1h = tech.get("trend_1h", "UNKNOWN")
-    rsi5 = tech.get("rsi_5m")
-    rsi15 = tech.get("rsi_15m")
-    ema20 = tech.get("ema20_15m")
-    order_score = orderflow.get("score", 0) or 0
-    news_score = news.get("score", 0) or 0
-    event_side = event_risk.get("direction", "MIXED")
-    calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
-    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    session_name = (session or {}).get("session", "")
-    volatility = (market or {}).get("volatility", {}).get("regime", "NORMAL")
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    local_from_high = local_move.get("from_high_pct", 0) or 0
-    local_from_low = local_move.get("from_low_pct", 0) or 0
-    bars_since_high = local_move.get("bars_since_high")
-    bars_since_low = local_move.get("bars_since_low")
-    local_momentum = local_move.get("local_momentum", "FLAT")
-
-    local_short_pullback = (
-        local_move.get("pullback_after_pump")
-        or (
-            local_move.get("available")
-            and -1.65 <= local_from_high <= -0.20
-            and bars_since_high is not None
-            and 1 <= bars_since_high <= 24
-            and local_momentum == "DOWN"
-        )
-    )
-    local_long_bounce = (
-        local_move.get("bounce_after_dump")
-        or (
-            local_move.get("available")
-            and 0.20 <= local_from_low <= 1.65
-            and bars_since_low is not None
-            and 1 <= bars_since_low <= 24
-            and local_momentum == "UP"
-        )
-    )
-
-    if abs_change >= 1.85 and not (local_short_pullback or local_long_bounce):
-        return {"active": False, "side": "NONE", "reason": "рух уже запізний"}
-    if volatility == "LOW VOLATILITY / CHOP MODE":
-        return {"active": False, "side": "NONE", "reason": "боковик, ранній вхід слабкий"}
-
-    def side_setup(side):
-        is_long = side == "LONG"
-        score_ok = tech_score >= 36 if is_long else tech_score <= -36
-        trend_ok = (
-            trend_5m == "UP" and trend_15m == "UP"
-            if is_long else
-            trend_5m == "DOWN" and trend_15m == "DOWN"
-        )
-        micro_ok = (
-            micro.get("bias") == "LONG" or micro.get("state") == "LONG_STRENGTHENING"
-            if is_long else
-            micro.get("bias") == "SHORT" or micro.get("state") == "SHORT_STRENGTHENING"
-        )
-        smc_ok = (
-            smc.get("bias") == "LONG" or smc.get("bos") == "пробій структури LONG"
-            if is_long else
-            smc.get("bias") == "SHORT" or smc.get("bos") == "пробій структури SHORT"
-        )
-        order_ok = order_score >= 3 if is_long else order_score <= -3
-        price_ema_ok = True
-        if price and ema20:
-            price_ema_ok = price > ema20 if is_long else price < ema20
-        rsi_ok = True
-        if rsi5 is not None and rsi15 is not None:
-            rsi_ok = (rsi5 < 74 and rsi15 < 70) if is_long else (rsi5 > 26 and rsi15 > 30)
-        local_pullback_ok = local_long_bounce if is_long else local_short_pullback
-        early_move_ok = (0.10 <= change <= 1.45) if is_long else (-1.45 <= change <= -0.10)
-        early_move_ok = early_move_ok or local_pullback_ok
-        not_against_1h = trend_1h != ("DOWN" if is_long else "UP")
-        score_requirement_ok = score_ok or (
-            local_pullback_ok
-            and (micro_ok or smc_ok or order_ok)
-            and (tech_score >= -35 if is_long else tech_score <= 35)
-        )
-        trend_requirement_ok = trend_ok or (
-            local_pullback_ok
-            and micro_ok
-            and (smc_ok or order_ok or trend_5m == ("UP" if is_long else "DOWN"))
-        )
-
-        confirmations = [
-            score_ok,
-            trend_ok,
-            micro_ok,
-            smc_ok,
-            order_ok,
-            price_ema_ok,
-            early_move_ok,
-            rsi_ok,
-            not_against_1h,
-            local_pullback_ok,
-        ]
-        count = sum(1 for item in confirmations if item)
-        required = 6
-        if (micro_ok and smc_ok and trend_ok and score_ok and early_move_ok and rsi_ok):
-            required = 5
-        if local_pullback_ok and micro_ok and (smc_ok or order_ok) and rsi_ok:
-            required = 5
-        if session_name == "ASIA":
-            required = 7
-
-        hard_news_against = (
-            (is_long and event_side == "SHORT" and news_score <= -35) or
-            ((not is_long) and event_side == "LONG" and news_score >= 35)
-        )
-
-        if count >= required and score_requirement_ok and trend_requirement_ok and early_move_ok and rsi_ok and (micro_ok or smc_ok or order_ok):
-            confidence = min(82, 58 + count * 3 + (5 if smc_ok else 0) + (4 if micro_ok else 0))
-            if local_pullback_ok and not not_against_1h:
-                confidence -= 5
-            if local_pullback_ok:
-                confidence = min(confidence, 72 if not_against_1h else 68)
-            if hard_news_against:
-                confidence -= 7
-            if local_pullback_ok and not is_long:
-                label = "ранній шорт-відкат від локального high"
-            elif local_pullback_ok and is_long:
-                label = "ранній лонг-відскок від локального low"
-            else:
-                label = "ранній лонг" if is_long else "ранній шорт"
-            details = []
-            if trend_ok:
-                details.append("5m/15m уже в один бік")
-            if local_pullback_ok:
-                details.append(local_move.get("note", "локальний рух підтверджує"))
-            if micro_ok:
-                details.append("3m підтверджує")
-            if smc_ok:
-                details.append("структура підтверджує")
-            if order_ok:
-                details.append("угоди/стакан допомагають")
-            return {
-                "active": True,
-                "side": side,
-                "score": confidence if is_long else -confidence,
-                "confidence": confidence,
-                "signal_type": f"РАННІЙ {side} / ВХІД ЗАРАЗ",
-                "reason": f"{label}: " + ", ".join(details[:3]),
-                "confirmations": count,
-            }
-        return None
-
-    candidates = []
-    for side in ["LONG", "SHORT"]:
-        result = side_setup(side)
-        if result:
-            candidates.append(result)
-
-    if not candidates:
-        return {"active": False, "side": "NONE", "reason": "ранній вхід ще не підтверджений"}
-
-    candidates.sort(key=lambda item: abs(item.get("score", 0)), reverse=True)
-    best = candidates[0]
-
-    # Do not flip a strong confirmed signal unless early setup is clearly stronger.
-    if signal in ["LONG", "SHORT"] and signal != best["side"] and abs(tech_score) < 70:
-        return {"active": False, "side": "NONE", "reason": "ранній сигнал конфліктує з основним"}
-
-    return best
-
-def news_event_trade_block(signal, trade_probability, event_risk, news, session=None):
-    """News/calendar is a caution layer, not a hard entry ban."""
-    return {"blocked": False, "reason": ""}
-
-def analyze_chase_protection(signal, tech, market):
-    change = abs(tech.get("change", 0) or 0)
-    rsi5 = tech.get("rsi_5m") or 50
-    rsi15 = tech.get("rsi_15m") or 50
-    vol = market.get("volatility", {}).get("regime", "NORMAL")
-    extended = False
-    reason = ""
-
-    if signal == "LONG" and (change >= 1.4 or rsi5 >= 72 or rsi15 >= 68):
-        extended = True
-        reason = "LONG після сильного росту — краще чекати відкат/ретест."
-    elif signal == "SHORT" and (change >= 1.4 or rsi5 <= 28 or rsi15 <= 32):
-        extended = True
-        reason = "SHORT після сильного падіння — краще чекати відкат/ретест."
-
-    if extended and vol == "HIGH VOLATILITY / BREAKOUT MODE":
-        reason += " Висока волатильність підсилює ризик відскоку."
-
-    return {"extended": extended, "reason": reason}
-
-def position_management_note(signal, plan, tech, news, event_risk, reversal):
-    rev_side = (reversal or {}).get("side", "NONE")
-    if signal == "LONG":
-        if rev_side == "REVERSAL SHORT WATCH" or tech.get("trend") == "DOWN":
-            return "Якщо вже в LONG: стоп обовʼязково; при слабкості 5m/15m краще скоротити або вийти."
-        return "Якщо вже в LONG: після TP1 частково фіксувати і підтягнути стоп."
-    if signal == "SHORT":
-        if rev_side == "REVERSAL LONG WATCH" or event_risk.get("direction") == "LONG":
-            return "Якщо вже в SHORT: стоп обовʼязково; bullish-новини можуть дати різкий відскок."
-        return "Якщо вже в SHORT: після TP1 частково фіксувати і підтягнути стоп."
-    if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 30:
-        return "Якщо вже в LONG: тримати тільки зі стопом; якщо техніка не підтвердить — скоротити/вийти."
-    if event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -20:
-        return "Якщо вже в SHORT: тримати тільки зі стопом; якщо техніка не підтвердить — скоротити/вийти."
-    return "Якщо вже в позиції: не усереднювати; чекати підтвердження або виходити при зламі сетапу."
-
-# ==========================================================
-# SIGNAL ENGINE
-# ==========================================================
-
-def build_signal(tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority=None, early_warning=None, trust_mode=None):
-
-    if priority is None:
-        priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
-    if early_warning is None:
-        early_warning = {"warning": "NONE", "side": "NEUTRAL", "score": 0, "trust": "BALANCED", "reason": ""}
-    if trust_mode is None:
-        trust_mode = "BALANCED"
-
-    
-    early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
-    trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
-# Base score remains visible for logs, but the signal engine now uses dynamic priority.
-    # When oil is in a high event/news regime, news/events get more weight.
-    score = (
-        tech["score"] * priority.get("tech_weight", 1.0)
-        + news["score"] * priority.get("news_weight", 1.0)
-        + orderflow["score"]
-        + macro["score"] * priority.get("news_weight", 1.0)
-        + event_risk["score"]
-        + market["score"]
-        + oi_analysis["score"]
-        + session.get("score", 0)
-    )
-    score = int(score)
-
-    # Early warning has priority over stale news direction.
-    if early_warning.get("warning") == "EARLY DUMP WARNING":
-        score += early_warning.get("score", 0)
-    elif early_warning.get("warning") == "EARLY PUMP WARNING":
-        score += early_warning.get("score", 0)
-
-    signal_type = "НЕМАЄ УГОДИ"
-    signal = "НЕЙТРАЛЬНО"
-
-    if early_warning.get("warning") == "EARLY DUMP WARNING":
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "УВАГА: МОЖЛИВИЙ ДАМП / ЧЕКАТИ SHORT-ТРИГЕР"
-    elif early_warning.get("warning") == "EARLY PUMP WARNING":
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "УВАГА: МОЖЛИВИЙ РІСТ / ЧЕКАТИ LONG-ТРИГЕР"
-
-    if news["total"] >= 5 and news["score"] >= 35:
-        score += 6
-    if news["total"] >= 60:
-        score -= 8
-    if macro["score"] >= 25 and tech["momentum"] in ["STRONG UP", "VERY STRONG UP"]:
-        score += 10
-    if macro["score"] <= -25 and tech["momentum"] in ["STRONG DOWN", "VERY STRONG DOWN"]:
-        score -= 10
-
-    if market["volatility"]["regime"] == "LOW VOLATILITY / CHOP MODE":
-        score -= 8
-    if market["liquidation"]["bias"].startswith("SHORT SQUEEZE"):
-        score += 8
-    if market["liquidation"]["bias"].startswith("LONG LIQUIDATION"):
-        score -= 8
-
-    if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        score -= 8
-
-    if event_risk["direction"] == "LONG":
-        score += 8
-    elif event_risk["direction"] == "SHORT":
-        score -= 8
-
-    # Dynamic priority: if news/event regime dominates oil, do not blindly follow opposite technical continuation.
-    # It can upgrade conflict into Reversal Watch, or allow a conservative entry only when technicals start confirming.
-    if signal_type == "НЕМАЄ УГОДИ" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
-        if tech.get("momentum") in ["STRONG UP", "VERY STRONG UP"] and tech.get("trend") in ["UP", "MIXED"] and orderflow.get("score", 0) >= 0:
-            signal = "LONG"
-            signal_type = "NEWS-PRIORITY LONG / EVENT MOMENTUM"
-        elif tech.get("trend") == "DOWN" or tech.get("score", 0) < 0:
-            signal = "НЕЙТРАЛЬНО"
-            signal_type = "REVERSAL LONG WATCH / NEWS PRIORITY"
-    elif signal_type == "НЕМАЄ УГОДИ" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
-        if tech.get("momentum") in ["STRONG DOWN", "VERY STRONG DOWN"] and tech.get("trend") in ["DOWN", "MIXED"] and orderflow.get("score", 0) <= 0:
-            signal = "SHORT"
-            signal_type = "NEWS-PRIORITY SHORT / EVENT MOMENTUM"
-        elif tech.get("trend") == "UP" or tech.get("score", 0) > 0:
-            signal = "НЕЙТРАЛЬНО"
-            signal_type = "REVERSAL SHORT WATCH / NEWS PRIORITY"
-
-    # Early confirmation: avoid staying in "watch" forever when news/event is dominant
-    # and the chart starts confirming the same direction.
-    if signal == "НЕЙТРАЛЬНО" and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"]:
-        if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 35:
-            if tech.get("score", 0) >= -25 and tech.get("change", 0) > 0.15 and orderflow.get("score", 0) >= 0:
-                signal = "LONG"
-                signal_type = "EARLY NEWS LONG / CONFIRMATION STARTED"
-        elif event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -25:
-            if tech.get("score", 0) <= 25 and tech.get("change", 0) < -0.15 and orderflow.get("score", 0) <= 0:
-                signal = "SHORT"
-                signal_type = "EARLY NEWS SHORT / CONFIRMATION STARTED"
-
-    # Reversal Watch is not an automatic aggressive entry. It can upgrade a conflict into a watch-signal.
-    if signal == "НЕЙТРАЛЬНО" and reversal.get("side") == "REVERSAL LONG WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) >= 30:
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "REVERSAL LONG WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-    elif signal == "НЕЙТРАЛЬНО" and reversal.get("side") == "REVERSAL SHORT WATCH" and reversal.get("confidence", 0) >= 45 and news.get("score", 0) <= -25:
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "REVERSAL SHORT WATCH / ЧЕКАТИ ПІДТВЕРДЖЕННЯ"
-    elif signal == "НЕЙТРАЛЬНО" and tech.get("momentum") == "VERY STRONG UP" and score >= 35:
-        signal = "LONG"
-        signal_type = "ІМПУЛЬСНИЙ LONG / BREAKOUT SCALP"
-    elif signal == "НЕЙТРАЛЬНО" and tech.get("momentum") == "VERY STRONG DOWN" and score <= -35:
-        signal = "SHORT"
-        signal_type = "ІМПУЛЬСНИЙ SHORT / BREAKDOWN SCALP"
-    elif signal == "НЕЙТРАЛЬНО" and score >= 75 and tech.get("trend") == "UP" and orderflow["score"] >= 20 and news["score"] >= 10 and macro["score"] >= 0:
-        signal = "LONG"
-        signal_type = "ПІДТВЕРДЖЕНИЙ TREND LONG"
-    elif signal == "НЕЙТРАЛЬНО" and score <= -75 and tech.get("trend") == "DOWN" and orderflow["score"] <= -20 and news["score"] <= -10 and macro["score"] <= 0:
-        signal = "SHORT"
-        signal_type = "ПІДТВЕРДЖЕНИЙ TREND SHORT"
-    elif signal == "НЕЙТРАЛЬНО" and score >= 90 and tech.get("trend") in ["UP", "MIXED"] and orderflow["score"] >= 8:
-        signal = "LONG"
-        signal_type = "РИЗИКОВИЙ LONG / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
-    elif signal == "НЕЙТРАЛЬНО" and score <= -90 and tech.get("trend") in ["DOWN", "MIXED"] and orderflow["score"] <= -8:
-        signal = "SHORT"
-        signal_type = "РИЗИКОВИЙ SHORT / ЗМІШАНІ ПІДТВЕРДЖЕННЯ"
-
-    # Shock Move Protection:
-    # If price dumps/pumps sharply, do not let bullish/bearish headlines create
-    # an opposite trade before the chart stabilizes. For oil this prevents
-    # catching a falling knife during fast liquidation moves.
-    shock_down = tech.get("change", 0) <= -1.2 and tech.get("score", 0) <= -80
-    shock_up = tech.get("change", 0) >= 1.2 and tech.get("score", 0) >= 80
-
-    if shock_down and news.get("score", 0) >= 25 and event_risk.get("direction") == "LONG":
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHOCK DOWN / LONG BLOCKED"
-    elif shock_up and news.get("score", 0) <= -20 and event_risk.get("direction") == "SHORT":
-        signal = "НЕЙТРАЛЬНО"
-        signal_type = "SHOCK UP / SHORT BLOCKED"
-
-        confidence = min(95, max(0, abs(score)))
-
-    risk_note = "Нормальний ризик"
-    if "РИЗИКОВИЙ" in signal_type:
-        risk_note = "Підтвердження змішані — зменшити розмір позиції"
-    if "ІМПУЛЬСНИЙ" in signal_type:
-        risk_note = "Імпульсний сигнал — краще чекати відкат/ретест"
-    if market["volatility"]["regime"] == "HIGH VOLATILITY / BREAKOUT MODE" and "ІМПУЛЬСНИЙ" in signal_type:
-        risk_note = "Висока волатильність: тільки відкат/ретест, не доганяти свічку"
-    if event_risk["risk"] in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        risk_note = "Подієвий ризик високий — краще чекати або зменшити позицію"
-    if "REVERSAL" in signal_type:
-        risk_note = "Можливий розворот: не входити одразу, чекати підтвердження/ретест"
-    if "NEWS-PRIORITY" in signal_type:
-        risk_note = "News/event priority: вхід тільки якщо техніка вже почала підтверджувати рух"
-    if macro["score"] <= -25 and signal == "LONG":
-        risk_note = "Macro risk-off проти LONG — тільки малий обʼєм або пропуск"
-    if macro["score"] >= 25 and signal == "SHORT":
-        risk_note = "Macro risk-on проти SHORT — тільки малий обʼєм або пропуск"
-    if tech.get("trend") == "DOWN" and signal == "LONG":
-        risk_note = "Тільки скальп: старший тренд не підтвердив LONG"
-    if tech.get("trend") == "UP" and signal == "SHORT":
-        risk_note = "Тільки скальп: старший тренд не підтвердив SHORT"
-
-    # Confidence is not the raw score. Raw score can be inflated by correlated
-    # indicators, so confidence is based on independent agreement/conflict.
-    aligned_sources = 0
-    conflict_sources = 0
-    if signal in ["LONG", "SHORT"]:
-        component_sides = [
-            side_from_score(tech.get("score", 0), 35, -35),
-            side_from_score(news.get("score", 0), 20, -20),
-            side_from_score(orderflow.get("score", 0), 15, -15),
-            side_from_score(macro.get("score", 0), 20, -20),
-            event_risk.get("direction", "MIXED"),
-            oi_analysis.get("side", "NEUTRAL"),
-        ]
-        for side in component_sides:
-            if side == signal:
-                aligned_sources += 1
-            elif side in ["LONG", "SHORT"] and side != signal:
-                conflict_sources += 1
-        confidence = 52 + aligned_sources * 7 - conflict_sources * 8 + min(12, abs(score) // 12)
-        confidence = min(88, max(45, int(confidence)))
-    else:
-        confidence = min(82, max(45, 55 + abs(score) // 6))
-
-    return signal, signal_type, score, confidence, risk_note
-
-def liquidity_buffer(atr, price, session=None, event_risk=None):
-    """Dynamic buffer around likely liquidity zones.
-    Wider during NY/event risk; smaller during quieter sessions.
-    """
-    buffer = atr * 0.22
-    session_name = (session or {}).get("session", "")
-    event_level = (event_risk or {}).get("risk", "")
-
-    if session_name == "NEW YORK":
-        buffer *= 1.25
-    elif session_name == "ASIA":
-        buffer *= 0.85
-
-    if event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        buffer *= 1.25
-
-    # Minimum micro-buffer so stop is not exactly on the obvious level.
-    return max(buffer, price * 0.0008)
-
-def risk_15m_bounds(price, atr, session=None, event_risk=None):
-    """Practical 15m risk bounds.
-
-    SMC gives invalidation zones, but with 10x leverage a far swing can make the
-    loss too large. Keep the stop technical, but also avoid tiny scalp stops.
-    Target scale: entry 90 -> stop not farther than about 88.5, and TP1 not
-    closer than about 93. Technicals may tighten the stop, but TP1 remains a
-    minimum target.
-    """
-    atr = atr or price * 0.006
-    min_stop_distance = max(atr * 0.55, price * 0.006)
-    max_stop_distance = max(atr * 1.00, price * 0.0167)
-    min_tp1_distance = max_stop_distance * 2.0
-    session_name = (session or {}).get("session", "")
-    event_level = (event_risk or {}).get("risk", "")
-
-    if session_name == "NEW YORK":
-        min_stop_distance *= 1.05
-        max_stop_distance *= 1.08
-        min_tp1_distance *= 1.08
-    if event_level in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        min_stop_distance *= 1.08
-        max_stop_distance *= 1.12
-        min_tp1_distance *= 1.12
-
-    return min_stop_distance, max_stop_distance, min_tp1_distance
-
-def estimate_liquidity_levels(price, tech, smc=None, orderflow=None):
-    """Approximate SMC-style liquidity levels using available free data.
-    Since we do not have full candle history, this estimates likely swing/liquidity zones
-    from ATR and EMA15 levels.
-    """
-    smc = smc or {}
-    orderflow = orderflow or {}
-    atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
-    ema20 = tech.get("ema20_15m")
-    ema50 = tech.get("ema50_15m")
-
-    # Local estimated liquidity pools.
-    recent_low = price - atr * 0.85
-    recent_high = price + atr * 0.85
-
-    if ema20:
-        if ema20 < price:
-            recent_low = min(recent_low, ema20 - atr * 0.20)
-        elif ema20 > price:
-            recent_high = max(recent_high, ema20 + atr * 0.20)
-
-    if ema50:
-        if ema50 < price:
-            recent_low = min(recent_low, ema50 - atr * 0.25)
-        elif ema50 > price:
-            recent_high = max(recent_high, ema50 + atr * 0.25)
-
-    swing_low = safe_float(smc.get("swing_low"))
-    swing_high = safe_float(smc.get("swing_high"))
-    if swing_low:
-        recent_low = min(recent_low, swing_low)
-    if swing_high:
-        recent_high = max(recent_high, swing_high)
-
-    fvg = smc.get("fvg") if isinstance(smc.get("fvg"), dict) else {}
-    fvg_zone = fvg.get("zone")
-    if isinstance(fvg_zone, (list, tuple)) and len(fvg_zone) == 2:
-        zone_values = [safe_float(value) for value in fvg_zone]
-        zone_values = [value for value in zone_values if value is not None]
-        low_zone = min(zone_values) if zone_values else None
-        high_zone = max(zone_values) if zone_values else None
-        if fvg.get("side") == "LONG" and low_zone and high_zone and high_zone < price:
-            recent_low = min(recent_low, low_zone)
-        elif fvg.get("side") == "SHORT" and low_zone and high_zone and low_zone > price:
-            recent_high = max(recent_high, high_zone)
-
-    book = orderflow.get("order_book") if isinstance(orderflow.get("order_book"), dict) else {}
-    wall_price = safe_float(book.get("accumulation_price"))
-    wall_side = book.get("accumulation_side", "NEUTRAL")
-    if wall_price and wall_side == "LONG" and wall_price < price:
-        recent_low = min(recent_low, wall_price - atr * 0.15)
-    elif wall_price and wall_side == "SHORT" and wall_price > price:
-        recent_high = max(recent_high, wall_price + atr * 0.15)
-
-    # Wider liquidity targets.
-    lower_liquidity_1 = price - atr * 1.25
-    lower_liquidity_2 = price - atr * 1.90
-    lower_liquidity_3 = price - atr * 2.70
-
-    upper_liquidity_1 = price + atr * 1.25
-    upper_liquidity_2 = price + atr * 1.90
-    upper_liquidity_3 = price + atr * 2.70
-
-    return {
-        "recent_low": recent_low,
-        "recent_high": recent_high,
-        "lower_liquidity_1": lower_liquidity_1,
-        "lower_liquidity_2": lower_liquidity_2,
-        "lower_liquidity_3": lower_liquidity_3,
-        "upper_liquidity_1": upper_liquidity_1,
-        "upper_liquidity_2": upper_liquidity_2,
-        "upper_liquidity_3": upper_liquidity_3,
-    }
-
-def tp_rr_multipliers(signal_type, tech=None, session=None, event_risk=None):
-    """Adaptive TP multipliers.
-
-    Early confirmation = a bit more conservative.
-    Confirmed пробій структури/trend/news alignment = wider targets.
-    This avoids tiny scalping TPs while keeping TP1 realistic.
-    """
-    st = (signal_type or "").upper()
-    tech = tech or {}
-    session = session or {}
-    event_risk = event_risk or {}
-
-    rr1, rr2, rr3 = 2.00, 3.00, 4.50
-
-    # Early reversal / watch entries are less mature, but TP1 still must be 2R.
-    if "EARLY" in st or "REVERSAL" in st or "WATCH" in st:
-        rr1, rr2, rr3 = 2.00, 2.80, 4.00
-
-    # Strong confirmed trend gets wider TP2/TP3, while TP1 stays near 2R.
-    if "пробій структури" in st or "BREAKOUT" in st or abs(tech.get("score", 0) or 0) >= 85:
-        rr1, rr2, rr3 = 2.00, 3.20, 4.80
-
-    # High-impact event/news can extend moves, but keep TP1 reachable.
-    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        rr2 += 0.25
-        rr3 += 0.45
-
-    # New York usually has better follow-through for oil/macro.
-    if session.get("session") == "NEW YORK":
-        rr2 += 0.15
-        rr3 += 0.25
-
-    return rr1, rr2, rr3
-
-def enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3):
-    """Keep TP levels separated enough to avoid tiny, clustered targets.
-
-    Targets are still based on SMC/liquidity + RR, but each next TP must be at
-    least 0.75 ATR from the previous one. This prevents TP1/TP2 from being too
-    close during low-volatility or compressed liquidity conditions.
-    """
-    atr = atr or price * 0.006
-    min_gap = max(atr * 0.75, price * 0.004)
-
-    if signal == "LONG":
-        tp1 = max(tp1, price + min_gap)
-        tp2 = max(tp2, tp1 + min_gap)
-        tp3 = max(tp3, tp2 + min_gap)
-    elif signal == "SHORT":
-        tp1 = min(tp1, price - min_gap)
-        tp2 = min(tp2, tp1 - min_gap)
-        tp3 = min(tp3, tp2 - min_gap)
-
-    return tp1, tp2, tp3
-
-def smc_hybrid_trade_plan(signal, signal_type, price, tech, session=None, event_risk=None, smc=None, orderflow=None):
-    """SMC + ATR + RR hybrid plan.
-
-    Stop:
-      LONG  -> below estimated liquidity low / EMA zone + ATR buffer
-      SHORT -> above estimated liquidity high / EMA zone + ATR buffer
-
-    TP:
-      Uses liquidity targets, but now with wider adaptive RR:
-      early/reversal: at least 2R to TP1
-      confirmed trend: TP1 near 2R, wider TP2/TP3
-
-    This is better than pure Smart Money or pure ATR alone:
-      - pure SMC levels can be too subjective or too far;
-      - pure ATR can be too mechanical and too small;
-      - hybrid keeps stop behind structure and targets realistic expansion.
-    """
-    smc = smc or {}
-    atr = smc.get("atr") or tech.get("atr_15m") or price * 0.006
-    orderflow = orderflow or {}
-    levels = estimate_liquidity_levels(price, tech, smc, orderflow)
-    buffer = liquidity_buffer(atr, price, session, event_risk)
-    min_stop_distance, max_stop_distance, min_tp1_distance = risk_15m_bounds(price, atr, session, event_risk)
-    rr1, rr2, rr3 = tp_rr_multipliers(signal_type, tech, session, event_risk)
-
-    if signal == "LONG":
-        raw_smc_stop = levels["recent_low"] - buffer
-        raw_risk = price - raw_smc_stop
-        stop_distance = min(max(raw_risk, min_stop_distance), max_stop_distance)
-        stop = price - stop_distance
-        risk = max(price - stop, min_stop_distance)
-        min_tp1 = price + min_tp1_distance
-
-        tp1 = max(levels["upper_liquidity_1"], price + risk * rr1, min_tp1)
-        tp2 = max(levels["upper_liquidity_2"], price + risk * rr2, tp1 + risk)
-        tp3 = max(levels["upper_liquidity_3"], price + risk * rr3, tp2 + risk * 1.5)
-
-        note = f"15m SMC LONG: стоп технічний, але не далі максимуму ризику; TP1 не ближче мінімальної цілі 1:2 від максимуму. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
-
-    elif signal == "SHORT":
-        raw_smc_stop = levels["recent_high"] + buffer
-        raw_risk = raw_smc_stop - price
-        stop_distance = min(max(raw_risk, min_stop_distance), max_stop_distance)
-        stop = price + stop_distance
-        risk = max(stop - price, min_stop_distance)
-        min_tp1 = price - min_tp1_distance
-
-        tp1 = min(levels["lower_liquidity_1"], price - risk * rr1, min_tp1)
-        tp2 = min(levels["lower_liquidity_2"], price - risk * rr2, tp1 - risk)
-        tp3 = min(levels["lower_liquidity_3"], price - risk * rr3, tp2 - risk * 1.5)
-
-        note = f"15m SMC SHORT: стоп технічний, але не далі максимуму ризику; TP1 не ближче мінімальної цілі 1:2 від максимуму. Далекий SMC стоп: {round(raw_smc_stop, 4)}. SMC: {smc.get('phase', 'NO DATA')}."
-
-    else:
-        return {
-            "entry": None,
-            "stop": None,
-            "tp1": None,
-            "tp2": None,
-            "tp3": None,
-            "note": "Не входити. Чекати підтвердження.",
-            "method": "NO TRADE",
-        }
-
-    tp1, tp2, tp3 = enforce_min_tp_spacing(signal, price, atr, tp1, tp2, tp3)
-    actual_risk = abs(price - stop)
-    actual_rr1 = abs(tp1 - price) / actual_risk if actual_risk else rr1
-    actual_rr2 = abs(tp2 - price) / actual_risk if actual_risk else rr2
-    actual_rr3 = abs(tp3 - price) / actual_risk if actual_risk else rr3
-
-    return {
-        "entry": round(price, 4),
-        "stop": round(stop, 4),
-        "tp1": round(tp1, 4),
-        "tp2": round(tp2, 4),
-        "tp3": round(tp3, 4),
-        "rr1": round(actual_rr1, 2),
-        "rr2": round(actual_rr2, 2),
-        "rr3": round(actual_rr3, 2),
-        "note": note,
-        "method": "SMC HYBRID / Liquidity + ATR + Adaptive RR",
-    }
-
-def make_trade_plan(signal, signal_type, price, tech, reversal=None, session=None, event_risk=None, smc=None, orderflow=None):
-    """Main plan generator.
-    Uses SMC-style hybrid logic:
-    - Stop behind estimated liquidity/swing zone, not just random ATR.
-    - TP targets use liquidity zones and minimum RR.
-    """
-    return smc_hybrid_trade_plan(signal, signal_type, price, tech, session, event_risk, smc, orderflow)
-
-def side_from_score(score, long_thr=15, short_thr=-15):
-    if score >= long_thr:
-        return "LONG"
-    if score <= short_thr:
-        return "SHORT"
-    return "NEUTRAL"
-
-def tech_verdict(tech):
-    score = tech.get("score", 0)
-    momentum = tech.get("momentum", "NEUTRAL")
-    trend = tech.get("trend", "UNKNOWN")
-
-    if score >= 55 or (momentum in ["STRONG UP", "VERY STRONG UP"] and trend in ["UP", "MIXED"]):
-        side = "LONG"
-    elif score <= -55 or (momentum in ["STRONG DOWN", "VERY STRONG DOWN"] and trend in ["DOWN", "MIXED"]):
-        side = "SHORT"
-    else:
-        side = "NEUTRAL"
-
-    reason = f"trend {trend}, momentum {momentum}, score {score}"
-    return side, reason
-
-def news_verdict(news):
-    side = side_from_score(news.get("score", 0), 15, -15)
-    reason = (
-        f"score {news.get('score')}, sentiment {news.get('sentiment')}, "
-        f"bullish {news.get('bullish')}, bearish {news.get('bearish')}, breaking {news.get('breaking')}"
-    )
-    return side, reason
-
-def event_verdict(event_risk):
-    direction = event_risk.get("direction", "MIXED")
-    risk = event_risk.get("risk", "НОРМАЛЬНИЙ")
-    score = event_risk.get("score", 0)
-
-    if direction in ["LONG", "SHORT"]:
-        side = direction
-    else:
-        side = "NEUTRAL"
-
-    reason = f"direction {direction}, risk {risk}, score {score}"
-    return side, reason
-
-def macro_verdict(macro):
-    side = side_from_score(macro.get("score", 0), 15, -15)
-    reason = f"regime {macro.get('regime')}, score {macro.get('score')}"
-    return side, reason
-
-def orderflow_verdict(orderflow):
-    side = side_from_score(orderflow.get("score", 0), 15, -15)
-    reason = f"{orderflow.get('bias')}, score {orderflow.get('score')}"
-    return side, reason
-
-def human_signal_label(signal, signal_type, early_warning=None):
-    early_warning = early_warning or {"warning": "NONE", "side": "NEUTRAL"}
-    st = signal_type or ""
-
-    if early_warning.get("warning") == "EARLY DUMP WARNING":
-        return "Увага: можливий дамп — чекаємо SHORT-тригер"
-    if early_warning.get("warning") == "EARLY PUMP WARNING":
-        return "Увага: можливий ріст — чекаємо LONG-тригер"
-
-    if signal == "LONG":
-        return "TRADE LONG"
-    if signal == "SHORT":
-        return "TRADE SHORT"
-
-    if "STRUCTURE SHORT WATCH" in st:
-        return "LONG слабшає — можливий відкат вниз"
-    if "STRUCTURE LONG WATCH" in st:
-        return "SHORT слабшає — можливий відскок вгору"
-    if "LONG СКАСОВАНО" in st:
-        return "LONG скасовано — чекати новий тригер"
-    if "SHORT СКАСОВАНО" in st:
-        return "SHORT скасовано — чекати новий тригер"
-    if "REVERSAL LONG" in st or "LONG WATCH" in st:
-        return "Чекаємо підтвердження LONG"
-    if "REVERSAL SHORT" in st or "SHORT WATCH" in st:
-        return "Чекаємо підтвердження SHORT"
-
-    return "НЕ ВХОДИТИ — чекати"
-
-def human_reversal_label(reversal):
-    side = (reversal or {}).get("side", "NONE")
-    conf = (reversal or {}).get("confidence", 0)
-
-    if side == "REVERSAL LONG WATCH":
-        return f"можливий розворот у LONG ({conf}%)"
-    if side == "REVERSAL SHORT WATCH":
-        return f"можливий розворот у SHORT ({conf}%)"
-    return "немає"
-
-def main_driver_override_for_early_warning(driver, early_warning):
-    early_warning = early_warning or {"warning": "NONE"}
-    if early_warning.get("warning") == "EARLY DUMP WARNING":
-        return {
-            "type": "TECH",
-            "side": "SHORT",
-            "title": "Раннє попередження: ціна не підтверджує bullish-новини",
-            "ua_title": "Раннє попередження: можливий дамп",
-            "time_context": "зараз",
-            "expectation": "SHORT може прискоритись; LONG тільки після стабілізації/ретесту",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
-        }
-    if early_warning.get("warning") == "EARLY PUMP WARNING":
-        return {
-            "type": "TECH",
-            "side": "LONG",
-            "title": "Раннє попередження: ціна не підтверджує bearish-новини",
-            "ua_title": "Раннє попередження: можливий ріст",
-            "time_context": "зараз",
-            "expectation": "LONG може прискоритись; SHORT тільки після стабілізації/ретесту",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
-        }
-    return driver
-
-def final_short_summary(signal, signal_type, tech, news, orderflow, macro, event_risk, market=None, oi_analysis=None, reversal=None, session=None):
-    tech_side, _ = tech_verdict(tech)
-    news_side, _ = news_verdict(news)
-    event_side, _ = event_verdict(event_risk)
-
-    st = signal_type or ""
-    reversal_side = (reversal or {}).get("side", "NONE")
-    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-
-    if "SHOCK DOWN" in st:
-        return (
-            "Різкий дамп: технічний продаж зараз домінує. "
-            "LONG по новинах можливий тільки після стабілізації, відскоку і ретесту. "
-            "Не ловити падаючий ринок."
-        )
-    if "SHOCK UP" in st:
-        return (
-            "Різкий ріст: покупці зараз домінують. "
-            "SHORT можливий тільки після стабілізації, відкату і ретесту. "
-            "Не шортити сильний імпульс без підтвердження."
-        )
-
-    if signal == "SHORT":
-        if reversal_side == "REVERSAL LONG WATCH" or news_side == "LONG" or event_side == "LONG":
-            return (
-                "SHORT зараз має перевагу через сильний технічний продаж. "
-                "Але bullish-новини/події можуть дати різкий LONG-відскок — "
-                "вхід тільки після ретесту або підтвердження продавців."
-            )
-        if event_high:
-            return "SHORT є, але подієвий ризик високий. Вхід тільки після ретесту/підтвердження."
-        return "SHORT підтверджений технікою. Вхід тільки зі стопом."
-
-    if signal == "LONG":
-        if reversal_side == "REVERSAL SHORT WATCH" or news_side == "SHORT" or event_side == "SHORT":
-            return (
-                "LONG зараз має перевагу, але bearish-новини/події можуть дати різкий відкат. "
-                "Краще чекати ретест і не доганяти свічку."
-            )
-        if event_high:
-            return "LONG є, але подієвий ризик високий. Не доганяти рух; краще чекати відкат/ретест."
-        return "LONG підтверджений. Вхід тільки зі стопом."
-
-    if reversal_side == "REVERSAL LONG WATCH":
-        return "Можливий розворот у LONG: новини/події підтримують ріст, але техніка ще не дала повний тригер."
-    if reversal_side == "REVERSAL SHORT WATCH":
-        return "Можливий розворот у SHORT: новини/події підтримують падіння, але техніка ще не дала повний тригер."
-
-    if tech_side == "SHORT" and news_side == "LONG":
-        return "Техніка за SHORT, але новини/події за LONG. Краще не входити до підтвердження."
-    if tech_side == "LONG" and news_side == "SHORT":
-        return "Техніка за LONG, але новини/події за SHORT. Краще не входити до підтвердження."
-
-    return "Сигналу на вхід немає. Ринок змішаний — краще чекати."
-
-def combined_technical_bias(tech, orderflow, market, oi_analysis):
-    """Separate technical-side decision. Does not include news/event/macro."""
-    tech_side, tech_reason = tech_verdict(tech)
-    order_side, order_reason = orderflow_verdict(orderflow)
-    market_side, market_reason = market_structure_verdict(market)
-    oi_side = oi_analysis.get("side", "NEUTRAL")
-
-    score = (
-        tech.get("score", 0)
-        + orderflow.get("score", 0)
-        + market.get("score", 0)
-        + oi_analysis.get("score", 0)
-    )
-
-    long_votes = [tech_side, order_side, market_side, oi_side].count("LONG")
-    short_votes = [tech_side, order_side, market_side, oi_side].count("SHORT")
-
-    if score >= 80 and long_votes >= 2:
-        side = "STRONG LONG"
-    elif score >= 35:
-        side = "LONG"
-    elif score <= -80 and short_votes >= 2:
-        side = "STRONG SHORT"
-    elif score <= -35:
-        side = "SHORT"
-    else:
-        side = "NEUTRAL"
-
-    reason = (
-        f"trend {tech.get('trend')}, 5m {tech.get('trend_5m')}, "
-        f"15m {tech.get('trend_15m')}, 1h {tech.get('trend_1h')}, "
-        f"momentum {tech.get('momentum')}, orderflow {orderflow.get('bias')}, "
-        f"OI {oi_analysis.get('summary')}, score {score}"
-    )
-
-    return {"side": side, "score": score, "reason": reason}
-
-def combined_fundamental_bias(news, event_risk, macro):
-    """Separate news/fundamental-side decision. Does not include technicals."""
-    news_side, news_reason = news_verdict(news)
-    event_side, event_reason = event_verdict(event_risk)
-    macro_side, macro_reason = macro_verdict(macro)
-
-    # Event score is risk penalty, so use direction separately for bias.
-    event_direction_score = 0
-    if event_risk.get("direction") == "LONG":
-        event_direction_score = 18
-    elif event_risk.get("direction") == "SHORT":
-        event_direction_score = -18
-
-    score = news.get("score", 0) + macro.get("score", 0) + event_direction_score
-
-    # High event risk means fundamentals are powerful but dangerous.
-    risk = event_risk.get("risk", "НОРМАЛЬНИЙ")
-
-    if score >= 55:
-        side = "STRONG LONG"
-    elif score >= 20:
-        side = "LONG"
-    elif score <= -55:
-        side = "STRONG SHORT"
-    elif score <= -20:
-        side = "SHORT"
-    else:
-        side = "NEUTRAL"
-
-    reason = (
-        f"news {news_side} score {news.get('score')}, "
-        f"event {event_side} risk {risk}, macro {macro.get('regime')}, "
-        f"fundamental score {score}"
-    )
-
-    return {"side": side, "score": score, "risk": risk, "reason": reason}
-
-def market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal=None, session=None, priority=None):
-    tech_side = technical_bias["side"]
-    fund_side = fundamental_bias["side"]
-
-    tech_short = "SHORT" in tech_side
-    tech_long = "LONG" in tech_side
-    fund_short = "SHORT" in fund_side
-    fund_long = "LONG" in fund_side
-
-    if priority and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and fund_long and tech_short:
-        return "NEWS/EVENT DOMINANT: техніка SHORT, але фундамент сильний LONG — SHORT не брати, чекати LONG-підтвердження"
-    if priority and priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and fund_short and tech_long:
-        return "NEWS/EVENT DOMINANT: техніка LONG, але фундамент сильний SHORT — LONG не брати, чекати SHORT-підтвердження"
-
-    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "REVERSAL LONG WATCH: можливий розворот вгору — чекати підтвердження"
-    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "REVERSAL SHORT WATCH: можливий розворот вниз — чекати підтвердження"
-
-    if signal == "НЕЙТРАЛЬНО":
-        if tech_long and fund_short:
-            return "КОНФЛІКТ: техніка LONG, фундамент SHORT — НЕ ВХОДИТИ"
-        if tech_short and fund_long:
-            return "КОНФЛІКТ: техніка SHORT, фундамент LONG — НЕ ВХОДИТИ"
-        return "НЕ ВХОДИТИ — підтвердження недостатні"
-
-    if tech_long and fund_long and signal == "LONG":
-        return "LONG підтверджений технікою і фундаментом"
-    if tech_short and fund_short and signal == "SHORT":
-        return "SHORT підтверджений технікою і фундаментом"
-
-    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        return f"{signal}, але подієвий ризик високий — чекати ретест"
-
-    return f"{signal}, але підтвердження змішані"
-
-def short_bias_label(side):
-    if "STRONG LONG" in side:
-        return "STRONG LONG"
-    if "LONG" in side:
-        return "LONG"
-    if "STRONG SHORT" in side:
-        return "STRONG SHORT"
-    if "SHORT" in side:
-        return "SHORT"
-    return "NEUTRAL"
-
-def compact_priority_label(priority, reversal):
-    dominant = priority.get("dominant", "BALANCED")
-    if dominant in ["FUNDAMENTAL", "EVENT"]:
-        return "NEWS/EVENT"
-    if dominant == "TECHNICAL":
-        return "TECH"
-    return "BALANCED"
-
-def compact_reversal_label(reversal):
-    side = reversal.get("side", "NONE") if reversal else "NONE"
-    confidence = reversal.get("confidence", 0) if reversal else 0
-    if side == "REVERSAL LONG WATCH":
-        return f"можливий розворот у LONG ({confidence}%)"
-    if side == "REVERSAL SHORT WATCH":
-        return f"можливий розворот у SHORT ({confidence}%)"
-    return "немає"
-
-def human_decision_line(signal, signal_type, reversal, tech, news, event_risk):
-    if "SHOCK DOWN" in signal_type:
-        return "НЕ ВХОДИТИ — різкий дамп"
-    if "SHOCK UP" in signal_type:
-        return "НЕ ВХОДИТИ — різкий памп"
-    if "РАННІЙ" in signal_type and signal == "LONG":
-        return "РАННІЙ LONG — можна входити зараз"
-    if "РАННІЙ" in signal_type and signal == "SHORT":
-        return "РАННІЙ SHORT — можна входити зараз"
-    if "СКАЛЬП" in signal_type and signal == "LONG":
-        return "СКАЛЬП LONG — ранній відскок"
-    if "СКАЛЬП" in signal_type and signal == "SHORT":
-        return "СКАЛЬП SHORT — ранній відкат"
-
-    if signal == "LONG":
-        if "EARLY NEWS" in signal_type:
-            return "TRADE LONG — можна входити"
-        if "ІМПУЛЬСНИЙ" in signal_type:
-            return "TRADE LONG — імпульсний"
-        if "РИЗИКОВИЙ" in signal_type:
-            return "TRADE LONG — обережно"
-        return "TRADE LONG"
-
-    if signal == "SHORT":
-        if "EARLY NEWS" in signal_type:
-            return "TRADE SHORT — можна входити"
-        if "ІМПУЛЬСНИЙ" in signal_type:
-            return "TRADE SHORT — імпульсний"
-        if "РИЗИКОВИЙ" in signal_type:
-            return "TRADE SHORT — обережно"
-        return "TRADE SHORT"
-
-    # No active trade: show a human trigger direction, not internal НЕЙТРАЛЬНО/WATCH terms.
-    if reversal and reversal.get("side") == "REVERSAL LONG WATCH":
-        return "Чекаємо підтвердження LONG"
-    if reversal and reversal.get("side") == "REVERSAL SHORT WATCH":
-        return "Чекаємо підтвердження SHORT"
-
-    if event_risk.get("direction") == "LONG" and news.get("score", 0) >= 30:
-        return "Чекаємо тригер по LONG"
-    if event_risk.get("direction") == "SHORT" and news.get("score", 0) <= -20:
-        return "Чекаємо тригер по SHORT"
-
-    return "НЕ ВХОДИТИ — чекати"
-
-def driver_time_context(item):
-    title = (item or {}).get("title", "")
-    lower = title.lower()
-    published_at = (item or {}).get("published_at")
-
-    if any(x in lower for x in ["now", "currently", "breaking", "urgent", "live"]):
-        return "зараз"
-    if any(x in lower for x in ["today", "later today", "this morning", "this afternoon", "tonight"]):
-        return "сьогодні"
-    if any(x in lower for x in ["tomorrow"]):
-        return "завтра"
-    if any(x in lower for x in ["this week", "upcoming", "ahead of", "expected", "awaits", "waiting for"]):
-        return "очікується найближчим часом"
-
-    if published_at:
-        try:
-            age_hours = (now_utc() - published_at).total_seconds() / 3600
-            if age_hours <= 2:
-                return "останні 2 год"
-            if age_hours <= 6:
-                return "останні 6 год"
-        except Exception:
-            pass
-
-    return "час не уточнено"
-
-def ua_driver_summary(title):
-    lower = (title or "").lower()
-
-    if "iran" in lower or "us-iran" in lower or "u.s.-iran" in lower or "hormuz" in lower:
-        return "Переговори США–Іран / Ормузька протока"
-    if "eia" in lower or "api" in lower or "inventory" in lower or "stockpiles" in lower:
-        return "Запаси нафти EIA/API"
-    if "opec" in lower or "opec+" in lower:
-        return "OPEC/OPEC+: рішення щодо видобутку"
-    if "fed" in lower or "powell" in lower or "fomc" in lower:
-        return "ФРС / Powell: вплив на долар і ризик-апетит"
-    if "cpi" in lower or "inflation" in lower:
-        return "Інфляція США / CPI"
-    if "nfp" in lower or "jobs" in lower or "payrolls" in lower:
-        return "Ринок праці США / NFP"
-    if "sanction" in lower or "tariff" in lower or "trump" in lower:
-        return "Санкції / тарифи / політичні заяви"
-    if "russia" in lower or "ukraine" in lower or "war" in lower:
-        return "Геополітика: війна / ризик постачання"
-    if "oil" in lower or "brent" in lower or "crude" in lower:
-        return "Нафта: свіжий новинний імпульс"
-
-    return BeautifulSoup(title or "Новинний фактор", "html.parser").get_text(" ", strip=True)[:95]
-
-def driver_expectation(direction, title, driver_type="NEWS"):
-    lower = (title or "").lower()
-    side = direction if direction in ["LONG", "SHORT"] else "MIXED"
-
-    if side == "LONG":
-        if any(x in lower for x in ["iran", "hormuz", "sanction", "war", "attack", "strike", "supply risk", "disruption"]):
-            return "LONG — ризик дефіциту/перебоїв постачання нафти"
-        if any(x in lower for x in ["draw", "stockpiles fell", "inventory draw"]):
-            return "LONG — запаси зменшуються, це підтримує нафту"
-        if "opec" in lower and any(x in lower for x in ["cut", "cuts", "reduce"]):
-            return "LONG — обмеження видобутку підтримує ціну"
-        return "LONG — новини/події підтримують попит або ризик дефіциту"
-
-    if side == "SHORT":
-        if any(x in lower for x in ["ceasefire", "peace", "deal", "sanctions relief", "talks progress"]):
-            return "SHORT — геополітична премія в ціні може зменшитись"
-        if any(x in lower for x in ["build", "stockpiles rose", "inventory build"]):
-            return "SHORT — запаси ростуть, це тисне на нафту"
-        if "opec" in lower and any(x in lower for x in ["increase", "output hike", "production hike"]):
-            return "SHORT — більша пропозиція може тиснути на ціну"
-        if any(x in lower for x in ["hawkish", "rate hike", "dollar rises", "yields rise"]):
-            return "SHORT — сильний долар/ставки тиснуть на нафту"
-        return "SHORT — новини/події тиснуть на ціну"
-
-    if driver_type == "TECH":
-        return "Очікування залежить від підтвердження 5m/15m"
-    return "MIXED — напрямок новини неоднозначний"
-
-def technical_driver_summary(tech, orderflow, market):
-    score = tech.get("score", 0)
-    trend = tech.get("trend", "MIXED")
-    momentum = tech.get("momentum", "NEUTRAL")
-    vol = market.get("volatility", {}).get("regime", "NORMAL")
-
-    if score >= 55:
-        return "TECH / LONG", "Техніка підтримує LONG", "LONG — тренд/імпульс на боці покупців"
-    if score <= -55:
-        if (tech.get("rsi_5m") is not None and tech.get("rsi_5m") < 26) or (tech.get("rsi_15m") is not None and tech.get("rsi_15m") < 30):
-            return "TECH / SHORT", "Техніка вниз, але є перепроданість", "SHORT обережно — можливий відскок"
-        return "TECH / SHORT", "Техніка підтримує SHORT", "SHORT — тренд/імпульс на боці продавців"
-    if momentum in ["STRONG UP", "VERY STRONG UP"]:
-        return "TECH / LONG", "Сильний імпульс вгору", "LONG — краще після відкату/ретесту"
-    if momentum in ["STRONG DOWN", "VERY STRONG DOWN"]:
-        return "TECH / SHORT", "Сильний імпульс вниз", "SHORT — краще після відкату/ретесту"
-    if vol == "TREND MODE":
-        return f"TECH / {trend}", f"Трендовий режим: {trend}", "Очікування — рух за трендом після підтвердження"
-    return "TECH / NEUTRAL", "Техніка без чіткого драйвера", "Чекати сильнішого 5m/15m сигналу"
-
-def news_source_quality(source, title=""):
-    s = (source or "").lower()
-    t = (title or "").lower()
-    if "reuters" in s or "reuters" in t:
-        return 1.35
-    if "tsta markets" in s or "t.me/s/tstamarkets" in t:
-        return 1.2
-    if any(x in s for x in ["cnbc", "oilprice", "eia", "opec", "financial times", "wsj", "investing"]):
-        return 1.15
-    if any(x in s for x in ["coindesk", "cointelegraph", "cryptopanic"]):
-        return 0.35
-    return 1.0
-
-def is_low_priority_oil_driver(item):
-    source = (item or {}).get("source", "")
-    title = (item or {}).get("title", "")
-    return news_source_quality(source, title) < 0.6
-
-def select_main_driver(tech, news, event_risk, macro, orderflow, market, session, priority):
-    # Event/news dominates if priority says so and there is a clear event headline.
-    important_events_raw = event_risk.get("important", []) or []
-    important_news_raw = news.get("important", []) or []
-
-    important_events = [x for x in important_events_raw if not is_low_priority_oil_driver(x)] or important_events_raw
-    important_news = [x for x in important_news_raw if not is_low_priority_oil_driver(x)] or important_news_raw
-
-    # Shock technical move should become the main driver even if headlines are bullish/bearish.
-    # This avoids showing an EVENT/LONG driver during a fast technical dump.
-    tech_score = tech.get("score", 0)
-    if tech_score <= -120:
-        return {
-            "type": "TECH / SHORT",
-            "summary": "Різкий технічний продаж",
-            "time": "зараз",
-            "expectation": "SHORT домінує зараз; LONG тільки після стабілізації/ретесту",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
-        }
-    if tech_score >= 120:
-        return {
-            "type": "TECH / LONG",
-            "summary": "Різкий технічний памп",
-            "time": "зараз",
-            "expectation": "LONG домінує зараз; SHORT тільки після слабкості/ретесту",
-            "source": "Технічний аналіз TradingView",
-            "link": "",
-        }
-
-    if priority.get("dominant") in ["FUNDAMENTAL", "EVENT"] and event_risk.get("direction") in ["LONG", "SHORT"] and important_events:
-        item = important_events[0]
-        direction = event_risk.get("direction")
-        return {
-            "type": f"EVENT / {direction}",
-            "summary": ua_driver_summary(item.get("title", "")),
-            "time": driver_time_context(item),
-            "expectation": driver_expectation(direction, item.get("title", ""), "EVENT"),
-            "source": item.get("source", ""),
-            "link": item.get("link", ""),
-        }
-
-    if abs(news.get("score", 0)) >= 30 and important_news:
-        item = important_news[0]
-        direction = "LONG" if news.get("score", 0) > 0 else "SHORT"
-        return {
-            "type": f"NEWS / {direction}",
-            "summary": ua_driver_summary(item.get("title", "")),
-            "time": driver_time_context(item),
-            "expectation": driver_expectation(direction, item.get("title", ""), "NEWS"),
-            "source": item.get("source", ""),
-            "link": item.get("link", ""),
-        }
-
-    tech_type, tech_summary, tech_expectation = technical_driver_summary(tech, orderflow, market)
-    return {
-        "type": tech_type,
-        "summary": tech_summary,
-        "time": "зараз",
-        "expectation": tech_expectation,
-        "source": "Технічний аналіз TradingView",
-        "link": "",
-    }
-
-def decision_confidence(signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal):
-    """Confidence means confidence in the decision, not win-rate."""
-    tech_side = technical_bias.get("side", "NEUTRAL")
-    fund_side = fundamental_bias.get("side", "NEUTRAL")
-    tech_score = abs(technical_bias.get("score", 0))
-    fund_score = abs(fundamental_bias.get("score", 0))
-    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    reversal_active = reversal and reversal.get("side") in ["REVERSAL LONG WATCH", "REVERSAL SHORT WATCH"]
-
-    if "SHOCK" in signal_type:
-        return 90
-
-    if signal in ["LONG", "SHORT"]:
-        base = 55 + min(30, abs(int(score)) // 3)
-        if "EARLY NEWS" in signal_type:
-            base = min(base, 72)
-        if event_high and "EARLY NEWS" not in signal_type:
-            base -= 5
-        return max(55, min(95, int(base)))
-
-    conflict = (("LONG" in tech_side and "SHORT" in fund_side) or ("SHORT" in tech_side and "LONG" in fund_side))
-    if reversal_active:
-        return min(92, max(75, int(reversal.get("confidence", 0)) + 35))
-    if conflict and event_high:
-        return 88
-    if conflict:
-        return 80
-    return min(78, max(50, int((tech_score + fund_score) / 3)))
-
-def format_driver_source(driver):
-    link = (driver or {}).get("link") or ""
-    source = (driver or {}).get("source") or ""
-    if link and link.startswith("http"):
-        label = source if source else "відкрити новину"
-        return f'<a href="{link}">{label}</a>'
-    if source:
-        return source
-    return "не вказано"
-
-def driver_side(driver):
-    text = f"{(driver or {}).get('type', '')} {(driver or {}).get('expectation', '')}".upper()
-    has_long = "LONG" in text
-    has_short = "SHORT" in text
-    if has_long and not has_short:
-        return "LONG"
-    if has_short and not has_long:
-        return "SHORT"
-    return "NEUTRAL"
-
-def simple_direction_word(signal):
-    if signal == "LONG":
-        return "лонг"
-    if signal == "SHORT":
-        return "шорт"
-    return "рух"
-
-def simple_opposite_action(signal):
-    if signal == "LONG":
-        return "не йде в шорт"
-    if signal == "SHORT":
-        return "не йде в лонг"
-    return "не підтверджує"
-
-def simple_bias_label(side):
-    side = side or "NEUTRAL"
-    if "STRONG LONG" in side:
-        return "сильний лонг"
-    if "LONG" in side:
-        return "лонг"
-    if "STRONG SHORT" in side:
-        return "сильний шорт"
-    if "SHORT" in side:
-        return "шорт"
-    return "нейтрально"
-
-def technical_reason_text(signal, technical_bias, smc=None, tech=None):
-    tech_side = short_bias_label((technical_bias or {}).get("side", "NEUTRAL"))
-    tech_score = (technical_bias or {}).get("score", 0)
-    smc_bias = (smc or {}).get("bias", "NEUTRAL")
-    micro = (tech or {}).get("micro_3m") if isinstance((tech or {}).get("micro_3m"), dict) else {}
-    micro_bias = micro.get("bias", "NEUTRAL")
-    direction = simple_direction_word(signal)
-
-    parts = []
-    if signal in ["LONG", "SHORT"]:
-        if signal in tech_side:
-            parts.append("графік")
-        if smc_bias == signal:
-            parts.append("структура")
-        if micro_bias == signal:
-            parts.append("3m")
-
-    if parts:
-        verb = "показують" if len(parts) > 1 else "показує"
-        return f"{', '.join(parts)} {verb} {direction} ({tech_score})"
-    if "LONG" in tech_side or "SHORT" in tech_side:
-        return f"графік задає напрямок ({tech_score})"
-    if signal in ["LONG", "SHORT"]:
-        return f"можливий рух на {direction}, але треба підтвердження"
-    return "перевага нечітка — краще чекати"
-
-def signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk):
-    if signal not in ["LONG", "SHORT"]:
-        return ""
-
-    opposite = "SHORT" if signal == "LONG" else "LONG"
-    driver_direction = driver_side(driver)
-    fund_side = (fundamental_bias or {}).get("side", "NEUTRAL")
-    event_side = (event_risk or {}).get("direction", "MIXED")
-
-    if driver_direction == opposite or opposite in fund_side or event_side == opposite:
-        news_direction = simple_direction_word(opposite)
-        return f"новини за {news_direction}, але ціна {simple_opposite_action(signal)} — зараз важливіший графік"
-    return ""
-
-def align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc=None, tech=None):
-    conflict = signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk)
-    if not conflict:
-        return driver
-
-    if signal == "SHORT":
-        summary = "Графік показує шорт, хоча новини за лонг"
-        expectation = "Не входити по ринку. Чекати відкат або пробій нижче рівня"
-    elif signal == "LONG":
-        summary = "Графік показує лонг, хоча новини за шорт"
-        expectation = "Не входити по ринку. Чекати відкат або пробій вище рівня"
-    else:
-        return driver
-
-    return {
-        "type": f"Графік / {simple_direction_word(signal)}",
-        "summary": summary,
-        "time": "зараз",
-        "expectation": expectation,
-        "source": "Графік / структура / 3m",
-        "link": "",
-    }
-
-def reversal_display_label(signal, reversal):
-    side = (reversal or {}).get("side", "NONE")
-    conf = (reversal or {}).get("confidence", 0)
-
-    if signal == "SHORT" and side == "REVERSAL LONG WATCH":
-        return f"ризик LONG-відскоку ({conf}%)"
-    if signal == "LONG" and side == "REVERSAL SHORT WATCH":
-        return f"ризик SHORT-відкату ({conf}%)"
-    if side == "REVERSAL LONG WATCH":
-        return f"можливий розворот у LONG ({conf}%)"
-    if side == "REVERSAL SHORT WATCH":
-        return f"можливий розворот у SHORT ({conf}%)"
-    return "немає"
-
-def reversal_risk_note(signal, reversal):
-    side = (reversal or {}).get("side", "NONE")
-    conf = (reversal or {}).get("confidence", 0)
-
-    if signal == "SHORT" and side == "REVERSAL LONG WATCH":
-        return f"Ризик: можливий LONG-відскок пізніше ({conf}%)"
-    if signal == "LONG" and side == "REVERSAL SHORT WATCH":
-        return f"Ризик: можливий SHORT-відкат пізніше ({conf}%)"
-    return ""
-
-def analyze_exhaustion_cooling(signal, tech, tv=None):
-    """Detects post-pump/dump cooling phase using available TradingView data.
-    No candle history required: uses change, RSI, EMA stretch, and momentum.
-    """
-    price = (tv or {}).get("price") if isinstance(tv, dict) else None
-    price = price or 0
-    change = tech.get("change", 0) or 0
-    rsi5 = tech.get("rsi_5m") or 50
-    rsi15 = tech.get("rsi_15m") or 50
-    ema20 = tech.get("ema20_15m")
-    momentum = tech.get("momentum", "NEUTRAL")
-
-    active = False
-    side = "NEUTRAL"
-    note = ""
-    stretch_pct = 0
-
-    if price and ema20:
-        try:
-            stretch_pct = abs(price - ema20) / price * 100
-        except Exception:
-            stretch_pct = 0
-
-    if signal == "LONG" and change >= 2.5:
-        active = True
-        side = "LONG_OVEREXTENDED"
-        note = "Ринок після сильного імпульсу охолоджується. Новий LONG краще шукати після ретесту або консолідації."
-    elif signal == "SHORT" and change <= -2.5:
-        active = True
-        side = "SHORT_OVEREXTENDED"
-        note = "Ринок після сильного падіння охолоджується. Новий SHORT краще шукати після ретесту або консолідації."
-
-    if signal == "LONG" and (rsi5 >= 76 or rsi15 >= 72 or stretch_pct >= 1.2):
-        active = True
-        side = "LONG_OVEREXTENDED"
-        note = "LONG перегрітий: ціна сильно відірвалась від середньої. Краще чекати відкат/ретест."
-    elif signal == "SHORT" and (rsi5 <= 24 or rsi15 <= 28 or stretch_pct >= 1.2):
-        active = True
-        side = "SHORT_OVEREXTENDED"
-        note = "SHORT перегрітий: ціна сильно відірвалась від середньої. Краще чекати відкат/ретест."
-
-    # If momentum is already neutral after a large move, cooling is more likely.
-    if active and momentum == "NEUTRAL":
-        note = note.replace("Краще чекати", "Momentum слабшає. Краще чекати")
-
-    return {
-        "active": active,
-        "side": side,
-        "note": note,
-        "stretch_pct": round(stretch_pct, 2),
-    }
-
-def analyze_late_entry_risk(signal, tech, market, chart_context=None):
-    """Detects when the move is already too extended for a clean entry."""
-    chart_context = chart_context or {}
-    if chart_context.get("late_override") and chart_context.get("side") == signal:
-        return {
-            "late": False,
-            "very_late": False,
-            "label": "",
-            "note": "є нова структура/ретест, вхід не вважається погонею",
-            "penalty": 0,
-        }
-
-    change = abs(tech.get("change", 0) or 0)
-    rsi5 = tech.get("rsi_5m") or 50
-    rsi15 = tech.get("rsi_15m") or 50
-    vol = market.get("volatility", {}).get("regime", "NORMAL") if market else "NORMAL"
-
-    late = False
-    label = ""
-    note = ""
-    penalty = 0
-
-    if signal == "LONG" and (change >= 2.0 or rsi5 >= 76 or rsi15 >= 72 or (chart_context.get("no_chase") and chart_context.get("side") == "LONG")):
-        late = True
-        label = "LONG активний — пізній вхід"
-        note = "Рух уже частково реалізований. Не доганяти свічку; краще чекати відкат/ретест."
-        penalty = -12
-    elif signal == "SHORT" and (change >= 2.0 or rsi5 <= 24 or rsi15 <= 28 or (chart_context.get("no_chase") and chart_context.get("side") == "SHORT")):
-        late = True
-        label = "SHORT активний — пізній вхід"
-        note = "Рух уже частково реалізований. Не доганяти падіння; краще чекати відкат/ретест."
-        penalty = -12
-
-    very_late = late and change >= 3.0
-    if very_late:
-        penalty -= 18
-        if signal == "LONG":
-            label = "LONG пізно — не доганяти памп"
-            note = "Рух уже занадто великий. Новий LONG тільки після відкату/ретесту."
-        elif signal == "SHORT":
-            label = "SHORT пізно — не доганяти дамп"
-            note = "Рух уже занадто великий. Новий SHORT тільки після відкату/ретесту."
-
-    if late and vol == "HIGH VOLATILITY / BREAKOUT MODE":
-        penalty -= 5
-        note += ""
-
-    return {"late": late, "very_late": very_late, "label": label, "note": note, "penalty": penalty}
-
-def apply_late_entry_no_chase_filter(signal, trade_probability, tech, late_entry=None, chart_context=None):
-    """A strong move can confirm direction but must not create a fresh entry."""
-    if signal not in ["LONG", "SHORT"] or trade_probability is None:
-        return trade_probability
-    if chart_context and chart_context.get("late_override") and chart_context.get("side") == signal:
-        return trade_probability
-    if not late_entry or not late_entry.get("late"):
-        return trade_probability
-
-    change = abs((tech or {}).get("change", 0) or 0)
-    cap = 54
-    if late_entry.get("very_late") or change >= 3.0:
-        cap = 49
-    return min(trade_probability, cap)
-
-def apply_expansion_targets(plan, signal, tech, market):
-    """Widen targets/stops when volatility expands or move is already large."""
-    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
-        return plan
-
-    change = abs(tech.get("change", 0) or 0)
-    vol = market.get("volatility", {}).get("regime", "NORMAL") if market else "NORMAL"
-
-    if change < 2.0 and vol != "HIGH VOLATILITY / BREAKOUT MODE":
-        return plan
-
-    entry = float(plan["entry"])
-    stop = float(plan["stop"])
-    risk = abs(entry - stop)
-    if risk <= 0:
-        return plan
-
-    # Wider targets in expansion/news breakout mode, with TP1 no closer than 2R.
-    if signal == "LONG":
-        plan["tp1"] = round(entry + risk * 2.0, 4)
-        plan["tp2"] = round(entry + risk * 3.0, 4)
-        plan["tp3"] = round(entry + risk * 4.5, 4)
-    elif signal == "SHORT":
-        plan["tp1"] = round(entry - risk * 2.0, 4)
-        plan["tp2"] = round(entry - risk * 3.0, 4)
-        plan["tp3"] = round(entry - risk * 4.5, 4)
-
-    plan["expansion"] = True
-    return plan
-
-def probability_note(probability, late_entry):
-    if probability is None:
-        return "немає входу"
-    if late_entry and late_entry.get("late"):
-        if probability < 50:
-            return f"{probability}% — краще чекати відкат"
-        return f"{probability}% — ризик пізнього входу"
-    return f"{probability}%"
-
-def entry_quality_scale(probability, late_entry=None, signal_type=""):
-    """User-friendly entry quality scale for Telegram.
-    This separates market direction from actual entry quality.
-    """
-    signal_type = str(signal_type or "")
-    if probability is None:
-        if "SHOCK DOWN" in signal_type:
-            return "0/5 — шорт уже пізно, не доганяти падіння"
-        if "SHOCK UP" in signal_type:
-            return "0/5 — лонг уже пізно, не доганяти імпульс"
-        return "0/5 — немає входу"
-    try:
-        probability = int(probability)
-    except Exception:
-        return "0/5 — немає входу"
-
-    if late_entry and late_entry.get("very_late"):
-        return f"0/5 — напрям є, але вхід пізній ({probability}%)"
-    if "ВХІД ПІЗНІЙ" in signal_type or "НЕ ДОГАНЯТИ" in signal_type:
-        return f"0/5 — напрям є, але вхід пізній ({probability}%)"
-
-    suffix = ""
-    if late_entry and late_entry.get("late"):
-        suffix = " — пізній вхід, краще чекати відкат"
-
-    if probability < 50:
-        return f"0/5 — не входити ({probability}%){suffix}"
-    if probability < 55:
-        return f"2/5 — тільки спостерігати ({probability}%){suffix}"
-    if probability < 65:
-        return f"3/5 — ризикований вхід ({probability}%){suffix}"
-    if probability < 75:
-        return f"4/5 — основний вхід ({probability}%){suffix}"
-    return f"5/5 — підтверджений вхід ({probability}%){suffix}"
-
-def simple_decision_text(signal, trade_probability, late_entry=None, cooling=None):
-    if signal not in ["LONG", "SHORT"]:
-        return None
-
-    direction = simple_direction_word(signal)
-    if late_entry and late_entry.get("very_late"):
-        return f"{direction.capitalize()} підтверджений, але зараз не входити — чекати відкат"
-    if late_entry and late_entry.get("late") and trade_probability is not None and trade_probability < 55:
-        return f"{direction.capitalize()} вже йде — зараз не входити"
-
-    if trade_probability is None:
-        return f"Можливий {direction}, але сигналу на вхід немає"
-
-    if trade_probability < 50:
-        if late_entry and late_entry.get("late"):
-            return f"{direction.capitalize()} вже йде — зараз не входити"
-        return f"Можливий {direction}, але зараз не входити"
-
-    if trade_probability < 65:
-        if cooling and cooling.get("active"):
-            return f"{direction.capitalize()} можливий, але чекати відкат"
-        return f"Ризикований {direction} — потрібне підтвердження"
-
-    if trade_probability < 75:
-        return f"Основний {direction} — тільки зі стопом"
-
-    return f"Підтверджений {direction} — тільки зі стопом"
-
-def smc_conflict_note(smc):
-    """Explain mixed SMC signals instead of showing contradictory пробій структури/volume silently."""
-    if not smc or not isinstance(smc, dict) or not smc.get("available"):
-        return ""
-
-    bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    summary = str(smc.get("summary", "")).lower()
-    volume = smc.get("volume", {}) if isinstance(smc.get("volume", {}), dict) else {}
-    vol_bias = volume.get("bias", "NEUTRAL")
-    поглинання = volume.get("поглинання", "NONE")
-
-    long_structure = bias == "LONG" or bos == "пробій структури LONG" or choch == "ознака розвороту LONG"
-    short_structure = bias == "SHORT" or bos == "пробій структури SHORT" or choch == "ознака розвороту SHORT"
-
-    bearish_candle = "bearish candle" in summary or "продавців" in summary or поглинання == "BEARISH ABSORPTION"
-    bullish_candle = "bullish candle" in summary or "покупців" in summary or поглинання == "BULLISH ABSORPTION"
-
-    if long_structure and (vol_bias == "SHORT" or bearish_candle):
-        return "Структура змішана: лонг є, але свічка/обсяг проти. Лонг ще не підтверджений."
-    if short_structure and (vol_bias == "LONG" or bullish_candle):
-        return "Структура змішана: шорт є, але свічка/обсяг проти. Шорт ще не підтверджений."
-    if bias == "LONG":
-        return "Структура підтверджує лонг."
-    if bias == "SHORT":
-        return "Структура підтверджує шорт."
-    return "Структура: ще без чіткого підтвердження."
-
-def no_entry_reason(signal, market_bias, trade_probability, technical_bias, news, event_risk, smc, late_entry=None, cooling=None, tech=None):
-    """Short explanation why Telegram says there is no entry now."""
-    reasons = []
-
-    if signal not in ["LONG", "SHORT"] or trade_probability is None:
-        reasons.append("немає повного торгового сигналу")
-    elif trade_probability < 55:
-        reasons.append("вхід тільки по тригеру, не по ринку")
-    elif trade_probability < 65:
-        reasons.append("є watch-сигнал, але ще немає повного підтвердження")
-
-    tech_side = technical_bias.get("side", "NEUTRAL") if isinstance(technical_bias, dict) else "NEUTRAL"
-    tech_score = technical_bias.get("score", 0) if isinstance(technical_bias, dict) else 0
-    news_score = news.get("score", 0) if isinstance(news, dict) else 0
-    event_side = event_risk.get("direction", "MIXED") if isinstance(event_risk, dict) else "MIXED"
-
-    if market_bias in ["LONG", "SHORT"]:
-        if tech_side not in [market_bias, "NEUTRAL"]:
-            reasons.append("техніка проти напрямку")
-        elif tech_side == "NEUTRAL" or abs(tech_score) < 20:
-            reasons.append("техніка ще не підтвердила")
-
-        if abs(news_score) >= 35 and event_side == market_bias and (tech_side == "NEUTRAL" or abs(tech_score) < 20):
-            reasons.append("новини сильніші за price action")
-
-    smc_note = smc_conflict_note(smc)
-    if "змішано" in smc_note:
-        reasons.append("SMC змішаний")
-
-    exhaustion_reason = extension_exhaustion_reason(signal, tech or {}, smc, news, event_risk)
-    if exhaustion_reason:
-        reasons.append(exhaustion_reason)
-
-    early = early_reversal_engine({}, tech or {}, smc, news, event_risk)
-    if early.get("active") and early.get("side") == signal and (trade_probability or 0) < 65:
-        reasons.append("ранній розворот ще без повного підтвердження")
-
-    if late_entry and late_entry.get("late"):
-        reasons.append("пізній вхід після імпульсу")
-    if cooling and cooling.get("active"):
-        reasons.append("потрібне охолодження/ретест")
-
-    if not reasons:
-        reasons.append("чекати ретест або підтвердження ціною")
-
-    # Deduplicate, keep short.
-    unique = []
-    for r in reasons:
-        if r not in unique:
-            unique.append(r)
-    return "; ".join(unique[:3])
-
-def compact_final_summary_text(final_summary, market_bias, trade_probability):
-    """Keep Telegram conclusion short and actionable."""
-    if trade_probability is None:
-        if market_bias in ["LONG", "SHORT"]:
-            return f"{market_bias} bias є, але входу ще немає — чекати підтвердження."
-        return "Сигнал не підтверджений — краще чекати."
-
-    if trade_probability < 55:
-        return "Сигнал слабкий — краще чекати."
-    if market_bias in ["LONG", "SHORT"]:
-        return f"{market_bias} сценарій активний, але працювати тільки зі стопом."
-    return "Перевага нечітка — не поспішати з входом."
-
-def estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase=None, weekend=None, late_entry=None, smc=None, tech=None):
-    """Human-friendly probability estimate for Telegram.
-    This is NOT a guarantee. It is a normalized bot estimate based on alignment/risk.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return None
-
-    prob = 50
-
-    # Confidence contribution, but capped so it does not become unrealistic.
-    try:
-        prob += min(18, max(0, (int(confidence) - 50) * 0.45))
-    except Exception:
-        pass
-
-    target = signal
-    tech_side = technical_bias.get("side", "NEUTRAL")
-    fund_side = fundamental_bias.get("side", "NEUTRAL")
-    event_side = event_risk.get("direction", "MIXED")
-    order_score = orderflow.get("score", 0)
-
-    if tech_side == target:
-        prob += 8
-    elif tech_side in ["LONG", "SHORT"] and tech_side != target:
-        prob -= 10
-
-    if fund_side == target:
-        prob += 7
-    elif fund_side in ["LONG", "SHORT"] and fund_side != target:
-        prob -= 9
-
-    if event_side == target:
-        prob += 5
-    elif event_side in ["LONG", "SHORT"] and event_side != target:
-        prob -= 8
-
-    if target == "LONG" and order_score >= 15:
-        prob += 5
-    elif target == "SHORT" and order_score <= -15:
-        prob += 5
-    elif abs(order_score) < 10:
-        prob -= 3
-
-    early_entry = early_entry_signal({}, signal, "", tech or {}, smc or {}, orderflow, news, event_risk, market)
-    if early_entry.get("active") and early_entry.get("side") == signal:
-        prob += 8
-
-    if event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]:
-        prob -= 7
-
-    if (reversal or {}).get("side") == "REVERSAL LONG WATCH" and target == "SHORT":
-        prob -= 6
-    if (reversal or {}).get("side") == "REVERSAL SHORT WATCH" and target == "LONG":
-        prob -= 6
-
-    if chase and chase.get("extended"):
-        prob -= 6
-
-    if weekend and weekend.get("active"):
-        prob -= 5
-    if late_entry and late_entry.get("late"):
-        prob += late_entry.get("penalty", -10)
-        if late_entry.get("very_late"):
-            prob = min(prob, 49)
-        else:
-            prob = min(prob, 54)
-
-    prob += smc_probability_adjustment(signal, smc)
-    truth_filter = price_action_truth_filter(signal, tech or {}, smc, news, event_risk, orderflow)
-    prob += truth_filter.get('penalty', 0)
-    prob += truth_filter.get('bonus', 0)
-
-    # Quality adjustment.
-    q = str(quality or "")
-    if "A+" in q:
-        prob += 5
-    elif q == "A":
-        prob += 3
-    elif q.startswith("C"):
-        prob -= 5
-
-    # Keep realistic range.
-    prob = cap_countertrend_probability(prob, signal, tech or {}, smc)
-
-    # Anti-late-continuation filter:
-    # prevents strong 5/5 entries after an extended move without SMC/пробій структури/volume confirmation.
-    exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
-    if exhaustion.get("active") and exhaustion.get("cap") is not None:
-        prob = min(prob, int(exhaustion["cap"]))
-
-    # Early reversal is only a WATCH until SMC/пробій структури/volume fully confirms it.
-    early = early_reversal_engine({}, tech or {}, smc, news, event_risk)
-    if early.get("active") and early.get("side") == signal and early.get("quality_cap") is not None:
-        prob = min(prob, int(early["quality_cap"]))
-
-    return int(max(30, min(82, round(prob))))
-
-
-def hard_no_long_when_chart_short(signal, signal_type, confidence, score, tech, trade_probability=None):
-    """Final safety guard before Telegram.
-
-    If chart is SHORT and price is falling, bot must not say "wait LONG".
-    Especially when entry quality is 0/5.
-    """
-    tech = tech or {}
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-
-    if signal == "LONG" and tech_score <= -35 and change < -0.25:
-        if trade_probability is None or trade_probability < 55:
-            return {
-                "signal": "НЕЙТРАЛЬНО",
-                "signal_type": "LONG BLOCKED / TECH SHORT",
-                "confidence": min(confidence, 50),
-                "score": 0,
-                "reason": "LONG не давати: графік SHORT і якість входу низька",
-            }
-
-    if signal == "SHORT" and tech_score >= 35 and change > 0.25:
-        if trade_probability is None or trade_probability < 55:
-            return {
-                "signal": "НЕЙТРАЛЬНО",
-                "signal_type": "SHORT BLOCKED / TECH LONG",
-                "confidence": min(confidence, 50),
-                "score": 0,
-                "reason": "SHORT не давати: графік LONG і якість входу низька",
-            }
-
-    return {
-        "signal": signal,
-        "signal_type": signal_type,
-        "confidence": confidence,
-        "score": score,
-        "reason": "",
-    }
-
-
-def final_signal_sanity_guard(signal, signal_type, confidence, tech, smc=None, micro=None, trade_probability=None):
-    """Final guard before Telegram.
-
-    Prevents:
-    - waiting for LONG while chart is already SHORT
-    - waiting for SHORT while chart is already LONG
-    """
-    tech = tech or {}
-    smc = smc or {}
-    micro = micro or {}
-
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-    smc_bias = smc.get("bias", "NEUTRAL")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-
-    low_quality = trade_probability is None or trade_probability < 55
-
-    chart_short = (
-        tech_score <= -35
-        or smc_bias == "SHORT"
-        or micro_bias == "SHORT"
-        or micro_state == "SHORT_STRENGTHENING"
-        or change <= -0.45
-    )
-
-    chart_long = (
-        tech_score >= 35
-        or smc_bias == "LONG"
-        or micro_bias == "LONG"
-        or micro_state == "LONG_STRENGTHENING"
-        or change >= 0.45
-    )
-
-    if "СКАЛЬП" in str(signal_type) and signal in ["LONG", "SHORT"]:
-        return {
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "reason": "",
-        }
-
-    if signal == "LONG" and chart_short and low_quality:
-        return {
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "LONG BLOCKED / CHART SHORT",
-            "confidence": min(confidence, 50),
-            "reason": "графік SHORT, LONG не підтверджений",
-        }
-
-    if signal == "SHORT" and chart_long and low_quality:
-        return {
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "SHORT BLOCKED / CHART LONG",
-            "confidence": min(confidence, 50),
-            "reason": "графік LONG, SHORT не підтверджений",
-        }
-
-    # If chart is strongly opposite, allow direction switch only as prepare/watch, not blind trade.
-    if signal == "LONG" and (tech_score <= -60 or smc_bias == "SHORT" or micro_bias == "SHORT"):
-        return {
-            "signal": "SHORT",
-            "signal_type": "PRICE ACTION SHORT / NEWS CONFLICT",
-            "confidence": max(55, min(72, abs(tech_score))),
-            "reason": "графік сильніший за LONG-новини",
-        }
-
-    if signal == "SHORT" and (tech_score >= 60 or smc_bias == "LONG" or micro_bias == "LONG"):
-        return {
-            "signal": "LONG",
-            "signal_type": "PRICE ACTION LONG / NEWS CONFLICT",
-            "confidence": max(55, min(72, abs(tech_score))),
-            "reason": "графік сильніший за SHORT-новини",
-        }
-
-    return {
-        "signal": signal,
-        "signal_type": signal_type,
-        "confidence": confidence,
-        "reason": "",
-    }
-
-def market_mode_engine(signal, signal_type, trade_probability, tech, smc, orderflow, news, event_risk, market, session, late_entry=None, cooling=None):
-    """Human market mode + strategy layer for Telegram.
-
-    This does not replace the signal. It explains how aggressively the signal
-    may be traded in the current regime.
-    """
-    signal_type = str(signal_type or "")
-    tech = tech or {}
-    smc = smc or {}
-    orderflow = orderflow or {}
-    event_risk = event_risk or {}
-    market = market or {}
-    micro = tech.get("micro_3m") if isinstance(tech.get("micro_3m"), dict) else {}
-
-    prob = trade_probability or 0
-    tech_score = tech.get("score", 0) or 0
-    change = tech.get("change", 0) or 0
-    trend = tech.get("trend", "MIXED")
-    micro_state = micro.get("state", "RANGE")
-    micro_bias = micro.get("bias", "NEUTRAL")
-    smc_bias = smc.get("bias", "NEUTRAL")
-    event_high = event_risk.get("risk") in ["ВИСОКИЙ", "ДУЖЕ ВИСОКИЙ"]
-    calendar_active = bool((event_risk.get("calendar") or {}).get("active"))
-    volatility = market.get("volatility", {}).get("regime", "NORMAL")
-
-    has_confirmed_entry = signal in ["LONG", "SHORT"] and prob >= 75
-    has_main_entry = signal in ["LONG", "SHORT"] and 65 <= prob < 75
-    has_risky_entry = signal in ["LONG", "SHORT"] and 55 <= prob < 65
-    has_entry = has_confirmed_entry or has_main_entry
-    has_watch = has_risky_entry
-
-    def entry_status():
-        if has_confirmed_entry:
-            return "ПІДТВЕРДЖЕНИЙ ВХІД"
-        if has_main_entry:
-            return "ОСНОВНИЙ ВХІД"
-        if has_risky_entry:
-            return "РИЗИКОВАНИЙ ВХІД"
-        return "ВХОДУ НЕМАЄ"
-
-    if "LONG-ВІДСКОК" in signal_type or "SHORT-ВІДКАТ" in signal_type or "СКАЛЬП" in signal_type:
-        side_text = "лонг-відскок" if signal == "LONG" else "шорт-відкат"
-        status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
-        return {
-            "status": status,
-            "mode": f"скальп {side_text}",
-            "strategy": "короткий швидкий вхід, малий стоп, фіксація швидше; не тримати як трендову угоду",
-            "priority": "3m + SMC + стакан/угоди важливіші за новини",
-            "aggression": "агресивно, але тільки малим ризиком",
-        }
-
-    if calendar_active or event_high:
-        if late_entry and late_entry.get("late"):
-            status = "ВХОДУ НЕМАЄ"
-            return {
-                "status": status,
-                "mode": "пізній рух",
-                "strategy": "напрям підтверджений, але новий вхід тільки після відкату/ретесту",
-                "priority": "ціна + 3m; не доганяти імпульс",
-                "aggression": "не входити по ринку",
-            }
-        if "СКАЛЬП" in signal_type:
-            status = "РИЗИКОВАНИЙ ВХІД" if prob >= 55 else "ВХОДУ НЕМАЄ"
-        elif has_entry:
-            status = "ВХІД Є"
-        elif has_watch:
-            status = "ЧЕКАТИ"
-        else:
-            status = "ВХОДУ НЕМАЄ"
-        return {
-            "status": status,
-            "mode": "новинна торгівля",
-            "strategy": "можна входити по новинах, якщо ціна вже підтвердила напрям",
-            "priority": "новини + реакція ціни; для скальпу 3m/стакан важливіші",
-            "aggression": "дозволено, але тільки зі стопом",
-        }
-
-    if volatility == "LOW VOLATILITY / CHOP MODE" or (micro_state == "RANGE" and abs(tech_score) < 45):
-        return {
-            "status": "ВХОДУ НЕМАЄ" if prob < 55 else "ЧЕКАТИ",
-            "mode": "боковик",
-            "strategy": "не брати середину діапазону; чекати пробій або відскок від краю",
-            "priority": "рівні + 3m; новини лише як фільтр",
-            "aggression": "не агресивно",
-        }
-
-    if signal in ["LONG", "SHORT"]:
-        direction = "лонг" if signal == "LONG" else "шорт"
-        aligned_trend = (
-            (signal == "LONG" and (trend == "UP" or tech_score >= 55 or micro_bias == "LONG" or smc_bias == "LONG")) or
-            (signal == "SHORT" and (trend == "DOWN" or tech_score <= -55 or micro_bias == "SHORT" or smc_bias == "SHORT"))
-        )
-        if aligned_trend:
-            status = entry_status()
-            aggression = "агресивний " + direction if has_entry and not (late_entry and late_entry.get("late")) else "обережний " + direction
-            if late_entry and late_entry.get("late"):
-                status = "ВХОДУ НЕМАЄ"
-                aggression = "не доганяти рух"
-            return {
-                "status": status,
-                "mode": f"трендовий {direction}",
-                "strategy": "працювати за трендом; найкраще після ретесту або раннього підтвердження 3m",
-                "priority": "графік + SMC + 3m > новини, якщо новини не проти руху",
-                "aggression": aggression,
-            }
-
-    if "SHOCK DOWN" in signal_type:
-        return {
-            "status": "ВХОДУ НЕМАЄ",
-            "mode": "різкий дамп",
-            "strategy": "шорт не доганяти; чекати ретест для шорту або скальп-відскок тільки після підтвердження",
-            "priority": "ціна і 3m > новини; для скальпу потрібен відкуп",
-            "aggression": "не агресивно",
-        }
-    if "SHOCK UP" in signal_type:
-        return {
-            "status": "ВХОДУ НЕМАЄ",
-            "mode": "різкий памп",
-            "strategy": "лонг не доганяти; чекати ретест для лонгу або скальп-відкат тільки після підтвердження",
-            "priority": "ціна і 3m > новини; для скальпу потрібен продаж",
-            "aggression": "не агресивно",
-        }
-
-    return {
-        "status": entry_status() if signal in ["LONG", "SHORT"] else "ВХОДУ НЕМАЄ",
-        "mode": "змішаний ринок",
-        "strategy": "чекати, поки графік, 3m і структура зійдуться в один бік",
-        "priority": "баланс: графік + новини + стакан",
-        "aggression": "не агресивно",
-    }
-
-
-def prepare_message_state(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None):
-    """Finalize display state before Telegram formatting.
-
-    Telegram formatting must not change a signal. All final probability,
-    no-chase, event-block, chart-context and plan visibility decisions happen here.
-    """
-    raw_tech = tech or {}
-    local_warning = ""
-    decision = human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
-    if late_entry and late_entry.get("late"):
-        decision = late_entry.get("label") or decision
-
-    tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
-    fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
-    priority_label = compact_priority_label(priority, reversal)
-    driver = select_main_driver(raw_tech or technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-    trade_probability = estimate_trade_probability(signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk, orderflow, market, reversal, chase, weekend, late_entry, smc, raw_tech)
-    confidence, trade_probability, local_warning = apply_local_3m_confidence_filter(signal, confidence, trade_probability, raw_tech)
-
-    counterflow_watch = counterflow_scalp_watch(raw_tech, orderflow, news, event_risk, smc)
-    should_use_fast_flow = (
-        counterflow_watch.get("active")
-        and (
-            signal not in ["LONG", "SHORT"]
-            or (
-                counterflow_watch.get("side") != signal
-                and (trade_probability is None or trade_probability < 65)
-            )
-        )
-    )
-    if should_use_fast_flow:
-        signal = counterflow_watch["side"]
-        signal_type = counterflow_watch["signal_type"]
-        confidence = max(confidence, counterflow_watch.get("confidence", confidence))
-        trade_probability = counterflow_watch.get("probability", trade_probability)
-        decision = counterflow_watch.get("decision", decision)
-        local_warning = ""
-        plan = make_trade_plan(signal, signal_type, tv["price"], raw_tech, reversal, session, event_risk, smc, orderflow)
-        plan = adjust_plan_for_rr(plan, signal)
-        plan = apply_expansion_targets(plan, signal, raw_tech, market)
-        quality = setup_quality_rank(signal, signal_type, technical_bias.get("score", 0), raw_tech, news, orderflow, macro, event_risk, market, oi_analysis)
-
-    if local_warning:
-        if "підтверджує LONG" in local_warning and trade_probability is not None and trade_probability >= 65:
-            decision = "TRADE LONG — 3m підтверджує вхід"
-        elif "підтверджує SHORT" in local_warning and trade_probability is not None and trade_probability >= 65:
-            decision = "TRADE SHORT — 3m підтверджує вхід"
-        elif signal == "LONG":
-            decision = "LONG слабшає — чекати відкат"
-        elif signal == "SHORT":
-            decision = "SHORT слабшає — чекати відскок"
-    exhaustion = extension_exhaustion_filter(signal, tech or {}, smc, news, event_risk)
-    early_reversal = early_reversal_engine(tv, tech or {}, smc, news, event_risk)
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
-
-    if show_trade_plan and signal in ["LONG", "SHORT"] and not str(decision).startswith("TRADE"):
-        if trade_probability is not None and trade_probability >= 75:
-            decision = f"TRADE {signal} — підтверджений вхід"
-        elif trade_probability is not None and trade_probability >= 65:
-            decision = f"TRADE {signal} — основний вхід"
-        elif trade_probability is not None and trade_probability >= 55:
-            decision = f"РИЗИКОВАНИЙ {signal} — тільки зі стопом"
-    entry_watch = proactive_entry_watch(signal, tv, tech or {}, smc, news, event_risk, early_reversal, trade_probability)
-    trade_probability = apply_entry_watch_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, entry_watch)
-    trade_probability = apply_confirmed_trade_quality_floor(signal, trade_probability, tech or {}, news, event_risk, smc, orderflow)
-    if counterflow_watch.get("active") and counterflow_watch.get("side") == signal:
-        trade_probability = max(trade_probability or 0, counterflow_watch.get("probability", 0))
-    trade_probability = apply_late_entry_no_chase_filter(signal, trade_probability, tech or {}, late_entry, chart_context)
-    event_block = news_event_trade_block(signal, trade_probability, event_risk, news, session)
-    if event_block.get("blocked"):
-        trade_probability = min(trade_probability or 0, 54)
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry)
-
-    if exhaustion.get("active") and trade_probability is not None and trade_probability < 65:
-        if signal == "SHORT":
-            decision = "РИЗИКОВАНИЙ SHORT — потрібен тригер"
-        elif signal == "LONG":
-            decision = "РИЗИКОВАНИЙ LONG — потрібен тригер"
-
-    if early_reversal.get("active") and early_reversal.get("side") == signal and trade_probability is not None and trade_probability < 65:
-        if signal == "LONG":
-            decision = "РИЗИКОВАНИЙ LONG — потрібен тригер"
-        elif signal == "SHORT":
-            decision = "РИЗИКОВАНИЙ SHORT — потрібен тригер"
-
-    # Never show TRADE if the setup is not confirmed.
-    if trade_probability is not None and trade_probability < 65 and str(decision).startswith("TRADE"):
-        if signal == "LONG":
-            decision = "РИЗИКОВАНИЙ LONG — потрібен тригер"
-        elif signal == "SHORT":
-            decision = "РИЗИКОВАНИЙ SHORT — потрібен тригер"
-        else:
-            decision = "НЕ ВХОДИТИ — чекати тригер"
-
-    if trade_probability is not None and trade_probability < 50 and late_entry and late_entry.get("late"):
-        if signal == "LONG":
-            decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
-        elif signal == "SHORT":
-            decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
-    if cooling and cooling.get("active"):
-        if signal == "LONG":
-            decision = "ГОТУЄМОСЬ ДО LONG — тільки після відкату/утримання"
-        elif signal == "SHORT":
-            decision = "ГОТУЄМОСЬ ДО SHORT — тільки після відкату/утримання"
-
-    simple_decision = simple_decision_text(signal, trade_probability, late_entry, cooling)
-    if simple_decision:
-        decision = simple_decision
-    if "РАННІЙ" in str(signal_type) and signal in ["LONG", "SHORT"] and trade_probability is not None and trade_probability >= 65:
-        decision = f"РАННІЙ {signal} — можна входити зараз"
-    if "СКАЛЬП" in str(signal_type) and signal in ["LONG", "SHORT"] and trade_probability is not None and trade_probability >= 55:
-        decision = f"СКАЛЬП {signal} — рання точка, тільки зі стопом"
-    if event_block.get("blocked"):
-        decision = "Зараз не входити — високий новинний ризик"
-    if chart_context:
-        trade_probability = apply_chart_context_probability(signal, trade_probability, chart_context)
-        if chart_context.get("side") != signal and signal in ["LONG", "SHORT"]:
-            decision = f"ЧЕКАТИ — графік не підтвердив {signal}"
-        elif chart_context.get("stage") == "TRIGGER" and trade_probability is not None:
-            decision = f"РАННІЙ {signal} — є тригер графіка"
-        elif chart_context.get("stage") == "SETUP_FORMING":
-            decision = f"ГОТУЄМОСЬ ДО {signal} — чекати тригер"
-        elif chart_context.get("stage") == "LATE_NO_CHASE":
-            decision = f"{signal} пізно — не доганяти рух"
-        elif chart_context.get("stage") == "WAIT" and signal in ["LONG", "SHORT"]:
-            decision = f"ЧЕКАТИ — графік ще не дав тригер {signal}"
-    show_trade_plan = should_show_trade_plan(signal, trade_probability, late_entry, chart_context)
-
-    market_mode = market_mode_engine(
-        signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
-        event_risk, market, session, late_entry, cooling
-    )
-
-    # Message-level conclusion safety is computed before formatting.
-    if "різкий дамп" in decision.lower():
-        final_summary = (
-            "Різкий дамп: технічний продаж зараз домінує. "
-            "LONG по новинах можливий тільки після стабілізації, відскоку і ретесту. "
-            "Не ловити падаючий ринок."
-        )
-    elif "різкий памп" in decision.lower() or "різкий ріст" in decision.lower():
-        final_summary = (
-            "Різкий ріст: покупці зараз домінують. "
-            "SHORT можливий тільки після стабілізації, відкату і ретесту. "
-            "Не шортити сильний імпульс без підтвердження."
-        )
-
-    state = {
-        "signal": signal,
-        "signal_type": signal_type,
-        "confidence": confidence,
         "quality": quality,
+        "title": f"ЧЕКАТИ — ГОТУЄМОСЬ ДО {side}",
+        "reason": "напрям є, але входу ще немає: " + ("; ".join(conflicts[:3]) if conflicts else "бракує 3m/структурного тригера"),
         "plan": plan,
-        "trade_probability": trade_probability,
-        "decision": decision,
-        "show_trade_plan": show_trade_plan,
-        "entry_watch": entry_watch,
-        "event_block": event_block,
-        "market_mode": market_mode,
-        "final_summary": final_summary,
+        "confirmations": confirmations,
+        "conflicts": conflicts,
     }
-    state["final_decision"] = build_final_decision(
-        tv=tv,
-        state=state,
-        technical_bias=technical_bias,
-        fundamental_bias=fundamental_bias,
-        event_risk=event_risk,
-        orderflow=orderflow,
-        smc=smc,
-        tech=raw_tech,
-        chart_context=chart_context,
-        late_entry=late_entry,
-    )
-    return state
 
 
-def build_final_decision(tv, state, technical_bias, fundamental_bias, event_risk, orderflow=None, smc=None, tech=None, chart_context=None, late_entry=None):
-    """Single source of truth for final market direction vs actual entry.
+# ==========================================================
+# ACTIVE TRADE MANAGEMENT
+# ==========================================================
 
-    market_side can be LONG/SHORT even when entry_side is None. That is the key
-    separation: direction is not the same as a fresh trade.
-    """
-    state = state or {}
-    tech = tech or {}
-    chart_context = chart_context or {}
-    late_entry = late_entry or {}
-    signal = state.get("signal", "НЕЙТРАЛЬНО")
-    signal_type = state.get("signal_type", "")
-    trade_probability = state.get("trade_probability")
-    confidence = state.get("confidence")
-    show_trade_plan = bool(state.get("show_trade_plan"))
-    plan = state.get("plan")
-    entry_watch = state.get("entry_watch") or {}
-    market_mode = state.get("market_mode") or {}
-    event_block = state.get("event_block") or {}
-    decision_text = state.get("decision", "")
 
-    market_side = infer_market_direction(
-        signal,
-        signal_type,
-        tech=tech,
-        technical_bias=technical_bias,
-        fundamental_bias=fundamental_bias,
-    )
-    if market_side not in ["LONG", "SHORT"] and chart_context.get("side") in ["LONG", "SHORT"]:
-        market_side = chart_context.get("side")
+def trade_hit_level(side, price, level):
+    if level is None:
+        return False
+    return price >= level if side == "LONG" else price <= level
 
-    has_trade_entry = (
-        signal in ["LONG", "SHORT"]
-        and show_trade_plan
-        and trade_probability is not None
-        and trade_probability >= 55
-        and not event_block.get("blocked")
-    )
-    entry_side = signal if has_trade_entry else None
 
-    if event_block.get("blocked"):
-        entry_status = "NO_ENTRY"
-        entry_status_text = "ВХОДУ НЕМАЄ"
-    elif has_trade_entry and trade_probability >= 75:
-        entry_status = "CONFIRMED_ENTRY"
-        entry_status_text = "ВХІД Є"
-    elif has_trade_entry and trade_probability >= 65:
-        entry_status = "MAIN_ENTRY"
-        entry_status_text = "ВХІД Є"
-    elif has_trade_entry:
-        entry_status = "RISKY_ENTRY"
-        entry_status_text = "РИЗИКОВАНИЙ ВХІД"
-    elif chart_context.get("stage") == "SETUP_FORMING":
-        entry_status = "WATCH"
-        entry_status_text = "ЧЕКАТИ"
-    else:
-        entry_status = "NO_ENTRY"
-        entry_status_text = "ВХОДУ НЕМАЄ"
+def trade_hit_stop(side, price, stop):
+    if stop is None:
+        return False
+    return price <= stop if side == "LONG" else price >= stop
 
-    if chart_context.get("stage") == "LATE_NO_CHASE" or late_entry.get("late"):
-        entry_timing = "LATE"
-    elif chart_context.get("stage") == "TRIGGER":
-        entry_timing = "EARLY_TRIGGER"
-    elif chart_context.get("stage") == "SETUP_FORMING":
-        entry_timing = "FORMING"
-    elif "СКАЛЬП" in str(signal_type):
-        entry_timing = "SCALP"
-    elif has_trade_entry:
-        entry_timing = "NORMAL"
-    else:
-        entry_timing = "WAIT"
 
-    stage = chart_context.get("stage") or entry_timing
-    quality_text = entry_quality_scale(trade_probability, late_entry, signal_type)
-    plan_text = proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)
+def best_trade_price(side, trade, current_price):
+    if not trade.best_price:
+        return current_price
+    if side == "LONG":
+        return max(trade.best_price, current_price)
+    return min(trade.best_price, current_price)
 
-    market_text = "змішано"
-    if market_side in ["LONG", "SHORT"]:
-        if has_trade_entry:
-            market_text = f"{simple_direction_word(market_side)} ({confidence}%)"
+
+def active_trade_message_key(trade, action):
+    return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{round_price(trade.stop_current)}"
+
+
+def manage_active_trade(trade, context):
+    price = context["price"]
+    side = trade.side
+    tf3 = context["tf3"]
+    tf15 = context["tf15"]
+    structure = context["structure"]
+    flow = context["flow"]
+
+    trade.best_price = best_trade_price(side, trade, price)
+    current_pct = signed_pct(side, trade.entry, price)
+    best_pct = signed_pct(side, trade.entry, trade.best_price)
+    giveback = max(0, best_pct - current_pct)
+    giveback_ratio = giveback / best_pct if best_pct > 0 else 0
+
+    notes = []
+    action = "HOLD"
+    title = f"СУПРОВІД {side}"
+    recommendation = "утримувати, поки 3m/15m не ламаються"
+
+    if trade_hit_stop(side, price, trade.stop_current):
+        trade.status = "CLOSED"
+        trade.last_action = "STOP"
+        return {
+            "closed": True,
+            "action": "STOP",
+            "title": f"УГОДУ {side} ЗАКРИТО — STOP",
+            "recommendation": "стоп/зона зламу пробита, сценарій закрито",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": [f"ціна {round_price(price)} проти стопу {round_price(trade.stop_current)}"],
+        }
+
+    if trade_hit_level(side, price, trade.tp3):
+        trade.tp3_hit = True
+        trade.status = "CLOSED"
+        trade.last_action = "TP3"
+        return {
+            "closed": True,
+            "action": "TP3",
+            "title": f"УГОДУ {side} ЗАКРИТО — TP3",
+            "recommendation": "основна ціль виконана, сценарій закрито",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": [f"TP3 {round_price(trade.tp3)} взято"],
+        }
+
+    if trade_hit_level(side, price, trade.tp2):
+        trade.tp2_hit = True
+        action = "TP2_PROTECT"
+        recommendation = "TP2 взято: зафіксувати ще частину, залишок вести трейлінгом"
+        if side == "LONG":
+            trade.stop_current = max(trade.stop_current, trade.tp1)
         else:
-            market_text = f"напрям {simple_direction_word(market_side)} ({confidence}%), це ще не вхід"
-
-    reasons = [
-        f"графік {simple_bias_label(short_bias_label((technical_bias or {}).get('side', 'NEUTRAL')))} ({(technical_bias or {}).get('score')})",
-        f"новини {simple_bias_label(short_bias_label((fundamental_bias or {}).get('side', 'NEUTRAL')))} ({(fundamental_bias or {}).get('score')})",
-    ]
-    local_move = tech.get("local_move") if isinstance(tech.get("local_move"), dict) else {}
-    micro_local_move = tech.get("micro_local_move") if isinstance(tech.get("micro_local_move"), dict) else {}
-    reason_local_move = local_move
-    if micro_local_move.get("available"):
-        micro_local_side = local_move_direction(micro_local_move)
-        local_side = local_move_direction(local_move)
-        if micro_local_side in ["LONG", "SHORT"] and market_side in ["LONG", "SHORT"] and micro_local_side == market_side and micro_local_side != local_side:
-            reason_local_move = micro_local_move
-    if reason_local_move.get("available") and "без сильного" not in str(reason_local_move.get("note", "")):
-        local_side = local_move_direction(reason_local_move)
-        if local_side in ["LONG", "SHORT"] and market_side in ["LONG", "SHORT"]:
-            prefix = f"локально за {market_side}" if local_side == market_side else f"локально проти {market_side}"
-        elif local_side in ["LONG", "SHORT"]:
-            prefix = f"локально {local_side}"
+            trade.stop_current = min(trade.stop_current, trade.tp1)
+        notes.append(f"стоп підтягнути до TP1 {round_price(trade.tp1)}")
+    elif trade_hit_level(side, price, trade.tp1):
+        trade.tp1_hit = True
+        action = "TP1_PROTECT"
+        recommendation = "TP1 взято: частково фіксувати, стоп у б/у або малий плюс"
+        be = trade.entry * (1.0008 if side == "LONG" else 0.9992)
+        if side == "LONG":
+            trade.stop_current = max(trade.stop_current, be)
         else:
-            prefix = "локально"
-        reasons.append(f"{prefix}: {reason_local_move.get('note', '')}")
-    calendar_text = economic_calendar_text(event_risk)
-    if calendar_text:
-        reasons.append(calendar_text.replace("Календар: ", "календар "))
+            trade.stop_current = min(trade.stop_current, be)
+        notes.append(f"стоп у б/у біля {round_price(trade.stop_current)}")
 
-    warnings = []
-    if late_entry.get("late") or chart_context.get("stage") == "LATE_NO_CHASE":
-        warnings.append("рух пізній, потрібен ретест або нова база")
-    if event_block.get("blocked"):
-        warnings.append(event_block.get("reason", "високий новинний ризик"))
+    opposite_votes = 0
+    support_votes = 0
+    for block in [tf3, tf15, structure, flow]:
+        if block.get("bias") == side:
+            support_votes += 1
+        elif block.get("bias") == opposite(side):
+            opposite_votes += 1
 
+    near_entry = abs(current_pct) <= 0.18
+    lost_after_profit = best_pct >= 0.38 and giveback_ratio >= 0.62 and current_pct <= 0.18
+
+    if lost_after_profit and opposite_votes >= 2:
+        trade.status = "CLOSED"
+        trade.last_action = "EXIT_GIVEBACK"
+        return {
+            "closed": True,
+            "action": "EXIT",
+            "title": f"УГОДУ {side} ЗАКРИТО — АКТУАЛЬНІСТЬ ВТРАЧЕНА",
+            "recommendation": "рух у плюс майже віддали назад, підтвердження зникло",
+            "current_pct": current_pct,
+            "best_pct": best_pct,
+            "notes": ["краще закрити біля входу / не чекати дальній стоп"],
+        }
+
+    if near_entry and opposite_votes >= 2 and support_votes <= 1:
+        action = "PROTECT_OR_EXIT"
+        recommendation = "ціна біля входу, підтвердження слабке: захистити позицію або закрити біля входу"
+        notes.append("не усереднювати; чекати нового тригера після виходу")
+    elif current_pct < -0.28 and opposite_votes >= 2:
+        action = "EXIT_WARNING"
+        recommendation = "позиція під тиском, структура проти: краще виходити раніше, не чекати дальній стоп"
+        notes.append("злам 3m/структури проти позиції")
+    elif current_pct > 0 and tf3.get("bias") == opposite(side):
+        action = "PROTECT"
+        recommendation = "позиція у плюсі, але 3m слабшає: підтягнути стоп"
+        notes.append("прибуток не віддавати назад")
+    elif action == "HOLD":
+        if current_pct > 0:
+            recommendation = "утримувати, напрям ще працює"
+        else:
+            recommendation = "тримати тільки поки 15m/3m не зламаються; стоп обов'язковий"
+
+    trade.last_action = action
+    key = active_trade_message_key(trade, action)
+    trade.last_message_key = key
     return {
-        "market_side": market_side,
-        "market_text": market_text,
-        "entry_side": entry_side,
-        "entry_status": entry_status,
-        "entry_status_text": entry_status_text,
-        "entry_timing": entry_timing,
-        "stage": stage,
-        "confidence": confidence,
-        "quality_percent": trade_probability,
-        "quality_text": quality_text,
-        "decision_text": decision_text,
-        "plan_text": plan_text,
-        "chart_text": chart_context_message(chart_context),
-        "reasons": reasons[:3],
-        "warnings": warnings,
+        "closed": False,
+        "action": action,
+        "title": title,
+        "recommendation": recommendation,
+        "current_pct": current_pct,
+        "best_pct": best_pct,
+        "notes": notes,
     }
 
 
-def fnum(value):
-    try:
-        return round(float(value), 4)
-    except Exception:
-        return value
+def new_active_trade(setup):
+    plan = setup["plan"]
+    return ActiveTrade(
+        id=uuid.uuid4().hex[:10],
+        side=setup["side"],
+        opened_at=iso_now(),
+        entry=plan.entry,
+        stop_initial=plan.stop,
+        stop_current=plan.stop,
+        tp1=plan.tp1,
+        tp2=plan.tp2,
+        tp3=plan.tp3,
+        quality=setup["quality"],
+        best_price=plan.entry,
+        notes=[setup["reason"]],
+    )
 
 
-def simplified_chart_entry_text(signal, entry_watch=None, chart_context=None, tv=None):
-    entry_watch = entry_watch or {}
-    chart_context = chart_context or {}
-    price = safe_float((tv or {}).get("price"))
-    trigger_kind = chart_context.get("trigger_kind")
-    if trigger_kind == "CONTINUATION_RETEST":
-        trigger = safe_float(chart_context.get("trigger")) or safe_float(entry_watch.get("trigger"))
-    else:
-        trigger = safe_float(entry_watch.get("trigger")) or safe_float(chart_context.get("trigger"))
-    retest = safe_float(entry_watch.get("retest"))
-    invalid = safe_float(entry_watch.get("invalid")) or safe_float(chart_context.get("invalid"))
-
-    if not retest and price:
-        atr_hint = abs(price) * 0.0025
-        retest = price - atr_hint if signal == "LONG" else price + atr_hint
-    if not trigger and price:
-        trigger = price + abs(price) * 0.0015 if signal == "LONG" else price - abs(price) * 0.0015
-    if not invalid and price:
-        invalid = price - abs(price) * 0.0035 if signal == "LONG" else price + abs(price) * 0.0035
-
-    if signal == "LONG":
-        trigger_text = (
-            f"утримання вище {fnum(trigger)}"
-            if price and trigger and price >= trigger
-            else f"пробій і закріплення вище {fnum(trigger)}"
-        )
-        retest_text = f"відкат до підтримки {fnum(retest)} з відкупом"
-        invalid_text = f"Скасування сценарію нижче {fnum(invalid)}"
-    elif signal == "SHORT":
-        trigger_text = (
-            f"утримання нижче {fnum(trigger)}"
-            if price and trigger and price <= trigger
-            else f"пробій і закріплення нижче {fnum(trigger)}"
-        )
-        if trigger_kind == "CONTINUATION_RETEST":
-            retest_text = f"новий відскок до опору {fnum(retest)} і відмова рости"
-        else:
-            retest_text = f"відкат до опору {fnum(retest)} з появою продавців"
-        invalid_text = f"Скасування сценарію вище {fnum(invalid)}"
-    else:
-        return "тригер графіка не визначений"
-
-    return f"{trigger_text}; або {retest_text}. {invalid_text}."
+# ==========================================================
+# MESSAGES
+# ==========================================================
 
 
-def confirmed_chart_entry_text(signal, entry_watch=None, chart_context=None, tv=None):
-    entry_watch = entry_watch or {}
-    chart_context = chart_context or {}
-    price = safe_float((tv or {}).get("price"))
-    trigger = safe_float(entry_watch.get("trigger")) or safe_float(chart_context.get("trigger"))
-    retest = safe_float(entry_watch.get("retest"))
-    trigger_event = chart_context.get("trigger_event") or chart_context.get("note")
-
-    if trigger_event and "ще не підтверджений" not in str(trigger_event):
-        return str(trigger_event)
-
-    if not trigger and price:
-        trigger = price + abs(price) * 0.0015 if signal == "LONG" else price - abs(price) * 0.0015
-    if not retest and price:
-        retest = price - abs(price) * 0.0025 if signal == "LONG" else price + abs(price) * 0.0025
-
-    if signal == "LONG":
-        return f"для LONG потрібне закріплення вище {fnum(trigger)} або ретест біля {fnum(retest)}"
-    if signal == "SHORT":
-        return f"для SHORT потрібне закріплення нижче {fnum(trigger)} або ретест біля {fnum(retest)}"
-    return "тригер графіка не визначений"
+def price_line(context):
+    return f"<b>Ціна:</b> {round_price(context['price'])} | 24h {round(context.get('change24h', 0), 3)}% | {context.get('source')}"
 
 
-def simplified_plan_entry_text(plan, signal, tv=None):
-    plan = plan if isinstance(plan, dict) else {}
-    entry = safe_float(plan.get("entry")) or safe_float((tv or {}).get("price"))
-    stop = safe_float(plan.get("stop"))
-    tp1 = safe_float(plan.get("tp1"))
-    parts = [f"Вхід: {fnum(entry)}" if entry else "Вхід: —"]
-    if stop is not None:
-        parts.append(f"Стоп: {fnum(stop)}")
-    if tp1 is not None:
-        parts.append(f"TP1: {fnum(tp1)}")
-    return " | ".join(parts)
+def context_lines(context):
+    return [
+        f"<b>15m:</b> {side_word(context['tf15'].get('bias'))} ({context['tf15'].get('score')}) — {context['tf15'].get('note')}",
+        f"<b>1h:</b> {side_word(context['tf1h'].get('bias'))} ({context['tf1h'].get('score')}) — {context['tf1h'].get('note')}",
+        f"<b>3m:</b> {side_word(context['tf3'].get('bias'))} ({context['tf3'].get('score')}) — {context['tf3'].get('note')}",
+        f"<b>Структура:</b> {side_word(context['structure'].get('bias'))} — {context['structure'].get('phase')} | {context['structure'].get('note')}",
+        f"<b>Потік:</b> {side_word(context['flow'].get('bias'))} ({context['flow'].get('score')}) — {context['flow'].get('note')}",
+        f"<b>Новини:</b> {side_word(context['news'].get('bias'))} ({context['news'].get('score')}) — {context['news'].get('top')[:150]}",
+    ]
 
 
-def confirmed_plan_text(plan, tv=None):
-    plan = plan if isinstance(plan, dict) else {}
-    entry = safe_float(plan.get("entry")) or safe_float((tv or {}).get("price"))
-    stop = safe_float(plan.get("stop"))
-    tp1 = safe_float(plan.get("tp1"))
-    tp2 = safe_float(plan.get("tp2"))
-    tp3 = safe_float(plan.get("tp3"))
+def plan_text(plan):
+    if not plan:
+        return "плану немає"
     return (
-        f"Вхід: {fnum(entry)} | Стоп: {fnum(stop) if stop is not None else '—'} | "
-        f"TP1: {fnum(tp1) if tp1 is not None else '—'} | "
-        f"TP2: {fnum(tp2) if tp2 is not None else '—'} | "
-        f"TP3: {fnum(tp3) if tp3 is not None else '—'}"
+        f"Вхід {plan.entry} | Стоп {plan.stop} | TP1 {plan.tp1} | "
+        f"TP2 {plan.tp2} | TP3 {plan.tp3} | ризик {plan.risk_pct}%"
     )
 
 
-def simplified_low_quality_message(tv, signal, trade_probability, status_text, market_text, quality_text, reasons, tech, plan, entry_watch, chart_context, event_risk):
-    side = signal if signal in ["LONG", "SHORT"] else None
-    if not side:
-        side = (chart_context or {}).get("side")
-    if side not in ["LONG", "SHORT"]:
-        side = "LONG" if "LONG" in str(status_text).upper() else "SHORT" if "SHORT" in str(status_text).upper() else None
-
-    reasons_text = " | ".join(reasons or [])
-    news_warning = pre_news_warning_text(event_risk)
-
-    if trade_probability is None or trade_probability < 50:
-        lines = [
-            "<b>ВХОДУ НЕМАЄ</b>",
-            f"<b>Ринок:</b> {market_text}",
-            "<b>Якість входу:</b> 0/5 — немає входу",
-            f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}%",
-            f"<b>Причини:</b> {reasons_text}",
-        ]
-    elif trade_probability < 55:
-        direction = f"ГОТУЄМОСЬ ДО {side}" if side in ["LONG", "SHORT"] else "ГОТУЄМОСЬ"
-        lines = [
-            f"<b>ЧЕКАТИ</b> — {direction}",
-            f"<b>Ринок:</b> {market_text}",
-            f"<b>Якість входу:</b> {quality_text}",
-            f"<b>Причини:</b> {reasons_text}",
-            f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}%",
-        ]
-    elif trade_probability < 65:
-        decision_side = side or signal
-        lines = [
-            f"<b>РИЗИКОВАНИЙ ВХІД</b> — {decision_side}",
-            f"<b>Ринок:</b> {market_text}",
-            f"<b>Якість входу:</b> {quality_text}",
-            f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-            f"<b>Графік:</b> {simplified_chart_entry_text(signal, entry_watch, chart_context, tv)}",
-            f"<b>План:</b> {simplified_plan_entry_text(plan, signal, tv)}",
-        ]
-    else:
-        return ""
-
-    if news_warning:
-        lines.append(news_warning)
-    return "\n".join(lines).strip()
-
-
-def simplified_confirmed_entry_message(tv, signal, trade_probability, market_text, quality_text, reasons, plan, entry_watch, chart_context, event_risk):
-    if signal not in ["LONG", "SHORT"] or trade_probability is None or trade_probability < 65:
-        return ""
-
+def build_new_setup_message(context, setup):
+    plan = setup.get("plan")
     lines = [
-        f"<b>ВХІД Є</b> — {signal}",
-        f"<b>Ринок:</b> {market_text}",
-        f"<b>Якість входу:</b> {quality_text}",
-        f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}%",
-        f"<b>Графік:</b> {confirmed_chart_entry_text(signal, entry_watch, chart_context, tv)}",
-        f"<b>План:</b> {confirmed_plan_text(plan, tv)}",
-        f"<b>Причини:</b> " + " | ".join(reasons or []),
-    ]
-    news_warning = pre_news_warning_text(event_risk)
-    if news_warning:
-        lines.append(news_warning)
-    return "\n".join(lines).strip()
-
-
-def compact_telegram_message(tv, signal, signal_type, confidence, quality, plan, technical_bias, fundamental_bias, news, event_risk, macro, orderflow, oi_analysis, market, session, reversal, priority, final_summary, weekend=None, cross_market=None, rr=None, chase=None, pos_note='', late_entry=None, cooling=None, smc=None, tech=None, chart_context=None, trade_probability=None, decision=None, show_trade_plan=None, entry_watch=None, event_block=None, market_mode=None, final_decision=None):
-    """Format Telegram text only. It must not change signal, plan or quality."""
-    raw_tech = tech or {}
-    final_decision = final_decision or {}
-    decision = decision if decision is not None else human_decision_line(signal, signal_type, reversal, technical_bias, news, event_risk)
-    trade_probability = trade_probability if trade_probability is not None else None
-    show_trade_plan = bool(show_trade_plan)
-    entry_watch = entry_watch or {"active": False}
-    event_block = event_block or {"blocked": False, "reason": ""}
-    market_mode = market_mode or market_mode_engine(
-        signal, signal_type, trade_probability, raw_tech, smc, orderflow, news,
-        event_risk, market, session, late_entry, cooling
-    )
-
-    tech_label = short_bias_label(technical_bias.get("side", "NEUTRAL"))
-    fund_label = short_bias_label(fundamental_bias.get("side", "NEUTRAL"))
-    driver = select_main_driver(raw_tech or technical_bias, news, event_risk, macro, orderflow, market, session, priority)
-
-    # Direction label for the user.
-    # It must show the real market direction (LONG/SHORT), not the internal signal value.
-    # Example: signal can be "НЕЙТРАЛЬНО", while decision is "Чекаємо підтвердження LONG".
-    decision_upper = str(decision).upper()
-    conflict_note = signal_conflict_text(signal, driver, technical_bias, fundamental_bias, event_risk)
-    driver = align_driver_with_final_signal(driver, signal, technical_bias, fundamental_bias, event_risk, smc, tech)
-    main_reason = technical_reason_text(signal, technical_bias, smc, tech) if signal in ["LONG", "SHORT"] else driver.get("summary", "перевага нечітка — краще чекати")
-    driver_text = f"{driver.get('type', '')} {driver.get('expectation', '')} {driver.get('summary', '')}".upper()
-
-    technical_side_raw = technical_bias.get("side", "NEUTRAL")
-    fundamental_side_raw = fundamental_bias.get("side", "NEUTRAL")
-    tech_short = "SHORT" in technical_side_raw and "LONG" not in technical_side_raw
-    tech_long = "LONG" in technical_side_raw and "SHORT" not in technical_side_raw
-    fund_long = "LONG" in fundamental_side_raw and "SHORT" not in fundamental_side_raw
-    fund_short = "SHORT" in fundamental_side_raw and "LONG" not in fundamental_side_raw
-    shock_conflict = (
-        signal == "НЕЙТРАЛЬНО"
-        and ("SHOCK DOWN" in str(signal_type) or "SHOCK UP" in str(signal_type))
-        and ((tech_short and fund_long) or (tech_long and fund_short))
-    )
-
-    if shock_conflict:
-        market_bias = "CONFLICT"
-    elif signal in ["LONG", "SHORT"]:
-        market_bias = signal
-    elif "LONG" in decision_upper:
-        market_bias = "LONG"
-    elif "SHORT" in decision_upper:
-        market_bias = "SHORT"
-    elif "LONG" in driver_text and "SHORT" not in driver_text:
-        market_bias = "LONG"
-    elif "SHORT" in driver_text and "LONG" not in driver_text:
-        market_bias = "SHORT"
-    elif fund_long and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
-        market_bias = "LONG"
-    elif fund_short and abs(fundamental_bias.get("score", 0)) >= abs(technical_bias.get("score", 0)):
-        market_bias = "SHORT"
-    elif tech_long:
-        market_bias = "LONG"
-    elif tech_short:
-        market_bias = "SHORT"
-    else:
-        market_bias = "НЕЙТРАЛЬНО"
-
-    if shock_conflict:
-        market_bias_text = "конфлікт"
-        if "SHOCK DOWN" in str(signal_type):
-            main_reason = "графік різко впав, але покупці почали відкуповувати"
-        elif "SHOCK UP" in str(signal_type):
-            main_reason = "графік різко виріс, але продавці можуть повернути тиск"
-    elif market_bias in ["LONG", "SHORT"]:
-        market_bias_text = f"{simple_direction_word(market_bias)} ({confidence}%)"
-    else:
-        market_bias_text = "змішано"
-    if "LONG-ВІДСКОК" in str(signal_type):
-        market_bias_text = f"можливий лонг-відскок ({trade_probability}%)"
-    elif "SHORT-ВІДКАТ" in str(signal_type):
-        market_bias_text = f"можливий шорт-відкат ({trade_probability}%)"
-
-    calendar_text = economic_calendar_text(event_risk)
-    compact_reasons = [
-        f"графік {simple_bias_label(tech_label)} ({technical_bias.get('score')})",
-        f"новини {simple_bias_label(fund_label)} ({fundamental_bias.get('score')})",
-    ]
-    if calendar_text:
-        compact_reasons.append(calendar_text.replace("Календар: ", "календар "))
-
-    top_decision = final_decision.get("decision_text") or decision
-    if market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("НЕ ВХОДИТИ"):
-        top_decision = top_decision.replace("НЕ ВХОДИТИ — ", "")
-    elif market_mode.get("status") == "ВХОДУ НЕМАЄ" and str(top_decision).startswith("Зараз не входити — "):
-        top_decision = top_decision.replace("Зараз не входити — ", "")
-    elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("ЧЕКАТИ — "):
-        top_decision = top_decision.replace("ЧЕКАТИ — ", "")
-    elif market_mode.get("status") == "ЧЕКАТИ" and str(top_decision).startswith("Чекати "):
-        top_decision = top_decision.replace("Чекати ", "")
-
-    status_text = final_decision.get("entry_status_text") or market_mode.get("status")
-    market_text = final_decision.get("market_text") or market_bias_text
-    quality_text = final_decision.get("quality_text") or entry_quality_scale(trade_probability, late_entry, signal_type)
-    plan_text = final_decision.get("plan_text") or proactive_plan_text(signal, trade_probability, show_trade_plan, plan, entry_watch, late_entry, chart_context)
-    reasons = final_decision.get("reasons") or compact_reasons[:3]
-
-    simplified = simplified_low_quality_message(
-        tv=tv,
-        signal=signal,
-        trade_probability=trade_probability,
-        status_text=status_text,
-        market_text=market_text,
-        quality_text=quality_text,
-        reasons=reasons,
-        tech=tech,
-        plan=plan,
-        entry_watch=entry_watch,
-        chart_context=chart_context,
-        event_risk=event_risk,
-    )
-    if simplified:
-        return simplified
-
-    confirmed = simplified_confirmed_entry_message(
-        tv=tv,
-        signal=signal,
-        trade_probability=trade_probability,
-        market_text=market_text,
-        quality_text=quality_text,
-        reasons=reasons,
-        plan=plan,
-        entry_watch=entry_watch,
-        chart_context=chart_context,
-        event_risk=event_risk,
-    )
-    if confirmed:
-        return confirmed
-
-    lines = [
-        "<b>📊 BZU SIGNAL BOT</b>",
-        f"<b>{status_text}</b> — {top_decision}",
+        "<b>BZU SIGNAL BOT PRO</b>",
+        f"<b>{setup['title']}</b>",
         "",
-        f"<b>Ринок:</b> {market_text}",
-        f"<b>Якість входу:</b> {quality_text}",
-        f"<b>Ціна:</b> {tv['price']} | {round(tv['change'], 4)}% | <b>{local_3m_status_text((tech or {}).get('micro_3m'), signal)}</b>",
-        f"<b>План:</b> {plan_text}",
-        f"<b>Причини:</b> " + " | ".join(reasons),
+        price_line(context),
+        f"<b>Якість:</b> {setup['quality']}/100",
+        f"<b>Причина:</b> {setup['reason']}",
     ]
+    if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
+        lines.append(f"<b>План:</b> {plan_text(plan)}")
+        lines.append(f"<b>Скасування:</b> {plan.invalidation}")
+        if setup["action"] == "RISKY_ENTRY":
+            lines.append("<b>Режим:</b> малий ризик; якщо 3m одразу піде проти — не тримати до дальнього стопу.")
+    elif setup["action"] == "WAIT_RETEST":
+        lines.append(f"<b>Зона:</b> напрям {setup['side']} є, але вхід тільки після відкату/ретесту. Орієнтир плану: {plan_text(plan)}")
+    elif setup["side"] in ["LONG", "SHORT"] and plan:
+        lines.append(f"<b>Що чекати:</b> {setup['side']} тільки після 3m-тригера і підтвердження структури. Орієнтир: {plan_text(plan)}")
 
-    chart_line = final_decision.get("chart_text") or chart_context_message(chart_context)
-    if chart_line:
-        lines.insert(6, f"<b>Графік:</b> {chart_line}")
+    if setup.get("conflicts"):
+        lines.append("<b>Ризики:</b> " + " | ".join(setup["conflicts"][:3]))
 
-    if event_block.get("blocked"):
-        lines.append(f"<b>Новинний ризик:</b> {event_block.get('reason')}")
-
-    news_warning = pre_news_warning_text(event_risk)
-    if news_warning:
-        lines.append(news_warning)
-
-    no_entry_active = (trade_probability is None) or (trade_probability < 55) or (not show_trade_plan)
-
-    risk_text = reversal_risk_note(signal, reversal)
-    rev_text = compact_reversal_label(reversal)
-
-    if risk_text:
-        lines.append(f"<b>{risk_text}</b>")
-    elif "різкий дамп" in decision.lower() and rev_text != "немає":
-        lines.append("<b>Ризик:</b> можливий LONG-відскок пізніше")
-    elif "різкий памп" in decision.lower() and rev_text != "немає":
-        lines.append("<b>Ризик:</b> можливий SHORT-відкат пізніше")
-    elif rev_text != "немає":
-        lines.append(f"<b>Reversal:</b> {rev_text}")
-
-
-
+    lines.extend(context_lines(context)[:4])
     return "\n".join(lines).strip()
 
-def setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis):
-    if signal == "НЕЙТРАЛЬНО":
-        return "NO TRADE"
 
-    aligned = 0
-    conflicts = 0
-    target = signal
-
-    components = [
-        tech_verdict(tech)[0],
-        news_verdict(news)[0],
-        event_verdict(event_risk)[0],
-        macro_verdict(macro)[0],
-        orderflow_verdict(orderflow)[0],
-        market_structure_verdict(market)[0],
-        oi_analysis.get("side", "NEUTRAL"),
+def build_follow_message(context, trade, result):
+    lines = [
+        "<b>BZU SIGNAL BOT PRO</b>",
+        f"<b>{result['title']}</b> — {result['recommendation']}",
+        "",
+        price_line(context),
+        f"<b>Стан:</b> від входу {round(result['current_pct'], 3)}% | максимум у плюс {round(result['best_pct'], 3)}%",
+        (
+            f"<b>Позиція:</b> Вхід {round_price(trade.entry)} | Стоп зараз {round_price(trade.stop_current)} "
+            f"| TP1 {round_price(trade.tp1)} | TP2 {round_price(trade.tp2)} | TP3 {round_price(trade.tp3)}"
+        ),
+        f"<b>TP:</b> TP1 {'так' if trade.tp1_hit else 'ні'} | TP2 {'так' if trade.tp2_hit else 'ні'} | TP3 {'так' if trade.tp3_hit else 'ні'}",
     ]
-
-    for side in components:
-        if side == target:
-            aligned += 1
-        elif side in ["LONG", "SHORT"] and side != target:
-            conflicts += 1
-
-    if abs(score) >= 150 and aligned >= 4 and conflicts <= 1 and "РИЗИКОВИЙ" not in signal_type:
-        return "A+"
-    if abs(score) >= 110 and aligned >= 3 and conflicts <= 2:
-        return "A"
-    if abs(score) >= 80 and aligned >= 2:
-        return "B"
-    return "C / ризиковий"
-
-def should_show_trade_plan(signal, trade_probability, late_entry=None, chart_context=None):
-    """Show entry/SL/TP for 3/5+ setups.
-
-    3/5 = ризикований вхід, so the plan is allowed but must be treated as
-    aggressive/conditional. 4/5 and 5/5 are locked by memory after first signal.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return False
-    if trade_probability is None:
-        return False
-    continuation_trigger = (
-        chart_context
-        and chart_context.get("stage") == "TRIGGER"
-        and chart_context.get("trigger_kind") == "CONTINUATION_RETEST"
-        and chart_context.get("side") == signal
-    )
-    if late_entry and late_entry.get("late") and not continuation_trigger:
-        return False
-    return (trade_probability or 0) >= 55
-
-def format_trade_plan(plan):
-    if isinstance(plan, str):
-        return plan
-    if not plan or not isinstance(plan, dict) or plan.get("entry") is None:
-        return "Входу немає — чекати підтвердження."
-    prefix = "🔒 Зафіксований план: " if plan.get("locked") else ""
-    return (
-        f"{prefix}Вхід: {plan.get('entry')} | "
-        f"Стоп: {plan.get('stop')} | "
-        f"TP1: {plan.get('tp1')} | "
-        f"TP2: {plan.get('tp2')} | "
-        f"TP3: {plan.get('tp3')}"
-    )
-
-def format_time(dt):
-    if not dt:
-        return "час невідомий"
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+    if result.get("notes"):
+        lines.append("<b>Дія:</b> " + " | ".join(result["notes"][:3]))
+    lines.extend(context_lines(context)[:5])
+    return "\n".join(lines).strip()
 
 
-def dedupe_telegram_blocks(message):
-    """Remove duplicated identical paragraphs from Telegram message."""
-    parts = [p.strip() for p in message.split("\\n\\n") if p.strip()]
-    seen = set()
-    clean = []
-    for part in parts:
-        key = re.sub(r"\\s+", " ", part).strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        clean.append(part)
-    return "\\n\\n".join(clean)
+def build_closed_trade_journal_item(trade, result, context):
+    return {
+        "id": trade.id,
+        "opened_at": trade.opened_at,
+        "closed_at": iso_now(),
+        "side": trade.side,
+        "entry": trade.entry,
+        "close_price": round_price(context["price"]),
+        "stop_initial": trade.stop_initial,
+        "stop_final": round_price(trade.stop_current),
+        "tp1": trade.tp1,
+        "tp2": trade.tp2,
+        "tp3": trade.tp3,
+        "quality": trade.quality,
+        "result_action": result["action"],
+        "result_pct": round(result["current_pct"], 3),
+        "leveraged_pct": round(result["current_pct"] * LEVERAGE, 2),
+        "best_pct": round(result["best_pct"], 3),
+        "notes": result.get("notes", []),
+    }
 
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[WARN] Telegram secrets missing")
+        print("[WARN] Telegram token/chat missing. Message:")
+        print(message)
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message[:3900],
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-
     try:
         response = requests.post(url, json=payload, timeout=15)
         print(f"Telegram status: {response.status_code}")
         print(response.text[:300])
     except Exception as error:
-        print(f"[WARN] Telegram error: {error}")
+        print(f"[WARN] Telegram send failed: {error}")
 
-# ==========================================================
-# MICRO 3M STRUCTURE
-# ==========================================================
-
-def analyze_micro_structure(candles):
-    """3m local movement state.
-
-    This version is stricter:
-    if the last 3m candles are stair-stepping down, it must show SHORT,
-    not 'боковик'.
-    """
-    if not candles or len(candles) < 30:
-        return {
-            "available": False,
-            "bias": "NEUTRAL",
-            "state": "NO DATA",
-            "score": 0,
-            "note": "3m data unavailable",
-        }
-
-    recent = candles[-24:]
-    fast = candles[-12:]
-    last8 = candles[-8:]
-    last = candles[-1]
-
-    closes = [c["close"] for c in recent]
-    highs = [c["high"] for c in recent]
-    lows = [c["low"] for c in recent]
-
-    fast_closes = [c["close"] for c in fast]
-    fast_highs = [c["high"] for c in fast]
-    fast_lows = [c["low"] for c in fast]
-
-    recent_high = max(highs[:-1])
-    recent_low = min(lows[:-1])
-
-    last4 = sum(closes[-4:]) / 4
-    prev4 = sum(closes[-8:-4]) / 4
-    first6 = sum(closes[:6]) / 6
-    last6 = sum(closes[-6:]) / 6
-
-    fast_start = fast_closes[0]
-    fast_end = fast_closes[-1]
-    fast_move_pct = ((fast_end - fast_start) / fast_start) * 100 if fast_start else 0
-
-    avg_vol = sum(c.get("volume", 0) for c in recent[:-1]) / max(1, len(recent[:-1]))
-    last_vol = last.get("volume", 0) or 0
-    vol_ratio = last_vol / avg_vol if avg_vol else 1.0
-
-    candle_range = max(last["high"] - last["low"], 1e-9)
-    body = last["close"] - last["open"]
-    body_ratio = abs(body) / candle_range
-    close_location = (last["close"] - last["low"]) / candle_range
-
-    # Structure counters
-    lower_high_count = 0
-    lower_low_count = 0
-    higher_high_count = 0
-    higher_low_count = 0
-    lower_close_count = 0
-    higher_close_count = 0
-
-    for i in range(1, len(fast)):
-        if fast_highs[i] < fast_highs[i - 1]:
-            lower_high_count += 1
-        if fast_lows[i] < fast_lows[i - 1]:
-            lower_low_count += 1
-        if fast_highs[i] > fast_highs[i - 1]:
-            higher_high_count += 1
-        if fast_lows[i] > fast_lows[i - 1]:
-            higher_low_count += 1
-        if fast_closes[i] < fast_closes[i - 1]:
-            lower_close_count += 1
-        if fast_closes[i] > fast_closes[i - 1]:
-            higher_close_count += 1
-
-    red_count = sum(1 for c in last8 if c["close"] < c["open"])
-    green_count = sum(1 for c in last8 if c["close"] > c["open"])
-
-    total_move_pct = ((closes[-1] - closes[0]) / closes[0]) * 100 if closes[0] else 0
-    drift_pct = ((last6 - first6) / first6) * 100 if first6 else 0
-
-    short_momentum = last4 < prev4
-    long_momentum = last4 > prev4
-
-    score = 0
-    notes = []
-
-    # Local breakout/breakdown
-    if last["close"] > recent_high:
-        score += 24
-        notes.append("пробій локального high")
-    elif last["close"] < recent_low:
-        score -= 24
-        notes.append("пробій локального low")
-
-    # Immediate 12-candle direction — this is the main fix
-    if fast_move_pct <= -0.35:
-        score -= 28
-        notes.append("3m швидко йде вниз")
-    elif fast_move_pct >= 0.35:
-        score += 28
-        notes.append("3m швидко йде вгору")
-
-    # Stair-step structure
-    if lower_high_count >= 5 or lower_close_count >= 7:
-        score -= 24
-        notes.append("3m lower highs / lower closes")
-    if lower_low_count >= 4:
-        score -= 14
-        notes.append("3m оновлює lows")
-
-    if higher_high_count >= 5 or higher_close_count >= 7:
-        score += 24
-        notes.append("3m higher highs / higher closes")
-    if higher_low_count >= 4:
-        score += 14
-        notes.append("3m утримує higher lows")
-
-    # Candle balance
-    if red_count >= 5:
-        score -= 12
-        notes.append("більшість останніх 3m свічок червоні")
-    elif green_count >= 5:
-        score += 12
-        notes.append("більшість останніх 3m свічок зелені")
-
-    # Short-term momentum
-    if long_momentum:
-        score += 8
-    elif short_momentum:
-        score -= 8
-
-    # Drift
-    if drift_pct <= -0.22:
-        score -= 12
-        notes.append("3m ціна сповзає вниз")
-    elif drift_pct >= 0.22:
-        score += 12
-        notes.append("3m ціна підтискається вгору")
-
-    # Last candle
-    if body > 0 and body_ratio >= 0.50 and close_location >= 0.58:
-        score += 6
-    elif body < 0 and body_ratio >= 0.50 and close_location <= 0.42:
-        score -= 6
-
-    # Volume
-    if vol_ratio >= 1.5:
-        if body > 0:
-            score += 8
-            notes.append("обсяг за покупців")
-        elif body < 0:
-            score -= 8
-            notes.append("обсяг за продавців")
-
-    # Very strict directional classification
-    if score >= 18:
-        bias = "LONG"
-        state = "LONG_STRENGTHENING"
-    elif score <= -18:
-        bias = "SHORT"
-        state = "SHORT_STRENGTHENING"
-    else:
-        bias = "NEUTRAL"
-        state = "RANGE"
-
-        if total_move_pct >= 0.30 and short_momentum:
-            state = "LONG_COOLING"
-            notes.append("LONG охолоджується після імпульсу")
-        elif total_move_pct <= -0.30 and long_momentum:
-            state = "SHORT_COOLING"
-            notes.append("SHORT охолоджується після падіння")
-
-    return {
-        "available": True,
-        "bias": bias,
-        "state": state,
-        "score": int(score),
-        "note": "; ".join(notes[:3]) if notes else "3m боковик",
-        "vol_ratio": round(vol_ratio, 2),
-        "move_pct": round(total_move_pct, 3),
-        "fast_move_pct": round(fast_move_pct, 3),
-        "drift_pct": round(drift_pct, 3),
-        "lower_high_count": lower_high_count,
-        "lower_low_count": lower_low_count,
-        "lower_close_count": lower_close_count,
-        "red_count": red_count,
-    }
-
-
-def micro_structure_text(micro):
-    """Human-readable 3m warning for Telegram."""
-    if not micro or not micro.get("available"):
-        return ""
-    bias = micro.get("bias", "NEUTRAL")
-    score = micro.get("score", 0)
-
-    if bias == "SHORT":
-        return f"<b>3m:</b> LONG слабшає — можливий відкат вниз ({score})"
-    if bias == "LONG":
-        return f"<b>3m:</b> SHORT слабшає — можливий відскок вгору ({score})"
-    return ""
-
-def structure_override_engine(signal, signal_type, confidence, score, tech, smc, micro, news, event_risk):
-    """SMC/price action override.
-
-    News can create the bias, but confirmed structure should cancel the opposite setup.
-    This prevents LONG watch while SMC/3m already shows SHORT, and vice versa.
-    """
-    if signal not in ["LONG", "SHORT"]:
-        return {
-            "active": False,
-            "signal": signal,
-            "signal_type": signal_type,
-            "confidence": confidence,
-            "score": score,
-            "reason": "",
-        }
-
-    tech = tech or {}
-    smc = smc or {}
-    micro = micro or {}
-    news = news or {}
-    event_risk = event_risk or {}
-
-    smc_bias = smc.get("bias", "NEUTRAL")
-    bos = smc.get("bos", "NONE")
-    choch = smc.get("choch", "NONE")
-    smc_score = smc.get("score", 0) or 0
-
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_score = micro.get("score", 0) or 0
-
-    tech_score = tech.get("score", 0) or 0
-
-    structure_short = (
-        smc_bias == "SHORT"
-        or bos == "пробій структури SHORT"
-        or choch == "ознака розвороту SHORT"
-        or smc_score <= -22
-    )
-    structure_long = (
-        smc_bias == "LONG"
-        or bos == "пробій структури LONG"
-        or choch == "ознака розвороту LONG"
-        or smc_score >= 22
-    )
-
-    micro_short = micro_bias == "SHORT" and micro_score <= -18
-    micro_long = micro_bias == "LONG" and micro_score >= 18
-
-    if signal == "LONG" and structure_short:
-        if micro_short or tech_score <= -35:
-            return {
-                "active": True,
-                "signal": "SHORT",
-                "signal_type": "LONG СЛАБШАЄ / МОЖЛИВИЙ ВІДКАТ ВНИЗ",
-                "confidence": min(68, max(55, abs(smc_score) + abs(micro_score))),
-                "score": -abs(max(abs(score), abs(smc_score) + abs(micro_score) + 20)),
-                "reason": "LONG скасовано: SMC/3m структура вже показує SHORT",
-            }
-        return {
-            "active": True,
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "LONG СКАСОВАНО / ЧЕКАТИ НОВИЙ ТРИГЕР",
-            "confidence": min(confidence, 50),
-            "score": 0,
-            "reason": "LONG скасовано: SMC проти сценарію",
-        }
-
-    if signal == "SHORT" and structure_long:
-        if micro_long or tech_score >= 35:
-            return {
-                "active": True,
-                "signal": "LONG",
-                "signal_type": "SHORT СЛАБШАЄ / МОЖЛИВИЙ ВІДСКОК ВГОРУ",
-                "confidence": min(68, max(55, abs(smc_score) + abs(micro_score))),
-                "score": abs(max(abs(score), abs(smc_score) + abs(micro_score) + 20)),
-                "reason": "SHORT скасовано: SMC/3m структура вже показує LONG",
-            }
-        return {
-            "active": True,
-            "signal": "НЕЙТРАЛЬНО",
-            "signal_type": "SHORT СКАСОВАНО / ЧЕКАТИ НОВИЙ ТРИГЕР",
-            "confidence": min(confidence, 50),
-            "score": 0,
-            "reason": "SHORT скасовано: SMC проти сценарію",
-        }
-
-    return {
-        "active": False,
-        "signal": signal,
-        "signal_type": signal_type,
-        "confidence": confidence,
-        "score": score,
-        "reason": "",
-    }
-
-def local_3m_status_text(micro, signal=None):
-    """Human-readable 3m state."""
-    if not micro or not micro.get("available"):
-        return "Локально 3m: дані недоступні"
-
-    state = micro.get("state", "RANGE")
-    score = micro.get("score", 0)
-
-    if state == "LONG_STRENGTHENING":
-        if signal == "SHORT":
-            return f"Локально 3m: шорт слабшає — покупці активні ({score})"
-        return f"Локально 3m: лонг посилюється — покупці активні ({score})"
-
-    if state == "SHORT_STRENGTHENING":
-        if signal == "LONG":
-            return f"Локально 3m: лонг слабшає — продавці активні ({score})"
-        return f"Локально 3m: шорт посилюється — продавці активні ({score})"
-
-    if state == "LONG_COOLING":
-        return f"Локально 3m: лонг охолоджується — краще чекати ретест ({score})"
-
-    if state == "SHORT_COOLING":
-        return f"Локально 3m: шорт охолоджується — можливий відскок ({score})"
-
-    return f"Локально 3m: боковик / немає чіткого входу ({score})"
-
-
-def global_trend_text(tech, market_bias):
-    """Human-readable global 15m/1h trend for Telegram."""
-    tech = tech or {}
-    trend_15m = tech.get("trend_15m", "UNKNOWN")
-    trend_1h = tech.get("trend_1h", "UNKNOWN")
-
-    if trend_15m == "UP" and trend_1h == "UP":
-        return "Загалом: лонг"
-    if trend_15m == "DOWN" and trend_1h == "DOWN":
-        return "Загалом: шорт"
-    if market_bias == "LONG":
-        return "Загалом: лонг"
-    if market_bias == "SHORT":
-        return "Загалом: шорт"
-    return "Загалом: змішано"
-
-def apply_local_3m_confidence_filter(signal, confidence, trade_probability, tech):
-    """Adjust confidence/quality by local 3m timing and state."""
-    micro = (tech or {}).get("micro_3m") or {}
-    if signal not in ["LONG", "SHORT"] or not micro.get("available"):
-        return confidence, trade_probability, ""
-
-    micro_bias = micro.get("bias", "NEUTRAL")
-    micro_state = micro.get("state", "RANGE")
-    micro_score = micro.get("score", 0) or 0
-
-    # Against main signal = reduce
-    if signal == "LONG" and (micro_bias == "SHORT" or micro_state in ["LONG_COOLING", "LONG_PAUSE"]):
-        confidence = min(confidence, 62)
-        if trade_probability is not None:
-            trade_probability = min(trade_probability, 58)
-        return confidence, trade_probability, "LONG охолоджується на 3m — краще чекати ретест"
-
-    if signal == "SHORT" and (micro_bias == "LONG" or micro_state in ["SHORT_COOLING", "SHORT_PAUSE"]):
-        confidence = min(confidence, 62)
-        if trade_probability is not None:
-            trade_probability = min(trade_probability, 58)
-        return confidence, trade_probability, "SHORT охолоджується на 3m — краще чекати ретест"
-
-    # Same direction = boost
-    if signal == "LONG" and micro_state == "LONG_STRENGTHENING":
-        confidence = min(95, confidence + 6)
-        if trade_probability is not None:
-            trade_probability = max(trade_probability, 66 if micro_score < 30 else 70)
-        return confidence, trade_probability, "3m підтверджує LONG — покупці активні"
-
-    if signal == "SHORT" and micro_state == "SHORT_STRENGTHENING":
-        confidence = min(95, confidence + 6)
-        if trade_probability is not None:
-            trade_probability = max(trade_probability, 66 if micro_score > -30 else 70)
-        return confidence, trade_probability, "3m підтверджує SHORT — продавці активні"
-
-    return confidence, trade_probability, ""
 
 # ==========================================================
 # MAIN
 # ==========================================================
 
-def trade_setup_level(probability):
-    try:
-        p = int(probability)
-    except Exception:
-        return 0
-    if p >= 75:
-        return 5
-    if p >= 65:
-        return 4
-    if p >= 55:
-        return 3
-    return 0
 
 def main():
-    print("START BZU PROFESSIONAL FREE BOT UA REVERSAL-SESSION")
+    print("START BZU SIGNAL BOT PRO")
+    state = load_state()
+    journal = load_journal()
 
-    tv = get_tradingview_market_data()
-    if not tv:
-        print("TRADINGVIEW PRICE ERROR")
+    data = collect_market_data()
+    context = build_context(data)
+    if not context.get("price"):
+        print("NO PRICE DATA")
         return
 
-    signal_memory = load_signal_memory()
-    previous_signal_note = memory_status_note(signal_memory, tv["price"])
-    signal_journal = load_signal_journal()
+    print(f"PRICE {context['price']} | BIAS {context['bias']} | TECH {context['tech_score']} | TOTAL {context['total_score']}")
+    print(f"15m {context['tf15'].get('bias')} {context['tf15'].get('score')} | 3m {context['tf3'].get('bias')} {context['tf3'].get('score')}")
+    print(f"STRUCTURE {context['structure'].get('phase')} {context['structure'].get('bias')} | FLOW {context['flow'].get('bias')} | NEWS {context['news'].get('bias')}")
 
-    fresh_news = get_all_fresh_news()
-    event_items = get_event_news()
-
-    tech = analyze_technical(tv)
-    
-    real_candles = get_real_candles()
-    signal_journal, _ = update_signal_journal_results(signal_journal, tv["price"], real_candles)
-    journal_stats_note = signal_journal_stats_text(signal_journal)
-    backtest_smoke = quick_backtest_smoke(real_candles)
-    smc = analyze_smc_structure(real_candles)
-    local_move = analyze_local_price_move(real_candles, tv["price"])
-    tech = apply_local_move_to_technical(tech, local_move)
-
-    micro_candles = get_real_candles(bar="3m", limit=160)
-    micro = analyze_micro_structure(micro_candles)
-    tech["micro_3m"] = micro
-    tech["micro_local_move"] = analyze_local_price_move(micro_candles, tv["price"], lookback=48)
-
-    if smc.get('available'):
-        tech['score'] += int(smc.get('score', 0))
-        tech.setdefault('confirmations', []).append('SMC: ' + smc.get('summary', ''))
-
-    # 3m is a micro-trigger only. It has small weight, but can override false news bias with SMC.
-    if micro.get("available"):
-        tech['score'] += int(max(-18, min(18, micro.get("score", 0))))
-        tech.setdefault('confirmations', []).append('MICRO 3m: ' + micro.get('note', ''))
-
-    news = analyze_news(fresh_news)
-    orderflow = analyze_free_orderflow(tv)
-    okx_trades = get_okx_recent_trades(limit=100)
-    real_trade_flow = analyze_okx_trade_flow(okx_trades)
-    orderflow = merge_orderflow_proxy(orderflow, real_trade_flow)
-    okx_book = get_okx_order_book(depth=50)
-    order_book_pressure = analyze_order_book_pressure(okx_book, tv["price"])
-    liquidity_proxy = analyze_liquidity_proxy(real_candles, real_trade_flow, order_book_pressure)
-    orderflow = merge_market_microstructure(orderflow, order_book_pressure, liquidity_proxy)
-    macro_data = get_macro_quant_data()
-    macro = analyze_macro_quant(macro_data)
-    event_risk = analyze_event_risk(event_items)
-    economic_calendar = analyze_economic_calendar()
-    event_risk = merge_calendar_into_event_risk(event_risk, economic_calendar)
-    news, event_risk = apply_price_reaction_to_news(news, event_risk, tech, orderflow)
-    market = analyze_market_structure(tv, tech)
-    oi_analysis = analyze_synthetic_open_interest(tv, tech, orderflow, market)
-    session = analyze_session_context()
-    
-    weekend = analyze_weekend_mode()
-    cross_data = get_cross_market_data()
-    cross_market = analyze_cross_market(cross_data, tech)
-    reversal = analyze_reversal_watch(tv, tech, news, event_risk, orderflow, market, oi_analysis, session)
-    priority = analyze_priority_engine(tech, news, event_risk, macro, orderflow, market, session, reversal)
-    chart_context = analyze_forward_chart_context(tv, tech, smc, orderflow, news, event_risk, real_candles)
-
-    signal, signal_type, score, confidence, risk_note = build_signal(
-        tech, news, orderflow, macro, event_risk, market, oi_analysis, session, reversal, priority, weekend, cross_market
-    )
-
-    structure_override = structure_override_engine(signal, signal_type, confidence, score, tech, smc, micro, news, event_risk)
-    if structure_override.get("active"):
-        signal = structure_override["signal"]
-        signal_type = structure_override["signal_type"]
-        confidence = structure_override["confidence"]
-        score = structure_override["score"]
-        risk_note = structure_override.get("reason", risk_note)
-
-    memory_adj = memory_confidence_adjustment(signal, signal_memory, tv["price"])
-    if memory_adj:
-        score += memory_adj
-        confidence = max(35, min(95, confidence + memory_adj))
-        print(f"MEMORY ADJUSTMENT: {memory_adj}")
-
-    price_override = price_structure_priority_override(
-        signal, signal_type, confidence, score, tech, smc, news, event_risk, micro
-    )
-    if price_override.get("reason"):
-        signal = price_override["signal"]
-        signal_type = price_override["signal_type"]
-        confidence = price_override["confidence"]
-        score = price_override["score"]
-        risk_note = price_override.get("reason", risk_note)
-        print("PRICE STRUCTURE OVERRIDE:", risk_note)
-
-    current_truth_filter = price_action_truth_filter(signal, tech, smc, news, event_risk, orderflow)
-    if current_truth_filter.get('blocked'):
-        signal = 'НЕЙТРАЛЬНО'
-        signal_type = 'НЕ ВХОДИТИ — ціна не підтвердила новини'
-        risk_note = current_truth_filter.get('reason')
-        confidence = min(confidence, 50)
-    elif current_truth_filter.get('bonus'):
-        score += current_truth_filter.get('bonus', 0)
-        confidence = min(88, confidence + min(6, abs(current_truth_filter.get('bonus', 0))))
-
-    yulia_guard = exhaustion_reversal_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news, event_risk)
-    if yulia_guard.get("active"):
-        signal = yulia_guard["signal"]
-        signal_type = yulia_guard["signal_type"]
-        confidence = yulia_guard["confidence"]
-        score = yulia_guard["score"]
-        risk_note = yulia_guard.get("reason", risk_note)
-        print("EXHAUSTION REVERSAL GUARD:", risk_note)
-
-    early_entry = early_entry_signal(tv, signal, signal_type, tech, smc, orderflow, news, event_risk, market, session)
-    if early_entry.get("active"):
-        signal = early_entry["side"]
-        signal_type = early_entry["signal_type"]
-        confidence = max(confidence, early_entry.get("confidence", confidence))
-        score = early_entry.get("score", score)
-        risk_note = early_entry.get("reason", risk_note)
-        print(f"EARLY ENTRY TRIGGER: {signal} | {risk_note}")
-
-    scalp_reversal = reversal_scalp_signal(tv, tech, smc, orderflow, news, event_risk, session)
-    if scalp_reversal.get("active"):
-        signal = scalp_reversal["side"]
-        signal_type = scalp_reversal["signal_type"]
-        confidence = max(confidence, scalp_reversal.get("confidence", confidence))
-        score = scalp_reversal.get("score", score)
-        risk_note = scalp_reversal.get("reason", risk_note)
-        print(f"SCALP REVERSAL TRIGGER: {signal} | {risk_note}")
-
-    decay_guard = post_move_decay_guard(signal, signal_type, confidence, score, tech, smc, orderflow, news, event_risk)
-    if decay_guard.get("active"):
-        signal = decay_guard["signal"]
-        signal_type = decay_guard["signal_type"]
-        confidence = decay_guard["confidence"]
-        score = decay_guard["score"]
-        risk_note = decay_guard.get("reason", risk_note)
-        print("POST MOVE DECAY GUARD:", risk_note)
-
-    if chart_context.get("side") in ["LONG", "SHORT"]:
-        chart_side = chart_context["side"]
-        chart_stage = chart_context.get("stage")
-        if chart_stage == "TRIGGER" and signal not in ["LONG", "SHORT"]:
-            signal = chart_side
-            signal_type = f"РАННІЙ {chart_side} / ГРАФІК + SMC + ПОТІК"
-            confidence = max(confidence, 68 + chart_context.get("quality_bonus", 0))
-            score = abs(score) if chart_side == "LONG" else -abs(score)
-            risk_note = chart_context.get("note", risk_note)
-            print("FORWARD CHART TRIGGER:", risk_note)
-        elif chart_stage == "SETUP_FORMING" and signal == chart_side:
-            signal_type = f"ГОТУЄМОСЬ ДО {chart_side} / ЧЕКАТИ ТРИГЕР ГРАФІКА"
-            confidence = min(confidence, 72)
-            risk_note = chart_context.get("note", risk_note)
-            print("FORWARD CHART SETUP:", risk_note)
-        elif chart_stage == "LATE_NO_CHASE" and signal == chart_side:
-            signal = "НЕЙТРАЛЬНО"
-            signal_type = f"{chart_side} НАПРЯМ Є / ВХІД ПІЗНІЙ — ЧЕКАТИ РЕТЕСТ"
-            confidence = min(confidence, 78)
-            risk_note = chart_context.get("note", risk_note)
-            print("FORWARD CHART NO CHASE:", risk_note)
-
-    plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc, orderflow)
-    plan = adjust_plan_for_rr(plan, signal)
-    rr = rr_metrics(plan)
-    chase = analyze_chase_protection(signal, tech, market)
-    
-    late_entry = analyze_late_entry_risk(signal, tech, market, chart_context)
-    
-    cooling = analyze_exhaustion_cooling(signal, tech, tv)
-    plan = apply_expansion_targets(plan, signal, tech, market)
-    rr = rr_metrics(plan)
-    pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
-
-    tech_side, tech_reason = tech_verdict(tech)
-    news_side, news_reason = news_verdict(news)
-    event_side, event_reason = event_verdict(event_risk)
-    macro_side, macro_reason = macro_verdict(macro)
-    order_side, order_reason = orderflow_verdict(orderflow)
-    market_side, market_reason = market_structure_verdict(market)
-    quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
-
-    print(f"SOURCE: {tv['source']}")
-    print(f"SYMBOL: {tv['symbol']}")
-    print(f"PRICE: {tv['price']}")
-    print(f"CHANGE: {tv['change']}")
-    print(f"FRESH NEWS COUNT: {news['total']}")
-    print(f"NEWS RAW SCORE: {news['raw_score']}")
-    print(f"NEWS CAPPED SCORE: {news['score']}")
-    print(f"TECH SCORE: {tech['score']}")
-    print(f"SMC STRUCTURE: {smc.get('phase')} | {smc.get('bias')} | SCORE: {smc.get('score')} | {smc.get('summary')}")
-    print(f"SMC VOLUME: {smc.get('volume', {}).get('bias', 'NEUTRAL')} | {smc.get('volume', {}).get('поглинання', 'NONE')} | {smc.get('volume', {}).get('note', '')}")
-    print(backtest_smoke.get("summary", "Backtest smoke unavailable"))
-    print(f"ORDERFLOW PROXY SCORE: {orderflow['score']} | {orderflow['bias']}")
-    print(f"OKX TRADE FLOW: {real_trade_flow['bias']} | DELTA: {real_trade_flow['delta_pct']}% | {real_trade_flow['note']}")
-    print(f"OKX BOOK: {order_book_pressure['bias']} | IMBALANCE: {order_book_pressure['imbalance_pct']}% | {order_book_pressure['note']} | {order_book_pressure.get('wall', '')}")
-    print(f"LIQUIDITY PROXY: {liquidity_proxy['bias']} | SCORE: {liquidity_proxy['score']} | {liquidity_proxy['note']}")
-    print(f"MACRO SCORE: {macro['score']} | {macro['regime']}")
-    print(f"EVENT RISK: {event_risk['risk']} | SCORE: {event_risk['score']} | DIRECTION: {event_risk['direction']}")
-    print(f"ECONOMIC CALENDAR: {economic_calendar['risk']} | ACTIVE: {economic_calendar['active']} | EVENTS: {len(economic_calendar.get('events', []))}")
-    print(f"MARKET STRUCTURE SCORE: {market['score']} | VOL: {market['volatility']['regime']} | LIQ: {market['liquidation']['bias']}")
-    print(f"OPEN INTEREST: {oi_analysis['summary']} | SCORE: {oi_analysis['score']}")
-    print(f"SESSION: {session['session']} | SCORE: {session['score']} | {session['note']}")
-    print(f"WEEKEND: {weekend['label']} | {weekend['note']}")
-    print(f"CROSS-MARKET: {cross_market['bias']} | SCORE: {cross_market['score']} | {cross_market['note']}")
-    print(f"PRIORITY: {priority['regime']} | DOMINANT: {priority['dominant']} | P-SCORE: {priority['priority_score']}")
-    print(f"FORWARD CHART: {chart_context.get('stage')} | {chart_context.get('side')} | {chart_context.get('status')} | {chart_context.get('note')}")
-    if "trust_mode" not in locals():
-        early_warning = analyze_early_warning(None, tech, news, event_risk, orderflow, market, oi_analysis, session)
-        trust_mode, trust_reason = decide_current_priority(tech, news, event_risk, orderflow, early_warning)
-    print(f"TRUST MODE: {trust_mode} | {trust_reason}")
-    print(f"EARLY WARNING: {early_warning['warning']} | SIDE: {early_warning['side']} | {early_warning['reason']}")
-    print(f"REVERSAL: {reversal['side']} | CONF: {reversal['confidence']} | SWEEP: {reversal['sweep']}")
-    print(f"MOMENTUM: {tech['momentum']} | CHANGE: {tech['change']}%")
-    print(f"LOCAL MOVE: {local_move.get('note')} | HIGH {local_move.get('recent_high')} | LOW {local_move.get('recent_low')} | FROM HIGH {local_move.get('from_high_pct')}% | FROM LOW {local_move.get('from_low_pct')}%")
-    print(f"FINAL SCORE: {score}")
-    print(f"SIGNAL TYPE: {signal_type}")
-    print(f"SIGNAL: {signal}")
-    print(f"PRICE ACTION FILTER: {current_truth_filter.get('mode')} | {current_truth_filter.get('reason')}")
-
-    if signal == "НЕЙТРАЛЬНО":
-        decision = "НЕ ВХОДИТИ"
-    elif "РИЗИКОВИЙ" in signal_type or "ІМПУЛЬСНИЙ" in signal_type:
-        decision = f"{signal}, але обережно"
-    else:
-        decision = signal
-
-    technical_bias = combined_technical_bias(tech, orderflow, market, oi_analysis)
-    fundamental_bias = combined_fundamental_bias(news, event_risk, macro)
-    market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
-
-    # Впевненість тепер означає якість рішення, а не win-rate.
-    # Для NO TRADE у чіткому конфлікті вона може бути високою: бот впевнено каже "не входити".
-    confidence = decision_confidence(
-        signal, signal_type, score, technical_bias, fundamental_bias, event_risk, priority, reversal
-    )
-
-    pre_message_probability = estimate_trade_probability(
-        signal, confidence, quality, technical_bias, fundamental_bias, news, event_risk,
-        orderflow, market, reversal, chase, weekend, late_entry, smc, tech
-    )
-    pre_message_probability = apply_chart_context_probability(signal, pre_message_probability, chart_context)
-    confidence, pre_message_probability, _ = apply_local_3m_confidence_filter(
-        signal, confidence, pre_message_probability, tech
-    )
-    message_guard = final_signal_sanity_guard(
-        signal, signal_type, confidence, tech, smc, tech.get("micro_3m") or {}, pre_message_probability
-    )
-    if message_guard.get("reason"):
-        signal = message_guard["signal"]
-        signal_type = message_guard["signal_type"]
-        confidence = message_guard["confidence"]
-        if signal == "LONG":
-            score = abs(score) if score else abs(technical_bias.get("score", 0))
-        elif signal == "SHORT":
-            score = -abs(score) if score else -abs(technical_bias.get("score", 0))
+    active = active_trade_from_state(state)
+    if active and active.status != "CLOSED":
+        result = manage_active_trade(active, context)
+        message = build_follow_message(context, active, result)
+        if result.get("closed"):
+            journal["trades"].append(build_closed_trade_journal_item(active, result, context))
+            append_history(state, {
+                "type": "TRADE_CLOSED",
+                "side": active.side,
+                "action": result["action"],
+                "price": round_price(context["price"]),
+                "result_pct": round(result["current_pct"], 3),
+            })
+            store_active_trade(state, None)
         else:
-            score = 0
-        plan = make_trade_plan(signal, signal_type, tv["price"], tech, reversal, session, event_risk, smc, orderflow)
-        plan = adjust_plan_for_rr(plan, signal)
-        plan = apply_expansion_targets(plan, signal, tech, market)
-        rr = rr_metrics(plan)
-        chase = analyze_chase_protection(signal, tech, market)
-        late_entry = analyze_late_entry_risk(signal, tech, market, chart_context)
-        cooling = analyze_exhaustion_cooling(signal, tech, tv)
-        pos_note = position_management_note(signal, plan, tech, news, event_risk, reversal)
-        quality = setup_quality_rank(signal, signal_type, score, tech, news, orderflow, macro, event_risk, market, oi_analysis)
-        market_decision = market_decision_from_bias(signal, signal_type, technical_bias, fundamental_bias, event_risk, reversal, session, priority)
-        print("FINAL SANITY GUARD:", message_guard.get("reason"))
+            store_active_trade(state, active)
+            append_history(state, {
+                "type": "FOLLOW",
+                "side": active.side,
+                "action": result["action"],
+                "price": round_price(context["price"]),
+                "result_pct": round(result["current_pct"], 3),
+                "stop_current": round_price(active.stop_current),
+            })
+        journal["signals"].append({
+            "time": iso_now(),
+            "type": "FOLLOW" if not result.get("closed") else "CLOSE",
+            "side": active.side,
+            "action": result["action"],
+            "price": round_price(context["price"]),
+            "quality": active.quality,
+            "context_bias": context["bias"],
+            "tech_score": context["tech_score"],
+            "total_score": context["total_score"],
+        })
+        save_state(state)
+        save_journal(journal)
+        send_telegram(message)
+        print("BOT COMPLETE: ACTIVE TRADE MANAGED")
+        return
 
-    summary = final_short_summary(
-        signal, signal_type, tech, news, orderflow, macro, event_risk, market, oi_analysis, reversal, session
-    )
+    setup = evaluate_new_setup(context)
+    message = build_new_setup_message(context, setup)
 
-    message_state = prepare_message_state(
-        tv=tv,
-        signal=signal,
-        signal_type=signal_type,
-        confidence=confidence,
-        quality=quality,
-        plan=plan,
-        technical_bias=technical_bias,
-        fundamental_bias=fundamental_bias,
-        news=news,
-        event_risk=event_risk,
-        macro=macro,
-        orderflow=orderflow,
-        oi_analysis=oi_analysis,
-        market=market,
-        session=session,
-        reversal=reversal,
-        priority=priority,
-        final_summary=summary,
-        weekend=weekend,
-        cross_market=cross_market,
-        rr=rr,
-        chase=chase,
-        pos_note=pos_note,
-        late_entry=late_entry,
-        smc=smc,
-        cooling=cooling,
-        tech=tech,
-        chart_context=chart_context,
-    )
-    signal = message_state["signal"]
-    signal_type = message_state["signal_type"]
-    confidence = message_state["confidence"]
-    quality = message_state["quality"]
-    plan = message_state["plan"]
-    summary = message_state["final_summary"]
-    trade_probability = message_state["trade_probability"]
-    show_trade_plan = message_state["show_trade_plan"]
-    entry_watch = message_state["entry_watch"]
-    event_block = message_state["event_block"]
-    market_mode = message_state["market_mode"]
-    decision_text = message_state["decision"]
-    final_decision = message_state["final_decision"]
+    if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
+        active = new_active_trade(setup)
+        store_active_trade(state, active)
+        append_history(state, {
+            "type": "ENTRY",
+            "side": setup["side"],
+            "action": setup["action"],
+            "price": round_price(context["price"]),
+            "quality": setup["quality"],
+            "entry": active.entry,
+            "stop": active.stop_current,
+            "tp1": active.tp1,
+            "tp2": active.tp2,
+            "tp3": active.tp3,
+        })
+    else:
+        store_active_trade(state, None)
+        append_history(state, {
+            "type": setup["action"],
+            "side": setup["side"],
+            "price": round_price(context["price"]),
+            "quality": setup["quality"],
+            "reason": setup["reason"],
+        })
 
-    reversal_label = reversal_display_label(signal, reversal)
-    message = compact_telegram_message(
-        tv=tv,
-        signal=signal,
-        signal_type=signal_type,
-        confidence=confidence,
-        quality=quality,
-        plan=plan,
-        technical_bias=technical_bias,
-        fundamental_bias=fundamental_bias,
-        news=news,
-        event_risk=event_risk,
-        macro=macro,
-        orderflow=orderflow,
-        oi_analysis=oi_analysis,
-        market=market,
-        session=session,
-        reversal=reversal,
-        priority=priority,
-        final_summary=summary,
-        weekend=weekend,
-        cross_market=cross_market,
-        rr=rr,
-        chase=chase,
-        pos_note=pos_note,
-        late_entry=late_entry,
-        smc=smc,
-        cooling=cooling,
-        tech=tech,
-        chart_context=chart_context,
-        trade_probability=trade_probability,
-        decision=decision_text,
-        show_trade_plan=show_trade_plan,
-        entry_watch=entry_watch,
-        event_block=event_block,
-        market_mode=market_mode,
-        final_decision=final_decision
-    )
+    journal["signals"].append({
+        "time": iso_now(),
+        "type": setup["action"],
+        "side": setup["side"],
+        "price": round_price(context["price"]),
+        "quality": setup["quality"],
+        "reason": setup["reason"],
+        "plan": asdict(setup["plan"]) if setup.get("plan") else None,
+        "confirmations": setup.get("confirmations", []),
+        "conflicts": setup.get("conflicts", []),
+        "context": {
+            "bias": context["bias"],
+            "tech_score": context["tech_score"],
+            "total_score": context["total_score"],
+            "tf3": context["tf3"],
+            "tf15": context["tf15"],
+            "tf1h": context["tf1h"],
+            "structure": context["structure"],
+            "flow": context["flow"],
+            "news": {
+                "bias": context["news"]["bias"],
+                "score": context["news"]["score"],
+                "top": context["news"]["top"],
+                "total": context["news"]["total"],
+            },
+        },
+    })
 
-    show_memory_in_telegram = os.getenv("SHOW_MEMORY_IN_TELEGRAM", "0") == "1"
-    position_trade = last_actionable_trade(signal_memory)
-    position_active = bool(
-        position_trade
-        and market_supports_position(position_trade.get("signal"), tv["price"], position_trade, tech, smc, orderflow)
-    )
-    if position_active:
-        follow_message = build_position_follow_message(tv, signal_memory, tech, news, event_risk, smc, orderflow, real_candles)
-        if follow_message:
-            message = follow_message
-    elif position_trade:
-        signal_memory, closed_trade = close_last_actionable_trade(signal_memory, tv["price"], tech, smc, orderflow)
-        close_message = build_position_close_message(closed_trade)
-        if close_message:
-            message = close_message + "\n\n" + message
-
-    if show_memory_in_telegram and previous_signal_note and previous_signal_note not in message:
-        message = message.strip() + "\n\n" + previous_signal_note
-
-    current_quality_percent = final_decision.get("quality_percent")
-    storage_entry_status = final_decision.get("entry_status")
-    storage_entry_side = final_decision.get("entry_side")
-    storage_plan = plan
-    if position_active:
-        storage_entry_status = "FOLLOW"
-        storage_entry_side = None
-        storage_plan = locked_position_plan(position_trade)
-
-    journal_market_direction = final_decision.get("market_side") or infer_market_direction(
-        signal,
-        signal_type,
-        tech=tech,
-        technical_bias=technical_bias,
-        fundamental_bias=fundamental_bias,
-    )
-
-    current_journal_entry = build_signal_journal_entry(
-        signal=signal,
-        signal_type=signal_type,
-        price=tv["price"],
-        confidence=confidence,
-        quality_percent=current_quality_percent,
-        plan=storage_plan,
-        tech=tech,
-        news=news,
-        event_risk=event_risk,
-        orderflow=orderflow,
-        smc=smc,
-        late_entry=late_entry,
-        cooling=cooling,
-        market_direction=journal_market_direction,
-    )
-    if position_active:
-        current_journal_entry["no_entry"] = True
-        current_journal_entry["actionable_entry"] = False
-    current_journal_entry["entry_status"] = storage_entry_status
-    current_journal_entry["entry_timing"] = final_decision.get("entry_timing")
-    current_journal_entry["decision_stage"] = final_decision.get("stage")
-    current_journal_entry["entry_side"] = storage_entry_side
-    current_journal_entry["decision_text"] = final_decision.get("decision_text")
-    pattern_note = pattern_stats_text(signal_journal, current_journal_entry.get("tags"), journal_market_direction)
-    signal_journal = append_signal_journal(signal_journal, current_journal_entry)
-    save_signal_journal(signal_journal)
-
-    show_stats_in_telegram = os.getenv("SHOW_STATS_IN_TELEGRAM", "0") == "1"
-
-    if show_stats_in_telegram and pattern_note and pattern_note not in message:
-        message = message.strip() + "\n\n" + pattern_note
-
-    if show_stats_in_telegram and journal_stats_note and journal_stats_note not in message:
-        message = message.strip() + "\n\n" + journal_stats_note
-
-    updated_memory = append_signal_memory(
-        signal_memory,
-        build_current_signal_memory(
-            signal=signal,
-            signal_type=signal_type,
-            price=tv["price"],
-            confidence=confidence,
-            quality_percent=current_quality_percent,
-            plan=storage_plan,
-            tech=tech,
-            entry_status=storage_entry_status,
-            entry_side=storage_entry_side,
-        )
-    )
-    save_signal_memory(updated_memory)
-
-    message = dedupe_telegram_blocks(message.strip())
-    send_telegram(message.strip())
-    print("TELEGRAM SENT")
+    save_state(state)
+    save_journal(journal)
+    send_telegram(message)
     print("BOT COMPLETE")
+
 
 if __name__ == "__main__":
     main()
