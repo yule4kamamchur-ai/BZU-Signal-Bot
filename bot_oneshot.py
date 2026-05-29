@@ -1807,17 +1807,17 @@ def build_context(data, state=None):
     # 15m/structure/3m are the engine. CVD and OI confirm quality.
     # 4H is only a background hint; clusters are only a local warning.
     tech_score = (
-        tf15.get("score", 0) * 1.35
-        + structure.get("score", 0) * 1.20
-        + tf3.get("score", 0) * 0.95
-        + tf1h.get("score", 0) * 0.65
-        + cvd.get("score", 0) * 0.80
+        tf15.get("score", 0) * 1.45
+        + structure.get("score", 0) * 1.30
+        + tf3.get("score", 0) * 0.70
+        + tf1h.get("score", 0) * 0.45
+        + cvd.get("score", 0) * 0.90
         + derivatives.get("score", 0) * 0.60
         + btc_inverse.get("score", 0) * 0.75
         + liquidity.get("score", 0) * 0.70
-        + flow.get("score", 0) * 0.30
-        + clusters.get("score", 0) * 0.25
-        + tf4h.get("score", 0) * 0.18
+        + flow.get("score", 0) * 0.45
+        + clusters.get("score", 0) * 0.18
+        + tf4h.get("score", 0) * 0.10
         + volume_guard.get("score", 0)
     )
     total_score = tech_score + news.get("score", 0) * 0.30 + calendar.get("score", 0) + session.get("score", 0)
@@ -1960,11 +1960,10 @@ def entry_confirmations(side, context):
     elif volume_guard.get("score", 0) >= 6:
         confirmations.append("активний обсяг")
 
-    # 4H is deliberately NOT a hard conflict for this intraday bot.
-    if tf4h.get("bias") == side and abs(tf4h.get("score", 0)) >= 30:
+    # 4H is deliberately background only for this intraday bot.
+    # It can add context when it agrees, but it must not block an entry.
+    if tf4h.get("bias") == side and abs(tf4h.get("score", 0)) >= 35:
         confirmations.append("4h фон підтримує")
-    elif tf4h.get("bias") == opposite(side) and abs(tf4h.get("score", 0)) >= 45:
-        conflicts.append("4h фон проти")
 
     if tf15.get("bias") == side:
         confirmations.append("15m за напрямом")
@@ -1976,10 +1975,14 @@ def entry_confirmations(side, context):
     elif tf1h.get("bias") == opposite(side):
         conflicts.append("1h проти")
 
+    tf3_score_abs = abs(int(tf3.get("score", 0) or 0))
     if tf3.get("bias") == side:
         confirmations.append("3m дав тригер")
+    elif tf3.get("bias") == opposite(side) and tf3_score_abs >= 32:
+        conflicts.append("3m сильно проти")
     elif tf3.get("bias") == opposite(side):
-        conflicts.append("3m проти")
+        # Weak opposite 3M is often just a pullback inside the 15M move.
+        conflicts.append("3m локальний відкат")
 
     if structure.get("bias") == side:
         confirmations.append("структура підтверджує")
@@ -2118,64 +2121,107 @@ def evaluate_new_setup(context):
     btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
-    volume_guard = context.get("volume_guard") or {}
     news = context.get("news") or {}
 
-    def add_for_block(block, same, opposite_penalty, neutral=0, strong_only=False):
+    def block_points(block, same, opposite_penalty, neutral=0, weak_opposite_penalty=None):
         bias = block.get("bias")
-        score_abs = abs(block.get("score", 0))
-        if strong_only and score_abs < 10:
-            return 0
+        score = abs(int(block.get("score", 0) or 0))
         if bias == side:
             return same
         if bias == opposite(side):
+            if weak_opposite_penalty is not None and score < 32:
+                return -weak_opposite_penalty
             return -opposite_penalty
         return neutral
 
-    # Quality is weighted by role, not by raw count of confirmations/conflicts.
-    # 15m/structure/3m are the core. 4H and clusters are small hints only.
+    # Intraday quality model:
+    # 15M + structure define the setup.
+    # 3M is a trigger/better timing tool, NOT a mandatory permission.
+    # CVD/flow/OI/BTC confirm whether the move has real pressure.
     score_for_side = side_score(context["total_score"], side)
-    quality = 48 + min(12, max(0, score_for_side // 7))
-    quality += add_for_block(tf15, 11, 14)
-    quality += add_for_block(structure, 10, 12)
-    quality += add_for_block(tf3, 10, 12, neutral=-3)
-    quality += add_for_block(tf1h, 5, 5)
-    quality += add_for_block(tf4h, 2, 2)
-    quality += add_for_block(cvd, 8, 9)
-    quality += add_for_block(derivatives, 6, 7)
-    quality += add_for_block(btc_inverse, 8, 9)
-    quality += add_for_block(liquidity, 7, 10)
-    quality += add_for_block(flow, 3, 3)
-    quality += add_for_block(clusters, 2, 3)
+    quality = 47 + min(10, max(0, score_for_side // 9))
+    quality += block_points(tf15, 14, 15)
+    quality += block_points(structure, 13, 14)
+    quality += block_points(tf3, 7, 10, neutral=0, weak_opposite_penalty=4)
+    quality += block_points(tf1h, 4, 4)
+    quality += block_points(tf4h, 1, 1)
+    quality += block_points(cvd, 10, 11)
+    quality += block_points(derivatives, 6, 7)
+    quality += block_points(btc_inverse, 7, 8)
+    quality += block_points(liquidity, 7, 10)
+    quality += block_points(flow, 5, 5)
+    quality += block_points(clusters, 1, 2)
 
     if news.get("bias") == side:
-        quality += 3
-    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 28:
-        quality -= 10
+        quality += 2
+    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 35:
+        quality -= 7
 
-    strong_cvd_against = cvd.get("bias") == opposite(side) and abs(cvd.get("score", 0)) >= 18
-    strong_oi_against = derivatives.get("bias") == opposite(side) and abs(derivatives.get("score", 0)) >= 14
-    strong_btc_against = btc_inverse.get("bias") == opposite(side) and abs(btc_inverse.get("score", 0)) >= 18
-    structure_against = structure.get("bias") == opposite(side)
+    tf3_score_abs = abs(int(tf3.get("score", 0) or 0))
+    tf3_same = tf3.get("bias") == side
+    tf3_neutral = tf3.get("bias") == "NEUTRAL"
+    tf3_weak_pullback = tf3.get("bias") == opposite(side) and tf3_score_abs < 32
+    tf3_strong_against = tf3.get("bias") == opposite(side) and tf3_score_abs >= 32
+
+    tf15_same = tf15.get("bias") == side
+    tf15_neutral = tf15.get("bias") == "NEUTRAL"
     tf15_against = tf15.get("bias") == opposite(side)
 
-    trigger_ok = (
-        tf3.get("bias") == side
-        and tf15.get("bias") in [side, "NEUTRAL"]
-        and not structure_against
+    structure_same = structure.get("bias") == side
+    structure_neutral = structure.get("bias") == "NEUTRAL"
+    structure_against = structure.get("bias") == opposite(side)
+
+    cvd_same = cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
+    flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10
+    oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 10
+    btc_same = btc_inverse.get("bias") == side and abs(int(btc_inverse.get("score", 0) or 0)) >= 10
+
+    strong_cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 18
+    strong_oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
+    strong_btc_against = btc_inverse.get("bias") == opposite(side) and abs(int(btc_inverse.get("score", 0) or 0)) >= 18
+
+    core_direction_ok = (
+        (tf15_same and not structure_against)
+        or (structure_same and not tf15_against)
+        or (tf15_neutral and structure_same)
+    )
+
+    pressure_ok = cvd_same or flow_same or oi_same or btc_same
+
+    # Classic entry: 3M confirms the 15M/structure direction.
+    trigger_entry_ok = (
+        tf3_same
+        and core_direction_ok
         and not strong_cvd_against
         and not strong_oi_against
         and not strong_btc_against
         and side not in liquidity.get("blocks", [])
     )
-    # 4H is not included here. It is background only.
-    trend_ok = tf15.get("bias") == side or (tf15.get("bias") == "NEUTRAL" and structure.get("bias") == side)
+
+    # Pullback / early intraday entry:
+    # If the higher intraday setup is aligned and pressure confirms, 3M RANGE or
+    # weak 3M counter-move is treated as a pullback, not as a blocker.
+    pullback_entry_ok = (
+        core_direction_ok
+        and pressure_ok
+        and (tf3_neutral or tf3_weak_pullback)
+        and not tf3_strong_against
+        and not strong_cvd_against
+        and not strong_oi_against
+        and not strong_btc_against
+        and side not in liquidity.get("blocks", [])
+    )
+
+    trigger_ok = trigger_entry_ok or pullback_entry_ok
+
+    # 4H is not included here. It is only context.
+    trend_ok = core_direction_ok
 
     hard_conflict = (
-        "сильні новини проти" in conflicts
-        or side in liquidity.get("blocks", [])
+        side in liquidity.get("blocks", [])
         or (tf15_against and structure_against)
         or (strong_cvd_against and strong_oi_against)
+        or (tf3_strong_against and (strong_cvd_against or strong_btc_against))
         or (strong_btc_against and (strong_cvd_against or strong_oi_against or tf15_against))
     )
 
@@ -2187,10 +2233,12 @@ def evaluate_new_setup(context):
             hard_conflict = True
     if hard_conflict:
         quality = min(quality, 56)
-    if not trigger_ok:
-        quality = min(quality, 63)
     if not trend_ok:
         quality = min(quality, 59)
+    elif not trigger_ok:
+        # Do not crush quality just because 3M is RANGE.
+        # The bot should show "готуватись" instead of acting as if setup is invalid.
+        quality = min(quality, 66)
 
     quality = int(max(0, min(92, quality)))
 
@@ -2207,35 +2255,50 @@ def evaluate_new_setup(context):
         }
 
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        if pullback_entry_ok and not trigger_entry_ok:
+            reason = "ранній вхід по відкату: 15M/структура тримають напрям, CVD/потік/OI/BTC підтверджують"
+        else:
+            reason = "сигнал підтверджений: " + " | ".join(confirmations[:4])
         return {
             "action": "ENTRY",
             "side": side,
             "quality": quality,
             "title": f"ВХІД Є — {side}",
-            "reason": "сигнал підтверджений: " + " | ".join(confirmations[:4]),
+            "reason": reason,
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
         }
 
     if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        if pullback_entry_ok and not trigger_entry_ok:
+            reason = "ранній сигнал по відкату; 3M ще не дав повний імпульсний тригер"
+        else:
+            reason = "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4])
         return {
             "action": "RISKY_ENTRY",
             "side": side,
             "quality": quality,
             "title": f"РИЗИКОВАНИЙ ВХІД — {side}",
-            "reason": "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4]),
+            "reason": reason,
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
         }
+
+    if core_direction_ok and pressure_ok and (tf3_neutral or tf3_weak_pullback):
+        wait_reason = "напрям є, 3M зараз у відкаті/проторговці; чекати коротке підтвердження або входити тільки малим ризиком"
+    elif conflicts:
+        wait_reason = "напрям є, але входу ще немає: " + "; ".join(conflicts[:3])
+    else:
+        wait_reason = "напрям є, але бракує якості входу"
 
     return {
         "action": "WATCH",
         "side": side,
         "quality": quality,
         "title": f"ЧЕКАТИ — ГОТУЄМОСЬ ДО {side}",
-        "reason": "напрям є, але входу ще немає: " + ("; ".join(conflicts[:3]) if conflicts else "бракує 3m/структурного тригера"),
+        "reason": wait_reason,
         "plan": plan,
         "confirmations": confirmations,
         "conflicts": conflicts,
@@ -2358,7 +2421,7 @@ def manage_active_trade(trade, context):
     # Intraday early-exit logic.
     # For trades that should last only a few hours, do not wait for the formal stop
     # if 3m has already broken against the position and order-flow/CVD confirms it.
-    tf3_against = tf3.get("bias") == opposite(side) and abs(int(tf3.get("score", 0) or 0)) >= 35
+    tf3_against = tf3.get("bias") == opposite(side) and abs(int(tf3.get("score", 0) or 0)) >= 32
     flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 10
     cvd_block = context.get("cvd") or {}
     cvd_against = cvd_block.get("bias") == opposite(side) and abs(int(cvd_block.get("score", 0) or 0)) >= 10
