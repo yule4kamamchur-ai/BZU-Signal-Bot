@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from statistics import mean
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -41,6 +42,21 @@ MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "500") or 500)
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 UA_TIMEZONE_LABEL = os.getenv("TIMEZONE_LABEL", "UTC")
+
+EIA_WPSR_URL = "https://www.eia.gov/petroleum/supply/weekly/index.php"
+EIA_WPSR_SCHEDULE_URL = "https://www.eia.gov/petroleum/supply/weekly/schedule.php"
+FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+IMPORTANT_EVENT_WINDOW_MINUTES = int(os.getenv("IMPORTANT_EVENT_WINDOW_MINUTES", "60") or 60)
+MANUAL_IMPORTANT_EVENTS = os.getenv("IMPORTANT_EVENTS", "")
+
+# BZU is volatile. The trade plan should not use tiny scalp targets.
+# For entry near 92 this gives roughly:
+# LONG  stop not farther than ~90.05, TP1 not closer than ~94.00.
+# SHORT stop not farther than ~93.95, TP1 not closer than ~90.05.
+MAX_STOP_DISTANCE_PCT = float(os.getenv("MAX_STOP_DISTANCE_PCT", "2.12") or 2.12)
+MIN_TP1_DISTANCE_PCT = float(os.getenv("MIN_TP1_DISTANCE_PCT", "2.18") or 2.18)
+MIN_TP2_DISTANCE_PCT = float(os.getenv("MIN_TP2_DISTANCE_PCT", "3.30") or 3.30)
+MIN_TP3_DISTANCE_PCT = float(os.getenv("MIN_TP3_DISTANCE_PCT", "5.00") or 5.00)
 
 
 NEWS_QUERIES = [
@@ -129,6 +145,14 @@ def now_utc():
 
 def iso_now():
     return now_utc().isoformat()
+
+
+def eastern_tz():
+    return ZoneInfo("America/New_York")
+
+
+def et_to_utc(date_obj, hour, minute=0):
+    return datetime(date_obj.year, date_obj.month, date_obj.day, hour, minute, tzinfo=eastern_tz()).astimezone(timezone.utc)
 
 
 def safe_float(value, default=None):
@@ -993,6 +1017,157 @@ def analyze_news(items):
     }
 
 
+def parse_month_date(text):
+    clean = re.sub(r"[^A-Za-z0-9, ]+", "", str(text or "")).strip()
+    for fmt in ["%B %d, %Y", "%b %d, %Y"]:
+        try:
+            return datetime.strptime(clean, fmt).date()
+        except Exception:
+            pass
+    return None
+
+
+def parse_us_time(text, default_hour=10, default_minute=30):
+    match = re.search(r"(\d{1,2}):(\d{2})\s*([AP])\.?M\.?", str(text or ""), re.I)
+    if not match:
+        return default_hour, default_minute
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    ampm = match.group(3).upper()
+    if ampm == "P" and hour != 12:
+        hour += 12
+    if ampm == "A" and hour == 12:
+        hour = 0
+    return hour, minute
+
+
+def event_minutes(event_time):
+    try:
+        return int((event_time - now_utc()).total_seconds() / 60)
+    except Exception:
+        return None
+
+
+def event_alert_status(event_time):
+    minutes = event_minutes(event_time)
+    if minutes is None:
+        return False, ""
+    if 0 <= minutes <= IMPORTANT_EVENT_WINDOW_MINUTES:
+        return True, f"через {minutes} хв"
+    if -45 <= minutes < 0:
+        return True, f"вийшла {abs(minutes)} хв тому"
+    return False, ""
+
+
+def get_eia_event():
+    text = ""
+    for url in [EIA_WPSR_URL, EIA_WPSR_SCHEDULE_URL]:
+        response = http_get(url, timeout=8, retries=1)
+        if response:
+            text += "\n" + clean_text(response.text)
+    match = re.search(r"Next Release Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text)
+    if not match:
+        return None
+    release_date = parse_month_date(match.group(1))
+    if not release_date:
+        return None
+    idx = text.find(match.group(1))
+    hour, minute = parse_us_time(text[idx:idx + 260] if idx >= 0 else text, 10, 30)
+    event_time = et_to_utc(release_date, hour, minute)
+    return {
+        "name": "EIA",
+        "title": "EIA crude inventories",
+        "time": event_time,
+        "risk": "HIGH",
+        "source": "EIA official",
+    }
+
+
+def get_fomc_events():
+    response = http_get(FED_FOMC_CALENDAR_URL, timeout=8, retries=1)
+    if not response:
+        return []
+    text = clean_text(response.text)
+    year = now_utc().year
+    events = []
+
+    month_names = (
+        "January|February|March|April|May|June|July|August|September|October|November|December|"
+        "Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec"
+    )
+    for match in re.finditer(rf"({month_names})\s+(\d{{1,2}})(?:-(\d{{1,2}}))?", text):
+        raw = f"{match.group(1)} {match.group(3) or match.group(2)}, {year}"
+        date_obj = parse_month_date(raw)
+        if not date_obj:
+            continue
+        event_time = et_to_utc(date_obj, 14, 0)
+        active, _ = event_alert_status(event_time)
+        if active:
+            events.append({
+                "name": "Fed",
+                "title": "Fed / FOMC decision or minutes",
+                "time": event_time,
+                "risk": "HIGH",
+                "source": "Federal Reserve calendar",
+            })
+    return events[:3]
+
+
+def get_manual_events():
+    events = []
+    for chunk in [x.strip() for x in MANUAL_IMPORTANT_EVENTS.split(";") if x.strip()]:
+        parts = [x.strip() for x in chunk.split("|")]
+        if len(parts) < 2:
+            continue
+        title = parts[0]
+        try:
+            dt = datetime.fromisoformat(parts[1].replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            events.append({
+                "name": "Manual",
+                "title": title,
+                "time": dt.astimezone(timezone.utc),
+                "risk": parts[2] if len(parts) > 2 else "HIGH",
+                "source": "IMPORTANT_EVENTS",
+            })
+        except Exception:
+            continue
+    return events
+
+
+def analyze_calendar_alerts():
+    events = []
+    try:
+        eia = get_eia_event()
+        if eia:
+            events.append(eia)
+    except Exception as error:
+        print(f"[WARN] EIA calendar failed: {error}")
+    try:
+        events.extend(get_fomc_events())
+    except Exception as error:
+        print(f"[WARN] Fed calendar failed: {error}")
+    events.extend(get_manual_events())
+
+    alerts = []
+    for event in events:
+        active, status = event_alert_status(event.get("time"))
+        if not active:
+            continue
+        item = dict(event)
+        item["status"] = status
+        item["minutes_to_event"] = event_minutes(event.get("time"))
+        alerts.append(item)
+
+    return {
+        "active": bool(alerts),
+        "alerts": alerts[:4],
+        "score": -12 if alerts else 0,
+        "note": "; ".join(f"{x['title']} — {x['status']}" for x in alerts[:3]) if alerts else "",
+    }
+
+
 # ==========================================================
 # SETUP ENGINE
 # ==========================================================
@@ -1008,6 +1183,7 @@ def build_context(data):
     flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
     news_items = get_news()
     news = analyze_news(news_items)
+    calendar = analyze_calendar_alerts()
     session = market_session()
 
     price = price or safe_float(tf15.get("close"))
@@ -1020,7 +1196,7 @@ def build_context(data):
         + structure.get("score", 0) * 1.00
         + flow.get("score", 0) * 0.55
     )
-    total_score = tech_score + news.get("score", 0) * 0.35 + session.get("score", 0)
+    total_score = tech_score + news.get("score", 0) * 0.35 + calendar.get("score", 0) + session.get("score", 0)
 
     if total_score >= 42:
         bias = "LONG"
@@ -1041,6 +1217,7 @@ def build_context(data):
         "structure": structure,
         "flow": flow,
         "news": news,
+        "calendar": calendar,
         "session": session,
         "tech_score": int(tech_score),
         "total_score": int(total_score),
@@ -1093,6 +1270,9 @@ def entry_confirmations(side, context):
     tf1h = context["tf1h"]
     structure = context["structure"]
     flow = context["flow"]
+    calendar = context.get("calendar") or {}
+    if calendar.get("active"):
+        conflicts.append("важлива новина у найближчу годину")
     news = context["news"]
 
     confirmations = []
@@ -1138,28 +1318,44 @@ def make_plan(side, context):
     swing_low = safe_float(structure.get("swing_low")) or price - atr15
     swing_high = safe_float(structure.get("swing_high")) or price + atr15
 
-    min_risk = max(atr15 * 0.65, price * 0.0035)
-    max_risk = max(atr15 * 1.45, price * 0.0125)
+    min_risk = max(atr15 * 1.15, price * 0.0075)
+    max_risk = price * (MAX_STOP_DISTANCE_PCT / 100)
     buffer = max(atr15 * 0.18, price * 0.0012)
+    min_tp1_distance = price * (MIN_TP1_DISTANCE_PCT / 100)
+    min_tp2_distance = price * (MIN_TP2_DISTANCE_PCT / 100)
+    min_tp3_distance = price * (MIN_TP3_DISTANCE_PCT / 100)
 
     if side == "LONG":
         raw_stop = min(swing_low - buffer, price - min_risk)
         risk = min(max(price - raw_stop, min_risk), max_risk)
         stop = price - risk
-        tp1 = price + risk * 1.25
-        tp2 = price + risk * 2.05
-        tp3 = price + risk * 3.10
-        invalidation = f"15m закриття нижче {round_price(stop)} або злам 3m/структури проти LONG"
+        technical_tp1 = max(swing_high, price + atr15 * 1.8)
+        technical_tp2 = max(structure.get("recent_high") or technical_tp1, price + atr15 * 2.6)
+        tp1 = max(technical_tp1, price + min_tp1_distance)
+        tp2 = max(technical_tp2, price + min_tp2_distance, tp1 + atr15 * 0.9)
+        tp3 = max(price + min_tp3_distance, tp2 + atr15 * 1.2)
+        invalidation = (
+            f"15m закриття нижче {round_price(stop)} або злам 3m/структури проти LONG. "
+            f"Стоп не далі {MAX_STOP_DISTANCE_PCT}% від входу; TP1 не ближче {MIN_TP1_DISTANCE_PCT}%."
+        )
     else:
         raw_stop = max(swing_high + buffer, price + min_risk)
         risk = min(max(raw_stop - price, min_risk), max_risk)
         stop = price + risk
-        tp1 = price - risk * 1.25
-        tp2 = price - risk * 2.05
-        tp3 = price - risk * 3.10
-        invalidation = f"15m закриття вище {round_price(stop)} або злам 3m/структури проти SHORT"
+        technical_tp1 = min(swing_low, price - atr15 * 1.8)
+        technical_tp2 = min(structure.get("recent_low") or technical_tp1, price - atr15 * 2.6)
+        tp1 = min(technical_tp1, price - min_tp1_distance)
+        tp2 = min(technical_tp2, price - min_tp2_distance, tp1 - atr15 * 0.9)
+        tp3 = min(price - min_tp3_distance, tp2 - atr15 * 1.2)
+        invalidation = (
+            f"15m закриття вище {round_price(stop)} або злам 3m/структури проти SHORT. "
+            f"Стоп не далі {MAX_STOP_DISTANCE_PCT}% від входу; TP1 не ближче {MIN_TP1_DISTANCE_PCT}%."
+        )
 
     risk_pct = abs(stop - price) / price * 100 if price else 0
+    reward1_pct = abs(tp1 - price) / price * 100 if price else 0
+    reward2_pct = abs(tp2 - price) / price * 100 if price else 0
+    reward3_pct = abs(tp3 - price) / price * 100 if price else 0
     return TradePlan(
         entry=round_price(price),
         stop=round_price(stop),
@@ -1167,9 +1363,9 @@ def make_plan(side, context):
         tp2=round_price(tp2),
         tp3=round_price(tp3),
         risk_pct=round(risk_pct, 3),
-        rr1=1.25,
-        rr2=2.05,
-        rr3=3.10,
+        rr1=round(reward1_pct / risk_pct, 2) if risk_pct else 0,
+        rr2=round(reward2_pct / risk_pct, 2) if risk_pct else 0,
+        rr3=round(reward3_pct / risk_pct, 2) if risk_pct else 0,
         invalidation=invalidation,
     )
 
@@ -1213,6 +1409,10 @@ def evaluate_new_setup(context):
         quality = min(quality, 54)
     if hard_conflict:
         quality = min(quality, 54)
+    if calendar.get("active"):
+        quality -= 8
+        if quality < 75:
+            hard_conflict = True
     if not trigger_ok:
         quality = min(quality, 61)
     if not trend_ok:
@@ -1447,7 +1647,7 @@ def price_line(context):
 
 
 def context_lines(context):
-    return [
+    lines = [
         f"<b>15m:</b> {side_word(context['tf15'].get('bias'))} ({context['tf15'].get('score')}) — {context['tf15'].get('note')}",
         f"<b>1h:</b> {side_word(context['tf1h'].get('bias'))} ({context['tf1h'].get('score')}) — {context['tf1h'].get('note')}",
         f"<b>3m:</b> {side_word(context['tf3'].get('bias'))} ({context['tf3'].get('score')}) — {context['tf3'].get('note')}",
@@ -1455,6 +1655,10 @@ def context_lines(context):
         f"<b>Потік:</b> {side_word(context['flow'].get('bias'))} ({context['flow'].get('score')}) — {context['flow'].get('note')}",
         f"<b>Новини:</b> {side_word(context['news'].get('bias'))} ({context['news'].get('score')}) — {context['news'].get('top')[:150]}",
     ]
+    calendar = context.get("calendar") or {}
+    if calendar.get("active"):
+        lines.insert(0, f"<b>Важлива новина:</b> {calendar.get('note')}. Новий вхід тільки після реакції ціни.")
+    return lines
 
 
 def plan_text(plan):
@@ -1462,7 +1666,7 @@ def plan_text(plan):
         return "плану немає"
     return (
         f"Вхід {plan.entry} | Стоп {plan.stop} | TP1 {plan.tp1} | "
-        f"TP2 {plan.tp2} | TP3 {plan.tp3} | ризик {plan.risk_pct}%"
+        f"TP2 {plan.tp2} | TP3 {plan.tp3} | ризик {plan.risk_pct}% | RR {plan.rr1}/{plan.rr2}/{plan.rr3}"
     )
 
 
@@ -1668,6 +1872,7 @@ def main():
                 "top": context["news"]["top"],
                 "total": context["news"]["total"],
             },
+            "calendar": context["calendar"],
         },
     })
 
