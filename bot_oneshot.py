@@ -946,6 +946,179 @@ def detect_orderblock_zone(candles, side, lookback=34):
     return None
 
 
+
+
+# ==========================================================
+# ICT PERSISTENT ZONES / MITIGATION
+# ==========================================================
+
+def _zone_key(zone):
+    if not zone:
+        return ""
+    return f"{zone.get('side')}:{zone.get('type')}:{round_price(zone.get('low'))}:{round_price(zone.get('high'))}:{zone.get('created_ts', '')}"
+
+
+def _normalize_zone(zone):
+    if not zone:
+        return None
+    try:
+        low = safe_float(zone.get("low"))
+        high = safe_float(zone.get("high"))
+        if low is None or high is None:
+            return None
+        low, high = min(low, high), max(low, high)
+        return {
+            "side": str(zone.get("side", "NEUTRAL")),
+            "type": str(zone.get("type", "ZONE")),
+            "low": round_price(low),
+            "high": round_price(high),
+            "mid": round_price(safe_float(zone.get("mid"), (low + high) / 2)),
+            "created_ts": int(zone.get("created_ts") or 0),
+            "displacement": bool(zone.get("displacement", False)),
+            "mitigated": bool(zone.get("mitigated", False)),
+            "last_seen": iso_now(),
+        }
+    except Exception:
+        return None
+
+
+def load_ict_memory(state):
+    raw = (state or {}).get("ict_memory") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    raw.setdefault("fvg_zones", [])
+    raw.setdefault("ob_zones", [])
+    raw.setdefault("mitigated_ob_keys", [])
+    raw.setdefault("mitigated_fvg_keys", [])
+    return raw
+
+
+def _merge_zone_history(existing, fresh, max_items=32):
+    merged = {}
+    for zone in existing or []:
+        nz = _normalize_zone(zone)
+        if nz:
+            merged[_zone_key(nz)] = nz
+    for zone in fresh or []:
+        nz = _normalize_zone(zone)
+        if nz:
+            key = _zone_key(nz)
+            if key in merged:
+                nz["mitigated"] = bool(merged[key].get("mitigated", False))
+            merged[key] = nz
+    zones = list(merged.values())
+    zones.sort(key=lambda z: z.get("created_ts", 0), reverse=True)
+    return zones[:max_items]
+
+
+def _mark_mitigated_zones(zones, candles, side=None):
+    """Mark FVG/OB zones as mitigated if price entered and then closed away.
+
+    LONG zone mitigation:
+      - candle trades into zone
+      - later closes above zone high
+    SHORT zone mitigation:
+      - candle trades into zone
+      - later closes below zone low
+
+    Once mitigated, it is not used for a fresh signal again.
+    """
+    if not zones or not candles:
+        return zones
+    out = []
+    recent = candles[-45:]
+    for z in zones:
+        nz = dict(z)
+        if side and nz.get("side") != side:
+            out.append(nz)
+            continue
+        low = safe_float(nz.get("low"))
+        high = safe_float(nz.get("high"))
+        if low is None or high is None:
+            out.append(nz)
+            continue
+        low, high = min(low, high), max(low, high)
+        touched = False
+        mitigated = bool(nz.get("mitigated", False))
+        for c in recent:
+            if c.high >= low and c.low <= high:
+                touched = True
+            if touched:
+                if nz.get("side") == "LONG" and c.close > high:
+                    mitigated = True
+                    break
+                if nz.get("side") == "SHORT" and c.close < low:
+                    mitigated = True
+                    break
+        nz["mitigated"] = mitigated
+        out.append(nz)
+    return out
+
+
+def update_ict_memory(state, context, candles_15m):
+    """Persist FVG/OB zones so pending ICT zones are stable between runs."""
+    memory = load_ict_memory(state)
+    ict = context.get("ict") or {}
+
+    fresh_fvgs = []
+    for key in ["bull_fvg", "bear_fvg"]:
+        if ict.get(key):
+            fresh_fvgs.append(ict[key])
+
+    fresh_obs = []
+    for key in ["bull_ob", "bear_ob"]:
+        if ict.get(key):
+            fresh_obs.append(ict[key])
+
+    memory["fvg_zones"] = _merge_zone_history(memory.get("fvg_zones", []), fresh_fvgs, 36)
+    memory["ob_zones"] = _merge_zone_history(memory.get("ob_zones", []), fresh_obs, 24)
+
+    memory["fvg_zones"] = _mark_mitigated_zones(memory["fvg_zones"], candles_15m)
+    memory["ob_zones"] = _mark_mitigated_zones(memory["ob_zones"], candles_15m)
+
+    memory["mitigated_ob_keys"] = [_zone_key(z) for z in memory["ob_zones"] if z.get("mitigated")][-60:]
+    memory["mitigated_fvg_keys"] = [_zone_key(z) for z in memory["fvg_zones"] if z.get("mitigated")][-80:]
+    memory["updated_at"] = iso_now()
+    state["ict_memory"] = memory
+    return memory
+
+
+def apply_ict_memory_to_context(context, memory):
+    """Attach persistent zones to context and avoid reusing mitigated OBs/FVGs."""
+    ict = context.get("ict") or {}
+    memory = memory or {}
+
+    fvg_zones = [z for z in memory.get("fvg_zones", []) if not z.get("mitigated")]
+    ob_zones = [z for z in memory.get("ob_zones", []) if not z.get("mitigated")]
+
+    price = context.get("price")
+    if price:
+        bull_fvgs = [z for z in fvg_zones if z.get("side") == "LONG"]
+        bear_fvgs = [z for z in fvg_zones if z.get("side") == "SHORT"]
+        bull_obs = [z for z in ob_zones if z.get("side") == "LONG"]
+        bear_obs = [z for z in ob_zones if z.get("side") == "SHORT"]
+
+        # Use persistent zone if current one is missing or already mitigated.
+        if not ict.get("bull_fvg") and bull_fvgs:
+            ict["bull_fvg"] = _nearest_zone(bull_fvgs, price)
+        if not ict.get("bear_fvg") and bear_fvgs:
+            ict["bear_fvg"] = _nearest_zone(bear_fvgs, price)
+        if not ict.get("bull_ob") and bull_obs:
+            ict["bull_ob"] = _nearest_zone(bull_obs, price)
+        if not ict.get("bear_ob") and bear_obs:
+            ict["bear_ob"] = _nearest_zone(bear_obs, price)
+
+    ict["persistent_fvg_count"] = len(fvg_zones)
+    ict["persistent_ob_count"] = len(ob_zones)
+    context["ict"] = ict
+    context["ict_memory"] = {
+        "active_fvg": len(fvg_zones),
+        "active_ob": len(ob_zones),
+        "mitigated_ob": len(memory.get("mitigated_ob_keys", [])),
+        "mitigated_fvg": len(memory.get("mitigated_fvg_keys", [])),
+    }
+    return context
+
 def analyze_ict_model(candles_3m, candles_15m, structure, price):
     """ICT intraday decision layer.
 
@@ -1178,7 +1351,7 @@ def build_pending_ict_zones(context):
     zones = []
 
     def add_zone(side_, zone, label, priority, condition, reason):
-        if not zone:
+        if not zone or zone.get("mitigated"):
             return
         low = safe_float(zone.get("low"))
         high = safe_float(zone.get("high"))
@@ -2428,13 +2601,11 @@ def entry_confirmations(side, context):
     structure = context["structure"]
     ict = context.get("ict") or {}
     flow = context["flow"]
-    ict = context.get("ict") or {}
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
     derivatives = context.get("derivatives") or {}
     btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
-    ict = context.get("ict") or {}
     calendar = context.get("calendar") or {}
     news = context["news"]
 
@@ -2530,7 +2701,6 @@ def entry_confirmations(side, context):
         conflicts.append("сильні новини проти")
 
     return confirmations, conflicts
-
 def make_plan(side, context):
     price = context["price"]
     atr15 = context["atr15"] or price * 0.006
@@ -2637,15 +2807,12 @@ def evaluate_new_setup(context):
     tf1h = context["tf1h"]
     tf4h = context.get("tf4h") or {}
     structure = context["structure"]
-    ict = context.get("ict") or {}
     flow = context["flow"]
-    ict = context.get("ict") or {}
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
     derivatives = context.get("derivatives") or {}
     btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
-    ict = context.get("ict") or {}
     calendar = context.get("calendar") or {}
     news = context.get("news") or {}
 
@@ -2849,7 +3016,6 @@ def evaluate_new_setup(context):
         "confirmations": confirmations,
         "conflicts": conflicts,
     }
-
 def trade_hit_level(side, price, level):
     if level is None:
         return False
@@ -3059,7 +3225,6 @@ def manage_active_trade(trade, context):
         "best_pct": best_pct,
         "notes": notes,
     }
-
 
 def new_active_trade(setup):
     plan = setup["plan"]
