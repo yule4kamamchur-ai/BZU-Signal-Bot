@@ -1193,6 +1193,38 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
     displacement_up = last.close > last.open and body >= max(avg_body * 1.45, atr15 * 0.36)
     displacement_down = last.close < last.open and body >= max(avg_body * 1.45, atr15 * 0.36)
 
+    # BOS continuation without perfect retest:
+    # If BOS has happened and the next candles hold the broken level instead of
+    # fully returning into FVG/OB, the bot can treat this as continuation.
+    recent3 = recent[-3:]
+    recent5 = recent[-5:]
+    swing_high = safe_float((structure or {}).get("swing_high"))
+    swing_low = safe_float((structure or {}).get("swing_low"))
+    bos_long_hold = bool(
+        bos_long and swing_high and
+        min(c.close for c in recent3) >= swing_high - atr15 * 0.12 and
+        last.close >= swing_high and
+        not displacement_up
+    )
+    bos_short_hold = bool(
+        bos_short and swing_low and
+        max(c.close for c in recent3) <= swing_low + atr15 * 0.12 and
+        last.close <= swing_low and
+        not displacement_down
+    )
+    bos_long_continuation = bool(
+        bos_long and swing_high and
+        last.close > swing_high and
+        min(c.low for c in recent5) >= swing_high - atr15 * 0.28 and
+        abs(move_3) <= 0.55
+    )
+    bos_short_continuation = bool(
+        bos_short and swing_low and
+        last.close < swing_low and
+        max(c.high for c in recent5) <= swing_low + atr15 * 0.28 and
+        abs(move_3) <= 0.55
+    )
+
     highs_near_above = sum(1 for c in recent[-28:-1] if price < c.high <= price + atr15 * 1.25)
     lows_near_below = sum(1 for c in recent[-28:-1] if price - atr15 * 1.25 <= c.low < price)
 
@@ -1238,6 +1270,11 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
             entry_ok = True
             setup = "BOS_LONG_RETRACE_FVG_OB"
             notes.append("BOS LONG + повернення у bullish FVG/OB")
+        elif bos_long_hold or bos_long_continuation:
+            local += 12
+            entry_ok = True
+            setup = "BOS_LONG_CONTINUATION_HOLD"
+            notes.append("BOS LONG утримує пробитий рівень — continuation без повного ретесту")
         elif displacement_up and move_3 > 0.55:
             no_chase = True
             local -= 10
@@ -1256,6 +1293,11 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
             entry_ok = True
             setup = "BOS_SHORT_RETRACE_FVG_OB"
             notes.append("BOS SHORT + повернення у bearish FVG/OB")
+        elif bos_short_hold or bos_short_continuation:
+            local -= 12
+            entry_ok = True
+            setup = "BOS_SHORT_CONTINUATION_HOLD"
+            notes.append("BOS SHORT утримує пробитий рівень — continuation без повного ретесту")
         elif displacement_down and move_3 < -0.55:
             no_chase = True
             local += 10
@@ -2354,12 +2396,12 @@ def _move_from_candles(candles, bars):
     return pct(candles[-1].close, candles[-bars - 1].close)
 
 
-def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles_1h):
+def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles_1h, bzu_change24h=None):
     """BTC inverse-correlation filter for BZU intraday trades.
 
-    Practical observation for this setup: when BTC impulse goes up, BZU/oil proxy
-    often weakens; when BTC impulse goes down, BZU can catch support. This block
-    is a strong confirmation layer, but not a standalone trade trigger.
+    BTC is useful only when the market is in inverse mode.
+    If BTC and BZ move synchronously in a broad risk-on/risk-off regime,
+    inverse mapping is disabled to avoid false LONG/SHORT signals.
     """
     if not btc_candles_15m or len(btc_candles_15m) < 20:
         return {"available": False, "bias": "NEUTRAL", "score": 0, "note": "BTC даних мало"}
@@ -2368,6 +2410,25 @@ def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles
     m15 = _move_from_candles(btc_candles_15m, 4)    # ~1 hour
     m1h = _move_from_candles(btc_candles_1h, 3)     # ~3 hours
     change24 = safe_float((btc_ticker or {}).get("change24h"), 0)
+    bzu_change24h = safe_float(bzu_change24h, None)
+
+    # Risk-off / broad market same-direction guard.
+    # If BZ and BTC are both meaningfully moving in the same direction,
+    # inverse filter is not reliable.
+    if bzu_change24h is not None:
+        if abs(bzu_change24h) > 1.5 and abs(change24) > 0.6 and (bzu_change24h * change24) > 0:
+            return {
+                "available": True,
+                "bias": "NEUTRAL",
+                "score": 0,
+                "state": "RISK_OFF_SAME_DIRECTION",
+                "btc_move_15m_pct": round(m3, 3),
+                "btc_move_1h_pct": round(m15, 3),
+                "btc_move_3h_pct": round(m1h, 3),
+                "btc_change24h": round(change24, 3),
+                "bzu_change24h": round(bzu_change24h, 3),
+                "note": "BTC і BZ рухаються синхронно — inverse-фільтр вимкнено",
+            }
 
     btc_pressure = 0
     notes = []
@@ -2412,12 +2473,15 @@ def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles
         "available": True,
         "bias": bias,
         "score": int(max(-28, min(28, score))),
+        "state": "INVERSE_ACTIVE" if bias != "NEUTRAL" else "NEUTRAL",
         "btc_move_15m_pct": round(m3, 3),
         "btc_move_1h_pct": round(m15, 3),
         "btc_move_3h_pct": round(m1h, 3),
         "btc_change24h": round(change24, 3),
+        "bzu_change24h": round(bzu_change24h, 3) if bzu_change24h is not None else None,
         "note": "; ".join(notes[:2]) if notes else "BTC без сильного імпульсу",
     }
+
 
 # ==========================================================
 # SETUP ENGINE
@@ -2427,6 +2491,7 @@ def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles
 def build_context(data, state=None):
     ticker = data.get("ticker") or {}
     price = safe_float(ticker.get("price"))
+    context_change24h = safe_float(ticker.get("change24h"), 0)
     tf3 = analyze_micro(data.get("candles_3m") or [])
     tf15 = analyze_timeframe(data.get("candles_15m") or [], "15m")
     tf1h = analyze_timeframe(data.get("candles_1h") or [], "1h")
@@ -2439,7 +2504,7 @@ def build_context(data, state=None):
     cvd = analyze_cvd(data.get("trades") or [], data.get("candles_3m") or [], price, previous_snapshot)
     clusters = analyze_clusters(data.get("trades") or [], data.get("book") or {}, price)
     derivatives = analyze_derivatives(data.get("open_interest") or {}, data.get("funding") or {}, price, previous_snapshot)
-    btc_inverse = analyze_btc_inverse(data.get("btc_ticker") or {}, data.get("btc_candles_3m") or [], data.get("btc_candles_15m") or [], data.get("btc_candles_1h") or [])
+    btc_inverse = analyze_btc_inverse(data.get("btc_ticker") or {}, data.get("btc_candles_3m") or [], data.get("btc_candles_15m") or [], data.get("btc_candles_1h") or [], context_change24h)
     liquidity = analyze_liquidations(data.get("candles_3m") or [], data.get("candles_15m") or [], flow, structure, price)
     news_items = get_news()
     news = analyze_news(news_items)
@@ -2455,15 +2520,15 @@ def build_context(data, state=None):
     tech_score = (
         tf15.get("score", 0) * 1.45
         + structure.get("score", 0) * 1.20
-        + ict.get("score", 0) * 1.15
-        + tf3.get("score", 0) * 0.62
+        + ict.get("score", 0) * 1.32
+        + tf3.get("score", 0) * 0.43
         + tf1h.get("score", 0) * 0.45
-        + cvd.get("score", 0) * 0.90
+        + cvd.get("score", 0) * 0.72
         + derivatives.get("score", 0) * 0.60
         + btc_inverse.get("score", 0) * 0.75
         + liquidity.get("score", 0) * 0.70
         + flow.get("score", 0) * 0.45
-        + clusters.get("score", 0) * 0.18
+        + clusters.get("score", 0) * 0.14
         + tf4h.get("score", 0) * 0.10
         + volume_guard.get("score", 0)
     )
@@ -2836,22 +2901,22 @@ def evaluate_new_setup(context):
     quality += block_points(tf15, 14, 15)
     quality += block_points(structure, 11, 13)
     if ict.get("state") == "ENTRY_MODEL":
-        quality += block_points(ict, 14, 14)
+        quality += block_points(ict, 16, 16)
     elif ict.get("bias") == side and ict.get("score", 0):
-        quality += block_points(ict, 5, 5)
+        quality += block_points(ict, 6, 6)
     if ict.get("entry_ok") and ict.get("bias") == side:
         quality += 8
     if ict.get("no_chase") and ict.get("bias") == side:
         quality -= 18
-    quality += block_points(tf3, 6, 9, neutral=0, weak_opposite_penalty=4)
+    quality += block_points(tf3, 4, 6, neutral=0, weak_opposite_penalty=4)
     quality += block_points(tf1h, 4, 4)
     quality += block_points(tf4h, 1, 1)
-    quality += block_points(cvd, 10, 11)
+    quality += block_points(cvd, 8, 9)
     quality += block_points(derivatives, 6, 7)
     quality += block_points(btc_inverse, 7, 8)
     quality += block_points(liquidity, 7, 10)
     quality += block_points(flow, 5, 5)
-    quality += block_points(clusters, 1, 2)
+    quality += block_points(clusters, 1, 1)
 
     if news.get("bias") == side:
         quality += 2
@@ -2862,7 +2927,7 @@ def evaluate_new_setup(context):
     tf3_same = tf3.get("bias") == side
     tf3_neutral = tf3.get("bias") == "NEUTRAL"
     tf3_weak_pullback = tf3.get("bias") == opposite(side) and tf3_score_abs < 32
-    tf3_strong_against = tf3.get("bias") == opposite(side) and tf3_score_abs >= 32
+    tf3_strong_against = tf3.get("bias") == opposite(side) and tf3_score_abs >= 42
 
     tf15_same = tf15.get("bias") == side
     tf15_neutral = tf15.get("bias") == "NEUTRAL"
@@ -2882,7 +2947,7 @@ def evaluate_new_setup(context):
     oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 10
     btc_same = btc_inverse.get("bias") == side and abs(int(btc_inverse.get("score", 0) or 0)) >= 10
 
-    strong_cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 18
+    strong_cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 22
     strong_oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
     strong_btc_against = btc_inverse.get("bias") == opposite(side) and abs(int(btc_inverse.get("score", 0) or 0)) >= 18
 
@@ -3134,7 +3199,7 @@ def manage_active_trade(trade, context):
     # Intraday early-exit logic.
     # For trades that should last only a few hours, do not wait for the formal stop
     # if 3m has already broken against the position and order-flow/CVD confirms it.
-    tf3_against = tf3.get("bias") == opposite(side) and abs(int(tf3.get("score", 0) or 0)) >= 32
+    tf3_against = tf3.get("bias") == opposite(side) and abs(int(tf3.get("score", 0) or 0)) >= 42
     flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 10
     cvd_block = context.get("cvd") or {}
     cvd_against = cvd_block.get("bias") == opposite(side) and abs(int(cvd_block.get("score", 0) or 0)) >= 10
