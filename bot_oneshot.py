@@ -2870,6 +2870,68 @@ def evaluate_new_setup(context):
             (tf4h, 0.04),
         ]:
             readiness += min(8, abs(int(block.get("score", 0) or 0)) * weight)
+        readiness_quality = int(max(25, min(55, readiness)))
+
+        # Preparation mode even when the global bias is still NEUTRAL.
+        # Example: 4H/1H are against or neutral, total_score is not enough for a market bias,
+        # but 3M and ICT already point the same way. In this case the user should not see only
+        # "ВХОДУ НЕМАЄ". The bot must show what direction is preparing and from which price
+        # the setup becomes active.
+        prep_side = None
+        prep_confirmations = []
+        prep_conflicts = []
+        for candidate in ["LONG", "SHORT"]:
+            tf3_same = tf3.get("bias") == candidate and abs(int(tf3.get("score", 0) or 0)) >= 18
+            ict_same = ict.get("bias") == candidate and abs(int(ict.get("score", 0) or 0)) >= 12
+            structure_same = structure.get("bias") == candidate and abs(int(structure.get("score", 0) or 0)) >= 18
+            tf15_same = tf15.get("bias") == candidate and abs(int(tf15.get("score", 0) or 0)) >= 18
+            flow_same = flow.get("bias") == candidate and abs(int(flow.get("score", 0) or 0)) >= 8
+            cvd_same = cvd.get("bias") == candidate and abs(int(cvd.get("score", 0) or 0)) >= 8
+
+            tf3_against_strong = tf3.get("bias") == opposite(candidate) and abs(int(tf3.get("score", 0) or 0)) >= 32
+            ict_against_entry = ict.get("bias") == opposite(candidate) and ict.get("state") == "ENTRY_MODEL"
+
+            prep_score = 0
+            if tf3_same:
+                prep_score += 3
+            if ict_same:
+                prep_score += 3
+            if structure_same:
+                prep_score += 2
+            if tf15_same:
+                prep_score += 2
+            if flow_same or cvd_same:
+                prep_score += 1
+
+            if prep_score >= 5 and not tf3_against_strong and not ict_against_entry:
+                prep_side = candidate
+                if tf3_same:
+                    prep_confirmations.append("3M вже показує напрям, але ще потрібен тригер ціни")
+                if ict_same:
+                    prep_confirmations.append("ICT підтримує ідею")
+                if structure_same:
+                    prep_confirmations.append("структура підтримує напрям")
+                if tf15.get("bias") == "NEUTRAL":
+                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M reclaim/ретесту")
+                if tf1h.get("bias") == opposite(candidate) or int(tf1h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -15:
+                    prep_conflicts.append("1H слабкий/проти — не заходити без чіткого тригера")
+                if tf4h.get("bias") == opposite(candidate) or int(tf4h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -35:
+                    prep_conflicts.append("4H проти — це підготовка, не агресивний вхід")
+                break
+
+        if prep_side:
+            plan = make_plan(prep_side, context)
+            return {
+                "action": "WATCH",
+                "side": prep_side,
+                "quality": int(max(readiness_quality, min(66, readiness_quality + 8))),
+                "title": f"ЧЕКАТИ — {prep_side} ГОТУЄТЬСЯ",
+                "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+                "plan": plan,
+                "confirmations": prep_confirmations,
+                "conflicts": prep_conflicts,
+            }
+
         if ict.get("setup") in ["BALANCE_MIDRANGE", "CONTEXT_ONLY", "DISCOUNT_CONTEXT", "PREMIUM_CONTEXT"]:
             reason = "ринок у балансі / ICT-сетап не готовий"
         else:
@@ -2877,7 +2939,7 @@ def evaluate_new_setup(context):
         return {
             "action": "NO_TRADE",
             "side": "NEUTRAL",
-            "quality": int(max(25, min(55, readiness))),
+            "quality": readiness_quality,
             "title": "ВХОДУ НЕМАЄ",
             "reason": reason,
             "plan": None,
