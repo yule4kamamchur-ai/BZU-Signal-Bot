@@ -2516,11 +2516,31 @@ def build_context(data, state=None):
 
     # Intraday architecture for trades lasting a few hours:
     # 15m/structure/3m are the engine. CVD and OI confirm quality.
-    # 4H is only a background hint; clusters are only a local warning.
+    # 4H is background, but a strong opposite 4H/1H trend must reduce ICT-only
+    # entries. This prevents the bot from printing market ENTRY when only ICT is
+    # bullish/bearish while 4H is strongly against and 15M/3M are still neutral.
+    ict_score_raw = safe_float(ict.get("score"), 0) or 0
+    ict_score_used = ict_score_raw
+    ict_bias = ict.get("bias", "NEUTRAL")
+    if ict_bias == "LONG":
+        if (tf4h.get("score", 0) or 0) <= -35 and tf15.get("bias") != "LONG":
+            ict_score_used *= 0.55
+        if (tf1h.get("score", 0) or 0) <= -15 and tf15.get("bias") != "LONG":
+            ict_score_used *= 0.75
+        if tf15.get("bias") != "LONG" and tf3.get("bias") != "LONG" and structure.get("bias") != "LONG":
+            ict_score_used *= 0.70
+    elif ict_bias == "SHORT":
+        if (tf4h.get("score", 0) or 0) >= 35 and tf15.get("bias") != "SHORT":
+            ict_score_used *= 0.55
+        if (tf1h.get("score", 0) or 0) >= 15 and tf15.get("bias") != "SHORT":
+            ict_score_used *= 0.75
+        if tf15.get("bias") != "SHORT" and tf3.get("bias") != "SHORT" and structure.get("bias") != "SHORT":
+            ict_score_used *= 0.70
+
     tech_score = (
         tf15.get("score", 0) * 1.45
         + structure.get("score", 0) * 1.20
-        + ict.get("score", 0) * 1.32
+        + ict_score_used * 1.32
         + tf3.get("score", 0) * 0.43
         + tf1h.get("score", 0) * 0.45
         + cvd.get("score", 0) * 0.72
@@ -2560,6 +2580,8 @@ def build_context(data, state=None):
         "tf4h": tf4h,
         "structure": structure,
         "ict": ict,
+        "ict_score_raw": int(ict_score_raw),
+        "ict_score_used": int(ict_score_used),
         "pending_ict_zones": pending_ict_zones,
         "volume_guard": volume_guard,
         "flow": flow,
@@ -2894,13 +2916,14 @@ def evaluate_new_setup(context):
         return neutral
 
     # Intraday quality model:
-    # 15M + structure define the setup.
-    # 3M is a trigger/better timing tool, NOT a mandatory permission.
+    # ICT + structure define the idea.
+    # 3M is the main ENTRY confirmation so the bot can enter before a late 15M close.
+    # 15M is a strength filter, not a hard permission.
     # CVD/flow/OI/BTC confirm whether the move has real pressure.
     score_for_side = side_score(context["total_score"], side)
-    quality = 47 + min(10, max(0, score_for_side // 9))
-    quality += block_points(tf15, 14, 15)
-    quality += block_points(structure, 11, 13)
+    quality = 45 + min(10, max(0, score_for_side // 9))
+    quality += block_points(tf15, 9, 12)
+    quality += block_points(structure, 10, 13)
     if ict.get("state") == "ENTRY_MODEL":
         quality += block_points(ict, 16, 16)
     elif ict.get("bias") == side and ict.get("score", 0):
@@ -2909,9 +2932,10 @@ def evaluate_new_setup(context):
         quality += 8
     if ict.get("no_chase") and ict.get("bias") == side:
         quality -= 18
-    quality += block_points(tf3, 4, 6, neutral=0, weak_opposite_penalty=4)
-    quality += block_points(tf1h, 4, 4)
-    quality += block_points(tf4h, 1, 1)
+    # 3M has stronger weight than before: it is the timing trigger.
+    quality += block_points(tf3, 15, 16, neutral=0, weak_opposite_penalty=6)
+    quality += block_points(tf1h, 3, 5)
+    quality += block_points(tf4h, 1, 2)
     quality += block_points(cvd, 8, 9)
     quality += block_points(derivatives, 6, 7)
     quality += block_points(btc_inverse, 7, 8)
@@ -2952,6 +2976,27 @@ def evaluate_new_setup(context):
     strong_oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
     strong_btc_against = btc_inverse.get("bias") == opposite(side) and abs(int(btc_inverse.get("score", 0) or 0)) >= 18
 
+    # Higher timeframe counter-trend gate.
+    # 4H is context/filter only. It must not forbid every intraday reversal,
+    # but ICT alone is not enough for a market ENTRY.
+    # A real entry needs 3M confirmation; 15M only upgrades strength.
+    tf4h_score_side = side_score(int(tf4h.get("score", 0) or 0), side)
+    tf1h_score_side = side_score(int(tf1h.get("score", 0) or 0), side)
+    tf4h_strong_against = tf4h_score_side <= -35
+    tf1h_against_or_heavy = tf1h_score_side <= -15 or tf1h.get("bias") == opposite(side)
+    htf_countertrend = tf4h_strong_against and tf1h_against_or_heavy
+    intraday_confirmation_present = tf3_same or tf15_same or structure_same
+    real_pressure_present = cvd_same or flow_same or oi_same or btc_same
+    countertrend_wait_required = bool(
+        htf_countertrend
+        and not tf3_same
+        and not tf15_same
+        and not structure_same
+        and not real_pressure_present
+    )
+    if countertrend_wait_required:
+        conflicts.append("4H/1H проти — ICT сам не дає вхід, потрібне 3M підтвердження")
+
     core_direction_ok = (
         (tf15_same and not structure_against)
         or (structure_same and not tf15_against)
@@ -2959,24 +3004,26 @@ def evaluate_new_setup(context):
         or (tf15_neutral and (structure_same or ict_same))
     )
 
-    pressure_ok = cvd_same or flow_same or oi_same or btc_same or ict_entry_ok
+    pressure_ok = cvd_same or flow_same or oi_same or btc_same or (ict_entry_ok and tf3_same)
 
-    # Classic entry: 3M confirms the 15M/structure direction.
+    # Classic/early entry: 3M must confirm the direction.
+    # 15M may still be NEUTRAL, because waiting for a full 15M LONG/SHORT can be late.
     trigger_entry_ok = (
-        (tf3_same or ict_entry_ok)
+        tf3_same
         and core_direction_ok
         and not strong_cvd_against
         and not strong_oi_against
         and not strong_btc_against
         and not ict_against
         and not ict_no_chase
+        and not countertrend_wait_required
         and side not in liquidity.get("blocks", [])
     )
 
-    # Pullback / early intraday entry:
-    # If the higher intraday setup is aligned and pressure confirms, 3M RANGE or
-    # weak 3M counter-move is treated as a pullback, not as a blocker.
-    pullback_entry_ok = (
+    # Pullback / pre-trigger state:
+    # 3M RANGE or weak 3M counter-move is useful for WATCH, but it must not open
+    # an immediate trade. The bot waits for 3M to turn with the setup.
+    pullback_watch_ok = (
         core_direction_ok
         and pressure_ok
         and (tf3_neutral or tf3_weak_pullback)
@@ -2989,7 +3036,7 @@ def evaluate_new_setup(context):
         and side not in liquidity.get("blocks", [])
     )
 
-    trigger_ok = trigger_entry_ok or pullback_entry_ok
+    trigger_ok = trigger_entry_ok
 
     # 4H is not included here. It is only context.
     trend_ok = core_direction_ok
@@ -3004,6 +3051,15 @@ def evaluate_new_setup(context):
         or (strong_btc_against and (strong_cvd_against or strong_oi_against or tf15_against))
     )
 
+    if not tf3_same:
+        # Without 3M confirmation this is preparation, not an entry.
+        quality = min(quality, 66)
+    elif htf_countertrend and not (tf15_same or structure_same or real_pressure_present):
+        # 3M may catch the turn early, but against 4H/1H keep quality realistic.
+        quality = min(quality, 78)
+    elif htf_countertrend and not tf15_same:
+        quality = min(quality, 84)
+
     if late:
         quality = min(quality, 55)
     if calendar.get("active"):
@@ -3015,8 +3071,7 @@ def evaluate_new_setup(context):
     if not trend_ok:
         quality = min(quality, 59)
     elif not trigger_ok:
-        # Do not crush quality just because 3M is RANGE.
-        # The bot should show "готуватись" instead of acting as if setup is invalid.
+        # If 3M is RANGE/pullback, the setup can be good, but entry is not active yet.
         quality = min(quality, 66)
 
     quality = int(max(0, min(92, quality)))
@@ -3034,8 +3089,8 @@ def evaluate_new_setup(context):
         }
 
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict:
-        if pullback_entry_ok and not trigger_entry_ok:
-            reason = "ICT/відкат: 15M/структура тримають напрям, вхід не після погоні, CVD/потік/OI/BTC підтверджують"
+        if not tf15_same:
+            reason = "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний"
         else:
             reason = "сигнал підтверджений: " + " | ".join(confirmations[:4])
         return {
@@ -3050,8 +3105,8 @@ def evaluate_new_setup(context):
         }
 
     if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
-        if pullback_entry_ok and not trigger_entry_ok:
-            reason = "ранній ICT/відкат; 3M ще не дав повний імпульсний тригер"
+        if not tf15_same:
+            reason = "ранній 3M-тригер; 15M ще не підтвердив повністю, тому ризик вищий"
         else:
             reason = "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4])
         return {
@@ -3065,8 +3120,8 @@ def evaluate_new_setup(context):
             "conflicts": conflicts,
         }
 
-    if core_direction_ok and pressure_ok and (tf3_neutral or tf3_weak_pullback):
-        wait_reason = "напрям є, 3M зараз у відкаті/проторговці; чекати реакцію в Pending ICT зоні або коротке підтвердження"
+    if pullback_watch_ok:
+        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M higher low/reclaim для LONG або lower high/rejection для SHORT"
     elif conflicts:
         wait_reason = "напрям є, але входу ще немає: " + "; ".join(conflicts[:3])
     else:
