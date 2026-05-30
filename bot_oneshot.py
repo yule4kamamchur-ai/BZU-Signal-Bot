@@ -3131,7 +3131,7 @@ def evaluate_new_setup(context):
         "action": "WATCH",
         "side": side,
         "quality": quality,
-        "title": f"ЧЕКАТИ — ГОТУЄМОСЬ ДО {side}",
+        "title": f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ",
         "reason": wait_reason,
         "plan": plan,
         "confirmations": confirmations,
@@ -3456,6 +3456,127 @@ def plan_text(plan, multiline=False):
     )
 
 
+
+def _side_icon(side):
+    return "🟢" if side == "LONG" else "🔴"
+
+
+def _zone_line(zone):
+    if not zone:
+        return ""
+    low = zone.get("low")
+    high = zone.get("high")
+    ztype = zone.get("type") or "зона"
+    if low is None or high is None:
+        return ""
+    return f"{_fmt_price(low)}–{_fmt_price(high)} ({ztype})"
+
+
+def planned_wait_text(context, setup):
+    """Human-readable waiting plan for WATCH / WAIT_RETEST states.
+
+    The goal is to avoid vague messages like "чекати LONG". The bot should
+    tell the user what exactly confirms the idea and from what price the trade
+    becomes active.
+    """
+    side = setup.get("side")
+    plan = setup.get("plan")
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15"), (price or 90) * 0.006) or ((price or 90) * 0.006)
+    if side not in ["LONG", "SHORT"] or not price or not plan:
+        return ""
+
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    pending = context.get("pending_ict_zones") or []
+    same_zones = [z for z in pending if z.get("side") == side]
+    best_zone = same_zones[0] if same_zones else None
+
+    recent_high = safe_float(structure.get("recent_high"))
+    recent_low = safe_float(structure.get("recent_low"))
+    swing_high = safe_float(structure.get("swing_high"))
+    swing_low = safe_float(structure.get("swing_low"))
+
+    if side == "LONG":
+        # Prefer a nearby reclaim/trigger, not a far 15m swing if it is too stretched.
+        candidates = [price + atr15 * 0.16]
+        for lvl in [recent_high, swing_high, safe_float(ict.get("equilibrium"))]:
+            if lvl and lvl > price and (lvl - price) / price * 100 <= 1.15:
+                candidates.append(lvl + atr15 * 0.04)
+        trigger = min(candidates) if candidates else price + atr15 * 0.16
+        entry_low = trigger
+        entry_high = trigger + atr15 * 0.22
+        retest_zone = _zone_line(best_zone)
+        if not retest_zone:
+            support = max(safe_float(getattr(plan, "stop", None), price - atr15), price - atr15 * 0.55)
+            retest_zone = f"{_fmt_price(support)}–{_fmt_price(price)}"
+        wait_items = [
+            f"3M reclaim вище {_fmt_price(trigger)} і закриття/утримання над рівнем",
+            "після reclaim — 3M higher low, без нового lower low",
+            f"або ретест зони {retest_zone} з викупом",
+        ]
+        activation = f"якщо 3M закриється вище {_fmt_price(trigger)} або дасть retest→reclaim цієї зони"
+        cancel = f"якщо 3M/15M закриється нижче {_fmt_price(plan.stop)} або CVD/потік різко стане проти LONG"
+    else:
+        candidates = [price - atr15 * 0.16]
+        for lvl in [recent_low, swing_low, safe_float(ict.get("equilibrium"))]:
+            if lvl and lvl < price and (price - lvl) / price * 100 <= 1.15:
+                candidates.append(lvl - atr15 * 0.04)
+        trigger = max(candidates) if candidates else price - atr15 * 0.16
+        entry_high = trigger
+        entry_low = trigger - atr15 * 0.22
+        retest_zone = _zone_line(best_zone)
+        if not retest_zone:
+            resistance = min(safe_float(getattr(plan, "stop", None), price + atr15), price + atr15 * 0.55)
+            retest_zone = f"{_fmt_price(price)}–{_fmt_price(resistance)}"
+        wait_items = [
+            f"3M rejection/пробій нижче {_fmt_price(trigger)} і утримання під рівнем",
+            "після пробою — 3M lower high, без нового higher high",
+            f"або ретест зони {retest_zone} з відбоєм вниз",
+        ]
+        activation = f"якщо 3M закриється нижче {_fmt_price(trigger)} або дасть retest→rejection цієї зони"
+        cancel = f"якщо 3M/15M закриється вище {_fmt_price(plan.stop)} або CVD/потік різко стане проти SHORT"
+
+    why = []
+    if tf3.get("bias") == side:
+        why.append("3M вже показує напрям")
+    elif tf3.get("bias") == "NEUTRAL":
+        why.append("3M ще без повного тригера")
+    else:
+        why.append("3M поки дає відкат — потрібен розворот назад")
+
+    if ict.get("bias") == side:
+        why.append("ICT контекст підтримує ідею")
+    if tf15.get("bias") == side:
+        why.append("15M підтримує напрям")
+    elif tf15.get("bias") == "NEUTRAL":
+        why.append("15M ще нейтральний, тому вхід тільки по 3M")
+    if flow.get("bias") == side or cvd.get("bias") == side:
+        why.append("потік/CVD не проти входу")
+
+    lines = []
+    if why:
+        lines.append("<b>Чому готується:</b>")
+        lines.extend([f"✅ {x}" for x in why[:4]])
+        lines.append("")
+    lines.append("<b>Що чекаємо:</b>")
+    lines.extend([f"• {x}" for x in wait_items])
+    lines.append("")
+    lines.append("<b>Планований вхід:</b>")
+    lines.append(f"{_side_icon(side)} від {_fmt_price(trigger)} | зона входу {_fmt_price(entry_low)}–{_fmt_price(entry_high)}")
+    lines.append(f"<b>Стоп після входу:</b> {_fmt_price(plan.stop)}")
+    lines.append(f"<b>TP1:</b> {_fmt_price(plan.tp1)} | <b>TP2:</b> {_fmt_price(plan.tp2)} | <b>TP3:</b> {_fmt_price(plan.tp3)}")
+    lines.append("")
+    lines.append("<b>Активація:</b>")
+    lines.append(activation)
+    lines.append("<b>Скасування:</b>")
+    lines.append(cancel)
+    return "\n".join(lines).strip()
+
 def _compact_title(setup):
     action = setup.get("action")
     side = setup.get("side")
@@ -3466,9 +3587,9 @@ def _compact_title(setup):
     if action == "WAIT_RETEST":
         return f"НЕ ДОГАНЯТИ {side}"
     if action == "WATCH" and side in ["LONG", "SHORT"]:
-        return f"ЧЕКАТИ {side}"
+        return f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
     if action == "NO_TRADE":
-        return "ЧЕКАТИ — ICT НЕ ГОТОВИЙ"
+        return str(setup.get("title") or "ЧЕКАТИ — ВХОДУ НЕМАЄ")
     return str(setup.get("title") or "СИГНАЛ")
 
 
@@ -3510,7 +3631,11 @@ def build_new_setup_message(context, setup):
             for x in reason_items:
                 icon = "⚠️" if ("локаль" in x or "4h фон" in x or "потік локально" in x) else "❌"
                 lines.append(f"{icon} {x}")
-        if setup.get("side") in ["LONG", "SHORT"] and plan:
+        wait_text = planned_wait_text(context, setup)
+        if wait_text:
+            lines.append("")
+            lines.append(wait_text)
+        elif setup.get("side") in ["LONG", "SHORT"] and plan:
             lines.append("")
             lines.append("<b>Орієнтир:</b>")
             lines.append(plan_text(plan, multiline=True))
