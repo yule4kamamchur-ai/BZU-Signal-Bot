@@ -532,7 +532,18 @@ def collect_market_data():
     btc_candles_15m = get_okx_candles("15m", 120, BTC_INST_ID)
     btc_candles_1h = get_okx_candles("1H", 80, BTC_INST_ID)
     btc_ticker = get_okx_ticker(BTC_INST_ID)
-    ticker = get_okx_ticker() or get_tradingview_price_fallback()
+
+    # IMPORTANT: the chart the user watches is BINANCE:BZUSDT.P on TradingView.
+    # Use TradingView/Binance as the primary displayed/current price and OKX only
+    # as a fallback. This prevents Telegram from showing an OKX price that is
+    # already different from the TradingView chart.
+    tv_ticker = get_tradingview_price_fallback()
+    okx_ticker = get_okx_ticker()
+    ticker = tv_ticker or okx_ticker
+    if ticker:
+        ticker["checked_at"] = iso_now()
+    if okx_ticker:
+        ticker["okx_reference_price"] = okx_ticker.get("price")
     if not ticker and candles_15m:
         ticker = {
             "price": candles_15m[-1].close,
@@ -540,6 +551,7 @@ def collect_market_data():
             "volume24h": 0,
             "source": "OKX candles",
             "symbol": OKX_INST_ID,
+            "checked_at": iso_now(),
         }
     return {
         "ticker": ticker,
@@ -556,6 +568,42 @@ def collect_market_data():
         "open_interest": get_okx_open_interest(),
         "funding": get_okx_funding_rate(),
     }
+
+
+def refresh_context_price(context):
+    """Refresh the current TradingView price immediately before decision/message.
+
+    The bot can spend several seconds collecting news/candles/orderbook. During
+    that time BZU can move fast, so the entry plan must be based on the newest
+    ticker, not on the price captured at the beginning of the run.
+    """
+    if not isinstance(context, dict):
+        return context
+    old_price = safe_float(context.get("price"))
+    latest = get_tradingview_price_fallback() or get_okx_ticker()
+    new_price = safe_float((latest or {}).get("price"))
+    if not new_price:
+        context["price_checked_at"] = iso_now()
+        context["price_status"] = "refresh_failed_using_previous"
+        return context
+
+    context["price_checked_at"] = iso_now()
+    context["price_source"] = latest.get("source") or context.get("price_source") or "ticker"
+    context["price_symbol"] = latest.get("symbol") or context.get("price_symbol") or ""
+
+    if old_price:
+        diff_pct = abs(new_price - old_price) / old_price * 100
+        context["price_refresh_diff_pct"] = round(diff_pct, 4)
+        context["price_before_refresh"] = round_price(old_price)
+    else:
+        diff_pct = 0
+        context["price_refresh_diff_pct"] = 0
+        context["price_before_refresh"] = None
+
+    # Always use the freshest ticker for the Telegram price and any new plan.
+    context["price"] = round_price(new_price)
+    context["price_status"] = "fresh" if diff_pct <= 0.08 else "updated_before_signal"
+    return context
 
 
 # ==========================================================
@@ -3465,8 +3513,11 @@ def _short_list(items, limit=3):
 
 
 def price_line(context):
-    # Clean intraday format: no exchange/source, no extra 24h noise.
-    return f"<b>Ціна:</b> {_fmt_price(context.get('price'))}"
+    # Current price is refreshed immediately before the signal is built.
+    line = f"<b>Ціна:</b> {_fmt_price(context.get('price'))}"
+    if context.get("price_status") == "updated_before_signal" and context.get("price_before_refresh") is not None:
+        line += f" <i>(оновлено з {_fmt_price(context.get('price_before_refresh'))})</i>"
+    return line
 
 
 def context_lines(context):
@@ -3801,6 +3852,7 @@ def main():
 
     data = collect_market_data()
     context = build_context(data, state)
+    context = refresh_context_price(context)
     if not context.get("price"):
         print("NO PRICE DATA")
         return
