@@ -2872,6 +2872,7 @@ def evaluate_new_setup(context):
     tf1h = context["tf1h"]
     tf4h = context.get("tf4h") or {}
     structure = context["structure"]
+    ict = context.get("ict") or {}
     flow = context["flow"]
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
