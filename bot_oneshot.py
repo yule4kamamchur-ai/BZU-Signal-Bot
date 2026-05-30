@@ -949,13 +949,15 @@ def detect_orderblock_zone(candles, side, lookback=34):
 def analyze_ict_model(candles_3m, candles_15m, structure, price):
     """ICT intraday decision layer.
 
-    The goal is to stop the bot from reporting a move after it already happened.
-    It favors:
-    - liquidity sweep / stop run + reclaim
-    - FVG or Order Block retracement
-    - premium/discount positioning
-    - low-resistance liquidity path
-    - expansion only after pullback, not chasing the candle
+    Important safety rule:
+    ICT direction is NOT assigned from premium/discount alone.
+    It needs an actual model:
+    - liquidity sweep + reclaim
+    - BOS/MSS + retracement into FVG/OB
+    - clear FVG/OB reaction zone
+
+    If price is in the middle of the dealing range and no model is active,
+    return NEUTRAL instead of forcing SHORT/LONG.
     """
     if not candles_15m or len(candles_15m) < 45 or not price:
         return {
@@ -971,13 +973,20 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
 
     recent = candles_15m[-48:]
     last = recent[-1]
-    prev = recent[-2]
     atr15 = atr(candles_15m, 14) or max(price * 0.005, 0.01)
-    range_high = max(c.high for c in recent[:-1])
-    range_low = min(c.low for c in recent[:-1])
+
+    # Use completed candles for the dealing range so current candle does not
+    # falsely create a sweep signal.
+    range_sample = recent[:-1]
+    range_high = max(c.high for c in range_sample)
+    range_low = min(c.low for c in range_sample)
     eq = (range_high + range_low) / 2
-    discount = price < eq
-    premium = price > eq
+    range_size = max(range_high - range_low, atr15)
+    pd_pos = (price - range_low) / range_size
+
+    discount = pd_pos <= 0.45
+    premium = pd_pos >= 0.55
+    midrange = 0.45 < pd_pos < 0.55
 
     fvg15 = detect_fvg_zones(candles_15m, 42)
     fvg3 = detect_fvg_zones(candles_3m or [], 55)
@@ -989,14 +998,11 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
     bull_ob = detect_orderblock_zone(candles_15m, "LONG") or detect_orderblock_zone(candles_3m or [], "LONG")
     bear_ob = detect_orderblock_zone(candles_15m, "SHORT") or detect_orderblock_zone(candles_3m or [], "SHORT")
 
-    pad = atr15 * 0.16
+    pad = atr15 * 0.14
     in_bull_fvg = _zone_contains(nearest_bull_fvg, price, pad)
     in_bear_fvg = _zone_contains(nearest_bear_fvg, price, pad)
     in_bull_ob = _zone_contains(bull_ob, price, pad)
     in_bear_ob = _zone_contains(bear_ob, price, pad)
-
-    swept_low = last.low < range_low and last.close > range_low
-    swept_high = last.high > range_high and last.close < range_high
 
     phase = (structure or {}).get("phase", "")
     bos_long = phase == "BOS LONG"
@@ -1004,14 +1010,16 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
     choch_long = phase in ["CHOCH LONG", "DOWNSIDE SWEEP"]
     choch_short = phase in ["CHOCH SHORT", "UPSIDE SWEEP"]
 
+    # Sweep must close back inside the previous range.
+    swept_low = last.low < range_low and last.close > range_low
+    swept_high = last.high > range_high and last.close < range_high
+
     move_3 = pct(last.close, recent[-4].close) if len(recent) >= 4 else 0
     body = abs(last.close - last.open)
     avg_body = mean([abs(c.close - c.open) for c in recent[-21:-1]]) if len(recent) >= 22 else body
     displacement_up = last.close > last.open and body >= max(avg_body * 1.45, atr15 * 0.36)
     displacement_down = last.close < last.open and body >= max(avg_body * 1.45, atr15 * 0.36)
 
-    # Low resistance: after a sweep/BOS, path to next liquidity is clearer if
-    # price is not immediately facing many recent highs/lows.
     highs_near_above = sum(1 for c in recent[-28:-1] if price < c.high <= price + atr15 * 1.25)
     lows_near_below = sum(1 for c in recent[-28:-1] if price - atr15 * 1.25 <= c.low < price)
 
@@ -1022,91 +1030,107 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
     entry_ok = False
     no_chase = False
 
-    # Reversal model: stop-run / turtle soup.
+    # 1) Liquidity sweep model.
     if swept_low or choch_long:
-        score += 28
+        score = 26
         bias = "LONG"
         setup = "LIQUIDITY_SWEEP_LONG"
-        notes.append("зняли sell-side liquidity і повернулись вище")
+        notes.append("sell-side liquidity sweep + reclaim")
         if discount:
-            score += 8
-            notes.append("ціна у discount")
+            score += 7
+            notes.append("discount")
         if highs_near_above <= 3:
-            score += 6
+            score += 5
             notes.append("шлях вгору з меншим опором")
         entry_ok = True
 
     elif swept_high or choch_short:
-        score -= 28
+        score = -26
         bias = "SHORT"
         setup = "LIQUIDITY_SWEEP_SHORT"
-        notes.append("зняли buy-side liquidity і повернулись нижче")
+        notes.append("buy-side liquidity sweep + reclaim вниз")
         if premium:
-            score -= 8
-            notes.append("ціна у premium")
+            score -= 7
+            notes.append("premium")
         if lows_near_below <= 3:
-            score -= 6
+            score -= 5
             notes.append("шлях вниз з меншим опором")
         entry_ok = True
 
-    # Continuation model: BOS/displacement, then retracement into FVG/OB.
+    # 2) Continuation after BOS: only entry if price returns to FVG/OB.
     if bos_long:
-        local = 18
+        local = 14
         if in_bull_fvg or in_bull_ob:
             local += 18
             entry_ok = True
             setup = "BOS_LONG_RETRACE_FVG_OB"
-            notes.append("лонг після BOS на поверненні у FVG/OB")
+            notes.append("BOS LONG + повернення у bullish FVG/OB")
         elif displacement_up and move_3 > 0.55:
             no_chase = True
-            local -= 8
+            local -= 10
             setup = "BOS_LONG_WAIT_PULLBACK"
-            notes.append("імпульс вже відбувся — не доганяти, чекати FVG/OB")
+            notes.append("BOS LONG, але імпульс вже відбувся — чекати FVG/OB")
         if discount:
-            local += 5
+            local += 4
         score += local
         if score > 0:
             bias = "LONG"
 
     if bos_short:
-        local = -18
+        local = -14
         if in_bear_fvg or in_bear_ob:
             local -= 18
             entry_ok = True
             setup = "BOS_SHORT_RETRACE_FVG_OB"
-            notes.append("шорт після BOS на поверненні у FVG/OB")
+            notes.append("BOS SHORT + повернення у bearish FVG/OB")
         elif displacement_down and move_3 < -0.55:
             no_chase = True
-            local += 8
+            local += 10
             setup = "BOS_SHORT_WAIT_PULLBACK"
-            notes.append("імпульс вже відбувся — не доганяти, чекати FVG/OB")
+            notes.append("BOS SHORT, але імпульс вже відбувся — чекати FVG/OB")
         if premium:
-            local -= 5
+            local -= 4
         score += local
         if score < 0:
             bias = "SHORT"
 
-    # Pure FVG/OB reaction without fresh BOS is weaker but still useful.
+    # 3) FVG/OB reaction model without fresh BOS is weaker.
+    # It must be in correct premium/discount area. Midrange alone is no trade.
     if bias == "NEUTRAL":
         if (in_bull_fvg or in_bull_ob) and discount:
             bias = "LONG"
-            score = 18
+            score = 16
             setup = "DISCOUNT_FVG_OB_LONG"
             entry_ok = True
-            notes.append("ціна у discount + FVG/OB")
+            notes.append("discount + bullish FVG/OB")
         elif (in_bear_fvg or in_bear_ob) and premium:
             bias = "SHORT"
-            score = -18
+            score = -16
             setup = "PREMIUM_FVG_OB_SHORT"
             entry_ok = True
-            notes.append("ціна у premium + FVG/OB")
+            notes.append("premium + bearish FVG/OB")
+        elif midrange:
+            bias = "NEUTRAL"
+            score = 0
+            setup = "BALANCE_MIDRANGE"
+            notes.append("ціна біля equilibrium — ICT входу немає")
+        elif discount:
+            bias = "NEUTRAL"
+            score = 0
+            setup = "DISCOUNT_CONTEXT"
+            notes.append("discount є, але немає sweep/FVG/OB реакції")
+        elif premium:
+            bias = "NEUTRAL"
+            score = 0
+            setup = "PREMIUM_CONTEXT"
+            notes.append("premium є, але немає sweep/FVG/OB реакції")
 
-    # Premium/discount should never be a hard blocker, only a quality filter.
+    # Context penalty only. Premium/discount cannot create direction by itself.
     if bias == "LONG" and premium and not (swept_low or in_bull_fvg or in_bull_ob):
-        score -= 7
+        score -= 6
         notes.append("лонг у premium — якість нижча")
     if bias == "SHORT" and discount and not (swept_high or in_bear_fvg or in_bear_ob):
-        score += 7
+        score += 6
         notes.append("шорт у discount — якість нижча")
 
     if score >= 16:
@@ -1115,11 +1139,13 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         bias = "SHORT"
     else:
         bias = "NEUTRAL"
+        if setup == "NONE":
+            setup = "CONTEXT_ONLY"
 
     return {
         "available": True,
         "bias": bias,
-        "score": int(max(-45, min(45, score))),
+        "score": int(max(-38, min(38, score))),
         "state": "NO_CHASE" if no_chase else ("ENTRY_MODEL" if entry_ok else "CONTEXT"),
         "setup": setup,
         "entry_ok": bool(entry_ok and not no_chase),
@@ -1127,14 +1153,14 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         "equilibrium": round_price(eq),
         "range_high": round_price(range_high),
         "range_low": round_price(range_low),
-        "premium_discount": "DISCOUNT" if discount else "PREMIUM",
+        "premium_discount": "MIDRANGE" if midrange else ("DISCOUNT" if discount else "PREMIUM"),
+        "pd_pos": round(pd_pos, 3),
         "bull_fvg": nearest_bull_fvg,
         "bear_fvg": nearest_bear_fvg,
         "bull_ob": bull_ob,
         "bear_ob": bear_ob,
         "note": "; ".join(notes[:4]) if notes else "ICT: контекст без готового сетапу",
     }
-
 
 def build_pending_ict_zones(context):
     """Create forward-looking ICT zones for the next runs.
@@ -1181,7 +1207,7 @@ def build_pending_ict_zones(context):
         "LONG",
         ict.get("bull_fvg"),
         "Bullish FVG",
-        82 if premium_discount == "DISCOUNT" else 66,
+        82 if premium_discount == "DISCOUNT" else 58,
         "реакція в зоні + 3M перестає робити lower low + CVD/потік не проти",
         "покупка не після імпульсу, а на поверненні в imbalance",
     )
@@ -1197,7 +1223,7 @@ def build_pending_ict_zones(context):
         "SHORT",
         ict.get("bear_fvg"),
         "Bearish FVG",
-        82 if premium_discount == "PREMIUM" else 66,
+        82 if premium_discount == "PREMIUM" else 58,
         "реакція в зоні + 3M перестає робити higher high + CVD/потік не проти",
         "продаж не після падіння, а на поверненні в imbalance",
     )
@@ -2567,12 +2593,36 @@ def make_plan(side, context):
 def evaluate_new_setup(context):
     side = context["bias"]
     if side not in ["LONG", "SHORT"] or not context.get("price"):
+        # Diagnostic quality: not an entry probability, but a market readiness score.
+        # Do not show 0/100 when the market is simply balanced.
+        tf15 = context.get("tf15") or {}
+        structure = context.get("structure") or {}
+        ict = context.get("ict") or {}
+        cvd = context.get("cvd") or {}
+        flow = context.get("flow") or {}
+        tf1h = context.get("tf1h") or {}
+        tf4h = context.get("tf4h") or {}
+        readiness = 28
+        for block, weight in [
+            (tf15, 0.22),
+            (structure, 0.26),
+            (ict, 0.28),
+            (cvd, 0.14),
+            (flow, 0.10),
+            (tf1h, 0.08),
+            (tf4h, 0.04),
+        ]:
+            readiness += min(8, abs(int(block.get("score", 0) or 0)) * weight)
+        if ict.get("setup") in ["BALANCE_MIDRANGE", "CONTEXT_ONLY", "DISCOUNT_CONTEXT", "PREMIUM_CONTEXT"]:
+            reason = "ринок у балансі / ICT-сетап не готовий"
+        else:
+            reason = "перевага нечітка, немає професійного входу"
         return {
             "action": "NO_TRADE",
             "side": "NEUTRAL",
-            "quality": 0,
+            "quality": int(max(25, min(55, readiness))),
             "title": "ВХОДУ НЕМАЄ",
-            "reason": "перевага нечітка, немає професійного входу",
+            "reason": reason,
             "plan": None,
             "confirmations": [],
             "conflicts": [],
@@ -2618,7 +2668,10 @@ def evaluate_new_setup(context):
     quality = 47 + min(10, max(0, score_for_side // 9))
     quality += block_points(tf15, 14, 15)
     quality += block_points(structure, 11, 13)
-    quality += block_points(ict, 14, 14)
+    if ict.get("state") == "ENTRY_MODEL":
+        quality += block_points(ict, 14, 14)
+    elif ict.get("bias") == side and ict.get("score", 0):
+        quality += block_points(ict, 5, 5)
     if ict.get("entry_ok") and ict.get("bias") == side:
         quality += 8
     if ict.get("no_chase") and ict.get("bias") == side:
@@ -2655,7 +2708,7 @@ def evaluate_new_setup(context):
     ict_same = ict.get("bias") == side
     ict_entry_ok = ict_same and bool(ict.get("entry_ok"))
     ict_no_chase = ict_same and bool(ict.get("no_chase"))
-    ict_against = ict.get("bias") == opposite(side) and abs(int(ict.get("score", 0) or 0)) >= 20
+    ict_against = ict.get("bias") == opposite(side) and ict.get("state") == "ENTRY_MODEL" and abs(int(ict.get("score", 0) or 0)) >= 22
 
     cvd_same = cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
     flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10
@@ -3129,7 +3182,7 @@ def _compact_title(setup):
     if action == "WATCH" and side in ["LONG", "SHORT"]:
         return f"ЧЕКАТИ {side}"
     if action == "NO_TRADE":
-        return "ВХОДУ НЕМАЄ"
+        return "ЧЕКАТИ — ICT НЕ ГОТОВИЙ"
     return str(setup.get("title") or "СИГНАЛ")
 
 
