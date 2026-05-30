@@ -2354,64 +2354,75 @@ def _move_from_candles(candles, bars):
     return pct(candles[-1].close, candles[-bars - 1].close)
 
 
-def analyze_btc_inverse(btc_ticker, bzu_ticker):
-    """BTC ↔ BZ inverse filter with risk-off fallback.
+def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles_1h):
+    """BTC inverse-correlation filter for BZU intraday trades.
 
-    Normal observation for this bot:
-      BTC strong up -> BZ often weaker / SHORT support
-      BTC strong down -> BZ often stronger / LONG support
-
-    But during broad risk-off/risk-on regimes both can move in the same
-    direction. In that case inverse mapping is disabled to avoid false signals.
+    Practical observation for this setup: when BTC impulse goes up, BZU/oil proxy
+    often weakens; when BTC impulse goes down, BZU can catch support. This block
+    is a strong confirmation layer, but not a standalone trade trigger.
     """
-    btc_change = safe_float((btc_ticker or {}).get("change24h"), 0)
-    bzu_change = safe_float((bzu_ticker or {}).get("change24h"), 0)
+    if not btc_candles_15m or len(btc_candles_15m) < 20:
+        return {"available": False, "bias": "NEUTRAL", "score": 0, "note": "BTC даних мало"}
 
-    # Risk-off / broad market same-direction guard.
-    # If BZ and BTC have the same sign and BZ move is meaningful, do NOT invert.
-    # This specifically prevents: BTC down + BZ down => false LONG.
-    if abs(bzu_change) > 1.5 and (btc_change * bzu_change) > 0:
-        return {
-            "bias": "NEUTRAL",
-            "score": 0,
-            "state": "RISK_OFF_SAME_DIRECTION",
-            "btc_change_pct": round(btc_change, 3),
-            "bzu_change_pct": round(bzu_change, 3),
-            "note": "BTC і BZ рухаються синхронно — inverse-фільтр вимкнено",
-        }
+    m3 = _move_from_candles(btc_candles_3m, 5)      # ~15 minutes
+    m15 = _move_from_candles(btc_candles_15m, 4)    # ~1 hour
+    m1h = _move_from_candles(btc_candles_1h, 3)     # ~3 hours
+    change24 = safe_float((btc_ticker or {}).get("change24h"), 0)
 
-    score = 0
+    btc_pressure = 0
     notes = []
 
-    # Apply inverse only when BTC move is meaningful and not in same-direction regime.
-    if btc_change >= 1.2:
-        score -= 18
-        notes.append("BTC росте — для BZ це inverse SHORT-фільтр")
-    elif btc_change <= -1.2:
-        score += 18
-        notes.append("BTC падає — для BZ це inverse LONG-фільтр")
-    elif btc_change >= 0.65:
-        score -= 9
-        notes.append("BTC помірно росте")
-    elif btc_change <= -0.65:
-        score += 9
-        notes.append("BTC помірно падає")
+    if m15 >= 0.28:
+        btc_pressure += 14
+        notes.append("BTC імпульс вгору")
+    elif m15 <= -0.28:
+        btc_pressure -= 14
+        notes.append("BTC імпульс вниз")
 
-    if score >= 10:
+    if m3 >= 0.16:
+        btc_pressure += 8
+    elif m3 <= -0.16:
+        btc_pressure -= 8
+
+    if m1h >= 0.45:
+        btc_pressure += 8
+    elif m1h <= -0.45:
+        btc_pressure -= 8
+
+    # 24h is context only, not the entry trigger.
+    if change24 >= 1.2:
+        btc_pressure += 3
+    elif change24 <= -1.2:
+        btc_pressure -= 3
+
+    # Inverse mapping: BTC strength usually pressures BZU/OIL lower; BTC weakness supports LONG.
+    score = -btc_pressure
+    if score >= 12:
         bias = "LONG"
-    elif score <= -10:
+        if not notes:
+            notes.append("BTC слабшає — підтримка для BZU")
+    elif score <= -12:
         bias = "SHORT"
+        if not notes:
+            notes.append("BTC росте — тиск на BZU")
     else:
         bias = "NEUTRAL"
 
     return {
+        "available": True,
         "bias": bias,
-        "score": int(score),
-        "state": "INVERSE_ACTIVE" if bias != "NEUTRAL" else "NEUTRAL",
-        "btc_change_pct": round(btc_change, 3),
-        "bzu_change_pct": round(bzu_change, 3),
-        "note": "; ".join(notes) if notes else "BTC inverse без сильного сигналу",
+        "score": int(max(-28, min(28, score))),
+        "btc_move_15m_pct": round(m3, 3),
+        "btc_move_1h_pct": round(m15, 3),
+        "btc_move_3h_pct": round(m1h, 3),
+        "btc_change24h": round(change24, 3),
+        "note": "; ".join(notes[:2]) if notes else "BTC без сильного імпульсу",
     }
+
+# ==========================================================
+# SETUP ENGINE
+# ==========================================================
+
 
 def build_context(data, state=None):
     ticker = data.get("ticker") or {}
