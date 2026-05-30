@@ -834,6 +834,452 @@ def analyze_structure(candles):
     }
 
 
+
+# ==========================================================
+# ICT INTRADAY MODEL
+# ==========================================================
+
+def _candle_dir(c):
+    if c.close > c.open:
+        return "UP"
+    if c.close < c.open:
+        return "DOWN"
+    return "DOJI"
+
+
+def _zone_contains(zone, price, pad=0.0):
+    if not zone or price is None:
+        return False
+    low = min(zone.get("low", 0), zone.get("high", 0)) - pad
+    high = max(zone.get("low", 0), zone.get("high", 0)) + pad
+    return low <= price <= high
+
+
+def _nearest_zone(zones, price):
+    if not zones or price is None:
+        return None
+    return min(zones, key=lambda z: abs(((z["low"] + z["high"]) / 2) - price))
+
+
+def detect_fvg_zones(candles, lookback=42):
+    """ICT Fair Value Gap / imbalance detector.
+
+    Bullish FVG: candle[i-2].high < candle[i].low.
+    Bearish FVG: candle[i-2].low > candle[i].high.
+
+    The bot uses FVG as a retracement destination, not as a reason to chase.
+    """
+    zones = []
+    if not candles or len(candles) < 8:
+        return zones
+    sample = candles[-lookback:]
+    for i in range(2, len(sample)):
+        c0 = sample[i - 2]
+        c1 = sample[i - 1]
+        c2 = sample[i]
+        mid_body = abs(c1.close - c1.open)
+        avg_body = mean([abs(x.close - x.open) for x in sample[max(0, i - 10):i]]) if i > 2 else mid_body
+        displacement = mid_body >= max(avg_body * 1.25, 1e-9)
+
+        if c0.high < c2.low:
+            zones.append({
+                "side": "LONG",
+                "low": round_price(c0.high),
+                "high": round_price(c2.low),
+                "mid": round_price((c0.high + c2.low) / 2),
+                "created_ts": c2.ts,
+                "displacement": displacement,
+                "type": "BULLISH_FVG",
+            })
+        if c0.low > c2.high:
+            zones.append({
+                "side": "SHORT",
+                "low": round_price(c2.high),
+                "high": round_price(c0.low),
+                "mid": round_price((c2.high + c0.low) / 2),
+                "created_ts": c2.ts,
+                "displacement": displacement,
+                "type": "BEARISH_FVG",
+            })
+    return zones[-12:]
+
+
+def detect_orderblock_zone(candles, side, lookback=34):
+    """Simple ICT orderblock proxy.
+
+    LONG: last down candle before bullish displacement.
+    SHORT: last up candle before bearish displacement.
+    Zone is candle range with the midpoint emphasized for lower risk.
+    """
+    if not candles or len(candles) < 12:
+        return None
+    sample = candles[-lookback:]
+    bodies = [abs(c.close - c.open) for c in sample]
+    avg_body = mean(bodies[-20:]) if len(bodies) >= 20 else mean(bodies)
+    for idx in range(len(sample) - 3, 2, -1):
+        c = sample[idx]
+        next2 = sample[idx + 1:min(len(sample), idx + 4)]
+        if not next2:
+            continue
+        if side == "LONG" and c.close < c.open:
+            displacement = max(x.close for x in next2) > c.high and any(abs(x.close - x.open) >= avg_body * 1.15 and x.close > x.open for x in next2)
+            if displacement:
+                return {
+                    "side": "LONG",
+                    "low": round_price(c.low),
+                    "high": round_price(c.high),
+                    "mid": round_price((c.low + c.high) / 2),
+                    "created_ts": c.ts,
+                    "type": "BULLISH_OB",
+                }
+        if side == "SHORT" and c.close > c.open:
+            displacement = min(x.close for x in next2) < c.low and any(abs(x.close - x.open) >= avg_body * 1.15 and x.close < x.open for x in next2)
+            if displacement:
+                return {
+                    "side": "SHORT",
+                    "low": round_price(c.low),
+                    "high": round_price(c.high),
+                    "mid": round_price((c.low + c.high) / 2),
+                    "created_ts": c.ts,
+                    "type": "BEARISH_OB",
+                }
+    return None
+
+
+def analyze_ict_model(candles_3m, candles_15m, structure, price):
+    """ICT intraday decision layer.
+
+    The goal is to stop the bot from reporting a move after it already happened.
+    It favors:
+    - liquidity sweep / stop run + reclaim
+    - FVG or Order Block retracement
+    - premium/discount positioning
+    - low-resistance liquidity path
+    - expansion only after pullback, not chasing the candle
+    """
+    if not candles_15m or len(candles_15m) < 45 or not price:
+        return {
+            "available": False,
+            "bias": "NEUTRAL",
+            "score": 0,
+            "state": "NO_DATA",
+            "setup": "NONE",
+            "entry_ok": False,
+            "no_chase": False,
+            "note": "ICT: даних мало",
+        }
+
+    recent = candles_15m[-48:]
+    last = recent[-1]
+    prev = recent[-2]
+    atr15 = atr(candles_15m, 14) or max(price * 0.005, 0.01)
+    range_high = max(c.high for c in recent[:-1])
+    range_low = min(c.low for c in recent[:-1])
+    eq = (range_high + range_low) / 2
+    discount = price < eq
+    premium = price > eq
+
+    fvg15 = detect_fvg_zones(candles_15m, 42)
+    fvg3 = detect_fvg_zones(candles_3m or [], 55)
+    bullish_fvgs = [z for z in (fvg15 + fvg3) if z["side"] == "LONG"]
+    bearish_fvgs = [z for z in (fvg15 + fvg3) if z["side"] == "SHORT"]
+    nearest_bull_fvg = _nearest_zone(bullish_fvgs, price)
+    nearest_bear_fvg = _nearest_zone(bearish_fvgs, price)
+
+    bull_ob = detect_orderblock_zone(candles_15m, "LONG") or detect_orderblock_zone(candles_3m or [], "LONG")
+    bear_ob = detect_orderblock_zone(candles_15m, "SHORT") or detect_orderblock_zone(candles_3m or [], "SHORT")
+
+    pad = atr15 * 0.16
+    in_bull_fvg = _zone_contains(nearest_bull_fvg, price, pad)
+    in_bear_fvg = _zone_contains(nearest_bear_fvg, price, pad)
+    in_bull_ob = _zone_contains(bull_ob, price, pad)
+    in_bear_ob = _zone_contains(bear_ob, price, pad)
+
+    swept_low = last.low < range_low and last.close > range_low
+    swept_high = last.high > range_high and last.close < range_high
+
+    phase = (structure or {}).get("phase", "")
+    bos_long = phase == "BOS LONG"
+    bos_short = phase == "BOS SHORT"
+    choch_long = phase in ["CHOCH LONG", "DOWNSIDE SWEEP"]
+    choch_short = phase in ["CHOCH SHORT", "UPSIDE SWEEP"]
+
+    move_3 = pct(last.close, recent[-4].close) if len(recent) >= 4 else 0
+    body = abs(last.close - last.open)
+    avg_body = mean([abs(c.close - c.open) for c in recent[-21:-1]]) if len(recent) >= 22 else body
+    displacement_up = last.close > last.open and body >= max(avg_body * 1.45, atr15 * 0.36)
+    displacement_down = last.close < last.open and body >= max(avg_body * 1.45, atr15 * 0.36)
+
+    # Low resistance: after a sweep/BOS, path to next liquidity is clearer if
+    # price is not immediately facing many recent highs/lows.
+    highs_near_above = sum(1 for c in recent[-28:-1] if price < c.high <= price + atr15 * 1.25)
+    lows_near_below = sum(1 for c in recent[-28:-1] if price - atr15 * 1.25 <= c.low < price)
+
+    score = 0
+    notes = []
+    setup = "NONE"
+    bias = "NEUTRAL"
+    entry_ok = False
+    no_chase = False
+
+    # Reversal model: stop-run / turtle soup.
+    if swept_low or choch_long:
+        score += 28
+        bias = "LONG"
+        setup = "LIQUIDITY_SWEEP_LONG"
+        notes.append("зняли sell-side liquidity і повернулись вище")
+        if discount:
+            score += 8
+            notes.append("ціна у discount")
+        if highs_near_above <= 3:
+            score += 6
+            notes.append("шлях вгору з меншим опором")
+        entry_ok = True
+
+    elif swept_high or choch_short:
+        score -= 28
+        bias = "SHORT"
+        setup = "LIQUIDITY_SWEEP_SHORT"
+        notes.append("зняли buy-side liquidity і повернулись нижче")
+        if premium:
+            score -= 8
+            notes.append("ціна у premium")
+        if lows_near_below <= 3:
+            score -= 6
+            notes.append("шлях вниз з меншим опором")
+        entry_ok = True
+
+    # Continuation model: BOS/displacement, then retracement into FVG/OB.
+    if bos_long:
+        local = 18
+        if in_bull_fvg or in_bull_ob:
+            local += 18
+            entry_ok = True
+            setup = "BOS_LONG_RETRACE_FVG_OB"
+            notes.append("лонг після BOS на поверненні у FVG/OB")
+        elif displacement_up and move_3 > 0.55:
+            no_chase = True
+            local -= 8
+            setup = "BOS_LONG_WAIT_PULLBACK"
+            notes.append("імпульс вже відбувся — не доганяти, чекати FVG/OB")
+        if discount:
+            local += 5
+        score += local
+        if score > 0:
+            bias = "LONG"
+
+    if bos_short:
+        local = -18
+        if in_bear_fvg or in_bear_ob:
+            local -= 18
+            entry_ok = True
+            setup = "BOS_SHORT_RETRACE_FVG_OB"
+            notes.append("шорт після BOS на поверненні у FVG/OB")
+        elif displacement_down and move_3 < -0.55:
+            no_chase = True
+            local += 8
+            setup = "BOS_SHORT_WAIT_PULLBACK"
+            notes.append("імпульс вже відбувся — не доганяти, чекати FVG/OB")
+        if premium:
+            local -= 5
+        score += local
+        if score < 0:
+            bias = "SHORT"
+
+    # Pure FVG/OB reaction without fresh BOS is weaker but still useful.
+    if bias == "NEUTRAL":
+        if (in_bull_fvg or in_bull_ob) and discount:
+            bias = "LONG"
+            score = 18
+            setup = "DISCOUNT_FVG_OB_LONG"
+            entry_ok = True
+            notes.append("ціна у discount + FVG/OB")
+        elif (in_bear_fvg or in_bear_ob) and premium:
+            bias = "SHORT"
+            score = -18
+            setup = "PREMIUM_FVG_OB_SHORT"
+            entry_ok = True
+            notes.append("ціна у premium + FVG/OB")
+
+    # Premium/discount should never be a hard blocker, only a quality filter.
+    if bias == "LONG" and premium and not (swept_low or in_bull_fvg or in_bull_ob):
+        score -= 7
+        notes.append("лонг у premium — якість нижча")
+    if bias == "SHORT" and discount and not (swept_high or in_bear_fvg or in_bear_ob):
+        score += 7
+        notes.append("шорт у discount — якість нижча")
+
+    if score >= 16:
+        bias = "LONG"
+    elif score <= -16:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    return {
+        "available": True,
+        "bias": bias,
+        "score": int(max(-45, min(45, score))),
+        "state": "NO_CHASE" if no_chase else ("ENTRY_MODEL" if entry_ok else "CONTEXT"),
+        "setup": setup,
+        "entry_ok": bool(entry_ok and not no_chase),
+        "no_chase": bool(no_chase),
+        "equilibrium": round_price(eq),
+        "range_high": round_price(range_high),
+        "range_low": round_price(range_low),
+        "premium_discount": "DISCOUNT" if discount else "PREMIUM",
+        "bull_fvg": nearest_bull_fvg,
+        "bear_fvg": nearest_bear_fvg,
+        "bull_ob": bull_ob,
+        "bear_ob": bear_ob,
+        "note": "; ".join(notes[:4]) if notes else "ICT: контекст без готового сетапу",
+    }
+
+
+def build_pending_ict_zones(context):
+    """Create forward-looking ICT zones for the next runs.
+
+    These are not market orders. They are zones where the bot should watch for
+    reaction/confirmation, so the message becomes predictive instead of late.
+    """
+    ict = context.get("ict") or {}
+    price = context.get("price")
+    atr15 = context.get("atr15") or (price or 90) * 0.006
+    side = context.get("bias", "NEUTRAL")
+    if not ict or not price:
+        return []
+
+    zones = []
+
+    def add_zone(side_, zone, label, priority, condition, reason):
+        if not zone:
+            return
+        low = safe_float(zone.get("low"))
+        high = safe_float(zone.get("high"))
+        mid = safe_float(zone.get("mid"), (low + high) / 2 if low and high else None)
+        if low is None or high is None:
+            return
+        low, high = min(low, high), max(low, high)
+        distance_pct = abs(((low + high) / 2) - price) / price * 100 if price else 0
+        zones.append({
+            "side": side_,
+            "type": label,
+            "low": round_price(low),
+            "high": round_price(high),
+            "mid": round_price(mid),
+            "priority": int(priority),
+            "distance_pct": round(distance_pct, 3),
+            "condition": condition,
+            "reason": reason,
+        })
+
+    premium_discount = ict.get("premium_discount", "")
+    ict_bias = ict.get("bias", "NEUTRAL")
+
+    # Main forward zones from ICT model.
+    add_zone(
+        "LONG",
+        ict.get("bull_fvg"),
+        "Bullish FVG",
+        82 if premium_discount == "DISCOUNT" else 66,
+        "реакція в зоні + 3M перестає робити lower low + CVD/потік не проти",
+        "покупка не після імпульсу, а на поверненні в imbalance",
+    )
+    add_zone(
+        "LONG",
+        ict.get("bull_ob"),
+        "Bullish OB",
+        78 if premium_discount == "DISCOUNT" else 64,
+        "утримання OB + reclaim середини зони + стоп нижче OB",
+        "order block для low-risk LONG",
+    )
+    add_zone(
+        "SHORT",
+        ict.get("bear_fvg"),
+        "Bearish FVG",
+        82 if premium_discount == "PREMIUM" else 66,
+        "реакція в зоні + 3M перестає робити higher high + CVD/потік не проти",
+        "продаж не після падіння, а на поверненні в imbalance",
+    )
+    add_zone(
+        "SHORT",
+        ict.get("bear_ob"),
+        "Bearish OB",
+        78 if premium_discount == "PREMIUM" else 64,
+        "утримання OB + rejection середини зони + стоп вище OB",
+        "order block для low-risk SHORT",
+    )
+
+    # Liquidity objectives / warning zones.
+    eq = safe_float(ict.get("equilibrium"))
+    rh = safe_float(ict.get("range_high"))
+    rl = safe_float(ict.get("range_low"))
+    if rh and rl and eq:
+        if price < eq:
+            zones.append({
+                "side": "LONG",
+                "type": "Discount → EQ",
+                "low": round_price(rl),
+                "high": round_price(eq),
+                "mid": round_price((rl + eq) / 2),
+                "priority": 58,
+                "distance_pct": round(abs(eq - price) / price * 100, 3),
+                "condition": "після sweep low або реакції в bullish FVG/OB",
+                "reason": "ціна у discount, перша магніт-зона — equilibrium",
+            })
+        if price > eq:
+            zones.append({
+                "side": "SHORT",
+                "type": "Premium → EQ",
+                "low": round_price(eq),
+                "high": round_price(rh),
+                "mid": round_price((rh + eq) / 2),
+                "priority": 58,
+                "distance_pct": round(abs(price - eq) / price * 100, 3),
+                "condition": "після sweep high або реакції в bearish FVG/OB",
+                "reason": "ціна у premium, перша магніт-зона — equilibrium",
+            })
+
+    # Prefer zones aligned with current context, but keep opposite zones as warnings.
+    for z in zones:
+        if side in ["LONG", "SHORT"] and z["side"] == side:
+            z["priority"] += 8
+        elif ict_bias in ["LONG", "SHORT"] and z["side"] == ict_bias:
+            z["priority"] += 5
+
+        # Do not give high priority to zones that are too far for intraday.
+        if z["distance_pct"] > 1.35:
+            z["priority"] -= 12
+        elif z["distance_pct"] <= 0.45:
+            z["priority"] += 4
+
+    zones = sorted(zones, key=lambda z: (z["priority"], -z["distance_pct"]), reverse=True)
+    # Deduplicate similar zones.
+    unique = []
+    for z in zones:
+        duplicate = False
+        for u in unique:
+            if z["side"] == u["side"] and abs((z["mid"] or 0) - (u["mid"] or 0)) <= atr15 * 0.12:
+                duplicate = True
+                break
+        if not duplicate:
+            unique.append(z)
+    return unique[:4]
+
+
+def pending_zones_text(context, limit=3):
+    zones = context.get("pending_ict_zones") or []
+    if not zones:
+        return ""
+    lines = ["<b>Pending ICT зони:</b>"]
+    for z in zones[:limit]:
+        side = z["side"]
+        icon = "🟢" if side == "LONG" else "🔴"
+        lines.append(
+            f"{icon} {side}: {z['low']}–{z['high']} | {z['type']} | P{z['priority']}"
+        )
+    return "\n".join(lines)
+
 def analyze_volume_guard(candles_15m):
     """Intraday volume context.
 
@@ -1787,6 +2233,7 @@ def build_context(data, state=None):
     tf1h = analyze_timeframe(data.get("candles_1h") or [], "1h")
     tf4h = analyze_timeframe(data.get("candles_4h") or [], "4h")
     structure = analyze_structure(data.get("candles_15m") or [])
+    ict = analyze_ict_model(data.get("candles_3m") or [], data.get("candles_15m") or [], structure, price)
     volume_guard = analyze_volume_guard(data.get("candles_15m") or [])
     previous_snapshot = (state or {}).get("last_market_snapshot") or {}
     flow = analyze_flow(data.get("trades") or [], data.get("book") or {}, price)
@@ -1808,8 +2255,9 @@ def build_context(data, state=None):
     # 4H is only a background hint; clusters are only a local warning.
     tech_score = (
         tf15.get("score", 0) * 1.45
-        + structure.get("score", 0) * 1.30
-        + tf3.get("score", 0) * 0.70
+        + structure.get("score", 0) * 1.20
+        + ict.get("score", 0) * 1.15
+        + tf3.get("score", 0) * 0.62
         + tf1h.get("score", 0) * 0.45
         + cvd.get("score", 0) * 0.90
         + derivatives.get("score", 0) * 0.60
@@ -1829,6 +2277,13 @@ def build_context(data, state=None):
     else:
         bias = "NEUTRAL"
 
+    pending_ict_zones = build_pending_ict_zones({
+        "price": price,
+        "bias": bias,
+        "atr15": atr15,
+        "ict": ict,
+    })
+
     return {
         "price": price,
         "change24h": safe_float(ticker.get("change24h"), 0),
@@ -1840,6 +2295,8 @@ def build_context(data, state=None):
         "tf1h": tf1h,
         "tf4h": tf4h,
         "structure": structure,
+        "ict": ict,
+        "pending_ict_zones": pending_ict_zones,
         "volume_guard": volume_guard,
         "flow": flow,
         "cvd": cvd,
@@ -1878,6 +2335,7 @@ def is_late_chase(side, context):
     tf3 = context["tf3"]
     structure = context["structure"]
     liquidity = context.get("liquidity") or {}
+    ict = context.get("ict") or {}
     ema20 = safe_float(tf15.get("ema20"))
     rsi15 = safe_float(tf15.get("rsi"), 50)
     move_8 = safe_float(tf15.get("move_8_pct"), 0)
@@ -1887,6 +2345,9 @@ def is_late_chase(side, context):
 
     if not price or not atr15:
         return False, ""
+
+    if ict.get("no_chase") and ict.get("bias") == side:
+        return True, "ICT: імпульс вже відбувся — не доганяти; чекати FVG/OB або нову проторговку"
 
     distance_atr = abs(price - ema20) / atr15 if ema20 else 0
 
@@ -1939,12 +2400,15 @@ def entry_confirmations(side, context):
     tf1h = context["tf1h"]
     tf4h = context.get("tf4h") or {}
     structure = context["structure"]
+    ict = context.get("ict") or {}
     flow = context["flow"]
+    ict = context.get("ict") or {}
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
     derivatives = context.get("derivatives") or {}
     btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
+    ict = context.get("ict") or {}
     calendar = context.get("calendar") or {}
     news = context["news"]
 
@@ -1988,6 +2452,15 @@ def entry_confirmations(side, context):
         confirmations.append("структура підтверджує")
     elif structure.get("bias") == opposite(side):
         conflicts.append("структура проти")
+
+    if ict.get("bias") == side and ict.get("entry_ok"):
+        confirmations.append("ICT сетап готовий")
+    elif ict.get("bias") == side:
+        confirmations.append("ICT контекст підтримує")
+    elif ict.get("bias") == opposite(side) and abs(int(ict.get("score", 0) or 0)) >= 20:
+        conflicts.append("ICT проти")
+    if ict.get("no_chase") and ict.get("bias") == side:
+        conflicts.append("ICT не доганяти")
 
     if cvd.get("bias") == side:
         confirmations.append("CVD підтверджує")
@@ -2114,12 +2587,15 @@ def evaluate_new_setup(context):
     tf1h = context["tf1h"]
     tf4h = context.get("tf4h") or {}
     structure = context["structure"]
+    ict = context.get("ict") or {}
     flow = context["flow"]
+    ict = context.get("ict") or {}
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
     derivatives = context.get("derivatives") or {}
     btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
+    ict = context.get("ict") or {}
     calendar = context.get("calendar") or {}
     news = context.get("news") or {}
 
@@ -2141,8 +2617,13 @@ def evaluate_new_setup(context):
     score_for_side = side_score(context["total_score"], side)
     quality = 47 + min(10, max(0, score_for_side // 9))
     quality += block_points(tf15, 14, 15)
-    quality += block_points(structure, 13, 14)
-    quality += block_points(tf3, 7, 10, neutral=0, weak_opposite_penalty=4)
+    quality += block_points(structure, 11, 13)
+    quality += block_points(ict, 14, 14)
+    if ict.get("entry_ok") and ict.get("bias") == side:
+        quality += 8
+    if ict.get("no_chase") and ict.get("bias") == side:
+        quality -= 18
+    quality += block_points(tf3, 6, 9, neutral=0, weak_opposite_penalty=4)
     quality += block_points(tf1h, 4, 4)
     quality += block_points(tf4h, 1, 1)
     quality += block_points(cvd, 10, 11)
@@ -2171,6 +2652,11 @@ def evaluate_new_setup(context):
     structure_neutral = structure.get("bias") == "NEUTRAL"
     structure_against = structure.get("bias") == opposite(side)
 
+    ict_same = ict.get("bias") == side
+    ict_entry_ok = ict_same and bool(ict.get("entry_ok"))
+    ict_no_chase = ict_same and bool(ict.get("no_chase"))
+    ict_against = ict.get("bias") == opposite(side) and abs(int(ict.get("score", 0) or 0)) >= 20
+
     cvd_same = cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
     flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10
     oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 10
@@ -2183,18 +2669,21 @@ def evaluate_new_setup(context):
     core_direction_ok = (
         (tf15_same and not structure_against)
         or (structure_same and not tf15_against)
-        or (tf15_neutral and structure_same)
+        or (ict_same and not tf15_against and not structure_against)
+        or (tf15_neutral and (structure_same or ict_same))
     )
 
-    pressure_ok = cvd_same or flow_same or oi_same or btc_same
+    pressure_ok = cvd_same or flow_same or oi_same or btc_same or ict_entry_ok
 
     # Classic entry: 3M confirms the 15M/structure direction.
     trigger_entry_ok = (
-        tf3_same
+        (tf3_same or ict_entry_ok)
         and core_direction_ok
         and not strong_cvd_against
         and not strong_oi_against
         and not strong_btc_against
+        and not ict_against
+        and not ict_no_chase
         and side not in liquidity.get("blocks", [])
     )
 
@@ -2209,6 +2698,8 @@ def evaluate_new_setup(context):
         and not strong_cvd_against
         and not strong_oi_against
         and not strong_btc_against
+        and not ict_against
+        and not ict_no_chase
         and side not in liquidity.get("blocks", [])
     )
 
@@ -2219,6 +2710,8 @@ def evaluate_new_setup(context):
 
     hard_conflict = (
         side in liquidity.get("blocks", [])
+        or ict_against
+        or ict_no_chase
         or (tf15_against and structure_against)
         or (strong_cvd_against and strong_oi_against)
         or (tf3_strong_against and (strong_cvd_against or strong_btc_against))
@@ -2256,7 +2749,7 @@ def evaluate_new_setup(context):
 
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict:
         if pullback_entry_ok and not trigger_entry_ok:
-            reason = "ранній вхід по відкату: 15M/структура тримають напрям, CVD/потік/OI/BTC підтверджують"
+            reason = "ICT/відкат: 15M/структура тримають напрям, вхід не після погоні, CVD/потік/OI/BTC підтверджують"
         else:
             reason = "сигнал підтверджений: " + " | ".join(confirmations[:4])
         return {
@@ -2272,7 +2765,7 @@ def evaluate_new_setup(context):
 
     if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
         if pullback_entry_ok and not trigger_entry_ok:
-            reason = "ранній сигнал по відкату; 3M ще не дав повний імпульсний тригер"
+            reason = "ранній ICT/відкат; 3M ще не дав повний імпульсний тригер"
         else:
             reason = "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4])
         return {
@@ -2287,11 +2780,11 @@ def evaluate_new_setup(context):
         }
 
     if core_direction_ok and pressure_ok and (tf3_neutral or tf3_weak_pullback):
-        wait_reason = "напрям є, 3M зараз у відкаті/проторговці; чекати коротке підтвердження або входити тільки малим ризиком"
+        wait_reason = "напрям є, 3M зараз у відкаті/проторговці; чекати реакцію в Pending ICT зоні або коротке підтвердження"
     elif conflicts:
         wait_reason = "напрям є, але входу ще немає: " + "; ".join(conflicts[:3])
     else:
-        wait_reason = "напрям є, але бракує якості входу"
+        wait_reason = "напрям є, але бракує якості входу; орієнтир — Pending ICT зона"
 
     return {
         "action": "WATCH",
@@ -2334,6 +2827,7 @@ def manage_active_trade(trade, context):
     tf3 = context["tf3"]
     tf15 = context["tf15"]
     structure = context["structure"]
+    ict = context.get("ict") or {}
     flow = context["flow"]
 
     trade.best_price = best_trade_price(side, trade, price)
@@ -2589,6 +3083,8 @@ def context_lines(context):
     ])
 
     # Extra professional blocks, also short.
+    if context.get("ict"):
+        lines.append(_score_line("ICT", context.get("ict")))
     if context.get("cvd"):
         lines.append(_score_line("CVD", context.get("cvd")))
     if context.get("clusters"):
