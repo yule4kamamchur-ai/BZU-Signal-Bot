@@ -2622,6 +2622,8 @@ def build_context(data, state=None):
         "source": ticker.get("source", "unknown"),
         "symbol": ticker.get("symbol", OKX_INST_ID),
         "atr15": atr15,
+        "candles_3m": data.get("candles_3m") or [],
+        "candles_15m": data.get("candles_15m") or [],
         "tf3": tf3,
         "tf15": tf15,
         "tf1h": tf1h,
@@ -3267,6 +3269,106 @@ def best_trade_price(side, trade, current_price):
     return min(trade.best_price, current_price)
 
 
+def _valid_stop_for_side(side, price, stop):
+    if stop is None or price is None:
+        return False
+    return stop < price if side == "LONG" else stop > price
+
+
+def _last_smc_trailing_level(side, candles, price, entry, atr_value):
+    """Find a practical SMC trailing stop from recent 3M swing structure.
+
+    LONG: trail under the latest meaningful 3M higher low.
+    SHORT: trail above the latest meaningful 3M lower high.
+    The level must be on the safe side of current price; after TP1 we prefer
+    levels that also protect at least breakeven/partial profit.
+    """
+    if not candles or len(candles) < 20 or not price:
+        return None, ""
+    highs, lows = swing_points(candles[-110:], 2)
+    buffer = max((atr_value or price * 0.004) * 0.12, price * 0.00035)
+
+    if side == "LONG":
+        candidates = [safe_float(x.get("price")) for x in lows[-12:]]
+        candidates = [x for x in candidates if x and x < price]
+        protected = [x for x in candidates if x >= entry * 0.999]
+        base = max(protected or candidates) if candidates else None
+        if base:
+            return round_price(base - buffer), f"SMC: стоп під останній 3M higher low {round_price(base)}"
+    else:
+        candidates = [safe_float(x.get("price")) for x in highs[-12:]]
+        candidates = [x for x in candidates if x and x > price]
+        protected = [x for x in candidates if x <= entry * 1.001]
+        base = min(protected or candidates) if candidates else None
+        if base:
+            return round_price(base + buffer), f"SMC: стоп над останній 3M lower high {round_price(base)}"
+    return None, ""
+
+
+def _ict_zone_trailing_level(side, ict, price, atr_value):
+    """Find an ICT/FVG/OB based protective stop if the zone is usable."""
+    if not ict or not price:
+        return None, ""
+    buffer = max((atr_value or price * 0.004) * 0.10, price * 0.0003)
+    zones = []
+    if side == "LONG":
+        for key, label in [("bull_ob", "bullish OB"), ("bull_fvg", "bullish FVG")]:
+            z = ict.get(key)
+            if z and not z.get("mitigated"):
+                low = safe_float(z.get("low"))
+                high = safe_float(z.get("high"))
+                if low and high and min(low, high) < price:
+                    zones.append((min(low, high) - buffer, label, min(low, high), max(low, high)))
+        if zones:
+            level, label, low, high = max(zones, key=lambda x: x[0])
+            return round_price(level), f"ICT: стоп під {label} {round_price(low)}–{round_price(high)}"
+    else:
+        for key, label in [("bear_ob", "bearish OB"), ("bear_fvg", "bearish FVG")]:
+            z = ict.get(key)
+            if z and not z.get("mitigated"):
+                low = safe_float(z.get("low"))
+                high = safe_float(z.get("high"))
+                if low and high and max(low, high) > price:
+                    zones.append((max(low, high) + buffer, label, min(low, high), max(low, high)))
+        if zones:
+            level, label, low, high = min(zones, key=lambda x: x[0])
+            return round_price(level), f"ICT: стоп над {label} {round_price(low)}–{round_price(high)}"
+    return None, ""
+
+
+def protective_stop_ict_smc(trade, context, after_tp="TP1"):
+    """Return a clear protective stop recommendation using ICT + SMC.
+
+    After TP1 the stop must protect the trade: breakeven/small profit is the
+    minimum. After TP2 the stop is tightened to TP1 or to the best ICT/SMC level
+    if that is more protective and still valid.
+    """
+    price = context.get("price")
+    side = trade.side
+    atr_value = context.get("atr15") or (price or trade.entry) * 0.006
+    be = trade.entry * (1.0008 if side == "LONG" else 0.9992)
+
+    candidates = [(be, "захист: беззбиток + малий плюс")]
+    smc_level, smc_reason = _last_smc_trailing_level(side, context.get("candles_3m") or [], price, trade.entry, atr_value)
+    ict_level, ict_reason = _ict_zone_trailing_level(side, context.get("ict") or {}, price, atr_value)
+    if smc_level is not None:
+        candidates.append((smc_level, smc_reason))
+    if ict_level is not None:
+        candidates.append((ict_level, ict_reason))
+    if after_tp == "TP2":
+        candidates.append((trade.tp1, "TP2 взято: мінімум захистити TP1"))
+
+    valid = [(lvl, why) for lvl, why in candidates if _valid_stop_for_side(side, price, lvl)]
+    if not valid:
+        return round_price(be), "захист: беззбиток + малий плюс"
+
+    if side == "LONG":
+        lvl, why = max(valid, key=lambda x: x[0])
+    else:
+        lvl, why = min(valid, key=lambda x: x[0])
+    return round_price(lvl), why
+
+
 def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{round_price(trade.stop_current)}"
 
@@ -3318,25 +3420,36 @@ def manage_active_trade(trade, context):
             "notes": [f"TP3 {round_price(trade.tp3)} взято"],
         }
 
+    recommended_stop = None
+    recommended_stop_reason = ""
+
     if trade_hit_level(side, price, trade.tp2):
         trade.tp2_hit = True
+        trade.tp1_hit = True
         action = "TP2_PROTECT"
-        recommendation = "TP2 взято: зафіксувати ще частину, залишок вести трейлінгом"
+        title = f"{side} — TP2 ВЗЯТО, ВЕСТИ ПО ICT/SMC"
+        recommendation = "TP2 взято: зафіксувати ще частину, залишок вести тільки з підтягнутим стопом"
+        recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2")
         if side == "LONG":
-            trade.stop_current = max(trade.stop_current, trade.tp1)
+            trade.stop_current = max(trade.stop_current, recommended_stop)
         else:
-            trade.stop_current = min(trade.stop_current, trade.tp1)
-        notes.append(f"стоп підтягнути до TP1 {round_price(trade.tp1)}")
+            trade.stop_current = min(trade.stop_current, recommended_stop)
+        notes.append(f"переставити стоп: {round_price(trade.stop_current)}")
+        if recommended_stop_reason:
+            notes.append(recommended_stop_reason)
     elif trade_hit_level(side, price, trade.tp1):
         trade.tp1_hit = True
         action = "TP1_PROTECT"
-        recommendation = "TP1 взято: частково фіксувати, стоп у б/у або малий плюс"
-        be = trade.entry * (1.0008 if side == "LONG" else 0.9992)
+        title = f"{side} — TP1 ВЗЯТО, ЗАХИСТИТИ ПРИБУТОК"
+        recommendation = "TP1 взято: частково фіксувати; стоп переставити по ICT/SMC або мінімум у б/у+"
+        recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
         if side == "LONG":
-            trade.stop_current = max(trade.stop_current, be)
+            trade.stop_current = max(trade.stop_current, recommended_stop)
         else:
-            trade.stop_current = min(trade.stop_current, be)
-        notes.append(f"стоп у б/у біля {round_price(trade.stop_current)}")
+            trade.stop_current = min(trade.stop_current, recommended_stop)
+        notes.append(f"переставити стоп: {round_price(trade.stop_current)}")
+        if recommended_stop_reason:
+            notes.append(recommended_stop_reason)
 
     # Weighted management pressure for intraday trades.
     # 3m/15m/structure matter most. 4H and clusters are only small background hints.
@@ -3346,6 +3459,9 @@ def manage_active_trade(trade, context):
         (tf3, 1.20),
         (tf15, 1.00),
         (structure, 1.00),
+        (ict, 0.90),
+        (context.get("liquidity") or {}, 0.75),
+        (context.get("news") or {}, 0.35),
         (context.get("cvd") or {}, 0.80),
         (context.get("derivatives") or {}, 0.55),
         (context.get("btc_inverse") or {}, 0.65),
@@ -3360,7 +3476,9 @@ def manage_active_trade(trade, context):
             opposite_votes += weight
 
     near_entry = abs(current_pct) <= 0.18
+    post_tp1 = bool(trade.tp1_hit)
     lost_after_profit = best_pct >= 0.38 and giveback_ratio >= 0.62 and current_pct <= 0.18
+    tp1_giveback_to_entry = post_tp1 and best_pct >= 0.55 and giveback_ratio >= 0.55 and current_pct <= 0.22
 
     # Intraday early-exit logic.
     # For trades that should last only a few hours, do not wait for the formal stop
@@ -3372,6 +3490,11 @@ def manage_active_trade(trade, context):
     btc_block = context.get("btc_inverse") or {}
     btc_against = btc_block.get("bias") == opposite(side) and abs(int(btc_block.get("score", 0) or 0)) >= 16
     structure_against = structure.get("bias") == opposite(side)
+    ict_against = ict.get("bias") == opposite(side) and abs(int(ict.get("score", 0) or 0)) >= 16
+    liquidity_block = context.get("liquidity") or {}
+    liquidity_against = liquidity_block.get("bias") == opposite(side) and abs(int(liquidity_block.get("score", 0) or 0)) >= 12
+    news_block = context.get("news") or {}
+    news_against = news_block.get("bias") == opposite(side) and abs(int(news_block.get("score", 0) or 0)) >= 18
 
     if side == "LONG":
         stop_distance_pct = max(0.0, (price - trade.stop_current) / trade.entry * 100) if trade.entry else 99.0
@@ -3411,6 +3534,44 @@ def manage_active_trade(trade, context):
         if near_stop:
             notes.append("ціна близько до стопу")
 
+    if tp1_giveback_to_entry:
+        warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
+        if warning_votes >= 2 or opposite_votes >= 1.8:
+            trade.status = "CLOSED"
+            trade.last_action = "EXIT_AFTER_TP1_GIVEBACK"
+            reasons = ["після TP1 ціна повертається майже до входу"]
+            if tf3_against:
+                reasons.append("3M вже проти")
+            if structure_against or ict_against:
+                reasons.append("ICT/SMC структура слабшає")
+            if flow_against or cvd_against:
+                reasons.append("потік/CVD проти")
+            if liquidity_against or news_against:
+                reasons.append("ліквідність/новини проти")
+            return {
+                "closed": True,
+                "action": "EXIT_AFTER_TP1_GIVEBACK",
+                "title": f"{side} ЗАКРИТИ — ПРИБУТОК НЕ ВІДДАВАТИ",
+                "recommendation": "TP1 вже був, ціна майже повернулась до входу: краще закрити залишок або мінімум не тримати без стопу в плюсі",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "recommended_stop": trade.stop_current,
+                "recommended_stop_reason": "після TP1 не віддавати угоду назад до входу",
+                "notes": reasons[:4],
+            }
+        elif action == "HOLD":
+            action = "PROTECT_OR_EXIT"
+            title = f"{side} — ПІСЛЯ TP1 ЦІНА ПОВЕРТАЄТЬСЯ ДО ВХОДУ"
+            recommendation = "проаналізувати закриття залишку; мінімум стоп має стояти у плюсі/б/у, не чекати дальній стоп"
+            recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
+            if side == "LONG":
+                trade.stop_current = max(trade.stop_current, recommended_stop)
+            else:
+                trade.stop_current = min(trade.stop_current, recommended_stop)
+            notes.append(f"стоп для захисту: {round_price(trade.stop_current)}")
+            if recommended_stop_reason:
+                notes.append(recommended_stop_reason)
+
     if lost_after_profit and opposite_votes >= 2.2:
         trade.status = "CLOSED"
         trade.last_action = "EXIT_GIVEBACK"
@@ -3423,6 +3584,27 @@ def manage_active_trade(trade, context):
             "best_pct": best_pct,
             "notes": ["краще закрити біля входу / не чекати дальній стоп"],
         }
+
+    if post_tp1 and action == "HOLD":
+        recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2" if trade.tp2_hit else "TP1")
+        if side == "LONG":
+            new_stop = max(trade.stop_current, recommended_stop)
+            if new_stop > trade.stop_current:
+                trade.stop_current = new_stop
+                action = "TRAIL_ICT_SMC"
+                title = f"СУПРОВІД {side} — СТОП ПІДТЯГНУТИ"
+                recommendation = "після TP1 вести залишок тільки з підтягнутим ICT/SMC стопом"
+        else:
+            new_stop = min(trade.stop_current, recommended_stop)
+            if new_stop < trade.stop_current:
+                trade.stop_current = new_stop
+                action = "TRAIL_ICT_SMC"
+                title = f"СУПРОВІД {side} — СТОП ПІДТЯГНУТИ"
+                recommendation = "після TP1 вести залишок тільки з підтягнутим ICT/SMC стопом"
+        if action == "TRAIL_ICT_SMC":
+            notes.append(f"новий стоп: {round_price(trade.stop_current)}")
+            if recommended_stop_reason:
+                notes.append(recommended_stop_reason)
 
     if action == "HOLD" and near_entry and opposite_votes >= 2.2 and support_votes <= 1.2:
         action = "PROTECT_OR_EXIT"
@@ -3454,6 +3636,8 @@ def manage_active_trade(trade, context):
         "recommendation": recommendation,
         "current_pct": current_pct,
         "best_pct": best_pct,
+        "recommended_stop": round_price(trade.stop_current),
+        "recommended_stop_reason": recommended_stop_reason,
         "notes": notes,
     }
 
@@ -3773,6 +3957,10 @@ def build_follow_message(context, trade, result):
         f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
         f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}",
     ]
+    if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK"]:
+        lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
+        if result.get("recommended_stop_reason"):
+            lines.append(f"<i>{html.escape(str(result.get('recommended_stop_reason')))}</i>")
     if result.get("notes"):
         lines.append("")
         lines.append("<b>Дія:</b>")
