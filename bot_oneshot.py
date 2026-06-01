@@ -2920,6 +2920,7 @@ def evaluate_new_setup(context):
     if side not in ["LONG", "SHORT"] or not context.get("price"):
         # Diagnostic quality: not an entry probability, but a market readiness score.
         # Do not show 0/100 when the market is simply balanced.
+        tf3 = context.get("tf3") or {}
         tf15 = context.get("tf15") or {}
         structure = context.get("structure") or {}
         ict = context.get("ict") or {}
