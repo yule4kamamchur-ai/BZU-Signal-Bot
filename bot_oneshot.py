@@ -3088,7 +3088,19 @@ def evaluate_new_setup(context):
                 "conflicts": prep_conflicts,
             }
 
-        if ict.get("setup") in ["BALANCE_MIDRANGE", "CONTEXT_ONLY", "DISCOUNT_CONTEXT", "PREMIUM_CONTEXT"]:
+        long_exhausted, long_exhausted_reason = detect_exhausted_move("LONG", context)
+        short_exhausted, short_exhausted_reason = detect_exhausted_move("SHORT", context)
+
+        no_trade_conflicts = []
+        if long_exhausted:
+            no_trade_conflicts.append("LONG вже відіграний після сильного імпульсу")
+            no_trade_conflicts.append("SHORT ще не підтверджений структурою / ICT")
+            reason = long_exhausted_reason or "LONG вже відіграний, а SHORT ще не готовий"
+        elif short_exhausted:
+            no_trade_conflicts.append("SHORT вже відіграний після сильного імпульсу")
+            no_trade_conflicts.append("LONG ще не підтверджений структурою / ICT")
+            reason = short_exhausted_reason or "SHORT вже відіграний, а LONG ще не готовий"
+        elif ict.get("setup") in ["BALANCE_MIDRANGE", "CONTEXT_ONLY", "DISCOUNT_CONTEXT", "PREMIUM_CONTEXT"]:
             reason = "ринок у балансі / ICT-сетап не готовий"
         else:
             reason = "перевага нечітка, немає професійного входу"
@@ -3100,7 +3112,7 @@ def evaluate_new_setup(context):
             "reason": reason,
             "plan": None,
             "confirmations": [],
-            "conflicts": [],
+            "conflicts": no_trade_conflicts,
         }
 
     confirmations, conflicts = entry_confirmations(side, context)
