@@ -2679,6 +2679,76 @@ def side_score(value, side):
     return 0
 
 
+def detect_ict_balance_market(context, side=None):
+    """ICT balance / midrange filter.
+
+    ICT idea used here:
+    - the middle of the dealing range around equilibrium is low edge;
+    - in balance we do NOT open market entries from the middle;
+    - valid trades come from sweep/reclaim at range edges or BOS + FVG/OB retest.
+
+    Important: this must not confuse a normal pullback with a range.
+    A pullback is allowed when price is in discount for LONG / premium for SHORT
+    and structure/HTF direction still supports continuation.
+    """
+    if not isinstance(context, dict):
+        return False, ""
+
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15")) or ((price or 90) * 0.006)
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+
+    if not price or not atr15:
+        return False, ""
+
+    phase = str(structure.get("phase") or "").upper()
+    ict_setup = str(ict.get("setup") or "").upper()
+    pd = str(ict.get("premium_discount") or "").upper()
+    pd_pos = safe_float(ict.get("pd_pos"), 0.5)
+    ema20 = safe_float(tf15.get("ema20"))
+    distance_atr = abs(price - ema20) / atr15 if ema20 else 0
+
+    has_bos_or_sweep = any(x in phase for x in ["BOS LONG", "BOS SHORT", "UPSIDE SWEEP", "DOWNSIDE SWEEP", "CHOCH LONG", "CHOCH SHORT"])
+    has_ict_entry_model = ict.get("state") == "ENTRY_MODEL" and bool(ict.get("entry_ok"))
+    near_equilibrium = pd == "MIDRANGE" or 0.43 <= pd_pos <= 0.57 or ict_setup == "BALANCE_MIDRANGE"
+
+    tf15_neutral_or_range = tf15.get("bias") == "NEUTRAL" or tf15.get("trend") == "RANGE" or abs(int(tf15.get("score", 0) or 0)) < 26
+    structure_neutral = structure.get("bias") == "NEUTRAL" or phase in ["RANGE / WAIT", "NO DATA", ""]
+    tf3_choppy = tf3.get("bias") == "NEUTRAL" or abs(int(tf3.get("score", 0) or 0)) < 32
+
+    # Pullback exception: do not call it balance if the market has a clear HTF/structure side
+    # and price is pulling back into the correct ICT side of the range.
+    if side in ["LONG", "SHORT"]:
+        htf_support = (tf1h.get("bias") == side or side_score(int(tf1h.get("score", 0) or 0), side) >= 18)
+        structure_support = structure.get("bias") == side or (side == "LONG" and "BOS LONG" in phase) or (side == "SHORT" and "BOS SHORT" in phase)
+        correct_side_of_range = (side == "LONG" and pd == "DISCOUNT") or (side == "SHORT" and pd == "PREMIUM")
+        has_retest_zone = bool(ict.get("bull_fvg") or ict.get("bull_ob")) if side == "LONG" else bool(ict.get("bear_fvg") or ict.get("bear_ob"))
+        if correct_side_of_range and (structure_support or htf_support) and (has_retest_zone or has_bos_or_sweep):
+            return False, ""
+
+    balance_score = 0
+    if near_equilibrium:
+        balance_score += 2
+    if tf15_neutral_or_range:
+        balance_score += 1
+    if structure_neutral:
+        balance_score += 1
+    if tf3_choppy:
+        balance_score += 1
+    if distance_atr <= 0.95:
+        balance_score += 1
+    if has_bos_or_sweep or has_ict_entry_model:
+        balance_score -= 2
+
+    if balance_score >= 4:
+        return True, "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest"
+    return False, ""
+
+
 
 def detect_exhausted_move(side, context):
     """Detect when a directional move is already mostly played out.
@@ -3015,6 +3085,7 @@ def evaluate_new_setup(context):
         flow = context.get("flow") or {}
         tf1h = context.get("tf1h") or {}
         tf4h = context.get("tf4h") or {}
+        ict_balance, ict_balance_reason = detect_ict_balance_market(context)
         readiness = 28
         for block, weight in [
             (tf15, 0.22),
@@ -3027,6 +3098,19 @@ def evaluate_new_setup(context):
         ]:
             readiness += min(8, abs(int(block.get("score", 0) or 0)) * weight)
         readiness_quality = int(max(25, min(55, readiness)))
+
+        if ict_balance:
+            return {
+                "action": "NO_TRADE",
+                "side": "NEUTRAL",
+                "quality": min(readiness_quality, 45),
+                "title": "ВХОДУ НЕМАЄ",
+                "reason": ict_balance_reason,
+                "plan": None,
+                "confirmations": [],
+                "conflicts": [ict_balance_reason, "Не плутати з відкатом: для входу потрібен вихід з EQ, sweep або BOS + retest"],
+                "show_wait_plan": False,
+            }
 
         # Preparation mode even when the global bias is still NEUTRAL.
         # Example: 4H/1H are against or neutral, total_score is not enough for a market bias,
@@ -3133,6 +3217,7 @@ def evaluate_new_setup(context):
     liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
     news = context.get("news") or {}
+    ict_balance, ict_balance_reason = detect_ict_balance_market(context, side)
 
     def block_points(block, same, opposite_penalty, neutral=0, weak_opposite_penalty=None):
         bias = block.get("bias")
@@ -3348,6 +3433,20 @@ def evaluate_new_setup(context):
         quality = min(quality, 66)
 
     quality = int(max(0, min(92, quality)))
+
+    if ict_balance:
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 55),
+            "title": f"ЧЕКАТИ — {side} ТІЛЬКИ ПІСЛЯ ВИХОДУ З БАЛАНСУ",
+            "reason": ict_balance_reason,
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": [ict_balance_reason],
+            "ict_balance": True,
+            "show_wait_plan": True,
+        }
 
     if exhausted:
         return {
