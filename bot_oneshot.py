@@ -689,15 +689,26 @@ def rsi(values, period=14):
 
 
 def atr(candles, period=14):
+    """TradingView-style ATR using Wilder/RMA smoothing."""
     if not candles or len(candles) < 2:
         return None
+
     trs = []
     for i in range(1, len(candles)):
         c = candles[i]
         prev = candles[i - 1]
         trs.append(max(c.high - c.low, abs(c.high - prev.close), abs(c.low - prev.close)))
-    sample = trs[-period:]
-    return mean(sample) if sample else None
+
+    if not trs:
+        return None
+
+    if len(trs) < period:
+        return mean(trs)
+
+    atr_val = sum(trs[:period]) / period
+    for tr in trs[period:]:
+        atr_val = ((atr_val * (period - 1)) + tr) / period
+    return atr_val
 
 
 def slope_pct(values, bars=12):
@@ -4004,8 +4015,6 @@ def planned_wait_text(context, setup):
     lines.append("")
     lines.append("<b>Активація:</b>")
     lines.append(activation)
-    lines.append("<b>Скасування:</b>")
-    lines.append(cancel)
     return "\n".join(lines).strip()
 
 def _compact_title(setup):
@@ -4050,10 +4059,8 @@ def build_new_setup_message(context, setup):
         lines.append("")
         lines.append("<b>План:</b>")
         lines.append(plan_text(plan, multiline=True))
-        lines.append("")
-        lines.append(f"<b>Скасування:</b> {plan.invalidation}")
         if setup.get("action") == "RISKY_ENTRY":
-            lines.append("<b>Режим:</b> ризиковий ранній вхід: стоп/TP активні як у звичайній угоді; супровід ICT/SMC/CVD/потік працює повністю.")
+            lines.append("")
             lines.append("<b>Контроль:</b> якщо після входу 1–2 свічки 3M не підтвердять напрям або CVD/потік різко проти — очікувати EXIT WARNING.")
     else:
         reason_items = conflicts or _short_list([setup.get("reason")], 1)
