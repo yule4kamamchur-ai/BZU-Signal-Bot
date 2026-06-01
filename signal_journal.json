@@ -1161,7 +1161,187 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-01T14:31:02.092594+00:00",
+      "type": "WAIT_RETEST",
+      "side": "LONG",
+      "price": 97.35,
+      "quality": 55,
+      "reason": "лонг після сильного 15M імпульсу: чекати відкат/проторговку",
+      "plan": {
+        "entry": 97.35,
+        "stop": 95.2862,
+        "tp1": 99.4722,
+        "tp2": 100.5625,
+        "tp3": 102.2175,
+        "risk_pct": 2.12,
+        "rr1": 1.03,
+        "rr2": 1.56,
+        "rr3": 2.36,
+        "invalidation": "15m закриття нижче 95.2862 або злам 3m/структури проти LONG. Стоп не далі 2.12% від входу; TP1 не ближче 2.18%."
+      },
+      "confirmations": [
+        "сильний обсяг",
+        "15m за напрямом",
+        "1h підтримує",
+        "структура підтверджує",
+        "ICT сетап готовий"
+      ],
+      "conflicts": [
+        "потік локально проти",
+        "локальний продавець у стакані",
+        "CVD/дельта поки проти — ранній вхід тільки як ризиковий"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 172,
+        "total_score": 179,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 10,
+          "state": "RANGE",
+          "fast_move_pct": -0.072,
+          "drift_pct": 0.202,
+          "vol_ratio": 0.13,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "LONG",
+          "score": 49,
+          "trend": "LONG",
+          "close": 97.37,
+          "ema20": 95.298,
+          "ema50": 94.4703,
+          "rsi": 72.1,
+          "atr": 0.6689,
+          "slope_pct": 3.631,
+          "move_8_pct": 4.733,
+          "range_atr": 7.18,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "LONG",
+          "score": 46,
+          "trend": "LONG",
+          "close": 97.38,
+          "ema20": 94.2283,
+          "ema50": 93.4021,
+          "rsi": 76.3,
+          "atr": 0.8859,
+          "slope_pct": 2.843,
+          "move_8_pct": 3.662,
+          "range_atr": 5.62,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору; перекупленість"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "LONG",
+          "score": 31,
+          "trend": "LONG",
+          "close": 97.38,
+          "ema20": 93.5296,
+          "ema50": 94.8111,
+          "rsi": 72.7,
+          "atr": 1.3753,
+          "slope_pct": 3.023,
+          "move_8_pct": 5.117,
+          "range_atr": 5.48,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "LONG",
+          "score": 24,
+          "phase": "BOS LONG",
+          "swing_high": 94.8,
+          "swing_low": 92.85,
+          "recent_high": 97.65,
+          "recent_low": 92.85,
+          "atr": 0.6689,
+          "note": "закриття вище swing high 94.8; сильне bearish-закриття"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -86.83,
+          "book_delta_pct": 12.68,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -38954.0,
+          "delta_pct": -86.83,
+          "cvd": -107506.0,
+          "cvd_change_pct": -56.824,
+          "last_trade_ts": 1780324253939,
+          "price_move_pct": -0.031,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -7,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 97.4279,
+              "imbalance_pct": -94.7,
+              "volume": 40720.0
+            },
+            {
+              "price": 97.5058,
+              "imbalance_pct": 100.0,
+              "volume": 48.0
+            }
+          ],
+          "note": "локальний продавець біля 97.4279; ask-стіна 97.5"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "SHORTS_CLOSING",
+          "oi": 60426.48,
+          "oi_change_pct": -1.159,
+          "funding_pct": 0.00012,
+          "price_change_pct": 0.672,
+          "note": "ріст на падінні OI — шорти закриваються, не доганяти без ретесту"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.15,
+          "move_1_pct": -0.133,
+          "move_6_pct": 0.599,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 15,
+          "top": "JetBlue flags higher fuel costs as Iran conflict drags on - Reuters",
+          "total": 40
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-01T14:15:48.813701+00:00"
+  "updated_at": "2026-06-01T14:31:02.093259+00:00"
 }
