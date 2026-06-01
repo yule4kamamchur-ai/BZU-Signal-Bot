@@ -3099,6 +3099,35 @@ def evaluate_new_setup(context):
     strong_oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
     strong_btc_against = btc_inverse.get("bias") == opposite(side) and abs(int(btc_inverse.get("score", 0) or 0)) >= 18
 
+    # Micro-pressure risk layer.
+    # ICT/SMC + 3M is allowed to open early, but if CVD/flow/clusters are against,
+    # the bot must label the entry as risky instead of pretending it is a 90+ setup.
+    cvd_score_side = side_score(int(cvd.get("score", 0) or 0), side)
+    flow_score_side = side_score(int(flow.get("score", 0) or 0), side)
+    clusters_score_side = side_score(int(clusters.get("score", 0) or 0), side)
+    cvd_pressure_against = cvd_score_side <= -10 or str(cvd.get("state", "")).upper() in [
+        "SELLERS_DOMINATE" if side == "LONG" else "BUYERS_DOMINATE"
+    ]
+    flow_pressure_against = flow_score_side <= -10 or flow.get("bias") == opposite(side)
+    clusters_pressure_against = clusters_score_side <= -4 or clusters.get("bias") == opposite(side)
+    pressure_risk_count = sum([
+        bool(cvd_pressure_against),
+        bool(flow_pressure_against),
+        bool(clusters_pressure_against),
+    ])
+    pressure_risk = pressure_risk_count >= 1
+    heavy_pressure_risk = pressure_risk_count >= 2
+
+    if cvd_pressure_against and "CVD проти" not in conflicts:
+        conflicts.append("CVD/дельта поки проти — ранній вхід тільки як ризиковий")
+    if flow_pressure_against and "потік локально проти" not in conflicts:
+        conflicts.append("потік локально проти — потрібен швидкий розворот після входу")
+    if clusters_pressure_against:
+        if side == "LONG" and "локальний продавець у стакані" not in conflicts:
+            conflicts.append("локальний продавець у стакані")
+        elif side == "SHORT" and "локальний покупець у стакані" not in conflicts:
+            conflicts.append("локальний покупець у стакані")
+
     # Higher timeframe counter-trend gate.
     # 4H is context/filter only. It must not forbid every intraday reversal,
     # but ICT alone is not enough for a market ENTRY.
@@ -3134,7 +3163,8 @@ def evaluate_new_setup(context):
     trigger_entry_ok = (
         tf3_same
         and core_direction_ok
-        and not strong_cvd_against
+        # CVD/flow against must NOT forbid an ICT+3M early entry.
+        # It changes the signal to RISKY_ENTRY and caps quality, so we do not enter late.
         and not strong_oi_against
         and not strong_btc_against
         and not ict_against
@@ -3183,6 +3213,13 @@ def evaluate_new_setup(context):
     elif htf_countertrend and not tf15_same:
         quality = min(quality, 84)
 
+    if heavy_pressure_risk:
+        # Keep the early entry available, but never call it an ideal/strong trade
+        # while CVD/flow/clusters show absorption or seller/buyer pressure against it.
+        quality = min(quality, 76)
+    elif pressure_risk:
+        quality = min(quality, 80)
+
     if late:
         quality = min(quality, 55)
     if calendar.get("active"):
@@ -3211,7 +3248,7 @@ def evaluate_new_setup(context):
             "conflicts": conflicts,
         }
 
-    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict:
+    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
         if not tf15_same:
             reason = "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний"
         else:
@@ -3228,7 +3265,9 @@ def evaluate_new_setup(context):
         }
 
     if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
-        if not tf15_same:
+        if pressure_risk:
+            reason = "ICT/SMC + 3M дають ранній вхід, але CVD/потік/кластери ще не підтвердили — ризиковий режим"
+        elif not tf15_same:
             reason = "ранній 3M-тригер; 15M ще не підтвердив повністю, тому ризик вищий"
         else:
             reason = "є ранній тригер, але підтверджень ще не максимум: " + " | ".join(confirmations[:4])
@@ -3756,7 +3795,7 @@ def new_active_trade(setup):
         tp1_locked_stop=0.0,
         tp2_locked_stop=0.0,
         best_price=plan.entry,
-        notes=[setup["reason"]],
+        notes=(["RISKY_ENTRY"] if setup.get("action") == "RISKY_ENTRY" else []) + [setup["reason"]],
     )
 
 
@@ -4020,7 +4059,8 @@ def build_new_setup_message(context, setup):
         lines.append("")
         lines.append(f"<b>Скасування:</b> {plan.invalidation}")
         if setup.get("action") == "RISKY_ENTRY":
-            lines.append("<b>Режим:</b> малий ризик; якщо 3M одразу піде проти — не тримати до дальнього стопу.")
+            lines.append("<b>Режим:</b> ризиковий ранній вхід: стоп/TP активні як у звичайній угоді; супровід ICT/SMC/CVD/потік працює повністю.")
+            lines.append("<b>Контроль:</b> якщо після входу 1–2 свічки 3M не підтвердять напрям або CVD/потік різко проти — очікувати EXIT WARNING.")
     else:
         reason_items = conflicts or _short_list([setup.get("reason")], 1)
         if reason_items:
