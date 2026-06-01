@@ -2343,13 +2343,13 @@ def analyze_news(items):
         # Google RSS is delayed for fast oil events. Use it as fuel/context, not as a late entry trigger.
         age_factor = 1.0
         if age_min is None:
-            age_factor = 0.70
-        elif age_min > 90:
-            age_factor = 0.45
-        elif age_min > 45:
-            age_factor = 0.65
-        elif age_min > 20:
-            age_factor = 0.85
+            age_factor = 0.60
+        elif age_min <= 30:
+            age_factor = 1.0
+        elif age_min <= 60:
+            age_factor = 0.60
+        else:
+            age_factor = 0.25
         item_score = int(item_score * age_factor)
         raw += item_score
         if item_score > 0:
