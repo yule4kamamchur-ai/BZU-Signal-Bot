@@ -64,6 +64,13 @@ MIN_TP3_DISTANCE_PCT = float(os.getenv("MIN_TP3_DISTANCE_PCT", "5.00") or 5.00)
 VOLUME_ACTIVE_RATIO = float(os.getenv("VOLUME_ACTIVE_RATIO", "1.30") or 1.30)
 VOLUME_STRONG_RATIO = float(os.getenv("VOLUME_STRONG_RATIO", "1.70") or 1.70)
 CVD_STATE_MAX_AGE_MINUTES = int(os.getenv("CVD_STATE_MAX_AGE_MINUTES", "360") or 360)
+CVD_MIN_FRESH_TRADES = int(os.getenv("CVD_MIN_FRESH_TRADES", "80") or 80)
+CVD_LOW_CONFIDENCE_FACTOR = float(os.getenv("CVD_LOW_CONFIDENCE_FACTOR", "0.45") or 0.45)
+CVD_MEDIUM_CONFIDENCE_FACTOR = float(os.getenv("CVD_MEDIUM_CONFIDENCE_FACTOR", "0.70") or 0.70)
+ICT_FVG_MAX_AGE_HOURS = float(os.getenv("ICT_FVG_MAX_AGE_HOURS", "18") or 18)
+ICT_OB_MAX_AGE_HOURS = float(os.getenv("ICT_OB_MAX_AGE_HOURS", "36") or 36)
+PRICE_SOURCE_MAX_DIFF_PCT = float(os.getenv("PRICE_SOURCE_MAX_DIFF_PCT", "0.18") or 0.18)
+LOW_LIQUIDITY_VOLUME_RATIO = float(os.getenv("LOW_LIQUIDITY_VOLUME_RATIO", "0.35") or 0.35)
 # Reuters is priority, but not the only source. EIA/Fed/OPEC/event headlines remain useful.
 REUTERS_PRIORITY_NEWS = os.getenv("REUTERS_PRIORITY_NEWS", "1").lower() not in ["0", "false", "no"]
 
@@ -548,8 +555,20 @@ def collect_market_data():
     ticker = tv_ticker or okx_ticker
     if ticker:
         ticker["checked_at"] = iso_now()
-    if okx_ticker:
+        ticker["price_status"] = "primary"
+    if tv_ticker and okx_ticker:
+        tv_price = safe_float(tv_ticker.get("price"))
+        okx_price = safe_float(okx_ticker.get("price"))
+        if tv_price and okx_price:
+            diff_pct = abs(tv_price - okx_price) / tv_price * 100
+            ticker["okx_reference_price"] = okx_price
+            ticker["cross_price_diff_pct"] = round(diff_pct, 4)
+            ticker["price_status"] = "cross_checked" if diff_pct <= PRICE_SOURCE_MAX_DIFF_PCT else "price_source_warning"
+            ticker["price_warning"] = diff_pct > PRICE_SOURCE_MAX_DIFF_PCT
+    elif okx_ticker:
         ticker["okx_reference_price"] = okx_ticker.get("price")
+        if not tv_ticker:
+            ticker["price_status"] = "tradingview_unavailable_okx_fallback"
     if not ticker and candles_15m:
         ticker = {
             "price": candles_15m[-1].close,
@@ -582,7 +601,9 @@ def refresh_context_price(context):
     if not isinstance(context, dict):
         return context
     old_price = safe_float(context.get("price"))
-    latest = get_tradingview_price_fallback() or get_okx_ticker()
+    tv_latest = get_tradingview_price_fallback()
+    okx_latest = get_okx_ticker()
+    latest = tv_latest or okx_latest
     new_price = safe_float((latest or {}).get("price"))
     if not new_price:
         context["price_checked_at"] = iso_now()
@@ -592,6 +613,14 @@ def refresh_context_price(context):
     context["price_checked_at"] = iso_now()
     context["price_source"] = latest.get("source") or context.get("price_source") or "ticker"
     context["price_symbol"] = latest.get("symbol") or context.get("price_symbol") or ""
+    if tv_latest and okx_latest:
+        tv_price = safe_float(tv_latest.get("price"))
+        okx_price = safe_float(okx_latest.get("price"))
+        if tv_price and okx_price:
+            cross_diff = abs(tv_price - okx_price) / tv_price * 100
+            context["cross_price_diff_pct"] = round(cross_diff, 4)
+            context["okx_reference_price"] = round_price(okx_price)
+            context["price_warning"] = cross_diff > PRICE_SOURCE_MAX_DIFF_PCT
 
     if old_price:
         diff_pct = abs(new_price - old_price) / old_price * 100
@@ -1105,6 +1134,27 @@ def _mark_mitigated_zones(zones, candles, side=None):
     return out
 
 
+def _filter_fresh_ict_zones(zones, candles, max_age_hours):
+    """Keep ICT zones fresh only. Old FVG/OB zones often become noise after many runs."""
+    if not zones:
+        return []
+    if not candles:
+        return [z for z in zones if not z.get("mitigated")][:24]
+    try:
+        last_ts = max(int(c.ts) for c in candles if getattr(c, "ts", None))
+    except Exception:
+        return [z for z in zones if not z.get("mitigated")][:24]
+    max_age_ms = int(max_age_hours * 60 * 60 * 1000)
+    fresh = []
+    for z in zones:
+        if z.get("mitigated"):
+            continue
+        created = int(z.get("created_ts") or 0)
+        if not created or last_ts - created <= max_age_ms:
+            fresh.append(z)
+    return fresh
+
+
 def update_ict_memory(state, context, candles_15m):
     """Persist FVG/OB zones so pending ICT zones are stable between runs."""
     memory = load_ict_memory(state)
@@ -1125,6 +1175,8 @@ def update_ict_memory(state, context, candles_15m):
 
     memory["fvg_zones"] = _mark_mitigated_zones(memory["fvg_zones"], candles_15m)
     memory["ob_zones"] = _mark_mitigated_zones(memory["ob_zones"], candles_15m)
+    memory["fvg_zones"] = _filter_fresh_ict_zones(memory["fvg_zones"], candles_15m, ICT_FVG_MAX_AGE_HOURS)
+    memory["ob_zones"] = _filter_fresh_ict_zones(memory["ob_zones"], candles_15m, ICT_OB_MAX_AGE_HOURS)
 
     memory["mitigated_ob_keys"] = [_zone_key(z) for z in memory["ob_zones"] if z.get("mitigated")][-60:]
     memory["mitigated_fvg_keys"] = [_zone_key(z) for z in memory["fvg_zones"] if z.get("mitigated")][-80:]
@@ -1842,6 +1894,20 @@ def analyze_cvd(trades, candles_3m, price, previous_snapshot=None):
         state = "BEARISH_ABSORPTION"
         notes.append("ціна вгору, CVD вниз")
 
+    sample_size = len(fresh_trades)
+    confidence = "HIGH"
+    confidence_factor = 1.0
+    if sample_size < max(20, int(CVD_MIN_FRESH_TRADES * 0.5)):
+        confidence = "LOW"
+        confidence_factor = CVD_LOW_CONFIDENCE_FACTOR
+        notes.append("CVD low confidence: мало свіжих трейдів")
+    elif sample_size < CVD_MIN_FRESH_TRADES:
+        confidence = "MEDIUM"
+        confidence_factor = CVD_MEDIUM_CONFIDENCE_FACTOR
+        notes.append("CVD medium confidence: вибірка обмежена")
+
+    score = int(score * confidence_factor)
+
     if score >= 16:
         bias = "LONG"
     elif score <= -16:
@@ -1853,13 +1919,16 @@ def analyze_cvd(trades, candles_3m, price, previous_snapshot=None):
         "bias": bias,
         "score": int(score),
         "state": state,
+        "confidence": confidence,
+        "confidence_factor": round(confidence_factor, 2),
+        "sample_size": sample_size,
         "delta": round(delta, 4),
         "delta_pct": round(delta_pct, 2),
         "cvd": round(cvd_value, 4),
         "cvd_change_pct": round(cvd_change_pct, 3),
         "last_trade_ts": last_trade_ts,
         "price_move_pct": round(price_move, 3),
-        "note": "; ".join(notes[:3]) if notes else "CVD без явної переваги",
+        "note": "; ".join(notes[:4]) if notes else "CVD без явної переваги",
     }
 
 
@@ -2130,11 +2199,13 @@ def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
 
 def market_session():
     hour = now_utc().hour
+    # BZU is much cleaner during London/NY. Asia/quiet hours are not forbidden,
+    # but entries must be treated as lower-liquidity / higher slippage risk.
     if 12 <= hour < 20:
-        return {"name": "NEW YORK / LONDON", "score": 4, "note": "ліквідна сесія"}
+        return {"name": "NEW YORK / LONDON", "score": 4, "liquidity_risk": False, "note": "ліквідна сесія"}
     if 7 <= hour < 12:
-        return {"name": "LONDON", "score": 2, "note": "європейська сесія"}
-    return {"name": "ASIA / QUIET", "score": -3, "note": "тихіша ліквідність"}
+        return {"name": "LONDON", "score": 2, "liquidity_risk": False, "note": "європейська сесія"}
+    return {"name": "ASIA / QUIET", "score": -6, "liquidity_risk": True, "note": "тиха сесія: ризик спреду/slippage"}
 
 
 # ==========================================================
@@ -2258,8 +2329,28 @@ def analyze_news(items):
     important = []
     long_count = 0
     short_count = 0
+    newest_age_min = None
     for item in items[:35]:
         item_score, impact = score_news_item(item.get("title", ""))
+        age_min = None
+        published = item.get("published_at")
+        try:
+            if published:
+                age_min = max(0, (now_utc() - published.astimezone(timezone.utc)).total_seconds() / 60)
+                newest_age_min = age_min if newest_age_min is None else min(newest_age_min, age_min)
+        except Exception:
+            age_min = None
+        # Google RSS is delayed for fast oil events. Use it as fuel/context, not as a late entry trigger.
+        age_factor = 1.0
+        if age_min is None:
+            age_factor = 0.70
+        elif age_min > 90:
+            age_factor = 0.45
+        elif age_min > 45:
+            age_factor = 0.65
+        elif age_min > 20:
+            age_factor = 0.85
+        item_score = int(item_score * age_factor)
         raw += item_score
         if item_score > 0:
             long_count += 1
@@ -2284,6 +2375,7 @@ def analyze_news(items):
         "short_count": short_count,
         "important": important[:5],
         "top": top,
+        "newest_age_min": round(newest_age_min, 1) if newest_age_min is not None else None,
         "note": f"{side_word(bias)} ({score}); {top}",
     }
 
@@ -2469,6 +2561,9 @@ def build_context(data, state=None):
     session = market_session()
 
     price = price or safe_float(tf15.get("close"))
+    price_warning = bool(ticker.get("price_warning"))
+    low_liquidity_risk = bool(session.get("liquidity_risk")) and safe_float(volume_guard.get("ratio"), 1.0) <= LOW_LIQUIDITY_VOLUME_RATIO
+
     atr15 = safe_float(structure.get("atr")) or safe_float(tf15.get("atr")) or (price or 90) * 0.006
 
     # Intraday architecture for trades lasting a few hours:
@@ -2511,7 +2606,11 @@ def build_context(data, state=None):
         + tf4h.get("score", 0) * 0.10
         + volume_guard.get("score", 0)
     )
-    total_score = tech_score + news.get("score", 0) * 0.30 + calendar.get("score", 0) + session.get("score", 0)
+    total_score = tech_score + news.get("score", 0) * 0.22 + calendar.get("score", 0) + session.get("score", 0)
+    if low_liquidity_risk:
+        total_score -= 10 if tech_score > 0 else -10
+    if price_warning:
+        total_score *= 0.92
 
     if total_score >= 42:
         bias = "LONG"
@@ -2553,6 +2652,9 @@ def build_context(data, state=None):
         "news": news,
         "calendar": calendar,
         "session": session,
+        "low_liquidity_risk": low_liquidity_risk,
+        "price_warning": price_warning,
+        "cross_price_diff_pct": ticker.get("cross_price_diff_pct"),
         "tech_score": int(tech_score),
         "total_score": int(total_score),
         "bias": bias,
@@ -2981,7 +3083,8 @@ def evaluate_new_setup(context):
     ict_no_chase = ict_same and bool(ict.get("no_chase"))
     ict_against = ict.get("bias") == opposite(side) and ict.get("state") == "ENTRY_MODEL" and abs(int(ict.get("score", 0) or 0)) >= 22
 
-    cvd_same = cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
+    cvd_reliable = cvd.get("confidence", "HIGH") != "LOW"
+    cvd_same = cvd_reliable and cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
     flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10
     oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 10
 
@@ -2994,9 +3097,9 @@ def evaluate_new_setup(context):
     cvd_score_side = side_score(int(cvd.get("score", 0) or 0), side)
     flow_score_side = side_score(int(flow.get("score", 0) or 0), side)
     clusters_score_side = side_score(int(clusters.get("score", 0) or 0), side)
-    cvd_pressure_against = cvd_score_side <= -10 or str(cvd.get("state", "")).upper() in [
+    cvd_pressure_against = cvd_reliable and (cvd_score_side <= -10 or str(cvd.get("state", "")).upper() in [
         "SELLERS_DOMINATE" if side == "LONG" else "BUYERS_DOMINATE"
-    ]
+    ])
     flow_pressure_against = flow_score_side <= -10 or flow.get("bias") == opposite(side)
     clusters_pressure_against = clusters_score_side <= -4 or clusters.get("bias") == opposite(side)
     pressure_risk_count = sum([
@@ -3016,6 +3119,13 @@ def evaluate_new_setup(context):
             conflicts.append("локальний продавець у стакані")
         elif side == "SHORT" and "локальний покупець у стакані" not in conflicts:
             conflicts.append("локальний покупець у стакані")
+
+    if context.get("low_liquidity_risk"):
+        conflicts.append("низька ліквідність/тиха сесія — ризик спреду і slippage")
+    if context.get("price_warning"):
+        conflicts.append("ціна TV/OKX розходиться — вхід тільки обережно")
+    if cvd.get("confidence") == "LOW":
+        confirmations.append("CVD має низьку довіру — не є головним фільтром")
 
     # Higher timeframe counter-trend gate.
     # 4H is context/filter only. It must not forbid every intraday reversal,
@@ -3105,6 +3215,11 @@ def evaluate_new_setup(context):
         quality = min(quality, 76)
     elif pressure_risk:
         quality = min(quality, 80)
+
+    if context.get("low_liquidity_risk"):
+        quality = min(quality, 74)
+    if context.get("price_warning"):
+        quality = min(quality, 72)
 
     if late:
         quality = min(quality, 55)
