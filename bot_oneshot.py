@@ -4009,11 +4009,8 @@ def planned_wait_text(context, setup):
     lines.append("<b>Що чекаємо:</b>")
     lines.extend([f"• {x}" for x in wait_items])
     lines.append("")
-    lines.append("<b>Планований вхід:</b>")
-    lines.append(f"{_side_icon(side)} від {_fmt_price(trigger)} | зона входу {_fmt_price(entry_low)}–{_fmt_price(entry_high)}")
-    lines.append(f"<b>Стоп після входу:</b> {_fmt_price(plan.stop)}")
-    lines.append(f"<b>TP1:</b> {_fmt_price(plan.tp1)} | <b>TP2:</b> {_fmt_price(plan.tp2)} | <b>TP3:</b> {_fmt_price(plan.tp3)}")
-    lines.append("")
+    # For WAIT/WATCH messages keep the alert short: activation is enough.
+    # Full entry/stop/TP plan is shown only when the bot gives a real ENTRY/RISKY_ENTRY.
     lines.append("<b>Активація:</b>")
     lines.append(activation)
     return "\n".join(lines).strip()
