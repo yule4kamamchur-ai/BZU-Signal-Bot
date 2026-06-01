@@ -143,6 +143,13 @@ class ActiveTrade:
     tp1_hit: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
+    # Stop-management locks. After TP1 the first protective stop is fixed and
+    # must not be recalculated on every 15m run. It can be changed only after
+    # TP2 or after a hard exit/close decision.
+    tp1_stop_locked: bool = False
+    tp2_stop_locked: bool = False
+    tp1_locked_stop: float = 0.0
+    tp2_locked_stop: float = 0.0
     best_price: float = 0.0
     last_action: str = "OPEN"
     last_message_key: str = ""
@@ -320,6 +327,10 @@ def active_trade_from_state(state):
             tp1_hit=bool(raw.get("tp1_hit")),
             tp2_hit=bool(raw.get("tp2_hit")),
             tp3_hit=bool(raw.get("tp3_hit")),
+            tp1_stop_locked=bool(raw.get("tp1_stop_locked", False)),
+            tp2_stop_locked=bool(raw.get("tp2_stop_locked", False)),
+            tp1_locked_stop=float(raw.get("tp1_locked_stop") or 0),
+            tp2_locked_stop=float(raw.get("tp2_locked_stop") or 0),
             best_price=float(raw.get("best_price") or raw.get("entry")),
             last_action=str(raw.get("last_action") or "OPEN"),
             last_message_key=str(raw.get("last_message_key") or ""),
@@ -3336,41 +3347,94 @@ def _ict_zone_trailing_level(side, ict, price, atr_value):
     return None, ""
 
 
-def protective_stop_ict_smc(trade, context, after_tp="TP1"):
-    """Return a clear protective stop recommendation using ICT + SMC.
+def _clamp_stop_between_entry_tp(side, raw_level, entry, tp1, tp2=None, after_tp="TP1"):
+    """Clamp protective stop so it is not too tight after TP1.
 
-    After TP1 the stop must protect the trade: breakeven/small profit is the
-    minimum. After TP2 the stop is tightened to TP1 or to the best ICT/SMC level
-    if that is more protective and still valid.
+    After TP1 the stop should usually sit around the middle of entry→TP1,
+    while still respecting ICT/SMC context. It must not jump directly under TP1
+    on every new 3M higher-low. After TP2 we allow a tighter lock, but still
+    avoid placing the stop exactly on the current noise.
+    """
+    if raw_level is None or not entry or not tp1:
+        return raw_level
+
+    if side == "LONG":
+        move1 = max(tp1 - entry, entry * 0.002)
+        tp1_floor = entry + move1 * 0.50
+        tp1_ceiling = entry + move1 * 0.68
+        if after_tp == "TP2" and tp2:
+            move2 = max(tp2 - entry, move1)
+            floor = max(tp1, entry + move2 * 0.50)
+            ceiling = entry + move2 * 0.78
+            return round_price(min(max(raw_level, floor), ceiling))
+        return round_price(min(max(raw_level, tp1_floor), tp1_ceiling))
+
+    move1 = max(entry - tp1, entry * 0.002)
+    tp1_floor = entry - move1 * 0.68   # lower number = tighter for SHORT
+    tp1_ceiling = entry - move1 * 0.50 # higher number = looser for SHORT
+    if after_tp == "TP2" and tp2:
+        move2 = max(entry - tp2, move1)
+        floor = entry - move2 * 0.78
+        ceiling = min(tp1, entry - move2 * 0.50)
+        return round_price(max(min(raw_level, ceiling), floor))
+    return round_price(max(min(raw_level, tp1_ceiling), tp1_floor))
+
+
+def protective_stop_ict_smc(trade, context, after_tp="TP1"):
+    """Return a staged protective stop recommendation using ICT + SMC.
+
+    Important management rule for BZU:
+    - After TP1, calculate ONE protective stop and lock it until TP2.
+      It should be around the middle of entry→TP1, adjusted by ICT/SMC/tech.
+      Do not trail directly under every new 3M higher-low/lower-high.
+    - After TP2, calculate ONE new tighter stop and lock it until TP3/exit.
     """
     price = context.get("price")
     side = trade.side
     atr_value = context.get("atr15") or (price or trade.entry) * 0.006
-    be = trade.entry * (1.0008 if side == "LONG" else 0.9992)
 
-    candidates = [(be, "захист: беззбиток + малий плюс")]
+    if side == "LONG":
+        move1 = max(trade.tp1 - trade.entry, trade.entry * 0.002)
+        midpoint = trade.entry + move1 * 0.50
+        base_level = midpoint
+        base_reason = "TP1 взято: стоп у середині руху entry→TP1, щоб не віддати прибуток і не вибило шумом"
+    else:
+        move1 = max(trade.entry - trade.tp1, trade.entry * 0.002)
+        midpoint = trade.entry - move1 * 0.50
+        base_level = midpoint
+        base_reason = "TP1 взято: стоп у середині руху entry→TP1, щоб не віддати прибуток і не вибило шумом"
+
+    candidates = [(base_level, base_reason)]
     smc_level, smc_reason = _last_smc_trailing_level(side, context.get("candles_3m") or [], price, trade.entry, atr_value)
     ict_level, ict_reason = _ict_zone_trailing_level(side, context.get("ict") or {}, price, atr_value)
     if smc_level is not None:
         candidates.append((smc_level, smc_reason))
     if ict_level is not None:
         candidates.append((ict_level, ict_reason))
+
     if after_tp == "TP2":
-        candidates.append((trade.tp1, "TP2 взято: мінімум захистити TP1"))
+        if side == "LONG":
+            candidates.append((trade.tp1, "TP2 взято: мінімум захистити TP1"))
+        else:
+            candidates.append((trade.tp1, "TP2 взято: мінімум захистити TP1"))
 
     valid = [(lvl, why) for lvl, why in candidates if _valid_stop_for_side(side, price, lvl)]
     if not valid:
-        return round_price(be), "захист: беззбиток + малий плюс"
-
-    if side == "LONG":
-        lvl, why = max(valid, key=lambda x: x[0])
+        raw_level, why = base_level, base_reason
+    elif side == "LONG":
+        # Use the most protective valid ICT/SMC level, but then cap it so TP1
+        # stop remains around the middle of entry→TP1 instead of right under TP1.
+        raw_level, why = max(valid, key=lambda x: x[0])
     else:
-        lvl, why = min(valid, key=lambda x: x[0])
-    return round_price(lvl), why
+        raw_level, why = min(valid, key=lambda x: x[0])
 
+    clamped = _clamp_stop_between_entry_tp(side, raw_level, trade.entry, trade.tp1, trade.tp2, after_tp)
+    if clamped != round_price(raw_level):
+        why = f"{why}; обмежено, щоб стоп не був занадто близько до TP1"
+    return round_price(clamped), why
 
 def active_trade_message_key(trade, action):
-    return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{round_price(trade.stop_current)}"
+    return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
 
 
 def manage_active_trade(trade, context):
@@ -3427,28 +3491,46 @@ def manage_active_trade(trade, context):
         trade.tp2_hit = True
         trade.tp1_hit = True
         action = "TP2_PROTECT"
-        title = f"{side} — TP2 ВЗЯТО, ВЕСТИ ПО ICT/SMC"
-        recommendation = "TP2 взято: зафіксувати ще частину, залишок вести тільки з підтягнутим стопом"
-        recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2")
-        if side == "LONG":
-            trade.stop_current = max(trade.stop_current, recommended_stop)
+        title = f"{side} — TP2 ВЗЯТО, НОВИЙ СТОП ЗАФІКСОВАНО"
+        recommendation = "TP2 взято: зафіксувати ще частину; новий ICT/SMC стоп рахується один раз і далі не рухається до TP3/виходу"
+        if not trade.tp2_stop_locked:
+            recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2")
+            if side == "LONG":
+                trade.stop_current = max(trade.stop_current, recommended_stop)
+            else:
+                trade.stop_current = min(trade.stop_current, recommended_stop)
+            trade.tp2_locked_stop = float(trade.stop_current)
+            trade.tp2_stop_locked = True
+            notes.append(f"зафіксувати стоп до TP3: {round_price(trade.stop_current)}")
+            if recommended_stop_reason:
+                notes.append(recommended_stop_reason)
         else:
-            trade.stop_current = min(trade.stop_current, recommended_stop)
-        notes.append(f"переставити стоп: {round_price(trade.stop_current)}")
-        if recommended_stop_reason:
+            recommended_stop = trade.tp2_locked_stop or trade.stop_current
+            recommended_stop_reason = "TP2-стоп уже зафіксований; до TP3 не перераховувати на кожній свічці"
+            trade.stop_current = float(recommended_stop)
+            notes.append(f"стоп вже зафіксовано до TP3: {round_price(trade.stop_current)}")
             notes.append(recommended_stop_reason)
     elif trade_hit_level(side, price, trade.tp1):
         trade.tp1_hit = True
         action = "TP1_PROTECT"
-        title = f"{side} — TP1 ВЗЯТО, ЗАХИСТИТИ ПРИБУТОК"
-        recommendation = "TP1 взято: частково фіксувати; стоп переставити по ICT/SMC або мінімум у б/у+"
-        recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
-        if side == "LONG":
-            trade.stop_current = max(trade.stop_current, recommended_stop)
+        title = f"{side} — TP1 ВЗЯТО, СТОП ЗАФІКСОВАНО ДО TP2"
+        recommendation = "TP1 взято: частково фіксувати; один раз переставити стоп у зону між входом і TP1 з урахуванням ICT/SMC, далі не рухати до TP2"
+        if not trade.tp1_stop_locked:
+            recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
+            if side == "LONG":
+                trade.stop_current = max(trade.stop_current, recommended_stop)
+            else:
+                trade.stop_current = min(trade.stop_current, recommended_stop)
+            trade.tp1_locked_stop = float(trade.stop_current)
+            trade.tp1_stop_locked = True
+            notes.append(f"зафіксувати стоп до TP2: {round_price(trade.stop_current)}")
+            if recommended_stop_reason:
+                notes.append(recommended_stop_reason)
         else:
-            trade.stop_current = min(trade.stop_current, recommended_stop)
-        notes.append(f"переставити стоп: {round_price(trade.stop_current)}")
-        if recommended_stop_reason:
+            recommended_stop = trade.tp1_locked_stop or trade.stop_current
+            recommended_stop_reason = "TP1-стоп уже зафіксований; до TP2 не перераховувати на кожній свічці"
+            trade.stop_current = float(recommended_stop)
+            notes.append(f"стоп вже зафіксовано до TP2: {round_price(trade.stop_current)}")
             notes.append(recommended_stop_reason)
 
     # Weighted management pressure for intraday trades.
@@ -3563,11 +3645,18 @@ def manage_active_trade(trade, context):
             action = "PROTECT_OR_EXIT"
             title = f"{side} — ПІСЛЯ TP1 ЦІНА ПОВЕРТАЄТЬСЯ ДО ВХОДУ"
             recommendation = "проаналізувати закриття залишку; мінімум стоп має стояти у плюсі/б/у, не чекати дальній стоп"
-            recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
-            if side == "LONG":
-                trade.stop_current = max(trade.stop_current, recommended_stop)
+            if trade.tp1_stop_locked:
+                recommended_stop = trade.tp1_locked_stop or trade.stop_current
+                recommended_stop_reason = "TP1-стоп уже зафіксований; якщо ціна повертається до входу — аналізуємо закриття, а не підтягування стопу"
+                trade.stop_current = float(recommended_stop)
             else:
-                trade.stop_current = min(trade.stop_current, recommended_stop)
+                recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
+                if side == "LONG":
+                    trade.stop_current = max(trade.stop_current, recommended_stop)
+                else:
+                    trade.stop_current = min(trade.stop_current, recommended_stop)
+                trade.tp1_locked_stop = float(trade.stop_current)
+                trade.tp1_stop_locked = True
             notes.append(f"стоп для захисту: {round_price(trade.stop_current)}")
             if recommended_stop_reason:
                 notes.append(recommended_stop_reason)
@@ -3586,25 +3675,33 @@ def manage_active_trade(trade, context):
         }
 
     if post_tp1 and action == "HOLD":
-        recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2" if trade.tp2_hit else "TP1")
-        if side == "LONG":
-            new_stop = max(trade.stop_current, recommended_stop)
-            if new_stop > trade.stop_current:
-                trade.stop_current = new_stop
-                action = "TRAIL_ICT_SMC"
-                title = f"СУПРОВІД {side} — СТОП ПІДТЯГНУТИ"
-                recommendation = "після TP1 вести залишок тільки з підтягнутим ICT/SMC стопом"
+        # Do NOT trail every 15 minutes after TP1. Keep the first TP1 stop
+        # locked until TP2. This avoids getting stopped by normal BZU noise
+        # right after the first take-profit.
+        if trade.tp2_hit:
+            if trade.tp2_stop_locked:
+                recommended_stop = trade.tp2_locked_stop or trade.stop_current
+                recommended_stop_reason = "TP2-стоп зафіксований; до TP3 не рухати без окремого exit-сигналу"
+                trade.stop_current = float(recommended_stop)
         else:
-            new_stop = min(trade.stop_current, recommended_stop)
-            if new_stop < trade.stop_current:
-                trade.stop_current = new_stop
-                action = "TRAIL_ICT_SMC"
-                title = f"СУПРОВІД {side} — СТОП ПІДТЯГНУТИ"
-                recommendation = "після TP1 вести залишок тільки з підтягнутим ICT/SMC стопом"
-        if action == "TRAIL_ICT_SMC":
-            notes.append(f"новий стоп: {round_price(trade.stop_current)}")
-            if recommended_stop_reason:
-                notes.append(recommended_stop_reason)
+            if trade.tp1_stop_locked:
+                recommended_stop = trade.tp1_locked_stop or trade.stop_current
+                recommended_stop_reason = "TP1-стоп зафіксований; до TP2 не рухати, супровід оцінює тільки утримувати чи закривати"
+                trade.stop_current = float(recommended_stop)
+            else:
+                recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
+                if side == "LONG":
+                    trade.stop_current = max(trade.stop_current, recommended_stop)
+                else:
+                    trade.stop_current = min(trade.stop_current, recommended_stop)
+                trade.tp1_locked_stop = float(trade.stop_current)
+                trade.tp1_stop_locked = True
+                action = "TP1_PROTECT"
+                title = f"{side} — TP1 ВЗЯТО, СТОП ЗАФІКСОВАНО ДО TP2"
+                recommendation = "TP1 взято: стоп зафіксовано один раз до TP2"
+                notes.append(f"зафіксувати стоп до TP2: {round_price(trade.stop_current)}")
+                if recommended_stop_reason:
+                    notes.append(recommended_stop_reason)
 
     if action == "HOLD" and near_entry and opposite_votes >= 2.2 and support_votes <= 1.2:
         action = "PROTECT_OR_EXIT"
@@ -3654,6 +3751,10 @@ def new_active_trade(setup):
         tp2=plan.tp2,
         tp3=plan.tp3,
         quality=setup["quality"],
+        tp1_stop_locked=False,
+        tp2_stop_locked=False,
+        tp1_locked_stop=0.0,
+        tp2_locked_stop=0.0,
         best_price=plan.entry,
         notes=[setup["reason"]],
     )
