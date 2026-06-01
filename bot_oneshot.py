@@ -4033,6 +4033,77 @@ def _compact_title(setup):
     return str(setup.get("title") or "СИГНАЛ")
 
 
+def entry_type_text(context, setup):
+    """Human-readable entry type for Telegram.
+
+    This does not block or downgrade early entries. It only marks whether the
+    signal goes with the higher-timeframe/flow context or against it, so the
+    user can instantly see if the trade is trend-following or countertrend.
+    """
+    side = (setup or {}).get("side")
+    action = (setup or {}).get("action")
+    if side not in ["LONG", "SHORT"] or action not in ["ENTRY", "RISKY_ENTRY"]:
+        return ""
+
+    opposite_side = opposite(side)
+    tf1h = (context.get("tf1h") or {}).get("bias", "NEUTRAL")
+    tf15 = (context.get("tf15") or {}).get("bias", "NEUTRAL")
+    tf4h = (context.get("tf4h") or {}).get("bias", "NEUTRAL")
+    cvd = (context.get("cvd") or {}).get("bias", "NEUTRAL")
+    flow = (context.get("flow") or {}).get("bias", "NEUTRAL")
+    news = (context.get("news") or {}).get("bias", "NEUTRAL")
+
+    against = []
+    support = []
+
+    if tf1h == opposite_side:
+        against.append("1H проти")
+    elif tf1h == side:
+        support.append("1H за")
+
+    if tf15 == opposite_side:
+        against.append("15M проти")
+    elif tf15 == side:
+        support.append("15M за")
+
+    if tf4h == opposite_side:
+        against.append("4H проти")
+    elif tf4h == side:
+        support.append("4H за")
+
+    if cvd == opposite_side:
+        against.append("CVD проти")
+    elif cvd == side:
+        support.append("CVD за")
+
+    if flow == opposite_side:
+        against.append("потік проти")
+    elif flow == side:
+        support.append("потік за")
+
+    if news == opposite_side:
+        against.append("новини проти")
+    elif news == side:
+        support.append("новини за")
+
+    if tf1h == opposite_side:
+        label = f"⚠️ Контртрендовий {side}"
+    elif tf1h == side or (tf15 == side and len(support) >= 2):
+        label = f"✅ Трендовий {side}"
+    elif len(against) >= 3:
+        label = f"⚠️ Агресивний {side} проти фону"
+    elif len(support) >= 2:
+        label = f"✅ Локально трендовий {side}"
+    else:
+        label = f"⚪ Нейтральний {side}"
+
+    if against:
+        return f"<b>Тип:</b> {label} | ризики: {', '.join(against[:3])}"
+    if support:
+        return f"<b>Тип:</b> {label} | підтримка: {', '.join(support[:3])}"
+    return f"<b>Тип:</b> {label}"
+
+
 def build_new_setup_message(context, setup):
     plan = setup.get("plan")
     conflicts = _short_list(setup.get("conflicts"), 3)
@@ -4046,6 +4117,10 @@ def build_new_setup_message(context, setup):
         price_line(context),
         f"<b>Якість:</b> {setup['quality']}/100",
     ]
+
+    entry_type = entry_type_text(context, setup)
+    if entry_type:
+        lines.append(entry_type)
 
     if setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
         if confirmations:
