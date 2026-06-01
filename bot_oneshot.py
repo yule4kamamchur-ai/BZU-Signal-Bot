@@ -2679,6 +2679,93 @@ def side_score(value, side):
     return 0
 
 
+
+def detect_exhausted_move(side, context):
+    """Detect when a directional move is already mostly played out.
+
+    This does NOT create an opposite entry. It only prevents the bot from
+    opening a fresh LONG after a vertical daily pump, or a fresh SHORT after a
+    vertical daily dump. The correct state is WAIT / new structure, not chase.
+    """
+    if side not in ["LONG", "SHORT"] or not isinstance(context, dict):
+        return False, ""
+
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15")) or ((price or 90) * 0.006)
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    tf3 = context.get("tf3") or {}
+    structure = context.get("structure") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+    clusters = context.get("clusters") or {}
+    derivatives = context.get("derivatives") or {}
+    liquidity = context.get("liquidity") or {}
+    candles_15m = context.get("candles_15m") or []
+
+    if not price or not atr15:
+        return False, ""
+
+    ema20 = safe_float(tf15.get("ema20"))
+    rsi15 = safe_float(tf15.get("rsi"), 50)
+    rsi1h = safe_float(tf1h.get("rsi"), 50)
+    change24h = safe_float(context.get("change24h"), 0)
+    move_8 = safe_float(tf15.get("move_8_pct"), 0)
+    distance_atr = abs(price - ema20) / atr15 if ema20 else 0
+
+    recent = candles_15m[-48:] if candles_15m else []
+    recent_low = min((c.low for c in recent), default=None)
+    recent_high = max((c.high for c in recent), default=None)
+    move_from_low = pct(price, recent_low) if recent_low else 0
+    move_from_high = pct(price, recent_high) if recent_high else 0
+
+    cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 10
+    flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 10
+    cluster_against = clusters.get("bias") == opposite(side) or side_score(int(clusters.get("score", 0) or 0), side) <= -4
+    liquidity_against = side in (liquidity.get("blocks") or []) or liquidity.get("bias") == opposite(side)
+    shorts_closing_or_longs_closing = str(derivatives.get("state", "")).upper() in ["SHORTS_CLOSING", "LONGS_CLOSING"]
+    pressure_against_count = sum([bool(cvd_against), bool(flow_against), bool(cluster_against), bool(liquidity_against), bool(shorts_closing_or_longs_closing)])
+
+    if side == "LONG":
+        big_daily = change24h >= 3.0 or move_from_low >= 3.2 or move_8 >= 3.0
+        stretched = distance_atr >= 1.45 or rsi15 >= 72 or rsi1h >= 74
+        near_top = bool(recent_high and (recent_high - price) / price * 100 <= 0.75)
+        tired_price_action = structure.get("phase") == "UPSIDE SWEEP" or tf3.get("bias") in ["SHORT", "NEUTRAL"]
+        if big_daily and stretched and (near_top or pressure_against_count >= 1 or tired_price_action):
+            reasons = []
+            if change24h >= 3.0:
+                reasons.append(f"за добу вже +{round(change24h, 2)}%")
+            elif move_from_low >= 3.2:
+                reasons.append(f"від локального low вже +{round(move_from_low, 2)}%")
+            if rsi15 >= 72:
+                reasons.append(f"15M RSI {round(rsi15, 1)}")
+            if distance_atr >= 1.45:
+                reasons.append(f"ціна далеко від EMA20 ({round(distance_atr, 2)} ATR)")
+            if pressure_against_count >= 1:
+                reasons.append("CVD/потік/кластери вже попереджають")
+            return True, "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. " + "; ".join(reasons[:4])
+
+    else:
+        big_daily = change24h <= -3.0 or move_from_high <= -3.2 or move_8 <= -3.0
+        stretched = distance_atr >= 2.0 or rsi15 <= 28 or rsi1h <= 26
+        near_bottom = bool(recent_low and (price - recent_low) / price * 100 <= 0.75)
+        tired_price_action = structure.get("phase") == "DOWNSIDE SWEEP" or tf3.get("bias") in ["LONG", "NEUTRAL"]
+        if big_daily and stretched and (near_bottom or pressure_against_count >= 1 or tired_price_action):
+            reasons = []
+            if change24h <= -3.0:
+                reasons.append(f"за добу вже {round(change24h, 2)}%")
+            elif move_from_high <= -3.2:
+                reasons.append(f"від локального high вже {round(move_from_high, 2)}%")
+            if rsi15 <= 28:
+                reasons.append(f"15M RSI {round(rsi15, 1)}")
+            if distance_atr >= 1.45:
+                reasons.append(f"ціна далеко від EMA20 ({round(distance_atr, 2)} ATR)")
+            if pressure_against_count >= 1:
+                reasons.append("CVD/потік/кластери вже попереджають")
+            return True, "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. " + "; ".join(reasons[:4])
+
+    return False, ""
+
 def is_late_chase(side, context):
     """Anti-chase guard for intraday entries.
 
@@ -3017,6 +3104,7 @@ def evaluate_new_setup(context):
         }
 
     confirmations, conflicts = entry_confirmations(side, context)
+    exhausted, exhausted_reason = detect_exhausted_move(side, context)
     late, late_reason = is_late_chase(side, context)
     plan = make_plan(side, context)
 
@@ -3248,6 +3336,20 @@ def evaluate_new_setup(context):
         quality = min(quality, 66)
 
     quality = int(max(0, min(92, quality)))
+
+    if exhausted:
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 55),
+            "title": f"ЧЕКАТИ — {side} ВЖЕ ВІДІГРАНИЙ",
+            "reason": exhausted_reason,
+            "plan": plan,
+            "confirmations": [],
+            "conflicts": [exhausted_reason],
+            "exhausted_move": True,
+            "show_wait_plan": False,
+        }
 
     if late:
         return {
@@ -3626,6 +3728,7 @@ def manage_active_trade(trade, context):
     liquidity_against = liquidity_block.get("bias") == opposite(side) and abs(int(liquidity_block.get("score", 0) or 0)) >= 12
     news_block = context.get("news") or {}
     news_against = news_block.get("bias") == opposite(side) and abs(int(news_block.get("score", 0) or 0)) >= 18
+    exhausted_trade, exhausted_trade_reason = detect_exhausted_move(side, context)
 
     if side == "LONG":
         stop_distance_pct = max(0.0, (price - trade.stop_current) / trade.entry * 100) if trade.entry else 99.0
@@ -3662,6 +3765,16 @@ def manage_active_trade(trade, context):
         notes.append("3M зламався проти позиції")
         if near_stop:
             notes.append("ціна близько до стопу")
+
+    if exhausted_trade and action == "HOLD" and (current_pct <= 0.15 or tf3_against or cvd_against or flow_against):
+        action = "EXIT_WARNING"
+        title = f"{side} ПІД ЗАГРОЗОЮ — РУХ ВІДІГРАНИЙ"
+        recommendation = "рух уже відпрацював імпульс: захистити або закрити, не чекати дальній стоп без нового 3M/15M підтвердження"
+        notes.append(exhausted_trade_reason)
+        if tf3_against:
+            notes.append("3M вже проти позиції")
+        if cvd_against or flow_against:
+            notes.append("CVD/потік проти супроводу")
 
     if tp1_giveback_to_entry:
         warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
@@ -4024,6 +4137,8 @@ def _compact_title(setup):
         return f"РИЗИКОВАНИЙ ВХІД {side}"
     if action == "WAIT_RETEST":
         return f"НЕ ДОГАНЯТИ {side}"
+    if action == "WATCH" and setup.get("exhausted_move") and side in ["LONG", "SHORT"]:
+        return f"ЧЕКАТИ — {side} ВЖЕ ВІДІГРАНИЙ"
     if action == "WATCH" and side in ["LONG", "SHORT"]:
         return f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
     if action == "NO_TRADE":
@@ -4143,11 +4258,11 @@ def build_new_setup_message(context, setup):
             for x in reason_items:
                 icon = "⚠️" if ("локаль" in x or "4h фон" in x or "потік локально" in x) else "❌"
                 lines.append(f"{icon} {x}")
-        wait_text = planned_wait_text(context, setup)
+        wait_text = planned_wait_text(context, setup) if setup.get("show_wait_plan", True) else ""
         if wait_text:
             lines.append("")
             lines.append(wait_text)
-        elif setup.get("side") in ["LONG", "SHORT"] and plan:
+        elif setup.get("side") in ["LONG", "SHORT"] and plan and setup.get("show_wait_plan", True):
             lines.append("")
             lines.append("<b>Орієнтир:</b>")
             lines.append(plan_text(plan, multiline=True))
