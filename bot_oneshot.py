@@ -31,7 +31,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-BTC_INST_ID = os.getenv("BTC_INST_ID", "BTC-USDT-SWAP")
 STATE_FILE = os.getenv("SIGNAL_MEMORY_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "last_signal.json"))
 JOURNAL_FILE = os.getenv("SIGNAL_JOURNAL_FILE", os.path.join(os.getenv("GITHUB_WORKSPACE", os.getcwd()), "signal_journal.json"))
 
@@ -539,10 +538,6 @@ def collect_market_data():
     candles_15m = get_okx_candles("15m", 180)
     candles_1h = get_okx_candles("1H", 140)
     candles_4h = get_okx_candles("4H", 140)
-    btc_candles_3m = get_okx_candles("3m", 120, BTC_INST_ID)
-    btc_candles_15m = get_okx_candles("15m", 120, BTC_INST_ID)
-    btc_candles_1h = get_okx_candles("1H", 80, BTC_INST_ID)
-    btc_ticker = get_okx_ticker(BTC_INST_ID)
 
     # IMPORTANT: the chart the user watches is BINANCE:BZUSDT.P on TradingView.
     # Use TradingView/Binance as the primary displayed/current price and OKX only
@@ -570,10 +565,6 @@ def collect_market_data():
         "candles_15m": candles_15m,
         "candles_1h": candles_1h,
         "candles_4h": candles_4h,
-        "btc_ticker": btc_ticker,
-        "btc_candles_3m": btc_candles_3m,
-        "btc_candles_15m": btc_candles_15m,
-        "btc_candles_1h": btc_candles_1h,
         "trades": get_okx_trades(),
         "book": get_okx_book(),
         "open_interest": get_okx_open_interest(),
@@ -2449,98 +2440,6 @@ def analyze_calendar_alerts():
 
 
 
-def _move_from_candles(candles, bars):
-    if not candles or len(candles) < bars + 1:
-        return 0.0
-    return pct(candles[-1].close, candles[-bars - 1].close)
-
-
-def analyze_btc_inverse(btc_ticker, btc_candles_3m, btc_candles_15m, btc_candles_1h, bzu_change24h=None):
-    """BTC inverse-correlation filter for BZU intraday trades.
-
-    BTC is useful only when the market is in inverse mode.
-    If BTC and BZ move synchronously in a broad risk-on/risk-off regime,
-    inverse mapping is disabled to avoid false LONG/SHORT signals.
-    """
-    if not btc_candles_15m or len(btc_candles_15m) < 20:
-        return {"available": False, "bias": "NEUTRAL", "score": 0, "note": "BTC даних мало"}
-
-    m3 = _move_from_candles(btc_candles_3m, 5)      # ~15 minutes
-    m15 = _move_from_candles(btc_candles_15m, 4)    # ~1 hour
-    m1h = _move_from_candles(btc_candles_1h, 3)     # ~3 hours
-    change24 = safe_float((btc_ticker or {}).get("change24h"), 0)
-    bzu_change24h = safe_float(bzu_change24h, None)
-
-    # Risk-off / broad market same-direction guard.
-    # If BZ and BTC are both meaningfully moving in the same direction,
-    # inverse filter is not reliable.
-    if bzu_change24h is not None:
-        if abs(bzu_change24h) > 1.5 and abs(change24) > 0.6 and (bzu_change24h * change24) > 0:
-            return {
-                "available": True,
-                "bias": "NEUTRAL",
-                "score": 0,
-                "state": "RISK_OFF_SAME_DIRECTION",
-                "btc_move_15m_pct": round(m3, 3),
-                "btc_move_1h_pct": round(m15, 3),
-                "btc_move_3h_pct": round(m1h, 3),
-                "btc_change24h": round(change24, 3),
-                "bzu_change24h": round(bzu_change24h, 3),
-                "note": "BTC і BZ рухаються синхронно — inverse-фільтр вимкнено",
-            }
-
-    btc_pressure = 0
-    notes = []
-
-    if m15 >= 0.28:
-        btc_pressure += 14
-        notes.append("BTC імпульс вгору")
-    elif m15 <= -0.28:
-        btc_pressure -= 14
-        notes.append("BTC імпульс вниз")
-
-    if m3 >= 0.16:
-        btc_pressure += 8
-    elif m3 <= -0.16:
-        btc_pressure -= 8
-
-    if m1h >= 0.45:
-        btc_pressure += 8
-    elif m1h <= -0.45:
-        btc_pressure -= 8
-
-    # 24h is context only, not the entry trigger.
-    if change24 >= 1.2:
-        btc_pressure += 3
-    elif change24 <= -1.2:
-        btc_pressure -= 3
-
-    # Inverse mapping: BTC strength usually pressures BZU/OIL lower; BTC weakness supports LONG.
-    score = -btc_pressure
-    if score >= 12:
-        bias = "LONG"
-        if not notes:
-            notes.append("BTC слабшає — підтримка для BZU")
-    elif score <= -12:
-        bias = "SHORT"
-        if not notes:
-            notes.append("BTC росте — тиск на BZU")
-    else:
-        bias = "NEUTRAL"
-
-    return {
-        "available": True,
-        "bias": bias,
-        "score": int(max(-28, min(28, score))),
-        "state": "INVERSE_ACTIVE" if bias != "NEUTRAL" else "NEUTRAL",
-        "btc_move_15m_pct": round(m3, 3),
-        "btc_move_1h_pct": round(m15, 3),
-        "btc_move_3h_pct": round(m1h, 3),
-        "btc_change24h": round(change24, 3),
-        "bzu_change24h": round(bzu_change24h, 3) if bzu_change24h is not None else None,
-        "note": "; ".join(notes[:2]) if notes else "BTC без сильного імпульсу",
-    }
-
 
 # ==========================================================
 # SETUP ENGINE
@@ -2563,7 +2462,6 @@ def build_context(data, state=None):
     cvd = analyze_cvd(data.get("trades") or [], data.get("candles_3m") or [], price, previous_snapshot)
     clusters = analyze_clusters(data.get("trades") or [], data.get("book") or {}, price)
     derivatives = analyze_derivatives(data.get("open_interest") or {}, data.get("funding") or {}, price, previous_snapshot)
-    btc_inverse = analyze_btc_inverse(data.get("btc_ticker") or {}, data.get("btc_candles_3m") or [], data.get("btc_candles_15m") or [], data.get("btc_candles_1h") or [], context_change24h)
     liquidity = analyze_liquidations(data.get("candles_3m") or [], data.get("candles_15m") or [], flow, structure, price)
     news_items = get_news()
     news = analyze_news(news_items)
@@ -2596,18 +2494,20 @@ def build_context(data, state=None):
         if tf15.get("bias") != "SHORT" and tf3.get("bias") != "SHORT" and structure.get("bias") != "SHORT":
             ict_score_used *= 0.70
 
+    # BTC↔BZ filter is intentionally removed.
+    # Quality/market bias is recalculated from BZU-native data only:
+    # ICT/SMC + 15M/3M/1H + CVD/Flow/OI/Liquidity/Clusters.
     tech_score = (
-        tf15.get("score", 0) * 1.45
-        + structure.get("score", 0) * 1.20
-        + ict_score_used * 1.32
-        + tf3.get("score", 0) * 0.43
-        + tf1h.get("score", 0) * 0.45
-        + cvd.get("score", 0) * 0.72
-        + derivatives.get("score", 0) * 0.60
-        + btc_inverse.get("score", 0) * 0.75
-        + liquidity.get("score", 0) * 0.70
-        + flow.get("score", 0) * 0.45
-        + clusters.get("score", 0) * 0.14
+        tf15.get("score", 0) * 1.50
+        + structure.get("score", 0) * 1.28
+        + ict_score_used * 1.38
+        + tf3.get("score", 0) * 0.52
+        + tf1h.get("score", 0) * 0.48
+        + cvd.get("score", 0) * 0.78
+        + derivatives.get("score", 0) * 0.65
+        + liquidity.get("score", 0) * 0.72
+        + flow.get("score", 0) * 0.52
+        + clusters.get("score", 0) * 0.18
         + tf4h.get("score", 0) * 0.10
         + volume_guard.get("score", 0)
     )
@@ -2649,7 +2549,6 @@ def build_context(data, state=None):
         "cvd": cvd,
         "clusters": clusters,
         "derivatives": derivatives,
-        "btc_inverse": btc_inverse,
         "liquidity": liquidity,
         "news": news,
         "calendar": calendar,
@@ -2752,7 +2651,6 @@ def entry_confirmations(side, context):
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
     derivatives = context.get("derivatives") or {}
-    btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
     news = context["news"]
@@ -2817,10 +2715,6 @@ def entry_confirmations(side, context):
     elif derivatives.get("bias") == opposite(side):
         conflicts.append("OI/Funding проти")
 
-    if btc_inverse.get("bias") == side:
-        confirmations.append("BTC inverse підтверджує")
-    elif btc_inverse.get("bias") == opposite(side):
-        conflicts.append("BTC inverse проти")
 
     if liquidity.get("bias") == side:
         confirmations.append("ліквідність підтримує")
@@ -3022,7 +2916,6 @@ def evaluate_new_setup(context):
     cvd = context.get("cvd") or {}
     clusters = context.get("clusters") or {}
     derivatives = context.get("derivatives") or {}
-    btc_inverse = context.get("btc_inverse") or {}
     liquidity = context.get("liquidity") or {}
     calendar = context.get("calendar") or {}
     news = context.get("news") or {}
@@ -3038,15 +2931,14 @@ def evaluate_new_setup(context):
             return -opposite_penalty
         return neutral
 
-    # Intraday quality model:
-    # ICT + structure define the idea.
-    # 3M is the main ENTRY confirmation so the bot can enter before a late 15M close.
-    # 15M is a strength filter, not a hard permission.
-    # CVD/flow/OI/BTC confirm whether the move has real pressure.
+    # Intraday quality model WITHOUT BTC↔BZ:
+    # ICT + SMC/structure define the idea.
+    # 3M is the main timing trigger for early entries.
+    # 15M/1H confirm strength. CVD/Flow/Clusters/OI adjust risk, but do not fully block ICT+3M.
     score_for_side = side_score(context["total_score"], side)
-    quality = 45 + min(10, max(0, score_for_side // 9))
-    quality += block_points(tf15, 9, 12)
-    quality += block_points(structure, 10, 13)
+    quality = 46 + min(9, max(0, score_for_side // 10))
+    quality += block_points(tf15, 10, 12)
+    quality += block_points(structure, 12, 14)
     if ict.get("state") == "ENTRY_MODEL":
         quality += block_points(ict, 16, 16)
     elif ict.get("bias") == side and ict.get("score", 0):
@@ -3055,16 +2947,15 @@ def evaluate_new_setup(context):
         quality += 8
     if ict.get("no_chase") and ict.get("bias") == side:
         quality -= 18
-    # 3M has stronger weight than before: it is the timing trigger.
-    quality += block_points(tf3, 15, 16, neutral=0, weak_opposite_penalty=6)
-    quality += block_points(tf1h, 3, 5)
+    # 3M has strong weight: it is the timing trigger.
+    quality += block_points(tf3, 16, 16, neutral=0, weak_opposite_penalty=6)
+    quality += block_points(tf1h, 4, 6)
     quality += block_points(tf4h, 1, 2)
     quality += block_points(cvd, 8, 9)
     quality += block_points(derivatives, 6, 7)
-    quality += block_points(btc_inverse, 7, 8)
     quality += block_points(liquidity, 7, 10)
-    quality += block_points(flow, 5, 5)
-    quality += block_points(clusters, 1, 1)
+    quality += block_points(flow, 6, 6)
+    quality += block_points(clusters, 2, 2)
 
     if news.get("bias") == side:
         quality += 2
@@ -3093,11 +2984,9 @@ def evaluate_new_setup(context):
     cvd_same = cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
     flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10
     oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 10
-    btc_same = btc_inverse.get("bias") == side and abs(int(btc_inverse.get("score", 0) or 0)) >= 10
 
     strong_cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 22
     strong_oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
-    strong_btc_against = btc_inverse.get("bias") == opposite(side) and abs(int(btc_inverse.get("score", 0) or 0)) >= 18
 
     # Micro-pressure risk layer.
     # ICT/SMC + 3M is allowed to open early, but if CVD/flow/clusters are against,
@@ -3138,7 +3027,7 @@ def evaluate_new_setup(context):
     tf1h_against_or_heavy = tf1h_score_side <= -15 or tf1h.get("bias") == opposite(side)
     htf_countertrend = tf4h_strong_against and tf1h_against_or_heavy
     intraday_confirmation_present = tf3_same or tf15_same or structure_same
-    real_pressure_present = cvd_same or flow_same or oi_same or btc_same
+    real_pressure_present = cvd_same or flow_same or oi_same
     countertrend_wait_required = bool(
         htf_countertrend
         and not tf3_same
@@ -3156,7 +3045,7 @@ def evaluate_new_setup(context):
         or (tf15_neutral and (structure_same or ict_same))
     )
 
-    pressure_ok = cvd_same or flow_same or oi_same or btc_same or (ict_entry_ok and tf3_same)
+    pressure_ok = cvd_same or flow_same or oi_same or (ict_entry_ok and tf3_same)
 
     # Classic/early entry: 3M must confirm the direction.
     # 15M may still be NEUTRAL, because waiting for a full 15M LONG/SHORT can be late.
@@ -3166,7 +3055,6 @@ def evaluate_new_setup(context):
         # CVD/flow against must NOT forbid an ICT+3M early entry.
         # It changes the signal to RISKY_ENTRY and caps quality, so we do not enter late.
         and not strong_oi_against
-        and not strong_btc_against
         and not ict_against
         and not ict_no_chase
         and not countertrend_wait_required
@@ -3183,7 +3071,6 @@ def evaluate_new_setup(context):
         and not tf3_strong_against
         and not strong_cvd_against
         and not strong_oi_against
-        and not strong_btc_against
         and not ict_against
         and not ict_no_chase
         and side not in liquidity.get("blocks", [])
@@ -3200,8 +3087,7 @@ def evaluate_new_setup(context):
         or ict_no_chase
         or (tf15_against and structure_against)
         or (strong_cvd_against and strong_oi_against)
-        or (tf3_strong_against and (strong_cvd_against or strong_btc_against))
-        or (strong_btc_against and (strong_cvd_against or strong_oi_against or tf15_against))
+        or (tf3_strong_against and strong_cvd_against)
     )
 
     if not tf3_same:
@@ -3585,7 +3471,6 @@ def manage_active_trade(trade, context):
         (context.get("news") or {}, 0.35),
         (context.get("cvd") or {}, 0.80),
         (context.get("derivatives") or {}, 0.55),
-        (context.get("btc_inverse") or {}, 0.65),
         (flow, 0.35),
         (context.get("clusters") or {}, 0.20),
         (context.get("tf4h") or {}, 0.20),
@@ -3608,8 +3493,6 @@ def manage_active_trade(trade, context):
     flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 10
     cvd_block = context.get("cvd") or {}
     cvd_against = cvd_block.get("bias") == opposite(side) and abs(int(cvd_block.get("score", 0) or 0)) >= 10
-    btc_block = context.get("btc_inverse") or {}
-    btc_against = btc_block.get("bias") == opposite(side) and abs(int(btc_block.get("score", 0) or 0)) >= 16
     structure_against = structure.get("bias") == opposite(side)
     ict_against = ict.get("bias") == opposite(side) and abs(int(ict.get("score", 0) or 0)) >= 16
     liquidity_block = context.get("liquidity") or {}
@@ -3625,7 +3508,7 @@ def manage_active_trade(trade, context):
     near_stop = stop_distance_pct <= 0.30
     clearly_losing = current_pct <= -0.30
 
-    if tf3_against and (flow_against or cvd_against or btc_against) and (near_stop or clearly_losing):
+    if tf3_against and (flow_against or cvd_against) and (near_stop or clearly_losing):
         trade.status = "CLOSED"
         trade.last_action = "EXIT_LOCAL_BREAK"
         reasons = ["3M зламався проти позиції"]
@@ -3633,8 +3516,6 @@ def manage_active_trade(trade, context):
             reasons.append("потік проти")
         if cvd_against:
             reasons.append("CVD проти")
-        if btc_against:
-            reasons.append("BTC inverse проти")
         if near_stop:
             reasons.append("ціна близько до стопу")
         return {
@@ -3867,8 +3748,6 @@ def context_lines(context):
         lines.append(_score_line("Кластери", context.get("clusters")))
     if context.get("derivatives"):
         lines.append(_score_line("OI/Funding", context.get("derivatives")))
-    if context.get("btc_inverse"):
-        lines.append(_score_line("BTC↔BZ", context.get("btc_inverse")))
     if context.get("flow"):
         lines.append(_score_line("Потік", context.get("flow")))
     return lines
