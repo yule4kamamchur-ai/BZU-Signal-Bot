@@ -9623,7 +9623,192 @@
           "note": "EIA crude inventories — через 10 хв"
         }
       }
+    },
+    {
+      "time": "2026-06-03T14:31:04.506066+00:00",
+      "type": "RISKY_ENTRY",
+      "side": "LONG",
+      "price": 97.37,
+      "quality": 76,
+      "reason": "ICT/SMC + 3M дають ранній вхід, але CVD/потік/кластери ще не підтвердили — ризиковий режим",
+      "plan": {
+        "entry": 97.37,
+        "stop": 96.6397,
+        "tp1": 99.4927,
+        "tp2": 100.5832,
+        "tp3": 102.2385,
+        "risk_pct": 0.75,
+        "rr1": 2.91,
+        "rr2": 4.4,
+        "rr3": 6.67,
+        "invalidation": "15m закриття нижче 96.6397 або злам 3m/структури проти LONG. Стоп не далі 2.12% від входу; TP1 не ближче 2.18%."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "1h підтримує",
+        "3m дав тригер",
+        "ICT сетап готовий",
+        "OI/Funding підтримує",
+        "новини дають паливо"
+      ],
+      "conflicts": [
+        "локальний продавець у стакані",
+        "CVD/дельта поки проти — ранній вхід тільки як ризиковий"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 32,
+        "total_score": 45,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 58,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.474,
+          "drift_pct": 0.322,
+          "vol_ratio": 1.46,
+          "note": "3m швидко йде вгору; 3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -24,
+          "trend": "NEUTRAL",
+          "close": 97.43,
+          "ema20": 97.8196,
+          "ema50": 97.7337,
+          "rsi": 42.1,
+          "atr": 0.4357,
+          "slope_pct": -0.805,
+          "move_8_pct": -0.956,
+          "range_atr": 5.16,
+          "note": "EMA20 вище EMA50; нахил вниз; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "LONG",
+          "score": 28,
+          "trend": "LONG",
+          "close": 97.46,
+          "ema20": 97.3357,
+          "ema50": 96.1905,
+          "rsi": 54.7,
+          "atr": 0.7873,
+          "slope_pct": 0.464,
+          "move_8_pct": -0.602,
+          "range_atr": 4.41,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "LONG",
+          "score": 56,
+          "trend": "LONG",
+          "close": 97.43,
+          "ema20": 95.5556,
+          "ema50": 95.2355,
+          "rsi": 63.3,
+          "atr": 1.4992,
+          "slope_pct": 2.093,
+          "move_8_pct": 3.892,
+          "range_atr": 4.47,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 98.6,
+          "swing_low": 96.9,
+          "recent_high": 99.15,
+          "recent_low": 96.9,
+          "atr": 0.4357,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -30.27,
+          "book_delta_pct": 27.65,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -9529.0,
+          "delta_pct": -30.27,
+          "cvd": 316910.0,
+          "cvd_change_pct": -2.919,
+          "last_trade_ts": 1780497053224,
+          "price_move_pct": 0.226,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 97.5759,
+              "imbalance_pct": -61.8,
+              "volume": 18307.0
+            },
+            {
+              "price": 97.4979,
+              "imbalance_pct": 75.8,
+              "volume": 7549.0
+            },
+            {
+              "price": 97.42,
+              "imbalance_pct": -70.0,
+              "volume": 5623.0
+            }
+          ],
+          "note": "локальний продавець біля 97.5759"
+        },
+        "derivatives": {
+          "bias": "LONG",
+          "score": 18,
+          "state": "LONG_BUILDUP",
+          "oi": 61385.74,
+          "oi_change_pct": 0.363,
+          "funding_pct": 0,
+          "price_change_pct": 0.195,
+          "note": "ціна росте + OI росте — нові лонги/попит"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 1.44,
+          "move_1_pct": -0.01,
+          "move_6_pct": 0.34,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 45,
+          "top": "Fire and damage in Kuwait airport after Iranian attack - Reuters",
+          "total": 31
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-03T14:19:28.702923+00:00"
+  "updated_at": "2026-06-03T14:31:04.508047+00:00"
 }
