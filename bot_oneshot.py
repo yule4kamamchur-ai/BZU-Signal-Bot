@@ -256,16 +256,44 @@ def http_post(url, payload, timeout=REQUEST_TIMEOUT):
 # ==========================================================
 
 
+def make_json_safe(value):
+    """Recursively convert bot state/journal values to JSON-safe types.
+
+    Some market/calendar/news helpers can leave datetime objects inside the
+    context saved to signal_journal.json. GitHub Actions then crashes on
+    json.dump(). This sanitizer keeps the journal useful and prevents one
+    non-serializable value from killing the bot run.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): make_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [make_json_safe(v) for v in value]
+    try:
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return str(value)
+
+
 def atomic_json_write(path, data):
     directory = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
     tmp = path + ".tmp"
     bak = path + ".bak"
+    safe_data = make_json_safe(data)
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(safe_data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
     with open(bak, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(safe_data, f, ensure_ascii=False, indent=2)
 
 
 def load_json(path, default):
