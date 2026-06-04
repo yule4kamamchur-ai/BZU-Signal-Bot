@@ -3701,11 +3701,40 @@ def evaluate_new_setup(context):
 
     pressure_ok = cvd_same or flow_same or oi_same or (ict_entry_ok and tf3_same)
 
-    # Classic/early entry: 3M must confirm the direction.
-    # 15M may still be NEUTRAL, because waiting for a full 15M LONG/SHORT can be late.
+    # Professional structure gate.
+    # ICT remains the entry model, but ICT + 3M alone must not open a trade
+    # from the middle of balance. A real ENTRY needs at least one structural
+    # confirmation so the bot does not buy/sell every small 3M twitch:
+    #   - 15M already agrees, OR
+    #   - SMC structure agrees (BOS/CHOCH/sweep reclaim), OR
+    #   - ICT itself is a liquidity sweep/reclaim model, OR
+    #   - price holds a BOS continuation level.
+    # If this is missing, the bot keeps WATCH/activation, so the user is not
+    # late: it shows the idea, but waits for reclaim/rejection instead of ENTRY.
+    structure_phase = str(structure.get("phase", "") or "").upper()
+    ict_setup = str(ict.get("setup", "") or "").upper()
+    side_structure_phases = {
+        "LONG": ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"],
+        "SHORT": ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"],
+    }
+    structure_reclaim_same = structure_phase in side_structure_phases.get(side, [])
+    ict_reclaim_same = (
+        side == "LONG" and ict_setup in ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "BOS_LONG_CONTINUATION_HOLD"]
+    ) or (
+        side == "SHORT" and ict_setup in ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD"]
+    )
+    structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same)
+    structure_gate_missing = bool(tf3_same and ict_entry_ok and not structural_entry_ok)
+    if structure_gate_missing:
+        conflicts.append("ICT+3M є, але немає 15M/BOS/reclaim — чекати структурне підтвердження")
+
+    # Classic/early entry: 3M must confirm the direction, but not alone.
+    # 15M may still be NEUTRAL only if BOS/reclaim/ICT sweep has confirmed
+    # structure. This avoids late entries while filtering mid-range false starts.
     trigger_entry_ok = (
         tf3_same
         and core_direction_ok
+        and structural_entry_ok
         # CVD/flow against must NOT forbid an ICT+3M early entry.
         # It changes the signal to RISKY_ENTRY and caps quality, so we do not enter late.
         and not strong_oi_against
@@ -3749,6 +3778,9 @@ def evaluate_new_setup(context):
     if not tf3_same:
         # Without 3M confirmation this is preparation, not an entry.
         quality = min(quality, 66)
+    elif structure_gate_missing:
+        # ICT + 3M without 15M/BOS/reclaim can be a good idea, but not a market entry.
+        quality = min(quality, 64)
     elif htf_countertrend and not (tf15_same or structure_same or real_pressure_present):
         # 3M may catch the turn early, but against 4H/1H keep quality realistic.
         quality = min(quality, 78)
@@ -3807,6 +3839,20 @@ def evaluate_new_setup(context):
             "confirmations": confirmations,
             "conflicts": conflicts,
             "reentry_cooldown": True,
+            "show_wait_plan": True,
+        }
+
+    if structure_gate_missing:
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 64),
+            "title": f"ЧЕКАТИ — {side} ПОТРІБЕН RECLAIM/BOS",
+            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або reclaim/rejection",
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+            "structure_gate": True,
             "show_wait_plan": True,
         }
 
