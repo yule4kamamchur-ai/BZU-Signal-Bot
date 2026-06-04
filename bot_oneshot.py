@@ -58,6 +58,13 @@ MIN_TP1_DISTANCE_PCT = float(os.getenv("MIN_TP1_DISTANCE_PCT", "2.18") or 2.18)
 MIN_TP2_DISTANCE_PCT = float(os.getenv("MIN_TP2_DISTANCE_PCT", "3.30") or 3.30)
 MIN_TP3_DISTANCE_PCT = float(os.getenv("MIN_TP3_DISTANCE_PCT", "5.00") or 5.00)
 
+# Smart Money / ICT risk-reward guard.
+# A setup is not professional if the first target is smaller than the stop.
+# Default: TP1 must be at least 1:1 to risk. Better setups receive quality bonus.
+MIN_RR1_ENTRY = float(os.getenv("MIN_RR1_ENTRY", "1.00") or 1.00)
+GOOD_RR1_BONUS = float(os.getenv("GOOD_RR1_BONUS", "1.30") or 1.30)
+STRONG_RR1_BONUS = float(os.getenv("STRONG_RR1_BONUS", "1.80") or 1.80)
+
 # Intraday filters
 # Volume is a bonus only. Low volume must NOT block entries for BZ intraday,
 # because compression often happens before the best impulse move.
@@ -2744,6 +2751,64 @@ def regime_label(regime):
     return labels.get(name, "звичайний intraday режим")
 
 
+def enforce_smart_money_rr(side, price, stop, tp1, tp2, tp3, atr15=None):
+    """Force professional Smart Money minimum risk/reward in the plan.
+
+    ICT/SMC chooses the entry/stop idea first. After that this guard makes
+    sure TP1 is not mathematically worse than the stop. If risk is 1%, TP1
+    must be at least 1% away. TP2/TP3 are kept beyond TP1 so the ladder stays
+    logical.
+    """
+    price = safe_float(price)
+    stop = safe_float(stop)
+    tp1 = safe_float(tp1)
+    tp2 = safe_float(tp2)
+    tp3 = safe_float(tp3)
+    atr15 = safe_float(atr15, (price or 90) * 0.006) or ((price or 90) * 0.006)
+    if side not in ["LONG", "SHORT"] or not price or stop is None or tp1 is None:
+        return stop, tp1, tp2, tp3
+
+    risk = abs(price - stop)
+    if risk <= 0:
+        return stop, tp1, tp2, tp3
+
+    min_tp1_distance = risk * max(1.0, MIN_RR1_ENTRY)
+    min_tp2_distance = risk * max(1.45, MIN_RR1_ENTRY + 0.45)
+    min_tp3_distance = risk * max(2.10, MIN_RR1_ENTRY + 1.10)
+    step = max(atr15 * 0.45, price * 0.003)
+
+    if side == "LONG":
+        tp1 = max(tp1, price + min_tp1_distance)
+        tp2 = max(tp2 if tp2 is not None else tp1 + step, price + min_tp2_distance, tp1 + step)
+        tp3 = max(tp3 if tp3 is not None else tp2 + step, price + min_tp3_distance, tp2 + step)
+    else:
+        tp1 = min(tp1, price - min_tp1_distance)
+        tp2 = min(tp2 if tp2 is not None else tp1 - step, price - min_tp2_distance, tp1 - step)
+        tp3 = min(tp3 if tp3 is not None else tp2 - step, price - min_tp3_distance, tp2 - step)
+
+    return stop, tp1, tp2, tp3
+
+
+def smart_money_rr_status(plan):
+    """Return whether the plan has acceptable Smart Money RR."""
+    if not plan:
+        return {"ok": False, "rr1": 0, "label": "RR недоступний"}
+    rr1 = safe_float(getattr(plan, "rr1", 0), 0) or 0
+    if rr1 < MIN_RR1_ENTRY:
+        return {
+            "ok": False,
+            "rr1": rr1,
+            "label": f"RR1 {round(rr1, 2)} < {round(MIN_RR1_ENTRY, 2)} — TP1 менший за стоп",
+        }
+    if rr1 >= STRONG_RR1_BONUS:
+        label = f"Smart Money RR сильний: {round(rr1, 2)}R"
+    elif rr1 >= GOOD_RR1_BONUS:
+        label = f"Smart Money RR добрий: {round(rr1, 2)}R"
+    else:
+        label = f"Smart Money RR мінімальний: {round(rr1, 2)}R"
+    return {"ok": True, "rr1": rr1, "label": label}
+
+
 def cooldown_override_ok(side, context):
     """Allow re-entry after a weak exit only if a fresh, strong setup appears."""
     if side not in ["LONG", "SHORT"]:
@@ -3311,6 +3376,10 @@ def make_plan(side, context):
             f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 орієнтир {round(safe_float(profile.get('tp1_pct'), 0), 2)}%."
         )
 
+    # Smart Money RR guard: TP1 must be at least equal to the stop risk.
+    # This preserves the ICT stop idea but refuses a mathematically bad ladder.
+    stop, tp1, tp2, tp3 = enforce_smart_money_rr(side, price, stop, tp1, tp2, tp3, atr15)
+
     risk_pct = abs(stop - price) / price * 100 if price else 0
     reward1_pct = abs(tp1 - price) / price * 100 if price else 0
     reward2_pct = abs(tp2 - price) / price * 100 if price else 0
@@ -3460,6 +3529,7 @@ def evaluate_new_setup(context):
     exhausted, exhausted_reason = detect_exhausted_move(side, context)
     late, late_reason = is_late_chase(side, context)
     plan = make_plan(side, context)
+    rr_status = smart_money_rr_status(plan)
     mode_profile = trade_mode_profile(context, side)
     market_regime = mode_profile.get("regime", "NORMAL")
     reentry_cooldown = context.get("reentry_cooldown") or {}
@@ -3580,6 +3650,15 @@ def evaluate_new_setup(context):
     if market_regime in ["RANGE", "NEWS_IMPULSE", "REVERSAL"]:
         confirmations.append(f"режим: {regime_label(market_regime)} — TP/стоп адаптовані")
 
+    if rr_status.get("ok"):
+        confirmations.append(rr_status.get("label"))
+        if rr_status.get("rr1", 0) >= STRONG_RR1_BONUS:
+            quality += 4
+        elif rr_status.get("rr1", 0) >= GOOD_RR1_BONUS:
+            quality += 2
+    else:
+        conflicts.append(rr_status.get("label") or "RR не відповідає Smart Money мінімуму")
+
     cooldown_active = bool(reentry_cooldown.get("active") and reentry_cooldown.get("side") == side)
     cooldown_can_override = cooldown_override_ok(side, context)
     if cooldown_active and not cooldown_can_override:
@@ -3657,7 +3736,8 @@ def evaluate_new_setup(context):
     trend_ok = core_direction_ok
 
     hard_conflict = (
-        side in liquidity.get("blocks", [])
+        not rr_status.get("ok")
+        or side in liquidity.get("blocks", [])
         or ict_against
         or ict_no_chase
         or (tf15_against and structure_against)
@@ -3702,6 +3782,19 @@ def evaluate_new_setup(context):
         quality = min(quality, 66)
 
     quality = int(max(0, min(92, quality)))
+
+    if not rr_status.get("ok"):
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 55),
+            "title": f"ЧЕКАТИ — {side} RR ЗАСЛАБКИЙ",
+            "reason": rr_status.get("label") or "тейк менший за стоп — Smart Money угода неякісна",
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+            "show_wait_plan": True,
+        }
 
     if cooldown_active and not cooldown_can_override:
         return {
