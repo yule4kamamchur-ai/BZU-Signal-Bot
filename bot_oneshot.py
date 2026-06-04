@@ -4135,19 +4135,49 @@ def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=N
     if not entry or not price or best_pct < be_trigger or current_pct < 0.12:
         return None, ""
 
-    # Lock ladder before TP1. It adapts to regime. In range we lock quicker;
-    # in trend we let the move breathe.
-    lock_pct = 0.04
+    # Lock ladder before TP1. It adapts to regime.
+    # Professional intraday management: if the trade already gave a meaningful
+    # MFE, the bot must lock part of it instead of waiting for a distant TP1.
+    # This fixes cases like: SHORT +0.78% MFE -> exit only +0.15%.
+    lock_pct = 0.06
     label = f"{regime}: MFE +{round(best_pct, 2)}% — стоп у беззбиток+"
-    if best_pct >= protect_trigger + 0.60 and current_pct >= protect_trigger * 0.75:
-        lock_pct = 0.58 if regime == "TREND" else 0.70
-        label = f"{regime}: сильний MFE — захистити більшу частину руху"
-    elif best_pct >= protect_trigger + 0.25 and current_pct >= protect_trigger * 0.55:
-        lock_pct = 0.38 if regime == "TREND" else 0.50
-        label = f"{regime}: MFE — зафіксувати частину прибутку"
-    elif best_pct >= protect_trigger and current_pct >= max(0.25, be_trigger * 0.65):
-        lock_pct = 0.20 if regime == "TREND" else 0.28
-        label = f"{regime}: перший захист прибутку"
+
+    if regime in ["RANGE", "NEWS_IMPULSE"]:
+        # In range/news chop the market often gives 0.5–1.0% and returns.
+        if best_pct >= 1.05 and current_pct >= 0.55:
+            lock_pct = 0.62
+            label = f"{regime}: MFE у боковику/новинах — агресивно захистити прибуток"
+        elif best_pct >= 0.75 and current_pct >= 0.35:
+            lock_pct = 0.40
+            label = f"{regime}: MFE — захистити основну частину короткого руху"
+        elif best_pct >= be_trigger and current_pct >= 0.18:
+            lock_pct = 0.20
+            label = f"{regime}: перший захист у боковику"
+    elif regime == "TREND":
+        # In a real trend do not kill the trade too early, but still protect
+        # enough profit once MFE becomes meaningful.
+        if best_pct >= 1.70 and current_pct >= 0.95:
+            lock_pct = 0.95
+            label = f"{regime}: сильний трендовий MFE — захистити майже 1%"
+        elif best_pct >= 1.20 and current_pct >= 0.65:
+            lock_pct = 0.58
+            label = f"{regime}: трендовий MFE — стоп у хороший плюс"
+        elif best_pct >= 0.75 and current_pct >= 0.32:
+            lock_pct = 0.35
+            label = f"{regime}: трендовий MFE — не віддавати рух назад"
+        elif best_pct >= be_trigger and current_pct >= 0.18:
+            lock_pct = 0.18
+            label = f"{regime}: перший трендовий захист"
+    else:
+        if best_pct >= protect_trigger + 0.60 and current_pct >= protect_trigger * 0.75:
+            lock_pct = 0.62
+            label = f"{regime}: сильний MFE — захистити більшу частину руху"
+        elif best_pct >= protect_trigger + 0.20 and current_pct >= protect_trigger * 0.50:
+            lock_pct = 0.45
+            label = f"{regime}: MFE — зафіксувати частину прибутку"
+        elif best_pct >= be_trigger and current_pct >= 0.20:
+            lock_pct = 0.22
+            label = f"{regime}: перший захист прибутку"
 
     if side == "LONG":
         level = entry * (1 + lock_pct / 100.0)
@@ -4438,7 +4468,26 @@ def manage_active_trade(trade, context):
     strong_mfe_giveback = best_pct >= safe_float(mode_profile.get("be_trigger"), 0.65) and giveback_ratio >= dynamic_giveback_limit and current_pct <= (0.35 if market_regime in ["RANGE", "NEWS_IMPULSE"] else 0.28)
     if strong_mfe_giveback and action in ["HOLD", "PROTECT"]:
         warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
-        if warning_votes >= 1 or opposite_votes >= 1.55:
+        trend_still_valid = (
+            market_regime == "TREND"
+            and (tf15.get("bias") == side or context.get("bias") == side or support_votes >= 2.0)
+            and not (structure_against or ict_against)
+        )
+
+        # In a confirmed trend, MFE giveback should first tighten the stop,
+        # not immediately close the trade. Otherwise the bot exits a good trend
+        # during a normal retest and then misses the continuation.
+        if trend_still_valid:
+            action = "PROTECT"
+            title = f"{side} — ПРИБУТОК ЗАХИЩЕНО, ТРЕНД ЩЕ ЖИВИЙ"
+            recommendation = "частину прибутку вже віддали, але тренд/15M ще підтримує: стоп підтягнути і дати руху шанс продовжитись"
+            protect_stop, protect_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, max(current_pct, 0.20), mode_profile)
+            if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop):
+                recommended_stop = trade.stop_current
+                recommended_stop_reason = protect_reason
+                notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
+            notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
+        elif warning_votes >= 2 or opposite_votes >= 2.05 or market_regime in ["RANGE", "NEWS_IMPULSE"]:
             trade.status = "CLOSED"
             trade.last_action = "EXIT_MFE_GIVEBACK"
             reasons = [f"було +{round(best_pct, 3)}%, зараз тільки {round(current_pct, 3)}%"]
@@ -4452,7 +4501,7 @@ def manage_active_trade(trade, context):
                 "closed": True,
                 "action": "EXIT_MFE_GIVEBACK",
                 "title": f"{side} ЗАКРИТИ — ПРИБУТОК ВІДДАЄТЬСЯ",
-                "recommendation": "рух у плюс майже віддали назад: краще закрити, ніж чекати дальній TP/стоп",
+                "recommendation": "рух у плюс майже віддали назад і підтвердження слабшає: краще закрити, ніж чекати дальній TP/стоп",
                 "current_pct": current_pct,
                 "best_pct": best_pct,
                 "recommended_stop": trade.stop_current,
@@ -4462,7 +4511,7 @@ def manage_active_trade(trade, context):
         elif action == "HOLD":
             action = "PROTECT_OR_EXIT"
             title = f"{side} — ПРИБУТОК ВІДДАЄТЬСЯ"
-            recommendation = "угода вже давала хороший плюс; захистити або закрити біля поточної"
+            recommendation = "угода вже давала хороший плюс; захистити стопом, а закривати тільки якщо 15M/ICT/структура зламаються"
             notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
 
     if lost_after_profit and opposite_votes >= 2.2:
