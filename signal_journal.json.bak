@@ -2191,7 +2191,186 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-04T07:45:44.114567+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 97.18,
+      "quality": 56,
+      "reason": "після слабкого виходу LONG (EXIT_LOCAL_BREAK, -0.309%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 97.18,
+        "stop": 96.5483,
+        "tp1": 98.249,
+        "tp2": 98.9778,
+        "tp3": 100.0954,
+        "risk_pct": 0.65,
+        "rr1": 1.69,
+        "rr2": 2.85,
+        "rr3": 4.62,
+        "invalidation": "15m закриття нижче 96.5483 або злам 3m/структури проти LONG. Режим: відкат у тренді. TP/стоп динамічні; TP1 орієнтир 1.1%."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "3m дав тригер",
+        "ICT сетап готовий",
+        "потік підтримує",
+        "кластери локально підтримують",
+        "Smart Money RR добрий: 1.69R"
+      ],
+      "conflicts": [
+        "після слабкого виходу LONG (EXIT_LOCAL_BREAK, -0.309%) не повторювати той самий напрям без нового BOS/reclaim"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 53,
+        "total_score": 55,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 46,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.33,
+          "drift_pct": 0.282,
+          "vol_ratio": 0.11,
+          "note": "3m швидко йде вгору; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "trend": "NEUTRAL",
+          "close": 97.2,
+          "ema20": 97.0588,
+          "ema50": 97.237,
+          "rsi": 53.5,
+          "atr": 0.2744,
+          "slope_pct": -0.021,
+          "move_8_pct": 0.279,
+          "range_atr": 2.7,
+          "note": "EMA20 нижче EMA50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -10,
+          "trend": "NEUTRAL",
+          "close": 97.2,
+          "ema20": 97.2483,
+          "ema50": 96.767,
+          "rsi": 50.0,
+          "atr": 0.6156,
+          "slope_pct": -0.797,
+          "move_8_pct": -0.123,
+          "range_atr": 3.33,
+          "note": "EMA20 вище EMA50; нахил вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "LONG",
+          "score": 42,
+          "trend": "LONG",
+          "close": 97.2,
+          "ema20": 96.1907,
+          "ema50": 95.4894,
+          "rsi": 60.0,
+          "atr": 1.3599,
+          "slope_pct": 2.833,
+          "move_8_pct": 0.289,
+          "range_atr": 4.65,
+          "note": "ціна вище EMA20/50; нахил вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 97.25,
+          "swing_low": 96.71,
+          "recent_high": 97.53,
+          "recent_low": 96.55,
+          "atr": 0.2744,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 16,
+          "trade_delta_pct": 95.76,
+          "book_delta_pct": 5.24,
+          "note": "угоди за покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 113938.0,
+          "delta_pct": 95.76,
+          "cvd": 82575.0,
+          "cvd_change_pct": 363.288,
+          "last_trade_ts": 1780559114040,
+          "price_move_pct": 0.33,
+          "note": "CVD росте"
+        },
+        "clusters": {
+          "bias": "LONG",
+          "score": 5,
+          "state": "LOCAL_BUYER_SUPPORT",
+          "zones": [
+            {
+              "price": 97.18,
+              "imbalance_pct": 95.7,
+              "volume": 115061.0
+            },
+            {
+              "price": 97.2577,
+              "imbalance_pct": 98.8,
+              "volume": 3919.0
+            }
+          ],
+          "note": "локальний покупець біля 97.18"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 60670.18,
+          "oi_change_pct": 0.983,
+          "funding_pct": 0,
+          "price_change_pct": 0.124,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.1,
+          "move_1_pct": 0.041,
+          "move_6_pct": 0.124,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -2,
+          "top": "India Nayara says Vadinar refinery turnaround completed - Reuters",
+          "total": 32
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-04T07:30:54.800073+00:00"
+  "updated_at": "2026-06-04T07:45:44.115461+00:00"
 }
