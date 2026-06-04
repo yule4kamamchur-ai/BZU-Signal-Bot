@@ -2577,6 +2577,194 @@ def analyze_calendar_alerts():
 # ==========================================================
 
 
+def _parse_iso_time(value):
+    try:
+        if not value:
+            return None
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def analyze_reentry_cooldown(state, max_age_hours=6):
+    """Block low-quality re-entry in the same direction after a weak exit.
+
+    This is intentionally a *cooldown*, not a permanent ban. It prevents the bot
+    from opening LONG again immediately after a weak LONG exit, unless a fresh
+    high-quality structure appears later (BOS/reclaim + 3M + flow/CVD).
+    """
+    history = (state or {}).get("history") or []
+    now = now_utc()
+    weak_actions = {
+        "EXIT", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK",
+        "EXIT_AFTER_TP1_GIVEBACK", "PROTECT_OR_EXIT", "STOP",
+    }
+    for item in reversed(history[-MAX_HISTORY:]):
+        if not isinstance(item, dict) or item.get("type") != "TRADE_CLOSED":
+            continue
+        side = item.get("side")
+        if side not in ["LONG", "SHORT"]:
+            continue
+        action = str(item.get("action") or "")
+        result_pct = safe_float(item.get("result_pct"), 0.0) or 0.0
+        ts = _parse_iso_time(item.get("time"))
+        age_h = ((now - ts).total_seconds() / 3600.0) if ts else 999.0
+        if age_h > max_age_hours:
+            return {"active": False}
+        # Weak exit = stop/loss, tiny win after good movement, or explicit giveback/local break.
+        is_weak = (
+            action in weak_actions
+            and (
+                result_pct <= 0.25
+                or action in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_AFTER_TP1_GIVEBACK"]
+            )
+        )
+        if is_weak:
+            return {
+                "active": True,
+                "side": side,
+                "action": action,
+                "result_pct": round(result_pct, 3),
+                "age_hours": round(age_h, 2),
+                "reason": f"після слабкого виходу {side} ({action}, {round(result_pct, 3)}%) не повторювати той самий напрям без нового BOS/reclaim",
+            }
+        return {"active": False}
+    return {"active": False}
+
+
+def detect_market_regime(context, side=None):
+    """Classify market state for dynamic TP/Stop and exits.
+
+    The regime must not confuse a normal pullback with range:
+    - PULLBACK: HTF still supports the side, and price is in correct ICT side.
+    - RANGE/BALANCE: EQ/midrange + neutral 15M/structure + choppy 3M.
+    - TREND: 15M/1H/structure align and the market has momentum.
+    """
+    if not isinstance(context, dict):
+        return {"name": "UNKNOWN", "score": 0, "reason": "немає контексту"}
+
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15")) or ((price or 90) * 0.006)
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    tf4h = context.get("tf4h") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    news = context.get("news") or {}
+    calendar = context.get("calendar") or {}
+    liquidity = context.get("liquidity") or {}
+
+    phase = str(structure.get("phase") or "").upper()
+    pd = str(ict.get("premium_discount") or "").upper()
+    ict_setup = str(ict.get("setup") or "").upper()
+    range_atr = safe_float(tf15.get("range_atr"), 0) or 0
+    move8 = abs(safe_float(tf15.get("move_8_pct"), 0) or 0)
+    score_total = abs(int(context.get("total_score", 0) or 0))
+    bias = side if side in ["LONG", "SHORT"] else context.get("bias")
+
+    ict_balance, balance_reason = detect_ict_balance_market(context, bias if bias in ["LONG", "SHORT"] else None)
+    near_eq = pd == "MIDRANGE" or ict_setup == "BALANCE_MIDRANGE"
+    tf15_neutral = tf15.get("bias") == "NEUTRAL" or tf15.get("trend") == "RANGE" or abs(int(tf15.get("score", 0) or 0)) < 26
+    structure_neutral = structure.get("bias") == "NEUTRAL" or phase in ["RANGE / WAIT", "NO DATA", ""]
+    tf3_choppy = tf3.get("bias") == "NEUTRAL" or abs(int(tf3.get("score", 0) or 0)) < 32
+
+    if calendar.get("active") or (abs(int(news.get("score", 0) or 0)) >= 35 and move8 >= 1.2):
+        return {"name": "NEWS_IMPULSE", "score": 70, "reason": "новинний/подієвий імпульс — цілі ближче, ризик різкого відкату"}
+
+    if bias in ["LONG", "SHORT"]:
+        same15 = tf15.get("bias") == bias
+        same1h = tf1h.get("bias") == bias or side_score(int(tf1h.get("score", 0) or 0), bias) >= 22
+        same4h = tf4h.get("bias") == bias or side_score(int(tf4h.get("score", 0) or 0), bias) >= 18
+        same_struct = structure.get("bias") == bias
+        same3 = tf3.get("bias") == bias
+        correct_pd = (bias == "LONG" and pd == "DISCOUNT") or (bias == "SHORT" and pd == "PREMIUM")
+
+        if (same1h or same4h) and correct_pd and not same15 and not near_eq:
+            return {"name": "PULLBACK", "score": 68, "reason": "відкат у правильну ICT-зону за старшим напрямом"}
+
+        if same15 and same1h and (same_struct or same3) and range_atr >= 3.0 and score_total >= 70:
+            return {"name": "TREND", "score": 85, "reason": "15M/1H/структура підтримують тренд — можна тримати довше"}
+
+        if any(x in phase for x in ["CHOCH", "SWEEP"]) or (same_struct and not same1h):
+            return {"name": "REVERSAL", "score": 62, "reason": "розворотний режим — прибуток захищати швидше, ніж у тренді"}
+
+    if ict_balance or (near_eq and tf15_neutral and (structure_neutral or tf3_choppy)):
+        return {"name": "RANGE", "score": 55, "reason": balance_reason or "баланс/EQ — брати швидший TP і не тримати до дальніх цілей"}
+
+    if move8 >= 1.5 and liquidity.get("event") not in ["QUIET", ""]:
+        return {"name": "IMPULSE", "score": 60, "reason": "імпульсний рух після ліквідності — потрібен швидкий захист прибутку"}
+
+    return {"name": "NORMAL", "score": 50, "reason": "звичайний intraday режим"}
+
+
+def trade_mode_profile(context, side=None):
+    """Dynamic TP/Stop profile by market regime.
+
+    Values are conservative for BZU intraday. They affect new plans and profit
+    management, but do not change the core signal direction.
+    """
+    regime = detect_market_regime(context, side)
+    name = regime.get("name", "NORMAL")
+    profiles = {
+        # Range: do not ask for +2.18% if the market is balanced. Take the first
+        # realistic edge at +0.75–1.0% and protect aggressively.
+        "RANGE": {"tp1_pct": 0.78, "tp2_pct": 1.25, "tp3_pct": 1.90, "max_stop_pct": 1.05, "be_trigger": 0.45, "protect_trigger": 0.70, "giveback": 0.42},
+        "PULLBACK": {"tp1_pct": 1.10, "tp2_pct": 1.85, "tp3_pct": 3.00, "max_stop_pct": 1.35, "be_trigger": 0.60, "protect_trigger": 0.95, "giveback": 0.50},
+        "TREND": {"tp1_pct": 2.18, "tp2_pct": 3.35, "tp3_pct": 5.20, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.80, "protect_trigger": 1.25, "giveback": 0.68},
+        "REVERSAL": {"tp1_pct": 1.25, "tp2_pct": 2.05, "tp3_pct": 3.20, "max_stop_pct": 1.45, "be_trigger": 0.60, "protect_trigger": 1.00, "giveback": 0.52},
+        "NEWS_IMPULSE": {"tp1_pct": 0.95, "tp2_pct": 1.65, "tp3_pct": 2.80, "max_stop_pct": 1.25, "be_trigger": 0.50, "protect_trigger": 0.85, "giveback": 0.45},
+        "IMPULSE": {"tp1_pct": 1.05, "tp2_pct": 1.75, "tp3_pct": 2.90, "max_stop_pct": 1.35, "be_trigger": 0.55, "protect_trigger": 0.90, "giveback": 0.48},
+        "NORMAL": {"tp1_pct": 1.35, "tp2_pct": 2.20, "tp3_pct": 3.60, "max_stop_pct": 1.55, "be_trigger": 0.65, "protect_trigger": 1.05, "giveback": 0.55},
+        "UNKNOWN": {"tp1_pct": 1.35, "tp2_pct": 2.20, "tp3_pct": 3.60, "max_stop_pct": 1.55, "be_trigger": 0.65, "protect_trigger": 1.05, "giveback": 0.55},
+    }
+    profile = dict(profiles.get(name, profiles["NORMAL"]))
+    profile["regime"] = name
+    profile["reason"] = regime.get("reason", "")
+    return profile
+
+
+
+def regime_label(regime):
+    """User-facing Ukrainian label for internal market regime codes."""
+    name = regime
+    if isinstance(regime, dict):
+        name = regime.get("name")
+    name = str(name or "NORMAL").upper()
+    labels = {
+        "TREND": "сильний тренд",
+        "RANGE": "боковик",
+        "PULLBACK": "відкат у тренді",
+        "REVERSAL": "розворот",
+        "NEWS_IMPULSE": "новинний імпульс",
+        "IMPULSE": "новинний імпульс",
+        "NORMAL": "звичайний intraday режим",
+        "UNKNOWN": "звичайний intraday режим",
+    }
+    return labels.get(name, "звичайний intraday режим")
+
+
+def cooldown_override_ok(side, context):
+    """Allow re-entry after a weak exit only if a fresh, strong setup appears."""
+    if side not in ["LONG", "SHORT"]:
+        return False
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+    phase = str(structure.get("phase") or "").upper()
+    fresh_bos = (side == "LONG" and "BOS LONG" in phase) or (side == "SHORT" and "BOS SHORT" in phase)
+    fresh_sweep = (side == "LONG" and "DOWNSIDE SWEEP" in phase) or (side == "SHORT" and "UPSIDE SWEEP" in phase)
+    return bool(
+        tf3.get("bias") == side
+        and (tf15.get("bias") == side or fresh_bos or fresh_sweep)
+        and (structure.get("bias") == side or ict.get("bias") == side)
+        and (cvd.get("bias") == side or flow.get("bias") == side)
+    )
+
+
 def build_context(data, state=None):
     ticker = data.get("ticker") or {}
     price = safe_float(ticker.get("price"))
@@ -2664,6 +2852,24 @@ def build_context(data, state=None):
         "atr15": atr15,
         "ict": ict,
     })
+    temp_context_for_regime = {
+        "price": price,
+        "atr15": atr15,
+        "change24h": context_change24h,
+        "tf3": tf3,
+        "tf15": tf15,
+        "tf1h": tf1h,
+        "tf4h": tf4h,
+        "structure": structure,
+        "ict": ict,
+        "news": news,
+        "calendar": calendar,
+        "liquidity": liquidity,
+        "total_score": int(total_score),
+        "bias": bias,
+    }
+    market_regime = detect_market_regime(temp_context_for_regime, bias if bias in ["LONG", "SHORT"] else None)
+    reentry_cooldown = analyze_reentry_cooldown(state)
 
     return {
         "price": price,
@@ -2682,6 +2888,8 @@ def build_context(data, state=None):
         "ict_score_raw": int(ict_score_raw),
         "ict_score_used": int(ict_score_used),
         "pending_ict_zones": pending_ict_zones,
+        "market_regime": market_regime,
+        "reentry_cooldown": reentry_cooldown,
         "volume_guard": volume_guard,
         "flow": flow,
         "cvd": cvd,
@@ -3047,39 +3255,60 @@ def make_plan(side, context):
     structure = context["structure"]
     swing_low = safe_float(structure.get("swing_low")) or price - atr15
     swing_high = safe_float(structure.get("swing_high")) or price + atr15
+    profile = trade_mode_profile(context, side)
+    regime = profile.get("regime", "NORMAL")
 
-    min_risk = max(atr15 * 1.15, price * 0.0075)
-    max_risk = price * (MAX_STOP_DISTANCE_PCT / 100)
+    min_risk = max(atr15 * 1.05, price * 0.0065)
+    max_risk = price * (safe_float(profile.get("max_stop_pct"), MAX_STOP_DISTANCE_PCT) / 100)
     buffer = max(atr15 * 0.18, price * 0.0012)
-    min_tp1_distance = price * (MIN_TP1_DISTANCE_PCT / 100)
-    min_tp2_distance = price * (MIN_TP2_DISTANCE_PCT / 100)
-    min_tp3_distance = price * (MIN_TP3_DISTANCE_PCT / 100)
+    min_tp1_distance = price * (safe_float(profile.get("tp1_pct"), MIN_TP1_DISTANCE_PCT) / 100)
+    min_tp2_distance = price * (safe_float(profile.get("tp2_pct"), MIN_TP2_DISTANCE_PCT) / 100)
+    min_tp3_distance = price * (safe_float(profile.get("tp3_pct"), MIN_TP3_DISTANCE_PCT) / 100)
 
     if side == "LONG":
         raw_stop = min(swing_low - buffer, price - min_risk)
         risk = min(max(price - raw_stop, min_risk), max_risk)
         stop = price - risk
-        technical_tp1 = max(swing_high, price + atr15 * 1.8)
-        technical_tp2 = max(structure.get("recent_high") or technical_tp1, price + atr15 * 2.6)
+        if regime == "RANGE":
+            # In balance, nearest realistic objective is EQ/range edge, not a far 2% TP.
+            eq = safe_float((context.get("ict") or {}).get("equilibrium"))
+            rh = safe_float((context.get("ict") or {}).get("range_high"))
+            range_target = min([x for x in [eq, rh, swing_high] if x and x > price], default=price + min_tp1_distance)
+            technical_tp1 = max(price + min_tp1_distance, min(range_target, price + atr15 * 1.45))
+            technical_tp2 = max(technical_tp1 + atr15 * 0.75, price + min_tp2_distance)
+        else:
+            tp1_atr_mult = 2.05 if regime == "TREND" else (1.55 if regime in ["PULLBACK", "REVERSAL"] else 1.35)
+            tp2_atr_mult = 3.00 if regime == "TREND" else (2.25 if regime in ["PULLBACK", "REVERSAL"] else 2.00)
+            technical_tp1 = max(swing_high, price + atr15 * tp1_atr_mult)
+            technical_tp2 = max(structure.get("recent_high") or technical_tp1, price + atr15 * tp2_atr_mult)
         tp1 = max(technical_tp1, price + min_tp1_distance)
-        tp2 = max(technical_tp2, price + min_tp2_distance, tp1 + atr15 * 0.9)
-        tp3 = max(price + min_tp3_distance, tp2 + atr15 * 1.2)
+        tp2 = max(technical_tp2, price + min_tp2_distance, tp1 + atr15 * 0.55)
+        tp3 = max(price + min_tp3_distance, tp2 + atr15 * (1.35 if regime == "TREND" else 0.95))
         invalidation = (
             f"15m закриття нижче {round_price(stop)} або злам 3m/структури проти LONG. "
-            f"Стоп не далі {MAX_STOP_DISTANCE_PCT}% від входу; TP1 не ближче {MIN_TP1_DISTANCE_PCT}%."
+            f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 орієнтир {round(safe_float(profile.get('tp1_pct'), 0), 2)}%."
         )
     else:
         raw_stop = max(swing_high + buffer, price + min_risk)
         risk = min(max(raw_stop - price, min_risk), max_risk)
         stop = price + risk
-        technical_tp1 = min(swing_low, price - atr15 * 1.8)
-        technical_tp2 = min(structure.get("recent_low") or technical_tp1, price - atr15 * 2.6)
+        if regime == "RANGE":
+            eq = safe_float((context.get("ict") or {}).get("equilibrium"))
+            rl = safe_float((context.get("ict") or {}).get("range_low"))
+            range_target = max([x for x in [eq, rl, swing_low] if x and x < price], default=price - min_tp1_distance)
+            technical_tp1 = min(price - min_tp1_distance, max(range_target, price - atr15 * 1.45))
+            technical_tp2 = min(technical_tp1 - atr15 * 0.75, price - min_tp2_distance)
+        else:
+            tp1_atr_mult = 2.05 if regime == "TREND" else (1.55 if regime in ["PULLBACK", "REVERSAL"] else 1.35)
+            tp2_atr_mult = 3.00 if regime == "TREND" else (2.25 if regime in ["PULLBACK", "REVERSAL"] else 2.00)
+            technical_tp1 = min(swing_low, price - atr15 * tp1_atr_mult)
+            technical_tp2 = min(structure.get("recent_low") or technical_tp1, price - atr15 * tp2_atr_mult)
         tp1 = min(technical_tp1, price - min_tp1_distance)
-        tp2 = min(technical_tp2, price - min_tp2_distance, tp1 - atr15 * 0.9)
-        tp3 = min(price - min_tp3_distance, tp2 - atr15 * 1.2)
+        tp2 = min(technical_tp2, price - min_tp2_distance, tp1 - atr15 * 0.55)
+        tp3 = min(price - min_tp3_distance, tp2 - atr15 * (1.35 if regime == "TREND" else 0.95))
         invalidation = (
             f"15m закриття вище {round_price(stop)} або злам 3m/структури проти SHORT. "
-            f"Стоп не далі {MAX_STOP_DISTANCE_PCT}% від входу; TP1 не ближче {MIN_TP1_DISTANCE_PCT}%."
+            f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 орієнтир {round(safe_float(profile.get('tp1_pct'), 0), 2)}%."
         )
 
     risk_pct = abs(stop - price) / price * 100 if price else 0
@@ -3231,6 +3460,9 @@ def evaluate_new_setup(context):
     exhausted, exhausted_reason = detect_exhausted_move(side, context)
     late, late_reason = is_late_chase(side, context)
     plan = make_plan(side, context)
+    mode_profile = trade_mode_profile(context, side)
+    market_regime = mode_profile.get("regime", "NORMAL")
+    reentry_cooldown = context.get("reentry_cooldown") or {}
 
     tf3 = context["tf3"]
     tf15 = context["tf15"]
@@ -3345,6 +3577,14 @@ def evaluate_new_setup(context):
         elif side == "SHORT" and "локальний покупець у стакані" not in conflicts:
             conflicts.append("локальний покупець у стакані")
 
+    if market_regime in ["RANGE", "NEWS_IMPULSE", "REVERSAL"]:
+        confirmations.append(f"режим: {regime_label(market_regime)} — TP/стоп адаптовані")
+
+    cooldown_active = bool(reentry_cooldown.get("active") and reentry_cooldown.get("side") == side)
+    cooldown_can_override = cooldown_override_ok(side, context)
+    if cooldown_active and not cooldown_can_override:
+        conflicts.append(reentry_cooldown.get("reason") or "після слабкого EXIT потрібен новий BOS/reclaim")
+
     if context.get("low_liquidity_risk"):
         conflicts.append("низька ліквідність/тиха сесія — ризик спреду і slippage")
     if context.get("price_warning"):
@@ -3423,6 +3663,7 @@ def evaluate_new_setup(context):
         or (tf15_against and structure_against)
         or (strong_cvd_against and strong_oi_against)
         or (tf3_strong_against and strong_cvd_against)
+        or (cooldown_active and not cooldown_can_override)
     )
 
     if not tf3_same:
@@ -3461,6 +3702,20 @@ def evaluate_new_setup(context):
         quality = min(quality, 66)
 
     quality = int(max(0, min(92, quality)))
+
+    if cooldown_active and not cooldown_can_override:
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 58),
+            "title": f"ЧЕКАТИ — {side} ПІСЛЯ СЛАБКОГО EXIT",
+            "reason": reentry_cooldown.get("reason") or "після слабкого виходу потрібен новий BOS/reclaim",
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+            "reentry_cooldown": True,
+            "show_wait_plan": True,
+        }
 
     if ict_balance:
         return {
@@ -3727,29 +3982,33 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
     return round_price(clamped), why
 
 
-def _profit_lock_stop_level(side, entry, price, best_pct, current_pct):
+def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=None):
     """MFE-based protective stop for BZU intraday trades.
 
-    The bot's historical journal showed many trades reaching +0.6%...+1.7%
-    and later closing near zero. This helper does not change entry logic; it
-    only protects already-earned unrealized profit before formal TP1.
+    Regime-aware:
+    - RANGE/NEWS: protect earlier and take smaller wins.
+    - TREND: give more room so TP2/TP3 still have a chance.
     """
-    if not entry or not price or best_pct < 0.70 or current_pct < 0.18:
+    profile = profile or {}
+    regime = profile.get("regime", "NORMAL")
+    be_trigger = safe_float(profile.get("be_trigger"), 0.65) or 0.65
+    protect_trigger = safe_float(profile.get("protect_trigger"), 1.05) or 1.05
+    if not entry or not price or best_pct < be_trigger or current_pct < 0.12:
         return None, ""
 
-    # Lock ladder before TP1. Values are intentionally moderate so normal BZU
-    # noise is not stopped immediately, but a good move cannot fully return to 0.
-    lock_pct = 0.05
-    label = "+0.7% MFE: стоп у беззбиток+"
-    if best_pct >= 1.60 and current_pct >= 0.85:
-        lock_pct = 0.65
-        label = "+1.6% MFE: захистити більшу частину руху"
-    elif best_pct >= 1.30 and current_pct >= 0.65:
-        lock_pct = 0.45
-        label = "+1.3% MFE: зафіксувати частину прибутку"
-    elif best_pct >= 1.00 and current_pct >= 0.45:
-        lock_pct = 0.25
-        label = "+1.0% MFE: стоп у невеликий плюс"
+    # Lock ladder before TP1. It adapts to regime. In range we lock quicker;
+    # in trend we let the move breathe.
+    lock_pct = 0.04
+    label = f"{regime}: MFE +{round(best_pct, 2)}% — стоп у беззбиток+"
+    if best_pct >= protect_trigger + 0.60 and current_pct >= protect_trigger * 0.75:
+        lock_pct = 0.58 if regime == "TREND" else 0.70
+        label = f"{regime}: сильний MFE — захистити більшу частину руху"
+    elif best_pct >= protect_trigger + 0.25 and current_pct >= protect_trigger * 0.55:
+        lock_pct = 0.38 if regime == "TREND" else 0.50
+        label = f"{regime}: MFE — зафіксувати частину прибутку"
+    elif best_pct >= protect_trigger and current_pct >= max(0.25, be_trigger * 0.65):
+        lock_pct = 0.20 if regime == "TREND" else 0.28
+        label = f"{regime}: перший захист прибутку"
 
     if side == "LONG":
         level = entry * (1 + lock_pct / 100.0)
@@ -3786,6 +4045,8 @@ def manage_active_trade(trade, context):
     structure = context["structure"]
     ict = context.get("ict") or {}
     flow = context["flow"]
+    mode_profile = trade_mode_profile(context, side)
+    market_regime = mode_profile.get("regime", "NORMAL")
 
     trade.best_price = best_trade_price(side, trade, price)
     current_pct = signed_pct(side, trade.entry, price)
@@ -3794,6 +4055,10 @@ def manage_active_trade(trade, context):
     giveback_ratio = giveback / best_pct if best_pct > 0 else 0
 
     notes = []
+    if market_regime in ["RANGE", "NEWS_IMPULSE", "REVERSAL"]:
+        notes.append(f"режим: {regime_label(market_regime)} — прибуток захищати швидше")
+    elif market_regime == "TREND":
+        notes.append("режим: сильний тренд — можна тримати довше, але MFE не віддавати")
     action = "HOLD"
     title = f"СУПРОВІД {side}"
     recommendation = "утримувати, поки 3m/15m не ламаються"
@@ -3899,8 +4164,10 @@ def manage_active_trade(trade, context):
 
     near_entry = abs(current_pct) <= 0.18
     post_tp1 = bool(trade.tp1_hit)
-    lost_after_profit = best_pct >= 0.38 and giveback_ratio >= 0.62 and current_pct <= 0.18
-    tp1_giveback_to_entry = post_tp1 and best_pct >= 0.55 and giveback_ratio >= 0.55 and current_pct <= 0.22
+    profile_be = safe_float(mode_profile.get("be_trigger"), 0.65) or 0.65
+    profile_giveback = safe_float(mode_profile.get("giveback"), 0.55) or 0.55
+    lost_after_profit = best_pct >= max(0.35, profile_be * 0.75) and giveback_ratio >= profile_giveback and current_pct <= (0.22 if market_regime in ["RANGE", "NEWS_IMPULSE"] else 0.18)
+    tp1_giveback_to_entry = post_tp1 and best_pct >= max(0.55, profile_be) and giveback_ratio >= min(0.60, profile_giveback + 0.08) and current_pct <= 0.22
 
     # Intraday early-exit logic.
     # For trades that should last only a few hours, do not wait for the formal stop
@@ -3924,7 +4191,7 @@ def manage_active_trade(trade, context):
 
     # MFE protection before formal TP1: do not allow a good intraday move
     # to come back to zero just because TP1 is still far away.
-    mfe_stop, mfe_stop_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, current_pct)
+    mfe_stop, mfe_stop_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, current_pct, mode_profile)
     if action == "HOLD" and mfe_stop is not None:
         if _apply_more_protective_stop(trade, side, mfe_stop):
             action = "PROTECT"
@@ -4028,7 +4295,8 @@ def manage_active_trade(trade, context):
 
     # If a trade reached meaningful profit but gives most of it back before TP1,
     # close/protect earlier. This directly addresses cases like +1.7% MFE → +0.1% exit.
-    strong_mfe_giveback = best_pct >= 0.75 and giveback_ratio >= 0.62 and current_pct <= 0.28
+    dynamic_giveback_limit = safe_float(mode_profile.get("giveback"), 0.55) or 0.55
+    strong_mfe_giveback = best_pct >= safe_float(mode_profile.get("be_trigger"), 0.65) and giveback_ratio >= dynamic_giveback_limit and current_pct <= (0.35 if market_regime in ["RANGE", "NEWS_IMPULSE"] else 0.28)
     if strong_mfe_giveback and action in ["HOLD", "PROTECT"]:
         warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
         if warning_votes >= 1 or opposite_votes >= 1.55:
@@ -4205,6 +4473,9 @@ def price_line(context):
 def context_lines(context):
     # Short dashboard only. Detailed notes stay inside the bot logic, not in Telegram.
     lines = []
+    regime = context.get("market_regime") or detect_market_regime(context, context.get("bias") if context.get("bias") in ["LONG", "SHORT"] else None)
+    if regime.get("name") and regime.get("name") != "UNKNOWN":
+        lines.append(f"<b>Режим:</b> {regime_label(regime)}")
     calendar = context.get("calendar") or {}
     if calendar.get("active"):
         lines.append(f"<b>⚠️ Новина:</b> {calendar.get('note')}. Новий вхід тільки після реакції ціни.")
