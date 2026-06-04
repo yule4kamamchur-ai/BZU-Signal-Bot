@@ -1521,7 +1521,188 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-04T11:30:59.798014+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 95.42,
+      "quality": 55,
+      "reason": "після слабкого виходу SHORT (EXIT_MFE_GIVEBACK, 0.155%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 95.42,
+        "stop": 97.0045,
+        "tp1": 93.3398,
+        "tp2": 92.2234,
+        "tp3": 90.4582,
+        "risk_pct": 1.661,
+        "rr1": 1.31,
+        "rr2": 2.02,
+        "rr3": 3.13,
+        "invalidation": "15m закриття вище 97.0045 або злам 3m/структури проти SHORT. Режим: сильний тренд. TP/стоп динамічні; TP1 орієнтир 2.18%."
+      },
+      "confirmations": [
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "структура підтверджує",
+        "Smart Money RR добрий: 1.31R"
+      ],
+      "conflicts": [
+        "CVD проти",
+        "потік локально проти",
+        "після слабкого виходу SHORT (EXIT_MFE_GIVEBACK, 0.155%) не повторювати той самий напрям без нового BOS/reclaim",
+        "ціна TV/OKX розходиться — вхід тільки обережно"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -141,
+        "total_score": -139,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -68,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -1.016,
+          "drift_pct": -0.978,
+          "vol_ratio": 0.12,
+          "note": "3m швидко йде вниз; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -42,
+          "trend": "SHORT",
+          "close": 95.56,
+          "ema20": 96.4416,
+          "ema50": 96.8343,
+          "rsi": 31.0,
+          "atr": 0.4053,
+          "slope_pct": -0.839,
+          "move_8_pct": -0.427,
+          "range_atr": 5.06,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -31,
+          "trend": "SHORT",
+          "close": 95.51,
+          "ema20": 96.888,
+          "ema50": 96.6847,
+          "rsi": 32.7,
+          "atr": 0.7332,
+          "slope_pct": -1.017,
+          "move_8_pct": -1.485,
+          "range_atr": 4.21,
+          "note": "EMA20 вище EMA50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 5,
+          "trend": "NEUTRAL",
+          "close": 95.51,
+          "ema20": 96.1222,
+          "ema50": 95.5266,
+          "rsi": 48.3,
+          "atr": 1.4092,
+          "slope_pct": 1.308,
+          "move_8_pct": -1.567,
+          "range_atr": 4.47,
+          "note": "EMA20 вище EMA50; нахил вгору; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -32,
+          "phase": "BOS SHORT",
+          "swing_high": 96.89,
+          "swing_low": 95.69,
+          "recent_high": 97.4,
+          "recent_low": 95.35,
+          "atr": 0.4053,
+          "note": "закриття нижче swing low 95.69"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 17,
+          "trade_delta_pct": 14.21,
+          "book_delta_pct": 41.69,
+          "note": "стакан підтримує покупців; підтримка покупців біля 95.23"
+        },
+        "cvd": {
+          "bias": "LONG",
+          "score": 18,
+          "state": "BULLISH_ABSORPTION",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 1938.0,
+          "delta_pct": 14.21,
+          "cvd": -49919.0,
+          "cvd_change_pct": 3.737,
+          "last_trade_ts": 1780572646727,
+          "price_move_pct": -0.913,
+          "note": "ціна вниз, CVD вгору"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 95.5727,
+              "imbalance_pct": 86.0,
+              "volume": 3945.0
+            },
+            {
+              "price": 95.42,
+              "imbalance_pct": -75.5,
+              "volume": 49.0
+            }
+          ],
+          "note": "локальні покупки вище ціни"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 62255.08,
+          "oi_change_pct": 0.004,
+          "funding_pct": 0,
+          "price_change_pct": 0.063,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.13,
+          "move_1_pct": -0.031,
+          "move_6_pct": -0.79,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -1,
+          "top": "Italy to approve Ludoil's acquisition of Sicilian oil refiner - Reuters",
+          "total": 37
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-04T11:27:18.387195+00:00"
+  "updated_at": "2026-06-04T11:30:59.798786+00:00"
 }
