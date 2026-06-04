@@ -3726,6 +3726,54 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
         why = f"{why}; обмежено, щоб стоп не був занадто близько до TP1"
     return round_price(clamped), why
 
+
+def _profit_lock_stop_level(side, entry, price, best_pct, current_pct):
+    """MFE-based protective stop for BZU intraday trades.
+
+    The bot's historical journal showed many trades reaching +0.6%...+1.7%
+    and later closing near zero. This helper does not change entry logic; it
+    only protects already-earned unrealized profit before formal TP1.
+    """
+    if not entry or not price or best_pct < 0.70 or current_pct < 0.18:
+        return None, ""
+
+    # Lock ladder before TP1. Values are intentionally moderate so normal BZU
+    # noise is not stopped immediately, but a good move cannot fully return to 0.
+    lock_pct = 0.05
+    label = "+0.7% MFE: стоп у беззбиток+"
+    if best_pct >= 1.60 and current_pct >= 0.85:
+        lock_pct = 0.65
+        label = "+1.6% MFE: захистити більшу частину руху"
+    elif best_pct >= 1.30 and current_pct >= 0.65:
+        lock_pct = 0.45
+        label = "+1.3% MFE: зафіксувати частину прибутку"
+    elif best_pct >= 1.00 and current_pct >= 0.45:
+        lock_pct = 0.25
+        label = "+1.0% MFE: стоп у невеликий плюс"
+
+    if side == "LONG":
+        level = entry * (1 + lock_pct / 100.0)
+        if level >= price:
+            return None, ""
+    else:
+        level = entry * (1 - lock_pct / 100.0)
+        if level <= price:
+            return None, ""
+    return round_price(level), label
+
+
+def _apply_more_protective_stop(trade, side, new_stop):
+    """Apply only if the new stop improves protection and stays on valid side."""
+    if new_stop is None:
+        return False
+    if side == "LONG" and new_stop > trade.stop_current:
+        trade.stop_current = float(new_stop)
+        return True
+    if side == "SHORT" and new_stop < trade.stop_current:
+        trade.stop_current = float(new_stop)
+        return True
+    return False
+
 def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
 
@@ -3874,6 +3922,24 @@ def manage_active_trade(trade, context):
     else:
         stop_distance_pct = max(0.0, (trade.stop_current - price) / trade.entry * 100) if trade.entry else 99.0
 
+    # MFE protection before formal TP1: do not allow a good intraday move
+    # to come back to zero just because TP1 is still far away.
+    mfe_stop, mfe_stop_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, current_pct)
+    if action == "HOLD" and mfe_stop is not None:
+        if _apply_more_protective_stop(trade, side, mfe_stop):
+            action = "PROTECT"
+            title = f"{side} — ПРИБУТОК ЗАХИЩЕНО"
+            recommendation = "ціна вже давала хороший плюс: стоп підтягнуто, щоб не віддати угоду назад"
+            recommended_stop = trade.stop_current
+            recommended_stop_reason = mfe_stop_reason
+            notes.append(f"MFE-захист: {mfe_stop_reason}")
+            notes.append(f"новий стоп: {round_price(trade.stop_current)}")
+
+    if side == "LONG":
+        stop_distance_pct = max(0.0, (price - trade.stop_current) / trade.entry * 100) if trade.entry else 99.0
+    else:
+        stop_distance_pct = max(0.0, (trade.stop_current - price) / trade.entry * 100) if trade.entry else 99.0
+
     near_stop = stop_distance_pct <= 0.30
     clearly_losing = current_pct <= -0.30
 
@@ -3959,6 +4025,38 @@ def manage_active_trade(trade, context):
             notes.append(f"стоп для захисту: {round_price(trade.stop_current)}")
             if recommended_stop_reason:
                 notes.append(recommended_stop_reason)
+
+    # If a trade reached meaningful profit but gives most of it back before TP1,
+    # close/protect earlier. This directly addresses cases like +1.7% MFE → +0.1% exit.
+    strong_mfe_giveback = best_pct >= 0.75 and giveback_ratio >= 0.62 and current_pct <= 0.28
+    if strong_mfe_giveback and action in ["HOLD", "PROTECT"]:
+        warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
+        if warning_votes >= 1 or opposite_votes >= 1.55:
+            trade.status = "CLOSED"
+            trade.last_action = "EXIT_MFE_GIVEBACK"
+            reasons = [f"було +{round(best_pct, 3)}%, зараз тільки {round(current_pct, 3)}%"]
+            if tf3_against:
+                reasons.append("3M вже проти")
+            if flow_against or cvd_against:
+                reasons.append("потік/CVD проти")
+            if structure_against or ict_against:
+                reasons.append("ICT/SMC проти")
+            return {
+                "closed": True,
+                "action": "EXIT_MFE_GIVEBACK",
+                "title": f"{side} ЗАКРИТИ — ПРИБУТОК ВІДДАЄТЬСЯ",
+                "recommendation": "рух у плюс майже віддали назад: краще закрити, ніж чекати дальній TP/стоп",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "recommended_stop": trade.stop_current,
+                "recommended_stop_reason": "MFE-giveback захист",
+                "notes": reasons[:4],
+            }
+        elif action == "HOLD":
+            action = "PROTECT_OR_EXIT"
+            title = f"{side} — ПРИБУТОК ВІДДАЄТЬСЯ"
+            recommendation = "угода вже давала хороший плюс; захистити або закрити біля поточної"
+            notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
 
     if lost_after_profit and opposite_votes >= 2.2:
         trade.status = "CLOSED"
@@ -4426,7 +4524,7 @@ def build_follow_message(context, trade, result):
         f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
         f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}",
     ]
-    if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK"]:
+    if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
         lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
         if result.get("recommended_stop_reason"):
             lines.append(f"<i>{html.escape(str(result.get('recommended_stop_reason')))}</i>")
