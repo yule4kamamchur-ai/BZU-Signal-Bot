@@ -8019,7 +8019,198 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-05T21:45:43.119614+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 92.81,
+      "quality": 64,
+      "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або reclaim/rejection",
+      "plan": {
+        "entry": 92.81,
+        "stop": 92.2067,
+        "tp1": 93.7845,
+        "tp2": 94.6198,
+        "tp3": 95.9655,
+        "risk_pct": 0.65,
+        "rr1": 1.62,
+        "rr2": 3.0,
+        "rr3": 5.23,
+        "invalidation": "15m закриття нижче 92.2067 або злам 3m/структури проти LONG. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "3m дав тригер",
+        "ICT сетап готовий",
+        "OI/Funding підтримує",
+        "потік підтримує",
+        "REVERSAL: попередня угода зламалась, шукаємо протилежний рух",
+        "3M розвернувся після невдалої угоди",
+        "15M нейтральний — розворот можливий, але потрібен 3M/BOS",
+        "ICT дає sweep/reclaim або continuation для розвороту",
+        "3M робить higher low після зламаного SHORT",
+        "потік підтримує розворот",
+        "Smart Money RR добрий: 1.62R"
+      ],
+      "conflicts": [
+        "1h проти",
+        "ціна TV/OKX розходиться — вхід тільки обережно",
+        "ICT+3M є, але немає 15M/BOS/reclaim — чекати структурне підтвердження"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 60,
+        "total_score": 51,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 58,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.475,
+          "drift_pct": 0.274,
+          "vol_ratio": 0.39,
+          "note": "3m швидко йде вгору; 3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 7,
+          "trend": "NEUTRAL",
+          "close": 92.99,
+          "ema20": 92.8954,
+          "ema50": 93.452,
+          "rsi": 49.1,
+          "atr": 0.3286,
+          "slope_pct": 0.144,
+          "move_8_pct": 0.194,
+          "range_atr": 2.47,
+          "note": "EMA20 нижче EMA50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 93.0,
+          "ema20": 93.8996,
+          "ema50": 94.9128,
+          "rsi": 28.9,
+          "atr": 0.6725,
+          "slope_pct": -2.085,
+          "move_8_pct": -0.906,
+          "range_atr": 5.17,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 93.0,
+          "ema20": 94.9572,
+          "ema50": 95.0189,
+          "rsi": 36.3,
+          "atr": 1.3619,
+          "slope_pct": -4.207,
+          "move_8_pct": -2.28,
+          "range_atr": 4.93,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 8,
+          "phase": "RANGE / WAIT",
+          "swing_high": 93.25,
+          "swing_low": 92.52,
+          "recent_high": 94.05,
+          "recent_low": 92.44,
+          "atr": 0.3286,
+          "note": "сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 26,
+          "trade_delta_pct": 95.57,
+          "book_delta_pct": 54.35,
+          "note": "угоди за покупців; стакан підтримує покупців; підтримка покупців біля 92.6"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 14828.0,
+          "delta_pct": 95.57,
+          "cvd": -43834.0,
+          "cvd_change_pct": 25.277,
+          "last_trade_ts": 1780695901681,
+          "price_move_pct": 0.334,
+          "note": "CVD росте"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUYER_SUPPORT",
+          "zones": [
+            {
+              "price": 92.81,
+              "imbalance_pct": 92.9,
+              "volume": 9747.0
+            },
+            {
+              "price": 92.8842,
+              "imbalance_pct": 100.0,
+              "volume": 3796.0
+            },
+            {
+              "price": 92.7358,
+              "imbalance_pct": 100.0,
+              "volume": 1973.0
+            }
+          ],
+          "note": "локальний покупець біля 92.81; ask-стіна 93.14"
+        },
+        "derivatives": {
+          "bias": "LONG",
+          "score": 12,
+          "state": "SHORTS_CLOSING",
+          "oi": 55650.2,
+          "oi_change_pct": -0.765,
+          "funding_pct": -0.0581,
+          "price_change_pct": 0.444,
+          "note": "ріст на падінні OI — шорти закриваються, не доганяти без ретесту; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.35,
+          "move_1_pct": 0.129,
+          "move_6_pct": 0.486,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "top": "Goldman Sachs says global oil demand takes big hit, sees risks to price forecast - Reuters",
+          "total": 27
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-05T21:30:52.506091+00:00"
+  "updated_at": "2026-06-05T21:45:43.121474+00:00"
 }
