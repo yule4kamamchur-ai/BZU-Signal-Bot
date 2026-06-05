@@ -3803,7 +3803,191 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-05T09:30:57.892186+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 94.55,
+      "quality": 56,
+      "reason": "після слабкого виходу SHORT (EXIT_LOCAL_BREAK, 0.137%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 94.55,
+        "stop": 95.3235,
+        "tp1": 93.7765,
+        "tp2": 92.2335,
+        "tp3": 90.0116,
+        "risk_pct": 0.818,
+        "rr1": 1.0,
+        "rr2": 2.99,
+        "rr3": 5.87,
+        "invalidation": "15m закриття вище 95.3235 або злам 3m/структури проти SHORT. Режим: сильний тренд. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "сильний обсяг",
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "Smart Money RR мінімальний: 1.0R"
+      ],
+      "conflicts": [
+        "потік локально проти",
+        "після слабкого виходу SHORT (EXIT_LOCAL_BREAK, 0.137%) не повторювати той самий напрям без нового BOS/reclaim"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -85,
+        "total_score": -83,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -36,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.316,
+          "drift_pct": -0.341,
+          "vol_ratio": 0.06,
+          "note": "3m швидко йде вниз; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -39,
+          "trend": "SHORT",
+          "close": 94.64,
+          "ema20": 94.819,
+          "ema50": 95.0406,
+          "rsi": 46.2,
+          "atr": 0.4358,
+          "slope_pct": -0.341,
+          "move_8_pct": -0.116,
+          "range_atr": 4.47,
+          "note": "ціна нижче EMA20/50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 94.64,
+          "ema20": 95.339,
+          "ema50": 95.8073,
+          "rsi": 37.0,
+          "atr": 0.6655,
+          "slope_pct": -0.549,
+          "move_8_pct": -0.932,
+          "range_atr": 3.4,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -24,
+          "trend": "NEUTRAL",
+          "close": 94.64,
+          "ema20": 95.6246,
+          "ema50": 95.4554,
+          "rsi": 43.9,
+          "atr": 1.3703,
+          "slope_pct": -3.173,
+          "move_8_pct": -2.383,
+          "range_atr": 4.46,
+          "note": "EMA20 вище EMA50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "phase": "RANGE / WAIT",
+          "swing_high": 95.21,
+          "swing_low": 93.66,
+          "recent_high": 95.92,
+          "recent_low": 93.66,
+          "atr": 0.4358,
+          "note": "сильне bearish-закриття"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 17,
+          "trade_delta_pct": 15.82,
+          "book_delta_pct": 37.72,
+          "note": "стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 1525.0,
+          "delta_pct": 15.82,
+          "cvd": 39185.0,
+          "cvd_change_pct": 4.049,
+          "last_trade_ts": 1780651845751,
+          "price_move_pct": -0.221,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 94.7013,
+              "imbalance_pct": 60.2,
+              "volume": 6000.0
+            },
+            {
+              "price": 94.6256,
+              "imbalance_pct": -59.5,
+              "volume": 3590.0
+            },
+            {
+              "price": 94.7769,
+              "imbalance_pct": 100.0,
+              "volume": 51.0
+            }
+          ],
+          "note": "локальні покупки вище ціни"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 63251.98,
+          "oi_change_pct": 0.896,
+          "funding_pct": -0.00257,
+          "price_change_pct": 0.148,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.05,
+          "move_1_pct": -0.053,
+          "move_6_pct": 0.212,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "top": "Stocks drop as US-Iran peace talks stall, AI rally cools - Reuters",
+          "total": 20
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-05T09:15:44.890668+00:00"
+  "updated_at": "2026-06-05T09:30:57.893320+00:00"
 }
