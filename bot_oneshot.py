@@ -2814,24 +2814,101 @@ def smart_money_rr_status(plan):
 
 
 def cooldown_override_ok(side, context):
-    """Allow re-entry after a weak exit only if a fresh, strong setup appears."""
-    if side not in ["LONG", "SHORT"]:
+    """Allow professional same-side re-entry after a weak exit.
+
+    Old behavior was too strict: any EXIT_LOCAL_BREAK/weak close blocked the
+    same direction until a perfect new BOS/reclaim. In a strong trend this can
+    make the bot watch the whole continuation without re-entering.
+
+    New behavior:
+    - still blocks random re-entry in RANGE/BALANCE;
+    - allows same-side continuation only when the market did NOT reverse and
+      there is fresh trend/structure/ICT evidence;
+    - does not require CVD/flow to be fully aligned, but blocks if both are
+      strongly against.
+    """
+    if side not in ["LONG", "SHORT"] or not isinstance(context, dict):
         return False
+
     tf3 = context.get("tf3") or {}
     tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    tf4h = context.get("tf4h") or {}
     structure = context.get("structure") or {}
     ict = context.get("ict") or {}
     cvd = context.get("cvd") or {}
     flow = context.get("flow") or {}
+    derivatives = context.get("derivatives") or {}
+    liquidity = context.get("liquidity") or {}
+
     phase = str(structure.get("phase") or "").upper()
+    ict_setup = str(ict.get("setup") or "").upper()
+    market_regime = context.get("market_regime") or {}
+    if isinstance(market_regime, dict):
+        regime_name = str(market_regime.get("name") or "NORMAL").upper()
+    else:
+        regime_name = str(market_regime or "NORMAL").upper()
+
     fresh_bos = (side == "LONG" and "BOS LONG" in phase) or (side == "SHORT" and "BOS SHORT" in phase)
     fresh_sweep = (side == "LONG" and "DOWNSIDE SWEEP" in phase) or (side == "SHORT" and "UPSIDE SWEEP" in phase)
-    return bool(
-        tf3.get("bias") == side
-        and (tf15.get("bias") == side or fresh_bos or fresh_sweep)
-        and (structure.get("bias") == side or ict.get("bias") == side)
-        and (cvd.get("bias") == side or flow.get("bias") == side)
+    fresh_choch = (side == "LONG" and "CHOCH LONG" in phase) or (side == "SHORT" and "CHOCH SHORT" in phase)
+    ict_continuation = (
+        side == "LONG" and ict_setup in ["BOS_LONG_RETRACE_FVG_OB", "BOS_LONG_CONTINUATION_HOLD", "LIQUIDITY_SWEEP_LONG"]
+    ) or (
+        side == "SHORT" and ict_setup in ["BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD", "LIQUIDITY_SWEEP_SHORT"]
     )
+
+    tf3_same = tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22
+    tf15_same = tf15.get("bias") == side and abs(int(tf15.get("score", 0) or 0)) >= 26
+    tf1h_support = tf1h.get("bias") == side or side_score(int(tf1h.get("score", 0) or 0), side) >= 18
+    tf4h_support = tf4h.get("bias") == side or side_score(int(tf4h.get("score", 0) or 0), side) >= 18
+    structure_support = structure.get("bias") == side or fresh_bos or fresh_sweep or fresh_choch
+    ict_support = ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 16 or ict_continuation)
+
+    # Do not override if price/liquidity model explicitly blocks this side.
+    if side in (liquidity.get("blocks") or []):
+        return False
+
+    cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 22
+    flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 18
+    oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
+    if sum([bool(cvd_against), bool(flow_against), bool(oi_against)]) >= 2:
+        return False
+
+    # Fresh BOS/sweep/ICT continuation is the cleanest unlock.
+    fresh_structure_unlock = bool(
+        (fresh_bos or fresh_sweep or fresh_choch or ict_continuation)
+        and (tf3_same or tf15_same)
+        and (structure_support or ict_support)
+    )
+
+    # Trend-continuation unlock: after a weak exit, allow re-entry if the trend
+    # clearly did not reverse and intraday direction is aligned again.
+    trend_continuation_unlock = bool(
+        regime_name in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]
+        and tf15_same
+        and (tf3_same or structure_support or ict_support)
+        and (tf1h_support or tf4h_support or structure_support)
+    )
+
+    # Normal continuation unlock is stricter: needs 15M + structure/ICT + 3M.
+    normal_continuation_unlock = bool(
+        tf15_same
+        and tf3_same
+        and (structure_support or ict_support)
+        and side_score(int(context.get("total_score", 0) or 0), side) >= 45
+    )
+
+    return bool(fresh_structure_unlock or trend_continuation_unlock or normal_continuation_unlock)
+
+
+def cooldown_override_reason(side, context):
+    """Short Ukrainian explanation when same-side cooldown is professionally unlocked."""
+    market_regime = context.get("market_regime") or {}
+    regime_name = market_regime.get("name") if isinstance(market_regime, dict) else market_regime
+    if str(regime_name or "").upper() in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]:
+        return f"після слабкого виходу {side} дозволено повторний вхід: тренд/структура продовжуються"
+    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS/reclaim або ICT continuation"
 
 def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
     """Detect a professional reversal setup after a failed trade.
@@ -3890,7 +3967,11 @@ def evaluate_new_setup(context):
 
     cooldown_active = bool(reentry_cooldown.get("active") and reentry_cooldown.get("side") == side)
     cooldown_can_override = cooldown_override_ok(side, context)
-    if cooldown_active and not cooldown_can_override:
+    if cooldown_active and cooldown_can_override:
+        msg = cooldown_override_reason(side, context)
+        if msg not in confirmations:
+            confirmations.append(msg)
+    elif cooldown_active:
         conflicts.append(reentry_cooldown.get("reason") or "після слабкого EXIT потрібен новий BOS/reclaim")
 
     if context.get("low_liquidity_risk"):
