@@ -2720,7 +2720,9 @@ def trade_mode_profile(context, side=None):
         "PULLBACK": {"tp1_pct": 0.95, "tp2_pct": 1.75, "tp3_pct": 3.00, "max_stop_pct": 1.35, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.46},
         # TREND: TP2/TP3 stay far, but TP1 is realistic for BZU intraday.
         # The previous 2.18% TP1 often missed +0.7–1.0% moves and gave profit back.
-        "TREND": {"tp1_pct": 0.92, "tp2_pct": 2.45, "tp3_pct": 4.80, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.50},
+        # TREND: do not put TP1 too close, but also do not force TP1 to the far swing.
+        # First partial/protection target is ATR-based (~1.2–1.5 ATR). Stop remains ICT/SMC-based.
+        "TREND": {"tp1_pct": 0.00, "tp2_pct": 2.45, "tp3_pct": 4.80, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.70, "protect_trigger": 1.00, "giveback": 0.55},
         "REVERSAL": {"tp1_pct": 0.95, "tp2_pct": 1.80, "tp3_pct": 3.10, "max_stop_pct": 1.45, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.46},
         "NEWS_IMPULSE": {"tp1_pct": 0.85, "tp2_pct": 1.55, "tp3_pct": 2.70, "max_stop_pct": 1.25, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.42},
         "IMPULSE": {"tp1_pct": 0.92, "tp2_pct": 1.65, "tp3_pct": 2.80, "max_stop_pct": 1.35, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.44},
@@ -3516,7 +3518,10 @@ def make_plan(side, context):
     min_risk = max(atr15 * 1.05, price * 0.0065)
     max_risk = price * (safe_float(profile.get("max_stop_pct"), MAX_STOP_DISTANCE_PCT) / 100)
     buffer = max(atr15 * 0.18, price * 0.0012)
-    min_tp1_distance = price * (safe_float(profile.get("tp1_pct"), MIN_TP1_DISTANCE_PCT) / 100)
+    profile_tp1_pct = safe_float(profile.get("tp1_pct"), MIN_TP1_DISTANCE_PCT)
+    # In TREND profile TP1 is deliberately ATR-based, not percent/far-swing based.
+    # RR guard below will still guarantee TP1 >= stop risk (at least 1:1).
+    min_tp1_distance = 0.0 if regime == "TREND" and profile_tp1_pct <= 0 else price * (profile_tp1_pct / 100)
     min_tp2_distance = price * (safe_float(profile.get("tp2_pct"), MIN_TP2_DISTANCE_PCT) / 100)
     min_tp3_distance = price * (safe_float(profile.get("tp3_pct"), MIN_TP3_DISTANCE_PCT) / 100)
 
@@ -3532,16 +3537,18 @@ def make_plan(side, context):
             technical_tp1 = max(price + min_tp1_distance, min(range_target, price + atr15 * 1.45))
             technical_tp2 = max(technical_tp1 + atr15 * 0.75, price + min_tp2_distance)
         else:
-            tp1_atr_mult = 2.05 if regime == "TREND" else (1.55 if regime in ["PULLBACK", "REVERSAL"] else 1.35)
+            # TP1 is the first partial/protection objective, not the final liquidity target.
+            # In a strong trend use ~1.35 ATR: not too close, but reachable before normal pullback.
+            tp1_atr_mult = 1.35 if regime == "TREND" else (1.35 if regime in ["PULLBACK", "REVERSAL"] else 1.25)
             tp2_atr_mult = 3.00 if regime == "TREND" else (2.25 if regime in ["PULLBACK", "REVERSAL"] else 2.00)
-            technical_tp1 = max(swing_high, price + atr15 * tp1_atr_mult)
-            technical_tp2 = max(structure.get("recent_high") or technical_tp1, price + atr15 * tp2_atr_mult)
+            technical_tp1 = price + atr15 * tp1_atr_mult
+            technical_tp2 = max(structure.get("recent_high") or swing_high or technical_tp1, price + atr15 * tp2_atr_mult)
         tp1 = max(technical_tp1, price + min_tp1_distance)
         tp2 = max(technical_tp2, price + min_tp2_distance, tp1 + atr15 * 0.55)
         tp3 = max(price + min_tp3_distance, tp2 + atr15 * (1.35 if regime == "TREND" else 0.95))
         invalidation = (
             f"15m закриття нижче {round_price(stop)} або злам 3m/структури проти LONG. "
-            f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 орієнтир {round(safe_float(profile.get('tp1_pct'), 0), 2)}%."
+            f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
         )
     else:
         raw_stop = max(swing_high + buffer, price + min_risk)
@@ -3554,16 +3561,18 @@ def make_plan(side, context):
             technical_tp1 = min(price - min_tp1_distance, max(range_target, price - atr15 * 1.45))
             technical_tp2 = min(technical_tp1 - atr15 * 0.75, price - min_tp2_distance)
         else:
-            tp1_atr_mult = 2.05 if regime == "TREND" else (1.55 if regime in ["PULLBACK", "REVERSAL"] else 1.35)
+            # TP1 is the first partial/protection objective, not the final liquidity target.
+            # In a strong trend use ~1.35 ATR: not too close, but reachable before normal pullback.
+            tp1_atr_mult = 1.35 if regime == "TREND" else (1.35 if regime in ["PULLBACK", "REVERSAL"] else 1.25)
             tp2_atr_mult = 3.00 if regime == "TREND" else (2.25 if regime in ["PULLBACK", "REVERSAL"] else 2.00)
-            technical_tp1 = min(swing_low, price - atr15 * tp1_atr_mult)
-            technical_tp2 = min(structure.get("recent_low") or technical_tp1, price - atr15 * tp2_atr_mult)
+            technical_tp1 = price - atr15 * tp1_atr_mult
+            technical_tp2 = min(structure.get("recent_low") or swing_low or technical_tp1, price - atr15 * tp2_atr_mult)
         tp1 = min(technical_tp1, price - min_tp1_distance)
         tp2 = min(technical_tp2, price - min_tp2_distance, tp1 - atr15 * 0.55)
         tp3 = min(price - min_tp3_distance, tp2 - atr15 * (1.35 if regime == "TREND" else 0.95))
         invalidation = (
             f"15m закриття вище {round_price(stop)} або злам 3m/структури проти SHORT. "
-            f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 орієнтир {round(safe_float(profile.get('tp1_pct'), 0), 2)}%."
+            f"Режим: {regime_label(regime)}. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
         )
 
     # Smart Money RR guard: TP1 must be at least equal to the stop risk.
