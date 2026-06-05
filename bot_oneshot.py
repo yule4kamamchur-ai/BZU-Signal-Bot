@@ -2716,14 +2716,16 @@ def trade_mode_profile(context, side=None):
     profiles = {
         # Range: do not ask for +2.18% if the market is balanced. Take the first
         # realistic edge at +0.75–1.0% and protect aggressively.
-        "RANGE": {"tp1_pct": 0.78, "tp2_pct": 1.25, "tp3_pct": 1.90, "max_stop_pct": 1.05, "be_trigger": 0.45, "protect_trigger": 0.70, "giveback": 0.42},
-        "PULLBACK": {"tp1_pct": 1.10, "tp2_pct": 1.85, "tp3_pct": 3.00, "max_stop_pct": 1.35, "be_trigger": 0.60, "protect_trigger": 0.95, "giveback": 0.50},
-        "TREND": {"tp1_pct": 2.18, "tp2_pct": 3.35, "tp3_pct": 5.20, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.80, "protect_trigger": 1.25, "giveback": 0.68},
-        "REVERSAL": {"tp1_pct": 1.25, "tp2_pct": 2.05, "tp3_pct": 3.20, "max_stop_pct": 1.45, "be_trigger": 0.60, "protect_trigger": 1.00, "giveback": 0.52},
-        "NEWS_IMPULSE": {"tp1_pct": 0.95, "tp2_pct": 1.65, "tp3_pct": 2.80, "max_stop_pct": 1.25, "be_trigger": 0.50, "protect_trigger": 0.85, "giveback": 0.45},
-        "IMPULSE": {"tp1_pct": 1.05, "tp2_pct": 1.75, "tp3_pct": 2.90, "max_stop_pct": 1.35, "be_trigger": 0.55, "protect_trigger": 0.90, "giveback": 0.48},
-        "NORMAL": {"tp1_pct": 1.35, "tp2_pct": 2.20, "tp3_pct": 3.60, "max_stop_pct": 1.55, "be_trigger": 0.65, "protect_trigger": 1.05, "giveback": 0.55},
-        "UNKNOWN": {"tp1_pct": 1.35, "tp2_pct": 2.20, "tp3_pct": 3.60, "max_stop_pct": 1.55, "be_trigger": 0.65, "protect_trigger": 1.05, "giveback": 0.55},
+        "RANGE": {"tp1_pct": 0.72, "tp2_pct": 1.15, "tp3_pct": 1.80, "max_stop_pct": 1.05, "be_trigger": 0.40, "protect_trigger": 0.62, "giveback": 0.38},
+        "PULLBACK": {"tp1_pct": 0.95, "tp2_pct": 1.75, "tp3_pct": 3.00, "max_stop_pct": 1.35, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.46},
+        # TREND: TP2/TP3 stay far, but TP1 is realistic for BZU intraday.
+        # The previous 2.18% TP1 often missed +0.7–1.0% moves and gave profit back.
+        "TREND": {"tp1_pct": 0.92, "tp2_pct": 2.45, "tp3_pct": 4.80, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.50},
+        "REVERSAL": {"tp1_pct": 0.95, "tp2_pct": 1.80, "tp3_pct": 3.10, "max_stop_pct": 1.45, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.46},
+        "NEWS_IMPULSE": {"tp1_pct": 0.85, "tp2_pct": 1.55, "tp3_pct": 2.70, "max_stop_pct": 1.25, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.42},
+        "IMPULSE": {"tp1_pct": 0.92, "tp2_pct": 1.65, "tp3_pct": 2.80, "max_stop_pct": 1.35, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.44},
+        "NORMAL": {"tp1_pct": 1.05, "tp2_pct": 1.95, "tp3_pct": 3.40, "max_stop_pct": 1.55, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.50},
+        "UNKNOWN": {"tp1_pct": 1.05, "tp2_pct": 1.95, "tp3_pct": 3.40, "max_stop_pct": 1.55, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.50},
     }
     profile = dict(profiles.get(name, profiles["NORMAL"]))
     profile["regime"] = name
@@ -4388,18 +4390,20 @@ def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=N
             label = f"{regime}: перший захист у боковику"
     elif regime == "TREND":
         # In a real trend do not kill the trade too early, but still protect
-        # enough profit once MFE becomes meaningful.
+        # enough profit once MFE becomes meaningful. For BZU, +0.7–0.9% MFE
+        # is already a material intraday move, so the stop must not remain
+        # near the original risk.
         if best_pct >= 1.70 and current_pct >= 0.95:
-            lock_pct = 0.95
+            lock_pct = 1.00
             label = f"{regime}: сильний трендовий MFE — захистити майже 1%"
-        elif best_pct >= 1.20 and current_pct >= 0.65:
-            lock_pct = 0.58
+        elif best_pct >= 1.15 and current_pct >= 0.62:
+            lock_pct = 0.62
             label = f"{regime}: трендовий MFE — стоп у хороший плюс"
-        elif best_pct >= 0.75 and current_pct >= 0.32:
-            lock_pct = 0.35
+        elif best_pct >= 0.72 and current_pct >= 0.30:
+            lock_pct = 0.42
             label = f"{regime}: трендовий MFE — не віддавати рух назад"
-        elif best_pct >= be_trigger and current_pct >= 0.18:
-            lock_pct = 0.18
+        elif best_pct >= be_trigger and current_pct >= 0.16:
+            lock_pct = 0.25
             label = f"{regime}: перший трендовий захист"
     else:
         if best_pct >= protect_trigger + 0.60 and current_pct >= protect_trigger * 0.75:
@@ -4435,6 +4439,23 @@ def _apply_more_protective_stop(trade, side, new_stop):
         return True
     return False
 
+
+def _mfe_exit_floor(best_pct, market_regime):
+    """Minimum acceptable captured MFE before closing a profitable trade.
+
+    Example: if best_pct was +0.80% in TREND, closing at +0.13% captures
+    only 16% and means the bot gave back too much. This floor lets the bot
+    either protect earlier or close before most profit disappears.
+    """
+    best_pct = safe_float(best_pct, 0.0) or 0.0
+    if best_pct <= 0:
+        return 0.0
+    if market_regime == "TREND":
+        return max(0.30, best_pct * 0.48)
+    if market_regime in ["RANGE", "NEWS_IMPULSE", "IMPULSE", "REVERSAL"]:
+        return max(0.22, best_pct * 0.58)
+    return max(0.25, best_pct * 0.52)
+
 def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
 
@@ -4468,13 +4489,16 @@ def manage_active_trade(trade, context):
     if trade_hit_stop(side, price, trade.stop_current):
         trade.status = "CLOSED"
         trade.last_action = "STOP"
+        stop_exit_pct = signed_pct(side, trade.entry, trade.stop_current)
         return {
             "closed": True,
             "action": "STOP",
             "title": f"УГОДУ {side} ЗАКРИТО — STOP",
             "recommendation": "стоп/зона зламу пробита, сценарій закрито",
-            "current_pct": current_pct,
+            "current_pct": stop_exit_pct,
+            "market_price_pct": current_pct,
             "best_pct": best_pct,
+            "exit_price": round_price(trade.stop_current),
             "notes": [f"ціна {round_price(price)} проти стопу {round_price(trade.stop_current)}"],
         }
 
@@ -4613,24 +4637,45 @@ def manage_active_trade(trade, context):
     clearly_losing = current_pct <= -0.30
 
     if tf3_against and (flow_against or cvd_against) and (near_stop or clearly_losing):
-        trade.status = "CLOSED"
-        trade.last_action = "EXIT_LOCAL_BREAK"
-        reasons = ["3M зламався проти позиції"]
-        if flow_against:
-            reasons.append("потік проти")
-        if cvd_against:
-            reasons.append("CVD проти")
-        if near_stop:
-            reasons.append("ціна близько до стопу")
-        return {
-            "closed": True,
-            "action": "EXIT_LOCAL_BREAK",
-            "title": f"{side} ЗАКРИТИ — ЛОКАЛЬНИЙ ЗЛАМ",
-            "recommendation": "закрити біля поточної / не чекати дальній стоп",
-            "current_pct": current_pct,
-            "best_pct": best_pct,
-            "notes": reasons[:4],
-        }
+        min_capture_pct = _mfe_exit_floor(best_pct, market_regime)
+        trend_soft_break = (
+            market_regime == "TREND"
+            and current_pct > 0
+            and best_pct >= profile_be
+            and current_pct >= min_capture_pct
+            and not (structure_against or ict_against)
+        )
+        if trend_soft_break:
+            action = "PROTECT"
+            title = f"{side} — ЛОКАЛЬНИЙ ЗЛАМ, АЛЕ ТРЕНД ЩЕ ЖИВИЙ"
+            recommendation = "3M/потік дають відкат проти, але 15M/ICT структура ще не зламана: стоп у прибуток і дати тренду шанс"
+            protect_stop, protect_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, current_pct, mode_profile)
+            if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop):
+                recommended_stop = trade.stop_current
+                recommended_stop_reason = protect_reason
+                notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
+            notes.append(f"MFE було +{round(best_pct, 3)}%, захоплено {round((current_pct / best_pct * 100), 1) if best_pct > 0 else 0}%")
+        else:
+            trade.status = "CLOSED"
+            trade.last_action = "EXIT_LOCAL_BREAK"
+            reasons = ["3M зламався проти позиції"]
+            if flow_against:
+                reasons.append("потік проти")
+            if cvd_against:
+                reasons.append("CVD проти")
+            if near_stop:
+                reasons.append("ціна близько до стопу")
+            if best_pct > 0.1:
+                reasons.append(f"MFE було +{round(best_pct, 3)}%, захоплено мало")
+            return {
+                "closed": True,
+                "action": "EXIT_LOCAL_BREAK",
+                "title": f"{side} ЗАКРИТИ — ЛОКАЛЬНИЙ ЗЛАМ",
+                "recommendation": "закрити біля поточної / не чекати дальній стоп",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "notes": reasons[:4],
+            }
 
     if tf3_against and (near_stop or clearly_losing):
         action = "EXIT_WARNING"
@@ -4698,11 +4743,13 @@ def manage_active_trade(trade, context):
     # If a trade reached meaningful profit but gives most of it back before TP1,
     # close/protect earlier. This directly addresses cases like +1.7% MFE → +0.1% exit.
     dynamic_giveback_limit = safe_float(mode_profile.get("giveback"), 0.55) or 0.55
-    strong_mfe_giveback = best_pct >= safe_float(mode_profile.get("be_trigger"), 0.65) and giveback_ratio >= dynamic_giveback_limit and current_pct <= (0.35 if market_regime in ["RANGE", "NEWS_IMPULSE"] else 0.28)
+    min_mfe_capture = _mfe_exit_floor(best_pct, market_regime)
+    strong_mfe_giveback = best_pct >= safe_float(mode_profile.get("be_trigger"), 0.65) and giveback_ratio >= dynamic_giveback_limit and current_pct <= min_mfe_capture
     if strong_mfe_giveback and action in ["HOLD", "PROTECT"]:
         warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
         trend_still_valid = (
             market_regime == "TREND"
+            and current_pct >= min_mfe_capture
             and (tf15.get("bias") == side or context.get("bias") == side or support_votes >= 2.0)
             and not (structure_against or ict_against)
         )
@@ -5209,7 +5256,7 @@ def build_follow_message(context, trade, result):
         f"{result['recommendation']}",
         "",
         price_line(context),
-        f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс:</b> {round(result['best_pct'], 3)}%",
+        f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс/MFE:</b> {round(result['best_pct'], 3)}%",
         "",
         "<b>Позиція:</b>",
         f"Вхід {_fmt_price(trade.entry)} | Стоп {_fmt_price(trade.stop_current)}",
@@ -5249,7 +5296,8 @@ def build_closed_trade_journal_item(trade, result, context):
         "closed_at": iso_now(),
         "side": trade.side,
         "entry": trade.entry,
-        "close_price": round_price(context["price"]),
+        "close_price": round_price(result.get("exit_price") or context["price"]),
+        "market_close_price": round_price(context["price"]),
         "stop_initial": trade.stop_initial,
         "stop_final": round_price(trade.stop_current),
         "tp1": trade.tp1,
@@ -5340,6 +5388,7 @@ def main():
                 "result_pct": closed_result_pct,
                 "mfe_pct": closed_mfe_pct,
                 "mfe_captured_pct": round(closed_result_pct / closed_mfe_pct * 100, 1) if closed_mfe_pct > 0.1 else None,
+                "mfe_giveback_pct": round(closed_mfe_pct - closed_result_pct, 3) if closed_mfe_pct > 0.1 else None,
             })
             store_active_trade(state, None)
         else:
