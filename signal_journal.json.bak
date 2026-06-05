@@ -8210,7 +8210,185 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-05T22:01:07.400457+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 92.49,
+      "quality": 56,
+      "reason": "після слабкого виходу SHORT (STOP, 0.929%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 92.49,
+        "stop": 93.361,
+        "tp1": 91.5189,
+        "tp2": 90.6864,
+        "tp3": 89.3453,
+        "risk_pct": 0.942,
+        "rr1": 1.11,
+        "rr2": 2.07,
+        "rr3": 3.61,
+        "invalidation": "15m закриття вище 93.361 або злам 3m/структури проти SHORT. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "1h підтримує",
+        "3m дав тригер",
+        "кластери локально підтримують",
+        "Smart Money RR мінімальний: 1.11R"
+      ],
+      "conflicts": [
+        "після слабкого виходу SHORT (STOP, 0.929%) не повторювати той самий напрям без нового BOS/reclaim"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -79,
+        "total_score": -86,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -22,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": 0.043,
+          "drift_pct": -0.097,
+          "vol_ratio": 0.01,
+          "note": "3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -24,
+          "trend": "NEUTRAL",
+          "close": 92.59,
+          "ema20": 92.832,
+          "ema50": 93.408,
+          "rsi": 39.3,
+          "atr": 0.3278,
+          "slope_pct": 0.018,
+          "move_8_pct": -0.301,
+          "range_atr": 2.47,
+          "note": "ціна нижче EMA20/50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -46,
+          "trend": "SHORT",
+          "close": 92.59,
+          "ema20": 93.7397,
+          "ema50": 94.8299,
+          "rsi": 20.0,
+          "atr": 0.6259,
+          "slope_pct": -2.159,
+          "move_8_pct": -1.258,
+          "range_atr": 5.4,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз; перепроданість"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 92.62,
+          "ema20": 94.921,
+          "ema50": 95.004,
+          "rsi": 33.9,
+          "atr": 1.3619,
+          "slope_pct": -4.337,
+          "move_8_pct": -2.679,
+          "range_atr": 4.93,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 93.25,
+          "swing_low": 92.44,
+          "recent_high": 94.05,
+          "recent_low": 92.44,
+          "atr": 0.3278,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -61.18,
+          "book_delta_pct": 50.41,
+          "note": "угоди за продавців; стакан підтримує покупців; підтримка покупців біля 92.16"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -4051.0,
+          "delta_pct": -61.18,
+          "cvd": -47885.0,
+          "cvd_change_pct": -9.242,
+          "last_trade_ts": 1780696801611,
+          "price_move_pct": -0.173,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 92.712,
+              "imbalance_pct": -84.7,
+              "volume": 3121.0
+            },
+            {
+              "price": 92.564,
+              "imbalance_pct": -69.9,
+              "volume": 1568.0
+            }
+          ],
+          "note": "локальний продавець біля 92.712"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 55778.73,
+          "oi_change_pct": 0.231,
+          "funding_pct": -0.03619,
+          "price_change_pct": -0.345,
+          "note": "OI ще накопичує історію для порівняння; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.01,
+          "move_1_pct": -0.011,
+          "move_6_pct": -0.312,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -1,
+          "top": "Goldman Sachs says global oil demand takes big hit, sees risks to price forecast - Reuters",
+          "total": 25
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-05T21:45:43.121474+00:00"
+  "updated_at": "2026-06-05T22:01:07.402411+00:00"
 }
