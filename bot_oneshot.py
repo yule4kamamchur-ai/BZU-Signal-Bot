@@ -2829,6 +2829,181 @@ def cooldown_override_ok(side, context):
         and (cvd.get("bias") == side or flow.get("bias") == side)
     )
 
+def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
+    """Detect a professional reversal setup after a failed trade.
+
+    This module is intentionally NOT an automatic flip. It activates only after
+    a weak/failed close (STOP, EXIT_LOCAL_BREAK, EXIT_MFE_GIVEBACK, etc.) and
+    then watches the opposite side for 3M structure + ICT/SMC confirmation.
+
+    Example:
+      failed SHORT -> watch LONG only if 3M turns up, there is no new lower low,
+      and CVD/flow are not strongly against the reversal.
+    """
+    if not isinstance(state, dict) or not isinstance(context, dict):
+        return {"active": False}
+
+    history = state.get("history") or []
+    failed_actions = {
+        "STOP", "EXIT", "EXIT_LOCAL_BREAK", "EXIT_STRUCTURE_BREAK",
+        "EXIT_WARNING_CONFIRM", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK",
+        "EXIT_AFTER_TP1_GIVEBACK", "PROTECT_OR_EXIT",
+    }
+
+    now = now_utc()
+    last_close = None
+    for item in reversed(history[-MAX_HISTORY:]):
+        if isinstance(item, dict) and item.get("type") == "TRADE_CLOSED":
+            last_close = item
+            break
+    if not last_close:
+        return {"active": False}
+
+    failed_side = last_close.get("side")
+    action = str(last_close.get("action") or "")
+    result_pct = safe_float(last_close.get("result_pct"), 0.0) or 0.0
+    ts = _parse_iso_time(last_close.get("time"))
+    age_min = ((now - ts).total_seconds() / 60.0) if ts else 99999.0
+
+    # Reversal mode is for recent failed/weak exits only.
+    weak_failed_close = action in failed_actions and (result_pct <= 0.35 or action in {
+        "STOP", "EXIT_LOCAL_BREAK", "EXIT_STRUCTURE_BREAK", "EXIT_WARNING_CONFIRM",
+        "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_AFTER_TP1_GIVEBACK",
+    })
+    if failed_side not in ["LONG", "SHORT"] or not weak_failed_close or age_min > max_age_minutes:
+        return {"active": False}
+
+    side = opposite(failed_side)
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+    clusters = context.get("clusters") or {}
+    candles_3m = context.get("candles_3m") or []
+
+    phase = str(structure.get("phase") or "").upper()
+    ict_setup = str(ict.get("setup") or "").upper()
+
+    bos_reclaim = (
+        (side == "LONG" and ("BOS LONG" in phase or "CHOCH LONG" in phase or "DOWNSIDE SWEEP" in phase))
+        or (side == "SHORT" and ("BOS SHORT" in phase or "CHOCH SHORT" in phase or "UPSIDE SWEEP" in phase))
+    )
+    ict_reclaim = (
+        (side == "LONG" and ict_setup in ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "BOS_LONG_CONTINUATION_HOLD"])
+        or (side == "SHORT" and ict_setup in ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD"])
+    )
+
+    # 3M micro reversal shape: higher low/no lower low after failed SHORT,
+    # lower high/no higher high after failed LONG.
+    micro_reversal = False
+    micro_reason = ""
+    try:
+        recent = candles_3m[-10:]
+        if len(recent) >= 6:
+            first = recent[:len(recent)//2]
+            last = recent[len(recent)//2:]
+            if side == "LONG":
+                micro_reversal = min(c.low for c in last) >= min(c.low for c in first) and recent[-1].close > mean([c.close for c in recent[-4:]])
+                micro_reason = "3M робить higher low після зламаного SHORT"
+            else:
+                micro_reversal = max(c.high for c in last) <= max(c.high for c in first) and recent[-1].close < mean([c.close for c in recent[-4:]])
+                micro_reason = "3M робить lower high після зламаного LONG"
+    except Exception:
+        micro_reversal = False
+
+    score = 0
+    confirmations = []
+    conflicts = []
+
+    if tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22:
+        score += 24
+        confirmations.append("3M розвернувся після невдалої угоди")
+    elif tf3.get("bias") == side:
+        score += 14
+        confirmations.append("3M починає розвертатись")
+    elif tf3.get("bias") == failed_side and abs(int(tf3.get("score", 0) or 0)) >= 32:
+        score -= 20
+        conflicts.append("3M ще не зламав попередній напрям")
+
+    if tf15.get("bias") == side:
+        score += 18
+        confirmations.append("15M вже підтримує розворот")
+    elif tf15.get("bias") == "NEUTRAL":
+        score += 6
+        confirmations.append("15M нейтральний — розворот можливий, але потрібен 3M/BOS")
+    elif tf15.get("bias") == failed_side:
+        score -= 14
+        conflicts.append("15M ще тримає старий напрям")
+
+    if bos_reclaim:
+        score += 24
+        confirmations.append("SMC/BOS підтверджує розворот")
+    elif structure.get("bias") == side:
+        score += 14
+        confirmations.append("структура вже за новий напрям")
+    elif structure.get("bias") == failed_side:
+        score -= 12
+        conflicts.append("структура ще проти розвороту")
+
+    if ict_reclaim or (ict.get("bias") == side and bool(ict.get("entry_ok"))):
+        score += 18
+        confirmations.append("ICT дає sweep/reclaim або continuation для розвороту")
+    elif ict.get("bias") == side:
+        score += 8
+        confirmations.append("ICT підтримує ідею розвороту")
+    elif ict.get("bias") == failed_side and ict.get("state") == "ENTRY_MODEL":
+        score -= 16
+        conflicts.append("ICT ще підтримує старий напрям")
+
+    if micro_reversal:
+        score += 10
+        confirmations.append(micro_reason)
+
+    # Flow/CVD must not be strongly against the reversal. They are not required
+    # to be perfect, because reversal often starts before all flow confirms.
+    cvd_against = cvd.get("bias") == failed_side and abs(int(cvd.get("score", 0) or 0)) >= 22
+    flow_against = flow.get("bias") == failed_side and abs(int(flow.get("score", 0) or 0)) >= 14
+    if cvd.get("bias") == side:
+        score += 10
+        confirmations.append("CVD підтримує розворот")
+    elif cvd_against:
+        score -= 12
+        conflicts.append("CVD ще проти розвороту")
+    else:
+        score += 3
+
+    if flow.get("bias") == side:
+        score += 8
+        confirmations.append("потік підтримує розворот")
+    elif flow_against:
+        score -= 10
+        conflicts.append("потік ще проти розвороту")
+    else:
+        score += 2
+
+    if clusters.get("bias") == side:
+        score += 4
+
+    score = int(max(0, min(100, score)))
+    allow_watch = score >= 52 and (tf3.get("bias") == side or bos_reclaim or ict_reclaim or micro_reversal)
+    allow_entry = score >= 68 and (bos_reclaim or ict_reclaim or tf15.get("bias") == side) and not (cvd_against and flow_against)
+
+    return {
+        "active": bool(allow_watch),
+        "side": side,
+        "failed_side": failed_side,
+        "failed_action": action,
+        "failed_result_pct": round(result_pct, 3),
+        "age_minutes": round(age_min, 1),
+        "score": score,
+        "allow_entry": bool(allow_entry),
+        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS/reclaim",
+        "confirmations": confirmations[:5],
+        "conflicts": conflicts[:5],
+    }
+
 
 def build_context(data, state=None):
     ticker = data.get("ticker") or {}
@@ -2936,6 +3111,18 @@ def build_context(data, state=None):
     market_regime = detect_market_regime(temp_context_for_regime, bias if bias in ["LONG", "SHORT"] else None)
     reentry_cooldown = analyze_reentry_cooldown(state)
 
+    # Reversal engine after a failed/weak trade. It is attached to context so
+    # setup evaluation can show REVERSAL WATCH or allow a confirmed opposite entry.
+    temp_context_for_reversal = dict(temp_context_for_regime)
+    temp_context_for_reversal.update({
+        "candles_3m": data.get("candles_3m") or [],
+        "flow": flow,
+        "cvd": cvd,
+        "clusters": clusters,
+        "derivatives": derivatives,
+    })
+    reversal_after_failed_trade = analyze_failed_trade_reversal(state, temp_context_for_reversal)
+
     return {
         "price": price,
         "change24h": safe_float(ticker.get("change24h"), 0),
@@ -2955,6 +3142,7 @@ def build_context(data, state=None):
         "pending_ict_zones": pending_ict_zones,
         "market_regime": market_regime,
         "reentry_cooldown": reentry_cooldown,
+        "reversal_after_failed_trade": reversal_after_failed_trade,
         "volume_guard": volume_guard,
         "flow": flow,
         "cvd": cvd,
@@ -3438,6 +3626,23 @@ def evaluate_new_setup(context):
                 "show_wait_plan": False,
             }
 
+        reversal_after_failed = context.get("reversal_after_failed_trade") or {}
+        if reversal_after_failed.get("active"):
+            rev_side = reversal_after_failed.get("side")
+            rev_plan = make_plan(rev_side, context) if rev_side in ["LONG", "SHORT"] else None
+            return {
+                "action": "WATCH",
+                "side": rev_side,
+                "quality": int(max(readiness_quality, min(66, reversal_after_failed.get("score", 55)))),
+                "title": f"ЧЕКАТИ — {rev_side} РОЗВОРОТ ПІСЛЯ НЕВДАЛОГО ВИХОДУ",
+                "reason": reversal_after_failed.get("reason") or "після слабкого EXIT шукаємо протилежний розворот",
+                "plan": rev_plan,
+                "confirmations": reversal_after_failed.get("confirmations") or [],
+                "conflicts": reversal_after_failed.get("conflicts") or [],
+                "reversal_after_failed_trade": True,
+                "show_wait_plan": True,
+            }
+
         # Preparation mode even when the global bias is still NEUTRAL.
         # Example: 4H/1H are against or neutral, total_score is not enough for a market bias,
         # but 3M and ICT already point the same way. In this case the user should not see only
@@ -3533,6 +3738,9 @@ def evaluate_new_setup(context):
     mode_profile = trade_mode_profile(context, side)
     market_regime = mode_profile.get("regime", "NORMAL")
     reentry_cooldown = context.get("reentry_cooldown") or {}
+    reversal_after_failed = context.get("reversal_after_failed_trade") or {}
+    reversal_active_for_side = bool(reversal_after_failed.get("active") and reversal_after_failed.get("side") == side)
+    reversal_entry_allowed = bool(reversal_active_for_side and reversal_after_failed.get("allow_entry"))
 
     tf3 = context["tf3"]
     tf15 = context["tf15"]
@@ -3585,6 +3793,16 @@ def evaluate_new_setup(context):
     quality += block_points(liquidity, 7, 10)
     quality += block_points(flow, 6, 6)
     quality += block_points(clusters, 2, 2)
+
+    if reversal_active_for_side:
+        quality += 8 if reversal_entry_allowed else 4
+        confirmations.append("REVERSAL: попередня угода зламалась, шукаємо протилежний рух")
+        for item in reversal_after_failed.get("confirmations") or []:
+            if item not in confirmations:
+                confirmations.append(item)
+        for item in reversal_after_failed.get("conflicts") or []:
+            if item not in conflicts:
+                conflicts.append(item)
 
     if news.get("bias") == side:
         quality += 2
@@ -3723,7 +3941,7 @@ def evaluate_new_setup(context):
     ) or (
         side == "SHORT" and ict_setup in ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD"]
     )
-    structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same)
+    structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same or reversal_entry_allowed)
     structure_gate_missing = bool(tf3_same and ict_entry_ok and not structural_entry_ok)
     if structure_gate_missing:
         conflicts.append("ICT+3M є, але немає 15M/BOS/reclaim — чекати структурне підтвердження")
@@ -3897,7 +4115,9 @@ def evaluate_new_setup(context):
         }
 
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
-        if not tf15_same:
+        if reversal_entry_allowed:
+            reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура/ICT підтвердили розворот"
+        elif not tf15_same:
             reason = "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний"
         else:
             reason = "сигнал підтверджений: " + " | ".join(confirmations[:4])
@@ -3913,6 +4133,19 @@ def evaluate_new_setup(context):
         }
 
     if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
+        if reversal_active_for_side and not reversal_entry_allowed:
+            return {
+                "action": "WATCH",
+                "side": side,
+                "quality": min(quality, 66),
+                "title": f"ЧЕКАТИ — {side} РОЗВОРОТ ЩЕ НЕ ПІДТВЕРДЖЕНИЙ",
+                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS/reclaim перед переворотом",
+                "plan": plan,
+                "confirmations": confirmations,
+                "conflicts": conflicts,
+                "reversal_after_failed_trade": True,
+                "show_wait_plan": True,
+            }
         if pressure_risk:
             reason = "ICT/SMC + 3M дають ранній вхід, але CVD/потік/кластери ще не підтвердили — ризиковий режим"
         elif not tf15_same:
