@@ -3106,7 +3106,185 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-05T08:31:01.601681+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 93.81,
+      "quality": 55,
+      "reason": "після слабкого виходу SHORT (EXIT_LOCAL_BREAK, 0.137%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 93.81,
+        "stop": 95.1626,
+        "tp1": 92.4574,
+        "tp2": 91.5117,
+        "tp3": 89.3071,
+        "risk_pct": 1.442,
+        "rr1": 1.0,
+        "rr2": 1.7,
+        "rr3": 3.33,
+        "invalidation": "15m закриття вище 95.1626 або злам 3m/структури проти SHORT. Режим: сильний тренд. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "активний обсяг",
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "структура підтверджує",
+        "Smart Money RR мінімальний: 1.0R"
+      ],
+      "conflicts": [
+        "ліквідність проти",
+        "локальний покупець у стакані",
+        "потік локально проти — потрібен швидкий розворот після входу",
+        "після слабкого виходу SHORT (EXIT_LOCAL_BREAK, 0.137%) не повторювати той самий напрям без нового BOS/reclaim",
+        "ціна TV/OKX розходиться — вхід тільки обережно"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -142,
+        "total_score": -129,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -36,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.875,
+          "drift_pct": -0.889,
+          "vol_ratio": 1.41,
+          "note": "3m швидко йде вниз; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -49,
+          "trend": "SHORT",
+          "close": 94.09,
+          "ema20": 94.8779,
+          "ema50": 95.0981,
+          "rsi": 35.3,
+          "atr": 0.3636,
+          "slope_pct": -1.147,
+          "move_8_pct": -1.0,
+          "range_atr": 5.36,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -63,
+          "trend": "SHORT",
+          "close": 94.07,
+          "ema20": 95.3284,
+          "ema50": 95.8162,
+          "rsi": 31.9,
+          "atr": 0.6321,
+          "slope_pct": -0.633,
+          "move_8_pct": -0.989,
+          "range_atr": 3.58,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -31,
+          "trend": "SHORT",
+          "close": 94.07,
+          "ema20": 95.5703,
+          "ema50": 95.433,
+          "rsi": 40.9,
+          "atr": 1.3589,
+          "slope_pct": -3.367,
+          "move_8_pct": -2.971,
+          "range_atr": 4.5,
+          "note": "EMA20 вище EMA50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -24,
+          "phase": "BOS SHORT",
+          "swing_high": 95.05,
+          "swing_low": 94.35,
+          "recent_high": 95.92,
+          "recent_low": 93.66,
+          "atr": 0.3636,
+          "note": "закриття нижче swing low 94.35; сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": 10,
+          "trade_delta_pct": 4.8,
+          "book_delta_pct": 87.62,
+          "note": "стакан підтримує покупців; підтримка покупців біля 93.79"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 720.0,
+          "delta_pct": 4.8,
+          "cvd": 9548.0,
+          "cvd_change_pct": 8.156,
+          "last_trade_ts": 1780648249335,
+          "price_move_pct": -0.749,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "LONG",
+          "score": 5,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 94.1852,
+              "imbalance_pct": 99.4,
+              "volume": 1712.0
+            }
+          ],
+          "note": "локальні покупки вище ціни; bid-стіна 93.91"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 60561.39,
+          "oi_change_pct": -0.209,
+          "funding_pct": -0.00066,
+          "price_change_pct": -1.023,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "LONG",
+          "score": 18,
+          "event": "SHORT SQUEEZE",
+          "blocks": [],
+          "vol_ratio": 1.6,
+          "move_1_pct": 0.427,
+          "move_6_pct": -0.948,
+          "note": "памп на обсязі — ймовірно шорт-сквіз"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "top": "Oil edges down as Oman says Mina al Fahal operations proceeding normally - Reuters",
+          "total": 24
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-05T08:16:31.519335+00:00"
+  "updated_at": "2026-06-05T08:31:01.602763+00:00"
 }
