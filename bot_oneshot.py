@@ -5230,6 +5230,19 @@ def build_follow_message(context, trade, result):
 
 
 def build_closed_trade_journal_item(trade, result, context):
+    """Build a closed-trade journal row with MFE analytics.
+
+    best_pct is kept for backward compatibility, but the same value is also
+    stored as mfe_pct so later analysis can directly answer:
+    - how much profit the trade had at its best moment;
+    - how much of that MFE was captured at exit;
+    - how much profit was given back before closing.
+    """
+    actual_pct = round(safe_float(result.get("current_pct"), 0.0) or 0.0, 3)
+    mfe_pct = round(safe_float(result.get("best_pct"), 0.0) or 0.0, 3)
+    mfe_captured_pct = round(actual_pct / mfe_pct * 100, 1) if mfe_pct > 0.1 else None
+    mfe_giveback_pct = round(mfe_pct - actual_pct, 3) if mfe_pct > 0.1 else None
+
     return {
         "id": trade.id,
         "opened_at": trade.opened_at,
@@ -5244,9 +5257,12 @@ def build_closed_trade_journal_item(trade, result, context):
         "tp3": trade.tp3,
         "quality": trade.quality,
         "result_action": result["action"],
-        "result_pct": round(result["current_pct"], 3),
-        "leveraged_pct": round(result["current_pct"] * LEVERAGE, 2),
-        "best_pct": round(result["best_pct"], 3),
+        "result_pct": actual_pct,
+        "leveraged_pct": round(actual_pct * LEVERAGE, 2),
+        "best_pct": mfe_pct,
+        "mfe_pct": mfe_pct,
+        "mfe_captured_pct": mfe_captured_pct,
+        "mfe_giveback_pct": mfe_giveback_pct,
         "notes": result.get("notes", []),
     }
 
@@ -5314,12 +5330,16 @@ def main():
         message = build_follow_message(context, active, result)
         if result.get("closed"):
             journal["trades"].append(build_closed_trade_journal_item(active, result, context))
+            closed_mfe_pct = round(safe_float(result.get("best_pct"), 0.0) or 0.0, 3)
+            closed_result_pct = round(safe_float(result.get("current_pct"), 0.0) or 0.0, 3)
             append_history(state, {
                 "type": "TRADE_CLOSED",
                 "side": active.side,
                 "action": result["action"],
                 "price": round_price(context["price"]),
-                "result_pct": round(result["current_pct"], 3),
+                "result_pct": closed_result_pct,
+                "mfe_pct": closed_mfe_pct,
+                "mfe_captured_pct": round(closed_result_pct / closed_mfe_pct * 100, 1) if closed_mfe_pct > 0.1 else None,
             })
             store_active_trade(state, None)
         else:
