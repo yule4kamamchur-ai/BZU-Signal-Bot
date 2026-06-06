@@ -3916,6 +3916,16 @@ def evaluate_new_setup(context):
     ict_no_chase = ict_same and bool(ict.get("no_chase"))
     ict_against = ict.get("bias") == opposite(side) and ict.get("state") == "ENTRY_MODEL" and abs(int(ict.get("score", 0) or 0)) >= 22
 
+    # ICT priority layer. ICT is not a hard blocker for every intraday trend
+    # continuation, because BZU can move without a perfect FVG/OB retest.
+    # But a normal 90+ quality ENTRY must have a real ICT model or a very strong
+    # trend stack. Without ICT, the bot may still enter, but quality is capped
+    # and the signal is treated as trend/risky rather than ideal.
+    ict_score_abs = abs(int(ict.get("score", 0) or 0))
+    ict_entry_model = ict_same and ict.get("state") == "ENTRY_MODEL" and bool(ict.get("entry_ok"))
+    ict_context_support = ict_same and ict_score_abs >= 16
+    ict_context_against = ict.get("bias") == opposite(side) and ict_score_abs >= 16
+
     cvd_reliable = cvd.get("confidence", "HIGH") != "LOW"
     cvd_same = cvd_reliable and cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
     flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10
@@ -4033,6 +4043,23 @@ def evaluate_new_setup(context):
     ) or (
         side == "SHORT" and ict_setup in ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD"]
     )
+    ict_full_model = bool(ict_entry_ok or ict_reclaim_same or ict_entry_model)
+    trend_stack_same = bool(tf3_same and tf15_same and (tf1h.get("bias") == side or tf4h.get("bias") == side or structure_same))
+    strong_trend_stack = bool(tf3_same and tf15_same and structure_same and (tf1h.get("bias") == side or tf4h.get("bias") == side))
+
+    if ict_full_model:
+        quality += 6
+        if "ICT сетап готовий" not in confirmations:
+            confirmations.append("ICT сетап готовий")
+    elif ict_context_support:
+        quality += 2
+        confirmations.append("ICT підтримує напрям, але без повного FVG/OB/sweep входу")
+    elif ict_context_against:
+        quality -= 12
+        conflicts.append("ICT проти напрямку — якість входу нижча")
+    else:
+        conflicts.append("немає повного ICT-сетапу — якість входу обмежена")
+
     structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same or reversal_entry_allowed)
     structure_gate_missing = bool(tf3_same and ict_entry_ok and not structural_entry_ok)
     if structure_gate_missing:
@@ -4103,6 +4130,18 @@ def evaluate_new_setup(context):
         quality = min(quality, 76)
     elif pressure_risk:
         quality = min(quality, 80)
+
+    # ICT priority caps: ICT is the quality anchor. Trend entries without a
+    # complete ICT model are allowed, but cannot be scored like ideal ICT setups.
+    if ict_context_against:
+        quality = min(quality, 72)
+    elif not ict_full_model:
+        if strong_trend_stack:
+            quality = min(quality, 86)
+        elif trend_stack_same:
+            quality = min(quality, 82)
+        else:
+            quality = min(quality, 78)
 
     if context.get("low_liquidity_risk"):
         quality = min(quality, 74)
@@ -4209,6 +4248,8 @@ def evaluate_new_setup(context):
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
         if reversal_entry_allowed:
             reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура/ICT підтвердили розворот"
+        elif not ict_full_model:
+            reason = "трендовий вхід без повного ICT-сетапу: напрям/структура/3M підтверджують, якість обмежена"
         elif not tf15_same:
             reason = "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний"
         else:
