@@ -2716,18 +2716,18 @@ def trade_mode_profile(context, side=None):
     profiles = {
         # Range: do not ask for +2.18% if the market is balanced. Take the first
         # realistic edge at +0.75–1.0% and protect aggressively.
-        "RANGE": {"tp1_pct": 0.72, "tp2_pct": 1.15, "tp3_pct": 1.80, "max_stop_pct": 1.05, "be_trigger": 0.40, "protect_trigger": 0.62, "giveback": 0.38},
-        "PULLBACK": {"tp1_pct": 0.95, "tp2_pct": 1.75, "tp3_pct": 3.00, "max_stop_pct": 1.35, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.46},
+        "RANGE": {"tp1_pct": 0.72, "tp2_pct": 1.15, "tp3_pct": 1.80, "max_stop_pct": 1.05, "be_trigger": 0.40, "protect_trigger": 0.62, "giveback": 0.20},
+        "PULLBACK": {"tp1_pct": 0.95, "tp2_pct": 1.75, "tp3_pct": 3.00, "max_stop_pct": 1.35, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.30},
         # TREND: TP2/TP3 stay far, but TP1 is realistic for BZU intraday.
         # The previous 2.18% TP1 often missed +0.7–1.0% moves and gave profit back.
         # TREND: do not put TP1 too close, but also do not force TP1 to the far swing.
         # First partial/protection target is ATR-based (~1.2–1.5 ATR). Stop remains ICT/SMC-based.
-        "TREND": {"tp1_pct": 0.00, "tp2_pct": 2.45, "tp3_pct": 4.80, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.70, "protect_trigger": 1.00, "giveback": 0.55},
-        "REVERSAL": {"tp1_pct": 0.95, "tp2_pct": 1.80, "tp3_pct": 3.10, "max_stop_pct": 1.45, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.46},
-        "NEWS_IMPULSE": {"tp1_pct": 0.85, "tp2_pct": 1.55, "tp3_pct": 2.70, "max_stop_pct": 1.25, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.42},
-        "IMPULSE": {"tp1_pct": 0.92, "tp2_pct": 1.65, "tp3_pct": 2.80, "max_stop_pct": 1.35, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.44},
-        "NORMAL": {"tp1_pct": 1.05, "tp2_pct": 1.95, "tp3_pct": 3.40, "max_stop_pct": 1.55, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.50},
-        "UNKNOWN": {"tp1_pct": 1.05, "tp2_pct": 1.95, "tp3_pct": 3.40, "max_stop_pct": 1.55, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.50},
+        "TREND": {"tp1_pct": 0.00, "tp2_pct": 2.45, "tp3_pct": 4.80, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "be_trigger": 0.70, "protect_trigger": 1.00, "giveback": 0.40},
+        "REVERSAL": {"tp1_pct": 0.95, "tp2_pct": 1.80, "tp3_pct": 3.10, "max_stop_pct": 1.45, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.25},
+        "NEWS_IMPULSE": {"tp1_pct": 0.85, "tp2_pct": 1.55, "tp3_pct": 2.70, "max_stop_pct": 1.25, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.50},
+        "IMPULSE": {"tp1_pct": 0.92, "tp2_pct": 1.65, "tp3_pct": 2.80, "max_stop_pct": 1.35, "be_trigger": 0.48, "protect_trigger": 0.78, "giveback": 0.35},
+        "NORMAL": {"tp1_pct": 1.05, "tp2_pct": 1.95, "tp3_pct": 3.40, "max_stop_pct": 1.55, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.35},
+        "UNKNOWN": {"tp1_pct": 1.05, "tp2_pct": 1.95, "tp3_pct": 3.40, "max_stop_pct": 1.55, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.35},
     }
     profile = dict(profiles.get(name, profiles["NORMAL"]))
     profile["regime"] = name
@@ -4447,11 +4447,12 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
 
 
 def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=None):
-    """MFE-based protective stop for BZU intraday trades.
+    """Regime-aware MFE protective stop for BZU intraday trades.
 
-    Regime-aware:
-    - RANGE/NEWS: protect earlier and take smaller wins.
-    - TREND: give more room so TP2/TP3 still have a chance.
+    The purpose is not to scalp every small pullback. It is to stop the bot from
+    giving back most of a real MFE. Protection is stricter in RANGE/REVERSAL,
+    moderate in PULLBACK/NORMAL, and softer in TREND/NEWS_IMPULSE so big moves
+    still have room to continue.
     """
     profile = profile or {}
     regime = profile.get("regime", "NORMAL")
@@ -4460,62 +4461,102 @@ def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=N
     if not entry or not price or best_pct < be_trigger or current_pct < 0.12:
         return None, ""
 
-    # Lock ladder before TP1. It adapts to regime.
-    # Professional intraday management: if the trade already gave a meaningful
-    # MFE, the bot must lock part of it instead of waiting for a distant TP1.
-    # This fixes cases like: SHORT +0.78% MFE -> exit only +0.15%.
-    lock_pct = 0.06
-    label = f"{regime}: MFE +{round(best_pct, 2)}% — стоп у беззбиток+"
+    lock_pct = 0.08
+    label = f"{regime}: MFE +{round(best_pct, 2)}% — перший захист прибутку"
 
-    if regime in ["RANGE", "NEWS_IMPULSE"]:
-        # In range/news chop the market often gives 0.5–1.0% and returns.
+    if regime == "RANGE":
+        # In balance the market often gives a short move and returns. Capture more.
         if best_pct >= 1.05 and current_pct >= 0.55:
-            lock_pct = 0.62
-            label = f"{regime}: MFE у боковику/новинах — агресивно захистити прибуток"
+            lock_pct = 0.72
+            label = f"{regime}: MFE у боковику — агресивно захистити прибуток"
         elif best_pct >= 0.75 and current_pct >= 0.35:
-            lock_pct = 0.40
-            label = f"{regime}: MFE — захистити основну частину короткого руху"
+            lock_pct = 0.52
+            label = f"{regime}: MFE у боковику — не віддавати короткий рух"
         elif best_pct >= be_trigger and current_pct >= 0.18:
-            lock_pct = 0.20
+            lock_pct = 0.30
             label = f"{regime}: перший захист у боковику"
+    elif regime == "REVERSAL":
+        # Reversal setups often fail after the first push, so protect sooner.
+        if best_pct >= 1.05 and current_pct >= 0.55:
+            lock_pct = 0.70
+            label = f"{regime}: розворотний MFE — захистити більшу частину"
+        elif best_pct >= 0.72 and current_pct >= 0.34:
+            lock_pct = 0.50
+            label = f"{regime}: розворотний MFE — стоп у плюс"
+        elif best_pct >= be_trigger and current_pct >= 0.18:
+            lock_pct = 0.32
+            label = f"{regime}: перший захист розвороту"
+    elif regime == "PULLBACK":
+        # Pullback in trend: protect profit, but leave room for continuation.
+        if best_pct >= 1.30 and current_pct >= 0.78:
+            lock_pct = 0.82
+            label = f"{regime}: відкат дав MFE — захистити основний рух"
+        elif best_pct >= 0.85 and current_pct >= 0.42:
+            lock_pct = 0.55
+            label = f"{regime}: MFE на відкаті — стоп у плюс"
+        elif best_pct >= be_trigger and current_pct >= 0.20:
+            lock_pct = 0.34
+            label = f"{regime}: перший захист на відкаті"
     elif regime == "TREND":
-        # In a real trend do not kill the trade too early, but still protect
-        # enough profit once MFE becomes meaningful. For BZU, +0.7–0.9% MFE
-        # is already a material intraday move, so the stop must not remain
-        # near the original risk.
+        # Trend keeps wider room than RANGE, but now captures at least ~60% of MFE
+        # when the move is meaningful. This protects cases like +0.8% MFE -> +0.2% exit.
         if best_pct >= 1.70 and current_pct >= 0.95:
-            lock_pct = 1.00
-            label = f"{regime}: сильний трендовий MFE — захистити майже 1%"
+            lock_pct = 1.08
+            label = f"{regime}: сильний трендовий MFE — захистити 1%+"
         elif best_pct >= 1.15 and current_pct >= 0.62:
-            lock_pct = 0.62
+            lock_pct = 0.78
             label = f"{regime}: трендовий MFE — стоп у хороший плюс"
         elif best_pct >= 0.72 and current_pct >= 0.30:
-            lock_pct = 0.42
+            lock_pct = 0.52
             label = f"{regime}: трендовий MFE — не віддавати рух назад"
         elif best_pct >= be_trigger and current_pct >= 0.16:
-            lock_pct = 0.25
+            lock_pct = 0.34
             label = f"{regime}: перший трендовий захист"
+    elif regime == "NEWS_IMPULSE":
+        # News needs the most air. Do not over-tighten on normal news volatility.
+        if best_pct >= 1.80 and current_pct >= 1.00:
+            lock_pct = 0.95
+            label = f"{regime}: новинний MFE — захистити прибуток, але дати простір"
+        elif best_pct >= 1.10 and current_pct >= 0.55:
+            lock_pct = 0.55
+            label = f"{regime}: новинний MFE — мʼякий захист"
+        elif best_pct >= be_trigger and current_pct >= 0.18:
+            lock_pct = 0.28
+            label = f"{regime}: перший новинний захист"
     else:
+        # NORMAL / IMPULSE / UNKNOWN: medium protection. Stronger than before,
+        # especially for LONGs, but not a hard exit on every pullback.
         if best_pct >= protect_trigger + 0.60 and current_pct >= protect_trigger * 0.75:
-            lock_pct = 0.62
+            lock_pct = 0.78
             label = f"{regime}: сильний MFE — захистити більшу частину руху"
-        elif best_pct >= protect_trigger + 0.20 and current_pct >= protect_trigger * 0.50:
-            lock_pct = 0.45
+        elif best_pct >= 0.75 and current_pct >= 0.35:
+            lock_pct = 0.50
             label = f"{regime}: MFE — зафіксувати частину прибутку"
-        elif best_pct >= be_trigger and current_pct >= 0.20:
-            lock_pct = 0.22
+        elif best_pct >= be_trigger and current_pct >= 0.18:
+            lock_pct = 0.32
             label = f"{regime}: перший захист прибутку"
 
+    # LONG pullbacks on BZU often return faster than shorts. Add a small extra
+    # lock only after meaningful MFE; the validity check below prevents putting
+    # the stop above current market price.
+    if side == "LONG" and best_pct >= 0.70:
+        lock_pct += 0.06
+
+    # Never place the protective stop on the wrong side of the current price.
     if side == "LONG":
+        # keep a small buffer below current price to avoid an impossible stop
+        max_lock_now = max(0.02, current_pct - 0.06)
+        lock_pct = min(lock_pct, max_lock_now)
         level = entry * (1 + lock_pct / 100.0)
         if level >= price:
             return None, ""
     else:
+        max_lock_now = max(0.02, current_pct - 0.06)
+        lock_pct = min(lock_pct, max_lock_now)
         level = entry * (1 - lock_pct / 100.0)
         if level <= price:
             return None, ""
     return round_price(level), label
-
 
 def _apply_more_protective_stop(trade, side, new_stop):
     """Apply only if the new stop improves protection and stays on valid side."""
@@ -4531,20 +4572,44 @@ def _apply_more_protective_stop(trade, side, new_stop):
 
 
 def _mfe_exit_floor(best_pct, market_regime):
-    """Minimum acceptable captured MFE before closing a profitable trade.
+    """Minimum acceptable captured MFE before closing/protecting a profitable trade.
 
-    Example: if best_pct was +0.80% in TREND, closing at +0.13% captures
-    only 16% and means the bot gave back too much. This floor lets the bot
-    either protect earlier or close before most profit disappears.
+    This is the regime-aware MFE Giveback Guard:
+    - TREND: can give back about 40% of MFE, capture ~60%.
+    - RANGE: can give back about 20%, capture ~80%.
+    - PULLBACK/NORMAL: can give back about 30–35%.
+    - REVERSAL: can give back about 25%.
+    - NEWS_IMPULSE: can give back about 50%, because news moves are noisy.
     """
     best_pct = safe_float(best_pct, 0.0) or 0.0
     if best_pct <= 0:
         return 0.0
-    if market_regime == "TREND":
-        return max(0.30, best_pct * 0.48)
-    if market_regime in ["RANGE", "NEWS_IMPULSE", "IMPULSE", "REVERSAL"]:
-        return max(0.22, best_pct * 0.58)
-    return max(0.25, best_pct * 0.52)
+
+    allowed_giveback = {
+        "TREND": 0.40,
+        "RANGE": 0.20,
+        "PULLBACK": 0.30,
+        "REVERSAL": 0.25,
+        "NEWS_IMPULSE": 0.50,
+        "IMPULSE": 0.35,
+        "NORMAL": 0.35,
+        "UNKNOWN": 0.35,
+    }.get(market_regime, 0.35)
+
+    capture_ratio = 1.0 - allowed_giveback
+    # For tiny MFE do not force unrealistic exits. Once MFE is meaningful,
+    # the ratio becomes the main rule.
+    min_absolute = 0.18
+    if market_regime == "RANGE":
+        min_absolute = 0.22
+    elif market_regime == "TREND":
+        min_absolute = 0.28
+    elif market_regime == "NEWS_IMPULSE":
+        min_absolute = 0.20
+    elif market_regime == "REVERSAL":
+        min_absolute = 0.22
+
+    return max(min_absolute, best_pct * capture_ratio)
 
 def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
