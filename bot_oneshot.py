@@ -4616,114 +4616,260 @@ def active_trade_message_key(trade, action):
 
 
 def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, action):
-    """Compact supervision risk model for Telegram.
+    """Professional, dynamic supervision risk model.
 
-    It does not open/close trades by itself. It only explains to the user:
-    - whether the current trade is still healthy;
-    - how strong the opposite/reversal scenario is becoming.
+    This is informational only: it does not open, close or move stops by itself.
+    It is recalculated on EVERY follow message from the fresh context and answers:
+      1) Current trade risk: how safe it is to keep holding the open position.
+      2) Reversal risk: whether a real opposite setup is forming.
+
+    The model is intentionally organic, not a hard one-factor switch:
+    - 15M / structure / ICT have the largest weight.
+    - 3M is important, but can be noisy.
+    - CVD / flow / clusters confirm or warn, but do not dominate alone.
+    - MFE giveback raises current trade risk, especially after meaningful profit.
+    - In a trend, normal pullbacks are tolerated more than in range/reversal modes.
     """
     side = trade.side
     opp = opposite(side)
 
-    tf3 = context.get("tf3") or {}
-    tf15 = context.get("tf15") or {}
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    cvd = context.get("cvd") or {}
-    flow = context.get("flow") or {}
-    clusters = context.get("clusters") or {}
-    liquidity = context.get("liquidity") or {}
+    def block(name):
+        return context.get(name) or {}
 
-    reasons = []
-    risk_score = 0
+    tf3 = block("tf3")
+    tf15 = block("tf15")
+    tf1h = block("tf1h")
+    tf4h = block("tf4h")
+    structure = block("structure")
+    ict = block("ict")
+    cvd = block("cvd")
+    flow = block("flow")
+    clusters = block("clusters")
+    derivatives = block("derivatives")
+    liquidity = block("liquidity")
+    news = block("news")
 
+    mode_profile = trade_mode_profile(context, side)
+    market_regime = mode_profile.get("regime", "NORMAL")
+
+    def clamp(value, lo=0, hi=100):
+        return max(lo, min(hi, value))
+
+    def strength(b, norm=40):
+        try:
+            return clamp(abs(float((b or {}).get("score", 0) or 0)) / float(norm), 0.35, 1.25)
+        except Exception:
+            return 0.65
+
+    def risk_label(score):
+        if score >= 76:
+            return "КРИТИЧНИЙ"
+        if score >= 56:
+            return "ВИСОКИЙ"
+        if score >= 31:
+            return "СЕРЕДНІЙ"
+        return "НИЗЬКИЙ"
+
+    def reversal_label(score):
+        if score >= 81:
+            return "ДУЖЕ ВИСОКИЙ"
+        if score >= 61:
+            return "ВИСОКИЙ"
+        if score >= 41:
+            return "СЕРЕДНІЙ"
+        if score >= 21:
+            return "ПОМІРНИЙ"
+        return "НИЗЬКИЙ"
+
+    # -------------------------
+    # 1) Current trade risk
+    # -------------------------
+    # Start from a neutral-but-not-scary baseline. The score then moves up/down
+    # according to fresh market evidence.
+    trade_risk_score = 30.0
+
+    # If the bot itself is no longer in a clean HOLD state, risk should rise,
+    # but not automatically become HIGH; strong 15M/ICT can still keep it moderate.
     if action in ["EXIT_WARNING", "PROTECT_OR_EXIT"]:
-        risk_score += 24
-        reasons.append("дія вже не HOLD")
-    elif action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT"]:
-        risk_score += 8
+        trade_risk_score += 18
+    elif action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC"]:
+        trade_risk_score += 6
+    elif action in ["EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
+        trade_risk_score += 30
 
-    if current_pct < -0.25:
-        risk_score += 22
-        reasons.append("угода в мінусі")
+    # Position result / stop proximity.
+    if current_pct <= -0.45:
+        trade_risk_score += 22
+    elif current_pct <= -0.18:
+        trade_risk_score += 13
     elif current_pct < 0:
-        risk_score += 12
-        reasons.append("угода трохи проти входу")
+        trade_risk_score += 7
+    elif current_pct >= 0.55:
+        trade_risk_score -= 6
+    elif current_pct >= 0.25:
+        trade_risk_score -= 3
 
-    if best_pct > 0.35 and giveback >= max(0.25, best_pct * 0.35):
-        risk_score += 16
-        reasons.append("частина MFE вже віддана")
+    # MFE giveback: if the market gave profit and is taking it back, risk rises.
+    if best_pct > 0.20:
+        giveback_ratio = clamp(giveback / best_pct if best_pct else 0.0, 0.0, 1.0)
+        if best_pct >= 0.90:
+            trade_risk_score += giveback_ratio * 22
+        elif best_pct >= 0.55:
+            trade_risk_score += giveback_ratio * 17
+        else:
+            trade_risk_score += giveback_ratio * 10
+        if current_pct > 0 and giveback_ratio < 0.25:
+            trade_risk_score -= 4
 
-    if "RISKY_ENTRY" in (trade.notes or []):
-        risk_score += 8
-        reasons.append("вхід був ризиковий")
+    # Distance to active stop: when price is already near the protective stop, risk is not low.
+    if trade.entry:
+        if side == "LONG":
+            stop_dist_pct = max(0.0, (safe_float(context.get("price"), trade.entry) - trade.stop_current) / trade.entry * 100)
+        else:
+            stop_dist_pct = max(0.0, (trade.stop_current - safe_float(context.get("price"), trade.entry)) / trade.entry * 100)
+        if stop_dist_pct <= 0.12:
+            trade_risk_score += 12
+        elif stop_dist_pct <= 0.28:
+            trade_risk_score += 7
 
-    if opposite_votes >= 2.4:
-        risk_score += 22
-        reasons.append("багато блоків проти")
-    elif opposite_votes >= 1.6:
-        risk_score += 12
-        reasons.append("є тиск проти")
+    # Fresh market alignment. 15M, structure and ICT dominate; flow confirms.
+    risk_blocks = [
+        (tf15, 22, 45),
+        (structure, 20, 35),
+        (ict, 20, 38),
+        (tf3, 15, 65),
+        (cvd, 10, 25),
+        (flow, 9, 25),
+        (clusters, 6, 14),
+        (derivatives, 5, 18),
+        (liquidity, 6, 18),
+        (tf1h, 8, 55),
+        (tf4h, 5, 60),
+        (news, 4, 35),
+    ]
+    for b, weight, norm in risk_blocks:
+        bias = (b or {}).get("bias")
+        s = strength(b, norm)
+        if bias == opp:
+            trade_risk_score += weight * s
+        elif bias == side:
+            trade_risk_score -= weight * min(s, 1.0)
 
-    if support_votes >= 2.4 and current_pct >= 0:
-        risk_score -= 12
+    # Regime smoothing: do not panic in a real trend, but be stricter in range/reversal.
+    if market_regime == "TREND" and (tf15.get("bias") == side or ict.get("bias") == side or structure.get("bias") == side):
+        trade_risk_score -= 7
+    elif market_regime == "RANGE":
+        trade_risk_score += 7
+    elif market_regime == "REVERSAL":
+        trade_risk_score += 5
+    elif market_regime == "NEWS_IMPULSE":
+        trade_risk_score += 3
+
     if trade.tp1_hit:
-        risk_score -= 8
+        trade_risk_score -= 6
+    if "RISKY_ENTRY" in (trade.notes or []):
+        trade_risk_score += 5
 
-    if risk_score >= 42:
-        trade_risk = "ВИСОКИЙ"
-    elif risk_score >= 22:
-        trade_risk = "СЕРЕДНІЙ"
-    else:
-        trade_risk = "НИЗЬКИЙ"
+    # Counter-trend context floor: if both 1H and 4H are against the open trade,
+    # the trade can still be valid, but risk should not be shown as ultra-low.
+    higher_tf_against = (tf1h.get("bias") == opp and tf4h.get("bias") == opp)
+    intraday_supports = sum([
+        tf15.get("bias") == side,
+        structure.get("bias") == side,
+        ict.get("bias") == side,
+        tf3.get("bias") == side,
+        flow.get("bias") == side or cvd.get("bias") == side,
+    ])
+    if higher_tf_against:
+        floor_value = 24 if (current_pct > 0.45 and intraday_supports >= 3) else 32
+        trade_risk_score = max(trade_risk_score, floor_value)
 
-    reversal_score = 0
-    reversal_reasons = []
+    # Support/opposition aggregate from manage_active_trade, used as soft confirmation.
+    trade_risk_score += max(0.0, opposite_votes - support_votes) * 4.5
+    trade_risk_score -= max(0.0, support_votes - opposite_votes) * 2.5
+    if higher_tf_against:
+        floor_value = 24 if (current_pct > 0.45 and intraday_supports >= 3) else 32
+        trade_risk_score = max(trade_risk_score, floor_value)
 
-    def score_against(block, label, strong_at=16, weight=12):
-        nonlocal reversal_score
-        if (block or {}).get("bias") == opp:
-            sc = abs(int((block or {}).get("score", 0) or 0))
-            add = weight + (6 if sc >= strong_at else 0)
-            reversal_score += add
-            reversal_reasons.append(label)
+    trade_risk_score = int(round(clamp(trade_risk_score)))
+    trade_risk = risk_label(trade_risk_score)
 
-    score_against(tf3, "3M проти", 42, 18)
-    score_against(tf15, "15M проти", 26, 14)
-    score_against(structure, "структура проти", 22, 18)
-    score_against(ict, "ICT проти", 16, 16)
-    score_against(cvd, "CVD проти", 10, 12)
-    score_against(flow, "потік проти", 10, 10)
-    score_against(clusters, "кластери проти", 5, 6)
-    score_against(liquidity, "ліквідність проти", 12, 10)
+    # -------------------------
+    # 2) Opposite/reversal risk
+    # -------------------------
+    # This is not just "blocks against position". It asks whether the opposite
+    # side is becoming a tradable setup: 3M + structure/ICT + flow/confirmation.
+    reversal_score = 8.0
 
-    if current_pct < 0:
+    reversal_blocks = [
+        (tf3, 18, 65),
+        (tf15, 20, 45),
+        (structure, 22, 35),
+        (ict, 22, 38),
+        (cvd, 10, 25),
+        (flow, 10, 25),
+        (clusters, 6, 14),
+        (liquidity, 6, 18),
+        (derivatives, 4, 18),
+        (tf1h, 6, 55),
+        (tf4h, 3, 60),
+    ]
+    opposite_core = 0
+    support_core = 0
+    for b, weight, norm in reversal_blocks:
+        bias = (b or {}).get("bias")
+        s = strength(b, norm)
+        if bias == opp:
+            reversal_score += weight * s
+            if b in [tf3, tf15, structure, ict]:
+                opposite_core += 1
+        elif bias == side:
+            reversal_score -= (weight * 0.65) * min(s, 1.0)
+            if b in [tf3, tf15, structure, ict]:
+                support_core += 1
+
+    # A real reversal normally needs at least two core components.
+    if opposite_core >= 3:
+        reversal_score += 12
+    elif opposite_core == 2:
+        reversal_score += 6
+    elif opposite_core == 0:
+        reversal_score -= 10
+
+    if support_core >= 3:
+        reversal_score -= 12
+    elif support_core == 2:
+        reversal_score -= 6
+
+    # MFE and PnL context: when a trade gives back profit or goes red, opposite scenario gains credibility.
+    if current_pct < -0.15:
         reversal_score += 8
-    if best_pct <= 0.15 and current_pct < 0:
-        reversal_score += 8
-        reversal_reasons.append("угода майже не дала MFE")
-    if support_votes >= 2.6:
-        reversal_score -= 14
+    if best_pct > 0.45:
+        giveback_ratio = clamp(giveback / best_pct if best_pct else 0.0, 0.0, 1.0)
+        reversal_score += giveback_ratio * 12
     if trade.tp1_hit and current_pct > 0:
-        reversal_score -= 8
+        reversal_score -= 6
 
-    reversal_score = max(0, min(100, int(reversal_score)))
-    if reversal_score >= 65:
-        reversal_label = "ВИСОКИЙ"
-    elif reversal_score >= 38:
-        reversal_label = "СЕРЕДНІЙ"
-    else:
-        reversal_label = "НИЗЬКИЙ"
+    # In a clean trend with higher timeframe still supporting the position, avoid overcalling reversals.
+    if market_regime == "TREND" and (tf15.get("bias") == side or tf1h.get("bias") == side) and opposite_core < 3:
+        reversal_score -= 8
+    if market_regime == "RANGE":
+        reversal_score += 4
+    if higher_tf_against and opposite_core >= 1:
+        reversal_score = max(reversal_score, 22)
+
+    reversal_score = int(round(clamp(reversal_score)))
+    rev_label = reversal_label(reversal_score)
 
     return {
         "trade_risk": trade_risk,
-        "trade_risk_reasons": _short_list(reasons, 2),
+        "trade_risk_score": trade_risk_score,
+        "trade_risk_reasons": [],
         "reversal_side": opp,
         "reversal_score": reversal_score,
-        "reversal_label": reversal_label,
-        "reversal_reasons": _short_list(reversal_reasons, 3),
+        "reversal_label": rev_label,
+        "reversal_reasons": [],
     }
-
 
 def manage_active_trade(trade, context):
     price = context["price"]
@@ -5147,6 +5293,7 @@ def manage_active_trade(trade, context):
         "recommended_stop_reason": recommended_stop_reason,
         "notes": notes,
         "trade_risk": risk_snapshot.get("trade_risk"),
+        "trade_risk_score": risk_snapshot.get("trade_risk_score"),
         "trade_risk_reasons": risk_snapshot.get("trade_risk_reasons"),
         "reversal_side": risk_snapshot.get("reversal_side"),
         "reversal_score": risk_snapshot.get("reversal_score"),
@@ -5519,18 +5666,11 @@ def build_follow_message(context, trade, result):
         lines.append("")
         lines.append("<b>Ризик:</b>")
         if result.get("trade_risk"):
-            risk_line = f"Поточний ризик угоди: <b>{result.get('trade_risk')}</b>"
-            risk_reasons = result.get("trade_risk_reasons") or []
-            if risk_reasons:
-                risk_line += " — " + "; ".join(str(x) for x in risk_reasons[:2])
-            lines.append(risk_line)
+            risk_score = int(result.get("trade_risk_score") or 0)
+            lines.append(f"Поточний ризик угоди: <b>{result.get('trade_risk')}</b> ({risk_score}%)")
         if result.get("reversal_label"):
             rev_side = result.get("reversal_side") or opposite(trade.side)
-            rev_line = f"Ризик розвороту в {rev_side}: <b>{result.get('reversal_label')}</b> ({int(result.get('reversal_score') or 0)}%)"
-            rev_reasons = result.get("reversal_reasons") or []
-            if rev_reasons:
-                rev_line += " — " + "; ".join(str(x) for x in rev_reasons[:3])
-            lines.append(rev_line)
+            lines.append(f"Ризик розвороту в {rev_side}: <b>{result.get('reversal_label')}</b> ({int(result.get('reversal_score') or 0)}%)")
     lines.extend([
         "",
         "<b>Позиція:</b>",
