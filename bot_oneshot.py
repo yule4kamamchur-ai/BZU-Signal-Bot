@@ -4615,6 +4615,116 @@ def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
 
 
+def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, action):
+    """Compact supervision risk model for Telegram.
+
+    It does not open/close trades by itself. It only explains to the user:
+    - whether the current trade is still healthy;
+    - how strong the opposite/reversal scenario is becoming.
+    """
+    side = trade.side
+    opp = opposite(side)
+
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+    clusters = context.get("clusters") or {}
+    liquidity = context.get("liquidity") or {}
+
+    reasons = []
+    risk_score = 0
+
+    if action in ["EXIT_WARNING", "PROTECT_OR_EXIT"]:
+        risk_score += 24
+        reasons.append("дія вже не HOLD")
+    elif action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT"]:
+        risk_score += 8
+
+    if current_pct < -0.25:
+        risk_score += 22
+        reasons.append("угода в мінусі")
+    elif current_pct < 0:
+        risk_score += 12
+        reasons.append("угода трохи проти входу")
+
+    if best_pct > 0.35 and giveback >= max(0.25, best_pct * 0.35):
+        risk_score += 16
+        reasons.append("частина MFE вже віддана")
+
+    if "RISKY_ENTRY" in (trade.notes or []):
+        risk_score += 8
+        reasons.append("вхід був ризиковий")
+
+    if opposite_votes >= 2.4:
+        risk_score += 22
+        reasons.append("багато блоків проти")
+    elif opposite_votes >= 1.6:
+        risk_score += 12
+        reasons.append("є тиск проти")
+
+    if support_votes >= 2.4 and current_pct >= 0:
+        risk_score -= 12
+    if trade.tp1_hit:
+        risk_score -= 8
+
+    if risk_score >= 42:
+        trade_risk = "ВИСОКИЙ"
+    elif risk_score >= 22:
+        trade_risk = "СЕРЕДНІЙ"
+    else:
+        trade_risk = "НИЗЬКИЙ"
+
+    reversal_score = 0
+    reversal_reasons = []
+
+    def score_against(block, label, strong_at=16, weight=12):
+        nonlocal reversal_score
+        if (block or {}).get("bias") == opp:
+            sc = abs(int((block or {}).get("score", 0) or 0))
+            add = weight + (6 if sc >= strong_at else 0)
+            reversal_score += add
+            reversal_reasons.append(label)
+
+    score_against(tf3, "3M проти", 42, 18)
+    score_against(tf15, "15M проти", 26, 14)
+    score_against(structure, "структура проти", 22, 18)
+    score_against(ict, "ICT проти", 16, 16)
+    score_against(cvd, "CVD проти", 10, 12)
+    score_against(flow, "потік проти", 10, 10)
+    score_against(clusters, "кластери проти", 5, 6)
+    score_against(liquidity, "ліквідність проти", 12, 10)
+
+    if current_pct < 0:
+        reversal_score += 8
+    if best_pct <= 0.15 and current_pct < 0:
+        reversal_score += 8
+        reversal_reasons.append("угода майже не дала MFE")
+    if support_votes >= 2.6:
+        reversal_score -= 14
+    if trade.tp1_hit and current_pct > 0:
+        reversal_score -= 8
+
+    reversal_score = max(0, min(100, int(reversal_score)))
+    if reversal_score >= 65:
+        reversal_label = "ВИСОКИЙ"
+    elif reversal_score >= 38:
+        reversal_label = "СЕРЕДНІЙ"
+    else:
+        reversal_label = "НИЗЬКИЙ"
+
+    return {
+        "trade_risk": trade_risk,
+        "trade_risk_reasons": _short_list(reasons, 2),
+        "reversal_side": opp,
+        "reversal_score": reversal_score,
+        "reversal_label": reversal_label,
+        "reversal_reasons": _short_list(reversal_reasons, 3),
+    }
+
+
 def manage_active_trade(trade, context):
     price = context["price"]
     side = trade.side
@@ -4822,6 +4932,9 @@ def manage_active_trade(trade, context):
                 reasons.append("ціна близько до стопу")
             if best_pct > 0.1:
                 reasons.append(f"MFE було +{round(best_pct, 3)}%, захоплено мало")
+            risk_snapshot = active_trade_risk_snapshot(
+                trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, "EXIT_WARNING"
+            )
             return {
                 "closed": True,
                 "action": "EXIT_LOCAL_BREAK",
@@ -4830,6 +4943,12 @@ def manage_active_trade(trade, context):
                 "current_pct": current_pct,
                 "best_pct": best_pct,
                 "notes": reasons[:4],
+                "trade_risk": risk_snapshot.get("trade_risk"),
+                "trade_risk_reasons": risk_snapshot.get("trade_risk_reasons"),
+                "reversal_side": risk_snapshot.get("reversal_side"),
+                "reversal_score": risk_snapshot.get("reversal_score"),
+                "reversal_label": risk_snapshot.get("reversal_label"),
+                "reversal_reasons": risk_snapshot.get("reversal_reasons"),
             }
 
     if tf3_against and (near_stop or clearly_losing):
@@ -5014,6 +5133,9 @@ def manage_active_trade(trade, context):
     trade.last_action = action
     key = active_trade_message_key(trade, action)
     trade.last_message_key = key
+    risk_snapshot = active_trade_risk_snapshot(
+        trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, action
+    )
     return {
         "closed": False,
         "action": action,
@@ -5024,6 +5146,12 @@ def manage_active_trade(trade, context):
         "recommended_stop": round_price(trade.stop_current),
         "recommended_stop_reason": recommended_stop_reason,
         "notes": notes,
+        "trade_risk": risk_snapshot.get("trade_risk"),
+        "trade_risk_reasons": risk_snapshot.get("trade_risk_reasons"),
+        "reversal_side": risk_snapshot.get("reversal_side"),
+        "reversal_score": risk_snapshot.get("reversal_score"),
+        "reversal_label": risk_snapshot.get("reversal_label"),
+        "reversal_reasons": risk_snapshot.get("reversal_reasons"),
     }
 
 def new_active_trade(setup):
@@ -5094,35 +5222,9 @@ def price_line(context):
 
 
 def context_lines(context):
-    # Short dashboard only. Detailed notes stay inside the bot logic, not in Telegram.
-    lines = []
-    regime = context.get("market_regime") or detect_market_regime(context, context.get("bias") if context.get("bias") in ["LONG", "SHORT"] else None)
-    if regime.get("name") and regime.get("name") != "UNKNOWN":
-        lines.append(f"<b>Режим:</b> {regime_label(regime)}")
-    calendar = context.get("calendar") or {}
-    if calendar.get("active"):
-        lines.append(f"<b>⚠️ Новина:</b> {calendar.get('note')}. Новий вхід тільки після реакції ціни.")
-
-    lines.extend([
-        _score_line("4H", context.get("tf4h")),
-        _score_line("1H", context.get("tf1h")),
-        _score_line("15M", context.get("tf15")),
-        _score_line("3M", context.get("tf3")),
-    ])
-
-    # Extra professional blocks, also short.
-    if context.get("ict"):
-        lines.append(_score_line("ICT", context.get("ict")))
-    if context.get("cvd"):
-        lines.append(_score_line("CVD", context.get("cvd")))
-    if context.get("clusters"):
-        lines.append(_score_line("Кластери", context.get("clusters")))
-    if context.get("derivatives"):
-        lines.append(_score_line("OI/Funding", context.get("derivatives")))
-    if context.get("flow"):
-        lines.append(_score_line("Потік", context.get("flow")))
-    return lines
-
+    # User requested to remove the detailed dashboard block from Telegram messages.
+    # Keep all calculations inside the bot, but do not print 4H/1H/15M/3M/ICT/CVD/etc.
+    return []
 
 def plan_text(plan, multiline=False):
     if not plan:
@@ -5412,12 +5514,30 @@ def build_follow_message(context, trade, result):
         "",
         price_line(context),
         f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс/MFE:</b> {round(result['best_pct'], 3)}%",
+    ]
+    if result.get("trade_risk") or result.get("reversal_label"):
+        lines.append("")
+        lines.append("<b>Ризик:</b>")
+        if result.get("trade_risk"):
+            risk_line = f"Поточний ризик угоди: <b>{result.get('trade_risk')}</b>"
+            risk_reasons = result.get("trade_risk_reasons") or []
+            if risk_reasons:
+                risk_line += " — " + "; ".join(str(x) for x in risk_reasons[:2])
+            lines.append(risk_line)
+        if result.get("reversal_label"):
+            rev_side = result.get("reversal_side") or opposite(trade.side)
+            rev_line = f"Ризик розвороту в {rev_side}: <b>{result.get('reversal_label')}</b> ({int(result.get('reversal_score') or 0)}%)"
+            rev_reasons = result.get("reversal_reasons") or []
+            if rev_reasons:
+                rev_line += " — " + "; ".join(str(x) for x in rev_reasons[:3])
+            lines.append(rev_line)
+    lines.extend([
         "",
         "<b>Позиція:</b>",
         f"Вхід {_fmt_price(trade.entry)} | Стоп {_fmt_price(trade.stop_current)}",
         f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
         f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}",
-    ]
+    ])
     if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
         lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
         if result.get("recommended_stop_reason"):
