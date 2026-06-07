@@ -3536,8 +3536,19 @@ def entry_confirmations(side, context):
     elif structure.get("bias") == opposite(side):
         conflicts.append("структура проти")
 
-    if ict.get("bias") == side and ict.get("entry_ok"):
+    ict_setup = str(ict.get("setup", "") or "").upper()
+    ict_strong_setups = {
+        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
+        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
+    }
+    ict_weak_setups = {
+        "LONG": ["BOS_LONG_CONTINUATION_HOLD"],
+        "SHORT": ["BOS_SHORT_CONTINUATION_HOLD"],
+    }
+    if ict.get("bias") == side and ict.get("entry_ok") and ict_setup in ict_strong_setups.get(side, []):
         confirmations.append("ICT сетап готовий")
+    elif ict.get("bias") == side and ict_setup in ict_weak_setups.get(side, []):
+        confirmations.append("ICT частково підтримує")
     elif ict.get("bias") == side:
         confirmations.append("ICT контекст підтримує")
     elif ict.get("bias") == opposite(side) and abs(int(ict.get("score", 0) or 0)) >= 20:
@@ -4038,22 +4049,37 @@ def evaluate_new_setup(context):
         "SHORT": ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"],
     }
     structure_reclaim_same = structure_phase in side_structure_phases.get(side, [])
-    ict_reclaim_same = (
-        side == "LONG" and ict_setup in ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "BOS_LONG_CONTINUATION_HOLD"]
-    ) or (
-        side == "SHORT" and ict_setup in ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD"]
-    )
-    ict_full_model = bool(ict_entry_ok or ict_reclaim_same or ict_entry_model)
+    # ICT quality hierarchy.
+    # STRONG ICT = real Smart Money entry model: sweep/reclaim, FVG/OB retrace,
+    # or clear discount/premium FVG/OB reaction. Only this can justify 90+ quality.
+    # WEAK ICT = BOS continuation/hold or directional ICT context without a clean
+    # FVG/OB/sweep entry. It supports a trend trade, but must not be called
+    # "ICT сетап готовий" and must not inflate quality to 90+.
+    ict_strong_setups = {
+        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
+        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
+    }
+    ict_weak_setups = {
+        "LONG": ["BOS_LONG_CONTINUATION_HOLD"],
+        "SHORT": ["BOS_SHORT_CONTINUATION_HOLD"],
+    }
+    ict_strong_model = bool(ict_same and ict.get("entry_ok") and ict_setup in ict_strong_setups.get(side, []))
+    ict_weak_model = bool(ict_same and ict_setup in ict_weak_setups.get(side, []))
+    ict_full_model = bool(ict_strong_model)
+    ict_reclaim_same = bool(ict_strong_model or ict_weak_model)
     trend_stack_same = bool(tf3_same and tf15_same and (tf1h.get("bias") == side or tf4h.get("bias") == side or structure_same))
     strong_trend_stack = bool(tf3_same and tf15_same and structure_same and (tf1h.get("bias") == side or tf4h.get("bias") == side))
 
-    if ict_full_model:
-        quality += 6
+    if ict_strong_model:
+        quality += 8
         if "ICT сетап готовий" not in confirmations:
             confirmations.append("ICT сетап готовий")
+    elif ict_weak_model:
+        quality += 3
+        confirmations.append("ICT частково підтримує напрям, але це не повний FVG/OB/sweep сетап")
     elif ict_context_support:
-        quality += 2
-        confirmations.append("ICT підтримує напрям, але без повного FVG/OB/sweep входу")
+        quality += 1
+        confirmations.append("ICT лише контекстно підтримує напрям")
     elif ict_context_against:
         quality -= 12
         conflicts.append("ICT проти напрямку — якість входу нижча")
@@ -4131,13 +4157,21 @@ def evaluate_new_setup(context):
     elif pressure_risk:
         quality = min(quality, 80)
 
-    # ICT priority caps: ICT is the quality anchor. Trend entries without a
-    # complete ICT model are allowed, but cannot be scored like ideal ICT setups.
+    # ICT priority caps: ICT is the quality anchor, but not a hard blocker.
+    # Goal: keep good trend entries, but stop printing 90+ when there is no
+    # real ICT setup. Only a STRONG ICT model may score above 88-90.
     if ict_context_against:
         quality = min(quality, 72)
-    elif not ict_full_model:
+    elif ict_weak_model:
         if strong_trend_stack:
-            quality = min(quality, 86)
+            quality = min(quality, 88)
+        elif trend_stack_same:
+            quality = min(quality, 84)
+        else:
+            quality = min(quality, 80)
+    elif not ict_strong_model:
+        if strong_trend_stack:
+            quality = min(quality, 84)
         elif trend_stack_same:
             quality = min(quality, 82)
         else:
@@ -4247,8 +4281,11 @@ def evaluate_new_setup(context):
 
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
         if reversal_entry_allowed:
-            reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура/ICT підтвердили розворот"
-        elif not ict_full_model:
+            if ict_strong_model:
+                reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура + повний ICT підтвердили розворот"
+            else:
+                reason = "REVERSAL ENTRY: попередній напрям зламано, але ICT не повний — якість обмежена"
+        elif not ict_strong_model:
             reason = "трендовий вхід без повного ICT-сетапу: напрям/структура/3M підтверджують, якість обмежена"
         elif not tf15_same:
             reason = "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний"
@@ -4762,6 +4799,27 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         if current_pct > 0 and giveback_ratio < 0.25:
             trade_risk_score -= 4
 
+    # Follow-through failure: if after several runs the trade did not move toward TP1,
+    # the position risk must rise even if 3M is not fully reversed yet. This catches
+    # situations like SHORT made after a drop: price gave only small MFE, then bounced
+    # back toward/above entry. It is informational only, not an auto-exit.
+    try:
+        opened_dt = datetime.fromisoformat(str(trade.opened_at).replace("Z", "+00:00"))
+        elapsed_min = max(0.0, (now_utc() - opened_dt).total_seconds() / 60.0)
+    except Exception:
+        elapsed_min = 0.0
+
+    weak_followthrough = bool(elapsed_min >= 45 and best_pct < 0.30 and current_pct <= 0.08)
+    no_followthrough = bool(elapsed_min >= 75 and best_pct < 0.22 and current_pct <= 0.05)
+    gave_back_small_mfe = bool(best_pct >= 0.12 and giveback >= max(0.12, best_pct * 0.65))
+
+    if weak_followthrough:
+        trade_risk_score += 8
+    if no_followthrough:
+        trade_risk_score += 10
+    if gave_back_small_mfe:
+        trade_risk_score += 7
+
     # Distance to active stop: when price is already near the protective stop, risk is not low.
     if trade.entry:
         if side == "LONG":
@@ -4857,13 +4915,21 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     ]
     opposite_core = 0
     support_core = 0
+    soft_opposite_pressure = 0
     for b, weight, norm in reversal_blocks:
         bias = (b or {}).get("bias")
         s = strength(b, norm)
+        signed_to_opp = side_score(int((b or {}).get("score", 0) or 0), opp)
         if bias == opp:
             reversal_score += weight * s
+            soft_opposite_pressure += 1
             if b in [tf3, tf15, structure, ict]:
                 opposite_core += 1
+        elif signed_to_opp >= max(6, int(norm * 0.22)):
+            # Some modules keep bias NEUTRAL while their signed score already
+            # shows pressure for the opposite side (common in CVD/flow/clusters).
+            reversal_score += weight * 0.45 * min(s, 1.0)
+            soft_opposite_pressure += 1
         elif bias == side:
             reversal_score -= (weight * 0.65) * min(s, 1.0)
             if b in [tf3, tf15, structure, ict]:
@@ -4882,6 +4948,19 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     elif support_core == 2:
         reversal_score -= 6
 
+    # If the open trade fails to follow through, the opposite side becomes more
+    # credible even before a textbook opposite ICT setup appears. This prevents
+    # unrealistic readings like "LONG reversal 5%" after a weak SHORT that failed
+    # to expand.
+    if weak_followthrough:
+        reversal_score += 7
+    if no_followthrough:
+        reversal_score += 10
+    if gave_back_small_mfe:
+        reversal_score += 6
+    if soft_opposite_pressure >= 3:
+        reversal_score += 5
+
     # MFE and PnL context: when a trade gives back profit or goes red, opposite scenario gains credibility.
     if current_pct < -0.15:
         reversal_score += 8
@@ -4898,6 +4977,16 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score += 4
     if higher_tf_against and opposite_core >= 1:
         reversal_score = max(reversal_score, 22)
+
+    # Floors for weak/failed positions. These floors are intentionally moderate:
+    # they do not force exits, but they stop the bot from displaying an
+    # unrealistically low reversal probability while the trade is already stalling.
+    if no_followthrough:
+        reversal_score = max(reversal_score, 28)
+    elif weak_followthrough or gave_back_small_mfe:
+        reversal_score = max(reversal_score, 22)
+    if current_pct < 0 and best_pct < 0.25 and elapsed_min >= 60:
+        reversal_score = max(reversal_score, 25)
 
     reversal_score = int(round(clamp(reversal_score)))
     rev_label = reversal_label(reversal_score)
