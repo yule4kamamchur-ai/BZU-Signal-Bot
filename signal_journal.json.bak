@@ -6192,7 +6192,183 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-07T21:15:37.794125+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 95.13,
+      "quality": 56,
+      "reason": "після слабкого виходу LONG (STOP, 0.532%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 95.13,
+        "stop": 94.5117,
+        "tp1": 96.0337,
+        "tp2": 97.67,
+        "tp3": 98.1471,
+        "risk_pct": 0.65,
+        "rr1": 1.46,
+        "rr2": 4.11,
+        "rr3": 4.88,
+        "invalidation": "15m закриття нижче 94.5117 або злам 3m/структури проти LONG. Режим: відкат у тренді. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "1h підтримує",
+        "3m дав тригер",
+        "ICT сетап готовий",
+        "Smart Money RR добрий: 1.46R"
+      ],
+      "conflicts": [
+        "локальний продавець у стакані",
+        "після слабкого виходу LONG (STOP, 0.532%) не повторювати той самий напрям без нового BOS/reclaim",
+        "низька ліквідність/тиха сесія — ризик спреду і slippage",
+        "ціна TV/OKX розходиться — вхід тільки обережно"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 65,
+        "total_score": 48,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 32,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.042,
+          "drift_pct": 0.07,
+          "vol_ratio": 0.11,
+          "note": "3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trend": "NEUTRAL",
+          "close": 95.33,
+          "ema20": 95.5193,
+          "ema50": 95.0984,
+          "rsi": 49.0,
+          "atr": 0.5022,
+          "slope_pct": -0.045,
+          "move_8_pct": -1.691,
+          "range_atr": 5.66,
+          "note": "EMA20 вище EMA50; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "LONG",
+          "score": 56,
+          "trend": "LONG",
+          "close": 95.34,
+          "ema20": 94.8937,
+          "ema50": 94.602,
+          "rsi": 57.2,
+          "atr": 0.6796,
+          "slope_pct": 2.059,
+          "move_8_pct": 0.793,
+          "range_atr": 6.05,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "LONG",
+          "score": 49,
+          "trend": "LONG",
+          "close": 95.33,
+          "ema20": 94.7981,
+          "ema50": 94.7445,
+          "rsi": 52.7,
+          "atr": 1.3575,
+          "slope_pct": 1.58,
+          "move_8_pct": 1.286,
+          "range_atr": 3.85,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 97.67,
+          "swing_low": 94.97,
+          "recent_high": 97.67,
+          "recent_low": 94.25,
+          "atr": 0.5022,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": 10,
+          "trade_delta_pct": -2.0,
+          "book_delta_pct": 45.21,
+          "note": "стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -200.0,
+          "delta_pct": -2.0,
+          "cvd": -20647.0,
+          "cvd_change_pct": -0.978,
+          "last_trade_ts": 1780866916101,
+          "price_move_pct": 0.0,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 95.2822,
+              "imbalance_pct": -100.0,
+              "volume": 536.0
+            }
+          ],
+          "note": "локальний продавець біля 95.2822"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 59961.3,
+          "oi_change_pct": -0.262,
+          "funding_pct": 0,
+          "price_change_pct": -0.241,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.13,
+          "move_1_pct": 0.0,
+          "move_6_pct": -0.23,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 12,
+          "top": "Fuel prices won't derail TAP's privatization, says chairman - Reuters",
+          "total": 21
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-07T21:01:02.887138+00:00"
+  "updated_at": "2026-06-07T21:15:37.796597+00:00"
 }
