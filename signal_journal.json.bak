@@ -4837,7 +4837,186 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-07T14:31:00.090430+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 94.34,
+      "quality": 56,
+      "reason": "після слабкого виходу LONG (EXIT_MFE_GIVEBACK, 0.138%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 94.34,
+        "stop": 93.7268,
+        "tp1": 95.3306,
+        "tp2": 96.1796,
+        "tp3": 97.5476,
+        "risk_pct": 0.65,
+        "rr1": 1.62,
+        "rr2": 3.0,
+        "rr3": 5.23,
+        "invalidation": "15m закриття нижче 93.7268 або злам 3m/структури проти LONG. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "15m за напрямом",
+        "ICT сетап готовий",
+        "Smart Money RR добрий: 1.62R"
+      ],
+      "conflicts": [
+        "3m локальний відкат",
+        "локальний продавець у стакані",
+        "CVD/дельта поки проти — ранній вхід тільки як ризиковий",
+        "після слабкого виходу LONG (EXIT_MFE_GIVEBACK, 0.138%) не повторювати той самий напрям без нового BOS/reclaim"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 55,
+        "total_score": 61,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -22,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.116,
+          "drift_pct": 0.078,
+          "vol_ratio": 0.03,
+          "note": "3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "LONG",
+          "score": 42,
+          "trend": "LONG",
+          "close": 94.48,
+          "ema20": 94.2989,
+          "ema50": 94.2635,
+          "rsi": 56.5,
+          "atr": 0.2507,
+          "slope_pct": 0.507,
+          "move_8_pct": 0.095,
+          "range_atr": 6.06,
+          "note": "ціна вище EMA20/50; нахил вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "trend": "NEUTRAL",
+          "close": 94.48,
+          "ema20": 94.2795,
+          "ema50": 94.3909,
+          "rsi": 54.3,
+          "atr": 0.4837,
+          "slope_pct": 0.085,
+          "move_8_pct": 0.244,
+          "range_atr": 3.56,
+          "note": "EMA20 нижче EMA50"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 8,
+          "trend": "NEUTRAL",
+          "close": 94.48,
+          "ema20": 94.5153,
+          "ema50": 94.6555,
+          "rsi": 49.0,
+          "atr": 1.1969,
+          "slope_pct": 0.681,
+          "move_8_pct": 1.189,
+          "range_atr": 4.14,
+          "note": "ціна нижче EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 95.28,
+          "swing_low": 94.25,
+          "recent_high": 95.28,
+          "recent_low": 93.56,
+          "atr": 0.2507,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -69.25,
+          "book_delta_pct": 45.57,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -8131.0,
+          "delta_pct": -69.25,
+          "cvd": -177099.0,
+          "cvd_change_pct": -4.812,
+          "last_trade_ts": 1780842622065,
+          "price_move_pct": 0.074,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 94.5464,
+              "imbalance_pct": -56.3,
+              "volume": 6335.0
+            },
+            {
+              "price": 94.4709,
+              "imbalance_pct": -84.4,
+              "volume": 5406.0
+            }
+          ],
+          "note": "локальний продавець біля 94.5464"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 56080.33,
+          "oi_change_pct": -0.07,
+          "funding_pct": 0,
+          "price_change_pct": 0.149,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.05,
+          "move_1_pct": -0.011,
+          "move_6_pct": 0.148,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 9,
+          "top": "Israel cenbank bought $801 million of forex in May amid strong shekel - Reuters",
+          "total": 32
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-07T14:15:41.580671+00:00"
+  "updated_at": "2026-06-07T14:31:00.092504+00:00"
 }
