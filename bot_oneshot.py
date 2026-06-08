@@ -3480,6 +3480,57 @@ def is_late_chase(side, context):
     return False, ""
 
 
+def soft_late_entry_penalty(side, context, late_reason=""):
+    """Soft anti-chase penalty.
+
+    It lowers quality after an extended 3M/15M impulse, but it does not hard
+    block the entry. Strong ICT + structure can still open an early/reversal
+    trade, just with a more honest quality score.
+    """
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15")) or (price or 90) * 0.006
+    tf15 = context.get("tf15") or {}
+    tf3 = context.get("tf3") or {}
+    ict = context.get("ict") or {}
+    ema20 = safe_float(tf15.get("ema20"))
+    distance_atr = abs(price - ema20) / atr15 if price and ema20 and atr15 else 0
+    fast = abs(safe_float(tf3.get("fast_move_pct"), 0) or 0)
+    move8 = abs(safe_float(tf15.get("move_8_pct"), 0) or 0)
+
+    penalty = 0
+    if distance_atr >= 1.5:
+        penalty += 7
+    elif distance_atr >= 1.0:
+        penalty += 5
+    elif distance_atr >= 0.55:
+        penalty += 3
+
+    if fast >= 0.75:
+        penalty += 6
+    elif fast >= 0.45:
+        penalty += 4
+
+    if move8 >= 1.2:
+        penalty += 5
+    elif move8 >= 0.8:
+        penalty += 3
+
+    if ict.get("no_chase") and ict.get("bias") == side:
+        penalty += 5
+
+    # A real ICT entry model can justify entering an impulse continuation/reversal,
+    # so reduce but never remove the anti-chase discount.
+    strong_setups = {
+        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
+        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
+    }
+    setup = str(ict.get("setup", "") or "").upper()
+    if ict.get("bias") == side and ict.get("entry_ok") and setup in strong_setups.get(side, []):
+        penalty = max(3, int(penalty * 0.55))
+
+    return int(max(0, min(18, penalty)))
+
+
 def entry_confirmations(side, context):
     tf3 = context["tf3"]
     tf15 = context["tf15"]
@@ -3832,6 +3883,9 @@ def evaluate_new_setup(context):
     confirmations, conflicts = entry_confirmations(side, context)
     exhausted, exhausted_reason = detect_exhausted_move(side, context)
     late, late_reason = is_late_chase(side, context)
+    late_penalty = soft_late_entry_penalty(side, context, late_reason) if late else 0
+    if late and late_reason:
+        conflicts.append(f"мʼякий anti-chase штраф -{late_penalty}: {late_reason}")
     plan = make_plan(side, context)
     rr_status = smart_money_rr_status(plan)
     mode_profile = trade_mode_profile(context, side)
@@ -4102,7 +4156,6 @@ def evaluate_new_setup(context):
         # It changes the signal to RISKY_ENTRY and caps quality, so we do not enter late.
         and not strong_oi_against
         and not ict_against
-        and not ict_no_chase
         and not countertrend_wait_required
         and side not in liquidity.get("blocks", [])
     )
@@ -4118,7 +4171,6 @@ def evaluate_new_setup(context):
         and not strong_cvd_against
         and not strong_oi_against
         and not ict_against
-        and not ict_no_chase
         and side not in liquidity.get("blocks", [])
     )
 
@@ -4131,7 +4183,6 @@ def evaluate_new_setup(context):
         not rr_status.get("ok")
         or side in liquidity.get("blocks", [])
         or ict_against
-        or ict_no_chase
         or (tf15_against and structure_against)
         or (strong_cvd_against and strong_oi_against)
         or (tf3_strong_against and strong_cvd_against)
@@ -4164,26 +4215,26 @@ def evaluate_new_setup(context):
         quality = min(quality, 72)
     elif ict_weak_model:
         if strong_trend_stack:
-            quality = min(quality, 88)
+            quality = min(quality, 86)
         elif trend_stack_same:
-            quality = min(quality, 84)
+            quality = min(quality, 83)
         else:
             quality = min(quality, 80)
     elif not ict_strong_model:
         if strong_trend_stack:
-            quality = min(quality, 84)
-        elif trend_stack_same:
             quality = min(quality, 82)
+        elif trend_stack_same:
+            quality = min(quality, 80)
         else:
-            quality = min(quality, 78)
+            quality = min(quality, 76)
 
     if context.get("low_liquidity_risk"):
         quality = min(quality, 74)
     if context.get("price_warning"):
         quality = min(quality, 72)
 
-    if late:
-        quality = min(quality, 55)
+    if late_penalty:
+        quality -= late_penalty
     if calendar.get("active"):
         quality -= 8
         if quality < 75:
@@ -4267,17 +4318,6 @@ def evaluate_new_setup(context):
             "show_wait_plan": False,
         }
 
-    if late:
-        return {
-            "action": "WAIT_RETEST",
-            "side": side,
-            "quality": quality,
-            "title": f"ЧЕКАТИ — {side} НЕ ДОГАНЯТИ",
-            "reason": late_reason,
-            "plan": plan,
-            "confirmations": confirmations,
-            "conflicts": conflicts,
-        }
 
     if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
         if reversal_entry_allowed:
@@ -4287,6 +4327,8 @@ def evaluate_new_setup(context):
                 reason = "REVERSAL ENTRY: попередній напрям зламано, але ICT не повний — якість обмежена"
         elif not ict_strong_model:
             reason = "трендовий вхід без повного ICT-сетапу: напрям/структура/3M підтверджують, якість обмежена"
+            if late_penalty:
+                reason += f"; anti-chase штраф уже врахований (-{late_penalty})"
         elif not tf15_same:
             reason = "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний"
         else:
@@ -4362,12 +4404,65 @@ def trade_hit_stop(side, price, stop):
     return price <= stop if side == "LONG" else price >= stop
 
 
-def best_trade_price(side, trade, current_price):
-    if not trade.best_price:
-        return current_price
+def _parse_iso_ts_ms(value):
+    try:
+        if not value:
+            return 0
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _trade_extremes_since_open(trade, context):
+    """High/low actually traded after entry.
+
+    The bot runs every ~15 minutes, while TP can be touched inside a candle and
+    disappear before the next run. For TP/MFE accounting we must use candle
+    high/low since the trade was opened, not only the latest ticker price.
+    We intentionally do NOT use this to trigger newly moved stops, because the
+    candle may have traded that level before the stop was moved.
+    """
+    opened_ms = _parse_iso_ts_ms(getattr(trade, "opened_at", ""))
+    highs = []
+    lows = []
+    for candle in (context.get("candles_3m") or []):
+        try:
+            if opened_ms and int(candle.ts) + 3 * 60 * 1000 < opened_ms:
+                continue
+            highs.append(float(candle.high))
+            lows.append(float(candle.low))
+        except Exception:
+            continue
+    price = safe_float(context.get("price"))
+    if price:
+        highs.append(price)
+        lows.append(price)
+    if not highs or not lows:
+        return price, price
+    return max(highs), min(lows)
+
+
+def trade_hit_level_by_extreme(side, price, level, high_since_open=None, low_since_open=None):
+    if level is None:
+        return False
+    if trade_hit_level(side, price, level):
+        return True
     if side == "LONG":
-        return max(trade.best_price, current_price)
-    return min(trade.best_price, current_price)
+        return high_since_open is not None and high_since_open >= level
+    return low_since_open is not None and low_since_open <= level
+
+
+def best_trade_price(side, trade, current_price, high_since_open=None, low_since_open=None):
+    candidate = current_price
+    if side == "LONG" and high_since_open is not None:
+        candidate = max(current_price, high_since_open)
+    elif side == "SHORT" and low_since_open is not None:
+        candidate = min(current_price, low_since_open)
+    if not trade.best_price:
+        return candidate
+    if side == "LONG":
+        return max(trade.best_price, candidate)
+    return min(trade.best_price, candidate)
 
 
 def _valid_stop_for_side(side, price, stop):
@@ -5012,7 +5107,8 @@ def manage_active_trade(trade, context):
     mode_profile = trade_mode_profile(context, side)
     market_regime = mode_profile.get("regime", "NORMAL")
 
-    trade.best_price = best_trade_price(side, trade, price)
+    high_since_open, low_since_open = _trade_extremes_since_open(trade, context)
+    trade.best_price = best_trade_price(side, trade, price, high_since_open, low_since_open)
     current_pct = signed_pct(side, trade.entry, price)
     best_pct = signed_pct(side, trade.entry, trade.best_price)
     giveback = max(0, best_pct - current_pct)
@@ -5043,7 +5139,7 @@ def manage_active_trade(trade, context):
             "notes": [f"ціна {round_price(price)} проти стопу {round_price(trade.stop_current)}"],
         }
 
-    if trade_hit_level(side, price, trade.tp3):
+    if trade_hit_level_by_extreme(side, price, trade.tp3, high_since_open, low_since_open):
         trade.tp3_hit = True
         trade.status = "CLOSED"
         trade.last_action = "TP3"
@@ -5060,7 +5156,7 @@ def manage_active_trade(trade, context):
     recommended_stop = None
     recommended_stop_reason = ""
 
-    if trade_hit_level(side, price, trade.tp2):
+    if trade_hit_level_by_extreme(side, price, trade.tp2, high_since_open, low_since_open):
         trade.tp2_hit = True
         trade.tp1_hit = True
         action = "TP2_PROTECT"
@@ -5083,7 +5179,7 @@ def manage_active_trade(trade, context):
             trade.stop_current = float(recommended_stop)
             notes.append(f"стоп вже зафіксовано до TP3: {round_price(trade.stop_current)}")
             notes.append(recommended_stop_reason)
-    elif trade_hit_level(side, price, trade.tp1):
+    elif trade_hit_level_by_extreme(side, price, trade.tp1, high_since_open, low_since_open):
         trade.tp1_hit = True
         action = "TP1_PROTECT"
         title = f"{side} — TP1 ВЗЯТО, СТОП ЗАФІКСОВАНО ДО TP2"
