@@ -3531,6 +3531,194 @@ def soft_late_entry_penalty(side, context, late_reason=""):
     return int(max(0, min(18, penalty)))
 
 
+def analyze_entry_location_score(side, context):
+    """Internal Entry Location Score (ELS), hidden from Telegram.
+
+    Purpose: separate a correct direction from a good entry location.
+    The score is deliberately SOFT: it does not block trades and it must not
+    kill early 3M/ICT entries. It only adjusts quality and supervision risk.
+
+    High score = entry is close to a professional location: ICT zone/reclaim,
+    fresh BOS, not too stretched from 15M EMA20/ATR, no obvious liquidity block.
+    Low score = direction may still be correct, but the market entry is late or
+    far from the smart-money area.
+    """
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15")) or (price or 90) * 0.006
+    tf15 = context.get("tf15") or {}
+    tf3 = context.get("tf3") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    clusters = context.get("clusters") or {}
+    liquidity = context.get("liquidity") or {}
+
+    opp = opposite(side)
+    score = 62.0
+    factors = []
+
+    def add(points, key):
+        nonlocal score
+        score += points
+        factors.append((key, points))
+
+    if not price or not atr15:
+        return {"score": 62, "adjustment": 0, "state": "NORMAL", "penalty": 0, "bonus": 0, "factors": factors}
+
+    # 1) Stretch from 15M mean. This catches late entries without blocking them.
+    ema20 = safe_float(tf15.get("ema20"))
+    distance_atr = abs(price - ema20) / atr15 if ema20 else 0.0
+    if distance_atr <= 0.35:
+        add(8, "near_ema20")
+    elif distance_atr <= 0.75:
+        add(4, "fair_distance")
+    elif distance_atr >= 1.75:
+        add(-10, "very_stretched")
+    elif distance_atr >= 1.20:
+        add(-7, "stretched")
+    elif distance_atr >= 0.95:
+        add(-3, "mild_stretch")
+
+    # 2) ICT entry model. This is the best location anchor.
+    setup = str(ict.get("setup", "") or "").upper()
+    strong_setups = {
+        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
+        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
+    }
+    weak_setups = {
+        "LONG": ["BOS_LONG_CONTINUATION_HOLD"],
+        "SHORT": ["BOS_SHORT_CONTINUATION_HOLD"],
+    }
+    ict_same = ict.get("bias") == side
+    ict_against = ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16
+    ict_strong = bool(ict_same and ict.get("entry_ok") and setup in strong_setups.get(side, []))
+    ict_weak = bool(ict_same and setup in weak_setups.get(side, []))
+    if ict_strong:
+        add(16, "strong_ict_location")
+    elif ict_weak:
+        add(7, "weak_ict_location")
+    elif ict_same:
+        add(2, "ict_context")
+    elif ict_against:
+        add(-12, "ict_against_location")
+
+    if ict.get("no_chase") and ict_same:
+        add(-8, "ict_no_chase")
+
+    # 3) Freshness of BOS / reclaim. Entering close to a fresh broken level is good;
+    # chasing far from it is not. This is still soft and cannot block a trade.
+    phase = str(structure.get("phase", "") or "").upper()
+    swing_high = safe_float(structure.get("swing_high"))
+    swing_low = safe_float(structure.get("swing_low"))
+    if side == "LONG" and phase in ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"]:
+        ref = swing_high or swing_low
+        if ref:
+            d = abs(price - ref) / atr15
+            if d <= 0.35:
+                add(10, "fresh_reclaim")
+            elif d <= 0.75:
+                add(5, "acceptable_reclaim")
+            elif d >= 1.45:
+                add(-7, "late_from_reclaim")
+            elif d >= 1.0:
+                add(-4, "extended_from_reclaim")
+        else:
+            add(4, "structure_same")
+    elif side == "SHORT" and phase in ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"]:
+        ref = swing_low or swing_high
+        if ref:
+            d = abs(price - ref) / atr15
+            if d <= 0.35:
+                add(10, "fresh_reclaim")
+            elif d <= 0.75:
+                add(5, "acceptable_reclaim")
+            elif d >= 1.45:
+                add(-7, "late_from_reclaim")
+            elif d >= 1.0:
+                add(-4, "extended_from_reclaim")
+        else:
+            add(4, "structure_same")
+    elif structure.get("bias") == opp:
+        add(-8, "structure_against")
+
+    # 4) 3M impulse quality. Good early 3M trigger is ok; vertical candle gets a small discount.
+    fast = safe_float(tf3.get("fast_move_pct"), 0) or 0
+    drift = safe_float(tf3.get("drift_pct"), 0) or 0
+    if tf3.get("bias") == side:
+        if (side == "LONG" and fast >= 0.70) or (side == "SHORT" and fast <= -0.70):
+            add(-5, "vertical_3m")
+        elif (side == "LONG" and 0.12 <= fast <= 0.45) or (side == "SHORT" and -0.45 <= fast <= -0.12):
+            add(4, "clean_3m_trigger")
+        elif abs(drift) <= 0.18:
+            add(2, "controlled_3m")
+    elif tf3.get("bias") == opp:
+        add(-6, "3m_against")
+
+    # 5) Liquidity / micro pressure. These are small adjustments, not blockers.
+    if side in (liquidity.get("blocks") or []):
+        add(-10, "liquidity_blocks_side")
+    elif liquidity.get("bias") == side:
+        add(4, "liquidity_support")
+    elif liquidity.get("bias") == opp:
+        add(-5, "liquidity_against")
+
+    pressure_against = 0
+    pressure_for = 0
+    for block in [cvd, flow, clusters]:
+        if block.get("bias") == side:
+            pressure_for += 1
+        elif block.get("bias") == opp:
+            pressure_against += 1
+    if pressure_for >= 2:
+        add(4, "micro_support")
+    if pressure_against >= 2:
+        add(-6, "micro_against")
+    elif pressure_against == 1:
+        add(-3, "one_micro_against")
+
+    # Keep ELS soft. A bad location should not delete the trade; it should only
+    # make the score more honest. Strong ICT/early 3M further softens penalties.
+    score = int(max(0, min(100, round(score))))
+
+    if score >= 84:
+        adjustment = 4
+        state = "STRONG"
+    elif score >= 72:
+        adjustment = 2
+        state = "GOOD"
+    elif score >= 58:
+        adjustment = 0
+        state = "NORMAL"
+    elif score >= 46:
+        adjustment = -3
+        state = "WEAK"
+    elif score >= 34:
+        adjustment = -6
+        state = "LATE"
+    else:
+        adjustment = -9
+        state = "VERY_LATE"
+
+    # Do not kill early quality entries: if full ICT + 3M agree, cap the ELS
+    # penalty to -4 even if the location model is cautious.
+    if adjustment < -4 and ict_strong and tf3.get("bias") == side:
+        adjustment = -4
+    # Trend continuation without ICT can still be traded, but keep the penalty moderate.
+    if adjustment < -7 and tf15.get("bias") == side and tf3.get("bias") == side:
+        adjustment = -7
+
+    return {
+        "score": score,
+        "adjustment": int(adjustment),
+        "state": state,
+        "penalty": int(abs(adjustment)) if adjustment < 0 else 0,
+        "bonus": int(adjustment) if adjustment > 0 else 0,
+        "distance_atr": round(distance_atr, 3),
+        "factors": factors[-8:],
+    }
+
+
 def entry_confirmations(side, context):
     tf3 = context["tf3"]
     tf15 = context["tf15"]
@@ -3886,6 +4074,13 @@ def evaluate_new_setup(context):
     late_penalty = soft_late_entry_penalty(side, context, late_reason) if late else 0
     if late and late_reason:
         conflicts.append(f"мʼякий anti-chase штраф -{late_penalty}: {late_reason}")
+
+    # Internal Entry Location Score: improves the bot brain without adding
+    # a new noisy Telegram line. It does not block entries; it only makes
+    # quality/risk more honest when the direction is right but the location is late.
+    entry_location = analyze_entry_location_score(side, context)
+    context["entry_location"] = entry_location
+
     plan = make_plan(side, context)
     rr_status = smart_money_rr_status(plan)
     mode_profile = trade_mode_profile(context, side)
@@ -4235,6 +4430,13 @@ def evaluate_new_setup(context):
 
     if late_penalty:
         quality -= late_penalty
+
+    # ELS is intentionally soft. It can slightly lift a clean ICT/reclaim entry
+    # or reduce a late/chasing location, but it never creates a hard no-trade.
+    entry_location_adjustment = int((context.get("entry_location") or {}).get("adjustment", 0) or 0)
+    if entry_location_adjustment:
+        quality += entry_location_adjustment
+
     if calendar.get("active"):
         quality -= 8
         if quality < 75:
@@ -4915,6 +5117,23 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     if gave_back_small_mfe:
         trade_risk_score += 7
 
+    # Hidden ELS support: if the current position was opened/managed from a poor
+    # location, the informational risk should not stay unrealistically low.
+    # This is only a small organic adjustment; it never moves stop/TP by itself.
+    entry_location = context.get("entry_location") or analyze_entry_location_score(side, context)
+    els_score = int(entry_location.get("score", 62) or 62)
+    if els_score < 38:
+        trade_risk_score += 9
+        reversal_score_floor_from_els = 26
+    elif els_score < 50:
+        trade_risk_score += 5
+        reversal_score_floor_from_els = 22
+    elif els_score >= 78 and current_pct >= 0:
+        trade_risk_score -= 3
+        reversal_score_floor_from_els = 0
+    else:
+        reversal_score_floor_from_els = 0
+
     # Distance to active stop: when price is already near the protective stop, risk is not low.
     if trade.entry:
         if side == "LONG":
@@ -5082,6 +5301,8 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score = max(reversal_score, 22)
     if current_pct < 0 and best_pct < 0.25 and elapsed_min >= 60:
         reversal_score = max(reversal_score, 25)
+    if 'reversal_score_floor_from_els' in locals() and reversal_score_floor_from_els:
+        reversal_score = max(reversal_score, reversal_score_floor_from_els)
 
     reversal_score = int(round(clamp(reversal_score)))
     rev_label = reversal_label(reversal_score)
