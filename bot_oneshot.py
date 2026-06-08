@@ -152,6 +152,7 @@ class ActiveTrade:
     tp2: float
     tp3: float
     quality: int
+    stop_updated_at: str = ""
     status: str = "OPEN"
     tp1_hit: bool = False
     tp2_hit: bool = False
@@ -364,6 +365,7 @@ def active_trade_from_state(state):
             tp2=float(raw.get("tp2")),
             tp3=float(raw.get("tp3")),
             quality=int(raw.get("quality") or 0),
+            stop_updated_at=str(raw.get("stop_updated_at") or raw.get("last_stop_update") or raw.get("opened_at") or iso_now()),
             status=str(raw.get("status") or "OPEN"),
             tp1_hit=bool(raw.get("tp1_hit")),
             tp2_hit=bool(raw.get("tp2_hit")),
@@ -4084,6 +4086,7 @@ def evaluate_new_setup(context):
     plan = make_plan(side, context)
     rr_status = smart_money_rr_status(plan)
     mode_profile = trade_mode_profile(context, side)
+    mode_profile["atr15"] = context.get("atr15") or safe_float((context.get("tf15") or {}).get("atr"), None)
     market_regime = mode_profile.get("regime", "NORMAL")
     reentry_cooldown = context.get("reentry_cooldown") or {}
     reversal_after_failed = context.get("reversal_after_failed_trade") or {}
@@ -4689,6 +4692,48 @@ def _trade_extremes_since_open(trade, context):
     return max(highs), min(lows)
 
 
+
+
+def _trade_extremes_since_stop_update(trade, context):
+    """High/low after the current stop became active.
+
+    STOP must be checked by candle high/low, not only by the latest close/price.
+    But for a newly moved stop we must not use old candles from before the stop
+    was moved. Therefore every stop update stores stop_updated_at, and this
+    helper only scans 3M candles after that moment.
+    """
+    anchor_ms = _parse_iso_ts_ms(getattr(trade, "stop_updated_at", ""))
+    if not anchor_ms:
+        anchor_ms = _parse_iso_ts_ms(getattr(trade, "opened_at", ""))
+    highs = []
+    lows = []
+    for candle in (context.get("candles_3m") or []):
+        try:
+            # include candles that overlap the active-stop window
+            if anchor_ms and int(candle.ts) + 3 * 60 * 1000 < anchor_ms:
+                continue
+            highs.append(float(candle.high))
+            lows.append(float(candle.low))
+        except Exception:
+            continue
+    price = safe_float(context.get("price"))
+    if price:
+        highs.append(price)
+        lows.append(price)
+    if not highs or not lows:
+        return price, price
+    return max(highs), min(lows)
+
+
+def trade_hit_stop_by_extreme(side, price, stop, high_since_stop=None, low_since_stop=None):
+    if stop is None:
+        return False
+    if trade_hit_stop(side, price, stop):
+        return True
+    if side == "LONG":
+        return low_since_stop is not None and low_since_stop <= stop
+    return high_since_stop is not None and high_since_stop >= stop
+
 def trade_hit_level_by_extreme(side, price, level, high_since_open=None, low_since_open=None):
     if level is None:
         return False
@@ -4779,6 +4824,87 @@ def _ict_zone_trailing_level(side, ict, price, atr_value):
     return None, ""
 
 
+
+def _stop_air_profile(context, mode_profile=None, stage="PRE_TP1"):
+    """Minimum safe air between current price and a moved stop.
+
+    BZU 3M candles can wick 0.15-0.35% without a real reversal.
+    A protective stop therefore must stay outside normal 3M noise and should be
+    wider before TP1 than after TP1. This function uses both regime and ATR.
+    """
+    mode_profile = mode_profile or {}
+    regime = mode_profile.get("regime", "NORMAL")
+    price = safe_float((context or {}).get("price"), 0) or 0
+    atr_value = safe_float((context or {}).get("atr15"), 0) or (price * 0.006 if price else 0)
+    atr_pct = (atr_value / price * 100.0) if price and atr_value else 0.55
+
+    if stage == "PRE_TP1":
+        base = {
+            "RANGE": 0.24,
+            "REVERSAL": 0.26,
+            "PULLBACK": 0.30,
+            "TREND": 0.34,
+            "NEWS_IMPULSE": 0.42,
+            "IMPULSE": 0.34,
+            "NORMAL": 0.30,
+            "UNKNOWN": 0.30,
+        }.get(regime, 0.30)
+        atr_mult = 0.46
+        cap = 0.58
+    elif stage == "POST_TP2":
+        base = {
+            "RANGE": 0.20,
+            "REVERSAL": 0.22,
+            "PULLBACK": 0.25,
+            "TREND": 0.30,
+            "NEWS_IMPULSE": 0.36,
+            "IMPULSE": 0.30,
+            "NORMAL": 0.26,
+            "UNKNOWN": 0.26,
+        }.get(regime, 0.26)
+        atr_mult = 0.34
+        cap = 0.48
+    else:  # POST_TP1
+        base = {
+            "RANGE": 0.22,
+            "REVERSAL": 0.24,
+            "PULLBACK": 0.28,
+            "TREND": 0.32,
+            "NEWS_IMPULSE": 0.38,
+            "IMPULSE": 0.32,
+            "NORMAL": 0.28,
+            "UNKNOWN": 0.28,
+        }.get(regime, 0.28)
+        atr_mult = 0.38
+        cap = 0.54
+
+    gap_pct = max(base, atr_pct * atr_mult)
+    return round(min(gap_pct, cap), 4)
+
+
+def _apply_stop_air(side, stop, price, entry, context, mode_profile=None, stage="PRE_TP1"):
+    """Push a proposed stop away from current price if it sits inside noise."""
+    stop = safe_float(stop)
+    price = safe_float(price)
+    entry = safe_float(entry)
+    if stop is None or price is None or entry is None or not price or not entry:
+        return stop, ""
+    gap_pct = _stop_air_profile(context, mode_profile, stage)
+    gap_abs = price * gap_pct / 100.0
+    adjusted = stop
+    if side == "LONG":
+        max_allowed = price - gap_abs
+        if stop > max_allowed:
+            adjusted = max_allowed
+    else:
+        min_allowed = price + gap_abs
+        if stop < min_allowed:
+            adjusted = min_allowed
+    adjusted = round_price(adjusted)
+    if adjusted != round_price(stop):
+        return adjusted, f"стоп відсунуто від ціни: мінімум ~{gap_pct}% / ATR-buffer, щоб не вибило 1-2 свічками"
+    return round_price(stop), f"стоп має запас від ціни ~{gap_pct}%"
+
 def _clamp_stop_between_entry_tp(side, raw_level, entry, tp1, tp2=None, after_tp="TP1"):
     """Clamp protective stop so it is not too tight after TP1.
 
@@ -4863,6 +4989,13 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
     clamped = _clamp_stop_between_entry_tp(side, raw_level, trade.entry, trade.tp1, trade.tp2, after_tp)
     if clamped != round_price(raw_level):
         why = f"{why}; обмежено, щоб стоп не був занадто близько до TP1"
+
+    # Final safety: even after TP1/TP2 do not place the stop inside ordinary
+    # 3M wick-noise. This keeps the stop behind SMC/ICT structure with ATR air.
+    stage = "POST_TP2" if after_tp == "TP2" else "POST_TP1"
+    clamped, air_reason = _apply_stop_air(side, clamped, price, trade.entry, context, trade_mode_profile(context, side), stage)
+    if air_reason and "відсунуто" in air_reason:
+        why = f"{why}; {air_reason}"
     return round_price(clamped), why
 
 
@@ -4962,21 +5095,34 @@ def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=N
     if side == "LONG" and best_pct >= 0.70:
         lock_pct += 0.06
 
-    # Never place the protective stop on the wrong side of the current price.
+    # Never place the protective stop inside ordinary BZU candle noise.
+    # Use ATR/regime air. Before TP1 the stop must be wider than after TP1,
+    # because there has not yet been a partial fix and BZU often retests.
+    temp_context = {"price": price, "atr15": safe_float(profile.get("atr15"), None)}
+    if not temp_context.get("atr15"):
+        temp_context["atr15"] = price * 0.006
+    air_profile = dict(profile or {})
+    min_gap_pct = _stop_air_profile(temp_context, air_profile, "PRE_TP1")
+
     if side == "LONG":
-        # keep a small buffer below current price to avoid an impossible stop
-        max_lock_now = max(0.02, current_pct - 0.06)
+        max_lock_now = current_pct - min_gap_pct
+        if max_lock_now <= 0.08:
+            return None, ""
         lock_pct = min(lock_pct, max_lock_now)
         level = entry * (1 + lock_pct / 100.0)
-        if level >= price:
+        level, air_reason = _apply_stop_air(side, level, price, entry, temp_context, air_profile, "PRE_TP1")
+        if level is None or level >= price:
             return None, ""
     else:
-        max_lock_now = max(0.02, current_pct - 0.06)
+        max_lock_now = current_pct - min_gap_pct
+        if max_lock_now <= 0.08:
+            return None, ""
         lock_pct = min(lock_pct, max_lock_now)
         level = entry * (1 - lock_pct / 100.0)
-        if level <= price:
+        level, air_reason = _apply_stop_air(side, level, price, entry, temp_context, air_profile, "PRE_TP1")
+        if level is None or level <= price:
             return None, ""
-    return round_price(level), label
+    return round_price(level), label + f"; {air_reason}"
 
 def _apply_more_protective_stop(trade, side, new_stop):
     """Apply only if the new stop improves protection and stays on valid side."""
@@ -4984,9 +5130,11 @@ def _apply_more_protective_stop(trade, side, new_stop):
         return False
     if side == "LONG" and new_stop > trade.stop_current:
         trade.stop_current = float(new_stop)
+        trade.stop_updated_at = iso_now()
         return True
     if side == "SHORT" and new_stop < trade.stop_current:
         trade.stop_current = float(new_stop)
+        trade.stop_updated_at = iso_now()
         return True
     return False
 
@@ -5374,6 +5522,7 @@ def manage_active_trade(trade, context):
     market_regime = mode_profile.get("regime", "NORMAL")
 
     high_since_open, low_since_open = _trade_extremes_since_open(trade, context)
+    high_since_stop, low_since_stop = _trade_extremes_since_stop_update(trade, context)
     trade.best_price = best_trade_price(side, trade, price, high_since_open, low_since_open)
     current_pct = signed_pct(side, trade.entry, price)
     best_pct = signed_pct(side, trade.entry, trade.best_price)
@@ -5389,7 +5538,7 @@ def manage_active_trade(trade, context):
     title = f"СУПРОВІД {side}"
     recommendation = "утримувати, поки 3m/15m не ламаються"
 
-    if trade_hit_stop(side, price, trade.stop_current):
+    if trade_hit_stop_by_extreme(side, price, trade.stop_current, high_since_stop, low_since_stop):
         trade.status = "CLOSED"
         trade.last_action = "STOP"
         stop_exit_pct = signed_pct(side, trade.entry, trade.stop_current)
@@ -5402,7 +5551,7 @@ def manage_active_trade(trade, context):
             "market_price_pct": current_pct,
             "best_pct": best_pct,
             "exit_price": round_price(trade.stop_current),
-            "notes": [f"ціна {round_price(price)} проти стопу {round_price(trade.stop_current)}"],
+            "notes": [f"стоп {round_price(trade.stop_current)} зачеплено по high/low 3M після його встановлення; ринкова ціна {round_price(price)}"],
         }
 
     if trade_hit_level_by_extreme(side, price, trade.tp3, high_since_open, low_since_open):
@@ -5432,8 +5581,10 @@ def manage_active_trade(trade, context):
             recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2")
             if side == "LONG":
                 trade.stop_current = max(trade.stop_current, recommended_stop)
+                trade.stop_updated_at = iso_now()
             else:
                 trade.stop_current = min(trade.stop_current, recommended_stop)
+                trade.stop_updated_at = iso_now()
             trade.tp2_locked_stop = float(trade.stop_current)
             trade.tp2_stop_locked = True
             notes.append(f"зафіксувати стоп до TP3: {round_price(trade.stop_current)}")
@@ -5454,8 +5605,10 @@ def manage_active_trade(trade, context):
             recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
             if side == "LONG":
                 trade.stop_current = max(trade.stop_current, recommended_stop)
+                trade.stop_updated_at = iso_now()
             else:
                 trade.stop_current = min(trade.stop_current, recommended_stop)
+                trade.stop_updated_at = iso_now()
             trade.tp1_locked_stop = float(trade.stop_current)
             trade.tp1_stop_locked = True
             notes.append(f"зафіксувати стоп до TP2: {round_price(trade.stop_current)}")
@@ -5646,6 +5799,7 @@ def manage_active_trade(trade, context):
                     trade.stop_current = max(trade.stop_current, recommended_stop)
                 else:
                     trade.stop_current = min(trade.stop_current, recommended_stop)
+                trade.stop_updated_at = iso_now()
                 trade.tp1_locked_stop = float(trade.stop_current)
                 trade.tp1_stop_locked = True
             notes.append(f"стоп для захисту: {round_price(trade.stop_current)}")
@@ -5739,6 +5893,7 @@ def manage_active_trade(trade, context):
                     trade.stop_current = max(trade.stop_current, recommended_stop)
                 else:
                     trade.stop_current = min(trade.stop_current, recommended_stop)
+                trade.stop_updated_at = iso_now()
                 trade.tp1_locked_stop = float(trade.stop_current)
                 trade.tp1_stop_locked = True
                 action = "TP1_PROTECT"
