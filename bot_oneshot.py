@@ -4384,6 +4384,31 @@ def evaluate_new_setup(context):
         or (cooldown_active and not cooldown_can_override)
     )
 
+    # EARLY ICT ENTRY GATE.
+    # Purpose: do not wait for the full confirmation stack after ICT + SMC
+    # already agree. This keeps the user's preferred early entries.
+    # It does NOT create a normal high-confidence ENTRY; it only allows
+    # RISKY_ENTRY when:
+    #   - ICT is aligned with the trade side,
+    #   - market structure is aligned with the trade side,
+    #   - the setup quality remains above the risky threshold,
+    #   - anti-chase did not mark the move as heavily overextended,
+    #   - there is no hard conflict/liquidity block.
+    # 3M may be neutral/weak during the retest; it must simply not be strongly
+    # against together with strong CVD pressure.
+    early_ict_entry_ok = bool(
+        ict_same
+        and structure_same
+        and not ict_against
+        and not hard_conflict
+        and late_penalty < 20
+        and not exhausted
+        and not ict_balance
+        and side not in liquidity.get("blocks", [])
+        and not (tf3_strong_against and strong_cvd_against)
+        and not countertrend_wait_required
+    )
+
     if not tf3_same:
         # Without 3M confirmation this is preparation, not an entry.
         quality = min(quality, 66)
@@ -4518,6 +4543,26 @@ def evaluate_new_setup(context):
             "conflicts": [exhausted_reason],
             "exhausted_move": True,
             "show_wait_plan": False,
+        }
+
+    if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok:
+        reason = "ранній ICT/SMC вхід: ICT і структура вже за напрям, не чекаємо повного набору підтверджень"
+        if late_penalty:
+            reason += f"; anti-chase штраф уже врахований (-{late_penalty})"
+        if not tf3_same:
+            reason += "; 3M ще не ідеальний, тому тільки ризиковий режим"
+        if "ранній ICT/SMC: ICT + структура за напрям" not in confirmations:
+            confirmations.append("ранній ICT/SMC: ICT + структура за напрям")
+        return {
+            "action": "RISKY_ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": f"РИЗИКОВАНИЙ ВХІД — {side}",
+            "reason": reason,
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": conflicts,
+            "early_ict_entry": True,
         }
 
 
