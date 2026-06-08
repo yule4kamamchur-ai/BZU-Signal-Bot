@@ -1,5 +1,194 @@
 {
-  "version": "pro-v2",
+  "version": "pro-v2-intraday-architecture",
   "trades": [],
-  "signals": []
+  "signals": [
+    {
+      "time": "2026-06-08T08:15:02.012594+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 97.21,
+      "quality": 22,
+      "reason": "напрям є, але входу ще немає: ICT проти; CVD проти; ліквідність проти",
+      "plan": {
+        "entry": 97.21,
+        "stop": 96.2733,
+        "tp1": 98.1467,
+        "tp2": 99.5916,
+        "tp3": 101.8761,
+        "risk_pct": 0.964,
+        "rr1": 1.0,
+        "rr2": 2.54,
+        "rr3": 4.98,
+        "invalidation": "15m закриття нижче 96.2733 або злам 3m/структури проти LONG. Режим: сильний тренд. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "новини дають паливо",
+        "Smart Money RR мінімальний: 1.0R"
+      ],
+      "conflicts": [
+        "ICT проти",
+        "CVD проти",
+        "ліквідність проти",
+        "після зняття ліквідності цей напрям не доганяти",
+        "потік локально проти",
+        "мʼякий anti-chase штраф -5: ліквідність проти: high зняли/памп поглинули, лонг не доганяти",
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 68,
+        "total_score": 80,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 58,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.403,
+          "drift_pct": 0.496,
+          "vol_ratio": 0.49,
+          "note": "3m швидко йде вгору; 3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "LONG",
+          "score": 53,
+          "trend": "LONG",
+          "close": 97.24,
+          "ema20": 96.6042,
+          "ema50": 96.0646,
+          "rsi": 64.7,
+          "atr": 0.4837,
+          "slope_pct": 0.269,
+          "move_8_pct": 0.61,
+          "range_atr": 3.7,
+          "note": "ціна вище EMA20/50; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "LONG",
+          "score": 63,
+          "trend": "LONG",
+          "close": 97.23,
+          "ema20": 95.8444,
+          "ema50": 95.1697,
+          "rsi": 69.2,
+          "atr": 0.851,
+          "slope_pct": 1.658,
+          "move_8_pct": 2.737,
+          "range_atr": 4.02,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "LONG",
+          "score": 63,
+          "trend": "LONG",
+          "close": 97.23,
+          "ema20": 95.2649,
+          "ema50": 95.0349,
+          "rsi": 60.7,
+          "atr": 1.3873,
+          "slope_pct": 2.713,
+          "move_8_pct": 2.987,
+          "range_atr": 3.77,
+          "note": "ціна вище EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -14,
+          "phase": "UPSIDE SWEEP",
+          "swing_high": 97.35,
+          "swing_low": 96.39,
+          "recent_high": 97.35,
+          "recent_low": 94.46,
+          "atr": 0.4837,
+          "note": "зняли ліквідність зверху і закрились нижче; сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -85.94,
+          "book_delta_pct": 8.62,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "SHORT",
+          "score": -32,
+          "state": "BEARISH_ABSORPTION",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -30407.0,
+          "delta_pct": -85.94,
+          "cvd": -30407.0,
+          "cvd_change_pct": 0,
+          "last_trade_ts": 1780906483396,
+          "price_move_pct": 0.558,
+          "note": "CVD падає; ціна вгору, CVD вниз"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": -1,
+          "state": "LOCAL_SELL_PRESSURE_BELOW",
+          "zones": [
+            {
+              "price": 97.1322,
+              "imbalance_pct": -99.8,
+              "volume": 23280.0
+            },
+            {
+              "price": 97.2878,
+              "imbalance_pct": -99.7,
+              "volume": 6348.0
+            }
+          ],
+          "note": "локальні продажі нижче ціни; bid-стіна 97.08"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 61818.69,
+          "oi_change_pct": 0,
+          "funding_pct": -0.03645,
+          "price_change_pct": 0,
+          "note": "OI ще накопичує історію для порівняння; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -24,
+          "event": "UPSIDE SWEEP / SHORT RECLAIM",
+          "blocks": [
+            "LONG"
+          ],
+          "vol_ratio": 0.46,
+          "move_1_pct": 0.082,
+          "move_6_pct": 0.216,
+          "note": "зняли high і закрились нижче — лонг не доганяти; продавці тиснуть після зняття high"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 45,
+          "top": "HYPE3.SA - Reuters",
+          "total": 34
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
+    }
+  ],
+  "updated_at": "2026-06-08T08:15:02.013129+00:00"
 }
