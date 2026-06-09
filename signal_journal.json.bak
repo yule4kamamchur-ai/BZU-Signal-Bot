@@ -2602,7 +2602,184 @@
           "note": "Fed / FOMC decision or minutes — через 58 хв"
         }
       }
+    },
+    {
+      "time": "2026-06-09T17:15:45.027031+00:00",
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 90.74,
+      "quality": 43,
+      "reason": "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+      "plan": null,
+      "confirmations": [],
+      "conflicts": [
+        "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+        "Не плутати з відкатом: для входу потрібен вихід з EQ, sweep або BOS + retest"
+      ],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": -12,
+        "total_score": -16,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "RANGE",
+          "fast_move_pct": 0.132,
+          "drift_pct": 0.084,
+          "vol_ratio": 0.24,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 90.78,
+          "ema20": 90.5661,
+          "ema50": 91.2676,
+          "rsi": 50.4,
+          "atr": 0.6094,
+          "slope_pct": 0.387,
+          "move_8_pct": 0.565,
+          "range_atr": 5.5,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 90.77,
+          "ema20": 91.7728,
+          "ema50": 93.018,
+          "rsi": 37.3,
+          "atr": 0.968,
+          "slope_pct": -2.27,
+          "move_8_pct": -0.971,
+          "range_atr": 5.11,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 90.78,
+          "ema20": 93.273,
+          "ema50": 94.0297,
+          "rsi": 38.5,
+          "atr": 1.6559,
+          "slope_pct": -5.307,
+          "move_8_pct": -2.909,
+          "range_atr": 5.34,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 92.07,
+          "swing_low": 88.82,
+          "recent_high": 92.19,
+          "recent_low": 88.82,
+          "atr": 0.6094,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -84.77,
+          "book_delta_pct": 11.31,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -47170.0,
+          "delta_pct": -84.77,
+          "cvd": -119030.0,
+          "cvd_change_pct": -65.642,
+          "last_trade_ts": 1781025332375,
+          "price_move_pct": -0.088,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 90.8126,
+              "imbalance_pct": -91.2,
+              "volume": 47428.0
+            },
+            {
+              "price": 90.74,
+              "imbalance_pct": -44.8,
+              "volume": 7749.0
+            },
+            {
+              "price": 90.8852,
+              "imbalance_pct": -97.8,
+              "volume": 465.0
+            }
+          ],
+          "note": "локальний продавець біля 90.8126"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 65993.56,
+          "oi_change_pct": 0.976,
+          "funding_pct": -0.06216,
+          "price_change_pct": 0.066,
+          "note": "OI ще накопичує історію для порівняння; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.22,
+          "move_1_pct": 0.044,
+          "move_6_pct": 0.165,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 19,
+          "top": "Trump blames Iran for helicopter downing, says US must respond - Reuters",
+          "total": 34
+        },
+        "calendar": {
+          "active": true,
+          "alerts": [
+            {
+              "name": "Fed",
+              "title": "Fed / FOMC decision or minutes",
+              "time": "2026-06-09T18:00:00+00:00",
+              "risk": "HIGH",
+              "source": "Federal Reserve calendar",
+              "status": "через 44 хв",
+              "minutes_to_event": 44
+            }
+          ],
+          "score": -12,
+          "note": "Fed / FOMC decision or minutes — через 44 хв"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-09T17:01:15.871155+00:00"
+  "updated_at": "2026-06-09T17:15:45.028073+00:00"
 }
