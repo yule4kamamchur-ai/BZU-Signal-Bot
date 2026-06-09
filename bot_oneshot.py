@@ -4503,6 +4503,7 @@ def evaluate_new_setup(context):
     # counter-trend LONG showing 88/100 after a broad downtrend.
     both_htf_against = bool(tf1h.get("bias") == opposite(side) and tf4h.get("bias") == opposite(side))
     one_htf_against = bool(tf1h.get("bias") == opposite(side) or tf4h.get("bias") == opposite(side))
+    countertrend_entry = bool(one_htf_against or htf_countertrend)
     if both_htf_against and not (ict_strong_model and structure_same and tf15_same):
         quality = min(quality, 76)
     elif one_htf_against and not (ict_strong_model and (structure_same or tf15_same)):
@@ -4676,6 +4677,7 @@ def evaluate_new_setup(context):
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
+            "countertrend_entry": countertrend_entry,
             "early_ict_entry": True,
         }
 
@@ -4703,6 +4705,7 @@ def evaluate_new_setup(context):
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
+            "countertrend_entry": countertrend_entry,
         }
 
     if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
@@ -4734,6 +4737,7 @@ def evaluate_new_setup(context):
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
+            "countertrend_entry": countertrend_entry,
         }
 
     if pullback_watch_ok:
@@ -5585,6 +5589,21 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     if gave_back_small_mfe:
         trade_risk_score += 7
 
+    # Universal trade validation: does the opened idea behave as expected?
+    # This is integrated into "Поточний ризик угоди"; it is not displayed as a
+    # separate noisy Telegram block. It works for all regimes, not only countertrend.
+    trade_validation = trade_entry_validation_snapshot(trade, context, current_pct, best_pct, giveback)
+    if trade_validation:
+        trade_risk_score += float(trade_validation.get("risk_adjustment", 0) or 0)
+        if trade_validation.get("severity") == "BAD":
+            reversal_score_floor_from_validation = 26
+        elif trade_validation.get("severity") == "WARN":
+            reversal_score_floor_from_validation = 20
+        else:
+            reversal_score_floor_from_validation = 0
+    else:
+        reversal_score_floor_from_validation = 0
+
     # Hidden ELS support: if the current position was opened/managed from a poor
     # location, the informational risk should not stay unrealistically low.
     # This is only a small organic adjustment; it never moves stop/TP by itself.
@@ -5789,6 +5808,8 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score = max(reversal_score, 25)
     if 'reversal_score_floor_from_els' in locals() and reversal_score_floor_from_els:
         reversal_score = max(reversal_score, reversal_score_floor_from_els)
+    if 'reversal_score_floor_from_validation' in locals() and reversal_score_floor_from_validation:
+        reversal_score = max(reversal_score, reversal_score_floor_from_validation)
 
     # ICT-gated labels: without a real opposite ICT/structure setup, do not
     # frighten the trader with HIGH/CRITICAL reversal labels.
@@ -5816,6 +5837,218 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         "reversal_reasons": [],
         "ict_reversal_components": ict_rev_components,
         "ict_reversal_count": ict_rev_count,
+        "trade_validation": trade_validation,
+    }
+
+
+
+def trade_entry_validation_snapshot(trade, context, current_pct, best_pct, giveback,
+                                    tf3_against=False, structure_against=False,
+                                    ict_against=False, flow_against=False, cvd_against=False):
+    """Universal trade validation used inside current trade risk.
+
+    It answers one question: is the opened idea behaving as expected after entry?
+    This is NOT a separate Telegram block and it does NOT delay entries. It only
+    adjusts "Поточний ризик угоди" and gives manage_active_trade a soft warning
+    when a position fails to develop.
+    """
+    side = getattr(trade, "side", "")
+    if side not in ["LONG", "SHORT"]:
+        return None
+    opp = opposite(side)
+
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    tf4h = context.get("tf4h") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+
+    try:
+        opened_dt = datetime.fromisoformat(str(trade.opened_at).replace("Z", "+00:00"))
+        elapsed_min = max(0.0, (now_utc() - opened_dt).total_seconds() / 60.0)
+    except Exception:
+        elapsed_min = 0.0
+
+    notes = [str(x).upper() for x in (getattr(trade, "notes", None) or [])]
+    flagged_countertrend = any("COUNTERTREND_ENTRY" in n or "КОНТРТРЕНД" in n for n in notes)
+    htf_against_now = bool(tf1h.get("bias") == opp or tf4h.get("bias") == opp)
+    is_countertrend = bool(flagged_countertrend or ("RISKY_ENTRY" in notes and htf_against_now))
+
+    confirmations = 0
+    warnings = 0
+
+    # Price/action validation. A normal trend trade gets more time; a countertrend
+    # trade must start working sooner, but this still remains informational.
+    if current_pct >= 0.18:
+        confirmations += 1
+    if best_pct >= (0.24 if is_countertrend else 0.32):
+        confirmations += 1
+    if tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 24:
+        confirmations += 1
+    if tf15.get("bias") == side:
+        confirmations += 1
+    if structure.get("bias") == side:
+        confirmations += 1
+    if ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 16):
+        confirmations += 1
+    if flow.get("bias") == side or cvd.get("bias") == side:
+        confirmations += 1
+
+    if current_pct <= (-0.16 if is_countertrend else -0.22):
+        warnings += 1
+    if best_pct < (0.16 if is_countertrend else 0.20) and elapsed_min >= 14:
+        warnings += 1
+    if elapsed_min >= 45 and best_pct < 0.25 and current_pct <= 0.05:
+        warnings += 1
+    if tf3_against or tf3.get("bias") == opp:
+        warnings += 1
+    if structure_against or structure.get("bias") == opp:
+        warnings += 1
+    if ict_against or (ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16):
+        warnings += 1
+    if flow_against and cvd_against:
+        warnings += 1
+    if giveback >= max(0.18, best_pct * 0.65) and best_pct >= 0.20:
+        warnings += 1
+
+    raw = 50 + confirmations * 8 - warnings * 10
+    if is_countertrend:
+        raw -= 6
+        # Countertrend entries that do not develop by the first follow message
+        # should be treated as higher current-risk, not as a normal trade.
+        if elapsed_min >= 14 and confirmations <= 1 and warnings >= 2:
+            raw -= 10
+
+    score = int(max(0, min(100, round(raw))))
+    if score >= 70:
+        status = "CONFIRMED"
+        risk_adjustment = -8
+        severity = "OK"
+    elif score >= 52:
+        status = "VALIDATING"
+        risk_adjustment = 0
+        severity = "WATCH"
+    elif score >= 36:
+        status = "WEAK"
+        risk_adjustment = 8 if not is_countertrend else 12
+        severity = "WARN"
+    else:
+        status = "FAILED"
+        risk_adjustment = 16 if not is_countertrend else 22
+        severity = "BAD"
+
+    return {
+        "active": True,
+        "status": status,
+        "severity": severity,
+        "score": score,
+        "risk_adjustment": risk_adjustment,
+        "is_countertrend": is_countertrend,
+        "elapsed_min": round(elapsed_min, 1),
+        "confirmations": confirmations,
+        "warnings": warnings,
+    }
+
+
+def countertrend_entry_validation(trade, context, current_pct, best_pct, giveback, tf3_against=False,
+                                  structure_against=False, ict_against=False, flow_against=False, cvd_against=False):
+    """Status block for early counter-trend entries.
+
+    It is informational for Telegram supervision. It does NOT close the trade by itself
+    and it does NOT delay the entry. Its purpose is to tell the user on the next
+    15-minute follow message whether a risky counter-trend reversal is confirming
+    or failing, so the user is not forced to watch 3M candles manually.
+    """
+    notes = [str(x).upper() for x in (getattr(trade, "notes", None) or [])]
+    side = getattr(trade, "side", "")
+    if side not in ["LONG", "SHORT"]:
+        return None
+    opp = opposite(side)
+
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    tf4h = context.get("tf4h") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+
+    flagged_countertrend = any("COUNTERTREND_ENTRY" in n or "КОНТРТРЕНД" in n for n in notes)
+    htf_against_now = bool(tf1h.get("bias") == opp or tf4h.get("bias") == opp)
+    is_countertrend = bool(flagged_countertrend or ("RISKY_ENTRY" in notes and htf_against_now))
+    if not is_countertrend:
+        return None
+
+    try:
+        opened_dt = datetime.fromisoformat(str(trade.opened_at).replace("Z", "+00:00"))
+        elapsed_min = max(0.0, (now_utc() - opened_dt).total_seconds() / 60.0)
+    except Exception:
+        elapsed_min = 0.0
+
+    # Confirmation means the reversal started to work, not merely that it is not stopped.
+    confirms = []
+    warnings = []
+    if current_pct >= 0.18:
+        confirms.append("ціна вже утримується в плюс")
+    if best_pct >= 0.28:
+        confirms.append("угода дала достатній MFE для раннього розвороту")
+    if tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 24:
+        confirms.append("3M підтримує напрям")
+    if tf15.get("bias") == side:
+        confirms.append("15M підтверджує")
+    if structure.get("bias") == side:
+        confirms.append("структура підтримує")
+    if ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 16):
+        confirms.append("ICT підтримує")
+
+    if current_pct <= -0.18:
+        warnings.append("ціна проти входу")
+    if best_pct < 0.18 and elapsed_min >= 14:
+        warnings.append("після входу немає нормального розкриття")
+    if tf3_against or tf3.get("bias") == opp:
+        warnings.append("3M вже проти")
+    if structure_against or structure.get("bias") == opp:
+        warnings.append("структура проти")
+    if ict_against or (ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16):
+        warnings.append("ICT проти")
+    if flow_against and cvd_against:
+        warnings.append("CVD і потік проти")
+
+    # First follow after 15 minutes is the important user-facing checkpoint.
+    if len(confirms) >= 3 and current_pct > -0.05:
+        status = "ПІДТВЕРДЖУЄТЬСЯ ✅"
+        advice = "можна залишатися в угоді; далі супровід як звичайна позиція, але стоп обовʼязковий"
+        severity = "OK"
+        score = 28
+    elif (len(warnings) >= 3 and len(confirms) <= 1) or (current_pct <= -0.28 and best_pct < 0.25):
+        status = "НЕ ПІДТВЕРДЖУЄТЬСЯ ⚠️"
+        advice = "контртрендовий розворот не розкрився; краще захистити/закрити біля входу або не чекати повний стоп"
+        severity = "BAD"
+        score = 72
+    elif len(warnings) >= 2 and len(confirms) <= 2:
+        status = "СЛАБКЕ ПІДТВЕРДЖЕННЯ ⚠️"
+        advice = "залишатися тільки якщо наступний супровід покаже покращення; не розширювати стоп"
+        severity = "WARN"
+        score = 56
+    else:
+        status = "ЩЕ ПЕРЕВІРЯЄТЬСЯ"
+        advice = "чекати наступне підтвердження; якщо ціна не дає MFE і 3M стане проти — виходити раніше"
+        severity = "WATCH"
+        score = 42
+
+    return {
+        "active": True,
+        "status": status,
+        "advice": advice,
+        "severity": severity,
+        "score": score,
+        "elapsed_min": round(elapsed_min, 1),
+        "confirmations": confirms[:3],
+        "warnings": warnings[:3],
     }
 
 def manage_active_trade(trade, context):
@@ -5980,7 +6213,33 @@ def manage_active_trade(trade, context):
     confirmed_ict_reversal, ict_reversal_components = _has_confirmed_ict_reversal(side, context)
     real_structure_break = bool(structure_against or ict_against or confirmed_ict_reversal)
     soft_warning_only = bool((cvd_against or flow_against or news_against or liquidity_against) and not real_structure_break)
+    countertrend_validation = countertrend_entry_validation(
+        trade, context, current_pct, best_pct, giveback,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+    )
+    trade_validation = trade_entry_validation_snapshot(
+        trade, context, current_pct, best_pct, giveback,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+    )
     exhausted_trade, exhausted_trade_reason = detect_exhausted_move(side, context)
+
+    # Universal validation of the opened idea. This does not delay entries and
+    # does not add a separate Telegram block. It only changes the normal
+    # supervision wording when any trade, especially a countertrend one, fails
+    # to develop after entry.
+    if trade_validation and trade_validation.get("severity") in ["BAD", "WARN"] and action == "HOLD" and not trade.tp1_hit:
+        action = "EXIT_WARNING" if trade_validation.get("severity") == "BAD" else "PROTECT_OR_EXIT"
+        title = f"{side} — ВХІД НЕ ПІДТВЕРДЖУЄТЬСЯ" if trade_validation.get("severity") == "BAD" else f"{side} — ВХІД СЛАБКО ПІДТВЕРДЖУЄТЬСЯ"
+        recommendation = "угода не розкривається як очікувалось; не чекати повний стоп, краще захистити позицію/вийти біля входу" if trade_validation.get("severity") == "BAD" else "угода розкривається слабко; залишатися тільки якщо наступний супровід покаже покращення"
+        notes.append("trade validation: " + str(trade_validation.get("status")))
 
     # Smart post-TP1 supervision. This does not close by itself; it labels the
     # trade correctly and prevents panic exits when TP1 is done but ICT/15M is
@@ -6335,6 +6594,8 @@ def manage_active_trade(trade, context):
         "reversal_reasons": risk_snapshot.get("reversal_reasons"),
         "exit_score": risk_snapshot.get("exit_score"),
         "exit_signal": risk_snapshot.get("exit_signal"),
+        "countertrend_validation": None,
+        "trade_validation": risk_snapshot.get("trade_validation"),
     }
 
 def new_active_trade(setup):
@@ -6355,7 +6616,11 @@ def new_active_trade(setup):
         tp1_locked_stop=0.0,
         tp2_locked_stop=0.0,
         best_price=plan.entry,
-        notes=(["RISKY_ENTRY"] if setup.get("action") == "RISKY_ENTRY" else []) + [setup["reason"]],
+        notes=(
+            (["RISKY_ENTRY"] if setup.get("action") == "RISKY_ENTRY" else [])
+            + (["COUNTERTREND_ENTRY"] if setup.get("countertrend_entry") else [])
+            + ([setup.get("reason", "")])
+        ),
     )
 
 
