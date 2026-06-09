@@ -2858,7 +2858,186 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-09T23:01:08.540426+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 91.49,
+      "quality": 41,
+      "reason": "після слабкого виходу LONG (STOP, 0.479%) не повторювати той самий напрям без нового BOS/reclaim",
+      "plan": {
+        "entry": 91.49,
+        "stop": 90.8953,
+        "tp1": 92.4506,
+        "tp2": 93.2741,
+        "tp3": 94.6007,
+        "risk_pct": 0.65,
+        "rr1": 1.62,
+        "rr2": 3.0,
+        "rr3": 5.23,
+        "invalidation": "15m закриття нижче 90.8953 або злам 3m/структури проти LONG. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "15m за напрямом",
+        "потік підтримує",
+        "кластери локально підтримують",
+        "новини дають паливо",
+        "Smart Money RR добрий: 1.62R"
+      ],
+      "conflicts": [
+        "після слабкого виходу LONG (STOP, 0.479%) не повторювати той самий напрям без нового BOS/reclaim",
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 66,
+        "total_score": 64,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 10,
+          "state": "RANGE",
+          "fast_move_pct": 0.219,
+          "drift_pct": 0.051,
+          "vol_ratio": 0.05,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "LONG",
+          "score": 42,
+          "trend": "LONG",
+          "close": 91.53,
+          "ema20": 91.147,
+          "ema50": 91.1357,
+          "rsi": 61.6,
+          "atr": 0.3699,
+          "slope_pct": 0.605,
+          "move_8_pct": 0.384,
+          "range_atr": 4.38,
+          "note": "ціна вище EMA20/50; нахил вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -2,
+          "trend": "NEUTRAL",
+          "close": 91.53,
+          "ema20": 91.5312,
+          "ema50": 92.6548,
+          "rsi": 46.5,
+          "atr": 0.852,
+          "slope_pct": 0.226,
+          "move_8_pct": 2.417,
+          "range_atr": 4.73,
+          "note": "ціна нижче EMA20/50; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 91.53,
+          "ema20": 93.1155,
+          "ema50": 93.9159,
+          "rsi": 42.0,
+          "atr": 1.6376,
+          "slope_pct": -5.54,
+          "move_8_pct": -2.793,
+          "range_atr": 5.4,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 92.12,
+          "swing_low": 91.07,
+          "recent_high": 92.12,
+          "recent_low": 88.82,
+          "atr": 0.3699,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 16,
+          "trade_delta_pct": 42.3,
+          "book_delta_pct": 8.07,
+          "note": "угоди за покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 10059.0,
+          "delta_pct": 42.3,
+          "cvd": 121693.0,
+          "cvd_change_pct": 9.011,
+          "last_trade_ts": 1781046040942,
+          "price_move_pct": -0.011,
+          "note": "CVD росте"
+        },
+        "clusters": {
+          "bias": "LONG",
+          "score": 5,
+          "state": "LOCAL_BUYER_SUPPORT",
+          "zones": [
+            {
+              "price": 91.49,
+              "imbalance_pct": 36.0,
+              "volume": 20391.0
+            },
+            {
+              "price": 91.5632,
+              "imbalance_pct": 80.4,
+              "volume": 3390.0
+            }
+          ],
+          "note": "локальний покупець біля 91.49"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 65932.03,
+          "oi_change_pct": 0.186,
+          "funding_pct": 0,
+          "price_change_pct": 0.153,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.04,
+          "move_1_pct": 0.011,
+          "move_6_pct": 0.164,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 18,
+          "top": "API shows US crude inventories fell for two straight months, sources say - Reuters",
+          "total": 26
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-09T22:45:42.387134+00:00"
+  "updated_at": "2026-06-09T23:01:08.541416+00:00"
 }
