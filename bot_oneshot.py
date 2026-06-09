@@ -5230,24 +5230,61 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
             return 0.65
 
     def risk_label(score):
-        if score >= 76:
+        if score >= 82:
             return "КРИТИЧНИЙ"
-        if score >= 56:
+        if score >= 64:
             return "ВИСОКИЙ"
-        if score >= 31:
+        if score >= 36:
             return "СЕРЕДНІЙ"
         return "НИЗЬКИЙ"
 
     def reversal_label(score):
-        if score >= 81:
+        if score >= 82:
             return "ДУЖЕ ВИСОКИЙ"
-        if score >= 61:
+        if score >= 64:
             return "ВИСОКИЙ"
-        if score >= 41:
+        if score >= 42:
             return "СЕРЕДНІЙ"
-        if score >= 21:
+        if score >= 24:
             return "ПОМІРНИЙ"
         return "НИЗЬКИЙ"
+
+    def ict_reversal_evidence():
+        """Return how strong the opposite ICT reversal is.
+
+        CVD/flow/news may warn, but they must not create HIGH/CRITICAL
+        reversal labels by themselves. For a scary label the bot needs actual
+        ICT/structure evidence: CHOCH/sweep/reclaim/FVG/OB against the trade.
+        """
+        phase = str((structure or {}).get("phase", "")).upper()
+        ict_setup = str((ict or {}).get("setup", "")).upper()
+        ict_state = str((ict or {}).get("state", "")).upper()
+        ict_note = str((ict or {}).get("note", "")).lower()
+
+        components = []
+        if opp == "LONG":
+            if "CHOCH LONG" in phase or "DOWNSIDE SWEEP" in phase:
+                components.append("CHOCH/SWEEP LONG")
+            if (liquidity or {}).get("bias") == "LONG" and any(x in str((liquidity or {}).get("event", "")).upper() for x in ["SWEEP", "RECLAIM"]):
+                components.append("LIQUIDITY RECLAIM LONG")
+            if (ict or {}).get("bias") == "LONG" and any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]):
+                components.append("ICT MODEL LONG")
+            if (ict or {}).get("entry_ok") and (ict or {}).get("bias") == "LONG":
+                components.append("ICT ENTRY LONG")
+        else:
+            if "CHOCH SHORT" in phase or "UPSIDE SWEEP" in phase:
+                components.append("CHOCH/SWEEP SHORT")
+            if (liquidity or {}).get("bias") == "SHORT" and any(x in str((liquidity or {}).get("event", "")).upper() for x in ["SWEEP", "RECLAIM"]):
+                components.append("LIQUIDITY RECLAIM SHORT")
+            if (ict or {}).get("bias") == "SHORT" and any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]):
+                components.append("ICT MODEL SHORT")
+            if (ict or {}).get("entry_ok") and (ict or {}).get("bias") == "SHORT":
+                components.append("ICT ENTRY SHORT")
+
+        # Avoid duplicate inflation when the same idea is seen by two modules.
+        return len(set(components)), list(dict.fromkeys(components))
+
+    ict_rev_count, ict_rev_components = ict_reversal_evidence()
 
     # -------------------------
     # 1) Current trade risk
@@ -5341,17 +5378,19 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     # Fresh market alignment. 15M, structure and ICT dominate; flow confirms.
     risk_blocks = [
         (tf15, 22, 45),
-        (structure, 20, 35),
-        (ict, 20, 38),
-        (tf3, 15, 65),
-        (cvd, 10, 25),
-        (flow, 9, 25),
-        (clusters, 6, 14),
-        (derivatives, 5, 18),
-        (liquidity, 6, 18),
+        (structure, 22, 35),
+        (ict, 22, 38),
+        (tf3, 13, 65),
+        # Flow/CVD/news are warning layers, not reasons for HIGH/CRITICAL
+        # by themselves. Their weights stay softer to avoid psychological noise.
+        (cvd, 6, 25),
+        (flow, 6, 25),
+        (clusters, 4, 14),
+        (derivatives, 4, 18),
+        (liquidity, 8, 18),
         (tf1h, 8, 55),
         (tf4h, 5, 60),
-        (news, 4, 35),
+        (news, 2, 35),
     ]
     for b, weight, norm in risk_blocks:
         bias = (b or {}).get("bias")
@@ -5397,6 +5436,15 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         floor_value = 24 if (current_pct > 0.45 and intraday_supports >= 3) else 32
         trade_risk_score = max(trade_risk_score, floor_value)
 
+    # Do not show scary current-risk labels when there is no real ICT/structure
+    # reversal. CVD/flow/news can lift risk to MEDIUM, but HIGH/CRITICAL should
+    # require ICT/structure evidence or the trade actually being close to stop/deep red.
+    if ict_rev_count == 0:
+        if current_pct > -0.25 and action not in ["EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
+            trade_risk_score = min(trade_risk_score, 54)
+    elif ict_rev_count == 1:
+        trade_risk_score = min(trade_risk_score, 68)
+
     trade_risk_score = int(round(clamp(trade_risk_score)))
     trade_risk = risk_label(trade_risk_score)
 
@@ -5408,17 +5456,19 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     reversal_score = 8.0
 
     reversal_blocks = [
-        (tf3, 18, 65),
+        (tf3, 16, 65),
         (tf15, 20, 45),
-        (structure, 22, 35),
-        (ict, 22, 38),
-        (cvd, 10, 25),
-        (flow, 10, 25),
-        (clusters, 6, 14),
-        (liquidity, 6, 18),
-        (derivatives, 4, 18),
-        (tf1h, 6, 55),
-        (tf4h, 3, 60),
+        (structure, 24, 35),
+        (ict, 24, 38),
+        # These are confirmations/warnings only. They should not create a
+        # reversal call without ICT/structure.
+        (cvd, 6, 25),
+        (flow, 6, 25),
+        (clusters, 4, 14),
+        (liquidity, 8, 18),
+        (derivatives, 3, 18),
+        (tf1h, 5, 55),
+        (tf4h, 2, 60),
     ]
     opposite_core = 0
     support_core = 0
@@ -5497,6 +5547,19 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     if 'reversal_score_floor_from_els' in locals() and reversal_score_floor_from_els:
         reversal_score = max(reversal_score, reversal_score_floor_from_els)
 
+    # ICT-gated labels: without a real opposite ICT/structure setup, do not
+    # frighten the trader with HIGH/CRITICAL reversal labels.
+    # 0 ICT components -> max low/moderate warning.
+    # 1 component -> max medium.
+    # 2 components -> high is possible.
+    # 3+ components -> very high is possible.
+    if ict_rev_count == 0:
+        reversal_score = min(reversal_score, 36)
+    elif ict_rev_count == 1:
+        reversal_score = min(reversal_score, 48)
+    elif ict_rev_count == 2:
+        reversal_score = min(reversal_score, 72)
+
     reversal_score = int(round(clamp(reversal_score)))
     rev_label = reversal_label(reversal_score)
 
@@ -5508,6 +5571,8 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         "reversal_score": reversal_score,
         "reversal_label": rev_label,
         "reversal_reasons": [],
+        "ict_reversal_components": ict_rev_components,
+        "ict_reversal_count": ict_rev_count,
     }
 
 def manage_active_trade(trade, context):
