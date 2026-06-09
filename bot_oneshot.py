@@ -2245,6 +2245,124 @@ def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
     }
 
 
+
+
+def analyze_post_sweep_reclaim_guard(candles_3m, candles_15m, structure, ict, liquidity, flow, cvd, price):
+    """Protect the bot from preparing/chasing SHORT after sell-side sweep + strong reclaim.
+
+    This fixes the case where the chart has already swept the lows, printed a
+    strong buyback, returned toward/above equilibrium, but the old downtrend/BOS
+    still makes the bot write "SHORT готується". In that situation the bot must
+    wait for a fresh bearish BOS / lower-high rejection before allowing shorts.
+    """
+    result = {
+        "active": False,
+        "block_new_shorts": False,
+        "block_new_longs": False,
+        "score": 0,
+        "side": "NEUTRAL",
+        "reason": "",
+        "confirmations": [],
+        "conflicts": [],
+    }
+    if not candles_15m or len(candles_15m) < 35 or not price:
+        return result
+
+    recent15 = candles_15m[-40:]
+    last15 = recent15[-1]
+    prev_range = recent15[:-1]
+    atr15 = atr(candles_15m, 14) or max(price * 0.006, 0.01)
+    prev_low = min(c.low for c in prev_range)
+    prev_high = max(c.high for c in prev_range)
+    eq = (prev_low + prev_high) / 2
+
+    # Look not only at the last 15m candle: the sweep can happen 1-4 candles ago,
+    # then the next candles reclaim. This matches the screenshot case.
+    window = recent15[-5:]
+    sweep_low_candle = None
+    for c in window:
+        if c.low < prev_low + atr15 * 0.10:
+            # Use a real stop-run wick / reclaim from lows, not a normal candle.
+            lower_wick = min(c.open, c.close) - c.low
+            rng = max(c.high - c.low, 1e-9)
+            if c.low <= prev_low or lower_wick / rng >= 0.38:
+                sweep_low_candle = c
+                break
+
+    recovery_from_sweep = False
+    strong_rejection_wick = False
+    if sweep_low_candle:
+        sweep_low = sweep_low_candle.low
+        recovery_from_sweep = price >= sweep_low + atr15 * 0.95 or pct(price, sweep_low) >= 0.85
+        rng = max(sweep_low_candle.high - sweep_low_candle.low, 1e-9)
+        lower_wick = min(sweep_low_candle.open, sweep_low_candle.close) - sweep_low_candle.low
+        strong_rejection_wick = lower_wick / rng >= 0.35
+
+    displacement_up = False
+    if len(window) >= 3:
+        bodies_sample = [abs(c.close - c.open) for c in recent15[-24:-5]] or [abs(c.close - c.open) for c in recent15[:-1]]
+        avg_body = mean(bodies_sample) if bodies_sample else 0
+        for c in window[-3:]:
+            body = abs(c.close - c.open)
+            if c.close > c.open and body >= max(avg_body * 1.35, atr15 * 0.28):
+                displacement_up = True
+                break
+
+    back_above_eq = bool(price >= eq or (ict or {}).get("premium_discount") in ["MIDRANGE", "PREMIUM"])
+    structure_phase = (structure or {}).get("phase", "")
+    liquidity_blocks = set((liquidity or {}).get("blocks") or [])
+    flow_not_short = (flow or {}).get("bias") != "SHORT" or int((flow or {}).get("score", 0) or 0) > -14
+    cvd_not_short = (cvd or {}).get("bias") != "SHORT" or int((cvd or {}).get("score", 0) or 0) > -14
+
+    score = 0
+    confirmations = []
+    if sweep_low_candle or structure_phase in ["DOWNSIDE SWEEP", "CHOCH LONG"]:
+        score += 20
+        confirmations.append("sweep low / зняття sell-side ліквідності")
+    if recovery_from_sweep:
+        score += 18
+        confirmations.append("сильний відкуп після sweep low")
+    if displacement_up:
+        score += 16
+        confirmations.append("bullish displacement після виносу low")
+    if back_above_eq:
+        score += 12
+        confirmations.append("ціна повернулась у середину/вище EQ")
+    if strong_rejection_wick:
+        score += 8
+        confirmations.append("довга нижня тінь — продавця викупили")
+    if "SHORT" in liquidity_blocks:
+        score += 10
+        confirmations.append("liquidity engine блокує доганяння SHORT")
+    if flow_not_short and cvd_not_short:
+        score += 6
+        confirmations.append("потік/CVD не дають сильного підтвердження SHORT")
+
+    # A fresh bearish BOS after the reclaim allows shorts again.
+    fresh_bearish_bos = False
+    if candles_3m and len(candles_3m) >= 20:
+        recent3 = candles_3m[-10:]
+        prior3 = candles_3m[-24:-10]
+        if prior3:
+            prior_low = min(c.low for c in prior3)
+            fresh_bearish_bos = recent3[-1].close < prior_low and recent3[-1].close < recent3[-2].low
+    if structure_phase == "BOS SHORT" and last15.close < (safe_float((structure or {}).get("swing_low")) or last15.close - atr15):
+        fresh_bearish_bos = True
+
+    if score >= 40 and not fresh_bearish_bos:
+        result.update({
+            "active": True,
+            "block_new_shorts": True,
+            "score": int(score),
+            "side": "LONG_RECLAIM_GUARD",
+            "reason": "після sweep low був сильний відкуп; SHORT знову дозволений тільки після нового bearish BOS / lower-high rejection",
+            "confirmations": confirmations[:5],
+            "conflicts": ["не писати 'SHORT готується' після викупленого low без нового bearish BOS"],
+        })
+    else:
+        result.update({"score": int(score), "confirmations": confirmations[:5]})
+    return result
+
 def market_session():
     hour = now_utc().hour
     # BZU is much cleaner during London/NY. Asia/quiet hours are not forbidden,
@@ -3105,6 +3223,10 @@ def build_context(data, state=None):
     clusters = analyze_clusters(data.get("trades") or [], data.get("book") or {}, price)
     derivatives = analyze_derivatives(data.get("open_interest") or {}, data.get("funding") or {}, price, previous_snapshot)
     liquidity = analyze_liquidations(data.get("candles_3m") or [], data.get("candles_15m") or [], flow, structure, price)
+    post_sweep_guard = analyze_post_sweep_reclaim_guard(
+        data.get("candles_3m") or [], data.get("candles_15m") or [],
+        structure, ict, liquidity, flow, cvd, price
+    )
     news_items = get_news()
     news = analyze_news(news_items)
     calendar = analyze_calendar_alerts()
@@ -3156,6 +3278,11 @@ def build_context(data, state=None):
         + tf4h.get("score", 0) * 0.10
         + volume_guard.get("score", 0)
     )
+    if post_sweep_guard.get("block_new_shorts") and tech_score < 0:
+        # Do not let old downtrend/BOS produce SHORT bias right after a swept low
+        # has been bought back. Keep the market in WAIT until a fresh bearish BOS appears.
+        tech_score = max(tech_score, -30)
+
     total_score = tech_score + news.get("score", 0) * 0.22 + calendar.get("score", 0) + session.get("score", 0)
     if low_liquidity_risk:
         total_score -= 10 if tech_score > 0 else -10
@@ -3188,6 +3315,7 @@ def build_context(data, state=None):
         "news": news,
         "calendar": calendar,
         "liquidity": liquidity,
+        "post_sweep_guard": post_sweep_guard,
         "total_score": int(total_score),
         "bias": bias,
     }
@@ -3226,6 +3354,7 @@ def build_context(data, state=None):
         "market_regime": market_regime,
         "reentry_cooldown": reentry_cooldown,
         "reversal_after_failed_trade": reversal_after_failed_trade,
+        "post_sweep_guard": post_sweep_guard,
         "volume_guard": volume_guard,
         "flow": flow,
         "cvd": cvd,
@@ -4008,6 +4137,7 @@ def evaluate_new_setup(context):
         tf15 = context.get("tf15") or {}
         structure = context.get("structure") or {}
         ict = context.get("ict") or {}
+        post_sweep_guard = context.get("post_sweep_guard") or {}
         cvd = context.get("cvd") or {}
         flow = context.get("flow") or {}
         tf1h = context.get("tf1h") or {}
@@ -4065,6 +4195,8 @@ def evaluate_new_setup(context):
         prep_confirmations = []
         prep_conflicts = []
         for candidate in ["LONG", "SHORT"]:
+            if candidate == "SHORT" and post_sweep_guard.get("block_new_shorts"):
+                continue
             tf3_same = tf3.get("bias") == candidate and abs(int(tf3.get("score", 0) or 0)) >= 18
             ict_same = ict.get("bias") == candidate and abs(int(ict.get("score", 0) or 0)) >= 12
             structure_same = structure.get("bias") == candidate and abs(int(structure.get("score", 0) or 0)) >= 18
@@ -4116,6 +4248,19 @@ def evaluate_new_setup(context):
                 "conflicts": prep_conflicts,
             }
 
+        if post_sweep_guard.get("block_new_shorts"):
+            return {
+                "action": "NO_TRADE",
+                "side": "NEUTRAL",
+                "quality": min(55, max(readiness_quality, int(post_sweep_guard.get("score", 40)))),
+                "title": "ВХОДУ НЕМАЄ",
+                "reason": post_sweep_guard.get("reason") or "після sweep low був сильний відкуп — SHORT без нового BOS не готуємо",
+                "plan": None,
+                "confirmations": post_sweep_guard.get("confirmations") or [],
+                "conflicts": post_sweep_guard.get("conflicts") or [],
+                "show_wait_plan": False,
+            }
+
         long_exhausted, long_exhausted_reason = detect_exhausted_move("LONG", context)
         short_exhausted, short_exhausted_reason = detect_exhausted_move("SHORT", context)
 
@@ -4141,6 +4286,20 @@ def evaluate_new_setup(context):
             "plan": None,
             "confirmations": [],
             "conflicts": no_trade_conflicts,
+        }
+
+    post_sweep_guard = context.get("post_sweep_guard") or {}
+    if side == "SHORT" and post_sweep_guard.get("block_new_shorts"):
+        return {
+            "action": "NO_TRADE",
+            "side": "NEUTRAL",
+            "quality": min(58, max(42, int(post_sweep_guard.get("score", 40)))),
+            "title": "ВХОДУ НЕМАЄ",
+            "reason": post_sweep_guard.get("reason") or "після sweep low був сильний відкуп — SHORT без нового BOS не готуємо",
+            "plan": None,
+            "confirmations": post_sweep_guard.get("confirmations") or [],
+            "conflicts": post_sweep_guard.get("conflicts") or [],
+            "show_wait_plan": False,
         }
 
     confirmations, conflicts = entry_confirmations(side, context)
