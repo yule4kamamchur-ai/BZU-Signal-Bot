@@ -4870,6 +4870,48 @@ def _last_smc_trailing_level(side, candles, price, entry, atr_value):
     return None, ""
 
 
+
+
+def _best_smc_trailing_level(side, context, price, entry, atr_value):
+    """Best SMC trailing stop from 3M + 15M swings.
+
+    3M gives the active intraday structure; 15M gives wider structure so the
+    stop is not placed inside ordinary 3M noise. After TP1/TP2 this lets the
+    bot protect profit while still keeping the stop behind real structure.
+    """
+    candidates = []
+    tf3_level, tf3_reason = _last_smc_trailing_level(side, (context or {}).get("candles_3m") or [], price, entry, atr_value)
+    if tf3_level is not None:
+        candidates.append((tf3_level, tf3_reason))
+
+    # Wider 15M swing anchor. Use a slightly larger ATR buffer so it does not
+    # hug a 15M wick. This is intentionally not used alone if it would worsen
+    # protection too much; the final clamp/air rules still apply.
+    tf15_level, tf15_reason = _last_smc_trailing_level(side, (context or {}).get("candles_15m") or [], price, entry, (atr_value or price * 0.006) * 1.35)
+    if tf15_level is not None:
+        candidates.append((tf15_level, tf15_reason.replace("3M", "15M")))
+
+    valid = [(lvl, why) for lvl, why in candidates if _valid_stop_for_side(side, price, lvl)]
+    if not valid:
+        return None, ""
+    if side == "LONG":
+        lvl, why = max(valid, key=lambda x: x[0])
+    else:
+        lvl, why = min(valid, key=lambda x: x[0])
+    return round_price(lvl), why
+
+
+def _tp_hit_note(side, label, level, high_since_open, low_since_open, price):
+    """Explain whether TP was reached by live price or candle high/low."""
+    level = round_price(level)
+    if side == "LONG":
+        if high_since_open is not None and high_since_open >= level and (price is None or price < level):
+            return f"{label} {level} взято по high свічки 3M/між запусками"
+        return f"{label} {level} взято"
+    if low_since_open is not None and low_since_open <= level and (price is None or price > level):
+        return f"{label} {level} взято по low свічки 3M/між запусками"
+    return f"{label} {level} взято"
+
 def _ict_zone_trailing_level(side, ict, price, atr_value):
     """Find an ICT/FVG/OB based protective stop if the zone is usable."""
     if not ict or not price:
@@ -5040,7 +5082,7 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
         base_reason = "TP1 взято: стоп у середині руху entry→TP1, щоб не віддати прибуток і не вибило шумом"
 
     candidates = [(base_level, base_reason)]
-    smc_level, smc_reason = _last_smc_trailing_level(side, context.get("candles_3m") or [], price, trade.entry, atr_value)
+    smc_level, smc_reason = _best_smc_trailing_level(side, context, price, trade.entry, atr_value)
     ict_level, ict_reason = _ict_zone_trailing_level(side, context.get("ict") or {}, price, atr_value)
     if smc_level is not None:
         candidates.append((smc_level, smc_reason))
@@ -5790,14 +5832,17 @@ def manage_active_trade(trade, context):
         trade.tp3_hit = True
         trade.status = "CLOSED"
         trade.last_action = "TP3"
+        tp3_pct = signed_pct(side, trade.entry, trade.tp3)
         return {
             "closed": True,
             "action": "TP3",
+            "exit_reason_code": "TP3_BY_HIGH_LOW",
+            "exit_price": round_price(trade.tp3),
             "title": f"УГОДУ {side} ЗАКРИТО — TP3",
             "recommendation": "основна ціль виконана, сценарій закрито",
-            "current_pct": current_pct,
-            "best_pct": best_pct,
-            "notes": [f"TP3 {round_price(trade.tp3)} взято"],
+            "current_pct": tp3_pct,
+            "best_pct": max(best_pct, tp3_pct),
+            "notes": [_tp_hit_note(side, "TP3", trade.tp3, high_since_open, low_since_open, price)],
         }
 
     recommended_stop = None
@@ -5819,6 +5864,7 @@ def manage_active_trade(trade, context):
                 trade.stop_updated_at = iso_now()
             trade.tp2_locked_stop = float(trade.stop_current)
             trade.tp2_stop_locked = True
+            notes.append(_tp_hit_note(side, "TP2", trade.tp2, high_since_open, low_since_open, price))
             notes.append(f"зафіксувати стоп до TP3: {round_price(trade.stop_current)}")
             if recommended_stop_reason:
                 notes.append(recommended_stop_reason)
@@ -5843,6 +5889,7 @@ def manage_active_trade(trade, context):
                 trade.stop_updated_at = iso_now()
             trade.tp1_locked_stop = float(trade.stop_current)
             trade.tp1_stop_locked = True
+            notes.append(_tp_hit_note(side, "TP1", trade.tp1, high_since_open, low_since_open, price))
             notes.append(f"зафіксувати стоп до TP2: {round_price(trade.stop_current)}")
             if recommended_stop_reason:
                 notes.append(recommended_stop_reason)
@@ -5901,6 +5948,22 @@ def manage_active_trade(trade, context):
     soft_warning_only = bool((cvd_against or flow_against or news_against or liquidity_against) and not real_structure_break)
     exhausted_trade, exhausted_trade_reason = detect_exhausted_move(side, context)
 
+    # Smart post-TP1 supervision. This does not close by itself; it labels the
+    # trade correctly and prevents panic exits when TP1 is done but ICT/15M is
+    # still valid. Closing after TP1 still requires ICT/SMC reversal, deep MFE
+    # giveback, stop, or a broad confirmed failure.
+    post_tp1_trend_valid = bool(
+        post_tp1
+        and (tf15.get("bias") == side or context.get("bias") == side or support_votes >= 2.6)
+        and not (structure_against or ict_against)
+        and not confirmed_ict_reversal
+    )
+    post_tp1_warning = bool(
+        post_tp1
+        and (tf3_against or flow_against or cvd_against or news_against)
+        and not (structure_against or ict_against or confirmed_ict_reversal)
+    )
+
     if side == "LONG":
         stop_distance_pct = max(0.0, (price - trade.stop_current) / trade.entry * 100) if trade.entry else 99.0
     else:
@@ -5926,6 +5989,17 @@ def manage_active_trade(trade, context):
 
     near_stop = stop_distance_pct <= 0.30
     clearly_losing = current_pct <= -0.30
+
+    if action == "HOLD" and post_tp1_trend_valid:
+        action = "HOLD_TO_TP2"
+        title = f"{side} — TP1 ВЗЯТО, ТРЕНД ЩЕ ЖИВИЙ"
+        recommendation = "TP1 виконано: якщо ICT/15M структура не зламана, не закривати залишок через шум; тримати до TP2 зі зафіксованим стопом"
+        notes.append("після TP1 структура/15M ще підтримують угоду")
+    elif action == "HOLD" and post_tp1_warning:
+        action = "PROTECT"
+        title = f"{side} — TP1 ВЗЯТО, Є ЛОКАЛЬНИЙ ВІДКАТ"
+        recommendation = "TP1 виконано: є локальні попередження, але без ICT/SMC зламу це не команда закривати; стоп має бути зафіксований"
+        notes.append("після TP1 є CVD/flow/3M шум, але ICT-розворот не підтверджений")
 
     if tf3_against and (flow_against or cvd_against) and (near_stop or clearly_losing):
         min_capture_pct = _mfe_exit_floor(best_pct, market_regime)
@@ -6151,7 +6225,7 @@ def manage_active_trade(trade, context):
             "notes": ["краще закрити біля входу / не чекати дальній стоп"],
         }
 
-    if post_tp1 and action == "HOLD":
+    if post_tp1 and action in ["HOLD", "HOLD_TO_TP2"]:
         # Do NOT trail every 15 minutes after TP1. Keep the first TP1 stop
         # locked until TP2. This avoids getting stopped by normal BZU noise
         # right after the first take-profit.
@@ -6177,6 +6251,7 @@ def manage_active_trade(trade, context):
                 action = "TP1_PROTECT"
                 title = f"{side} — TP1 ВЗЯТО, СТОП ЗАФІКСОВАНО ДО TP2"
                 recommendation = "TP1 взято: стоп зафіксовано один раз до TP2"
+                notes.append(_tp_hit_note(side, "TP1", trade.tp1, high_since_open, low_since_open, price))
                 notes.append(f"зафіксувати стоп до TP2: {round_price(trade.stop_current)}")
                 if recommended_stop_reason:
                     notes.append(recommended_stop_reason)
