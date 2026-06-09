@@ -4477,7 +4477,7 @@ def evaluate_new_setup(context):
         and structure_same
         and not ict_against
         and not hard_conflict
-        and late_penalty < 20
+        and late_penalty < 15
         and not exhausted
         and not ict_balance
         and side not in liquidity.get("blocks", [])
@@ -4496,6 +4496,17 @@ def evaluate_new_setup(context):
         quality = min(quality, 78)
     elif htf_countertrend and not tf15_same:
         quality = min(quality, 84)
+
+    # Counter-trend quality honesty. A trade against both 1H and 4H can still be
+    # taken only as a risky bounce/reversal attempt, but it must not look like
+    # a premium 85-90+ setup in Telegram. This prevents cases like a
+    # counter-trend LONG showing 88/100 after a broad downtrend.
+    both_htf_against = bool(tf1h.get("bias") == opposite(side) and tf4h.get("bias") == opposite(side))
+    one_htf_against = bool(tf1h.get("bias") == opposite(side) or tf4h.get("bias") == opposite(side))
+    if both_htf_against and not (ict_strong_model and structure_same and tf15_same):
+        quality = min(quality, 76)
+    elif one_htf_against and not (ict_strong_model and (structure_same or tf15_same)):
+        quality = min(quality, 82)
 
     if heavy_pressure_risk:
         # Keep the early entry available, but never call it an ideal/strong trade
@@ -4623,6 +4634,29 @@ def evaluate_new_setup(context):
             "conflicts": [exhausted_reason],
             "exhausted_move": True,
             "show_wait_plan": False,
+        }
+
+    # HARD NO-CHASE GUARD.
+    # If the move is already extended enough to receive a heavy anti-chase
+    # penalty, the bot must not still print ENTRY/RISKY_ENTRY in the same
+    # direction. Direction can be correct, but location is bad. The proper
+    # state is WATCH until a pullback/protorgovka/new FVG-OB retest appears.
+    # This prevents signals like: "anti-chase -18, не доганяти" +
+    # "РИЗИКОВАНИЙ ВХІД SHORT" in the same message.
+    heavy_chase = bool(late_penalty >= 15)
+    chase_reason = late_reason or "рух уже розтягнутий — не доганяти; чекати відкат/проторговку або новий ICT/FVG/OB retest"
+    if heavy_chase:
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 61),
+            "title": f"ЧЕКАТИ — {side} НЕ ДОГАНЯТИ",
+            "reason": chase_reason,
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": list(dict.fromkeys(conflicts + [chase_reason])),
+            "hard_no_chase": True,
+            "show_wait_plan": True,
         }
 
     if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok:
