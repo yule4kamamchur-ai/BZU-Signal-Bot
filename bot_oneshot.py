@@ -3721,6 +3721,79 @@ def analyze_entry_location_score(side, context):
     }
 
 
+def entry_quality_adjustment(side, context, late_penalty=0):
+    """Unified entry-location quality adjustment.
+
+    This merges Anti-chase + ELS + ICT cap into ONE controlled correction.
+    The goal is to avoid double punishment for the same problem:
+      - late impulse / stretched price,
+      - weak location away from ICT/SMC,
+      - no full ICT model.
+
+    It never blocks an entry. It only adjusts quality softly:
+      - strong ICT + structure/3M keeps early entries alive;
+      - very late non-ICT entries cannot look like high-quality setups;
+      - total location penalty is capped so the bot does not overreact.
+    """
+    context = context if isinstance(context, dict) else {}
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    entry_location = context.get("entry_location") or analyze_entry_location_score(side, context)
+    context["entry_location"] = entry_location
+
+    els_adj = int(entry_location.get("adjustment", 0) or 0)
+    late_penalty = int(max(0, late_penalty or 0))
+    raw_adjustment = els_adj - late_penalty
+
+    ict_setup = str(ict.get("setup", "") or "").upper()
+    strong_ict_setups = {
+        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
+        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
+    }
+    ict_strong = bool(ict.get("bias") == side and ict.get("entry_ok") and ict_setup in strong_ict_setups.get(side, []))
+    structure_same = structure.get("bias") == side
+    tf3_same = tf3.get("bias") == side
+    tf15_same = tf15.get("bias") == side
+    trend_stack = bool(tf3_same and tf15_same and (structure_same or ict.get("bias") == side))
+
+    # Compensation rules: early ICT entries should not be killed, while late
+    # non-ICT continuation entries still receive a real quality discount.
+    if ict_strong and (structure_same or tf3_same):
+        max_penalty = 7
+    elif trend_stack:
+        max_penalty = 10
+    elif ict.get("bias") == side:
+        max_penalty = 12
+    else:
+        max_penalty = 15
+
+    # Bonus is deliberately tiny. ELS should not inflate weak signals.
+    max_bonus = 5 if ict_strong else 3
+    adjustment = max(-max_penalty, min(max_bonus, raw_adjustment))
+
+    state = "NEUTRAL"
+    if adjustment >= 3:
+        state = "LOCATION_BONUS"
+    elif adjustment <= -10:
+        state = "LATE_OR_WEAK_LOCATION"
+    elif adjustment < 0:
+        state = "SOFT_LOCATION_PENALTY"
+
+    result = {
+        "adjustment": int(adjustment),
+        "raw_adjustment": int(raw_adjustment),
+        "late_penalty_used": late_penalty,
+        "els_adjustment_used": els_adj,
+        "max_penalty": int(max_penalty),
+        "state": state,
+        "els_score": int(entry_location.get("score", 62) or 62),
+    }
+    context["entry_quality_adjustment"] = result
+    return result
+
+
 def entry_confirmations(side, context):
     tf3 = context["tf3"]
     tf15 = context["tf15"]
@@ -4456,14 +4529,10 @@ def evaluate_new_setup(context):
     if context.get("price_warning"):
         quality = min(quality, 72)
 
-    if late_penalty:
-        quality -= late_penalty
-
-    # ELS is intentionally soft. It can slightly lift a clean ICT/reclaim entry
-    # or reduce a late/chasing location, but it never creates a hard no-trade.
-    entry_location_adjustment = int((context.get("entry_location") or {}).get("adjustment", 0) or 0)
-    if entry_location_adjustment:
-        quality += entry_location_adjustment
+    # Unified entry-location correction. This replaces separate Anti-chase + ELS
+    # deductions so the bot does not punish the same late/chase problem twice.
+    eq_adjust = entry_quality_adjustment(side, context, late_penalty)
+    quality += int(eq_adjust.get("adjustment", 0) or 0)
 
     if calendar.get("active"):
         quality -= 8
@@ -4476,6 +4545,14 @@ def evaluate_new_setup(context):
     elif not trigger_ok:
         # If 3M is RANGE/pullback, the setup can be good, but entry is not active yet.
         quality = min(quality, 66)
+
+    # Late or weak-location entries may still be traded, but they must not look
+    # like strong clean setups. This preserves early entries without chasing.
+    eq_state = (context.get("entry_quality_adjustment") or {}).get("state")
+    if eq_state == "LATE_OR_WEAK_LOCATION" and not ict_strong_model:
+        quality = min(quality, 74)
+    elif eq_state == "SOFT_LOCATION_PENALTY" and not ict_strong_model:
+        quality = min(quality, 82)
 
     quality = int(max(0, min(92, quality)))
 
@@ -5183,6 +5260,91 @@ def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
 
 
+def _has_confirmed_ict_reversal(side, context):
+    """True only when the opposite side has real ICT/SMC reversal evidence."""
+    opp = opposite(side)
+    structure = (context or {}).get("structure") or {}
+    ict = (context or {}).get("ict") or {}
+    liquidity = (context or {}).get("liquidity") or {}
+    phase = str(structure.get("phase", "")).upper()
+    ict_setup = str(ict.get("setup", "")).upper()
+    liq_event = str(liquidity.get("event", "")).upper()
+    if opp == "LONG":
+        choch = "CHOCH LONG" in phase or "DOWNSIDE SWEEP" in phase
+        sweep = liquidity.get("bias") == "LONG" and any(x in liq_event for x in ["SWEEP", "RECLAIM"])
+        model = ict.get("bias") == "LONG" and (ict.get("entry_ok") or any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]))
+    else:
+        choch = "CHOCH SHORT" in phase or "UPSIDE SWEEP" in phase
+        sweep = liquidity.get("bias") == "SHORT" and any(x in liq_event for x in ["SWEEP", "RECLAIM"])
+        model = ict.get("bias") == "SHORT" and (ict.get("entry_ok") or any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]))
+    components = int(bool(choch)) + int(bool(sweep)) + int(bool(model))
+    return components >= 2, components
+
+def _should_apply_pre_tp_profit_stop(trade, context, proposed_stop, best_pct, current_pct, market_regime):
+    """Avoid moving pre-TP1 stops on every small MFE."""
+    if proposed_stop is None or trade is None:
+        return False, ""
+    if getattr(trade, "tp1_hit", False):
+        return True, "після TP1 стоп керується TP-lock логікою"
+    price = safe_float((context or {}).get("price"), 0.0) or 0.0
+    if not price or not trade.entry:
+        return False, "немає ціни для перевірки стопу"
+    atr_value = safe_float((context or {}).get("atr15"), price * 0.006) or price * 0.006
+    min_gap_pct = _stop_air_profile(context, trade_mode_profile(context, trade.side), "PRE_TP1")
+    gap_pct = ((price - proposed_stop) / trade.entry * 100.0) if trade.side == "LONG" else ((proposed_stop - price) / trade.entry * 100.0)
+    if gap_pct < min_gap_pct:
+        return False, f"стоп занадто близько до ціни до TP1 ({round(gap_pct, 3)}% < {round(min_gap_pct, 3)}%)"
+    smc_level, _ = _last_smc_trailing_level(trade.side, (context or {}).get("candles_3m") or [], price, trade.entry, atr_value)
+    ict_level, _ = _ict_zone_trailing_level(trade.side, (context or {}).get("ict") or {}, price, atr_value)
+    has_structure_anchor = smc_level is not None or ict_level is not None
+    if best_pct >= 1.05 and current_pct >= 0.45:
+        return True, "MFE достатній для першого захисту до TP1"
+    if has_structure_anchor and best_pct >= 0.65 and current_pct >= 0.25:
+        return True, "є SMC/ICT опора для стопу до TP1"
+    return False, "до TP1 стоп не рухати без нового swing/ICT або достатнього MFE"
+
+def _exit_reason_code(result, context=None, trade=None):
+    action = str((result or {}).get("action") or "")
+    notes = " ".join(str(x) for x in ((result or {}).get("notes") or [])).lower()
+    if action.startswith("TP"):
+        return "TP_HIT"
+    if action == "STOP":
+        return "STOP_BY_HIGH_LOW"
+    if "MFE" in action or "giveback" in notes or "відда" in notes:
+        return "MFE_GIVEBACK"
+    if "LOCAL_BREAK" in action or "3m" in notes or "структ" in notes:
+        return "STRUCTURE_BREAK"
+    if "EXIT" in action:
+        return "MANUAL_EXIT_SIGNAL"
+    return action or "UNKNOWN"
+
+def _exit_quality_score(trade, result, context):
+    """0-100 quality of the exit, separate from entry quality."""
+    action = str((result or {}).get("action") or "")
+    current_pct = safe_float((result or {}).get("current_pct"), 0.0) or 0.0
+    best_pct = safe_float((result or {}).get("best_pct"), 0.0) or 0.0
+    captured = (current_pct / best_pct * 100.0) if best_pct > 0.1 else None
+    confirmed_rev, _ = _has_confirmed_ict_reversal(getattr(trade, "side", "NEUTRAL"), context or {})
+    score = 55.0
+    if action.startswith("TP"):
+        score += 25
+    if action == "STOP" and current_pct >= 0:
+        score += 16
+    elif action == "STOP" and current_pct < 0:
+        score -= 18
+    if captured is not None:
+        if captured >= 70:
+            score += 14
+        elif captured >= 50:
+            score += 6
+        elif captured < 30:
+            score -= 16
+    if confirmed_rev:
+        score += 10
+    elif "EXIT" in action and current_pct > 0:
+        score -= 6
+    return int(max(0, min(100, round(score))))
+
 def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, action):
     """Professional, dynamic supervision risk model.
 
@@ -5382,15 +5544,15 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         (ict, 22, 38),
         (tf3, 13, 65),
         # Flow/CVD/news are warning layers, not reasons for HIGH/CRITICAL
-        # by themselves. Their weights stay softer to avoid psychological noise.
-        (cvd, 6, 25),
-        (flow, 6, 25),
-        (clusters, 4, 14),
-        (derivatives, 4, 18),
-        (liquidity, 8, 18),
+        # by themselves. Their weights stay soft to avoid psychological noise.
+        (cvd, 4, 25),
+        (flow, 4, 25),
+        (clusters, 3, 14),
+        (derivatives, 3, 18),
+        (liquidity, 7, 18),
         (tf1h, 8, 55),
         (tf4h, 5, 60),
-        (news, 2, 35),
+        (news, 1, 35),
     ]
     for b, weight, norm in risk_blocks:
         bias = (b or {}).get("bias")
@@ -5440,10 +5602,15 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     # reversal. CVD/flow/news can lift risk to MEDIUM, but HIGH/CRITICAL should
     # require ICT/structure evidence or the trade actually being close to stop/deep red.
     if ict_rev_count == 0:
+        # Without ICT/structure reversal evidence, CVD/flow/news can warn,
+        # but must not print scary HIGH/CRITICAL risk. If the trade is not
+        # materially losing, cap it at MEDIUM.
         if current_pct > -0.25 and action not in ["EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
-            trade_risk_score = min(trade_risk_score, 54)
+            trade_risk_score = min(trade_risk_score, 52)
     elif ict_rev_count == 1:
-        trade_risk_score = min(trade_risk_score, 68)
+        # One ICT clue means caution, not panic. HIGH requires a cluster of
+        # real reversal evidence or actual stop/deep loss conditions.
+        trade_risk_score = min(trade_risk_score, 62 if current_pct > -0.35 else 68)
 
     trade_risk_score = int(round(clamp(trade_risk_score)))
     trade_risk = risk_label(trade_risk_score)
@@ -5729,6 +5896,9 @@ def manage_active_trade(trade, context):
     liquidity_against = liquidity_block.get("bias") == opposite(side) and abs(int(liquidity_block.get("score", 0) or 0)) >= 12
     news_block = context.get("news") or {}
     news_against = news_block.get("bias") == opposite(side) and abs(int(news_block.get("score", 0) or 0)) >= 18
+    confirmed_ict_reversal, ict_reversal_components = _has_confirmed_ict_reversal(side, context)
+    real_structure_break = bool(structure_against or ict_against or confirmed_ict_reversal)
+    soft_warning_only = bool((cvd_against or flow_against or news_against or liquidity_against) and not real_structure_break)
     exhausted_trade, exhausted_trade_reason = detect_exhausted_move(side, context)
 
     if side == "LONG":
@@ -5777,43 +5947,69 @@ def manage_active_trade(trade, context):
                 notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
             notes.append(f"MFE було +{round(best_pct, 3)}%, захоплено {round((current_pct / best_pct * 100), 1) if best_pct > 0 else 0}%")
         else:
-            trade.status = "CLOSED"
-            trade.last_action = "EXIT_LOCAL_BREAK"
-            reasons = ["3M зламався проти позиції"]
-            if flow_against:
-                reasons.append("потік проти")
-            if cvd_against:
-                reasons.append("CVD проти")
-            if near_stop:
-                reasons.append("ціна близько до стопу")
-            if best_pct > 0.1:
-                reasons.append(f"MFE було +{round(best_pct, 3)}%, захоплено мало")
-            risk_snapshot = active_trade_risk_snapshot(
-                trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, "EXIT_WARNING"
+            # Local 3M + flow/CVD noise must not close a trade by itself.
+            # Hard exit requires ICT/structure break, deep loss, or stop danger
+            # after the trade failed to develop. Otherwise protect/hold.
+            hard_local_exit = bool(
+                real_structure_break
+                or (clearly_losing and near_stop)
+                or (near_stop and best_pct < 0.18 and (tf3_against or cvd_against or flow_against))
             )
-            return {
-                "closed": True,
-                "action": "EXIT_LOCAL_BREAK",
-                "title": f"{side} ЗАКРИТИ — ЛОКАЛЬНИЙ ЗЛАМ",
-                "recommendation": "закрити біля поточної / не чекати дальній стоп",
-                "current_pct": current_pct,
-                "best_pct": best_pct,
-                "notes": reasons[:4],
-                "trade_risk": risk_snapshot.get("trade_risk"),
-                "trade_risk_reasons": risk_snapshot.get("trade_risk_reasons"),
-                "reversal_side": risk_snapshot.get("reversal_side"),
-                "reversal_score": risk_snapshot.get("reversal_score"),
-                "reversal_label": risk_snapshot.get("reversal_label"),
-                "reversal_reasons": risk_snapshot.get("reversal_reasons"),
-            }
+            if hard_local_exit:
+                trade.status = "CLOSED"
+                trade.last_action = "EXIT_LOCAL_BREAK"
+                reasons = ["3M зламався проти позиції"]
+                if real_structure_break:
+                    reasons.append("ICT/SMC структура підтвердила злам")
+                if flow_against:
+                    reasons.append("потік проти")
+                if cvd_against:
+                    reasons.append("CVD проти")
+                if near_stop:
+                    reasons.append("ціна близько до стопу")
+                if best_pct > 0.1:
+                    reasons.append(f"MFE було +{round(best_pct, 3)}%, захоплено мало")
+                risk_snapshot = active_trade_risk_snapshot(
+                    trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, "EXIT_WARNING"
+                )
+                return {
+                    "closed": True,
+                    "action": "EXIT_LOCAL_BREAK",
+                    "exit_reason_code": "STRUCTURE_OR_STOP_LOCAL_BREAK",
+                    "exit_quality": "HARD",
+                    "title": f"{side} ЗАКРИТИ — ЛОКАЛЬНИЙ ЗЛАМ",
+                    "recommendation": "закрити біля поточної / не чекати дальній стоп",
+                    "current_pct": current_pct,
+                    "best_pct": best_pct,
+                    "notes": reasons[:4],
+                    "trade_risk": risk_snapshot.get("trade_risk"),
+                    "trade_risk_reasons": risk_snapshot.get("trade_risk_reasons"),
+                    "reversal_side": risk_snapshot.get("reversal_side"),
+                    "reversal_score": risk_snapshot.get("reversal_score"),
+                    "reversal_label": risk_snapshot.get("reversal_label"),
+                    "reversal_reasons": risk_snapshot.get("reversal_reasons"),
+                    "exit_score": risk_snapshot.get("exit_score"),
+                    "exit_signal": risk_snapshot.get("exit_signal"),
+                }
+            else:
+                action = "PROTECT" if current_pct > 0 else "EXIT_WARNING"
+                title = f"{side} — ЛОКАЛЬНИЙ ШУМ ПРОТИ, ICT ЩЕ НЕ ЗЛАМАНИЙ"
+                recommendation = "не закривати лише через CVD/потік; чекати ICT/SMC злам або спрацювання стопу"
+                notes.append("3M/потік проти, але ICT/структура ще не дали повний розворот")
 
     if tf3_against and (near_stop or clearly_losing):
-        action = "EXIT_WARNING"
-        title = f"{side} ПІД ЗАГРОЗОЮ"
-        recommendation = "3M вже проти позиції: захистити або закрити, не усереднювати"
-        notes.append("3M зламався проти позиції")
-        if near_stop:
-            notes.append("ціна близько до стопу")
+        if real_structure_break or clearly_losing:
+            action = "EXIT_WARNING"
+            title = f"{side} ПІД ЗАГРОЗОЮ"
+            recommendation = "3M вже проти позиції: захистити або закрити, не усереднювати"
+            notes.append("3M зламався проти позиції")
+            if near_stop:
+                notes.append("ціна близько до стопу")
+        else:
+            action = "PROTECT"
+            title = f"{side} — 3M ВІДКАТ, ICT ЩЕ НЕ ЗЛАМАНИЙ"
+            recommendation = "3M шумить проти позиції, але ICT/15M структура ще не дали підтверджений розворот"
+            notes.append("3M проти, але без ICT-зламу")
 
     if exhausted_trade and action == "HOLD" and (current_pct <= 0.15 or tf3_against or cvd_against or flow_against):
         action = "EXIT_WARNING"
@@ -5826,8 +6022,12 @@ def manage_active_trade(trade, context):
             notes.append("CVD/потік проти супроводу")
 
     if tp1_giveback_to_entry:
-        warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
-        if warning_votes >= 2 or opposite_votes >= 1.8:
+        # After TP1, do not close just because soft layers disagree.
+        # Close requires ICT/structure reversal or a broad confirmed failure.
+        hard_reversal_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against), bool(confirmed_ict_reversal)])
+        soft_warning_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
+        warning_votes = hard_reversal_votes * 2 + soft_warning_votes
+        if confirmed_ict_reversal or (hard_reversal_votes >= 1 and warning_votes >= 3) or opposite_votes >= 2.6:
             trade.status = "CLOSED"
             trade.last_action = "EXIT_AFTER_TP1_GIVEBACK"
             reasons = ["після TP1 ціна повертається майже до входу"]
@@ -5851,9 +6051,9 @@ def manage_active_trade(trade, context):
                 "notes": reasons[:4],
             }
         elif action == "HOLD":
-            action = "PROTECT_OR_EXIT"
-            title = f"{side} — ПІСЛЯ TP1 ЦІНА ПОВЕРТАЄТЬСЯ ДО ВХОДУ"
-            recommendation = "проаналізувати закриття залишку; мінімум стоп має стояти у плюсі/б/у, не чекати дальній стоп"
+            action = "PROTECT"
+            title = f"{side} — ПІСЛЯ TP1 ВІДКАТ, ICT НЕ ЗЛАМАНИЙ"
+            recommendation = "після TP1 ціна відкотилася, але без ICT-розвороту це не команда закривати; тримати тільки зі зафіксованим стопом"
             if trade.tp1_stop_locked:
                 recommended_stop = trade.tp1_locked_stop or trade.stop_current
                 recommended_stop_reason = "TP1-стоп уже зафіксований; якщо ціна повертається до входу — аналізуємо закриття, а не підтягування стопу"
@@ -5898,32 +6098,45 @@ def manage_active_trade(trade, context):
                 recommended_stop_reason = protect_reason
                 notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
             notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
-        elif warning_votes >= 2 or opposite_votes >= 2.05 or market_regime in ["RANGE", "NEWS_IMPULSE"]:
-            trade.status = "CLOSED"
-            trade.last_action = "EXIT_MFE_GIVEBACK"
-            reasons = [f"було +{round(best_pct, 3)}%, зараз тільки {round(current_pct, 3)}%"]
-            if tf3_against:
-                reasons.append("3M вже проти")
-            if flow_against or cvd_against:
-                reasons.append("потік/CVD проти")
-            if structure_against or ict_against:
-                reasons.append("ICT/SMC проти")
-            return {
-                "closed": True,
-                "action": "EXIT_MFE_GIVEBACK",
-                "title": f"{side} ЗАКРИТИ — ПРИБУТОК ВІДДАЄТЬСЯ",
-                "recommendation": "рух у плюс майже віддали назад і підтвердження слабшає: краще закрити, ніж чекати дальній TP/стоп",
-                "current_pct": current_pct,
-                "best_pct": best_pct,
-                "recommended_stop": trade.stop_current,
-                "recommended_stop_reason": "MFE-giveback захист",
-                "notes": reasons[:4],
-            }
-        elif action == "HOLD":
-            action = "PROTECT_OR_EXIT"
-            title = f"{side} — ПРИБУТОК ВІДДАЄТЬСЯ"
-            recommendation = "угода вже давала хороший плюс; захистити стопом, а закривати тільки якщо 15M/ICT/структура зламаються"
-            notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
+        else:
+            hard_reversal_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against)])
+            soft_warning_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
+            should_close_mfe = bool(
+                confirmed_ict_reversal
+                or hard_reversal_votes >= 1
+                or opposite_votes >= 2.55
+                or (market_regime == "RANGE" and soft_warning_votes >= 3 and current_pct <= 0.12)
+                or (market_regime == "NEWS_IMPULSE" and soft_warning_votes >= 3 and (tf3_against or near_stop))
+                or (current_pct <= 0.08 and best_pct >= 0.85 and soft_warning_votes >= 3)
+            )
+            if should_close_mfe:
+                trade.status = "CLOSED"
+                trade.last_action = "EXIT_MFE_GIVEBACK"
+                reasons = [f"було +{round(best_pct, 3)}%, зараз тільки {round(current_pct, 3)}%"]
+                if hard_reversal_votes >= 1:
+                    reasons.append("ICT/SMC або ліквідність проти")
+                if tf3_against:
+                    reasons.append("3M вже проти")
+                if flow_against or cvd_against:
+                    reasons.append("потік/CVD проти")
+                return {
+                    "closed": True,
+                    "action": "EXIT_MFE_GIVEBACK",
+                    "exit_reason_code": "MFE_GIVEBACK_WITH_CONFIRMATION",
+                    "exit_quality": "CONFIRMED",
+                    "title": f"{side} ЗАКРИТИ — ПРИБУТОК ВІДДАЄТЬСЯ",
+                    "recommendation": "рух у плюс майже віддали назад і є підтвердження слабкості: краще закрити, ніж чекати дальній TP/стоп",
+                    "current_pct": current_pct,
+                    "best_pct": best_pct,
+                    "recommended_stop": trade.stop_current,
+                    "recommended_stop_reason": "MFE-giveback захист",
+                    "notes": reasons[:4],
+                }
+            elif action == "HOLD":
+                action = "PROTECT"
+                title = f"{side} — MFE ВІДДАЄТЬСЯ, АЛЕ ICT ЩЕ НЕ ЗЛАМАНИЙ"
+                recommendation = "захистити стопом; закривати тільки якщо 15M/ICT/структура зламаються або спрацює стоп"
+                notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
 
     if lost_after_profit and opposite_votes >= 2.2:
         trade.status = "CLOSED"
@@ -6011,6 +6224,8 @@ def manage_active_trade(trade, context):
         "reversal_score": risk_snapshot.get("reversal_score"),
         "reversal_label": risk_snapshot.get("reversal_label"),
         "reversal_reasons": risk_snapshot.get("reversal_reasons"),
+        "exit_score": risk_snapshot.get("exit_score"),
+        "exit_signal": risk_snapshot.get("exit_signal"),
     }
 
 def new_active_trade(setup):
@@ -6438,6 +6653,10 @@ def build_closed_trade_journal_item(trade, result, context):
         "mfe_pct": mfe_pct,
         "mfe_captured_pct": mfe_captured_pct,
         "mfe_giveback_pct": mfe_giveback_pct,
+        "exit_reason_code": result.get("exit_reason_code") or _exit_reason_code(result, context, trade),
+        "exit_quality": result.get("exit_quality") or _exit_quality_score(trade, result, context),
+        "exit_score": result.get("exit_score"),
+        "missed_continuation_check": "pending_next_runs",
         "notes": result.get("notes", []),
     }
 
