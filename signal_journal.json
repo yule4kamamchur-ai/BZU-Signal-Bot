@@ -5767,7 +5767,185 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-09T06:10:25.435128+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 92.32,
+      "quality": 57,
+      "reason": "попередній SHORT зламано (STOP, 0.845%); шукати LONG тільки після 3M + BOS/reclaim",
+      "plan": {
+        "entry": 92.32,
+        "stop": 91.7199,
+        "tp1": 93.197,
+        "tp2": 93.9818,
+        "tp3": 95.1819,
+        "risk_pct": 0.65,
+        "rr1": 1.46,
+        "rr2": 2.77,
+        "rr3": 4.77,
+        "invalidation": "15m закриття нижче 91.7199 або злам 3m/структури проти LONG. Режим: розворот. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "3M розвернувся після невдалої угоди",
+        "SMC/BOS підтверджує розворот",
+        "ICT дає sweep/reclaim або continuation для розвороту"
+      ],
+      "conflicts": [
+        "15M ще тримає старий напрям"
+      ],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": -24,
+        "total_score": -20,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 22,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": -0.087,
+          "drift_pct": -0.079,
+          "vol_ratio": 0.09,
+          "note": "3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -32,
+          "trend": "SHORT",
+          "close": 92.37,
+          "ema20": 92.7366,
+          "ema50": 93.2116,
+          "rsi": 35.7,
+          "atr": 0.2724,
+          "slope_pct": -0.13,
+          "move_8_pct": -0.324,
+          "range_atr": 4.19,
+          "note": "ціна нижче EMA20/50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 92.37,
+          "ema20": 93.4985,
+          "ema50": 94.1417,
+          "rsi": 31.1,
+          "atr": 0.6564,
+          "slope_pct": -1.03,
+          "move_8_pct": -1.272,
+          "range_atr": 5.55,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 92.37,
+          "ema20": 94.2083,
+          "ema50": 94.5387,
+          "rsi": 40.6,
+          "atr": 1.4452,
+          "slope_pct": -1.476,
+          "move_8_pct": -2.758,
+          "range_atr": 3.84,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "LONG",
+          "score": 22,
+          "phase": "DOWNSIDE SWEEP",
+          "swing_high": 92.85,
+          "swing_low": 92.3,
+          "recent_high": 93.68,
+          "recent_low": 92.26,
+          "atr": 0.2724,
+          "note": "зняли ліквідність знизу і повернулись вище"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -62.38,
+          "book_delta_pct": 19.34,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -20955.0,
+          "delta_pct": -62.38,
+          "cvd": 211675.0,
+          "cvd_change_pct": -9.008,
+          "last_trade_ts": 1780985415606,
+          "price_move_pct": -0.022,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 92.3939,
+              "imbalance_pct": -60.1,
+              "volume": 30736.0
+            },
+            {
+              "price": 92.32,
+              "imbalance_pct": -87.2,
+              "volume": 2859.0
+            }
+          ],
+          "note": "локальний продавець біля 92.3939"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 58803.41,
+          "oi_change_pct": 0.449,
+          "funding_pct": 0,
+          "price_change_pct": -0.108,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "LONG",
+          "score": 18,
+          "event": "DOWNSIDE SWEEP / LONG RECLAIM",
+          "blocks": [
+            "SHORT"
+          ],
+          "vol_ratio": 0.09,
+          "move_1_pct": 0.032,
+          "move_6_pct": -0.054,
+          "note": "зняли low і повернулись вище — шорт не доганяти"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 45,
+          "top": "Trump says US helicopter pilots who went down in Strait of Hormuz are fine - Reuters",
+          "total": 38
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-09T06:01:13.248935+00:00"
+  "updated_at": "2026-06-09T06:10:25.437160+00:00"
 }
