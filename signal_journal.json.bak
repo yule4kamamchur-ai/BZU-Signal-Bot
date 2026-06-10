@@ -1176,7 +1176,193 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-10T08:15:50.088941+00:00",
+      "type": "RISKY_ENTRY",
+      "side": "LONG",
+      "price": 90.84,
+      "quality": 66,
+      "reason": "ранній ICT/SMC вхід: ICT і структура вже за напрям, не чекаємо повного набору підтверджень; 3M ще не ідеальний, тому тільки ризиковий режим",
+      "plan": {
+        "entry": 90.84,
+        "stop": 89.871,
+        "tp1": 91.809,
+        "tp2": 92.4751,
+        "tp3": 93.656,
+        "risk_pct": 1.067,
+        "rr1": 1.0,
+        "rr2": 1.69,
+        "rr3": 2.91,
+        "invalidation": "15m закриття нижче 89.871 або злам 3m/структури проти LONG. Режим: розворот. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "структура підтверджує",
+        "ICT сетап готовий",
+        "новини дають паливо",
+        "REVERSAL: попередня угода зламалась, шукаємо протилежний рух",
+        "15M нейтральний — розворот можливий, але потрібен 3M/BOS",
+        "SMC/BOS підтверджує розворот",
+        "ICT дає sweep/reclaim або continuation для розвороту",
+        "3M робить higher low після зламаного SHORT",
+        "режим: розворот — TP/стоп адаптовані",
+        "Smart Money RR мінімальний: 1.0R",
+        "ранній ICT/SMC: ICT + структура за напрям"
+      ],
+      "conflicts": [
+        "1h проти",
+        "локальний продавець у стакані",
+        "CVD/дельта поки проти — ранній вхід тільки як ризиковий"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 66,
+        "total_score": 72,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 10,
+          "state": "RANGE",
+          "fast_move_pct": 0.254,
+          "drift_pct": 0.239,
+          "vol_ratio": 0.11,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 90.95,
+          "ema20": 90.7155,
+          "ema50": 90.9242,
+          "rsi": 53.2,
+          "atr": 0.3683,
+          "slope_pct": 0.376,
+          "move_8_pct": 0.798,
+          "range_atr": 4.02,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -35,
+          "trend": "SHORT",
+          "close": 90.95,
+          "ema20": 91.139,
+          "ema50": 92.1462,
+          "rsi": 44.9,
+          "atr": 0.8157,
+          "slope_pct": -0.81,
+          "move_8_pct": -0.383,
+          "range_atr": 4.27,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -49,
+          "trend": "SHORT",
+          "close": 90.95,
+          "ema20": 92.5109,
+          "ema50": 93.6219,
+          "rsi": 41.1,
+          "atr": 1.543,
+          "slope_pct": -3.144,
+          "move_8_pct": -1.697,
+          "range_atr": 5.74,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "LONG",
+          "score": 32,
+          "phase": "BOS LONG",
+          "swing_high": 90.57,
+          "swing_low": 89.98,
+          "recent_high": 92.3,
+          "recent_low": 89.9,
+          "atr": 0.3683,
+          "note": "закриття вище swing high 90.57"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -40.63,
+          "book_delta_pct": 36.77,
+          "note": "угоди за продавців; стакан підтримує покупців; підтримка покупців біля 90.65"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -5591.0,
+          "delta_pct": -40.63,
+          "cvd": -67179.0,
+          "cvd_change_pct": -9.078,
+          "last_trade_ts": 1781079333198,
+          "price_move_pct": 0.265,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 90.9127,
+              "imbalance_pct": -43.6,
+              "volume": 11890.0
+            },
+            {
+              "price": 90.84,
+              "imbalance_pct": -30.3,
+              "volume": 482.0
+            }
+          ],
+          "note": "локальний продавець біля 90.9127"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 66061.7,
+          "oi_change_pct": -0.062,
+          "funding_pct": -0.00694,
+          "price_change_pct": 0.565,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.1,
+          "move_1_pct": 0.022,
+          "move_6_pct": 0.597,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 20,
+          "top": "Oil volatile on renewed US-Iran fighting; low stockpiles underpin prices - Reuters",
+          "total": 30
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-10T08:01:17.831743+00:00"
+  "updated_at": "2026-06-10T08:15:50.089884+00:00"
 }
