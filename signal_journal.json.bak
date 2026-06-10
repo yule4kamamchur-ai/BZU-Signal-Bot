@@ -5411,7 +5411,182 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-10T15:45:49.452622+00:00",
+      "type": "RISKY_ENTRY",
+      "side": "LONG",
+      "price": 91.92,
+      "quality": 62,
+      "reason": "є ранній тригер, але підтверджень ще не максимум: 15m за напрямом | 3m дав тригер | OI/Funding підтримує | потік підтримує",
+      "plan": {
+        "entry": 91.92,
+        "stop": 90.7197,
+        "tp1": 93.1203,
+        "tp2": 94.172,
+        "tp3": 96.3322,
+        "risk_pct": 1.306,
+        "rr1": 1.0,
+        "rr2": 1.88,
+        "rr3": 3.68,
+        "invalidation": "15m закриття нижче 90.7197 або злам 3m/структури проти LONG. Режим: сильний тренд. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "15m за напрямом",
+        "3m дав тригер",
+        "OI/Funding підтримує",
+        "потік підтримує",
+        "новини дають паливо",
+        "Smart Money RR мінімальний: 1.0R",
+        "після слабкого виходу LONG дозволено повторний вхід: тренд/структура продовжуються"
+      ],
+      "conflicts": [
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 121,
+        "total_score": 130,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 58,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.284,
+          "drift_pct": 0.193,
+          "vol_ratio": 0.51,
+          "note": "3m швидко йде вгору; 3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "LONG",
+          "score": 42,
+          "trend": "LONG",
+          "close": 91.96,
+          "ema20": 91.5689,
+          "ema50": 91.259,
+          "rsi": 58.6,
+          "atr": 0.4461,
+          "slope_pct": 0.569,
+          "move_8_pct": 0.218,
+          "range_atr": 5.63,
+          "note": "ціна вище EMA20/50; нахил вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 91.96,
+          "ema20": 91.2603,
+          "ema50": 91.9027,
+          "rsi": 55.6,
+          "atr": 0.9307,
+          "slope_pct": 1.285,
+          "move_8_pct": 1.726,
+          "range_atr": 2.8,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -42,
+          "trend": "SHORT",
+          "close": 91.96,
+          "ema20": 92.5536,
+          "ema50": 93.6071,
+          "rsi": 45.7,
+          "atr": 1.6599,
+          "slope_pct": -2.411,
+          "move_8_pct": -0.163,
+          "range_atr": 5.33,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 92.17,
+          "swing_low": 90.83,
+          "recent_high": 92.45,
+          "recent_low": 89.84,
+          "atr": 0.4461,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 26,
+          "trade_delta_pct": 74.42,
+          "book_delta_pct": 27.24,
+          "note": "угоди за покупців; стакан підтримує покупців; підтримка покупців біля 91.77"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 20660.0,
+          "delta_pct": 74.42,
+          "cvd": -151098.0,
+          "cvd_change_pct": 12.029,
+          "last_trade_ts": 1781106341548,
+          "price_move_pct": 0.229,
+          "note": "CVD росте"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 91.9935,
+              "imbalance_pct": 74.4,
+              "volume": 27762.0
+            }
+          ],
+          "note": "локальні покупки вище ціни"
+        },
+        "derivatives": {
+          "bias": "LONG",
+          "score": 12,
+          "state": "SHORTS_CLOSING",
+          "oi": 67625.55,
+          "oi_change_pct": -0.561,
+          "funding_pct": -0.04151,
+          "price_change_pct": 0.251,
+          "note": "ріст на падінні OI — шорти закриваються, не доганяти без ретесту; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.51,
+          "move_1_pct": -0.022,
+          "move_6_pct": 0.382,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 20,
+          "top": "Czech central banker '50-50' over rate hike or no change in June - Reuters",
+          "total": 46
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-10T15:15:52.295477+00:00"
+  "updated_at": "2026-06-10T15:45:49.453984+00:00"
 }
