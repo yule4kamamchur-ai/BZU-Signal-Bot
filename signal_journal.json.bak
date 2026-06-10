@@ -2851,7 +2851,197 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-10T11:15:47.201321+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 91.54,
+      "quality": 48,
+      "reason": "напрям є, але входу ще немає: CVD проти; потік локально проти; локальний продавець у стакані",
+      "plan": {
+        "entry": 91.54,
+        "stop": 90.3958,
+        "tp1": 92.6843,
+        "tp2": 93.1992,
+        "tp3": 94.0116,
+        "risk_pct": 1.25,
+        "rr1": 1.0,
+        "rr2": 1.45,
+        "rr3": 2.16,
+        "invalidation": "15m закриття нижче 90.3958 або злам 3m/структури проти LONG. Режим: новинний імпульс. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "сильний обсяг",
+        "3m дав тригер",
+        "структура підтверджує",
+        "OI/Funding підтримує",
+        "новини дають паливо",
+        "режим: новинний імпульс — TP/стоп адаптовані",
+        "Smart Money RR мінімальний: 1.0R",
+        "після слабкого виходу LONG дозволено повторний вхід: тренд/структура продовжуються"
+      ],
+      "conflicts": [
+        "CVD проти",
+        "потік локально проти",
+        "локальний продавець у стакані",
+        "мʼякий anti-chase штраф -18: 3M вже дав різкий імпульс вгору — лонг не доганяти; чекати проторговку або відкат",
+        "немає повного ICT-сетапу — якість входу обмежена"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 86,
+        "total_score": 96,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 36,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 1.677,
+          "drift_pct": 1.599,
+          "vol_ratio": 0.12,
+          "note": "3m швидко йде вгору; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 91.53,
+          "ema20": 90.6164,
+          "ema50": 90.7064,
+          "rsi": 62.0,
+          "atr": 0.4996,
+          "slope_pct": 0.619,
+          "move_8_pct": 1.475,
+          "range_atr": 4.48,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -5,
+          "trend": "NEUTRAL",
+          "close": 91.53,
+          "ema20": 90.9546,
+          "ema50": 91.9274,
+          "rsi": 53.8,
+          "atr": 0.9433,
+          "slope_pct": -0.965,
+          "move_8_pct": 0.616,
+          "range_atr": 3.69,
+          "note": "EMA20 нижче EMA50; нахил вниз; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 91.53,
+          "ema20": 92.5662,
+          "ema50": 93.6446,
+          "rsi": 43.8,
+          "atr": 1.658,
+          "slope_pct": -2.938,
+          "move_8_pct": -1.07,
+          "range_atr": 5.34,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "LONG",
+          "score": 32,
+          "phase": "BOS LONG",
+          "swing_high": 90.6,
+          "swing_low": 89.9,
+          "recent_high": 92.08,
+          "recent_low": 89.84,
+          "atr": 0.4996,
+          "note": "закриття вище swing high 90.6"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -89.2,
+          "book_delta_pct": -5.0,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "SHORT",
+          "score": -32,
+          "state": "BEARISH_ABSORPTION",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -12981.0,
+          "delta_pct": -89.2,
+          "cvd": -100332.0,
+          "cvd_change_pct": -14.861,
+          "last_trade_ts": 1781090135538,
+          "price_move_pct": 1.565,
+          "note": "CVD падає; ціна вгору, CVD вниз"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 91.6132,
+              "imbalance_pct": -96.2,
+              "volume": 8262.0
+            },
+            {
+              "price": 91.4668,
+              "imbalance_pct": -95.1,
+              "volume": 3664.0
+            },
+            {
+              "price": 91.54,
+              "imbalance_pct": -59.1,
+              "volume": 2627.0
+            }
+          ],
+          "note": "локальний продавець біля 91.6132"
+        },
+        "derivatives": {
+          "bias": "LONG",
+          "score": 18,
+          "state": "LONG_BUILDUP",
+          "oi": 65430.18,
+          "oi_change_pct": 0.685,
+          "funding_pct": -0.01503,
+          "price_change_pct": 1.643,
+          "note": "ціна росте + OI росте — нові лонги/попит"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.11,
+          "move_1_pct": 0.055,
+          "move_6_pct": 1.52,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 38,
+          "top": "Erdogan says Israel's attacks on Syria, Lebanon threaten Turkey too - Reuters",
+          "total": 45
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-10T11:01:17.003979+00:00"
+  "updated_at": "2026-06-10T11:15:47.202382+00:00"
 }
