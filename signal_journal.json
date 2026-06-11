@@ -9361,7 +9361,194 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-11T22:30:54.421777+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 87.54,
+      "quality": 34,
+      "reason": "напрям є, але входу ще немає: OI/Funding проти; сильні новини проти; мʼякий anti-chase штраф -13: ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження",
+      "plan": {
+        "entry": 87.54,
+        "stop": 88.545,
+        "tp1": 86.535,
+        "tp2": 85.833,
+        "tp3": 84.5636,
+        "risk_pct": 1.148,
+        "rr1": 1.0,
+        "rr2": 1.7,
+        "rr3": 2.96,
+        "invalidation": "15m закриття вище 88.545 або злам 3m/структури проти SHORT. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "CVD підтверджує",
+        "потік підтримує",
+        "Smart Money RR мінімальний: 1.0R"
+      ],
+      "conflicts": [
+        "OI/Funding проти",
+        "сильні новини проти",
+        "мʼякий anti-chase штраф -13: ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження",
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -115,
+        "total_score": -115,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -16,
+          "state": "SHORT_COOLING",
+          "fast_move_pct": -0.861,
+          "drift_pct": 0.509,
+          "vol_ratio": 0.78,
+          "note": "3m швидко йде вниз; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -42,
+          "trend": "SHORT",
+          "close": 87.56,
+          "ema20": 88.5247,
+          "ema50": 89.7616,
+          "rsi": 33.4,
+          "atr": 0.5394,
+          "slope_pct": -0.425,
+          "move_8_pct": -0.421,
+          "range_atr": 5.97,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 87.59,
+          "ema20": 90.2557,
+          "ema50": 91.2512,
+          "rsi": 31.4,
+          "atr": 1.1861,
+          "slope_pct": -3.383,
+          "move_8_pct": -4.21,
+          "range_atr": 5.83,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 87.55,
+          "ema20": 91.5794,
+          "ema50": 92.8119,
+          "rsi": 34.9,
+          "atr": 2.0346,
+          "slope_pct": -1.865,
+          "move_8_pct": -5.454,
+          "range_atr": 4.14,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 88.44,
+          "swing_low": 86.66,
+          "recent_high": 92.67,
+          "recent_low": 86.66,
+          "atr": 0.5394,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -73.01,
+          "book_delta_pct": -3.33,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "SHORT",
+          "score": -32,
+          "state": "BEARISH_ABSORPTION",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -27412.0,
+          "delta_pct": -73.01,
+          "cvd": 117823.0,
+          "cvd_change_pct": -18.874,
+          "last_trade_ts": 1781217031749,
+          "price_move_pct": 0.632,
+          "note": "CVD падає; ціна вгору, CVD вниз"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": -3,
+          "state": "LOCAL_SELL_PRESSURE_BELOW",
+          "zones": [
+            {
+              "price": 87.54,
+              "imbalance_pct": -64.5,
+              "volume": 22298.0
+            },
+            {
+              "price": 87.61,
+              "imbalance_pct": -100.0,
+              "volume": 8677.0
+            },
+            {
+              "price": 87.47,
+              "imbalance_pct": -66.4,
+              "volume": 6569.0
+            }
+          ],
+          "note": "локальні продажі нижче ціни"
+        },
+        "derivatives": {
+          "bias": "LONG",
+          "score": 24,
+          "state": "LONG_BUILDUP",
+          "oi": 61193.5,
+          "oi_change_pct": 0.78,
+          "funding_pct": -0.04581,
+          "price_change_pct": 0.309,
+          "note": "ціна росте + OI росте — нові лонги/попит; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.7,
+          "move_1_pct": -0.091,
+          "move_6_pct": 0.229,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 29,
+          "top": "From firefighting to street patrols, Dubai ramps up robot use - Reuters",
+          "total": 40
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-11T22:15:45.957203+00:00"
+  "updated_at": "2026-06-11T22:30:54.423855+00:00"
 }
