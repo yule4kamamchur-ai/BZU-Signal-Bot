@@ -167,6 +167,13 @@ class ActiveTrade:
     best_price: float = 0.0
     last_action: str = "OPEN"
     last_message_key: str = ""
+    # Entry point lifecycle: used by supervision to decide whether the original
+    # entry idea is still alive, weak, recovered, or broken. This prevents noisy
+    # contradictions like "entry not confirmed" while risk still looks moderate.
+    entry_integrity_score: int = 100
+    entry_fail_streak: int = 0
+    entry_recovery_checks: int = 0
+    entry_last_state: str = "СИЛЬНА"
     notes: list = field(default_factory=list)
 
 
@@ -377,6 +384,10 @@ def active_trade_from_state(state):
             best_price=float(raw.get("best_price") or raw.get("entry")),
             last_action=str(raw.get("last_action") or "OPEN"),
             last_message_key=str(raw.get("last_message_key") or ""),
+            entry_integrity_score=int(raw.get("entry_integrity_score", 100) or 100),
+            entry_fail_streak=int(raw.get("entry_fail_streak", 0) or 0),
+            entry_recovery_checks=int(raw.get("entry_recovery_checks", 0) or 0),
+            entry_last_state=str(raw.get("entry_last_state") or "СИЛЬНА"),
             notes=list(raw.get("notes") or []),
         )
     except Exception as error:
@@ -6021,6 +6032,194 @@ def trade_entry_validation_snapshot(trade, context, current_pct, best_pct, giveb
     }
 
 
+def entry_point_state_snapshot(trade, context, current_pct, best_pct, giveback,
+                               high_since_open=None, low_since_open=None,
+                               trade_validation=None,
+                               tf3_against=False, structure_against=False,
+                               ict_against=False, flow_against=False, cvd_against=False):
+    """Professional lifecycle model for the original entry point.
+
+    This is not a duplicate of generic risk. It answers: is the exact entry
+    price/idea still valid, damaged but recoverable, or broken?
+
+    It uses:
+    - MFE/MAE relative to the initial stop;
+    - whether price recovered back to entry after a bad move;
+    - 3M/15M/ICT/structure/flow confirmation;
+    - deep adverse move before the formal stop.
+    """
+    side = getattr(trade, "side", "")
+    if side not in ["LONG", "SHORT"]:
+        return None
+    opp = opposite(side)
+    price = safe_float(context.get("price"), getattr(trade, "entry", 0)) or getattr(trade, "entry", 0)
+
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+
+    entry = safe_float(getattr(trade, "entry", 0), 0) or 0
+    stop_initial = safe_float(getattr(trade, "stop_initial", getattr(trade, "stop_current", 0)), 0) or 0
+    stop_current = safe_float(getattr(trade, "stop_current", stop_initial), stop_initial) or stop_initial
+    risk_distance_pct = abs(entry - stop_initial) / entry * 100 if entry else 0.0
+    risk_distance_pct = max(risk_distance_pct, 0.01)
+
+    if side == "LONG":
+        worst_price = safe_float(low_since_open, min(price, entry))
+        adverse_pct = max(0.0, (entry - worst_price) / entry * 100 if entry else 0.0)
+        stop_distance_now_pct = max(0.0, (price - stop_current) / entry * 100 if entry else 99.0)
+    else:
+        worst_price = safe_float(high_since_open, max(price, entry))
+        adverse_pct = max(0.0, (worst_price - entry) / entry * 100 if entry else 0.0)
+        stop_distance_now_pct = max(0.0, (stop_current - price) / entry * 100 if entry else 99.0)
+
+    adverse_fraction = adverse_pct / risk_distance_pct if risk_distance_pct else 0.0
+    near_entry = abs(current_pct) <= 0.16
+    recovered_to_entry = bool(adverse_fraction >= 0.34 and near_entry)
+    deep_adverse = bool(adverse_fraction >= 0.60)
+    near_stop = bool(stop_distance_now_pct <= max(0.12, risk_distance_pct * 0.18))
+
+    core_support = 0
+    core_against = 0
+    soft_support = 0
+    soft_against = 0
+    for block in [tf3, tf15, structure, ict]:
+        if block.get("bias") == side:
+            core_support += 1
+        elif block.get("bias") == opp:
+            core_against += 1
+    for block in [flow, cvd]:
+        if block.get("bias") == side:
+            soft_support += 1
+        elif block.get("bias") == opp:
+            soft_against += 1
+
+    ict_valid = bool(ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 16))
+    structure_valid = bool(structure.get("bias") == side)
+    structure_broken = bool(structure_against or structure.get("bias") == opp)
+    ict_broken = bool(ict_against or (ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16))
+
+    base = int((trade_validation or {}).get("score", getattr(trade, "entry_integrity_score", 100) or 100) or 50)
+    score = float(base)
+
+    # Price lifecycle.
+    if current_pct >= 0.45:
+        score += 10
+    elif current_pct >= 0.18:
+        score += 5
+    elif current_pct <= -0.45:
+        score -= 16
+    elif current_pct <= -0.22:
+        score -= 9
+
+    if best_pct >= 0.55:
+        score += 7
+    elif best_pct >= 0.25:
+        score += 3
+    elif best_pct < 0.16:
+        score -= 6
+
+    if deep_adverse:
+        score -= 18
+    elif adverse_fraction >= 0.42:
+        score -= 10
+
+    if core_support >= 3:
+        score += 12
+    elif core_support == 2:
+        score += 6
+    if core_against >= 3:
+        score -= 18
+    elif core_against == 2:
+        score -= 10
+    if soft_support >= 1:
+        score += 3
+    if soft_against >= 2:
+        score -= 5
+
+    if giveback >= max(0.20, best_pct * 0.65) and best_pct >= 0.25:
+        score -= 7
+
+    recovery_mode = "NONE"
+    reason = "точка входу працює штатно"
+    advice = "можна залишатися в угоді, поки ICT/структура не зламаються"
+    auto_exit = False
+    hard_broken = False
+
+    if recovered_to_entry:
+        recovery_mode = "RECHECK_AT_ENTRY"
+        if (core_support >= 2 or ict_valid or structure_valid) and core_against <= 1:
+            # Price came back to entry after a bad move, but the setup rebuilt.
+            # Re-rate from the current context instead of punishing it forever.
+            score = max(score, 62)
+            reason = "ціна повернулась до входу після просадки; сетап повторно перевірений і ще має підтвердження"
+            advice = "залишатися можна, але без усереднення; якщо наступний супровід знову слабшає — вихід біля входу"
+        else:
+            score = min(score, 48)
+            reason = "ціна повернулась до входу після просадки, але ICT/структура не відновили сетап"
+            advice = "краще закрити біля входу, якщо наступний імпульс не підтвердить напрям"
+    elif deep_adverse:
+        recovery_mode = "DEEP_ADVERSE_MOVE"
+        if structure_broken or ict_broken or core_against >= 2:
+            score = min(score, 34)
+            reason = "ціна пройшла понад 60% шляху до стопа і структура/ICT проти точки входу"
+            advice = "вихід раніше повного стопа; точка входу втратила актуальність"
+            auto_exit = True
+            hard_broken = True
+        else:
+            score = min(score, 55)
+            reason = "глибока просадка до стопа, але повного ICT/SMC зламу ще немає"
+            advice = "тримати тільки до наступної перевірки; без reclaim/підтвердження не чекати повний стоп"
+    elif (trade_validation or {}).get("severity") == "BAD":
+        reason = "угода не розкривається після входу: MFE слабкий або структура/3M проти"
+        advice = "не чекати дальній стоп; шукати вихід біля входу або при наступному слабкому супроводі"
+    elif (trade_validation or {}).get("severity") == "WARN":
+        reason = "точка входу слабшає, але ще не зламана"
+        advice = "залишатися тільки якщо наступний супровід покаже відновлення"
+
+    score = int(max(0, min(100, round(score))))
+    if score >= 80:
+        label = "🟢 Сильна"
+        state = "STRONG"
+    elif score >= 60:
+        label = "🟡 Робоча"
+        state = "WORKING"
+    elif score >= 40:
+        label = "🟠 Слабка"
+        state = "WEAK"
+    else:
+        label = "🔴 Зламана"
+        state = "BROKEN"
+        if core_against >= 2 or hard_broken:
+            auto_exit = True
+
+    fail_now = state in ["WEAK", "BROKEN"] and not (recovered_to_entry and state == "WORKING")
+
+    return {
+        "active": True,
+        "score": score,
+        "label": label,
+        "state": state,
+        "reason": reason,
+        "advice": advice,
+        "fail_now": fail_now,
+        "auto_exit": bool(auto_exit),
+        "recovery_mode": recovery_mode,
+        "adverse_pct": round(adverse_pct, 3),
+        "adverse_fraction": round(adverse_fraction, 3),
+        "near_entry": near_entry,
+        "deep_adverse": deep_adverse,
+        "near_stop": near_stop,
+        "core_support": core_support,
+        "core_against": core_against,
+        "soft_support": soft_support,
+        "soft_against": soft_against,
+    }
+
+
 def countertrend_entry_validation(trade, context, current_pct, best_pct, giveback, tf3_against=False,
                                   structure_against=False, ict_against=False, flow_against=False, cvd_against=False):
     """Status block for early counter-trend entries.
@@ -6297,17 +6496,60 @@ def manage_active_trade(trade, context):
         flow_against=flow_against,
         cvd_against=cvd_against,
     )
+    entry_state = entry_point_state_snapshot(
+        trade, context, current_pct, best_pct, giveback,
+        high_since_open=high_since_open,
+        low_since_open=low_since_open,
+        trade_validation=trade_validation,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+    )
+    if entry_state:
+        if entry_state.get("fail_now") and not trade.tp1_hit:
+            trade.entry_fail_streak = int(getattr(trade, "entry_fail_streak", 0) or 0) + 1
+        elif entry_state.get("state") in ["STRONG", "WORKING"]:
+            trade.entry_fail_streak = 0
+        if entry_state.get("recovery_mode") == "RECHECK_AT_ENTRY":
+            trade.entry_recovery_checks = int(getattr(trade, "entry_recovery_checks", 0) or 0) + 1
+        trade.entry_integrity_score = int(entry_state.get("score") or 50)
+        trade.entry_last_state = str(entry_state.get("label") or "")
     exhausted_trade, exhausted_trade_reason = detect_exhausted_move(side, context)
 
-    # Universal validation of the opened idea. This does not delay entries and
-    # does not add a separate Telegram block. It only changes the normal
-    # supervision wording when any trade, especially a countertrend one, fails
-    # to develop after entry.
-    if trade_validation and trade_validation.get("severity") in ["BAD", "WARN"] and action == "HOLD" and not trade.tp1_hit:
-        action = "EXIT_WARNING" if trade_validation.get("severity") == "BAD" else "PROTECT_OR_EXIT"
-        title = f"{side} — ВХІД НЕ ПІДТВЕРДЖУЄТЬСЯ" if trade_validation.get("severity") == "BAD" else f"{side} — ВХІД СЛАБКО ПІДТВЕРДЖУЄТЬСЯ"
-        recommendation = "угода не розкривається як очікувалось; не чекати повний стоп, краще захистити позицію/вийти біля входу" if trade_validation.get("severity") == "BAD" else "угода розкривається слабко; залишатися тільки якщо наступний супровід покаже покращення"
-        notes.append("trade validation: " + str(trade_validation.get("status")))
+    # Universal validation of the opened idea. This does not delay entries.
+    # It changes the supervision wording through "Стан точки входу", without
+    # adding a duplicated generic trade-risk block to Telegram.
+    if entry_state and entry_state.get("state") in ["BROKEN", "WEAK"] and action == "HOLD" and not trade.tp1_hit:
+        action = "EXIT_WARNING" if entry_state.get("state") == "BROKEN" else "PROTECT_OR_EXIT"
+        title = f"{side} — ТОЧКА ВХОДУ ЗЛАМАНА" if entry_state.get("state") == "BROKEN" else f"{side} — ТОЧКА ВХОДУ СЛАБШАЄ"
+        recommendation = entry_state.get("advice") or "угода слабшає; не чекати дальній стоп без відновлення ICT/структури"
+        notes.append("стан точки входу: " + str(entry_state.get("label")))
+
+    # If the opened idea fails several times in a row, the entry point is no
+    # longer valid. Exit near entry / before full stop, but do not close a trade
+    # that has already reached TP1 or is still clearly protected by ICT/structure.
+    if entry_state and not trade.tp1_hit:
+        should_close_by_integrity = bool(
+            entry_state.get("auto_exit")
+            or (int(getattr(trade, "entry_fail_streak", 0) or 0) >= 3 and current_pct <= 0.18)
+        )
+        if should_close_by_integrity:
+            trade.status = "CLOSED"
+            trade.last_action = "EXIT_ENTRY_POINT_BROKEN"
+            return {
+                "closed": True,
+                "action": "EXIT_ENTRY_POINT_BROKEN",
+                "exit_reason_code": "ENTRY_POINT_INTEGRITY_BROKEN",
+                "exit_quality": "ENTRY_POINT",
+                "title": f"{side} ЗАКРИТИ — ТОЧКА ВХОДУ ЗЛАМАНА",
+                "recommendation": entry_state.get("advice") or "точка входу не відпрацювала; краще вийти раніше повного стопа",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "notes": [entry_state.get("reason", "точка входу втратила актуальність"), f"слабких перевірок підряд: {getattr(trade, 'entry_fail_streak', 0)}"],
+                "entry_state": entry_state,
+            }
 
     # Smart post-TP1 supervision. This does not close by itself; it labels the
     # trade correctly and prevents panic exits when TP1 is done but ICT/15M is
@@ -6664,6 +6906,7 @@ def manage_active_trade(trade, context):
         "exit_signal": risk_snapshot.get("exit_signal"),
         "countertrend_validation": None,
         "trade_validation": risk_snapshot.get("trade_validation"),
+        "entry_state": entry_state,
     }
 
 def new_active_trade(setup):
@@ -6684,6 +6927,10 @@ def new_active_trade(setup):
         tp1_locked_stop=0.0,
         tp2_locked_stop=0.0,
         best_price=plan.entry,
+        entry_integrity_score=100,
+        entry_fail_streak=0,
+        entry_recovery_checks=0,
+        entry_last_state="СИЛЬНА",
         notes=(
             (["RISKY_ENTRY"] if setup.get("action") == "RISKY_ENTRY" else [])
             + (["COUNTERTREND_ENTRY"] if setup.get("countertrend_entry") else [])
@@ -7031,15 +7278,20 @@ def build_follow_message(context, trade, result):
         price_line(context),
         f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс/MFE:</b> {round(result['best_pct'], 3)}%",
     ]
-    if result.get("trade_risk") or result.get("reversal_label"):
+    entry_state = result.get("entry_state") or {}
+    if entry_state:
+        lines.append("")
+        lines.append("<b>Стан точки входу:</b>")
+        lines.append(f"{entry_state.get('label', '—')} ({int(entry_state.get('score') or 0)}%)")
+        if entry_state.get("reason"):
+            lines.append(f"Причина: {html.escape(str(entry_state.get('reason')))}")
+        if entry_state.get("advice"):
+            lines.append(f"Дія: {html.escape(str(entry_state.get('advice')))}")
+    if result.get("reversal_label"):
         lines.append("")
         lines.append("<b>Ризик:</b>")
-        if result.get("trade_risk"):
-            risk_score = int(result.get("trade_risk_score") or 0)
-            lines.append(f"Поточний ризик угоди: <b>{result.get('trade_risk')}</b> ({risk_score}%)")
-        if result.get("reversal_label"):
-            rev_side = result.get("reversal_side") or opposite(trade.side)
-            lines.append(f"Ризик розвороту в {rev_side}: <b>{result.get('reversal_label')}</b> ({int(result.get('reversal_score') or 0)}%)")
+        rev_side = result.get("reversal_side") or opposite(trade.side)
+        lines.append(f"Ризик розвороту в {rev_side}: <b>{result.get('reversal_label')}</b> ({int(result.get('reversal_score') or 0)}%)")
     lines.extend([
         "",
         "<b>Позиція:</b>",
