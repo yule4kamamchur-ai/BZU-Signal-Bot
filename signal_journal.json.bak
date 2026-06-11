@@ -4955,7 +4955,188 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-11T14:31:16.234931+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 91.56,
+      "quality": 44,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "plan": {
+        "entry": 91.56,
+        "stop": 90.7001,
+        "tp1": 92.5214,
+        "tp2": 93.3454,
+        "tp3": 94.673,
+        "risk_pct": 0.939,
+        "rr1": 1.12,
+        "rr2": 2.08,
+        "rr3": 3.62,
+        "invalidation": "15m закриття нижче 90.7001 або злам 3m/структури проти LONG. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "3M вже показує напрям, але ще потрібен тригер ціни",
+        "ICT підтримує ідею"
+      ],
+      "conflicts": [
+        "15M ще нейтральний — вхід тільки після 3M reclaim/ретесту",
+        "1H слабкий/проти — не заходити без чіткого тригера"
+      ],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": 27,
+        "total_score": 38,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 58,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.693,
+          "drift_pct": 0.325,
+          "vol_ratio": 0.29,
+          "note": "3m швидко йде вгору; 3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -4,
+          "trend": "NEUTRAL",
+          "close": 91.59,
+          "ema20": 91.4094,
+          "ema50": 91.7226,
+          "rsi": 51.7,
+          "atr": 0.5154,
+          "slope_pct": 0.886,
+          "move_8_pct": -0.812,
+          "range_atr": 4.71,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -35,
+          "trend": "SHORT",
+          "close": 91.59,
+          "ema20": 91.7904,
+          "ema50": 92.1517,
+          "rsi": 47.7,
+          "atr": 0.981,
+          "slope_pct": -1.713,
+          "move_8_pct": -0.435,
+          "range_atr": 4.81,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 8,
+          "trend": "NEUTRAL",
+          "close": 91.6,
+          "ema20": 92.3624,
+          "ema50": 93.1744,
+          "rsi": 45.6,
+          "atr": 1.8191,
+          "slope_pct": 0.725,
+          "move_8_pct": 1.327,
+          "range_atr": 4.71,
+          "note": "ціна нижче EMA20/50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 92.8,
+          "swing_low": 90.81,
+          "recent_high": 92.8,
+          "recent_low": 90.37,
+          "atr": 0.5154,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "trade_delta_pct": -18.0,
+          "book_delta_pct": 57.67,
+          "note": "стакан підтримує покупців; підтримка покупців біля 91.27"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -2581.0,
+          "delta_pct": -18.0,
+          "cvd": -43843.0,
+          "cvd_change_pct": -6.255,
+          "last_trade_ts": 1781188255923,
+          "price_move_pct": 0.329,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "LONG",
+          "score": 5,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 91.5763,
+              "imbalance_pct": 50.7,
+              "volume": 6490.0
+            },
+            {
+              "price": 91.5031,
+              "imbalance_pct": -69.0,
+              "volume": 4748.0
+            },
+            {
+              "price": 91.43,
+              "imbalance_pct": -85.8,
+              "volume": 3067.0
+            }
+          ],
+          "note": "локальні покупки вище ціни; bid-стіна 91.47"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 71933.74,
+          "oi_change_pct": 0.172,
+          "funding_pct": -0.02544,
+          "price_change_pct": 0.23,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.26,
+          "move_1_pct": 0.109,
+          "move_6_pct": 0.318,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 33,
+          "top": "US confirms third strike on Indian-crewed tankers this week - Reuters",
+          "total": 53
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-11T14:15:53.345492+00:00"
+  "updated_at": "2026-06-11T14:31:16.236272+00:00"
 }
