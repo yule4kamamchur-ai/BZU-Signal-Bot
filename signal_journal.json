@@ -8645,7 +8645,183 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-11T21:31:02.005790+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 88.24,
+      "quality": 20,
+      "reason": "напрям є, але входу ще немає: 3m сильно проти; низька ліквідність/тиха сесія — ризик спреду і slippage; ICT проти напрямку — якість входу нижча",
+      "plan": {
+        "entry": 88.24,
+        "stop": 89.6077,
+        "tp1": 86.8723,
+        "tp2": 86.2568,
+        "tp3": 85.2398,
+        "risk_pct": 1.55,
+        "rr1": 1.0,
+        "rr2": 1.45,
+        "rr3": 2.19,
+        "invalidation": "15m закриття вище 89.6077 або злам 3m/структури проти SHORT. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "кластери локально підтримують",
+        "Smart Money RR мінімальний: 1.0R",
+        "CVD має низьку довіру — не є головним фільтром"
+      ],
+      "conflicts": [
+        "3m сильно проти",
+        "низька ліквідність/тиха сесія — ризик спреду і slippage",
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -80,
+        "total_score": -70,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 46,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.386,
+          "drift_pct": 0.31,
+          "vol_ratio": 0.02,
+          "note": "3m швидко йде вгору; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -49,
+          "trend": "SHORT",
+          "close": 88.31,
+          "ema20": 88.9387,
+          "ema50": 90.1203,
+          "rsi": 37.3,
+          "atr": 0.5119,
+          "slope_pct": -1.223,
+          "move_8_pct": 0.421,
+          "range_atr": 9.94,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -49,
+          "trend": "SHORT",
+          "close": 88.31,
+          "ema20": 90.5348,
+          "ema50": 91.4002,
+          "rsi": 34.2,
+          "atr": 1.1497,
+          "slope_pct": -2.952,
+          "move_8_pct": -2.913,
+          "range_atr": 5.43,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 88.31,
+          "ema20": 91.6518,
+          "ema50": 92.8417,
+          "rsi": 37.1,
+          "atr": 1.986,
+          "slope_pct": -1.587,
+          "move_8_pct": -4.633,
+          "range_atr": 3.91,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "phase": "RANGE / WAIT",
+          "swing_high": 92.67,
+          "swing_low": 87.33,
+          "recent_high": 92.67,
+          "recent_low": 87.33,
+          "atr": 0.5119,
+          "note": "сильне bearish-закриття"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -18.92,
+          "book_delta_pct": 22.34,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "LOW",
+          "confidence_factor": 0.45,
+          "sample_size": 22,
+          "delta": -87.0,
+          "delta_pct": -10.65,
+          "cvd": 124933.0,
+          "cvd_change_pct": -0.07,
+          "last_trade_ts": 1781213425593,
+          "price_move_pct": 0.238,
+          "note": "CVD low confidence: мало свіжих трейдів"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -7,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 88.3812,
+              "imbalance_pct": -41.1,
+              "volume": 1768.0
+            }
+          ],
+          "note": "локальний продавець біля 88.3812; ask-стіна 88.44"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 61139.59,
+          "oi_change_pct": -0.002,
+          "funding_pct": -0.04504,
+          "price_change_pct": -0.045,
+          "note": "OI ще накопичує історію для порівняння; funding перегрітий у шорт — шорт не доганяти"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.01,
+          "move_1_pct": -0.045,
+          "move_6_pct": 0.023,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 25,
+          "top": "Investor says 'difficult to justify participating' in SpaceX IPO - Reuters",
+          "total": 40
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-11T21:30:10.323997+00:00"
+  "updated_at": "2026-06-11T21:31:02.007742+00:00"
 }
