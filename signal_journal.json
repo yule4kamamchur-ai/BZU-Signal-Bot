@@ -8399,7 +8399,196 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-11T01:30:55.076426+00:00",
+      "type": "RISKY_ENTRY",
+      "side": "SHORT",
+      "price": 92.97,
+      "quality": 76,
+      "reason": "ранній ICT/SMC вхід: ICT і структура вже за напрям, не чекаємо повного набору підтверджень; anti-chase штраф уже врахований (-6)",
+      "plan": {
+        "entry": 92.97,
+        "stop": 94.3181,
+        "tp1": 91.6219,
+        "tp2": 91.0153,
+        "tp3": 90.0879,
+        "risk_pct": 1.45,
+        "rr1": 1.0,
+        "rr2": 1.45,
+        "rr3": 2.14,
+        "invalidation": "15m закриття вище 94.3181 або злам 3m/структури проти SHORT. Режим: розворот. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "3m дав тригер",
+        "структура підтверджує",
+        "ICT сетап готовий",
+        "OI/Funding підтримує",
+        "кластери локально підтримують",
+        "REVERSAL: попередня угода зламалась, шукаємо протилежний рух",
+        "3M розвернувся після невдалої угоди",
+        "15M нейтральний — розворот можливий, але потрібен 3M/BOS",
+        "SMC/BOS підтверджує розворот",
+        "ICT дає sweep/reclaim або continuation для розвороту",
+        "3M робить lower high після зламаного LONG",
+        "режим: розворот — TP/стоп адаптовані",
+        "Smart Money RR мінімальний: 1.0R",
+        "ранній ICT/SMC: ICT + структура за напрям"
+      ],
+      "conflicts": [
+        "1h проти",
+        "сильні новини проти",
+        "мʼякий anti-chase штраф -6: 3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -126,
+        "total_score": -123,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -58,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.693,
+          "drift_pct": -0.442,
+          "vol_ratio": 0.05,
+          "note": "3m швидко йде вниз; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -17,
+          "trend": "NEUTRAL",
+          "close": 93.08,
+          "ema20": 93.5132,
+          "ema50": 92.9301,
+          "rsi": 45.3,
+          "atr": 0.4588,
+          "slope_pct": -1.62,
+          "move_8_pct": -1.01,
+          "range_atr": 4.69,
+          "note": "EMA20 вище EMA50; нахил вниз; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "LONG",
+          "score": 35,
+          "trend": "LONG",
+          "close": 93.08,
+          "ema20": 92.618,
+          "ema50": 92.4422,
+          "rsi": 54.9,
+          "atr": 0.9969,
+          "slope_pct": 1.45,
+          "move_8_pct": 0.367,
+          "range_atr": 5.27,
+          "note": "ціна вище EMA20/50; нахил вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 93.08,
+          "ema20": 92.7235,
+          "ema50": 93.4688,
+          "rsi": 50.4,
+          "atr": 1.7794,
+          "slope_pct": 0.868,
+          "move_8_pct": 2.421,
+          "range_atr": 4.81,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "structure": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -24,
+          "phase": "BOS SHORT",
+          "swing_high": 95.09,
+          "swing_low": 93.24,
+          "recent_high": 95.09,
+          "recent_low": 91.72,
+          "atr": 0.4588,
+          "note": "закриття нижче swing low 93.24; сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -76.58,
+          "book_delta_pct": 35.85,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -102304.0,
+          "delta_pct": -76.58,
+          "cvd": -331268.0,
+          "cvd_change_pct": -44.681,
+          "last_trade_ts": 1781141428013,
+          "price_move_pct": -0.439,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELL_PRESSURE_BELOW",
+          "zones": [
+            {
+              "price": 92.97,
+              "imbalance_pct": -79.3,
+              "volume": 130321.0
+            },
+            {
+              "price": 93.0444,
+              "imbalance_pct": 33.4,
+              "volume": 3267.0
+            }
+          ],
+          "note": "локальні продажі нижче ціни; ask-стіна 93.21"
+        },
+        "derivatives": {
+          "bias": "SHORT",
+          "score": -18,
+          "state": "SHORT_BUILDUP",
+          "oi": 70553.56,
+          "oi_change_pct": 0.399,
+          "funding_pct": 0,
+          "price_change_pct": -0.215,
+          "note": "ціна падає + OI росте — нові шорти/тиск"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.05,
+          "move_1_pct": 0.086,
+          "move_6_pct": -0.193,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 45,
+          "top": "Shares retreat as techs extend losses, US strikes on Iran lift oil - Reuters",
+          "total": 39
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-11T01:15:41.181933+00:00"
+  "updated_at": "2026-06-11T01:30:55.078499+00:00"
 }
