@@ -174,6 +174,11 @@ class ActiveTrade:
     entry_fail_streak: int = 0
     entry_recovery_checks: int = 0
     entry_last_state: str = "СИЛЬНА"
+    # Adaptive MFE Giveback Guard 2.0 memory. It requires repeated confirmation
+    # before closing on profit giveback, so one noisy 3M candle does not kick us
+    # out of a still-valid trend.
+    mfe_giveback_streak: int = 0
+    mfe_giveback_last_state: str = "OK"
     notes: list = field(default_factory=list)
 
 
@@ -388,6 +393,8 @@ def active_trade_from_state(state):
             entry_fail_streak=int(raw.get("entry_fail_streak", 0) or 0),
             entry_recovery_checks=int(raw.get("entry_recovery_checks", 0) or 0),
             entry_last_state=str(raw.get("entry_last_state") or "СИЛЬНА"),
+            mfe_giveback_streak=int(raw.get("mfe_giveback_streak", 0) or 0),
+            mfe_giveback_last_state=str(raw.get("mfe_giveback_last_state") or "OK"),
             notes=list(raw.get("notes") or []),
         )
     except Exception as error:
@@ -5415,6 +5422,123 @@ def _mfe_exit_floor(best_pct, market_regime):
 
     return max(min_absolute, best_pct * capture_ratio)
 
+
+def _adaptive_mfe_guard_snapshot(trade, context, market_regime, current_pct, best_pct, giveback,
+                                 giveback_ratio, post_tp1, tf3_against=False,
+                                 structure_against=False, ict_against=False,
+                                 flow_against=False, cvd_against=False,
+                                 liquidity_against=False, news_against=False,
+                                 confirmed_ict_reversal=False, support_votes=0.0,
+                                 opposite_votes=0.0):
+    """Adaptive MFE Giveback Guard 2.0.
+
+    Protect real profit without killing good trends:
+    - before TP1: mostly protect with stop, not panic close;
+    - after TP1 / MFE > 2%: giveback threshold is stricter;
+    - close after two confirmed warnings, except hard ICT/SMC reversal;
+    - valid trend gets PROTECT first, not immediate close.
+    """
+    best_pct = safe_float(best_pct, 0.0) or 0.0
+    current_pct = safe_float(current_pct, 0.0) or 0.0
+    giveback = safe_float(giveback, 0.0) or 0.0
+    giveback_ratio = safe_float(giveback_ratio, 0.0) or 0.0
+    regime = str(market_regime or "NORMAL").upper()
+
+    if best_pct < 0.45 or giveback <= 0:
+        trade.mfe_giveback_streak = 0
+        trade.mfe_giveback_last_state = "OK"
+        return {"active": False, "streak": 0, "severity": "OK"}
+
+    tp1_distance_pct = abs(pct(trade.tp1, trade.entry)) if getattr(trade, "entry", 0) else 0.0
+    reached_tp1_zone = bool(post_tp1 or (tp1_distance_pct and best_pct >= tp1_distance_pct * 0.92))
+    big_mfe = best_pct >= 2.0
+    meaningful_mfe = best_pct >= max(0.65, tp1_distance_pct * 0.70 if tp1_distance_pct else 0.65)
+
+    if not reached_tp1_zone and not big_mfe:
+        allowed_giveback = 0.68
+        stage = "PRE_TP1"
+    elif getattr(trade, "tp2_hit", False):
+        allowed_giveback = 0.45
+        stage = "POST_TP2"
+    elif reached_tp1_zone:
+        allowed_giveback = 0.60
+        stage = "POST_TP1"
+    else:
+        allowed_giveback = 0.55
+        stage = "MFE"
+
+    if big_mfe:
+        allowed_giveback = min(allowed_giveback, 0.35)
+        stage = "BIG_MFE"
+
+    if regime == "TREND":
+        allowed_giveback += 0.08
+    elif regime in ["RANGE", "REVERSAL"]:
+        allowed_giveback -= 0.08
+    elif regime == "NEWS_IMPULSE":
+        allowed_giveback += 0.08
+    allowed_giveback = clamp(allowed_giveback, 0.28, 0.72)
+
+    hard_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against), bool(confirmed_ict_reversal)])
+    soft_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
+    warning_score = hard_votes * 2 + soft_votes
+    trend_still_valid = bool(
+        regime == "TREND"
+        and (support_votes >= 2.0 or (context.get("tf15") or {}).get("bias") == trade.side or context.get("bias") == trade.side)
+        and not (structure_against or ict_against or confirmed_ict_reversal)
+    )
+
+    triggered = bool(meaningful_mfe and giveback_ratio >= allowed_giveback)
+    if not triggered:
+        trade.mfe_giveback_streak = max(0, int(getattr(trade, "mfe_giveback_streak", 0) or 0) - 1)
+        trade.mfe_giveback_last_state = "COOLING" if trade.mfe_giveback_streak else "OK"
+        return {
+            "active": False,
+            "streak": trade.mfe_giveback_streak,
+            "severity": trade.mfe_giveback_last_state,
+            "allowed_giveback": round(allowed_giveback, 3),
+            "stage": stage,
+        }
+
+    trade.mfe_giveback_streak = int(getattr(trade, "mfe_giveback_streak", 0) or 0) + 1
+    hard_reversal = bool(confirmed_ict_reversal or hard_votes >= 1)
+    min_capture = _mfe_exit_floor(best_pct, regime)
+    close_now = bool(
+        hard_reversal
+        or (
+            trade.mfe_giveback_streak >= 2
+            and warning_score >= 3
+            and not trend_still_valid
+            and (post_tp1 or big_mfe or current_pct <= min_capture)
+        )
+        or (big_mfe and trade.mfe_giveback_streak >= 2 and warning_score >= 2 and current_pct <= min_capture)
+    )
+    trade.mfe_giveback_last_state = "CLOSE" if close_now else "PROTECT"
+
+    reason_bits = [
+        f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%",
+        f"віддано {round(giveback_ratio * 100, 1)}% руху; ліміт {round(allowed_giveback * 100, 1)}%",
+        f"перевірка {trade.mfe_giveback_streak}/2",
+    ]
+    if hard_reversal:
+        reason_bits.append("ICT/SMC злам підтверджений")
+    elif trend_still_valid:
+        reason_bits.append("тренд ще живий — спершу захист, не панічний вихід")
+
+    return {
+        "active": True,
+        "close": close_now,
+        "protect": not close_now,
+        "stage": stage,
+        "streak": trade.mfe_giveback_streak,
+        "allowed_giveback": round(allowed_giveback, 3),
+        "warning_score": warning_score,
+        "hard_reversal": hard_reversal,
+        "trend_still_valid": trend_still_valid,
+        "reason": "; ".join(reason_bits),
+        "reasons": reason_bits,
+    }
+
 def active_trade_message_key(trade, action):
     return f"{trade.id}:{action}:{trade.tp1_hit}:{trade.tp2_hit}:{trade.tp3_hit}:{trade.tp1_stop_locked}:{trade.tp2_stop_locked}:{round_price(trade.stop_current)}"
 
@@ -6748,72 +6872,57 @@ def manage_active_trade(trade, context):
             if recommended_stop_reason:
                 notes.append(recommended_stop_reason)
 
-    # If a trade reached meaningful profit but gives most of it back before TP1,
-    # close/protect earlier. This directly addresses cases like +1.7% MFE → +0.1% exit.
-    dynamic_giveback_limit = safe_float(mode_profile.get("giveback"), 0.55) or 0.55
-    min_mfe_capture = _mfe_exit_floor(best_pct, market_regime)
-    strong_mfe_giveback = best_pct >= safe_float(mode_profile.get("be_trigger"), 0.65) and giveback_ratio >= dynamic_giveback_limit and current_pct <= min_mfe_capture
-    if strong_mfe_giveback and action in ["HOLD", "PROTECT"]:
-        warning_votes = sum([bool(tf3_against), bool(structure_against), bool(ict_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
-        trend_still_valid = (
-            market_regime == "TREND"
-            and current_pct >= min_mfe_capture
-            and (tf15.get("bias") == side or context.get("bias") == side or support_votes >= 2.0)
-            and not (structure_against or ict_against)
-        )
-
-        # In a confirmed trend, MFE giveback should first tighten the stop,
-        # not immediately close the trade. Otherwise the bot exits a good trend
-        # during a normal retest and then misses the continuation.
-        if trend_still_valid:
+    # Adaptive MFE Giveback Guard 2.0.
+    # Protects real profit without killing normal trend retests:
+    # - before TP1: mostly protect with stop, no panic close;
+    # - after TP1 / after big MFE: close only after 2 confirmed warnings;
+    # - hard ICT/SMC reversal can close immediately.
+    mfe_guard = _adaptive_mfe_guard_snapshot(
+        trade, context, market_regime, current_pct, best_pct, giveback, giveback_ratio,
+        post_tp1=post_tp1,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+        liquidity_against=liquidity_against,
+        news_against=news_against,
+        confirmed_ict_reversal=confirmed_ict_reversal,
+        support_votes=support_votes,
+        opposite_votes=opposite_votes,
+    )
+    if mfe_guard.get("active") and action in ["HOLD", "PROTECT", "HOLD_TO_TP2", "TP1_PROTECT"]:
+        if mfe_guard.get("close"):
+            trade.status = "CLOSED"
+            trade.last_action = "EXIT_MFE_GIVEBACK"
+            reasons = list(mfe_guard.get("reasons") or [])
+            if tf3_against:
+                reasons.append("3M вже проти")
+            if flow_against or cvd_against:
+                reasons.append("потік/CVD проти")
+            return {
+                "closed": True,
+                "action": "EXIT_MFE_GIVEBACK",
+                "exit_reason_code": "ADAPTIVE_MFE_GIVEBACK_2_CONFIRMED",
+                "exit_quality": "CONFIRMED" if mfe_guard.get("streak", 0) >= 2 else "HARD_ICT_SMC",
+                "title": f"{side} ЗАКРИТИ — ПРИБУТОК ВІДДАЄТЬСЯ",
+                "recommendation": "адаптивний MFE Guard підтвердив, що рух у плюс віддається і є слабкість: краще закрити/зафіксувати, ніж чекати дальній TP або повний стоп",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "recommended_stop": trade.stop_current,
+                "recommended_stop_reason": "Adaptive MFE Giveback Guard 2.0",
+                "notes": reasons[:5],
+            }
+        else:
             action = "PROTECT"
-            title = f"{side} — ПРИБУТОК ЗАХИЩЕНО, ТРЕНД ЩЕ ЖИВИЙ"
-            recommendation = "частину прибутку вже віддали, але тренд/15M ще підтримує: стоп підтягнути і дати руху шанс продовжитись"
+            title = f"{side} — MFE ВІДДАЄТЬСЯ, ПОТРІБЕН ЗАХИСТ"
+            recommendation = "угода вже давала хороший плюс і частину руху віддала; це ще не обовʼязковий вихід, але стоп треба захистити"
             protect_stop, protect_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, max(current_pct, 0.20), mode_profile)
             if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop):
                 recommended_stop = trade.stop_current
-                recommended_stop_reason = protect_reason
+                recommended_stop_reason = protect_reason or "Adaptive MFE Giveback Guard 2.0"
                 notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
-            notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
-        else:
-            hard_reversal_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against)])
-            soft_warning_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
-            should_close_mfe = bool(
-                confirmed_ict_reversal
-                or hard_reversal_votes >= 1
-                or opposite_votes >= 2.55
-                or (market_regime == "RANGE" and soft_warning_votes >= 3 and current_pct <= 0.12)
-                or (market_regime == "NEWS_IMPULSE" and soft_warning_votes >= 3 and (tf3_against or near_stop))
-                or (current_pct <= 0.08 and best_pct >= 0.85 and soft_warning_votes >= 3)
-            )
-            if should_close_mfe:
-                trade.status = "CLOSED"
-                trade.last_action = "EXIT_MFE_GIVEBACK"
-                reasons = [f"було +{round(best_pct, 3)}%, зараз тільки {round(current_pct, 3)}%"]
-                if hard_reversal_votes >= 1:
-                    reasons.append("ICT/SMC або ліквідність проти")
-                if tf3_against:
-                    reasons.append("3M вже проти")
-                if flow_against or cvd_against:
-                    reasons.append("потік/CVD проти")
-                return {
-                    "closed": True,
-                    "action": "EXIT_MFE_GIVEBACK",
-                    "exit_reason_code": "MFE_GIVEBACK_WITH_CONFIRMATION",
-                    "exit_quality": "CONFIRMED",
-                    "title": f"{side} ЗАКРИТИ — ПРИБУТОК ВІДДАЄТЬСЯ",
-                    "recommendation": "рух у плюс майже віддали назад і є підтвердження слабкості: краще закрити, ніж чекати дальній TP/стоп",
-                    "current_pct": current_pct,
-                    "best_pct": best_pct,
-                    "recommended_stop": trade.stop_current,
-                    "recommended_stop_reason": "MFE-giveback захист",
-                    "notes": reasons[:4],
-                }
-            elif action == "HOLD":
-                action = "PROTECT"
-                title = f"{side} — MFE ВІДДАЄТЬСЯ, АЛЕ ICT ЩЕ НЕ ЗЛАМАНИЙ"
-                recommendation = "захистити стопом; закривати тільки якщо 15M/ICT/структура зламаються або спрацює стоп"
-                notes.append(f"MFE було +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%")
+            notes.extend(list(mfe_guard.get("reasons") or [])[:3])
 
     if lost_after_profit and opposite_votes >= 2.2:
         trade.status = "CLOSED"
