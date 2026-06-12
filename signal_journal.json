@@ -14947,7 +14947,191 @@
           "note": ""
         }
       }
+    },
+    {
+      "time": "2026-06-12T11:45:48.481794+00:00",
+      "type": "ENTRY",
+      "side": "LONG",
+      "price": 86.23,
+      "quality": 80,
+      "reason": "ранній вхід: 3M підтвердив напрям, 15M ще не запізнився/нейтральний",
+      "plan": {
+        "entry": 86.23,
+        "stop": 85.6695,
+        "tp1": 87.1354,
+        "tp2": 87.9115,
+        "tp3": 89.1618,
+        "risk_pct": 0.65,
+        "rr1": 1.62,
+        "rr2": 3.0,
+        "rr3": 5.23,
+        "invalidation": "15m закриття нижче 85.6695 або злам 3m/структури проти LONG. Режим: звичайний intraday режим. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "3m дав тригер",
+        "ICT сетап готовий",
+        "OI/Funding підтримує",
+        "потік підтримує",
+        "REVERSAL: попередня угода зламалась, шукаємо протилежний рух",
+        "3M розвернувся після невдалої угоди",
+        "15M нейтральний — розворот можливий, але потрібен 3M/BOS",
+        "ICT дає sweep/reclaim або continuation для розвороту",
+        "3M робить higher low після зламаного SHORT",
+        "потік підтримує розворот",
+        "Smart Money RR добрий: 1.62R"
+      ],
+      "conflicts": [
+        "1h проти"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 68,
+        "total_score": 73,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 36,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.325,
+          "drift_pct": 0.469,
+          "vol_ratio": 0.05,
+          "note": "3m швидко йде вгору; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 86.36,
+          "ema20": 86.3006,
+          "ema50": 87.0982,
+          "rsi": 47.9,
+          "atr": 0.3945,
+          "slope_pct": 0.956,
+          "move_8_pct": 0.735,
+          "range_atr": 7.12,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 86.4,
+          "ema20": 87.8015,
+          "ema50": 89.5059,
+          "rsi": 33.6,
+          "atr": 0.9272,
+          "slope_pct": -2.236,
+          "move_8_pct": -1.482,
+          "range_atr": 8.35,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 86.4,
+          "ema20": 90.3662,
+          "ema50": 92.1439,
+          "rsi": 32.2,
+          "atr": 1.9138,
+          "slope_pct": -5.886,
+          "move_8_pct": -7.386,
+          "range_atr": 5.31,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 86.76,
+          "swing_low": 85.82,
+          "recent_high": 87.79,
+          "recent_low": 84.93,
+          "atr": 0.3945,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 26,
+          "trade_delta_pct": 29.08,
+          "book_delta_pct": 49.35,
+          "note": "угоди за покупців; стакан підтримує покупців; підтримка покупців біля 86.14"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 1688.0,
+          "delta_pct": 29.08,
+          "cvd": 25763.0,
+          "cvd_change_pct": 7.011,
+          "last_trade_ts": 1781264731258,
+          "price_move_pct": 0.477,
+          "note": "CVD росте"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 86.368,
+              "imbalance_pct": 47.3,
+              "volume": 4154.0
+            },
+            {
+              "price": 86.23,
+              "imbalance_pct": -100.0,
+              "volume": 334.0
+            }
+          ],
+          "note": "локальні покупки вище ціни"
+        },
+        "derivatives": {
+          "bias": "LONG",
+          "score": 18,
+          "state": "LONG_BUILDUP",
+          "oi": 62781.36,
+          "oi_change_pct": 0.901,
+          "funding_pct": 0,
+          "price_change_pct": 0.337,
+          "note": "ціна росте + OI росте — нові лонги/попит"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.07,
+          "move_1_pct": 0.0,
+          "move_6_pct": 0.325,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "top": "Morning Bid: Chips and ships By Reuters - Investing.com",
+          "total": 47
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-12T11:30:58.805638+00:00"
+  "updated_at": "2026-06-12T11:45:48.483828+00:00"
 }
