@@ -207,6 +207,20 @@ def safe_float(value, default=None):
         return default
 
 
+def clamp(value, lo=0, hi=100):
+    """Clamp a numeric value into [lo, hi].
+
+    This helper is intentionally global because several supervision modules
+    use it, including Adaptive MFE Giveback Guard 2.0. Keeping it global
+    prevents runtime NameError when a branch reaches MFE protection.
+    """
+    try:
+        value = float(value)
+    except Exception:
+        value = float(lo)
+    return max(lo, min(hi, value))
+
+
 def round_price(value):
     if value is None:
         return None
