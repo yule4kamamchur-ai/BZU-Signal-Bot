@@ -7441,12 +7441,12 @@ def _zone_line(zone):
 
 
 def planned_wait_text(context, setup):
-    """Compact Ukrainian WAIT/WATCH block.
+    """Compact Ukrainian WAIT/WATCH block with professional reason + activation.
 
-    The visible message should not print noisy sections like "Причина",
-    "Чому готується", "Активація". Instead it shows only what is still
-    missing before a real entry. The list is recalculated on every bot run from
-    live 3M/15M/structure/ICT/flow/CVD/professional-entry-model context.
+    The text is recalculated on every run from live 3M/15M/1H structure,
+    ICT/FVG/OB, flow/CVD, liquidity, news and professional-entry-model state.
+    Telegram receives only the most important reason and activation conditions,
+    while the full analytics stay inside context/journal.
     """
     side = setup.get("side")
     plan = setup.get("plan")
@@ -7459,6 +7459,7 @@ def planned_wait_text(context, setup):
     ict = context.get("ict") or {}
     tf3 = context.get("tf3") or {}
     tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
     flow = context.get("flow") or {}
     cvd = context.get("cvd") or {}
     pro_model = context.get("professional_entry_model") or {}
@@ -7476,8 +7477,50 @@ def planned_wait_text(context, setup):
         if value and value not in items:
             items.append(value)
 
-    missing = []
+    reason_items = []
+    activation_items = []
 
+    # 1) Professional reason: why this is still WAIT and not an entry now.
+    state = str(pro_model.get("state") or "")
+    model_reason = str(pro_model.get("reason") or setup.get("reason") or "")
+    state_reason_map = {
+        "REENTRY_NEEDS_NEW_STRUCTURE": f"повторний {side} після слабкого виходу — потрібен новий структурний сетап",
+        "LOW_LIQUIDITY_NEEDS_STRUCTURE": "тиха сесія — одного 3M руху недостатньо",
+        "NEWS_WITHOUT_STRUCTURE": "новина є, але без структури/ICT це ще не вхід",
+        "ICT_CONTEXT_ONLY": "ICT контекст є, але ще немає реакції від зони або виходу з балансу",
+        "EDGE_NO_CHASE": "ціна біля краю руху — не доганяти без continuation-сетапу",
+        "NO_PROFESSIONAL_BASE": "немає повної бази: структура + місце входу + підтвердження",
+        "TF3_AGAINST": f"3M поки проти {side}",
+    }
+    if state in state_reason_map:
+        add_unique(reason_items, state_reason_map[state])
+
+    opposite_side = opposite(side)
+    if tf3.get("bias") == opposite_side:
+        add_unique(reason_items, f"3M поки проти {side}")
+    elif tf3.get("bias") not in [side] and len(reason_items) < 2:
+        add_unique(reason_items, f"3M ще не підтвердив {side}")
+
+    if ict.get("bias") == opposite_side and len(reason_items) < 2:
+        add_unique(reason_items, "ICT поки проти напрямку")
+    elif ict.get("bias") not in [side] and len(reason_items) < 2:
+        add_unique(reason_items, "немає активного ICT сетапу в сторону входу")
+
+    if tf1h.get("bias") == opposite_side and len(reason_items) < 2:
+        add_unique(reason_items, "1H слабкий/проти — потрібен чіткий тригер")
+    elif tf15.get("bias") == opposite_side and len(reason_items) < 2:
+        add_unique(reason_items, "15M поки проти — вхід тільки після локального підтвердження")
+
+    if (flow.get("bias") == opposite_side and cvd.get("bias") == opposite_side) and len(reason_items) < 2:
+        add_unique(reason_items, "CVD/потік проти входу")
+
+    if not reason_items and model_reason:
+        # Keep only one concise reason from the deeper model.
+        add_unique(reason_items, model_reason)
+    if not reason_items:
+        add_unique(reason_items, "ідея є, але підтвердження входу ще неповне")
+
+    # 2) Activation: exact condition that turns WAIT into a real entry.
     if side == "LONG":
         candidates = [price + atr15 * 0.16]
         for lvl in [recent_high, swing_high, safe_float(ict.get("equilibrium"))]:
@@ -7489,10 +7532,9 @@ def planned_wait_text(context, setup):
             support = max(safe_float(getattr(plan, "stop", None), price - atr15), price - atr15 * 0.55)
             retest_zone = f"{_fmt_price(support)}–{_fmt_price(price)}"
 
-        add_unique(missing, f"3M закриття вище {_fmt_price(trigger)}")
-        add_unique(missing, "утримання ціни над рівнем")
-        add_unique(missing, "без нового lower low")
-        add_unique(missing, f"або відбій/викуп від зони {retest_zone}")
+        add_unique(activation_items, f"3M закриття вище {_fmt_price(trigger)} і утримання над рівнем")
+        add_unique(activation_items, "після пробою — higher low, без нового lower low")
+        add_unique(activation_items, f"або викуп із зони {retest_zone}")
     else:
         candidates = [price - atr15 * 0.16]
         for lvl in [recent_low, swing_low, safe_float(ict.get("equilibrium"))]:
@@ -7504,43 +7546,17 @@ def planned_wait_text(context, setup):
             resistance = min(safe_float(getattr(plan, "stop", None), price + atr15), price + atr15 * 0.55)
             retest_zone = f"{_fmt_price(price)}–{_fmt_price(resistance)}"
 
-        add_unique(missing, f"3M закриття нижче {_fmt_price(trigger)}")
-        add_unique(missing, "утримання ціни під рівнем")
-        add_unique(missing, "без нового higher high")
-        add_unique(missing, f"або відбій від зони {retest_zone}")
+        add_unique(activation_items, f"3M закриття нижче {_fmt_price(trigger)} і утримання під рівнем")
+        add_unique(activation_items, "після пробою — lower high, без нового higher high")
+        add_unique(activation_items, f"або відбій від зони {retest_zone}")
 
-    # Add one professional gap only when it materially explains why this is still
-    # a wait state. Keep it short so Telegram stays clean.
-    state = str(pro_model.get("state") or "")
-    reason = str(pro_model.get("reason") or setup.get("reason") or "")
-    if state in ["REENTRY_NEEDS_NEW_STRUCTURE"]:
-        add_unique(missing, "новий BOS/CHOCH/sweep або повернення рівня після слабкого виходу")
-    elif state in ["LOW_LIQUIDITY_NEEDS_STRUCTURE"]:
-        add_unique(missing, "повний ICT/структурний сетап у тихій сесії")
-    elif state in ["NEWS_WITHOUT_STRUCTURE"]:
-        add_unique(missing, "структура/ICT, бо новина сама не дає вхід")
-    elif state in ["ICT_CONTEXT_ONLY"]:
-        add_unique(missing, "реакція від ICT-зони або вихід з балансу")
-    elif state in ["EDGE_NO_CHASE"]:
-        add_unique(missing, "відкат/проторговка або ICT continuation, не вхід на краю руху")
-    elif state in ["NO_PROFESSIONAL_BASE"]:
-        add_unique(missing, "структура + місце входу + 3M/ICT підтвердження")
-    elif state in ["TF3_AGAINST"]:
-        add_unique(missing, f"3M розворот назад у сторону {side}")
-    elif tf3.get("bias") not in [side] and len(missing) < 4:
-        add_unique(missing, f"3M підтвердження у сторону {side}")
-    elif ict.get("bias") != side and len(missing) < 4:
-        add_unique(missing, f"активний ICT сетап у сторону {side}")
-    elif (flow.get("bias") == opposite(side) and cvd.get("bias") == opposite(side)) and len(missing) < 4:
-        add_unique(missing, "CVD/потік не проти входу")
-    elif reason and not missing:
-        add_unique(missing, reason)
-
-    # Keep the notification short. The full analytics stay in context/journal;
-    # Telegram shows only the most actionable missing items.
-    missing = missing[:4]
-    lines = ["<b>Не вистачає для входу:</b>"]
-    lines.extend([f"• {html.escape(str(x))}" for x in missing])
+    reason_items = reason_items[:2]
+    activation_items = activation_items[:3]
+    lines = ["<b>Причина:</b>"]
+    lines.extend([f"• {html.escape(str(x))}" for x in reason_items])
+    lines.append("")
+    lines.append("<b>Активація:</b>")
+    lines.extend([f"• {html.escape(str(x))}" for x in activation_items])
     return "\n".join(lines).strip()
 
 def _compact_title(setup):
@@ -7666,9 +7682,8 @@ def build_new_setup_message(context, setup):
             lines.append("")
             lines.append("<b>Контроль:</b> якщо після входу 1–2 свічки 3M не підтвердять напрям або CVD/потік різко проти — очікувати EXIT WARNING.")
     else:
-        # For WATCH/WAIT messages keep Telegram clean: no separate "Причина",
-        # no "Чому готується", no "Активація". The only user-facing block is
-        # a live list of what is still missing before entry.
+        # For WATCH/WAIT messages keep Telegram clean: only short dynamic "Причина"
+        # and "Активація" blocks are printed. The full analytics stay internal.
         wait_text = planned_wait_text(context, setup) if setup.get("show_wait_plan", True) else ""
         if wait_text:
             lines.append("")
