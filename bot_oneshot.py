@@ -1420,7 +1420,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         score = 26
         bias = "LONG"
         setup = "LIQUIDITY_SWEEP_LONG"
-        notes.append("sell-side liquidity sweep + повернення рівня")
+        notes.append("sell-side liquidity sweep + reclaim")
         if discount:
             score += 7
             notes.append("discount")
@@ -1433,7 +1433,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         score = -26
         bias = "SHORT"
         setup = "LIQUIDITY_SWEEP_SHORT"
-        notes.append("buy-side liquidity sweep + повернення рівня вниз")
+        notes.append("buy-side liquidity sweep + reclaim вниз")
         if premium:
             score -= 7
             notes.append("premium")
@@ -1611,7 +1611,7 @@ def build_pending_ict_zones(context):
         ict.get("bull_ob"),
         "Bullish OB",
         78 if premium_discount == "DISCOUNT" else 64,
-        "утримання OB + повернення середини зони + стоп нижче OB",
+        "утримання OB + reclaim середини зони + стоп нижче OB",
         "order block для low-risk LONG",
     )
     add_zone(
@@ -2632,7 +2632,7 @@ def analyze_reentry_cooldown(state, max_age_hours=6):
     block the same direction for hours and keep printing WATCH. New behavior:
     - no hard ban by default;
     - apply a quality penalty for the same direction;
-    - remove/override the penalty when a fresh BOS/повернення рівня/ICT continuation appears;
+    - remove/override the penalty when a fresh BOS/reclaim/ICT continuation appears;
     - prevent revenge-looping with a max same-side entries guard.
     """
     history = (state or {}).get("history") or []
@@ -2970,7 +2970,7 @@ def cooldown_override_reason(side, context):
     regime_name = market_regime.get("name") if isinstance(market_regime, dict) else market_regime
     if str(regime_name or "").upper() in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]:
         return f"після слабкого виходу {side} дозволено повторний вхід: тренд/структура продовжуються"
-    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS / повернення рівня або ICT continuation"
+    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS/reclaim або ICT continuation"
 
 def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
     """Detect a professional reversal setup after a failed trade.
@@ -3092,7 +3092,7 @@ def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
 
     if ict_reclaim or (ict.get("bias") == side and bool(ict.get("entry_ok"))):
         score += 18
-        confirmations.append("ICT дає sweep / повернення рівня або continuation для розвороту")
+        confirmations.append("ICT дає sweep/reclaim або continuation для розвороту")
     elif ict.get("bias") == side:
         score += 8
         confirmations.append("ICT підтримує ідею розвороту")
@@ -3142,7 +3142,7 @@ def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
         "age_minutes": round(age_min, 1),
         "score": score,
         "allow_entry": bool(allow_entry),
-        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS / повернення рівня",
+        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS/reclaim",
         "confirmations": confirmations[:5],
         "conflicts": conflicts[:5],
     }
@@ -3317,7 +3317,7 @@ def detect_ict_balance_market(context, side=None):
     ICT idea used here:
     - the middle of the dealing range around equilibrium is low edge;
     - in balance we do NOT open market entries from the middle;
-    - valid trades come from sweep / повернення рівня at range edges or BOS + FVG/OB retest.
+    - valid trades come from sweep/reclaim at range edges or BOS + FVG/OB retest.
 
     Important: this must not confuse a normal pullback with a range.
     A pullback is allowed when price is in discount for LONG / premium for SHORT
@@ -3854,273 +3854,6 @@ def entry_quality_adjustment(side, context, late_penalty=0):
     return result
 
 
-
-def professional_entry_model_snapshot(side, context, plan=None):
-    """Balanced professional entry gate.
-
-    This is the final arbiter between three states:
-    - ENTRY: structure + timing + location are all good;
-    - RISKY_ENTRY: idea is valid but early/partial;
-    - WATCH: direction exists, but the entry location has no professional base yet.
-
-    It is intentionally balanced: it does not require a perfect checklist for
-    every trade, but it prevents entries caused only by score inflation, news,
-    low-liquidity 3M spikes, old ICT context zones, or repeated revenge entries.
-    """
-    context = context if isinstance(context, dict) else {}
-    price = safe_float(context.get("price"))
-    atr15 = safe_float(context.get("atr15")) or (price or 90) * 0.006
-    tf3 = context.get("tf3") or {}
-    tf15 = context.get("tf15") or {}
-    tf1h = context.get("tf1h") or {}
-    tf4h = context.get("tf4h") or {}
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    cvd = context.get("cvd") or {}
-    flow = context.get("flow") or {}
-    clusters = context.get("clusters") or {}
-    derivatives = context.get("derivatives") or {}
-    news = context.get("news") or {}
-    reentry = context.get("reentry_cooldown") or {}
-
-    opp = opposite(side)
-    model = {
-        "entry_allowed": True,
-        "risky_allowed": True,
-        "risk_only": False,
-        "force_watch": False,
-        "quality_cap": 92,
-        "quality_adjustment": 0,
-        "title": f"ЧЕКАТИ — {side} ПОТРІБНА СТРУКТУРА",
-        "reason": "напрям є, але для входу потрібна професійна структура, а не тільки імпульс",
-        "confirmations": [],
-        "conflicts": [],
-        "state": "BALANCED",
-        "score": 0,
-    }
-
-    def cap(value):
-        model["quality_cap"] = min(int(model.get("quality_cap", 92)), int(value))
-
-    def force_watch(reason, cap_value=66, title=None, state="WATCH_REQUIRED"):
-        model["force_watch"] = True
-        model["entry_allowed"] = False
-        model["risky_allowed"] = False
-        model["reason"] = reason
-        if title:
-            model["title"] = title
-        model["state"] = state
-        cap(cap_value)
-        if reason not in model["conflicts"]:
-            model["conflicts"].append(reason)
-
-    def risk_only(reason, cap_value=76, state="RISK_ONLY"):
-        if not model.get("force_watch"):
-            model["risk_only"] = True
-            model["entry_allowed"] = False
-            model["risky_allowed"] = True
-            model["state"] = state
-            cap(cap_value)
-            if reason not in model["conflicts"]:
-                model["conflicts"].append(reason)
-
-    tf3_same = tf3.get("bias") == side
-    tf3_against = tf3.get("bias") == opp
-    tf3_score_abs = abs(int(tf3.get("score", 0) or 0))
-    tf3_strong_against = tf3_against and tf3_score_abs >= 42
-    tf15_same = tf15.get("bias") == side
-    tf15_against = tf15.get("bias") == opp
-    tf1h_against = tf1h.get("bias") == opp
-    tf4h_against = tf4h.get("bias") == opp
-    structure_same = structure.get("bias") == side
-    structure_against = structure.get("bias") == opp
-
-    phase = str(structure.get("phase", "") or "").upper()
-    setup = str(ict.get("setup", "") or "").upper()
-    side_phases = {
-        "LONG": {"BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"},
-        "SHORT": {"BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"},
-    }
-    structure_event = phase in side_phases.get(side, set())
-
-    strong_setups = {
-        "LONG": {"LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"},
-        "SHORT": {"LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"},
-    }
-    weak_setups = {
-        "LONG": {"BOS_LONG_CONTINUATION_HOLD"},
-        "SHORT": {"BOS_SHORT_CONTINUATION_HOLD"},
-    }
-    ict_same = ict.get("bias") == side
-    ict_against = ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16
-    ict_strong = bool(ict_same and ict.get("entry_ok") and setup in strong_setups.get(side, set()))
-    ict_weak = bool(ict_same and setup in weak_setups.get(side, set()))
-    ict_context_only = bool(ict_same and not ict.get("entry_ok") and setup in {
-        "CONTEXT_ONLY", "DISCOUNT_CONTEXT", "PREMIUM_CONTEXT", "BALANCE_MIDRANGE"
-    })
-
-    cvd_reliable = cvd.get("confidence", "HIGH") != "LOW"
-    cvd_same = cvd_reliable and cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
-    flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 8
-    clusters_same = clusters.get("bias") == side and abs(int(clusters.get("score", 0) or 0)) >= 4
-    oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 8
-    cvd_against = cvd_reliable and cvd.get("bias") == opp and abs(int(cvd.get("score", 0) or 0)) >= 14
-    flow_against = flow.get("bias") == opp and abs(int(flow.get("score", 0) or 0)) >= 10
-    clusters_against = clusters.get("bias") == opp and abs(int(clusters.get("score", 0) or 0)) >= 4
-    micro_for = sum([bool(cvd_same), bool(flow_same), bool(clusters_same), bool(oi_same)])
-    micro_against = sum([bool(cvd_against), bool(flow_against), bool(clusters_against)])
-
-    full_ict_structure = bool(ict_strong and (structure_same or structure_event or tf15_same))
-    continuation_structure = bool(ict_weak and tf3_same and (tf15_same or structure_same or structure_event))
-    trend_stack = bool(tf3_same and tf15_same and (structure_same or structure_event or ict_same))
-    strong_trend_stack = bool(tf3_same and tf15_same and (structure_same or structure_event) and (tf1h.get("bias") == side or tf4h.get("bias") == side or micro_for >= 1))
-    professional_base = bool(full_ict_structure or continuation_structure or strong_trend_stack)
-    minimum_base = bool(
-        (tf3_same or ict_strong or structure_event)
-        and (structure_same or structure_event or ict_same or tf15_same)
-        and not (structure_against and ict_against)
-    )
-
-    # Local extreme / late-location check. This does not forbid continuation;
-    # it forbids buying/selling the edge without a continuation structure.
-    fast = safe_float(tf3.get("fast_move_pct"), 0) or 0
-    candles3 = context.get("candles_3m") or []
-    local_high = None
-    local_low = None
-    try:
-        sample = candles3[-18:] if len(candles3) >= 6 else []
-        if sample:
-            local_high = max(float(c.high) for c in sample)
-            local_low = min(float(c.low) for c in sample)
-    except Exception:
-        local_high = local_low = None
-    recent_high = safe_float(structure.get("recent_high")) or local_high
-    recent_low = safe_float(structure.get("recent_low")) or local_low
-    near_high = bool(side == "LONG" and price and recent_high and price >= recent_high - atr15 * 0.28)
-    near_low = bool(side == "SHORT" and price and recent_low and price <= recent_low + atr15 * 0.28)
-    fast_with_side = bool((side == "LONG" and fast >= 0.45) or (side == "SHORT" and fast <= -0.45))
-    full_continuation_at_edge = bool((full_ict_structure or continuation_structure or strong_trend_stack) and tf3_same and micro_against < 2)
-
-    # Realistic TP1 room: RR can be mathematically ok while the market has no
-    # nearby objective. Keep this as a cap, not a universal blocker.
-    real_tp_room = True
-    if plan and price and atr15:
-        tp1 = safe_float(getattr(plan, "tp1", None))
-        tp1_dist = abs(tp1 - price) if tp1 else 0
-        if tp1_dist and tp1_dist < atr15 * 0.70 and not professional_base:
-            real_tp_room = False
-            risk_only("TP1 близько, але немає повної структури — тільки обережний режим", 70, "TP_ROOM_WEAK")
-
-    # 1) Repeat entry after a weak same-side exit: must have NEW structure, not
-    # merely a better score. This prevents repeated late entries in the same chop.
-    cooldown_active = bool(reentry.get("active") and reentry.get("side") == side)
-    if cooldown_active:
-        fresh_new_setup = bool(
-            full_ict_structure
-            or continuation_structure
-            or structure_event
-            or (tf3_same and tf15_same and (structure_same or ict_strong) and micro_against < 2)
-        )
-        if not fresh_new_setup:
-            force_watch(
-                f"після слабкого виходу {side} потрібна нова структура: BOS/CHOCH/sweep, повернення рівня або ICT continuation",
-                64,
-                f"ЧЕКАТИ — {side} ПОТРІБЕН НОВИЙ СЕТАП",
-                "REENTRY_NEEDS_NEW_STRUCTURE",
-            )
-        else:
-            risk_only("повторний вхід після слабкого виходу дозволений тільки як новий структурний сетап", 78, "REENTRY_STRUCTURAL_ONLY")
-
-    # 5) Low-liquidity sessions: one 3M impulse is not enough. Do not turn this
-    # into a hard day-long ban: a full ICT/structure setup can still trade.
-    if context.get("low_liquidity_risk"):
-        if not professional_base:
-            force_watch(
-                "тиха сесія: для входу потрібен повний ICT/структурний сетап, а не один 3M імпульс",
-                64,
-                f"ЧЕКАТИ — {side} ТИХА СЕСІЯ",
-                "LOW_LIQUIDITY_NEEDS_STRUCTURE",
-            )
-        else:
-            risk_only("тиха сесія — навіть хороший сетап тільки обережно", 76, "LOW_LIQUIDITY_RISK_ONLY")
-
-    # 6) News is fuel, not a trigger. It can strengthen a prepared setup, but
-    # cannot promote a structure-less idea into a market entry.
-    if news.get("bias") == side and abs(int(news.get("score", 0) or 0)) >= 25:
-        if not minimum_base:
-            force_watch(
-                "новина підтримує напрям, але без структури/ICT це не вхід",
-                62,
-                f"ЧЕКАТИ — {side} НОВИНА БЕЗ СТРУКТУРИ",
-                "NEWS_WITHOUT_STRUCTURE",
-            )
-        elif not professional_base:
-            risk_only("новина є тільки паливом; без повного сетапу якість обмежена", 74, "NEWS_FUEL_ONLY")
-
-    # 7) Old/context ICT zones from memory are not enough. A zone must produce a
-    # reaction, sweep, BOS hold or FVG/OB retrace. Context-only ICT remains WATCH.
-    if ict_context_only and not (structure_event or tf15_same or tf3_same and micro_for >= 1):
-        force_watch(
-            "ICT-зона лише контекстна: потрібна реакція, вихід з балансу або утримання рівня",
-            62,
-            f"ЧЕКАТИ — {side} ICT ЩЕ НЕ ГОТОВИЙ",
-            "ICT_CONTEXT_ONLY",
-        )
-
-    # Buy/sell high/low filter with continuation override.
-    if (near_high or near_low) and fast_with_side:
-        if full_continuation_at_edge:
-            risk_only("вхід біля краю руху дозволений тільки як підтверджене продовження", 78, "EDGE_CONTINUATION_RISK_ONLY")
-        else:
-            edge_word = "максимуму" if side == "LONG" else "мінімуму"
-            force_watch(
-                f"3M вже пройшов рух і ціна біля локального {edge_word}; чекати відкат, проторговку або ICT/структурне продовження",
-                68,
-                f"ЧЕКАТИ — {side} НЕ ЗАХОДИТИ НА КРАЮ РУХУ",
-                "EDGE_NO_CHASE",
-            )
-
-    # Base professional filter: keep early entries, but they still need at least
-    # a minimum foundation. If it is not there, stay in WATCH instead of forcing
-    # a trade with a pretty score.
-    if not minimum_base:
-        force_watch(
-            "напрям є, але немає професійної основи входу: потрібні структура + місце входу + 3M/ICT підтвердження",
-            64,
-            f"ЧЕКАТИ — {side} НЕМАЄ ОСНОВИ ВХОДУ",
-            "NO_PROFESSIONAL_BASE",
-        )
-    elif not professional_base:
-        risk_only("сетап неповний — можна тільки як ранній/ризиковий вхід, не як чистий ENTRY", 76, "PARTIAL_SETUP_RISK_ONLY")
-
-    # Counter-trend and pressure balancing. Do not block good reversals, but keep
-    # them honest if higher timeframes and micro-pressure are not aligned.
-    if (tf1h_against and tf4h_against) and not full_ict_structure:
-        risk_only("1H/4H проти — потрібен повний розворотний ICT/структурний сетап", 72, "HTF_COUNTERTREND_RISK")
-    if micro_against >= 2 and not full_ict_structure:
-        risk_only("CVD/потік/кластери не підтверджують — тільки обережний режим", 72, "MICRO_PRESSURE_RISK")
-    if tf3_strong_against:
-        force_watch(
-            "3M різко проти напрямку — чекати нове підтвердження, не входити в ринок",
-            60,
-            f"ЧЕКАТИ — {side} 3M ПРОТИ",
-            "TF3_AGAINST",
-        )
-
-    # Score is only diagnostic for journal/debugging.
-    model["score"] = int(sum([
-        25 if tf3_same else 0,
-        18 if tf15_same else 0,
-        20 if structure_same or structure_event else 0,
-        24 if ict_strong else (12 if ict_weak else (6 if ict_same else 0)),
-        8 if micro_for >= 1 else 0,
-        7 if real_tp_room else 0,
-    ]))
-    if professional_base and not model.get("force_watch") and not model.get("risk_only"):
-        model["confirmations"].append("професійна модель: структура + точка входу + підтвердження зібрані")
-    context["professional_entry_model"] = model
-    return model
-
 def entry_confirmations(side, context):
     tf3 = context["tf3"]
     tf15 = context["tf15"]
@@ -4423,7 +4156,7 @@ def evaluate_new_setup(context):
                 if structure_same:
                     prep_confirmations.append("структура підтримує напрям")
                 if tf15.get("bias") == "NEUTRAL":
-                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M повернення рівня/ретесту")
+                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M reclaim/ретесту")
                 if tf1h.get("bias") == opposite(candidate) or int(tf1h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -15:
                     prep_conflicts.append("1H слабкий/проти — не заходити без чіткого тригера")
                 if tf4h.get("bias") == opposite(candidate) or int(tf4h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -35:
@@ -4437,7 +4170,7 @@ def evaluate_new_setup(context):
                 "side": prep_side,
                 "quality": int(max(readiness_quality, min(66, readiness_quality + 8))),
                 "title": f"ЧЕКАТИ — {prep_side} ГОТУЄТЬСЯ",
-                "reason": "напрям формується, але потрібна ціна-тригер: повернення рівня/ретест на 3M",
+                "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
                 "plan": plan,
                 "confirmations": prep_confirmations,
                 "conflicts": prep_conflicts,
@@ -4507,13 +4240,6 @@ def evaluate_new_setup(context):
     calendar = context.get("calendar") or {}
     news = context.get("news") or {}
     ict_balance, ict_balance_reason = detect_ict_balance_market(context, side)
-    pro_model = professional_entry_model_snapshot(side, context, plan)
-    for item in pro_model.get("confirmations") or []:
-        if item not in confirmations:
-            confirmations.append(item)
-    for item in pro_model.get("conflicts") or []:
-        if item not in conflicts:
-            conflicts.append(item)
 
     def block_points(block, same, opposite_penalty, neutral=0, weak_opposite_penalty=None):
         bias = block.get("bias")
@@ -4705,10 +4431,10 @@ def evaluate_new_setup(context):
     # confirmation so the bot does not buy/sell every small 3M twitch:
     #   - 15M already agrees, OR
     #   - SMC structure agrees (BOS/CHOCH/sweep reclaim), OR
-    #   - ICT itself is a liquidity sweep / повернення рівня model, OR
+    #   - ICT itself is a liquidity sweep/reclaim model, OR
     #   - price holds a BOS continuation level.
     # If this is missing, the bot keeps WATCH/activation, so the user is not
-    # late: it shows the idea, but waits for повернення/відбій рівня instead of ENTRY.
+    # late: it shows the idea, but waits for reclaim/rejection instead of ENTRY.
     structure_phase = str(structure.get("phase", "") or "").upper()
     ict_setup = str(ict.get("setup", "") or "").upper()
     side_structure_phases = {
@@ -4717,7 +4443,7 @@ def evaluate_new_setup(context):
     }
     structure_reclaim_same = structure_phase in side_structure_phases.get(side, [])
     # ICT quality hierarchy.
-    # STRONG ICT = real Smart Money entry model: sweep / повернення рівня, FVG/OB retrace,
+    # STRONG ICT = real Smart Money entry model: sweep/reclaim, FVG/OB retrace,
     # or clear discount/premium FVG/OB reaction. Only this can justify 90+ quality.
     # WEAK ICT = BOS continuation/hold or directional ICT context without a clean
     # FVG/OB/sweep entry. It supports a trend trade, but must not be called
@@ -4756,10 +4482,10 @@ def evaluate_new_setup(context):
     structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same or reversal_entry_allowed)
     structure_gate_missing = bool(tf3_same and ict_entry_ok and not structural_entry_ok)
     if structure_gate_missing:
-        conflicts.append("ICT+3M є, але немає 15M/BOS/повернення рівня — чекати структурне підтвердження")
+        conflicts.append("ICT+3M є, але немає 15M/BOS/reclaim — чекати структурне підтвердження")
 
     # Classic/early entry: 3M must confirm the direction, but not alone.
-    # 15M may still be NEUTRAL only if BOS/повернення рівня/ICT sweep has confirmed
+    # 15M may still be NEUTRAL only if BOS/reclaim/ICT sweep has confirmed
     # structure. This avoids late entries while filtering mid-range false starts.
     trigger_entry_ok = (
         tf3_same
@@ -4825,14 +4551,13 @@ def evaluate_new_setup(context):
         and side not in liquidity.get("blocks", [])
         and not (tf3_strong_against and strong_cvd_against)
         and not countertrend_wait_required
-        and pro_model.get("risky_allowed", True)
     )
 
     if not tf3_same:
         # Without 3M confirmation this is preparation, not an entry.
         quality = min(quality, 66)
     elif structure_gate_missing:
-        # ICT + 3M without 15M/BOS/повернення рівня can be a good idea, but not a market entry.
+        # ICT + 3M without 15M/BOS/reclaim can be a good idea, but not a market entry.
         quality = min(quality, 64)
     elif htf_countertrend and not (tf15_same or structure_same or real_pressure_present):
         # 3M may catch the turn early, but against 4H/1H keep quality realistic.
@@ -4891,23 +4616,17 @@ def evaluate_new_setup(context):
 
     # Soft same-direction cooldown after a weak exit.
     # It no longer blocks the trade; it only lowers quality unless a fresh
-    # BOS/повернення рівня/ICT continuation overrides it. This prevents half-day silence
+    # BOS/reclaim/ICT continuation overrides it. This prevents half-day silence
     # while still reducing revenge entries after a bad close.
     if cooldown_active and not cooldown_can_override and cooldown_penalty:
         quality -= cooldown_penalty
         previous_quality = int(reentry_cooldown.get("last_entry_quality") or 0)
-        # Якщо нова угода справді має нову структуру, професійна модель вже
-        # дозволить ризиковий режим. Самого факту "якість стала вища" більше
-        # недостатньо, щоб обійти слабкий попередній вихід.
-        if previous_quality and quality >= previous_quality + 10 and pro_model.get("state") in ["REENTRY_STRUCTURAL_ONLY", "BALANCED"]:
-            quality += int(cooldown_penalty * 0.5)
+        # If the new setup is clearly better than the failed one, do not let the
+        # old loss suppress a materially stronger signal.
+        if previous_quality and quality >= previous_quality + 10:
+            quality += cooldown_penalty
             cooldown_can_override = True
-            confirmations.append("повторний вхід дозволено: є нова структура, не просто вищий бал")
-
-    quality += int(pro_model.get("quality_adjustment", 0) or 0)
-    quality = min(quality, int(pro_model.get("quality_cap", 92) or 92))
-    if pro_model.get("risk_only"):
-        quality = min(quality, int(pro_model.get("quality_cap", 76) or 76))
+            confirmations.append("повторний вхід дозволено: новий сетап значно якісніший за попередній")
 
     if calendar.get("active"):
         quality -= 8
@@ -4950,7 +4669,7 @@ def evaluate_new_setup(context):
             "side": side,
             "quality": min(quality, 58),
             "title": f"ЧЕКАТИ — {side} НЕ ПОВТОРЮВАТИ СЕРІЮ",
-            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/повернення рівня або повний ICT continuation",
+            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/reclaim або повний ICT continuation",
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
@@ -4963,8 +4682,8 @@ def evaluate_new_setup(context):
             "action": "WATCH",
             "side": side,
             "quality": min(quality, 64),
-            "title": f"ЧЕКАТИ — {side} ПОТРІБНЕ ПОВЕРНЕННЯ РІВНЯ/BOS",
-            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або повернення/відбій рівня",
+            "title": f"ЧЕКАТИ — {side} ПОТРІБЕН RECLAIM/BOS",
+            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або reclaim/rejection",
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
@@ -5000,20 +4719,6 @@ def evaluate_new_setup(context):
             "show_wait_plan": False,
         }
 
-    if pro_model.get("force_watch"):
-        return {
-            "action": "WATCH",
-            "side": side,
-            "quality": min(quality, int(pro_model.get("quality_cap", 64) or 64)),
-            "title": pro_model.get("title") or f"ЧЕКАТИ — {side} ПОТРІБНА СТРУКТУРА",
-            "reason": pro_model.get("reason") or "потрібна професійна структура перед входом",
-            "plan": plan,
-            "confirmations": confirmations,
-            "conflicts": list(dict.fromkeys(conflicts + (pro_model.get("conflicts") or []))),
-            "professional_gate": True,
-            "show_wait_plan": True,
-        }
-
     # HARD NO-CHASE GUARD.
     # If the move is already extended enough to receive a heavy anti-chase
     # penalty, the bot must not still print ENTRY/RISKY_ENTRY in the same
@@ -5037,7 +4742,7 @@ def evaluate_new_setup(context):
             "show_wait_plan": True,
         }
 
-    if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok and pro_model.get("risky_allowed", True):
+    if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok:
         # Early ICT/SMC is allowed to preserve early entries, but it must not
         # look like a clean 90+ confirmed trade. If it is counter-trend, without
         # 3M confirmation, or without 15M agreement, keep the score in the risky
@@ -5071,7 +4776,7 @@ def evaluate_new_setup(context):
         }
 
 
-    if quality >= ENTRY_QUALITY_MIN and trigger_ok and pro_model.get("entry_allowed", True) and not hard_conflict and not pressure_risk:
+    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
         if reversal_entry_allowed:
             if ict_strong_model:
                 reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура + повний ICT підтвердили розворот"
@@ -5097,7 +4802,7 @@ def evaluate_new_setup(context):
             "countertrend_entry": countertrend_entry,
         }
 
-    if quality >= RISKY_QUALITY_MIN and trigger_ok and pro_model.get("risky_allowed", True) and not hard_conflict:
+    if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
         # Any RISKY_ENTRY must remain visually honest: it should not print
         # 85-92/100 like a fully confirmed signal. Normal high scores are
         # reserved for ENTRY, not risky/early attempts.
@@ -5108,7 +4813,7 @@ def evaluate_new_setup(context):
                 "side": side,
                 "quality": min(quality, 66),
                 "title": f"ЧЕКАТИ — {side} РОЗВОРОТ ЩЕ НЕ ПІДТВЕРДЖЕНИЙ",
-                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS / повернення рівня перед переворотом",
+                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS/reclaim перед переворотом",
                 "plan": plan,
                 "confirmations": confirmations,
                 "conflicts": conflicts,
@@ -5134,7 +4839,7 @@ def evaluate_new_setup(context):
         }
 
     if pullback_watch_ok:
-        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M higher low / повернення рівня для LONG або lower high / відбій для SHORT"
+        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M higher low/reclaim для LONG або lower high/rejection для SHORT"
     elif conflicts:
         wait_reason = "напрям є, але входу ще немає: " + "; ".join(conflicts[:3])
     else:
@@ -6006,7 +5711,7 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
 
         CVD/flow/news may warn, but they must not create HIGH/CRITICAL
         reversal labels by themselves. For a scary label the bot needs actual
-        ICT/structure evidence: CHOCH/sweep / повернення рівня/FVG/OB against the trade.
+        ICT/structure evidence: CHOCH/sweep/reclaim/FVG/OB against the trade.
         """
         phase = str((structure or {}).get("phase", "")).upper()
         ict_setup = str((ict or {}).get("setup", "")).upper()
@@ -6603,7 +6308,7 @@ def entry_point_state_snapshot(trade, context, current_pct, best_pct, giveback,
         else:
             score = min(score, 55)
             reason = "глибока просадка до стопа, але повного ICT/SMC зламу ще немає"
-            advice = "тримати тільки до наступної перевірки; без повернення рівня/підтвердження не чекати повний стоп"
+            advice = "тримати тільки до наступної перевірки; без reclaim/підтвердження не чекати повний стоп"
     elif (trade_validation or {}).get("severity") == "BAD":
         reason = "угода не розкривається після входу: MFE слабкий або структура/3M проти"
         advice = "не чекати дальній стоп; шукати вихід біля входу або при наступному слабкому супроводі"
@@ -7440,123 +7145,163 @@ def _zone_line(zone):
     return f"{_fmt_price(low)}–{_fmt_price(high)} ({ztype})"
 
 
-def planned_wait_text(context, setup):
-    """Compact Ukrainian WAIT/WATCH block with professional reason + activation.
+def _trigger_zone_for_wait(context, setup):
+    """Return side-aware trigger and best ICT zone for a waiting setup.
 
-    The text is recalculated on every run from live 3M/15M/1H structure,
-    ICT/FVG/OB, flow/CVD, liquidity, news and professional-entry-model state.
-    Telegram receives only the most important reason and activation conditions,
-    while the full analytics stay inside context/journal.
+    This is used only for short Telegram WAIT explanations. It does not open a
+    trade by itself; the decision engine still performs the full professional
+    checks before ENTRY/RISKY_ENTRY.
     """
-    side = setup.get("side")
-    plan = setup.get("plan")
-    price = safe_float(context.get("price"))
-    atr15 = safe_float(context.get("atr15"), (price or 90) * 0.006) or ((price or 90) * 0.006)
-    if side not in ["LONG", "SHORT"] or not price or not plan:
-        return ""
-
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    tf3 = context.get("tf3") or {}
-    tf15 = context.get("tf15") or {}
-    tf1h = context.get("tf1h") or {}
-    flow = context.get("flow") or {}
-    cvd = context.get("cvd") or {}
-    pro_model = context.get("professional_entry_model") or {}
-    pending = context.get("pending_ict_zones") or []
+    side = (setup or {}).get("side")
+    plan = (setup or {}).get("plan")
+    price = safe_float((context or {}).get("price"))
+    atr15 = safe_float((context or {}).get("atr15"), (price or 90) * 0.006) or ((price or 90) * 0.006)
+    structure = (context or {}).get("structure") or {}
+    ict = (context or {}).get("ict") or {}
+    pending = (context or {}).get("pending_ict_zones") or []
     same_zones = [z for z in pending if z.get("side") == side]
     best_zone = same_zones[0] if same_zones else None
+
+    if side not in ["LONG", "SHORT"] or not price or not plan:
+        return {"trigger": None, "zone": best_zone, "zone_text": _zone_line(best_zone)}
 
     recent_high = safe_float(structure.get("recent_high"))
     recent_low = safe_float(structure.get("recent_low"))
     swing_high = safe_float(structure.get("swing_high"))
     swing_low = safe_float(structure.get("swing_low"))
+    eq = safe_float(ict.get("equilibrium"))
 
-    def add_unique(items, value):
-        value = str(value or "").strip()
-        if value and value not in items:
-            items.append(value)
-
-    reason_items = []
-    activation_items = []
-
-    # 1) Professional reason: why this is still WAIT and not an entry now.
-    state = str(pro_model.get("state") or "")
-    model_reason = str(pro_model.get("reason") or setup.get("reason") or "")
-    state_reason_map = {
-        "REENTRY_NEEDS_NEW_STRUCTURE": f"повторний {side} після слабкого виходу — потрібен новий структурний сетап",
-        "LOW_LIQUIDITY_NEEDS_STRUCTURE": "тиха сесія — одного 3M руху недостатньо",
-        "NEWS_WITHOUT_STRUCTURE": "новина є, але без структури/ICT це ще не вхід",
-        "ICT_CONTEXT_ONLY": "ICT контекст є, але ще немає реакції від зони або виходу з балансу",
-        "EDGE_NO_CHASE": "ціна біля краю руху — не доганяти без continuation-сетапу",
-        "NO_PROFESSIONAL_BASE": "немає повної бази: структура + місце входу + підтвердження",
-        "TF3_AGAINST": f"3M поки проти {side}",
-    }
-    if state in state_reason_map:
-        add_unique(reason_items, state_reason_map[state])
-
-    opposite_side = opposite(side)
-    if tf3.get("bias") == opposite_side:
-        add_unique(reason_items, f"3M поки проти {side}")
-    elif tf3.get("bias") not in [side] and len(reason_items) < 2:
-        add_unique(reason_items, f"3M ще не підтвердив {side}")
-
-    if ict.get("bias") == opposite_side and len(reason_items) < 2:
-        add_unique(reason_items, "ICT поки проти напрямку")
-    elif ict.get("bias") not in [side] and len(reason_items) < 2:
-        add_unique(reason_items, "немає активного ICT сетапу в сторону входу")
-
-    if tf1h.get("bias") == opposite_side and len(reason_items) < 2:
-        add_unique(reason_items, "1H слабкий/проти — потрібен чіткий тригер")
-    elif tf15.get("bias") == opposite_side and len(reason_items) < 2:
-        add_unique(reason_items, "15M поки проти — вхід тільки після локального підтвердження")
-
-    if (flow.get("bias") == opposite_side and cvd.get("bias") == opposite_side) and len(reason_items) < 2:
-        add_unique(reason_items, "CVD/потік проти входу")
-
-    if not reason_items and model_reason:
-        # Keep only one concise reason from the deeper model.
-        add_unique(reason_items, model_reason)
-    if not reason_items:
-        add_unique(reason_items, "ідея є, але підтвердження входу ще неповне")
-
-    # 2) Activation: exact condition that turns WAIT into a real entry.
     if side == "LONG":
         candidates = [price + atr15 * 0.16]
-        for lvl in [recent_high, swing_high, safe_float(ict.get("equilibrium"))]:
+        for lvl in [recent_high, swing_high, eq]:
             if lvl and lvl > price and (lvl - price) / price * 100 <= 1.15:
                 candidates.append(lvl + atr15 * 0.04)
         trigger = min(candidates) if candidates else price + atr15 * 0.16
-        retest_zone = _zone_line(best_zone)
-        if not retest_zone:
-            support = max(safe_float(getattr(plan, "stop", None), price - atr15), price - atr15 * 0.55)
-            retest_zone = f"{_fmt_price(support)}–{_fmt_price(price)}"
-
-        add_unique(activation_items, f"3M закриття вище {_fmt_price(trigger)} і утримання над рівнем")
-        add_unique(activation_items, "після пробою — higher low, без нового lower low")
-        add_unique(activation_items, f"або викуп із зони {retest_zone}")
     else:
         candidates = [price - atr15 * 0.16]
-        for lvl in [recent_low, swing_low, safe_float(ict.get("equilibrium"))]:
+        for lvl in [recent_low, swing_low, eq]:
             if lvl and lvl < price and (price - lvl) / price * 100 <= 1.15:
                 candidates.append(lvl - atr15 * 0.04)
         trigger = max(candidates) if candidates else price - atr15 * 0.16
-        retest_zone = _zone_line(best_zone)
-        if not retest_zone:
-            resistance = min(safe_float(getattr(plan, "stop", None), price + atr15), price + atr15 * 0.55)
-            retest_zone = f"{_fmt_price(price)}–{_fmt_price(resistance)}"
 
-        add_unique(activation_items, f"3M закриття нижче {_fmt_price(trigger)} і утримання під рівнем")
-        add_unique(activation_items, "після пробою — lower high, без нового higher high")
-        add_unique(activation_items, f"або відбій від зони {retest_zone}")
+    return {"trigger": trigger, "zone": best_zone, "zone_text": _zone_line(best_zone)}
 
-    reason_items = reason_items[:2]
-    activation_items = activation_items[:3]
+
+def planned_wait_text(context, setup):
+    """Professional short WAIT reason block.
+
+    The user requested no separate Activation/What-wait blocks. For WATCH/WAIT
+    the message should show only what is still missing for entry, recalculated
+    on every run from 3M, structure, ICT/FVG/OB, CVD/flow, liquidity, news and
+    re-entry guards. Keep only the most important 3-5 points.
+    """
+    side = (setup or {}).get("side")
+    price = safe_float((context or {}).get("price"))
+    plan = (setup or {}).get("plan")
+    if side not in ["LONG", "SHORT"] or not price or not plan:
+        return ""
+
+    tf3 = (context or {}).get("tf3") or {}
+    tf15 = (context or {}).get("tf15") or {}
+    tf1h = (context or {}).get("tf1h") or {}
+    structure = (context or {}).get("structure") or {}
+    ict = (context or {}).get("ict") or {}
+    cvd = (context or {}).get("cvd") or {}
+    flow = (context or {}).get("flow") or {}
+    liquidity = (context or {}).get("liquidity") or {}
+    news = (context or {}).get("news") or {}
+    professional = (context or {}).get("professional_entry_model") or (setup or {}).get("professional_entry_model") or {}
+
+    trig = _trigger_zone_for_wait(context, setup)
+    trigger = trig.get("trigger")
+    zone_text = trig.get("zone_text")
+    up = side == "LONG"
+    opposite_side = opposite(side)
+    lvl = _fmt_price(trigger) if trigger else "рівня"
+    close_word = "вище" if up else "нижче"
+    hold_word = "над" if up else "під"
+    hh_ll = "без нового lower low" if up else "без нового higher high"
+    hl_lh = "higher low" if up else "lower high"
+    zone_action = "викуп із зони" if up else "відбій вниз із зони"
+
+    reasons = []
+
+    # 1) Always start with the real 3M gap when it is not already supportive.
+    if tf3.get("bias") == opposite_side:
+        reasons.append(f"3M поки проти {side} — потрібне закриття {close_word} {lvl}")
+    elif tf3.get("bias") == "NEUTRAL":
+        reasons.append(f"3M ще без тригера — потрібне закриття і утримання {hold_word} {lvl}")
+    elif setup.get("action") in ["WATCH", "WAIT_RETEST"]:
+        reasons.append(f"потрібне закріплення {hold_word} {lvl}, не просто дотик рівня")
+
+    # 2) Structure should be described as the exact missing market behaviour.
+    phase = str(structure.get("phase") or "")
+    structure_bias = structure.get("bias")
+    if structure_bias != side:
+        if up:
+            reasons.append(f"структура ще не підтвердила LONG — потрібен {hl_lh}, {hh_ll}")
+        else:
+            reasons.append(f"структура ще не підтвердила SHORT — потрібен {hl_lh}, {hh_ll}")
+    elif "BOS" not in phase and "CHOCH" not in phase and "SWEEP" not in phase:
+        reasons.append(f"структура за {side}, але потрібне утримання рівня після пробою")
+
+    # 3) ICT/FVG/OB: avoid generic 'no full base', say what is missing.
+    ict_entry_ok = bool(ict.get("entry_ok"))
+    ict_bias = ict.get("bias")
+    if ict_bias != side or not ict_entry_ok:
+        if zone_text:
+            reasons.append(f"ICT ще без реакції — потрібен {zone_action} {zone_text}")
+        else:
+            reasons.append(f"ICT ще не дав повний сетап — потрібна FVG/OB реакція або sweep")
+    elif ict.get("no_chase"):
+        reasons.append("ICT не дозволяє доганяти рух — потрібен відкат або утримання рівня")
+
+    # 4) Higher timeframe / flow only if it is a real blocker.
+    if tf1h.get("bias") == opposite_side:
+        reasons.append(f"1H проти {side} — потрібне сильніше 3M підтвердження")
+    elif tf15.get("bias") == opposite_side:
+        reasons.append(f"15M проти {side} — потрібне підтвердження через структуру")
+
+    if cvd.get("bias") == opposite_side or flow.get("bias") == opposite_side:
+        reasons.append(f"CVD/потік поки проти — потрібен розворот у бік {side}")
+
+    # 5) Context-specific professional guards. These are short and only when relevant.
+    conflicts = [str(x) for x in ((setup or {}).get("conflicts") or [])]
+    reason_txt = " | ".join(conflicts + [str((setup or {}).get("reason") or "")]).lower()
+    if "повтор" in reason_txt or "сері" in reason_txt or "reentry" in reason_txt:
+        reasons.append("після слабкого виходу потрібен новий BOS/ICT, не просто кращий бал")
+    if "ліквід" in reason_txt or liquidity.get("low_liquidity"):
+        reasons.append("тиха ліквідність — потрібна реакція від рівня, не один імпульс 3M")
+    if "новин" in reason_txt and news.get("bias") == side:
+        reasons.append("новина є лише фоном — потрібне технічне підтвердження")
+    if "стар" in reason_txt or "mitigated" in reason_txt:
+        reasons.append("ICT-зона має підтвердитись реакцією, стара зона сама не є входом")
+    if professional.get("missing"):
+        for item in professional.get("missing") or []:
+            reasons.append(str(item))
+
+    # Fallback from existing conflicts, but keep it as missing condition, not a noisy dashboard.
+    if not reasons:
+        for item in conflicts[:3]:
+            clean = item.replace("reclaim", "повернення рівня").replace("Reclaim", "повернення рівня")
+            clean = clean.replace("retet", "ретест").replace("retest", "ретест")
+            if clean:
+                reasons.append(clean)
+    if not reasons:
+        reasons.append(f"потрібне 3M підтвердження {side} і утримання ключового рівня")
+
+    # Deduplicate and keep Telegram concise.
+    clean = []
+    for item in reasons:
+        item = " ".join(str(item).split()).strip(" .;—")
+        item = item.replace("reclaim", "повернення рівня").replace("retest", "ретест")
+        if item and item not in clean:
+            clean.append(item)
+        if len(clean) >= 4:
+            break
+
     lines = ["<b>Причина:</b>"]
-    lines.extend([f"• {html.escape(str(x))}" for x in reason_items])
-    lines.append("")
-    lines.append("<b>Активація:</b>")
-    lines.extend([f"• {html.escape(str(x))}" for x in activation_items])
+    lines.extend([f"• {html.escape(x)}" for x in clean])
     return "\n".join(lines).strip()
 
 def _compact_title(setup):
@@ -7682,16 +7427,20 @@ def build_new_setup_message(context, setup):
             lines.append("")
             lines.append("<b>Контроль:</b> якщо після входу 1–2 свічки 3M не підтвердять напрям або CVD/потік різко проти — очікувати EXIT WARNING.")
     else:
-        # For WATCH/WAIT messages keep Telegram clean: only short dynamic "Причина"
-        # and "Активація" blocks are printed. The full analytics stay internal.
+        # WAIT/WATCH messages: show only a professional short reason block —
+        # what is still missing for entry. No separate Activation/What-wait blocks.
         wait_text = planned_wait_text(context, setup) if setup.get("show_wait_plan", True) else ""
         if wait_text:
             lines.append("")
             lines.append(wait_text)
-        elif setup.get("side") in ["LONG", "SHORT"] and plan and setup.get("show_wait_plan", True):
-            lines.append("")
-            lines.append("<b>Орієнтир:</b>")
-            lines.append(plan_text(plan, multiline=True))
+        else:
+            reason_items = conflicts or _short_list([setup.get("reason")], 1)
+            if reason_items:
+                lines.append("")
+                lines.append("<b>Причина:</b>")
+                for x in reason_items[:3]:
+                    clean = str(x).replace("reclaim", "повернення рівня").replace("retest", "ретест")
+                    lines.append(f"• {html.escape(clean)}")
 
     lines.append("")
     lines.extend(context_lines(context))
@@ -7713,8 +7462,10 @@ def build_follow_message(context, trade, result):
         lines.append("")
         lines.append("<b>Стан точки входу:</b>")
         lines.append(f"{entry_state.get('label', '—')} ({int(entry_state.get('score') or 0)}%)")
-        # Detailed reason/advice stays inside internal analytics/journal,
-        # but is not printed in Telegram to avoid noise.
+        if entry_state.get("reason"):
+            lines.append(f"Причина: {html.escape(str(entry_state.get('reason')))}")
+        if entry_state.get("advice"):
+            lines.append(f"Дія: {html.escape(str(entry_state.get('advice')))}")
     if result.get("reversal_label"):
         lines.append("")
         lines.append("<b>Ризик:</b>")
