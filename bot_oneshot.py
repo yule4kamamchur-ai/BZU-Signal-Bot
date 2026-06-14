@@ -208,17 +208,15 @@ def safe_float(value, default=None):
 
 
 def clamp(value, lo=0, hi=100):
-    """Clamp a numeric value into [lo, hi].
+    """Clamp numeric value into [lo, hi].
 
-    This helper is intentionally global because several supervision modules
-    use it, including Adaptive MFE Giveback Guard 2.0. Keeping it global
-    prevents runtime NameError when a branch reaches MFE protection.
+    Used by risk/MFE engines. Kept global so helper functions defined before
+    assess_trade_risk can call it safely in GitHub Actions.
     """
     try:
-        value = float(value)
+        return max(lo, min(hi, value))
     except Exception:
-        value = float(lo)
-    return max(lo, min(hi, value))
+        return lo
 
 
 def round_price(value):
@@ -1422,7 +1420,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         score = 26
         bias = "LONG"
         setup = "LIQUIDITY_SWEEP_LONG"
-        notes.append("sell-side liquidity sweep + reclaim")
+        notes.append("зняття sell-side ліквідності + повернення рівня")
         if discount:
             score += 7
             notes.append("discount")
@@ -1435,7 +1433,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         score = -26
         bias = "SHORT"
         setup = "LIQUIDITY_SWEEP_SHORT"
-        notes.append("buy-side liquidity sweep + reclaim вниз")
+        notes.append("зняття buy-side ліквідності + повернення рівня вниз")
         if premium:
             score -= 7
             notes.append("premium")
@@ -1456,7 +1454,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
             local += 12
             entry_ok = True
             setup = "BOS_LONG_CONTINUATION_HOLD"
-            notes.append("BOS LONG утримує пробитий рівень — continuation без повного ретесту")
+            notes.append("BOS LONG утримує пробитий рівень — продовження без повного ретесту")
         elif displacement_up and move_3 > 0.55:
             no_chase = True
             local -= 10
@@ -1479,7 +1477,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
             local -= 12
             entry_ok = True
             setup = "BOS_SHORT_CONTINUATION_HOLD"
-            notes.append("BOS SHORT утримує пробитий рівень — continuation без повного ретесту")
+            notes.append("BOS SHORT утримує пробитий рівень — продовження без повного ретесту")
         elif displacement_down and move_3 < -0.55:
             no_chase = True
             local += 10
@@ -1613,7 +1611,7 @@ def build_pending_ict_zones(context):
         ict.get("bull_ob"),
         "Bullish OB",
         78 if premium_discount == "DISCOUNT" else 64,
-        "утримання OB + reclaim середини зони + стоп нижче OB",
+        "утримання OB + повернення ціни до середини зони + стоп нижче OB",
         "order block для low-risk LONG",
     )
     add_zone(
@@ -1629,7 +1627,7 @@ def build_pending_ict_zones(context):
         ict.get("bear_ob"),
         "Bearish OB",
         78 if premium_discount == "PREMIUM" else 64,
-        "утримання OB + rejection середини зони + стоп вище OB",
+        "утримання OB + відбій від середини зони + стоп вище OB",
         "order block для low-risk SHORT",
     )
 
@@ -2972,7 +2970,7 @@ def cooldown_override_reason(side, context):
     regime_name = market_regime.get("name") if isinstance(market_regime, dict) else market_regime
     if str(regime_name or "").upper() in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]:
         return f"після слабкого виходу {side} дозволено повторний вхід: тренд/структура продовжуються"
-    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS/reclaim або ICT continuation"
+    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS/повернення рівня або ICT-продовження"
 
 def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
     """Detect a professional reversal setup after a failed trade.
@@ -3094,7 +3092,7 @@ def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
 
     if ict_reclaim or (ict.get("bias") == side and bool(ict.get("entry_ok"))):
         score += 18
-        confirmations.append("ICT дає sweep/reclaim або continuation для розвороту")
+        confirmations.append("ICT дає зняття ліквідності/повернення рівня або продовження для розвороту")
     elif ict.get("bias") == side:
         score += 8
         confirmations.append("ICT підтримує ідею розвороту")
@@ -3144,7 +3142,7 @@ def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
         "age_minutes": round(age_min, 1),
         "score": score,
         "allow_entry": bool(allow_entry),
-        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS/reclaim",
+        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS/повернення рівня",
         "confirmations": confirmations[:5],
         "conflicts": conflicts[:5],
     }
@@ -3469,6 +3467,98 @@ def detect_exhausted_move(side, context):
             return True, "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. " + "; ".join(reasons[:4])
 
     return False, ""
+
+
+def detect_late_long_near_high_cap(side, context):
+    """Professional no-buy-highs guard.
+
+    Rule requested by the user:
+    If 3M has already moved sharply up and price is near a local high, LONG
+    must not print 76-80 quality. Maximum is WATCH or RISKY 60-68.
+
+    This is separate from the normal anti-chase filter because the bad case can
+    happen even when the 3M impulse is not huge enough for the old vertical
+    threshold, but price is already sitting at the broken high/swing high.
+    """
+    if side != "LONG" or not isinstance(context, dict):
+        return {"active": False, "cap": 100, "watch_required": False, "reason": ""}
+
+    price = safe_float(context.get("price"))
+    atr15 = safe_float(context.get("atr15")) or ((price or 90) * 0.006)
+    if not price or not atr15:
+        return {"active": False, "cap": 100, "watch_required": False, "reason": ""}
+
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    candles_3m = context.get("candles_3m") or []
+    candles_15m = context.get("candles_15m") or []
+
+    ema20 = safe_float(tf15.get("ema20"))
+    rsi15 = safe_float(tf15.get("rsi"), 50)
+    move8 = safe_float(tf15.get("move_8_pct"), 0) or 0
+    fast3 = safe_float(tf3.get("fast_move_pct"), 0) or 0
+    drift3 = safe_float(tf3.get("drift_pct"), 0) or 0
+    score3 = int(tf3.get("score", 0) or 0)
+    distance_atr = abs(price - ema20) / atr15 if ema20 else 0.0
+
+    recent_3m = candles_3m[-26:] if candles_3m else []
+    recent_15m = candles_15m[-12:] if candles_15m else []
+    local_high_3m = max((float(c.high) for c in recent_3m), default=None)
+    local_high_15m = max((float(c.high) for c in recent_15m), default=None)
+    swing_high = safe_float(structure.get("swing_high"))
+    recent_high = safe_float(structure.get("recent_high"))
+
+    def near_level(level, atr_mult=0.70, pct_limit=0.32):
+        if not level:
+            return False
+        # Allow a small overshoot because breakouts often print a wick above the level.
+        return abs(price - level) <= max(atr15 * atr_mult, price * pct_limit / 100)
+
+    near_swing_high = near_level(swing_high, atr_mult=0.55, pct_limit=0.24)
+    near_3m_high = bool(local_high_3m and price <= local_high_3m + atr15 * 0.18 and (local_high_3m - price) <= max(atr15 * 0.95, price * 0.35 / 100))
+    near_15m_high = bool(local_high_15m and price <= local_high_15m + atr15 * 0.18 and (local_high_15m - price) <= max(atr15 * 0.95, price * 0.35 / 100))
+    near_structure_high = bool(recent_high and price <= recent_high + atr15 * 0.18 and (recent_high - price) <= max(atr15 * 1.10, price * 0.42 / 100))
+    price_near_high = bool(near_swing_high or near_3m_high or near_15m_high or near_structure_high)
+
+    impulse_3m_done = bool(tf3.get("bias") == "LONG" and (fast3 >= 0.32 or drift3 >= 0.28 or score3 >= 42))
+    mature_15m = bool(tf15.get("bias") == "LONG" and (move8 >= 0.55 or rsi15 >= 66 or distance_atr >= 1.15))
+
+    setup = str(ict.get("setup", "") or "").upper()
+    strong_long_ict = bool(
+        ict.get("bias") == "LONG"
+        and ict.get("entry_ok")
+        and setup in ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"]
+    )
+
+    # If there is a real pullback/FVG/OB model, the entry may still be risky,
+    # but it must not be shown as a clean high-quality ENTRY.
+    active = bool(price_near_high and impulse_3m_done and mature_15m)
+    if not active:
+        return {"active": False, "cap": 100, "watch_required": False, "reason": ""}
+
+    reason_parts = ["3M вже різко пройшов вгору", "ціна біля локального максимуму"]
+    if near_swing_high:
+        reason_parts.append("біля swing high")
+    if distance_atr >= 1.15:
+        reason_parts.append(f"далеко від EMA20 ({round(distance_atr, 2)} ATR)")
+    if rsi15 >= 66:
+        reason_parts.append(f"15M RSI {round(rsi15, 1)}")
+
+    reason = "; ".join(reason_parts[:5]) + " — LONG не купувати на хаях; чекати відкат/проторговку або повернення рівня."
+    return {
+        "active": True,
+        "cap": 68,
+        "watch_required": not strong_long_ict,
+        "strong_ict_exception": strong_long_ict,
+        "reason": reason,
+        "distance_atr": round(distance_atr, 3),
+        "fast_3m_pct": round(fast3, 3),
+        "drift_3m_pct": round(drift3, 3),
+        "near_swing_high": bool(near_swing_high),
+        "near_3m_high": bool(near_3m_high),
+    }
 
 def is_late_chase(side, context):
     """Anti-chase guard for intraday entries.
@@ -4158,7 +4248,7 @@ def evaluate_new_setup(context):
                 if structure_same:
                     prep_confirmations.append("структура підтримує напрям")
                 if tf15.get("bias") == "NEUTRAL":
-                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M reclaim/ретесту")
+                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M повернення рівня/ретесту")
                 if tf1h.get("bias") == opposite(candidate) or int(tf1h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -15:
                     prep_conflicts.append("1H слабкий/проти — не заходити без чіткого тригера")
                 if tf4h.get("bias") == opposite(candidate) or int(tf4h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -35:
@@ -4172,7 +4262,7 @@ def evaluate_new_setup(context):
                 "side": prep_side,
                 "quality": int(max(readiness_quality, min(66, readiness_quality + 8))),
                 "title": f"ЧЕКАТИ — {prep_side} ГОТУЄТЬСЯ",
-                "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+                "reason": "напрям формується, але потрібна ціна-тригер: повернення рівня/ретест на 3M",
                 "plan": plan,
                 "confirmations": prep_confirmations,
                 "conflicts": prep_conflicts,
@@ -4484,7 +4574,7 @@ def evaluate_new_setup(context):
     structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same or reversal_entry_allowed)
     structure_gate_missing = bool(tf3_same and ict_entry_ok and not structural_entry_ok)
     if structure_gate_missing:
-        conflicts.append("ICT+3M є, але немає 15M/BOS/reclaim — чекати структурне підтвердження")
+        conflicts.append("ICT+3M є, але немає 15M/BOS/повернення рівня — чекати структурне підтвердження")
 
     # Classic/early entry: 3M must confirm the direction, but not alone.
     # 15M may still be NEUTRAL only if BOS/reclaim/ICT sweep has confirmed
@@ -4616,6 +4706,19 @@ def evaluate_new_setup(context):
     eq_adjust = entry_quality_adjustment(side, context, late_penalty)
     quality += int(eq_adjust.get("adjustment", 0) or 0)
 
+    # Professional no-buy-highs cap for LONG.
+    # If 3M has already moved sharply up and price is near the local/swing high,
+    # do not allow a clean 76-80 quality LONG. It becomes WATCH, or at most
+    # RISKY_ENTRY 60-68 only when a full ICT pullback/sweep model exists.
+    late_high_cap = detect_late_long_near_high_cap(side, context)
+    late_high_chase = bool(late_high_cap.get("active"))
+    if late_high_chase:
+        quality = min(quality, int(late_high_cap.get("cap", 68) or 68))
+        high_reason = late_high_cap.get("reason") or "LONG біля локального максимуму після 3M-імпульсу — не доганяти"
+        if high_reason not in conflicts:
+            conflicts.append(high_reason)
+        context["late_high_entry_cap"] = late_high_cap
+
     # Soft same-direction cooldown after a weak exit.
     # It no longer blocks the trade; it only lowers quality unless a fresh
     # BOS/reclaim/ICT continuation overrides it. This prevents half-day silence
@@ -4671,7 +4774,7 @@ def evaluate_new_setup(context):
             "side": side,
             "quality": min(quality, 58),
             "title": f"ЧЕКАТИ — {side} НЕ ПОВТОРЮВАТИ СЕРІЮ",
-            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/reclaim або повний ICT continuation",
+            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/повернення рівня або повне ICT-продовження",
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
@@ -4684,8 +4787,8 @@ def evaluate_new_setup(context):
             "action": "WATCH",
             "side": side,
             "quality": min(quality, 64),
-            "title": f"ЧЕКАТИ — {side} ПОТРІБЕН RECLAIM/BOS",
-            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або reclaim/rejection",
+            "title": f"ЧЕКАТИ — {side} ПОТРІБНЕ ПОВЕРНЕННЯ РІВНЯ/BOS",
+            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або повернення рівня/відбій",
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
@@ -4744,6 +4847,21 @@ def evaluate_new_setup(context):
             "show_wait_plan": True,
         }
 
+    if late_high_chase and late_high_cap.get("watch_required"):
+        high_reason = late_high_cap.get("reason") or "3M уже пройшов вгору, а ціна біля локального максимуму — LONG не купувати на хаях"
+        return {
+            "action": "WATCH",
+            "side": side,
+            "quality": min(quality, 68),
+            "title": "ЧЕКАТИ — LONG НЕ КУПУВАТИ БІЛЯ ВЕРХУ РУХУ",
+            "reason": high_reason,
+            "plan": plan,
+            "confirmations": confirmations,
+            "conflicts": list(dict.fromkeys(conflicts + [high_reason])),
+            "late_high_entry_cap": True,
+            "show_wait_plan": True,
+        }
+
     if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok:
         # Early ICT/SMC is allowed to preserve early entries, but it must not
         # look like a clean 90+ confirmed trade. If it is counter-trend, without
@@ -4760,6 +4878,9 @@ def evaluate_new_setup(context):
         reason = "ранній ICT/SMC вхід: ICT і структура вже за напрям, не чекаємо повного набору підтверджень"
         if late_penalty:
             reason += f"; anti-chase штраф уже врахований (-{late_penalty})"
+        if late_high_chase:
+            quality = min(quality, 68)
+            reason += "; вхід біля локального максимуму — якість обмежена до ризикової зони"
         if not tf3_same:
             reason += "; 3M ще не ідеальний, тому тільки ризиковий режим"
         if "ранній ICT/SMC: ICT + структура за напрям" not in confirmations:
@@ -4778,7 +4899,7 @@ def evaluate_new_setup(context):
         }
 
 
-    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
+    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk and not late_high_chase:
         if reversal_entry_allowed:
             if ict_strong_model:
                 reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура + повний ICT підтвердили розворот"
@@ -4809,20 +4930,24 @@ def evaluate_new_setup(context):
         # 85-92/100 like a fully confirmed signal. Normal high scores are
         # reserved for ENTRY, not risky/early attempts.
         quality = min(quality, 79 if not countertrend_entry else 76)
+        if late_high_chase:
+            quality = min(quality, 68)
         if reversal_active_for_side and not reversal_entry_allowed:
             return {
                 "action": "WATCH",
                 "side": side,
                 "quality": min(quality, 66),
                 "title": f"ЧЕКАТИ — {side} РОЗВОРОТ ЩЕ НЕ ПІДТВЕРДЖЕНИЙ",
-                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS/reclaim перед переворотом",
+                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS/повернення рівня перед переворотом",
                 "plan": plan,
                 "confirmations": confirmations,
                 "conflicts": conflicts,
                 "reversal_after_failed_trade": True,
                 "show_wait_plan": True,
             }
-        if pressure_risk:
+        if late_high_chase:
+            reason = "ризиковий тільки через сильні підтвердження, але 3M уже пройшов вгору і ціна біля локального максимуму — якість обмежена 60–68"
+        elif pressure_risk:
             reason = "ICT/SMC + 3M дають ранній вхід, але CVD/потік/кластери ще не підтвердили — ризиковий режим"
         elif not tf15_same:
             reason = "ранній 3M-тригер; 15M ще не підтвердив повністю, тому ризик вищий"
@@ -4841,7 +4966,7 @@ def evaluate_new_setup(context):
         }
 
     if pullback_watch_ok:
-        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M higher low/reclaim для LONG або lower high/rejection для SHORT"
+        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M вищий мінімум/повернення рівня для LONG або нижчий максимум/відбій для SHORT"
     elif conflicts:
         wait_reason = "напрям є, але входу ще немає: " + "; ".join(conflicts[:3])
     else:
@@ -6310,7 +6435,7 @@ def entry_point_state_snapshot(trade, context, current_pct, best_pct, giveback,
         else:
             score = min(score, 55)
             reason = "глибока просадка до стопа, але повного ICT/SMC зламу ще немає"
-            advice = "тримати тільки до наступної перевірки; без reclaim/підтвердження не чекати повний стоп"
+            advice = "тримати тільки до наступної перевірки; без повернення рівня/підтвердження не чекати повний стоп"
     elif (trade_validation or {}).get("severity") == "BAD":
         reason = "угода не розкривається після входу: MFE слабкий або структура/3M проти"
         advice = "не чекати дальній стоп; шукати вихід біля входу або при наступному слабкому супроводі"
@@ -7190,11 +7315,11 @@ def planned_wait_text(context, setup):
             support = max(safe_float(getattr(plan, "stop", None), price - atr15), price - atr15 * 0.55)
             retest_zone = f"{_fmt_price(support)}–{_fmt_price(price)}"
         wait_items = [
-            f"3M reclaim вище {_fmt_price(trigger)} і закриття/утримання над рівнем",
-            "після reclaim — 3M higher low, без нового lower low",
+            f"3M повернення ціни вище {_fmt_price(trigger)} і закриття/утримання над рівнем",
+            "після повернення рівня — 3M вищий мінімум, без нового нижчого мінімуму",
             f"або ретест зони {retest_zone} з викупом",
         ]
-        activation = f"якщо 3M закриється вище {_fmt_price(trigger)} або дасть retest→reclaim цієї зони"
+        activation = f"якщо 3M закриється вище {_fmt_price(trigger)} або дасть ретест→повернення ціни в цю зону"
         cancel = f"якщо 3M/15M закриється нижче {_fmt_price(plan.stop)} або CVD/потік різко стане проти LONG"
     else:
         candidates = [price - atr15 * 0.16]
@@ -7209,11 +7334,11 @@ def planned_wait_text(context, setup):
             resistance = min(safe_float(getattr(plan, "stop", None), price + atr15), price + atr15 * 0.55)
             retest_zone = f"{_fmt_price(price)}–{_fmt_price(resistance)}"
         wait_items = [
-            f"3M rejection/пробій нижче {_fmt_price(trigger)} і утримання під рівнем",
+            f"3M відбій/пробій нижче {_fmt_price(trigger)} і утримання під рівнем",
             "після пробою — 3M lower high, без нового higher high",
             f"або ретест зони {retest_zone} з відбоєм вниз",
         ]
-        activation = f"якщо 3M закриється нижче {_fmt_price(trigger)} або дасть retest→rejection цієї зони"
+        activation = f"якщо 3M закриється нижче {_fmt_price(trigger)} або дасть ретест→відбій від цієї зони"
         cancel = f"якщо 3M/15M закриється вище {_fmt_price(plan.stop)} або CVD/потік різко стане проти SHORT"
 
     why = []
