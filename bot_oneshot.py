@@ -7531,10 +7531,8 @@ def build_follow_message(context, trade, result):
         lines.append("")
         lines.append("<b>Стан точки входу:</b>")
         lines.append(f"{entry_state.get('label', '—')} ({int(entry_state.get('score') or 0)}%)")
-        if entry_state.get("reason"):
-            lines.append(f"Причина: {html.escape(str(entry_state.get('reason')))}")
-        if entry_state.get("advice"):
-            lines.append(f"Дія: {html.escape(str(entry_state.get('advice')))}")
+        # Keep follow-up messages clean: detailed reason/advice remains in logs,
+        # but Telegram shows only the state and the practical recommendation line.
     if result.get("reversal_label"):
         lines.append("")
         lines.append("<b>Ризик:</b>")
@@ -7551,10 +7549,8 @@ def build_follow_message(context, trade, result):
         lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
         if result.get("recommended_stop_reason"):
             lines.append(f"<i>{html.escape(str(result.get('recommended_stop_reason')))}</i>")
-    if result.get("notes"):
-        lines.append("")
-        lines.append("<b>Дія:</b>")
-        lines.extend([f"⚠️ {x}" for x in _short_list(result.get("notes"), 3)])
+    # Detailed action notes are intentionally hidden from Telegram follow-ups
+    # to avoid noise. They remain in result/state/journal for diagnostics.
     lines.append("")
     lines.extend(context_lines(context))
     return "\n".join(lines).strip()
