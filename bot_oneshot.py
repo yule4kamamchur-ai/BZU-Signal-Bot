@@ -370,6 +370,7 @@ def save_journal(journal):
     journal["updated_at"] = iso_now()
     journal["trades"] = (journal.get("trades") or [])[-MAX_JOURNAL:]
     journal["signals"] = (journal.get("signals") or [])[-MAX_JOURNAL:]
+    update_outcome_analytics(journal)
     atomic_json_write(JOURNAL_FILE, journal)
 
 
@@ -8428,7 +8429,7 @@ ENTRY_LEVEL_LABELS = {
     "ENTRY": "🟢 ПОВНИЙ ВХІД — повний сетап + 3M + структура",
     "RISKY_ENTRY": "🟠 РИЗИКОВАНИЙ ВХІД — рання ICT-точка / старт тренду",
     "WATCH_TRIGGER": "🟡 ЧЕКАТИ ПІДТВЕРДЖЕННЯ — майже готово, потрібне повернення рівня або закриття 3M",
-    "BLOCK": "🔴 ЗАБОРОНА ВХОДУ — входу немає",
+    "BLOCK": "🔴 ВХОДУ НЕМАЄ — сигнал не підтверджений",
 }
 
 
@@ -8778,6 +8779,7 @@ def new_active_trade(setup):
             + (["COUNTERTREND_ENTRY"] if setup.get("countertrend_entry") else [])
             + (["ENTRY_LEVEL: " + str(setup.get("entry_level"))] if setup.get("entry_level") else [])
             + (["SETUP_CLASSIFIER: " + str((setup.get("setup_classifier") or {}).get("type"))] if setup.get("setup_classifier") else [])
+            + (["REGIME_TYPE: " + str((setup.get("regime_engine") or {}).get("regime_type") or (setup.get("regime_engine") or {}).get("name"))] if setup.get("regime_engine") else [])
             + ([setup.get("reason", "")])
         ),
     )
@@ -8825,7 +8827,7 @@ def localize_user_text(text):
         ("trigger", "підтвердження"),
         ("Trigger", "Підтвердження"),
         ("WATCH", "ЧЕКАТИ"),
-        ("BLOCK", "ЗАБОРОНА"),
+        ("BLOCK", "ВХОДУ НЕМАЄ"),
         ("ENTRY", "ВХІД"),
         ("LONG", "ЛОНГ"),
         ("SHORT", "ШОРТ"),
@@ -8838,9 +8840,217 @@ def localize_user_text(text):
         ("retest", "ретест"),
         ("chase", "доганяння"),
     ]
+
     for old, new in replacements:
         text = text.replace(old, new)
     return text
+
+
+# ==========================================================
+# OUTCOME ANALYTICS ENGINE
+# ==========================================================
+# Analytics only: this block records performance statistics and does NOT affect
+# entries, stops, TP, supervision, alerts, or risk filters.
+OUTCOME_ANALYTICS_LOCAL_TZ = os.getenv("OUTCOME_ANALYTICS_LOCAL_TZ", "Europe/Uzhgorod")
+OUTCOME_ANALYTICS_LOOKBACK = int(os.getenv("OUTCOME_ANALYTICS_LOOKBACK", "120") or 120)
+
+
+def _outcome_local_tz_safe():
+    try:
+        return ZoneInfo(OUTCOME_ANALYTICS_LOCAL_TZ)
+    except Exception:
+        return timezone.utc
+
+
+def _outcome_parse_dt_safe(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        raw = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _outcome_same_local_day(value, now=None):
+    dt = _outcome_parse_dt_safe(value)
+    if not dt:
+        return False
+    tz = _outcome_local_tz_safe()
+    now = now or now_utc()
+    return dt.astimezone(tz).date() == now.astimezone(tz).date()
+
+
+def _note_value(notes, prefix):
+    prefix = str(prefix)
+    for item in notes or []:
+        s = str(item)
+        if s.startswith(prefix + ":"):
+            return s.split(":", 1)[1].strip()
+    return None
+
+
+def _trade_result_pct(trade):
+    return safe_float((trade or {}).get("result_pct"), 0.0) or 0.0
+
+
+def _trade_leveraged_pct(trade):
+    val = safe_float((trade or {}).get("leveraged_pct"), None)
+    if val is not None:
+        return val
+    return _trade_result_pct(trade) * LEVERAGE
+
+
+def _tp1_distance_pct_for_trade(trade):
+    entry = safe_float((trade or {}).get("entry"), None)
+    tp1 = safe_float((trade or {}).get("tp1"), None)
+    side = str((trade or {}).get("side") or "").upper()
+    if not entry or not tp1 or side not in ["LONG", "SHORT"]:
+        return None
+    raw = pct(tp1, entry)
+    return raw if side == "LONG" else -raw
+
+
+def _tp1_was_reached_proxy(trade):
+    action = str((trade or {}).get("result_action") or "").upper()
+    if action.startswith("TP"):
+        return True
+    mfe = safe_float((trade or {}).get("mfe_pct"), safe_float((trade or {}).get("best_pct"), 0.0)) or 0.0
+    tp1_dist = _tp1_distance_pct_for_trade(trade)
+    if tp1_dist is not None and tp1_dist > 0:
+        return mfe >= tp1_dist * 0.96
+    return mfe >= 0.75
+
+
+def _analytics_bucket_stats(trades):
+    trades = [t for t in trades or [] if isinstance(t, dict)]
+    if not trades:
+        return {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": None,
+            "expectancy_pct": 0.0,
+            "total_pct": 0.0,
+            "total_leveraged_pct": 0.0,
+            "avg_mfe_pct": 0.0,
+            "avg_mae_pct": 0.0,
+            "avg_mfe_capture_pct": None,
+            "tp1_proxy_rate": None,
+            "stop_or_negative_rate": None,
+        }
+
+    results = [_trade_result_pct(t) for t in trades]
+    wins = [x for x in results if x > 0]
+    mfe_vals = [safe_float(t.get("mfe_pct"), safe_float(t.get("best_pct"), 0.0)) or 0.0 for t in trades]
+    mae_vals = [safe_float(t.get("mae_pct"), 0.0) or 0.0 for t in trades]
+    capture_vals = [safe_float(t.get("mfe_captured_pct"), None) for t in trades]
+    capture_vals = [x for x in capture_vals if x is not None]
+    tp1_hits = sum(1 for t in trades if _tp1_was_reached_proxy(t))
+    stop_count = sum(
+        1 for t in trades
+        if "STOP" in str(t.get("result_action") or "").upper() or _trade_result_pct(t) < 0
+    )
+
+    return {
+        "trades": len(trades),
+        "wins": len(wins),
+        "losses": len(trades) - len(wins),
+        "win_rate": round(len(wins) / len(trades) * 100, 1),
+        "expectancy_pct": round(sum(results) / len(results), 3),
+        "total_pct": round(sum(results), 3),
+        "total_leveraged_pct": round(sum(_trade_leveraged_pct(t) for t in trades), 2),
+        "avg_mfe_pct": round(sum(mfe_vals) / len(mfe_vals), 3) if mfe_vals else 0.0,
+        "avg_mae_pct": round(sum(mae_vals) / len(mae_vals), 3) if mae_vals else 0.0,
+        "avg_mfe_capture_pct": round(sum(capture_vals) / len(capture_vals), 1) if capture_vals else None,
+        "tp1_proxy_rate": round(tp1_hits / len(trades) * 100, 1),
+        "stop_or_negative_rate": round(stop_count / len(trades) * 100, 1),
+    }
+
+
+def _analytics_group_by(trades, field):
+    grouped = {}
+    for t in trades or []:
+        if not isinstance(t, dict):
+            continue
+        key = t.get(field) or "UNKNOWN"
+        if isinstance(key, dict):
+            key = key.get("regime_type") or key.get("type") or key.get("name") or "UNKNOWN"
+        key = str(key or "UNKNOWN")
+        grouped.setdefault(key, []).append(t)
+    return {k: _analytics_bucket_stats(v) for k, v in sorted(grouped.items())}
+
+
+def _signal_key_from_setup(signal):
+    setup = (signal or {}).get("setup_classifier") or {}
+    if isinstance(setup, dict):
+        return setup.get("type") or setup.get("label") or "UNKNOWN"
+    return str(setup or "UNKNOWN")
+
+
+def _signal_key_from_regime(signal):
+    regime = (signal or {}).get("regime_engine") or {}
+    if isinstance(regime, dict):
+        return regime.get("regime_type") or regime.get("name") or "UNKNOWN"
+    return str(regime or "UNKNOWN")
+
+
+def compute_outcome_analytics(journal):
+    """Build compact statistics from the existing journal.
+
+    This engine is passive. It only writes analytics into the journal so later
+    reviews can see which regimes, setups and entry levels actually worked.
+    """
+    journal = journal or {}
+    trades = [t for t in list(journal.get("trades") or [])[-OUTCOME_ANALYTICS_LOOKBACK:] if isinstance(t, dict)]
+    signals = [s for s in list(journal.get("signals") or [])[-OUTCOME_ANALYTICS_LOOKBACK:] if isinstance(s, dict)]
+    today = [t for t in trades if _outcome_same_local_day(t.get("closed_at") or t.get("time"))]
+
+    signal_counts = {
+        "total": len(signals),
+        "entries": sum(1 for s in signals if str(s.get("type") or "").upper() in ["ENTRY", "RISKY_ENTRY"]),
+        "full_entries": sum(1 for s in signals if str(s.get("type") or "").upper() == "ENTRY"),
+        "risky_entries": sum(1 for s in signals if str(s.get("type") or "").upper() == "RISKY_ENTRY"),
+        "watch": sum(1 for s in signals if str(s.get("type") or "").upper() in ["WATCH", "WAIT_RETEST"]),
+        "no_trade": sum(1 for s in signals if str(s.get("type") or "").upper() == "NO_TRADE"),
+        "follow": sum(1 for s in signals if str(s.get("type") or "").upper() == "FOLLOW"),
+        "closed": sum(1 for s in signals if str(s.get("type") or "").upper() == "CLOSE"),
+        "pending_trigger_activations": sum(1 for s in signals if bool(s.get("pending_trigger_activated"))),
+    }
+
+    setup_signal_counts = {}
+    regime_signal_counts = {}
+    for s in signals:
+        setup_key = str(_signal_key_from_setup(s) or "UNKNOWN")
+        regime_key = str(_signal_key_from_regime(s) or "UNKNOWN")
+        setup_signal_counts[setup_key] = setup_signal_counts.get(setup_key, 0) + 1
+        regime_signal_counts[regime_key] = regime_signal_counts.get(regime_key, 0) + 1
+
+    return {
+        "updated_at": iso_now(),
+        "lookback_limit": OUTCOME_ANALYTICS_LOOKBACK,
+        "closed_trades_count": len(trades),
+        "signals_count": len(signals),
+        "overall": _analytics_bucket_stats(trades),
+        "today": _analytics_bucket_stats(today),
+        "by_side": _analytics_group_by(trades, "side"),
+        "by_setup": _analytics_group_by(trades, "setup_type"),
+        "by_regime": _analytics_group_by(trades, "regime_type"),
+        "by_entry_level": _analytics_group_by(trades, "entry_level"),
+        "by_exit_reason": _analytics_group_by(trades, "exit_reason_code"),
+        "signals": signal_counts,
+        "signal_counts_by_setup": dict(sorted(setup_signal_counts.items())),
+        "signal_counts_by_regime": dict(sorted(regime_signal_counts.items())),
+    }
+
+
+def update_outcome_analytics(journal):
+    if isinstance(journal, dict):
+        journal["outcome_analytics"] = compute_outcome_analytics(journal)
+    return journal
 
 # ==========================================================
 # MESSAGES
@@ -9031,9 +9241,9 @@ def _compact_title(setup):
     side_text = _side_label(side)
     level = setup.get("entry_level")
     if level == "BLOCK" and side in ["LONG", "SHORT"]:
-        return f"🔴 ЗАБОРОНА — {side_text} НЕ ВХОДИТИ"
+        return f"🔴 ВХОДУ НЕМАЄ — {side_text} НЕ ПІДТВЕРДЖЕНИЙ"
     if level == "BLOCK":
-        return "🔴 ЗАБОРОНА — ВХОДУ НЕМАЄ"
+        return "🔴 ВХОДУ НЕМАЄ"
     if action == "ENTRY":
         return f"🟢 ВХІД {side_text}"
     if action == "RISKY_ENTRY":
@@ -9201,11 +9411,19 @@ def build_closed_trade_journal_item(trade, result, context):
     mfe_captured_pct = round(actual_pct / mfe_pct * 100, 1) if mfe_pct > 0.1 else None
     mfe_giveback_pct = round(mfe_pct - actual_pct, 3) if mfe_pct > 0.1 else None
 
+    notes = list(getattr(trade, "notes", []) or [])
+    entry_level = _note_value(notes, "ENTRY_LEVEL")
+    setup_type = _note_value(notes, "SETUP_CLASSIFIER")
+    regime_type = _note_value(notes, "REGIME_TYPE")
+
     return {
         "id": trade.id,
         "opened_at": trade.opened_at,
         "closed_at": iso_now(),
         "side": trade.side,
+        "entry_level": entry_level,
+        "setup_type": setup_type,
+        "regime_type": regime_type,
         "entry": trade.entry,
         "close_price": round_price(result.get("exit_price") or context["price"]),
         "market_close_price": round_price(context["price"]),
@@ -9328,6 +9546,9 @@ def main():
             "action": result["action"],
             "price": round_price(context["price"]),
             "quality": active.quality,
+            "entry_level": _note_value(getattr(active, "notes", []), "ENTRY_LEVEL"),
+            "setup_type": _note_value(getattr(active, "notes", []), "SETUP_CLASSIFIER"),
+            "regime_type": _note_value(getattr(active, "notes", []), "REGIME_TYPE"),
             "context_bias": context["bias"],
             "tech_score": context["tech_score"],
             "total_score": context["total_score"],
@@ -9385,6 +9606,8 @@ def main():
         "price": round_price(context["price"]),
         "quality": setup["quality"],
         "reason": setup["reason"],
+        "entry_level": setup.get("entry_level"),
+        "pending_trigger_activated": bool(setup.get("pending_trigger_activated")),
         "setup_classifier": setup.get("setup_classifier"),
         "regime_engine": setup.get("regime_engine") or context.get("regime_engine"),
         "plan": asdict(setup["plan"]) if setup.get("plan") else None,
