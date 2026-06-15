@@ -135,25 +135,69 @@
         "previous_regime_type": ""
       },
       "time": "2026-06-15T13:15:54.236998+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 82.59,
+      "quality": 36,
+      "reason": "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "RANGE",
+        "regime_type": "RANGE_COMPRESSION",
+        "label": "стискання діапазону",
+        "score": 62,
+        "confidence": 64,
+        "reason": "стискання діапазону: середина range заборонена, дозволений лише підтверджений compression breakout",
+        "entry_action": "WAIT",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 77,
+        "hard_block": false,
+        "allowed_setups": [
+          "RANGE_COMPRESSION_BREAKOUT",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.16,
+          "move8_abs_pct": 0.048,
+          "slope15_abs_pct": 0.214,
+          "rsi15": 53.9,
+          "score_total_abs": 21,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "MIDRANGE",
+          "ict_setup": "BALANCE_MIDRANGE",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-15T13:31:17.987184+00:00"
     }
   ],
   "regime_memory": {
     "type": "NORMAL",
-    "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-15T13:15:53.897875+00:00"
+    "pending_type": "RANGE_COMPRESSION",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-15T13:31:17.605607+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-15T13:15:54.237047+00:00",
-    "price": 82.44,
-    "oi": 63940.67,
-    "cvd": -3746.0,
-    "cvd_time": "2026-06-15T13:15:54.237050+00:00",
-    "last_trade_ts": 1781529341863,
+    "time": "2026-06-15T13:31:17.987198+00:00",
+    "price": 82.59,
+    "oi": 64163.68,
+    "cvd": 11411.0,
+    "cvd_time": "2026-06-15T13:31:17.987200+00:00",
+    "last_trade_ts": 1781530269870,
     "bias": "NEUTRAL",
-    "tech_score": -42,
-    "total_score": -38
+    "tech_score": 13,
+    "total_score": 21
   },
-  "updated_at": "2026-06-15T13:15:54.237054+00:00"
+  "updated_at": "2026-06-15T13:31:17.987205+00:00"
 }
