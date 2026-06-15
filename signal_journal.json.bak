@@ -1,5 +1,191 @@
 {
-  "version": "pro-v2",
+  "version": "pro-v2-intraday-architecture",
   "trades": [],
-  "signals": []
+  "signals": [
+    {
+      "time": "2026-06-15T08:29:27.018635+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 82.33,
+      "quality": 54,
+      "reason": "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+      "plan": {
+        "entry": 82.33,
+        "stop": 83.1945,
+        "tp1": 81.4655,
+        "tp2": 81.0765,
+        "tp3": 80.5146,
+        "risk_pct": 1.05,
+        "rr1": 1.0,
+        "rr2": 1.45,
+        "rr3": 2.1,
+        "invalidation": "15m закриття вище 83.1945 або злам 3m/структури проти SHORT. Режим: боковик. TP/стоп динамічні; TP1 у тренді ≈1.35 ATR, у боковику ближче."
+      },
+      "confirmations": [
+        "активний обсяг",
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "режим: боковик — TP/стоп адаптовані",
+        "Smart Money RR мінімальний: 1.0R"
+      ],
+      "conflicts": [
+        "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -90,
+        "total_score": -89,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 22,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": -0.061,
+          "drift_pct": 0.081,
+          "vol_ratio": 0.9,
+          "note": "3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -53,
+          "trend": "SHORT",
+          "close": 82.4,
+          "ema20": 82.6241,
+          "ema50": 82.9542,
+          "rsi": 44.3,
+          "atr": 0.3497,
+          "slope_pct": -0.326,
+          "move_8_pct": -0.555,
+          "range_atr": 3.2,
+          "note": "ціна нижче EMA20/50; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -46,
+          "trend": "SHORT",
+          "close": 82.44,
+          "ema20": 83.1269,
+          "ema50": 83.9421,
+          "rsi": 42.2,
+          "atr": 0.8713,
+          "slope_pct": -0.31,
+          "move_8_pct": -0.639,
+          "range_atr": 6.4,
+          "note": "ціна нижче EMA20/50; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 82.44,
+          "ema20": 84.7915,
+          "ema50": 87.9815,
+          "rsi": 28.7,
+          "atr": 1.5702,
+          "slope_pct": -1.992,
+          "move_8_pct": -1.916,
+          "range_atr": 5.68,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "phase": "RANGE / WAIT",
+          "swing_high": 83.12,
+          "swing_low": 82.0,
+          "recent_high": 83.29,
+          "recent_low": 82.0,
+          "atr": 0.3497,
+          "note": "сильне bearish-закриття"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 17,
+          "trade_delta_pct": 9.3,
+          "book_delta_pct": 31.51,
+          "note": "стакан підтримує покупців; підтримка покупців біля 82.13"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 1395.0,
+          "delta_pct": 9.3,
+          "cvd": 1395.0,
+          "cvd_change_pct": 0,
+          "last_trade_ts": 1781512151095,
+          "price_move_pct": -0.048,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 82.3959,
+              "imbalance_pct": 86.0,
+              "volume": 7787.0
+            },
+            {
+              "price": 82.33,
+              "imbalance_pct": -90.4,
+              "volume": 4607.0
+            },
+            {
+              "price": 82.4617,
+              "imbalance_pct": -72.7,
+              "volume": 1164.0
+            }
+          ],
+          "note": "локальні покупки вище ціни"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 64595.25,
+          "oi_change_pct": 0,
+          "funding_pct": 0,
+          "price_change_pct": 0,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.8,
+          "move_1_pct": -0.145,
+          "move_6_pct": -0.29,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "top": "Lebanon warns displaced against rushing home after US-Iran deal - Reuters",
+          "total": 42
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        }
+      }
+    }
+  ],
+  "updated_at": "2026-06-15T08:29:27.019154+00:00"
 }
