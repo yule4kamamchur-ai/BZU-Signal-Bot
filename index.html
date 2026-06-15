@@ -248,6 +248,7 @@
   }
   .journal-side.long { background: var(--green-dim); color: var(--green); }
   .journal-side.short { background: var(--red-dim); color: var(--red); }
+  .journal-side.neutral { background: var(--gray-dim); color: var(--gray); }
   .journal-action { color: var(--muted); flex: 1; }
   .journal-time { color: var(--muted); font-family: var(--mono); font-size: 10px; }
 
@@ -530,41 +531,61 @@
 const REPO = 'yule4kamamchur-ai/BZU-Signal-Bot';
 const SIGNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/last_signal.json`;
 const JOURNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/signal_journal.json`;
+const REFRESH_MS = 60000;
 
 function $(id) { return document.getElementById(id); }
+function isObj(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+function hasKeys(v) { return isObj(v) && Object.keys(v).length > 0; }
+function firstNonEmptyObject(...objs) { return objs.find(hasKeys) || {}; }
+function asArray(v) { return Array.isArray(v) ? v : []; }
+function firstDefined(...vals) { return vals.find(v => v !== undefined && v !== null && v !== ''); }
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function escapeHtml(v) {
+  return String(v ?? '—')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
 
 function colorClass(bias) {
   if (!bias) return 'gray';
-  const b = bias.toUpperCase();
-  if (b === 'LONG') return 'green';
-  if (b === 'SHORT') return 'red';
+  const b = String(bias).toUpperCase();
+  if (b.includes('LONG') || b.includes('BUY') || b.includes('BULL')) return 'green';
+  if (b.includes('SHORT') || b.includes('SELL') || b.includes('BEAR')) return 'red';
+  if (b.includes('WAIT') || b.includes('WATCH') || b.includes('RISK')) return 'amber';
   return 'gray';
 }
 
 function biasLabel(bias) {
   if (!bias) return '—';
-  const b = bias.toUpperCase();
-  if (b === 'LONG') return '▲ LONG';
-  if (b === 'SHORT') return '▼ SHORT';
+  const b = String(bias).toUpperCase();
+  if (b.includes('LONG') || b.includes('BUY') || b.includes('BULL')) return '▲ LONG';
+  if (b.includes('SHORT') || b.includes('SELL') || b.includes('BEAR')) return '▼ SHORT';
   return '= НЕЙТР';
 }
 
-function scoreLabel(score, side) {
-  if (!score && score !== 0) return '—';
-  const s = parseInt(score);
-  const sign = s > 0 ? '+' : '';
-  return `${sign}${s}`;
+function formatPrice(v) {
+  const n = num(v);
+  if (n === null) return '—';
+  return n.toFixed(4);
 }
 
-function formatPrice(v) {
-  if (!v && v !== 0) return '—';
-  return parseFloat(v).toFixed(4);
+function formatPct(v, digits = 2) {
+  const n = num(v);
+  if (n === null) return '—';
+  return `${n > 0 ? '+' : ''}${n.toFixed(digits)}%`;
 }
 
 function formatTime(iso) {
   if (!iso) return '—';
   try {
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
     return d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
   } catch { return '—'; }
 }
@@ -573,84 +594,179 @@ function formatDateTime(iso) {
   if (!iso) return '—';
   try {
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
     return d.toLocaleString('uk-UA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   } catch { return '—'; }
 }
 
+function setText(id, value, fallback = '—') {
+  const el = $(id);
+  if (el) el.textContent = value === undefined || value === null || value === '' ? fallback : value;
+}
+
+function setRow(id, value, cls = 'gray') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = value === undefined || value === null || value === '' ? '—' : value;
+  el.className = 'info-row-val ' + cls;
+}
+
+function scoreText(score) {
+  const s = num(score);
+  if (s === null) return '—';
+  return `${s > 0 ? '+' : ''}${Math.round(s)}`;
+}
+
 function setQualityRing(quality) {
   const arc = $('qualityArc');
-  const num = $('qualityNum');
+  const numEl = $('qualityNum');
   const label = $('qualityLabel');
-  if (!quality && quality !== 0) { num.textContent = '—'; return; }
-  const q = parseInt(quality);
+  const qRaw = num(quality);
+  if (qRaw === null) {
+    numEl.textContent = '—';
+    label.textContent = 'якість';
+    arc.style.strokeDashoffset = 2 * Math.PI * 26;
+    return;
+  }
+  const q = Math.max(0, Math.min(100, Math.round(qRaw)));
   const circumference = 2 * Math.PI * 26;
-  const offset = circumference - (q / 100) * circumference;
-  arc.style.strokeDashoffset = offset;
+  arc.style.strokeDasharray = circumference;
+  arc.style.strokeDashoffset = circumference - (q / 100) * circumference;
   arc.classList.remove('high', 'mid', 'low');
   if (q >= 68) arc.classList.add('high');
   else if (q >= 55) arc.classList.add('mid');
   else arc.classList.add('low');
-  num.textContent = q;
-  num.style.color = q >= 68 ? 'var(--green)' : q >= 55 ? 'var(--amber)' : 'var(--red)';
+  numEl.textContent = q;
+  numEl.style.color = q >= 68 ? 'var(--green)' : q >= 55 ? 'var(--amber)' : 'var(--red)';
   label.textContent = q >= 68 ? 'сильний' : q >= 55 ? 'ризиковий' : 'слабкий';
 }
 
-function setSignalCard(action, side, title, reason, quality) {
+function normalizeAction(signal) {
+  const raw = String(firstDefined(signal?.action, signal?.type, signal?.entry_level, '')).toUpperCase();
+  if (!raw || raw === 'NO_TRADE' || raw.includes('NO_TRADE') || raw.includes('BLOCK') || raw.includes('ЗАБОРО')) return 'no_trade';
+  if (raw.includes('WATCH') || raw.includes('WAIT') || raw.includes('PENDING')) return 'watch';
+  if (raw.includes('RISKY')) return 'risky_entry';
+  if (raw.includes('ENTRY') || raw.includes('IGNITION')) return 'entry';
+  if (raw.includes('EXIT') || raw.includes('SUPPORT') || raw.includes('MANAGE')) return 'watch';
+  return raw.toLowerCase();
+}
+
+function signalTitle(signal) {
+  const explicit = firstDefined(signal?.title, signal?.message_title);
+  if (explicit) return explicit;
+  const action = normalizeAction(signal);
+  const side = String(signal?.side || '').toUpperCase();
+  const suffix = side ? ` ${side}` : '';
+  if (action === 'entry') return `ВХІД${suffix}`;
+  if (action === 'risky_entry') return `РИЗИКОВАНИЙ ВХІД${suffix}`;
+  if (action === 'watch') return `ЧЕКАТИ ТРИГЕР${suffix}`;
+  return 'ВХОДУ НЕМАЄ';
+}
+
+function setSignalCard(signal, ctx, state) {
   const card = $('signalCard');
   const titleEl = $('signalTitle');
+  const action = normalizeAction(signal);
   card.className = 'signal-card';
   titleEl.className = 'signal-title';
-  const a = (action || '').toLowerCase();
-  if (a === 'entry') {
+  if (action === 'entry') {
     card.classList.add('entry');
     titleEl.classList.add('entry');
-  } else if (a === 'risky_entry') {
+  } else if (action === 'risky_entry') {
     card.classList.add('risky');
     titleEl.classList.add('risky');
-  } else if (a === 'watch') {
+  } else if (action === 'watch') {
     card.classList.add('watch');
     titleEl.classList.add('watch');
   } else {
     card.classList.add('notrade');
     titleEl.classList.add('notrade');
   }
-  titleEl.textContent = title || action || '—';
-  $('signalReason').textContent = reason || '—';
-  setQualityRing(quality);
+  titleEl.textContent = signalTitle(signal);
+  const reason = firstDefined(
+    signal?.reason,
+    signal?.regime_engine?.reason,
+    signal?.setup_classifier?.reason,
+    ctx?.regime_engine?.reason,
+    ctx?.market_regime?.reason,
+    state?.reason,
+    '—'
+  );
+  $('signalReason').textContent = reason;
+  setQualityRing(firstDefined(signal?.quality, state?.last_quality, signal?.setup_classifier?.score));
 }
 
-function renderPlan(plan) {
+function normalizePlan(signal) {
+  const plan = signal?.plan || {};
+  const out = {
+    entry: firstDefined(plan.entry, plan.entry_price, signal?.entry, signal?.entry_price, signal?.price),
+    stop: firstDefined(plan.stop, plan.stop_price, plan.stop_current, signal?.stop, signal?.stop_initial),
+    tp1: firstDefined(plan.tp1, signal?.tp1),
+    tp2: firstDefined(plan.tp2, signal?.tp2),
+    tp3: firstDefined(plan.tp3, signal?.tp3),
+    risk_pct: firstDefined(plan.risk_pct, signal?.risk_pct),
+    rr1: firstDefined(plan.rr1, signal?.rr1),
+    rr2: firstDefined(plan.rr2, signal?.rr2),
+    rr3: firstDefined(plan.rr3, signal?.rr3)
+  };
+  return out;
+}
+
+function renderPlan(signal) {
   const grid = $('planGrid');
-  if (!plan || !plan.entry) { grid.style.display = 'none'; return; }
+  const plan = normalizePlan(signal);
+  if (num(plan.entry) === null && num(plan.tp1) === null && num(plan.stop) === null) {
+    grid.style.display = 'none';
+    return;
+  }
   grid.style.display = 'grid';
-  $('planEntry').textContent = formatPrice(plan.entry);
-  $('planStop').textContent = formatPrice(plan.stop);
-  $('planRisk').textContent = `ризик ${(plan.risk_pct || 0).toFixed(2)}%`;
-  $('planTp1').textContent = formatPrice(plan.tp1);
-  $('planRr1').textContent = `RR ${(plan.rr1 || 0).toFixed(2)}`;
-  $('planTp2').textContent = formatPrice(plan.tp2);
-  $('planRr2').textContent = `RR ${(plan.rr2 || 0).toFixed(2)}`;
-  $('planTp3').textContent = formatPrice(plan.tp3);
-  $('planRr3').textContent = `RR ${(plan.rr3 || 0).toFixed(2)}`;
+  setText('planEntry', formatPrice(plan.entry));
+  setText('planStop', formatPrice(plan.stop));
+  const risk = num(plan.risk_pct);
+  setText('planRisk', risk === null ? 'ризик —%' : `ризик ${risk.toFixed(2)}%`);
+  setText('planTp1', formatPrice(plan.tp1));
+  setText('planRr1', num(plan.rr1) === null ? 'RR —' : `RR ${num(plan.rr1).toFixed(2)}`);
+  setText('planTp2', formatPrice(plan.tp2));
+  setText('planRr2', num(plan.rr2) === null ? 'RR —' : `RR ${num(plan.rr2).toFixed(2)}`);
+  setText('planTp3', formatPrice(plan.tp3));
+  setText('planRr3', num(plan.rr3) === null ? 'RR —' : `RR ${num(plan.rr3).toFixed(2)}`);
 }
 
-function renderActiveTrade(trade) {
+function tpHit(side, price, target, explicit) {
+  if (explicit !== undefined && explicit !== null) return Boolean(explicit);
+  const p = num(price), t = num(target);
+  if (p === null || t === null) return false;
+  const s = String(side || '').toUpperCase();
+  return s === 'LONG' ? p >= t : s === 'SHORT' ? p <= t : false;
+}
+
+function renderActiveTrade(trade, currentPrice) {
   const banner = $('activeTradeBanner');
-  if (!trade || !trade.entry) { banner.style.display = 'none'; return; }
+  if (!trade || num(firstDefined(trade.entry, trade.entry_price)) === null) {
+    banner.style.display = 'none';
+    return;
+  }
   banner.style.display = 'block';
-  const side = (trade.side || '').toUpperCase();
-  $('tradeSide').textContent = side === 'LONG' ? '▲ LONG' : '▼ SHORT';
-  $('tradeSide').className = 'trade-stat-value ' + (side === 'LONG' ? 'positive' : 'negative');
-  $('tradeEntry').textContent = formatPrice(trade.entry);
-  $('tradeStop').textContent = formatPrice(trade.stop_initial);
-  $('tradeStopCurrent').textContent = formatPrice(trade.stop_current);
-  $('tradeBestPrice').textContent = formatPrice(trade.best_price);
-  $('tradeOpenedAt').textContent = formatDateTime(trade.opened_at);
+  const side = String(trade.side || '').toUpperCase();
+  $('tradeSide').textContent = side === 'LONG' ? '▲ LONG' : side === 'SHORT' ? '▼ SHORT' : '—';
+  $('tradeSide').className = 'trade-stat-value ' + (side === 'LONG' ? 'positive' : side === 'SHORT' ? 'negative' : 'neutral');
+  setText('tradeEntry', formatPrice(firstDefined(trade.entry, trade.entry_price)));
+  setText('tradeStop', formatPrice(firstDefined(trade.stop_initial, trade.stop, trade.initial_stop)));
+  setText('tradeStopCurrent', formatPrice(firstDefined(trade.stop_current, trade.current_stop, trade.stop)));
+  setText('tradeBestPrice', formatPrice(firstDefined(trade.best_price, trade.best, trade.mfe_price)));
+  setText('tradeOpenedAt', formatDateTime(firstDefined(trade.opened_at, trade.time, trade.created_at)));
+
+  const tp1 = firstDefined(trade.tp1, trade.plan?.tp1);
+  const tp2 = firstDefined(trade.tp2, trade.plan?.tp2);
+  const tp3 = firstDefined(trade.tp3, trade.plan?.tp3);
   const tpRow = $('tpRow');
   tpRow.innerHTML = '';
-  [['TP1', trade.tp1_hit, trade.tp1],
-   ['TP2', trade.tp2_hit, trade.tp2],
-   ['TP3', trade.tp3_hit, trade.tp3]].forEach(([label, hit, val]) => {
+  [
+    ['TP1', tpHit(side, currentPrice, tp1, trade.tp1_hit), tp1],
+    ['TP2', tpHit(side, currentPrice, tp2, trade.tp2_hit), tp2],
+    ['TP3', tpHit(side, currentPrice, tp3, trade.tp3_hit), tp3]
+  ].forEach(([label, hit, val]) => {
+    if (num(val) === null) return;
     const el = document.createElement('span');
     el.className = 'tp-badge ' + (hit ? 'hit' : 'pending');
     el.textContent = `${label} ${formatPrice(val)}${hit ? ' ✓' : ''}`;
@@ -660,234 +776,307 @@ function renderActiveTrade(trade) {
 
 function tfRow(tf, id) {
   const el = $(id);
-  if (!tf || !el) return;
-  const bias = (tf.bias || 'NEUTRAL').toUpperCase();
-  el.textContent = `${biasLabel(bias)} ${tf.score >= 0 ? '+' : ''}${tf.score || 0}`;
+  if (!el) return;
+  if (!tf) { setRow(id, '—', 'gray'); return; }
+  const bias = firstDefined(tf.bias, tf.trend, tf.state, 'NEUTRAL');
+  const score = firstDefined(tf.score, tf.value, 0);
+  el.textContent = `${biasLabel(bias)} ${scoreText(score)}`;
   el.className = 'info-row-val ' + colorClass(bias);
 }
 
 function renderTechAnalysis(ctx) {
-  if (!ctx) return;
-  tfRow(ctx.tf3, 'tf3');
-  tfRow(ctx.tf15, 'tf15');
-  tfRow(ctx.tf1h, 'tf1h');
-  tfRow(ctx.tf4h, 'tf4h');
+  ctx = ctx || {};
+  tfRow(firstDefined(ctx.tf3, ctx.tf_3m, ctx['3m']), 'tf3');
+  tfRow(firstDefined(ctx.tf15, ctx.tf_15m, ctx['15m']), 'tf15');
+  tfRow(firstDefined(ctx.tf1h, ctx.tf_1h, ctx['1h']), 'tf1h');
+  tfRow(firstDefined(ctx.tf4h, ctx.tf_4h, ctx['4h']), 'tf4h');
 
-  const struct = ctx.structure;
-  if (struct) {
-    $('structure').textContent = struct.phase || struct.bias || '—';
-    $('structure').className = 'info-row-val ' + colorClass(struct.bias);
-  }
-  if (ctx.atr15) {
-    $('atr15').textContent = parseFloat(ctx.atr15).toFixed(4);
-  }
+  const struct = ctx.structure || ctx.market_structure || {};
+  setRow('structure', firstDefined(struct.phase, struct.state, struct.bias), colorClass(struct.bias || struct.state));
+  setRow('atr15', formatPrice(firstDefined(ctx.atr15, ctx.atr_15m, ctx.tf15?.atr, ctx.tf_15m?.atr)), 'gray');
 }
 
-function renderIctFlow(ctx) {
-  if (!ctx) return;
-  const ict = ctx.ict || {};
-  $('ictSetup').textContent = (ict.setup || '—').replace(/_/g, ' ');
-  $('ictSetup').className = 'info-row-val ' + colorClass(ict.bias);
-  $('ictZone').textContent = ict.premium_discount || '—';
+function renderIctFlow(ctx, signal) {
+  ctx = ctx || {};
+  signal = signal || {};
+  const ict = ctx.ict || signal.ict || {};
+  const classifier = signal.setup_classifier || ctx.setup_classifier || {};
+  const regime = signal.regime_engine || ctx.regime_engine || ctx.market_regime || {};
+  const metrics = regime.metrics || {};
 
-  const cvd = ctx.cvd || {};
-  $('cvd').textContent = `${biasLabel(cvd.bias)} (${cvd.confidence || '—'})`;
-  $('cvd').className = 'info-row-val ' + colorClass(cvd.bias);
+  const setupText = firstDefined(ict.setup, ict.type, classifier.label, classifier.type, metrics.ict_setup);
+  setRow('ictSetup', setupText ? String(setupText).replace(/_/g, ' ') : '—', colorClass(firstDefined(ict.bias, classifier.side, signal.side)));
+  setRow('ictZone', firstDefined(ict.premium_discount, ict.zone, metrics.pd, metrics.premium_discount), 'gray');
 
-  const flow = ctx.flow || {};
-  $('flow').textContent = biasLabel(flow.bias);
-  $('flow').className = 'info-row-val ' + colorClass(flow.bias);
+  const cvd = ctx.cvd || signal.cvd || {};
+  const cvdText = hasKeys(cvd) ? `${biasLabel(cvd.bias)} (${firstDefined(cvd.confidence, scoreText(cvd.score))})` : '—';
+  setRow('cvd', cvdText, colorClass(cvd.bias));
 
-  const der = ctx.derivatives || {};
-  const funding = der.funding_pct != null ? `f:${(der.funding_pct * 100).toFixed(3)}%` : '';
-  $('derivatives').textContent = `${biasLabel(der.bias)} ${funding}`;
-  $('derivatives').className = 'info-row-val ' + colorClass(der.bias);
+  const flow = ctx.flow || ctx.order_flow || {};
+  setRow('flow', hasKeys(flow) ? biasLabel(flow.bias) : '—', colorClass(flow.bias));
+
+  const der = ctx.derivatives || ctx.oi_funding || {};
+  const funding = num(der.funding_pct);
+  const derText = hasKeys(der) ? `${biasLabel(der.bias)}${funding !== null ? ` f:${funding.toFixed(4)}%` : ''}` : '—';
+  setRow('derivatives', derText, colorClass(der.bias));
 
   const liq = ctx.liquidity || {};
-  $('liquidity').textContent = liq.event || biasLabel(liq.bias) || '—';
-  $('liquidity').className = 'info-row-val ' + colorClass(liq.bias);
+  setRow('liquidity', firstDefined(liq.event, liq.state, biasLabel(liq.bias)), colorClass(liq.bias || liq.event));
 }
 
-function renderRegime(ctx) {
-  if (!ctx) return;
-  const regime = ctx.market_regime || {};
+function renderRegime(ctx, signal) {
+  ctx = ctx || {};
+  signal = signal || {};
+  const regime = ctx.market_regime || signal.regime_engine || ctx.regime_engine || signal.market_regime || {};
   const badge = $('regimeBadge');
-  const label = regime.label || regime.name || '—';
+  const label = firstDefined(regime.label, regime.name, regime.regime_type, signal.regime_type, '—');
   badge.textContent = label;
-  const name = (regime.regime_type || regime.name || '').toUpperCase();
-  if (name.includes('TREND_EXPANSION')) { badge.style.background='var(--green-dim)'; badge.style.color='var(--green)'; }
+  const name = String(firstDefined(regime.regime_type, regime.name, signal.regime_type, '')).toUpperCase();
+  if (name.includes('TREND') || name.includes('IGNITION')) { badge.style.background='var(--green-dim)'; badge.style.color='var(--green)'; }
   else if (name.includes('EXHAUSTION') || name.includes('BLOCK')) { badge.style.background='var(--red-dim)'; badge.style.color='var(--red)'; }
-  else if (name.includes('NEWS') || name.includes('REVERSAL')) { badge.style.background='var(--amber-dim)'; badge.style.color='var(--amber)'; }
+  else if (name.includes('NEWS') || name.includes('REVERSAL') || name.includes('RISK')) { badge.style.background='var(--amber-dim)'; badge.style.color='var(--amber)'; }
   else if (name.includes('RANGE')) { badge.style.background='#0c1a2e'; badge.style.color='var(--blue)'; }
   else { badge.style.background='var(--gray-dim)'; badge.style.color='var(--gray)'; }
 
-  $('regimeType').textContent = regime.regime_type || regime.name || '—';
-  $('regimeEntry').textContent = regime.entry_action || '—';
-  $('regimeEntry').className = 'info-row-val ' + (
-    (regime.entry_action || '').includes('ALLOW') ? 'green' :
-    (regime.entry_action || '').includes('WAIT') ? 'amber' :
-    (regime.entry_action || '').includes('BLOCK') ? 'red' : 'gray'
-  );
+  setRow('regimeType', firstDefined(regime.regime_type, regime.name, signal.regime_type), 'gray');
+  const entryAction = firstDefined(regime.entry_action, signal.entry_level, signal.type);
+  const ea = String(entryAction || '').toUpperCase();
+  setRow('regimeEntry', entryAction, ea.includes('ALLOW') || ea.includes('ENTRY') ? 'green' : ea.includes('WAIT') || ea.includes('WATCH') ? 'amber' : ea.includes('BLOCK') ? 'red' : 'gray');
 
-  const session = ctx.session || {};
-  $('session').textContent = session.name || '—';
-  $('session').className = 'info-row-val ' + (session.liquidity_risk ? 'amber' : 'gray');
+  const session = ctx.session || signal.session || {};
+  setRow('session', hasKeys(session) ? firstDefined(session.name, session.label, session.type) : '—', hasKeys(session) && session.liquidity_risk ? 'amber' : 'gray');
 
-  const news = ctx.news || {};
-  $('newsBias').textContent = `${biasLabel(news.bias)} (${news.score >= 0 ? '+' : ''}${news.score || 0})`;
-  $('newsBias').className = 'info-row-val ' + colorClass(news.bias);
+  const news = ctx.news || signal.news || {};
+  const newsText = hasKeys(news) ? `${biasLabel(news.bias)} (${scoreText(news.score)})` : '—';
+  setRow('newsBias', newsText, colorClass(news.bias));
 
-  const ts = ctx.total_score;
-  $('totalScore').textContent = ts != null ? (ts >= 0 ? '+' : '') + ts : '—';
-  $('totalScore').className = 'info-row-val ' + (ts > 30 ? 'green' : ts < -30 ? 'red' : 'gray');
+  const ts = num(firstDefined(ctx.total_score, signal.total_score, ctx.tech_score));
+  setRow('totalScore', ts === null ? '—' : `${ts > 0 ? '+' : ''}${Math.round(ts)}`, ts > 30 ? 'green' : ts < -30 ? 'red' : 'gray');
 }
 
-function renderConfirmations(confs, confls) {
+function renderConfirmations(confs, conflicts) {
   const list = $('confList');
   list.innerHTML = '';
   const all = [];
-  (confs || []).forEach(c => all.push({ text: c, ok: true }));
-  (confls || []).forEach(c => all.push({ text: c, ok: false }));
-  if (!all.length) { list.innerHTML = '<span style="font-size:12px;color:var(--muted);">—</span>'; return; }
+  asArray(confs).forEach(c => all.push({ text: c, ok: true }));
+  asArray(conflicts).forEach(c => all.push({ text: c, ok: false }));
+  if (!all.length) {
+    list.innerHTML = '<span style="font-size:12px;color:var(--muted);">—</span>';
+    return;
+  }
   all.slice(0, 12).forEach(item => {
     const div = document.createElement('div');
     div.className = 'conf-item ' + (item.ok ? 'ok' : 'warn');
-    div.innerHTML = `<span class="dot"></span><span>${item.text}</span>`;
+    div.innerHTML = `<span class="dot"></span><span>${escapeHtml(item.text)}</span>`;
     list.appendChild(div);
   });
 }
 
 function renderICTZones(zones) {
   const el = $('ictZonesList');
-  if (!zones || !zones.length) { el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Немає активних зон</span>'; return; }
+  zones = asArray(zones);
+  if (!zones.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Немає активних зон</span>';
+    return;
+  }
   el.innerHTML = '';
-  zones.slice(0, 6).forEach(z => {
+  zones.slice(0, 8).forEach(z => {
+    const side = String(z.side || z.bias || '').toUpperCase();
     const pill = document.createElement('span');
-    pill.className = 'zone-pill ' + (z.side === 'LONG' ? 'bull' : z.side === 'SHORT' ? 'bear' : 'neutral');
-    pill.textContent = `${z.side} ${z.type} ${z.low}–${z.high}`;
+    pill.className = 'zone-pill ' + (side === 'LONG' ? 'bull' : side === 'SHORT' ? 'bear' : 'neutral');
+    const low = firstDefined(z.low, z.from, z.bottom, z.price_low);
+    const high = firstDefined(z.high, z.to, z.top, z.price_high);
+    pill.textContent = `${side || 'ZONE'} ${z.type || z.name || ''} ${formatPrice(low)}–${formatPrice(high)}`;
     el.appendChild(pill);
   });
 }
 
-function renderNews(items) {
+function normalizeNews(news) {
+  if (Array.isArray(news)) return news;
+  if (!news || typeof news !== 'object') return [];
+  if (Array.isArray(news.important)) return news.important;
+  if (Array.isArray(news.items)) return news.items;
+  if (news.top) return [{ title: news.top, source: news.source || 'news', score: news.score, published_at: news.published_at }];
+  return [];
+}
+
+function renderNews(news) {
+  const items = normalizeNews(news);
   const el = $('newsList');
-  if (!items || !items.length) { el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Новин немає</span>'; return; }
+  if (!items.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Новин немає</span>';
+    return;
+  }
   el.innerHTML = '';
   items.slice(0, 5).forEach(item => {
     const div = document.createElement('div');
     div.className = 'news-item';
-    const score = item.score || 0;
+    const score = num(item.score) ?? 0;
     const badgeClass = score > 0 ? 'long' : score < 0 ? 'short' : 'neutral';
     const badgeText = score > 0 ? '↑' : score < 0 ? '↓' : '–';
     div.innerHTML = `
       <div class="news-headline">
         <span class="news-badge ${badgeClass}">${badgeText}</span>
-        ${item.title || '—'}
+        ${escapeHtml(firstDefined(item.title, item.headline, '—'))}
       </div>
-      <div class="news-meta">${item.source || ''} · ${formatDateTime(item.published_at)}</div>
+      <div class="news-meta">${escapeHtml(firstDefined(item.source, ''))} · ${escapeHtml(formatDateTime(firstDefined(item.published_at, item.time)))}</div>
     `;
     el.appendChild(div);
   });
 }
 
-function renderJournal(history) {
+function renderJournal(items) {
   const el = $('journalList');
-  if (!history || !history.length) { el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Журнал порожній</span>'; return; }
+  items = asArray(items);
+  if (!items.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Журнал порожній</span>';
+    return;
+  }
   el.innerHTML = '';
-  const recent = history.slice(-10).reverse();
-  recent.forEach(item => {
+  items.slice(-10).reverse().forEach(item => {
+    const side = String(item.side || '').toUpperCase();
     const div = document.createElement('div');
     div.className = 'journal-item';
-    const side = (item.side || '').toUpperCase();
+    const sideClass = side === 'LONG' ? 'long' : side === 'SHORT' ? 'short' : 'neutral';
     div.innerHTML = `
-      <span class="journal-side ${side === 'LONG' ? 'long' : 'short'}">${side || '?'}</span>
-      <span class="journal-action">${item.type || item.action || '—'}</span>
-      <span class="journal-time">${formatDateTime(item.time)}</span>
+      <span class="journal-side ${sideClass}">${escapeHtml(side || '?')}</span>
+      <span class="journal-action">${escapeHtml(firstDefined(item.type, item.action, item.entry_level, item.result_action, '—'))}</span>
+      <span class="journal-time">${escapeHtml(formatDateTime(firstDefined(item.time, item.opened_at, item.closed_at)))}</span>
     `;
     el.appendChild(div);
   });
 }
 
-function renderPrice(ctx) {
-  if (!ctx) return;
-  const price = ctx.price;
-  const change = ctx.change24h;
-  if (price) $('priceValue').textContent = formatPrice(price);
-  if (change != null) {
-    const pct = parseFloat(change).toFixed(2);
-    const el = $('priceChange');
-    el.textContent = `${pct > 0 ? '+' : ''}${pct}%`;
-    el.className = 'price-change ' + (pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat');
+function currentPriceFrom(ctx, signal, state, activeTrade) {
+  return firstDefined(
+    ctx?.price,
+    ctx?.last_price,
+    signal?.price,
+    state?.price,
+    ctx?.tf15?.close,
+    ctx?.tf_15m?.close,
+    ctx?.tf3?.close,
+    activeTrade?.market_price,
+    activeTrade?.current_price,
+    activeTrade?.best_price
+  );
+}
+
+function renderPrice(ctx, signal, state, activeTrade) {
+  const price = currentPriceFrom(ctx, signal, state, activeTrade);
+  setText('priceValue', formatPrice(price));
+  const change = firstDefined(ctx?.change24h, ctx?.change_24h, ctx?.price_change_pct, state?.change24h, state?.change_24h);
+  const changeN = num(change);
+  const el = $('priceChange');
+  if (changeN === null) {
+    el.textContent = '—';
+    el.className = 'price-change flat';
+  } else {
+    el.textContent = formatPct(changeN);
+    el.className = 'price-change ' + (changeN > 0 ? 'up' : changeN < 0 ? 'down' : 'flat');
   }
-  if (ctx.source) $('priceSource').textContent = `джерело: ${ctx.source}`;
+  setText('priceSource', `джерело: ${firstDefined(ctx?.source, state?.source, 'history[]')}`);
 }
 
 function ageMinutes(iso) {
   if (!iso) return 999;
-  try { return (Date.now() - new Date(iso).getTime()) / 60000; } catch { return 999; }
+  try {
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return 999;
+    return (Date.now() - t) / 60000;
+  } catch { return 999; }
+}
+
+function newestByTime(items) {
+  const arr = asArray(items).filter(Boolean);
+  if (!arr.length) return null;
+  return arr.reduce((best, cur) => {
+    const bt = new Date(firstDefined(best.time, best.updated_at, best.opened_at, 0)).getTime() || 0;
+    const ct = new Date(firstDefined(cur.time, cur.updated_at, cur.opened_at, 0)).getTime() || 0;
+    return ct >= bt ? cur : best;
+  }, arr[0]);
+}
+
+function hasSignalShape(v) {
+  return hasKeys(v) && (v.type || v.action || v.entry_level || v.quality !== undefined || v.plan || v.context || v.reason || v.price !== undefined);
+}
+
+function extractSignalAndContext(state, journal) {
+  state = state || {};
+  journal = journal || {};
+
+  // Головне виправлення: нові версії бота кладуть готовий сигнал у history[].
+  // Тому беремо останній елемент history[], а не чекаємо last_context.
+  const fromStateHistory = newestByTime(asArray(state.history).filter(hasSignalShape));
+  const fromStateSignals = newestByTime(asArray(state.signals).filter(hasSignalShape));
+  const fromJournalSignals = newestByTime(asArray(journal.signals).filter(hasSignalShape));
+  const fromLastSignal = hasSignalShape(state.last_signal) ? state.last_signal : null;
+  const fromRoot = hasSignalShape(state) ? state : null;
+
+  const baseSignal = fromStateHistory || fromStateSignals || fromJournalSignals || fromLastSignal || fromRoot || {};
+  const signal = { ...baseSignal, ...(fromLastSignal || {}) };
+
+  const ctx = firstNonEmptyObject(
+    signal.context,
+    fromStateHistory?.context,
+    fromStateSignals?.context,
+    fromJournalSignals?.context,
+    state.last_context,
+    state.context
+  );
+
+  return { signal, ctx };
+}
+
+function extractJournalItems(state, journal) {
+  const stateHist = asArray(state?.history);
+  const journalSignals = asArray(journal?.signals);
+  const journalTrades = asArray(journal?.trades);
+  if (journalSignals.length) return journalSignals;
+  if (stateHist.length) return stateHist;
+  if (journalTrades.length) return journalTrades;
+  return [];
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
+  return await res.json();
 }
 
 async function loadData() {
   try {
-    const [sigRes] = await Promise.all([
-      fetch(SIGNAL_URL + '?t=' + Date.now()),
+    const [state, journal] = await Promise.all([
+      fetchJson(SIGNAL_URL),
+      fetchJson(JOURNAL_URL).catch(() => ({}))
     ]);
-    if (!sigRes.ok) throw new Error('HTTP ' + sigRes.status);
-    const state = await sigRes.json();
 
     $('errorBanner').style.display = 'none';
 
-    const ctx = state.last_context || state.context || {};
-    const lastSignal = state.last_signal || {};
-    const activeTrade = state.active_trade;
-    const history = state.history || [];
+    const { signal, ctx } = extractSignalAndContext(state, journal);
+    const activeTrade = firstDefined(state.active_trade, state.open_trade, signal.active_trade, null);
+    const currentPrice = currentPriceFrom(ctx, signal, state, activeTrade);
 
-    // Price
-    renderPrice(ctx);
-
-    // Signal
-    const action = lastSignal.action || state.last_action || 'NO_TRADE';
-    const title = lastSignal.title || action;
-    const reason = lastSignal.reason || ctx.regime_engine?.reason || '—';
-    const quality = lastSignal.quality || state.last_quality;
-    setSignalCard(action, lastSignal.side, title, reason, quality);
-
-    // Plan
-    renderPlan(lastSignal.plan || state.last_plan);
-
-    // Active trade
-    renderActiveTrade(activeTrade);
-
-    // Tech analysis
+    renderPrice(ctx, signal, state, activeTrade);
+    setSignalCard(signal, ctx, state);
+    renderPlan(signal);
+    renderActiveTrade(activeTrade, currentPrice);
     renderTechAnalysis(ctx);
+    renderIctFlow(ctx, signal);
+    renderRegime(ctx, signal);
+    renderConfirmations(firstDefined(signal.confirmations, ctx.confirmations), firstDefined(signal.conflicts, ctx.conflicts));
+    renderICTZones(firstDefined(ctx.pending_ict_zones, state.pending_ict_zones, state.ict_memory?.pending_zones, []));
+    renderNews(firstDefined(ctx.news, signal.news, state.news));
+    renderJournal(extractJournalItems(state, journal));
 
-    // ICT / Flow
-    renderIctFlow(ctx);
-
-    // Regime
-    renderRegime(ctx);
-
-    // Confirmations
-    renderConfirmations(lastSignal.confirmations, lastSignal.conflicts);
-
-    // ICT zones
-    renderICTZones(ctx.pending_ict_zones);
-
-    // News
-    renderNews((ctx.news || {}).important);
-
-    // Journal / history
-    renderJournal(history);
-
-    // Live dot + time
-    const updatedAt = state.updated_at || ctx.price_checked_at;
+    const updatedAt = firstDefined(state.updated_at, state.time, signal.time, ctx.price_checked_at, activeTrade?.opened_at);
     const age = ageMinutes(updatedAt);
     const dot = $('liveDot');
-    if (age < 20) { dot.className = 'live-dot'; }
-    else if (age < 60) { dot.className = 'live-dot stale'; }
-    else { dot.className = 'live-dot error'; }
-    $('updateTime').textContent = `оновлено ${formatTime(updatedAt)}`;
-
+    if (age < 20) dot.className = 'live-dot';
+    else if (age < 60) dot.className = 'live-dot stale';
+    else dot.className = 'live-dot error';
+    $('updateTime').textContent = updatedAt ? `оновлено ${formatTime(updatedAt)}` : 'оновлено —';
+    $('footer').textContent = `Оновлення кожні ${Math.round(REFRESH_MS / 1000)} сек · Дані з GitHub · формат history[]/signals[]`;
   } catch (e) {
     console.error(e);
     $('errorBanner').style.display = 'block';
@@ -896,20 +1085,8 @@ async function loadData() {
   }
 }
 
-// Load journal separately (optional, for extended news)
-async function loadJournal() {
-  try {
-    const res = await fetch(JOURNAL_URL + '?t=' + Date.now());
-    if (!res.ok) return;
-    const journal = await res.json();
-    const signals = (journal.signals || []).slice(-10).reverse();
-    if (signals.length) renderJournal(signals);
-  } catch {}
-}
-
 loadData();
-loadJournal();
-setInterval(() => { loadData(); loadJournal(); }, 60000);
+setInterval(loadData, REFRESH_MS);
 </script>
 </body>
 </html>
