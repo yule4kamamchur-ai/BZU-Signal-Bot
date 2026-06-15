@@ -7346,14 +7346,252 @@
           "previous_regime_type": "TREND_EXPANSION"
         }
       }
+    },
+    {
+      "time": "2026-06-15T22:16:01.573577+00:00",
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 82.59,
+      "quality": 35,
+      "reason": "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 4.5,
+          "move8_abs_pct": 0.181,
+          "slope15_abs_pct": 0.125,
+          "rsi15": 51.4,
+          "score_total_abs": 0,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "plan": null,
+      "confirmations": [],
+      "conflicts": [
+        "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+        "Не плутати з відкатом: для входу потрібен вихід з EQ, sweep або BOS + retest"
+      ],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": 3,
+        "total_score": 0,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -10,
+          "state": "RANGE",
+          "fast_move_pct": -0.278,
+          "drift_pct": -0.241,
+          "vol_ratio": 0.0,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 16,
+          "trend": "NEUTRAL",
+          "close": 82.65,
+          "ema20": 82.6498,
+          "ema50": 82.5411,
+          "rsi": 51.4,
+          "atr": 0.2024,
+          "slope_pct": -0.125,
+          "move_8_pct": -0.181,
+          "range_atr": 4.5,
+          "note": "ціна вище EMA20/50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -12,
+          "trend": "NEUTRAL",
+          "close": 82.65,
+          "ema20": 82.6839,
+          "ema50": 83.2552,
+          "rsi": 47.6,
+          "atr": 0.5945,
+          "slope_pct": 0.23,
+          "move_8_pct": 0.303,
+          "range_atr": 2.2,
+          "note": "ціна нижче EMA20/50; стиснення/боковик"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 82.65,
+          "ema20": 84.2098,
+          "ema50": 87.4602,
+          "rsi": 33.5,
+          "atr": 1.4494,
+          "slope_pct": -1.641,
+          "move_8_pct": -2.547,
+          "range_atr": 4.64,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 82.9,
+          "swing_low": 82.53,
+          "recent_high": 83.07,
+          "recent_low": 81.82,
+          "atr": 0.2024,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -7,
+          "trade_delta_pct": -11.41,
+          "book_delta_pct": 5.65,
+          "note": "потік без явної переваги"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -1554.0,
+          "delta_pct": -11.41,
+          "cvd": 239168.0,
+          "cvd_change_pct": -0.646,
+          "last_trade_ts": 1781561702010,
+          "price_move_pct": -0.241,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "zones": [],
+          "note": "кластери без явної переваги"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 65019.45,
+          "oi_change_pct": -0.05,
+          "funding_pct": 0.01328,
+          "price_change_pct": -0.133,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.0,
+          "move_1_pct": 0.0,
+          "move_6_pct": -0.169,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 8,
+          "top": "ConocoPhillips set to sign deal with Syria to revive gas production, FT reports - Reuters",
+          "total": 38
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "NO_CLEAN_SETUP",
+          "label": "⚪ Чистого сетапу немає",
+          "side": "NEUTRAL",
+          "score": 42,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "немає одного з топових сетапів для професійного входу",
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -6,
+            "quality_cap": 66,
+            "block_entry": true
+          },
+          "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+          "stop_rule": "стоп/TP не активувати без сетапу",
+          "tp_rule": "чекати чистішу структуру",
+          "management_rule": "чекати до появи топового сетапу"
+        },
+        "regime_engine": {
+          "name": "NORMAL",
+          "regime_type": "NORMAL",
+          "label": "звичайний intraday режим",
+          "score": 50,
+          "confidence": 50,
+          "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+          "entry_action": "ALLOW",
+          "entry_quality_adjustment": 0,
+          "quality_cap": null,
+          "hard_block": false,
+          "allowed_setups": [],
+          "notes": [],
+          "metrics": {
+            "bias": "NEUTRAL",
+            "range_atr": 4.5,
+            "move8_abs_pct": 0.181,
+            "slope15_abs_pct": 0.125,
+            "rsi15": 51.4,
+            "score_total_abs": 0,
+            "participation_same": 0,
+            "late_penalty": 0,
+            "pd": "PREMIUM",
+            "ict_setup": "PREMIUM_CONTEXT",
+            "range_edge": false
+          },
+          "stable_count": 1,
+          "pending_count": 2,
+          "is_stable": false,
+          "previous_regime_type": "TREND_EXPANSION"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-15T22:01:23.187119+00:00",
+  "updated_at": "2026-06-15T22:16:01.577773+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-15T22:01:23.187659+00:00",
+    "updated_at": "2026-06-15T22:16:01.583415+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 2,
-    "signals_count": 39,
+    "signals_count": 40,
     "overall": {
       "trades": 2,
       "wins": 1,
@@ -7505,12 +7743,12 @@
       }
     },
     "signals": {
-      "total": 39,
+      "total": 40,
       "entries": 2,
       "full_entries": 0,
       "risky_entries": 2,
       "watch": 14,
-      "no_trade": 6,
+      "no_trade": 7,
       "follow": 15,
       "closed": 2,
       "pending_trigger_activations": 0
@@ -7521,11 +7759,11 @@
       "NEWS_IMPULSE": 5,
       "NO_CLEAN_SETUP": 6,
       "TREND_IGNITION_ENTRY": 1,
-      "UNKNOWN": 23
+      "UNKNOWN": 24
     },
     "signal_counts_by_regime": {
       "NEWS_SHOCK": 15,
-      "NORMAL": 16,
+      "NORMAL": 17,
       "RANGE_COMPRESSION": 1,
       "TREND_EXPANSION": 6,
       "TREND_PULLBACK": 1
