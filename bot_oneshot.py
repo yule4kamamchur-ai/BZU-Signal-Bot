@@ -6653,6 +6653,162 @@ def _should_apply_pre_tp_profit_stop(trade, context, proposed_stop, best_pct, cu
         return True, "є SMC/ICT опора для стопу до TP1"
     return False, "до TP1 стоп не рухати без нового swing/ICT або достатнього MFE"
 
+
+def _trade_notes_text(trade):
+    return " | ".join(str(x) for x in (getattr(trade, "notes", None) or [])).upper()
+
+
+def _is_risky_pre_tp1_guard_trade(trade):
+    """Trades where pre-TP1 profit must be protected faster.
+
+    Applies to the exact cases that tend to give a quick impulse and then return:
+    RISKY_ENTRY, NEWS_SHOCK/NEWS_IMPULSE and early ignition setups.
+    """
+    notes = _trade_notes_text(trade)
+    risky_entry = "RISKY_ENTRY" in notes or "ENTRY_LEVEL: RISKY_ENTRY" in notes
+    early_setup = any(x in notes for x in [
+        "SETUP_CLASSIFIER: TREND_IGNITION_ENTRY",
+        "SETUP_CLASSIFIER: NEWS_IMPULSE",
+        "SETUP_CLASSIFIER: SWEEP_RECLAIM_EARLY_ENTRY",
+        "SETUP_CLASSIFIER: COUNTERTREND_SCALP",
+    ])
+    shock_regime = any(x in notes for x in [
+        "REGIME_TYPE: NEWS_SHOCK",
+        "REGIME_TYPE: NEWS_IMPULSE",
+        "REGIME_TYPE: EXHAUSTION",
+    ])
+    return bool(risky_entry or early_setup or shock_regime)
+
+
+def _near_entry_lock_stop(side, entry, price, lock_pct, min_gap_pct=0.12):
+    """Small breakeven-plus stop used only by the pre-TP1 risky profit guard."""
+    entry = safe_float(entry, 0.0) or 0.0
+    price = safe_float(price, 0.0) or 0.0
+    lock_pct = max(0.0, safe_float(lock_pct, 0.0) or 0.0)
+    min_gap_pct = max(0.06, safe_float(min_gap_pct, 0.12) or 0.12)
+    if not entry or not price or lock_pct <= 0:
+        return None
+
+    max_lock_now = safe_float(signed_pct(side, entry, price), 0.0) - min_gap_pct
+    if max_lock_now < 0.035:
+        return None
+    lock_pct = min(lock_pct, max_lock_now)
+
+    if side == "LONG":
+        stop = entry * (1.0 + lock_pct / 100.0)
+    else:
+        stop = entry * (1.0 - lock_pct / 100.0)
+    stop = round_price(stop)
+    return stop if _valid_stop_for_side(side, price, stop) else None
+
+
+def risky_pre_tp1_profit_guard_snapshot(trade, context, current_pct, best_pct, giveback, giveback_ratio,
+                                        support_votes=0.0, opposite_votes=0.0,
+                                        tf3_against=False, structure_against=False, ict_against=False,
+                                        flow_against=False, cvd_against=False, liquidity_against=False,
+                                        news_against=False, confirmed_ict_reversal=False,
+                                        entry_state=None):
+    """Professional pre-TP1 protection for RISKY / NEWS / ignition entries.
+
+    Decision logic:
+    1) If MFE is only noise -> do nothing.
+    2) If MFE >= 0.40% and trade is still working -> move stop near BE+.
+    3) If most of that MFE is given back and warnings appear -> exit near entry.
+
+    This prevents a RISKY_ENTRY that already gave +0.40-0.60% from becoming a
+    full negative trade when TP1 is intentionally farther away.
+    """
+    if not trade or getattr(trade, "tp1_hit", False):
+        return {"active": False}
+    if not _is_risky_pre_tp1_guard_trade(trade):
+        return {"active": False}
+
+    best_pct = safe_float(best_pct, 0.0) or 0.0
+    current_pct = safe_float(current_pct, 0.0) or 0.0
+    giveback = safe_float(giveback, max(0.0, best_pct - current_pct)) or 0.0
+    giveback_ratio = safe_float(giveback_ratio, (giveback / best_pct if best_pct > 0.1 else 0.0)) or 0.0
+    if best_pct < 0.40:
+        return {"active": False}
+
+    side = getattr(trade, "side", "NEUTRAL")
+    price = safe_float((context or {}).get("price"), 0.0) or 0.0
+    hard_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against), bool(confirmed_ict_reversal)])
+    soft_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
+    entry_state_name = str((entry_state or {}).get("state") or "").upper()
+    entry_weak = entry_state_name in ["WEAK", "BROKEN"]
+    support_ok = bool(support_votes >= max(1.8, opposite_votes + 0.30) or ((context or {}).get("tf15") or {}).get("bias") == side)
+
+    # Exit near BE instead of letting a RISKY/NEWS/ignition trade fall into loss.
+    close_near_entry = bool(
+        current_pct <= 0.08
+        and (hard_votes >= 1 or soft_votes >= 2 or entry_weak or giveback_ratio >= 0.62)
+        and not support_ok
+    )
+    close_negative_after_mfe = bool(
+        current_pct <= -0.03
+        and (hard_votes >= 1 or soft_votes >= 1 or entry_weak or giveback_ratio >= 0.55)
+    )
+    if close_near_entry or close_negative_after_mfe:
+        return {
+            "active": True,
+            "close": True,
+            "action": "EXIT_RISKY_PRE_TP1_BE_GUARD",
+            "title": f"{side} ЗАКРИТИ — РИЗИКОВИЙ ВХІД ВІДДАВ MFE",
+            "recommendation": "угода вже давала хороший плюс до TP1, але продовження не підтвердилось: закрити біля входу, не чекати дальній стоп",
+            "reason": f"RISKY/NEWS Guard: MFE +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%, віддано {round(giveback_ratio * 100, 1)}%",
+            "notes": [
+                f"MFE було +{round(best_pct, 3)}%, TP1 ще не взято",
+                "для ризикового/новинного раннього входу не віддавати рух назад у мінус",
+                f"hard/soft warnings: {hard_votes}/{soft_votes}",
+            ],
+        }
+
+    # Decide how much to lock. This is intentionally small: BE+ first, not TP1 trailing.
+    if best_pct >= 0.85 and current_pct >= 0.50 and soft_votes == 0 and hard_votes == 0:
+        desired_lock = 0.22
+        mode = "RUNNER_PROTECT"
+    elif best_pct >= 0.60 and current_pct >= 0.36:
+        desired_lock = 0.14
+        mode = "MFE_PROTECT"
+    elif current_pct >= 0.24:
+        desired_lock = 0.08
+        mode = "BREAKEVEN_PLUS"
+    elif current_pct >= 0.16 and (soft_votes >= 1 or giveback_ratio >= 0.35):
+        desired_lock = 0.045
+        mode = "DEFENSIVE_BE"
+    else:
+        return {"active": True, "protect": False, "reason": "MFE є, але ще мало простору для валідного BE+ стопу"}
+
+    # News / early ignition gets a little more room from the current price, but still protects BE+.
+    notes_text = _trade_notes_text(trade)
+    min_gap = 0.16 if ("NEWS" in notes_text or "TREND_IGNITION_ENTRY" in notes_text) else 0.12
+    stop = _near_entry_lock_stop(side, getattr(trade, "entry", 0.0), price, desired_lock, min_gap_pct=min_gap)
+    if stop is None:
+        if current_pct <= 0.12 and (soft_votes >= 1 or hard_votes >= 1 or giveback_ratio >= 0.45):
+            return {
+                "active": True,
+                "close": True,
+                "action": "EXIT_RISKY_PRE_TP1_BE_GUARD",
+                "title": f"{side} ЗАКРИТИ — НЕМАЄ МІСЦЯ ДЛЯ BE-СТОПУ",
+                "recommendation": "ціна вже близько до входу: стоп біля входу технічно запізнився, краще закрити біля нуля",
+                "reason": f"MFE +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%, стоп BE+ вже занадто близько",
+                "notes": ["RISKY/NEWS Guard: стоп біля входу не має достатнього зазору від ціни"],
+            }
+        return {"active": True, "protect": False, "reason": "стоп BE+ занадто близько до поточної ціни"}
+
+    return {
+        "active": True,
+        "protect": True,
+        "mode": mode,
+        "stop": stop,
+        "reason": f"RISKY/NEWS Guard: MFE +{round(best_pct, 3)}%, TP1 ще не взято — стоп біля входу",
+        "notes": [
+            f"MFE було +{round(best_pct, 3)}%, TP1 ще не взято",
+            f"режим захисту: {mode}",
+            f"стоп біля входу: {round_price(stop)}",
+        ],
+    }
+
 def _exit_reason_code(result, context=None, trade=None):
     action = str((result or {}).get("action") or "")
     notes = " ".join(str(x) for x in ((result or {}).get("notes") or [])).lower()
@@ -7690,7 +7846,7 @@ def analyze_trade_phase(trade, context, current_pct, best_pct, giveback,
     action_s = str(action or "")
     title = f"🟡 СУПРОВІД {side} — ПОТРІБНЕ ПРОДОВЖЕННЯ"
     status = "NEEDS_CONTINUATION"
-    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT"]:
+    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_RISKY_PRE_TP1_BE_GUARD", "EXIT"]:
         status = "EDGE_LOST"
         if action_s.startswith("TP"):
             title = f"🔵 {side} ЗАКРИТО — ЦІЛЬ ВИКОНАНА"
@@ -7737,7 +7893,7 @@ def analyze_trade_phase(trade, context, current_pct, best_pct, giveback,
             status = "CONTINUATION_VALID"
 
     # One concise reason for Telegram. Full diagnostics stay in the journal.
-    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT"]:
+    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_RISKY_PRE_TP1_BE_GUARD", "EXIT"]:
         if action_s == "STOP":
             reason = "стопова зона була зачеплена; сценарій закрито за планом."
         elif best_pct >= 0.35 and current_pct >= -0.05:
@@ -8007,6 +8163,60 @@ def manage_active_trade(trade, context):
         news_against=news_against,
         confirmed_ict_reversal=confirmed_ict_reversal,
     )
+
+    # Professional RISKY/NEWS pre-TP1 profit guard.
+    # If an early/risky/news entry already gave meaningful MFE but TP1 is still
+    # untouched, the bot must not wait until the full stop. It either moves stop
+    # near BE+, or exits near entry when the edge is fading.
+    risky_guard = risky_pre_tp1_profit_guard_snapshot(
+        trade, context, current_pct, best_pct, giveback, giveback_ratio,
+        support_votes=support_votes,
+        opposite_votes=opposite_votes,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+        liquidity_against=liquidity_against,
+        news_against=news_against,
+        confirmed_ict_reversal=confirmed_ict_reversal,
+        entry_state=entry_state,
+    )
+    if risky_guard.get("active"):
+        if risky_guard.get("close"):
+            trade.status = "CLOSED"
+            trade.last_action = risky_guard.get("action") or "EXIT_RISKY_PRE_TP1_BE_GUARD"
+            return {
+                "closed": True,
+                "action": trade.last_action,
+                "exit_reason_code": "RISKY_PRE_TP1_BE_GUARD",
+                "exit_quality": "PROTECTIVE_BE_EXIT",
+                "title": risky_guard.get("title") or f"{side} ЗАКРИТИ — РИЗИКОВИЙ ВХІД ВІДДАВ MFE",
+                "recommendation": risky_guard.get("recommendation") or "закрити біля входу, не чекати дальній стоп",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "notes": list(risky_guard.get("notes") or [])[:5],
+                "entry_state": entry_state,
+                "trade_phase": analyze_trade_phase(
+                    trade, context, current_pct, best_pct, giveback,
+                    high_since_open=high_since_open, low_since_open=low_since_open,
+                    entry_state=entry_state, trade_validation=trade_validation,
+                    support_votes=support_votes, opposite_votes=opposite_votes,
+                    action=trade.last_action, market_regime=market_regime,
+                    tf3_against=tf3_against, structure_against=structure_against, ict_against=ict_against,
+                    flow_against=flow_against, cvd_against=cvd_against, liquidity_against=liquidity_against,
+                    news_against=news_against, confirmed_ict_reversal=confirmed_ict_reversal,
+                    closed=True, exit_reason_code="RISKY_PRE_TP1_BE_GUARD",
+                ),
+            }
+        guard_stop = risky_guard.get("stop")
+        if risky_guard.get("protect") and guard_stop is not None and _apply_more_protective_stop(trade, side, guard_stop):
+            action = "PROTECT"
+            title = f"{side} — РИЗИКОВИЙ ВХІД: MFE ЗАХИЩЕНО"
+            recommendation = "ранній/новинний вхід уже дав хороший рух до TP1: стоп підтягнуто біля входу, щоб не перетворити плюс у мінус"
+            recommended_stop = trade.stop_current
+            recommended_stop_reason = risky_guard.get("reason") or "RISKY/NEWS pre-TP1 profit guard"
+            notes.extend(list(risky_guard.get("notes") or [])[:4])
 
     # Universal validation of the opened idea. This does not delay entries.
     # It changes the supervision wording through "Стан точки входу", without
