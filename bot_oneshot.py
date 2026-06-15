@@ -1305,7 +1305,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
     Important safety rule:
     ICT direction is NOT assigned from premium/discount alone.
     It needs an actual model:
-    - liquidity sweep + повернення рівня
+    - liquidity sweep + reclaim
     - BOS/MSS + retracement into FVG/OB
     - clear FVG/OB reaction zone
 
@@ -1420,7 +1420,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         score = 26
         bias = "LONG"
         setup = "LIQUIDITY_SWEEP_LONG"
-        notes.append("sell-side liquidity sweep + повернення рівня")
+        notes.append("sell-side liquidity sweep + reclaim")
         if discount:
             score += 7
             notes.append("discount")
@@ -1433,7 +1433,7 @@ def analyze_ict_model(candles_3m, candles_15m, structure, price):
         score = -26
         bias = "SHORT"
         setup = "LIQUIDITY_SWEEP_SHORT"
-        notes.append("buy-side liquidity sweep + повернення рівня вниз")
+        notes.append("buy-side liquidity sweep + reclaim вниз")
         if premium:
             score -= 7
             notes.append("premium")
@@ -1611,7 +1611,7 @@ def build_pending_ict_zones(context):
         ict.get("bull_ob"),
         "Bullish OB",
         78 if premium_discount == "DISCOUNT" else 64,
-        "утримання OB + повернення середини зони + стоп нижче OB",
+        "утримання OB + reclaim середини зони + стоп нижче OB",
         "order block для low-risk LONG",
     )
     add_zone(
@@ -2177,7 +2177,7 @@ def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
     - trades/book flow
 
     It is a practical proxy for: long liquidation, short squeeze, high/low sweep,
-    and post-sweep повернення рівня.
+    and post-sweep reclaim.
     """
     candles = candles_3m if candles_3m and len(candles_3m) >= 25 else candles_15m
     if not candles or len(candles) < 25 or not price:
@@ -2213,7 +2213,7 @@ def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
     upside_sweep = last.high > prev_high and last.close < prev_high
 
     if downside_sweep or phase == "DOWNSIDE SWEEP":
-        event = "DOWNSIDE SWEEP / LONG ПОВЕРНЕННЯ РІВНЯ"
+        event = "DOWNSIDE SWEEP / LONG RECLAIM"
         score += 18
         blocks.append("SHORT")
         notes.append("зняли low і повернулись вище — шорт не доганяти")
@@ -2222,7 +2222,7 @@ def analyze_liquidations(candles_3m, candles_15m, flow, structure, price):
             notes.append("покупці відкуповують після зняття low")
 
     elif upside_sweep or phase == "UPSIDE SWEEP":
-        event = "UPSIDE SWEEP / SHORT ПОВЕРНЕННЯ РІВНЯ"
+        event = "UPSIDE SWEEP / SHORT RECLAIM"
         score -= 18
         blocks.append("LONG")
         notes.append("зняли high і закрились нижче — лонг не доганяти")
@@ -2283,10 +2283,7 @@ def market_session():
         return {"name": "NEW YORK / LONDON", "score": 4, "liquidity_risk": False, "note": "ліквідна сесія"}
     if 7 <= hour < 12:
         return {"name": "LONDON", "score": 2, "liquidity_risk": False, "note": "європейська сесія"}
-    # Спокійна сесія більше не знижує якість і не блокує входи сама по собі.
-    # Якість має визначатися структурою, ICT, 3M, CVD/flow і місцем входу,
-    # бо саме в тихі дні часто зʼявляються чисті ранні сетапи.
-    return {"name": "ASIA / QUIET", "score": 0, "liquidity_risk": True, "note": "спокійна сесія — не фільтр входу"}
+    return {"name": "ASIA / QUIET", "score": -6, "liquidity_risk": True, "note": "тиха сесія: ризик спреду/slippage"}
 
 
 # ==========================================================
@@ -2635,7 +2632,7 @@ def analyze_reentry_cooldown(state, max_age_hours=6):
     block the same direction for hours and keep printing WATCH. New behavior:
     - no hard ban by default;
     - apply a quality penalty for the same direction;
-    - remove/override the penalty when a fresh BOS/повернення рівня/ICT continuation appears;
+    - remove/override the penalty when a fresh BOS/reclaim/ICT continuation appears;
     - prevent revenge-looping with a max same-side entries guard.
     """
     history = (state or {}).get("history") or []
@@ -2882,7 +2879,7 @@ def cooldown_override_ok(side, context):
     """Allow professional same-side re-entry after a weak exit.
 
     Old behavior was too strict: any EXIT_LOCAL_BREAK/weak close blocked the
-    same direction until a perfect new BOS/повернення рівня. In a strong trend this can
+    same direction until a perfect new BOS/reclaim. In a strong trend this can
     make the bot watch the whole continuation without re-entering.
 
     New behavior:
@@ -2973,7 +2970,7 @@ def cooldown_override_reason(side, context):
     regime_name = market_regime.get("name") if isinstance(market_regime, dict) else market_regime
     if str(regime_name or "").upper() in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]:
         return f"після слабкого виходу {side} дозволено повторний вхід: тренд/структура продовжуються"
-    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS / повернення рівня або ICT continuation"
+    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS/reclaim або ICT continuation"
 
 def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
     """Detect a professional reversal setup after a failed trade.
@@ -3095,7 +3092,7 @@ def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
 
     if ict_reclaim or (ict.get("bias") == side and bool(ict.get("entry_ok"))):
         score += 18
-        confirmations.append("ICT дає sweep / повернення рівня або continuation для розвороту")
+        confirmations.append("ICT дає sweep/reclaim або continuation для розвороту")
     elif ict.get("bias") == side:
         score += 8
         confirmations.append("ICT підтримує ідею розвороту")
@@ -3145,7 +3142,7 @@ def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
         "age_minutes": round(age_min, 1),
         "score": score,
         "allow_entry": bool(allow_entry),
-        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS / повернення рівня",
+        "reason": f"попередній {failed_side} зламано ({action}, {round(result_pct, 3)}%); шукати {side} тільки після 3M + BOS/reclaim",
         "confirmations": confirmations[:5],
         "conflicts": conflicts[:5],
     }
@@ -3220,8 +3217,8 @@ def build_context(data, state=None):
         + volume_guard.get("score", 0)
     )
     total_score = tech_score + news.get("score", 0) * 0.22 + calendar.get("score", 0) + session.get("score", 0)
-    # Low-liquidity/quiet session is informational only.
-    # Do not reduce directional score only because the session is calm.
+    if low_liquidity_risk:
+        total_score -= 10 if tech_score > 0 else -10
     if price_warning:
         total_score *= 0.92
 
@@ -3320,7 +3317,7 @@ def detect_ict_balance_market(context, side=None):
     ICT idea used here:
     - the middle of the dealing range around equilibrium is low edge;
     - in balance we do NOT open market entries from the middle;
-    - valid trades come from sweep / повернення рівня at range edges or BOS + FVG/OB retest.
+    - valid trades come from sweep/reclaim at range edges or BOS + FVG/OB retest.
 
     Important: this must not confuse a normal pullback with a range.
     A pullback is allowed when price is in discount for LONG / premium for SHORT
@@ -3469,135 +3466,7 @@ def detect_exhausted_move(side, context):
                 reasons.append("CVD/потік/кластери вже попереджають")
             return True, "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. " + "; ".join(reasons[:4])
 
-
     return False, ""
-
-
-def professional_continuation_snapshot(side, context):
-    """Professional continuation validator.
-
-    Distinguishes a bad chase from a real continuation setup:
-    - impulse -> base/hold -> continuation;
-    - BOS/CHOCH or sweep context;
-    - FVG/OB reaction or broken-level hold;
-    - 3M confirmation without heavy CVD/flow conflict.
-
-    It is intentionally a score, not a hard gate. It lets the bot keep good
-    early entries while blocking empty high/low chasing.
-    """
-    context = context if isinstance(context, dict) else {}
-    side = side if side in ["LONG", "SHORT"] else "NEUTRAL"
-    if side not in ["LONG", "SHORT"]:
-        return {"score": 0, "grade": "NONE", "allow_edge": False, "reasons": []}
-
-    opp = opposite(side)
-    price = safe_float(context.get("price"), 0) or 0
-    atr15 = safe_float(context.get("atr15"), 0) or (price * 0.006 if price else 0.5)
-    tf3 = context.get("tf3") or {}
-    tf15 = context.get("tf15") or {}
-    tf1h = context.get("tf1h") or {}
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    cvd = context.get("cvd") or {}
-    flow = context.get("flow") or {}
-    clusters = context.get("clusters") or {}
-    candles3 = context.get("candles_3m") or []
-
-    phase = str(structure.get("phase", "") or "").upper()
-    setup = str(ict.get("setup", "") or "").upper()
-    score = 0
-    reasons = []
-
-    def add(points, reason):
-        nonlocal score
-        score += int(points)
-        if reason and reason not in reasons:
-            reasons.append(reason)
-
-    if tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 24:
-        add(16, "3M підтверджує напрям")
-    if tf15.get("bias") == side:
-        add(14, "15M підтримує")
-    if tf1h.get("bias") == side:
-        add(8, "1H не проти")
-
-    if structure.get("bias") == side:
-        add(16, "структура за напрям")
-    if side == "LONG" and any(x in phase for x in ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"]):
-        add(20, "структурна подія LONG")
-    if side == "SHORT" and any(x in phase for x in ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"]):
-        add(20, "структурна подія SHORT")
-
-    strong_ict = {
-        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
-        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
-    }
-    continuation_ict = {
-        "LONG": ["BOS_LONG_CONTINUATION_HOLD", "BOS_LONG_RETRACE_FVG_OB"],
-        "SHORT": ["BOS_SHORT_CONTINUATION_HOLD", "BOS_SHORT_RETRACE_FVG_OB"],
-    }
-    if ict.get("bias") == side and ict.get("entry_ok") and setup in strong_ict.get(side, []):
-        add(24, "ICT сетап готовий")
-    elif ict.get("bias") == side and setup in continuation_ict.get(side, []):
-        add(18, "ICT continuation/утримання рівня")
-    elif ict.get("bias") == side:
-        add(7, "ICT контекст за напрям")
-
-    # Impulse -> base -> continuation. A vertical candle alone is not enough;
-    # a short compression/hold after impulse is a professional continuation clue.
-    try:
-        sample = candles3[-6:]
-        if len(sample) >= 4 and atr15:
-            last4_range = max(c.high for c in sample[-4:]) - min(c.low for c in sample[-4:])
-            bodies = [abs(c.close - c.open) for c in sample[-4:]]
-            avg_body = sum(bodies) / len(bodies) if bodies else 0
-            compressed = last4_range <= atr15 * 0.95 and avg_body <= atr15 * 0.36
-            if side == "LONG":
-                higher_lows = sample[-1].low >= min(c.low for c in sample[-4:-1])
-                holds = sample[-1].close >= min(c.close for c in sample[-4:])
-                if compressed and higher_lows and holds:
-                    add(14, "після імпульсу є проторговка/утримання")
-            else:
-                lower_highs = sample[-1].high <= max(c.high for c in sample[-4:-1])
-                holds = sample[-1].close <= max(c.close for c in sample[-4:])
-                if compressed and lower_highs and holds:
-                    add(14, "після імпульсу є проторговка/утримання")
-    except Exception:
-        pass
-
-    micro_against = 0
-    if cvd.get("confidence", "HIGH") != "LOW" and cvd.get("bias") == opp and abs(int(cvd.get("score", 0) or 0)) >= 14:
-        micro_against += 1
-        add(-12, "CVD проти")
-    if flow.get("bias") == opp and abs(int(flow.get("score", 0) or 0)) >= 10:
-        micro_against += 1
-        add(-10, "потік проти")
-    if clusters.get("bias") == opp and abs(int(clusters.get("score", 0) or 0)) >= 4:
-        micro_against += 1
-        add(-8, "кластери проти")
-    if cvd.get("bias") == side and cvd.get("confidence", "HIGH") != "LOW":
-        add(7, "CVD не проти")
-    if flow.get("bias") == side:
-        add(7, "потік не проти")
-
-    score = int(max(0, min(100, score)))
-    if score >= 72 and micro_against <= 1:
-        grade = "STRONG_CONTINUATION"
-    elif score >= 56 and micro_against <= 2:
-        grade = "EARLY_CONTINUATION"
-    elif score >= 40:
-        grade = "PARTIAL_CONTINUATION"
-    else:
-        grade = "NO_CONTINUATION"
-
-    return {
-        "score": score,
-        "grade": grade,
-        "allow_edge": bool(score >= 72 and micro_against <= 1),
-        "micro_against": micro_against,
-        "reasons": reasons[:5],
-    }
-
 
 def is_late_chase(side, context):
     """Anti-chase guard for intraday entries.
@@ -3630,23 +3499,6 @@ def is_late_chase(side, context):
 
     distance_atr = abs(price - ema20) / atr15 if ema20 else 0
 
-    recent_15 = (context.get("candles_15m") or [])[-32:]
-    local_high = max((c.high for c in recent_15), default=None)
-    local_low = min((c.low for c in recent_15), default=None)
-    move_from_high = pct(price, local_high) if local_high else 0.0
-    move_from_low = pct(price, local_low) if local_low else 0.0
-    near_local_high = bool(local_high and (local_high - price) / price * 100 <= 0.45)
-    near_local_low = bool(local_low and (price - local_low) / price * 100 <= 0.45)
-
-    setup = str(ict.get("setup", "") or "").upper()
-    strong_continuation = {
-        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG", "BOS_LONG_CONTINUATION_HOLD"],
-        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT", "BOS_SHORT_CONTINUATION_HOLD"],
-    }
-    has_ict_continuation = bool(ict.get("bias") == side and ict.get("entry_ok") and setup in strong_continuation.get(side, []))
-    continuation_snapshot = professional_continuation_snapshot(side, context)
-    has_structured_continuation = bool(has_ict_continuation or continuation_snapshot.get("allow_edge"))
-
     # Strong 3m impulse already happened. For a 15m intraday strategy this is
     # the classic place where market entries become late/chasing.
     long_vertical_3m = fast_move_3m >= 0.62 and score_3m >= 34
@@ -3664,31 +3516,27 @@ def is_late_chase(side, context):
     if side == "LONG":
         if "LONG" in liquidity.get("blocks", []):
             return True, "ліквідність проти: high зняли/памп поглинули, лонг не доганяти"
-        if long_vertical_3m and not has_structured_continuation:
+        if long_vertical_3m:
             return True, "3M вже дав різкий імпульс вгору — лонг не доганяти; чекати проторговку або відкат"
-        if long_stretched and not has_structured_continuation:
+        if long_stretched:
             return True, "ціна розтягнута від EMA20 після 3M-імпульсу — лонг тільки після охолодження"
-        if mature_15m_long and not has_structured_continuation:
+        if mature_15m_long:
             return True, "лонг після сильного 15M імпульсу: чекати відкат/проторговку"
         if distance_atr >= 1.75 and tf3.get("state") != "LONG_STRENGTHENING":
             return True, "ціна далеко від EMA20, 3M не підсилює"
-        if near_local_high and move_from_low >= 1.6 and not has_structured_continuation:
-            return True, "LONG біля локального high після руху — потрібен відкат, утримання рівня або ICT continuation"
         if structure.get("phase") == "UPSIDE SWEEP":
             return True, "зверху зняли ліквідність, лонг не доганяти"
     else:
         if "SHORT" in liquidity.get("blocks", []):
             return True, "ліквідність проти: low зняли/дамп викупили, шорт не доганяти"
-        if short_vertical_3m and not has_structured_continuation:
+        if short_vertical_3m:
             return True, "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат"
-        if short_stretched and not has_structured_continuation:
+        if short_stretched:
             return True, "ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження"
-        if mature_15m_short and not has_structured_continuation:
+        if mature_15m_short:
             return True, "шорт після сильного 15M імпульсу: чекати відкат/проторговку"
         if distance_atr >= 1.75 and tf3.get("state") != "SHORT_STRENGTHENING":
             return True, "ціна далеко від EMA20, 3M не підсилює"
-        if near_local_low and move_from_high <= -1.6 and not has_structured_continuation:
-            return True, "SHORT біля локального low після імпульсу — потрібен ретест, lower high або ICT reaction"
         if structure.get("phase") == "DOWNSIDE SWEEP":
             return True, "знизу зняли ліквідність, шорт не доганяти"
     return False, ""
@@ -3732,10 +3580,6 @@ def soft_late_entry_penalty(side, context, late_reason=""):
     if ict.get("no_chase") and ict.get("bias") == side:
         penalty += 5
 
-    lr = str(late_reason or "").lower()
-    if "біля локального low" in lr or "біля локального high" in lr or "після імпульсу" in lr:
-        penalty = max(penalty, 16)
-
     # A real ICT entry model can justify entering an impulse continuation/reversal,
     # so reduce but never remove the anti-chase discount.
     strong_setups = {
@@ -3756,7 +3600,7 @@ def analyze_entry_location_score(side, context):
     The score is deliberately SOFT: it does not block trades and it must not
     kill early 3M/ICT entries. It only adjusts quality and supervision risk.
 
-    High score = entry is close to a professional location: ICT zone/повернення рівня,
+    High score = entry is close to a professional location: ICT zone/reclaim,
     fresh BOS, not too stretched from 15M EMA20/ATR, no obvious liquidity block.
     Low score = direction may still be correct, but the market entry is late or
     far from the smart-money area.
@@ -3824,7 +3668,7 @@ def analyze_entry_location_score(side, context):
     if ict.get("no_chase") and ict_same:
         add(-8, "ict_no_chase")
 
-    # 3) Freshness of BOS / повернення рівня. Entering close to a fresh broken level is good;
+    # 3) Freshness of BOS / reclaim. Entering close to a fresh broken level is good;
     # chasing far from it is not. This is still soft and cannot block a trade.
     phase = str(structure.get("phase", "") or "").upper()
     swing_high = safe_float(structure.get("swing_high"))
@@ -4009,279 +3853,6 @@ def entry_quality_adjustment(side, context, late_penalty=0):
     context["entry_quality_adjustment"] = result
     return result
 
-
-
-def professional_entry_model_snapshot(side, context, plan=None):
-    """Balanced professional entry gate.
-
-    This is the final arbiter between three states:
-    - ENTRY: structure + timing + location are all good;
-    - RISKY_ENTRY: idea is valid but early/partial;
-    - WATCH: direction exists, but the entry location has no professional base yet.
-
-    It is intentionally balanced: it does not require a perfect checklist for
-    every trade, but it prevents entries caused only by score inflation, news,
-    low-liquidity 3M spikes, old ICT context zones, or repeated revenge entries.
-    """
-    context = context if isinstance(context, dict) else {}
-    price = safe_float(context.get("price"))
-    atr15 = safe_float(context.get("atr15")) or (price or 90) * 0.006
-    tf3 = context.get("tf3") or {}
-    tf15 = context.get("tf15") or {}
-    tf1h = context.get("tf1h") or {}
-    tf4h = context.get("tf4h") or {}
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    cvd = context.get("cvd") or {}
-    flow = context.get("flow") or {}
-    clusters = context.get("clusters") or {}
-    derivatives = context.get("derivatives") or {}
-    news = context.get("news") or {}
-    reentry = context.get("reentry_cooldown") or {}
-
-    opp = opposite(side)
-    model = {
-        "entry_allowed": True,
-        "risky_allowed": True,
-        "risk_only": False,
-        "force_watch": False,
-        "quality_cap": 92,
-        "quality_adjustment": 0,
-        "title": f"ЧЕКАТИ — {side} ПОТРІБНА СТРУКТУРА",
-        "reason": "напрям є, але для входу потрібна професійна структура, а не тільки імпульс",
-        "confirmations": [],
-        "conflicts": [],
-        "state": "BALANCED",
-        "score": 0,
-    }
-
-    def cap(value):
-        model["quality_cap"] = min(int(model.get("quality_cap", 92)), int(value))
-
-    def force_watch(reason, cap_value=66, title=None, state="WATCH_REQUIRED"):
-        model["force_watch"] = True
-        model["entry_allowed"] = False
-        model["risky_allowed"] = False
-        model["reason"] = reason
-        if title:
-            model["title"] = title
-        model["state"] = state
-        cap(cap_value)
-        if reason not in model["conflicts"]:
-            model["conflicts"].append(reason)
-
-    def risk_only(reason, cap_value=76, state="RISK_ONLY"):
-        if not model.get("force_watch"):
-            model["risk_only"] = True
-            model["entry_allowed"] = False
-            model["risky_allowed"] = True
-            model["state"] = state
-            cap(cap_value)
-            if reason not in model["conflicts"]:
-                model["conflicts"].append(reason)
-
-    tf3_same = tf3.get("bias") == side
-    tf3_against = tf3.get("bias") == opp
-    tf3_score_abs = abs(int(tf3.get("score", 0) or 0))
-    tf3_strong_against = tf3_against and tf3_score_abs >= 42
-    tf15_same = tf15.get("bias") == side
-    tf15_against = tf15.get("bias") == opp
-    tf1h_against = tf1h.get("bias") == opp
-    tf4h_against = tf4h.get("bias") == opp
-    structure_same = structure.get("bias") == side
-    structure_against = structure.get("bias") == opp
-
-    phase = str(structure.get("phase", "") or "").upper()
-    setup = str(ict.get("setup", "") or "").upper()
-    side_phases = {
-        "LONG": {"BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"},
-        "SHORT": {"BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"},
-    }
-    structure_event = phase in side_phases.get(side, set())
-
-    strong_setups = {
-        "LONG": {"LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"},
-        "SHORT": {"LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"},
-    }
-    weak_setups = {
-        "LONG": {"BOS_LONG_CONTINUATION_HOLD"},
-        "SHORT": {"BOS_SHORT_CONTINUATION_HOLD"},
-    }
-    ict_same = ict.get("bias") == side
-    ict_against = ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16
-    ict_strong = bool(ict_same and ict.get("entry_ok") and setup in strong_setups.get(side, set()))
-    ict_weak = bool(ict_same and setup in weak_setups.get(side, set()))
-    ict_context_only = bool(ict_same and not ict.get("entry_ok") and setup in {
-        "CONTEXT_ONLY", "DISCOUNT_CONTEXT", "PREMIUM_CONTEXT", "BALANCE_MIDRANGE"
-    })
-
-    cvd_reliable = cvd.get("confidence", "HIGH") != "LOW"
-    cvd_same = cvd_reliable and cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10
-    flow_same = flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 8
-    clusters_same = clusters.get("bias") == side and abs(int(clusters.get("score", 0) or 0)) >= 4
-    oi_same = derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 8
-    cvd_against = cvd_reliable and cvd.get("bias") == opp and abs(int(cvd.get("score", 0) or 0)) >= 14
-    flow_against = flow.get("bias") == opp and abs(int(flow.get("score", 0) or 0)) >= 10
-    clusters_against = clusters.get("bias") == opp and abs(int(clusters.get("score", 0) or 0)) >= 4
-    micro_for = sum([bool(cvd_same), bool(flow_same), bool(clusters_same), bool(oi_same)])
-    micro_against = sum([bool(cvd_against), bool(flow_against), bool(clusters_against)])
-
-    full_ict_structure = bool(ict_strong and (structure_same or structure_event or tf15_same))
-    continuation_structure = bool(ict_weak and tf3_same and (tf15_same or structure_same or structure_event))
-    trend_stack = bool(tf3_same and tf15_same and (structure_same or structure_event or ict_same))
-    strong_trend_stack = bool(tf3_same and tf15_same and (structure_same or structure_event) and (tf1h.get("bias") == side or tf4h.get("bias") == side or micro_for >= 1))
-    continuation_snapshot = professional_continuation_snapshot(side, context)
-    structured_continuation = bool(continuation_snapshot.get("allow_edge"))
-    professional_base = bool(full_ict_structure or continuation_structure or strong_trend_stack or structured_continuation)
-    minimum_base = bool(
-        (
-            (tf3_same or ict_strong or structure_event)
-            and (structure_same or structure_event or ict_same or tf15_same)
-            and not (structure_against and ict_against)
-        )
-        or continuation_snapshot.get("score", 0) >= 56
-    )
-    model["continuation_model"] = continuation_snapshot
-
-    # Local extreme / late-location check. This does not forbid continuation;
-    # it forbids buying/selling the edge without a continuation structure.
-    fast = safe_float(tf3.get("fast_move_pct"), 0) or 0
-    candles3 = context.get("candles_3m") or []
-    local_high = None
-    local_low = None
-    try:
-        sample = candles3[-18:] if len(candles3) >= 6 else []
-        if sample:
-            local_high = max(float(c.high) for c in sample)
-            local_low = min(float(c.low) for c in sample)
-    except Exception:
-        local_high = local_low = None
-    recent_high = safe_float(structure.get("recent_high")) or local_high
-    recent_low = safe_float(structure.get("recent_low")) or local_low
-    near_high = bool(side == "LONG" and price and recent_high and price >= recent_high - atr15 * 0.28)
-    near_low = bool(side == "SHORT" and price and recent_low and price <= recent_low + atr15 * 0.28)
-    fast_with_side = bool((side == "LONG" and fast >= 0.45) or (side == "SHORT" and fast <= -0.45))
-    full_continuation_at_edge = bool(
-        ((full_ict_structure or continuation_structure or strong_trend_stack) and tf3_same and micro_against < 2)
-        or structured_continuation
-    )
-
-    # Realistic TP1 room: RR can be mathematically ok while the market has no
-    # nearby objective. Keep this as a cap, not a universal blocker.
-    real_tp_room = True
-    if plan and price and atr15:
-        tp1 = safe_float(getattr(plan, "tp1", None))
-        tp1_dist = abs(tp1 - price) if tp1 else 0
-        if tp1_dist and tp1_dist < atr15 * 0.70 and not professional_base:
-            real_tp_room = False
-            risk_only("TP1 близько, але немає повної структури — тільки обережний режим", 70, "TP_ROOM_WEAK")
-
-    # 1) Repeat entry after a weak same-side exit: must have NEW structure, not
-    # merely a better score. This prevents repeated late entries in the same chop.
-    cooldown_active = bool(reentry.get("active") and reentry.get("side") == side)
-    if cooldown_active:
-        fresh_new_setup = bool(
-            full_ict_structure
-            or continuation_structure
-            or structure_event
-            or (tf3_same and tf15_same and (structure_same or ict_strong) and micro_against < 2)
-        )
-        if not fresh_new_setup:
-            force_watch(
-                f"після слабкого виходу {side} потрібна нова структура: BOS/CHOCH/sweep, повернення рівня або ICT continuation",
-                64,
-                f"ЧЕКАТИ — {side} ПОТРІБЕН НОВИЙ СЕТАП",
-                "REENTRY_NEEDS_NEW_STRUCTURE",
-            )
-        else:
-            risk_only("повторний вхід після слабкого виходу дозволений тільки як новий структурний сетап", 78, "REENTRY_STRUCTURAL_ONLY")
-
-    # 5) Quiet-session rule removed.
-    # A calm/low-volume session must not block early professional entries.
-    # The bot now judges the setup by structure + ICT + 3M + flow/CVD only.
-
-    # 6) News is fuel, not a trigger. It can strengthen a prepared setup, but
-    # cannot promote a structure-less idea into a market entry.
-    if news.get("bias") == side and abs(int(news.get("score", 0) or 0)) >= 25:
-        if not minimum_base:
-            force_watch(
-                "новина підтримує напрям, але без структури/ICT це не вхід",
-                62,
-                f"ЧЕКАТИ — {side} НОВИНА БЕЗ СТРУКТУРИ",
-                "NEWS_WITHOUT_STRUCTURE",
-            )
-        elif not professional_base:
-            risk_only("новина є тільки паливом; без повного сетапу якість обмежена", 74, "NEWS_FUEL_ONLY")
-
-    # 7) Old/context ICT zones from memory are not enough. A zone must produce a
-    # reaction, sweep, BOS hold or FVG/OB retrace. Context-only ICT remains WATCH.
-    if ict_context_only and not (structure_event or tf15_same or tf3_same and micro_for >= 1):
-        force_watch(
-            "ICT-зона лише контекстна: потрібна реакція, вихід з балансу або утримання рівня",
-            62,
-            f"ЧЕКАТИ — {side} ICT ЩЕ НЕ ГОТОВИЙ",
-            "ICT_CONTEXT_ONLY",
-        )
-
-    # Buy/sell high/low filter with continuation override.
-    if (near_high or near_low) and fast_with_side:
-        if full_continuation_at_edge:
-            risk_only("вхід біля краю руху дозволений тільки як підтверджене продовження", 78, "EDGE_CONTINUATION_RISK_ONLY")
-        else:
-            edge_word = "максимуму" if side == "LONG" else "мінімуму"
-            force_watch(
-                f"3M вже пройшов рух і ціна біля локального {edge_word}; чекати відкат, проторговку або ICT/структурне продовження",
-                68,
-                f"ЧЕКАТИ — {side} НЕ ЗАХОДИТИ НА КРАЮ РУХУ",
-                "EDGE_NO_CHASE",
-            )
-
-    # Base professional filter: keep early entries, but they still need at least
-    # a minimum foundation. If it is not there, stay in WATCH instead of forcing
-    # a trade with a pretty score.
-    if not minimum_base:
-        force_watch(
-            "напрям є, але немає професійної основи входу: потрібні структура + місце входу + 3M/ICT підтвердження",
-            64,
-            f"ЧЕКАТИ — {side} НЕМАЄ ОСНОВИ ВХОДУ",
-            "NO_PROFESSIONAL_BASE",
-        )
-    elif not professional_base:
-        risk_only("сетап неповний — можна тільки як ранній/ризиковий вхід, не як чистий ENTRY", 76, "PARTIAL_SETUP_RISK_ONLY")
-
-    # Counter-trend and pressure balancing. Do not block good reversals, but keep
-    # them honest if higher timeframes and micro-pressure are not aligned.
-    if (tf1h_against and tf4h_against) and not full_ict_structure:
-        risk_only("1H/4H проти — потрібен повний розворотний ICT/структурний сетап", 72, "HTF_COUNTERTREND_RISK")
-    if micro_against >= 2 and not full_ict_structure:
-        risk_only("CVD/потік/кластери не підтверджують — тільки обережний режим", 72, "MICRO_PRESSURE_RISK")
-    if tf3_strong_against:
-        force_watch(
-            "3M різко проти напрямку — чекати нове підтвердження, не входити в ринок",
-            60,
-            f"ЧЕКАТИ — {side} 3M ПРОТИ",
-            "TF3_AGAINST",
-        )
-
-    if structured_continuation and not model.get("force_watch"):
-        if continuation_snapshot.get("grade") == "STRONG_CONTINUATION":
-            model["confirmations"].append("continuation-модель: імпульс має базу/утримання, вхід на краю дозволений обережно")
-        if not model.get("risk_only"):
-            risk_only("сильне продовження дозволене, але це не чистий low-risk вхід — контроль якості", 78, "CONTINUATION_EDGE_RISK_ONLY")
-
-    # Score is only diagnostic for journal/debugging.
-    model["score"] = int(sum([
-        25 if tf3_same else 0,
-        18 if tf15_same else 0,
-        20 if structure_same or structure_event else 0,
-        24 if ict_strong else (12 if ict_weak else (6 if ict_same else 0)),
-        8 if micro_for >= 1 else 0,
-        7 if real_tp_room else 0,
-    ]))
-    if professional_base and not model.get("force_watch") and not model.get("risk_only"):
-        model["confirmations"].append("професійна модель: структура + точка входу + підтвердження зібрані")
-    context["professional_entry_model"] = model
-    return model
 
 def entry_confirmations(side, context):
     tf3 = context["tf3"]
@@ -4585,7 +4156,7 @@ def evaluate_new_setup(context):
                 if structure_same:
                     prep_confirmations.append("структура підтримує напрям")
                 if tf15.get("bias") == "NEUTRAL":
-                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M повернення рівня/ретесту")
+                    prep_conflicts.append("15M ще нейтральний — вхід тільки після 3M reclaim/ретесту")
                 if tf1h.get("bias") == opposite(candidate) or int(tf1h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -15:
                     prep_conflicts.append("1H слабкий/проти — не заходити без чіткого тригера")
                 if tf4h.get("bias") == opposite(candidate) or int(tf4h.get("score", 0) or 0) * (1 if candidate == "LONG" else -1) < -35:
@@ -4599,7 +4170,7 @@ def evaluate_new_setup(context):
                 "side": prep_side,
                 "quality": int(max(readiness_quality, min(66, readiness_quality + 8))),
                 "title": f"ЧЕКАТИ — {prep_side} ГОТУЄТЬСЯ",
-                "reason": "напрям формується, але потрібна ціна-тригер: повернення рівня/ретест на 3M",
+                "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
                 "plan": plan,
                 "confirmations": prep_confirmations,
                 "conflicts": prep_conflicts,
@@ -4669,13 +4240,6 @@ def evaluate_new_setup(context):
     calendar = context.get("calendar") or {}
     news = context.get("news") or {}
     ict_balance, ict_balance_reason = detect_ict_balance_market(context, side)
-    pro_model = professional_entry_model_snapshot(side, context, plan)
-    for item in pro_model.get("confirmations") or []:
-        if item not in confirmations:
-            confirmations.append(item)
-    for item in pro_model.get("conflicts") or []:
-        if item not in conflicts:
-            conflicts.append(item)
 
     def block_points(block, same, opposite_penalty, neutral=0, weak_opposite_penalty=None):
         bias = block.get("bias")
@@ -4824,6 +4388,8 @@ def evaluate_new_setup(context):
         if cooldown_loop_guard:
             conflicts.append("ліміт повторних входів у цей напрям за 3 години — потрібен новий BOS/ICT для розблокування")
 
+    if context.get("low_liquidity_risk"):
+        conflicts.append("низька ліквідність/тиха сесія — ризик спреду і slippage")
     if context.get("price_warning"):
         conflicts.append("ціна TV/OKX розходиться — вхід тільки обережно")
     if cvd.get("confidence") == "LOW":
@@ -4864,11 +4430,11 @@ def evaluate_new_setup(context):
     # from the middle of balance. A real ENTRY needs at least one structural
     # confirmation so the bot does not buy/sell every small 3M twitch:
     #   - 15M already agrees, OR
-    #   - SMC structure agrees (BOS/CHOCH/sweep повернення рівня), OR
-    #   - ICT itself is a liquidity sweep / повернення рівня model, OR
+    #   - SMC structure agrees (BOS/CHOCH/sweep reclaim), OR
+    #   - ICT itself is a liquidity sweep/reclaim model, OR
     #   - price holds a BOS continuation level.
     # If this is missing, the bot keeps WATCH/activation, so the user is not
-    # late: it shows the idea, but waits for повернення/відбій рівня instead of ENTRY.
+    # late: it shows the idea, but waits for reclaim/rejection instead of ENTRY.
     structure_phase = str(structure.get("phase", "") or "").upper()
     ict_setup = str(ict.get("setup", "") or "").upper()
     side_structure_phases = {
@@ -4877,7 +4443,7 @@ def evaluate_new_setup(context):
     }
     structure_reclaim_same = structure_phase in side_structure_phases.get(side, [])
     # ICT quality hierarchy.
-    # STRONG ICT = real Smart Money entry model: sweep / повернення рівня, FVG/OB retrace,
+    # STRONG ICT = real Smart Money entry model: sweep/reclaim, FVG/OB retrace,
     # or clear discount/premium FVG/OB reaction. Only this can justify 90+ quality.
     # WEAK ICT = BOS continuation/hold or directional ICT context without a clean
     # FVG/OB/sweep entry. It supports a trend trade, but must not be called
@@ -4916,10 +4482,10 @@ def evaluate_new_setup(context):
     structural_entry_ok = bool(tf15_same or structure_same or structure_reclaim_same or ict_reclaim_same or reversal_entry_allowed)
     structure_gate_missing = bool(tf3_same and ict_entry_ok and not structural_entry_ok)
     if structure_gate_missing:
-        conflicts.append("ICT+3M є, але немає 15M/BOS/повернення рівня — чекати структурне підтвердження")
+        conflicts.append("ICT+3M є, але немає 15M/BOS/reclaim — чекати структурне підтвердження")
 
     # Classic/early entry: 3M must confirm the direction, but not alone.
-    # 15M may still be NEUTRAL only if BOS/повернення рівня/ICT sweep has confirmed
+    # 15M may still be NEUTRAL only if BOS/reclaim/ICT sweep has confirmed
     # structure. This avoids late entries while filtering mid-range false starts.
     trigger_entry_ok = (
         tf3_same
@@ -4985,14 +4551,13 @@ def evaluate_new_setup(context):
         and side not in liquidity.get("blocks", [])
         and not (tf3_strong_against and strong_cvd_against)
         and not countertrend_wait_required
-        and pro_model.get("risky_allowed", True)
     )
 
     if not tf3_same:
         # Without 3M confirmation this is preparation, not an entry.
         quality = min(quality, 66)
     elif structure_gate_missing:
-        # ICT + 3M without 15M/BOS/повернення рівня can be a good idea, but not a market entry.
+        # ICT + 3M without 15M/BOS/reclaim can be a good idea, but not a market entry.
         quality = min(quality, 64)
     elif htf_countertrend and not (tf15_same or structure_same or real_pressure_present):
         # 3M may catch the turn early, but against 4H/1H keep quality realistic.
@@ -5039,6 +4604,8 @@ def evaluate_new_setup(context):
         else:
             quality = min(quality, 76)
 
+    if context.get("low_liquidity_risk"):
+        quality = min(quality, 74)
     if context.get("price_warning"):
         quality = min(quality, 72)
 
@@ -5049,23 +4616,17 @@ def evaluate_new_setup(context):
 
     # Soft same-direction cooldown after a weak exit.
     # It no longer blocks the trade; it only lowers quality unless a fresh
-    # BOS/повернення рівня/ICT continuation overrides it. This prevents half-day silence
+    # BOS/reclaim/ICT continuation overrides it. This prevents half-day silence
     # while still reducing revenge entries after a bad close.
     if cooldown_active and not cooldown_can_override and cooldown_penalty:
         quality -= cooldown_penalty
         previous_quality = int(reentry_cooldown.get("last_entry_quality") or 0)
-        # Якщо нова угода справді має нову структуру, професійна модель вже
-        # дозволить ризиковий режим. Самого факту "якість стала вища" більше
-        # недостатньо, щоб обійти слабкий попередній вихід.
-        if previous_quality and quality >= previous_quality + 10 and pro_model.get("state") in ["REENTRY_STRUCTURAL_ONLY", "BALANCED"]:
-            quality += int(cooldown_penalty * 0.5)
+        # If the new setup is clearly better than the failed one, do not let the
+        # old loss suppress a materially stronger signal.
+        if previous_quality and quality >= previous_quality + 10:
+            quality += cooldown_penalty
             cooldown_can_override = True
-            confirmations.append("повторний вхід дозволено: є нова структура, не просто вищий бал")
-
-    quality += int(pro_model.get("quality_adjustment", 0) or 0)
-    quality = min(quality, int(pro_model.get("quality_cap", 92) or 92))
-    if pro_model.get("risk_only"):
-        quality = min(quality, int(pro_model.get("quality_cap", 76) or 76))
+            confirmations.append("повторний вхід дозволено: новий сетап значно якісніший за попередній")
 
     if calendar.get("active"):
         quality -= 8
@@ -5108,7 +4669,7 @@ def evaluate_new_setup(context):
             "side": side,
             "quality": min(quality, 58),
             "title": f"ЧЕКАТИ — {side} НЕ ПОВТОРЮВАТИ СЕРІЮ",
-            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/повернення рівня або повний ICT continuation",
+            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/reclaim або повний ICT continuation",
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
@@ -5121,8 +4682,8 @@ def evaluate_new_setup(context):
             "action": "WATCH",
             "side": side,
             "quality": min(quality, 64),
-            "title": f"ЧЕКАТИ — {side} ПОТРІБНЕ ПОВЕРНЕННЯ РІВНЯ/BOS",
-            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або повернення/відбій рівня",
+            "title": f"ЧЕКАТИ — {side} ПОТРІБЕН RECLAIM/BOS",
+            "reason": "ICT і 3M вже показують ідею, але структури ще нема: чекати 15M підтвердження, BOS або reclaim/rejection",
             "plan": plan,
             "confirmations": confirmations,
             "conflicts": conflicts,
@@ -5158,20 +4719,6 @@ def evaluate_new_setup(context):
             "show_wait_plan": False,
         }
 
-    if pro_model.get("force_watch"):
-        return {
-            "action": "WATCH",
-            "side": side,
-            "quality": min(quality, int(pro_model.get("quality_cap", 64) or 64)),
-            "title": pro_model.get("title") or f"ЧЕКАТИ — {side} ПОТРІБНА СТРУКТУРА",
-            "reason": pro_model.get("reason") or "потрібна професійна структура перед входом",
-            "plan": plan,
-            "confirmations": confirmations,
-            "conflicts": list(dict.fromkeys(conflicts + (pro_model.get("conflicts") or []))),
-            "professional_gate": True,
-            "show_wait_plan": True,
-        }
-
     # HARD NO-CHASE GUARD.
     # If the move is already extended enough to receive a heavy anti-chase
     # penalty, the bot must not still print ENTRY/RISKY_ENTRY in the same
@@ -5195,7 +4742,7 @@ def evaluate_new_setup(context):
             "show_wait_plan": True,
         }
 
-    if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok and pro_model.get("risky_allowed", True):
+    if quality >= RISKY_QUALITY_MIN and early_ict_entry_ok:
         # Early ICT/SMC is allowed to preserve early entries, but it must not
         # look like a clean 90+ confirmed trade. If it is counter-trend, without
         # 3M confirmation, or without 15M agreement, keep the score in the risky
@@ -5229,7 +4776,7 @@ def evaluate_new_setup(context):
         }
 
 
-    if quality >= ENTRY_QUALITY_MIN and trigger_ok and pro_model.get("entry_allowed", True) and not hard_conflict and not pressure_risk:
+    if quality >= ENTRY_QUALITY_MIN and trigger_ok and not hard_conflict and not pressure_risk:
         if reversal_entry_allowed:
             if ict_strong_model:
                 reason = "REVERSAL ENTRY: попередній напрям зламано, 3M + структура + повний ICT підтвердили розворот"
@@ -5255,7 +4802,7 @@ def evaluate_new_setup(context):
             "countertrend_entry": countertrend_entry,
         }
 
-    if quality >= RISKY_QUALITY_MIN and trigger_ok and pro_model.get("risky_allowed", True) and not hard_conflict:
+    if quality >= RISKY_QUALITY_MIN and trigger_ok and not hard_conflict:
         # Any RISKY_ENTRY must remain visually honest: it should not print
         # 85-92/100 like a fully confirmed signal. Normal high scores are
         # reserved for ENTRY, not risky/early attempts.
@@ -5266,7 +4813,7 @@ def evaluate_new_setup(context):
                 "side": side,
                 "quality": min(quality, 66),
                 "title": f"ЧЕКАТИ — {side} РОЗВОРОТ ЩЕ НЕ ПІДТВЕРДЖЕНИЙ",
-                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS / повернення рівня перед переворотом",
+                "reason": reversal_after_failed.get("reason") or "після невдалої угоди потрібен BOS/reclaim перед переворотом",
                 "plan": plan,
                 "confirmations": confirmations,
                 "conflicts": conflicts,
@@ -5292,7 +4839,7 @@ def evaluate_new_setup(context):
         }
 
     if pullback_watch_ok:
-        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M higher low / повернення рівня для LONG або lower high / відбій для SHORT"
+        wait_reason = "напрям є, але 3M ще не підтвердив; чекати 3M higher low/reclaim для LONG або lower high/rejection для SHORT"
     elif conflicts:
         wait_reason = "напрям є, але входу ще немає: " + "; ".join(conflicts[:3])
     else:
@@ -5343,10 +4890,7 @@ def _trade_extremes_since_open(trade, context):
     lows = []
     for candle in (context.get("candles_3m") or []):
         try:
-            # Use only candles that START after the trade was opened.
-            # Including the overlapping candle can create false MFE/TP from a wick
-            # that happened before the signal was sent.
-            if opened_ms and int(candle.ts) < opened_ms:
+            if opened_ms and int(candle.ts) + 3 * 60 * 1000 < opened_ms:
                 continue
             highs.append(float(candle.high))
             lows.append(float(candle.low))
@@ -5378,10 +4922,8 @@ def _trade_extremes_since_stop_update(trade, context):
     lows = []
     for candle in (context.get("candles_3m") or []):
         try:
-            # Use only candles that START after the current stop became active.
-            # This prevents a stop moved at the end of a candle from being
-            # triggered by a wick that happened before the stop existed.
-            if anchor_ms and int(candle.ts) < anchor_ms:
+            # include candles that overlap the active-stop window
+            if anchor_ms and int(candle.ts) + 3 * 60 * 1000 < anchor_ms:
                 continue
             highs.append(float(candle.high))
             lows.append(float(candle.low))
@@ -5709,22 +5251,6 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
     clamped, air_reason = _apply_stop_air(side, clamped, price, trade.entry, context, trade_mode_profile(context, side), stage)
     if air_reason and "відсунуто" in air_reason:
         why = f"{why}; {air_reason}"
-
-    # Professional rule: after TP1/TP2 the protective stop must not be on the
-    # losing side of entry. If ATR-air would push it behind entry, keep at least
-    # a small profit lock. If that cannot be placed at current price, caller will
-    # close/protect instead of keeping a losing stop.
-    min_profit_pct = 0.08 if after_tp == "TP1" else 0.18
-    if side == "LONG":
-        profit_floor = trade.entry * (1 + min_profit_pct / 100.0)
-        if clamped is None or clamped < profit_floor:
-            clamped = profit_floor
-            why = f"{why}; мінімальний profit-lock після {after_tp}"
-    else:
-        profit_floor = trade.entry * (1 - min_profit_pct / 100.0)
-        if clamped is None or clamped > profit_floor:
-            clamped = profit_floor
-            why = f"{why}; мінімальний profit-lock після {after_tp}"
     return round_price(clamped), why
 
 
@@ -5866,206 +5392,6 @@ def _apply_more_protective_stop(trade, side, new_stop):
         trade.stop_updated_at = iso_now()
         return True
     return False
-
-
-def _stop_protects_profit(trade, side, min_profit_pct=0.06):
-    """True when current stop is already on the profitable side of entry."""
-    try:
-        entry = float(trade.entry)
-        stop = float(trade.stop_current)
-    except Exception:
-        return False
-    if not entry or not stop:
-        return False
-    if side == "LONG":
-        return stop >= entry * (1 + min_profit_pct / 100.0)
-    return stop <= entry * (1 - min_profit_pct / 100.0)
-
-
-
-def _mfe_management_policy_snapshot(trade, context, current_pct, best_pct, giveback):
-    """Adaptive MFE policy with continuation awareness.
-
-    The old mistake was binary: once MFE appeared, either lock/exit too hard or
-    give too much back. This policy separates three cases:
-    - continuation still valid -> give the trade air, but do not let it turn red after 1R/TP1;
-    - neutral -> lock a modest profit when possible;
-    - reversal pressure -> move to risk control / exit near entry.
-    """
-    side = getattr(trade, "side", "")
-    if side not in ["LONG", "SHORT"]:
-        return {"mode": "UNKNOWN", "continuation_score": 0, "reversal_pressure": 0}
-    opp = opposite(side)
-    tf3 = context.get("tf3") or {}
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    cvd = context.get("cvd") or {}
-    flow = context.get("flow") or {}
-    clusters = context.get("clusters") or {}
-
-    continuation = professional_continuation_snapshot(side, context)
-    continuation_score = int(continuation.get("score", 0) or 0)
-    reversal_pressure = 0
-    if tf3.get("bias") == opp and abs(int(tf3.get("score", 0) or 0)) >= 24:
-        reversal_pressure += 1
-    if structure.get("bias") == opp:
-        reversal_pressure += 1
-    if ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16:
-        reversal_pressure += 1
-    if cvd.get("confidence", "HIGH") != "LOW" and cvd.get("bias") == opp and abs(int(cvd.get("score", 0) or 0)) >= 14:
-        reversal_pressure += 1
-    if flow.get("bias") == opp and abs(int(flow.get("score", 0) or 0)) >= 10:
-        reversal_pressure += 1
-    if clusters.get("bias") == opp and abs(int(clusters.get("score", 0) or 0)) >= 4:
-        reversal_pressure += 1
-
-    giveback_ratio = giveback / best_pct if best_pct and best_pct > 0 else 0.0
-    if best_pct < 0.45:
-        mode = "NO_LOCK_TINY_MFE"
-    elif continuation_score >= 72 and reversal_pressure <= 1 and current_pct >= max(0.18, best_pct * 0.28):
-        mode = "CONTINUATION_AIR"
-    elif reversal_pressure >= 3 and giveback_ratio >= 0.55:
-        mode = "REVERSAL_LOCK_OR_EXIT"
-    elif giveback_ratio >= 0.65:
-        mode = "GIVEBACK_LOCK"
-    else:
-        mode = "STANDARD_LOCK"
-
-    return {
-        "mode": mode,
-        "continuation_score": continuation_score,
-        "continuation_grade": continuation.get("grade"),
-        "continuation_reasons": continuation.get("reasons", []),
-        "reversal_pressure": reversal_pressure,
-        "giveback_ratio": round(giveback_ratio, 3),
-    }
-
-def _mfe_lock_triggered(trade, best_pct):
-    """Detect when MFE is large enough that the trade must not return to loss.
-
-    Trigger conditions:
-    - price reached TP1 zone by true post-entry candle extremes; or
-    - MFE reached at least 1R based on initial stop distance; or
-    - very large raw MFE (>1.35%).
-    """
-    entry = safe_float(getattr(trade, "entry", None))
-    if not entry:
-        return False, ""
-    best_pct = safe_float(best_pct, 0.0) or 0.0
-    tp1_distance_pct = abs(pct(safe_float(getattr(trade, "tp1", None)), entry)) if safe_float(getattr(trade, "tp1", None)) else 0.0
-    risk_pct = abs(pct(safe_float(getattr(trade, "stop_initial", None)), entry)) if safe_float(getattr(trade, "stop_initial", None)) else 0.0
-    if tp1_distance_pct and best_pct >= tp1_distance_pct * 0.92:
-        return True, "MFE дійшов до TP1-зони"
-    if risk_pct and best_pct >= risk_pct:
-        return True, "MFE >= 1R"
-    if best_pct >= 1.35:
-        return True, "великий MFE"
-    return False, ""
-
-
-def _mfe_profit_lock_level(side, entry, price, best_pct, current_pct, profile=None):
-    """Return a stop level that locks profit after TP1/1R MFE, or None if impossible.
-
-    If price has already returned too close to entry, a valid profit stop may not
-    be placeable anymore. In that case management should close/exit-warning
-    instead of leaving the original loss stop.
-    """
-    if not entry or not price or best_pct <= 0:
-        return None, ""
-    profile = profile or {}
-    # Capture enough to avoid giving back a true intraday move, but keep air.
-    if best_pct >= 2.0:
-        lock_pct = min(max(best_pct * 0.42, 0.45), 1.15)
-    elif best_pct >= 1.0:
-        lock_pct = min(max(best_pct * 0.35, 0.25), 0.75)
-    else:
-        lock_pct = min(max(best_pct * 0.30, 0.14), 0.42)
-
-    # Stop must stay on valid side of the live price. If there is not enough
-    # room left, reduce the lock, but never below a tiny profit lock.
-    min_gap_pct = max(0.10, _stop_air_profile({"price": price, "atr15": safe_float(profile.get("atr15"), price * 0.006)}, profile, "PRE_TP1") * 0.45)
-    max_lock_now = max(0.0, current_pct - min_gap_pct)
-    if max_lock_now <= 0.06:
-        return None, ""
-    lock_pct = min(lock_pct, max_lock_now)
-    if lock_pct <= 0.05:
-        return None, ""
-
-    if side == "LONG":
-        level = entry * (1 + lock_pct / 100.0)
-        if level >= price:
-            return None, ""
-    else:
-        level = entry * (1 - lock_pct / 100.0)
-        if level <= price:
-            return None, ""
-    return round_price(level), f"MFE Profit Lock: зафіксувати мінімум +{round(lock_pct, 3)}% після руху +{round(best_pct, 3)}%"
-
-
-def _apply_mfe_profit_lock_before_stop(trade, context, price, current_pct, best_pct, mode_profile):
-    """Professional MFE lock applied BEFORE checking the stop.
-
-    Prevents cases where a trade reached TP1/1R MFE, but the bot later keeps a
-    losing stop and gives the whole move back.
-    """
-    side = trade.side
-    giveback = max(0.0, (safe_float(best_pct, 0.0) or 0.0) - (safe_float(current_pct, 0.0) or 0.0))
-    mfe_policy = _mfe_management_policy_snapshot(trade, context, current_pct, best_pct, giveback)
-    triggered, why = _mfe_lock_triggered(trade, best_pct)
-    if not triggered:
-        return {"active": False, "mfe_policy": mfe_policy}
-    if _stop_protects_profit(trade, side):
-        return {"active": False, "already_protected": True, "mfe_policy": mfe_policy}
-
-    # If MFE reached TP1 zone, treat TP1 as achieved for management purposes.
-    tp1_distance_pct = abs(pct(trade.tp1, trade.entry)) if getattr(trade, "entry", 0) else 0.0
-    if tp1_distance_pct and best_pct >= tp1_distance_pct * 0.92:
-        trade.tp1_hit = True
-
-    lock_stop, lock_reason = _mfe_profit_lock_level(side, trade.entry, price, best_pct, current_pct, mode_profile)
-    if lock_stop is not None and _apply_more_protective_stop(trade, side, lock_stop):
-        return {
-            "active": True,
-            "protected": True,
-            "stop": round_price(trade.stop_current),
-            "reason": f"{why}; {lock_reason}; режим MFE: {mfe_policy.get('mode')}",
-            "mfe_policy": mfe_policy,
-        }
-
-    # If continuation is still structurally valid and the trade is still green,
-    # do not force an early exit just because a profit stop cannot be placed yet.
-    # The hard rule remains: after 1R/TP1 the trade must not be allowed to turn red.
-    if mfe_policy.get("mode") == "CONTINUATION_AIR" and current_pct > 0.16:
-        return {
-            "active": True,
-            "protected": False,
-            "continuation_air": True,
-            "reason": f"{why}; continuation ще валідний — дати простір, але не віддавати в мінус",
-            "mfe_policy": mfe_policy,
-        }
-
-    # Price already returned too far. Do not keep a losing stop after TP1/1R MFE.
-    if current_pct <= 0.12:
-        trade.status = "CLOSED"
-        trade.last_action = "EXIT_MFE_PROFIT_LOCK"
-        return {
-            "active": True,
-            "closed": True,
-            "action": "EXIT_MFE_PROFIT_LOCK",
-            "exit_reason_code": "MFE_TP1_OR_1R_RETURNED_TO_ENTRY",
-            "exit_quality": "MFE_LOCK",
-            "title": f"{side} ЗАКРИТИ — MFE НЕ ВІДДАВАТИ",
-            "recommendation": "угода вже давала TP1/1R MFE, але повернулась до входу; не залишати її до збиткового стопа",
-            "current_pct": current_pct,
-            "best_pct": best_pct,
-            "exit_price": round_price(price),
-            "recommended_stop": round_price(trade.stop_current),
-            "recommended_stop_reason": why,
-            "notes": [f"{why}: після такого MFE стоп не має залишатись у мінусі", f"MFE policy: {mfe_policy.get('mode')}, continuation {mfe_policy.get('continuation_score')}"],
-            "mfe_policy": mfe_policy,
-        }
-
-    return {"active": True, "protected": False, "reason": why, "mfe_policy": mfe_policy}
 
 
 def _mfe_exit_floor(best_pct, market_regime):
@@ -6240,12 +5566,12 @@ def _has_confirmed_ict_reversal(side, context):
     liq_event = str(liquidity.get("event", "")).upper()
     if opp == "LONG":
         choch = "CHOCH LONG" in phase or "DOWNSIDE SWEEP" in phase
-        sweep = liquidity.get("bias") == "LONG" and any(x in liq_event for x in ["SWEEP", "ПОВЕРНЕННЯ РІВНЯ"])
-        model = ict.get("bias") == "LONG" and (ict.get("entry_ok") or any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "ПОВЕРНЕННЯ РІВНЯ"]))
+        sweep = liquidity.get("bias") == "LONG" and any(x in liq_event for x in ["SWEEP", "RECLAIM"])
+        model = ict.get("bias") == "LONG" and (ict.get("entry_ok") or any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]))
     else:
         choch = "CHOCH SHORT" in phase or "UPSIDE SWEEP" in phase
-        sweep = liquidity.get("bias") == "SHORT" and any(x in liq_event for x in ["SWEEP", "ПОВЕРНЕННЯ РІВНЯ"])
-        model = ict.get("bias") == "SHORT" and (ict.get("entry_ok") or any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "ПОВЕРНЕННЯ РІВНЯ"]))
+        sweep = liquidity.get("bias") == "SHORT" and any(x in liq_event for x in ["SWEEP", "RECLAIM"])
+        model = ict.get("bias") == "SHORT" and (ict.get("entry_ok") or any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]))
     components = int(bool(choch)) + int(bool(sweep)) + int(bool(model))
     return components >= 2, components
 
@@ -6385,7 +5711,7 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
 
         CVD/flow/news may warn, but they must not create HIGH/CRITICAL
         reversal labels by themselves. For a scary label the bot needs actual
-        ICT/structure evidence: CHOCH/sweep / повернення рівня/FVG/OB against the trade.
+        ICT/structure evidence: CHOCH/sweep/reclaim/FVG/OB against the trade.
         """
         phase = str((structure or {}).get("phase", "")).upper()
         ict_setup = str((ict or {}).get("setup", "")).upper()
@@ -6396,18 +5722,18 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         if opp == "LONG":
             if "CHOCH LONG" in phase or "DOWNSIDE SWEEP" in phase:
                 components.append("CHOCH/SWEEP LONG")
-            if (liquidity or {}).get("bias") == "LONG" and any(x in str((liquidity or {}).get("event", "")).upper() for x in ["SWEEP", "ПОВЕРНЕННЯ РІВНЯ"]):
-                components.append("LIQUIDITY ПОВЕРНЕННЯ РІВНЯ LONG")
-            if (ict or {}).get("bias") == "LONG" and any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "ПОВЕРНЕННЯ РІВНЯ"]):
+            if (liquidity or {}).get("bias") == "LONG" and any(x in str((liquidity or {}).get("event", "")).upper() for x in ["SWEEP", "RECLAIM"]):
+                components.append("LIQUIDITY RECLAIM LONG")
+            if (ict or {}).get("bias") == "LONG" and any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]):
                 components.append("ICT MODEL LONG")
             if (ict or {}).get("entry_ok") and (ict or {}).get("bias") == "LONG":
                 components.append("ICT ENTRY LONG")
         else:
             if "CHOCH SHORT" in phase or "UPSIDE SWEEP" in phase:
                 components.append("CHOCH/SWEEP SHORT")
-            if (liquidity or {}).get("bias") == "SHORT" and any(x in str((liquidity or {}).get("event", "")).upper() for x in ["SWEEP", "ПОВЕРНЕННЯ РІВНЯ"]):
-                components.append("LIQUIDITY ПОВЕРНЕННЯ РІВНЯ SHORT")
-            if (ict or {}).get("bias") == "SHORT" and any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "ПОВЕРНЕННЯ РІВНЯ"]):
+            if (liquidity or {}).get("bias") == "SHORT" and any(x in str((liquidity or {}).get("event", "")).upper() for x in ["SWEEP", "RECLAIM"]):
+                components.append("LIQUIDITY RECLAIM SHORT")
+            if (ict or {}).get("bias") == "SHORT" and any(x in ict_setup for x in ["SWEEP", "FVG", "OB", "RETRACE", "RECLAIM"]):
                 components.append("ICT MODEL SHORT")
             if (ict or {}).get("entry_ok") and (ict or {}).get("bias") == "SHORT":
                 components.append("ICT ENTRY SHORT")
@@ -6982,7 +6308,7 @@ def entry_point_state_snapshot(trade, context, current_pct, best_pct, giveback,
         else:
             score = min(score, 55)
             reason = "глибока просадка до стопа, але повного ICT/SMC зламу ще немає"
-            advice = "тримати тільки до наступної перевірки; без повернення рівня/підтвердження не чекати повний стоп"
+            advice = "тримати тільки до наступної перевірки; без reclaim/підтвердження не чекати повний стоп"
     elif (trade_validation or {}).get("severity") == "BAD":
         reason = "угода не розкривається після входу: MFE слабкий або структура/3M проти"
         advice = "не чекати дальній стоп; шукати вихід біля входу або при наступному слабкому супроводі"
@@ -7128,6 +6454,285 @@ def countertrend_entry_validation(trade, context, current_pct, best_pct, givebac
         "warnings": warnings[:3],
     }
 
+
+def _trade_open_elapsed_minutes(trade):
+    try:
+        opened = datetime.fromisoformat(str(getattr(trade, "opened_at", "")).replace("Z", "+00:00"))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return max(0.0, (now_utc() - opened).total_seconds() / 60.0)
+    except Exception:
+        return 0.0
+
+
+def _candle_ts_to_dt(ts):
+    try:
+        ts = float(ts)
+        if ts > 10_000_000_000:
+            ts = ts / 1000.0
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+    except Exception:
+        return None
+
+
+def _candles_after_trade_open(trade, candles):
+    try:
+        opened = datetime.fromisoformat(str(getattr(trade, "opened_at", "")).replace("Z", "+00:00"))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+    except Exception:
+        opened = None
+    out = []
+    for c in (candles or []):
+        dt = _candle_ts_to_dt(getattr(c, "ts", None))
+        if opened is None or dt is None or dt >= opened:
+            out.append(c)
+    return out
+
+
+def _close_mfe_mae_after_open(trade, context, current_price=None):
+    """Close-based MFE/MAE for phase management.
+
+    Wick MFE is useful for TP/stop detection, but professional supervision should
+    not tighten or close too early from a single wick. This helper separates:
+    - close_mfe_pct: best favorable candle close after entry;
+    - confirmed_mfe_pct: close MFE confirmed by at least two favorable closes;
+    - close_mae_pct: worst adverse candle close after entry.
+    """
+    side = getattr(trade, "side", "")
+    entry = safe_float(getattr(trade, "entry", None), 0.0) or 0.0
+    if side not in ["LONG", "SHORT"] or not entry:
+        return {"close_mfe_pct": 0.0, "confirmed_mfe_pct": 0.0, "close_mae_pct": 0.0, "follow_closes": 0}
+    candles = _candles_after_trade_open(trade, (context or {}).get("candles_3m") or [])
+    vals = []
+    for c in candles:
+        cl = safe_float(getattr(c, "close", None), None)
+        if cl:
+            vals.append(signed_pct(side, entry, cl))
+    cp = safe_float(current_price if current_price is not None else (context or {}).get("price"), None)
+    if cp:
+        vals.append(signed_pct(side, entry, cp))
+    if not vals:
+        return {"close_mfe_pct": 0.0, "confirmed_mfe_pct": 0.0, "close_mae_pct": 0.0, "follow_closes": 0}
+    close_mfe = max(0.0, max(vals))
+    close_mae = abs(min(0.0, min(vals)))
+    # Confirmed MFE: do not treat a single close or wick as a stable expansion.
+    confirmation_floor = max(0.10, close_mfe * 0.55)
+    favorable_closes = sum(1 for v in vals if v >= confirmation_floor)
+    if favorable_closes >= 2:
+        confirmed = close_mfe
+    elif close_mfe >= 0.35 and vals[-1] >= close_mfe * 0.55:
+        confirmed = close_mfe * 0.75
+    else:
+        confirmed = min(close_mfe, close_mfe * 0.45)
+    return {
+        "close_mfe_pct": round(close_mfe, 3),
+        "confirmed_mfe_pct": round(max(0.0, confirmed), 3),
+        "close_mae_pct": round(close_mae, 3),
+        "follow_closes": len(vals),
+    }
+
+
+def _phase_label_name(phase):
+    return {
+        "ENTRY_VALIDATION": "валідація входу",
+        "EXPANSION": "розвиток імпульсу",
+        "PROFIT_PROTECTION": "захист прибутку",
+        "CONTINUATION_OR_EXIT": "продовження / вихід",
+    }.get(str(phase or ""), "супровід")
+
+
+def analyze_trade_phase(trade, context, current_pct, best_pct, giveback,
+                        high_since_open=None, low_since_open=None,
+                        entry_state=None, trade_validation=None,
+                        support_votes=0.0, opposite_votes=0.0,
+                        action="HOLD", market_regime=None,
+                        tf3_against=False, structure_against=False, ict_against=False,
+                        flow_against=False, cvd_against=False, liquidity_against=False,
+                        news_against=False, confirmed_ict_reversal=False,
+                        closed=False, exit_reason_code=""):
+    """MFE/MAE Intelligence: professional phase model for open trade supervision.
+
+    It does not replace the stop. It explains and soft-gates decisions by phase:
+    1) ENTRY_VALIDATION      — first 1–3 3M candles after entry;
+    2) EXPANSION             — price should start moving in our direction;
+    3) PROFIT_PROTECTION     — meaningful MFE exists; avoid giving it back;
+    4) CONTINUATION_OR_EXIT  — decide whether the setup still deserves TP2/TP3.
+    """
+    side = getattr(trade, "side", "NEUTRAL")
+    opp = opposite(side) if side in ["LONG", "SHORT"] else "NEUTRAL"
+    price = safe_float((context or {}).get("price"), safe_float(getattr(trade, "entry", None), 0.0)) or 0.0
+    entry = safe_float(getattr(trade, "entry", 0), 0.0) or 0.0
+    stop_initial = safe_float(getattr(trade, "stop_initial", getattr(trade, "stop_current", 0)), 0.0) or 0.0
+    tp1 = safe_float(getattr(trade, "tp1", 0), 0.0) or 0.0
+    risk_distance_pct = abs(pct(stop_initial, entry)) if entry and stop_initial else 0.65
+    risk_distance_pct = max(0.10, risk_distance_pct)
+    tp1_distance_pct = abs(pct(tp1, entry)) if entry and tp1 else 0.0
+    elapsed_min = _trade_open_elapsed_minutes(trade)
+    close_stats = _close_mfe_mae_after_open(trade, context, price)
+    close_mfe = safe_float(close_stats.get("close_mfe_pct"), 0.0) or 0.0
+    confirmed_mfe = safe_float(close_stats.get("confirmed_mfe_pct"), 0.0) or 0.0
+    close_mae = safe_float(close_stats.get("close_mae_pct"), 0.0) or 0.0
+
+    if side == "LONG":
+        adverse_extreme = safe_float(low_since_open, min(price, entry))
+        wick_mae = max(0.0, (entry - adverse_extreme) / entry * 100.0) if entry else close_mae
+    elif side == "SHORT":
+        adverse_extreme = safe_float(high_since_open, max(price, entry))
+        wick_mae = max(0.0, (adverse_extreme - entry) / entry * 100.0) if entry else close_mae
+    else:
+        wick_mae = close_mae
+    mae_pct = round(max(close_mae, wick_mae), 3)
+    mae_risk_used = round(mae_pct / risk_distance_pct, 3) if risk_distance_pct else 0.0
+
+    best_pct = safe_float(best_pct, 0.0) or 0.0
+    current_pct = safe_float(current_pct, 0.0) or 0.0
+    giveback = max(0.0, safe_float(giveback, best_pct - current_pct) or 0.0)
+    giveback_ratio = giveback / best_pct if best_pct > 0.10 else 0.0
+    regime = str(market_regime or (trade_mode_profile(context or {}, side).get("regime") if side in ["LONG", "SHORT"] else "NORMAL") or "NORMAL").upper()
+
+    phase = "ENTRY_VALIDATION"
+    if getattr(trade, "tp1_hit", False) or (tp1_distance_pct and best_pct >= tp1_distance_pct * 0.85):
+        phase = "CONTINUATION_OR_EXIT"
+    elif best_pct >= max(0.60, risk_distance_pct * 0.70) or confirmed_mfe >= max(0.45, risk_distance_pct * 0.50):
+        phase = "PROFIT_PROTECTION"
+    elif elapsed_min > 12 or close_stats.get("follow_closes", 0) >= 4:
+        phase = "EXPANSION"
+
+    hard_against = sum([bool(structure_against), bool(ict_against), bool(confirmed_ict_reversal)])
+    soft_against = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(liquidity_against), bool(news_against)])
+    support_ok = bool(support_votes >= max(1.8, opposite_votes) or ((context or {}).get("tf15") or {}).get("bias") == side)
+    entry_state_name = str((entry_state or {}).get("state") or "")
+    validation_severity = str((trade_validation or {}).get("severity") or "")
+
+    # Exit permission: never allow one weak metric to close by itself.
+    exit_permission = False
+    if confirmed_ict_reversal or hard_against >= 2:
+        exit_permission = True
+    elif phase == "ENTRY_VALIDATION":
+        exit_permission = bool(mae_risk_used >= 0.70 and (hard_against >= 1 or soft_against >= 2))
+    elif phase == "EXPANSION":
+        exit_permission = bool(
+            (entry_state_name == "BROKEN" and (hard_against >= 1 or soft_against >= 2))
+            or (validation_severity == "BAD" and current_pct <= -0.18 and soft_against >= 2)
+            or (best_pct < 0.18 and elapsed_min >= 30 and opposite_votes >= 2.2 and support_votes <= 1.2)
+        )
+    elif phase == "PROFIT_PROTECTION":
+        # Giveback is actionable only when plus was real enough and weakness is confirmed.
+        allowed = 0.72 if regime in ["TREND", "NEWS_IMPULSE"] else 0.62
+        exit_permission = bool(giveback_ratio >= allowed and (hard_against >= 1 or soft_against >= 3) and not support_ok)
+    elif phase == "CONTINUATION_OR_EXIT":
+        allowed = 0.62 if regime in ["TREND", "NEWS_IMPULSE"] else 0.52
+        exit_permission = bool(
+            confirmed_ict_reversal
+            or (giveback_ratio >= allowed and (hard_against >= 1 or soft_against >= 2) and not support_ok)
+            or (entry_state_name == "BROKEN" and current_pct <= 0.18 and hard_against >= 1)
+        )
+    if str(action or "").startswith("TP") or str(action or "") == "STOP":
+        exit_permission = True
+
+    # Human title / status.
+    action_s = str(action or "")
+    title = f"🟡 СУПРОВІД {side} — ПОТРІБНЕ ПРОДОВЖЕННЯ"
+    status = "NEEDS_CONTINUATION"
+    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT"]:
+        status = "EDGE_LOST"
+        if action_s.startswith("TP"):
+            title = f"🔵 {side} ЗАКРИТО — ЦІЛЬ ВИКОНАНА"
+            status = "TARGET_DONE"
+        elif action_s == "STOP":
+            title = f"🔴 {side} ЗАКРИТО — СТОП СПРАЦЮВАВ"
+        elif best_pct >= 0.35 and current_pct >= -0.05:
+            title = f"🔴 {side} ЗАКРИТО — ПРОДОВЖЕННЯ НЕ ПІДТВЕРДИЛОСЬ"
+        else:
+            title = f"🔴 {side} ЗАКРИТО — ПЕРЕВАГА ВТРАЧЕНА"
+    elif action_s.startswith("TP"):
+        title = f"🔵 СУПРОВІД {side} — ЦІЛЬ ВЗЯТО, ВЕСТИ ЗАЛИШОК"
+        status = "TARGET_PROTECTION"
+    elif phase == "ENTRY_VALIDATION":
+        if current_pct >= 0.12 and not (hard_against or soft_against >= 2):
+            title = f"🟢 СУПРОВІД {side} — ВХІД ПІДТВЕРДЖУЄТЬСЯ"
+            status = "ENTRY_VALIDATING_POSITIVE"
+        else:
+            title = f"🟡 СУПРОВІД {side} — ЙДЕ ПЕРЕВІРКА ВХОДУ"
+            status = "ENTRY_VALIDATION"
+    elif phase == "EXPANSION":
+        if current_pct > 0 and (support_votes >= opposite_votes or confirmed_mfe >= 0.25) and not hard_against:
+            title = f"🟢 СУПРОВІД {side} — ІМПУЛЬС ПІДТВЕРДЖУЄТЬСЯ"
+            status = "EXPANSION_CONFIRMED"
+        elif entry_state_name in ["WEAK", "BROKEN"] or soft_against >= 2:
+            title = f"🟠 СУПРОВІД {side} — СЕТАП СЛАБШАЄ"
+            status = "SETUP_WEAKENING"
+        else:
+            title = f"🟡 СУПРОВІД {side} — ПОТРІБНЕ ПРОДОВЖЕННЯ"
+            status = "NEEDS_CONTINUATION"
+    elif phase == "PROFIT_PROTECTION":
+        if giveback_ratio >= 0.55 or action_s in ["PROTECT", "PROTECT_OR_EXIT", "EXIT_WARNING"]:
+            title = f"🟠 СУПРОВІД {side} — ПРИБУТОК СЛАБШАЄ"
+            status = "PROFIT_WEAKENING"
+        else:
+            title = f"🟢 СУПРОВІД {side} — ПРИБУТОК ПІД КОНТРОЛЕМ"
+            status = "PROFIT_CONTROLLED"
+    elif phase == "CONTINUATION_OR_EXIT":
+        if exit_permission or action_s in ["PROTECT_OR_EXIT", "EXIT_WARNING"]:
+            title = f"🟠 СУПРОВІД {side} — ПЕРЕВАГА СЛАБШАЄ"
+            status = "EDGE_WEAKENING"
+        else:
+            title = f"🟢 СУПРОВІД {side} — ПРОДОВЖЕННЯ ЩЕ АКТУАЛЬНЕ"
+            status = "CONTINUATION_VALID"
+
+    # One concise reason for Telegram. Full diagnostics stay in the journal.
+    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT"]:
+        if action_s == "STOP":
+            reason = "стопова зона була зачеплена; сценарій закрито за планом."
+        elif best_pct >= 0.35 and current_pct >= -0.05:
+            reason = f"угода давала +{round(best_pct, 3)}% MFE, але продовження {side} не підтвердилось; вихід біля входу замість очікування дальнього стопа."
+        else:
+            reason = f"перевага {side} втрачена: структура/імпульс не дали продовження, ризик утримання став вищий за потенціал."
+    elif phase == "ENTRY_VALIDATION":
+        reason = f"перші 1–3 свічки після входу ще перевіряють точку; MFE {round(best_pct, 3)}%, MAE {round(mae_pct, 3)}%."
+        if hard_against or soft_against >= 2:
+            reason += " Є ранні попередження, але без повного зламу це ще не самостійна причина для виходу."
+    elif phase == "EXPANSION":
+        if status == "EXPANSION_CONFIRMED":
+            reason = "ціна утримує напрям після входу; 3M закриття підтверджують рух, структура ще не зламана."
+        elif status == "SETUP_WEAKENING":
+            reason = f"після входу немає достатнього розвитку: MFE {round(best_pct, 3)}%, ціна повертається до входу, частина підтверджень вже проти."
+        else:
+            reason = f"угода ще не дала достатнього розвитку до TP1; потрібне продовження імпульсу без зламу 3M/ICT."
+    elif phase == "PROFIT_PROTECTION":
+        if status == "PROFIT_WEAKENING":
+            reason = f"угода вже давала +{round(best_pct, 3)}% MFE, зараз {round(current_pct, 3)}%; віддано {round(giveback_ratio*100, 1)}% руху."
+        else:
+            reason = f"MFE вже змістовний (+{round(best_pct, 3)}%), але ціна ще утримує робочу зону; без confirmed-розвороту даємо простір."
+    else:
+        if status == "CONTINUATION_VALID":
+            reason = "після першого руху структура/фон ще не зламали сценарій; є підстава вести залишок до наступної цілі."
+        else:
+            reason = f"після MFE +{round(best_pct, 3)}% перевага слабшає: потрібне відновлення структури, інакше краще не віддавати рух назад."
+
+    return {
+        "phase": phase,
+        "phase_label": _phase_label_name(phase),
+        "status": status,
+        "telegram_title": title,
+        "telegram_reason": reason,
+        "exit_permission": bool(exit_permission),
+        "elapsed_min": round(elapsed_min, 1),
+        "current_pct": round(current_pct, 3),
+        "best_pct": round(best_pct, 3),
+        "close_mfe_pct": round(close_mfe, 3),
+        "confirmed_mfe_pct": round(confirmed_mfe, 3),
+        "mae_pct": round(mae_pct, 3),
+        "mae_risk_used": mae_risk_used,
+        "giveback_pct": round(giveback, 3),
+        "giveback_ratio": round(giveback_ratio, 3),
+        "support_votes": round(float(support_votes or 0.0), 2),
+        "opposite_votes": round(float(opposite_votes or 0.0), 2),
+        "hard_against": int(hard_against),
+        "soft_against": int(soft_against),
+    }
+
 def manage_active_trade(trade, context):
     price = context["price"]
     side = trade.side
@@ -7155,15 +6760,6 @@ def manage_active_trade(trade, context):
     action = "HOLD"
     title = f"СУПРОВІД {side}"
     recommendation = "утримувати, поки 3m/15m не ламаються"
-
-    # Apply TP1/1R MFE profit lock BEFORE stop check. If the stop is improved
-    # now, do not test the new stop against old candles from before the update.
-    mfe_prelock = _apply_mfe_profit_lock_before_stop(trade, context, price, current_pct, best_pct, mode_profile)
-    if mfe_prelock.get("closed"):
-        return mfe_prelock
-    if mfe_prelock.get("protected"):
-        high_since_stop, low_since_stop = price, price
-        notes.append(str(mfe_prelock.get("reason") or "MFE profit lock"))
 
     if trade_hit_stop_by_extreme(side, price, trade.stop_current, high_since_stop, low_since_stop):
         trade.status = "CLOSED"
@@ -7209,21 +6805,6 @@ def manage_active_trade(trade, context):
         recommendation = "TP2 взято: зафіксувати ще частину; новий ICT/SMC стоп рахується один раз і далі не рухається до TP3/виходу"
         if not trade.tp2_stop_locked:
             recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2")
-            if not _valid_stop_for_side(side, price, recommended_stop):
-                trade.status = "CLOSED"
-                trade.last_action = "EXIT_TP2_LOCK_IMPOSSIBLE"
-                return {
-                    "closed": True,
-                    "action": "EXIT_TP2_LOCK_IMPOSSIBLE",
-                    "exit_reason_code": "TP2_PROFIT_LOCK_IMPOSSIBLE",
-                    "exit_quality": "PROFIT_LOCK",
-                    "title": f"{side} ЗАКРИТИ — TP2 ПРИБУТОК ЗАХИСТИТИ",
-                    "recommendation": "TP2/MFE вже був, але безпечний profit-lock уже неможливо поставити — краще закрити, ніж віддати рух",
-                    "current_pct": current_pct,
-                    "best_pct": best_pct,
-                    "exit_price": round_price(price),
-                    "notes": ["після TP2 стоп не може залишатись у мінусі"],
-                }
             if side == "LONG":
                 trade.stop_current = max(trade.stop_current, recommended_stop)
                 trade.stop_updated_at = iso_now()
@@ -7249,21 +6830,6 @@ def manage_active_trade(trade, context):
         recommendation = "TP1 взято: частково фіксувати; один раз переставити стоп у зону між входом і TP1 з урахуванням ICT/SMC, далі не рухати до TP2"
         if not trade.tp1_stop_locked:
             recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
-            if not _valid_stop_for_side(side, price, recommended_stop):
-                trade.status = "CLOSED"
-                trade.last_action = "EXIT_TP1_LOCK_IMPOSSIBLE"
-                return {
-                    "closed": True,
-                    "action": "EXIT_TP1_LOCK_IMPOSSIBLE",
-                    "exit_reason_code": "TP1_PROFIT_LOCK_IMPOSSIBLE",
-                    "exit_quality": "PROFIT_LOCK",
-                    "title": f"{side} ЗАКРИТИ — TP1 ПРИБУТОК ЗАХИСТИТИ",
-                    "recommendation": "TP1/MFE вже був, але безпечний profit-lock уже неможливо поставити — краще закрити, ніж віддати рух",
-                    "current_pct": current_pct,
-                    "best_pct": best_pct,
-                    "exit_price": round_price(price),
-                    "notes": ["після TP1 стоп не може залишатись у мінусі"],
-                }
             if side == "LONG":
                 trade.stop_current = max(trade.stop_current, recommended_stop)
                 trade.stop_updated_at = iso_now()
@@ -7367,6 +6933,26 @@ def manage_active_trade(trade, context):
         trade.entry_last_state = str(entry_state.get("label") or "")
     exhausted_trade, exhausted_trade_reason = detect_exhausted_move(side, context)
 
+    phase_snapshot = analyze_trade_phase(
+        trade, context, current_pct, best_pct, giveback,
+        high_since_open=high_since_open,
+        low_since_open=low_since_open,
+        entry_state=entry_state,
+        trade_validation=trade_validation,
+        support_votes=support_votes,
+        opposite_votes=opposite_votes,
+        action=action,
+        market_regime=market_regime,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+        liquidity_against=liquidity_against,
+        news_against=news_against,
+        confirmed_ict_reversal=confirmed_ict_reversal,
+    )
+
     # Universal validation of the opened idea. This does not delay entries.
     # It changes the supervision wording through "Стан точки входу", without
     # adding a duplicated generic trade-risk block to Telegram.
@@ -7382,7 +6968,11 @@ def manage_active_trade(trade, context):
     if entry_state and not trade.tp1_hit:
         should_close_by_integrity = bool(
             entry_state.get("auto_exit")
-            or (int(getattr(trade, "entry_fail_streak", 0) or 0) >= 3 and current_pct <= 0.18)
+            or (
+                int(getattr(trade, "entry_fail_streak", 0) or 0) >= 3
+                and current_pct <= 0.18
+                and phase_snapshot.get("exit_permission")
+            )
         )
         if should_close_by_integrity:
             trade.status = "CLOSED"
@@ -7398,6 +6988,17 @@ def manage_active_trade(trade, context):
                 "best_pct": best_pct,
                 "notes": [entry_state.get("reason", "точка входу втратила актуальність"), f"слабких перевірок підряд: {getattr(trade, 'entry_fail_streak', 0)}"],
                 "entry_state": entry_state,
+                "trade_phase": analyze_trade_phase(
+                    trade, context, current_pct, best_pct, giveback,
+                    high_since_open=high_since_open, low_since_open=low_since_open,
+                    entry_state=entry_state, trade_validation=trade_validation,
+                    support_votes=support_votes, opposite_votes=opposite_votes,
+                    action="EXIT_ENTRY_POINT_BROKEN", market_regime=market_regime,
+                    tf3_against=tf3_against, structure_against=structure_against, ict_against=ict_against,
+                    flow_against=flow_against, cvd_against=cvd_against, liquidity_against=liquidity_against,
+                    news_against=news_against, confirmed_ict_reversal=confirmed_ict_reversal,
+                    closed=True, exit_reason_code="ENTRY_POINT_INTEGRITY_BROKEN",
+                ),
             }
 
     # Smart post-TP1 supervision. This does not close by itself; it labels the
@@ -7423,7 +7024,16 @@ def manage_active_trade(trade, context):
 
     # MFE protection before formal TP1: do not allow a good intraday move
     # to come back to zero just because TP1 is still far away.
-    mfe_stop, mfe_stop_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, current_pct, mode_profile)
+    # Use confirmed/close MFE for pre-TP1 stop tightening so one wick does not
+    # over-tighten the trade. Big wick MFE still matters, but only after the
+    # candle closes/follow-through validate it.
+    effective_mfe_for_lock = best_pct
+    if not trade.tp1_hit:
+        close_mfe_for_lock = safe_float(phase_snapshot.get("close_mfe_pct"), 0.0) or 0.0
+        confirmed_mfe_for_lock = safe_float(phase_snapshot.get("confirmed_mfe_pct"), 0.0) or 0.0
+        if best_pct >= 0.45 and confirmed_mfe_for_lock < best_pct * 0.45:
+            effective_mfe_for_lock = max(confirmed_mfe_for_lock, close_mfe_for_lock, min(best_pct, 0.65))
+    mfe_stop, mfe_stop_reason = _profit_lock_stop_level(side, trade.entry, price, effective_mfe_for_lock, current_pct, mode_profile)
     if action == "HOLD" and mfe_stop is not None:
         if _apply_more_protective_stop(trade, side, mfe_stop):
             action = "PROTECT"
@@ -7602,8 +7212,10 @@ def manage_active_trade(trade, context):
     # - before TP1: mostly protect with stop, no panic close;
     # - after TP1 / after big MFE: close only after 2 confirmed warnings;
     # - hard ICT/SMC reversal can close immediately.
+    effective_giveback = max(0.0, effective_mfe_for_lock - current_pct)
+    effective_giveback_ratio = effective_giveback / effective_mfe_for_lock if effective_mfe_for_lock > 0 else 0.0
     mfe_guard = _adaptive_mfe_guard_snapshot(
-        trade, context, market_regime, current_pct, best_pct, giveback, giveback_ratio,
+        trade, context, market_regime, current_pct, effective_mfe_for_lock, effective_giveback, effective_giveback_ratio,
         post_tp1=post_tp1,
         tf3_against=tf3_against,
         structure_against=structure_against,
@@ -7741,6 +7353,16 @@ def manage_active_trade(trade, context):
         "countertrend_validation": None,
         "trade_validation": risk_snapshot.get("trade_validation"),
         "entry_state": entry_state,
+        "trade_phase": analyze_trade_phase(
+            trade, context, current_pct, best_pct, giveback,
+            high_since_open=high_since_open, low_since_open=low_since_open,
+            entry_state=entry_state, trade_validation=trade_validation,
+            support_votes=support_votes, opposite_votes=opposite_votes,
+            action=action, market_regime=market_regime,
+            tf3_against=tf3_against, structure_against=structure_against, ict_against=ict_against,
+            flow_against=flow_against, cvd_against=cvd_against, liquidity_against=liquidity_against,
+            news_against=news_against, confirmed_ict_reversal=confirmed_ict_reversal,
+        ),
     }
 
 def new_active_trade(setup):
@@ -7859,12 +7481,11 @@ def _zone_line(zone):
 
 
 def planned_wait_text(context, setup):
-    """Compact Ukrainian WAIT/WATCH block with professional reason + activation.
+    """Human-readable waiting plan for WATCH / WAIT_RETEST states.
 
-    The text is recalculated on every run from live 3M/15M/1H structure,
-    ICT/FVG/OB, flow/CVD, liquidity, news and professional-entry-model state.
-    Telegram receives only the most important reason and activation conditions,
-    while the full analytics stay inside context/journal.
+    The goal is to avoid vague messages like "чекати LONG". The bot should
+    tell the user what exactly confirms the idea and from what price the trade
+    becomes active.
     """
     side = setup.get("side")
     plan = setup.get("plan")
@@ -7877,10 +7498,8 @@ def planned_wait_text(context, setup):
     ict = context.get("ict") or {}
     tf3 = context.get("tf3") or {}
     tf15 = context.get("tf15") or {}
-    tf1h = context.get("tf1h") or {}
     flow = context.get("flow") or {}
     cvd = context.get("cvd") or {}
-    pro_model = context.get("professional_entry_model") or {}
     pending = context.get("pending_ict_zones") or []
     same_zones = [z for z in pending if z.get("side") == side]
     best_zone = same_zones[0] if same_zones else None
@@ -7890,109 +7509,92 @@ def planned_wait_text(context, setup):
     swing_high = safe_float(structure.get("swing_high"))
     swing_low = safe_float(structure.get("swing_low"))
 
-    def add_unique(items, value):
-        value = str(value or "").strip()
-        if value and value not in items:
-            items.append(value)
-
-    reason_items = []
-    activation_items = []
-
-    # 1) Professional reason: why this is still WAIT and not an entry now.
-    state = str(pro_model.get("state") or "")
-    model_reason = str(pro_model.get("reason") or setup.get("reason") or "")
-    state_reason_map = {
-        "REENTRY_NEEDS_NEW_STRUCTURE": f"повторний {side} після слабкого виходу — потрібен новий структурний сетап",
-        "NEWS_WITHOUT_STRUCTURE": "новина є, але без структури/ICT це ще не вхід",
-        "ICT_CONTEXT_ONLY": "ICT контекст є, але ще немає реакції від зони або виходу з балансу",
-        "EDGE_NO_CHASE": "ціна біля краю руху — не доганяти без continuation-сетапу",
-        "NO_PROFESSIONAL_BASE": "ще немає конкретного підтвердження входу",
-        "TF3_AGAINST": f"3M поки проти {side}",
-    }
-    if state in state_reason_map:
-        add_unique(reason_items, state_reason_map[state])
-
-    opposite_side = opposite(side)
-    if tf3.get("bias") == opposite_side:
-        add_unique(reason_items, f"3M поки проти {side}")
-    elif tf3.get("bias") not in [side] and len(reason_items) < 2:
-        add_unique(reason_items, f"3M ще не підтвердив {side}")
-
-    if ict.get("bias") == opposite_side and len(reason_items) < 2:
-        add_unique(reason_items, "ICT поки проти напрямку")
-    elif ict.get("bias") not in [side] and len(reason_items) < 2:
-        add_unique(reason_items, "немає активного ICT сетапу в сторону входу")
-
-    if tf1h.get("bias") == opposite_side and len(reason_items) < 2:
-        add_unique(reason_items, "1H слабкий/проти — потрібен чіткий тригер")
-    elif tf15.get("bias") == opposite_side and len(reason_items) < 2:
-        add_unique(reason_items, "15M поки проти — вхід тільки після локального підтвердження")
-
-    if (flow.get("bias") == opposite_side and cvd.get("bias") == opposite_side) and len(reason_items) < 2:
-        add_unique(reason_items, "CVD/потік проти входу")
-
-    if not reason_items and model_reason:
-        # Keep only one concise reason from the deeper model.
-        add_unique(reason_items, model_reason)
-    if not reason_items:
-        add_unique(reason_items, "ідея є, але підтвердження входу ще неповне")
-
-    # 2) Missing concrete conditions that would make WAIT become a real entry.
     if side == "LONG":
+        # Prefer a nearby reclaim/trigger, not a far 15m swing if it is too stretched.
         candidates = [price + atr15 * 0.16]
         for lvl in [recent_high, swing_high, safe_float(ict.get("equilibrium"))]:
             if lvl and lvl > price and (lvl - price) / price * 100 <= 1.15:
                 candidates.append(lvl + atr15 * 0.04)
         trigger = min(candidates) if candidates else price + atr15 * 0.16
+        entry_low = trigger
+        entry_high = trigger + atr15 * 0.22
         retest_zone = _zone_line(best_zone)
         if not retest_zone:
             support = max(safe_float(getattr(plan, "stop", None), price - atr15), price - atr15 * 0.55)
             retest_zone = f"{_fmt_price(support)}–{_fmt_price(price)}"
-
-        add_unique(activation_items, f"3M закриття вище {_fmt_price(trigger)} і утримання над рівнем")
-        add_unique(activation_items, "після пробою — higher low, без нового lower low")
-        add_unique(activation_items, f"або викуп із зони {retest_zone}")
+        wait_items = [
+            f"3M reclaim вище {_fmt_price(trigger)} і закриття/утримання над рівнем",
+            "після reclaim — 3M higher low, без нового lower low",
+            f"або ретест зони {retest_zone} з викупом",
+        ]
+        activation = f"якщо 3M закриється вище {_fmt_price(trigger)} або дасть retest→reclaim цієї зони"
+        cancel = f"якщо 3M/15M закриється нижче {_fmt_price(plan.stop)} або CVD/потік різко стане проти LONG"
     else:
         candidates = [price - atr15 * 0.16]
         for lvl in [recent_low, swing_low, safe_float(ict.get("equilibrium"))]:
             if lvl and lvl < price and (price - lvl) / price * 100 <= 1.15:
                 candidates.append(lvl - atr15 * 0.04)
         trigger = max(candidates) if candidates else price - atr15 * 0.16
+        entry_high = trigger
+        entry_low = trigger - atr15 * 0.22
         retest_zone = _zone_line(best_zone)
         if not retest_zone:
             resistance = min(safe_float(getattr(plan, "stop", None), price + atr15), price + atr15 * 0.55)
             retest_zone = f"{_fmt_price(price)}–{_fmt_price(resistance)}"
+        wait_items = [
+            f"3M rejection/пробій нижче {_fmt_price(trigger)} і утримання під рівнем",
+            "після пробою — 3M lower high, без нового higher high",
+            f"або ретест зони {retest_zone} з відбоєм вниз",
+        ]
+        activation = f"якщо 3M закриється нижче {_fmt_price(trigger)} або дасть retest→rejection цієї зони"
+        cancel = f"якщо 3M/15M закриється вище {_fmt_price(plan.stop)} або CVD/потік різко стане проти SHORT"
 
-        add_unique(activation_items, f"3M закриття нижче {_fmt_price(trigger)} і утримання під рівнем")
-        add_unique(activation_items, "після пробою — lower high, без нового higher high")
-        add_unique(activation_items, f"або відбій від зони {retest_zone}")
+    why = []
+    if tf3.get("bias") == side:
+        why.append("3M вже показує напрям")
+    elif tf3.get("bias") == "NEUTRAL":
+        why.append("3M ще без повного тригера")
+    else:
+        why.append("3M поки дає відкат — потрібен розворот назад")
 
-    # Instead of a separate noisy activation block, merge the concrete missing
-    # conditions into Причина. This is recalculated on every run from live data.
-    for item in activation_items:
-        if len(reason_items) >= 4:
-            break
-        add_unique(reason_items, item)
-    reason_items = reason_items[:4]
-    lines = ["<b>Причина:</b>"]
-    lines.extend([f"• {html.escape(str(x))}" for x in reason_items])
+    if ict.get("bias") == side:
+        why.append("ICT контекст підтримує ідею")
+    if tf15.get("bias") == side:
+        why.append("15M підтримує напрям")
+    elif tf15.get("bias") == "NEUTRAL":
+        why.append("15M ще нейтральний, тому вхід тільки по 3M")
+    if flow.get("bias") == side or cvd.get("bias") == side:
+        why.append("потік/CVD не проти входу")
+
+    lines = []
+    if why:
+        lines.append("<b>Чому готується:</b>")
+        lines.extend([f"✅ {x}" for x in why[:4]])
+        lines.append("")
+    lines.append("<b>Що чекаємо:</b>")
+    lines.extend([f"• {x}" for x in wait_items])
+    lines.append("")
+    # For WAIT/WATCH messages keep the alert short: activation is enough.
+    # Full entry/stop/TP plan is shown only when the bot gives a real ENTRY/RISKY_ENTRY.
+    lines.append("<b>Активація:</b>")
+    lines.append(activation)
     return "\n".join(lines).strip()
 
 def _compact_title(setup):
     action = setup.get("action")
     side = setup.get("side")
     if action == "ENTRY":
-        return f"ВХІД {side}"
+        return f"🟢 ВХІД {side}"
     if action == "RISKY_ENTRY":
-        return f"РИЗИКОВАНИЙ ВХІД {side}"
+        return f"🟠 РИЗИКОВАНИЙ ВХІД {side}"
     if action == "WAIT_RETEST":
-        return f"НЕ ДОГАНЯТИ {side}"
+        return f"🟡 НЕ ДОГАНЯТИ {side}"
     if action == "WATCH" and setup.get("exhausted_move") and side in ["LONG", "SHORT"]:
-        return f"ЧЕКАТИ — {side} ВЖЕ ВІДІГРАНИЙ"
+        return f"🟡 ЧЕКАТИ — {side} ВЖЕ ВІДІГРАНИЙ"
     if action == "WATCH" and side in ["LONG", "SHORT"]:
-        return f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
+        return f"🟡 ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
     if action == "NO_TRADE":
-        return str(setup.get("title") or "ЧЕКАТИ — ВХОДУ НЕМАЄ")
+        return "⚪ " + str(setup.get("title") or "ЧЕКАТИ — ВХОДУ НЕМАЄ")
     return str(setup.get("title") or "СИГНАЛ")
 
 
@@ -8072,13 +7674,14 @@ def build_new_setup_message(context, setup):
     conflicts = _short_list(setup.get("conflicts"), 3)
     confirmations = _short_list(setup.get("confirmations"), 3)
 
+    quality_label = "Якість" if setup.get("action") in ["ENTRY", "RISKY_ENTRY"] else "Готовність"
     lines = [
         "<b>BZU SIGNAL BOT PRO</b>",
         "",
         f"<b>{_compact_title(setup)}</b>",
         "",
         price_line(context),
-        f"<b>{'Якість' if setup.get('action') in ['ENTRY', 'RISKY_ENTRY'] else 'Готовність'}:</b> {setup['quality']}/100",
+        f"<b>{quality_label}:</b> {setup['quality']}/100",
     ]
 
     entry_type = entry_type_text(context, setup)
@@ -8101,9 +7704,16 @@ def build_new_setup_message(context, setup):
             lines.append("")
             lines.append("<b>Контроль:</b> якщо після входу 1–2 свічки 3M не підтвердять напрям або CVD/потік різко проти — очікувати EXIT WARNING.")
     else:
-        # For WATCH/WAIT messages keep Telegram clean: only short dynamic "Причина"
-        # only the compact "Причина" block is printed. The full analytics stay internal.
-        wait_text = planned_wait_text(context, setup) if setup.get("show_wait_plan", True) else ""
+        reason_items = conflicts or _short_list([setup.get("reason")], 1)
+        if reason_items:
+            lines.append("")
+            lines.append("<b>Причина:</b>")
+            for x in reason_items:
+                icon = "⚠️" if ("локаль" in x or "4h фон" in x or "потік локально" in x) else "❌"
+                lines.append(f"{icon} {x}")
+        # WAIT/ЧЕКАТИ alerts stay calm: no separate "Активація" block.
+        # The dynamic reason already explains what is missing for entry.
+        wait_text = ""
         if wait_text:
             lines.append("")
             lines.append(wait_text)
@@ -8117,84 +7727,42 @@ def build_new_setup_message(context, setup):
     return "\n".join(lines).strip()
 
 
-def _follow_decision_label(action, closed=False):
-    """One calm user-facing decision for trade supervision."""
-    action = str(action or "HOLD").upper()
-    if closed:
-        return "ЗАКРИТО"
-    if action in ["HOLD", "HOLD_TO_TP2"]:
-        return "ТРИМАТИ"
-    if action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT_OR_EXIT"]:
-        return "КОНТРОЛЬ РИЗИКУ"
-    if action in [
-        "EXIT_WARNING", "EXIT", "EXIT_LOCAL_BREAK", "EXIT_AFTER_TP1_GIVEBACK",
-        "EXIT_MFE_GIVEBACK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_TP1_LOCK_IMPOSSIBLE",
-        "EXIT_TP2_LOCK_IMPOSSIBLE", "EXIT_MFE_PROFIT_LOCK"
-    ]:
-        return "ЗАКРИТИ"
-    if action in ["STOP", "TP3"]:
-        return "ЗАКРИТО"
-    return "ТРИМАТИ"
-
-
-def _follow_reason_line(trade, result):
-    """Short non-alarming explanation for closed/protect decisions.
-
-    Detailed entry-state diagnostics remain in journal/internal analytics; Telegram
-    gets only the trading decision so the supervision does not create noise.
-    """
-    action = str(result.get("action") or "").upper()
-    current_pct = safe_float(result.get("current_pct"), 0.0) or 0.0
-    best_pct = safe_float(result.get("best_pct"), 0.0) or 0.0
-
-    if result.get("closed"):
-        if action == "TP3":
-            return "ціль виконана, позицію закрито"
-        if action == "STOP":
-            return "спрацював стоп / рівень контролю ризику"
-        if best_pct < 0.20:
-            return "угода не дала розвитку після входу"
-        if current_pct > 0:
-            return "рух у плюс захищено, позицію закрито"
-        if best_pct >= 0.50:
-            return "після руху в плюс зʼявився відкат, позицію закрито за контрольним стопом"
-        return "ризик став вищий за потенціал, позицію закрито"
-
-    if action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT_OR_EXIT"]:
-        if best_pct >= 0.20:
-            return "угода вже давала плюс — підтягнути стоп у контрольну зону"
-        return "позиція слабшає — зменшити ризик"
-    if action in ["EXIT_WARNING", "EXIT", "EXIT_LOCAL_BREAK", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK", "EXIT_ENTRY_POINT_BROKEN"]:
-        if best_pct < 0.20:
-            return "угода не дала розвитку після входу"
-        return "підтвердження слабшає — не чекати дальній стоп"
-    return "позиція ще робоча"
-
-
 def build_follow_message(context, trade, result):
-    side = getattr(trade, "side", result.get("side", ""))
-    closed = bool(result.get("closed"))
-    decision = _follow_decision_label(result.get("action"), closed=closed)
-    if closed:
-        title = f"{side} ЗАКРИТО"
-    else:
-        title = f"СУПРОВІД {side} — {decision}"
+    current_pct = safe_float((result or {}).get("current_pct"), 0.0) or 0.0
+    best_pct = safe_float((result or {}).get("best_pct"), 0.0) or 0.0
+    giveback = max(0.0, best_pct - current_pct)
+    high_since_open, low_since_open = _trade_extremes_since_open(trade, context)
+    phase = (result or {}).get("trade_phase") or analyze_trade_phase(
+        trade, context, current_pct, best_pct, giveback,
+        high_since_open=high_since_open,
+        low_since_open=low_since_open,
+        entry_state=(result or {}).get("entry_state"),
+        trade_validation=(result or {}).get("trade_validation"),
+        action=(result or {}).get("action"),
+        closed=bool((result or {}).get("closed")),
+        exit_reason_code=(result or {}).get("exit_reason_code"),
+    )
+    title = phase.get("telegram_title") or (result or {}).get("title") or f"СУПРОВІД {trade.side}"
+    reason = phase.get("telegram_reason") or (result or {}).get("recommendation") or "супровід оновлено за поточним контекстом."
+    mae_pct = safe_float(phase.get("mae_pct"), 0.0) or 0.0
+    close_mfe = safe_float(phase.get("close_mfe_pct"), 0.0) or 0.0
 
     lines = [
         "<b>BZU SIGNAL BOT PRO</b>",
         "",
-        f"<b>{title}</b>",
-        f"Рішення: <b>{decision}</b>",
+        f"<b>{html.escape(str(title))}</b>",
         "",
         price_line(context),
-        f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс/MFE:</b> {round(result['best_pct'], 3)}%",
+        f"<b>Від входу:</b> {round(current_pct, 3)}% | <b>MFE:</b> {round(best_pct, 3)}% | <b>MAE:</b> {round(mae_pct, 3)}%",
     ]
+    # Close/confirmed MFE is used by the engine internally, but not printed by
+    # default to keep Telegram clean and fast to read.
 
-    reason = _follow_reason_line(trade, result)
-    if reason:
-        lines.append(f"<b>Причина:</b> {html.escape(str(reason))}")
+    lines.append("")
+    lines.append("<b>Причина:</b>")
+    lines.append(html.escape(str(reason)))
 
-    if result.get("reversal_label") and not closed:
+    if result.get("reversal_label"):
         lines.append("")
         rev_side = result.get("reversal_side") or opposite(trade.side)
         lines.append(f"<b>Ризик розвороту в {rev_side}:</b> {result.get('reversal_label')} ({int(result.get('reversal_score') or 0)}%)")
@@ -8207,10 +7775,15 @@ def build_follow_message(context, trade, result):
         f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}",
     ])
 
-    if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
-        lines.append(f"<b>Контрольний стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
+    # Show stop update only if it really changed from the initial stop; do not
+    # repeat a "control stop" when it is identical to the entry stop.
+    rec_stop = result.get("recommended_stop")
+    if rec_stop is not None:
+        rec_stop = safe_float(rec_stop, None)
+        stop_initial = safe_float(getattr(trade, "stop_initial", None), None)
+        if rec_stop is not None and stop_initial is not None and abs(rec_stop - stop_initial) > max(0.0001, abs(stop_initial) * 0.00005):
+            lines.append(f"<b>Активний стоп:</b> {_fmt_price(rec_stop)}")
 
-    # No "Стан точки входу", no duplicated "Дія", no entry-state diagnostics in Telegram.
     return "\n".join(lines).strip()
 
 def build_closed_trade_journal_item(trade, result, context):
@@ -8248,6 +7821,10 @@ def build_closed_trade_journal_item(trade, result, context):
         "mfe_pct": mfe_pct,
         "mfe_captured_pct": mfe_captured_pct,
         "mfe_giveback_pct": mfe_giveback_pct,
+        "trade_phase": (result.get("trade_phase") or {}).get("phase"),
+        "phase_status": (result.get("trade_phase") or {}).get("status"),
+        "mae_pct": (result.get("trade_phase") or {}).get("mae_pct"),
+        "confirmed_mfe_pct": (result.get("trade_phase") or {}).get("confirmed_mfe_pct"),
         "exit_reason_code": result.get("exit_reason_code") or _exit_reason_code(result, context, trade),
         "exit_quality": result.get("exit_quality") or _exit_quality_score(trade, result, context),
         "exit_score": result.get("exit_score"),
