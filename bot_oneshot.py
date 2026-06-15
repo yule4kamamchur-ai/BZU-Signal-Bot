@@ -2283,7 +2283,10 @@ def market_session():
         return {"name": "NEW YORK / LONDON", "score": 4, "liquidity_risk": False, "note": "ліквідна сесія"}
     if 7 <= hour < 12:
         return {"name": "LONDON", "score": 2, "liquidity_risk": False, "note": "європейська сесія"}
-    return {"name": "ASIA / QUIET", "score": -6, "liquidity_risk": True, "note": "тиха сесія: ризик спреду/slippage"}
+    # Спокійна сесія більше не знижує якість і не блокує входи сама по собі.
+    # Якість має визначатися структурою, ICT, 3M, CVD/flow і місцем входу,
+    # бо саме в тихі дні часто зʼявляються чисті ранні сетапи.
+    return {"name": "ASIA / QUIET", "score": 0, "liquidity_risk": True, "note": "спокійна сесія — не фільтр входу"}
 
 
 # ==========================================================
@@ -3217,8 +3220,8 @@ def build_context(data, state=None):
         + volume_guard.get("score", 0)
     )
     total_score = tech_score + news.get("score", 0) * 0.22 + calendar.get("score", 0) + session.get("score", 0)
-    if low_liquidity_risk:
-        total_score -= 10 if tech_score > 0 else -10
+    # Low-liquidity/quiet session is informational only.
+    # Do not reduce directional score only because the session is calm.
     if price_warning:
         total_score *= 0.92
 
@@ -4054,18 +4057,9 @@ def professional_entry_model_snapshot(side, context, plan=None):
         else:
             risk_only("повторний вхід після слабкого виходу дозволений тільки як новий структурний сетап", 78, "REENTRY_STRUCTURAL_ONLY")
 
-    # 5) Low-liquidity sessions: one 3M impulse is not enough. Do not turn this
-    # into a hard day-long ban: a full ICT/structure setup can still trade.
-    if context.get("low_liquidity_risk"):
-        if not professional_base:
-            force_watch(
-                "тиха сесія: для входу потрібен повний ICT/структурний сетап, а не один 3M імпульс",
-                64,
-                f"ЧЕКАТИ — {side} ТИХА СЕСІЯ",
-                "LOW_LIQUIDITY_NEEDS_STRUCTURE",
-            )
-        else:
-            risk_only("тиха сесія — навіть хороший сетап тільки обережно", 76, "LOW_LIQUIDITY_RISK_ONLY")
+    # 5) Quiet-session rule removed.
+    # A calm/low-volume session must not block early professional entries.
+    # The bot now judges the setup by structure + ICT + 3M + flow/CVD only.
 
     # 6) News is fuel, not a trigger. It can strengthen a prepared setup, but
     # cannot promote a structure-less idea into a market entry.
@@ -4685,8 +4679,6 @@ def evaluate_new_setup(context):
         if cooldown_loop_guard:
             conflicts.append("ліміт повторних входів у цей напрям за 3 години — потрібен новий BOS/ICT для розблокування")
 
-    if context.get("low_liquidity_risk"):
-        conflicts.append("низька ліквідність/тиха сесія — ризик спреду і slippage")
     if context.get("price_warning"):
         conflicts.append("ціна TV/OKX розходиться — вхід тільки обережно")
     if cvd.get("confidence") == "LOW":
@@ -4902,8 +4894,6 @@ def evaluate_new_setup(context):
         else:
             quality = min(quality, 76)
 
-    if context.get("low_liquidity_risk"):
-        quality = min(quality, 74)
     if context.get("price_warning"):
         quality = min(quality, 72)
 
@@ -7694,7 +7684,6 @@ def planned_wait_text(context, setup):
     model_reason = str(pro_model.get("reason") or setup.get("reason") or "")
     state_reason_map = {
         "REENTRY_NEEDS_NEW_STRUCTURE": f"повторний {side} після слабкого виходу — потрібен новий структурний сетап",
-        "LOW_LIQUIDITY_NEEDS_STRUCTURE": "тиха сесія — одного 3M руху недостатньо",
         "NEWS_WITHOUT_STRUCTURE": "новина є, але без структури/ICT це ще не вхід",
         "ICT_CONTEXT_ONLY": "ICT контекст є, але ще немає реакції від зони або виходу з балансу",
         "EDGE_NO_CHASE": "ціна біля краю руху — не доганяти без continuation-сетапу",
