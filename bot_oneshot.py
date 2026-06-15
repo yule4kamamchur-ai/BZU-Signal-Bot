@@ -3469,7 +3469,135 @@ def detect_exhausted_move(side, context):
                 reasons.append("CVD/потік/кластери вже попереджають")
             return True, "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. " + "; ".join(reasons[:4])
 
+
     return False, ""
+
+
+def professional_continuation_snapshot(side, context):
+    """Professional continuation validator.
+
+    Distinguishes a bad chase from a real continuation setup:
+    - impulse -> base/hold -> continuation;
+    - BOS/CHOCH or sweep context;
+    - FVG/OB reaction or broken-level hold;
+    - 3M confirmation without heavy CVD/flow conflict.
+
+    It is intentionally a score, not a hard gate. It lets the bot keep good
+    early entries while blocking empty high/low chasing.
+    """
+    context = context if isinstance(context, dict) else {}
+    side = side if side in ["LONG", "SHORT"] else "NEUTRAL"
+    if side not in ["LONG", "SHORT"]:
+        return {"score": 0, "grade": "NONE", "allow_edge": False, "reasons": []}
+
+    opp = opposite(side)
+    price = safe_float(context.get("price"), 0) or 0
+    atr15 = safe_float(context.get("atr15"), 0) or (price * 0.006 if price else 0.5)
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+    clusters = context.get("clusters") or {}
+    candles3 = context.get("candles_3m") or []
+
+    phase = str(structure.get("phase", "") or "").upper()
+    setup = str(ict.get("setup", "") or "").upper()
+    score = 0
+    reasons = []
+
+    def add(points, reason):
+        nonlocal score
+        score += int(points)
+        if reason and reason not in reasons:
+            reasons.append(reason)
+
+    if tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 24:
+        add(16, "3M підтверджує напрям")
+    if tf15.get("bias") == side:
+        add(14, "15M підтримує")
+    if tf1h.get("bias") == side:
+        add(8, "1H не проти")
+
+    if structure.get("bias") == side:
+        add(16, "структура за напрям")
+    if side == "LONG" and any(x in phase for x in ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"]):
+        add(20, "структурна подія LONG")
+    if side == "SHORT" and any(x in phase for x in ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"]):
+        add(20, "структурна подія SHORT")
+
+    strong_ict = {
+        "LONG": ["LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"],
+        "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"],
+    }
+    continuation_ict = {
+        "LONG": ["BOS_LONG_CONTINUATION_HOLD", "BOS_LONG_RETRACE_FVG_OB"],
+        "SHORT": ["BOS_SHORT_CONTINUATION_HOLD", "BOS_SHORT_RETRACE_FVG_OB"],
+    }
+    if ict.get("bias") == side and ict.get("entry_ok") and setup in strong_ict.get(side, []):
+        add(24, "ICT сетап готовий")
+    elif ict.get("bias") == side and setup in continuation_ict.get(side, []):
+        add(18, "ICT continuation/утримання рівня")
+    elif ict.get("bias") == side:
+        add(7, "ICT контекст за напрям")
+
+    # Impulse -> base -> continuation. A vertical candle alone is not enough;
+    # a short compression/hold after impulse is a professional continuation clue.
+    try:
+        sample = candles3[-6:]
+        if len(sample) >= 4 and atr15:
+            last4_range = max(c.high for c in sample[-4:]) - min(c.low for c in sample[-4:])
+            bodies = [abs(c.close - c.open) for c in sample[-4:]]
+            avg_body = sum(bodies) / len(bodies) if bodies else 0
+            compressed = last4_range <= atr15 * 0.95 and avg_body <= atr15 * 0.36
+            if side == "LONG":
+                higher_lows = sample[-1].low >= min(c.low for c in sample[-4:-1])
+                holds = sample[-1].close >= min(c.close for c in sample[-4:])
+                if compressed and higher_lows and holds:
+                    add(14, "після імпульсу є проторговка/утримання")
+            else:
+                lower_highs = sample[-1].high <= max(c.high for c in sample[-4:-1])
+                holds = sample[-1].close <= max(c.close for c in sample[-4:])
+                if compressed and lower_highs and holds:
+                    add(14, "після імпульсу є проторговка/утримання")
+    except Exception:
+        pass
+
+    micro_against = 0
+    if cvd.get("confidence", "HIGH") != "LOW" and cvd.get("bias") == opp and abs(int(cvd.get("score", 0) or 0)) >= 14:
+        micro_against += 1
+        add(-12, "CVD проти")
+    if flow.get("bias") == opp and abs(int(flow.get("score", 0) or 0)) >= 10:
+        micro_against += 1
+        add(-10, "потік проти")
+    if clusters.get("bias") == opp and abs(int(clusters.get("score", 0) or 0)) >= 4:
+        micro_against += 1
+        add(-8, "кластери проти")
+    if cvd.get("bias") == side and cvd.get("confidence", "HIGH") != "LOW":
+        add(7, "CVD не проти")
+    if flow.get("bias") == side:
+        add(7, "потік не проти")
+
+    score = int(max(0, min(100, score)))
+    if score >= 72 and micro_against <= 1:
+        grade = "STRONG_CONTINUATION"
+    elif score >= 56 and micro_against <= 2:
+        grade = "EARLY_CONTINUATION"
+    elif score >= 40:
+        grade = "PARTIAL_CONTINUATION"
+    else:
+        grade = "NO_CONTINUATION"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "allow_edge": bool(score >= 72 and micro_against <= 1),
+        "micro_against": micro_against,
+        "reasons": reasons[:5],
+    }
+
 
 def is_late_chase(side, context):
     """Anti-chase guard for intraday entries.
@@ -3516,6 +3644,8 @@ def is_late_chase(side, context):
         "SHORT": ["LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT", "BOS_SHORT_CONTINUATION_HOLD"],
     }
     has_ict_continuation = bool(ict.get("bias") == side and ict.get("entry_ok") and setup in strong_continuation.get(side, []))
+    continuation_snapshot = professional_continuation_snapshot(side, context)
+    has_structured_continuation = bool(has_ict_continuation or continuation_snapshot.get("allow_edge"))
 
     # Strong 3m impulse already happened. For a 15m intraday strategy this is
     # the classic place where market entries become late/chasing.
@@ -3534,30 +3664,30 @@ def is_late_chase(side, context):
     if side == "LONG":
         if "LONG" in liquidity.get("blocks", []):
             return True, "ліквідність проти: high зняли/памп поглинули, лонг не доганяти"
-        if long_vertical_3m:
+        if long_vertical_3m and not has_structured_continuation:
             return True, "3M вже дав різкий імпульс вгору — лонг не доганяти; чекати проторговку або відкат"
-        if long_stretched:
+        if long_stretched and not has_structured_continuation:
             return True, "ціна розтягнута від EMA20 після 3M-імпульсу — лонг тільки після охолодження"
-        if mature_15m_long:
+        if mature_15m_long and not has_structured_continuation:
             return True, "лонг після сильного 15M імпульсу: чекати відкат/проторговку"
         if distance_atr >= 1.75 and tf3.get("state") != "LONG_STRENGTHENING":
             return True, "ціна далеко від EMA20, 3M не підсилює"
-        if near_local_high and move_from_low >= 1.6 and not has_ict_continuation:
+        if near_local_high and move_from_low >= 1.6 and not has_structured_continuation:
             return True, "LONG біля локального high після руху — потрібен відкат, утримання рівня або ICT continuation"
         if structure.get("phase") == "UPSIDE SWEEP":
             return True, "зверху зняли ліквідність, лонг не доганяти"
     else:
         if "SHORT" in liquidity.get("blocks", []):
             return True, "ліквідність проти: low зняли/дамп викупили, шорт не доганяти"
-        if short_vertical_3m:
+        if short_vertical_3m and not has_structured_continuation:
             return True, "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат"
-        if short_stretched:
+        if short_stretched and not has_structured_continuation:
             return True, "ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження"
-        if mature_15m_short:
+        if mature_15m_short and not has_structured_continuation:
             return True, "шорт після сильного 15M імпульсу: чекати відкат/проторговку"
         if distance_atr >= 1.75 and tf3.get("state") != "SHORT_STRENGTHENING":
             return True, "ціна далеко від EMA20, 3M не підсилює"
-        if near_local_low and move_from_high <= -1.6 and not has_ict_continuation:
+        if near_local_low and move_from_high <= -1.6 and not has_structured_continuation:
             return True, "SHORT біля локального low після імпульсу — потрібен ретест, lower high або ICT reaction"
         if structure.get("phase") == "DOWNSIDE SWEEP":
             return True, "знизу зняли ліквідність, шорт не доганяти"
@@ -4000,12 +4130,18 @@ def professional_entry_model_snapshot(side, context, plan=None):
     continuation_structure = bool(ict_weak and tf3_same and (tf15_same or structure_same or structure_event))
     trend_stack = bool(tf3_same and tf15_same and (structure_same or structure_event or ict_same))
     strong_trend_stack = bool(tf3_same and tf15_same and (structure_same or structure_event) and (tf1h.get("bias") == side or tf4h.get("bias") == side or micro_for >= 1))
-    professional_base = bool(full_ict_structure or continuation_structure or strong_trend_stack)
+    continuation_snapshot = professional_continuation_snapshot(side, context)
+    structured_continuation = bool(continuation_snapshot.get("allow_edge"))
+    professional_base = bool(full_ict_structure or continuation_structure or strong_trend_stack or structured_continuation)
     minimum_base = bool(
-        (tf3_same or ict_strong or structure_event)
-        and (structure_same or structure_event or ict_same or tf15_same)
-        and not (structure_against and ict_against)
+        (
+            (tf3_same or ict_strong or structure_event)
+            and (structure_same or structure_event or ict_same or tf15_same)
+            and not (structure_against and ict_against)
+        )
+        or continuation_snapshot.get("score", 0) >= 56
     )
+    model["continuation_model"] = continuation_snapshot
 
     # Local extreme / late-location check. This does not forbid continuation;
     # it forbids buying/selling the edge without a continuation structure.
@@ -4025,7 +4161,10 @@ def professional_entry_model_snapshot(side, context, plan=None):
     near_high = bool(side == "LONG" and price and recent_high and price >= recent_high - atr15 * 0.28)
     near_low = bool(side == "SHORT" and price and recent_low and price <= recent_low + atr15 * 0.28)
     fast_with_side = bool((side == "LONG" and fast >= 0.45) or (side == "SHORT" and fast <= -0.45))
-    full_continuation_at_edge = bool((full_ict_structure or continuation_structure or strong_trend_stack) and tf3_same and micro_against < 2)
+    full_continuation_at_edge = bool(
+        ((full_ict_structure or continuation_structure or strong_trend_stack) and tf3_same and micro_against < 2)
+        or structured_continuation
+    )
 
     # Realistic TP1 room: RR can be mathematically ok while the market has no
     # nearby objective. Keep this as a cap, not a universal blocker.
@@ -4123,6 +4262,12 @@ def professional_entry_model_snapshot(side, context, plan=None):
             f"ЧЕКАТИ — {side} 3M ПРОТИ",
             "TF3_AGAINST",
         )
+
+    if structured_continuation and not model.get("force_watch"):
+        if continuation_snapshot.get("grade") == "STRONG_CONTINUATION":
+            model["confirmations"].append("continuation-модель: імпульс має базу/утримання, вхід на краю дозволений обережно")
+        if not model.get("risk_only"):
+            risk_only("сильне продовження дозволене, але це не чистий low-risk вхід — контроль якості", 78, "CONTINUATION_EDGE_RISK_ONLY")
 
     # Score is only diagnostic for journal/debugging.
     model["score"] = int(sum([
@@ -5737,6 +5882,64 @@ def _stop_protects_profit(trade, side, min_profit_pct=0.06):
     return stop <= entry * (1 - min_profit_pct / 100.0)
 
 
+
+def _mfe_management_policy_snapshot(trade, context, current_pct, best_pct, giveback):
+    """Adaptive MFE policy with continuation awareness.
+
+    The old mistake was binary: once MFE appeared, either lock/exit too hard or
+    give too much back. This policy separates three cases:
+    - continuation still valid -> give the trade air, but do not let it turn red after 1R/TP1;
+    - neutral -> lock a modest profit when possible;
+    - reversal pressure -> move to risk control / exit near entry.
+    """
+    side = getattr(trade, "side", "")
+    if side not in ["LONG", "SHORT"]:
+        return {"mode": "UNKNOWN", "continuation_score": 0, "reversal_pressure": 0}
+    opp = opposite(side)
+    tf3 = context.get("tf3") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+    clusters = context.get("clusters") or {}
+
+    continuation = professional_continuation_snapshot(side, context)
+    continuation_score = int(continuation.get("score", 0) or 0)
+    reversal_pressure = 0
+    if tf3.get("bias") == opp and abs(int(tf3.get("score", 0) or 0)) >= 24:
+        reversal_pressure += 1
+    if structure.get("bias") == opp:
+        reversal_pressure += 1
+    if ict.get("bias") == opp and abs(int(ict.get("score", 0) or 0)) >= 16:
+        reversal_pressure += 1
+    if cvd.get("confidence", "HIGH") != "LOW" and cvd.get("bias") == opp and abs(int(cvd.get("score", 0) or 0)) >= 14:
+        reversal_pressure += 1
+    if flow.get("bias") == opp and abs(int(flow.get("score", 0) or 0)) >= 10:
+        reversal_pressure += 1
+    if clusters.get("bias") == opp and abs(int(clusters.get("score", 0) or 0)) >= 4:
+        reversal_pressure += 1
+
+    giveback_ratio = giveback / best_pct if best_pct and best_pct > 0 else 0.0
+    if best_pct < 0.45:
+        mode = "NO_LOCK_TINY_MFE"
+    elif continuation_score >= 72 and reversal_pressure <= 1 and current_pct >= max(0.18, best_pct * 0.28):
+        mode = "CONTINUATION_AIR"
+    elif reversal_pressure >= 3 and giveback_ratio >= 0.55:
+        mode = "REVERSAL_LOCK_OR_EXIT"
+    elif giveback_ratio >= 0.65:
+        mode = "GIVEBACK_LOCK"
+    else:
+        mode = "STANDARD_LOCK"
+
+    return {
+        "mode": mode,
+        "continuation_score": continuation_score,
+        "continuation_grade": continuation.get("grade"),
+        "continuation_reasons": continuation.get("reasons", []),
+        "reversal_pressure": reversal_pressure,
+        "giveback_ratio": round(giveback_ratio, 3),
+    }
+
 def _mfe_lock_triggered(trade, best_pct):
     """Detect when MFE is large enough that the trade must not return to loss.
 
@@ -5806,11 +6009,13 @@ def _apply_mfe_profit_lock_before_stop(trade, context, price, current_pct, best_
     losing stop and gives the whole move back.
     """
     side = trade.side
+    giveback = max(0.0, (safe_float(best_pct, 0.0) or 0.0) - (safe_float(current_pct, 0.0) or 0.0))
+    mfe_policy = _mfe_management_policy_snapshot(trade, context, current_pct, best_pct, giveback)
     triggered, why = _mfe_lock_triggered(trade, best_pct)
     if not triggered:
-        return {"active": False}
+        return {"active": False, "mfe_policy": mfe_policy}
     if _stop_protects_profit(trade, side):
-        return {"active": False, "already_protected": True}
+        return {"active": False, "already_protected": True, "mfe_policy": mfe_policy}
 
     # If MFE reached TP1 zone, treat TP1 as achieved for management purposes.
     tp1_distance_pct = abs(pct(trade.tp1, trade.entry)) if getattr(trade, "entry", 0) else 0.0
@@ -5823,7 +6028,20 @@ def _apply_mfe_profit_lock_before_stop(trade, context, price, current_pct, best_
             "active": True,
             "protected": True,
             "stop": round_price(trade.stop_current),
-            "reason": f"{why}; {lock_reason}",
+            "reason": f"{why}; {lock_reason}; режим MFE: {mfe_policy.get('mode')}",
+            "mfe_policy": mfe_policy,
+        }
+
+    # If continuation is still structurally valid and the trade is still green,
+    # do not force an early exit just because a profit stop cannot be placed yet.
+    # The hard rule remains: after 1R/TP1 the trade must not be allowed to turn red.
+    if mfe_policy.get("mode") == "CONTINUATION_AIR" and current_pct > 0.16:
+        return {
+            "active": True,
+            "protected": False,
+            "continuation_air": True,
+            "reason": f"{why}; continuation ще валідний — дати простір, але не віддавати в мінус",
+            "mfe_policy": mfe_policy,
         }
 
     # Price already returned too far. Do not keep a losing stop after TP1/1R MFE.
@@ -5843,10 +6061,11 @@ def _apply_mfe_profit_lock_before_stop(trade, context, price, current_pct, best_
             "exit_price": round_price(price),
             "recommended_stop": round_price(trade.stop_current),
             "recommended_stop_reason": why,
-            "notes": [f"{why}: після такого MFE стоп не має залишатись у мінусі"],
+            "notes": [f"{why}: після такого MFE стоп не має залишатись у мінусі", f"MFE policy: {mfe_policy.get('mode')}, continuation {mfe_policy.get('continuation_score')}"],
+            "mfe_policy": mfe_policy,
         }
 
-    return {"active": True, "protected": False, "reason": why}
+    return {"active": True, "protected": False, "reason": why, "mfe_policy": mfe_policy}
 
 
 def _mfe_exit_floor(best_pct, market_regime):
