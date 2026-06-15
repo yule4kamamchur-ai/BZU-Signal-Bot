@@ -7909,28 +7909,88 @@ def build_new_setup_message(context, setup):
     return "\n".join(lines).strip()
 
 
+def _follow_decision_label(action, closed=False):
+    """One calm user-facing decision for trade supervision."""
+    action = str(action or "HOLD").upper()
+    if closed:
+        return "ЗАКРИТО"
+    if action in ["HOLD", "HOLD_TO_TP2"]:
+        return "ТРИМАТИ"
+    if action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT_OR_EXIT"]:
+        return "КОНТРОЛЬ РИЗИКУ"
+    if action in [
+        "EXIT_WARNING", "EXIT", "EXIT_LOCAL_BREAK", "EXIT_AFTER_TP1_GIVEBACK",
+        "EXIT_MFE_GIVEBACK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_TP1_LOCK_IMPOSSIBLE",
+        "EXIT_TP2_LOCK_IMPOSSIBLE", "EXIT_MFE_PROFIT_LOCK"
+    ]:
+        return "ЗАКРИТИ"
+    if action in ["STOP", "TP3"]:
+        return "ЗАКРИТО"
+    return "ТРИМАТИ"
+
+
+def _follow_reason_line(trade, result):
+    """Short non-alarming explanation for closed/protect decisions.
+
+    Detailed entry-state diagnostics remain in journal/internal analytics; Telegram
+    gets only the trading decision so the supervision does not create noise.
+    """
+    action = str(result.get("action") or "").upper()
+    current_pct = safe_float(result.get("current_pct"), 0.0) or 0.0
+    best_pct = safe_float(result.get("best_pct"), 0.0) or 0.0
+
+    if result.get("closed"):
+        if action == "TP3":
+            return "ціль виконана, позицію закрито"
+        if action == "STOP":
+            return "спрацював стоп / рівень контролю ризику"
+        if best_pct < 0.20:
+            return "угода не дала розвитку після входу"
+        if current_pct > 0:
+            return "рух у плюс захищено, позицію закрито"
+        if best_pct >= 0.50:
+            return "після руху в плюс зʼявився відкат, позицію закрито за контрольним стопом"
+        return "ризик став вищий за потенціал, позицію закрито"
+
+    if action in ["PROTECT", "TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT_OR_EXIT"]:
+        if best_pct >= 0.20:
+            return "угода вже давала плюс — підтягнути стоп у контрольну зону"
+        return "позиція слабшає — зменшити ризик"
+    if action in ["EXIT_WARNING", "EXIT", "EXIT_LOCAL_BREAK", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK", "EXIT_ENTRY_POINT_BROKEN"]:
+        if best_pct < 0.20:
+            return "угода не дала розвитку після входу"
+        return "підтвердження слабшає — не чекати дальній стоп"
+    return "позиція ще робоча"
+
+
 def build_follow_message(context, trade, result):
+    side = getattr(trade, "side", result.get("side", ""))
+    closed = bool(result.get("closed"))
+    decision = _follow_decision_label(result.get("action"), closed=closed)
+    if closed:
+        title = f"{side} ЗАКРИТО"
+    else:
+        title = f"СУПРОВІД {side} — {decision}"
+
     lines = [
         "<b>BZU SIGNAL BOT PRO</b>",
         "",
-        f"<b>{result['title']}</b>",
-        f"{result['recommendation']}",
+        f"<b>{title}</b>",
+        f"Рішення: <b>{decision}</b>",
         "",
         price_line(context),
         f"<b>Від входу:</b> {round(result['current_pct'], 3)}% | <b>Макс/MFE:</b> {round(result['best_pct'], 3)}%",
     ]
-    entry_state = result.get("entry_state") or {}
-    if entry_state:
+
+    reason = _follow_reason_line(trade, result)
+    if reason:
+        lines.append(f"<b>Причина:</b> {html.escape(str(reason))}")
+
+    if result.get("reversal_label") and not closed:
         lines.append("")
-        lines.append("<b>Стан точки входу:</b>")
-        lines.append(f"{entry_state.get('label', '—')} ({int(entry_state.get('score') or 0)}%)")
-        # Detailed reason/advice stays inside internal analytics/journal,
-        # but is not printed in Telegram to avoid noise.
-    if result.get("reversal_label"):
-        lines.append("")
-        lines.append("<b>Ризик:</b>")
         rev_side = result.get("reversal_side") or opposite(trade.side)
-        lines.append(f"Ризик розвороту в {rev_side}: <b>{result.get('reversal_label')}</b> ({int(result.get('reversal_score') or 0)}%)")
+        lines.append(f"<b>Ризик розвороту в {rev_side}:</b> {result.get('reversal_label')} ({int(result.get('reversal_score') or 0)}%)")
+
     lines.extend([
         "",
         "<b>Позиція:</b>",
@@ -7938,18 +7998,12 @@ def build_follow_message(context, trade, result):
         f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
         f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}",
     ])
-    if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
-        lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
-        if result.get("recommended_stop_reason"):
-            lines.append(f"<i>{html.escape(str(result.get('recommended_stop_reason')))}</i>")
-    if result.get("notes"):
-        lines.append("")
-        lines.append("<b>Дія:</b>")
-        lines.extend([f"⚠️ {x}" for x in _short_list(result.get("notes"), 3)])
-    lines.append("")
-    lines.extend(context_lines(context))
-    return "\n".join(lines).strip()
 
+    if result.get("recommended_stop") is not None and result.get("action") in ["TP1_PROTECT", "TP2_PROTECT", "TRAIL_ICT_SMC", "PROTECT", "PROTECT_OR_EXIT", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_MFE_GIVEBACK"]:
+        lines.append(f"<b>Контрольний стоп:</b> {_fmt_price(result.get('recommended_stop'))}")
+
+    # No "Стан точки входу", no duplicated "Дія", no entry-state diagnostics in Telegram.
+    return "\n".join(lines).strip()
 
 def build_closed_trade_journal_item(trade, result, context):
     """Build a closed-trade journal row with MFE analytics.
