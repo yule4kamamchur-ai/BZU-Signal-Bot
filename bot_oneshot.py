@@ -6680,6 +6680,143 @@ def _is_risky_pre_tp1_guard_trade(trade):
     return bool(risky_entry or early_setup or shock_regime)
 
 
+def _context_regime_type(context):
+    """Current regime label used by protective stop logic."""
+    regime_engine = (context or {}).get("regime_engine") or {}
+    if isinstance(regime_engine, dict):
+        regime_type = str(regime_engine.get("regime_type") or regime_engine.get("name") or "").upper()
+        name = str(regime_engine.get("name") or "").upper()
+        if regime_type:
+            return regime_type, name
+    market_regime = (context or {}).get("market_regime") or {}
+    if isinstance(market_regime, dict):
+        return str(market_regime.get("type") or market_regime.get("name") or "").upper(), str(market_regime.get("name") or "").upper()
+    return "", ""
+
+
+def _pre_tp1_guard_profile(trade, context, side, best_pct, current_pct, support_votes, opposite_votes,
+                           hard_votes, soft_votes, entry_weak=False, confirmed_ict_reversal=False):
+    """Market-model profile for the RISKY pre-TP1 profit guard.
+
+    The same +0.40% MFE should not be managed identically in every market:
+    - NEWS / REVERSAL / RANGE: protect faster because reversals are abrupt.
+    - NORMAL / PULLBACK: balanced protection.
+    - TREND_IGNITION + confirmed TREND_EXPANSION: give the trade more air,
+      because early BE+ can close the first position right before continuation.
+    """
+    notes = _trade_notes_text(trade)
+    regime_type, regime_name = _context_regime_type(context)
+    setup_trend_ignition = "SETUP_CLASSIFIER: TREND_IGNITION_ENTRY" in notes
+    setup_news = "SETUP_CLASSIFIER: NEWS_IMPULSE" in notes
+    entry_news = any(x in notes for x in ["REGIME_TYPE: NEWS_SHOCK", "REGIME_TYPE: NEWS_IMPULSE"]) or setup_news
+    entry_exhaustion = "REGIME_TYPE: EXHAUSTION" in notes or regime_type == "EXHAUSTION"
+    entry_reversal = any(x in notes for x in ["SETUP_CLASSIFIER: COUNTERTREND_SCALP", "SETUP_CLASSIFIER: SWEEP_REVERSAL", "REGIME_TYPE: REVERSAL"])
+    current_trend = regime_type == "TREND_EXPANSION" or regime_name == "TREND"
+    current_range = "RANGE" in regime_type or regime_name == "RANGE"
+    current_news = regime_type in ["NEWS_SHOCK", "NEWS_IMPULSE"] or regime_name == "NEWS_IMPULSE"
+
+    tf15_same = ((context or {}).get("tf15") or {}).get("bias") == side
+    tf1h_same = ((context or {}).get("tf1h") or {}).get("bias") == side
+    tf4h_same = ((context or {}).get("tf4h") or {}).get("bias") == side
+    context_same = (context or {}).get("bias") == side
+    total_score = abs(int((context or {}).get("total_score", 0) or 0))
+    htf_support_count = int(bool(tf15_same)) + int(bool(tf1h_same)) + int(bool(tf4h_same)) + int(bool(context_same))
+    trend_support = bool(
+        support_votes >= max(2.0, opposite_votes + 0.65)
+        or htf_support_count >= 2
+        or (context_same and total_score >= 75)
+    )
+
+    tp1_distance_pct = abs(pct(getattr(trade, "tp1", 0), getattr(trade, "entry", 0))) if getattr(trade, "entry", 0) else 0.0
+    progress_to_tp1 = best_pct / tp1_distance_pct if tp1_distance_pct > 0.05 else 0.0
+
+    strong_trend_ignition = bool(
+        setup_trend_ignition
+        and current_trend
+        and trend_support
+        and not entry_news
+        and not entry_exhaustion
+        and hard_votes == 0
+        and not confirmed_ict_reversal
+    )
+
+    if strong_trend_ignition:
+        min_best = max(0.70, tp1_distance_pct * 0.62 if tp1_distance_pct else 0.70)
+        min_current = 0.36
+        min_gap = 0.24
+        close_giveback = 0.74
+        model = "TREND_IGNITION_RUNNER"
+        reason = "сильний TREND_IGNITION у TREND_EXPANSION: не душити ранній шорт/лонг BE-стопом на малому MFE"
+    elif entry_news or current_news:
+        min_best = 0.40
+        min_current = 0.20
+        min_gap = 0.16
+        close_giveback = 0.58
+        model = "NEWS_FAST_PROTECT"
+        reason = "новинний імпульс: прибуток захищати швидше"
+    elif entry_reversal or current_range:
+        min_best = 0.40
+        min_current = 0.18
+        min_gap = 0.14
+        close_giveback = 0.55
+        model = "RANGE_REVERSAL_FAST_PROTECT"
+        reason = "range/reversal: не давати MFE швидко повернутись у мінус"
+    elif entry_exhaustion:
+        min_best = 0.40
+        min_current = 0.16
+        min_gap = 0.18
+        close_giveback = 0.54
+        model = "EXHAUSTION_DEFENSIVE"
+        reason = "виснажений рух: захист агресивніший"
+    else:
+        min_best = 0.45
+        min_current = 0.22
+        min_gap = 0.16
+        close_giveback = 0.62
+        model = "BALANCED_PROTECT"
+        reason = "звичайний ранній/ризиковий вхід: збалансований захист"
+
+    if hard_votes >= 1 or entry_weak:
+        min_best = min(min_best, 0.40)
+        min_current = min(min_current, 0.14)
+        close_giveback = min(close_giveback, 0.55)
+        model += "_WEAK_EDGE"
+        reason += "; є злам/слабкість — захист не відкладати"
+    elif soft_votes >= 2 and not strong_trend_ignition:
+        min_best = min(min_best, 0.40)
+        min_current = min(min_current, 0.18)
+        close_giveback = min(close_giveback, 0.58)
+
+    # Risk Floor після MFE: пом'якшення для trend runner не повинно дозволяти
+    # плюсовій до TP1 угоді перейти у нормальний мінус. Для живого тренду даємо
+    # трохи більше повітря, для новини/range/reversal — вихід ближче до нуля.
+    if strong_trend_ignition:
+        risk_floor_pct = -0.10
+        near_zero_floor_pct = 0.02
+    elif entry_news or current_news or entry_reversal or current_range or entry_exhaustion:
+        risk_floor_pct = -0.06
+        near_zero_floor_pct = 0.04
+    else:
+        risk_floor_pct = -0.08
+        near_zero_floor_pct = 0.03
+
+    return {
+        "model": model,
+        "reason": reason,
+        "min_best": round(float(min_best), 4),
+        "min_current": round(float(min_current), 4),
+        "min_gap": round(float(min_gap), 4),
+        "close_giveback": round(float(close_giveback), 4),
+        "risk_floor_pct": round(float(risk_floor_pct), 4),
+        "near_zero_floor_pct": round(float(near_zero_floor_pct), 4),
+        "strong_trend_ignition": strong_trend_ignition,
+        "tp1_distance_pct": round(float(tp1_distance_pct), 4),
+        "progress_to_tp1": round(float(progress_to_tp1), 4),
+        "trend_support": trend_support,
+        "current_regime_type": regime_type,
+    }
+
+
 def _near_entry_lock_stop(side, entry, price, lock_pct, min_gap_pct=0.12):
     """Small breakeven-plus stop used only by the pre-TP1 risky profit guard."""
     entry = safe_float(entry, 0.0) or 0.0
@@ -6737,16 +6874,68 @@ def risky_pre_tp1_profit_guard_snapshot(trade, context, current_pct, best_pct, g
     entry_state_name = str((entry_state or {}).get("state") or "").upper()
     entry_weak = entry_state_name in ["WEAK", "BROKEN"]
     support_ok = bool(support_votes >= max(1.8, opposite_votes + 0.30) or ((context or {}).get("tf15") or {}).get("bias") == side)
+    guard_profile = _pre_tp1_guard_profile(
+        trade, context, side, best_pct, current_pct, support_votes, opposite_votes,
+        hard_votes, soft_votes, entry_weak=entry_weak, confirmed_ict_reversal=confirmed_ict_reversal,
+    )
+    min_best_for_guard = safe_float(guard_profile.get("min_best"), 0.40) or 0.40
+    min_current_for_guard = safe_float(guard_profile.get("min_current"), 0.20) or 0.20
+    close_giveback_limit = safe_float(guard_profile.get("close_giveback"), 0.62) or 0.62
+    risk_floor_pct = safe_float(guard_profile.get("risk_floor_pct"), -0.08) or -0.08
+    near_zero_floor_pct = safe_float(guard_profile.get("near_zero_floor_pct"), 0.03) or 0.03
+
+    # Hard Safety Risk Floor: якщо рання/ризикова угода вже мала MFE >= 0.40%,
+    # пом'якшення trend-runner не має права дозволити їй перейти у нормальний мінус.
+    # Це не рухає стоп і не конфліктує з TP1/TP2 locks: працює тільки до TP1.
+    risk_floor_broken = bool(current_pct <= risk_floor_pct)
+    near_zero_after_giveback = bool(
+        current_pct <= near_zero_floor_pct
+        and giveback_ratio >= min(0.82, max(0.62, close_giveback_limit + 0.10))
+    )
+    weak_near_zero_after_mfe = bool(
+        current_pct <= max(0.06, near_zero_floor_pct)
+        and (hard_votes >= 1 or soft_votes >= 2 or entry_weak)
+        and giveback_ratio >= 0.50
+    )
+    if risk_floor_broken or near_zero_after_giveback or weak_near_zero_after_mfe:
+        floor_reason = "risk floor після MFE" if risk_floor_broken else "майже весь MFE віддано біля входу"
+        return {
+            "active": True,
+            "close": True,
+            "action": "EXIT_RISKY_PRE_TP1_RISK_FLOOR",
+            "title": f"{side} ЗАКРИТИ — RISK FLOOR ПІСЛЯ MFE",
+            "recommendation": "угода вже давала плюс до TP1, але повернулась до входу/в мінус: закрити біля нуля, не чекати дальній стоп",
+            "reason": f"{guard_profile.get('model')}: {floor_reason}; MFE +{round(best_pct, 3)}%, зараз {round(current_pct, 3)}%, floor {round(risk_floor_pct, 3)}%, віддано {round(giveback_ratio * 100, 1)}%",
+            "notes": [
+                f"MFE було +{round(best_pct, 3)}%, TP1 ще не взято",
+                f"risk floor: {round(risk_floor_pct, 3)}% | near-zero floor: {round(near_zero_floor_pct, 3)}%",
+                f"модель захисту: {guard_profile.get('model')}",
+                "пом'якшення тренду не дозволяє перетворити плюс у мінус",
+                f"hard/soft warnings: {hard_votes}/{soft_votes}",
+            ],
+        }
+
+    if best_pct < min_best_for_guard:
+        return {
+            "active": bool(best_pct >= 0.40),
+            "protect": False,
+            "reason": f"{guard_profile.get('model')}: MFE +{round(best_pct, 3)}% ще замалий для стопу; risk floor активний до ≥ {round(min_best_for_guard, 3)}%",
+            "notes": [
+                str(guard_profile.get("reason") or ""),
+                f"MFE +{round(best_pct, 3)}%, до TP1 прогрес {round((guard_profile.get('progress_to_tp1') or 0) * 100, 1)}%",
+                f"risk floor не дасть угоді піти гірше {round(risk_floor_pct, 3)}% після MFE",
+            ],
+        }
 
     # Exit near BE instead of letting a RISKY/NEWS/ignition trade fall into loss.
     close_near_entry = bool(
         current_pct <= 0.08
-        and (hard_votes >= 1 or soft_votes >= 2 or entry_weak or giveback_ratio >= 0.62)
-        and not support_ok
+        and (hard_votes >= 1 or soft_votes >= 2 or entry_weak or giveback_ratio >= close_giveback_limit)
+        and not (support_ok and guard_profile.get("strong_trend_ignition"))
     )
     close_negative_after_mfe = bool(
         current_pct <= -0.03
-        and (hard_votes >= 1 or soft_votes >= 1 or entry_weak or giveback_ratio >= 0.55)
+        and (hard_votes >= 1 or soft_votes >= 1 or entry_weak or giveback_ratio >= min(0.55, close_giveback_limit))
     )
     if close_near_entry or close_negative_after_mfe:
         return {
@@ -6764,16 +6953,38 @@ def risky_pre_tp1_profit_guard_snapshot(trade, context, current_pct, best_pct, g
         }
 
     # Decide how much to lock. This is intentionally small: BE+ first, not TP1 trailing.
-    if best_pct >= 0.85 and current_pct >= 0.50 and soft_votes == 0 and hard_votes == 0:
+    # In confirmed TREND_IGNITION + TREND_EXPANSION we wait for larger progress
+    # toward TP1, so the first entry is not closed right before continuation.
+    if current_pct < min_current_for_guard and not (soft_votes >= 1 or hard_votes >= 1 or giveback_ratio >= 0.45):
+        return {
+            "active": True,
+            "protect": False,
+            "reason": f"{guard_profile.get('model')}: MFE є, але поточного плюса замало для валідного стопу",
+            "notes": [str(guard_profile.get("reason") or "")],
+        }
+
+    if guard_profile.get("strong_trend_ignition"):
+        if best_pct >= max(0.95, (guard_profile.get("tp1_distance_pct") or 0.0) * 0.78) and current_pct >= 0.50:
+            desired_lock = 0.14
+            mode = "TREND_RUNNER_PROTECT"
+        elif best_pct >= min_best_for_guard and current_pct >= min_current_for_guard:
+            desired_lock = 0.065
+            mode = "TREND_SOFT_BE"
+        elif soft_votes >= 1 or giveback_ratio >= 0.48:
+            desired_lock = 0.04
+            mode = "TREND_DEFENSIVE_BE"
+        else:
+            return {"active": True, "protect": False, "reason": "TREND_IGNITION ще живий: стоп до TP1 не рухати без більшого MFE або слабкості"}
+    elif best_pct >= 0.85 and current_pct >= 0.50 and soft_votes == 0 and hard_votes == 0:
         desired_lock = 0.22
         mode = "RUNNER_PROTECT"
     elif best_pct >= 0.60 and current_pct >= 0.36:
         desired_lock = 0.14
         mode = "MFE_PROTECT"
-    elif current_pct >= 0.24:
+    elif current_pct >= max(0.24, min_current_for_guard):
         desired_lock = 0.08
         mode = "BREAKEVEN_PLUS"
-    elif current_pct >= 0.16 and (soft_votes >= 1 or giveback_ratio >= 0.35):
+    elif current_pct >= min(0.16, min_current_for_guard) and (soft_votes >= 1 or giveback_ratio >= 0.35):
         desired_lock = 0.045
         mode = "DEFENSIVE_BE"
     else:
@@ -6781,7 +6992,7 @@ def risky_pre_tp1_profit_guard_snapshot(trade, context, current_pct, best_pct, g
 
     # News / early ignition gets a little more room from the current price, but still protects BE+.
     notes_text = _trade_notes_text(trade)
-    min_gap = 0.16 if ("NEWS" in notes_text or "TREND_IGNITION_ENTRY" in notes_text) else 0.12
+    min_gap = safe_float(guard_profile.get("min_gap"), 0.16) or 0.16
     stop = _near_entry_lock_stop(side, getattr(trade, "entry", 0.0), price, desired_lock, min_gap_pct=min_gap)
     if stop is None:
         if current_pct <= 0.12 and (soft_votes >= 1 or hard_votes >= 1 or giveback_ratio >= 0.45):
@@ -6801,12 +7012,164 @@ def risky_pre_tp1_profit_guard_snapshot(trade, context, current_pct, best_pct, g
         "protect": True,
         "mode": mode,
         "stop": stop,
-        "reason": f"RISKY/NEWS Guard: MFE +{round(best_pct, 3)}%, TP1 ще не взято — стоп біля входу",
+        "reason": f"{guard_profile.get('model')}: MFE +{round(best_pct, 3)}%, TP1 ще не взято — стоп біля входу",
         "notes": [
             f"MFE було +{round(best_pct, 3)}%, TP1 ще не взято",
+            f"модель захисту: {guard_profile.get('model')}",
+            str(guard_profile.get("reason") or ""),
             f"режим захисту: {mode}",
             f"стоп біля входу: {round_price(stop)}",
         ],
+    }
+
+
+def _post_tp2_dynamic_profit_manager_snapshot(trade, context, current_pct, best_pct, giveback, giveback_ratio,
+                                             support_votes=0.0, opposite_votes=0.0,
+                                             tf3_against=False, structure_against=False, ict_against=False,
+                                             flow_against=False, cvd_against=False,
+                                             liquidity_against=False, news_against=False,
+                                             confirmed_ict_reversal=False, entry_state=None,
+                                             action="HOLD"):
+    """Professional dynamic protection after TP2.
+
+    After TP2 the trade is no longer an ordinary runner. The bot has already
+    received a large market gift, so the stop must be allowed to react again
+    when the market gives warning signs. This layer never loosens a stop and
+    never conflicts with TP1 logic: it works only after TP2 and before TP3.
+
+    Decisions:
+    - if TP2 was hit and the market gives back too much / reversal appears -> close in profit;
+    - if TP2 was hit and price still has room -> trail the stop more tightly;
+    - if the trend is still clean -> keep the TP2 lock and let TP3 breathe.
+    """
+    if not trade or not getattr(trade, "tp2_hit", False) or getattr(trade, "tp3_hit", False):
+        return {"active": False}
+
+    side = getattr(trade, "side", "NEUTRAL")
+    entry = safe_float(getattr(trade, "entry", 0.0), 0.0) or 0.0
+    price = safe_float((context or {}).get("price"), 0.0) or 0.0
+    if side not in ["LONG", "SHORT"] or not entry or not price:
+        return {"active": False}
+
+    current_pct = safe_float(current_pct, 0.0) or 0.0
+    best_pct = safe_float(best_pct, 0.0) or 0.0
+    giveback = safe_float(giveback, max(0.0, best_pct - current_pct)) or 0.0
+    giveback_ratio = safe_float(giveback_ratio, (giveback / best_pct if best_pct > 0.05 else 0.0)) or 0.0
+    if best_pct < 0.80 or current_pct <= 0:
+        return {"active": False}
+
+    mode_profile = trade_mode_profile(context or {}, side)
+    market_regime = str(mode_profile.get("regime", "NORMAL") or "NORMAL").upper()
+    hard_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against), bool(confirmed_ict_reversal)])
+    soft_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
+    entry_state_name = str((entry_state or {}).get("state") or "").upper()
+    entry_weak = entry_state_name in ["WEAK", "BROKEN"] or str(action or "").upper() in ["EXIT_WARNING", "PROTECT_OR_EXIT"]
+
+    tf15_same = ((context or {}).get("tf15") or {}).get("bias") == side
+    tf1h_same = ((context or {}).get("tf1h") or {}).get("bias") == side
+    structure_same = ((context or {}).get("structure") or {}).get("bias") == side
+    ict_same = ((context or {}).get("ict") or {}).get("bias") == side
+    trend_support = bool(support_votes >= max(2.4, opposite_votes + 0.45) or tf15_same or tf1h_same or structure_same or ict_same)
+
+    if side == "LONG":
+        stop_distance_pct = max(0.0, (price - safe_float(getattr(trade, "stop_current", entry), entry)) / entry * 100.0)
+        tp2_pct = signed_pct(side, entry, getattr(trade, "tp2", entry))
+        candidate_from_lock = lambda lock: entry * (1 + lock / 100.0)
+    else:
+        stop_distance_pct = max(0.0, (safe_float(getattr(trade, "stop_current", entry), entry) - price) / entry * 100.0)
+        tp2_pct = signed_pct(side, entry, getattr(trade, "tp2", entry))
+        candidate_from_lock = lambda lock: entry * (1 - lock / 100.0)
+
+    # After TP2, a pullback of 25-35% of the whole MFE is already meaningful.
+    gave_back_meaningful = bool(best_pct >= 1.25 and giveback >= max(0.45, best_pct * 0.24))
+    gave_back_deep = bool(best_pct >= 1.50 and giveback >= max(0.70, best_pct * 0.34))
+    near_protective_stop = bool(stop_distance_pct <= 0.14)
+    broad_warning = bool(hard_votes >= 1 or soft_votes >= 2 or opposite_votes >= support_votes + 0.55 or entry_weak)
+    hard_reversal = bool(confirmed_ict_reversal or (hard_votes >= 1 and (soft_votes >= 1 or gave_back_meaningful)))
+
+    # Profit capture model. TREND can breathe; NEWS/RANGE/REVERSAL/EXHAUSTION must protect more.
+    if market_regime in ["RANGE", "REVERSAL", "NEWS_IMPULSE", "IMPULSE"]:
+        capture_ratio = 0.76
+        model = "POST_TP2_FAST_CAPTURE"
+    elif market_regime == "TREND":
+        capture_ratio = 0.66
+        model = "POST_TP2_TREND_RUNNER"
+    elif market_regime == "PULLBACK":
+        capture_ratio = 0.70
+        model = "POST_TP2_PULLBACK_CAPTURE"
+    else:
+        capture_ratio = 0.70
+        model = "POST_TP2_BALANCED_CAPTURE"
+
+    if hard_reversal:
+        capture_ratio = max(capture_ratio, 0.82)
+        model += "_HARD_REVERSAL"
+    elif broad_warning or gave_back_meaningful:
+        capture_ratio = max(capture_ratio, 0.74)
+        model += "_WARNING"
+
+    # If the bounce/reversal has already reached the active protective stop area,
+    # closing now is better than waiting for another 15m cycle.
+    close_now = bool(
+        hard_reversal
+        or (near_protective_stop and (broad_warning or gave_back_meaningful or str(action or "").upper() == "EXIT_WARNING"))
+        or (gave_back_deep and (soft_votes >= 1 or opposite_votes >= support_votes))
+    )
+    if close_now:
+        return {
+            "active": True,
+            "close": True,
+            "action": "EXIT_AFTER_TP2_PROFIT_PROTECT",
+            "title": f"{side} ЗАКРИТИ — TP2 ВЗЯТО, РОЗВОРОТ/ВІДКАТ ПОСИЛИВСЯ",
+            "recommendation": "TP2 вже виконано і ринок почав віддавати прибуток: зафіксувати залишок у плюсі, не чекати дальній стоп/TP3 без нового імпульсу",
+            "reason": f"{model}: MFE +{round(best_pct, 3)}%, зараз +{round(current_pct, 3)}%, віддано {round(giveback_ratio * 100, 1)}%, stop-gap {round(stop_distance_pct, 3)}%",
+            "notes": [
+                f"TP2 вже взято; MFE було +{round(best_pct, 3)}%",
+                f"поточний плюс +{round(current_pct, 3)}%, віддано {round(giveback_ratio * 100, 1)}% MFE",
+                f"модель: {model}",
+                f"hard/soft warnings: {hard_votes}/{soft_votes}",
+                "після TP2 головне — не віддати основний зароблений рух",
+            ],
+        }
+
+    # Dynamic stop: protect a defined part of MFE, but keep ATR/SMC air.
+    min_lock = max(0.0, tp2_pct * 0.78 if tp2_pct else 0.0)
+    desired_lock = max(min_lock, best_pct * capture_ratio)
+    if trend_support and not broad_warning and market_regime == "TREND":
+        desired_lock = min(desired_lock, max(min_lock, best_pct * 0.68))
+    desired_lock = min(desired_lock, max(current_pct - 0.08, 0.0)) if current_pct > 0.10 else desired_lock
+
+    proposed = candidate_from_lock(desired_lock)
+    proposed, air_reason = _apply_stop_air(side, proposed, price, entry, context or {}, mode_profile, "POST_TP2")
+    if proposed is None or not _valid_stop_for_side(side, price, proposed):
+        return {"active": True, "protect": False, "reason": "POST_TP2: немає валідного місця для нового стопу без миттєвого вибивання"}
+
+    if side == "LONG":
+        improves = proposed > safe_float(getattr(trade, "stop_current", entry), entry)
+    else:
+        improves = proposed < safe_float(getattr(trade, "stop_current", entry), entry)
+
+    if improves:
+        return {
+            "active": True,
+            "protect": True,
+            "stop": round_price(proposed),
+            "action": "TP2_DYNAMIC_PROTECT",
+            "title": f"{side} — TP2 ВЗЯТО, СТОП ДИНАМІЧНО ПІДТЯГНУТО",
+            "recommendation": "після TP2 стоп реагує на MFE/giveback і умови ринку; захист підтягнуто, але без душіння нормального тренду",
+            "reason": f"{model}: захистити ~{round(capture_ratio * 100, 1)}% MFE; {air_reason}",
+            "notes": [
+                f"MFE +{round(best_pct, 3)}%, поточний плюс +{round(current_pct, 3)}%",
+                f"віддано {round(giveback_ratio * 100, 1)}% руху після TP2",
+                f"новий динамічний стоп: {round_price(proposed)}",
+                f"модель: {model}",
+            ],
+        }
+
+    return {
+        "active": True,
+        "protect": False,
+        "reason": f"POST_TP2: поточний стоп уже достатньо захищає прибуток ({round_price(getattr(trade, 'stop_current', None))})",
     }
 
 def _exit_reason_code(result, context=None, trade=None):
@@ -7007,6 +7370,16 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     weak_followthrough = bool(elapsed_min >= 45 and best_pct < 0.30 and current_pct <= 0.08)
     no_followthrough = bool(elapsed_min >= 75 and best_pct < 0.22 and current_pct <= 0.05)
     gave_back_small_mfe = bool(best_pct >= 0.12 and giveback >= max(0.12, best_pct * 0.65))
+    post_tp2_tail_warning = bool(
+        getattr(trade, "tp2_hit", False)
+        and best_pct >= 1.20
+        and giveback >= max(0.42, best_pct * 0.22)
+    )
+    post_tp2_tail_strong_warning = bool(
+        getattr(trade, "tp2_hit", False)
+        and best_pct >= 1.50
+        and giveback >= max(0.70, best_pct * 0.32)
+    )
 
     if weak_followthrough:
         trade_risk_score += 8
@@ -7057,6 +7430,10 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
             trade_risk_score += 12
         elif stop_dist_pct <= 0.28:
             trade_risk_score += 7
+        if getattr(trade, "tp2_hit", False) and current_pct > 0 and post_tp2_tail_warning:
+            trade_risk_score += 10
+            if stop_dist_pct <= 0.18 or post_tp2_tail_strong_warning:
+                trade_risk_score += 7
 
     # Fresh market alignment. 15M, structure and ICT dominate; flow confirms.
     risk_blocks = [
@@ -7214,6 +7591,21 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score += giveback_ratio * 12
     if trade.tp1_hit and current_pct > 0:
         reversal_score -= 6
+    if getattr(trade, "tp2_hit", False) and current_pct > 0:
+        # After TP2, a strong bounce/giveback is a real tail-risk even if ICT has
+        # not yet printed a textbook reversal. This prevents messages like
+        # "LONG reversal LOW 22%" while price is already bouncing hard into a
+        # protected SHORT stop.
+        if post_tp2_tail_strong_warning:
+            reversal_score += 22
+            post_tp2_reversal_floor = 48
+        elif post_tp2_tail_warning:
+            reversal_score += 14
+            post_tp2_reversal_floor = 42
+        else:
+            post_tp2_reversal_floor = 0
+    else:
+        post_tp2_reversal_floor = 0
 
     # In a clean trend with higher timeframe still supporting the position, avoid overcalling reversals.
     if market_regime == "TREND" and (tf15.get("bias") == side or tf1h.get("bias") == side) and opposite_core < 3:
@@ -7236,6 +7628,8 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score = max(reversal_score, reversal_score_floor_from_els)
     if 'reversal_score_floor_from_validation' in locals() and reversal_score_floor_from_validation:
         reversal_score = max(reversal_score, reversal_score_floor_from_validation)
+    if 'post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor:
+        reversal_score = max(reversal_score, post_tp2_reversal_floor)
 
     # ICT-gated labels: without a real opposite ICT/structure setup, do not
     # frighten the trader with HIGH/CRITICAL reversal labels.
@@ -7244,11 +7638,17 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     # 2 components -> high is possible.
     # 3+ components -> very high is possible.
     if ict_rev_count == 0:
-        reversal_score = min(reversal_score, 36)
+        cap0 = 36
+        if 'post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor:
+            cap0 = 58 if post_tp2_tail_strong_warning else 48
+        reversal_score = min(reversal_score, cap0)
     elif ict_rev_count == 1:
-        reversal_score = min(reversal_score, 48)
+        cap1 = 48
+        if 'post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor:
+            cap1 = 66 if post_tp2_tail_strong_warning else 56
+        reversal_score = min(reversal_score, cap1)
     elif ict_rev_count == 2:
-        reversal_score = min(reversal_score, 72)
+        reversal_score = min(reversal_score, 78 if ('post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor) else 72)
 
     reversal_score = int(round(clamp(reversal_score)))
     rev_label = reversal_label(reversal_score)
@@ -7846,7 +8246,7 @@ def analyze_trade_phase(trade, context, current_pct, best_pct, giveback,
     action_s = str(action or "")
     title = f"🟡 СУПРОВІД {side} — ПОТРІБНЕ ПРОДОВЖЕННЯ"
     status = "NEEDS_CONTINUATION"
-    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_RISKY_PRE_TP1_BE_GUARD", "EXIT"]:
+    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_RISKY_PRE_TP1_BE_GUARD", "EXIT_RISKY_PRE_TP1_RISK_FLOOR", "EXIT_AFTER_TP2_PROFIT_PROTECT", "EXIT"]:
         status = "EDGE_LOST"
         if action_s.startswith("TP"):
             title = f"🔵 {side} ЗАКРИТО — ЦІЛЬ ВИКОНАНА"
@@ -7893,7 +8293,7 @@ def analyze_trade_phase(trade, context, current_pct, best_pct, giveback,
             status = "CONTINUATION_VALID"
 
     # One concise reason for Telegram. Full diagnostics stay in the journal.
-    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_RISKY_PRE_TP1_BE_GUARD", "EXIT"]:
+    if closed or action_s in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_ENTRY_POINT_BROKEN", "EXIT_AFTER_TP1_GIVEBACK", "EXIT_RISKY_PRE_TP1_BE_GUARD", "EXIT_RISKY_PRE_TP1_RISK_FLOOR", "EXIT_AFTER_TP2_PROFIT_PROTECT", "EXIT"]:
         if action_s == "STOP":
             reason = "стопова зона була зачеплена; сценарій закрито за планом."
         elif best_pct >= 0.35 and current_pct >= -0.05:
@@ -8189,7 +8589,7 @@ def manage_active_trade(trade, context):
             return {
                 "closed": True,
                 "action": trade.last_action,
-                "exit_reason_code": "RISKY_PRE_TP1_BE_GUARD",
+                "exit_reason_code": "RISKY_PRE_TP1_RISK_FLOOR" if trade.last_action == "EXIT_RISKY_PRE_TP1_RISK_FLOOR" else "RISKY_PRE_TP1_BE_GUARD",
                 "exit_quality": "PROTECTIVE_BE_EXIT",
                 "title": risky_guard.get("title") or f"{side} ЗАКРИТИ — РИЗИКОВИЙ ВХІД ВІДДАВ MFE",
                 "recommendation": risky_guard.get("recommendation") or "закрити біля входу, не чекати дальній стоп",
@@ -8569,6 +8969,74 @@ def manage_active_trade(trade, context):
                 notes.append(f"зафіксувати стоп до TP2: {round_price(trade.stop_current)}")
                 if recommended_stop_reason:
                     notes.append(recommended_stop_reason)
+
+
+    # Dynamic post-TP2 supervision. After TP2 the stop is allowed to react again
+    # to MFE giveback / reversal warnings. It never loosens the stop and it does
+    # not touch TP1 logic. If price is already close to the protective stop and
+    # the market is reversing, it can close the remaining position in profit.
+    post_tp2_manager = _post_tp2_dynamic_profit_manager_snapshot(
+        trade, context, current_pct, best_pct, giveback, giveback_ratio,
+        support_votes=support_votes,
+        opposite_votes=opposite_votes,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+        liquidity_against=liquidity_against,
+        news_against=news_against,
+        confirmed_ict_reversal=confirmed_ict_reversal,
+        entry_state=entry_state,
+        action=action,
+    )
+    if post_tp2_manager.get("active"):
+        if post_tp2_manager.get("close"):
+            trade.status = "CLOSED"
+            trade.last_action = post_tp2_manager.get("action") or "EXIT_AFTER_TP2_PROFIT_PROTECT"
+            risk_snapshot = active_trade_risk_snapshot(
+                trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, trade.last_action
+            )
+            return {
+                "closed": True,
+                "action": trade.last_action,
+                "exit_reason_code": "POST_TP2_DYNAMIC_PROFIT_PROTECT",
+                "exit_quality": "PROFIT_PROTECT_AFTER_TP2",
+                "title": post_tp2_manager.get("title") or f"{side} ЗАКРИТИ — TP2 PROFIT PROTECT",
+                "recommendation": post_tp2_manager.get("recommendation") or "TP2 взято: прибуток захистити, не чекати дальній стоп",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "recommended_stop": round_price(trade.stop_current),
+                "recommended_stop_reason": post_tp2_manager.get("reason"),
+                "notes": list(post_tp2_manager.get("notes") or [])[:5],
+                "trade_risk": risk_snapshot.get("trade_risk"),
+                "trade_risk_score": risk_snapshot.get("trade_risk_score"),
+                "reversal_side": risk_snapshot.get("reversal_side"),
+                "reversal_score": risk_snapshot.get("reversal_score"),
+                "reversal_label": risk_snapshot.get("reversal_label"),
+                "entry_state": entry_state,
+                "trade_phase": analyze_trade_phase(
+                    trade, context, current_pct, best_pct, giveback,
+                    high_since_open=high_since_open, low_since_open=low_since_open,
+                    entry_state=entry_state, trade_validation=trade_validation,
+                    support_votes=support_votes, opposite_votes=opposite_votes,
+                    action=trade.last_action, market_regime=market_regime,
+                    tf3_against=tf3_against, structure_against=structure_against, ict_against=ict_against,
+                    flow_against=flow_against, cvd_against=cvd_against, liquidity_against=liquidity_against,
+                    news_against=news_against, confirmed_ict_reversal=confirmed_ict_reversal,
+                    closed=True, exit_reason_code="POST_TP2_DYNAMIC_PROFIT_PROTECT",
+                ),
+            }
+        new_tp2_stop = post_tp2_manager.get("stop")
+        if post_tp2_manager.get("protect") and new_tp2_stop is not None and _apply_more_protective_stop(trade, side, new_tp2_stop):
+            trade.tp2_locked_stop = float(trade.stop_current)
+            trade.tp2_stop_locked = True
+            action = post_tp2_manager.get("action") or "TP2_DYNAMIC_PROTECT"
+            title = post_tp2_manager.get("title") or f"{side} — TP2 ДИНАМІЧНИЙ ЗАХИСТ"
+            recommendation = post_tp2_manager.get("recommendation") or "TP2 взято: стоп підтягнуто за поточними умовами ринку"
+            recommended_stop = trade.stop_current
+            recommended_stop_reason = post_tp2_manager.get("reason") or "Post-TP2 Dynamic Profit Protect"
+            notes.extend(list(post_tp2_manager.get("notes") or [])[:4])
 
     if action == "HOLD" and near_entry and opposite_votes >= 2.2 and support_votes <= 1.2:
         action = "PROTECT_OR_EXIT"
