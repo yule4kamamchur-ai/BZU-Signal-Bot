@@ -5,46 +5,6 @@
     {
       "type": "NO_TRADE",
       "side": "NEUTRAL",
-      "price": 82.81,
-      "quality": 47,
-      "reason": "перевага нечітка, немає професійного входу",
-      "setup_classifier": null,
-      "regime_engine": {
-        "name": "NORMAL",
-        "regime_type": "NORMAL",
-        "label": "звичайний intraday режим",
-        "score": 50,
-        "confidence": 50,
-        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
-        "entry_action": "ALLOW",
-        "entry_quality_adjustment": 0,
-        "quality_cap": null,
-        "hard_block": false,
-        "allowed_setups": [],
-        "notes": [],
-        "metrics": {
-          "bias": "LONG",
-          "range_atr": 3.78,
-          "move8_abs_pct": 0.206,
-          "slope15_abs_pct": 0.004,
-          "rsi15": 58.3,
-          "score_total_abs": 34,
-          "participation_same": 0,
-          "late_penalty": 0,
-          "pd": "PREMIUM",
-          "ict_setup": "PREMIUM_FVG_OB_SHORT",
-          "range_edge": false
-        },
-        "stable_count": 3,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NORMAL"
-      },
-      "time": "2026-06-15T22:45:49.479583+00:00"
-    },
-    {
-      "type": "NO_TRADE",
-      "side": "NEUTRAL",
       "price": 82.82,
       "quality": 45,
       "reason": "перевага нечітка, немає професійного входу",
@@ -2515,26 +2475,93 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-16T17:45:58.365722+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.55,
+      "quality": 8,
+      "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. за добу вже -5.19%; ціна далеко від EMA20 (1.57 ATR); CVD/потік/кластери вже попереджають",
+      "setup_classifier": {
+        "type": "LATE_IMPULSE_CHASE",
+        "label": "🔴 Пізній імпульс / доганяння",
+        "side": "SHORT",
+        "score": 30,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. за добу вже -5.19%; ціна далеко від EMA20 (1.57 ATR); CVD/потік/кластери вже попереджають",
+        "quality_adjustment": -12,
+        "quality_cap": 61,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "block_entry": true
+        },
+        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+        "stop_rule": "план лише після нового рівня для стопу",
+        "tp_rule": "не рахувати TP від поганої локації",
+        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+        "late_penalty": 0,
+        "late_without_reset": false
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 6.58,
+          "move8_abs_pct": 0.051,
+          "slope15_abs_pct": 1.162,
+          "rsi15": 35.2,
+          "score_total_abs": 105,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG"
+        },
+        "stable_count": 5,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-16T18:01:22.401359+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 4,
+    "stable_count": 5,
     "pending_count": 0,
-    "updated_at": "2026-06-16T17:45:57.969440+00:00"
+    "updated_at": "2026-06-16T18:01:22.048164+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T17:45:58.365780+00:00",
-    "price": 78.38,
-    "oi": 61710.82,
-    "cvd": 193550.0,
-    "cvd_time": "2026-06-16T17:45:58.365783+00:00",
-    "last_trade_ts": 1781631929658,
+    "time": "2026-06-16T18:01:22.401428+00:00",
+    "price": 78.55,
+    "oi": 61357.87,
+    "cvd": 189237.0,
+    "cvd_time": "2026-06-16T18:01:22.401432+00:00",
+    "last_trade_ts": 1781632871824,
     "bias": "SHORT",
-    "tech_score": -102,
-    "total_score": -97
+    "tech_score": -98,
+    "total_score": -105
   },
-  "updated_at": "2026-06-16T17:45:58.365788+00:00",
+  "updated_at": "2026-06-16T18:01:22.401437+00:00",
   "pending_trigger": null
 }
