@@ -12881,14 +12881,343 @@
         "is_stable": true,
         "previous_regime_type": "NORMAL"
       }
+    },
+    {
+      "time": "2026-06-16T07:15:58.772164+00:00",
+      "type": "RISKY_ENTRY",
+      "side": "SHORT",
+      "price": 81.71,
+      "quality": 79,
+      "reason": "ранній Trend Ignition: micro-BOS/старт руху після бази; це не chase, але режим тільки ризиковий",
+      "entry_level": "RISKY_ENTRY",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "TREND_IGNITION_ENTRY",
+        "label": "🟢 Ранній старт тренду / пробій",
+        "side": "SHORT",
+        "score": 83,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "ранній старт тренду: мікро-BOS ще не закрився",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.2,
+          "tp2_atr_mult": 2.35,
+          "tp3_tail_atr": 1.0,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.28,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "ранній старт пробою після проторговки/мікро-BOS; тільки якщо це старт руху, а не кінець імпульсу",
+        "stop_rule": "стоп за 3M базу / мікро-swing, не всередині імпульсної свічки",
+        "tp_rule": "TP1 не ближче ризику, TP2/TP3 як продовження тренду або відкату",
+        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає продовження руху — швидке попередження на вихід",
+        "professional_override": true,
+        "trend_ignition": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 88,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 5.17,
+          "move8_abs_pct": 0.22,
+          "slope15_abs_pct": 0.381,
+          "rsi15": 30.4,
+          "score_total_abs": 162,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "CONTEXT_ONLY",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "plan": {
+        "entry": 81.71,
+        "stop": 82.4181,
+        "tp1": 81.0019,
+        "tp2": 79.6264,
+        "tp3": 77.7062,
+        "risk_pct": 0.867,
+        "rr1": 1.0,
+        "rr2": 2.94,
+        "rr3": 5.65,
+        "invalidation": "15m закриття вище 82.4181 або злам 3m/структури проти SHORT. Сетап: 🟢 Ранній старт тренду / пробій. Режим: відкат у тренді. стоп за 3M базу / мікро-swing, не всередині імпульсної свічки | TP1 не ближче ризику, TP2/TP3 як продовження тренду або відкату"
+      },
+      "confirmations": [
+        "сильний обсяг",
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "структура підтверджує",
+        "потік підтримує",
+        "режим ринку: сильне продовження тренду",
+        "швидкий шлях: сильний ранній сетап дозволено навіть поки режим ринку ще підтверджується",
+        "Сетап: 🟢 Ранній старт тренду / пробій (83/100)",
+        "Smart Money RR мінімальний: 1.0R",
+        "після слабкого виходу SHORT дозволено повторний вхід: тренд/структура продовжуються",
+        "ранній старт тренду: мікро-BOS ще не закрився",
+        "Early Professional Override: якість обмежена, стоп/TP адаптовані"
+      ],
+      "conflicts": [
+        "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
+        "немає повного ICT-сетапу — якість входу обмежена"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -163,
+        "total_score": -162,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -36,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.305,
+          "drift_pct": -0.527,
+          "vol_ratio": 0.37,
+          "note": "3m швидко йде вниз; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -35,
+          "trend": "SHORT",
+          "close": 81.79,
+          "ema20": 82.1213,
+          "ema50": 82.3363,
+          "rsi": 30.4,
+          "atr": 0.1779,
+          "slope_pct": -0.381,
+          "move_8_pct": -0.22,
+          "range_atr": 5.17,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -63,
+          "trend": "SHORT",
+          "close": 81.79,
+          "ema20": 82.4306,
+          "ema50": 82.9449,
+          "rsi": 35.6,
+          "atr": 0.4728,
+          "slope_pct": -0.942,
+          "move_8_pct": -1.47,
+          "range_atr": 2.96,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -63,
+          "trend": "SHORT",
+          "close": 81.77,
+          "ema20": 83.831,
+          "ema50": 87.0846,
+          "rsi": 30.6,
+          "atr": 1.3587,
+          "slope_pct": -1.98,
+          "move_8_pct": -1.423,
+          "range_atr": 4.23,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -24,
+          "phase": "BOS SHORT",
+          "swing_high": 82.32,
+          "swing_low": 81.84,
+          "recent_high": 83.04,
+          "recent_low": 81.67,
+          "atr": 0.1779,
+          "note": "закриття нижче swing low 81.84; сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "SHORT",
+          "score": -16,
+          "trade_delta_pct": -50.72,
+          "book_delta_pct": 9.22,
+          "note": "угоди за продавців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -22226.0,
+          "delta_pct": -50.72,
+          "cvd": 31472.0,
+          "cvd_change_pct": -41.391,
+          "last_trade_ts": 1781594147573,
+          "price_move_pct": -0.547,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": -3,
+          "state": "LOCAL_SELL_PRESSURE_BELOW",
+          "zones": [
+            {
+              "price": 81.6446,
+              "imbalance_pct": -100.0,
+              "volume": 26766.0
+            },
+            {
+              "price": 81.7754,
+              "imbalance_pct": 83.4,
+              "volume": 9191.0
+            },
+            {
+              "price": 81.71,
+              "imbalance_pct": -39.8,
+              "volume": 7861.0
+            }
+          ],
+          "note": "локальні продажі нижче ціни"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "state": "LONGS_CLOSING",
+          "oi": 62996.9,
+          "oi_change_pct": -0.579,
+          "funding_pct": 0.01202,
+          "price_change_pct": -0.244,
+          "note": "падіння на падінні OI — лонги закриваються, не доганяти без ретесту"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.31,
+          "move_1_pct": 0.012,
+          "move_6_pct": -0.39,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -8,
+          "top": "US-Iran deal promises end to war but how it will work remains unclear - Reuters",
+          "total": 33
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "TREND_IGNITION_ENTRY",
+          "label": "🟢 Ранній старт тренду / пробій",
+          "side": "SHORT",
+          "score": 83,
+          "entry_allowed": true,
+          "block_entry": false,
+          "risk_mode": "RISKY",
+          "reason": "ранній старт тренду: мікро-BOS ще не закрився",
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true,
+          "profile": {
+            "regime_override": "PULLBACK",
+            "tp1_atr_mult": 1.2,
+            "tp2_atr_mult": 2.35,
+            "tp3_tail_atr": 1.0,
+            "min_stop_pct": 0.82,
+            "max_stop_pct": 1.28,
+            "quality_adjustment": 1,
+            "quality_cap": 79,
+            "force_risky": true
+          },
+          "entry_rule": "ранній старт пробою після проторговки/мікро-BOS; тільки якщо це старт руху, а не кінець імпульсу",
+          "stop_rule": "стоп за 3M базу / мікро-swing, не всередині імпульсної свічки",
+          "tp_rule": "TP1 не ближче ризику, TP2/TP3 як продовження тренду або відкату",
+          "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає продовження руху — швидке попередження на вихід",
+          "professional_override": true,
+          "trend_ignition": true,
+          "late_penalty": 0
+        },
+        "regime_engine": {
+          "name": "TREND",
+          "regime_type": "TREND_EXPANSION",
+          "label": "сильне продовження тренду",
+          "score": 82,
+          "confidence": 88,
+          "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+          "entry_action": "ALLOW",
+          "entry_quality_adjustment": 3,
+          "quality_cap": 90,
+          "hard_block": false,
+          "allowed_setups": [
+            "TREND_CONTINUATION",
+            "TREND_IGNITION_ENTRY",
+            "PULLBACK_CONTINUATION",
+            "PULLBACK_CONTINUATION_FAST_ENTRY"
+          ],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 5.17,
+            "move8_abs_pct": 0.22,
+            "slope15_abs_pct": 0.381,
+            "rsi15": 30.4,
+            "score_total_abs": 162,
+            "participation_same": 2,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "CONTEXT_ONLY",
+            "range_edge": false
+          },
+          "stable_count": 1,
+          "pending_count": 1,
+          "is_stable": false,
+          "previous_regime_type": "NORMAL"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-16T07:01:22.345180+00:00",
+  "updated_at": "2026-06-16T07:15:58.778802+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-16T07:01:22.350337+00:00",
+    "updated_at": "2026-06-16T07:15:58.782046+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 4,
-    "signals_count": 76,
+    "signals_count": 77,
     "overall": {
       "trades": 4,
       "wins": 2,
@@ -13082,10 +13411,10 @@
       }
     },
     "signals": {
-      "total": 76,
-      "entries": 4,
+      "total": 77,
+      "entries": 5,
       "full_entries": 0,
-      "risky_entries": 4,
+      "risky_entries": 5,
       "watch": 20,
       "no_trade": 14,
       "follow": 34,
@@ -13100,14 +13429,14 @@
       "PRIME_ICT_LOCATION_OVERRIDE": 1,
       "PULLBACK_CONTINUATION": 1,
       "RANGE_MIDDLE_BLOCK": 4,
-      "TREND_IGNITION_ENTRY": 2,
+      "TREND_IGNITION_ENTRY": 3,
       "UNKNOWN": 52
     },
     "signal_counts_by_regime": {
       "NEWS_SHOCK": 15,
       "NORMAL": 37,
       "RANGE_COMPRESSION": 5,
-      "TREND_EXPANSION": 15,
+      "TREND_EXPANSION": 16,
       "TREND_PULLBACK": 4
     }
   }
