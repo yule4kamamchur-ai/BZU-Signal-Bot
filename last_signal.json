@@ -3,81 +3,6 @@
   "active_trade": null,
   "history": [
     {
-      "type": "ENTRY",
-      "side": "SHORT",
-      "action": "RISKY_ENTRY",
-      "price": 82.18,
-      "quality": 73,
-      "setup_classifier": {
-        "type": "TREND_IGNITION_ENTRY",
-        "label": "🟢 Ранній старт тренду / пробій",
-        "side": "SHORT",
-        "score": 76,
-        "entry_allowed": true,
-        "block_entry": false,
-        "risk_mode": "RISKY",
-        "reason": "ранній старт тренду: мікро-BOS ще не закрився",
-        "quality_adjustment": 1,
-        "quality_cap": 79,
-        "force_risky": true,
-        "profile": {
-          "regime_override": "PULLBACK",
-          "tp1_atr_mult": 1.2,
-          "tp2_atr_mult": 2.35,
-          "tp3_tail_atr": 1.0,
-          "min_stop_pct": 0.82,
-          "max_stop_pct": 1.28,
-          "quality_adjustment": 1,
-          "quality_cap": 79,
-          "force_risky": true
-        },
-        "entry_rule": "ранній старт пробою після проторговки/мікро-BOS; тільки якщо це старт руху, а не кінець імпульсу",
-        "stop_rule": "стоп за 3M базу / мікро-swing, не всередині імпульсної свічки",
-        "tp_rule": "TP1 не ближче ризику, TP2/TP3 як продовження тренду або відкату",
-        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає продовження руху — швидке попередження на вихід",
-        "professional_override": true,
-        "trend_ignition": true,
-        "late_penalty": 0
-      },
-      "regime_engine": {
-        "name": "NORMAL",
-        "regime_type": "NORMAL",
-        "label": "звичайний intraday режим",
-        "score": 50,
-        "confidence": 50,
-        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
-        "entry_action": "ALLOW",
-        "entry_quality_adjustment": 0,
-        "quality_cap": null,
-        "hard_block": false,
-        "allowed_setups": [],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 4.82,
-          "move8_abs_pct": 0.532,
-          "slope15_abs_pct": 0.588,
-          "rsi15": 35.0,
-          "score_total_abs": 150,
-          "participation_same": 1,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "CONTEXT_ONLY",
-          "range_edge": false
-        },
-        "stable_count": 1,
-        "pending_count": 2,
-        "is_stable": false,
-        "previous_regime_type": "RANGE_COMPRESSION"
-      },
-      "entry": 82.18,
-      "stop": 83.1386,
-      "tp1": 81.2214,
-      "tp2": 80.5775,
-      "tp3": 79.3859,
-      "time": "2026-06-16T03:01:22.751016+00:00"
-    },
-    {
       "type": "FOLLOW",
       "side": "SHORT",
       "action": "PROTECT_OR_EXIT",
@@ -2728,26 +2653,91 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-16T22:01:24.228826+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.32,
+      "quality": 55,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "LONG",
+        "score": 35,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ліквідність/ринковий блок проти цього входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 5.27,
+          "move8_abs_pct": 0.29,
+          "slope15_abs_pct": 0.331,
+          "rsi15": 53.4,
+          "score_total_abs": 36,
+          "participation_same": 3,
+          "late_penalty": 3,
+          "pd": "MIDRANGE",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-16T22:15:54.615339+00:00"
     }
   ],
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "NORMAL",
+    "pending_type": "REVERSAL_BUILDUP",
     "stable_count": 0,
     "pending_count": 1,
-    "updated_at": "2026-06-16T22:01:23.820810+00:00"
+    "updated_at": "2026-06-16T22:15:54.335060+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T22:01:24.228892+00:00",
-    "price": 79.07,
-    "oi": 59864.21,
-    "cvd": 203974.0,
-    "cvd_time": "2026-06-16T22:01:24.228896+00:00",
-    "last_trade_ts": 1781647273408,
-    "bias": "SHORT",
-    "tech_score": -64,
-    "total_score": -59
+    "time": "2026-06-16T22:15:54.615404+00:00",
+    "price": 79.32,
+    "oi": 60222.12,
+    "cvd": 215336.0,
+    "cvd_time": "2026-06-16T22:15:54.615407+00:00",
+    "last_trade_ts": 1781648125187,
+    "bias": "NEUTRAL",
+    "tech_score": 43,
+    "total_score": 36
   },
-  "updated_at": "2026-06-16T22:01:24.228901+00:00",
+  "updated_at": "2026-06-16T22:15:54.615412+00:00",
   "pending_trigger": null
 }
