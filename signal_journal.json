@@ -25600,11 +25600,313 @@
           "previous_regime_type": "REVERSAL_BUILDUP"
         }
       }
+    },
+    {
+      "time": "2026-06-16T23:01:22.512232+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 79.26,
+      "quality": 43,
+      "reason": "ціна в середині range/EQ — входити не професійно",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "RANGE_MIDDLE_BLOCK",
+        "label": "🔴 Середина діапазону — входу немає",
+        "side": "SHORT",
+        "score": 38,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ціна в середині range/EQ — входити не професійно",
+        "quality_adjustment": -10,
+        "quality_cap": 55,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -10,
+          "quality_cap": 55,
+          "block_entry": true
+        },
+        "entry_rule": "середина діапазону/EQ — входу немає; чекати край або BOS з ретестом",
+        "stop_rule": "стоп не визначати з середини діапазону",
+        "tp_rule": "математика RR з середини діапазону слабка",
+        "management_rule": "тільки чекати"
+      },
+      "regime_engine": {
+        "name": "RANGE",
+        "regime_type": "RANGE_COMPRESSION",
+        "label": "стискання діапазону",
+        "score": 62,
+        "confidence": 64,
+        "reason": "стискання діапазону: середина range заборонена, дозволений лише підтверджений compression breakout",
+        "entry_action": "WAIT",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 77,
+        "hard_block": false,
+        "allowed_setups": [
+          "RANGE_COMPRESSION_BREAKOUT",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 5.05,
+          "move8_abs_pct": 0.227,
+          "slope15_abs_pct": 0.118,
+          "rsi15": 51.8,
+          "score_total_abs": 48,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "MIDRANGE",
+          "ict_setup": "BALANCE_MIDRANGE",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "REVERSAL_BUILDUP"
+      },
+      "plan": {
+        "entry": 79.26,
+        "stop": 79.7752,
+        "tp1": 78.6418,
+        "tp2": 78.293,
+        "tp3": 77.7699,
+        "risk_pct": 0.65,
+        "rr1": 1.2,
+        "rr2": 1.88,
+        "rr3": 2.89,
+        "invalidation": "15m закриття вище 79.7752 або злам 3m/структури проти SHORT. Сетап: 🔴 Середина діапазону — входу немає. Режим: боковик. стоп не визначати з середини діапазону | математика RR з середини діапазону слабка"
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "1h підтримує",
+        "режим ринку: стискання діапазону",
+        "режим: боковик — TP/стоп адаптовані",
+        "Сетап: 🔴 Середина діапазону — входу немає (38/100)",
+        "Smart Money RR мінімальний: 1.2R"
+      ],
+      "conflicts": [
+        "режим ринку: потрібне підтвердження, не відкривати з поточної точки",
+        "ціна в середині range/EQ — входити не професійно",
+        "немає повного ICT-сетапу — якість входу обмежена"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -45,
+        "total_score": -48,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "RANGE",
+          "fast_move_pct": -0.126,
+          "drift_pct": -0.017,
+          "vol_ratio": 0.11,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "trend": "NEUTRAL",
+          "close": 79.36,
+          "ema20": 79.2641,
+          "ema50": 79.5838,
+          "rsi": 51.8,
+          "atr": 0.2355,
+          "slope_pct": 0.118,
+          "move_8_pct": 0.227,
+          "range_atr": 5.05,
+          "note": "EMA20 нижче EMA50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -28,
+          "trend": "SHORT",
+          "close": 79.36,
+          "ema20": 79.9961,
+          "ema50": 81.2667,
+          "rsi": 37.1,
+          "atr": 0.5784,
+          "slope_pct": -0.941,
+          "move_8_pct": 0.916,
+          "range_atr": 7.24,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 79.36,
+          "ema20": 82.3399,
+          "ema50": 85.9736,
+          "rsi": 27.5,
+          "atr": 1.3771,
+          "slope_pct": -4.261,
+          "move_8_pct": -3.231,
+          "range_atr": 5.21,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 79.53,
+          "swing_low": 78.97,
+          "recent_high": 79.86,
+          "recent_low": 78.17,
+          "atr": 0.2355,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -80.21,
+          "book_delta_pct": 34.84,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -23018.0,
+          "delta_pct": -80.21,
+          "cvd": 117015.0,
+          "cvd_change_pct": -16.438,
+          "last_trade_ts": 1781650861794,
+          "price_move_pct": -0.013,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": -3,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 79.3334,
+              "imbalance_pct": -86.5,
+              "volume": 27327.0
+            },
+            {
+              "price": 79.27,
+              "imbalance_pct": 87.5,
+              "volume": 866.0
+            },
+            {
+              "price": 79.3968,
+              "imbalance_pct": -28.8,
+              "volume": 503.0
+            }
+          ],
+          "note": "локальний продавець біля 79.3334; bid-стіна 79.22"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 59652.57,
+          "oi_change_pct": 0.284,
+          "funding_pct": 0,
+          "price_change_pct": 0.139,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.1,
+          "move_1_pct": 0.0,
+          "move_6_pct": 0.114,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 16,
+          "top": "Exclusive: Iran deal includes $300 billion fund, more than half of which already committed, source says - Reuters",
+          "total": 40
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "RANGE_MIDDLE_BLOCK",
+          "label": "🔴 Середина діапазону — входу немає",
+          "side": "SHORT",
+          "score": 38,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "ціна в середині range/EQ — входити не професійно",
+          "quality_adjustment": -10,
+          "quality_cap": 55,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -10,
+            "quality_cap": 55,
+            "block_entry": true
+          },
+          "entry_rule": "середина діапазону/EQ — входу немає; чекати край або BOS з ретестом",
+          "stop_rule": "стоп не визначати з середини діапазону",
+          "tp_rule": "математика RR з середини діапазону слабка",
+          "management_rule": "тільки чекати"
+        },
+        "regime_engine": {
+          "name": "RANGE",
+          "regime_type": "RANGE_COMPRESSION",
+          "label": "стискання діапазону",
+          "score": 62,
+          "confidence": 64,
+          "reason": "стискання діапазону: середина range заборонена, дозволений лише підтверджений compression breakout",
+          "entry_action": "WAIT",
+          "entry_quality_adjustment": -2,
+          "quality_cap": 77,
+          "hard_block": false,
+          "allowed_setups": [
+            "RANGE_COMPRESSION_BREAKOUT",
+            "TREND_IGNITION_ENTRY",
+            "PULLBACK_CONTINUATION_FAST_ENTRY"
+          ],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 5.05,
+            "move8_abs_pct": 0.227,
+            "slope15_abs_pct": 0.118,
+            "rsi15": 51.8,
+            "score_total_abs": 48,
+            "participation_same": 1,
+            "late_penalty": 0,
+            "pd": "MIDRANGE",
+            "ict_setup": "BALANCE_MIDRANGE",
+            "range_edge": false
+          },
+          "stable_count": 0,
+          "pending_count": 1,
+          "is_stable": false,
+          "previous_regime_type": "REVERSAL_BUILDUP"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-16T22:45:52.826916+00:00",
+  "updated_at": "2026-06-16T23:01:22.519752+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-16T22:45:52.832359+00:00",
+    "updated_at": "2026-06-16T23:01:22.529236+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 6,
     "signals_count": 120,
@@ -25833,8 +26135,8 @@
       "entries": 5,
       "full_entries": 1,
       "risky_entries": 4,
-      "watch": 42,
-      "no_trade": 11,
+      "watch": 43,
+      "no_trade": 10,
       "follow": 57,
       "closed": 5,
       "pending_trigger_activations": 0
@@ -25846,15 +26148,15 @@
       "NO_CLEAN_SETUP": 14,
       "PRIME_ICT_LOCATION_OVERRIDE": 2,
       "PULLBACK_CONTINUATION": 1,
-      "RANGE_MIDDLE_BLOCK": 4,
+      "RANGE_MIDDLE_BLOCK": 5,
       "TREND_IGNITION_ENTRY": 3,
-      "UNKNOWN": 73
+      "UNKNOWN": 72
     },
     "signal_counts_by_regime": {
       "EXHAUSTION": 17,
-      "NEWS_SHOCK": 19,
+      "NEWS_SHOCK": 18,
       "NORMAL": 52,
-      "RANGE_COMPRESSION": 4,
+      "RANGE_COMPRESSION": 5,
       "REVERSAL_BUILDUP": 2,
       "TREND_EXPANSION": 22,
       "TREND_PULLBACK": 4
