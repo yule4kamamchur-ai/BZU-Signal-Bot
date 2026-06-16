@@ -1910,26 +1910,156 @@
       "mfe_captured_pct": -189.3,
       "mfe_giveback_pct": 0.35,
       "time": "2026-06-16T01:01:28.545224+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 82.63,
+      "quality": 66,
+      "reason": "напрям є, але входу ще немає: потік локально проти; CVD/дельта поки проти — ранній вхід тільки як ризиковий; відкат у правильну ICT-зону; чекати 3M повернення/відбій",
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION",
+        "label": "🟢 Відкат у тренді",
+        "side": "SHORT",
+        "score": 60,
+        "entry_allowed": false,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "відкат у правильну ICT-зону; чекати 3M повернення/відбій",
+        "quality_adjustment": 3,
+        "quality_cap": 86,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.3,
+          "tp2_atr_mult": 2.45,
+          "tp3_tail_atr": 1.1,
+          "min_stop_pct": 0.78,
+          "max_stop_pct": 1.45,
+          "quality_adjustment": 3,
+          "quality_cap": 86
+        },
+        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
+        "stop_rule": "стоп за low/high відкату або за OB/FVG",
+        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
+        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
+      },
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 2.94,
+          "move8_abs_pct": 0.193,
+          "slope15_abs_pct": 0.105,
+          "rsi15": 48.2,
+          "score_total_abs": 45,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "NONE",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-16T01:15:54.786860+00:00"
     }
   ],
   "regime_memory": {
-    "type": "TREND_EXPANSION",
-    "pending_type": "TREND_PULLBACK",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-16T01:01:28.143640+00:00"
+    "type": "TREND_PULLBACK",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-16T01:15:54.372733+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T01:01:28.545241+00:00",
-    "price": 82.74,
-    "oi": 64460.5,
-    "cvd": 287411.0,
-    "cvd_time": "2026-06-16T01:01:28.545243+00:00",
-    "last_trade_ts": 1781571626720,
+    "time": "2026-06-16T01:15:54.786890+00:00",
+    "price": 82.63,
+    "oi": 64744.16,
+    "cvd": 322893.0,
+    "cvd_time": "2026-06-16T01:15:54.786893+00:00",
+    "last_trade_ts": 1781572520253,
     "bias": "SHORT",
-    "tech_score": -107,
-    "total_score": -110
+    "tech_score": -41,
+    "total_score": -45
   },
-  "updated_at": "2026-06-16T01:01:28.545248+00:00",
-  "pending_trigger": null
+  "updated_at": "2026-06-16T01:15:54.786898+00:00",
+  "pending_trigger": {
+    "active": true,
+    "created_at": "2026-06-16T01:15:54.786768+00:00",
+    "side": "SHORT",
+    "price": 82.63,
+    "quality": 66,
+    "setup_type": "PULLBACK_CONTINUATION",
+    "setup_label": "🟢 Відкат у тренді",
+    "reason": "напрям є, але входу ще немає: потік локально проти; CVD/дельта поки проти — ранній вхід тільки як ризиковий; відкат у правильну ICT-зону; чекати 3M повернення/відбій",
+    "regime_engine": {
+      "name": "PULLBACK",
+      "regime_type": "TREND_PULLBACK",
+      "label": "відкат у тренді",
+      "score": 70,
+      "confidence": 70,
+      "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+      "entry_action": "ALLOW",
+      "entry_quality_adjustment": 2,
+      "quality_cap": 86,
+      "hard_block": false,
+      "allowed_setups": [
+        "PULLBACK_CONTINUATION",
+        "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "PRIME_ICT_LOCATION_OVERRIDE",
+        "SWEEP_REVERSAL",
+        "SWEEP_RECLAIM_EARLY_ENTRY"
+      ],
+      "notes": [],
+      "metrics": {
+        "bias": "SHORT",
+        "range_atr": 2.94,
+        "move8_abs_pct": 0.193,
+        "slope15_abs_pct": 0.105,
+        "rsi15": 48.2,
+        "score_total_abs": 45,
+        "participation_same": 0,
+        "late_penalty": 0,
+        "pd": "PREMIUM",
+        "ict_setup": "NONE",
+        "range_edge": false
+      },
+      "stable_count": 1,
+      "pending_count": 2,
+      "is_stable": false,
+      "previous_regime_type": "TREND_EXPANSION"
+    },
+    "plan": {
+      "entry": 82.63,
+      "stop": 83.2745,
+      "tp1": 81.8202,
+      "tp2": 81.1261,
+      "tp3": 80.0272,
+      "risk_pct": 0.78,
+      "rr1": 1.26,
+      "rr2": 2.33,
+      "rr3": 4.04,
+      "invalidation": "15m закриття вище 83.2745 або злам 3m/структури проти SHORT. Сетап: 🟢 Відкат у тренді. Режим: відкат у тренді. стоп за low/high відкату або за OB/FVG | TP1 ближче, TP2 до продовження тренду"
+    }
+  }
 }
