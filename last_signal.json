@@ -20,13 +20,13 @@
     "tp2_stop_locked": false,
     "tp1_locked_stop": 81.2285,
     "tp2_locked_stop": 0.0,
-    "best_price": 80.27,
+    "best_price": 80.18,
     "last_action": "TP1_PROTECT",
     "last_message_key": "1aef5d422e:TP1_PROTECT:True:False:False:True:False:81.2285",
-    "entry_integrity_score": 53,
+    "entry_integrity_score": 100,
     "entry_fail_streak": 0,
     "entry_recovery_checks": 0,
-    "entry_last_state": "🟠 Слабка",
+    "entry_last_state": "🟢 Сильна",
     "mfe_giveback_streak": 0,
     "mfe_giveback_last_state": "OK",
     "notes": [
@@ -38,73 +38,6 @@
     ]
   },
   "history": [
-    {
-      "type": "WATCH",
-      "side": "SHORT",
-      "price": 81.92,
-      "quality": 13,
-      "reason": "ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження",
-      "setup_classifier": {
-        "type": "LATE_IMPULSE_CHASE",
-        "label": "🔴 Пізній імпульс / доганяння",
-        "side": "SHORT",
-        "score": 30,
-        "entry_allowed": false,
-        "block_entry": true,
-        "risk_mode": "NORMAL",
-        "reason": "ціна розтягнута від EMA20 після 3M-імпульсу — шорт тільки після охолодження",
-        "quality_adjustment": -12,
-        "quality_cap": 61,
-        "force_risky": false,
-        "profile": {
-          "quality_adjustment": -12,
-          "quality_cap": 61,
-          "block_entry": true
-        },
-        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
-        "stop_rule": "план лише після нового рівня для стопу",
-        "tp_rule": "не рахувати TP від поганої локації",
-        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
-        "late_penalty": 9,
-        "late_without_reset": true
-      },
-      "regime_engine": {
-        "name": "NEWS_IMPULSE",
-        "regime_type": "NEWS_SHOCK",
-        "label": "новинний шок",
-        "score": 78,
-        "confidence": 78,
-        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
-        "entry_action": "RISKY_ONLY",
-        "entry_quality_adjustment": -2,
-        "quality_cap": 79,
-        "hard_block": false,
-        "allowed_setups": [
-          "NEWS_IMPULSE",
-          "TREND_IGNITION_ENTRY",
-          "PRIME_ICT_LOCATION_OVERRIDE",
-          "PULLBACK_CONTINUATION_FAST_ENTRY"
-        ],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 3.23,
-          "move8_abs_pct": 0.353,
-          "slope15_abs_pct": 0.525,
-          "rsi15": 39.8,
-          "score_total_abs": 108,
-          "participation_same": 1,
-          "late_penalty": 9,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG"
-        },
-        "stable_count": 2,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NEWS_SHOCK"
-      },
-      "time": "2026-06-15T16:01:23.479826+00:00"
-    },
     {
       "type": "WATCH",
       "side": "SHORT",
@@ -2282,26 +2215,35 @@
       "result_pct": 1.591,
       "stop_current": 81.2285,
       "time": "2026-06-16T11:15:54.332919+00:00"
+    },
+    {
+      "type": "FOLLOW",
+      "side": "SHORT",
+      "action": "TP1_PROTECT",
+      "price": 80.18,
+      "result_pct": 1.872,
+      "stop_current": 81.2285,
+      "time": "2026-06-16T11:31:16.496937+00:00"
     }
   ],
   "regime_memory": {
     "type": "EXHAUSTION",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-06-16T11:15:53.934631+00:00"
+    "updated_at": "2026-06-16T11:31:16.099054+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T11:15:54.332944+00:00",
-    "price": 80.41,
-    "oi": 62295.57,
-    "cvd": 80628.0,
-    "cvd_time": "2026-06-16T11:15:54.332946+00:00",
-    "last_trade_ts": 1781608531272,
-    "bias": "NEUTRAL",
-    "tech_score": -19,
-    "total_score": -15
+    "time": "2026-06-16T11:31:16.496961+00:00",
+    "price": 80.18,
+    "oi": 62452.56,
+    "cvd": 89559.0,
+    "cvd_time": "2026-06-16T11:31:16.496964+00:00",
+    "last_trade_ts": 1781609458543,
+    "bias": "SHORT",
+    "tech_score": -189,
+    "total_score": -185
   },
-  "updated_at": "2026-06-16T11:15:54.332952+00:00",
+  "updated_at": "2026-06-16T11:31:16.496969+00:00",
   "pending_trigger": null
 }
