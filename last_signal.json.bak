@@ -20,7 +20,7 @@
     "tp2_stop_locked": false,
     "tp1_locked_stop": 81.2285,
     "tp2_locked_stop": 0.0,
-    "best_price": 80.58,
+    "best_price": 80.44,
     "last_action": "TP1_PROTECT",
     "last_message_key": "1aef5d422e:TP1_PROTECT:True:False:False:True:False:81.2285",
     "entry_integrity_score": 100,
@@ -38,73 +38,6 @@
     ]
   },
   "history": [
-    {
-      "type": "WATCH",
-      "side": "LONG",
-      "price": 82.44,
-      "quality": 55,
-      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
-      "setup_classifier": {
-        "type": "COUNTERTREND_SCALP",
-        "label": "🟠 Скальп проти тренду",
-        "side": "LONG",
-        "score": 73,
-        "entry_allowed": true,
-        "block_entry": false,
-        "risk_mode": "RISKY",
-        "reason": "контртренд дозволений тільки як scalp після локального розвороту",
-        "quality_adjustment": -3,
-        "quality_cap": 76,
-        "force_risky": true,
-        "profile": {
-          "regime_override": "REVERSAL",
-          "tp1_pct": 0.8,
-          "tp2_pct": 1.22,
-          "tp3_pct": 2.0,
-          "min_stop_pct": 0.7,
-          "max_stop_pct": 1.05,
-          "quality_adjustment": -3,
-          "quality_cap": 76,
-          "force_risky": true
-        },
-        "entry_rule": "тільки сильне зняття ліквідності/CHOCH + 3M розворот + CVD/потік не проти",
-        "stop_rule": "короткий стоп за екстремум, без усереднення",
-        "tp_rule": "швидший TP1, TP2 тільки якщо структура розвертається",
-        "management_rule": "агресивний контроль; якщо немає швидкого підтвердження — вихід"
-      },
-      "regime_engine": {
-        "name": "NORMAL",
-        "regime_type": "NORMAL",
-        "label": "звичайний intraday режим",
-        "score": 50,
-        "confidence": 50,
-        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
-        "entry_action": "ALLOW",
-        "entry_quality_adjustment": 0,
-        "quality_cap": null,
-        "hard_block": false,
-        "allowed_setups": [],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 3.08,
-          "move8_abs_pct": 0.279,
-          "slope15_abs_pct": 0.085,
-          "rsi15": 51.1,
-          "score_total_abs": 38,
-          "participation_same": 1,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG",
-          "range_edge": false
-        },
-        "stable_count": 1,
-        "pending_count": 2,
-        "is_stable": false,
-        "previous_regime_type": ""
-      },
-      "time": "2026-06-15T13:15:54.236998+00:00"
-    },
     {
       "type": "NO_TRADE",
       "side": "NEUTRAL",
@@ -2654,26 +2587,35 @@
       "result_pct": 1.383,
       "stop_current": 81.2285,
       "time": "2026-06-16T08:16:01.378704+00:00"
+    },
+    {
+      "type": "FOLLOW",
+      "side": "SHORT",
+      "action": "TP1_PROTECT",
+      "price": 80.58,
+      "result_pct": 1.383,
+      "stop_current": 81.2285,
+      "time": "2026-06-16T08:31:06.207654+00:00"
     }
   ],
   "regime_memory": {
     "type": "EXHAUSTION",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-16T08:16:01.056749+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-16T08:31:05.924548+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T08:16:01.378728+00:00",
+    "time": "2026-06-16T08:31:06.207702+00:00",
     "price": 80.58,
-    "oi": 62591.7,
-    "cvd": 47717.0,
-    "cvd_time": "2026-06-16T08:16:01.378732+00:00",
-    "last_trade_ts": 1781597744154,
+    "oi": 62091.91,
+    "cvd": 42152.0,
+    "cvd_time": "2026-06-16T08:31:06.207706+00:00",
+    "last_trade_ts": 1781598648805,
     "bias": "SHORT",
-    "tech_score": -169,
-    "total_score": -173
+    "tech_score": -214,
+    "total_score": -217
   },
-  "updated_at": "2026-06-16T08:16:01.378737+00:00",
+  "updated_at": "2026-06-16T08:31:06.207711+00:00",
   "pending_trigger": null
 }
