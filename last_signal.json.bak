@@ -1,114 +1,7 @@
 {
   "version": "pro-v2-intraday-architecture",
-  "active_trade": {
-    "id": "1aef5d422e",
-    "side": "SHORT",
-    "opened_at": "2026-06-16T07:15:58.772064+00:00",
-    "entry": 81.71,
-    "stop_initial": 82.4181,
-    "stop_current": 80.0848,
-    "tp1": 81.0019,
-    "tp2": 79.6264,
-    "tp3": 77.7062,
-    "quality": 79,
-    "stop_updated_at": "2026-06-16T12:31:13.002636+00:00",
-    "status": "OPEN",
-    "tp1_hit": true,
-    "tp2_hit": true,
-    "tp3_hit": false,
-    "tp1_stop_locked": true,
-    "tp2_stop_locked": true,
-    "tp1_locked_stop": 81.2285,
-    "tp2_locked_stop": 80.0848,
-    "best_price": 79.18,
-    "last_action": "EXIT_WARNING",
-    "last_message_key": "1aef5d422e:EXIT_WARNING:True:True:False:True:True:80.0848",
-    "entry_integrity_score": 72,
-    "entry_fail_streak": 0,
-    "entry_recovery_checks": 0,
-    "entry_last_state": "🟡 Робоча",
-    "mfe_giveback_streak": 0,
-    "mfe_giveback_last_state": "OK",
-    "notes": [
-      "RISKY_ENTRY",
-      "ENTRY_LEVEL: RISKY_ENTRY",
-      "SETUP_CLASSIFIER: TREND_IGNITION_ENTRY",
-      "REGIME_TYPE: TREND_EXPANSION",
-      "ранній Trend Ignition: micro-BOS/старт руху після бази; це не chase, але режим тільки ризиковий"
-    ]
-  },
+  "active_trade": null,
   "history": [
-    {
-      "type": "WATCH",
-      "side": "LONG",
-      "price": 82.28,
-      "quality": 55,
-      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
-      "setup_classifier": {
-        "type": "NEWS_IMPULSE",
-        "label": "🟠 Новинний імпульс",
-        "side": "LONG",
-        "score": 73,
-        "entry_allowed": true,
-        "block_entry": false,
-        "risk_mode": "RISKY",
-        "reason": "новина + структура/3M підтримують імпульс",
-        "quality_adjustment": -2,
-        "quality_cap": 79,
-        "force_risky": true,
-        "profile": {
-          "regime_override": "NEWS_IMPULSE",
-          "tp1_pct": 0.9,
-          "tp2_pct": 1.6,
-          "tp3_pct": 2.6,
-          "min_stop_pct": 0.82,
-          "max_stop_pct": 1.3,
-          "quality_adjustment": -2,
-          "quality_cap": 79,
-          "force_risky": true
-        },
-        "entry_rule": "новинний драйвер + 3M/структура в той самий бік; не доганяти без ретесту",
-        "stop_rule": "стоп ширший за шум, але не більше новинного максимального ризику",
-        "tp_rule": "TP ближче; новина може дати різкий відкат",
-        "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу"
-      },
-      "regime_engine": {
-        "name": "NEWS_IMPULSE",
-        "regime_type": "NEWS_SHOCK",
-        "label": "новинний шок",
-        "score": 78,
-        "confidence": 78,
-        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
-        "entry_action": "RISKY_ONLY",
-        "entry_quality_adjustment": -2,
-        "quality_cap": 79,
-        "hard_block": false,
-        "allowed_setups": [
-          "NEWS_IMPULSE",
-          "TREND_IGNITION_ENTRY",
-          "PRIME_ICT_LOCATION_OVERRIDE",
-          "PULLBACK_CONTINUATION_FAST_ENTRY"
-        ],
-        "notes": [],
-        "metrics": {
-          "bias": "NEUTRAL",
-          "range_atr": 3.71,
-          "move8_abs_pct": 0.39,
-          "slope15_abs_pct": 0.101,
-          "rsi15": 50.1,
-          "score_total_abs": 0,
-          "participation_same": 0,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG"
-        },
-        "stable_count": 4,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NEWS_SHOCK"
-      },
-      "time": "2026-06-15T17:46:30.309741+00:00"
-    },
     {
       "type": "NO_TRADE",
       "side": "NEUTRAL",
@@ -1867,26 +1760,37 @@
       "result_pct": 2.129,
       "stop_current": 80.0848,
       "time": "2026-06-16T13:15:58.010875+00:00"
+    },
+    {
+      "type": "TRADE_CLOSED",
+      "side": "SHORT",
+      "action": "STOP",
+      "price": 79.98,
+      "result_pct": 1.989,
+      "mfe_pct": 3.096,
+      "mfe_captured_pct": 64.2,
+      "mfe_giveback_pct": 1.107,
+      "time": "2026-06-16T13:31:14.857558+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
-    "pending_type": "",
-    "stable_count": 1,
+    "pending_type": "NORMAL",
+    "stable_count": 0,
     "pending_count": 1,
-    "updated_at": "2026-06-16T13:15:57.651724+00:00"
+    "updated_at": "2026-06-16T13:31:14.571588+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T13:15:58.010900+00:00",
-    "price": 79.97,
-    "oi": 60538.1,
-    "cvd": 224801.0,
-    "cvd_time": "2026-06-16T13:15:58.010903+00:00",
-    "last_trade_ts": 1781615749483,
-    "bias": "SHORT",
-    "tech_score": -76,
-    "total_score": -80
+    "time": "2026-06-16T13:31:14.857577+00:00",
+    "price": 79.98,
+    "oi": 60929.14,
+    "cvd": 275840.0,
+    "cvd_time": "2026-06-16T13:31:14.857580+00:00",
+    "last_trade_ts": 1781616660248,
+    "bias": "NEUTRAL",
+    "tech_score": -31,
+    "total_score": -30
   },
-  "updated_at": "2026-06-16T13:15:58.010908+00:00",
+  "updated_at": "2026-06-16T13:31:14.857585+00:00",
   "pending_trigger": null
 }
