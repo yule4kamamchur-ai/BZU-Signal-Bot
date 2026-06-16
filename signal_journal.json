@@ -9476,14 +9476,65 @@
         "is_stable": false,
         "previous_regime_type": "TREND_EXPANSION"
       }
+    },
+    {
+      "time": "2026-06-16T00:15:53.572722+00:00",
+      "type": "FOLLOW",
+      "side": "LONG",
+      "action": "EXIT_WARNING",
+      "price": 82.71,
+      "quality": 79,
+      "entry_level": "RISKY_ENTRY",
+      "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
+      "regime_type": "TREND_EXPANSION",
+      "context_bias": "NEUTRAL",
+      "tech_score": -25,
+      "total_score": -33,
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 2.96,
+          "move8_abs_pct": 0.024,
+          "slope15_abs_pct": 0.064,
+          "rsi15": 52.3,
+          "score_total_abs": 33,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_FVG_OB_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      }
     }
   ],
-  "updated_at": "2026-06-16T00:01:30.588396+00:00",
+  "updated_at": "2026-06-16T00:15:53.577528+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-16T00:01:30.588931+00:00",
+    "updated_at": "2026-06-16T00:15:53.594160+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 2,
-    "signals_count": 48,
+    "signals_count": 49,
     "overall": {
       "trades": 2,
       "wins": 1,
@@ -9635,13 +9686,13 @@
       }
     },
     "signals": {
-      "total": 48,
+      "total": 49,
       "entries": 3,
       "full_entries": 0,
       "risky_entries": 3,
       "watch": 14,
       "no_trade": 13,
-      "follow": 16,
+      "follow": 17,
       "closed": 2,
       "pending_trigger_activations": 0
     },
@@ -9652,14 +9703,14 @@
       "NO_CLEAN_SETUP": 6,
       "PRIME_ICT_LOCATION_OVERRIDE": 1,
       "TREND_IGNITION_ENTRY": 1,
-      "UNKNOWN": 31
+      "UNKNOWN": 32
     },
     "signal_counts_by_regime": {
       "NEWS_SHOCK": 15,
       "NORMAL": 24,
       "RANGE_COMPRESSION": 1,
       "TREND_EXPANSION": 7,
-      "TREND_PULLBACK": 1
+      "TREND_PULLBACK": 2
     }
   }
 }
