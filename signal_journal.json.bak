@@ -15344,14 +15344,302 @@
           "previous_regime_type": "NORMAL"
         }
       }
+    },
+    {
+      "time": "2026-06-16T14:01:27.516225+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 80.03,
+      "quality": 6,
+      "reason": "немає одного з топових сетапів для професійного входу",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "SHORT",
+        "score": 42,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 6.91,
+          "move8_abs_pct": 0.502,
+          "slope15_abs_pct": 0.249,
+          "rsi15": 42.3,
+          "score_total_abs": 57,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NORMAL"
+      },
+      "plan": {
+        "entry": 80.03,
+        "stop": 81.256,
+        "tp1": 78.804,
+        "tp2": 78.2522,
+        "tp3": 77.309,
+        "risk_pct": 1.532,
+        "rr1": 1.0,
+        "rr2": 1.45,
+        "rr3": 2.22,
+        "invalidation": "15m закриття вище 81.256 або злам 3m/структури проти SHORT. Сетап: ⚪ Чистого сетапу немає. Режим: звичайний intraday режим. стоп/TP не активувати без сетапу | чекати чистішу структуру"
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "1h підтримує",
+        "кластери локально підтримують",
+        "Сетап: ⚪ Чистого сетапу немає (42/100)",
+        "Smart Money RR мінімальний: 1.0R"
+      ],
+      "conflicts": [
+        "немає одного з топових сетапів для професійного входу",
+        "після слабкого виходу SHORT (STOP, 1.989%) якість нового входу тимчасово знижена, але не заблокована; штраф якості -15",
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -63,
+        "total_score": -57,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 10,
+          "state": "RANGE",
+          "fast_move_pct": 0.238,
+          "drift_pct": 0.196,
+          "vol_ratio": 0.64,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -18,
+          "trend": "NEUTRAL",
+          "close": 80.15,
+          "ema20": 80.3012,
+          "ema50": 80.9886,
+          "rsi": 42.3,
+          "atr": 0.2865,
+          "slope_pct": -0.249,
+          "move_8_pct": 0.502,
+          "range_atr": 6.91,
+          "note": "ціна нижче EMA20/50; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 80.15,
+          "ema20": 81.31,
+          "ema50": 82.2671,
+          "rsi": 31.4,
+          "atr": 0.5586,
+          "slope_pct": -2.693,
+          "move_8_pct": -2.363,
+          "range_atr": 6.96,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 80.15,
+          "ema20": 83.1326,
+          "ema50": 86.5779,
+          "rsi": 25.2,
+          "atr": 1.3662,
+          "slope_pct": -4.244,
+          "move_8_pct": -2.884,
+          "range_atr": 4.52,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 81.16,
+          "swing_low": 79.18,
+          "recent_high": 82.32,
+          "recent_low": 79.18,
+          "atr": 0.2865,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -38.91,
+          "book_delta_pct": 21.47,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -11323.0,
+          "delta_pct": -38.91,
+          "cvd": 283890.0,
+          "cvd_change_pct": -3.836,
+          "last_trade_ts": 1781618476211,
+          "price_move_pct": 0.137,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -7,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 80.158,
+              "imbalance_pct": -66.4,
+              "volume": 11683.0
+            },
+            {
+              "price": 80.2861,
+              "imbalance_pct": -100.0,
+              "volume": 167.0
+            }
+          ],
+          "note": "локальний продавець біля 80.158; ask-стіна 80.28"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 60052.04,
+          "oi_change_pct": -0.947,
+          "funding_pct": 5e-05,
+          "price_change_pct": -0.175,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.78,
+          "move_1_pct": -0.025,
+          "move_6_pct": -0.187,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": 7,
+          "top": "Breakingviews - Iran deal’s cash sweeteners require pinch of salt - Reuters",
+          "total": 44
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "NO_CLEAN_SETUP",
+          "label": "⚪ Чистого сетапу немає",
+          "side": "SHORT",
+          "score": 42,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "немає одного з топових сетапів для професійного входу",
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -6,
+            "quality_cap": 66,
+            "block_entry": true
+          },
+          "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+          "stop_rule": "стоп/TP не активувати без сетапу",
+          "tp_rule": "чекати чистішу структуру",
+          "management_rule": "чекати до появи топового сетапу"
+        },
+        "regime_engine": {
+          "name": "NORMAL",
+          "regime_type": "NORMAL",
+          "label": "звичайний intraday режим",
+          "score": 50,
+          "confidence": 50,
+          "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+          "entry_action": "ALLOW",
+          "entry_quality_adjustment": 0,
+          "quality_cap": null,
+          "hard_block": false,
+          "allowed_setups": [],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 6.91,
+            "move8_abs_pct": 0.502,
+            "slope15_abs_pct": 0.249,
+            "rsi15": 42.3,
+            "score_total_abs": 57,
+            "participation_same": 1,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "DISCOUNT_FVG_OB_LONG",
+            "range_edge": false
+          },
+          "stable_count": 4,
+          "pending_count": 0,
+          "is_stable": true,
+          "previous_regime_type": "NORMAL"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-16T13:54:35.434677+00:00",
+  "updated_at": "2026-06-16T14:01:27.520989+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-16T13:54:35.435423+00:00",
+    "updated_at": "2026-06-16T14:01:27.525935+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 5,
-    "signals_count": 105,
+    "signals_count": 106,
     "overall": {
       "trades": 5,
       "wins": 3,
@@ -15545,11 +15833,11 @@
       }
     },
     "signals": {
-      "total": 105,
+      "total": 106,
       "entries": 5,
       "full_entries": 0,
       "risky_entries": 5,
-      "watch": 23,
+      "watch": 24,
       "no_trade": 14,
       "follow": 58,
       "closed": 5,
@@ -15559,7 +15847,7 @@
       "COUNTERTREND_SCALP": 4,
       "LATE_IMPULSE_CHASE": 1,
       "NEWS_IMPULSE": 5,
-      "NO_CLEAN_SETUP": 9,
+      "NO_CLEAN_SETUP": 10,
       "PRIME_ICT_LOCATION_OVERRIDE": 1,
       "PULLBACK_CONTINUATION": 1,
       "RANGE_MIDDLE_BLOCK": 4,
@@ -15569,7 +15857,7 @@
     "signal_counts_by_regime": {
       "EXHAUSTION": 11,
       "NEWS_SHOCK": 17,
-      "NORMAL": 45,
+      "NORMAL": 46,
       "RANGE_COMPRESSION": 5,
       "TREND_EXPANSION": 23,
       "TREND_PULLBACK": 4
