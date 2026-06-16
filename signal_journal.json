@@ -13936,14 +13936,63 @@
         "is_stable": true,
         "previous_regime_type": "TREND_EXPANSION"
       }
+    },
+    {
+      "time": "2026-06-16T11:15:54.332930+00:00",
+      "type": "FOLLOW",
+      "side": "SHORT",
+      "action": "TP1_PROTECT",
+      "price": 80.41,
+      "quality": 79,
+      "entry_level": "RISKY_ENTRY",
+      "setup_type": "TREND_IGNITION_ENTRY",
+      "regime_type": "TREND_EXPANSION",
+      "context_bias": "NEUTRAL",
+      "tech_score": -19,
+      "total_score": -15,
+      "regime_engine": {
+        "name": "IMPULSE",
+        "regime_type": "EXHAUSTION",
+        "label": "виснажений рух",
+        "score": 72,
+        "confidence": 72,
+        "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. за добу вже -3.03%; ціна далеко від EMA20 (2.16 ATR); CVD/потік/кластери вже попереджають",
+        "entry_action": "BLOCK",
+        "entry_quality_adjustment": -10,
+        "quality_cap": 61,
+        "hard_block": true,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "RANGE_EDGE_TRADE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 8.18,
+          "move8_abs_pct": 0.421,
+          "slope15_abs_pct": 0.095,
+          "rsi15": 29.7,
+          "score_total_abs": 15,
+          "participation_same": 0,
+          "late_penalty": 7,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG"
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "EXHAUSTION"
+      }
     }
   ],
-  "updated_at": "2026-06-16T11:01:28.785361+00:00",
+  "updated_at": "2026-06-16T11:15:54.338801+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-16T11:01:28.789687+00:00",
+    "updated_at": "2026-06-16T11:15:54.339721+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 4,
-    "signals_count": 92,
+    "signals_count": 93,
     "overall": {
       "trades": 4,
       "wins": 2,
@@ -14137,13 +14186,13 @@
       }
     },
     "signals": {
-      "total": 92,
+      "total": 93,
       "entries": 5,
       "full_entries": 0,
       "risky_entries": 5,
       "watch": 20,
       "no_trade": 14,
-      "follow": 49,
+      "follow": 50,
       "closed": 4,
       "pending_trigger_activations": 0
     },
@@ -14156,10 +14205,10 @@
       "PULLBACK_CONTINUATION": 1,
       "RANGE_MIDDLE_BLOCK": 4,
       "TREND_IGNITION_ENTRY": 3,
-      "UNKNOWN": 67
+      "UNKNOWN": 68
     },
     "signal_counts_by_regime": {
-      "EXHAUSTION": 3,
+      "EXHAUSTION": 4,
       "NEWS_SHOCK": 16,
       "NORMAL": 41,
       "RANGE_COMPRESSION": 5,
