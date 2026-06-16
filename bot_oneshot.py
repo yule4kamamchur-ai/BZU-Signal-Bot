@@ -6248,6 +6248,189 @@ def _clamp_stop_between_entry_tp(side, raw_level, entry, tp1, tp2=None, after_tp
     return round_price(max(min(raw_level, tp1_ceiling), tp1_floor))
 
 
+
+def _tp_noise_context_votes(side, context):
+    """Small helper for TP noise filters.
+
+    It separates a normal pullback from a real reversal. A stop may be tightened
+    aggressively only when there is hard structure/ICT evidence or several soft
+    warnings. Otherwise TP1/TP2 locks get more air so one 3M wick does not kick
+    the bot out of a valid runner.
+    """
+    context = context or {}
+    opp = opposite(side)
+    hard = 0
+    soft = 0
+    support = 0
+    hard_blocks = [context.get("structure") or {}, context.get("ict") or {}, context.get("liquidity") or {}]
+    soft_blocks = [context.get("tf3") or {}, context.get("cvd") or {}, context.get("flow") or {}, context.get("news") or {}]
+    support_blocks = [context.get("tf15") or {}, context.get("tf1h") or {}, context.get("structure") or {}, context.get("ict") or {}, context.get("cvd") or {}, context.get("flow") or {}]
+    for block in hard_blocks:
+        if block.get("bias") == opp and abs(int(block.get("score", 0) or 0)) >= 12:
+            hard += 1
+    for block in soft_blocks:
+        if block.get("bias") == opp and abs(int(block.get("score", 0) or 0)) >= 10:
+            soft += 1
+    for block in support_blocks:
+        if block.get("bias") == side:
+            support += 1
+    return {"hard": hard, "soft": soft, "support": support, "opposite": hard + soft}
+
+
+def _tp_lock_fraction_profile(side, context, after_tp="TP1"):
+    """Return how much of the TP leg should be locked by the first TP stop.
+
+    This is the main TP-noise improvement:
+    - TREND runner: lock less aggressively, keep stop outside normal pullback.
+    - RANGE/REVERSAL/NEWS/EXHAUSTION: lock faster because giveback is dangerous.
+    - Hard reversal evidence overrides the runner mode and allows tighter stop.
+    """
+    mode_profile = trade_mode_profile(context or {}, side)
+    regime = str(mode_profile.get("regime", "NORMAL") or "NORMAL").upper()
+    votes = _tp_noise_context_votes(side, context or {})
+    hard = votes.get("hard", 0)
+    soft = votes.get("soft", 0)
+    support = votes.get("support", 0)
+    hard_reversal = bool(hard >= 1 or soft >= 3)
+
+    if after_tp == "TP2":
+        if hard_reversal:
+            return 0.82, "TP2: є підтверджений тиск проти — стоп може бути щільнішим"
+        if regime == "TREND" and support >= 2:
+            return 0.62, "TP2 TREND_RUNNER: стоп не ставити всередину нормального відкату"
+        if regime == "PULLBACK":
+            return 0.68, "TP2 PULLBACK: захистити прибуток, але залишити простір"
+        if regime in ["RANGE", "REVERSAL", "NEWS_IMPULSE", "IMPULSE"]:
+            return 0.76, "TP2 FAST_CAPTURE: ринок може швидко віддати рух"
+        return 0.70, "TP2 BALANCED: середній захист без шумового затиску"
+
+    # POST_TP1: softer than TP2. TP1 confirms idea, but TP2 is not reached yet.
+    if hard_reversal:
+        return 0.70, "TP1: є тиск проти — стоп можна підтягнути швидше"
+    if regime == "TREND" and support >= 2:
+        return 0.50, "TP1 TREND_RUNNER: перший стоп не душити шумом"
+    if regime == "PULLBACK":
+        return 0.56, "TP1 PULLBACK: помірний захист"
+    if regime in ["RANGE", "REVERSAL", "NEWS_IMPULSE", "IMPULSE"]:
+        return 0.64, "TP1 FAST_CAPTURE: перший прибуток захищати швидше"
+    return 0.58, "TP1 BALANCED: середній захист"
+
+
+def _apply_tp_lock_noise_profile(side, clamped_stop, trade, context, after_tp="TP1"):
+    """Soften the first TP1/TP2 lock when it sits inside normal pullback noise.
+
+    It never loosens an already active stop by itself; manage_active_trade still
+    applies only more-protective stops. This function only prevents a NEW TP lock
+    from being calculated too tightly when the market model is still a trend.
+    """
+    if clamped_stop is None or not trade or not getattr(trade, "entry", None):
+        return clamped_stop, ""
+    entry = safe_float(trade.entry, 0) or 0
+    tp1 = safe_float(getattr(trade, "tp1", 0), 0) or 0
+    tp2 = safe_float(getattr(trade, "tp2", 0), 0) or 0
+    if not entry or not tp1:
+        return clamped_stop, ""
+
+    fraction, reason = _tp_lock_fraction_profile(side, context or {}, after_tp)
+    if side == "LONG":
+        if after_tp == "TP2" and tp2:
+            move = max(tp2 - entry, tp1 - entry, entry * 0.002)
+            model_stop = entry + move * fraction
+        else:
+            move = max(tp1 - entry, entry * 0.002)
+            model_stop = entry + move * fraction
+        # For LONG, higher stop = tighter. If classic clamp is too tight for the
+        # current model, use the softer model stop.
+        adjusted = min(safe_float(clamped_stop), model_stop)
+    else:
+        if after_tp == "TP2" and tp2:
+            move = max(entry - tp2, entry - tp1, entry * 0.002)
+            model_stop = entry - move * fraction
+        else:
+            move = max(entry - tp1, entry * 0.002)
+            model_stop = entry - move * fraction
+        # For SHORT, lower stop = tighter. If classic clamp is too tight for the
+        # current model, use the softer model stop.
+        adjusted = max(safe_float(clamped_stop), model_stop)
+    adjusted = round_price(adjusted)
+    if adjusted != round_price(clamped_stop):
+        return adjusted, reason
+    return round_price(clamped_stop), ""
+
+
+def _recent_tp_noise_safe_stop(side, proposed, trade, context, stage="POST_TP1", hard_reversal=False, broad_warning=False):
+    """Avoid moving dynamic TP stop directly into recent 3M/15M wick noise.
+
+    If there is no confirmed reversal, the stop should sit behind the recent
+    pullback high/low plus ATR buffer. If that safe level would not improve the
+    current stop, we simply do not move the stop on this run.
+    """
+    proposed = safe_float(proposed)
+    if proposed is None or not trade:
+        return proposed, ""
+    context = context or {}
+    price = safe_float(context.get("price"), 0) or 0
+    entry = safe_float(getattr(trade, "entry", 0), 0) or 0
+    if not price or not entry:
+        return proposed, ""
+    # Hard reversal means the market is no longer a normal pullback; allow the
+    # tighter stop/exit layer to protect immediately.
+    if hard_reversal:
+        return round_price(proposed), "hard reversal: шумовий фільтр не розширює стоп"
+
+    candles3 = list(context.get("candles_3m") or [])[-9:]
+    candles15 = list(context.get("candles_15m") or [])[-4:]
+    candles = candles3 + candles15
+    if len(candles) < 4:
+        return round_price(proposed), ""
+
+    highs = [safe_float(getattr(c, "high", None)) for c in candles]
+    lows = [safe_float(getattr(c, "low", None)) for c in candles]
+    highs = [x for x in highs if x]
+    lows = [x for x in lows if x]
+    if not highs or not lows:
+        return round_price(proposed), ""
+
+    ranges_pct = sorted([abs(h - l) / price * 100.0 for h, l in zip(highs, lows) if h and l and h >= l])
+    median_range = ranges_pct[len(ranges_pct) // 2] if ranges_pct else 0.22
+    atr_value = safe_float(context.get("atr15"), None) or safe_float((context.get("tf15") or {}).get("atr"), None) or price * 0.006
+    atr_pct = atr_value / price * 100.0 if price and atr_value else 0.55
+    mode_profile = trade_mode_profile(context, side)
+    regime = str(mode_profile.get("regime", "NORMAL") or "NORMAL").upper()
+
+    if stage == "POST_TP2":
+        base = 0.18
+        atr_mult = 0.30
+        cap = 0.46
+    else:
+        base = 0.22
+        atr_mult = 0.36
+        cap = 0.54
+    if regime == "TREND":
+        base += 0.05
+    elif regime in ["RANGE", "REVERSAL", "NEWS_IMPULSE", "IMPULSE"]:
+        base += 0.02
+    if broad_warning:
+        # Warning allows a little less air, but still not inside wick-noise.
+        base -= 0.03
+        cap -= 0.04
+    buffer_pct = min(cap, max(base, median_range * 0.80, atr_pct * atr_mult))
+    buffer_abs = price * buffer_pct / 100.0
+
+    if side == "LONG":
+        safe_stop = min(proposed, min(lows) - buffer_abs)
+        # A dynamic long stop must still be below price.
+        safe_stop = min(safe_stop, price - buffer_abs)
+    else:
+        safe_stop = max(proposed, max(highs) + buffer_abs)
+        # A dynamic short stop must still be above price.
+        safe_stop = max(safe_stop, price + buffer_abs)
+    safe_stop = round_price(safe_stop)
+    if safe_stop != round_price(proposed):
+        return safe_stop, f"TP-noise guard: стоп винесено за останній pullback/wick + ATR buffer (~{round(buffer_pct, 3)}%), щоб не вибило шумом"
+    return round_price(proposed), f"TP-noise guard: стоп поза останнім wick-шумом (~{round(buffer_pct, 3)}%)"
+
+
 def protective_stop_ict_smc(trade, context, after_tp="TP1"):
     """Return a staged protective stop recommendation using ICT + SMC.
 
@@ -6298,7 +6481,16 @@ def protective_stop_ict_smc(trade, context, after_tp="TP1"):
 
     clamped = _clamp_stop_between_entry_tp(side, raw_level, trade.entry, trade.tp1, trade.tp2, after_tp)
     if clamped != round_price(raw_level):
-        why = f"{why}; обмежено, щоб стоп не був занадто близько до TP1"
+        why = f"{why}; обмежено базовим TP-lock"
+
+    # TP noise profile: in a clean TREND runner the first TP1/TP2 lock must not
+    # be calculated as if every pullback is a reversal. In range/news/reversal it
+    # stays tighter. This only affects the newly calculated lock; the caller still
+    # never loosens an already active stop.
+    noise_adjusted, noise_reason = _apply_tp_lock_noise_profile(side, clamped, trade, context, after_tp)
+    if noise_reason:
+        clamped = noise_adjusted
+        why = f"{why}; {noise_reason}"
 
     # Final safety: even after TP1/TP2 do not place the stop inside ordinary
     # 3M wick-noise. This keeps the stop behind SMC/ICT structure with ATR air.
@@ -7023,6 +7215,194 @@ def risky_pre_tp1_profit_guard_snapshot(trade, context, current_pct, best_pct, g
     }
 
 
+
+def _post_tp1_dynamic_profit_manager_snapshot(trade, context, current_pct, best_pct, giveback, giveback_ratio,
+                                             support_votes=0.0, opposite_votes=0.0,
+                                             tf3_against=False, structure_against=False, ict_against=False,
+                                             flow_against=False, cvd_against=False,
+                                             liquidity_against=False, news_against=False,
+                                             confirmed_ict_reversal=False, entry_state=None,
+                                             action="HOLD"):
+    """Professional dynamic protection after TP1 and before TP2.
+
+    TP1 is the first confirmation that the idea worked. The classic bot logic
+    locked one ICT/SMC stop and kept it unchanged until TP2 to avoid being
+    shaken out by ordinary BZU 3M noise. That is good for clean trends, but it
+    can be too passive when price travels far beyond TP1, almost reaches TP2,
+    then starts giving the move back.
+
+    This layer works only between TP1 and TP2. It never loosens the stop, never
+    touches pre-TP1 Risk Floor, and stops working as soon as TP2 is hit. Its job:
+    - keep the first TP1 lock if the trend is still clean;
+    - tighten the stop only after meaningful progress beyond TP1 or warnings;
+    - close only on confirmed reversal / deep giveback near the protective stop.
+    """
+    if (
+        not trade
+        or not getattr(trade, "tp1_hit", False)
+        or getattr(trade, "tp2_hit", False)
+        or getattr(trade, "tp3_hit", False)
+    ):
+        return {"active": False}
+
+    side = getattr(trade, "side", "NEUTRAL")
+    entry = safe_float(getattr(trade, "entry", 0.0), 0.0) or 0.0
+    price = safe_float((context or {}).get("price"), 0.0) or 0.0
+    if side not in ["LONG", "SHORT"] or not entry or not price:
+        return {"active": False}
+
+    current_pct = safe_float(current_pct, 0.0) or 0.0
+    best_pct = safe_float(best_pct, 0.0) or 0.0
+    giveback = safe_float(giveback, max(0.0, best_pct - current_pct)) or 0.0
+    giveback_ratio = safe_float(giveback_ratio, (giveback / best_pct if best_pct > 0.05 else 0.0)) or 0.0
+    if best_pct <= 0 or current_pct <= 0:
+        return {"active": False}
+
+    tp1_pct = signed_pct(side, entry, getattr(trade, "tp1", entry))
+    tp2_pct = signed_pct(side, entry, getattr(trade, "tp2", entry))
+    if tp1_pct <= 0:
+        return {"active": False}
+    # Start dynamic management only when the market has paid meaningfully beyond TP1.
+    if best_pct < max(tp1_pct * 1.10, tp1_pct + 0.22, 0.72):
+        return {"active": False}
+
+    mode_profile = trade_mode_profile(context or {}, side)
+    market_regime = str(mode_profile.get("regime", "NORMAL") or "NORMAL").upper()
+    hard_votes = sum([bool(structure_against), bool(ict_against), bool(liquidity_against), bool(confirmed_ict_reversal)])
+    soft_votes = sum([bool(tf3_against), bool(flow_against), bool(cvd_against), bool(news_against)])
+    entry_state_name = str((entry_state or {}).get("state") or "").upper()
+    entry_weak = entry_state_name in ["WEAK", "BROKEN"] or str(action or "").upper() in ["EXIT_WARNING", "PROTECT_OR_EXIT"]
+
+    tf15_same = ((context or {}).get("tf15") or {}).get("bias") == side
+    tf1h_same = ((context or {}).get("tf1h") or {}).get("bias") == side
+    structure_same = ((context or {}).get("structure") or {}).get("bias") == side
+    ict_same = ((context or {}).get("ict") or {}).get("bias") == side
+    trend_support = bool(support_votes >= max(2.35, opposite_votes + 0.35) or tf15_same or tf1h_same or structure_same or ict_same)
+
+    if side == "LONG":
+        stop_distance_pct = max(0.0, (price - safe_float(getattr(trade, "stop_current", entry), entry)) / entry * 100.0)
+        candidate_from_lock = lambda lock: entry * (1 + lock / 100.0)
+    else:
+        stop_distance_pct = max(0.0, (safe_float(getattr(trade, "stop_current", entry), entry) - price) / entry * 100.0)
+        candidate_from_lock = lambda lock: entry * (1 - lock / 100.0)
+
+    tp2_span = max(0.01, (tp2_pct - tp1_pct)) if tp2_pct > tp1_pct else max(0.01, tp1_pct * 0.85)
+    progress_to_tp2 = clamp((best_pct - tp1_pct) / tp2_span, 0.0, 1.25)
+
+    # A pullback after TP1 becomes important earlier than before TP1, but later
+    # than after TP2. We scale by progress toward TP2 so the bot does not overreact
+    # right after TP1, yet does protect if price almost touched TP2.
+    gave_back_meaningful = bool(best_pct >= max(tp1_pct + 0.35, 0.95) and giveback >= max(0.30, best_pct * 0.22))
+    gave_back_deep = bool(best_pct >= max(tp1_pct + 0.55, 1.15) and giveback >= max(0.46, best_pct * 0.34))
+    near_protective_stop = bool(stop_distance_pct <= 0.16)
+    broad_warning = bool(hard_votes >= 1 or soft_votes >= 2 or opposite_votes >= support_votes + 0.50 or entry_weak)
+    hard_reversal = bool(confirmed_ict_reversal or (hard_votes >= 1 and (soft_votes >= 1 or gave_back_meaningful)))
+
+    if market_regime in ["RANGE", "REVERSAL", "NEWS_IMPULSE", "IMPULSE"]:
+        capture_ratio = 0.66
+        model = "POST_TP1_FAST_CAPTURE"
+    elif market_regime == "TREND":
+        capture_ratio = 0.50
+        model = "POST_TP1_TREND_RUNNER"
+    elif market_regime == "PULLBACK":
+        capture_ratio = 0.58
+        model = "POST_TP1_PULLBACK_CAPTURE"
+    else:
+        capture_ratio = 0.58
+        model = "POST_TP1_BALANCED_CAPTURE"
+
+    if progress_to_tp2 >= 0.70:
+        capture_ratio = max(capture_ratio, 0.66)
+        model += "_NEAR_TP2"
+    elif progress_to_tp2 >= 0.45:
+        capture_ratio = max(capture_ratio, 0.60)
+        model += "_MIDWAY_TO_TP2"
+
+    if hard_reversal:
+        capture_ratio = max(capture_ratio, 0.74)
+        model += "_HARD_REVERSAL"
+    elif broad_warning or gave_back_meaningful:
+        capture_ratio = max(capture_ratio, 0.64)
+        model += "_WARNING"
+
+    # Closing after TP1 should be rarer than after TP2. It is allowed only when
+    # reversal evidence is confirmed or price is already close to the locked stop
+    # after giving back a meaningful move.
+    close_now = bool(
+        hard_reversal
+        or (near_protective_stop and (broad_warning or gave_back_meaningful or str(action or "").upper() == "EXIT_WARNING"))
+        or (gave_back_deep and progress_to_tp2 >= 0.45 and (soft_votes >= 1 or opposite_votes >= support_votes))
+    )
+    if close_now:
+        return {
+            "active": True,
+            "close": True,
+            "action": "EXIT_AFTER_TP1_PROFIT_PROTECT",
+            "title": f"{side} ЗАКРИТИ — TP1 ВЗЯТО, ПРИБУТОК ВІДДАЄТЬСЯ",
+            "recommendation": "TP1 уже виконано, а ринок почав повертати прибуток до стоп-зони: краще зафіксувати залишок у плюсі, ніж чекати втрату більшої частини руху",
+            "reason": f"{model}: MFE +{round(best_pct, 3)}%, зараз +{round(current_pct, 3)}%, віддано {round(giveback_ratio * 100, 1)}%, progress до TP2 {round(progress_to_tp2 * 100, 1)}%",
+            "notes": [
+                f"TP1 взято; MFE було +{round(best_pct, 3)}%",
+                f"поточний плюс +{round(current_pct, 3)}%, віддано {round(giveback_ratio * 100, 1)}% MFE",
+                f"прогрес до TP2: {round(progress_to_tp2 * 100, 1)}%",
+                f"модель: {model}",
+                "після TP1 головне — не віддати підтверджений прибуток назад",
+            ],
+        }
+
+    # Dynamic stop after TP1: do not trail on every candle. Tighten only when the
+    # trade made real progress beyond TP1, or warnings appear. Keep ATR/SMC air.
+    min_lock = max(tp1_pct * 0.55, 0.18)
+    if progress_to_tp2 >= 0.70:
+        min_lock = max(min_lock, tp1_pct * 0.92)
+    elif progress_to_tp2 >= 0.45:
+        min_lock = max(min_lock, tp1_pct * 0.78)
+
+    desired_lock = max(min_lock, best_pct * capture_ratio)
+    if trend_support and not broad_warning and market_regime == "TREND":
+        desired_lock = min(desired_lock, max(min_lock, best_pct * 0.58))
+    desired_lock = min(desired_lock, max(current_pct - 0.10, 0.0)) if current_pct > 0.16 else desired_lock
+
+    proposed = candidate_from_lock(desired_lock)
+    proposed, air_reason = _apply_stop_air(side, proposed, price, entry, context or {}, mode_profile, "POST_TP1")
+    proposed, noise_reason = _recent_tp_noise_safe_stop(
+        side, proposed, trade, context or {}, stage="POST_TP1",
+        hard_reversal=hard_reversal, broad_warning=broad_warning,
+    )
+    if noise_reason:
+        air_reason = f"{air_reason}; {noise_reason}" if air_reason else noise_reason
+    if proposed is None or not _valid_stop_for_side(side, price, proposed):
+        return {"active": True, "protect": False, "reason": "POST_TP1: немає валідного місця для нового стопу без вибивання шумом"}
+
+    if side == "LONG":
+        improves = proposed > safe_float(getattr(trade, "stop_current", entry), entry)
+    else:
+        improves = proposed < safe_float(getattr(trade, "stop_current", entry), entry)
+
+    if improves:
+        return {
+            "active": True,
+            "protect": True,
+            "stop": round_price(proposed),
+            "action": "TP1_DYNAMIC_PROTECT",
+            "title": f"{side} — TP1 ВЗЯТО, СТОП ДИНАМІЧНО ПІДТЯГНУТО",
+            "recommendation": "після TP1 стоп реагує на прогрес до TP2, MFE і попередження ринку; захист підтягнуто, але без трейлінгу кожної 3M свічки",
+            "reason": f"{model}: захистити ~{round(capture_ratio * 100, 1)}% MFE; {air_reason}",
+            "notes": [
+                f"MFE +{round(best_pct, 3)}%, поточний плюс +{round(current_pct, 3)}%",
+                f"прогрес до TP2: {round(progress_to_tp2 * 100, 1)}%",
+                f"віддано {round(giveback_ratio * 100, 1)}% руху після TP1",
+                f"новий TP1-dynamic стоп: {round_price(proposed)}",
+                f"модель: {model}",
+            ],
+        }
+
+    return {
+        "active": True,
+        "protect": False,
+        "reason": f"POST_TP1: поточний стоп уже достатньо захищає прибуток ({round_price(getattr(trade, 'stop_current', None))})",
+    }
+
 def _post_tp2_dynamic_profit_manager_snapshot(trade, context, current_pct, best_pct, giveback, giveback_ratio,
                                              support_votes=0.0, opposite_votes=0.0,
                                              tf3_against=False, structure_against=False, ict_against=False,
@@ -7141,6 +7521,12 @@ def _post_tp2_dynamic_profit_manager_snapshot(trade, context, current_pct, best_
 
     proposed = candidate_from_lock(desired_lock)
     proposed, air_reason = _apply_stop_air(side, proposed, price, entry, context or {}, mode_profile, "POST_TP2")
+    proposed, noise_reason = _recent_tp_noise_safe_stop(
+        side, proposed, trade, context or {}, stage="POST_TP2",
+        hard_reversal=hard_reversal, broad_warning=broad_warning,
+    )
+    if noise_reason:
+        air_reason = f"{air_reason}; {noise_reason}" if air_reason else noise_reason
     if proposed is None or not _valid_stop_for_side(side, price, proposed):
         return {"active": True, "protect": False, "reason": "POST_TP2: немає валідного місця для нового стопу без миттєвого вибивання"}
 
@@ -7370,6 +7756,18 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     weak_followthrough = bool(elapsed_min >= 45 and best_pct < 0.30 and current_pct <= 0.08)
     no_followthrough = bool(elapsed_min >= 75 and best_pct < 0.22 and current_pct <= 0.05)
     gave_back_small_mfe = bool(best_pct >= 0.12 and giveback >= max(0.12, best_pct * 0.65))
+    post_tp1_tail_warning = bool(
+        getattr(trade, "tp1_hit", False)
+        and not getattr(trade, "tp2_hit", False)
+        and best_pct >= 0.90
+        and giveback >= max(0.32, best_pct * 0.24)
+    )
+    post_tp1_tail_strong_warning = bool(
+        getattr(trade, "tp1_hit", False)
+        and not getattr(trade, "tp2_hit", False)
+        and best_pct >= 1.15
+        and giveback >= max(0.50, best_pct * 0.36)
+    )
     post_tp2_tail_warning = bool(
         getattr(trade, "tp2_hit", False)
         and best_pct >= 1.20
@@ -7430,6 +7828,10 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
             trade_risk_score += 12
         elif stop_dist_pct <= 0.28:
             trade_risk_score += 7
+        if getattr(trade, "tp1_hit", False) and not getattr(trade, "tp2_hit", False) and current_pct > 0 and post_tp1_tail_warning:
+            trade_risk_score += 7
+            if stop_dist_pct <= 0.18 or post_tp1_tail_strong_warning:
+                trade_risk_score += 5
         if getattr(trade, "tp2_hit", False) and current_pct > 0 and post_tp2_tail_warning:
             trade_risk_score += 10
             if stop_dist_pct <= 0.18 or post_tp2_tail_strong_warning:
@@ -7591,6 +7993,20 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score += giveback_ratio * 12
     if trade.tp1_hit and current_pct > 0:
         reversal_score -= 6
+    if getattr(trade, "tp1_hit", False) and not getattr(trade, "tp2_hit", False) and current_pct > 0:
+        # After TP1, a meaningful giveback before TP2 should not be displayed as
+        # unrealistically low reversal risk. It is softer than the TP2 floor, but
+        # enough to print at least MODERATE/MEDIUM when the market starts turning.
+        if post_tp1_tail_strong_warning:
+            reversal_score += 16
+            post_tp1_reversal_floor = 40
+        elif post_tp1_tail_warning:
+            reversal_score += 10
+            post_tp1_reversal_floor = 32
+        else:
+            post_tp1_reversal_floor = 0
+    else:
+        post_tp1_reversal_floor = 0
     if getattr(trade, "tp2_hit", False) and current_pct > 0:
         # After TP2, a strong bounce/giveback is a real tail-risk even if ICT has
         # not yet printed a textbook reversal. This prevents messages like
@@ -7628,6 +8044,8 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
         reversal_score = max(reversal_score, reversal_score_floor_from_els)
     if 'reversal_score_floor_from_validation' in locals() and reversal_score_floor_from_validation:
         reversal_score = max(reversal_score, reversal_score_floor_from_validation)
+    if 'post_tp1_reversal_floor' in locals() and post_tp1_reversal_floor:
+        reversal_score = max(reversal_score, post_tp1_reversal_floor)
     if 'post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor:
         reversal_score = max(reversal_score, post_tp2_reversal_floor)
 
@@ -7639,11 +8057,15 @@ def active_trade_risk_snapshot(trade, context, current_pct, best_pct, giveback, 
     # 3+ components -> very high is possible.
     if ict_rev_count == 0:
         cap0 = 36
+        if 'post_tp1_reversal_floor' in locals() and post_tp1_reversal_floor:
+            cap0 = max(cap0, 46 if post_tp1_tail_strong_warning else 40)
         if 'post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor:
             cap0 = 58 if post_tp2_tail_strong_warning else 48
         reversal_score = min(reversal_score, cap0)
     elif ict_rev_count == 1:
         cap1 = 48
+        if 'post_tp1_reversal_floor' in locals() and post_tp1_reversal_floor:
+            cap1 = max(cap1, 56 if post_tp1_tail_strong_warning else 50)
         if 'post_tp2_reversal_floor' in locals() and post_tp2_reversal_floor:
             cap1 = 66 if post_tp2_tail_strong_warning else 56
         reversal_score = min(reversal_score, cap1)
@@ -8355,6 +8777,11 @@ def manage_active_trade(trade, context):
     mode_profile = trade_mode_profile(context, side)
     market_regime = mode_profile.get("regime", "NORMAL")
 
+    # Notification support: remember the active stop at the start of this run.
+    # If management improves it later, Telegram will show a highlighted
+    # "УВАГА: СТОП ЗМІНЕНО" block with old/new stop only.
+    previous_stop_at_run_start = round_price(getattr(trade, "stop_current", None))
+
     high_since_open, low_since_open = _trade_extremes_since_open(trade, context)
     high_since_stop, low_since_stop = _trade_extremes_since_stop_update(trade, context)
     trade.best_price = best_trade_price(side, trade, price, high_since_open, low_since_open)
@@ -8971,6 +9398,77 @@ def manage_active_trade(trade, context):
                     notes.append(recommended_stop_reason)
 
 
+    # Dynamic post-TP1 supervision. After TP1 the initial stop remains locked by
+    # default, but if the trade makes real progress toward TP2 or starts giving
+    # back a confirmed MFE, the stop is allowed to improve. This never loosens
+    # the TP1 stop and stops working immediately after TP2.
+    post_tp1_manager = _post_tp1_dynamic_profit_manager_snapshot(
+        trade, context, current_pct, best_pct, giveback, giveback_ratio,
+        support_votes=support_votes,
+        opposite_votes=opposite_votes,
+        tf3_against=tf3_against,
+        structure_against=structure_against,
+        ict_against=ict_against,
+        flow_against=flow_against,
+        cvd_against=cvd_against,
+        liquidity_against=liquidity_against,
+        news_against=news_against,
+        confirmed_ict_reversal=confirmed_ict_reversal,
+        entry_state=entry_state,
+        action=action,
+    )
+    if post_tp1_manager.get("active"):
+        if post_tp1_manager.get("close"):
+            trade.status = "CLOSED"
+            trade.last_action = post_tp1_manager.get("action") or "EXIT_AFTER_TP1_PROFIT_PROTECT"
+            risk_snapshot = active_trade_risk_snapshot(
+                trade, context, current_pct, best_pct, giveback, support_votes, opposite_votes, trade.last_action
+            )
+            return {
+                "closed": True,
+                "action": trade.last_action,
+                "exit_reason_code": "POST_TP1_DYNAMIC_PROFIT_PROTECT",
+                "exit_quality": "PROFIT_PROTECT_AFTER_TP1",
+                "title": post_tp1_manager.get("title") or f"{side} ЗАКРИТИ — TP1 PROFIT PROTECT",
+                "recommendation": post_tp1_manager.get("recommendation") or "TP1 взято: прибуток захистити, не чекати повний відкат до стопу",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "recommended_stop": round_price(trade.stop_current),
+                "recommended_stop_reason": post_tp1_manager.get("reason"),
+                "notes": list(post_tp1_manager.get("notes") or [])[:5],
+                "trade_risk": risk_snapshot.get("trade_risk"),
+                "trade_risk_score": risk_snapshot.get("trade_risk_score"),
+                "reversal_side": risk_snapshot.get("reversal_side"),
+                "reversal_score": risk_snapshot.get("reversal_score"),
+                "reversal_label": risk_snapshot.get("reversal_label"),
+                "entry_state": entry_state,
+                "trade_phase": analyze_trade_phase(
+                    trade, context, current_pct, best_pct, giveback,
+                    high_since_open=high_since_open, low_since_open=low_since_open,
+                    entry_state=entry_state, trade_validation=trade_validation,
+                    support_votes=support_votes, opposite_votes=opposite_votes,
+                    action=trade.last_action, market_regime=market_regime,
+                    tf3_against=tf3_against, structure_against=structure_against, ict_against=ict_against,
+                    flow_against=flow_against, cvd_against=cvd_against, liquidity_against=liquidity_against,
+                    news_against=news_against, confirmed_ict_reversal=confirmed_ict_reversal,
+                    closed=True, exit_reason_code="POST_TP1_DYNAMIC_PROFIT_PROTECT",
+                ),
+            }
+        new_tp1_stop = post_tp1_manager.get("stop")
+        if post_tp1_manager.get("protect") and new_tp1_stop is not None and _apply_more_protective_stop(trade, side, new_tp1_stop):
+            # Keep the TP1 lock in sync with the improved protection so the
+            # later locked-stop block does not restore the older, looser level.
+            trade.tp1_locked_stop = float(trade.stop_current)
+            trade.tp1_stop_locked = True
+            action = post_tp1_manager.get("action") or "TP1_DYNAMIC_PROTECT"
+            title = post_tp1_manager.get("title") or f"{side} — TP1 ДИНАМІЧНИЙ ЗАХИСТ"
+            recommendation = post_tp1_manager.get("recommendation") or "TP1 взято: стоп підтягнуто за прогресом до TP2 і умовами ринку"
+            recommended_stop = trade.stop_current
+            recommended_stop_reason = post_tp1_manager.get("reason") or "Post-TP1 Dynamic Profit Protect"
+            notes.extend(list(post_tp1_manager.get("notes") or [])[:4])
+
+
+
     # Dynamic post-TP2 supervision. After TP2 the stop is allowed to react again
     # to MFE giveback / reversal warnings. It never loosens the stop and it does
     # not touch TP1 logic. If price is already close to the protective stop and
@@ -9073,6 +9571,10 @@ def manage_active_trade(trade, context):
         "best_pct": best_pct,
         "recommended_stop": round_price(trade.stop_current),
         "recommended_stop_reason": recommended_stop_reason,
+        "stop_changed": _stop_changed(previous_stop_at_run_start, trade.stop_current),
+        "previous_stop": previous_stop_at_run_start,
+        "new_stop": round_price(trade.stop_current),
+        "stop_change_reason": recommended_stop_reason or _latest_stop_reason_from_notes(notes),
         "notes": notes,
         "trade_risk": risk_snapshot.get("trade_risk"),
         "trade_risk_score": risk_snapshot.get("trade_risk_score"),
@@ -10016,6 +10518,46 @@ def build_new_setup_message(context, setup):
     return localize_user_text("\n".join(lines).strip())
 
 
+def _stop_changed(old_stop, new_stop):
+    old_stop = safe_float(old_stop, None)
+    new_stop = safe_float(new_stop, None)
+    if old_stop is None or new_stop is None:
+        return False
+    return abs(new_stop - old_stop) > max(0.0001, abs(old_stop) * 0.00005)
+
+
+def _latest_stop_reason_from_notes(notes):
+    """Extract a compact stop-update reason from management notes for Telegram."""
+    for item in reversed(list(notes or [])):
+        text = str(item or "")
+        lower = text.lower()
+        if any(key in lower for key in ["stop", "стоп", "tp-noise", "mfe", "protect"]):
+            return text[:180]
+    return "стоп оновлено за поточним супроводом"
+
+
+def _stop_update_alert_lines(trade, result):
+    """Highlighted Telegram block shown only when the active stop changed this run."""
+    result = result or {}
+    if not result.get("stop_changed"):
+        return []
+
+    old_stop = safe_float(result.get("previous_stop"), None)
+    new_stop = safe_float(result.get("new_stop") or result.get("recommended_stop") or getattr(trade, "stop_current", None), None)
+    if new_stop is None:
+        return []
+
+    lines = [
+        "",
+        "🚨 <b>УВАГА: СТОП ЗМІНЕНО</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🔒 <b>Новий стоп:</b> {_fmt_price(new_stop)}",
+    ]
+    if old_stop is not None:
+        lines.append(f"↪️ <b>Було:</b> {_fmt_price(old_stop)} → <b>Стало:</b> {_fmt_price(new_stop)}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    return lines
+
 def build_follow_message(context, trade, result):
     current_pct = safe_float((result or {}).get("current_pct"), 0.0) or 0.0
     best_pct = safe_float((result or {}).get("best_pct"), 0.0) or 0.0
@@ -10051,6 +10593,10 @@ def build_follow_message(context, trade, result):
     lines.append("<b>Причина:</b>")
     lines.append(html.escape(str(reason)))
 
+    # If the stop was updated in this run, make it impossible to miss in Telegram.
+    # This block is intentionally visual and placed above risk/position details.
+    lines.extend(_stop_update_alert_lines(trade, result))
+
     if result.get("reversal_label"):
         lines.append("")
         rev_side = result.get("reversal_side") or opposite(trade.side)
@@ -10071,7 +10617,8 @@ def build_follow_message(context, trade, result):
         rec_stop = safe_float(rec_stop, None)
         stop_initial = safe_float(getattr(trade, "stop_initial", None), None)
         if rec_stop is not None and stop_initial is not None and abs(rec_stop - stop_initial) > max(0.0001, abs(stop_initial) * 0.00005):
-            lines.append(f"<b>Активний стоп:</b> {_fmt_price(rec_stop)}")
+            if not (result or {}).get("stop_changed"):
+                lines.append(f"🔒 <b>Активний стоп:</b> {_fmt_price(rec_stop)}")
 
     return localize_user_text("\n".join(lines).strip())
 
