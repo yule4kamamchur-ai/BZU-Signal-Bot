@@ -5,15 +5,6 @@
     {
       "type": "FOLLOW",
       "side": "SHORT",
-      "action": "PROTECT_OR_EXIT",
-      "price": 82.13,
-      "result_pct": 0.061,
-      "stop_current": 83.1386,
-      "time": "2026-06-16T03:15:58.771764+00:00"
-    },
-    {
-      "type": "FOLLOW",
-      "side": "SHORT",
       "action": "HOLD",
       "price": 82.15,
       "result_pct": 0.037,
@@ -2718,26 +2709,156 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-16T22:15:54.615339+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.36,
+      "quality": 61,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "setup_classifier": {
+        "type": "PRIME_ICT_LOCATION_OVERRIDE",
+        "label": "🟢 Сильна ICT-локація",
+        "side": "LONG",
+        "score": 72,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.92,
+          "tp2_pct": 1.55,
+          "tp3_pct": 2.55,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.22,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+        "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+        "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+        "professional_override": true,
+        "prime_ict_override": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 5.14,
+          "move8_abs_pct": 0.24,
+          "slope15_abs_pct": 0.017,
+          "rsi15": 54.3,
+          "score_total_abs": 24,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "MIDRANGE",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-16T22:31:14.262813+00:00"
     }
   ],
   "regime_memory": {
-    "type": "TREND_EXPANSION",
-    "pending_type": "REVERSAL_BUILDUP",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-16T22:15:54.335060+00:00"
+    "type": "REVERSAL_BUILDUP",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-16T22:31:13.886815+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T22:15:54.615404+00:00",
-    "price": 79.32,
-    "oi": 60222.12,
-    "cvd": 215336.0,
-    "cvd_time": "2026-06-16T22:15:54.615407+00:00",
-    "last_trade_ts": 1781648125187,
+    "time": "2026-06-16T22:31:14.262839+00:00",
+    "price": 79.36,
+    "oi": 60287.23,
+    "cvd": 153231.0,
+    "cvd_time": "2026-06-16T22:31:14.262842+00:00",
+    "last_trade_ts": 1781649061652,
     "bias": "NEUTRAL",
-    "tech_score": 43,
-    "total_score": 36
+    "tech_score": 31,
+    "total_score": 24
   },
-  "updated_at": "2026-06-16T22:15:54.615412+00:00",
-  "pending_trigger": null
+  "updated_at": "2026-06-16T22:31:14.262846+00:00",
+  "pending_trigger": {
+    "active": true,
+    "created_at": "2026-06-16T22:31:14.262720+00:00",
+    "side": "LONG",
+    "price": 79.36,
+    "quality": 61,
+    "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
+    "setup_label": "🟢 Сильна ICT-локація",
+    "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+    "regime_engine": {
+      "name": "REVERSAL",
+      "regime_type": "REVERSAL_BUILDUP",
+      "label": "формується розворот",
+      "score": 65,
+      "confidence": 66,
+      "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+      "entry_action": "RISKY_ONLY",
+      "entry_quality_adjustment": -1,
+      "quality_cap": 84,
+      "hard_block": false,
+      "allowed_setups": [
+        "SWEEP_REVERSAL",
+        "COUNTERTREND_SCALP",
+        "PRIME_ICT_LOCATION_OVERRIDE"
+      ],
+      "notes": [],
+      "metrics": {
+        "bias": "LONG",
+        "range_atr": 5.14,
+        "move8_abs_pct": 0.24,
+        "slope15_abs_pct": 0.017,
+        "rsi15": 54.3,
+        "score_total_abs": 24,
+        "participation_same": 0,
+        "late_penalty": 0,
+        "pd": "MIDRANGE",
+        "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+        "range_edge": false
+      },
+      "stable_count": 1,
+      "pending_count": 2,
+      "is_stable": false,
+      "previous_regime_type": "TREND_EXPANSION"
+    },
+    "plan": {
+      "entry": 79.36,
+      "stop": 78.7569,
+      "tp1": 80.0901,
+      "tp2": 80.5901,
+      "tp3": 81.3837,
+      "risk_pct": 0.76,
+      "rr1": 1.21,
+      "rr2": 2.04,
+      "rr3": 3.36,
+      "invalidation": "15m закриття нижче 78.7569 або злам 3m/структури проти LONG. Сетап: 🟢 Сильна ICT-локація. Режим: розворот. стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером | TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження"
+    }
+  }
 }
