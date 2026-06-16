@@ -2222,26 +2222,91 @@
         "previous_regime_type": "RANGE_COMPRESSION"
       },
       "time": "2026-06-16T02:15:55.371020+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 82.46,
+      "quality": 38,
+      "reason": "ціна в середині range/EQ — входити не професійно",
+      "setup_classifier": {
+        "type": "RANGE_MIDDLE_BLOCK",
+        "label": "🔴 Середина діапазону — входу немає",
+        "side": "SHORT",
+        "score": 38,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ціна в середині range/EQ — входити не професійно",
+        "quality_adjustment": -10,
+        "quality_cap": 55,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -10,
+          "quality_cap": 55,
+          "block_entry": true
+        },
+        "entry_rule": "середина діапазону/EQ — входу немає; чекати край або BOS з ретестом",
+        "stop_rule": "стоп не визначати з середини діапазону",
+        "tp_rule": "математика RR з середини діапазону слабка",
+        "management_rule": "тільки чекати"
+      },
+      "regime_engine": {
+        "name": "RANGE",
+        "regime_type": "RANGE_COMPRESSION",
+        "label": "стискання діапазону",
+        "score": 62,
+        "confidence": 64,
+        "reason": "стискання діапазону: середина range заборонена, дозволений лише підтверджений compression breakout",
+        "entry_action": "WAIT",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 77,
+        "hard_block": false,
+        "allowed_setups": [
+          "RANGE_COMPRESSION_BREAKOUT",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.24,
+          "move8_abs_pct": 0.41,
+          "slope15_abs_pct": 0.502,
+          "rsi15": 41.7,
+          "score_total_abs": 44,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "MIDRANGE",
+          "ict_setup": "BALANCE_MIDRANGE",
+          "range_edge": false
+        },
+        "stable_count": 3,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "RANGE_COMPRESSION"
+      },
+      "time": "2026-06-16T02:31:11.262048+00:00"
     }
   ],
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-06-16T02:15:54.993290+00:00"
+    "updated_at": "2026-06-16T02:31:10.890634+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T02:15:55.371035+00:00",
-    "price": 82.43,
-    "oi": 63826.67,
-    "cvd": 311088.0,
-    "cvd_time": "2026-06-16T02:15:55.371038+00:00",
-    "last_trade_ts": 1781576110325,
-    "bias": "NEUTRAL",
-    "tech_score": -23,
-    "total_score": -35
+    "time": "2026-06-16T02:31:11.262103+00:00",
+    "price": 82.46,
+    "oi": 63790.85,
+    "cvd": 312228.0,
+    "cvd_time": "2026-06-16T02:31:11.262106+00:00",
+    "last_trade_ts": 1781577062808,
+    "bias": "SHORT",
+    "tech_score": -40,
+    "total_score": -44
   },
-  "updated_at": "2026-06-16T02:15:55.371044+00:00",
+  "updated_at": "2026-06-16T02:31:11.262111+00:00",
   "pending_trigger": null
 }
