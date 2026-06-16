@@ -21153,11 +21153,321 @@
           "previous_regime_type": "NEWS_SHOCK"
         }
       }
+    },
+    {
+      "time": "2026-06-16T18:31:23.881041+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.76,
+      "quality": 52,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "LONG",
+        "score": 35,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ліквідність/ринковий блок проти цього входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 6.87,
+          "move8_abs_pct": 0.625,
+          "slope15_abs_pct": 0.093,
+          "rsi15": 41.5,
+          "score_total_abs": 23,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG"
+        },
+        "stable_count": 8,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "plan": {
+        "entry": 78.76,
+        "stop": 78.2481,
+        "tp1": 79.4688,
+        "tp2": 80.6,
+        "tp3": 81.0047,
+        "risk_pct": 0.65,
+        "rr1": 1.38,
+        "rr2": 3.59,
+        "rr3": 4.38,
+        "invalidation": "15m закриття нижче 78.2481 або злам 3m/структури проти LONG. Сетап: ⚪ Чистого сетапу немає. Режим: новинний імпульс. стоп/TP не активувати без сетапу | чекати чистішу структуру"
+      },
+      "confirmations": [
+        "3M вже показує напрям, але ще потрібен тригер ціни",
+        "ICT підтримує ідею"
+      ],
+      "conflicts": [
+        "15M ще нейтральний — вхід тільки після 3M reclaim/ретесту",
+        "1H слабкий/проти — не заходити без чіткого тригера",
+        "4H проти — це підготовка, не агресивний вхід"
+      ],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": -19,
+        "total_score": -23,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 22,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.242,
+          "drift_pct": 0.114,
+          "vol_ratio": 0.03,
+          "note": "3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -10,
+          "trend": "NEUTRAL",
+          "close": 78.84,
+          "ema20": 79.0256,
+          "ema50": 79.9085,
+          "rsi": 41.5,
+          "atr": 0.3233,
+          "slope_pct": -0.093,
+          "move_8_pct": 0.625,
+          "range_atr": 6.87,
+          "note": "ціна нижче EMA20/50; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 78.84,
+          "ema20": 80.4053,
+          "ema50": 81.7012,
+          "rsi": 27.7,
+          "atr": 0.6414,
+          "slope_pct": -3.204,
+          "move_8_pct": -2.05,
+          "range_atr": 7.59,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -46,
+          "trend": "SHORT",
+          "close": 78.84,
+          "ema20": 82.5946,
+          "ema50": 86.218,
+          "rsi": 23.0,
+          "atr": 1.377,
+          "slope_pct": -4.918,
+          "move_8_pct": -4.471,
+          "range_atr": 5.21,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз; перепроданість"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 79.9,
+          "swing_low": 78.37,
+          "recent_high": 80.6,
+          "recent_low": 78.17,
+          "atr": 0.3233,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 16,
+          "trade_delta_pct": 54.09,
+          "book_delta_pct": 4.92,
+          "note": "угоди за покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 14,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 8948.0,
+          "delta_pct": 54.09,
+          "cvd": 223754.0,
+          "cvd_change_pct": 4.166,
+          "last_trade_ts": 1781634661310,
+          "price_move_pct": 0.191,
+          "note": "CVD росте"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 1,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 78.823,
+              "imbalance_pct": 80.9,
+              "volume": 13418.0
+            },
+            {
+              "price": 78.76,
+              "imbalance_pct": -76.0,
+              "volume": 2854.0
+            },
+            {
+              "price": 78.886,
+              "imbalance_pct": 98.5,
+              "volume": 270.0
+            }
+          ],
+          "note": "локальні покупки вище ціни; ask-стіна 78.97"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 61387.84,
+          "oi_change_pct": -0.023,
+          "funding_pct": 0,
+          "price_change_pct": 0.306,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -18,
+          "event": "UPSIDE SWEEP / SHORT RECLAIM",
+          "blocks": [
+            "LONG"
+          ],
+          "vol_ratio": 0.03,
+          "move_1_pct": 0.063,
+          "move_6_pct": 0.382,
+          "note": "зняли high і закрились нижче — лонг не доганяти"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 19,
+          "top": "French central bank cuts economic growth outlook as energy prices bite By Reuters - Investing.com",
+          "total": 46
+        },
+        "calendar": {
+          "active": true,
+          "alerts": [
+            {
+              "name": "Fed",
+              "title": "Fed / FOMC decision or minutes",
+              "time": "2026-06-16T18:00:00+00:00",
+              "risk": "HIGH",
+              "source": "Federal Reserve calendar",
+              "status": "вийшла 31 хв тому",
+              "minutes_to_event": -31
+            }
+          ],
+          "score": -12,
+          "note": "Fed / FOMC decision or minutes — вийшла 31 хв тому"
+        },
+        "setup_classifier": {
+          "type": "NO_CLEAN_SETUP",
+          "label": "⚪ Чистого сетапу немає",
+          "side": "LONG",
+          "score": 35,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "ліквідність/ринковий блок проти цього входу",
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -6,
+            "quality_cap": 66,
+            "block_entry": true
+          },
+          "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+          "stop_rule": "стоп/TP не активувати без сетапу",
+          "tp_rule": "чекати чистішу структуру",
+          "management_rule": "чекати до появи топового сетапу"
+        },
+        "regime_engine": {
+          "name": "NEWS_IMPULSE",
+          "regime_type": "NEWS_SHOCK",
+          "label": "новинний шок",
+          "score": 78,
+          "confidence": 78,
+          "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+          "entry_action": "RISKY_ONLY",
+          "entry_quality_adjustment": -2,
+          "quality_cap": 79,
+          "hard_block": false,
+          "allowed_setups": [
+            "NEWS_IMPULSE",
+            "TREND_IGNITION_ENTRY",
+            "PRIME_ICT_LOCATION_OVERRIDE",
+            "PULLBACK_CONTINUATION_FAST_ENTRY"
+          ],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 6.87,
+            "move8_abs_pct": 0.625,
+            "slope15_abs_pct": 0.093,
+            "rsi15": 41.5,
+            "score_total_abs": 23,
+            "participation_same": 0,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "DISCOUNT_FVG_OB_LONG"
+          },
+          "stable_count": 8,
+          "pending_count": 0,
+          "is_stable": true,
+          "previous_regime_type": "NEWS_SHOCK"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-16T18:16:11.664428+00:00",
+  "updated_at": "2026-06-16T18:31:23.887779+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-16T18:16:11.671091+00:00",
+    "updated_at": "2026-06-16T18:31:23.892458+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 5,
     "signals_count": 120,
@@ -21355,10 +21665,10 @@
     },
     "signals": {
       "total": 120,
-      "entries": 5,
+      "entries": 4,
       "full_entries": 0,
-      "risky_entries": 5,
-      "watch": 38,
+      "risky_entries": 4,
+      "watch": 39,
       "no_trade": 14,
       "follow": 58,
       "closed": 5,
@@ -21368,11 +21678,11 @@
       "COUNTERTREND_SCALP": 3,
       "LATE_IMPULSE_CHASE": 14,
       "NEWS_IMPULSE": 6,
-      "NO_CLEAN_SETUP": 11,
+      "NO_CLEAN_SETUP": 12,
       "PRIME_ICT_LOCATION_OVERRIDE": 1,
       "PULLBACK_CONTINUATION": 1,
       "RANGE_MIDDLE_BLOCK": 4,
-      "TREND_IGNITION_ENTRY": 3,
+      "TREND_IGNITION_ENTRY": 2,
       "UNKNOWN": 77
     },
     "signal_counts_by_regime": {
