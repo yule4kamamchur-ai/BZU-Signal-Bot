@@ -3,15 +3,6 @@
   "active_trade": null,
   "history": [
     {
-      "type": "FOLLOW",
-      "side": "LONG",
-      "action": "TP1_PROTECT",
-      "price": 82.61,
-      "result_pct": 0.401,
-      "stop_current": 82.535,
-      "time": "2026-06-15T21:01:21.046525+00:00"
-    },
-    {
       "type": "TRADE_CLOSED",
       "side": "LONG",
       "action": "STOP",
@@ -2309,26 +2300,93 @@
         "previous_regime_type": "EXHAUSTION"
       },
       "time": "2026-06-16T16:01:29.356026+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.51,
+      "quality": 46,
+      "reason": "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат",
+      "setup_classifier": {
+        "type": "LATE_IMPULSE_CHASE",
+        "label": "🔴 Пізній імпульс / доганяння",
+        "side": "SHORT",
+        "score": 30,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. за добу вже -5.32%; 15M RSI 25.2; ціна далеко від EMA20 (3.21 ATR)",
+        "quality_adjustment": -12,
+        "quality_cap": 61,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "block_entry": true
+        },
+        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+        "stop_rule": "план лише після нового рівня для стопу",
+        "tp_rule": "не рахувати TP від поганої локації",
+        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+        "late_penalty": 18,
+        "late_without_reset": true
+      },
+      "regime_engine": {
+        "name": "IMPULSE",
+        "regime_type": "EXHAUSTION",
+        "label": "виснажений рух",
+        "score": 72,
+        "confidence": 72,
+        "reason": "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат",
+        "entry_action": "BLOCK",
+        "entry_quality_adjustment": -10,
+        "quality_cap": 61,
+        "hard_block": true,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "RANGE_EDGE_TRADE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 6.31,
+          "move8_abs_pct": 1.64,
+          "slope15_abs_pct": 1.926,
+          "rsi15": 25.2,
+          "score_total_abs": 154,
+          "participation_same": 1,
+          "late_penalty": 18,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_CONTEXT"
+        },
+        "stable_count": 3,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "EXHAUSTION"
+      },
+      "time": "2026-06-16T16:16:04.250639+00:00"
     }
   ],
   "regime_memory": {
     "type": "EXHAUSTION",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-06-16T16:01:29.011548+00:00"
+    "updated_at": "2026-06-16T16:16:03.937099+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-16T16:01:29.356084+00:00",
-    "price": 78.59,
-    "oi": 61404.14,
-    "cvd": 269163.0,
-    "cvd_time": "2026-06-16T16:01:29.356087+00:00",
-    "last_trade_ts": 1781625679969,
+    "time": "2026-06-16T16:16:04.250696+00:00",
+    "price": 78.51,
+    "oi": 61741.64,
+    "cvd": 224138.0,
+    "cvd_time": "2026-06-16T16:16:04.250699+00:00",
+    "last_trade_ts": 1781626523893,
     "bias": "SHORT",
-    "tech_score": -276,
-    "total_score": -267
+    "tech_score": -158,
+    "total_score": -154
   },
-  "updated_at": "2026-06-16T16:01:29.356092+00:00",
+  "updated_at": "2026-06-16T16:16:04.250704+00:00",
   "pending_trigger": null
 }
