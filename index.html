@@ -252,6 +252,51 @@
   .journal-action { color: var(--muted); flex: 1; }
   .journal-time { color: var(--muted); font-family: var(--mono); font-size: 10px; }
 
+
+
+  /* LIVE DASHBOARD MONITOR */
+  .live-monitor-card {
+    margin-top: 14px;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .live-monitor-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin-bottom: 10px; font-weight: 600;
+  }
+  .live-monitor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+  }
+  .live-cell {
+    background: rgba(0,0,0,0.16);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 11px;
+  }
+  .live-cell-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .live-cell-value { font-size: 14px; font-weight: 700; font-family: var(--mono); }
+  .live-cell-value.positive { color: var(--green); }
+  .live-cell-value.negative { color: var(--red); }
+  .live-cell-value.warning { color: var(--amber); }
+  .live-cell-value.neutral { color: var(--text); }
+  .live-status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 9px; border-radius: 999px; font-size: 11px;
+    font-family: var(--mono); font-weight: 700; border: 1px solid var(--border);
+  }
+  .live-status-pill.ok { background: var(--green-dim); color: var(--green); border-color: #065f46; }
+  .live-status-pill.warn { background: var(--amber-dim); color: var(--amber); border-color: #78350f; }
+  .live-status-pill.danger { background: var(--red-dim); color: var(--red); border-color: #7f1d1d; }
+  .live-status-pill.neutral { background: var(--gray-dim); color: var(--gray); border-color: var(--border); }
+  .live-note {
+    margin-top: 10px; font-size: 11px; color: var(--muted); line-height: 1.45;
+  }
+
   /* ERROR STATE */
   .error-banner {
     background: #1a0a0a; border: 1px solid #450a0a;
@@ -402,6 +447,46 @@
     </div>
   </div>
   <div class="tp-row" id="tpRow"></div>
+
+  <div class="live-monitor-card" id="liveMonitorCard" style="display:none;">
+    <div class="live-monitor-title">
+      <span>Live супровід · read-only</span>
+      <span id="liveSource">джерело: —</span>
+    </div>
+    <div class="live-monitor-grid">
+      <div class="live-cell">
+        <div class="live-cell-label">PnL зараз</div>
+        <div class="live-cell-value neutral" id="livePnl">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">MFE</div>
+        <div class="live-cell-value neutral" id="liveMfe">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">Giveback</div>
+        <div class="live-cell-value neutral" id="liveGiveback">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">До TP1</div>
+        <div class="live-cell-value neutral" id="liveDistTp1">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">Запас до Stop</div>
+        <div class="live-cell-value neutral" id="liveDistStop">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">Вік сигналу</div>
+        <div class="live-cell-value neutral" id="liveSignalAge">—</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;">
+      <span class="live-status-pill neutral" id="liveStatusPill">—</span>
+    </div>
+    <div class="live-note" id="liveNote">
+      Дашборд тільки показує live-стан і не відправляє Telegram-повідомлення.
+    </div>
+  </div>
+
 </div>
 
 <!-- INFO GRID -->
@@ -532,6 +617,14 @@ const REPO = 'yule4kamamchur-ai/BZU-Signal-Bot';
 const SIGNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/last_signal.json`;
 const JOURNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/signal_journal.json`;
 const REFRESH_MS = 60000;
+const LIVE_SYMBOL_OKX = 'BZ-USDT-SWAP';
+const LIVE_SYMBOL_BINANCE = 'BZUSDT';
+let LAST_STATE = {};
+let LAST_JOURNAL = {};
+let LAST_SIGNAL = {};
+let LAST_CONTEXT = {};
+let LAST_ACTIVE_TRADE = null;
+let LAST_LIVE_MARKET = null;
 
 function $(id) { return document.getElementById(id); }
 function isObj(v) { return v && typeof v === 'object' && !Array.isArray(v); }
@@ -744,6 +837,8 @@ function renderActiveTrade(trade, currentPrice) {
   const banner = $('activeTradeBanner');
   if (!trade || num(firstDefined(trade.entry, trade.entry_price)) === null) {
     banner.style.display = 'none';
+    const card = $('liveMonitorCard');
+    if (card) card.style.display = 'none';
     return;
   }
   banner.style.display = 'block';
@@ -773,6 +868,161 @@ function renderActiveTrade(trade, currentPrice) {
     tpRow.appendChild(el);
   });
 }
+
+function tradeKey(trade) {
+  const side = String(trade?.side || '').toUpperCase();
+  const entry = formatPrice(firstDefined(trade?.entry, trade?.entry_price));
+  const opened = firstDefined(trade?.opened_at, trade?.time, trade?.created_at, 'unknown');
+  return `bzu_live_best_${side}_${entry}_${opened}`;
+}
+
+function getStoredBestPrice(trade) {
+  try {
+    const raw = localStorage.getItem(tradeKey(trade));
+    const parsed = num(raw);
+    return parsed;
+  } catch { return null; }
+}
+
+function setStoredBestPrice(trade, price) {
+  try { localStorage.setItem(tradeKey(trade), String(price)); } catch {}
+}
+
+function pctClass(v, reverse = false) {
+  const n = num(v);
+  if (n === null) return 'neutral';
+  if (reverse) return n <= 0.15 ? 'negative' : n <= 0.35 ? 'warning' : 'positive';
+  return n > 0 ? 'positive' : n < 0 ? 'negative' : 'neutral';
+}
+
+function setLiveCell(id, value, cls = 'neutral') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = value;
+  el.className = 'live-cell-value ' + cls;
+}
+
+function distanceToTargetPct(side, price, target, entry) {
+  const p = num(price), t = num(target), e = num(entry);
+  if (p === null || t === null || e === null || e === 0) return null;
+  const s = String(side || '').toUpperCase();
+  if (s === 'LONG') return ((t - p) / e) * 100;
+  if (s === 'SHORT') return ((p - t) / e) * 100;
+  return null;
+}
+
+function stopSafetyPct(side, price, stop, entry) {
+  const p = num(price), st = num(stop), e = num(entry);
+  if (p === null || st === null || e === null || e === 0) return null;
+  const s = String(side || '').toUpperCase();
+  if (s === 'LONG') return ((p - st) / e) * 100;
+  if (s === 'SHORT') return ((st - p) / e) * 100;
+  return null;
+}
+
+function pnlPct(side, price, entry) {
+  const p = num(price), e = num(entry);
+  if (p === null || e === null || e === 0) return null;
+  const s = String(side || '').toUpperCase();
+  if (s === 'LONG') return ((p - e) / e) * 100;
+  if (s === 'SHORT') return ((e - p) / e) * 100;
+  return null;
+}
+
+function bestMfePct(side, bestPrice, entry) {
+  return pnlPct(side, bestPrice, entry);
+}
+
+function statusMeta(status) {
+  const map = {
+    NORMAL: ['ok', '✅ NORMAL', 'Угода рухається в межах плану. Дашборд тільки моніторить стан.'],
+    NEAR_TP1: ['ok', '🎯 NEAR TP1', 'Ціна близько до TP1. Варто уважно дивитися, але Telegram не змінюється.'],
+    TP1_HIT: ['ok', '✅ TP1 HIT', 'TP1 за live-ціною вже досягнуто або дуже близько. Далі орієнтир — правила супроводу бота.'],
+    PROTECT_PROFIT: ['warn', '🛡️ PROTECT PROFIT', 'Угода вже давала хороший MFE, але частина прибутку віддається. Це сигнал на екрані, не Telegram-команда.'],
+    RETURNING_TO_ENTRY: ['warn', '↩️ RETURNING TO ENTRY', 'Ціна повертається до входу після хорошого руху. Не давати емоційно перетримувати мінус.'],
+    STOP_DANGER: ['danger', '⚠️ STOP DANGER', 'Ціна близько до стопа. Дашборд показує ризик, але стоп не змінює.'],
+    STOP_TOUCHED: ['danger', '🛑 STOP TOUCHED', 'Live-ціна дійшла до стоп-зони або пройшла її. Перевір фактичне виконання на біржі/у плані.'],
+    STALE_SIGNAL: ['warn', '⏳ STALE SIGNAL', 'Останній сигнал старіший за нормальний інтервал. Чекаємо наступне 15-хв оновлення бота.'],
+    NO_LIVE_PRICE: ['neutral', '— NO LIVE PRICE', 'Live-ціну не вдалось отримати, показано останній стан з JSON.']
+  };
+  return map[status] || map.NORMAL;
+}
+
+function chooseLiveStatus({ pnl, mfe, giveback, distTp1, distStop, tp1Hit, signalAgeMin, liveOk }) {
+  if (!liveOk) return 'NO_LIVE_PRICE';
+  if (num(distStop) !== null && distStop <= 0) return 'STOP_TOUCHED';
+  if (num(distStop) !== null && distStop <= 0.15) return 'STOP_DANGER';
+  if (tp1Hit) return 'TP1_HIT';
+  if (num(mfe) !== null && mfe >= 0.40 && !tp1Hit) {
+    if (num(pnl) !== null && Math.abs(pnl) <= 0.10) return 'RETURNING_TO_ENTRY';
+    if (num(giveback) !== null && giveback >= Math.max(0.15, mfe * 0.45)) return 'PROTECT_PROFIT';
+  }
+  if (num(distTp1) !== null && distTp1 >= 0 && distTp1 <= 0.15) return 'NEAR_TP1';
+  if (num(signalAgeMin) !== null && signalAgeMin > 30) return 'STALE_SIGNAL';
+  return 'NORMAL';
+}
+
+function renderLiveMonitor(trade, signal, ctx, liveMarket) {
+  const card = $('liveMonitorCard');
+  if (!card || !trade || num(firstDefined(trade.entry, trade.entry_price)) === null) {
+    if (card) card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+
+  const side = String(trade.side || '').toUpperCase();
+  const entry = firstDefined(trade.entry, trade.entry_price);
+  const stop = firstDefined(trade.stop_current, trade.current_stop, trade.stop, trade.stop_initial, trade.initial_stop);
+  const tp1 = firstDefined(trade.tp1, trade.plan?.tp1, normalizePlan(signal).tp1);
+  const price = firstDefined(liveMarket?.price, currentPriceFrom(ctx, signal, LAST_STATE, trade));
+  const liveOk = liveMarket && num(liveMarket.price) !== null;
+
+  if (num(price) !== null) {
+    setText('priceValue', formatPrice(price));
+    const ch = num(firstDefined(liveMarket?.change24h, ctx?.change24h, ctx?.change_24h));
+    const chEl = $('priceChange');
+    if (chEl && ch !== null) {
+      chEl.textContent = formatPct(ch);
+      chEl.className = 'price-change ' + (ch > 0 ? 'up' : ch < 0 ? 'down' : 'flat');
+    }
+    setText('priceSource', `джерело: ${firstDefined(liveMarket?.source, 'live/API')}`);
+  }
+
+  let best = firstDefined(trade.best_price, trade.best, trade.mfe_price, getStoredBestPrice(trade), price);
+  if (num(price) !== null && num(best) !== null) {
+    best = side === 'LONG' ? Math.max(num(best), num(price)) : side === 'SHORT' ? Math.min(num(best), num(price)) : num(best);
+    setStoredBestPrice(trade, best);
+    setText('tradeBestPrice', formatPrice(best));
+  }
+
+  const pnl = pnlPct(side, price, entry);
+  const mfe = Math.max(0, num(bestMfePct(side, best, entry)) ?? 0);
+  const giveback = Math.max(0, mfe - (num(pnl) ?? 0));
+  const distTp1 = distanceToTargetPct(side, price, tp1, entry);
+  const distStop = stopSafetyPct(side, price, stop, entry);
+  const tp1HitNow = tpHit(side, price, tp1, trade.tp1_hit);
+  const updatedAt = firstDefined(LAST_STATE?.updated_at, LAST_STATE?.time, signal?.time, ctx?.price_checked_at, trade?.opened_at);
+  const signalAge = ageMinutes(updatedAt);
+
+  setLiveCell('livePnl', pnl === null ? '—' : formatPct(pnl, 3), pctClass(pnl));
+  setLiveCell('liveMfe', formatPct(mfe, 3), mfe >= 0.40 ? 'positive' : 'neutral');
+  setLiveCell('liveGiveback', formatPct(giveback, 3), giveback >= Math.max(0.15, mfe * 0.45) && mfe >= 0.40 ? 'warning' : 'neutral');
+  setLiveCell('liveDistTp1', distTp1 === null ? '—' : (distTp1 <= 0 ? 'взято' : formatPct(distTp1, 3)), distTp1 !== null && distTp1 <= 0.15 ? 'positive' : 'neutral');
+  setLiveCell('liveDistStop', distStop === null ? '—' : formatPct(distStop, 3), pctClass(distStop, true));
+  setLiveCell('liveSignalAge', Number.isFinite(signalAge) ? `${Math.round(signalAge)} хв` : '—', signalAge > 30 ? 'warning' : 'neutral');
+  setText('liveSource', `джерело: ${firstDefined(liveMarket?.source, 'JSON fallback')} · ${formatTime(new Date().toISOString())}`);
+
+  const status = chooseLiveStatus({ pnl, mfe, giveback, distTp1, distStop, tp1Hit: tp1HitNow, signalAgeMin: signalAge, liveOk });
+  const [cls, label, note] = statusMeta(status);
+  const pill = $('liveStatusPill');
+  if (pill) {
+    pill.className = 'live-status-pill ' + cls;
+    pill.textContent = label;
+  }
+  setText('liveNote', note);
+  renderActiveTrade(trade, price);
+}
+
 
 function tfRow(tf, id) {
   const el = $(id);
@@ -1044,6 +1294,74 @@ async function fetchJson(url) {
   return await res.json();
 }
 
+
+
+async function fetchLiveMarket(fallbackPrice) {
+  // 1) OKX BZ-USDT-SWAP. Основне live-джерело для BZ-USDT-SWAP.
+  try {
+    const url = `https://www.okx.com/api/v5/market/ticker?instId=${encodeURIComponent(LIVE_SYMBOL_OKX)}&t=${Date.now()}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      const row = data?.data?.[0];
+      const price = num(row?.last);
+      if (price !== null) {
+        const open24h = num(row?.open24h);
+        const change24h = open24h ? ((price - open24h) / open24h) * 100 : null;
+        return { price, change24h, source: `OKX ${LIVE_SYMBOL_OKX}` };
+      }
+    }
+  } catch (e) {
+    console.warn('OKX live price unavailable', e);
+  }
+
+  // 2) Binance Futures fallback. Якщо символ доступний, беремо його.
+  try {
+    const url = `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(LIVE_SYMBOL_BINANCE)}&t=${Date.now()}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.ok) {
+      const row = await res.json();
+      const price = num(row?.lastPrice);
+      if (price !== null) {
+        return { price, change24h: num(row?.priceChangePercent), source: `Binance Futures ${LIVE_SYMBOL_BINANCE}` };
+      }
+    }
+  } catch (e) {
+    console.warn('Binance live price unavailable', e);
+  }
+
+  // 3) Безпечний fallback: остання ціна з JSON. Telegram/бот не чіпаємо.
+  const fb = num(fallbackPrice);
+  if (fb !== null) return { price: fb, change24h: null, source: 'JSON fallback', fallback: true };
+  return { price: null, change24h: null, source: 'немає live-ціни', fallback: true };
+}
+
+function buildSyntheticTradeFromSignal(signal) {
+  const action = normalizeAction(signal);
+  if (!(action === 'entry' || action === 'risky_entry')) return null;
+  const plan = normalizePlan(signal);
+  if (num(plan.entry) === null) return null;
+  return {
+    side: signal.side,
+    entry: plan.entry,
+    stop: plan.stop,
+    stop_current: plan.stop,
+    tp1: plan.tp1,
+    tp2: plan.tp2,
+    tp3: plan.tp3,
+    opened_at: firstDefined(signal.time, signal.created_at, LAST_STATE.updated_at),
+    best_price: firstDefined(signal.best_price, signal.mfe_price, plan.entry)
+  };
+}
+
+async function refreshLiveOnly() {
+  if (!LAST_SIGNAL || !hasKeys(LAST_SIGNAL)) return;
+  const activeTrade = LAST_ACTIVE_TRADE || buildSyntheticTradeFromSignal(LAST_SIGNAL);
+  const fallbackPrice = currentPriceFrom(LAST_CONTEXT, LAST_SIGNAL, LAST_STATE, activeTrade);
+  LAST_LIVE_MARKET = await fetchLiveMarket(fallbackPrice);
+  renderLiveMonitor(activeTrade, LAST_SIGNAL, LAST_CONTEXT, LAST_LIVE_MARKET);
+}
+
 async function loadData() {
   try {
     const [state, journal] = await Promise.all([
@@ -1054,8 +1372,14 @@ async function loadData() {
     $('errorBanner').style.display = 'none';
 
     const { signal, ctx } = extractSignalAndContext(state, journal);
-    const activeTrade = firstDefined(state.active_trade, state.open_trade, signal.active_trade, null);
+    const activeTrade = firstDefined(state.active_trade, state.open_trade, signal.active_trade, buildSyntheticTradeFromSignal(signal), null);
     const currentPrice = currentPriceFrom(ctx, signal, state, activeTrade);
+
+    LAST_STATE = state || {};
+    LAST_JOURNAL = journal || {};
+    LAST_SIGNAL = signal || {};
+    LAST_CONTEXT = ctx || {};
+    LAST_ACTIVE_TRADE = activeTrade || null;
 
     renderPrice(ctx, signal, state, activeTrade);
     setSignalCard(signal, ctx, state);
@@ -1075,8 +1399,10 @@ async function loadData() {
     if (age < 20) dot.className = 'live-dot';
     else if (age < 60) dot.className = 'live-dot stale';
     else dot.className = 'live-dot error';
-    $('updateTime').textContent = updatedAt ? `оновлено ${formatTime(updatedAt)}` : 'оновлено —';
-    $('footer').textContent = `Оновлення кожні ${Math.round(REFRESH_MS / 1000)} сек · Дані з GitHub · формат history[]/signals[]`;
+    $('updateTime').textContent = updatedAt ? `сигнал ${formatTime(updatedAt)}` : 'сигнал —';
+    $('footer').textContent = `Dashboard read-only · live-ціна кожні ${Math.round(REFRESH_MS / 1000)} сек · Telegram не змінюється`;
+
+    await refreshLiveOnly();
   } catch (e) {
     console.error(e);
     $('errorBanner').style.display = 'block';
