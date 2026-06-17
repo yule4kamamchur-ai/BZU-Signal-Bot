@@ -72,6 +72,13 @@ MIN_TP3_ATR_15M = float(os.getenv("MIN_TP3_ATR_15M", "3.10") or 3.10)
 MIN_FULL_POSITION_STOP_ATR_15M = float(os.getenv("MIN_FULL_POSITION_STOP_ATR_15M", "0.32") or 0.32)
 STRONG_BARRIER_PRIORITY = int(os.getenv("STRONG_BARRIER_PRIORITY", "94") or 94)
 FAST_REVERSAL_MIN_SCORE = int(os.getenv("FAST_REVERSAL_MIN_SCORE", "68") or 68)
+# The GitHub workflow runs once every 15 minutes. Scan the complete sequence of
+# closed 3M candles formed between runs, so a sweep/reclaim or breakout/retest
+# is not lost merely because the bot did not execute at the exact trigger minute.
+ENTRY_RESCUE_SCAN_BARS_3M = int(os.getenv("ENTRY_RESCUE_SCAN_BARS_3M", "6") or 6)
+ENTRY_RESCUE_MIN_SCORE = int(os.getenv("ENTRY_RESCUE_MIN_SCORE", "66") or 66)
+ENTRY_RESCUE_MAX_EXTENSION_ATR15 = float(os.getenv("ENTRY_RESCUE_MAX_EXTENSION_ATR15", "0.95") or 0.95)
+ENTRY_RESCUE_MAX_AGE_MINUTES = int(os.getenv("ENTRY_RESCUE_MAX_AGE_MINUTES", "18") or 18)
 GOOD_RR1_BONUS = float(os.getenv("GOOD_RR1_BONUS", "1.50") or 1.50)
 STRONG_RR1_BONUS = float(os.getenv("STRONG_RR1_BONUS", "2.00") or 2.00)
 
@@ -626,6 +633,208 @@ def _directional_vote(block, side, min_score=0, weight=1.0):
 
 
 
+
+def _recent_closed_3m_scan(context, scan_bars=None):
+    """Return enough closed 3M candles to reconstruct the interval between runs."""
+    candles = list((context or {}).get("candles_3m") or [])
+    if not candles:
+        return []
+    closed = closed_candles(candles, 3, min_required=4)
+    if len(closed) < 8:
+        return []
+    scan_bars = max(4, int(scan_bars or ENTRY_RESCUE_SCAN_BARS_3M))
+    # Keep a baseline before the 15-minute scan window. Six scan bars provide
+    # an 18-minute overlap, preventing a boundary trigger from falling through.
+    return closed[-(scan_bars + 10):]
+
+
+def _event_directional_flow_score(context, side):
+    score = 0
+    evidence = []
+    for key, threshold, points, label in [
+        ("cvd", 12, 7, "CVD"),
+        ("flow", 10, 6, "FLOW"),
+        ("liquidity", 9, 4, "LIQUIDITY"),
+        ("derivatives", 9, 3, "DERIVATIVES"),
+    ]:
+        block = (context or {}).get(key) or {}
+        magnitude = abs(int(block.get("score", 0) or 0))
+        if block.get("bias") == side and magnitude >= threshold:
+            score += points
+            evidence.append(label)
+        elif block.get("bias") == opposite(side) and magnitude >= threshold + 4:
+            score -= points
+    return score, evidence
+
+
+def scan_15m_interval_entry_events(context, side):
+    """Reconstruct professional 3M entry events that occurred between 15M runs.
+
+    This does not turn the bot into a 3M scalper. The 15M/ICT thesis and targets
+    remain primary; the closed 3M sequence is used only to recover timing that a
+    15-minute scheduler could otherwise miss.
+    """
+    context = context or {}
+    side = str(side or "").upper()
+    price = safe_float(context.get("price"))
+    if side not in ["LONG", "SHORT"] or not price:
+        return []
+    series = _recent_closed_3m_scan(context)
+    scan_bars = max(4, int(ENTRY_RESCUE_SCAN_BARS_3M))
+    if len(series) < scan_bars + 5:
+        return []
+    window = series[-scan_bars:]
+    baseline = series[:-scan_bars][-8:]
+    if len(baseline) < 4:
+        return []
+
+    atr15 = safe_float(context.get("atr15"), price * 0.006) or price * 0.006
+    atr3 = safe_float(atr(series, 14), atr15 * 0.32) or atr15 * 0.32
+    buffer3 = max(atr3 * 0.24, price * 0.00035)
+    prior_high = max(c.high for c in baseline)
+    prior_low = min(c.low for c in baseline)
+    latest_ts = int(window[-1].ts)
+    flow_score, flow_evidence = _event_directional_flow_score(context, side)
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    closed_anchor = bool(
+        tf15.get("bias") == side
+        or structure.get("bias") == side
+        or ict.get("bias") == side
+        or (tf1h.get("bias") == side and abs(int(tf1h.get("score", 0) or 0)) >= 18)
+    )
+
+    events = []
+
+    def add_event(event_type, trigger_idx, trigger_level, stop_level, base_score, evidence, anchor, reset_confirmed=True):
+        if trigger_idx is None or trigger_idx < 0 or trigger_idx >= len(window):
+            return
+        trigger_candle = window[trigger_idx]
+        age_min = max(0.0, (latest_ts - int(trigger_candle.ts)) / 60000.0)
+        if age_min > ENTRY_RESCUE_MAX_AGE_MINUTES + 0.1:
+            return
+        stop_level = safe_float(stop_level)
+        trigger_level = safe_float(trigger_level, trigger_candle.close)
+        if stop_level is None or trigger_level is None:
+            return
+        # The event must still be alive at the current price.
+        invalidated = (side == "LONG" and price <= stop_level) or (side == "SHORT" and price >= stop_level)
+        if invalidated:
+            return
+        favourable_extension = (price - trigger_level) if side == "LONG" else (trigger_level - price)
+        extension_atr15 = max(0.0, favourable_extension / atr15) if atr15 else 0.0
+        if extension_atr15 > ENTRY_RESCUE_MAX_EXTENSION_ATR15:
+            return
+        current_against = bool(
+            ((context.get("tf3") or {}).get("bias") == opposite(side))
+            and abs(int((context.get("tf3") or {}).get("score", 0) or 0)) >= 42
+        )
+        score = int(clamp(base_score + flow_score + (7 if closed_anchor else 0) - (12 if current_against else 0), 0, 100))
+        if score < ENTRY_RESCUE_MIN_SCORE:
+            return
+        events.append({
+            "confirmed": True,
+            "side": side,
+            "type": event_type,
+            "score": score,
+            "trigger_ts": int(trigger_candle.ts),
+            "age_min": round(age_min, 2),
+            "trigger_level": round_price(trigger_level),
+            "trigger_close": round_price(trigger_candle.close),
+            "stop_level": round_price(stop_level),
+            "extension_atr15": round(extension_atr15, 3),
+            "anchor_confirmed": bool(anchor or closed_anchor),
+            "closed_anchor": closed_anchor,
+            "reset_confirmed": bool(reset_confirmed),
+            "professional_location": bool(anchor or closed_anchor),
+            "evidence": list(dict.fromkeys(list(evidence) + flow_evidence)),
+            "source": "CLOSED_3M_SEQUENCE_BETWEEN_15M_RUNS",
+        })
+
+    # 1) Liquidity sweep followed by reclaim inside the scan interval.
+    if side == "LONG":
+        sweep_idxs = [i for i, c in enumerate(window) if c.low < prior_low - atr3 * 0.06]
+        for sweep_idx in sweep_idxs:
+            reclaim_idx = next((j for j in range(sweep_idx, len(window)) if window[j].close > prior_low + atr3 * 0.03), None)
+            if reclaim_idx is not None:
+                stop = min(c.low for c in window[sweep_idx:reclaim_idx + 1]) - buffer3
+                add_event("SWEEP_RECLAIM", reclaim_idx, prior_low, stop, 73,
+                          ["DOWNSIDE_SWEEP", "RECLAIM"], True)
+                break
+    else:
+        sweep_idxs = [i for i, c in enumerate(window) if c.high > prior_high + atr3 * 0.06]
+        for sweep_idx in sweep_idxs:
+            reclaim_idx = next((j for j in range(sweep_idx, len(window)) if window[j].close < prior_high - atr3 * 0.03), None)
+            if reclaim_idx is not None:
+                stop = max(c.high for c in window[sweep_idx:reclaim_idx + 1]) + buffer3
+                add_event("SWEEP_RECLAIM", reclaim_idx, prior_high, stop, 73,
+                          ["UPSIDE_SWEEP", "RECLAIM"], True)
+                break
+
+    # 2) Breakout followed by a retest/acceptance. This is especially important
+    # for a 15-minute runner because both events may happen before the next run.
+    if side == "LONG":
+        breakout_idx = next((i for i, c in enumerate(window) if c.close > prior_high + atr3 * 0.06), None)
+        if breakout_idx is not None:
+            retest_idx = next((j for j in range(breakout_idx + 1, len(window))
+                               if window[j].low <= prior_high + atr3 * 0.24 and window[j].close >= prior_high - atr3 * 0.03), None)
+            closes_above = sum(1 for c in window[breakout_idx:] if c.close > prior_high)
+            if retest_idx is not None:
+                stop = min(c.low for c in window[breakout_idx:retest_idx + 1]) - buffer3
+                add_event("BREAKOUT_RETEST", retest_idx, prior_high, stop, 76,
+                          ["MICRO_BOS", "RETEST_HOLD"], True)
+            elif closes_above >= 2:
+                stop = min(prior_high - atr3 * 0.34, min(c.low for c in window[breakout_idx:]) - buffer3 * 0.35)
+                add_event("BREAKOUT_ACCEPTANCE", breakout_idx, prior_high, stop, 68,
+                          ["MICRO_BOS", "TWO_CLOSE_ACCEPTANCE"], closed_anchor, False)
+    else:
+        breakout_idx = next((i for i, c in enumerate(window) if c.close < prior_low - atr3 * 0.06), None)
+        if breakout_idx is not None:
+            retest_idx = next((j for j in range(breakout_idx + 1, len(window))
+                               if window[j].high >= prior_low - atr3 * 0.24 and window[j].close <= prior_low + atr3 * 0.03), None)
+            closes_below = sum(1 for c in window[breakout_idx:] if c.close < prior_low)
+            if retest_idx is not None:
+                stop = max(c.high for c in window[breakout_idx:retest_idx + 1]) + buffer3
+                add_event("BREAKOUT_RETEST", retest_idx, prior_low, stop, 76,
+                          ["MICRO_BOS", "RETEST_HOLD"], True)
+            elif closes_below >= 2:
+                stop = max(prior_low + atr3 * 0.34, max(c.high for c in window[breakout_idx:]) + buffer3 * 0.35)
+                add_event("BREAKOUT_ACCEPTANCE", breakout_idx, prior_low, stop, 68,
+                          ["MICRO_BOS", "TWO_CLOSE_ACCEPTANCE"], closed_anchor, False)
+
+    # 3) Touch and reclaim of the active ICT zone during the interval.
+    zone_keys = ["bull_ob", "bull_fvg"] if side == "LONG" else ["bear_ob", "bear_fvg"]
+    for key in zone_keys:
+        low, high = _zone_bounds(ict.get(key))
+        if low is None or high is None:
+            continue
+        touch_idx = next((i for i, c in enumerate(window) if c.high >= low - atr3 * 0.08 and c.low <= high + atr3 * 0.08), None)
+        if touch_idx is None:
+            continue
+        mid = (low + high) / 2.0
+        if side == "LONG":
+            reclaim_idx = next((j for j in range(touch_idx, len(window)) if window[j].close > max(mid, low)), None)
+            stop = min(low, min(c.low for c in window[touch_idx:(reclaim_idx + 1) if reclaim_idx is not None else len(window)])) - buffer3
+        else:
+            reclaim_idx = next((j for j in range(touch_idx, len(window)) if window[j].close < min(mid, high)), None)
+            stop = max(high, max(c.high for c in window[touch_idx:(reclaim_idx + 1) if reclaim_idx is not None else len(window)])) + buffer3
+        if reclaim_idx is not None:
+            add_event("ICT_ZONE_RECLAIM", reclaim_idx, mid, stop, 72,
+                      [key.upper(), "ZONE_RECLAIM"], True)
+            break
+
+    # Strongest, freshest and least extended event first.
+    events.sort(key=lambda e: (e["score"] - e["extension_atr15"] * 12 - e["age_min"] * 0.15), reverse=True)
+    return events
+
+
+def best_15m_interval_entry_event(context, side):
+    events = scan_15m_interval_entry_events(context, side)
+    return events[0] if events else None
+
+
 def professional_fast_reversal_bridge(context, target_side):
     """Confirm a real fast reversal without waiting for a full 15M close.
 
@@ -657,7 +866,15 @@ def professional_fast_reversal_bridge(context, target_side):
     flow_score = abs(int(flow.get("score", 0) or 0))
     liq_score = abs(int(liquidity.get("score", 0) or 0))
 
-    tf3_trigger = bool(tf3.get("bias") == target_side and tf3_score >= 34)
+    interval_event = best_15m_interval_entry_event(context, target_side)
+    interval_reversal = bool(
+        interval_event
+        and interval_event.get("confirmed")
+        and interval_event.get("anchor_confirmed")
+        and interval_event.get("type") in ["SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"]
+        and int(interval_event.get("score", 0) or 0) >= ENTRY_RESCUE_MIN_SCORE
+    )
+    tf3_trigger = bool((tf3.get("bias") == target_side and tf3_score >= 34) or interval_reversal)
     ict_setup = str(ict.get("setup") or "").upper()
     ict_event = bool(
         ict.get("bias") == target_side
@@ -690,14 +907,17 @@ def professional_fast_reversal_bridge(context, target_side):
         flow.get("bias") == opposite_side and flow_score >= 14,
         liquidity.get("bias") == opposite_side and liq_score >= 12,
     ])
-    independent_confirms = sum([ict_event, structure_event, live15_event, cvd_confirm, flow_confirm, liquidity_confirm])
-    structural_anchor = bool(ict_event or structure_event or live15_event)
+    independent_confirms = sum([ict_event, structure_event, live15_event, cvd_confirm, flow_confirm, liquidity_confirm, interval_reversal])
+    structural_anchor = bool(ict_event or structure_event or live15_event or interval_reversal)
 
     score = 0
     evidence = []
     if tf3_trigger:
         score += 30
         evidence.append("3M_TRIGGER")
+    if interval_reversal:
+        score += 12
+        evidence.append("15M_INTERVAL_3M_EVENT")
     if ict_event:
         score += 22
         evidence.append("ICT_EVENT")
@@ -742,6 +962,7 @@ def professional_fast_reversal_bridge(context, target_side):
         "adverse_fast_layers": int(adverse_fast),
         "tf3_trigger": tf3_trigger,
         "structural_anchor": structural_anchor,
+        "interval_event": interval_event,
     }
 
 
@@ -809,6 +1030,18 @@ def dual_speed_mtf_snapshot(context, side):
 
     bridge_to_side = professional_fast_reversal_bridge(context, side)
     bridge_against = professional_fast_reversal_bridge(context, opposite(side))
+    rescue_event = context.get("entry_rescue_event") or {}
+    rescue_to_side = bool(
+        rescue_event.get("confirmed")
+        and rescue_event.get("side") == side
+        and rescue_event.get("professional_location")
+        and int(rescue_event.get("score", 0) or 0) >= ENTRY_RESCUE_MIN_SCORE
+    )
+    rescue_against = bool(
+        rescue_event.get("confirmed")
+        and rescue_event.get("side") == opposite(side)
+        and int(rescue_event.get("score", 0) or 0) >= ENTRY_RESCUE_MIN_SCORE
+    )
 
     ict = context.get("ict") or {}
     structure = context.get("structure") or {}
@@ -817,11 +1050,12 @@ def dual_speed_mtf_snapshot(context, side):
         (ict.get("bias") == side and (ict.get("entry_ok") or any(k in ict_setup for k in ["FVG", "OB", "SWEEP", "RETRACE", "HOLD"])))
         or structure.get("bias") == side
         or bridge_to_side.get("confirmed")
+        or rescue_to_side
     )
     closed_confirmed = bool(closed_support >= 2.45 and closed_against < 1.25)
     regular_fast_trigger = bool(fast_support + live_support >= 1.65 and fast_against + live_against < 1.35)
-    fast_trigger = bool(regular_fast_trigger or bridge_to_side.get("confirmed"))
-    live_pressure = bool(live_against >= 0.55 or fast_against >= 1.45 or bridge_against.get("confirmed"))
+    fast_trigger = bool(regular_fast_trigger or bridge_to_side.get("confirmed") or rescue_to_side)
+    live_pressure = bool(live_against >= 0.55 or fast_against >= 1.45 or bridge_against.get("confirmed") or rescue_against)
 
     adverse_fast_blocks = sum([
         (context.get("tf3") or {}).get("bias") == opposite(side) and abs(int((context.get("tf3") or {}).get("score", 0) or 0)) >= 42,
@@ -861,6 +1095,7 @@ def dual_speed_mtf_snapshot(context, side):
         "emergency_against": emergency_against,
         "fast_reversal_to_side": bridge_to_side,
         "fast_reversal_against": bridge_against,
+        "entry_rescue_event": rescue_event if rescue_to_side else None,
         "confidence": confidence,
         "live_details": live_details,
         "policy": "UNIFIED_CLOSED_THESIS + LIVE_PRESSURE + STRICT_FAST_REVERSAL_BRIDGE",
@@ -4245,6 +4480,24 @@ def _technical_stop_candidates(side, context, atr15):
             "distance": float(distance),
         })
 
+    # Exact micro invalidation recovered from the closed 3M sequence between
+    # 15-minute workflow runs. It is eligible only after the resolver confirms
+    # that the event is still alive and not extended.
+    rescue_event = (context or {}).get("entry_rescue_event") or {}
+    if (
+        rescue_event.get("confirmed")
+        and rescue_event.get("side") == side
+        and rescue_event.get("anchor_confirmed")
+        and safe_float(rescue_event.get("extension_atr15"), 99) <= ENTRY_RESCUE_MAX_EXTENSION_ATR15
+    ):
+        add(
+            rescue_event.get("stop_level"),
+            "3M interval " + str(rescue_event.get("type") or "trigger") + " invalidation",
+            106,
+            "3M",
+            "INTERVAL_RESCUE_EVENT",
+        )
+
     # 3M trigger structure: preferred for early entries, but still technically grounded.
     for level, idx3 in _recent_swing_liquidity(candles3, "SHORT" if side == "LONG" else "LONG", 8):
         if level is None:
@@ -4428,7 +4681,16 @@ def _three_minute_stop_allowed(side, context, setup_type, snapshot):
         "RANGE_COMPRESSION_BREAKOUT", "NEWS_IMPULSE", "SWEEP_REVERSAL",
         "COUNTERTREND_SCALP",
     }
-    if setup_type not in early_types:
+    rescue_event = (context or {}).get("entry_rescue_event") or {}
+    rescue_ok = bool(
+        rescue_event.get("confirmed")
+        and rescue_event.get("side") == side
+        and rescue_event.get("anchor_confirmed")
+        and rescue_event.get("professional_location")
+        and int(rescue_event.get("score", 0) or 0) >= ENTRY_RESCUE_MIN_SCORE
+        and safe_float(rescue_event.get("extension_atr15"), 99) <= ENTRY_RESCUE_MAX_EXTENSION_ATR15
+    )
+    if setup_type not in early_types and not rescue_ok:
         return False
     tf3 = (context or {}).get("tf3") or {}
     ict = (context or {}).get("ict") or {}
@@ -4444,11 +4706,14 @@ def _three_minute_stop_allowed(side, context, setup_type, snapshot):
     if both_htf_against and not bridge_ok:
         return False
     return bool(
-        tf3_ok
-        and snapshot.get("fast_trigger")
-        and snapshot.get("professional_location")
-        and (ict_ok or structure_ok or bridge_ok)
-        and not snapshot.get("emergency_against")
+        rescue_ok
+        or (
+            tf3_ok
+            and snapshot.get("fast_trigger")
+            and snapshot.get("professional_location")
+            and (ict_ok or structure_ok or bridge_ok)
+            and not snapshot.get("emergency_against")
+        )
     )
 
 
@@ -5079,6 +5344,11 @@ def build_context(data, state=None):
         "calendar": calendar,
         "liquidity": liquidity,
         "mtf_guard": mtf_guard,
+        "candles_3m": candles_3m_all,
+        "candles_15m": candles_15m_all,
+        "candles_15m_closed": candles_15m_closed,
+        "candles_1h_closed": candles_1h_closed,
+        "candles_4h_closed": candles_4h_closed,
         "total_score": int(total_score),
         "bias": bias,
     }
@@ -11671,6 +11941,173 @@ def update_pending_trigger_memory(state, setup, context):
             state["pending_trigger"] = None
 
 
+
+def _rescue_setup_type(event, snapshot):
+    event_type = str((event or {}).get("type") or "")
+    closed = bool((snapshot or {}).get("closed_confirmed"))
+    if event_type == "SWEEP_RECLAIM":
+        return "SWEEP_REVERSAL" if not closed else "SWEEP_RECLAIM_EARLY_ENTRY"
+    if event_type == "BREAKOUT_RETEST":
+        return "TREND_CONTINUATION" if closed else "PULLBACK_CONTINUATION_FAST_ENTRY"
+    if event_type == "BREAKOUT_ACCEPTANCE":
+        return "TREND_IGNITION_ENTRY"
+    if event_type == "ICT_ZONE_RECLAIM":
+        return "PULLBACK_CONTINUATION" if closed else "PULLBACK_CONTINUATION_FAST_ENTRY"
+    return "PRIME_ICT_LOCATION_OVERRIDE"
+
+
+def _build_rescue_setup_classifier(side, event, snapshot):
+    setup_type = _rescue_setup_type(event, snapshot)
+    profile = setup_trade_profile(setup_type)
+    rules = _setup_rules(setup_type, side)
+    force_risky = bool(
+        not snapshot.get("closed_confirmed")
+        or setup_type in {"TREND_IGNITION_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY", "SWEEP_REVERSAL"}
+    )
+    result = {
+        "type": setup_type,
+        "label": _setup_label(setup_type),
+        "side": side,
+        "score": int(event.get("score", ENTRY_RESCUE_MIN_SCORE) or ENTRY_RESCUE_MIN_SCORE),
+        "entry_allowed": True,
+        "block_entry": False,
+        "risk_mode": "RISKY" if force_risky else "NORMAL",
+        "reason": "3M сетап відновлено з повної послідовності свічок між 15-хвилинними запусками",
+        "quality_adjustment": int(profile.get("quality_adjustment", 0) or 0),
+        "quality_cap": profile.get("quality_cap"),
+        "force_risky": force_risky,
+        "profile": profile,
+        "interval_rescue": True,
+    }
+    result.update(rules)
+    return result
+
+
+def _rescue_candidate_utility(setup, event, snapshot):
+    plan = (setup or {}).get("plan")
+    if not plan or not getattr(plan, "valid", False):
+        return -999.0
+    rr1 = safe_float(getattr(plan, "rr1", 0), 0) or 0
+    event_score = int((event or {}).get("score", 0) or 0)
+    confidence = int((snapshot or {}).get("confidence", 50) or 50)
+    extension = safe_float((event or {}).get("extension_atr15"), 0) or 0
+    age = safe_float((event or {}).get("age_min"), 0) or 0
+    return event_score * 0.48 + confidence * 0.30 + min(rr1, 3.0) * 8.0 - extension * 12.0 - age * 0.12
+
+
+def resolve_15m_scheduler_entry_opportunity(context, base_setup):
+    """Try all professional entry paths visible inside the last 15 minutes.
+
+    It is invoked only when the normal engine did not already produce a valid
+    ENTRY/RISKY_ENTRY. Therefore it raises entry coverage without disturbing a
+    good existing setup and without requiring 3-minute workflow notifications.
+    """
+    if not isinstance(context, dict) or not isinstance(base_setup, dict):
+        return base_setup
+    base_plan = base_setup.get("plan")
+    if base_setup.get("action") in ["ENTRY", "RISKY_ENTRY"] and base_plan and getattr(base_plan, "valid", False):
+        return base_setup
+    if context.get("price_warning"):
+        return base_setup
+
+    candidate_sides = []
+    for side in [base_setup.get("side"), context.get("bias"), "LONG", "SHORT"]:
+        if side in ["LONG", "SHORT"] and side not in candidate_sides:
+            candidate_sides.append(side)
+
+    candidates = []
+    for side in candidate_sides:
+        # Do not rescue through an explicit liquidity block.
+        if side in ((context.get("liquidity") or {}).get("blocks") or []):
+            continue
+        for event in scan_15m_interval_entry_events(context, side):
+            if not event.get("anchor_confirmed") or not event.get("professional_location"):
+                continue
+            # A pure two-close breakout is not enough against both 1H and 4H.
+            both_htf_against = bool(
+                (context.get("tf1h") or {}).get("bias") == opposite(side)
+                and (context.get("tf4h") or {}).get("bias") == opposite(side)
+            )
+            if both_htf_against and event.get("type") == "BREAKOUT_ACCEPTANCE":
+                continue
+
+            work = dict(context)
+            work["entry_rescue_event"] = event
+            tf3 = dict(work.get("tf3") or {})
+            directional_score = max(28, min(68, int(event.get("score", 66) or 66) - 10))
+            tf3["bias"] = side
+            tf3["score"] = directional_score if side == "LONG" else -directional_score
+            tf3["state"] = "INTERVAL_TRIGGER_RECOVERED"
+            tf3["note"] = "3M тригер зафіксований у послідовності між 15-хвилинними запусками"
+            work["tf3"] = tf3
+            # Rebuild Dual-Speed after injecting the recovered event.
+            work["dual_speed_mtf"] = build_dual_speed_mtf(work)
+            snapshot = (work["dual_speed_mtf"] or {}).get(side) or {}
+            # Countertrend rescue needs the strict multi-layer reversal bridge;
+            # a candle pattern alone must not override both higher timeframes.
+            if both_htf_against and not (snapshot.get("fast_reversal_to_side") or {}).get("confirmed"):
+                continue
+            if context.get("bias") == opposite(side) and not snapshot.get("closed_confirmed") and not (snapshot.get("fast_reversal_to_side") or {}).get("confirmed"):
+                continue
+            setup_info = _build_rescue_setup_classifier(side, event, snapshot)
+            work["setup_classifier"] = setup_info
+            plan = make_plan(side, work)
+            if not plan or not getattr(plan, "valid", False):
+                continue
+            if snapshot.get("emergency_against"):
+                continue
+
+            closed_confirmed = bool(snapshot.get("closed_confirmed"))
+            event_type = str(event.get("type") or "")
+            full_entry_event = bool(
+                closed_confirmed
+                and event_type in ["BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"]
+                and int(event.get("score", 0) or 0) >= 72
+                and safe_float(event.get("extension_atr15"), 99) <= 0.70
+                and not setup_info.get("force_risky")
+            )
+            action = "ENTRY" if full_entry_event else "RISKY_ENTRY"
+            raw_quality = int(round(
+                int(event.get("score", 0) or 0) * 0.55
+                + int(snapshot.get("confidence", 50) or 50) * 0.30
+                + int(base_setup.get("quality", 50) or 50) * 0.15
+            ))
+            if safe_float(getattr(plan, "rr1", 0), 0) >= 2.0:
+                raw_quality += 3
+            quality = int(max(ENTRY_QUALITY_MIN, min(90, raw_quality))) if action == "ENTRY" else int(max(RISKY_QUALITY_MIN, min(79, raw_quality)))
+            candidate = dict(base_setup)
+            candidate.update({
+                "action": action,
+                "side": side,
+                "quality": quality,
+                "title": ("ВХІД " if action == "ENTRY" else "РИЗИКОВАНИЙ ВХІД ") + side,
+                "reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками",
+                "plan": plan,
+                "setup_classifier": setup_info,
+                "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + list(event.get("evidence") or []))),
+                "conflicts": [x for x in (base_setup.get("conflicts") or []) if "тригер" not in str(x).lower()],
+                "entry_rescue_event": event,
+                "scheduler_rescue": True,
+                "entry_level": action,
+                "entry_level_label": _entry_level_label(action),
+            })
+            utility = _rescue_candidate_utility(candidate, event, snapshot)
+            candidates.append((utility, candidate, work, snapshot))
+
+    if not candidates:
+        return base_setup
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, selected, selected_context, snapshot = candidates[0]
+    # Persist the selected internal interpretation so the unified lifecycle sees
+    # the same setup, rather than re-evaluating it from the old current-only 3M state.
+    context["entry_rescue_event"] = selected.get("entry_rescue_event")
+    context["tf3"] = selected_context.get("tf3")
+    context["setup_classifier"] = selected.get("setup_classifier")
+    context["dual_speed_mtf"] = selected_context.get("dual_speed_mtf")
+    selected["dual_speed_snapshot"] = snapshot
+    return selected
+
+
 def evaluate_new_setup(context):
     setup = _evaluate_new_setup_core(context)
     if isinstance(setup, dict):
@@ -11679,6 +12116,8 @@ def evaluate_new_setup(context):
             setup.setdefault("regime_engine", regime_engine)
     setup = apply_entry_level_gate(setup, context)
     setup = activate_pending_trigger_if_ready(context, setup)
+    setup = resolve_15m_scheduler_entry_opportunity(context, setup)
+    setup = apply_entry_level_gate(setup, context)
     setup = apply_professional_lifecycle_to_setup(setup, context)
     return setup
 
