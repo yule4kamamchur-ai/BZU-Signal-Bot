@@ -5,15 +5,6 @@
     {
       "type": "FOLLOW",
       "side": "SHORT",
-      "action": "TP1_PROTECT",
-      "price": 79.68,
-      "result_pct": 2.484,
-      "stop_current": 81.2285,
-      "time": "2026-06-16T12:15:57.596912+00:00"
-    },
-    {
-      "type": "FOLLOW",
-      "side": "SHORT",
       "action": "TP2_PROTECT",
       "price": 79.59,
       "result_pct": 2.595,
@@ -3407,26 +3398,93 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-17T07:01:25.479820+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 77.87,
+      "quality": 20,
+      "reason": "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат",
+      "setup_classifier": {
+        "type": "LATE_IMPULSE_CHASE",
+        "label": "🔴 Пізній імпульс / доганяння",
+        "side": "SHORT",
+        "score": 30,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "3M вже дав різкий імпульс вниз — шорт не доганяти; чекати проторговку або відкат",
+        "quality_adjustment": -12,
+        "quality_cap": 61,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "block_entry": true
+        },
+        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+        "stop_rule": "план лише після нового рівня для стопу",
+        "tp_rule": "не рахувати TP від поганої локації",
+        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+        "late_penalty": 11,
+        "late_without_reset": true
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 4.8,
+          "move8_abs_pct": 0.192,
+          "slope15_abs_pct": 0.518,
+          "rsi15": 33.9,
+          "score_total_abs": 121,
+          "participation_same": 0,
+          "late_penalty": 11,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG"
+        },
+        "stable_count": 7,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-17T07:15:51.193053+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 6,
+    "stable_count": 7,
     "pending_count": 0,
-    "updated_at": "2026-06-17T07:01:25.185509+00:00"
+    "updated_at": "2026-06-17T07:15:50.873028+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T07:01:25.479880+00:00",
-    "price": 78.26,
-    "oi": 56833.96,
-    "cvd": 31956.0,
-    "cvd_time": "2026-06-17T07:01:25.479884+00:00",
-    "last_trade_ts": 1781679666499,
+    "time": "2026-06-17T07:15:51.193110+00:00",
+    "price": 77.87,
+    "oi": 56426.4,
+    "cvd": 31011.0,
+    "cvd_time": "2026-06-17T07:15:51.193114+00:00",
+    "last_trade_ts": 1781680534935,
     "bias": "SHORT",
-    "tech_score": -99,
-    "total_score": -87
+    "tech_score": -133,
+    "total_score": -121
   },
-  "updated_at": "2026-06-17T07:01:25.479889+00:00",
+  "updated_at": "2026-06-17T07:15:51.193119+00:00",
   "pending_trigger": null
 }
