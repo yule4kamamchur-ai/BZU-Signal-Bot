@@ -1583,27 +1583,92 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-17T20:16:02.799784+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.64,
+      "quality": 46,
+      "reason": "ліквідність/ринковий блок проти цього входу",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "SHORT",
+        "score": 35,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ліквідність/ринковий блок проти цього входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.07,
+          "move8_abs_pct": 0.894,
+          "slope15_abs_pct": 0.203,
+          "rsi15": 38.9,
+          "score_total_abs": 121,
+          "participation_same": 2,
+          "late_penalty": 8,
+          "pd": "DISCOUNT",
+          "ict_setup": "LIQUIDITY_SWEEP_LONG",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-17T20:31:16.229860+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
-    "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 0,
-    "updated_at": "2026-06-17T20:16:02.411637+00:00"
+    "pending_type": "REVERSAL_BUILDUP",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-17T20:31:15.855717+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T20:16:02.799855+00:00",
-    "price": 78.68,
-    "oi": 58851.59,
-    "cvd": 135714.0,
-    "cvd_time": "2026-06-17T20:16:02.799859+00:00",
-    "last_trade_ts": 1781727315021,
+    "time": "2026-06-17T20:31:16.229930+00:00",
+    "price": 78.64,
+    "oi": 58143.41,
+    "cvd": 110902.0,
+    "cvd_time": "2026-06-17T20:31:16.229933+00:00",
+    "last_trade_ts": 1781728242602,
     "bias": "SHORT",
-    "tech_score": -94,
-    "total_score": -81
+    "tech_score": -132,
+    "total_score": -121
   },
-  "updated_at": "2026-06-17T20:16:02.799863+00:00",
+  "updated_at": "2026-06-17T20:31:16.229938+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 0,
@@ -1648,9 +1713,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 79.55,
-    "low": 78.7,
+    "low": 78.68,
     "created_ts": 1781720100000,
-    "updated_ts": 1781726400000,
+    "updated_ts": 1781727300000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
