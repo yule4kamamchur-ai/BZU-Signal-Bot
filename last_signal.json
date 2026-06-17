@@ -575,26 +575,100 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-17T16:46:05.126298+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.94,
+      "quality": 62,
+      "reason": "не вдалося побудувати життєздатну технічну геометрію",
+      "setup_classifier": {
+        "type": "TREND_IGNITION_ENTRY",
+        "label": "🟢 Ранній старт тренду / пробій",
+        "side": "SHORT",
+        "score": 76,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "ранній старт тренду: свіжий BOS за напрямом без розтягнутого 3M імпульсу",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.2,
+          "tp2_atr_mult": 2.35,
+          "tp3_tail_atr": 1.0,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.28,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "ранній старт пробою після проторговки/мікро-BOS; тільки якщо це старт руху, а не кінець імпульсу",
+        "stop_rule": "стоп за 3M базу / мікро-swing, не всередині імпульсної свічки",
+        "tp_rule": "TP1 не ближче ризику, TP2/TP3 як продовження тренду або відкату",
+        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає продовження руху — швидке попередження на вихід",
+        "professional_override": true,
+        "trend_ignition": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 6.79,
+          "move8_abs_pct": 1.619,
+          "slope15_abs_pct": 1.016,
+          "rsi15": 41.9,
+          "score_total_abs": 120,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "CONTEXT_ONLY"
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-17T17:01:33.542252+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-17T16:46:04.751764+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-17T17:01:33.216982+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T16:46:05.126314+00:00",
-    "price": 79.26,
-    "oi": 59545.18,
-    "cvd": 43412.0,
-    "cvd_time": "2026-06-17T16:46:05.126317+00:00",
-    "last_trade_ts": 1781714743799,
-    "bias": "NEUTRAL",
-    "tech_score": -47,
-    "total_score": -35
+    "time": "2026-06-17T17:01:33.542324+00:00",
+    "price": 78.94,
+    "oi": 59534.04,
+    "cvd": 77643.0,
+    "cvd_time": "2026-06-17T17:01:33.542328+00:00",
+    "last_trade_ts": 1781715669999,
+    "bias": "SHORT",
+    "tech_score": -122,
+    "total_score": -120
   },
-  "updated_at": "2026-06-17T16:46:05.126322+00:00",
+  "updated_at": "2026-06-17T17:01:33.542333+00:00",
   "pending_trigger": null
 }
