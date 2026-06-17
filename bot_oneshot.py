@@ -170,6 +170,14 @@ AGED_3M_EVENT_MAX_EXTENSION_ATR15 = float(os.getenv("AGED_3M_EVENT_MAX_EXTENSION
 ALTERNATIVE_GEOMETRY_MIN_RR1 = float(os.getenv("ALTERNATIVE_GEOMETRY_MIN_RR1", "1.20") or 1.20)
 ALTERNATIVE_GEOMETRY_MIN_ATR15 = float(os.getenv("ALTERNATIVE_GEOMETRY_MIN_ATR15", "1.00") or 1.00)
 ALTERNATIVE_GEOMETRY_MIN_PCT = float(os.getenv("ALTERNATIVE_GEOMETRY_MIN_PCT", "0.85") or 0.85)
+
+# State Transition Memory Reset package.
+FRESH_BASE_EXHAUSTION_MIN_CANDLES = int(os.getenv("FRESH_BASE_EXHAUSTION_MIN_CANDLES", "6") or 6)
+FRESH_BASE_EXHAUSTION_MAX_CANDLES = int(os.getenv("FRESH_BASE_EXHAUSTION_MAX_CANDLES", "12") or 12)
+FRESH_BASE_EXHAUSTION_MAX_WIDTH_ATR15 = float(os.getenv("FRESH_BASE_EXHAUSTION_MAX_WIDTH_ATR15", "3.20") or 3.20)
+RANGE_BOUNDARY_ROLLOVER_HOLD_BARS = int(os.getenv("RANGE_BOUNDARY_ROLLOVER_HOLD_BARS", "8") or 8)
+PRE_GATE_MEMORY_MIN_QUALITY = int(os.getenv("PRE_GATE_MEMORY_MIN_QUALITY", "57") or 57)
+RECOVERY_EXPIRY_MIN_FAST_SCORE = int(os.getenv("RECOVERY_EXPIRY_MIN_FAST_SCORE", "8") or 8)
 OPPORTUNITY_MEMORY_SETUP_TYPES = {
     "CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY",
     "TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "PULLBACK_CONTINUATION",
@@ -3964,13 +3972,343 @@ def apply_structural_reset_gate_to_setup(setup, context):
 
 
 
-def rolling_balance_detector(context):
-    """Detect a persistent 15M balance independently of the regime label.
 
-    The detector evaluates both the configured window and a faster 8-candle
-    window. This lets it recognize a new balance soon after a crash/spike instead
-    of waiting until the old impulse leaves a long lookback.
+def _range_boundary_rollover_apply(context, snapshot, atr15, candles):
+    """Retire stale range boundaries after an accepted breakout and retest.
+
+    Two closes outside the stored range plus a boundary retest/re-acceptance and
+    supportive fast flow roll the old range forward. For a limited number of
+    15M bars the retired range can no longer classify the new trend as its middle.
     """
+    context = context or {}
+    snapshot = dict(snapshot or {})
+    state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else None
+    if state is None or not candles or not snapshot.get("available"):
+        return snapshot
+    price = safe_float(context.get("price"), candles[-1].close) or candles[-1].close
+    last_ts = int(candles[-1].ts)
+    boundary = state.get("range_boundary_state") if isinstance(state.get("range_boundary_state"), dict) else None
+
+    # Seed a persistent range only when a genuine balance exists.
+    if not boundary and snapshot.get("balance"):
+        boundary = {
+            "status": "ACTIVE", "high": snapshot.get("high"), "low": snapshot.get("low"),
+            "created_ts": last_ts, "updated_ts": last_ts, "rollover_ts": 0,
+            "rollover_side": "", "old_high": None, "old_low": None,
+        }
+        state["range_boundary_state"] = boundary
+
+    if not boundary:
+        return snapshot
+
+    status = str(boundary.get("status") or "ACTIVE").upper()
+    old_high = safe_float(boundary.get("high"), None)
+    old_low = safe_float(boundary.get("low"), None)
+
+    if status == "ROLLED_OVER":
+        side = str(boundary.get("rollover_side") or "").upper()
+        rollover_ts = int(boundary.get("rollover_ts", 0) or 0)
+        bars_since = sum(1 for c in candles if int(c.ts) > rollover_ts)
+        retired_high = safe_float(boundary.get("old_high"), old_high)
+        retired_low = safe_float(boundary.get("old_low"), old_low)
+        returned_inside = bool(
+            retired_high is not None and retired_low is not None
+            and retired_low + atr15 * 0.08 <= price <= retired_high - atr15 * 0.08
+        )
+        new_range_beyond = bool(
+            snapshot.get("balance") and (
+                (side == "LONG" and safe_float(snapshot.get("low"), -1e18) > (retired_high or 1e18) - atr15 * 0.18)
+                or (side == "SHORT" and safe_float(snapshot.get("high"), 1e18) < (retired_low or -1e18) + atr15 * 0.18)
+            )
+        )
+        if returned_inside:
+            # Breakout failed: the old range becomes relevant again.
+            boundary.update({"status": "ACTIVE", "high": retired_high, "low": retired_low,
+                             "updated_ts": last_ts, "rollover_side": "", "rollover_ts": 0})
+            state["range_boundary_state"] = boundary
+            snapshot["boundary_rollover_failed"] = True
+            return snapshot
+        if new_range_beyond and bars_since >= 3:
+            # A new balance has formed fully beyond the retired boundary.
+            boundary = {"status": "ACTIVE", "high": snapshot.get("high"), "low": snapshot.get("low"),
+                        "created_ts": last_ts, "updated_ts": last_ts, "rollover_ts": 0,
+                        "rollover_side": "", "old_high": None, "old_low": None}
+            state["range_boundary_state"] = boundary
+            snapshot["new_range_after_rollover"] = True
+            return snapshot
+        still_outside = bool(
+            (side == "LONG" and retired_high is not None and price > retired_high - atr15 * 0.05)
+            or (side == "SHORT" and retired_low is not None and price < retired_low + atr15 * 0.05)
+        )
+        if bars_since <= RANGE_BOUNDARY_ROLLOVER_HOLD_BARS and still_outside:
+            snapshot.update({
+                "balance": False, "breakout_accepted": True, "accepted_side": side,
+                "boundary_rollover": True, "retired_high": round_price(retired_high),
+                "retired_low": round_price(retired_low), "rollover_bars_since": bars_since,
+            })
+            return snapshot
+        if bars_since > RANGE_BOUNDARY_ROLLOVER_HOLD_BARS:
+            state["range_boundary_state"] = None
+        return snapshot
+
+    if old_high is None or old_low is None:
+        if snapshot.get("balance"):
+            boundary.update({"high": snapshot.get("high"), "low": snapshot.get("low"), "updated_ts": last_ts})
+            state["range_boundary_state"] = boundary
+        return snapshot
+
+    last2 = candles[-2:] if len(candles) >= 2 else []
+    support_long, against_long = _fast_layer_counts(context, "LONG")
+    support_short, against_short = _fast_layer_counts(context, "SHORT")
+    event = context.get("entry_rescue_event") or {}
+    event_long = bool(event.get("confirmed") and event.get("side") == "LONG" and event.get("type") in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"})
+    event_short = bool(event.get("confirmed") and event.get("side") == "SHORT" and event.get("type") in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"})
+    long_roll = bool(
+        len(last2) == 2
+        and all(c.close > old_high + atr15 * 0.04 for c in last2)
+        and (min(c.low for c in last2) <= old_high + atr15 * 0.30 or event_long)
+        and last2[-1].close >= last2[-2].close
+        and support_long >= 1 and against_long <= 1
+    )
+    short_roll = bool(
+        len(last2) == 2
+        and all(c.close < old_low - atr15 * 0.04 for c in last2)
+        and (max(c.high for c in last2) >= old_low - atr15 * 0.30 or event_short)
+        and last2[-1].close <= last2[-2].close
+        and support_short >= 1 and against_short <= 1
+    )
+    if long_roll or short_roll:
+        side = "LONG" if long_roll else "SHORT"
+        boundary.update({
+            "status": "ROLLED_OVER", "rollover_side": side, "rollover_ts": last_ts,
+            "old_high": old_high, "old_low": old_low, "updated_ts": last_ts,
+        })
+        state["range_boundary_state"] = boundary
+        snapshot.update({
+            "balance": False, "breakout_accepted": True, "accepted_side": side,
+            "boundary_rollover": True, "retired_high": round_price(old_high),
+            "retired_low": round_price(old_low), "rollover_bars_since": 0,
+        })
+        return snapshot
+
+    # Refresh active boundaries only while the market is still a balance and the
+    # new detector substantially overlaps the stored range.
+    if snapshot.get("balance"):
+        new_high = safe_float(snapshot.get("high"), old_high)
+        new_low = safe_float(snapshot.get("low"), old_low)
+        overlap = max(0.0, min(old_high, new_high) - max(old_low, new_low))
+        denom = max(min(old_high - old_low, new_high - new_low), 1e-9)
+        if overlap / denom >= 0.50:
+            boundary.update({"high": round_price(new_high), "low": round_price(new_low), "updated_ts": last_ts})
+            state["range_boundary_state"] = boundary
+    return snapshot
+
+
+def fresh_base_exhaustion_reset_snapshot(context, side):
+    """Confirm a genuinely new 6-12 candle base after stale EXHAUSTION."""
+    context = context or {}
+    if side not in ["LONG", "SHORT"]:
+        return {"active": False, "allowed": False}
+    candles = list(context.get("candles_15m_closed") or [])
+    if len(candles) < FRESH_BASE_EXHAUSTION_MIN_CANDLES + 2:
+        return {"active": False, "allowed": False, "reason": "для reset потрібні 6-12 закритих 15M свічок бази"}
+    price = safe_float(context.get("price"), candles[-1].close) or candles[-1].close
+    atr15 = safe_float(context.get("atr15"), None) or safe_float((context.get("tf15") or {}).get("atr"), None) or max(price * 0.006, 0.01)
+    phase = str((context.get("structure") or {}).get("phase") or "").upper()
+    structure_bias = (context.get("structure") or {}).get("bias")
+    regime = context.get("regime_engine") or {}
+    regime_type = str(regime.get("regime_type") or regime.get("name") or "").upper()
+    active = bool(regime_type == "EXHAUSTION" or _entry_consensus_raw_post_shock_snapshot(context, side).get("active"))
+    best = None
+    max_n = min(FRESH_BASE_EXHAUSTION_MAX_CANDLES, len(candles) - 2)
+    for n in range(max_n, FRESH_BASE_EXHAUSTION_MIN_CANDLES - 1, -1):
+        base = candles[-(n + 2):-2]
+        confirm = candles[-2:]
+        if len(base) != n:
+            continue
+        base_high = max(c.high for c in base); base_low = min(c.low for c in base)
+        width_atr = (base_high - base_low) / max(atr15, 1e-9)
+        if width_atr > FRESH_BASE_EXHAUSTION_MAX_WIDTH_ATR15:
+            continue
+        if side == "LONG":
+            local_swing = any(base[i].low <= base[i-1].low and base[i].low <= base[i+1].low for i in range(1, len(base)-1))
+            two_outside = all(c.close > base_high + atr15 * 0.03 for c in confirm)
+            retest = min(c.low for c in confirm) <= base_high + atr15 * 0.30
+            reaccept = confirm[-1].close >= confirm[-2].close and confirm[-1].low >= base_high - atr15 * 0.12
+            structural = structure_bias == side or "BOS LONG" in phase or "CHOCH LONG" in phase
+            stop_level = min(c.low for c in base[-4:] + confirm) - max(atr15 * 0.14, price * 0.0007)
+            trigger_level = base_high
+        else:
+            local_swing = any(base[i].high >= base[i-1].high and base[i].high >= base[i+1].high for i in range(1, len(base)-1))
+            two_outside = all(c.close < base_low - atr15 * 0.03 for c in confirm)
+            retest = max(c.high for c in confirm) >= base_low - atr15 * 0.30
+            reaccept = confirm[-1].close <= confirm[-2].close and confirm[-1].high <= base_low + atr15 * 0.12
+            structural = structure_bias == side or "BOS SHORT" in phase or "CHOCH SHORT" in phase
+            stop_level = max(c.high for c in base[-4:] + confirm) + max(atr15 * 0.14, price * 0.0007)
+            trigger_level = base_low
+        flow = context.get("flow") or {}; cvd = context.get("cvd") or {}
+        flow_support = bool(
+            (flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= RECOVERY_EXPIRY_MIN_FAST_SCORE)
+            or (cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= RECOVERY_EXPIRY_MIN_FAST_SCORE)
+        )
+        _, against = _fast_layer_counts(context, side)
+        accepted = bool(two_outside and (retest or reaccept))
+        allowed = bool(local_swing and accepted and flow_support and against <= 1 and structural)
+        score = int(70 + min(8, n - 6) + (4 if retest else 2) + (4 if flow_support else 0) - against * 5)
+        candidate = {
+            "active": active, "allowed": allowed, "side": side, "base_candles": n,
+            "base_high": round_price(base_high), "base_low": round_price(base_low),
+            "width_atr": round(width_atr, 3), "new_local_swing": bool(local_swing),
+            "accepted_breakout": bool(two_outside), "retest": bool(retest),
+            "reacceptance": bool(reaccept), "flow_support": bool(flow_support),
+            "fast_against": int(against), "structural": bool(structural),
+            "stop_level": round_price(stop_level), "trigger_level": round_price(trigger_level),
+            "trigger_ts": int(confirm[-1].ts), "score": score,
+            "reason": ("нова 6-12 свічкова 15M база скинула старий EXHAUSTION: accepted breakout + ретест/повторне прийняття + flow" if allowed
+                       else "старий EXHAUSTION діє, доки нова 6-12 свічкова база не дасть swing, accepted breakout, ретест і flow"),
+        }
+        if allowed:
+            return candidate
+        if best is None or score > best.get("score", 0):
+            best = candidate
+    return best or {"active": active, "allowed": False, "reason": "нова 6-12 свічкова база ще не підтвердила continuation"}
+
+
+def recovery_thesis_expiry_snapshot(context, recovery_side):
+    """Expire a stale recovery thesis after a closed opposite 15M transition."""
+    context = context or {}
+    if recovery_side not in ["LONG", "SHORT"]:
+        return {"active": False, "expired": False}
+    side = opposite(recovery_side)
+    candles = list(context.get("candles_15m_closed") or [])
+    if len(candles) < 4:
+        return {"active": True, "expired": False, "recovery_side": recovery_side, "new_side": side}
+    recent = candles[-4:]
+    structure = context.get("structure") or {}
+    phase = str(structure.get("phase") or "").upper()
+    structure_break = bool(
+        structure.get("bias") == side and (
+            (side == "SHORT" and ("BOS SHORT" in phase or "CHOCH SHORT" in phase))
+            or (side == "LONG" and ("BOS LONG" in phase or "CHOCH LONG" in phase))
+        )
+    )
+    last2 = recent[-2:]
+    if side == "SHORT":
+        two_closes = all(c.close < c.open for c in last2) and last2[-1].close < last2[-2].close
+        pivot = recent[-1].high < max(recent[-2].high, recent[-3].high)
+    else:
+        two_closes = all(c.close > c.open for c in last2) and last2[-1].close > last2[-2].close
+        pivot = recent[-1].low > min(recent[-2].low, recent[-3].low)
+    flow = context.get("flow") or {}; cvd = context.get("cvd") or {}
+    fast = bool(
+        (flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= RECOVERY_EXPIRY_MIN_FAST_SCORE)
+        or (cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= RECOVERY_EXPIRY_MIN_FAST_SCORE)
+    )
+    expired = bool(structure_break and pivot and two_closes and fast)
+    return {
+        "active": True, "expired": expired, "recovery_side": recovery_side, "new_side": side,
+        "structure_break": structure_break, "new_pivot": pivot, "two_directional_closes": two_closes,
+        "flow_or_cvd": fast,
+        "reason": (f"стара {recovery_side} recovery-гіпотеза анульована: закритий {side} BOS/CHOCH, новий pivot, два close і flow/CVD" if expired
+                   else f"для ануляції {recovery_side} recovery потрібні закритий {side} BOS/CHOCH, pivot, два close і flow/CVD"),
+    }
+
+
+def expire_recovery_thesis_if_invalid(context, setup=None):
+    """Clear stale recovery memory before it can block an opposite direction flip."""
+    context = context or {}
+    state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else None
+    recovery_sides = []
+    memory = (state or {}).get("opportunity_memory") if state is not None else None
+    if isinstance(memory, dict) and str(memory.get("setup_type") or "").upper() == "CAPITULATION_RECOVERY":
+        recovery_sides.append(memory.get("side"))
+    if isinstance(setup, dict) and _entry_setup_type(setup) == "CAPITULATION_RECOVERY":
+        recovery_sides.append(setup.get("side"))
+    current_classifier = context.get("setup_classifier") or {}
+    if str(current_classifier.get("type") or "").upper() == "CAPITULATION_RECOVERY":
+        recovery_sides.append(current_classifier.get("side"))
+    for recovery_side in [x for x in dict.fromkeys(recovery_sides) if x in ["LONG", "SHORT"]]:
+        snap = recovery_thesis_expiry_snapshot(context, recovery_side)
+        if not snap.get("expired"):
+            continue
+        context["recovery_thesis_expiry"] = snap
+        if state is not None:
+            if isinstance(state.get("opportunity_memory"), dict) and state["opportunity_memory"].get("side") == recovery_side:
+                state["opportunity_memory"] = None
+            if isinstance(state.get("pending_trigger"), dict) and state["pending_trigger"].get("side") == recovery_side:
+                state["pending_trigger"] = None
+        if isinstance(setup, dict) and _entry_setup_type(setup) == "CAPITULATION_RECOVERY" and setup.get("side") == recovery_side:
+            out = dict(setup)
+            out.update({"action": "WATCH", "entry_level": "WATCH_TRIGGER", "entry_level_label": _entry_level_label("WATCH_TRIGGER"),
+                        "quality": min(59, int(out.get("quality", 0) or 0)), "reason": snap.get("reason"),
+                        "recovery_thesis_expired": True})
+            out["conflicts"] = list(dict.fromkeys((out.get("conflicts") or []) + [snap.get("reason")]))
+            return out
+    return setup
+
+
+def capture_pre_gate_opportunity_memory(context, candidate, blocked, gate_name):
+    """Persist the professional candidate before a hard gate converts it to WAIT."""
+    context = context or {}
+    if not isinstance(candidate, dict) or not isinstance(blocked, dict):
+        return
+    if candidate.get("action") not in ["ENTRY", "RISKY_ENTRY"] or blocked.get("action") in ["ENTRY", "RISKY_ENTRY"]:
+        return
+    side = candidate.get("side"); setup_type = _entry_setup_type(candidate)
+    if side not in ["LONG", "SHORT"] or setup_type not in OPPORTUNITY_MEMORY_SETUP_TYPES:
+        return
+    quality = int(candidate.get("quality", 0) or 0)
+    if quality < PRE_GATE_MEMORY_MIN_QUALITY:
+        return
+    fast = _fast_layer_state(context, side)
+    if fast.get("against", 0) >= 2:
+        return
+    price = safe_float(context.get("price"), None)
+    atr15 = safe_float(context.get("atr15"), (price or 90) * 0.006) or (price or 90) * 0.006
+    event = candidate.get("entry_rescue_event") or context.get("entry_rescue_event") or {}
+    trigger = safe_float(event.get("trigger_level"), None)
+    if price is not None and trigger is not None:
+        extension = max(0.0, ((price - trigger) if side == "LONG" else (trigger - price)) / max(atr15, 1e-9))
+        if extension > OPPORTUNITY_MEMORY_MAX_EXTENSION_ATR15:
+            return
+    state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else None
+    if state is None:
+        return
+    plan = candidate.get("plan")
+    old = state.get("opportunity_memory") if isinstance(state.get("opportunity_memory"), dict) else None
+    same = bool(old and old.get("side") == side and str(old.get("setup_type") or "") == setup_type and old.get("source") == "PRE_GATE")
+    created = old.get("created_at") if same else iso_now()
+    gates = list(old.get("blocked_gates") or []) if same else []
+    if gate_name not in gates:
+        gates.append(gate_name)
+    missing = str(blocked.get("reason") or "потрібне повторне підтвердження hard gate")
+    state["opportunity_memory"] = {
+        "active": True, "source": "PRE_GATE", "created_at": created,
+        "updated_at": iso_now(), "ttl_minutes": _opportunity_memory_ttl(setup_type),
+        "side": side, "setup_type": setup_type,
+        "setup_label": (candidate.get("setup_classifier") or {}).get("label"),
+        "initial_action": candidate.get("action"), "quality": quality,
+        "price": round_price(price), "trigger_level": round_price(trigger),
+        "trigger_ts": int(event.get("trigger_ts", 0) or 0),
+        "trigger_type": event.get("type"), "retest_confirmed": bool(event.get("confirmed") and event.get("anchor_confirmed")),
+        "invalidation": _opportunity_invalidation_from_setup(candidate, context),
+        "initial_reason": candidate.get("reason"), "missing_condition": missing,
+        "blocking_gate": gate_name, "blocked_gates": gates,
+        "missing_conditions": list(dict.fromkeys([missing] + list(blocked.get("conflicts") or [])))[:5],
+        "plan": asdict(plan) if plan else None,
+    }
+
+
+def _apply_gate_with_pre_memory(context, setup, gate_func, gate_name):
+    before = setup
+    after = gate_func(before, context)
+    capture_pre_gate_opportunity_memory(context, before, after, gate_name)
+    return after
+
+
+
+def rolling_balance_detector(context):
+    """Detect persistent 15M balance and retire stale boundaries after rollover."""
     context = context or {}
     candles = list(context.get("candles_15m_closed") or [])
     if len(candles) < 8:
@@ -4032,7 +4370,7 @@ def rolling_balance_detector(context):
         and base_lo-last2[-1].close>=atr15*0.12
     )
     pos=(price-lo)/width
-    return {
+    snapshot = {
         "available":True,"balance":bool(chosen["balance"]),"score":int(chosen["score"]),
         "window":len(w),"high":round_price(hi),"low":round_price(lo),"position":round(pos,3),
         "overlap_ratio":round(chosen["overlap_ratio"],3),"efficiency":round(chosen["efficiency"],3),
@@ -4041,6 +4379,7 @@ def rolling_balance_detector(context):
         "accepted_side":"LONG" if long_accept else ("SHORT" if short_accept else "NEUTRAL"),
         "base_high":round_price(base_hi),"base_low":round_price(base_lo),
     }
+    return _range_boundary_rollover_apply(context, snapshot, atr15, candles)
 
 
 
@@ -4432,12 +4771,18 @@ def _entry_consensus_raw_post_shock_snapshot(context, side):
 
 
 
+
 def apply_post_shock_retest_gate_to_setup(setup, context):
     if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
         return setup
     side = setup.get("side")
     st = _entry_setup_type(setup)
     shock_side = _dominant_shock_side(context)
+    reset = setup.get("fresh_base_exhaustion_reset_snapshot") or context.get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, side)
+    if reset.get("allowed") and st in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
+        out = dict(setup); out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
+        out["fresh_base_exhaustion_reset"] = True
+        return out
     if st == "CLOSED_15M_DIRECTION_FLIP" and _transition_priority_confirmed(setup, context) and shock_side in ["LONG", "SHORT"] and side != shock_side:
         out = dict(setup); out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
         out["shock_direction_isolation"] = True
@@ -4532,8 +4877,9 @@ def apply_capitulation_recovery_gate_to_setup(setup, context):
 
 
 
+
 def apply_final_same_side_exhaustion_lock(setup,context):
-    """Last non-bypassable lock: same-side EXHAUSTION needs a fresh retest."""
+    """Last lock, except when a genuinely new 6-12 candle base resets exhaustion."""
     if not isinstance(setup,dict) or setup.get("action") not in ["ENTRY","RISKY_ENTRY"]:
         return setup
     regime=(context or {}).get("regime_engine") or {}
@@ -4542,6 +4888,13 @@ def apply_final_same_side_exhaustion_lock(setup,context):
     side=setup.get("side")
     if regime_type!="EXHAUSTION" or exhausted_side not in ["LONG","SHORT"] or side!=exhausted_side:
         return setup
+    reset = setup.get("fresh_base_exhaustion_reset_snapshot") or (context or {}).get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, side)
+    if reset.get("allowed") and _entry_setup_type(setup) in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
+        out=dict(setup)
+        out["action"]="RISKY_ENTRY"; out["entry_level"]="RISKY_ENTRY"; out["entry_level_label"]=_entry_level_label("RISKY_ENTRY")
+        out["quality"]=min(79,max(RISKY_QUALITY_MIN,int(out.get("quality",0) or 0)))
+        out["fresh_base_exhaustion_reset"] = True
+        return out
     shock=post_shock_retest_snapshot(context,side)
     event=(context or {}).get("entry_rescue_event") or setup.get("entry_rescue_event") or {}
     fresh_retest=bool(shock.get("retest_confirmed") and event.get("confirmed") and event.get("trigger_ts",0)>shock.get("extreme_ts",0))
@@ -4551,7 +4904,7 @@ def apply_final_same_side_exhaustion_lock(setup,context):
         out["quality"]=min(79,max(RISKY_QUALITY_MIN,int(out.get("quality",0) or 0)))
         return out
     out=dict(setup)
-    reason="виснажений рух у тому самому напрямку: потрібен новий pullback/retest після extreme; старий 3M тригер не використовується"
+    reason="виснажений рух у тому самому напрямку: потрібен новий pullback/retest або підтверджена 6-12 свічкова база після extreme"
     out.update({"action":"WATCH","entry_level":"BLOCK","entry_level_label":_entry_level_label("BLOCK"),
                 "quality":min(55,int(out.get("quality",0) or 0)),"reason":reason,"same_side_exhaustion_lock":True})
     out["conflicts"]=list(dict.fromkeys((out.get("conflicts") or [])+[reason]))
@@ -4667,6 +5020,7 @@ def post_shock_retest_snapshot(context, side):
 
 
 
+
 def range_zone_segmentation_snapshot(context, side):
     rolling = rolling_balance_detector(context)
     if side not in ["LONG", "SHORT"] or not rolling.get("available"):
@@ -4681,17 +5035,19 @@ def range_zone_segmentation_snapshot(context, side):
     event = (context or {}).get("entry_rescue_event") or {}
     displacement = (context or {}).get("closed_15m_displacement_override") or {}
     cap = capitulation_recovery_snapshot(context, side)
-    fresh = fresh_base_continuation_snapshot(context, side)
+    reset = (context or {}).get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, side)
     transition_override = bool(
-        (displacement.get("confirmed") and displacement.get("side") == side and displacement.get("retest") and displacement.get("fast_support", 0) >= 1)
+        rolling.get("boundary_rollover") and rolling.get("accepted_side") == side
+        or (displacement.get("confirmed") and displacement.get("side") == side and displacement.get("retest") and displacement.get("fast_support", 0) >= 1)
         or (cap.get("active") and cap.get("allowed"))
+        or (reset.get("allowed"))
         or (event.get("confirmed") and event.get("side") == side and event.get("type") in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM", "SWEEP_RECLAIM"} and (event.get("follow_through") or event.get("post_confirmed")) and _fast_layer_counts(context, side)[0] >= 1)
     )
     accepted = bool(rolling.get("breakout_accepted") and rolling.get("accepted_side") == side or transition_override)
     correct_edge = bool((side == "LONG" and zone == "LOWER_EDGE") or (side == "SHORT" and zone == "UPPER_EDGE"))
     outside_correct = bool((side == "LONG" and zone == "OUTSIDE_HIGH") or (side == "SHORT" and zone == "OUTSIDE_LOW"))
     allowed = bool(not balance or correct_edge or (outside_correct and accepted) or accepted)
-    return {"active": balance, "allowed": allowed, "zone": zone, "position": round(float(pos), 3), "correct_edge": correct_edge, "accepted_breakout": accepted, "transition_override": transition_override, "rolling_balance": rolling, "reason": ("range transition підтверджено закритим BOS/retest + flow" if transition_override else ("range edge або accepted breakout підтверджено" if allowed else "середина/неприйнятий вихід із 15M range: потрібен край діапазону або закритий breakout-retest"))}
+    return {"active": balance, "allowed": allowed, "zone": zone, "position": round(float(pos), 3), "correct_edge": correct_edge, "accepted_breakout": accepted, "transition_override": transition_override, "boundary_rollover": bool(rolling.get("boundary_rollover")), "rolling_balance": rolling, "reason": ("старі межі range списані після двох close, accepted breakout і ретесту" if rolling.get("boundary_rollover") else ("range transition підтверджено закритим BOS/retest + flow" if transition_override else ("range edge або accepted breakout підтверджено" if allowed else "середина/неприйнятий вихід із 15M range: потрібен край діапазону або закритий breakout-retest")))}
 
 
 
@@ -4722,6 +5078,7 @@ def apply_range_midpoint_gate_to_setup(setup, context):
 
 
 
+
 def apply_regime_allowed_setup_whitelist(setup, context):
     if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
         return setup
@@ -4730,11 +5087,13 @@ def apply_regime_allowed_setup_whitelist(setup, context):
     setup_type = _entry_setup_type(setup)
     regime_type = str(regime.get("regime_type") or regime.get("name") or "").upper()
     priority = _transition_priority_confirmed(setup, context)
+    reset = setup.get("fresh_base_exhaustion_reset_snapshot") or (context or {}).get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, setup.get("side"))
+    reset_exception = bool(reset.get("allowed") and setup_type in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"})
     event = setup.get("entry_rescue_event") or (context or {}).get("entry_rescue_event") or {}
     support, against = _fast_layer_counts(context, setup.get("side"))
     transition_event = bool(event.get("confirmed") and event.get("anchor_confirmed") and event.get("type") in {"BREAKOUT_RETEST", "SWEEP_RECLAIM", "ICT_ZONE_RECLAIM"} and (event.get("follow_through") or event.get("post_confirmed")) and support >= 1 and against <= 1)
     transition_types = {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY", "SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "RANGE_COMPRESSION_BREAKOUT", "TREND_IGNITION_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY"}
-    transition_exception = bool(priority or (regime_type in TRANSITION_WHITELIST_REGIMES and setup_type in transition_types and transition_event))
+    transition_exception = bool(priority or reset_exception or (regime_type in TRANSITION_WHITELIST_REGIMES and setup_type in transition_types and transition_event))
     if transition_exception:
         out = dict(setup)
         snap = out.get("closed_15m_displacement_override") or (context or {}).get("closed_15m_displacement_override") or {}
@@ -4744,9 +5103,7 @@ def apply_regime_allowed_setup_whitelist(setup, context):
             and regime_type not in TRANSITION_WHITELIST_REGIMES
             and str(regime.get("entry_action") or "ALLOW").upper() == "ALLOW"
         )
-        # Early transitions and recoveries remain risky. A fully confirmed flip
-        # may become normal ENTRY only after 1H and the stabilized regime agree.
-        if not full_flip and (regime_type in TRANSITION_WHITELIST_REGIMES or setup_type in {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY"}):
+        if not full_flip and (regime_type in TRANSITION_WHITELIST_REGIMES or setup_type in {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY"} or reset_exception):
             out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
             out["quality"] = min(79, max(RISKY_QUALITY_MIN, int(out.get("quality", 0) or 0)))
         elif full_flip:
@@ -4754,6 +5111,7 @@ def apply_regime_allowed_setup_whitelist(setup, context):
             out["quality"] = min(84, max(ENTRY_QUALITY_MIN, int(out.get("quality", 0) or 0)))
             out["full_direction_flip_entry"] = True
         out["regime_transition_exception"] = True
+        out["fresh_base_exhaustion_reset"] = bool(reset_exception)
         return out
     hard_block = bool(regime.get("hard_block") or str(regime.get("entry_action") or "").upper() == "BLOCK")
     if hard_block or (allowed and setup_type not in allowed):
@@ -14297,33 +14655,39 @@ def fresh_base_continuation_snapshot(context, side):
     }
 
 
+
 def resolve_fresh_base_continuation_reentry(context, base_setup):
     if not isinstance(context, dict) or not isinstance(base_setup, dict):
         return base_setup
     candidates = []
     for side in ["LONG", "SHORT"]:
-        snap = fresh_base_continuation_snapshot(context, side)
+        standard = fresh_base_continuation_snapshot(context, side)
+        reset = fresh_base_exhaustion_reset_snapshot(context, side)
+        snap = standard if standard.get("allowed") else reset
         if not snap.get("allowed"):
             continue
+        reset_mode = bool(snap is reset or snap.get("base_candles"))
+        last_same_side = _latest_closed_trade_snapshot(context, side)
+        setup_type = "FRESH_BASE_CONTINUATION_REENTRY" if last_same_side else "RANGE_COMPRESSION_BREAKOUT"
         event = snap.get("event") or {
             "confirmed": True, "anchor_confirmed": True, "professional_location": True,
-            "type": "BREAKOUT_RETEST", "side": side, "score": 74,
+            "type": "BREAKOUT_RETEST", "side": side, "score": int(snap.get("score", 74) or 74),
             "trigger_ts": snap.get("trigger_ts"), "trigger_level": snap.get("trigger_level"),
             "follow_through": True, "post_confirmed": True,
-            "evidence": ["нова 15M база", "accepted breakout/retest", "flow підтверджує"],
-            "source": "FRESH_BASE_CONTINUATION",
+            "evidence": (["нова 6-12 свічкова 15M база", "старий EXHAUSTION скинуто", "accepted breakout + ретест/прийняття", "flow підтверджує"] if reset_mode else ["нова 15M база", "accepted breakout/retest", "flow підтверджує"]),
+            "source": "FRESH_BASE_EXHAUSTION_RESET" if reset_mode else "FRESH_BASE_CONTINUATION",
         }
         work = dict(context)
         work["bias"] = side
         work["entry_rescue_event"] = event
         work["fresh_base_geometry"] = {"confirmed": True, "side": side, "stop_level": snap.get("stop_level")}
         setup_info = {
-            "type": "FRESH_BASE_CONTINUATION_REENTRY", "label": "🟢 Нове продовження після бази",
-            "side": side, "score": 75, "entry_allowed": True, "block_entry": False,
+            "type": setup_type, "label": ("🟢 Нове продовження після бази" if setup_type == "FRESH_BASE_CONTINUATION_REENTRY" else "🟢 Пробій після нової бази"),
+            "side": side, "score": int(snap.get("score", 75) or 75), "entry_allowed": True, "block_entry": False,
             "risk_mode": "RISKY", "force_risky": True, "professional_override": True,
             "reason": snap.get("reason"), "quality_adjustment": 2, "quality_cap": 82,
             "profile": setup_trade_profile("TREND_CONTINUATION"),
-            "entry_rule": "після попереднього виходу сформована нова 15M база + breakout/retest + flow",
+            "entry_rule": "нова 6-12 свічкова 15M база + accepted breakout + ретест/прийняття + flow" if reset_mode else "після попереднього виходу сформована нова 15M база + breakout/retest + flow",
             "stop_rule": "стоп за новою 15M/ICT базою",
             "tp_rule": "цілі до наступної зовнішньої ліквідності",
             "management_rule": "вести як окремий continuation, а не доганяння старого імпульсу",
@@ -14337,23 +14701,26 @@ def resolve_fresh_base_continuation_reentry(context, base_setup):
         tf1 = (context.get("tf1h") or {}).get("bias") == side
         regime = context.get("regime_engine") or {}
         stable = bool(regime.get("is_stable", True))
-        full = bool(tf1 and stable and str(regime.get("entry_action") or "ALLOW").upper() == "ALLOW" and snap.get("fast_against", 0) == 0)
+        fast_against = int(snap.get("fast_against", 0) or 0)
+        full = bool(not reset_mode and tf1 and stable and str(regime.get("entry_action") or "ALLOW").upper() == "ALLOW" and fast_against == 0)
         action = "ENTRY" if full else "RISKY_ENTRY"
-        quality = 82 if full else 76
+        quality = 82 if full else min(79, max(74, int(snap.get("score", 76) or 76)))
         candidate = dict(base_setup)
         candidate.update({
             "action": action, "side": side, "quality": quality,
             "title": ("ВХІД " if full else "РИЗИКОВАНИЙ ВХІД ") + side,
             "reason": snap.get("reason"), "plan": plan, "setup_classifier": setup_info,
-            "entry_rescue_event": event, "fresh_base_reentry_confirmed": True,
-            "fresh_base_snapshot": snap, "entry_level": action, "entry_level_label": _entry_level_label(action),
+            "entry_rescue_event": event, "fresh_base_reentry_confirmed": setup_type == "FRESH_BASE_CONTINUATION_REENTRY",
+            "fresh_base_snapshot": snap, "fresh_base_exhaustion_reset_snapshot": reset if reset_mode else {},
+            "fresh_base_exhaustion_reset": reset_mode, "transition_override_confirmed": reset_mode,
+            "entry_level": action, "entry_level_label": _entry_level_label(action),
             "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + list(event.get("evidence") or []))),
         })
-        candidates.append((quality + min(getattr(plan, "rr1", 0), 3) * 4, candidate, work))
+        candidates.append((quality + min(getattr(plan, "rr1", 0), 3) * 4 + (4 if reset_mode else 0), candidate, work, reset_mode))
     if not candidates:
         return base_setup
     candidates.sort(key=lambda x: x[0], reverse=True)
-    _, candidate, work = candidates[0]
+    _, candidate, work, reset_mode = candidates[0]
     if base_setup.get("action") in ["ENTRY", "RISKY_ENTRY"] and base_setup.get("side") != candidate.get("side"):
         return base_setup
     if base_setup.get("action") in ["ENTRY", "RISKY_ENTRY"] and int(base_setup.get("quality", 0) or 0) >= candidate["quality"] + 4:
@@ -14362,6 +14729,8 @@ def resolve_fresh_base_continuation_reentry(context, base_setup):
     context["setup_classifier"] = candidate.get("setup_classifier")
     context["fresh_base_geometry"] = work.get("fresh_base_geometry")
     context["dual_speed_mtf"] = work.get("dual_speed_mtf")
+    if reset_mode:
+        context["fresh_base_exhaustion_reset"] = candidate.get("fresh_base_exhaustion_reset_snapshot")
     return candidate
 
 
@@ -14447,13 +14816,20 @@ def resolve_capitulation_recovery_geometry_opportunity(context, base_setup):
     return candidate
 
 
+
 def resolve_direction_flip_priority_lane(context, base_setup):
+    base_setup = expire_recovery_thesis_if_invalid(context, base_setup)
     out = resolve_closed_15m_displacement_opportunity(context, base_setup)
     if isinstance(out, dict) and _entry_setup_type(out) == "CLOSED_15M_DIRECTION_FLIP":
         out = dict(out)
         snap = out.get("closed_15m_displacement_override") or {}
+        expiry = context.get("recovery_thesis_expiry") or {}
         out["direction_flip_priority_lane"] = True
         out["transition_override_confirmed"] = True
+        if expiry.get("expired") and out.get("side") == expiry.get("new_side"):
+            out["recovery_thesis_expiry_priority"] = True
+            out["reason"] = str(expiry.get("reason") or out.get("reason") or "")
+            out["conflicts"] = [x for x in (out.get("conflicts") or []) if "recovery" not in str(x).lower()]
         if not snap.get("full_confirmed"):
             out["action"] = "RISKY_ENTRY"
             out["entry_level"] = "RISKY_ENTRY"
@@ -14510,6 +14886,7 @@ def should_store_opportunity_memory(setup, context):
     return bool(one_condition_wait or setup.get("entry_level") == "WATCH_TRIGGER")
 
 
+
 def update_opportunity_memory(state, setup, context):
     if not isinstance(state, dict):
         return
@@ -14519,11 +14896,26 @@ def update_opportunity_memory(state, setup, context):
     if isinstance(setup, dict) and setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
         state["opportunity_memory"] = None
         return
+    # A pre-gate candidate is more informative than the final WATCH result.
+    # Keep its original setup, trigger, invalidation and geometry while updating
+    # the last blocking reason.
+    if old and old.get("source") == "PRE_GATE":
+        if isinstance(setup, dict):
+            side = setup.get("side")
+            if side in ["LONG", "SHORT"] and side != old.get("side") and int(setup.get("quality", 0) or 0) >= 62:
+                state["opportunity_memory"] = None
+                return
+            if side == old.get("side"):
+                old["updated_at"] = iso_now()
+                old["last_final_reason"] = setup.get("reason")
+                old["last_final_action"] = setup.get("action")
+                state["opportunity_memory"] = old
+        return
     if should_store_opportunity_memory(setup, context):
         st = _entry_setup_type(setup); side = setup.get("side")
         plan = setup.get("plan")
         state["opportunity_memory"] = {
-            "active": True, "created_at": iso_now(), "ttl_minutes": _opportunity_memory_ttl(st),
+            "active": True, "source": "POST_GATE", "created_at": iso_now(), "ttl_minutes": _opportunity_memory_ttl(st),
             "side": side, "setup_type": st, "setup_label": ((setup.get("setup_classifier") or {}).get("label")),
             "quality": int(setup.get("quality", 0) or 0), "price": round_price((context or {}).get("price")),
             "trigger_level": round_price(((setup.get("entry_rescue_event") or {}).get("trigger_level"))),
@@ -14550,6 +14942,7 @@ def _memory_setup_classifier(memory, side):
     }
 
 
+
 def activate_opportunity_memory_if_ready(context, base_setup):
     if not isinstance(context, dict) or not isinstance(base_setup, dict) or base_setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
         return base_setup
@@ -14557,6 +14950,12 @@ def activate_opportunity_memory_if_ready(context, base_setup):
     memory = state.get("opportunity_memory") if isinstance(state.get("opportunity_memory"), dict) else context.get("opportunity_memory")
     if not isinstance(memory, dict) or not memory.get("active"):
         return base_setup
+    if str(memory.get("setup_type") or "").upper() == "CAPITULATION_RECOVERY":
+        expiry = recovery_thesis_expiry_snapshot(context, memory.get("side"))
+        if expiry.get("expired"):
+            state["opportunity_memory"] = None
+            context["recovery_thesis_expiry"] = expiry
+            return base_setup
     age = _opportunity_memory_age_minutes(memory)
     if age > int(memory.get("ttl_minutes", OPPORTUNITY_MEMORY_DEFAULT_MINUTES) or OPPORTUNITY_MEMORY_DEFAULT_MINUTES):
         state["opportunity_memory"] = None
@@ -14569,21 +14968,29 @@ def activate_opportunity_memory_if_ready(context, base_setup):
     if invalidation is not None and ((side == "LONG" and price <= invalidation) or (side == "SHORT" and price >= invalidation)):
         state["opportunity_memory"] = None
         return base_setup
-    origin = safe_float(memory.get("price"), price) or price
+    origin = safe_float(memory.get("trigger_level"), None)
+    if origin is None:
+        origin = safe_float(memory.get("price"), price) or price
     extension = max(0.0, ((price - origin) if side == "LONG" else (origin - price)) / max(atr15, 1e-9))
     if extension > OPPORTUNITY_MEMORY_MAX_EXTENSION_ATR15:
         return base_setup
 
     fast = _professional_fast_layer_permission(context, side, strong_15m=True)
-    if not fast.get("risky_ok"):
+    if not fast.get("risky_ok") or fast.get("against", 0) >= 2:
         return base_setup
     snap = None
     if st == "CLOSED_15M_DIRECTION_FLIP":
         snap = closed_15m_displacement_snapshot(context, side); ready = snap.get("confirmed")
     elif st == "FRESH_BASE_CONTINUATION_REENTRY":
-        snap = fresh_base_continuation_snapshot(context, side); ready = snap.get("allowed")
+        standard = fresh_base_continuation_snapshot(context, side)
+        reset = fresh_base_exhaustion_reset_snapshot(context, side)
+        snap = standard if standard.get("allowed") else reset
+        ready = snap.get("allowed")
     elif st == "CAPITULATION_RECOVERY":
         snap = capitulation_recovery_snapshot(context, side); ready = snap.get("active") and snap.get("allowed")
+    elif st == "RANGE_COMPRESSION_BREAKOUT":
+        snap = fresh_base_exhaustion_reset_snapshot(context, side)
+        ready = snap.get("allowed") or bool(rolling_balance_detector(context).get("breakout_accepted") and rolling_balance_detector(context).get("accepted_side") == side)
     else:
         event = best_15m_interval_entry_event(context, side)
         structure = context.get("structure") or {}; tf15 = context.get("tf15") or {}
@@ -14605,12 +15012,18 @@ def activate_opportunity_memory_if_ready(context, base_setup):
     out.update({
         "action": "RISKY_ENTRY", "side": side, "quality": quality,
         "title": "РИЗИКОВАНИЙ ВХІД " + side + " — ЗБЕРЕЖЕНА МОЖЛИВІСТЬ ПІДТВЕРДЖЕНА",
-        "reason": "збережений професійний сценарій підтверджено на наступному запуску; ціна не втекла та інвалідація не пробита",
+        "reason": "збережений pre-gate сценарій підтверджено; інвалідація не пробита, два adverse-шари відсутні, ціна не втекла",
         "plan": plan, "setup_classifier": setup_info, "entry_rescue_event": event,
-        "opportunity_memory_activated": True, "opportunity_memory_age_min": round(age, 1),
+        "opportunity_memory_activated": True, "opportunity_memory_source": memory.get("source"),
+        "opportunity_memory_blocking_gate": memory.get("blocking_gate"),
+        "opportunity_memory_age_min": round(age, 1),
         "entry_level": "RISKY_ENTRY", "entry_level_label": _entry_level_label("RISKY_ENTRY"),
-        "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + ["сценарій збережено між запусками", "відсутня умова підтверджена", "інвалідація не пробита"])),
+        "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + ["професійний сценарій збережено до hard gate", "відсутня умова підтверджена", "інвалідація не пробита"])),
     })
+    if st in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"} and isinstance(snap, dict) and snap.get("base_candles"):
+        out["fresh_base_exhaustion_reset_snapshot"] = snap
+        out["fresh_base_exhaustion_reset"] = True
+        context["fresh_base_exhaustion_reset"] = snap
     return out
 
 
@@ -14701,46 +15114,55 @@ def update_opportunity_coverage(state, context, setup=None, active_trade=None):
     state["opportunity_analytics"] = analytics
 
 
+
 def evaluate_new_setup(context):
     setup = _evaluate_new_setup_core(context)
+    setup = expire_recovery_thesis_if_invalid(context, setup)
     if isinstance(setup, dict):
         regime_engine = context.get("regime_engine") or context.get("market_regime")
         if isinstance(regime_engine, dict):
             setup.setdefault("regime_engine", regime_engine)
 
     # Priority lanes are checked before generic pending/rescue, because a stale
-    # classifier must not consume the brief transition window.
+    # recovery thesis must not consume the brief opposite transition window.
     setup = activate_opportunity_memory_if_ready(context, setup)
     setup = resolve_direction_flip_priority_lane(context, setup)
     setup = resolve_capitulation_recovery_geometry_opportunity(context, setup)
     setup = resolve_fresh_base_continuation_reentry(context, setup)
-    setup = apply_entry_level_gate(setup, context)
+    setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "ENTRY_LEVEL_GATE_PRE")
     setup = activate_pending_trigger_if_ready(context, setup)
     setup = resolve_15m_scheduler_entry_opportunity(context, setup)
     setup = resolve_direction_flip_priority_lane(context, setup)
     setup = resolve_capitulation_recovery_geometry_opportunity(context, setup)
     setup = resolve_fresh_base_continuation_reentry(context, setup)
     setup = activate_opportunity_memory_if_ready(context, setup)
-    setup = apply_entry_level_gate(setup, context)
+    setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "ENTRY_LEVEL_GATE_POST_RESCUE")
 
     def hard_consensus(s):
-        s = apply_strict_transition_gate_to_setup(s, context)
-        s = apply_post_shock_retest_gate_to_setup(s, context)
-        s = apply_capitulation_recovery_gate_to_setup(s, context)
-        s = apply_range_midpoint_gate_to_setup(s, context)
-        s = apply_structural_reset_gate_to_setup(s, context)
-        s = apply_regime_allowed_setup_whitelist(s, context)
-        s = apply_adverse_flow_veto_prime_ict(s, context)
-        return apply_entry_level_gate(s, context)
+        stages = [
+            ("STRICT_TRANSITION_GATE", apply_strict_transition_gate_to_setup),
+            ("POST_SHOCK_RETEST_GATE", apply_post_shock_retest_gate_to_setup),
+            ("CAPITULATION_RECOVERY_GATE", apply_capitulation_recovery_gate_to_setup),
+            ("RANGE_SEGMENTATION_GATE", apply_range_midpoint_gate_to_setup),
+            ("STRUCTURAL_RESET_GATE", apply_structural_reset_gate_to_setup),
+            ("REGIME_WHITELIST_GATE", apply_regime_allowed_setup_whitelist),
+            ("PRIME_ICT_ADVERSE_FLOW_GATE", apply_adverse_flow_veto_prime_ict),
+            ("ENTRY_LEVEL_GATE", apply_entry_level_gate),
+        ]
+        for gate_name, gate_func in stages:
+            s = _apply_gate_with_pre_memory(context, s, gate_func, gate_name)
+        return s
 
     setup = hard_consensus(setup)
     setup = apply_professional_lifecycle_to_setup(setup, context)
     setup = hard_consensus(setup)
-    setup = apply_final_same_side_exhaustion_lock(setup, context)
+    setup = _apply_gate_with_pre_memory(context, setup, apply_final_same_side_exhaustion_lock, "FINAL_SAME_SIDE_EXHAUSTION_LOCK")
     setup = hard_consensus(setup)
+    before_stop = setup
     setup = final_stop_role_rebuild(setup, context)
+    capture_pre_gate_opportunity_memory(context, before_stop, setup, "FINAL_STOP_ROLE_REBUILD")
     setup = hard_consensus(setup)
-    return apply_entry_level_gate(setup, context)
+    return _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "FINAL_ENTRY_LEVEL_GATE")
 
 
 
@@ -14793,7 +15215,7 @@ def new_active_trade(setup):
             + (["SETUP_CLASSIFIER: " + str((setup.get("setup_classifier") or {}).get("type"))] if setup.get("setup_classifier") else [])
             + (["REGIME_TYPE: " + str((setup.get("regime_engine") or {}).get("regime_type") or (setup.get("regime_engine") or {}).get("name"))] if setup.get("regime_engine") else [])
             + (["LIFECYCLE_STAGE: " + str((setup.get("lifecycle") or {}).get("stage"))] if setup.get("lifecycle") else [])
-            + (["ENGINE_VERSION: OPPORTUNITY_PERSISTENCE_TIERED_ENTRY"])
+            + (["ENGINE_VERSION: STATE_TRANSITION_MEMORY_RESET"])
             + (["POST_REJECTION_RECOVERY"] if (setup.get("post_rejection_recovery") or {}).get("active") else [])
             + (["RECOVERY_TRIGGER_LEVEL: " + str((setup.get("post_rejection_recovery") or {}).get("trigger_level"))] if (setup.get("post_rejection_recovery") or {}).get("active") else [])
             + ([setup.get("reason", "")])
