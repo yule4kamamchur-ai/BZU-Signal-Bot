@@ -10743,7 +10743,6 @@ def _stop_update_alert_lines(trade, result):
 
     lines = [
         "",
-        "🚨 <b>УВАГА: СТОП ЗМІНЕНО</b>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"🔒 <b>Новий стоп:</b> {_fmt_price(new_stop)}",
     ]
@@ -10778,16 +10777,12 @@ def build_follow_message(context, trade, result):
         f"<b>{html.escape(str(title))}</b>",
         "",
         price_line(context),
-        f"<b>Від входу:</b> {round(current_pct, 3)}% | <b>MFE:</b> {round(best_pct, 3)}% | <b>MAE:</b> {round(mae_pct, 3)}%",
+        f"<b>Від входу:</b> {round(current_pct, 3)}% | <b>Макс. прибуток:</b> {round(best_pct, 3)}% | <b>Макс. просадка:</b> {round(mae_pct, 3)}%",
     ]
     # Close/confirmed MFE is used by the engine internally, but not printed by
     # default to keep Telegram clean and fast to read.
 
-    lines.append("")
-    lines.append("<b>Причина:</b>")
-    lines.append(html.escape(str(reason)))
-
-    # If the stop was updated in this run, make it impossible to miss in Telegram.
+    # If the stop was updated in this run, show only the old and new stop values.
     # This block is intentionally visual and placed above risk/position details.
     lines.extend(_stop_update_alert_lines(trade, result))
 
