@@ -480,25 +480,92 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-17T14:01:21.324192+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 80.29,
+      "quality": 65,
+      "reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.35%; ціна далеко від EMA20 (2.34 ATR)",
+      "setup_classifier": {
+        "type": "LATE_IMPULSE_CHASE",
+        "label": "🔴 Пізній імпульс / доганяння",
+        "side": "LONG",
+        "score": 30,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.35%; ціна далеко від EMA20 (2.34 ATR)",
+        "quality_adjustment": -12,
+        "quality_cap": 61,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "block_entry": true
+        },
+        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+        "stop_rule": "план лише після нового рівня для стопу",
+        "tp_rule": "не рахувати TP від поганої локації",
+        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+        "late_penalty": 8,
+        "late_without_reset": false
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 5.36,
+          "move8_abs_pct": 1.171,
+          "slope15_abs_pct": 0.98,
+          "rsi15": 70.9,
+          "score_total_abs": 237,
+          "participation_same": 2,
+          "late_penalty": 8,
+          "pd": "PREMIUM",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB"
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-17T14:16:02.962135+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-06-17T14:01:21.012245+00:00"
+    "updated_at": "2026-06-17T14:16:02.579530+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T14:01:21.324258+00:00",
-    "price": 79.78,
-    "oi": 55885.78,
-    "cvd": 12003.0,
-    "cvd_time": "2026-06-17T14:01:21.324262+00:00",
-    "last_trade_ts": 1781704871511,
+    "time": "2026-06-17T14:16:02.962204+00:00",
+    "price": 80.29,
+    "oi": 56085.3,
+    "cvd": 12809.0,
+    "cvd_time": "2026-06-17T14:16:02.962208+00:00",
+    "last_trade_ts": 1781705751656,
     "bias": "LONG",
-    "tech_score": 204,
-    "total_score": 204
+    "tech_score": 236,
+    "total_score": 237
   },
-  "updated_at": "2026-06-17T14:01:21.324267+00:00"
+  "updated_at": "2026-06-17T14:16:02.962213+00:00"
 }
