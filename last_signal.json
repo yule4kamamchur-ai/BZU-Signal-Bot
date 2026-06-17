@@ -456,26 +456,101 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-17T16:16:03.217449+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 79.33,
+      "quality": 60,
+      "reason": "не вдалося побудувати життєздатну технічну геометрію",
+      "setup_classifier": {
+        "type": "PRIME_ICT_LOCATION_OVERRIDE",
+        "label": "🟢 Сильна ICT-локація",
+        "side": "SHORT",
+        "score": 64,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.92,
+          "tp2_pct": 1.55,
+          "tp3_pct": 2.55,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.22,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+        "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+        "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+        "professional_override": true,
+        "prime_ict_override": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 82,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 6.25,
+          "move8_abs_pct": 0.725,
+          "slope15_abs_pct": 0.547,
+          "rsi15": 48.4,
+          "score_total_abs": 113,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-17T16:31:24.832953+00:00"
     }
   ],
   "regime_memory": {
-    "type": "NEWS_SHOCK",
+    "type": "TREND_EXPANSION",
     "pending_type": "",
-    "stable_count": 2,
-    "pending_count": 0,
-    "updated_at": "2026-06-17T16:16:02.824526+00:00"
+    "stable_count": 1,
+    "pending_count": 1,
+    "updated_at": "2026-06-17T16:31:24.439315+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T16:16:03.217518+00:00",
-    "price": 79.26,
-    "oi": 59822.0,
-    "cvd": 51208.0,
-    "cvd_time": "2026-06-17T16:16:03.217522+00:00",
-    "last_trade_ts": 1781712946548,
+    "time": "2026-06-17T16:31:24.833032+00:00",
+    "price": 79.33,
+    "oi": 59733.18,
+    "cvd": 49606.0,
+    "cvd_time": "2026-06-17T16:31:24.833036+00:00",
+    "last_trade_ts": 1781713861555,
     "bias": "SHORT",
-    "tech_score": -99,
-    "total_score": -85
+    "tech_score": -124,
+    "total_score": -113
   },
-  "updated_at": "2026-06-17T16:16:03.217527+00:00",
+  "updated_at": "2026-06-17T16:31:24.833041+00:00",
   "pending_trigger": null
 }
