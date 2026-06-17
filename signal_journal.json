@@ -1645,14 +1645,59 @@
           "previous_regime_type": "EXHAUSTION"
         }
       }
+    },
+    {
+      "time": "2026-06-17T15:31:16.478355+00:00",
+      "type": "FOLLOW",
+      "side": "LONG",
+      "action": "EXIT_WARNING",
+      "price": 79.43,
+      "quality": 79,
+      "entry_level": "RISKY_ENTRY",
+      "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
+      "regime_type": "TREND_EXPANSION",
+      "context_bias": "NEUTRAL",
+      "tech_score": 1,
+      "total_score": 8,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 6.65,
+          "move8_abs_pct": 0.376,
+          "slope15_abs_pct": 0.676,
+          "rsi15": 48.0,
+          "score_total_abs": 8,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_WAIT_PULLBACK",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      }
     }
   ],
-  "updated_at": "2026-06-17T15:16:06.670684+00:00",
+  "updated_at": "2026-06-17T15:31:16.479879+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-17T15:16:06.670720+00:00",
+    "updated_at": "2026-06-17T15:31:16.479925+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 0,
-    "signals_count": 5,
+    "signals_count": 6,
     "overall": {
       "trades": 0,
       "wins": 0,
@@ -1687,23 +1732,25 @@
     "by_entry_level": {},
     "by_exit_reason": {},
     "signals": {
-      "total": 5,
+      "total": 6,
       "entries": 1,
       "full_entries": 0,
       "risky_entries": 1,
       "watch": 4,
       "no_trade": 0,
-      "follow": 0,
+      "follow": 1,
       "closed": 0,
       "pending_trigger_activations": 0
     },
     "signal_counts_by_setup": {
       "LATE_IMPULSE_CHASE": 1,
       "NO_CLEAN_SETUP": 2,
-      "PRIME_ICT_LOCATION_OVERRIDE": 2
+      "PRIME_ICT_LOCATION_OVERRIDE": 2,
+      "UNKNOWN": 1
     },
     "signal_counts_by_regime": {
       "EXHAUSTION": 1,
+      "NORMAL": 1,
       "REVERSAL_BUILDUP": 2,
       "TREND_EXPANSION": 2
     }
