@@ -6127,14 +6127,271 @@
           "previous_regime_type": "NEWS_SHOCK"
         }
       }
+    },
+    {
+      "time": "2026-06-17T19:01:21.718391+00:00",
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 78.96,
+      "quality": 45,
+      "reason": "перевага нечітка, немає професійного входу",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 8.18,
+          "move8_abs_pct": 0.051,
+          "slope15_abs_pct": 0.172,
+          "rsi15": 45.0,
+          "score_total_abs": 15,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "plan": null,
+      "confirmations": [],
+      "conflicts": [],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": -23,
+        "total_score": -15,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -58,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.453,
+          "drift_pct": -0.307,
+          "vol_ratio": 0.07,
+          "note": "3m швидко йде вниз; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -7,
+          "trend": "NEUTRAL",
+          "close": 79.05,
+          "ema20": 79.2821,
+          "ema50": 79.2558,
+          "rsi": 45.0,
+          "atr": 0.4194,
+          "slope_pct": -0.172,
+          "move_8_pct": 0.051,
+          "range_atr": 8.18,
+          "note": "EMA20 вище EMA50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trend": "NEUTRAL",
+          "close": 79.05,
+          "ema20": 79.29,
+          "ema50": 80.1085,
+          "rsi": 45.1,
+          "atr": 0.8165,
+          "slope_pct": 0.505,
+          "move_8_pct": -0.101,
+          "range_atr": 5.52,
+          "note": "ціна нижче EMA20/50; нахил вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 79.33,
+          "ema20": 81.2306,
+          "ema50": 84.7875,
+          "rsi": 32.9,
+          "atr": 1.4933,
+          "slope_pct": -4.237,
+          "move_8_pct": -2.267,
+          "range_atr": 5.13,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -8,
+          "phase": "RANGE / WAIT",
+          "swing_high": 79.6,
+          "swing_low": 78.77,
+          "recent_high": 82.2,
+          "recent_low": 78.77,
+          "atr": 0.4194,
+          "note": "сильне bearish-закриття"
+        },
+        "flow": {
+          "bias": "LONG",
+          "score": 26,
+          "trade_delta_pct": 61.66,
+          "book_delta_pct": 54.22,
+          "note": "угоди за покупців; стакан підтримує покупців; підтримка покупців біля 78.68"
+        },
+        "cvd": {
+          "bias": "LONG",
+          "score": 32,
+          "state": "BULLISH_ABSORPTION",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": 50026.0,
+          "delta_pct": 61.66,
+          "cvd": 200404.0,
+          "cvd_change_pct": 33.267,
+          "last_trade_ts": 1781722873209,
+          "price_move_pct": -0.365,
+          "note": "CVD росте; ціна вниз, CVD вгору"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 79.0663,
+              "imbalance_pct": 58.0,
+              "volume": 71523.0
+            },
+            {
+              "price": 79.1295,
+              "imbalance_pct": 100.0,
+              "volume": 9064.0
+            },
+            {
+              "price": 79.0032,
+              "imbalance_pct": -100.0,
+              "volume": 547.0
+            }
+          ],
+          "note": "локальні покупки вище ціни"
+        },
+        "derivatives": {
+          "bias": "SHORT",
+          "score": -18,
+          "state": "SHORT_BUILDUP",
+          "oi": 60443.83,
+          "oi_change_pct": 0.954,
+          "funding_pct": 0,
+          "price_change_pct": -0.253,
+          "note": "ціна падає + OI росте — нові шорти/тиск"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.06,
+          "move_1_pct": 0.013,
+          "move_6_pct": -0.189,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 20,
+          "top": "US crude inventories decline for tenth week to over 40-year low, EIA says - Reuters",
+          "total": 15
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "COUNTERTREND_SCALP",
+          "label": "🟠 Скальп проти тренду",
+          "side": "LONG",
+          "score": 68,
+          "entry_allowed": false,
+          "block_entry": false,
+          "risk_mode": "RISKY",
+          "reason": "контртренд дозволений тільки як scalp після локального розвороту",
+          "quality_adjustment": -3,
+          "quality_cap": 76,
+          "force_risky": true,
+          "profile": {
+            "regime_override": "REVERSAL",
+            "tp1_pct": 0.8,
+            "tp2_pct": 1.22,
+            "tp3_pct": 2.0,
+            "min_stop_pct": 0.7,
+            "max_stop_pct": 1.05,
+            "quality_adjustment": -3,
+            "quality_cap": 76,
+            "force_risky": true
+          },
+          "entry_rule": "тільки сильне зняття ліквідності/CHOCH + 3M розворот + CVD/потік не проти",
+          "stop_rule": "короткий стоп за екстремум, без усереднення",
+          "tp_rule": "швидший TP1, TP2 тільки якщо структура розвертається",
+          "management_rule": "агресивний контроль; якщо немає швидкого підтвердження — вихід"
+        },
+        "regime_engine": {
+          "name": "NORMAL",
+          "regime_type": "NORMAL",
+          "label": "звичайний intraday режим",
+          "score": 50,
+          "confidence": 50,
+          "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+          "entry_action": "ALLOW",
+          "entry_quality_adjustment": 0,
+          "quality_cap": null,
+          "hard_block": false,
+          "allowed_setups": [],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 8.18,
+            "move8_abs_pct": 0.051,
+            "slope15_abs_pct": 0.172,
+            "rsi15": 45.0,
+            "score_total_abs": 15,
+            "participation_same": 1,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "DISCOUNT_FVG_OB_LONG",
+            "range_edge": false
+          },
+          "stable_count": 0,
+          "pending_count": 1,
+          "is_stable": false,
+          "previous_regime_type": "NEWS_SHOCK"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-17T18:45:59.533954+00:00",
+  "updated_at": "2026-06-17T19:01:21.722078+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-17T18:45:59.534427+00:00",
+    "updated_at": "2026-06-17T19:01:21.726620+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 1,
-    "signals_count": 21,
+    "signals_count": 22,
     "overall": {
       "trades": 1,
       "wins": 0,
@@ -6244,12 +6501,12 @@
       }
     },
     "signals": {
-      "total": 21,
+      "total": 22,
       "entries": 1,
       "full_entries": 0,
       "risky_entries": 1,
       "watch": 15,
-      "no_trade": 2,
+      "no_trade": 3,
       "follow": 2,
       "closed": 1,
       "pending_trigger_activations": 0
@@ -6260,12 +6517,12 @@
       "NO_CLEAN_SETUP": 3,
       "PRIME_ICT_LOCATION_OVERRIDE": 4,
       "TREND_IGNITION_ENTRY": 2,
-      "UNKNOWN": 5
+      "UNKNOWN": 6
     },
     "signal_counts_by_regime": {
       "EXHAUSTION": 1,
       "NEWS_SHOCK": 13,
-      "NORMAL": 2,
+      "NORMAL": 3,
       "REVERSAL_BUILDUP": 2,
       "TREND_EXPANSION": 3
     }
