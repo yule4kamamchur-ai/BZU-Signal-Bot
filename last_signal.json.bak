@@ -6,15 +6,6 @@
       "type": "FOLLOW",
       "side": "SHORT",
       "action": "HOLD",
-      "price": 81.97,
-      "result_pct": 0.256,
-      "stop_current": 82.1143,
-      "time": "2026-06-16T05:45:58.749608+00:00"
-    },
-    {
-      "type": "FOLLOW",
-      "side": "SHORT",
-      "action": "HOLD",
       "price": 81.99,
       "result_pct": 0.231,
       "stop_current": 82.1143,
@@ -3128,26 +3119,70 @@
         "previous_regime_type": "RANGE_COMPRESSION"
       },
       "time": "2026-06-17T00:31:13.664250+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.2,
+      "quality": 39,
+      "reason": "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "RANGE",
+        "regime_type": "RANGE_COMPRESSION",
+        "label": "стискання діапазону",
+        "score": 62,
+        "confidence": 64,
+        "reason": "стискання діапазону: середина range заборонена, дозволений лише підтверджений compression breakout",
+        "entry_action": "WAIT",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 77,
+        "hard_block": false,
+        "allowed_setups": [
+          "RANGE_COMPRESSION_BREAKOUT",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 2.89,
+          "move8_abs_pct": 0.063,
+          "slope15_abs_pct": 0.046,
+          "rsi15": 50.6,
+          "score_total_abs": 22,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "MIDRANGE",
+          "ict_setup": "BALANCE_MIDRANGE",
+          "range_edge": false
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "RANGE_COMPRESSION"
+      },
+      "time": "2026-06-17T00:45:49.319833+00:00"
     }
   ],
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-06-17T00:31:13.342986+00:00"
+    "updated_at": "2026-06-17T00:45:48.986324+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T00:31:13.664265+00:00",
-    "price": 79.21,
-    "oi": 59886.44,
-    "cvd": 208140.0,
-    "cvd_time": "2026-06-17T00:31:13.664268+00:00",
-    "last_trade_ts": 1781656249450,
+    "time": "2026-06-17T00:45:49.319850+00:00",
+    "price": 79.2,
+    "oi": 60076.88,
+    "cvd": 226919.0,
+    "cvd_time": "2026-06-17T00:45:49.319853+00:00",
+    "last_trade_ts": 1781657123776,
     "bias": "NEUTRAL",
-    "tech_score": -13,
-    "total_score": -18
+    "tech_score": 26,
+    "total_score": 22
   },
-  "updated_at": "2026-06-17T00:31:13.664273+00:00",
+  "updated_at": "2026-06-17T00:45:49.319859+00:00",
   "pending_trigger": null
 }
