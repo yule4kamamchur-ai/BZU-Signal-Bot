@@ -79,6 +79,15 @@ ENTRY_RESCUE_SCAN_BARS_3M = int(os.getenv("ENTRY_RESCUE_SCAN_BARS_3M", "6") or 6
 ENTRY_RESCUE_MIN_SCORE = int(os.getenv("ENTRY_RESCUE_MIN_SCORE", "66") or 66)
 ENTRY_RESCUE_MAX_EXTENSION_ATR15 = float(os.getenv("ENTRY_RESCUE_MAX_EXTENSION_ATR15", "0.95") or 0.95)
 ENTRY_RESCUE_MAX_AGE_MINUTES = int(os.getenv("ENTRY_RESCUE_MAX_AGE_MINUTES", "18") or 18)
+# Opportunity-preserving geometry. The 1.5R / full 15M travel values remain
+# preferred, but a technically valid setup is not discarded merely because a
+# nearby breakout gate sits before the main objective. Viable fallback geometry
+# is still required to have meaningful full-position travel.
+MIN_VIABLE_RR1_ENTRY = float(os.getenv("MIN_VIABLE_RR1_ENTRY", "1.25") or 1.25)
+MIN_VIABLE_TP1_DISTANCE_PCT = float(os.getenv("MIN_VIABLE_TP1_DISTANCE_PCT", "0.95") or 0.95)
+MIN_VIABLE_TP1_ATR_15M = float(os.getenv("MIN_VIABLE_TP1_ATR_15M", "1.15") or 1.15)
+BREAKOUT_GATE_MAX_ATR15 = float(os.getenv("BREAKOUT_GATE_MAX_ATR15", "0.90") or 0.90)
+BREAKOUT_GATE_MAX_DISTANCE_PCT = float(os.getenv("BREAKOUT_GATE_MAX_DISTANCE_PCT", "0.75") or 0.75)
 GOOD_RR1_BONUS = float(os.getenv("GOOD_RR1_BONUS", "1.50") or 1.50)
 STRONG_RR1_BONUS = float(os.getenv("STRONG_RR1_BONUS", "2.00") or 2.00)
 
@@ -170,6 +179,11 @@ class TradePlan:
     geometry_mode: str = ""
     technical_rr_target: float = 1.50
     better_entry: float = 0.0
+    # Internal only: Telegram formatting remains unchanged.
+    geometry_grade: str = "OPTIMAL"
+    barrier_mode: str = "DIRECT"
+    preferred_geometry_met: bool = True
+    breakout_gates: list = field(default_factory=list)
 
 
 @dataclass
@@ -3008,6 +3022,35 @@ def dedupe_news(items):
     return out
 
 
+OIL_NEWS_CORE_TERMS = [
+    "brent", "crude", "oil price", "oil prices", "petroleum", "opec", "opec+",
+    "eia", "api crude", "crude inventories", "oil inventories", "stockpiles",
+    "refinery", "refining", "gasoline inventories", "distillate", "hormuz",
+    "oil supply", "oil demand", "energy market", "barrel", "bpd",
+]
+
+OIL_NEWS_CONTEXT_TERMS = [
+    "iran", "russia", "sanctions", "middle east", "fed", "powell", "dollar",
+    "yields", "tariff", "ceasefire", "strike", "attack", "production", "output",
+]
+
+
+def oil_news_relevance(title):
+    """Return a strict oil-market relevance score for a headline.
+
+    Reuters attribution alone is never relevance. Broad macro/geopolitical words
+    count only when the headline also contains a direct oil/energy anchor. This
+    prevents unrelated headlines (for example pharma news) from creating an oil
+    NEWS_SHOCK or directional bias.
+    """
+    text = normalized(title)
+    direct_hits = sum(1 for term in OIL_NEWS_CORE_TERMS if term in text)
+    context_hits = sum(1 for term in OIL_NEWS_CONTEXT_TERMS if term in text)
+    if direct_hits <= 0:
+        return 0
+    return int(min(6, direct_hits * 2 + min(2, context_hits)))
+
+
 def get_news():
     """News feed for the bot.
 
@@ -3037,8 +3080,12 @@ def get_news():
         title = normalized(item.get("title", ""))
         link = normalized(item.get("link", ""))
         is_reuters = "reuters" in title or "reuters.com" in link
+        relevance = oil_news_relevance(item.get("title", ""))
+        if relevance <= 0:
+            continue
         item["source"] = "Reuters" if is_reuters else item.get("source", "Google News")
         item["priority"] = 1 if is_reuters else 0
+        item["oil_relevance"] = relevance
         out.append(item)
 
     out.sort(key=lambda x: (x.get("priority", 0), x.get("published_at") or datetime(1970, 1, 1, tzinfo=timezone.utc)), reverse=True)
@@ -3047,6 +3094,9 @@ def get_news():
 
 def score_news_item(title):
     text = normalized(title)
+    relevance = oil_news_relevance(title)
+    if relevance <= 0:
+        return 0, 0
     long_hits = sum(1 for p in LONG_NEWS_PHRASES if p in text)
     short_hits = sum(1 for p in SHORT_NEWS_PHRASES if p in text)
     impact = sum(1 for p in HIGH_IMPACT_WORDS if p in text)
@@ -3056,9 +3106,11 @@ def score_news_item(title):
         score += long_hits * (12 + min(6, impact))
     if short_hits:
         score -= short_hits * (12 + min(6, impact))
+    # Source quality can strengthen a relevant oil headline, never create relevance.
     if "reuters" in text:
         score = int(score * 1.2)
-    return score, impact
+    score = int(score * min(1.25, 0.85 + relevance * 0.07))
+    return score, max(impact, relevance)
 
 
 def analyze_news(items):
@@ -4550,12 +4602,12 @@ def _technical_stop_candidates(side, context, atr15):
 
 
 def _tp1_travel_profile(context, setup_type, price, atr15):
-    """Dynamic minimum travel for the first *full-position* 15M target.
+    """Preferred and viable travel profiles for a full-position 15M target.
 
-    RR alone is not enough: a tiny stop can turn an insignificant 0.6% move
-    into a visually attractive 1.5R. The floor combines percentage travel and
-    15M ATR, then the geometry selector also requires roughly 1.5R from the
-    chosen technical stop. Nearby levels below the floor remain checkpoints.
+    Preferred geometry targets the user's normal 15M objective. Viable geometry
+    is a controlled fallback for a real technical setup, not a tiny scalp: it
+    still requires a meaningful percentage move, ATR travel and RR. This avoids
+    the old deadlock where a nearby breakout gate made every farther TP illegal.
     """
     context = context or {}
     setup_type = str(setup_type or "").upper()
@@ -4565,39 +4617,53 @@ def _tp1_travel_profile(context, setup_type, price, atr15):
     else:
         regime_name = str(regime or "NORMAL").upper()
 
-    min_pct = float(MIN_TP1_DISTANCE_PCT)
-    min_atr = float(MIN_TP1_ATR_15M)
+    preferred_pct = float(MIN_TP1_DISTANCE_PCT)
+    preferred_atr = float(MIN_TP1_ATR_15M)
+    viable_pct = float(MIN_VIABLE_TP1_DISTANCE_PCT)
+    viable_atr = float(MIN_VIABLE_TP1_ATR_15M)
 
     if any(k in regime_name for k in ["TREND_EXPANSION", "IMPULSE", "NEWS_SHOCK"]):
-        min_pct = max(min_pct, 1.40)
-        min_atr = max(min_atr, 1.75)
+        preferred_pct = max(preferred_pct, 1.35)
+        preferred_atr = max(preferred_atr, 1.65)
+        viable_pct = max(viable_pct, 1.00)
+        viable_atr = max(viable_atr, 1.20)
     elif any(k in regime_name for k in ["TREND_PULLBACK", "PULLBACK"]):
-        min_pct = max(min_pct, 1.25)
-        min_atr = max(min_atr, 1.60)
+        preferred_pct = max(preferred_pct, 1.20)
+        preferred_atr = max(preferred_atr, 1.50)
     elif any(k in regime_name for k in ["RANGE", "COMPRESSION"]):
-        min_pct = max(0.95, min(min_pct, 1.10))
-        min_atr = max(1.30, min(min_atr, 1.45))
+        preferred_pct = max(0.95, min(preferred_pct, 1.10))
+        preferred_atr = max(1.30, min(preferred_atr, 1.45))
+        viable_pct = max(0.80, min(viable_pct, 0.95))
+        viable_atr = max(1.00, min(viable_atr, 1.15))
 
     if setup_type in {"TREND_IGNITION_ENTRY", "NEWS_IMPULSE", "RANGE_COMPRESSION_BREAKOUT"}:
-        min_pct = max(min_pct, 1.40)
-        min_atr = max(min_atr, 1.75)
+        preferred_pct = max(preferred_pct, 1.35)
+        preferred_atr = max(preferred_atr, 1.65)
+        viable_pct = max(viable_pct, 1.00)
+        viable_atr = max(viable_atr, 1.20)
     elif setup_type in {"PULLBACK_CONTINUATION", "PULLBACK_CONTINUATION_FAST_ENTRY", "TREND_CONTINUATION"}:
-        min_pct = max(min_pct, 1.25)
-        min_atr = max(min_atr, 1.60)
+        preferred_pct = max(preferred_pct, 1.20)
+        preferred_atr = max(preferred_atr, 1.50)
     elif setup_type in {"COUNTERTREND_SCALP", "RANGE_EDGE_TRADE"}:
-        min_pct = max(1.00, min(min_pct, 1.15))
-        min_atr = max(1.35, min(min_atr, 1.50))
+        preferred_pct = max(1.00, min(preferred_pct, 1.15))
+        preferred_atr = max(1.35, min(preferred_atr, 1.50))
 
-    pct_distance = float(price) * min_pct / 100.0
-    atr_distance = float(atr15) * min_atr
+    preferred_pct_distance = float(price) * preferred_pct / 100.0
+    preferred_atr_distance = float(atr15) * preferred_atr
+    viable_pct_distance = float(price) * viable_pct / 100.0
+    viable_atr_distance = float(atr15) * viable_atr
     return {
-        "min_pct": round(min_pct, 3),
-        "min_atr": round(min_atr, 3),
-        "pct_distance": pct_distance,
-        "atr_distance": atr_distance,
-        "absolute_floor": max(pct_distance, atr_distance),
+        "min_pct": round(preferred_pct, 3),
+        "min_atr": round(preferred_atr, 3),
+        "pct_distance": preferred_pct_distance,
+        "atr_distance": preferred_atr_distance,
+        "absolute_floor": max(preferred_pct_distance, preferred_atr_distance),
+        "viable_min_pct": round(viable_pct, 3),
+        "viable_min_atr": round(viable_atr, 3),
+        "viable_pct_distance": viable_pct_distance,
+        "viable_atr_distance": viable_atr_distance,
+        "viable_absolute_floor": max(viable_pct_distance, viable_atr_distance),
     }
-
 
 def _measured_move_target(side, context, price, atr15, required_reward):
     """Create a technical 15M projection when visible liquidity is too close.
@@ -4645,6 +4711,135 @@ def _strong_barriers_between(side, price, selected_level, targets, exclude_level
             barriers.append(item)
     barriers.sort(key=lambda x: abs(float(x["level"]) - float(price)))
     return barriers
+
+
+
+def _barrier_clearance_state(side, context, barrier, price, atr15, setup_type, snapshot=None):
+    """Classify a strong level as hard, cleared, or an active breakout gate.
+
+    A nearby 15M swing can be the trigger level of a trend-ignition setup rather
+    than a reason to declare every farther objective invalid. Major 1H/external
+    levels and opposing ICT zones stay hard until price actually clears/retests
+    them. The classification is internal and never changes Telegram formatting.
+    """
+    context = context or {}
+    snapshot = snapshot or ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
+    level = safe_float((barrier or {}).get("level"))
+    if side not in ["LONG", "SHORT"] or level is None or not price:
+        return {"status": "HARD", "reason": "invalid barrier"}
+    atr15 = safe_float(atr15, price * 0.006) or price * 0.006
+    basis = str((barrier or {}).get("basis") or "").lower()
+    priority = int((barrier or {}).get("priority", 0) or 0)
+    distance = abs(level - price)
+    distance_atr = distance / atr15 if atr15 else 99.0
+    distance_pct = distance / price * 100.0 if price else 99.0
+    buffer = max(atr15 * 0.05, price * 0.00025)
+
+    c3 = list(context.get("candles_3m") or [])
+    c15 = list(context.get("candles_15m_closed") or context.get("candles_15m") or [])
+    c3_closed = closed_candles(c3, 3, min_required=1)[-5:] if c3 else []
+    c15_closed = closed_candles(c15, 15, min_required=1)[-3:] if c15 else []
+    through = (lambda c: c.close > level + buffer) if side == "LONG" else (lambda c: c.close < level - buffer)
+    touches = (lambda c: c.high >= level - buffer) if side == "LONG" else (lambda c: c.low <= level + buffer)
+    close_through_count = sum(1 for c in c3_closed if through(c))
+    closed15_through = any(through(c) for c in c15_closed)
+    touch_count = sum(1 for c in c3_closed if touches(c))
+    tested = bool(touch_count or any(touches(c) for c in c15_closed))
+    if closed15_through or close_through_count >= 2:
+        return {"status": "CLEARED", "reason": "closed acceptance beyond barrier", "distance_atr": distance_atr}
+
+    setup_type = str(setup_type or "").upper()
+    breakout_types = {
+        "TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "NEWS_IMPULSE",
+        "RANGE_COMPRESSION_BREAKOUT", "PRIME_ICT_LOCATION_OVERRIDE",
+        "PULLBACK_CONTINUATION_FAST_ENTRY", "PULLBACK_CONTINUATION",
+    }
+    structure = context.get("structure") or {}
+    phase = str(structure.get("phase") or "").upper()
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    rescue = context.get("entry_rescue_event") or {}
+    rescue_type = str(rescue.get("type") or "")
+    rescue_breakout = bool(
+        rescue.get("confirmed") and rescue.get("side") == side
+        and rescue_type in ["BREAKOUT_RETEST", "BREAKOUT_ACCEPTANCE", "ICT_ZONE_RECLAIM"]
+    )
+    phase_support = bool(
+        structure.get("bias") == side
+        or (side == "LONG" and any(x in phase for x in ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"]))
+        or (side == "SHORT" and any(x in phase for x in ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"]))
+    )
+    tf3_support = bool(tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22)
+    tf15_support = bool(tf15.get("bias") == side and abs(int(tf15.get("score", 0) or 0)) >= 26)
+    cvd_block = context.get("cvd") or {}
+    clusters_block = context.get("clusters") or {}
+    cvd_state_support = bool(
+        (side == "LONG" and str(cvd_block.get("state") or "").upper() == "BUYERS_DOMINATE")
+        or (side == "SHORT" and str(cvd_block.get("state") or "").upper() == "SELLERS_DOMINATE")
+    )
+    flow_support = sum([
+        (cvd_block.get("bias") == side and abs(int(cvd_block.get("score", 0) or 0)) >= 12)
+        or (cvd_state_support and abs(int(cvd_block.get("score", 0) or 0)) >= 10),
+        (context.get("flow") or {}).get("bias") == side and abs(int((context.get("flow") or {}).get("score", 0) or 0)) >= 10,
+        (context.get("liquidity") or {}).get("bias") == side and abs(int((context.get("liquidity") or {}).get("score", 0) or 0)) >= 9,
+        clusters_block.get("bias") == side and abs(int(clusters_block.get("score", 0) or 0)) >= 4,
+    ])
+    near_gate = bool(distance_atr <= BREAKOUT_GATE_MAX_ATR15 and distance_pct <= BREAKOUT_GATE_MAX_DISTANCE_PCT)
+    major_1h = "1h" in basis or (priority >= 95 and "external" in basis)
+    opposing_ict = bool(
+        (side == "LONG" and any(x in basis for x in ["bearish ob", "bearish fvg"]))
+        or (side == "SHORT" and any(x in basis for x in ["bullish ob", "bullish fvg"]))
+    )
+    breakout_location_ok = bool(
+        snapshot.get("professional_location")
+        or (setup_type in {"TREND_IGNITION_ENTRY", "NEWS_IMPULSE", "RANGE_COMPRESSION_BREAKOUT"}
+            and tf15_support and flow_support >= 2)
+    )
+    directional_stack = bool(
+        snapshot.get("fast_trigger") and breakout_location_ok
+        and tf3_support and tf15_support and (phase_support or rescue_breakout or flow_support >= 2)
+        and not snapshot.get("emergency_against")
+    )
+    gate = bool(setup_type in breakout_types and near_gate and tested and directional_stack)
+    absorption_stack = bool(
+        touch_count >= 2
+        and abs(int(tf3.get("score", 0) or 0)) >= 42
+        and abs(int(tf15.get("score", 0) or 0)) >= 45
+        and flow_support >= 3
+    )
+    # An opposing ICT zone still needs an actual breakout/retest. A major 1H
+    # liquidity level may be treated as a risky breakout gate only after clear
+    # repeated absorption plus strong 3M/15M/order-flow participation.
+    if opposing_ict and not rescue_breakout:
+        gate = False
+    if major_1h and not (rescue_breakout or absorption_stack):
+        gate = False
+    if gate:
+        return {
+            "status": "BREAKOUT_GATE",
+            "reason": "near technical gate with 15M/3M acceptance stack",
+            "distance_atr": round(distance_atr, 3),
+            "distance_pct": round(distance_pct, 3),
+        }
+    return {"status": "HARD", "reason": "unbroken strong barrier", "distance_atr": distance_atr}
+
+
+def _blocking_barriers_between(side, price, selected_level, targets, context, atr15, setup_type, snapshot=None, exclude_level=None):
+    raw = _strong_barriers_between(side, price, selected_level, targets, exclude_level=exclude_level)
+    blocking = []
+    gates = []
+    cleared = []
+    for item in raw:
+        state = _barrier_clearance_state(side, context, item, price, atr15, setup_type, snapshot)
+        enriched = dict(item)
+        enriched["barrier_state"] = state
+        if state.get("status") == "HARD":
+            blocking.append(enriched)
+        elif state.get("status") == "BREAKOUT_GATE":
+            gates.append(enriched)
+        else:
+            cleared.append(enriched)
+    return blocking, gates, cleared
 
 
 def _target_barrier_penalty(side, price, selected, targets):
@@ -4719,12 +4914,13 @@ def _three_minute_stop_allowed(side, context, setup_type, snapshot):
 
 
 def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
-    """Select one coherent stop/TP1 pair without skipping strong barriers.
+    """Select technical stop/TP geometry without sacrificing a valid opportunity.
 
-    Strong 15M/1H liquidity or opposing ICT zones are hard TP1 boundaries.
-    A measured move is allowed only in genuine expansion and only when no strong
-    barrier lies before it. Tactical 3M stops are allowed only for a confirmed
-    micro trigger; otherwise the full-position trade uses ICT/15M invalidation.
+    Preferred geometry remains the goal. If a close strong level is actually the
+    trigger gate of a confirmed breakout, it is tracked internally and the next
+    technical objective may be used. If preferred geometry is unavailable, a
+    meaningful VIABLE plan can still be returned and later classified as risky.
+    True hard 1H/ICT barriers are never skipped.
     """
     price = safe_float((context or {}).get("price"))
     if side not in ["LONG", "SHORT"] or not price:
@@ -4744,6 +4940,11 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
         snapshot.get("closed_confirmed")
         or (snapshot.get("fast_reversal_to_side") or {}).get("confirmed")
         or (tf15.get("bias") == side and structure.get("bias") == side)
+        or (
+            tf15.get("bias") == side and snapshot.get("fast_trigger")
+            and snapshot.get("professional_location")
+            and setup_type in {"TREND_IGNITION_ENTRY", "NEWS_IMPULSE", "RANGE_COMPRESSION_BREAKOUT", "PRIME_ICT_LOCATION_OVERRIDE"}
+        )
     )
     projection_allowed = bool(expansion_confirmed and setup_type not in no_projection_types)
 
@@ -4760,54 +4961,79 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
         return None
 
     best = None
-    all_checkpoints = []
     for stop in stops:
         risk = abs(price - stop["level"])
         if risk <= 0:
             continue
         risk_atr = risk / atr15
-        required_reward = max(profile["absolute_floor"], risk * TARGET_RR1_ENTRY)
+        preferred_reward = max(profile["absolute_floor"], risk * TARGET_RR1_ENTRY)
+        viable_reward = max(profile["viable_absolute_floor"], risk * MIN_VIABLE_RR1_ENTRY)
 
-        qualifying_visible = [
-            t for t in targets
-            if abs(float(t["level"]) - price) + 1e-9 >= required_reward
+        preferred_visible = [t for t in targets if abs(float(t["level"]) - price) + 1e-9 >= preferred_reward]
+        viable_visible = [
+            dict(t, viable_fallback=True) for t in targets
+            if viable_reward <= abs(float(t["level"]) - price) + 1e-9 < preferred_reward
         ]
         checkpoints = [
             dict(t, checkpoint=True) for t in targets
-            if abs(float(t["level"]) - price) + 1e-9 < required_reward
+            if abs(float(t["level"]) - price) + 1e-9 < viable_reward
         ]
-        all_checkpoints.extend(checkpoints)
-        candidate_targets = list(qualifying_visible)
+        candidate_targets = list(preferred_visible) + list(viable_visible)
 
-        if projection_allowed and not qualifying_visible:
-            projected = _measured_move_target(side, context, price, atr15, required_reward)
-            if not _strong_barriers_between(side, price, projected["level"], targets):
+        if projection_allowed:
+            projected = _measured_move_target(side, context, price, atr15, preferred_reward)
+            blocking, gates, _ = _blocking_barriers_between(
+                side, price, projected["level"], targets, context, atr15, setup_type, snapshot
+            )
+            if not blocking:
+                projected = dict(projected, breakout_gates=gates)
                 candidate_targets.append(projected)
 
         for target in candidate_targets:
             reward = abs(float(target["level"]) - price)
-            if reward <= 0 or reward + 1e-9 < required_reward:
+            if reward <= 0 or reward + 1e-9 < viable_reward:
                 continue
-            # TP1 may never jump over a strong unbroken 15M/1H barrier.
-            hard_barriers = _strong_barriers_between(side, price, target["level"], targets, exclude_level=target.get("level"))
-            if hard_barriers:
+            blocking, gates, cleared = _blocking_barriers_between(
+                side, price, target["level"], targets, context, atr15, setup_type, snapshot, exclude_level=target.get("level")
+            )
+            if blocking:
                 continue
             rr = reward / risk
             reward_atr = reward / atr15
-            barrier_penalty, strong_barriers = _target_barrier_penalty(side, price, target, targets)
+            reward_pct = reward / price * 100.0
+            preferred_met = bool(
+                reward + 1e-9 >= preferred_reward
+                and rr + 1e-9 >= TARGET_RR1_ENTRY
+                and reward_atr + 1e-9 >= profile["min_atr"]
+                and reward_pct + 1e-9 >= profile["min_pct"]
+            )
+            viable_met = bool(
+                rr + 1e-9 >= MIN_VIABLE_RR1_ENTRY
+                and reward_atr + 1e-9 >= profile["viable_min_atr"]
+                and reward_pct + 1e-9 >= profile["viable_min_pct"]
+            )
+            if not viable_met:
+                continue
 
+            grade = "OPTIMAL" if preferred_met else "VIABLE"
+            barrier_mode = "BREAKOUT_GATE" if gates else "DIRECT"
+            if target.get("projected") and gates:
+                grade = "GATE_EXPANSION" if preferred_met else "VIABLE_GATE_EXPANSION"
+
+            barrier_penalty, _ = _target_barrier_penalty(side, price, target, targets)
             score = stop["priority"] * 0.22 + int(target.get("priority", 0) or 0) * 0.18
             if stop.get("timeframe") == "3M":
                 score += 10.0 if allow_3m_stop else -40.0
             elif snapshot.get("closed_confirmed") and stop.get("timeframe") in ["15M", "ICT"]:
                 score += 11.0
-
-            score += 28.0 if rr >= 2.0 else 24.0
-            if reward_atr >= profile["min_atr"]:
-                score += 12.0
-            if reward / price * 100 >= profile["min_pct"]:
-                score += 12.0
+            score += 28.0 if rr >= 2.0 else (24.0 if rr >= TARGET_RR1_ENTRY else 17.0)
+            score += 12.0 if reward_atr >= profile["min_atr"] else 5.0
+            score += 12.0 if reward_pct >= profile["min_pct"] else 5.0
             if target.get("projected"):
+                score -= 6.0
+            if gates:
+                score -= 3.0 * len(gates)
+            if not preferred_met:
                 score -= 8.0
             if 0.32 <= risk_atr <= 1.35:
                 score += 10.0
@@ -4815,33 +5041,22 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
                 score -= 18.0
             elif risk_atr > 1.80:
                 score -= 10.0
-            score -= barrier_penalty
+            score -= min(barrier_penalty, 6.0)
 
             candidate = {
-                "score": score,
-                "stop": stop,
-                "target": target,
-                "risk": risk,
-                "reward": reward,
-                "rr": rr,
-                "risk_atr": risk_atr,
-                "reward_atr": reward_atr,
-                "reward_pct": reward / price * 100,
-                "barrier_penalty": barrier_penalty,
-                "strong_barriers": strong_barriers,
-                "stops": stops,
-                "targets": list(targets) + ([target] if target.get("projected") else []),
-                "checkpoints": checkpoints,
-                "tp1_profile": profile,
-                "required_reward": required_reward,
-                "allow_3m_stop": allow_3m_stop,
-                "projection_allowed": projection_allowed,
+                "score": score, "stop": stop, "target": target, "risk": risk,
+                "reward": reward, "rr": rr, "risk_atr": risk_atr,
+                "reward_atr": reward_atr, "reward_pct": reward_pct,
+                "stops": stops, "targets": list(targets) + ([target] if target.get("projected") else []),
+                "checkpoints": checkpoints, "tp1_profile": profile,
+                "preferred_reward": preferred_reward, "viable_reward": viable_reward,
+                "allow_3m_stop": allow_3m_stop, "projection_allowed": projection_allowed,
+                "geometry_grade": grade, "barrier_mode": barrier_mode,
+                "preferred_geometry_met": preferred_met, "breakout_gates": gates,
+                "cleared_barriers": cleared,
             }
             if best is None or candidate["score"] > best["score"]:
                 best = candidate
-
-    # No unconditional measured-move fallback: an invalid geometry stays invalid.
-    # This prevents the bot from manufacturing a distant TP behind strong barriers.
     return best
 
 def _technical_stop_from_context(side, context, atr15):
@@ -6132,7 +6347,12 @@ def _select_followup_target(side, context, price, previous_level, targets, risk,
 
 
 def make_plan(side, context):
-    """Build a barrier-aware full-position 15M/ICT plan."""
+    """Build a barrier-aware full-position 15M/ICT plan.
+
+    Preferred 1.5R / 15M travel remains the target. A technically valid VIABLE
+    plan is allowed as risky rather than being converted into a zero-price block.
+    Breakout-gate handling prevents the exact deadlock that missed the 79.62 LONG.
+    """
     price = safe_float(context.get("price"))
     atr15 = safe_float(context.get("atr15"), (price or 90) * 0.006) or ((price or 90) * 0.006)
 
@@ -6153,7 +6373,7 @@ def make_plan(side, context):
     valid = bool(side in ["LONG", "SHORT"] and price and geometry)
     validation_reasons = []
     if not valid:
-        validation_reasons.append("не вдалося побудувати технічну геометрію без пропуску сильних барʼєрів")
+        validation_reasons.append("не вдалося побудувати життєздатну технічну геометрію")
 
     if geometry:
         stop = float(geometry["stop"]["level"])
@@ -6166,18 +6386,23 @@ def make_plan(side, context):
         risk_pct = risk / price * 100 if price else 0.0
         targets = geometry.get("targets") or _technical_target_candidates(side, context, atr15)
         tp1_profile = geometry.get("tp1_profile") or {}
-        if reward1 / price * 100 + 1e-9 < safe_float(tp1_profile.get("min_pct"), 0):
+        # Only the viable floors are hard. Preferred floors determine ENTRY vs RISKY.
+        if reward1 / price * 100 + 1e-9 < safe_float(tp1_profile.get("viable_min_pct"), MIN_VIABLE_TP1_DISTANCE_PCT):
             valid = False
-            validation_reasons.append("TP1 не має достатньої intraday-відстані")
-        if reward1 / atr15 + 1e-9 < safe_float(tp1_profile.get("min_atr"), 0):
+            validation_reasons.append("TP1 не має мінімальної повноцінної intraday-відстані")
+        if reward1 / atr15 + 1e-9 < safe_float(tp1_profile.get("viable_min_atr"), MIN_VIABLE_TP1_ATR_15M):
             valid = False
-            validation_reasons.append("TP1 не має достатнього 15M ATR-руху")
-        if rr1 + 1e-9 < TARGET_RR1_ENTRY:
+            validation_reasons.append("TP1 не має мінімального 15M ATR-руху")
+        if rr1 + 1e-9 < MIN_VIABLE_RR1_ENTRY:
             valid = False
-            validation_reasons.append("TP1 нижче професійної геометрії 1.5R")
-        if _strong_barriers_between(side, price, tp1, targets, exclude_level=tp1):
+            validation_reasons.append("TP1 нижче мінімальної життєздатної RR-геометрії")
+        snapshot = ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
+        blocking, _, _ = _blocking_barriers_between(
+            side, price, tp1, targets, context, atr15, setup_type, snapshot, exclude_level=tp1
+        )
+        if blocking:
             valid = False
-            validation_reasons.append("TP1 пропускає сильний 15M/1H барʼєр")
+            validation_reasons.append("TP1 пропускає непідтверджений сильний 15M/1H барʼєр")
     else:
         stop = price
         tp1 = price
@@ -6194,6 +6419,7 @@ def make_plan(side, context):
             snapshot.get("closed_confirmed")
             or (snapshot.get("fast_reversal_to_side") or {}).get("confirmed")
             or (tf15.get("bias") == side and structure.get("bias") == side)
+            or (geometry and geometry.get("barrier_mode") == "BREAKOUT_GATE")
         )
     )
 
@@ -6210,8 +6436,6 @@ def make_plan(side, context):
             MIN_RR3_ENTRY, MIN_TP3_DISTANCE_PCT, MIN_TP3_ATR_15M,
             "TP3", projection_allowed,
         )
-        # Never push a target through a strong technical barrier merely to
-        # create cosmetic spacing between TP levels.
         if side == "LONG":
             if not tp2_barrier_override:
                 tp2 = max(tp2, tp1 + max(atr15 * 0.18, price * 0.0008))
@@ -6243,25 +6467,21 @@ def make_plan(side, context):
     reward3 = abs(tp3 - price) if price and tp3 is not None else 0.0
     geometry_mode = "3M_TACTICAL" if geometry and geometry["stop"].get("timeframe") == "3M" else "15M_ICT_STRUCTURAL"
     return TradePlan(
-        entry=round_price(price),
-        stop=round_price(stop),
-        tp1=round_price(tp1),
-        tp2=round_price(tp2),
-        tp3=round_price(tp3),
-        risk_pct=round(risk_pct, 3),
-        rr1=round(rr1, 2) if risk else 0,
-        rr2=round(reward2 / risk, 2) if risk else 0,
-        rr3=round(reward3 / risk, 2) if risk else 0,
-        invalidation=invalidation,
-        valid=bool(valid),
-        validation_reason="; ".join(dict.fromkeys(validation_reasons)),
-        technical_stop_basis=stop_basis,
-        technical_tp1_basis=tp1_basis,
-        technical_tp2_basis=tp2_basis,
-        technical_tp3_basis=tp3_basis,
-        geometry_mode=geometry_mode,
-        technical_rr_target=TARGET_RR1_ENTRY,
-        better_entry=0.0,
+        entry=round_price(price), stop=round_price(stop), tp1=round_price(tp1),
+        tp2=round_price(tp2), tp3=round_price(tp3), risk_pct=round(risk_pct, 3),
+        rr1=round(rr1, 2) if risk else 0, rr2=round(reward2 / risk, 2) if risk else 0,
+        rr3=round(reward3 / risk, 2) if risk else 0, invalidation=invalidation,
+        valid=bool(valid), validation_reason="; ".join(dict.fromkeys(validation_reasons)),
+        technical_stop_basis=stop_basis, technical_tp1_basis=tp1_basis,
+        technical_tp2_basis=tp2_basis, technical_tp3_basis=tp3_basis,
+        geometry_mode=geometry_mode, technical_rr_target=TARGET_RR1_ENTRY, better_entry=0.0,
+        geometry_grade=str((geometry or {}).get("geometry_grade") or "INVALID"),
+        barrier_mode=str((geometry or {}).get("barrier_mode") or "NONE"),
+        preferred_geometry_met=bool((geometry or {}).get("preferred_geometry_met", False)),
+        breakout_gates=[
+            {"level": round_price(g.get("level")), "basis": str(g.get("basis") or "")}
+            for g in ((geometry or {}).get("breakout_gates") or [])
+        ],
     )
 
 def _evaluate_new_setup_core(context):
@@ -10526,7 +10746,8 @@ def apply_professional_lifecycle_to_setup(setup, context):
     base_level = str(out.get("entry_level") or ("ENTRY" if base_action == "ENTRY" else "RISKY_ENTRY" if base_action == "RISKY_ENTRY" else "WATCH_TRIGGER")).upper()
     setup_info = out.get("setup_classifier") or {}
     setup_type = str(setup_info.get("type") or "").upper()
-    forced_risky = bool(setup_info.get("force_risky")) or setup_type in {
+    geometry_grade = str(getattr(plan, "geometry_grade", "OPTIMAL") or "OPTIMAL").upper() if plan else "INVALID"
+    forced_risky = bool(setup_info.get("force_risky")) or geometry_grade != "OPTIMAL" or setup_type in {
         "TREND_IGNITION_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY", "PRIME_ICT_LOCATION_OVERRIDE",
         "SWEEP_RECLAIM_EARLY_ENTRY", "COUNTERTREND_SCALP", "NEWS_IMPULSE", "RANGE_COMPRESSION_BREAKOUT",
     }
@@ -10538,9 +10759,10 @@ def apply_professional_lifecycle_to_setup(setup, context):
         and snapshot.get("fast_trigger")
         and not snapshot.get("emergency_against")
     )
+    breakout_geometry = bool(plan and str(getattr(plan, "barrier_mode", "") or "").upper() == "BREAKOUT_GATE")
     early_consensus = bool(
         plan_valid
-        and snapshot.get("professional_location")
+        and (snapshot.get("professional_location") or breakout_geometry)
         and (snapshot.get("fast_trigger") or bridge.get("confirmed"))
         and not snapshot.get("emergency_against")
     )
@@ -10565,10 +10787,15 @@ def apply_professional_lifecycle_to_setup(setup, context):
             geometry_bonus = 4
         elif rr1 >= TARGET_RR1_ENTRY:
             geometry_bonus = 2
-    unified_quality = int(clamp(round(base_quality * 0.72 + dual_quality * 0.28) + geometry_bonus, 0, 92))
+    geometry_penalty = 0 if geometry_grade == "OPTIMAL" else (2 if "GATE_EXPANSION" in geometry_grade else 5)
+    unified_quality = int(clamp(round(base_quality * 0.72 + dual_quality * 0.28) + geometry_bonus - geometry_penalty, 0, 92))
 
     final_action = base_action
     stage = "WATCH_TRIGGER"
+    explicit_block = bool(
+        out.get("hard_no_chase") or out.get("exhausted_move") or out.get("regime_gate")
+        or out.get("setup_gate") or out.get("entry_blocked") or base_level == "BLOCK"
+    )
     if not plan_valid and base_action in ["ENTRY", "RISKY_ENTRY"]:
         final_action = "WATCH"
         stage = "BLOCKED"
@@ -10586,18 +10813,23 @@ def apply_professional_lifecycle_to_setup(setup, context):
             stage = "WATCH_TRIGGER"
     elif base_action == "RISKY_ENTRY":
         if full_consensus or early_consensus:
-            # The base engine may mark RISKY because of pressure, countertrend
-            # or setup-specific risk. Dual-Speed confirms timing but must not
-            # silently upgrade that risk classification to a full ENTRY.
             final_action = "RISKY_ENTRY"
             stage = "EARLY_CONFIRMED"
         else:
             final_action = "WATCH"
             stage = "WATCH_TRIGGER"
-    elif base_action in ["WATCH", "WAIT"] and reversal_fast_path and unified_quality >= RISKY_QUALITY_MIN:
-        final_action = "RISKY_ENTRY"
-        stage = "EARLY_CONFIRMED"
-        out["reason"] = out.get("reason") or "сильний ранній розворот підтверджений 3M + ICT/структурою + потоком"
+    elif base_action in ["WATCH", "WAIT"] and plan_valid and not explicit_block and setup_info.get("entry_allowed"):
+        # One canonical consensus may activate an otherwise valid WATCH. This
+        # prevents Quality, Geometry and Dual-Speed from vetoing each other in
+        # sequence after all professional requirements are already present.
+        if full_consensus and not forced_risky and unified_quality >= ENTRY_QUALITY_MIN:
+            final_action = "ENTRY"
+            stage = "CONFIRMED_ENTRY"
+        elif (early_consensus or reversal_fast_path) and unified_quality >= RISKY_QUALITY_MIN:
+            final_action = "RISKY_ENTRY"
+            stage = "EARLY_CONFIRMED"
+            if reversal_fast_path:
+                out["reason"] = out.get("reason") or "сильний ранній розворот підтверджений 3M + ICT/структурою + потоком"
 
     if final_action == "ENTRY":
         out["action"] = "ENTRY"
@@ -10628,6 +10860,8 @@ def apply_professional_lifecycle_to_setup(setup, context):
         "fast_reversal_bridge": bridge,
         "quality_components": components,
         "decision_source": "UNIFIED_ENTRY_CONSENSUS",
+        "geometry_grade": geometry_grade,
+        "barrier_mode": str(getattr(plan, "barrier_mode", "") or "") if plan else "",
     }
     out["dual_speed_snapshot"] = snapshot
     return out
