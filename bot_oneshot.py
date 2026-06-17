@@ -19,7 +19,7 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
-# Version upgrade: Balanced Opportunity + Post-Impulse Rejection Guard.
+# Version upgrade: Adaptive Rejection Severity + Fresh-Recovery Rescue Guard.
 # Core idea:
 # 1. Price action is the base.
 # 2. News is fuel/filter, not a standalone trade.
@@ -96,8 +96,11 @@ MIN_TACTICAL_STOP_ATR_15M = float(os.getenv("MIN_TACTICAL_STOP_ATR_15M", "0.45")
 EXTREME_RR_SANITY_LIMIT = float(os.getenv("EXTREME_RR_SANITY_LIMIT", "8.0") or 8.0)
 ABSOLUTE_RR_SANITY_LIMIT = float(os.getenv("ABSOLUTE_RR_SANITY_LIMIT", "12.0") or 12.0)
 POST_IMPULSE_MIN_RUN_ATR15 = float(os.getenv("POST_IMPULSE_MIN_RUN_ATR15", "1.00") or 1.00)
+POST_IMPULSE_MODERATE_PULLBACK_ATR15 = float(os.getenv("POST_IMPULSE_MODERATE_PULLBACK_ATR15", "0.50") or 0.50)
 POST_IMPULSE_REJECTION_PULLBACK_ATR15 = float(os.getenv("POST_IMPULSE_REJECTION_PULLBACK_ATR15", "0.70") or 0.70)
 POST_IMPULSE_REJECTION_BODY_ATR15 = float(os.getenv("POST_IMPULSE_REJECTION_BODY_ATR15", "0.42") or 0.42)
+POST_IMPULSE_RECOVERY_MIN_SCORE = int(os.getenv("POST_IMPULSE_RECOVERY_MIN_SCORE", "70") or 70)
+POST_IMPULSE_RECOVERY_MAX_EXTENSION_ATR15 = float(os.getenv("POST_IMPULSE_RECOVERY_MAX_EXTENSION_ATR15", "0.78") or 0.78)
 GOOD_RR1_BONUS = float(os.getenv("GOOD_RR1_BONUS", "1.50") or 1.50)
 STRONG_RR1_BONUS = float(os.getenv("STRONG_RR1_BONUS", "2.00") or 2.00)
 
@@ -693,32 +696,38 @@ def _event_directional_flow_score(context, side):
 
 
 def post_impulse_rejection_snapshot(side, context):
-    """Detect a completed impulse followed by a real rejection, not a healthy retest.
+    """Classify post-impulse behavior as MODERATE, STRONG or RECOVERED.
 
-    This is the distinction needed between the valid earlier LONG around 79.62
-    and the later invalid LONG after the spike above 80.20/80.40 and a sharp
-    rejection back toward 79.9. The guard is symmetric for SHORT.
-
-    It blocks a *new* entry only while the rejection is unresolved. A fresh
-    two-candle 3M recovery / higher-low (or lower-high for SHORT) releases it.
+    A moderate rejection is caution, not a hard ban: it forces any new entry to
+    remain RISKY and requires a fresh trigger. A strong rejection invalidates all
+    triggers that occurred before the rejection. A new sweep/reclaim,
+    breakout-retest or ICT-zone reclaim *after* the rejection can reopen the
+    scenario as a new RISKY setup.
     """
     context = context or {}
     side = str(side or "").upper()
     price = safe_float(context.get("price"))
     if side not in ["LONG", "SHORT"] or not price:
-        return {"active": False, "block_entry": False, "reason": ""}
+        return {
+            "active": False, "block_entry": False, "force_risky": False,
+            "severity": "NONE", "reason": "", "rejection_ts": 0,
+            "fresh_recovery": False, "invalidate_old_triggers": False,
+        }
 
     candles = list(context.get("candles_3m") or [])
     closed = closed_candles(candles, 3, min_required=4) if candles else []
     closed = closed[-8:]
     if len(closed) < 5:
-        return {"active": False, "block_entry": False, "reason": ""}
+        return {
+            "active": False, "block_entry": False, "force_risky": False,
+            "severity": "NONE", "reason": "", "rejection_ts": 0,
+            "fresh_recovery": False, "invalidate_old_triggers": False,
+        }
 
     atr15 = safe_float(context.get("atr15"), None)
     if not atr15:
         atr15 = safe_float((context.get("tf15") or {}).get("atr"), price * 0.006) or price * 0.006
     atr15 = max(float(atr15), price * 0.0015)
-
     live15 = ((context.get("mtf_guard") or {}).get("live_15m") or {})
 
     if side == "LONG":
@@ -740,7 +749,7 @@ def post_impulse_rejection_snapshot(side, context):
             and safe_float(live15.get("body_atr"), 0.0) >= 0.55
         )
         last2 = closed[-2:]
-        recovered = bool(
+        two_candle_recovery = bool(
             len(after) >= 2
             and all(c.close > c.open for c in last2)
             and last2[-1].close > last2[-2].close
@@ -766,7 +775,7 @@ def post_impulse_rejection_snapshot(side, context):
             and safe_float(live15.get("body_atr"), 0.0) >= 0.55
         )
         last2 = closed[-2:]
-        recovered = bool(
+        two_candle_recovery = bool(
             len(after) >= 2
             and all(c.close < c.open for c in last2)
             and last2[-1].close < last2[-2].close
@@ -776,28 +785,96 @@ def post_impulse_rejection_snapshot(side, context):
 
     impulse_complete = bool(peak_idx <= len(closed) - 2 and run_atr >= POST_IMPULSE_MIN_RUN_ATR15)
     rejection = bool(rejection_candles or live_rejection)
-    active = bool(
-        impulse_complete
-        and pullback_atr >= POST_IMPULSE_REJECTION_PULLBACK_ATR15
-        and rejection
+    rejection_ts = max([int(c.ts) for c in rejection_candles] + ([int(live15.get("ts") or 0)] if live_rejection else [0]))
+
+    opposite_side = opposite(side)
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    tf3 = context.get("tf3") or {}
+    hard_against = bool(
+        (structure.get("bias") == opposite_side and abs(int(structure.get("score", 0) or 0)) >= 18)
+        or (ict.get("bias") == opposite_side and abs(int(ict.get("score", 0) or 0)) >= 18)
     )
-    block = bool(active and not recovered)
+    fast_against_layers = sum([
+        tf3.get("bias") == opposite_side and abs(int(tf3.get("score", 0) or 0)) >= 34,
+        (context.get("cvd") or {}).get("bias") == opposite_side and abs(int((context.get("cvd") or {}).get("score", 0) or 0)) >= 16,
+        (context.get("flow") or {}).get("bias") == opposite_side and abs(int((context.get("flow") or {}).get("score", 0) or 0)) >= 12,
+        (context.get("liquidity") or {}).get("bias") == opposite_side and abs(int((context.get("liquidity") or {}).get("score", 0) or 0)) >= 10,
+    ])
+
+    moderate = bool(
+        impulse_complete and rejection
+        and pullback_atr >= POST_IMPULSE_MODERATE_PULLBACK_ATR15
+    )
+    strong = bool(
+        moderate
+        and pullback_atr >= POST_IMPULSE_REJECTION_PULLBACK_ATR15
+        and (
+            hard_against
+            or fast_against_layers >= 2
+            or len(rejection_candles) >= 2
+            or (live_rejection and safe_float(live15.get("body_atr"), 0.0) >= 0.72)
+            or pullback_atr >= 0.95
+        )
+    )
+
+    fresh_recovery_event = None
+    if moderate and rejection_ts:
+        for event in scan_15m_interval_entry_events(context, side):
+            if (
+                int(event.get("trigger_ts", 0) or 0) > rejection_ts
+                and event.get("type") in ["SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"]
+                and event.get("anchor_confirmed")
+                and event.get("professional_location")
+                and int(event.get("score", 0) or 0) >= POST_IMPULSE_RECOVERY_MIN_SCORE
+                and safe_float(event.get("extension_atr15"), 99) <= POST_IMPULSE_RECOVERY_MAX_EXTENSION_ATR15
+            ):
+                fresh_recovery_event = event
+                break
+
+    fresh_recovery = bool(fresh_recovery_event)
+    recovered = bool(two_candle_recovery or fresh_recovery)
+    if recovered and moderate:
+        severity = "RECOVERED"
+    elif strong:
+        severity = "STRONG"
+    elif moderate:
+        severity = "MODERATE"
+    else:
+        severity = "NONE"
+
+    block = bool(strong and not recovered)
+    force_risky = bool((moderate and not recovered) or fresh_recovery)
     reason = ""
     if block:
         reason = (
-            "після різкого імпульсу є сильне відхилення; це ще не підтверджений ретест — "
-            "чекати нового 3M reclaim/higher low" if side == "LONG" else
-            "після різкого імпульсу є сильне відхилення; це ще не підтверджений ретест — "
-            "чекати нового 3M rejection/lower high"
+            "після різкого імпульсу є сильне відхилення; старий тригер анульовано — "
+            "потрібен новий 3M sweep/reclaim або breakout-retest" if side == "LONG" else
+            "після різкого імпульсу є сильне відхилення; старий тригер анульовано — "
+            "потрібен новий 3M rejection/reclaim або breakout-retest"
         )
+    elif severity == "MODERATE":
+        reason = "є помірне відхилення після імпульсу; дозволений лише новий ризикований вхід після свіжого 3M підтвердження"
+    elif severity == "RECOVERED":
+        reason = "після відхилення сформовано новий 3M сетап; старий тригер не використовується"
+
     return {
-        "active": active,
+        "active": moderate,
         "block_entry": block,
+        "force_risky": force_risky,
+        "severity": severity,
         "recovered": recovered,
+        "two_candle_recovery": two_candle_recovery,
+        "fresh_recovery": fresh_recovery,
+        "fresh_recovery_event": fresh_recovery_event,
+        "invalidate_old_triggers": bool(moderate and not recovered),
+        "rejection_ts": int(rejection_ts or 0),
         "run_atr15": round(run_atr, 3),
         "pullback_atr15": round(pullback_atr, 3),
         "rejection_count": len(rejection_candles),
         "live_rejection": live_rejection,
+        "hard_against": hard_against,
+        "fast_against_layers": int(fast_against_layers),
         "reason": reason,
     }
 
@@ -10891,7 +10968,7 @@ def apply_professional_lifecycle_to_setup(setup, context):
     regime_risky_only = bool(isinstance(regime_info, dict) and str(regime_info.get("entry_action") or "").upper() == "RISKY_ONLY")
     event_risky_only = bool(((context or {}).get("calendar") or {}).get("active"))
     rejection_guard = post_impulse_rejection_snapshot(side, context)
-    forced_risky = bool(setup_info.get("force_risky")) or regime_risky_only or event_risky_only or geometry_grade != "OPTIMAL" or setup_type in {
+    forced_risky = bool(setup_info.get("force_risky")) or regime_risky_only or event_risky_only or rejection_guard.get("force_risky") or geometry_grade != "OPTIMAL" or setup_type in {
         "TREND_IGNITION_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY", "PRIME_ICT_LOCATION_OVERRIDE",
         "SWEEP_RECLAIM_EARLY_ENTRY", "COUNTERTREND_SCALP", "NEWS_IMPULSE", "RANGE_COMPRESSION_BREAKOUT",
     }
@@ -11153,13 +11230,15 @@ def manage_active_trade(trade, context):
     title = f"СУПРОВІД {side}"
     recommendation = "утримувати, поки 3m/15m не ламаються"
 
-    # One-time safety for a freshly opened legacy/anomalous entry created by the
-    # previous opportunity-preserving build: tiny stop + extreme RR + unresolved
-    # post-impulse rejection. A valid earlier entry with a structural stop and
-    # normal RR is not affected.
-    atr15_now = safe_float(context.get("atr15"), None) or safe_float(tf15.get("atr"), price * 0.006) or price * 0.006
-    initial_risk_atr = abs(float(trade.entry) - float(trade.stop_initial)) / atr15_now if atr15_now else 99.0
-    initial_rr1 = abs(float(trade.tp1) - float(trade.entry)) / max(abs(float(trade.entry) - float(trade.stop_initial)), 1e-9)
+    # Geometry anomaly guard. A micro-stop + extreme RR is a warning signal,
+    # not an automatic close by itself. Full exit requires an actual structural
+    # invalidation, strict fast reversal, or the factual stop event handled below.
+    atr15_now = safe_float(context.get("atr15"), None)
+    if not atr15_now:
+        atr15_now = safe_float((context.get("tf15") or {}).get("atr"), price * 0.006) or price * 0.006
+    initial_risk_abs = abs(float(trade.entry) - float(trade.stop_initial))
+    initial_risk_atr = initial_risk_abs / max(atr15_now, 1e-9)
+    initial_rr1 = abs(float(trade.tp1) - float(trade.entry)) / max(initial_risk_abs, 1e-9)
     rejection_guard = post_impulse_rejection_snapshot(side, context)
     try:
         opened_dt = datetime.fromisoformat(str(trade.opened_at).replace("Z", "+00:00"))
@@ -11171,29 +11250,60 @@ def manage_active_trade(trade, context):
     anomalous_fresh_entry = bool(
         not trade.tp1_hit
         and trade_age_min <= 60.0
-        and rejection_guard.get("block_entry")
+        and rejection_guard.get("active")
         and initial_risk_atr < MIN_ROBUST_STOP_ATR_15M
         and initial_rr1 >= EXTREME_RR_SANITY_LIMIT
     )
     if anomalous_fresh_entry:
-        trade.status = "CLOSED"
-        trade.last_action = "EXIT_ENTRY_POINT_BROKEN"
-        return {
-            "closed": True,
-            "action": "EXIT_ENTRY_POINT_BROKEN",
-            "exit_reason_code": "ANOMALOUS_POST_IMPULSE_ENTRY",
-            "exit_quality": "ENTRY_GEOMETRY_INVALID",
-            "title": f"{side} ЗАКРИТИ — ТОЧКА ВХОДУ ВТРАТИЛА АКТУАЛЬНІСТЬ",
-            "recommendation": "після імпульсу сформувалось сильне відхилення; мікростоп і надмірний RR не підтверджують повноцінний 15M-вхід",
-            "current_pct": current_pct,
-            "best_pct": best_pct,
-            "exit_price": round_price(price),
-            "notes": [
+        anomaly_break = closed_mtf_break_snapshot(side, context, False)
+        reversal_against = professional_fast_reversal_bridge(context, opposite(side))
+        opposing_layers = sum([
+            (context.get("tf3") or {}).get("bias") == opposite(side) and abs(int((context.get("tf3") or {}).get("score", 0) or 0)) >= 34,
+            (context.get("cvd") or {}).get("bias") == opposite(side) and abs(int((context.get("cvd") or {}).get("score", 0) or 0)) >= 16,
+            (context.get("flow") or {}).get("bias") == opposite(side) and abs(int((context.get("flow") or {}).get("score", 0) or 0)) >= 12,
+            (context.get("liquidity") or {}).get("bias") == opposite(side) and abs(int((context.get("liquidity") or {}).get("score", 0) or 0)) >= 10,
+        ])
+        real_invalidation = bool(
+            anomaly_break.get("closed_15m_break")
+            or reversal_against.get("emergency")
+            or (
+                reversal_against.get("confirmed")
+                and opposing_layers >= 2
+                and current_pct < 0
+            )
+        )
+        if real_invalidation:
+            trade.status = "CLOSED"
+            trade.last_action = "EXIT_ENTRY_POINT_BROKEN"
+            return {
+                "closed": True,
+                "action": "EXIT_ENTRY_POINT_BROKEN",
+                "exit_reason_code": "ANOMALOUS_ENTRY_WITH_REAL_INVALIDATION",
+                "exit_quality": "STRUCTURAL",
+                "title": f"{side} ЗАКРИТИ — ТОЧКА ВХОДУ ВТРАТИЛА АКТУАЛЬНІСТЬ",
+                "recommendation": "аномальна геометрія підтверджена реальним структурним зламом/швидким розворотом",
+                "current_pct": current_pct,
+                "best_pct": best_pct,
+                "exit_price": round_price(price),
+                "notes": [
+                    rejection_guard.get("reason"),
+                    f"початковий стоп: {round(initial_risk_atr, 2)} ATR15",
+                    f"початковий RR1: {round(initial_rr1, 2)}R",
+                    "є незалежне підтвердження інвалідації",
+                ],
+            }
+        warning_key = "ANOMALOUS_GEOMETRY_WARNING"
+        if warning_key not in (trade.notes or []):
+            trade.notes.append(warning_key)
+            action = "EXIT_WARNING"
+            title = f"{side} — КРИТИЧНА ПЕРЕВІРКА ТОЧКИ ВХОДУ"
+            recommendation = "мікростоп і надмірний RR підозрілі, але без структурного зламу угоду автоматично не закривати"
+            notes.extend([
                 rejection_guard.get("reason"),
                 f"початковий стоп: {round(initial_risk_atr, 2)} ATR15",
                 f"початковий RR1: {round(initial_rr1, 2)}R",
-            ],
-        }
+                "потрібен ICT/структурний злам або фактичний стоп для повного виходу",
+            ])
 
     if trade_hit_stop_by_extreme(side, price, trade.stop_current, high_since_stop, low_since_stop):
         trade.status = "CLOSED"
@@ -12448,15 +12558,30 @@ def resolve_15m_scheduler_entry_opportunity(context, base_setup):
 
     candidates = []
     for side in candidate_sides:
-        # Do not rescue through an explicit liquidity block or through a fresh
-        # post-impulse rejection. The latter needs a new 3M recovery first.
+        # Explicit liquidity blocks stay hard. Post-impulse rejection is
+        # timestamp-aware: every trigger from before the rejection is cancelled,
+        # while a genuinely new reclaim/retest after it may reopen only a RISKY setup.
         if side in ((context.get("liquidity") or {}).get("blocks") or []):
             continue
         rejection_guard = post_impulse_rejection_snapshot(side, context)
-        if rejection_guard.get("block_entry"):
-            continue
+        rejection_ts = int(rejection_guard.get("rejection_ts", 0) or 0)
+        rejection_active = rejection_guard.get("severity") in ["MODERATE", "STRONG", "RECOVERED"]
         for event in scan_15m_interval_entry_events(context, side):
             if not event.get("anchor_confirmed") or not event.get("professional_location"):
+                continue
+            event_ts = int(event.get("trigger_ts", 0) or 0)
+            fresh_after_rejection = bool(
+                rejection_active
+                and rejection_ts
+                and event_ts > rejection_ts
+                and event.get("type") in ["SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"]
+                and int(event.get("score", 0) or 0) >= POST_IMPULSE_RECOVERY_MIN_SCORE
+                and safe_float(event.get("extension_atr15"), 99) <= POST_IMPULSE_RECOVERY_MAX_EXTENSION_ATR15
+            )
+            if rejection_active and not fresh_after_rejection:
+                # Old interval triggers are invalid once a rejection happened.
+                continue
+            if rejection_guard.get("block_entry") and not fresh_after_rejection:
                 continue
             # A pure two-close breakout is not enough against both 1H and 4H.
             both_htf_against = bool(
@@ -12500,6 +12625,8 @@ def resolve_15m_scheduler_entry_opportunity(context, base_setup):
                 and int(event.get("score", 0) or 0) >= 72
                 and safe_float(event.get("extension_atr15"), 99) <= 0.70
                 and not setup_info.get("force_risky")
+                and not rejection_guard.get("force_risky")
+                and not fresh_after_rejection
             )
             action = "ENTRY" if full_entry_event else "RISKY_ENTRY"
             raw_quality = int(round(
@@ -12516,7 +12643,11 @@ def resolve_15m_scheduler_entry_opportunity(context, base_setup):
                 "side": side,
                 "quality": quality,
                 "title": ("ВХІД " if action == "ENTRY" else "РИЗИКОВАНИЙ ВХІД ") + side,
-                "reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками",
+                "reason": (
+                    "новий 3M сетап сформувався після відхилення; старий тригер анульовано"
+                    if fresh_after_rejection else
+                    "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками"
+                ),
                 "plan": plan,
                 "setup_classifier": setup_info,
                 "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + list(event.get("evidence") or []))),
@@ -12596,6 +12727,7 @@ def new_active_trade(setup):
             + (["SETUP_CLASSIFIER: " + str((setup.get("setup_classifier") or {}).get("type"))] if setup.get("setup_classifier") else [])
             + (["REGIME_TYPE: " + str((setup.get("regime_engine") or {}).get("regime_type") or (setup.get("regime_engine") or {}).get("name"))] if setup.get("regime_engine") else [])
             + (["LIFECYCLE_STAGE: " + str((setup.get("lifecycle") or {}).get("stage"))] if setup.get("lifecycle") else [])
+            + (["ENGINE_VERSION: ADAPTIVE_REJECTION_RECOVERY_GUARD"])
             + ([setup.get("reason", "")])
         ),
     )
