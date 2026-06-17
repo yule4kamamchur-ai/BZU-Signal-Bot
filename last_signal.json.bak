@@ -1,16 +1,43 @@
 {
   "version": "pro-v2-intraday-architecture",
-  "active_trade": null,
+  "active_trade": {
+    "id": "3265a06612",
+    "side": "SHORT",
+    "opened_at": "2026-06-17T01:31:06.116808+00:00",
+    "entry": 78.91,
+    "stop_initial": 79.5097,
+    "stop_current": 79.5097,
+    "tp1": 78.184,
+    "tp2": 77.6869,
+    "tp3": 76.8978,
+    "quality": 78,
+    "stop_updated_at": "",
+    "status": "OPEN",
+    "tp1_hit": false,
+    "tp2_hit": false,
+    "tp3_hit": false,
+    "tp1_stop_locked": false,
+    "tp2_stop_locked": false,
+    "tp1_locked_stop": 0.0,
+    "tp2_locked_stop": 0.0,
+    "best_price": 78.91,
+    "last_action": "OPEN",
+    "last_message_key": "",
+    "entry_integrity_score": 100,
+    "entry_fail_streak": 0,
+    "entry_recovery_checks": 0,
+    "entry_last_state": "СИЛЬНА",
+    "mfe_giveback_streak": 0,
+    "mfe_giveback_last_state": "OK",
+    "notes": [
+      "RISKY_ENTRY",
+      "ENTRY_LEVEL: RISKY_ENTRY",
+      "SETUP_CLASSIFIER: PRIME_ICT_LOCATION_OVERRIDE",
+      "REGIME_TYPE: TREND_EXPANSION",
+      "ранній Prime ICT: локація FVG/OB/sweep вже професійна, 3M не сильно проти; anti-chase штраф врахований (-3)"
+    ]
+  },
   "history": [
-    {
-      "type": "FOLLOW",
-      "side": "SHORT",
-      "action": "HOLD",
-      "price": 81.98,
-      "result_pct": 0.243,
-      "stop_current": 82.1143,
-      "time": "2026-06-16T06:31:15.599935+00:00"
-    },
     {
       "type": "FOLLOW",
       "side": "SHORT",
@@ -3273,26 +3300,106 @@
         "previous_regime_type": "RANGE_COMPRESSION"
       },
       "time": "2026-06-17T01:15:51.558244+00:00"
+    },
+    {
+      "type": "ENTRY",
+      "side": "SHORT",
+      "action": "RISKY_ENTRY",
+      "price": 78.91,
+      "quality": 78,
+      "setup_classifier": {
+        "type": "PRIME_ICT_LOCATION_OVERRIDE",
+        "label": "🟢 Сильна ICT-локація",
+        "side": "SHORT",
+        "score": 72,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.92,
+          "tp2_pct": 1.55,
+          "tp3_pct": 2.55,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.22,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+        "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+        "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+        "professional_override": true,
+        "prime_ict_override": true,
+        "late_penalty": 3
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 88,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 2.79,
+          "move8_abs_pct": 0.252,
+          "slope15_abs_pct": 0.269,
+          "rsi15": 40.8,
+          "score_total_abs": 217,
+          "participation_same": 1,
+          "late_penalty": 3,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "entry": 78.91,
+      "stop": 79.5097,
+      "tp1": 78.184,
+      "tp2": 77.6869,
+      "tp3": 76.8978,
+      "time": "2026-06-17T01:31:06.116908+00:00"
     }
   ],
   "regime_memory": {
-    "type": "NORMAL",
+    "type": "TREND_EXPANSION",
     "pending_type": "",
     "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-17T01:15:51.120867+00:00"
+    "pending_count": 1,
+    "updated_at": "2026-06-17T01:31:05.748055+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T01:15:51.558317+00:00",
-    "price": 79.15,
-    "oi": 60570.07,
-    "cvd": 236164.0,
-    "cvd_time": "2026-06-17T01:15:51.558322+00:00",
-    "last_trade_ts": 1781658930713,
-    "bias": "NEUTRAL",
-    "tech_score": 40,
-    "total_score": 35
+    "time": "2026-06-17T01:31:06.116941+00:00",
+    "price": 78.91,
+    "oi": 60720.09,
+    "cvd": 181632.0,
+    "cvd_time": "2026-06-17T01:31:06.116944+00:00",
+    "last_trade_ts": 1781659854020,
+    "bias": "SHORT",
+    "tech_score": -216,
+    "total_score": -217
   },
-  "updated_at": "2026-06-17T01:15:51.558327+00:00",
+  "updated_at": "2026-06-17T01:31:06.116949+00:00",
   "pending_trigger": null
 }
