@@ -10369,14 +10369,345 @@
           "previous_regime_type": "NORMAL"
         }
       }
+    },
+    {
+      "time": "2026-06-17T22:15:55.176553+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.03,
+      "quality": 58,
+      "reason": "не вдалося побудувати життєздатну технічну геометрію",
+      "entry_level": "WATCH_TRIGGER",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "PRIME_ICT_LOCATION_OVERRIDE",
+        "label": "🟢 Сильна ICT-локація",
+        "side": "LONG",
+        "score": 77,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.92,
+          "tp2_pct": 1.55,
+          "tp3_pct": 2.55,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.22,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+        "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+        "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+        "professional_override": true,
+        "prime_ict_override": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.4,
+          "move8_abs_pct": 0.47,
+          "slope15_abs_pct": 0.03,
+          "rsi15": 53.7,
+          "score_total_abs": 93,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+          "range_edge": true
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "plan": {
+        "entry": 79.03,
+        "stop": 79.03,
+        "tp1": 79.03,
+        "tp2": 79.03,
+        "tp3": 79.03,
+        "risk_pct": 0.0,
+        "rr1": 0,
+        "rr2": 0,
+        "rr3": 0,
+        "invalidation": "15m закриття нижче 79.03 або злам 3m/структури проти LONG. Сетап: 🟢 Сильна ICT-локація. Режим: розворот. стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером | TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "valid": false,
+        "validation_reason": "не вдалося побудувати життєздатну технічну геометрію",
+        "technical_stop_basis": "",
+        "technical_tp1_basis": "",
+        "technical_tp2_basis": "",
+        "technical_tp3_basis": "",
+        "geometry_mode": "15M_ICT_STRUCTURAL",
+        "technical_rr_target": 1.5,
+        "better_entry": 0.0,
+        "geometry_grade": "INVALID",
+        "barrier_mode": "NONE",
+        "preferred_geometry_met": false,
+        "breakout_gates": []
+      },
+      "confirmations": [
+        "3m дав тригер",
+        "структура підтверджує",
+        "ICT сетап готовий",
+        "новини дають паливо",
+        "режим ринку: формується розворот",
+        "швидкий шлях: сильний ранній сетап дозволено навіть поки режим ринку ще підтверджується",
+        "режим: розворот — TP/стоп адаптовані",
+        "Сетап: 🟢 Сильна ICT-локація (77/100)"
+      ],
+      "conflicts": [
+        "1h проти",
+        "режим ринку дозволяє тільки ризиковий/обережний вхід",
+        "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
+        "не вдалося побудувати життєздатну технічну геометрію"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 93,
+        "total_score": 93,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 58,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.559,
+          "drift_pct": 0.428,
+          "vol_ratio": 0.91,
+          "note": "3m швидко йде вгору; 3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 13,
+          "trend": "NEUTRAL",
+          "close": 79.12,
+          "ema20": 78.8932,
+          "ema50": 79.0323,
+          "rsi": 53.7,
+          "atr": 0.3356,
+          "slope_pct": -0.03,
+          "move_8_pct": 0.47,
+          "range_atr": 3.4,
+          "note": "EMA20 нижче EMA50; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 78.64,
+          "ema20": 79.1272,
+          "ema50": 79.9556,
+          "rsi": 41.2,
+          "atr": 0.7399,
+          "slope_pct": -0.627,
+          "move_8_pct": -1.552,
+          "range_atr": 6.1,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -63,
+          "trend": "SHORT",
+          "close": 78.79,
+          "ema20": 80.9943,
+          "ema50": 84.5809,
+          "rsi": 30.9,
+          "atr": 1.4545,
+          "slope_pct": -4.205,
+          "move_8_pct": -1.905,
+          "range_atr": 5.27,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "LONG",
+          "score": 40,
+          "phase": "BOS LONG",
+          "swing_high": 78.88,
+          "swing_low": 78.41,
+          "recent_high": 82.2,
+          "recent_low": 78.41,
+          "atr": 0.3356,
+          "note": "закриття вище swing high 78.88; сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": 3,
+          "trade_delta_pct": -8.84,
+          "book_delta_pct": 33.03,
+          "note": "стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "BALANCED",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -2954.0,
+          "delta_pct": -8.84,
+          "cvd": 112143.0,
+          "cvd_change_pct": -2.567,
+          "last_trade_ts": 1781734540083,
+          "price_move_pct": 0.508,
+          "note": "CVD без явної переваги"
+        },
+        "clusters": {
+          "bias": "NEUTRAL",
+          "score": 1,
+          "state": "LOCAL_BUY_PRESSURE_ABOVE",
+          "zones": [
+            {
+              "price": 79.0932,
+              "imbalance_pct": 22.4,
+              "volume": 4976.0
+            },
+            {
+              "price": 79.03,
+              "imbalance_pct": -100.0,
+              "volume": 17.0
+            }
+          ],
+          "note": "локальні покупки вище ціни; ask-стіна 79.28"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "SHORTS_CLOSING",
+          "oi": 56498.89,
+          "oi_change_pct": -0.622,
+          "funding_pct": 0.00707,
+          "price_change_pct": 0.662,
+          "note": "ріст на падінні OI — шорти закриваються, не доганяти без ретесту"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 1.16,
+          "move_1_pct": 0.025,
+          "move_6_pct": 0.636,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "LONG",
+          "score": 25,
+          "top": "U.S.-Iran Deal to Reopen the Strait of Hormuz in 2026 - Discovery Alert",
+          "total": 6
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "PRIME_ICT_LOCATION_OVERRIDE",
+          "label": "🟢 Сильна ICT-локація",
+          "side": "LONG",
+          "score": 77,
+          "entry_allowed": true,
+          "block_entry": false,
+          "risk_mode": "RISKY",
+          "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true,
+          "profile": {
+            "regime_override": "REVERSAL",
+            "tp1_pct": 0.92,
+            "tp2_pct": 1.55,
+            "tp3_pct": 2.55,
+            "min_stop_pct": 0.76,
+            "max_stop_pct": 1.22,
+            "quality_adjustment": 1,
+            "quality_cap": 79,
+            "force_risky": true
+          },
+          "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+          "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+          "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+          "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+          "professional_override": true,
+          "prime_ict_override": true,
+          "late_penalty": 0
+        },
+        "regime_engine": {
+          "name": "REVERSAL",
+          "regime_type": "REVERSAL_BUILDUP",
+          "label": "формується розворот",
+          "score": 65,
+          "confidence": 66,
+          "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+          "entry_action": "RISKY_ONLY",
+          "entry_quality_adjustment": -1,
+          "quality_cap": 84,
+          "hard_block": false,
+          "allowed_setups": [
+            "SWEEP_REVERSAL",
+            "COUNTERTREND_SCALP",
+            "PRIME_ICT_LOCATION_OVERRIDE"
+          ],
+          "notes": [],
+          "metrics": {
+            "bias": "LONG",
+            "range_atr": 3.4,
+            "move8_abs_pct": 0.47,
+            "slope15_abs_pct": 0.03,
+            "rsi15": 53.7,
+            "score_total_abs": 93,
+            "participation_same": 0,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+            "range_edge": true
+          },
+          "stable_count": 0,
+          "pending_count": 1,
+          "is_stable": false,
+          "previous_regime_type": "NORMAL"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-17T22:01:20.034992+00:00",
+  "updated_at": "2026-06-17T22:15:55.182218+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-17T22:01:20.035519+00:00",
+    "updated_at": "2026-06-17T22:15:55.187839+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 1,
-    "signals_count": 35,
+    "signals_count": 36,
     "overall": {
       "trades": 1,
       "wins": 0,
@@ -10486,11 +10817,11 @@
       }
     },
     "signals": {
-      "total": 35,
+      "total": 36,
       "entries": 1,
       "full_entries": 0,
       "risky_entries": 1,
-      "watch": 26,
+      "watch": 27,
       "no_trade": 5,
       "follow": 2,
       "closed": 1,
@@ -10501,7 +10832,7 @@
       "LATE_IMPULSE_CHASE": 1,
       "NEWS_IMPULSE": 7,
       "NO_CLEAN_SETUP": 10,
-      "PRIME_ICT_LOCATION_OVERRIDE": 4,
+      "PRIME_ICT_LOCATION_OVERRIDE": 5,
       "TREND_CONTINUATION": 1,
       "TREND_IGNITION_ENTRY": 2,
       "UNKNOWN": 8
@@ -10510,7 +10841,7 @@
       "EXHAUSTION": 1,
       "NEWS_SHOCK": 17,
       "NORMAL": 9,
-      "REVERSAL_BUILDUP": 4,
+      "REVERSAL_BUILDUP": 5,
       "TREND_EXPANSION": 4
     }
   }
