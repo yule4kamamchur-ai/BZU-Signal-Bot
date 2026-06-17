@@ -3066,6 +3066,7 @@ SETUP_CLASS_LABELS = {
     "COUNTERTREND_SCALP": "🟠 Скальп проти тренду",
     "NEWS_IMPULSE": "🟠 Новинний імпульс",
     "LATE_IMPULSE_CHASE": "🔴 Пізній імпульс / доганяння",
+    "COUNTERTREND_PULLBACK_WAIT": "🟡 Відкат проти основного тренду — чекати",
     "RANGE_MIDDLE_BLOCK": "🔴 Середина діапазону — входу немає",
     "NO_CLEAN_SETUP": "⚪ Чистого сетапу немає",
 }
@@ -3296,6 +3297,12 @@ def _setup_rules(setup_type, side):
             "tp_rule": "TP ближче; новина може дати різкий відкат",
             "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу",
         },
+        "COUNTERTREND_PULLBACK_WAIT": {
+            "entry_rule": "сильний локальний рух проти 1H/4H тренду вважається відкатом, а не новим трендом; вхід тільки після окремого розворотного ICT-сетапу або завершення відкату",
+            "stop_rule": "стоп і TP не активувати всередині вже розігнаного відкату",
+            "tp_rule": "чекати нову базу, FVG/OB реакцію або повернення за основним трендом",
+            "management_rule": "не плутати сильну 3M свічку з новим трендом, коли 1H/4H залишаються проти",
+        },
         "LATE_IMPULSE_CHASE": {
             "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
             "stop_rule": "план лише після нового рівня для стопу",
@@ -3339,6 +3346,7 @@ def setup_trade_profile(setup_type):
         "COUNTERTREND_SCALP": {"regime_override": "REVERSAL", "tp1_pct": 0.80, "tp2_pct": 1.22, "tp3_pct": 2.00, "min_stop_pct": 0.70, "max_stop_pct": 1.05, "quality_adjustment": -3, "quality_cap": 76, "force_risky": True},
         "NEWS_IMPULSE": {"regime_override": "NEWS_IMPULSE", "tp1_pct": 0.90, "tp2_pct": 1.60, "tp3_pct": 2.60, "min_stop_pct": 0.82, "max_stop_pct": 1.30, "quality_adjustment": -2, "quality_cap": 79, "force_risky": True},
         "LATE_IMPULSE_CHASE": {"quality_adjustment": -12, "quality_cap": 61, "block_entry": True},
+        "COUNTERTREND_PULLBACK_WAIT": {"quality_adjustment": -10, "quality_cap": 60, "block_entry": True},
         "RANGE_MIDDLE_BLOCK": {"quality_adjustment": -10, "quality_cap": 55, "block_entry": True},
         "NO_CLEAN_SETUP": {"quality_adjustment": -6, "quality_cap": 66, "block_entry": True},
     }
@@ -3416,19 +3424,55 @@ def classify_setup_candidate(context, side):
     exhausted, exhausted_reason = detect_exhausted_move(side, context)
     hard_liquidity_block = side in (liquidity.get("blocks") or [])
 
+    # Distinguish a fast countertrend rebound from a genuine new trend.
+    # A strong 3M candle is not enough to call TREND_IGNITION when both 1H and
+    # 4H still point the other way, the move is already extended, and there is
+    # no fresh ICT reversal/retest location. In that case the correct state is
+    # WAIT: this is a pullback against the main trend, not a new market entry.
+    fast_move_3m = abs(safe_float(tf3.get("fast_move_pct"), 0.0) or 0.0)
+    drift_3m = abs(safe_float(tf3.get("drift_pct"), 0.0) or 0.0)
+    htf_both_against = bool(tf1h.get("bias") == opposite(side) and tf4h.get("bias") == opposite(side))
+    countertrend_pullback_wait = bool(
+        htf_both_against
+        and tf3_same
+        and (structure_same or bos_same)
+        and not ict_entry_model
+        and not ict_strong_zone
+        and not sweep_same
+        and (late or fast_move_3m >= 0.75 or drift_3m >= 0.80)
+        and (
+            pd in ["PREMIUM", "MIDRANGE", ""]
+            if side == "LONG"
+            else pd in ["DISCOUNT", "MIDRANGE", ""]
+        )
+    )
+
     # Early Professional Override Layer. These are narrow exceptions, not a
     # weakening of the whole filter stack. They let the bot take a real early
     # professional setup while still blocking naked late/chase entries.
+    ignition_from_base = bool(
+        micro_breakout.get("micro_bos")
+        and micro_breakout.get("micro_base")
+        and safe_float(micro_breakout.get("extension_from_base_atr"), 99.0) <= 1.20
+    )
+    fresh_bos_not_extended = bool(
+        bos_same
+        and tf3_same
+        and fast_move_3m <= 0.68
+        and drift_3m <= 0.78
+        and late_penalty <= 7
+    )
     trend_ignition_ok = bool(
         not range_context
+        and not countertrend_pullback_wait
         and tf3_same
-        and (tf3_strong_same or micro_breakout.get("micro_bos"))
+        and (ignition_from_base or fresh_bos_not_extended)
         and (tf15_same or structure_same or htf_same)
-        and (bos_same or structure_same or continuation_hold or micro_breakout.get("micro_bos"))
+        and (bos_same or structure_same or continuation_hold or ignition_from_base)
         and pressure_against_count < 2
         and not tf3_strong_against
         and not exhausted
-        and (late_penalty < 15 or (late_penalty < 18 and micro_breakout.get("micro_base")))
+        and not (late and not ignition_from_base)
     )
     prime_ict_override_ok = bool(
         ict_same
@@ -3492,6 +3536,20 @@ def classify_setup_candidate(context, side):
     if hard_liquidity_block:
         return result("NO_CLEAN_SETUP", 35, False, "ліквідність блокує цей бік", block_entry=True)
 
+    if countertrend_pullback_wait:
+        return result(
+            "COUNTERTREND_PULLBACK_WAIT",
+            36,
+            False,
+            "це сильний локальний відкат проти основного 1H/4H тренду, а не новий Trend Ignition; імпульс уже відбувся — чекати завершення відкату, нову базу або окремий ICT-розворот",
+            block_entry=True,
+            extra={
+                "market_move_type": "COUNTERTREND_PULLBACK",
+                "late_penalty": int(late_penalty),
+                "fast_move_3m": round(fast_move_3m, 3),
+            },
+        )
+
     # Hard anti-chase: any late impulse is blocked unless the price has already
     # created a professional reason to enter from the current location:
     # fresh FVG/OB reaction, BOS hold/continuation-hold, or a real sweep/reclaim.
@@ -3542,11 +3600,16 @@ def classify_setup_candidate(context, side):
     # 4) Trend ignition / breakout-start before a full retest.
     if trend_ignition_ok and not (ict_strong_zone or ict_hold):
         score = 63 + (8 if tf3_strong_same else 0) + (7 if pressure_same else 0) + (5 if htf_same else 0)
+        ignition_reason = (
+            micro_breakout.get("reason", "3M мікро-BOS після бази")
+            if ignition_from_base
+            else "свіжий BOS за напрямом без розтягнутого 3M імпульсу"
+        )
         return result(
             "TREND_IGNITION_ENTRY",
             score,
             True,
-            "ранній старт тренду: " + micro_breakout.get("reason", "3M мікро-BOS після бази"),
+            "ранній старт тренду: " + ignition_reason,
             risk_mode="RISKY",
             extra={"professional_override": True, "trend_ignition": True, "late_penalty": int(late_penalty)},
         )
@@ -5665,7 +5728,7 @@ def _evaluate_new_setup_core(context):
             "setup_classifier": setup_classifier,
             "setup_gate": True,
             "hard_no_chase": setup_classifier.get("type") == "LATE_IMPULSE_CHASE",
-            "show_wait_plan": setup_classifier.get("type") not in ["LATE_IMPULSE_CHASE", "RANGE_MIDDLE_BLOCK"],
+            "show_wait_plan": setup_classifier.get("type") not in ["LATE_IMPULSE_CHASE", "COUNTERTREND_PULLBACK_WAIT", "RANGE_MIDDLE_BLOCK"],
         }
 
     if not rr_status.get("ok"):
@@ -6626,19 +6689,168 @@ def _profit_lock_stop_level(side, entry, price, best_pct, current_pct, profile=N
             return None, ""
     return round_price(level), label + f"; {air_reason}"
 
-def _apply_more_protective_stop(trade, side, new_stop):
-    """Apply only if the new stop improves protection and stays on valid side."""
-    if new_stop is None:
+def _stop_update_urgency(side, context=None):
+    """Classify whether the market requires a faster protective stop reaction.
+
+    This is event-driven, not time-driven. A new 15-minute run may immediately
+    tighten the stop when the market structure changes materially. Ordinary
+    noise still needs a meaningful stop improvement before it is accepted.
+    """
+    context = context or {}
+    against = opposite(side)
+
+    hard_votes = 0
+    soft_votes = 0
+
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    liquidity = context.get("liquidity") or {}
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    cvd = context.get("cvd") or {}
+    flow = context.get("flow") or {}
+
+    structure_phase = str(structure.get("phase") or "").upper()
+    ict_setup = str(ict.get("setup") or "").upper()
+    ict_state = str(ict.get("state") or "").upper()
+
+    if structure.get("bias") == against:
+        hard_votes += 1
+    if side == "LONG" and any(x in structure_phase for x in ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"]):
+        hard_votes += 1
+    if side == "SHORT" and any(x in structure_phase for x in ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"]):
+        hard_votes += 1
+
+    if ict.get("bias") == against:
+        if bool(ict.get("entry_ok")) or ict_state == "ENTRY_MODEL":
+            hard_votes += 1
+        else:
+            soft_votes += 1
+    if side == "LONG" and any(x in ict_setup for x in ["SHORT", "BEARISH"]):
+        hard_votes += 1
+    if side == "SHORT" and any(x in ict_setup for x in ["LONG", "BULLISH"]):
+        hard_votes += 1
+
+    if liquidity.get("bias") == against:
+        hard_votes += 1
+
+    for block in [tf3, tf15, cvd, flow]:
+        if block.get("bias") == against:
+            soft_votes += 1
+
+    if hard_votes >= 2 or (hard_votes >= 1 and soft_votes >= 2):
+        level = "CRITICAL"
+    elif hard_votes >= 1 or soft_votes >= 2:
+        level = "ELEVATED"
+    else:
+        level = "NORMAL"
+
+    return {
+        "level": level,
+        "hard_votes": hard_votes,
+        "soft_votes": soft_votes,
+    }
+
+
+def _stop_update_policy(trade, side, new_stop, context=None, stage="PRE_TP1", force=False):
+    """Return whether a proposed stop update is materially useful.
+
+    The old logic accepted every numerically better stop, including tiny
+    0.02-0.05 USDT micro-moves. The previous patch added a time cooldown, but a
+    fixed pause is unsafe because the market can change sharply on the very next
+    supervision run.
+
+    The current policy is fully event-driven:
+    - there is no time pause and no cooldown;
+    - every run is evaluated immediately;
+    - ordinary updates need a meaningful entry/ATR improvement;
+    - elevated or critical reversal pressure lowers the threshold immediately;
+    - TP1/TP2 locks and the first move from risk to breakeven/profit bypass the
+      threshold;
+    - the stop is never loosened.
+    """
+    if new_stop is None or side not in ["LONG", "SHORT"]:
+        return {"apply": False, "reason": "invalid"}
+
+    old_stop = safe_float(getattr(trade, "stop_current", None), None)
+    proposed = safe_float(new_stop, None)
+    entry = safe_float(getattr(trade, "entry", None), None)
+    if old_stop is None or proposed is None or not entry:
+        return {"apply": False, "reason": "missing_values"}
+
+    improvement = (proposed - old_stop) if side == "LONG" else (old_stop - proposed)
+    if improvement <= 0:
+        return {"apply": False, "reason": "not_more_protective"}
+
+    context = context or {}
+    atr15 = safe_float(context.get("atr15"), None)
+    if not atr15:
+        atr15 = safe_float((context.get("tf15") or {}).get("atr"), None)
+    if not atr15:
+        atr15 = entry * 0.0045
+
+    stage_name = str(stage or "PRE_TP1").upper()
+    if "TP2" in stage_name:
+        min_pct, atr_mult = 0.14, 0.42
+    elif "TP1" in stage_name and "PRE" not in stage_name:
+        min_pct, atr_mult = 0.12, 0.38
+    else:
+        min_pct, atr_mult = 0.10, 0.32
+
+    base_minimum = max(entry * min_pct / 100.0, atr15 * atr_mult)
+    urgency = _stop_update_urgency(side, context)
+    urgency_level = urgency.get("level", "NORMAL")
+
+    # A confirmed market deterioration must be able to react on the next run,
+    # but even a critical state should not generate meaningless micro-trailing.
+    if urgency_level == "CRITICAL":
+        urgency_factor = 0.35
+    elif urgency_level == "ELEVATED":
+        urgency_factor = 0.65
+    else:
+        urgency_factor = 1.0
+
+    absolute_noise_floor = max(entry * 0.035 / 100.0, atr15 * 0.12)
+    min_improvement = max(absolute_noise_floor, base_minimum * urgency_factor)
+
+    # First transition from loss-side stop to breakeven/profit is important even
+    # when the numeric delta is smaller than a later trailing step.
+    crosses_risk_floor = bool(
+        (side == "LONG" and old_stop < entry and proposed >= entry * 0.9995)
+        or (side == "SHORT" and old_stop > entry and proposed <= entry * 1.0005)
+    )
+
+    if not (force or crosses_risk_floor) and improvement < min_improvement:
+        return {
+            "apply": False,
+            "reason": "below_dynamic_minimum",
+            "improvement": improvement,
+            "minimum": min_improvement,
+            "base_minimum": base_minimum,
+            "urgency": urgency_level,
+            "hard_votes": urgency.get("hard_votes", 0),
+            "soft_votes": urgency.get("soft_votes", 0),
+        }
+
+    return {
+        "apply": True,
+        "improvement": improvement,
+        "minimum": min_improvement,
+        "base_minimum": base_minimum,
+        "urgency": urgency_level,
+        "hard_votes": urgency.get("hard_votes", 0),
+        "soft_votes": urgency.get("soft_votes", 0),
+        "force": bool(force or crosses_risk_floor),
+    }
+
+def _apply_more_protective_stop(trade, side, new_stop, context=None, stage="PRE_TP1", force=False):
+    """Apply only a materially more protective stop; never micro-trail."""
+    policy = _stop_update_policy(trade, side, new_stop, context=context, stage=stage, force=force)
+    if not policy.get("apply"):
         return False
-    if side == "LONG" and new_stop > trade.stop_current:
-        trade.stop_current = float(new_stop)
-        trade.stop_updated_at = iso_now()
-        return True
-    if side == "SHORT" and new_stop < trade.stop_current:
-        trade.stop_current = float(new_stop)
-        trade.stop_updated_at = iso_now()
-        return True
-    return False
+    trade.stop_current = float(new_stop)
+    trade.stop_updated_at = iso_now()
+    return True
 
 
 def _mfe_exit_floor(best_pct, market_regime):
@@ -8843,12 +9055,7 @@ def manage_active_trade(trade, context):
         recommendation = "TP2 взято: зафіксувати ще частину; новий ICT/SMC стоп рахується один раз і далі не рухається до TP3/виходу"
         if not trade.tp2_stop_locked:
             recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP2")
-            if side == "LONG":
-                trade.stop_current = max(trade.stop_current, recommended_stop)
-                trade.stop_updated_at = iso_now()
-            else:
-                trade.stop_current = min(trade.stop_current, recommended_stop)
-                trade.stop_updated_at = iso_now()
+            _apply_more_protective_stop(trade, side, recommended_stop, context=context, stage="TP2_LOCK", force=True)
             trade.tp2_locked_stop = float(trade.stop_current)
             trade.tp2_stop_locked = True
             notes.append(_tp_hit_note(side, "TP2", trade.tp2, high_since_open, low_since_open, price))
@@ -8868,12 +9075,7 @@ def manage_active_trade(trade, context):
         recommendation = "TP1 взято: частково фіксувати; один раз переставити стоп у зону між входом і TP1 з урахуванням ICT/SMC, далі не рухати до TP2"
         if not trade.tp1_stop_locked:
             recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
-            if side == "LONG":
-                trade.stop_current = max(trade.stop_current, recommended_stop)
-                trade.stop_updated_at = iso_now()
-            else:
-                trade.stop_current = min(trade.stop_current, recommended_stop)
-                trade.stop_updated_at = iso_now()
+            _apply_more_protective_stop(trade, side, recommended_stop, context=context, stage="TP1_LOCK", force=True)
             trade.tp1_locked_stop = float(trade.stop_current)
             trade.tp1_stop_locked = True
             notes.append(_tp_hit_note(side, "TP1", trade.tp1, high_since_open, low_since_open, price))
@@ -9037,7 +9239,7 @@ def manage_active_trade(trade, context):
                 ),
             }
         guard_stop = risky_guard.get("stop")
-        if risky_guard.get("protect") and guard_stop is not None and _apply_more_protective_stop(trade, side, guard_stop):
+        if risky_guard.get("protect") and guard_stop is not None and _apply_more_protective_stop(trade, side, guard_stop, context=context, stage="PRE_TP1"):
             action = "PROTECT"
             title = f"{side} — РИЗИКОВИЙ ВХІД: MFE ЗАХИЩЕНО"
             recommendation = "ранній/новинний вхід уже дав хороший рух до TP1: стоп підтягнуто біля входу, щоб не перетворити плюс у мінус"
@@ -9127,7 +9329,7 @@ def manage_active_trade(trade, context):
             effective_mfe_for_lock = max(confirmed_mfe_for_lock, close_mfe_for_lock, min(best_pct, 0.65))
     mfe_stop, mfe_stop_reason = _profit_lock_stop_level(side, trade.entry, price, effective_mfe_for_lock, current_pct, mode_profile)
     if action == "HOLD" and mfe_stop is not None:
-        if _apply_more_protective_stop(trade, side, mfe_stop):
+        if _apply_more_protective_stop(trade, side, mfe_stop, context=context, stage="PRE_TP1" if not trade.tp1_hit else ("POST_TP2" if trade.tp2_hit else "POST_TP1")):
             action = "PROTECT"
             title = f"{side} — ПРИБУТОК ЗАХИЩЕНО"
             recommendation = "ціна вже давала хороший плюс: стоп підтягнуто, щоб не віддати угоду назад"
@@ -9169,7 +9371,7 @@ def manage_active_trade(trade, context):
             title = f"{side} — ЛОКАЛЬНИЙ ЗЛАМ, АЛЕ ТРЕНД ЩЕ ЖИВИЙ"
             recommendation = "3M/потік дають відкат проти, але 15M/ICT структура ще не зламана: стоп у прибуток і дати тренду шанс"
             protect_stop, protect_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, current_pct, mode_profile)
-            if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop):
+            if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop, context=context, stage="PRE_TP1" if not trade.tp1_hit else ("POST_TP2" if trade.tp2_hit else "POST_TP1")):
                 recommended_stop = trade.stop_current
                 recommended_stop_reason = protect_reason
                 notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
@@ -9288,11 +9490,7 @@ def manage_active_trade(trade, context):
                 trade.stop_current = float(recommended_stop)
             else:
                 recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
-                if side == "LONG":
-                    trade.stop_current = max(trade.stop_current, recommended_stop)
-                else:
-                    trade.stop_current = min(trade.stop_current, recommended_stop)
-                trade.stop_updated_at = iso_now()
+                _apply_more_protective_stop(trade, side, recommended_stop, context=context, stage="TP1_LOCK", force=True)
                 trade.tp1_locked_stop = float(trade.stop_current)
                 trade.tp1_stop_locked = True
             notes.append(f"стоп для захисту: {round_price(trade.stop_current)}")
@@ -9347,7 +9545,7 @@ def manage_active_trade(trade, context):
             title = f"{side} — MFE ВІДДАЄТЬСЯ, ПОТРІБЕН ЗАХИСТ"
             recommendation = "угода вже давала хороший плюс і частину руху віддала; це ще не обовʼязковий вихід, але стоп треба захистити"
             protect_stop, protect_reason = _profit_lock_stop_level(side, trade.entry, price, best_pct, max(current_pct, 0.20), mode_profile)
-            if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop):
+            if protect_stop is not None and _apply_more_protective_stop(trade, side, protect_stop, context=context, stage="PRE_TP1" if not trade.tp1_hit else ("POST_TP2" if trade.tp2_hit else "POST_TP1")):
                 recommended_stop = trade.stop_current
                 recommended_stop_reason = protect_reason or "Adaptive MFE Giveback Guard 2.0"
                 notes.append(f"новий захисний стоп: {round_price(trade.stop_current)}")
@@ -9382,11 +9580,7 @@ def manage_active_trade(trade, context):
                 trade.stop_current = float(recommended_stop)
             else:
                 recommended_stop, recommended_stop_reason = protective_stop_ict_smc(trade, context, after_tp="TP1")
-                if side == "LONG":
-                    trade.stop_current = max(trade.stop_current, recommended_stop)
-                else:
-                    trade.stop_current = min(trade.stop_current, recommended_stop)
-                trade.stop_updated_at = iso_now()
+                _apply_more_protective_stop(trade, side, recommended_stop, context=context, stage="TP1_LOCK", force=True)
                 trade.tp1_locked_stop = float(trade.stop_current)
                 trade.tp1_stop_locked = True
                 action = "TP1_PROTECT"
@@ -9455,7 +9649,7 @@ def manage_active_trade(trade, context):
                 ),
             }
         new_tp1_stop = post_tp1_manager.get("stop")
-        if post_tp1_manager.get("protect") and new_tp1_stop is not None and _apply_more_protective_stop(trade, side, new_tp1_stop):
+        if post_tp1_manager.get("protect") and new_tp1_stop is not None and _apply_more_protective_stop(trade, side, new_tp1_stop, context=context, stage="POST_TP1"):
             # Keep the TP1 lock in sync with the improved protection so the
             # later locked-stop block does not restore the older, looser level.
             trade.tp1_locked_stop = float(trade.stop_current)
@@ -9526,7 +9720,7 @@ def manage_active_trade(trade, context):
                 ),
             }
         new_tp2_stop = post_tp2_manager.get("stop")
-        if post_tp2_manager.get("protect") and new_tp2_stop is not None and _apply_more_protective_stop(trade, side, new_tp2_stop):
+        if post_tp2_manager.get("protect") and new_tp2_stop is not None and _apply_more_protective_stop(trade, side, new_tp2_stop, context=context, stage="POST_TP2"):
             trade.tp2_locked_stop = float(trade.stop_current)
             trade.tp2_stop_locked = True
             action = post_tp2_manager.get("action") or "TP2_DYNAMIC_PROTECT"
@@ -9651,7 +9845,7 @@ def apply_entry_level_gate(setup, context=None):
         or out.get("exhausted_move")
         or out.get("ict_balance")
         or rr_bad
-        or setup_type in ["LATE_IMPULSE_CHASE", "RANGE_MIDDLE_BLOCK"]
+        or setup_type in ["LATE_IMPULSE_CHASE", "COUNTERTREND_PULLBACK_WAIT", "RANGE_MIDDLE_BLOCK"]
         or (setup_type == "NO_CLEAN_SETUP" and not setup_info.get("entry_allowed"))
         or (setup_info.get("block_entry") and not setup_info.get("entry_allowed") and action not in ["ENTRY", "RISKY_ENTRY"])
     )
@@ -9679,7 +9873,7 @@ def apply_entry_level_gate(setup, context=None):
     # Preserve legacy action values for the rest of the bot, but make blocks explicit.
     if level == "BLOCK":
         out["entry_blocked"] = True
-        out["show_wait_plan"] = False if setup_type in ["LATE_IMPULSE_CHASE", "RANGE_MIDDLE_BLOCK", "NO_CLEAN_SETUP"] else out.get("show_wait_plan", False)
+        out["show_wait_plan"] = False if setup_type in ["LATE_IMPULSE_CHASE", "COUNTERTREND_PULLBACK_WAIT", "RANGE_MIDDLE_BLOCK", "NO_CLEAN_SETUP"] else out.get("show_wait_plan", False)
     elif level == "WATCH_TRIGGER":
         out["entry_blocked"] = False
         out["watch_trigger"] = True
@@ -9700,7 +9894,7 @@ PENDING_TRIGGER_SETUP_TYPES = {
     "NEWS_IMPULSE",
 }
 
-PENDING_TRIGGER_BLOCK_TYPES = {"LATE_IMPULSE_CHASE", "RANGE_MIDDLE_BLOCK", "NO_CLEAN_SETUP"}
+PENDING_TRIGGER_BLOCK_TYPES = {"LATE_IMPULSE_CHASE", "COUNTERTREND_PULLBACK_WAIT", "RANGE_MIDDLE_BLOCK", "NO_CLEAN_SETUP"}
 
 
 def _pending_trigger_age_minutes(pending):
