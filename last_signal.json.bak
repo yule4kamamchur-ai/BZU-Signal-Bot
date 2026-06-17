@@ -2175,39 +2175,104 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-17T22:15:55.176548+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.0,
+      "quality": 59,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "setup_classifier": {
+        "type": "COUNTERTREND_SCALP",
+        "label": "🟠 Скальп проти тренду",
+        "side": "LONG",
+        "score": 73,
+        "entry_allowed": false,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "контртренд дозволений тільки як scalp після локального розвороту",
+        "quality_adjustment": -3,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.8,
+          "tp2_pct": 1.22,
+          "tp3_pct": 2.0,
+          "min_stop_pct": 0.7,
+          "max_stop_pct": 1.05,
+          "quality_adjustment": -3,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "entry_rule": "тільки сильне зняття ліквідності/CHOCH + 3M розворот + CVD/потік не проти",
+        "stop_rule": "короткий стоп за екстремум, без усереднення",
+        "tp_rule": "швидший TP1, TP2 тільки якщо структура розвертається",
+        "management_rule": "агресивний контроль; якщо немає швидкого підтвердження — вихід"
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 3.42,
+          "move8_abs_pct": 0.407,
+          "slope15_abs_pct": 0.169,
+          "rsi15": 51.6,
+          "score_total_abs": 6,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 0,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-17T22:31:11.266121+00:00"
     }
   ],
   "regime_memory": {
     "type": "NORMAL",
-    "pending_type": "REVERSAL_BUILDUP",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-17T22:15:54.864112+00:00"
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 0,
+    "updated_at": "2026-06-17T22:31:10.705714+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T22:15:55.176592+00:00",
-    "price": 79.03,
-    "oi": 56498.89,
-    "cvd": 112143.0,
-    "cvd_time": "2026-06-17T22:15:55.176596+00:00",
-    "last_trade_ts": 1781734540083,
-    "bias": "LONG",
-    "tech_score": 93,
-    "total_score": 93
+    "time": "2026-06-17T22:31:11.266186+00:00",
+    "price": 79.0,
+    "oi": 56121.92,
+    "cvd": 66542.0,
+    "cvd_time": "2026-06-17T22:31:11.266190+00:00",
+    "last_trade_ts": 1781735454067,
+    "bias": "NEUTRAL",
+    "tech_score": 13,
+    "total_score": 6
   },
-  "updated_at": "2026-06-17T22:15:55.176600+00:00",
+  "updated_at": "2026-06-17T22:31:11.266194+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 0,
     "covered_by_active_trade": 0,
-    "missed": 4,
+    "missed": 5,
     "active_episode_keys": [
-      "LONG:CLOSED_15M_DIRECTION_FLIP",
-      "SHORT:CAPITULATION_RECOVERY"
+      "LONG:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "SHORT:CAPITULATION_RECOVERY": "MISSED",
-      "LONG:CLOSED_15M_DIRECTION_FLIP": "MISSED"
+      "LONG:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -2241,66 +2306,30 @@
         "episode_key": "LONG:CLOSED_15M_DIRECTION_FLIP",
         "status": "MISSED",
         "time": "2026-06-17T22:15:55.176427+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781734500000,
+        "episode_key": "LONG:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-17T22:31:11.266012+00:00"
       }
     ],
     "covered_total": 0,
-    "total_opportunities": 4,
+    "total_opportunities": 5,
     "coverage_pct": 0.0
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 79.14,
+    "high": 79.25,
     "low": 78.41,
     "created_ts": 1781720100000,
-    "updated_ts": 1781733600000,
+    "updated_ts": 1781734500000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
     "old_low": null
   },
-  "opportunity_memory": {
-    "active": true,
-    "source": "POST_GATE",
-    "created_at": "2026-06-17T22:15:55.175657+00:00",
-    "ttl_minutes": 45,
-    "side": "LONG",
-    "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
-    "setup_label": "🟢 Сильна ICT-локація",
-    "quality": 58,
-    "price": 79.03,
-    "trigger_level": null,
-    "invalidation": 79.03,
-    "reason": "не вдалося побудувати життєздатну технічну геометрію",
-    "missing_conditions": [
-      "1h проти",
-      "режим ринку дозволяє тільки ризиковий/обережний вхід",
-      "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
-      "не вдалося побудувати життєздатну технічну геометрію"
-    ],
-    "plan": {
-      "entry": 79.03,
-      "stop": 79.03,
-      "tp1": 79.03,
-      "tp2": 79.03,
-      "tp3": 79.03,
-      "risk_pct": 0.0,
-      "rr1": 0,
-      "rr2": 0,
-      "rr3": 0,
-      "invalidation": "15m закриття нижче 79.03 або злам 3m/структури проти LONG. Сетап: 🟢 Сильна ICT-локація. Режим: розворот. стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером | TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
-      "valid": false,
-      "validation_reason": "не вдалося побудувати життєздатну технічну геометрію",
-      "technical_stop_basis": "",
-      "technical_tp1_basis": "",
-      "technical_tp2_basis": "",
-      "technical_tp3_basis": "",
-      "geometry_mode": "15M_ICT_STRUCTURAL",
-      "technical_rr_target": 1.5,
-      "better_entry": 0.0,
-      "geometry_grade": "INVALID",
-      "barrier_mode": "NONE",
-      "preferred_geometry_met": false,
-      "breakout_gates": []
-    }
-  }
+  "opportunity_memory": null
 }
