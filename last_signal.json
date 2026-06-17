@@ -5,67 +5,6 @@
     {
       "type": "WATCH",
       "side": "SHORT",
-      "price": 80.14,
-      "quality": 9,
-      "reason": "немає одного з топових сетапів для професійного входу",
-      "setup_classifier": {
-        "type": "NO_CLEAN_SETUP",
-        "label": "⚪ Чистого сетапу немає",
-        "side": "SHORT",
-        "score": 42,
-        "entry_allowed": false,
-        "block_entry": true,
-        "risk_mode": "NORMAL",
-        "reason": "немає одного з топових сетапів для професійного входу",
-        "quality_adjustment": -6,
-        "quality_cap": 66,
-        "force_risky": false,
-        "profile": {
-          "quality_adjustment": -6,
-          "quality_cap": 66,
-          "block_entry": true
-        },
-        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
-        "stop_rule": "стоп/TP не активувати без сетапу",
-        "tp_rule": "чекати чистішу структуру",
-        "management_rule": "чекати до появи топового сетапу"
-      },
-      "regime_engine": {
-        "name": "NORMAL",
-        "regime_type": "NORMAL",
-        "label": "звичайний intraday режим",
-        "score": 50,
-        "confidence": 50,
-        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
-        "entry_action": "ALLOW",
-        "entry_quality_adjustment": 0,
-        "quality_cap": null,
-        "hard_block": false,
-        "allowed_setups": [],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 6.97,
-          "move8_abs_pct": 0.791,
-          "slope15_abs_pct": 0.149,
-          "rsi15": 45.1,
-          "score_total_abs": 66,
-          "participation_same": 1,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG",
-          "range_edge": false
-        },
-        "stable_count": 5,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NORMAL"
-      },
-      "time": "2026-06-16T14:16:03.240941+00:00"
-    },
-    {
-      "type": "WATCH",
-      "side": "SHORT",
       "price": 79.71,
       "quality": 34,
       "reason": "немає одного з топових сетапів для професійного входу",
@@ -3677,26 +3616,93 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-17T09:10:43.537432+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.88,
+      "quality": 55,
+      "reason": "немає одного з топових сетапів для професійного входу",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "SHORT",
+        "score": 50,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 4.45,
+          "move8_abs_pct": 0.356,
+          "slope15_abs_pct": 0.531,
+          "rsi15": 53.0,
+          "score_total_abs": 44,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-17T09:15:51.710384+00:00"
     }
   ],
   "regime_memory": {
     "type": "NORMAL",
-    "pending_type": "",
-    "stable_count": 2,
-    "pending_count": 0,
-    "updated_at": "2026-06-17T09:10:43.121244+00:00"
+    "pending_type": "TREND_PULLBACK",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-17T09:15:51.308660+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-17T09:10:43.537451+00:00",
-    "price": 78.99,
-    "oi": 56286.46,
-    "cvd": 42876.0,
-    "cvd_time": "2026-06-17T09:10:43.537454+00:00",
-    "last_trade_ts": 1781687433481,
-    "bias": "NEUTRAL",
-    "tech_score": -10,
-    "total_score": -10
+    "time": "2026-06-17T09:15:51.710441+00:00",
+    "price": 78.88,
+    "oi": 56165.87,
+    "cvd": 41930.0,
+    "cvd_time": "2026-06-17T09:15:51.710444+00:00",
+    "last_trade_ts": 1781687728437,
+    "bias": "SHORT",
+    "tech_score": -44,
+    "total_score": -44
   },
-  "updated_at": "2026-06-17T09:10:43.537459+00:00",
+  "updated_at": "2026-06-17T09:15:51.710449+00:00",
   "pending_trigger": null
 }
