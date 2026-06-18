@@ -19,7 +19,7 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
-# Version upgrade: Geometry Persistence & Missed Continuation Recovery.
+# Version upgrade: Geometry Persistence + Entry Consensus Guards + News Reaction Lifecycle.
 # Entry package: Persistent Exhaustion / Shock Release 2.0 / Directional News
 # Consensus / Strong ICT Override / Location Viability / Composite Exhaustion.
 # Core idea:
@@ -191,6 +191,19 @@ SHOCK_RELEASE_FLOW_AGAINST_SCORE = int(os.getenv("SHOCK_RELEASE_FLOW_AGAINST_SCO
 SHOCK_RELEASE_CVD_AGAINST_SCORE = int(os.getenv("SHOCK_RELEASE_CVD_AGAINST_SCORE", "16") or 16)
 NEWS_DIRECTIONAL_MIN_SCORE = int(os.getenv("NEWS_DIRECTIONAL_MIN_SCORE", "35") or 35)
 NEWS_OPPOSING_BLOCK_SCORE = int(os.getenv("NEWS_OPPOSING_BLOCK_SCORE", "35") or 35)
+# News Reaction Lifecycle. A headline is a temporary catalyst, not a permanent
+# veto. During the initial window it can block the opposite NEWS_IMPULSE. After
+# that window the market reaction becomes the authority: only accepted price
+# action keeps the directional block alive; absorbed/rejected news is context only.
+NEWS_REACTION_STANDARD_HARD_MINUTES = int(os.getenv("NEWS_REACTION_STANDARD_HARD_MINUTES", "30") or 30)
+NEWS_REACTION_STRUCTURAL_HARD_MINUTES = int(os.getenv("NEWS_REACTION_STRUCTURAL_HARD_MINUTES", "45") or 45)
+NEWS_REACTION_MIN_ACCEPTANCE_CLOSES = int(os.getenv("NEWS_REACTION_MIN_ACCEPTANCE_CLOSES", "2") or 2)
+NEWS_REACTION_CONFIRM_ATR15 = float(os.getenv("NEWS_REACTION_CONFIRM_ATR15", "0.30") or 0.30)
+NEWS_REACTION_REJECT_ATR15 = float(os.getenv("NEWS_REACTION_REJECT_ATR15", "0.24") or 0.24)
+NEWS_REACTION_MIN_MOVE_PCT = float(os.getenv("NEWS_REACTION_MIN_MOVE_PCT", "0.12") or 0.12)
+NEWS_REACTION_DIGESTED_GIVEBACK = float(os.getenv("NEWS_REACTION_DIGESTED_GIVEBACK", "0.62") or 0.62)
+NEWS_REACTION_MEMORY_HOURS = int(os.getenv("NEWS_REACTION_MEMORY_HOURS", "12") or 12)
+NEWS_REACTION_UNVERIFIED_FACTOR = float(os.getenv("NEWS_REACTION_UNVERIFIED_FACTOR", "0.28") or 0.28)
 COMPOSITE_EXHAUSTION_BLOCK_COUNT = int(os.getenv("COMPOSITE_EXHAUSTION_BLOCK_COUNT", "3") or 3)
 LOCATION_MAX_EMA_EXTENSION_ATR15 = float(os.getenv("LOCATION_MAX_EMA_EXTENSION_ATR15", "1.35") or 1.35)
 LOCATION_VERTICAL_3M_PCT = float(os.getenv("LOCATION_VERTICAL_3M_PCT", "0.55") or 0.55)
@@ -254,20 +267,30 @@ NEWS_QUERIES = [
 
 LONG_NEWS_PHRASES = [
     "inventory draw", "crude draw", "stockpiles fell", "stockpiles decline",
-    "supply disruption", "supply risk", "hormuz", "new sanctions",
-    "fresh sanctions", "opec cut", "production cut", "output cut",
-    "attack", "strike", "war escalates", "talks fail",
-    "запаси впали", "скорочення запасів", "нові санкції", "атака",
-    "удар", "ормуз", "перебої постачання",
+    "inventories fell", "inventories decline", "crude inventories fell",
+    "crude inventories decline", "oil inventories fell", "oil inventories decline",
+    "supply disruption", "supply risk", "supply outage",
+    "hormuz closure", "hormuz disruption", "hormuz tensions", "hormuz risk",
+    "strait closed", "shipping halted", "shipping disrupted",
+    "new sanctions", "fresh sanctions", "opec cut", "production cut", "output cut",
+    "attack on oil", "attack on tanker", "attack on refinery", "war escalates", "talks fail",
+    "запаси впали", "скорочення запасів", "нові санкції", "атака на нафтов",
+    "удар по нафтов", "закриття ормуз", "перебої постачання",
 ]
 
 SHORT_NEWS_PHRASES = [
     "inventory build", "crude build", "stockpiles rose", "stockpiles rise",
+    "inventories rose", "inventories rise", "crude inventories rose",
+    "crude inventories rise", "oil inventories rose", "oil inventories rise",
     "ceasefire", "cease-fire", "truce", "peace deal", "talks progress",
     "sanctions relief", "sanctions lifted", "output increase",
     "production increase", "opec increase", "demand weak", "oversupply",
+    "oil surplus", "crude surplus", "significant surplus",
+    "hormuz recovery", "hormuz reopens", "strait reopens",
+    "shipping resumes", "shipping restored", "supply resumes", "exports resume",
     "запаси зросли", "припинення вогню", "перемир", "мирна угода",
     "послаблення санкцій", "збільшення видобутку", "слабкий попит",
+    "профіцит нафти", "відновлення ормуз", "постачання відновлено",
 ]
 
 HIGH_IMPACT_WORDS = [
@@ -3457,13 +3480,24 @@ def market_session():
 def parse_date(value):
     if not value:
         return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     try:
-        dt = parsedate_to_datetime(value)
+        dt = parsedate_to_datetime(str(value))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except Exception:
-        return None
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
 
 
 def clean_text(text):
@@ -3603,59 +3637,308 @@ def score_news_item(title):
     return score, max(impact, relevance)
 
 
-def analyze_news(items):
+def _news_event_profile(title):
+    """Classify a headline and define how long its first reaction may dominate.
+
+    The windows are deliberately event-specific. Weekly inventory/macro prints
+    are usually digested faster than structural supply-policy or geopolitical
+    changes. Even structural news loses its hard veto when price rejects it.
+    """
+    text = normalized(title)
+    if any(x in text for x in ["inventory", "inventories", "stockpiles", "eia", "api crude", "crude draw", "crude build"]):
+        return {"event_class": "INVENTORY", "hard_minutes": 30, "context_minutes": 90, "half_life_minutes": 45}
+    if any(x in text for x in ["fed", "powell", "fomc", "cpi", "interest rate", "rates", "dollar", "yields"]):
+        return {"event_class": "MACRO", "hard_minutes": 30, "context_minutes": 120, "half_life_minutes": 60}
+    if any(x in text for x in ["opec", "production cut", "output cut", "production increase", "output increase", "quota"]):
+        return {"event_class": "SUPPLY_POLICY", "hard_minutes": NEWS_REACTION_STRUCTURAL_HARD_MINUTES, "context_minutes": 240, "half_life_minutes": 120}
+    if any(x in text for x in ["hormuz", "sanctions", "attack", "strike", "ceasefire", "cease-fire", "truce", "war", "supply disruption"]):
+        return {"event_class": "GEOPOLITICAL", "hard_minutes": NEWS_REACTION_STRUCTURAL_HARD_MINUTES, "context_minutes": 240, "half_life_minutes": 120}
+    if any(x in text for x in ["surplus", "oversupply", "demand weak", "forecast", "outlook", "iea", "demand growth"]):
+        return {"event_class": "OUTLOOK", "hard_minutes": NEWS_REACTION_STANDARD_HARD_MINUTES, "context_minutes": 120, "half_life_minutes": 60}
+    return {"event_class": "GENERAL", "hard_minutes": NEWS_REACTION_STANDARD_HARD_MINUTES, "context_minutes": 90, "half_life_minutes": 45}
+
+
+def _news_memory_key(title):
+    return re.sub(r"[^a-z0-9а-яіїєґ]+", " ", normalized(title)).strip()[:180]
+
+
+def _news_reference_from_candles(candles, event_dt, current_price):
+    closed = closed_candles(candles or [], 3, min_required=1)
+    if not closed or event_dt is None:
+        return safe_float(current_price), False
+    event_ms = int(event_dt.timestamp() * 1000)
+    before = [c for c in closed if int(c.ts) <= event_ms]
+    after = [c for c in closed if int(c.ts) > event_ms]
+    candidate = before[-1] if before else (after[0] if after else None)
+    if candidate is None:
+        return safe_float(current_price), False
+    distance_min = abs(int(candidate.ts) - event_ms) / 60000.0
+    # If the feed headline is older than the available intraday candles, do not
+    # invent a market reaction from the current price.
+    if distance_min > 35:
+        return safe_float(current_price), False
+    return safe_float(candidate.close, current_price), True
+
+
+def _news_market_reaction(base_score, event_dt, reference_price, candles_3m, candles_15m, current_price, age_min, profile, reaction_known=True):
+    direction = 1 if base_score > 0 else -1
+    reference_price = safe_float(reference_price)
+    current_price = safe_float(current_price)
+    atr15 = atr(closed_candles(candles_15m or [], 15, min_required=2))
+    if not atr15 and current_price:
+        atr15 = current_price * 0.005
+    threshold_pct = max(
+        NEWS_REACTION_MIN_MOVE_PCT,
+        (safe_float(atr15, 0.0) / current_price * 100.0 * NEWS_REACTION_CONFIRM_ATR15) if current_price else NEWS_REACTION_MIN_MOVE_PCT,
+    )
+    reject_threshold_pct = max(
+        NEWS_REACTION_MIN_MOVE_PCT * 0.8,
+        (safe_float(atr15, 0.0) / current_price * 100.0 * NEWS_REACTION_REJECT_ATR15) if current_price else NEWS_REACTION_MIN_MOVE_PCT * 0.8,
+    )
+    if not reaction_known or not reference_price or not current_price or event_dt is None:
+        return {
+            "status": "UNVERIFIED", "reaction_known": False, "current_signed_pct": 0.0,
+            "max_favorable_pct": 0.0, "max_adverse_pct": 0.0, "giveback_ratio": 0.0,
+            "acceptance_closes": 0, "opposite_closes": 0,
+            "threshold_pct": round(threshold_pct, 3), "hard_block": bool(age_min <= profile["hard_minutes"]),
+        }
+
+    event_ms = int(event_dt.timestamp() * 1000)
+    sequence = [c for c in closed_candles(candles_3m or [], 3, min_required=1) if int(c.ts) >= event_ms - 180000]
+    if not sequence:
+        return {
+            "status": "UNVERIFIED", "reaction_known": False, "current_signed_pct": 0.0,
+            "max_favorable_pct": 0.0, "max_adverse_pct": 0.0, "giveback_ratio": 0.0,
+            "acceptance_closes": 0, "opposite_closes": 0,
+            "threshold_pct": round(threshold_pct, 3), "hard_block": bool(age_min <= profile["hard_minutes"]),
+        }
+
+    def signed_move(price):
+        return direction * pct(float(price), reference_price)
+
+    current_signed = signed_move(current_price)
+    favorable_values = []
+    adverse_values = []
+    signed_closes = []
+    for candle in sequence:
+        favorable_price = candle.high if direction > 0 else candle.low
+        adverse_price = candle.low if direction > 0 else candle.high
+        favorable_values.append(signed_move(favorable_price))
+        adverse_values.append(-signed_move(adverse_price))
+        signed_closes.append(signed_move(candle.close))
+    max_favorable = max([0.0] + favorable_values)
+    max_adverse = max([0.0] + adverse_values)
+    last_closes = signed_closes[-3:]
+    acceptance = sum(1 for move in last_closes if move >= threshold_pct * 0.60)
+    opposite_acceptance = sum(1 for move in last_closes if move <= -reject_threshold_pct * 0.60)
+    giveback = max(0.0, (max_favorable - current_signed) / max(max_favorable, 1e-9)) if max_favorable > 0 else 0.0
+
+    confirmed = bool(current_signed >= threshold_pct and acceptance >= NEWS_REACTION_MIN_ACCEPTANCE_CLOSES)
+    rejected = bool(current_signed <= -reject_threshold_pct and opposite_acceptance >= NEWS_REACTION_MIN_ACCEPTANCE_CLOSES)
+    absorbed = bool(
+        age_min >= min(20, profile["hard_minutes"])
+        and max_favorable >= threshold_pct
+        and giveback >= NEWS_REACTION_DIGESTED_GIVEBACK
+        and current_signed < threshold_pct * 0.35
+    )
+    digested = bool(
+        age_min > profile["hard_minutes"]
+        and len(sequence) >= 6
+        and abs(current_signed) < threshold_pct * 0.45
+        and not confirmed
+    )
+
+    if rejected:
+        status = "REJECTED"
+    elif absorbed:
+        status = "ABSORBED"
+    elif confirmed:
+        status = "CONFIRMED"
+    elif digested:
+        status = "DIGESTED"
+    elif age_min <= profile["hard_minutes"]:
+        status = "FRESH"
+    else:
+        status = "UNRESOLVED"
+
+    hard_block = bool(
+        status == "CONFIRMED"
+        or (age_min <= profile["hard_minutes"] and status not in {"REJECTED", "ABSORBED"})
+    )
+    return {
+        "status": status, "reaction_known": True,
+        "current_signed_pct": round(current_signed, 3),
+        "max_favorable_pct": round(max_favorable, 3),
+        "max_adverse_pct": round(max_adverse, 3),
+        "giveback_ratio": round(giveback, 3),
+        "acceptance_closes": int(acceptance), "opposite_closes": int(opposite_acceptance),
+        "threshold_pct": round(threshold_pct, 3), "hard_block": hard_block,
+    }
+
+
+def _news_lifecycle_label(status):
+    return {
+        "FRESH": "первинна реакція",
+        "CONFIRMED": "підтверджена ціною",
+        "REJECTED": "відхилена ринком",
+        "ABSORBED": "поглинута ринком",
+        "DIGESTED": "вже відіграна",
+        "UNRESOLVED": "не отримала продовження",
+        "UNVERIFIED": "реакцію не підтверджено",
+        "NONE": "немає активної реакції",
+    }.get(str(status or "NONE").upper(), str(status or "NONE"))
+
+
+def _news_lifecycle_factor(age_min, profile, reaction):
+    half_life = max(1.0, float(profile.get("half_life_minutes", 45)))
+    time_factor = math.exp(-math.log(2.0) * max(0.0, age_min) / half_life)
+    status = str((reaction or {}).get("status") or "UNVERIFIED")
+    if age_min > float(profile.get("context_minutes", 90)):
+        return 0.0
+    if status == "CONFIRMED":
+        return max(0.55, time_factor)
+    if status in {"REJECTED", "ABSORBED", "DIGESTED"}:
+        return min(0.18, time_factor * 0.25)
+    if status == "UNRESOLVED" and age_min > float(profile.get("hard_minutes", 30)):
+        return min(NEWS_REACTION_UNVERIFIED_FACTOR, time_factor * 0.45)
+    if status == "UNVERIFIED" and age_min > float(profile.get("hard_minutes", 30)):
+        return min(NEWS_REACTION_UNVERIFIED_FACTOR, time_factor * 0.35)
+    if age_min <= float(profile.get("hard_minutes", 30)):
+        return max(0.72, time_factor)
+    return min(0.45, time_factor)
+
+
+def analyze_news(items, candles_3m=None, candles_15m=None, current_price=None, state=None):
+    """Score oil news by source, age and the market's observed reaction.
+
+    First 30-45 minutes: a material headline may block the opposite news trade.
+    Afterwards: only confirmed price acceptance keeps that block. If price has
+    absorbed, rejected or fully digested the headline, technical structure gets
+    priority and the old headline becomes low-weight context.
+    """
     raw = 0
+    effective_raw = 0
+    blocking_raw = 0
     important = []
     long_count = 0
     short_count = 0
     newest_age_min = None
-    for item in items[:35]:
-        item_score, impact = score_news_item(item.get("title", ""))
-        age_min = None
-        published = item.get("published_at")
+    now = now_utc()
+    memory = state.setdefault("news_reaction_memory", {}) if isinstance(state, dict) else {}
+
+    # Keep state compact and discard old headlines.
+    for key, value in list(memory.items()):
         try:
-            if published:
-                age_min = max(0, (now_utc() - published.astimezone(timezone.utc)).total_seconds() / 60)
-                newest_age_min = age_min if newest_age_min is None else min(newest_age_min, age_min)
+            seen = parse_date(value.get("first_seen_at")) if isinstance(value, dict) else None
+            if not seen or (now - seen).total_seconds() > NEWS_REACTION_MEMORY_HOURS * 3600:
+                memory.pop(key, None)
         except Exception:
-            age_min = None
-        # Google RSS is delayed for fast oil events. Use it as fuel/context, not as a late entry trigger.
-        age_factor = 1.0
-        if age_min is None:
-            age_factor = 0.60
-        elif age_min <= 30:
-            age_factor = 1.0
-        elif age_min <= 60:
-            age_factor = 0.60
-        else:
-            age_factor = 0.25
-        item_score = int(item_score * age_factor)
-        raw += item_score
+            memory.pop(key, None)
+
+    for item in items[:35]:
+        title = item.get("title", "")
+        base_score, impact = score_news_item(title)
+        if not base_score:
+            continue
+        published = item.get("published_at")
+        key = _news_memory_key(title)
+        remembered = memory.get(key) if isinstance(memory.get(key), dict) else {}
+        first_seen = parse_date(remembered.get("first_seen_at")) if remembered else None
+        if first_seen is None:
+            first_seen = now
+        event_dt = published.astimezone(timezone.utc) if published else first_seen
+        age_min = max(0.0, (now - event_dt).total_seconds() / 60.0)
+        newest_age_min = age_min if newest_age_min is None else min(newest_age_min, age_min)
+        profile = _news_event_profile(title)
+
+        reference_price = safe_float(remembered.get("reference_price"), None)
+        reaction_known = bool(remembered.get("reaction_known", False))
+        if reference_price is None:
+            reference_price, reaction_known = _news_reference_from_candles(candles_3m, event_dt, current_price)
+        reaction = _news_market_reaction(
+            base_score, event_dt, reference_price, candles_3m, candles_15m,
+            current_price, age_min, profile, reaction_known=reaction_known,
+        )
+        factor = _news_lifecycle_factor(age_min, profile, reaction)
+        item_score = int(round(base_score * factor))
+        raw += base_score
+        effective_raw += item_score
+        if reaction.get("hard_block"):
+            # Hard-block strength represents a still-live catalyst. Do not let
+            # ordinary time decay silently erase a headline that price is still
+            # accepting; confirmed reaction keeps at least 80% directional force.
+            blocking_item_score = int(round(base_score * max(factor, 0.80)))
+            blocking_raw += blocking_item_score
         if item_score > 0:
             long_count += 1
         elif item_score < 0:
             short_count += 1
-        if impact or abs(item_score) >= 12:
-            important.append({**item, "score": item_score})
-    score = max(-45, min(45, int(raw)))
+
+        memory[key] = {
+            "first_seen_at": first_seen.isoformat(),
+            "published_at": event_dt.isoformat(),
+            "reference_price": round_price(reference_price),
+            "reaction_known": bool(reaction.get("reaction_known")),
+            "last_seen_at": now.isoformat(),
+            "last_status": reaction.get("status"),
+        }
+        enriched = {
+            **item, "base_score": base_score, "score": item_score,
+            "age_min": round(age_min, 1), "age_factor": round(factor, 3),
+            "event_class": profile.get("event_class"),
+            "hard_window_min": profile.get("hard_minutes"),
+            "lifecycle": reaction.get("status"),
+            "hard_block": bool(reaction.get("hard_block")),
+            "reaction": reaction,
+        }
+        if impact or abs(item_score) >= 8:
+            important.append(enriched)
+
+    score = max(-45, min(45, int(effective_raw)))
+    blocking_score = max(-45, min(45, int(blocking_raw)))
     if score >= 18:
         bias = "LONG"
     elif score <= -18:
         bias = "SHORT"
     else:
         bias = "NEUTRAL"
-    top = important[0]["title"] if important else "свіжого сильного драйвера немає"
+    if blocking_score >= NEWS_DIRECTIONAL_MIN_SCORE:
+        blocking_bias = "LONG"
+    elif blocking_score <= -NEWS_DIRECTIONAL_MIN_SCORE:
+        blocking_bias = "SHORT"
+    else:
+        blocking_bias = "NEUTRAL"
+
+    important.sort(key=lambda x: (bool(x.get("hard_block")), abs(int(x.get("score", 0) or 0)), -(safe_float(x.get("age_min"), 9999) or 9999)), reverse=True)
+    top_item = important[0] if important else None
+    top = top_item.get("title") if top_item else "свіжого сильного драйвера немає"
+    top_age = safe_float(top_item.get("age_min"), None) if top_item else None
+    top_lifecycle = str(top_item.get("lifecycle") or "NONE") if top_item else "NONE"
+    top_lifecycle_label = _news_lifecycle_label(top_lifecycle)
+    hard_block_active = blocking_bias in {"LONG", "SHORT"}
+    headline_short = clean_text(top)[:110]
+    if hard_block_active and top_item:
+        block_reason = f"активна {blocking_bias}-новина: {round(top_age or 0)} хв, {top_lifecycle_label} — {headline_short}"
+    elif top_item and top_lifecycle in {"REJECTED", "ABSORBED", "DIGESTED", "UNRESOLVED"}:
+        block_reason = f"новина вже не має жорсткого пріоритету: {round(top_age or 0)} хв, {top_lifecycle_label} — {headline_short}"
+    else:
+        block_reason = "активного новинного блокування немає"
+
     return {
-        "bias": bias,
-        "score": score,
-        "raw_score": raw,
-        "total": len(items),
-        "long_count": long_count,
-        "short_count": short_count,
-        "important": important[:5],
-        "top": top,
+        "bias": bias, "score": score,
+        "raw_score": raw, "effective_raw_score": effective_raw,
+        "blocking_score": blocking_score, "blocking_bias": blocking_bias,
+        "hard_block_active": hard_block_active,
+        "directional_driver_active": hard_block_active,
+        "technical_priority": not hard_block_active,
+        "total": len(items), "long_count": long_count, "short_count": short_count,
+        "important": important[:7], "top": top,
+        "top_age_min": round(top_age, 1) if top_age is not None else None,
+        "top_lifecycle": top_lifecycle,
+        "top_lifecycle_label": top_lifecycle_label,
         "newest_age_min": round(newest_age_min, 1) if newest_age_min is not None else None,
-        "note": f"{side_word(bias)} ({score}); {top}",
+        "block_reason": block_reason,
+        "note": f"{side_word(bias)} ({score}); {block_reason}; {top}",
     }
 
 
@@ -5564,20 +5847,15 @@ def composite_exhaustion_snapshot(context, side):
 
 
 def news_directional_consensus_snapshot(context, side):
-    """Directional News Consensus plus mandatory retest for a late news entry."""
+    """Directional consensus where time and market reaction outrank the headline."""
     context = context or {}
     news = context.get("news") or {}
     calendar = context.get("calendar") or {}
-    regime = context.get("regime_engine") or context.get("market_regime") or {}
-    regime_name = str(regime.get("regime_type") or regime.get("name") or "").upper()
-    news_score = abs(int(news.get("score", 0) or 0))
-    active = bool(
-        calendar.get("active")
-        or regime_name in {"NEWS_IMPULSE", "NEWS_SHOCK"}
-        or news_score >= NEWS_DIRECTIONAL_MIN_SCORE
-    )
-    same = bool(news.get("bias") == side and news_score >= NEWS_DIRECTIONAL_MIN_SCORE)
-    opposing = bool(news.get("bias") == opposite(side) and news_score >= NEWS_OPPOSING_BLOCK_SCORE)
+    blocking_score = abs(int(news.get("blocking_score", 0) or 0))
+    blocking_bias = str(news.get("blocking_bias") or "NEUTRAL")
+    directional_driver = bool(news.get("hard_block_active") and blocking_bias in {"LONG", "SHORT"})
+    same = bool(directional_driver and blocking_bias == side and blocking_score >= NEWS_DIRECTIONAL_MIN_SCORE)
+    opposing = bool(directional_driver and blocking_bias == opposite(side) and blocking_score >= NEWS_OPPOSING_BLOCK_SCORE)
     neutral_calendar = bool(calendar.get("active") and not same and not opposing)
     evidence = _fresh_professional_entry_evidence(context, side)
     shock = post_shock_retest_snapshot(context, side)
@@ -5588,29 +5866,41 @@ def news_directional_consensus_snapshot(context, side):
         late = False
     composite = composite_exhaustion_snapshot(context, side)
     late = bool(late or composite.get("count", 0) >= COMPOSITE_EXHAUSTION_BLOCK_COUNT)
+
+    # A NEWS_IMPULSE requires a currently active directional catalyst. An old,
+    # absorbed headline cannot manufacture a news setup; technical setups remain free.
+    active = bool(directional_driver or calendar.get("active"))
     allowed = bool(
         active and not opposing and (
             (same and (not late or retest))
             or (neutral_calendar and retest)
         )
     )
-    if not active:
-        reason = "новинний режим не активний"
-    elif opposing:
-        reason = "новини спрямовані проти цього NEWS_IMPULSE"
+    age = news.get("top_age_min")
+    lifecycle = str(news.get("top_lifecycle") or "NONE")
+    lifecycle_label = str(news.get("top_lifecycle_label") or _news_lifecycle_label(lifecycle))
+    age_text = f"{round(float(age))} хв" if age is not None else "час невідомий"
+    if opposing:
+        reason = f"активна новина проти цього NEWS_IMPULSE ({age_text}, {lifecycle_label})"
     elif same and late and not retest:
-        reason = "новина підтримує напрям, але імпульс уже запізнілий — обовʼязковий post-news retest"
+        reason = f"новина ще активна ({age_text}, {lifecycle_label}), але імпульс запізнілий — потрібен post-news retest"
     elif neutral_calendar and not retest:
         reason = "календарна подія нейтральна за напрямом — потрібен підтверджений post-news retest"
-    elif not same and not neutral_calendar:
-        reason = "режим NEWS_SHOCK сам по собі не підтверджує напрям; потрібна новина у бік угоди або нейтральна подія + retest"
+    elif same:
+        reason = f"напрям новини ще підтверджений ринком ({age_text}, {lifecycle_label})"
+    elif not active and lifecycle in {"REJECTED", "ABSORBED", "DIGESTED", "UNRESOLVED"}:
+        reason = f"новина втратила жорсткий пріоритет ({age_text}, {lifecycle_label}); технічний сетап має перевагу"
     else:
-        reason = "напрям новин і post-news структура узгоджені"
+        reason = "активного directional news driver немає; режим NEWS_SHOCK сам не підтверджує напрям"
     return {
         "active": active, "allowed": allowed, "directional_same": same,
         "opposing": opposing, "neutral_calendar": neutral_calendar,
         "retest_confirmed": retest, "late": late, "reason": reason,
-        "news_score": news_score, "news_bias": news.get("bias"),
+        "news_score": abs(int(news.get("score", 0) or 0)),
+        "blocking_score": blocking_score, "news_bias": news.get("bias"),
+        "blocking_bias": blocking_bias, "top_age_min": age,
+        "top_lifecycle": lifecycle, "top_lifecycle_label": lifecycle_label,
+        "technical_priority": bool(news.get("technical_priority", True)),
     }
 
 
@@ -6051,7 +6341,8 @@ def detect_regime_engine_2(context, side=None):
     score_total = abs(int(context.get("total_score", 0) or 0))
     tf15_score = abs(int(tf15.get("score", 0) or 0))
     tf3_score = abs(int(tf3.get("score", 0) or 0))
-    news_score = abs(int(news.get("score", 0) or 0))
+    news_score = abs(int(news.get("blocking_score", 0) or 0))
+    news_driver_active = bool(news.get("hard_block_active"))
 
     near_eq = pd == "MIDRANGE" or ict_setup == "BALANCE_MIDRANGE"
     tf15_neutral = tf15.get("bias") == "NEUTRAL" or tf15.get("trend") == "RANGE" or tf15_score < 26
@@ -6105,7 +6396,7 @@ def detect_regime_engine_2(context, side=None):
     }
 
     # 1) Highest priority: News shock. It changes noise/stop/MFE assumptions.
-    if calendar.get("active") or (news_score >= 35 and (move8 >= 0.75 or same3 or participation_same >= 1)):
+    if calendar.get("active") or (news_driver_active and news_score >= NEWS_DIRECTIONAL_MIN_SCORE and (move8 >= 0.75 or same3 or participation_same >= 1)):
         return _regime_engine_result(
             "NEWS_SHOCK", "NEWS_IMPULSE", 78, 78,
             "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
@@ -8311,7 +8602,10 @@ def build_context(data, state=None):
     derivatives = analyze_derivatives(data.get("open_interest") or {}, data.get("funding") or {}, price, previous_snapshot)
     liquidity = analyze_liquidations(candles_3m_all, candles_15m_closed, flow, structure, price)
     news_items = get_news()
-    news = analyze_news(news_items)
+    news = analyze_news(
+        news_items, candles_3m=candles_3m_all, candles_15m=candles_15m_closed,
+        current_price=price, state=state,
+    )
     calendar = analyze_calendar_alerts()
     session = market_session()
 
@@ -9138,10 +9432,10 @@ def entry_confirmations(side, context):
         else:
             conflicts.append("локальний продавець у стакані")
 
-    if news.get("bias") == side:
-        confirmations.append("новини дають паливо")
-    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 28:
-        conflicts.append("сильні новини проти")
+    if news.get("hard_block_active") and news.get("blocking_bias") == side:
+        confirmations.append(f"активна новина дає паливо ({news.get('top_age_min')} хв, {news.get('top_lifecycle_label')})")
+    elif news.get("hard_block_active") and news.get("blocking_bias") == opposite(side):
+        conflicts.append(news.get("block_reason") or "активні новини проти")
 
     return confirmations, conflicts
 
@@ -9667,9 +9961,9 @@ def _evaluate_new_setup_core(context):
             if item not in conflicts:
                 conflicts.append(item)
 
-    if news.get("bias") == side:
+    if news.get("hard_block_active") and news.get("blocking_bias") == side:
         quality += 2
-    elif news.get("bias") == opposite(side) and abs(news.get("score", 0)) >= 35:
+    elif news.get("hard_block_active") and news.get("blocking_bias") == opposite(side):
         quality -= 7
 
     tf3_score_abs = abs(int(tf3.get("score", 0) or 0))
@@ -17329,7 +17623,16 @@ def main():
             "news": {
                 "bias": context["news"]["bias"],
                 "score": context["news"]["score"],
+                "blocking_bias": context["news"].get("blocking_bias"),
+                "blocking_score": context["news"].get("blocking_score"),
+                "hard_block_active": context["news"].get("hard_block_active"),
+                "technical_priority": context["news"].get("technical_priority"),
                 "top": context["news"]["top"],
+                "top_age_min": context["news"].get("top_age_min"),
+                "top_lifecycle": context["news"].get("top_lifecycle"),
+                "top_lifecycle_label": context["news"].get("top_lifecycle_label"),
+                "block_reason": context["news"].get("block_reason"),
+                "important": context["news"].get("important", [])[:3],
                 "total": context["news"]["total"],
             },
             "calendar": context["calendar"],
