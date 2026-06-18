@@ -7,6 +7,8 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
+from copy import deepcopy
+from enum import Enum
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from statistics import mean
@@ -19,7 +21,7 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
-# Version upgrade: Geometry Persistence + Entry Consensus Guards + News Reaction Lifecycle.
+# Version upgrade: Single-File Clean Architecture V3 + deterministic decision pipeline.
 # Entry package: Persistent Exhaustion / Shock Release 2.0 / Directional News
 # Consensus / Strong ICT Override / Location Viability / Composite Exhaustion.
 # Core idea:
@@ -597,7 +599,7 @@ def load_state():
         state["active_trade"] = None
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
-    state["version"] = "pro-v2-intraday-architecture"
+    state["version"] = "pro-v3-single-file-clean-architecture"
     return state
 
 
@@ -609,7 +611,7 @@ def save_state(state):
 
 def load_journal():
     journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
-    journal["version"] = "pro-v2-intraday-architecture"
+    journal["version"] = "pro-v3-single-file-clean-architecture"
     if "trades" not in journal or not isinstance(journal["trades"], list):
         journal["trades"] = []
     if "signals" not in journal or not isinstance(journal["signals"], list):
@@ -17151,68 +17153,772 @@ def update_opportunity_coverage(state, context, setup=None, active_trade=None):
 
 
 
+# ==========================================================
+# SINGLE-FILE CLEAN DECISION ARCHITECTURE V3
+# ==========================================================
+# The bot remains one deployable file, but the entry decision is now processed
+# as an internal clean architecture:
+#   independent candidate lanes -> one deterministic selector -> one lifecycle
+#   pass -> one monotonic gate pass -> one geometry rebuild -> immutable result.
+# No bridge/memory/lock module may rewrite a finished decision.
+
+
+class V3DecisionAction(str, Enum):
+    NO_TRADE = "NO_TRADE"
+    WATCH = "WATCH"
+    RISKY_ENTRY = "RISKY_ENTRY"
+    ENTRY = "ENTRY"
+
+
+class V3CandidateSource(str, Enum):
+    LIVE_CORE = "LIVE_CORE"
+    CLOSED_15M_DIRECTION = "CLOSED_15M_DIRECTION"
+    CAPITULATION_RECOVERY = "CAPITULATION_RECOVERY"
+    FRESH_BASE = "FRESH_BASE"
+    OPPORTUNITY_MEMORY = "OPPORTUNITY_MEMORY"
+    LOCK_RELEASE_BRIDGE = "LOCK_RELEASE_BRIDGE"
+    PENDING_TRIGGER = "PENDING_TRIGGER"
+    SCHEDULER_RESCUE = "SCHEDULER_RESCUE"
+
+
+@dataclass(frozen=True)
+class V3EntryProposal:
+    source: str
+    side: str
+    action: str
+    quality: int
+    setup_score: int
+    direction_margin: float
+    geometry_valid: bool
+    selection_score: float
+    setup: dict = field(compare=False, repr=False)
+    context: dict = field(compare=False, repr=False)
+
+
+V3_SOURCE_PRIORITY = {
+    V3CandidateSource.LIVE_CORE.value: 80,
+    V3CandidateSource.CLOSED_15M_DIRECTION.value: 98,
+    V3CandidateSource.CAPITULATION_RECOVERY.value: 97,
+    V3CandidateSource.FRESH_BASE.value: 96,
+    V3CandidateSource.OPPORTUNITY_MEMORY.value: 90,
+    V3CandidateSource.LOCK_RELEASE_BRIDGE.value: 89,
+    V3CandidateSource.PENDING_TRIGGER.value: 86,
+    V3CandidateSource.SCHEDULER_RESCUE.value: 84,
+}
+
+V3_ACTION_RANK = {
+    "NO_TRADE": 0,
+    "WATCH": 1,
+    "RISKY_ENTRY": 2,
+    "ENTRY": 3,
+}
+
+V3_VALID_ACTIONS = set(V3_ACTION_RANK)
+V3_TRANSITION_SETUPS = {
+    "CLOSED_15M_DIRECTION_FLIP",
+    "CAPITULATION_RECOVERY",
+    "FRESH_BASE_CONTINUATION_REENTRY",
+    "RANGE_COMPRESSION_BREAKOUT",
+    "SWEEP_REVERSAL",
+}
+
+
+def _v3_clone_context(context):
+    """Cheap isolated lane copy: share immutable candle arrays, copy decision state."""
+    source = context or {}
+    out = dict(source)
+    for key, value in list(source.items()):
+        if str(key).startswith("candles_"):
+            # Candle objects are treated as immutable market facts in decision lanes.
+            out[key] = value
+        elif isinstance(value, (dict, list, set, tuple)):
+            out[key] = deepcopy(value)
+    return out
+
+
+def _v3_action_rank(action):
+    return V3_ACTION_RANK.get(str(action or "NO_TRADE").upper(), 0)
+
+
+def _v3_setup_type(setup):
+    info = (setup or {}).get("setup_classifier") or {}
+    return str(info.get("type") or (setup or {}).get("setup_type") or "NO_CLEAN_SETUP").upper()
+
+
+def _v3_setup_score(setup):
+    info = (setup or {}).get("setup_classifier") or {}
+    return int(clamp(safe_float(info.get("score"), safe_float((setup or {}).get("quality"), 0)) or 0, 0, 100))
+
+
+def _v3_plan_values(plan):
+    if plan is None:
+        return None
+    getter = plan.get if isinstance(plan, dict) else lambda key, default=None: getattr(plan, key, default)
+    try:
+        return {
+            "entry": float(getter("entry")),
+            "stop": float(getter("stop")),
+            "tp1": float(getter("tp1")),
+            "tp2": float(getter("tp2")),
+            "tp3": float(getter("tp3")),
+            "rr1": float(getter("rr1", 0) or 0),
+            "valid": bool(getter("valid", True)),
+            "validation_reason": str(getter("validation_reason", "") or ""),
+        }
+    except Exception:
+        return None
+
+
+def _v3_plan_valid_for_side(plan, side):
+    values = _v3_plan_values(plan)
+    if not values or not values["valid"] or side not in ["LONG", "SHORT"]:
+        return False
+    e, s, t1, t2, t3 = values["entry"], values["stop"], values["tp1"], values["tp2"], values["tp3"]
+    if not all(math.isfinite(x) for x in [e, s, t1, t2, t3]):
+        return False
+    if values["rr1"] <= 0:
+        return False
+    if side == "LONG":
+        return bool(s < e < t1 <= t2 <= t3)
+    return bool(s > e > t1 >= t2 >= t3)
+
+
+def _v3_direction_margin(context, side):
+    if side not in ["LONG", "SHORT"]:
+        return -100.0
+    weights = {
+        "tf3": 3.0,
+        "tf15": 2.4,
+        "structure": 2.4,
+        "ict": 2.2,
+        "flow": 1.5,
+        "cvd": 1.4,
+        "liquidity": 1.2,
+        "clusters": 0.8,
+        "derivatives": 0.7,
+        "tf1h": 1.0,
+        "tf4h": 0.45,
+    }
+    margin = 0.0
+    for key, weight in weights.items():
+        block = (context or {}).get(key) or {}
+        bias = str(block.get("bias") or "NEUTRAL").upper()
+        magnitude = min(40.0, abs(safe_float(block.get("score"), 0.0) or 0.0)) / 10.0
+        if bias == side:
+            margin += weight * max(1.0, magnitude)
+        elif bias == opposite(side):
+            margin -= weight * max(1.0, magnitude)
+    regime = (context or {}).get("regime_engine") or (context or {}).get("market_regime") or {}
+    regime_bias = str(((regime.get("metrics") or {}).get("bias") or "")).upper()
+    if regime_bias == side:
+        margin += 2.0
+    elif regime_bias == opposite(side):
+        margin -= 2.0
+    return round(margin, 3)
+
+
+def _v3_dedupe_text(items):
+    out = []
+    seen = set()
+    for item in items or []:
+        text = str(item or "").strip()
+        key = re.sub(r"\s+", " ", text).lower()
+        if text and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _v3_clean_side_messages(items, final_side):
+    """Remove only stale directional metadata, not legitimate opposite evidence."""
+    if final_side not in ["LONG", "SHORT"]:
+        return _v3_dedupe_text(items)
+    other = opposite(final_side)
+    stale_patterns = [
+        "після слабкого виходу",
+        "штраф якості",
+        "re-entry cooldown",
+        "same-side cooldown",
+        "тимчасово знижена",
+    ]
+    cleaned = []
+    for item in items or []:
+        text = str(item or "")
+        low = text.lower()
+        if any(pattern in low for pattern in stale_patterns) and other.lower() in low:
+            continue
+        cleaned.append(text)
+    return _v3_dedupe_text(cleaned)
+
+
+def _v3_watch_title(side, setup):
+    info = (setup or {}).get("setup_classifier") or {}
+    label = str(info.get("label") or "").strip()
+    if label:
+        return f"ЧЕКАТИ — {side} НЕ ПІДТВЕРДЖЕНИЙ"
+    return f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
+
+
+def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
+    return {
+        "action": "NO_TRADE",
+        "side": "NEUTRAL",
+        "quality": 0,
+        "current_readiness": 0,
+        "title": "ВХОДУ НЕМАЄ — БЕЗПЕЧНИЙ РЕЖИМ",
+        "reason": reason,
+        "plan": None,
+        "confirmations": [],
+        "conflicts": [reason],
+        "setup_classifier": None,
+        "entry_level": "BLOCK",
+        "reason_codes": [error_code],
+        "architecture_version": "SINGLE_FILE_CLEAN_V3",
+    }
+
+
+def _v3_normalize_setup(setup, context, source, audit=None):
+    audit = audit if isinstance(audit, list) else []
+    raw = dict(setup or {})
+    action = str(raw.get("action") or "NO_TRADE").upper()
+    if action not in V3_VALID_ACTIONS:
+        audit.append({"stage": "NORMALIZE", "code": "UNKNOWN_ACTION", "value": action})
+        action = "NO_TRADE"
+    side = str(raw.get("side") or "NEUTRAL").upper()
+    if side not in ["LONG", "SHORT", "NEUTRAL"]:
+        audit.append({"stage": "NORMALIZE", "code": "UNKNOWN_SIDE", "value": side})
+        side = "NEUTRAL"
+    if action in ["ENTRY", "RISKY_ENTRY", "WATCH"] and side not in ["LONG", "SHORT"]:
+        action = "NO_TRADE"
+        side = "NEUTRAL"
+        raw["reason"] = "сторона кандидата не визначена; вхід не дозволено"
+        audit.append({"stage": "NORMALIZE", "code": "MISSING_DIRECTION"})
+
+    quality = int(clamp(safe_float(raw.get("quality"), 0) or 0, 0, 100))
+    raw["action"] = action
+    raw["side"] = side
+    raw["quality"] = quality
+
+    # The formatter and journal must never re-classify after the decision.
+    # Ensure the selected side owns its classifier before proposal scoring.
+    if side in ["LONG", "SHORT"]:
+        info = raw.get("setup_classifier") if isinstance(raw.get("setup_classifier"), dict) else None
+        info_side = str((info or {}).get("side") or "").upper()
+        if info is None or info_side != side:
+            if info is not None and info_side in ["LONG", "SHORT"] and info_side != side:
+                audit.append({"stage": "NORMALIZE", "code": "CLASSIFIER_SIDE_MISMATCH", "from": info_side, "to": side})
+            try:
+                refreshed = classify_setup(context, side) if isinstance(context, dict) and context.get("price") else None
+            except Exception:
+                refreshed = None
+            if not isinstance(refreshed, dict):
+                refreshed = {
+                    "type": "NO_CLEAN_SETUP", "label": "⚪ Чистого сетапу немає", "side": side,
+                    "score": min(55, quality), "entry_allowed": False, "block_entry": True,
+                    "risk_mode": "NORMAL", "reason": "класифікатор сторони не підтверджений",
+                    "quality_adjustment": 0, "quality_cap": 55, "force_risky": False,
+                }
+            refreshed["side"] = side
+            raw["setup_classifier"] = refreshed
+            if raw["action"] in ["ENTRY", "RISKY_ENTRY"] and refreshed.get("block_entry"):
+                raw["action"] = "WATCH"
+                raw["plan"] = None
+                raw["reason"] = "обраний кандидат не має узгодженого класифікатора для своєї сторони"
+                raw.setdefault("reason_codes", []).append("CLASSIFIER_SIDE_NOT_CONFIRMED")
+    raw["current_readiness"] = quality
+    raw["candidate_source"] = str(source)
+    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3"
+    raw["confirmations"] = _v3_clean_side_messages(raw.get("confirmations"), side)
+    raw["conflicts"] = _v3_clean_side_messages(raw.get("conflicts"), side)
+    raw.setdefault("reason_codes", [])
+
+    plan_ok = _v3_plan_valid_for_side(raw.get("plan"), side)
+    if action in ["ENTRY", "RISKY_ENTRY"] and not plan_ok:
+        raw["action"] = "WATCH"
+        raw["title"] = _v3_watch_title(side, raw)
+        raw["reason"] = str(raw.get("reason") or "") + ("; " if raw.get("reason") else "") + "технічний план не пройшов фінальну перевірку сторони/геометрії"
+        raw["plan"] = None
+        raw["entry_level"] = "WATCH_TRIGGER"
+        raw["reason_codes"] = _v3_dedupe_text(list(raw.get("reason_codes") or []) + ["PLAN_SIDE_OR_GEOMETRY_INVALID"])
+        audit.append({"stage": "NORMALIZE", "code": "ENTRY_DOWNGRADED_INVALID_PLAN", "side": side})
+    elif raw["action"] not in ["ENTRY", "RISKY_ENTRY"] and raw.get("plan") is not None and not plan_ok:
+        raw["plan"] = None
+
+    if raw["action"] == "NO_TRADE" and side == "NEUTRAL":
+        raw["plan"] = None
+    if raw["action"] in ["ENTRY", "RISKY_ENTRY"]:
+        raw["entry_level"] = raw["action"]
+        raw["entry_level_label"] = _entry_level_label(raw["action"])
+    elif raw["action"] == "WATCH":
+        raw["entry_level"] = "WATCH_TRIGGER"
+        raw["entry_level_label"] = _entry_level_label("WATCH_TRIGGER")
+        raw.setdefault("title", _v3_watch_title(side, raw))
+    else:
+        raw["entry_level"] = "BLOCK"
+        raw["entry_level_label"] = _entry_level_label("BLOCK")
+        raw.setdefault("title", "ВХОДУ НЕМАЄ")
+    raw.setdefault("reason", "перевага нечітка, немає професійного входу")
+    return raw
+
+
+def _v3_proposal_score(source, setup, context):
+    action = str((setup or {}).get("action") or "NO_TRADE").upper()
+    side = str((setup or {}).get("side") or "NEUTRAL").upper()
+    quality = int((setup or {}).get("quality", 0) or 0)
+    setup_score = _v3_setup_score(setup)
+    direction_margin = _v3_direction_margin(context, side)
+    geometry_valid = _v3_plan_valid_for_side((setup or {}).get("plan"), side)
+    source_priority = V3_SOURCE_PRIORITY.get(str(source), 70)
+    score = (
+        _v3_action_rank(action) * 1000.0
+        + quality * 8.0
+        + setup_score * 3.0
+        + direction_margin * 6.0
+        + source_priority
+        + (85.0 if geometry_valid else 0.0)
+        + (35.0 if _v3_setup_type(setup) in V3_TRANSITION_SETUPS else 0.0)
+    )
+    return quality, setup_score, direction_margin, geometry_valid, round(score, 3)
+
+
+def _v3_make_proposal(source, setup, context, audit):
+    normalized = _v3_normalize_setup(setup, context, source, audit)
+    quality, setup_score, direction_margin, geometry_valid, selection_score = _v3_proposal_score(source, normalized, context)
+    return V3EntryProposal(
+        source=str(source),
+        side=str(normalized.get("side") or "NEUTRAL"),
+        action=str(normalized.get("action") or "NO_TRADE"),
+        quality=quality,
+        setup_score=setup_score,
+        direction_margin=direction_margin,
+        geometry_valid=geometry_valid,
+        selection_score=selection_score,
+        setup=normalized,
+        context=context,
+    )
+
+
+def _v3_semantic_setup_signature(setup):
+    raw = setup or {}
+    plan = _v3_plan_values(raw.get("plan")) or {}
+    return (
+        str(raw.get("action") or "NO_TRADE").upper(),
+        str(raw.get("side") or "NEUTRAL").upper(),
+        int(raw.get("quality", 0) or 0),
+        _v3_setup_type(raw),
+        round(safe_float(plan.get("entry"), 0.0) or 0.0, 4),
+        round(safe_float(plan.get("stop"), 0.0) or 0.0, 4),
+        round(safe_float(plan.get("tp1"), 0.0) or 0.0, 4),
+        bool(raw.get("pending_trigger_activated")),
+        bool(raw.get("lock_release_bridge_activated")),
+        bool(raw.get("geometry_persistence_activated")),
+        bool(raw.get("transition_override_confirmed")),
+    )
+
+
+def _v3_run_candidate_lane(source, func, seed_context, seed_setup, audit):
+    lane_context = _v3_clone_context(seed_context)
+    lane_setup = deepcopy(seed_setup)
+    try:
+        out = func(lane_context, lane_setup)
+        if _v3_semantic_setup_signature(out) == _v3_semantic_setup_signature(seed_setup):
+            return None
+        return _v3_make_proposal(source, out, lane_context, audit)
+    except Exception as error:
+        audit.append({"stage": "CANDIDATE_LANE", "source": str(source), "code": "LANE_ERROR", "error": str(error)[:240]})
+        return None
+
+
+def _v3_collect_proposals(context, base_setup, audit):
+    seed_context = _v3_clone_context(context)
+    seed_setup = deepcopy(base_setup)
+    proposals = [_v3_make_proposal(V3CandidateSource.LIVE_CORE.value, seed_setup, seed_context, audit)]
+    lanes = [
+        (V3CandidateSource.CLOSED_15M_DIRECTION.value, resolve_direction_flip_priority_lane),
+        (V3CandidateSource.CAPITULATION_RECOVERY.value, resolve_capitulation_recovery_geometry_opportunity),
+        (V3CandidateSource.FRESH_BASE.value, resolve_fresh_base_continuation_reentry),
+        (V3CandidateSource.OPPORTUNITY_MEMORY.value, activate_opportunity_memory_if_ready),
+        (V3CandidateSource.LOCK_RELEASE_BRIDGE.value, activate_lock_release_opportunity_bridge),
+        (V3CandidateSource.PENDING_TRIGGER.value, activate_pending_trigger_if_ready),
+        (V3CandidateSource.SCHEDULER_RESCUE.value, resolve_15m_scheduler_entry_opportunity),
+    ]
+    for source, func in lanes:
+        proposal = _v3_run_candidate_lane(source, func, seed_context, seed_setup, audit)
+        if proposal is not None:
+            proposals.append(proposal)
+
+    # Deduplicate identical proposals generated by more than one memory lane.
+    unique = {}
+    for proposal in proposals:
+        plan = _v3_plan_values(proposal.setup.get("plan")) or {}
+        signature = (
+            proposal.side,
+            proposal.action,
+            _v3_setup_type(proposal.setup),
+            round(safe_float(plan.get("entry"), 0.0) or 0.0, 4),
+            round(safe_float(plan.get("stop"), 0.0) or 0.0, 4),
+        )
+        old = unique.get(signature)
+        if old is None or proposal.selection_score > old.selection_score:
+            unique[signature] = proposal
+    return list(unique.values())
+
+
+def _v3_select_proposal(proposals, audit):
+    if not proposals:
+        return None
+    live = next((p for p in proposals if p.source == V3CandidateSource.LIVE_CORE.value), None)
+    filtered = []
+    for proposal in proposals:
+        if live and _v3_action_rank(live.action) >= _v3_action_rank("RISKY_ENTRY") and proposal.side != live.side:
+            st = _v3_setup_type(proposal.setup)
+            confirmed_transition = bool(
+                st in V3_TRANSITION_SETUPS
+                and (
+                    proposal.setup.get("transition_override_confirmed")
+                    or proposal.setup.get("capitulation_recovery_confirmed")
+                    or proposal.setup.get("fresh_base_reentry_confirmed")
+                    or (proposal.setup.get("closed_15m_displacement_override") or {}).get("confirmed")
+                )
+            )
+            if not confirmed_transition or proposal.quality < live.quality + 4:
+                audit.append({
+                    "stage": "SELECTOR", "code": "OPPOSITE_STALE_PROPOSAL_REJECTED",
+                    "source": proposal.source, "side": proposal.side, "live_side": live.side,
+                })
+                continue
+        filtered.append(proposal)
+    if not filtered:
+        filtered = proposals
+    selected = max(filtered, key=lambda p: (p.selection_score, p.source))
+    audit.append({
+        "stage": "SELECTOR", "code": "SELECTED", "source": selected.source,
+        "side": selected.side, "action": selected.action,
+        "score": selected.selection_score, "quality": selected.quality,
+        "setup_score": selected.setup_score, "direction_margin": selected.direction_margin,
+    })
+    return selected
+
+
+def _v3_enforce_stage_invariants(previous, current, fixed_side, stage_name, allow_upgrade, audit):
+    prev = dict(previous or {})
+    cur = _v3_normalize_setup(current, {}, "FINAL_PIPELINE", audit)
+    if fixed_side in ["LONG", "SHORT"] and cur.get("side") != fixed_side:
+        audit.append({
+            "stage": stage_name, "code": "SIDE_MUTATION_BLOCKED",
+            "from": fixed_side, "to": cur.get("side"),
+        })
+        cur = dict(prev)
+        cur["action"] = "WATCH"
+        cur["side"] = fixed_side
+        cur["plan"] = None
+        cur["entry_level"] = "WATCH_TRIGGER"
+        cur["entry_level_label"] = _entry_level_label("WATCH_TRIGGER")
+        cur["title"] = _v3_watch_title(fixed_side, cur)
+        cur["reason"] = "модуль спробував змінити вже вибрану сторону; рішення зупинено до нового незалежного кандидата"
+        cur["reason_codes"] = _v3_dedupe_text(list(cur.get("reason_codes") or []) + ["SIDE_MUTATION_PREVENTED"])
+    if not allow_upgrade and _v3_action_rank(cur.get("action")) > _v3_action_rank(prev.get("action")):
+        audit.append({
+            "stage": stage_name, "code": "NON_MONOTONIC_UPGRADE_BLOCKED",
+            "from": prev.get("action"), "to": cur.get("action"),
+        })
+        cur["action"] = prev.get("action")
+        cur["plan"] = prev.get("plan") if _v3_action_rank(prev.get("action")) >= 2 else None
+        cur["entry_level"] = prev.get("entry_level")
+        cur["entry_level_label"] = prev.get("entry_level_label")
+        cur["title"] = prev.get("title")
+        cur["reason"] = prev.get("reason")
+        cur["reason_codes"] = _v3_dedupe_text(list(cur.get("reason_codes") or []) + ["NON_MONOTONIC_UPGRADE_PREVENTED"])
+    cur["confirmations"] = _v3_clean_side_messages(cur.get("confirmations"), fixed_side)
+    cur["conflicts"] = _v3_clean_side_messages(cur.get("conflicts"), fixed_side)
+    return cur
+
+
+def _v3_run_gate_once(context, setup, gate_name, gate_func, fixed_side, audit):
+    previous = deepcopy(setup)
+    try:
+        current = _apply_gate_with_pre_memory(context, deepcopy(setup), gate_func, gate_name)
+    except Exception as error:
+        audit.append({"stage": gate_name, "code": "GATE_ERROR", "error": str(error)[:240]})
+        current = dict(previous)
+        current["action"] = "WATCH" if fixed_side in ["LONG", "SHORT"] else "NO_TRADE"
+        current["plan"] = None
+        current["reason"] = f"внутрішня перевірка {gate_name} не завершена; вхід безпечно відкладено"
+        current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + [f"{gate_name}_ERROR"])
+    current = _v3_enforce_stage_invariants(previous, current, fixed_side, gate_name, False, audit)
+    audit.append({
+        "stage": gate_name,
+        "from_action": previous.get("action"),
+        "to_action": current.get("action"),
+        "quality": current.get("quality"),
+    })
+    return current
+
+
+def _v3_apply_gates_once(context, setup, fixed_side, audit):
+    gates = [
+        ("STRICT_TRANSITION_GATE", apply_strict_transition_gate_to_setup),
+        ("POST_SHOCK_RETEST_GATE", apply_post_shock_retest_gate_to_setup),
+        ("CAPITULATION_RECOVERY_GATE", apply_capitulation_recovery_gate_to_setup),
+        ("RANGE_SEGMENTATION_GATE", apply_range_midpoint_gate_to_setup),
+        ("STRUCTURAL_RESET_GATE", apply_structural_reset_gate_to_setup),
+        ("REGIME_WHITELIST_GATE", apply_regime_allowed_setup_whitelist),
+        ("PRIME_ICT_HTF_CONFLICT_CAP", apply_prime_ict_htf_conflict_cap),
+        ("PRIME_ICT_ADVERSE_FLOW_GATE", apply_adverse_flow_veto_prime_ict),
+        ("ENTRY_RISK_PACKAGE_GATE", apply_entry_risk_package_gate),
+        ("FINAL_SAME_SIDE_EXHAUSTION_LOCK", apply_final_same_side_exhaustion_lock),
+    ]
+    current = setup
+    for gate_name, gate_func in gates:
+        current = _v3_run_gate_once(context, current, gate_name, gate_func, fixed_side, audit)
+    return current
+
+
+def _v3_lock_record(context, side):
+    state = (context or {}).get("runtime_state") if isinstance((context or {}).get("runtime_state"), dict) else {}
+    locks = (context or {}).get("persistent_exhaustion_locks") or state.get("persistent_exhaustion_locks") or {}
+    persistent = locks.get(side) if isinstance(locks, dict) and isinstance(locks.get(side), dict) else {}
+    shock = state.get("shock_lock") if isinstance(state.get("shock_lock"), dict) else {}
+    p_status = str(persistent.get("status") or ("ACTIVE" if persistent.get("active") else "INACTIVE")).upper()
+    s_status = str(shock.get("status") or ("ACTIVE" if shock.get("active") else "INACTIVE")).upper()
+    p_active = bool(persistent.get("active") or p_status in {"ACTIVE", "LOCKED", "RELEASE_PENDING"})
+    s_active = bool((shock.get("side") == side) and (shock.get("active") or s_status in {"ACTIVE", "LOCKED", "RELEASE_PENDING"}))
+    p_released = bool(p_status == "RELEASED" or persistent.get("released"))
+    s_released = bool(shock.get("side") == side and (s_status == "RELEASED" or shock.get("released")))
+    return {
+        "persistent_status": p_status,
+        "shock_status": s_status,
+        "active": bool(p_active or s_active),
+        "released": bool((p_released or s_released) and not (p_active or s_active)),
+        "persistent": persistent,
+        "shock": shock,
+    }
+
+
+def _v3_canonical_lock_guard(context, setup, fixed_side, audit):
+    current = dict(setup or {})
+    if fixed_side not in ["LONG", "SHORT"]:
+        return current
+    lock = _v3_lock_record(context, fixed_side)
+    reset_allowed = bool(
+        current.get("transition_override_confirmed")
+        or current.get("fresh_base_exhaustion_reset")
+        or current.get("capitulation_recovery_confirmed")
+        or current.get("fresh_base_reentry_confirmed")
+    )
+    current["canonical_lock_state"] = lock
+    if lock["active"] and not reset_allowed:
+        if _v3_action_rank(current.get("action")) >= 2:
+            audit.append({"stage": "CANONICAL_LOCK", "code": "ACTIVE_LOCK_DOWNGRADE", "side": fixed_side})
+        current["action"] = "WATCH"
+        current["plan"] = None
+        current["title"] = _v3_watch_title(fixed_side, current)
+        current["reason"] = "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event"
+        current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + ["CANONICAL_LOCK_ACTIVE"])
+    elif lock["released"]:
+        stale_lock_text = []
+        for item in current.get("conflicts") or []:
+            low = str(item).lower()
+            if "persistent exhaustion" in low or "impulse lock" in low or "shock lock" in low:
+                continue
+            stale_lock_text.append(item)
+        current["conflicts"] = _v3_dedupe_text(stale_lock_text)
+        plan_values = _v3_plan_values(current.get("plan")) or {}
+        validation_reason = str(plan_values.get("validation_reason") or "").lower()
+        if "persistent exhaustion" in validation_reason or "impulse lock" in validation_reason or "shock lock" in validation_reason:
+            current["plan"] = None
+            if _v3_action_rank(current.get("action")) >= 2:
+                current["action"] = "WATCH"
+            current["plan_rebuild_required"] = True
+            current["plan_rebuild_status"] = "WAIT_FRESH_TRIGGER_AFTER_RELEASE"
+            current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + ["STALE_PRE_RELEASE_PLAN_REMOVED"])
+            audit.append({"stage": "CANONICAL_LOCK", "code": "STALE_PRE_RELEASE_PLAN_REMOVED", "side": fixed_side})
+    return _v3_normalize_setup(current, context, "FINAL_PIPELINE", audit)
+
+
+def _v3_final_geometry_and_entry_level(context, setup, fixed_side, audit):
+    current = deepcopy(setup)
+    before = deepcopy(current)
+    try:
+        rebuilt = final_stop_role_rebuild(current, context)
+    except Exception as error:
+        audit.append({"stage": "FINAL_GEOMETRY_REBUILD", "code": "ERROR", "error": str(error)[:240]})
+        rebuilt = dict(current)
+        rebuilt["action"] = "WATCH" if fixed_side in ["LONG", "SHORT"] else "NO_TRADE"
+        rebuilt["plan"] = None
+        rebuilt["reason"] = "фінальну геометрію не вдалося безпечно перебудувати"
+        rebuilt["reason_codes"] = _v3_dedupe_text(list(rebuilt.get("reason_codes") or []) + ["FINAL_GEOMETRY_ERROR"])
+    capture_pre_gate_opportunity_memory(context, before, rebuilt, "V3_FINAL_STOP_ROLE_REBUILD")
+    rebuilt = _v3_enforce_stage_invariants(before, rebuilt, fixed_side, "FINAL_GEOMETRY_REBUILD", False, audit)
+    rebuilt = _v3_run_gate_once(context, rebuilt, "FINAL_ENTRY_LEVEL_GATE", apply_entry_level_gate, fixed_side, audit)
+    return rebuilt
+
+
+def _v3_decision_fingerprint(setup):
+    raw = setup or {}
+    plan = _v3_plan_values(raw.get("plan"))
+    info = raw.get("setup_classifier") if isinstance(raw.get("setup_classifier"), dict) else {}
+    payload = {
+        "action": raw.get("action"),
+        "side": raw.get("side"),
+        "quality": int(raw.get("quality", 0) or 0),
+        "entry_level": raw.get("entry_level"),
+        "setup_type": info.get("type"),
+        "setup_score": int(info.get("score", 0) or 0),
+        "plan": plan,
+        "reason_codes": list(raw.get("reason_codes") or []),
+    }
+    return json.dumps(make_json_safe(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _v3_verify_post_decision_integrity(setup):
+    if not isinstance(setup, dict):
+        return _v3_safe_no_trade("фінальне рішення має некоректний формат", "POST_DECISION_FORMAT_ERROR")
+    expected = setup.get("decision_fingerprint")
+    if not expected:
+        return setup
+    actual = _v3_decision_fingerprint(setup)
+    if actual == expected:
+        return setup
+    safe = _v3_safe_no_trade(
+        "після фінального рішення виявлено спробу його змінити; вхід скасовано безпечним режимом",
+        "POST_DECISION_MUTATION_PREVENTED",
+    )
+    safe["decision_pipeline_v3"] = deepcopy(setup.get("decision_pipeline_v3") or {})
+    safe["decision_pipeline_v3"]["post_decision_mutation_detected"] = True
+    safe["decision_pipeline_v3"]["expected_fingerprint"] = expected
+    safe["decision_pipeline_v3"]["actual_fingerprint"] = actual
+    return safe
+
+
+def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
+    current = _v3_normalize_setup(setup, context, source, audit)
+    current = _v3_canonical_lock_guard(context, current, fixed_side, audit)
+    current["confirmations"] = _v3_clean_side_messages(current.get("confirmations"), fixed_side)
+    current["conflicts"] = _v3_clean_side_messages(current.get("conflicts"), fixed_side)
+
+    if current.get("action") in ["ENTRY", "RISKY_ENTRY"] and not _v3_plan_valid_for_side(current.get("plan"), fixed_side):
+        current["action"] = "WATCH"
+        current["plan"] = None
+        current["title"] = _v3_watch_title(fixed_side, current)
+        current["reason"] = "фінальна геометрія не відповідає вибраній стороні; потрібна нова точка входу"
+        current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + ["FINAL_PLAN_INVARIANT_FAILED"])
+        audit.append({"stage": "FINALIZE", "code": "FINAL_PLAN_INVARIANT_FAILED"})
+
+    current["quality"] = int(clamp(current.get("quality", 0), 0, 100))
+    current["current_readiness"] = current["quality"]
+    current["selected_setup_score"] = _v3_setup_score(current)
+    current["candidate_source"] = source
+    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3"
+    current["decision_id"] = uuid.uuid4().hex[:12]
+    current["decision_pipeline_v3"] = {
+        "version": "SINGLE_FILE_CLEAN_V3",
+        "decision_id": current["decision_id"],
+        "selected_source": source,
+        "selected_side": fixed_side,
+        "selected_action": current.get("action"),
+        "candidate_count": len(proposals),
+        "candidates": [
+            {
+                "source": p.source,
+                "side": p.side,
+                "action": p.action,
+                "quality": p.quality,
+                "setup_score": p.setup_score,
+                "direction_margin": p.direction_margin,
+                "geometry_valid": p.geometry_valid,
+                "selection_score": p.selection_score,
+                "setup_type": _v3_setup_type(p.setup),
+            }
+            for p in sorted(proposals, key=lambda x: x.selection_score, reverse=True)
+        ],
+        "audit": audit[-80:],
+        "invariants": {
+            "side_frozen": fixed_side in ["LONG", "SHORT"] or current.get("side") == "NEUTRAL",
+            "entry_requires_valid_plan": current.get("action") not in ["ENTRY", "RISKY_ENTRY"] or _v3_plan_valid_for_side(current.get("plan"), fixed_side),
+            "single_gate_pass": True,
+            "single_geometry_rebuild": True,
+            "post_decision_mutation_allowed": False,
+        },
+    }
+    current["decision_fingerprint"] = _v3_decision_fingerprint(current)
+    current["decision_pipeline_v3"]["decision_fingerprint"] = current["decision_fingerprint"]
+    return current
+
+
+def _v3_commit_context(target, selected_context):
+    if not isinstance(target, dict) or not isinstance(selected_context, dict):
+        return
+    real_state = target.get("runtime_state") if isinstance(target.get("runtime_state"), dict) else None
+    selected_state = selected_context.get("runtime_state") if isinstance(selected_context.get("runtime_state"), dict) else None
+    if real_state is not None and selected_state is not None:
+        real_state.clear()
+        real_state.update(deepcopy(selected_state))
+        selected_context = _v3_clone_context(selected_context)
+        selected_context["runtime_state"] = real_state
+    else:
+        selected_context = _v3_clone_context(selected_context)
+    target.clear()
+    target.update(selected_context)
+
+
 def evaluate_new_setup(context):
-    # Persist exhaustion/impulse state even when the current run returns WATCH.
-    # This must happen before classification so a regime-name change cannot erase it.
-    refresh_persistent_exhaustion_locks(context)
-    setup = _evaluate_new_setup_core(context)
-    setup = expire_recovery_thesis_if_invalid(context, setup)
-    # Reconnect a professional setup that survived an exhaustion/shock lock.
-    # Lock release alone remains WATCH; a fresh 3M/BOS/retest is mandatory.
-    setup = activate_lock_release_opportunity_bridge(context, setup)
-    if isinstance(setup, dict):
-        regime_engine = context.get("regime_engine") or context.get("market_regime")
-        if isinstance(regime_engine, dict):
-            setup.setdefault("regime_engine", regime_engine)
+    """Deterministic one-file entry pipeline.
 
-    # Priority lanes are checked before generic pending/rescue, because a stale
-    # recovery thesis must not consume the brief opposite transition window.
-    setup = activate_opportunity_memory_if_ready(context, setup)
-    setup = resolve_direction_flip_priority_lane(context, setup)
-    setup = resolve_capitulation_recovery_geometry_opportunity(context, setup)
-    setup = resolve_fresh_base_continuation_reentry(context, setup)
-    setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "ENTRY_LEVEL_GATE_PRE")
-    setup = activate_pending_trigger_if_ready(context, setup)
-    setup = resolve_15m_scheduler_entry_opportunity(context, setup)
-    setup = resolve_direction_flip_priority_lane(context, setup)
-    setup = resolve_capitulation_recovery_geometry_opportunity(context, setup)
-    setup = resolve_fresh_base_continuation_reentry(context, setup)
-    setup = activate_opportunity_memory_if_ready(context, setup)
-    setup = activate_lock_release_opportunity_bridge(context, setup)
-    setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "ENTRY_LEVEL_GATE_POST_RESCUE")
+    Analytical engines are preserved, but candidate lanes are isolated. Only one
+    candidate is selected, its side is frozen, gates run once and may only
+    downgrade, geometry is rebuilt once, and the final decision becomes immutable
+    for Telegram, journal and memory updates.
+    """
+    audit = []
+    try:
+        refresh_persistent_exhaustion_locks(context)
+        base_setup = _evaluate_new_setup_core(context)
+        base_setup = expire_recovery_thesis_if_invalid(context, base_setup)
+        seed_context = _v3_clone_context(context)
+        proposals = _v3_collect_proposals(seed_context, base_setup, audit)
+        selected = _v3_select_proposal(proposals, audit)
+        if selected is None:
+            return _v3_safe_no_trade("жоден кандидат не пройшов внутрішню побудову", "NO_CANDIDATE")
 
-    def hard_consensus(s):
-        stages = [
-            ("STRICT_TRANSITION_GATE", apply_strict_transition_gate_to_setup),
-            ("POST_SHOCK_RETEST_GATE", apply_post_shock_retest_gate_to_setup),
-            ("CAPITULATION_RECOVERY_GATE", apply_capitulation_recovery_gate_to_setup),
-            ("RANGE_SEGMENTATION_GATE", apply_range_midpoint_gate_to_setup),
-            ("STRUCTURAL_RESET_GATE", apply_structural_reset_gate_to_setup),
-            ("REGIME_WHITELIST_GATE", apply_regime_allowed_setup_whitelist),
-            ("PRIME_ICT_HTF_CONFLICT_CAP", apply_prime_ict_htf_conflict_cap),
-            ("PRIME_ICT_ADVERSE_FLOW_GATE", apply_adverse_flow_veto_prime_ict),
-            ("ENTRY_RISK_PACKAGE_GATE", apply_entry_risk_package_gate),
-            ("ENTRY_LEVEL_GATE", apply_entry_level_gate),
-        ]
-        for gate_name, gate_func in stages:
-            s = _apply_gate_with_pre_memory(context, s, gate_func, gate_name)
-        return s
+        working_context = _v3_clone_context(selected.context)
+        working_setup = deepcopy(selected.setup)
+        fixed_side = selected.side if selected.side in ["LONG", "SHORT"] else "NEUTRAL"
 
-    setup = hard_consensus(setup)
-    setup = apply_professional_lifecycle_to_setup(setup, context)
-    setup = hard_consensus(setup)
-    setup = _apply_gate_with_pre_memory(context, setup, apply_final_same_side_exhaustion_lock, "FINAL_SAME_SIDE_EXHAUSTION_LOCK")
-    setup = hard_consensus(setup)
-    before_stop = setup
-    setup = final_stop_role_rebuild(setup, context)
-    capture_pre_gate_opportunity_memory(context, before_stop, setup, "FINAL_STOP_ROLE_REBUILD")
-    setup = hard_consensus(setup)
-    setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "FINAL_ENTRY_LEVEL_GATE")
-    # Final consistency pass: hard gates may have attached old-side conflicts or
-    # a pre-release invalid plan after the Bridge changed the final side. Restore
-    # a clean WATCH only; never bypass a hard gate into an entry here.
-    setup = activate_lock_release_opportunity_bridge(context, setup, finalize_watch_only=True)
-    return setup
+        # Lifecycle may refine readiness once before gates. It is the only stage
+        # allowed to upgrade the selected proposal. Every later stage is monotonic.
+        before_lifecycle = deepcopy(working_setup)
+        try:
+            lifecycle_setup = apply_professional_lifecycle_to_setup(deepcopy(working_setup), working_context)
+        except Exception as error:
+            audit.append({"stage": "LIFECYCLE", "code": "ERROR", "error": str(error)[:240]})
+            lifecycle_setup = before_lifecycle
+        working_setup = _v3_enforce_stage_invariants(
+            before_lifecycle, lifecycle_setup, fixed_side, "LIFECYCLE", True, audit
+        )
+
+        working_setup = _v3_apply_gates_once(working_context, working_setup, fixed_side, audit)
+        working_setup = _v3_final_geometry_and_entry_level(working_context, working_setup, fixed_side, audit)
+        final_setup = _v3_finalize_decision(
+            working_context, working_setup, fixed_side, selected.source, proposals, audit
+        )
+        _v3_commit_context(context, working_context)
+        context["setup_classifier"] = final_setup.get("setup_classifier")
+        context["decision_pipeline_v3"] = final_setup.get("decision_pipeline_v3")
+        return final_setup
+    except Exception as error:
+        print(f"[WARN] SINGLE_FILE_CLEAN_V3 safe-mode: {error}")
+        safe = _v3_safe_no_trade(
+            "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
+            "PIPELINE_SAFE_MODE",
+        )
+        safe["pipeline_error"] = str(error)[:400]
+        safe["decision_pipeline_v3"] = {
+            "version": "SINGLE_FILE_CLEAN_V3",
+            "safe_mode": True,
+            "audit": audit[-40:],
+        }
+        return safe
 
 
 
@@ -17762,10 +18468,9 @@ def entry_type_text(context, setup):
         saved_score = int((setup or {}).get("lock_release_bridge_saved_setup_score", 0) or ((setup or {}).get("setup_classifier") or {}).get("score", 0) or 0)
         return f"<b>Збережений сетап:</b> {html.escape(str(saved_label))} | {saved_score}/100"
 
-    setup_info = (setup or {}).get("setup_classifier") or (context.get("setup_classifier") or {})
-    if not setup_info or setup_info.get("side") != side:
-        setup_info = classify_setup(context, side)
-        context["setup_classifier"] = setup_info
+    setup_info = (setup or {}).get("setup_classifier") or {}
+    if not setup_info or str(setup_info.get("side") or "").upper() != side:
+        return "<b>Сетап:</b> ⚪ класифікатор сторони не підтверджений"
 
     line = setup_classifier_text(setup_info)
     # User requested to remove the public "Правило" line from Telegram alerts.
@@ -18094,6 +18799,60 @@ def update_market_snapshot(state, context):
 
 
 # ==========================================================
+# SINGLE-FILE ACTIVE-TRADE INVARIANT WRAPPER V3
+# ==========================================================
+
+
+def manage_active_trade_v3(trade, context):
+    """Run the legacy/proven manager once, then enforce non-conflicting invariants."""
+    before_side = str(getattr(trade, "side", "") or "")
+    before_stop = safe_float(getattr(trade, "stop_current", None), None)
+    try:
+        result = manage_active_trade(trade, context)
+    except Exception as error:
+        current_pct = signed_pct(before_side, safe_float(getattr(trade, "entry", 0), 0), safe_float((context or {}).get("price"), 0))
+        return {
+            "action": "HOLD",
+            "title": f"СУПРОВІД {before_side}",
+            "recommendation": "модуль супроводу не завершив перевірку; позиція не замінена новим сигналом, потрібен ручний контроль",
+            "closed": False,
+            "current_pct": current_pct,
+            "best_pct": max(0.0, signed_pct(before_side, safe_float(getattr(trade, "entry", 0), 0), safe_float(getattr(trade, "best_price", getattr(trade, "entry", 0)), 0))),
+            "notes": [f"MANAGEMENT_SAFE_MODE: {str(error)[:240]}"],
+            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3", "safe_mode": True},
+        }
+
+    if str(getattr(trade, "side", "") or "") != before_side:
+        trade.side = before_side
+        result.setdefault("notes", []).append("SIDE_MUTATION_PREVENTED")
+
+    after_stop = safe_float(getattr(trade, "stop_current", None), before_stop)
+    stop_restored = False
+    if before_stop is not None and after_stop is not None:
+        if before_side == "LONG" and after_stop < before_stop - max(0.0001, abs(before_stop) * 0.00001):
+            trade.stop_current = before_stop
+            stop_restored = True
+        elif before_side == "SHORT" and after_stop > before_stop + max(0.0001, abs(before_stop) * 0.00001):
+            trade.stop_current = before_stop
+            stop_restored = True
+    if stop_restored:
+        result["stop_changed"] = False
+        result["recommended_stop"] = before_stop
+        result.setdefault("notes", []).append("STOP_LOOSENING_PREVENTED")
+
+    result.setdefault("action", "HOLD")
+    result.setdefault("closed", False)
+    result.setdefault("current_pct", signed_pct(before_side, trade.entry, safe_float((context or {}).get("price"), trade.entry)))
+    result.setdefault("best_pct", max(0.0, safe_float(result.get("current_pct"), 0.0) or 0.0))
+    result["architecture_audit"] = {
+        "version": "SINGLE_FILE_CLEAN_V3",
+        "side_immutable": str(getattr(trade, "side", "") or "") == before_side,
+        "stop_never_loosened": not stop_restored,
+        "active_trade_never_replaced_by_watch": True,
+    }
+    return result
+
+# ==========================================================
 # MAIN
 # ==========================================================
 
@@ -18118,7 +18877,7 @@ def main():
     if active and active.status != "CLOSED":
         update_opportunity_coverage(state, context, active_trade=active)
         state["opportunity_memory"] = None
-        result = manage_active_trade(active, context)
+        result = manage_active_trade_v3(active, context)
         message = build_follow_message(context, active, result)
         if result.get("closed"):
             journal["trades"].append(build_closed_trade_journal_item(active, result, context))
@@ -18203,14 +18962,15 @@ def main():
         return
 
     setup = evaluate_new_setup(context)
-    if setup.get("side") in ["LONG", "SHORT"]:
-        setup_classifier = setup.get("setup_classifier") or classify_setup(context, setup.get("side"))
-        setup["setup_classifier"] = setup_classifier
-        context["setup_classifier"] = setup_classifier
+    if setup.get("side") in ["LONG", "SHORT"] and isinstance(setup.get("setup_classifier"), dict):
+        # Decision is immutable after evaluate_new_setup: only mirror the already
+        # selected classifier into context for presentation/journal compatibility.
+        context["setup_classifier"] = setup.get("setup_classifier")
     update_lock_release_opportunity_bridge_memory(state, setup, context)
     update_opportunity_memory(state, setup, context)
     update_pending_trigger_memory(state, setup, context)
     update_opportunity_coverage(state, context, setup=setup)
+    setup = _v3_verify_post_decision_integrity(setup)
     message = build_new_setup_message(context, setup)
 
     if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
@@ -18260,6 +19020,14 @@ def main():
         "lock_release_bridge_current_readiness": setup.get("lock_release_bridge_current_readiness"),
         "plan_rebuild_required": bool(setup.get("plan_rebuild_required")),
         "plan_rebuild_status": setup.get("plan_rebuild_status"),
+        "architecture_version": setup.get("architecture_version"),
+        "decision_id": setup.get("decision_id"),
+        "decision_fingerprint": setup.get("decision_fingerprint"),
+        "candidate_source": setup.get("candidate_source"),
+        "current_readiness": setup.get("current_readiness"),
+        "selected_setup_score": setup.get("selected_setup_score"),
+        "reason_codes": setup.get("reason_codes", []),
+        "decision_pipeline_v3": setup.get("decision_pipeline_v3"),
         "setup_classifier": setup.get("setup_classifier"),
         "regime_engine": setup.get("regime_engine") or context.get("regime_engine"),
         "plan": asdict(setup["plan"]) if setup.get("plan") else None,
