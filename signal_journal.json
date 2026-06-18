@@ -14714,14 +14714,332 @@
           "previous_regime_type": "TREND_EXPANSION"
         }
       }
+    },
+    {
+      "time": "2026-06-18T01:45:55.548598+00:00",
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.14,
+      "quality": 34,
+      "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. від локального high вже -4.94%; ціна далеко від EMA20 (2.01 ATR); CVD/потік/кластери вже попереджають",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "SHORT",
+        "score": 35,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ліквідність/ринковий блок проти цього входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "IMPULSE",
+        "regime_type": "EXHAUSTION",
+        "label": "виснажений рух",
+        "score": 72,
+        "confidence": 72,
+        "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. від локального high вже -4.94%; ціна далеко від EMA20 (2.01 ATR); CVD/потік/кластери вже попереджають",
+        "entry_action": "BLOCK",
+        "entry_quality_adjustment": -10,
+        "quality_cap": 61,
+        "hard_block": true,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "RANGE_EDGE_TRADE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.93,
+          "move8_abs_pct": 0.66,
+          "slope15_abs_pct": 0.596,
+          "rsi15": 35.9,
+          "score_total_abs": 146,
+          "participation_same": 1,
+          "late_penalty": 7,
+          "pd": "DISCOUNT",
+          "ict_setup": "LIQUIDITY_SWEEP_LONG"
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": true,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "plan": {
+        "entry": 78.14,
+        "stop": 78.14,
+        "tp1": 78.14,
+        "tp2": 78.14,
+        "tp3": 78.14,
+        "risk_pct": 0.0,
+        "rr1": 0,
+        "rr2": 0,
+        "rr3": 0,
+        "invalidation": "15m закриття вище 78.14 або злам 3m/структури проти SHORT. Сетап: ⚪ Чистого сетапу немає. Режим: імпульсний / виснажений рух. стоп/TP не активувати без сетапу | чекати чистішу структуру",
+        "valid": false,
+        "validation_reason": "не вдалося побудувати життєздатну технічну геометрію",
+        "technical_stop_basis": "",
+        "technical_tp1_basis": "",
+        "technical_tp2_basis": "",
+        "technical_tp3_basis": "",
+        "geometry_mode": "15M_ICT_STRUCTURAL",
+        "technical_rr_target": 1.5,
+        "better_entry": 0.0,
+        "geometry_grade": "INVALID",
+        "barrier_mode": "NONE",
+        "preferred_geometry_met": false,
+        "breakout_gates": []
+      },
+      "confirmations": [
+        "4h фон підтримує",
+        "15m за напрямом",
+        "1h підтримує",
+        "3m дав тригер",
+        "кластери локально підтримують",
+        "режим ринку: виснажений рух",
+        "Сетап: ⚪ Чистого сетапу немає (35/100)"
+      ],
+      "conflicts": [
+        "ICT проти",
+        "ліквідність проти",
+        "після зняття ліквідності цей напрям не доганяти",
+        "мʼякий anti-chase штраф -7: ліквідність проти: low зняли/дамп викупили, шорт не доганяти",
+        "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. від локального high вже -4.94%; ціна далеко від EMA20 (2.01 ATR); CVD/потік/кластери вже попереджають",
+        "ліквідність/ринковий блок проти цього входу",
+        "не вдалося побудувати життєздатну технічну геометрію",
+        "ICT проти напрямку — якість входу нижча"
+      ],
+      "context": {
+        "bias": "SHORT",
+        "tech_score": -138,
+        "total_score": -146,
+        "tf3": {
+          "available": true,
+          "bias": "SHORT",
+          "score": -58,
+          "state": "SHORT_STRENGTHENING",
+          "fast_move_pct": -0.356,
+          "drift_pct": -0.28,
+          "vol_ratio": 0.02,
+          "note": "3m швидко йде вниз; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 78.27,
+          "ema20": 78.6923,
+          "ema50": 78.8875,
+          "rsi": 35.9,
+          "atr": 0.2751,
+          "slope_pct": -0.596,
+          "move_8_pct": -0.66,
+          "range_atr": 3.93,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -42,
+          "trend": "SHORT",
+          "close": 78.76,
+          "ema20": 79.0526,
+          "ema50": 79.8273,
+          "rsi": 43.3,
+          "atr": 0.6831,
+          "slope_pct": -1.265,
+          "move_8_pct": -0.316,
+          "range_atr": 6.6,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -42,
+          "trend": "SHORT",
+          "close": 78.88,
+          "ema20": 80.7949,
+          "ema50": 84.3659,
+          "rsi": 31.6,
+          "atr": 1.4106,
+          "slope_pct": -3.811,
+          "move_8_pct": 0.305,
+          "range_atr": 5.41,
+          "note": "ціна нижче EMA20/50; нахил вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -10,
+          "phase": "DOWNSIDE SWEEP",
+          "swing_high": 78.88,
+          "swing_low": 78.7,
+          "recent_high": 79.55,
+          "recent_low": 78.25,
+          "atr": 0.2751,
+          "note": "закриття нижче swing low 78.7; зняли ліквідність знизу і повернулись вище"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -81.7,
+          "book_delta_pct": 62.18,
+          "note": "угоди за продавців; стакан підтримує покупців; підтримка покупців біля 77.89"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -36984.0,
+          "delta_pct": -81.7,
+          "cvd": 142961.0,
+          "cvd_change_pct": -20.553,
+          "last_trade_ts": 1781747141269,
+          "price_move_pct": -0.217,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 78.2025,
+              "imbalance_pct": -69.5,
+              "volume": 24127.0
+            },
+            {
+              "price": 78.14,
+              "imbalance_pct": -100.0,
+              "volume": 20246.0
+            }
+          ],
+          "note": "локальний продавець біля 78.2025"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 58424.85,
+          "oi_change_pct": 0.299,
+          "funding_pct": 0.00142,
+          "price_change_pct": -0.077,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "LONG",
+          "score": 18,
+          "event": "DOWNSIDE SWEEP / LONG RECLAIM",
+          "blocks": [
+            "SHORT"
+          ],
+          "vol_ratio": 0.02,
+          "move_1_pct": 0.013,
+          "move_6_pct": -0.038,
+          "note": "зняли low і повернулись вище — шорт не доганяти"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -10,
+          "top": "Crude oil prices fall over 1% on US-Iran peace deal; Brent hovers around $78 per barrel - Mint",
+          "total": 5
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "NO_CLEAN_SETUP",
+          "label": "⚪ Чистого сетапу немає",
+          "side": "SHORT",
+          "score": 35,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "ліквідність/ринковий блок проти цього входу",
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -6,
+            "quality_cap": 66,
+            "block_entry": true
+          },
+          "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+          "stop_rule": "стоп/TP не активувати без сетапу",
+          "tp_rule": "чекати чистішу структуру",
+          "management_rule": "чекати до появи топового сетапу"
+        },
+        "regime_engine": {
+          "name": "IMPULSE",
+          "regime_type": "EXHAUSTION",
+          "label": "виснажений рух",
+          "score": 72,
+          "confidence": 72,
+          "reason": "SHORT вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий LONG-сетап. від локального high вже -4.94%; ціна далеко від EMA20 (2.01 ATR); CVD/потік/кластери вже попереджають",
+          "entry_action": "BLOCK",
+          "entry_quality_adjustment": -10,
+          "quality_cap": 61,
+          "hard_block": true,
+          "allowed_setups": [
+            "SWEEP_REVERSAL",
+            "SWEEP_RECLAIM_EARLY_ENTRY",
+            "PRIME_ICT_LOCATION_OVERRIDE",
+            "RANGE_EDGE_TRADE"
+          ],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 3.93,
+            "move8_abs_pct": 0.66,
+            "slope15_abs_pct": 0.596,
+            "rsi15": 35.9,
+            "score_total_abs": 146,
+            "participation_same": 1,
+            "late_penalty": 7,
+            "pd": "DISCOUNT",
+            "ict_setup": "LIQUIDITY_SWEEP_LONG"
+          },
+          "stable_count": 1,
+          "pending_count": 1,
+          "is_stable": true,
+          "previous_regime_type": "TREND_EXPANSION"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-18T01:31:05.966091+00:00",
+  "updated_at": "2026-06-18T01:45:55.556607+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-18T01:31:05.969767+00:00",
+    "updated_at": "2026-06-18T01:45:55.561580+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 1,
-    "signals_count": 49,
+    "signals_count": 50,
     "overall": {
       "trades": 1,
       "wins": 0,
@@ -14831,11 +15149,11 @@
       }
     },
     "signals": {
-      "total": 49,
+      "total": 50,
       "entries": 1,
       "full_entries": 0,
       "risky_entries": 1,
-      "watch": 39,
+      "watch": 40,
       "no_trade": 6,
       "follow": 2,
       "closed": 1,
@@ -14845,14 +15163,14 @@
       "COUNTERTREND_SCALP": 5,
       "LATE_IMPULSE_CHASE": 2,
       "NEWS_IMPULSE": 7,
-      "NO_CLEAN_SETUP": 16,
+      "NO_CLEAN_SETUP": 17,
       "PRIME_ICT_LOCATION_OVERRIDE": 5,
       "TREND_CONTINUATION": 2,
       "TREND_IGNITION_ENTRY": 3,
       "UNKNOWN": 9
     },
     "signal_counts_by_regime": {
-      "EXHAUSTION": 1,
+      "EXHAUSTION": 2,
       "NEWS_SHOCK": 17,
       "NORMAL": 17,
       "REVERSAL_BUILDUP": 5,
