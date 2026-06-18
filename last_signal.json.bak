@@ -3440,6 +3440,99 @@
       "entry_window_closed": false,
       "market_direction_context": null,
       "time": "2026-06-18T23:31:08.683200+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.88,
+      "quality": 39,
+      "reason": "активна новина проти цього NEWS_IMPULSE (61 хв, підтверджена ціною)",
+      "setup_classifier": {
+        "type": "NEWS_IMPULSE",
+        "label": "🟠 Новинний імпульс",
+        "side": "LONG",
+        "score": 61,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "RISKY",
+        "reason": "активна новина проти цього NEWS_IMPULSE (61 хв, підтверджена ціною)",
+        "quality_adjustment": -2,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "NEWS_IMPULSE",
+          "tp1_pct": 0.9,
+          "tp2_pct": 1.6,
+          "tp3_pct": 2.6,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.3,
+          "quality_adjustment": -2,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "новинний драйвер + 3M/структура в той самий бік; не доганяти без ретесту",
+        "stop_rule": "стоп ширший за шум, але не більше новинного максимального ризику",
+        "tp_rule": "TP ближче; новина може дати різкий відкат",
+        "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу",
+        "news_consensus": {
+          "active": true,
+          "allowed": false,
+          "directional_same": false,
+          "opposing": true,
+          "neutral_calendar": false,
+          "retest_confirmed": false,
+          "late": false,
+          "reason": "активна новина проти цього NEWS_IMPULSE (61 хв, підтверджена ціною)",
+          "news_score": 45,
+          "blocking_score": 45,
+          "news_bias": "SHORT",
+          "blocking_bias": "SHORT",
+          "top_age_min": 61.1,
+          "top_lifecycle": "CONFIRMED",
+          "top_lifecycle_label": "підтверджена ціною",
+          "technical_priority": false
+        },
+        "mandatory_retest": false
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 2.67,
+          "move8_abs_pct": 0.126,
+          "slope15_abs_pct": 0.169,
+          "rsi15": 54.1,
+          "score_total_abs": 61,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT"
+        },
+        "stable_count": 3,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-18T23:45:51.693155+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -3624,7 +3717,7 @@
       "published_at": "2026-06-18T21:03:43+00:00",
       "reference_price": 79.11,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:31:07.874868+00:00",
+      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
       "last_status": "CONFIRMED"
     },
     "update brent rises after vance warns israel against breaking cease fire reuters": {
@@ -3640,7 +3733,7 @@
       "published_at": "2026-06-18T22:28:36+00:00",
       "reference_price": 79.22,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:31:07.874868+00:00",
+      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
       "last_status": "CONFIRMED"
     },
     "oil dips as us iran ceasefire deal takes effect ships return to hormuz the business times": {
@@ -3648,7 +3741,7 @@
       "published_at": "2026-06-18T22:22:00+00:00",
       "reference_price": 79.32,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:31:07.874868+00:00",
+      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
       "last_status": "CONFIRMED"
     },
     "oil prices hit lowest since ceasefire deal what this means for investors and businesses in oman omanet om": {
@@ -3656,7 +3749,7 @@
       "published_at": "2026-06-18T22:44:44+00:00",
       "reference_price": 79.13,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:31:07.874868+00:00",
+      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
       "last_status": "CONFIRMED"
     },
     "iran us deal opens hormuz initiates sanctions relief and creates new opportunities for pakistan propakistani": {
@@ -3664,23 +3757,23 @@
       "published_at": "2026-06-18T22:39:02+00:00",
       "reference_price": 79.13,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:31:07.874868+00:00",
+      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
       "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-06-18T23:31:08.206111+00:00"
+    "updated_at": "2026-06-18T23:45:51.230461+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781825400000,
+      "updated_ts": 1781826300000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -3693,7 +3786,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781808300000,
-      "updated_ts": 1781825400000,
+      "updated_ts": 1781826300000,
       "origin_price": 79.26,
       "extreme_price": 79.38,
       "released_at": "2026-06-18T18:45:55.908025+00:00",
@@ -4131,12 +4224,14 @@
   "opportunity_analytics": {
     "new_entries": 3,
     "covered_by_active_trade": 0,
-    "missed": 7,
+    "missed": 8,
     "active_episode_keys": [
+      "LONG:CAPITULATION_RECOVERY",
       "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "SHORT:CAPITULATION_RECOVERY": "MISSED"
+      "SHORT:CAPITULATION_RECOVERY": "MISSED",
+      "LONG:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -4226,276 +4321,44 @@
         "episode_key": "LONG:CAPITULATION_RECOVERY",
         "status": "MISSED",
         "time": "2026-06-18T22:15:53.672360+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781825400000,
+        "episode_key": "LONG:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-18T23:45:51.692974+00:00"
       }
     ],
     "covered_total": 3,
-    "total_opportunities": 10,
-    "coverage_pct": 30.0
+    "total_opportunities": 11,
+    "coverage_pct": 27.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T23:31:08.683487+00:00",
-    "price": 78.77,
-    "oi": 55117.74,
-    "cvd": -187531.0,
-    "cvd_time": "2026-06-18T23:31:08.683492+00:00",
-    "last_trade_ts": 1781825456576,
-    "bias": "NEUTRAL",
-    "tech_score": -13,
-    "total_score": -29
+    "time": "2026-06-18T23:45:51.693175+00:00",
+    "price": 78.88,
+    "oi": 55198.94,
+    "cvd": -163706.0,
+    "cvd_time": "2026-06-18T23:45:51.693178+00:00",
+    "last_trade_ts": 1781826319813,
+    "bias": "LONG",
+    "tech_score": 77,
+    "total_score": 61
   },
-  "updated_at": "2026-06-18T23:31:08.683495+00:00",
+  "updated_at": "2026-06-18T23:45:51.693181+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 79.39,
-    "low": 78.87,
+    "low": 78.84,
     "created_ts": 1781814600000,
-    "updated_ts": 1781824500000,
+    "updated_ts": 1781825400000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
     "old_low": null
   },
-  "pending_trigger": {
-    "active": true,
-    "created_at": "2026-06-18T23:15:55.245484+00:00",
-    "side": "SHORT",
-    "price": 78.95,
-    "quality": 67,
-    "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
-    "setup_label": "🟢 Ранній вхід на відкаті",
-    "reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками",
-    "regime_engine": {
-      "name": "NEWS_IMPULSE",
-      "regime_type": "NEWS_SHOCK",
-      "label": "новинний шок",
-      "score": 78,
-      "confidence": 78,
-      "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
-      "entry_action": "RISKY_ONLY",
-      "entry_quality_adjustment": -2,
-      "quality_cap": 79,
-      "hard_block": false,
-      "allowed_setups": [
-        "NEWS_IMPULSE",
-        "TREND_IGNITION_ENTRY",
-        "PRIME_ICT_LOCATION_OVERRIDE",
-        "PULLBACK_CONTINUATION_FAST_ENTRY"
-      ],
-      "notes": [],
-      "metrics": {
-        "bias": "LONG",
-        "range_atr": 3.91,
-        "move8_abs_pct": 0.025,
-        "slope15_abs_pct": 0.076,
-        "rsi15": 55.3,
-        "score_total_abs": 32,
-        "participation_same": 1,
-        "late_penalty": 0,
-        "pd": "PREMIUM",
-        "ict_setup": "PREMIUM_CONTEXT"
-      },
-      "stable_count": 1,
-      "pending_count": 1,
-      "is_stable": true,
-      "previous_regime_type": "NORMAL"
-    },
-    "plan": {
-      "entry": 78.95,
-      "stop": 79.1953,
-      "tp1": 77.82,
-      "tp2": 77.69,
-      "tp3": 77.47,
-      "risk_pct": 0.311,
-      "rr1": 4.61,
-      "rr2": 5.14,
-      "rr3": 6.03,
-      "invalidation": "15m закриття вище 79.1953 або злам 3m/структури проти SHORT. Сетап: 🟢 Ранній вхід на відкаті. Режим: відкат у тренді. стоп за low/high відкату або за межу FVG/OB з ATR-буфером | TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
-      "valid": true,
-      "validation_reason": "",
-      "technical_stop_basis": "last closed 15M high",
-      "technical_tp1_basis": "протилежний bullish OB (перший край)",
-      "technical_tp2_basis": "закритий 1H swing low",
-      "technical_tp3_basis": "закритий 1H swing low",
-      "geometry_mode": "15M_ICT_STRUCTURAL",
-      "technical_rr_target": 1.5,
-      "better_entry": 0.0,
-      "geometry_grade": "OPTIMAL",
-      "barrier_mode": "MANAGEMENT_CHECKPOINT",
-      "preferred_geometry_met": true,
-      "breakout_gates": [],
-      "management_checkpoints": [
-        {
-          "level": 78.89,
-          "basis": "15M swing low / sell-side liquidity",
-          "priority": 96,
-          "source_status": "HARD",
-          "status": "PENDING",
-          "acceptance_streak": 0,
-          "rejection_streak": 0,
-          "touched_at": "",
-          "accepted_at": "",
-          "rejected_at": ""
-        },
-        {
-          "level": 78.17,
-          "basis": "закритий 1H swing low",
-          "priority": 94,
-          "source_status": "HARD",
-          "status": "PENDING",
-          "acceptance_streak": 0,
-          "rejection_streak": 0,
-          "touched_at": "",
-          "accepted_at": "",
-          "rejected_at": ""
-        },
-        {
-          "level": 78.41,
-          "basis": "закритий 1H swing low",
-          "priority": 94,
-          "source_status": "HARD",
-          "status": "PENDING",
-          "acceptance_streak": 0,
-          "rejection_streak": 0,
-          "touched_at": "",
-          "accepted_at": "",
-          "rejected_at": ""
-        }
-      ],
-      "geometry_reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
-      "geometry_diagnostics": {
-        "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V2_CHECKPOINTS",
-        "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
-        "setup_label": "🟢 Ранній вхід на відкаті",
-        "setup_family": "FAST_PULLBACK",
-        "side": "SHORT",
-        "price": 78.95,
-        "atr15": 0.2585,
-        "policy": {
-          "min_rr": 1.15,
-          "min_target_pct": 0.72,
-          "min_target_atr15": 0.95,
-          "max_stop_pct": 1.34,
-          "tactical_family": true
-        },
-        "reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
-        "public_message": "",
-        "details": {
-          "stop_candidates": 9,
-          "target_candidates": 12,
-          "allow_3m_stop": false,
-          "rejection_counts": {
-            "tactical_stop_not_confirmed": 4,
-            "stop_too_tight": 0,
-            "stop_too_wide": 0,
-            "hard_barrier": 99
-          },
-          "best_pair": {
-            "stop": 79.1953,
-            "stop_basis": "last closed 15M high",
-            "stop_timeframe": "15M",
-            "target": 77.82,
-            "target_basis": "протилежний bullish OB (перший край)",
-            "risk_pct": 0.311,
-            "risk_atr15": 0.949,
-            "reward_pct": 1.431,
-            "reward_atr15": 4.371,
-            "rr": 4.607,
-            "failures": [],
-            "barrier": null,
-            "barrier_basis": "",
-            "management_checkpoints": [
-              {
-                "level": 78.89,
-                "basis": "15M swing low / sell-side liquidity",
-                "priority": 96,
-                "source_status": "HARD",
-                "status": "PENDING",
-                "acceptance_streak": 0,
-                "rejection_streak": 0,
-                "touched_at": "",
-                "accepted_at": "",
-                "rejected_at": ""
-              },
-              {
-                "level": 78.17,
-                "basis": "закритий 1H swing low",
-                "priority": 94,
-                "source_status": "HARD",
-                "status": "PENDING",
-                "acceptance_streak": 0,
-                "rejection_streak": 0,
-                "touched_at": "",
-                "accepted_at": "",
-                "rejected_at": ""
-              },
-              {
-                "level": 78.41,
-                "basis": "закритий 1H swing low",
-                "priority": 94,
-                "source_status": "HARD",
-                "status": "PENDING",
-                "acceptance_streak": 0,
-                "rejection_streak": 0,
-                "touched_at": "",
-                "accepted_at": "",
-                "rejected_at": ""
-              }
-            ],
-            "pass_ratio": 1.0,
-            "priority": 999
-          },
-          "validation_reasons": [],
-          "management_checkpoints": [
-            {
-              "level": 78.89,
-              "basis": "15M swing low / sell-side liquidity",
-              "priority": 96,
-              "source_status": "HARD",
-              "status": "PENDING",
-              "acceptance_streak": 0,
-              "rejection_streak": 0,
-              "touched_at": "",
-              "accepted_at": "",
-              "rejected_at": ""
-            },
-            {
-              "level": 78.17,
-              "basis": "закритий 1H swing low",
-              "priority": 94,
-              "source_status": "HARD",
-              "status": "PENDING",
-              "acceptance_streak": 0,
-              "rejection_streak": 0,
-              "touched_at": "",
-              "accepted_at": "",
-              "rejected_at": ""
-            },
-            {
-              "level": 78.41,
-              "basis": "закритий 1H swing low",
-              "priority": 94,
-              "source_status": "HARD",
-              "status": "PENDING",
-              "acceptance_streak": 0,
-              "rejection_streak": 0,
-              "touched_at": "",
-              "accepted_at": "",
-              "rejected_at": ""
-            }
-          ]
-        },
-        "better_entry": {
-          "level": 0.0,
-          "low": 0.0,
-          "high": 0.0
-        },
-        "hidden_for_no_setup": false,
-        "checkpoint_message": "Контрольні бар’єри: 78.89, 78.17, 78.41. Кожний рівень супроводжується окремо: прийняття — продовжуємо, підтверджене відхилення — аналіз захисту або виходу."
-      },
-      "better_entry_zone_low": 0.0,
-      "better_entry_zone_high": 0.0
-    }
-  },
+  "pending_trigger": null,
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-18T18:31:13.949995+00:00",
@@ -4540,7 +4403,7 @@
       "status": "INVALIDATED",
       "side": "LONG",
       "created_at": "2026-06-18T18:50:59.035537+00:00",
-      "updated_at": "2026-06-18T23:31:08.562812+00:00",
+      "updated_at": "2026-06-18T23:45:51.634698+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781807220000,
