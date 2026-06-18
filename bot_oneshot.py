@@ -281,20 +281,46 @@ PRIME_ICT_HTF_CONFLICT_QUALITY_CAP = int(os.getenv("PRIME_ICT_HTF_CONFLICT_QUALI
 GEOMETRY_PERSISTENCE_SETUP_TYPES = {
     "TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "PULLBACK_CONTINUATION",
     "PULLBACK_CONTINUATION_FAST_ENTRY", "FRESH_BASE_CONTINUATION_REENTRY",
-    "RANGE_COMPRESSION_BREAKOUT",
+    "RANGE_COMPRESSION_BREAKOUT", "REVERSAL_PULLBACK_RECLAIM_ENTRY",
 }
 OPPORTUNITY_MEMORY_SETUP_TYPES = {
     "CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY",
     "TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "PULLBACK_CONTINUATION",
     "PULLBACK_CONTINUATION_FAST_ENTRY", "RANGE_COMPRESSION_BREAKOUT", "SWEEP_REVERSAL",
     "SWEEP_RECLAIM_EARLY_ENTRY", "PRIME_ICT_LOCATION_OVERRIDE",
+    "REVERSAL_PULLBACK_RECLAIM_ENTRY",
 }
 TRANSITION_WHITELIST_REGIMES = {"REVERSAL_BUILDUP", "EXHAUSTION", "RANGE_COMPRESSION", "COMPRESSION", "PULLBACK", "NEWS_SHOCK"}
-TRANSITION_PRIORITY_SETUPS = {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY"}
+TRANSITION_PRIORITY_SETUPS = {
+    "CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY",
+    "FRESH_BASE_CONTINUATION_REENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY",
+}
 LOCK_RELEASE_BRIDGE_SETUP_TYPES = set(OPPORTUNITY_MEMORY_SETUP_TYPES) | {
     "COUNTERTREND_SCALP", "RANGE_EDGE_TRADE", "TREND_IGNITION_ENTRY",
     "NEWS_IMPULSE", "CAPITULATION_RECOVERY", "CLOSED_15M_DIRECTION_FLIP",
 }
+
+# Reversal Handoff + 3M Pullback Reclaim Entry.
+# This package bridges a confirmed failure of the previous thesis into a fresh
+# opposite-side scenario. It never resurrects the first impulse: after the seed
+# it requires a controlled pullback, a new closed-3M reclaim, limited extension
+# and a fresh tactical invalidation.
+REVERSAL_HANDOFF_TTL_MINUTES = int(os.getenv("REVERSAL_HANDOFF_TTL_MINUTES", "90") or 90)
+REVERSAL_HANDOFF_MIN_SEED_SCORE = int(os.getenv("REVERSAL_HANDOFF_MIN_SEED_SCORE", "66") or 66)
+REVERSAL_HANDOFF_MIN_OPPOSITE_RUN_ATR15 = float(os.getenv("REVERSAL_HANDOFF_MIN_OPPOSITE_RUN_ATR15", "0.95") or 0.95)
+REVERSAL_HANDOFF_MIN_IMPULSE_ATR15 = float(os.getenv("REVERSAL_HANDOFF_MIN_IMPULSE_ATR15", "0.55") or 0.55)
+REVERSAL_PULLBACK_MIN_RETRACE_ATR15 = float(os.getenv("REVERSAL_PULLBACK_MIN_RETRACE_ATR15", "0.20") or 0.20)
+REVERSAL_PULLBACK_MIN_RATIO = float(os.getenv("REVERSAL_PULLBACK_MIN_RATIO", "0.18") or 0.18)
+REVERSAL_PULLBACK_MAX_RATIO = float(os.getenv("REVERSAL_PULLBACK_MAX_RATIO", "0.72") or 0.72)
+REVERSAL_PULLBACK_MAX_BARS_3M = int(os.getenv("REVERSAL_PULLBACK_MAX_BARS_3M", "10") or 10)
+REVERSAL_RECLAIM_MAX_AGE_MINUTES = int(os.getenv("REVERSAL_RECLAIM_MAX_AGE_MINUTES", "24") or 24)
+REVERSAL_RECLAIM_MAX_EXTENSION_ATR15 = float(os.getenv("REVERSAL_RECLAIM_MAX_EXTENSION_ATR15", "0.68") or 0.68)
+REVERSAL_RECLAIM_MIN_TF3_SCORE = int(os.getenv("REVERSAL_RECLAIM_MIN_TF3_SCORE", "30") or 30)
+REVERSAL_RECLAIM_MAX_ADVERSE_LAYERS = int(os.getenv("REVERSAL_RECLAIM_MAX_ADVERSE_LAYERS", "1") or 1)
+REVERSAL_RECLAIM_MIN_SCORE = int(os.getenv("REVERSAL_RECLAIM_MIN_SCORE", "70") or 70)
+REVERSAL_RECLAIM_MIN_RR1 = float(os.getenv("REVERSAL_RECLAIM_MIN_RR1", "1.20") or 1.20)
+REVERSAL_RECLAIM_ZONE_LOW_ATR3 = float(os.getenv("REVERSAL_RECLAIM_ZONE_LOW_ATR3", "0.28") or 0.28)
+REVERSAL_RECLAIM_ZONE_HIGH_ATR3 = float(os.getenv("REVERSAL_RECLAIM_ZONE_HIGH_ATR3", "0.55") or 0.55)
 
 # Intraday filters
 # Volume is a bonus only. Low volume must NOT block entries for BZ intraday,
@@ -661,7 +687,7 @@ def load_state():
         state["active_trade"] = None
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
-    state["version"] = "pro-v3.6-single-file-clean-range-entry-active-checkpoints"
+    state["version"] = "pro-v3.8-single-file-clean-reversal-handoff-reclaim"
     return state
 
 
@@ -673,7 +699,7 @@ def save_state(state):
 
 def load_journal():
     journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
-    journal["version"] = "pro-v3.6-single-file-clean-range-entry-active-checkpoints"
+    journal["version"] = "pro-v3.8-single-file-clean-reversal-handoff-reclaim"
     if "trades" not in journal or not isinstance(journal["trades"], list):
         journal["trades"] = []
     if "signals" not in journal or not isinstance(journal["signals"], list):
@@ -5352,8 +5378,10 @@ def apply_strict_transition_gate_to_setup(setup, context):
     if priority and setup_type == "CLOSED_15M_DIRECTION_FLIP" and shock_side in ["LONG", "SHORT"] and side != shock_side:
         out = dict(setup); out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
         return out
-    if priority and setup_type in {"CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY"}:
-        out = dict(setup); out["action"] = "RISKY_ENTRY" if setup_type == "CAPITULATION_RECOVERY" else out.get("action")
+    if priority and setup_type in {"CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"}:
+        out = dict(setup)
+        if setup_type in {"CAPITULATION_RECOVERY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"}:
+            out["action"] = "RISKY_ENTRY"
         out["entry_level"] = out["action"]; out["entry_level_label"] = _entry_level_label(out["action"])
         return out
     regime = (context or {}).get("regime_engine") or {}
@@ -5665,8 +5693,13 @@ def apply_post_shock_retest_gate_to_setup(setup, context):
             out["shock_reset_confirmed"] = bool(full_retest)
             out["transition_override_confirmed"] = True
             return out
-    if st in {"CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY"} and _transition_priority_confirmed(setup, context):
-        return setup
+    if st in {"CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"} and _transition_priority_confirmed(setup, context):
+        out = dict(setup)
+        if st == "REVERSAL_PULLBACK_RECLAIM_ENTRY":
+            out["post_shock_retest_confirmed"] = True
+            out["shock_reset_confirmed"] = True
+            out["transition_override_confirmed"] = True
+        return out
     snap = post_shock_retest_snapshot(context, side)
     if not snap.get("active") or snap.get("allowed"):
         return setup
@@ -5739,6 +5772,8 @@ def apply_capitulation_recovery_gate_to_setup(setup, context):
         return out
     if st == "CLOSED_15M_DIRECTION_FLIP" and _transition_priority_confirmed(setup, context):
         return setup
+    if st == "REVERSAL_PULLBACK_RECLAIM_ENTRY" and _transition_priority_confirmed(setup, context):
+        return setup
     snap = capitulation_recovery_snapshot(context, setup.get("side"))
     if not snap.get("active"):
         return setup
@@ -5766,6 +5801,14 @@ def apply_final_same_side_exhaustion_lock(setup,context):
     if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
         return setup
     side = setup.get("side")
+    if _entry_setup_type(setup) == "REVERSAL_PULLBACK_RECLAIM_ENTRY" and setup.get("fresh_pullback_reset_confirmed"):
+        out = dict(setup)
+        out["action"] = "RISKY_ENTRY"
+        out["entry_level"] = "RISKY_ENTRY"
+        out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
+        out["same_side_exhaustion_lock"] = False
+        out["persistent_exhaustion_release"] = "новий reversal pullback + 3M reclaim створив окрему незалежну локацію"
+        return out
     snap = persistent_exhaustion_lock_snapshot(context, side, setup)
     if not snap.get("active"):
         out = dict(setup)
@@ -6425,17 +6468,23 @@ def location_viability_snapshot(context, side, setup=None):
     pd = str(ict.get("pd") or ict.get("pd_zone") or "").upper()
     wrong_pd = bool((side == "LONG" and pd == "PREMIUM") or (side == "SHORT" and pd == "DISCOUNT"))
     evidence = composite.get("professional_evidence") or _fresh_professional_entry_evidence(context, side)
+    reversal_reset = (context.get("reversal_pullback_reset") or {})
+    reversal_reset_allowed = bool(
+        setup_type == "REVERSAL_PULLBACK_RECLAIM_ENTRY"
+        and reversal_reset.get("confirmed")
+        and reversal_reset.get("side") == side
+    )
 
     reasons = []
-    if persistent.get("active"):
+    if persistent.get("active") and not reversal_reset_allowed:
         reasons.append(persistent.get("reason") or "persistent exhaustion lock")
-    if composite.get("hard_block"):
+    if composite.get("hard_block") and not reversal_reset_allowed:
         reasons.append(composite.get("reason") or "композитна заборона запізнілої локації")
     if setup_type == "NEWS_IMPULSE" and news_consensus.get("active") and not news_consensus.get("allowed"):
         reasons.append(news_consensus.get("reason"))
     if setup_type == "PRIME_ICT_LOCATION_OVERRIDE" and not strong_ict.get("allowed"):
         reasons.append(strong_ict.get("reason"))
-    if wrong_pd and composite.get("count", 0) >= 2 and not evidence.get("professional_exception"):
+    if wrong_pd and composite.get("count", 0) >= 2 and not evidence.get("professional_exception") and not reversal_reset_allowed:
         reasons.append("ціна знаходиться у неправильній premium/discount зоні для цього напрямку")
 
     allowed = not reasons
@@ -6625,7 +6674,7 @@ def apply_range_midpoint_gate_to_setup(setup, context):
 
     # Prime ICT in balance never bypasses zone segmentation by score alone.
     explicit_range_edge = setup_type == "RANGE_EDGE_TRADE"
-    generic_edge_rescue = setup_type in {"SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY"}
+    generic_edge_rescue = setup_type in {"SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"}
     if snap.get("allowed") and (setup_type != "PRIME_ICT_LOCATION_OVERRIDE" or snap.get("correct_edge") or snap.get("accepted_breakout")):
         if snap.get("active") and snap.get("correct_edge") and generic_edge_rescue and not snap.get("accepted_breakout") and not explicit_range_edge:
             pass
@@ -6654,7 +6703,7 @@ def apply_regime_allowed_setup_whitelist(setup, context):
     event = setup.get("entry_rescue_event") or (context or {}).get("entry_rescue_event") or {}
     support, against = _fast_layer_counts(context, setup.get("side"))
     transition_event = bool(event.get("confirmed") and event.get("anchor_confirmed") and event.get("type") in {"BREAKOUT_RETEST", "SWEEP_RECLAIM", "ICT_ZONE_RECLAIM"} and (event.get("follow_through") or event.get("post_confirmed")) and support >= 1 and against <= 1)
-    transition_types = {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY", "SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "RANGE_COMPRESSION_BREAKOUT", "TREND_IGNITION_ENTRY", "BREAKOUT_ACCEPTANCE_FAST_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY"}
+    transition_types = {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY", "SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "RANGE_COMPRESSION_BREAKOUT", "TREND_IGNITION_ENTRY", "BREAKOUT_ACCEPTANCE_FAST_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"}
     transition_exception = bool(priority or reset_exception or (regime_type in TRANSITION_WHITELIST_REGIMES and setup_type in transition_types and transition_event))
     if transition_exception:
         out = dict(setup)
@@ -7209,6 +7258,7 @@ SETUP_CLASS_LABELS = {
     "TREND_CONTINUATION": "🟢 Продовження тренду",
     "TREND_IGNITION_ENTRY": "🟢 Ранній старт тренду / пробій",
     "BREAKOUT_ACCEPTANCE_FAST_ENTRY": "🟢 3M прийнятий пробій / ранній вхід",
+    "REVERSAL_PULLBACK_RECLAIM_ENTRY": "🟢 Розворотний відкат + 3M повернення рівня",
     "PULLBACK_CONTINUATION": "🟢 Відкат у тренді",
     "PULLBACK_CONTINUATION_FAST_ENTRY": "🟢 Ранній вхід на відкаті",
     "PRIME_ICT_LOCATION_OVERRIDE": "🟢 Сильна ICT-локація",
@@ -7402,6 +7452,12 @@ def _setup_rules(setup_type, side):
             "tp_rule": "TP1 лише з RR не нижче 1.20 і до реальної 15M/ICT ліквідності; TP2/TP3 тільки при продовженні",
             "management_rule": "ризиковий ранній вхід: якщо після acceptance немає швидкого follow-through або рівень повернуто назад — швидке попередження/вихід",
         },
+        "REVERSAL_PULLBACK_RECLAIM_ENTRY": {
+            "entry_rule": "підтверджений reversal seed + контрольований 3M відкат + новий закритий micro-BOS/reclaim у динамічній зоні",
+            "stop_rule": "стоп під/над новим 3M higher low/lower high, micro-base або pullback extreme з ATR-буфером",
+            "tp_rule": "TP1 до першої реальної 15M/ICT ліквідності з RR не нижче 1.20; проміжні бар’єри контролюються у супроводі",
+            "management_rule": "ризиковий reversal-вхід має швидко підтвердити reclaim; втрата нового HL/LH або accepted-рівня запускає PROTECT/EXIT REVIEW",
+        },
         "PULLBACK_CONTINUATION": {
             "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
             "stop_rule": "стоп за low/high відкату або за OB/FVG",
@@ -7496,6 +7552,7 @@ def setup_trade_profile(setup_type):
         "TREND_CONTINUATION": {"regime_override": "TREND", "tp1_atr_mult": 1.45, "tp2_atr_mult": 3.10, "tp3_tail_atr": 1.45, "min_stop_pct": 0.85, "max_stop_pct": MAX_STOP_DISTANCE_PCT, "quality_adjustment": 4, "quality_cap": 92},
         "TREND_IGNITION_ENTRY": {"regime_override": "PULLBACK", "tp1_atr_mult": 1.20, "tp2_atr_mult": 2.35, "tp3_tail_atr": 1.00, "min_stop_pct": 0.82, "max_stop_pct": 1.28, "quality_adjustment": 1, "quality_cap": 79, "force_risky": True},
         "BREAKOUT_ACCEPTANCE_FAST_ENTRY": {"regime_override": "PULLBACK", "tp1_atr_mult": 1.18, "tp2_atr_mult": 2.25, "tp3_tail_atr": 0.95, "min_stop_pct": 0.45, "max_stop_pct": 1.20, "quality_adjustment": 1, "quality_cap": 79, "force_risky": True},
+        "REVERSAL_PULLBACK_RECLAIM_ENTRY": {"regime_override": "REVERSAL", "tp1_atr_mult": 1.12, "tp2_atr_mult": 2.10, "tp3_tail_atr": 0.90, "min_stop_pct": 0.42, "max_stop_pct": 1.18, "quality_adjustment": 2, "quality_cap": 82, "force_risky": True},
         "PULLBACK_CONTINUATION": {"regime_override": "PULLBACK", "tp1_atr_mult": 1.30, "tp2_atr_mult": 2.45, "tp3_tail_atr": 1.10, "min_stop_pct": 0.78, "max_stop_pct": 1.45, "quality_adjustment": 3, "quality_cap": 86},
         "PULLBACK_CONTINUATION_FAST_ENTRY": {"regime_override": "PULLBACK", "tp1_atr_mult": 1.18, "tp2_atr_mult": 2.20, "tp3_tail_atr": 0.95, "min_stop_pct": 0.76, "max_stop_pct": 1.34, "quality_adjustment": 1, "quality_cap": 76, "force_risky": True},
         "PRIME_ICT_LOCATION_OVERRIDE": {"regime_override": "REVERSAL", "tp1_pct": 0.92, "tp2_pct": 1.55, "tp3_pct": 2.55, "min_stop_pct": 0.76, "max_stop_pct": 1.22, "quality_adjustment": 1, "quality_cap": 79, "force_risky": True},
@@ -8030,6 +8087,13 @@ def _technical_stop_candidates(side, context, atr15):
     cap_geo = (context or {}).get("capitulation_recovery_geometry") or {}
     if cap_geo.get("side") == side and cap_geo.get("confirmed"):
         add(cap_geo.get("stop_level"), "post-capitulation 15M reclaim base invalidation", 112, "15M", "CAPITULATION_BASE")
+    reversal_geo = (context or {}).get("reversal_pullback_geometry") or {}
+    if reversal_geo.get("side") == side and reversal_geo.get("confirmed"):
+        add(
+            reversal_geo.get("stop_level"),
+            "3M reversal pullback higher-low/lower-high invalidation",
+            116, "3M", "REVERSAL_PULLBACK_BASE",
+        )
 
     # Exact micro invalidation recovered from the closed 3M sequence between
     # 15-minute workflow runs. It is eligible only after the resolver confirms
@@ -8416,13 +8480,13 @@ def _three_minute_stop_allowed(side, context, setup_type, snapshot):
     setup_type = str(setup_type or "").upper()
     if (context or {}).get("force_durable_stop_role"):
         return False
-    tactical_types = {"SWEEP_RECLAIM_EARLY_ENTRY", "SWEEP_REVERSAL", "COUNTERTREND_SCALP", "BREAKOUT_ACCEPTANCE_FAST_ENTRY"}
+    tactical_types = {"SWEEP_RECLAIM_EARLY_ENTRY", "SWEEP_REVERSAL", "COUNTERTREND_SCALP", "BREAKOUT_ACCEPTANCE_FAST_ENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"}
     if setup_type not in tactical_types:
         return False
     event = (context or {}).get("entry_rescue_event") or {}
     event_ok = bool(
         event.get("confirmed") and event.get("side") == side and event.get("anchor_confirmed")
-        and event.get("professional_location") and event.get("type") in {"SWEEP_RECLAIM", "ICT_ZONE_RECLAIM", "BREAKOUT_ACCEPTANCE"}
+        and event.get("professional_location") and event.get("type") in {"SWEEP_RECLAIM", "ICT_ZONE_RECLAIM", "BREAKOUT_ACCEPTANCE", "REVERSAL_PULLBACK_RECLAIM"}
         and int(event.get("score", 0) or 0) >= ENTRY_RESCUE_MIN_SCORE
         and safe_float(event.get("extension_atr15"), 99) <= ENTRY_RESCUE_MAX_EXTENSION_ATR15
     )
@@ -8468,6 +8532,7 @@ def _setup_aware_geometry_policy(context, setup_type, price, atr15):
         "SWEEP_RECLAIM_EARLY_ENTRY": ("SWEEP_RECLAIM", 1.10, 0.65, 0.90, True),
         "SWEEP_REVERSAL": ("SWEEP_REVERSAL", 1.10, 0.65, 0.90, True),
         "BREAKOUT_ACCEPTANCE_FAST_ENTRY": ("3M_BREAKOUT_ACCEPTANCE", 1.20, 0.72, 0.95, True),
+        "REVERSAL_PULLBACK_RECLAIM_ENTRY": ("REVERSAL_PULLBACK_RECLAIM", 1.20, 0.68, 0.90, True),
         "PULLBACK_CONTINUATION_FAST_ENTRY": ("FAST_PULLBACK", 1.15, 0.72, 0.95, True),
         "TREND_IGNITION_ENTRY": ("TREND_IGNITION", 1.20, 0.82, 1.05, False),
         "TREND_CONTINUATION": ("TREND_CONTINUATION", 1.20, 0.85, 1.05, False),
@@ -8764,6 +8829,11 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
         return None
     stops = _technical_stop_candidates(side, context, atr15)
     targets = _technical_target_candidates(side, context, atr15)
+    setup_type = str(setup_type or "").upper()
+    if setup_type == "REVERSAL_PULLBACK_RECLAIM_ENTRY":
+        reclaim_stops = [stop for stop in stops if str(stop.get("kind") or "").upper() == "REVERSAL_PULLBACK_BASE"]
+        if reclaim_stops:
+            stops = reclaim_stops
     snapshot = ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
     tf15 = context.get("tf15") or {}
     structure = context.get("structure") or {}
@@ -8771,7 +8841,6 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
     geometry_policy = _setup_aware_geometry_policy(context, setup_type, price, atr15)
     allow_3m_stop = _three_minute_stop_allowed(side, context, setup_type, snapshot)
 
-    setup_type = str(setup_type or "").upper()
     no_projection_types = {"RANGE_EDGE_TRADE", "COUNTERTREND_SCALP"}
     expansion_confirmed = bool(
         snapshot.get("closed_confirmed")
@@ -16555,6 +16624,756 @@ def update_pending_trigger_memory(state, setup, context):
 
 
 
+def _reversal_handoff_age_minutes(record):
+    try:
+        dt = datetime.fromisoformat(str((record or {}).get("created_at") or "").replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (now_utc() - dt.astimezone(timezone.utc)).total_seconds() / 60.0)
+    except Exception:
+        return 9999.0
+
+
+def _reversal_handoff_store(context):
+    state = (context or {}).get("runtime_state") if isinstance((context or {}).get("runtime_state"), dict) else None
+    if state is None:
+        return None, {}
+    store = state.get("reversal_handoff")
+    if not isinstance(store, dict):
+        store = {}
+        state["reversal_handoff"] = store
+    for side in ["LONG", "SHORT"]:
+        if side not in store or not isinstance(store.get(side), dict):
+            store[side] = {}
+    return state, store
+
+
+def _reversal_handoff_opposite_run_atr(context, side):
+    candles = list((context or {}).get("candles_15m_closed") or [])[-12:]
+    price = safe_float((context or {}).get("price"), candles[-1].close if candles else 0.0) or 0.0
+    atr15 = safe_float((context or {}).get("atr15"), price * 0.006 if price else 0.5) or (price * 0.006 if price else 0.5)
+    if len(candles) < 5 or side not in ["LONG", "SHORT"]:
+        return 0.0
+    if side == "LONG":
+        extreme_idx = min(range(len(candles)), key=lambda i: candles[i].low)
+        if extreme_idx <= 0:
+            return 0.0
+        start = max(c.high for c in candles[:extreme_idx])
+        run = max(0.0, start - candles[extreme_idx].low)
+    else:
+        extreme_idx = max(range(len(candles)), key=lambda i: candles[i].high)
+        if extreme_idx <= 0:
+            return 0.0
+        start = min(c.low for c in candles[:extreme_idx])
+        run = max(0.0, candles[extreme_idx].high - start)
+    return round(run / max(atr15, 1e-9), 3)
+
+
+def _reversal_handoff_fallback_seed_event(context, side):
+    """Build a seed only when a real closed-3M reversal is visible.
+
+    This fallback is used when the generic interval scanner cannot name the
+    event because the scheduler boundary split its baseline. It still requires
+    a recent extreme, two directional closes and a micro break away from it.
+    """
+    closed = closed_candles(list((context or {}).get("candles_3m") or []), 3, min_required=8)[-16:]
+    price = safe_float((context or {}).get("price"), closed[-1].close if closed else None)
+    if side not in ["LONG", "SHORT"] or len(closed) < 8 or not price:
+        return None
+    atr15 = safe_float((context or {}).get("atr15"), price * 0.006) or price * 0.006
+    atr3 = safe_float(atr(closed, 14), atr15 * 0.32) or atr15 * 0.32
+    buffer3 = max(atr3 * 0.24, price * 0.00035)
+    if side == "LONG":
+        idx = min(range(len(closed) - 2), key=lambda i: closed[i].low)
+        after = closed[idx + 1:]
+        if len(after) < 2:
+            return None
+        prior = closed[max(0, idx - 4):idx + 1]
+        trigger_level = max(c.high for c in after[:-1]) if len(after) > 1 else after[0].high
+        directional = sum(1 for c in after[-4:] if c.close > c.open) >= 2
+        micro_break = after[-1].close > trigger_level + atr3 * 0.03 and close_location(after[-1]) >= 0.56
+        displacement = after[-1].close - closed[idx].low >= atr15 * 0.42
+        if not (directional and micro_break and displacement):
+            return None
+        stop = min(c.low for c in prior + after[:2]) - buffer3
+    else:
+        idx = max(range(len(closed) - 2), key=lambda i: closed[i].high)
+        after = closed[idx + 1:]
+        if len(after) < 2:
+            return None
+        prior = closed[max(0, idx - 4):idx + 1]
+        trigger_level = min(c.low for c in after[:-1]) if len(after) > 1 else after[0].low
+        directional = sum(1 for c in after[-4:] if c.close < c.open) >= 2
+        micro_break = after[-1].close < trigger_level - atr3 * 0.03 and close_location(after[-1]) <= 0.44
+        displacement = closed[idx].high - after[-1].close >= atr15 * 0.42
+        if not (directional and micro_break and displacement):
+            return None
+        stop = max(c.high for c in prior + after[:2]) + buffer3
+    return {
+        "confirmed": True,
+        "side": side,
+        "type": "REVERSAL_SEED",
+        "score": 68,
+        "trigger_ts": int(after[-1].ts),
+        "age_min": 0.0,
+        "trigger_level": round_price(trigger_level),
+        "trigger_close": round_price(after[-1].close),
+        "stop_level": round_price(stop),
+        "extension_atr15": round(abs(price - trigger_level) / max(atr15, 1e-9), 3),
+        "anchor_confirmed": True,
+        "closed_anchor": False,
+        "reset_confirmed": False,
+        "professional_location": True,
+        "evidence": ["RECENT_EXTREME", "TWO_DIRECTIONAL_3M_CLOSES", "MICRO_BOS"],
+        "source": "REVERSAL_HANDOFF_FALLBACK",
+    }
+
+
+def reversal_handoff_seed_snapshot(context, side):
+    context = context or {}
+    side = str(side or "").upper()
+    price = safe_float(context.get("price"))
+    if side not in ["LONG", "SHORT"] or not price:
+        return {"active": False, "allowed": False, "reason": "сторона або ціна не визначена"}
+
+    allowed_types = {"SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM", "BREAKOUT_ACCEPTANCE"}
+    events = [e for e in scan_15m_interval_entry_events(context, side) if str(e.get("type") or "") in allowed_types]
+    event = events[0] if events else _reversal_handoff_fallback_seed_event(context, side)
+    if not isinstance(event, dict):
+        return {"active": False, "allowed": False, "reason": "свіжого reversal seed ще немає"}
+
+    tf3 = context.get("tf3") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    regime = context.get("regime_engine") or context.get("market_regime") or {}
+    phase = str(structure.get("phase") or "").upper()
+    tf3_same = bool(tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22)
+    structure_same = bool(
+        structure.get("bias") == side
+        or (side == "LONG" and any(x in phase for x in ["BOS LONG", "CHOCH LONG", "DOWNSIDE SWEEP"]))
+        or (side == "SHORT" and any(x in phase for x in ["BOS SHORT", "CHOCH SHORT", "UPSIDE SWEEP"]))
+    )
+    ict_same = bool(ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 18))
+    support, against = _fast_layer_counts(context, side)
+    opposite_run_atr = _reversal_handoff_opposite_run_atr(context, side)
+    state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else {}
+    last_closed = (state or {}).get("last_closed_trade") or {}
+    closed_trade_handoff = bool(
+        last_closed.get("side") == opposite(side)
+        and _reversal_handoff_age_minutes({"created_at": last_closed.get("closed_at")}) <= 60
+    )
+    reversal_regime = str(regime.get("regime_type") or regime.get("name") or "").upper() in {
+        "REVERSAL_BUILDUP", "EXHAUSTION", "NEWS_SHOCK", "RANGE_COMPRESSION"
+    }
+    event_score = int(event.get("score", 0) or 0)
+    structural_layers = int(structure_same) + int(ict_same)
+    historical_context = bool(
+        opposite_run_atr >= REVERSAL_HANDOFF_MIN_OPPOSITE_RUN_ATR15
+        or closed_trade_handoff
+        or reversal_regime
+    )
+    allowed = bool(
+        event_score >= REVERSAL_HANDOFF_MIN_SEED_SCORE
+        and tf3_same
+        and structural_layers >= 1
+        and against <= REVERSAL_RECLAIM_MAX_ADVERSE_LAYERS
+        and historical_context
+    )
+    score = int(clamp(
+        event_score
+        + (6 if closed_trade_handoff else 0)
+        + (4 if structure_same else 0)
+        + (3 if ict_same else 0)
+        + min(6, support * 2)
+        - against * 7,
+        0, 92,
+    ))
+    return {
+        "active": True,
+        "allowed": allowed,
+        "side": side,
+        "score": score,
+        "event": event,
+        "event_score": event_score,
+        "tf3_same": tf3_same,
+        "structure_same": structure_same,
+        "ict_same": ict_same,
+        "support_layers": support,
+        "adverse_layers": against,
+        "opposite_run_atr15": opposite_run_atr,
+        "closed_trade_handoff": closed_trade_handoff,
+        "reversal_regime": reversal_regime,
+        "reason": (
+            "reversal handoff озброєно: попередня теза зламана, є свіжий 3M reversal seed"
+            if allowed else
+            "для reversal handoff потрібні свіжий 3M seed, структурна опора і відсутність двох сильних шарів проти"
+        ),
+    }
+
+
+def _reversal_handoff_pullback_snapshot(context, memory):
+    side = str((memory or {}).get("side") or "").upper()
+    seed_ts = int((memory or {}).get("seed_ts", 0) or 0)
+    price = safe_float((context or {}).get("price"))
+    closed = closed_candles(list((context or {}).get("candles_3m") or []), 3, min_required=6)
+    after = [c for c in closed if int(c.ts) >= seed_ts]
+    if side not in ["LONG", "SHORT"] or not price or len(after) < 3:
+        return {"active": False, "detected": False, "reason": "після seed ще мало закритих 3M свічок"}
+    atr15 = safe_float((context or {}).get("atr15"), price * 0.006) or price * 0.006
+    invalidation = safe_float((memory or {}).get("invalidation"))
+    reversal_extreme = safe_float((memory or {}).get("reversal_extreme"), invalidation)
+    if reversal_extreme is None:
+        reversal_extreme = min(c.low for c in after) if side == "LONG" else max(c.high for c in after)
+
+    if side == "LONG":
+        impulse_idx = max(range(len(after)), key=lambda i: after[i].high)
+        impulse_extreme = after[impulse_idx].high
+        tail = after[impulse_idx + 1:]
+        if not tail:
+            return {"active": True, "detected": False, "impulse_extreme": round_price(impulse_extreme), "reason": "первинний імпульс ще не дав закритого відкату"}
+        pullback_idx_rel = min(range(len(tail)), key=lambda i: tail[i].low)
+        pullback_candle = tail[pullback_idx_rel]
+        pullback_extreme = pullback_candle.low
+        impulse = impulse_extreme - reversal_extreme
+        retrace = impulse_extreme - pullback_extreme
+        invalidated = bool(invalidation is not None and pullback_extreme <= invalidation)
+    else:
+        impulse_idx = min(range(len(after)), key=lambda i: after[i].low)
+        impulse_extreme = after[impulse_idx].low
+        tail = after[impulse_idx + 1:]
+        if not tail:
+            return {"active": True, "detected": False, "impulse_extreme": round_price(impulse_extreme), "reason": "первинний імпульс ще не дав закритого відкату"}
+        pullback_idx_rel = max(range(len(tail)), key=lambda i: tail[i].high)
+        pullback_candle = tail[pullback_idx_rel]
+        pullback_extreme = pullback_candle.high
+        impulse = reversal_extreme - impulse_extreme
+        retrace = pullback_extreme - impulse_extreme
+        invalidated = bool(invalidation is not None and pullback_extreme >= invalidation)
+
+    ratio = retrace / max(impulse, 1e-9)
+    bars_after_impulse = len(tail)
+    impulse_atr = impulse / max(atr15, 1e-9)
+    retrace_atr = retrace / max(atr15, 1e-9)
+    too_deep = ratio > 0.84
+    controlled = bool(
+        not invalidated
+        and not too_deep
+        and impulse_atr >= REVERSAL_HANDOFF_MIN_IMPULSE_ATR15
+        and retrace_atr >= REVERSAL_PULLBACK_MIN_RETRACE_ATR15
+        and REVERSAL_PULLBACK_MIN_RATIO <= ratio <= REVERSAL_PULLBACK_MAX_RATIO
+        and bars_after_impulse <= REVERSAL_PULLBACK_MAX_BARS_3M
+    )
+    return {
+        "active": True,
+        "detected": controlled,
+        "invalidated": invalidated or too_deep,
+        "impulse_extreme": round_price(impulse_extreme),
+        "impulse_atr15": round(impulse_atr, 3),
+        "pullback_extreme": round_price(pullback_extreme),
+        "pullback_ts": int(pullback_candle.ts),
+        "pullback_ratio": round(ratio, 3),
+        "pullback_atr15": round(retrace_atr, 3),
+        "bars_after_impulse": bars_after_impulse,
+        "reason": (
+            "контрольований 3M pullback сформовано; чекаємо новий micro-BOS/reclaim"
+            if controlled else
+            ("pullback зламав reversal thesis" if invalidated or too_deep else "контрольований pullback ще не завершений")
+        ),
+    }
+
+
+def _reversal_reclaim_zone_with_ict(context, side, level, atr3):
+    ict = (context or {}).get("ict") or {}
+    raw_low = level - atr3 * REVERSAL_RECLAIM_ZONE_LOW_ATR3
+    raw_high = level + atr3 * REVERSAL_RECLAIM_ZONE_HIGH_ATR3
+    keys = ["bull_fvg", "bull_ob"] if side == "LONG" else ["bear_fvg", "bear_ob"]
+    nearby = []
+    for key in keys:
+        lo, hi = _zone_bounds(ict.get(key))
+        if lo is None or hi is None:
+            continue
+        if hi >= raw_low - atr3 * 0.45 and lo <= raw_high + atr3 * 0.45:
+            nearby.append((lo, hi))
+    if nearby:
+        zone_low = max(raw_low - atr3 * 0.18, min(lo for lo, _ in nearby))
+        zone_high = min(raw_high + atr3 * 0.18, max(hi for _, hi in nearby))
+        if zone_low > zone_high:
+            zone_low, zone_high = raw_low, raw_high
+    else:
+        zone_low, zone_high = raw_low, raw_high
+    return round_price(zone_low), round_price(zone_high)
+
+
+def _reversal_handoff_reclaim_snapshot(context, memory):
+    side = str((memory or {}).get("side") or "").upper()
+    pullback_ts = int((memory or {}).get("pullback_ts", 0) or 0)
+    pullback_extreme = safe_float((memory or {}).get("pullback_extreme"))
+    price = safe_float((context or {}).get("price"))
+    closed_all = closed_candles(list((context or {}).get("candles_3m") or []), 3, min_required=6)
+    if side not in ["LONG", "SHORT"] or not pullback_ts or pullback_extreme is None or not price:
+        return {"active": False, "allowed": False, "reason": "pullback ще не зафіксований"}
+    start_idx = next((i for i, c in enumerate(closed_all) if int(c.ts) >= pullback_ts), None)
+    if start_idx is None:
+        return {"active": True, "allowed": False, "reason": "3M pullback-свічки ще немає у закритій послідовності"}
+    series = closed_all[max(0, start_idx - 3):]
+    local_pull_idx = next((i for i, c in enumerate(series) if int(c.ts) == pullback_ts), None)
+    if local_pull_idx is None:
+        local_pull_idx = 3 if len(series) > 3 else 0
+    if len(series) <= local_pull_idx + 1:
+        return {"active": True, "allowed": False, "reason": "після pullback ще немає закритого 3M reclaim"}
+
+    atr15 = safe_float((context or {}).get("atr15"), price * 0.006) or price * 0.006
+    atr3 = safe_float(atr(closed_all[-30:], 14), atr15 * 0.32) or atr15 * 0.32
+    trigger = None
+    for j in range(local_pull_idx + 1, len(series)):
+        candle = series[j]
+        prior = series[max(local_pull_idx, j - 3):j]
+        if not prior:
+            continue
+        body_atr = abs(candle.close - candle.open) / max(atr3, 1e-9)
+        if side == "LONG":
+            level = max(c.high for c in prior)
+            directional = candle.close > candle.open
+            broke = candle.close > level + atr3 * 0.03
+            close_ok = close_location(candle) >= 0.58
+            strong_single = body_atr >= 0.34 and close_location(candle) >= 0.66
+            later = series[j + 1:]
+            follow = bool(strong_single or (later and later[0].close >= level - atr3 * 0.08))
+        else:
+            level = min(c.low for c in prior)
+            directional = candle.close < candle.open
+            broke = candle.close < level - atr3 * 0.03
+            close_ok = close_location(candle) <= 0.42
+            strong_single = body_atr >= 0.34 and close_location(candle) <= 0.34
+            later = series[j + 1:]
+            follow = bool(strong_single or (later and later[0].close <= level + atr3 * 0.08))
+        if directional and broke and close_ok and body_atr >= 0.16 and follow:
+            trigger = {"idx": j, "candle": candle, "level": level, "body_atr": body_atr, "follow_through": follow}
+            break
+    if not trigger:
+        return {"active": True, "allowed": False, "reason": "контрольований pullback є, але свіжий закритий 3M micro-BOS/reclaim ще не сформувався"}
+
+    trigger_candle = trigger["candle"]
+    level = float(trigger["level"])
+    latest_ts = int(closed_all[-1].ts)
+    age_min = max(0.0, (latest_ts - int(trigger_candle.ts)) / 60000.0)
+    extension = max(0.0, ((price - level) if side == "LONG" else (level - price)) / max(atr15, 1e-9))
+    buffer3 = max(atr3 * 0.24, price * 0.00035)
+    stop_level = pullback_extreme - buffer3 if side == "LONG" else pullback_extreme + buffer3
+    zone_low, zone_high = _reversal_reclaim_zone_with_ict(context, side, level, atr3)
+
+    tf3 = (context or {}).get("tf3") or {}
+    structure = (context or {}).get("structure") or {}
+    ict = (context or {}).get("ict") or {}
+    phase = str(structure.get("phase") or "").upper()
+    tf3_same = bool(tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= REVERSAL_RECLAIM_MIN_TF3_SCORE)
+    structure_same = bool(
+        structure.get("bias") == side
+        or (side == "LONG" and any(x in phase for x in ["BOS LONG", "CHOCH LONG"]))
+        or (side == "SHORT" and any(x in phase for x in ["BOS SHORT", "CHOCH SHORT"]))
+    )
+    ict_same = bool(ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 18))
+    support, against = _fast_layer_counts(context, side)
+    seed_score = int((memory or {}).get("seed_score", 0) or 0)
+    reclaim_score = int(clamp(
+        58
+        + min(16, max(0, seed_score - 60) // 2)
+        + (7 if tf3_same else 0)
+        + (5 if structure_same else 0)
+        + (4 if ict_same else 0)
+        + min(6, support * 2)
+        - against * 8
+        - int(max(0.0, extension - 0.35) * 18),
+        0, 92,
+    ))
+    current_in_window = bool(
+        (side == "LONG" and price > stop_level and price <= max(zone_high, level + atr15 * REVERSAL_RECLAIM_MAX_EXTENSION_ATR15))
+        or (side == "SHORT" and price < stop_level and price >= min(zone_low, level - atr15 * REVERSAL_RECLAIM_MAX_EXTENSION_ATR15))
+    )
+    allowed = bool(
+        age_min <= REVERSAL_RECLAIM_MAX_AGE_MINUTES
+        and extension <= REVERSAL_RECLAIM_MAX_EXTENSION_ATR15
+        and current_in_window
+        and tf3_same
+        and (structure_same or ict_same)
+        and against <= REVERSAL_RECLAIM_MAX_ADVERSE_LAYERS
+        and reclaim_score >= REVERSAL_RECLAIM_MIN_SCORE
+    )
+    return {
+        "active": True,
+        "allowed": allowed,
+        "side": side,
+        "score": reclaim_score,
+        "trigger_ts": int(trigger_candle.ts),
+        "trigger_level": round_price(level),
+        "trigger_close": round_price(trigger_candle.close),
+        "stop_level": round_price(stop_level),
+        "pullback_extreme": round_price(pullback_extreme),
+        "entry_zone_low": zone_low,
+        "entry_zone_high": zone_high,
+        "age_min": round(age_min, 2),
+        "extension_atr15": round(extension, 3),
+        "tf3_same": tf3_same,
+        "structure_same": structure_same,
+        "ict_same": ict_same,
+        "support_layers": support,
+        "adverse_layers": against,
+        "follow_through": bool(trigger.get("follow_through")),
+        "reason": (
+            f"контрольований reversal pullback завершено; 3M reclaim {round_price(level)} підтверджено у зоні {zone_low}–{zone_high}"
+            if allowed else
+            "reversal pullback є, але reclaim ще не має одночасно свіжості, 3M напряму, структурної опори та допустимої локації"
+        ),
+    }
+
+
+def refresh_reversal_handoff_memory(context):
+    """Advance the handoff state machine once per market snapshot.
+
+    It only writes market memory. Entry selection remains an isolated candidate
+    lane, so the package cannot mutate a finished decision or an active trade.
+    """
+    state, store = _reversal_handoff_store(context)
+    if state is None:
+        return {}
+    price = safe_float((context or {}).get("price"))
+    if not price:
+        return store
+
+    # Active trades own the market. A handoff can be armed only after closure.
+    active = active_trade_from_state(state)
+    if active and active.status != "CLOSED":
+        return store
+
+    for side in ["LONG", "SHORT"]:
+        memory = store.get(side) if isinstance(store.get(side), dict) else {}
+        status = str(memory.get("status") or "").upper()
+        age = _reversal_handoff_age_minutes(memory) if memory else 9999.0
+        invalidation = safe_float(memory.get("invalidation")) if memory else None
+        invalidated = bool(
+            memory and invalidation is not None and (
+                (side == "LONG" and price <= invalidation)
+                or (side == "SHORT" and price >= invalidation)
+            )
+        )
+        # Terminal records are audit history, not a permanent lock. A genuinely
+        # newer reversal seed must be able to arm the same side again in a later
+        # market episode. This prevents CONSUMED/INVALIDATED memory from silently
+        # disabling all future handoffs.
+        terminal_status = status in {"CONSUMED", "INVALIDATED", "EXPIRED"}
+        if memory and (age > REVERSAL_HANDOFF_TTL_MINUTES or invalidated or terminal_status):
+            if invalidated:
+                memory.update({"status": "INVALIDATED", "active": False, "updated_at": iso_now(), "reason": "reversal handoff invalidation зламано"})
+            elif age > REVERSAL_HANDOFF_TTL_MINUTES and not terminal_status:
+                memory.update({"status": "EXPIRED", "active": False, "updated_at": iso_now(), "reason": "reversal handoff втратив свіжість"})
+
+            replacement_seed = reversal_handoff_seed_snapshot(context, side)
+            replacement_event = (replacement_seed or {}).get("event") or {}
+            replacement_ts = int(replacement_event.get("trigger_ts", 0) or 0)
+            previous_ts = int(memory.get("seed_ts", 0) or 0)
+            # Require a strictly newer closed-market event. The small timestamp
+            # separation prevents the same event from re-arming immediately
+            # after an entry consumes it.
+            materially_new = bool(
+                replacement_seed.get("allowed")
+                and replacement_ts > previous_ts
+                and (replacement_ts - previous_ts >= 3 * 60 * 1000 or previous_ts <= 0)
+            )
+            if materially_new:
+                memory = {}
+                status = ""
+            else:
+                store[side] = memory
+                continue
+
+        if not memory or status in {"", "CLEAR"}:
+            seed = reversal_handoff_seed_snapshot(context, side)
+            if seed.get("allowed"):
+                event = seed.get("event") or {}
+                closed3 = closed_candles(list((context or {}).get("candles_3m") or []), 3, min_required=4)
+                if side == "LONG":
+                    reversal_extreme = min((c.low for c in closed3[-10:]), default=safe_float(event.get("stop_level"), price))
+                else:
+                    reversal_extreme = max((c.high for c in closed3[-10:]), default=safe_float(event.get("stop_level"), price))
+                store[side] = {
+                    "active": True,
+                    "status": "WAITING_PULLBACK",
+                    "side": side,
+                    "created_at": iso_now(),
+                    "updated_at": iso_now(),
+                    "ttl_minutes": REVERSAL_HANDOFF_TTL_MINUTES,
+                    "seed_type": str(event.get("type") or "REVERSAL_SEED"),
+                    "seed_ts": int(event.get("trigger_ts", 0) or 0),
+                    "seed_level": round_price(event.get("trigger_level")),
+                    "seed_close": round_price(event.get("trigger_close")),
+                    "seed_score": int(seed.get("score", 0) or 0),
+                    "reversal_extreme": round_price(reversal_extreme),
+                    "invalidation": round_price(event.get("stop_level")),
+                    "opposite_run_atr15": seed.get("opposite_run_atr15"),
+                    "closed_trade_handoff": bool(seed.get("closed_trade_handoff")),
+                    "evidence": list(event.get("evidence") or []),
+                    "reason": seed.get("reason"),
+                }
+            continue
+
+        pullback = _reversal_handoff_pullback_snapshot(context, memory)
+        memory["pullback_snapshot"] = pullback
+        memory["updated_at"] = iso_now()
+        if pullback.get("invalidated"):
+            memory.update({"status": "INVALIDATED", "reason": pullback.get("reason")})
+            store[side] = memory
+            continue
+        if pullback.get("detected"):
+            memory.update({
+                "status": "WAITING_RECLAIM",
+                "impulse_extreme": pullback.get("impulse_extreme"),
+                "impulse_atr15": pullback.get("impulse_atr15"),
+                "pullback_extreme": pullback.get("pullback_extreme"),
+                "pullback_ts": pullback.get("pullback_ts"),
+                "pullback_ratio": pullback.get("pullback_ratio"),
+                "pullback_atr15": pullback.get("pullback_atr15"),
+                "reason": pullback.get("reason"),
+            })
+            reclaim = _reversal_handoff_reclaim_snapshot(context, memory)
+            memory["reclaim_snapshot"] = reclaim
+            if reclaim.get("allowed"):
+                memory.update({
+                    "status": "READY",
+                    "reclaim_ts": reclaim.get("trigger_ts"),
+                    "reclaim_level": reclaim.get("trigger_level"),
+                    "reclaim_close": reclaim.get("trigger_close"),
+                    "stop_level": reclaim.get("stop_level"),
+                    "entry_zone_low": reclaim.get("entry_zone_low"),
+                    "entry_zone_high": reclaim.get("entry_zone_high"),
+                    "reclaim_score": reclaim.get("score"),
+                    "reason": reclaim.get("reason"),
+                })
+        store[side] = memory
+
+    state["reversal_handoff"] = store
+    context["reversal_handoff_memory"] = deepcopy(store)
+    return store
+
+
+def reversal_pullback_reclaim_snapshot(context, side):
+    state = (context or {}).get("runtime_state") if isinstance((context or {}).get("runtime_state"), dict) else {}
+    store = (state or {}).get("reversal_handoff") or (context or {}).get("reversal_handoff_memory") or {}
+    memory = store.get(side) if isinstance(store, dict) and isinstance(store.get(side), dict) else {}
+    if not memory:
+        return {"active": False, "allowed": False, "reason": "reversal handoff memory ще не озброєна"}
+    if str(memory.get("status") or "").upper() not in {"WAITING_RECLAIM", "READY"}:
+        return {"active": True, "allowed": False, "status": memory.get("status"), "memory": memory, "reason": memory.get("reason") or "handoff чекає pullback"}
+    reclaim = _reversal_handoff_reclaim_snapshot(context, memory)
+    if reclaim.get("allowed"):
+        memory = dict(memory)
+        memory["status"] = "READY"
+        memory["reclaim_snapshot"] = reclaim
+    return {
+        "active": True,
+        "allowed": bool(reclaim.get("allowed")),
+        "status": "READY" if reclaim.get("allowed") else "WAITING_RECLAIM",
+        "side": side,
+        "memory": memory,
+        "reclaim": reclaim,
+        "score": int(reclaim.get("score", memory.get("reclaim_score", 0)) or 0),
+        "reason": reclaim.get("reason") or memory.get("reason") or "чекаємо свіжий 3M reclaim",
+    }
+
+
+def resolve_reversal_pullback_reclaim_entry(context, base_setup):
+    """Independent early reversal lane after impulse -> pullback -> reclaim."""
+    if not isinstance(context, dict) or not isinstance(base_setup, dict) or context.get("price_warning"):
+        return base_setup
+    candidates = []
+    for side in ["LONG", "SHORT"]:
+        snap = reversal_pullback_reclaim_snapshot(context, side)
+        if not snap.get("allowed"):
+            continue
+        reclaim = snap.get("reclaim") or {}
+        work = dict(context)
+        event = {
+            "confirmed": True,
+            "side": side,
+            "type": "REVERSAL_PULLBACK_RECLAIM",
+            "score": int(snap.get("score", REVERSAL_RECLAIM_MIN_SCORE) or REVERSAL_RECLAIM_MIN_SCORE),
+            "trigger_ts": int(reclaim.get("trigger_ts", 0) or 0),
+            "trigger_level": reclaim.get("trigger_level"),
+            "trigger_close": reclaim.get("trigger_close"),
+            "stop_level": reclaim.get("stop_level"),
+            "extension_atr15": reclaim.get("extension_atr15"),
+            "anchor_confirmed": True,
+            "closed_anchor": False,
+            "reset_confirmed": True,
+            "professional_location": True,
+            "follow_through": bool(reclaim.get("follow_through")),
+            "post_confirmed": True,
+            "evidence": ["REVERSAL_HANDOFF", "CONTROLLED_PULLBACK", "MICRO_BOS_RECLAIM", "FRESH_HL_LH"],
+            "source": "REVERSAL_HANDOFF_MEMORY",
+        }
+        setup_type = "REVERSAL_PULLBACK_RECLAIM_ENTRY"
+        profile = setup_trade_profile(setup_type)
+        setup_info = {
+            "type": setup_type,
+            "label": _setup_label(setup_type),
+            "side": side,
+            "score": int(clamp(snap.get("score", 72), REVERSAL_RECLAIM_MIN_SCORE, 88)),
+            "entry_allowed": True,
+            "block_entry": False,
+            "risk_mode": "RISKY",
+            "reason": snap.get("reason"),
+            "quality_adjustment": int(profile.get("quality_adjustment", 0) or 0),
+            "quality_cap": profile.get("quality_cap"),
+            "force_risky": True,
+            "profile": profile,
+            "professional_override": True,
+            "reversal_pullback_reclaim": True,
+        }
+        setup_info.update(_setup_rules(setup_type, side))
+        work["bias"] = side
+        work["setup_classifier"] = setup_info
+        work["entry_rescue_event"] = event
+        work["reversal_pullback_reset"] = {
+            "confirmed": True,
+            "side": side,
+            "status": "READY",
+            "trigger_ts": event["trigger_ts"],
+            "trigger_level": event["trigger_level"],
+            "entry_zone_low": reclaim.get("entry_zone_low"),
+            "entry_zone_high": reclaim.get("entry_zone_high"),
+        }
+        work["reversal_pullback_geometry"] = {
+            "confirmed": True,
+            "side": side,
+            "stop_level": reclaim.get("stop_level"),
+            "trigger_level": reclaim.get("trigger_level"),
+            "entry_zone_low": reclaim.get("entry_zone_low"),
+            "entry_zone_high": reclaim.get("entry_zone_high"),
+        }
+        work["force_durable_stop_role"] = False
+        work["dual_speed_mtf"] = build_dual_speed_mtf(work)
+        plan = make_plan(side, work)
+        if not plan or not getattr(plan, "valid", False) or not _v3_plan_valid_for_side(plan, side):
+            continue
+        rr1 = safe_float(getattr(plan, "rr1", 0), 0) or 0
+        if rr1 + 1e-9 < REVERSAL_RECLAIM_MIN_RR1:
+            continue
+        quality = int(clamp(
+            round(int(snap.get("score", 72) or 72) * 0.72 + min(100, abs(int((context.get("tf3") or {}).get("score", 0) or 0))) * 0.18 + min(rr1, 2.5) * 4),
+            RISKY_QUALITY_MIN,
+            82,
+        ))
+        out = dict(base_setup)
+        out.update({
+            "action": "RISKY_ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": f"РИЗИКОВАНИЙ ВХІД {side} — 3M ВІДКАТ І ПОВЕРНЕННЯ РІВНЯ",
+            "reason": snap.get("reason"),
+            "plan": plan,
+            "setup_classifier": setup_info,
+            "entry_rescue_event": event,
+            "reversal_handoff": snap,
+            "reversal_pullback_reclaim_confirmed": True,
+            "fresh_pullback_reset_confirmed": True,
+            "transition_override_confirmed": True,
+            "entry_window_status": "OPEN",
+            "entry_level": "RISKY_ENTRY",
+            "entry_level_label": _entry_level_label("RISKY_ENTRY"),
+            "confirmations": list(dict.fromkeys(
+                (base_setup.get("confirmations") or [])
+                + [
+                    "попередня теза передана у reversal handoff",
+                    "контрольований 3M pullback сформував новий HL/LH",
+                    f"закритий 3M reclaim {reclaim.get('trigger_level')}",
+                    f"динамічна зона входу {reclaim.get('entry_zone_low')}–{reclaim.get('entry_zone_high')}",
+                    f"RR1 {round(rr1, 2)}",
+                ]
+            )),
+            "conflicts": [
+                x for x in (base_setup.get("conflicts") or [])
+                if not any(k in str(x).lower() for k in ["пізній імпульс", "не доганяти", "рух уже розтягнутий", "exhaustion/shock lock"])
+            ],
+            "reason_codes": list(dict.fromkeys((base_setup.get("reason_codes") or []) + ["REVERSAL_PULLBACK_RECLAIM_ENTRY", "FRESH_PULLBACK_RESET"])),
+        })
+        utility = quality + min(rr1, 3.0) * 8.0 - safe_float(reclaim.get("extension_atr15"), 0.0) * 10.0
+        candidates.append((utility, out, work))
+    if not candidates:
+        return base_setup
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, selected, selected_context = candidates[0]
+    for key in ["entry_rescue_event", "reversal_pullback_reset", "reversal_pullback_geometry", "setup_classifier", "dual_speed_mtf"]:
+        if key in selected_context:
+            context[key] = selected_context.get(key)
+    return selected
+
+
+def update_reversal_handoff_after_decision(state, setup, context=None):
+    if not isinstance(state, dict):
+        return
+    store = state.get("reversal_handoff")
+    if not isinstance(store, dict):
+        return
+    action = str((setup or {}).get("action") or "").upper()
+    side = str((setup or {}).get("side") or "").upper()
+    setup_type = _entry_setup_type(setup) if isinstance(setup, dict) else ""
+    if action in {"ENTRY", "RISKY_ENTRY"} and side in ["LONG", "SHORT"]:
+        if setup_type == "REVERSAL_PULLBACK_RECLAIM_ENTRY" and isinstance(store.get(side), dict):
+            store[side].update({"status": "CONSUMED", "active": False, "consumed_at": iso_now(), "decision_id": (setup or {}).get("decision_id")})
+        other = opposite(side)
+        if isinstance(store.get(other), dict) and store[other].get("active"):
+            store[other].update({"status": "INVALIDATED", "active": False, "updated_at": iso_now(), "reason": "відкрито угоду у протилежний бік"})
+    state["reversal_handoff"] = store
+
+
+def prime_reversal_handoff_from_closed_trade(state, trade, result, context):
+    """Arm the opposite scenario immediately after a confirmed reversal exit."""
+    if not isinstance(state, dict) or trade is None or not isinstance(context, dict):
+        return
+    new_side = opposite(str(getattr(trade, "side", "") or ""))
+    if new_side not in ["LONG", "SHORT"]:
+        return
+    execution = (result or {}).get("institutional_execution") or {}
+    hard_reversal = bool(
+        execution.get("hard_reversal")
+        or execution.get("confirmed_ict_reversal")
+        or execution.get("closed_15m_break")
+        or str((result or {}).get("action") or "").upper() in {"EXIT_REVERSAL", "EXIT_RISKY_PRE_TP1_RISK_FLOOR"}
+    )
+    if not hard_reversal:
+        return
+    context["runtime_state"] = state
+    seed = reversal_handoff_seed_snapshot(context, new_side)
+    if not seed.get("allowed"):
+        return
+    _, store = _reversal_handoff_store(context)
+    event = seed.get("event") or {}
+    closed3 = closed_candles(list(context.get("candles_3m") or []), 3, min_required=4)
+    reversal_extreme = (
+        min((c.low for c in closed3[-10:]), default=safe_float(event.get("stop_level"), context.get("price")))
+        if new_side == "LONG" else
+        max((c.high for c in closed3[-10:]), default=safe_float(event.get("stop_level"), context.get("price")))
+    )
+    store[new_side] = {
+        "active": True,
+        "status": "WAITING_PULLBACK",
+        "side": new_side,
+        "created_at": iso_now(),
+        "updated_at": iso_now(),
+        "ttl_minutes": REVERSAL_HANDOFF_TTL_MINUTES,
+        "seed_type": str(event.get("type") or "CLOSED_TRADE_REVERSAL"),
+        "seed_ts": int(event.get("trigger_ts", 0) or 0),
+        "seed_level": round_price(event.get("trigger_level")),
+        "seed_close": round_price(event.get("trigger_close")),
+        "seed_score": int(seed.get("score", 0) or 0),
+        "reversal_extreme": round_price(reversal_extreme),
+        "invalidation": round_price(event.get("stop_level")),
+        "closed_trade_handoff": True,
+        "source_trade_id": str(getattr(trade, "id", "") or ""),
+        "evidence": list(event.get("evidence") or []) + ["CONFIRMED_EXIT_REVERSAL"],
+        "reason": "попередню угоду закрито через підтверджений розворот; озброєно протилежний reversal handoff",
+    }
+    state["reversal_handoff"] = store
+
 def resolve_3m_breakout_acceptance_fast_entry(context, base_setup):
     """Create a dedicated risky candidate from an accepted 3M breakout.
 
@@ -17052,6 +17871,8 @@ def _transition_priority_confirmed(setup, context):
         return bool(setup.get("capitulation_recovery_confirmed"))
     if st == "FRESH_BASE_CONTINUATION_REENTRY":
         return bool(setup.get("fresh_base_reentry_confirmed"))
+    if st == "REVERSAL_PULLBACK_RECLAIM_ENTRY":
+        return bool(setup.get("reversal_pullback_reclaim_confirmed"))
     return False
 
 
@@ -18081,6 +18902,7 @@ class V3CandidateSource(str, Enum):
     OPPORTUNITY_MEMORY = "OPPORTUNITY_MEMORY"
     LOCK_RELEASE_BRIDGE = "LOCK_RELEASE_BRIDGE"
     PENDING_TRIGGER = "PENDING_TRIGGER"
+    REVERSAL_PULLBACK_RECLAIM = "REVERSAL_PULLBACK_RECLAIM"
     BREAKOUT_ACCEPTANCE_FAST = "BREAKOUT_ACCEPTANCE_FAST"
     SCHEDULER_RESCUE = "SCHEDULER_RESCUE"
 
@@ -18107,6 +18929,7 @@ V3_SOURCE_PRIORITY = {
     V3CandidateSource.OPPORTUNITY_MEMORY.value: 90,
     V3CandidateSource.LOCK_RELEASE_BRIDGE.value: 89,
     V3CandidateSource.PENDING_TRIGGER.value: 86,
+    V3CandidateSource.REVERSAL_PULLBACK_RECLAIM.value: 100,
     V3CandidateSource.BREAKOUT_ACCEPTANCE_FAST.value: 95,
     V3CandidateSource.SCHEDULER_RESCUE.value: 84,
 }
@@ -18125,6 +18948,7 @@ V3_TRANSITION_SETUPS = {
     "FRESH_BASE_CONTINUATION_REENTRY",
     "RANGE_COMPRESSION_BREAKOUT",
     "SWEEP_REVERSAL",
+    "REVERSAL_PULLBACK_RECLAIM_ENTRY",
 }
 
 
@@ -18282,7 +19106,7 @@ def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
         "setup_classifier": None,
         "entry_level": "BLOCK",
         "reason_codes": [error_code],
-        "architecture_version": "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES",
+        "architecture_version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM",
     }
 
 
@@ -18336,7 +19160,7 @@ def _v3_normalize_setup(setup, context, source, audit=None):
                 raw.setdefault("reason_codes", []).append("CLASSIFIER_SIDE_NOT_CONFIRMED")
     raw["current_readiness"] = quality
     raw["candidate_source"] = str(source)
-    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES"
+    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM"
     raw["confirmations"] = _v3_clean_side_messages(raw.get("confirmations"), side)
     raw["conflicts"] = _v3_clean_side_messages(raw.get("conflicts"), side)
     raw.setdefault("reason_codes", [])
@@ -18460,6 +19284,7 @@ def _v3_collect_proposals(context, base_setup, audit):
     seed_setup = deepcopy(base_setup)
     proposals = [_v3_make_proposal(V3CandidateSource.LIVE_CORE.value, seed_setup, seed_context, audit)]
     lanes = [
+        (V3CandidateSource.REVERSAL_PULLBACK_RECLAIM.value, resolve_reversal_pullback_reclaim_entry),
         (V3CandidateSource.CLOSED_15M_DIRECTION.value, resolve_direction_flip_priority_lane),
         (V3CandidateSource.CAPITULATION_RECOVERY.value, resolve_capitulation_recovery_geometry_opportunity),
         (V3CandidateSource.FRESH_BASE.value, resolve_fresh_base_continuation_reentry),
@@ -18634,6 +19459,8 @@ def _v3_canonical_lock_guard(context, setup, fixed_side, audit):
         or current.get("fresh_base_reentry_confirmed")
         or current.get("post_shock_retest_confirmed")
         or current.get("shock_reset_confirmed")
+        or current.get("fresh_pullback_reset_confirmed")
+        or current.get("reversal_pullback_reclaim_confirmed")
     )
     current["canonical_lock_state"] = lock
     if lock["active"] and not reset_allowed:
@@ -18727,6 +19554,8 @@ def _v3_apply_entry_window_lifecycle(context, setup, fixed_side, audit):
         or current.get("post_shock_retest_confirmed")
         or current.get("shock_reset_confirmed")
         or current.get("breakout_acceptance_fast_entry")
+        or current.get("fresh_pullback_reset_confirmed")
+        or current.get("reversal_pullback_reclaim_confirmed")
     )
 
     phrase_stretched = any(phrase in text_blob for phrase in [
@@ -18866,10 +19695,10 @@ def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
     current["current_readiness"] = current["quality"]
     current["selected_setup_score"] = _v3_setup_score(current)
     current["candidate_source"] = source
-    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES"
+    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM"
     current["decision_id"] = uuid.uuid4().hex[:12]
     current["decision_pipeline_v3"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES",
+        "version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM",
         "decision_id": current["decision_id"],
         "selected_source": source,
         "selected_side": fixed_side,
@@ -18930,6 +19759,7 @@ def evaluate_new_setup(context):
     audit = []
     try:
         refresh_persistent_exhaustion_locks(context)
+        refresh_reversal_handoff_memory(context)
         base_setup = _evaluate_new_setup_core(context)
         base_setup = expire_recovery_thesis_if_invalid(context, base_setup)
         seed_context = _v3_clone_context(context)
@@ -18971,7 +19801,7 @@ def evaluate_new_setup(context):
         )
         safe["pipeline_error"] = str(error)[:400]
         safe["decision_pipeline_v3"] = {
-            "version": "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES",
+            "version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM",
             "safe_mode": True,
             "audit": audit[-40:],
         }
@@ -20458,7 +21288,7 @@ def manage_active_trade_v3(trade, context):
             "best_pct": max(0.0, signed_pct(before_side, safe_float(getattr(trade, "entry", 0), 0), safe_float(getattr(trade, "best_price", getattr(trade, "entry", 0)), 0))),
             "notes": [f"MANAGEMENT_SAFE_MODE: {str(error)[:240]}"],
             "institutional_execution": pre_execution,
-            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES", "safe_mode": True},
+            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM", "safe_mode": True},
         }
 
     if str(getattr(trade, "side", "") or "") != before_side:
@@ -20484,7 +21314,7 @@ def manage_active_trade_v3(trade, context):
     result.setdefault("current_pct", signed_pct(before_side, trade.entry, safe_float((context or {}).get("price"), trade.entry)))
     result.setdefault("best_pct", max(0.0, safe_float(result.get("current_pct"), 0.0) or 0.0))
     result["architecture_audit"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_7_ENTRY_WINDOW_EXHAUSTED_TITLES",
+        "version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM",
         "side_immutable": str(getattr(trade, "side", "") or "") == before_side,
         "stop_never_loosened": not stop_restored,
         "active_trade_never_replaced_by_watch": True,
@@ -20560,6 +21390,7 @@ def main():
                     "entry_location": context.get("entry_location"),
                 },
             }
+            prime_reversal_handoff_from_closed_trade(state, active, result, context)
             if active.tp2_hit or active.tp3_hit or str(result.get("action")) == "TP3":
                 structure_now = context.get("structure") or {}
                 state["structural_reset_gate"] = {
@@ -20616,6 +21447,7 @@ def main():
     update_pending_trigger_memory(state, setup, context)
     update_opportunity_coverage(state, context, setup=setup)
     setup = _v3_verify_post_decision_integrity(setup)
+    update_reversal_handoff_after_decision(state, setup, context)
     message = build_new_setup_message(context, setup)
 
     if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
@@ -20678,6 +21510,9 @@ def main():
         "entry_window_closed": bool(setup.get("entry_window_closed")),
         "entry_window_late_penalty": setup.get("entry_window_late_penalty"),
         "market_direction_context": setup.get("market_direction_context"),
+        "reversal_handoff": setup.get("reversal_handoff"),
+        "reversal_pullback_reclaim_confirmed": bool(setup.get("reversal_pullback_reclaim_confirmed")),
+        "fresh_pullback_reset_confirmed": bool(setup.get("fresh_pullback_reset_confirmed")),
         "reason_codes": setup.get("reason_codes", []),
         "decision_pipeline_v3": setup.get("decision_pipeline_v3"),
         "setup_classifier": setup.get("setup_classifier"),
@@ -20719,6 +21554,7 @@ def main():
             "reentry_cooldown": context.get("reentry_review") or context.get("reentry_cooldown"),  # compatibility alias
             "persistent_exhaustion_locks": context.get("persistent_exhaustion_locks") or (state.get("persistent_exhaustion_locks") if isinstance(state, dict) else None),
             "shock_lock": state.get("shock_lock") if isinstance(state, dict) else None,
+            "reversal_handoff_memory": state.get("reversal_handoff") if isinstance(state, dict) else None,
             "setup_classifier": context.get("setup_classifier"),
             "regime_engine": context.get("regime_engine") or context.get("market_regime"),
         },
