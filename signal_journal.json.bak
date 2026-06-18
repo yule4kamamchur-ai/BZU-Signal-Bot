@@ -24153,14 +24153,532 @@
           "previous_regime_type": "NEWS_SHOCK"
         }
       }
+    },
+    {
+      "time": "2026-06-18T08:16:06.112980+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 77.85,
+      "quality": 49,
+      "reason": "попередній SHORT зламано (STOP, -0.784%); шукати LONG тільки після 3M + BOS/reclaim",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": {
+        "type": "LATE_IMPULSE_CHASE",
+        "label": "🔴 Пізній імпульс / доганяння",
+        "side": "LONG",
+        "score": 30,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап",
+        "quality_adjustment": -12,
+        "quality_cap": 61,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "block_entry": true
+        },
+        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+        "stop_rule": "план лише після нового рівня для стопу",
+        "tp_rule": "не рахувати TP від поганої локації",
+        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+        "late_penalty": 0,
+        "late_without_reset": false,
+        "composite_exhaustion": {
+          "hard_block": false,
+          "count": 2,
+          "signals": [
+            "15M рух уже зрілий: move8 0.867%",
+            "flow/CVD/кластери показують поглинання проти входу"
+          ],
+          "distance_atr": 0.076,
+          "rsi15": 50.2,
+          "professional_exception": true,
+          "hard_reset_evidence": false,
+          "ict_exception": true,
+          "professional_evidence": {
+            "professional_exception": true,
+            "fresh_event": false,
+            "event": {},
+            "fresh_base": false,
+            "fresh_base_snapshot": {
+              "active": true,
+              "fresh_base_valid": false,
+              "exhaustion_reset_allowed": false,
+              "allowed": false,
+              "reason": "нова 6-12 свічкова база ще не підтвердила continuation"
+            },
+            "micro_base_breakout": false,
+            "micro": {
+              "micro_bos": false,
+              "micro_base": true,
+              "compression": true,
+              "extension_from_base_atr": 0.28,
+              "local_high": 78.04,
+              "local_low": 77.67,
+              "reason": "мікро-BOS ще не закрився; перед цим була проторговка/стиснення"
+            },
+            "strong_ict_location": true
+          },
+          "reason": ""
+        },
+        "persistent_exhaustion": {
+          "active": true,
+          "allowed": false,
+          "state": "LOCKED",
+          "side": "LONG",
+          "current_exhausted": true,
+          "fresh_base_reset": false,
+          "shock_retest": false,
+          "separate_setup_release": false,
+          "release_reason": "",
+          "lock": {
+            "side": "LONG",
+            "status": "LOCKED",
+            "origin_ts": 1781769420000,
+            "updated_ts": 1781770500000,
+            "origin_price": 77.85,
+            "extreme_price": 77.88,
+            "released_at": "",
+            "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock"
+          },
+          "reason": "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап"
+        }
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 4.06,
+          "move8_abs_pct": 0.867,
+          "slope15_abs_pct": 0.163,
+          "rsi15": 50.2,
+          "score_total_abs": 12,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "plan": {
+        "entry": 77.85,
+        "stop": 77.85,
+        "tp1": 77.85,
+        "tp2": 77.85,
+        "tp3": 77.85,
+        "risk_pct": 0.0,
+        "rr1": 0,
+        "rr2": 0,
+        "rr3": 0,
+        "invalidation": "Локація заблокована до нової бази/retest. Сетап: 🔴 Пізній імпульс / доганяння. Причина: persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап",
+        "valid": false,
+        "validation_reason": "локація нежиттєздатна до побудови RR: persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап",
+        "technical_stop_basis": "",
+        "technical_tp1_basis": "",
+        "technical_tp2_basis": "",
+        "technical_tp3_basis": "",
+        "geometry_mode": "LOCATION_VIABILITY_FIRST",
+        "technical_rr_target": 1.5,
+        "better_entry": 0.0,
+        "geometry_grade": "INVALID_LOCATION",
+        "barrier_mode": "LOCATION_BLOCK",
+        "preferred_geometry_met": false,
+        "breakout_gates": []
+      },
+      "confirmations": [
+        "3M розвернувся після невдалої угоди",
+        "15M нейтральний — розворот можливий, але потрібен 3M/BOS",
+        "ICT дає sweep/reclaim або continuation для розвороту"
+      ],
+      "conflicts": [],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": 11,
+        "total_score": 12,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 26,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.283,
+          "drift_pct": 0.017,
+          "vol_ratio": 0.05,
+          "note": "3m швидко йде вгору; 3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 14,
+          "trend": "NEUTRAL",
+          "close": 77.97,
+          "ema20": 77.8731,
+          "ema50": 78.2467,
+          "rsi": 50.2,
+          "atr": 0.3028,
+          "slope_pct": 0.163,
+          "move_8_pct": 0.867,
+          "range_atr": 4.06,
+          "note": "EMA20 нижче EMA50; імпульс вгору"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 77.89,
+          "ema20": 78.4961,
+          "ema50": 79.3314,
+          "rsi": 36.4,
+          "atr": 0.6259,
+          "slope_pct": -1.144,
+          "move_8_pct": -1.255,
+          "range_atr": 8.21,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 77.89,
+          "ema20": 80.2835,
+          "ema50": 83.8809,
+          "rsi": 28.0,
+          "atr": 1.3523,
+          "slope_pct": -2.174,
+          "move_8_pct": -1.778,
+          "range_atr": 4.61,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 78.24,
+          "swing_low": 77.06,
+          "recent_high": 78.88,
+          "recent_low": 77.06,
+          "atr": 0.3028,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -38.87,
+          "book_delta_pct": 60.71,
+          "note": "угоди за продавців; стакан підтримує покупців; підтримка покупців біля 77.59"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": 6,
+          "state": "BUYERS_DOMINATE",
+          "confidence": "LOW",
+          "confidence_factor": 0.45,
+          "sample_size": 6,
+          "delta": 335.0,
+          "delta_pct": 45.45,
+          "cvd": 105089.0,
+          "cvd_change_pct": 0.32,
+          "last_trade_ts": 1781770549595,
+          "price_move_pct": -0.013,
+          "note": "CVD росте; CVD low confidence: мало свіжих трейдів"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 77.9123,
+              "imbalance_pct": -76.1,
+              "volume": 12602.0
+            },
+            {
+              "price": 77.9746,
+              "imbalance_pct": 30.6,
+              "volume": 3850.0
+            },
+            {
+              "price": 77.85,
+              "imbalance_pct": 100.0,
+              "volume": 1456.0
+            }
+          ],
+          "note": "локальний продавець біля 77.9123"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 60231.96,
+          "oi_change_pct": -0.005,
+          "funding_pct": 0,
+          "price_change_pct": -0.039,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.05,
+          "move_1_pct": -0.038,
+          "move_6_pct": 0.064,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "blocking_bias": "NEUTRAL",
+          "blocking_score": 0,
+          "hard_block_active": false,
+          "technical_priority": true,
+          "top": "Brent Crude Oil Price Today (June 18): Oil Prices Fall as US-Iran Peace Deal Raises Hopes of Strait of Hormuz Reopening; Check Latest Brent Price & WTI Rates - The Sunday Guardian",
+          "top_age_min": 106.1,
+          "top_lifecycle": "REJECTED",
+          "top_lifecycle_label": "відхилена ринком",
+          "block_reason": "новина вже не має жорсткого пріоритету: 106 хв, відхилена ринком — Brent Crude Oil Price Today (June 18): Oil Prices Fall as US-Iran Peace Deal Raises Hopes of Strait of Hormuz ",
+          "important": [
+            {
+              "title": "Brent Crude Oil Price Today (June 18): Oil Prices Fall as US-Iran Peace Deal Raises Hopes of Strait of Hormuz Reopening; Check Latest Brent Price & WTI Rates - The Sunday Guardian",
+              "link": "https://news.google.com/rss/articles/CBMipwJBVV95cUxOZzQ3Rkc2QnI5SW9TNmY2S2JPaHlhRnBGOU5ETUsybFdxSHFiVVI1elhZZVBmM3kwV3F4T3pzM2E3YnB6c2tXNmM3UXVIdjhxNFMxdl9VYXhYTkV4LTFGcmJyV0x0THl0d1VzWC1RYmFzRjhzdUY2TG50UlVWWlZCbEoxT2pFbmx2Z2hha0pXWExIYmZxMFYxdlJoNjRENVI4YlV3YWdPZ0dFN0RjYUNxZUdSUHJDTHpTdTg3ZTZpdVVFY0N6dF80Sjgwemg2YlU2THBWUE4xSTBzNEV6X3hJQ2lQZVNZOEQ0amZBbUNsWlk1dmRGdnVfLXpSTk9zQlFPWjhjQ0RRMTJQMnYxSmE2czdRbVY1QVJudi1yZ2FvU3hvY2Q1dkUw0gGnAkFVX3lxTE5nNDdGRzZCcjlJb1M2ZjZLYk9oeWFGcEY5TkRNSzJsV3FIcWJVUjV6WFllUGYzeTBXcXhPenMzYTdicHpza1c2YzdRdUh2OHE0UzF2X1VheFhORXgtMUZyYnJXTHRMeXR3VXNYLVFiYXNGOHN1RjZMbnRSVVZaVkJsSjFPakVubHZnaGFrSldYTEhiZnEwVjF2Umg2NEQ1UjhiVXdhZ09nR0U3RGNhQ3FlR1JQckNMelN1ODdlNml1VUVjQ3p0XzRKODB6aDZiVTZMcFZQTjFJMHM0RXpfeElDaVBlU1k4RDRqZkFtQ2xaWTV2ZEZ2dV8telJOT3NCUU9aOGNDRFExMlAydjFKYTZzN1FtVjVBUm52LXJnYW9TeG9jZDV2RTA?oc=5",
+              "published_at": "2026-06-18T06:29:57+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 6,
+              "base_score": -21,
+              "score": -2,
+              "age_min": 106.1,
+              "age_factor": 0.073,
+              "event_class": "MACRO",
+              "hard_window_min": 30,
+              "lifecycle": "REJECTED",
+              "hard_block": false,
+              "reaction": {
+                "status": "REJECTED",
+                "reaction_known": true,
+                "current_signed_pct": -0.855,
+                "max_favorable_pct": 0.078,
+                "max_adverse_pct": 1.36,
+                "giveback_ratio": 12.0,
+                "acceptance_closes": 0,
+                "opposite_closes": 3,
+                "threshold_pct": 0.12,
+                "hard_block": false
+              }
+            },
+            {
+              "title": "Trump sanctions waiver on Russian crude expires: What it means for India amid US-Iran peace deal, Strait - The Times of India",
+              "link": "https://news.google.com/rss/articles/CBMirwJBVV95cUxQLVZ1ZjhvY24xTXVUUkpyajVLVlFudFBOaDVreDdBcmpmV0lTX1lNNEFCVFdWRlc1WVdwTk1ZQnZ4cUptY1VHSXBHSGxfOGdKWXJtaWxMc1EtMmNLU0E1MkFoZjdxektzSGk5UVV0UG9FU2Q1X2hTR0M5X1JmTlpiZUJEYk84TFk5ZTFueDlIc0d6RXJkOXN6b2lUZjBuWEVuOFdzTElaQTF2czk5Z253dXk5SDUxZW1OR3lDTXhTN1ZYNldNM0tjeTVZaXR5WjM0clcyc1M0MDh0bzBqVmFmbU0yd2xsTWl3ek5EWDB1UjJkRGNpUDQ3c0F2SDZ1VzRyZjhxUEFkVTN5LVhVY2hiQ3lGOW9QSVMwTjlCRl9IOUFQaklMM21Lc19DeFoyTWvSAbQCQVVfeXFMUG5mb2wyb3VEazl3ck1SaDFBSmhpSHg0VS1GbkRCeXhpbHpoTXg0YlpLdmNzS3NDczJGVm92MWZRUDczams5UnZkTFUwaFl1Y1c0V21lNVh0TWRMQjZHWWw1N3ZqVzlwYjcwSHRFbzE4N2VZaWdqaFRfcmZuRndQelhXODZCc2hyV1VXWUl1eWhCd3dXRkJLT2p2aWxQSi1mRjZwZm1nSmRvYnU2RFhWdmhkazBNWDBYOVFEejBKZy1KMmkwc2hYbFFpZlBqN3A1R2NlQnhCYW5kVnVrenNIblN3c2tjWFQyUVJjeHpmSUZuQ3djakxTcGI2UW14Sks0WnpYVUw3cWZnVWNXUElfRUVodGNRUHZCcUN3aTlEVk9qcXJmZGhYSUdtUjVBWUhkbDF1MnE?oc=5",
+              "published_at": "2026-06-18T06:27:00+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 4,
+              "base_score": -18,
+              "score": -2,
+              "age_min": 109.1,
+              "age_factor": 0.133,
+              "event_class": "GEOPOLITICAL",
+              "hard_window_min": 45,
+              "lifecycle": "REJECTED",
+              "hard_block": false,
+              "reaction": {
+                "status": "REJECTED",
+                "reaction_known": true,
+                "current_signed_pct": -0.855,
+                "max_favorable_pct": 0.078,
+                "max_adverse_pct": 1.36,
+                "giveback_ratio": 12.0,
+                "acceptance_closes": 0,
+                "opposite_closes": 3,
+                "threshold_pct": 0.12,
+                "hard_block": false
+              }
+            },
+            {
+              "title": "US-Iran deal shakes oil markets as Strait of Hormuz reopens - Latest news from Azerbaijan",
+              "link": "https://news.google.com/rss/articles/CBMihwFBVV95cUxPTGdVTGdRMkNJZlU3NmFGbV9URU9WQ3VfcURfWkc1elFkdjVac3dhaFBtNHJYSEFKdXJGMExRZ210dXlfVHJZR1dTZlpEcXYya214VHZMSUYzX21wZTJ2eU5ZT3ZCRWRCYTdQVTlhUWNlVS1MbFRDUFlxTGtjdWJ5WU5STHlfMEU?oc=5",
+              "published_at": "2026-06-18T06:20:31+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 3,
+              "base_score": -15,
+              "score": -2,
+              "age_min": 115.6,
+              "age_factor": 0.128,
+              "event_class": "GEOPOLITICAL",
+              "hard_window_min": 45,
+              "lifecycle": "REJECTED",
+              "hard_block": false,
+              "reaction": {
+                "status": "REJECTED",
+                "reaction_known": true,
+                "current_signed_pct": -0.764,
+                "max_favorable_pct": 0.168,
+                "max_adverse_pct": 1.268,
+                "giveback_ratio": 5.538,
+                "acceptance_closes": 0,
+                "opposite_closes": 3,
+                "threshold_pct": 0.12,
+                "hard_block": false
+              }
+            }
+          ],
+          "total": 14
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "LATE_IMPULSE_CHASE",
+          "label": "🔴 Пізній імпульс / доганяння",
+          "side": "LONG",
+          "score": 30,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап",
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -12,
+            "quality_cap": 61,
+            "block_entry": true
+          },
+          "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+          "stop_rule": "план лише після нового рівня для стопу",
+          "tp_rule": "не рахувати TP від поганої локації",
+          "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+          "late_penalty": 0,
+          "late_without_reset": false,
+          "composite_exhaustion": {
+            "hard_block": false,
+            "count": 2,
+            "signals": [
+              "15M рух уже зрілий: move8 0.867%",
+              "flow/CVD/кластери показують поглинання проти входу"
+            ],
+            "distance_atr": 0.076,
+            "rsi15": 50.2,
+            "professional_exception": true,
+            "hard_reset_evidence": false,
+            "ict_exception": true,
+            "professional_evidence": {
+              "professional_exception": true,
+              "fresh_event": false,
+              "event": {},
+              "fresh_base": false,
+              "fresh_base_snapshot": {
+                "active": true,
+                "fresh_base_valid": false,
+                "exhaustion_reset_allowed": false,
+                "allowed": false,
+                "reason": "нова 6-12 свічкова база ще не підтвердила continuation"
+              },
+              "micro_base_breakout": false,
+              "micro": {
+                "micro_bos": false,
+                "micro_base": true,
+                "compression": true,
+                "extension_from_base_atr": 0.28,
+                "local_high": 78.04,
+                "local_low": 77.67,
+                "reason": "мікро-BOS ще не закрився; перед цим була проторговка/стиснення"
+              },
+              "strong_ict_location": true
+            },
+            "reason": ""
+          },
+          "persistent_exhaustion": {
+            "active": true,
+            "allowed": false,
+            "state": "LOCKED",
+            "side": "LONG",
+            "current_exhausted": true,
+            "fresh_base_reset": false,
+            "shock_retest": false,
+            "separate_setup_release": false,
+            "release_reason": "",
+            "lock": {
+              "side": "LONG",
+              "status": "LOCKED",
+              "origin_ts": 1781769420000,
+              "updated_ts": 1781770500000,
+              "origin_price": 77.85,
+              "extreme_price": 77.88,
+              "released_at": "",
+              "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock"
+            },
+            "reason": "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап"
+          }
+        },
+        "regime_engine": {
+          "name": "NORMAL",
+          "regime_type": "NORMAL",
+          "label": "звичайний intraday режим",
+          "score": 50,
+          "confidence": 50,
+          "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+          "entry_action": "ALLOW",
+          "entry_quality_adjustment": 0,
+          "quality_cap": null,
+          "hard_block": false,
+          "allowed_setups": [],
+          "notes": [],
+          "metrics": {
+            "bias": "NEUTRAL",
+            "range_atr": 4.06,
+            "move8_abs_pct": 0.867,
+            "slope15_abs_pct": 0.163,
+            "rsi15": 50.2,
+            "score_total_abs": 12,
+            "participation_same": 0,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "DISCOUNT_FVG_OB_LONG",
+            "range_edge": false
+          },
+          "stable_count": 1,
+          "pending_count": 2,
+          "is_stable": false,
+          "previous_regime_type": "NEWS_SHOCK"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-18T08:14:59.417159+00:00",
+  "updated_at": "2026-06-18T08:16:06.126335+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-18T08:14:59.421674+00:00",
+    "updated_at": "2026-06-18T08:16:06.130956+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 2,
-    "signals_count": 79,
+    "signals_count": 80,
     "overall": {
       "trades": 2,
       "wins": 0,
@@ -24326,11 +24844,11 @@
       }
     },
     "signals": {
-      "total": 79,
+      "total": 80,
       "entries": 2,
       "full_entries": 0,
       "risky_entries": 2,
-      "watch": 65,
+      "watch": 66,
       "no_trade": 8,
       "follow": 2,
       "closed": 2,
@@ -24338,7 +24856,7 @@
     },
     "signal_counts_by_setup": {
       "COUNTERTREND_SCALP": 7,
-      "LATE_IMPULSE_CHASE": 3,
+      "LATE_IMPULSE_CHASE": 4,
       "NEWS_IMPULSE": 9,
       "NO_CLEAN_SETUP": 25,
       "PRIME_ICT_LOCATION_OVERRIDE": 6,
@@ -24352,7 +24870,7 @@
     "signal_counts_by_regime": {
       "EXHAUSTION": 2,
       "NEWS_SHOCK": 21,
-      "NORMAL": 24,
+      "NORMAL": 25,
       "REVERSAL_BUILDUP": 11,
       "TREND_EXPANSION": 21
     }
