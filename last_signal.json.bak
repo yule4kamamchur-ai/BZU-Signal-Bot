@@ -1852,6 +1852,80 @@
       "mfe_captured_pct": 87.4,
       "mfe_giveback_pct": 0.308,
       "time": "2026-06-18T18:31:13.949991+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "LONG",
+      "price": 79.26,
+      "quality": 55,
+      "reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.61%; ціна далеко від EMA20 (2.67 ATR); CVD/потік/кластери вже попереджають",
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION",
+        "label": "🟢 Відкат у тренді",
+        "side": "LONG",
+        "score": 79,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "3M сетап відновлено з повної послідовності свічок між 15-хвилинними запусками",
+        "quality_adjustment": 3,
+        "quality_cap": 86,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.3,
+          "tp2_atr_mult": 2.45,
+          "tp3_tail_atr": 1.1,
+          "min_stop_pct": 0.78,
+          "max_stop_pct": 1.45,
+          "quality_adjustment": 3,
+          "quality_cap": 86
+        },
+        "interval_rescue": true,
+        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
+        "stop_rule": "стоп за low/high відкату або за OB/FVG",
+        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
+        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 7.56,
+          "move8_abs_pct": 2.386,
+          "slope15_abs_pct": 2.276,
+          "rsi15": 71.2,
+          "score_total_abs": 174,
+          "participation_same": 0,
+          "late_penalty": 8,
+          "pd": "PREMIUM",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB"
+        },
+        "stable_count": 8,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "entry_window_status": "EXHAUSTED",
+      "entry_window_closed": true,
+      "market_direction_context": "LONG",
+      "time": "2026-06-18T18:45:55.943342+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1932,7 +2006,7 @@
       "published_at": "2026-06-18T17:29:32+00:00",
       "reference_price": 77.99,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T18:31:13.052371+00:00",
+      "last_seen_at": "2026-06-18T18:45:55.029054+00:00",
       "last_status": "REJECTED"
     },
     "from hormuz to chabahar how the us iran peace deal could boost india s strategic interests firstpost": {
@@ -1940,7 +2014,7 @@
       "published_at": "2026-06-18T16:33:07+00:00",
       "reference_price": 77.39,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T18:31:13.052371+00:00",
+      "last_seen_at": "2026-06-18T18:45:55.029054+00:00",
       "last_status": "REJECTED"
     },
     "oil price falls following ceasefire agreement inspenet": {
@@ -1956,7 +2030,7 @@
       "published_at": "2026-06-18T17:45:38+00:00",
       "reference_price": 78.08,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T18:31:13.052371+00:00",
+      "last_seen_at": "2026-06-18T18:45:55.029054+00:00",
       "last_status": "REJECTED"
     },
     "crude oil prices tumble as strait of hormuz reopens barchart": {
@@ -1972,23 +2046,31 @@
       "published_at": "2026-06-18T16:00:44+00:00",
       "reference_price": 77.5,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T18:31:13.052371+00:00",
+      "last_seen_at": "2026-06-18T18:45:55.029054+00:00",
       "last_status": "CONFIRMED"
+    },
+    "brent crude oil price touches pre iran war lows after ceasefire deal inkl": {
+      "first_seen_at": "2026-06-18T18:45:55.029054+00:00",
+      "published_at": "2026-06-18T16:56:00+00:00",
+      "reference_price": 77.87,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-18T18:45:55.029054+00:00",
+      "last_status": "REJECTED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 7,
+    "stable_count": 8,
     "pending_count": 0,
-    "updated_at": "2026-06-18T18:31:13.509996+00:00"
+    "updated_at": "2026-06-18T18:45:55.583253+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781802900000,
+      "updated_ts": 1781808300000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -2000,14 +2082,14 @@
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
-      "origin_ts": 1781797500000,
-      "updated_ts": 1781802900000,
-      "origin_price": 77.24,
-      "extreme_price": 77.87,
-      "released_at": "2026-06-18T17:16:00.098988+00:00",
-      "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock",
-      "released_ts": 1781802900000,
-      "released_extreme": 77.87,
+      "origin_ts": 1781808300000,
+      "updated_ts": 1781808300000,
+      "origin_price": 79.26,
+      "extreme_price": 79.26,
+      "released_at": "2026-06-18T18:45:55.908025+00:00",
+      "reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.61%; ціна далеко від EMA20 (2.67 ATR); CVD/потік/кластери вже попереджають",
+      "released_ts": 1781808300000,
+      "released_extreme": 79.26,
       "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
     }
   },
@@ -2015,22 +2097,73 @@
     "side": "LONG",
     "status": "LOCKED",
     "origin_ts": 1781799300000,
-    "extreme_ts": 1781799300000,
-    "extreme_price": 77.82,
+    "extreme_ts": 1781806500000,
+    "extreme_price": 79.77,
     "released_at": "",
     "released_extreme": null
   },
   "opportunity_memory": null,
-  "lock_release_opportunities": {},
+  "lock_release_opportunities": {
+    "LONG": {
+      "active": true,
+      "status": "ARMED",
+      "source": "POST_EVALUATION",
+      "gate_name": "",
+      "created_at": "2026-06-18T18:45:55.942298+00:00",
+      "updated_at": "2026-06-18T18:45:55.942307+00:00",
+      "ttl_minutes": 105,
+      "side": "LONG",
+      "setup_type": "PULLBACK_CONTINUATION",
+      "setup_label": "🟢 Відкат у тренді",
+      "classifier": {
+        "type": "PULLBACK_CONTINUATION",
+        "label": "🟢 Відкат у тренді",
+        "side": "LONG",
+        "score": 79,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "3M сетап відновлено з повної послідовності свічок між 15-хвилинними запусками",
+        "quality_adjustment": 3,
+        "quality_cap": 86,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.3,
+          "tp2_atr_mult": 2.45,
+          "tp3_tail_atr": 1.1,
+          "min_stop_pct": 0.78,
+          "max_stop_pct": 1.45,
+          "quality_adjustment": 3,
+          "quality_cap": 86
+        },
+        "interval_rescue": true,
+        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
+        "stop_rule": "стоп за low/high відкату або за OB/FVG",
+        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
+        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
+      },
+      "quality": 79,
+      "origin_price": 79.26,
+      "trigger_level": 79.405,
+      "trigger_ts": 1781807220000,
+      "trigger_type": "ICT_ZONE_RECLAIM",
+      "invalidation": 78.9198,
+      "initial_reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.61%; ціна далеко від EMA20 (2.67 ATR); CVD/потік/кластери вже попереджають",
+      "plan": null
+    }
+  },
   "opportunity_analytics": {
     "new_entries": 3,
     "covered_by_active_trade": 0,
-    "missed": 2,
+    "missed": 3,
     "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY"
+      "LONG:CAPITULATION_RECOVERY",
+      "LONG:PULLBACK_CONTINUATION"
     ],
     "episode_status": {
-      "LONG:CAPITULATION_RECOVERY": "NEW_ENTRY"
+      "LONG:CAPITULATION_RECOVERY": "NEW_ENTRY",
+      "LONG:PULLBACK_CONTINUATION": "MISSED"
     },
     "recent": [
       {
@@ -2080,24 +2213,32 @@
         "episode_key": "LONG:CAPITULATION_RECOVERY",
         "status": "NEW_ENTRY",
         "time": "2026-06-18T17:16:00.164071+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "PULLBACK_CONTINUATION",
+        "ts": 1781807400000,
+        "episode_key": "LONG:PULLBACK_CONTINUATION",
+        "status": "MISSED",
+        "time": "2026-06-18T18:45:55.943152+00:00"
       }
     ],
     "covered_total": 3,
-    "total_opportunities": 5,
-    "coverage_pct": 60.0
+    "total_opportunities": 6,
+    "coverage_pct": 50.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T18:31:13.950024+00:00",
-    "price": 79.51,
-    "oi": 57030.05,
-    "cvd": -190126.0,
-    "cvd_time": "2026-06-18T18:31:13.950027+00:00",
-    "last_trade_ts": 1781807461781,
+    "time": "2026-06-18T18:45:55.943363+00:00",
+    "price": 79.26,
+    "oi": 56758.86,
+    "cvd": -187772.0,
+    "cvd_time": "2026-06-18T18:45:55.943366+00:00",
+    "last_trade_ts": 1781808341644,
     "bias": "LONG",
-    "tech_score": 178,
-    "total_score": 154
+    "tech_score": 185,
+    "total_score": 174
   },
-  "updated_at": "2026-06-18T18:31:13.950031+00:00",
+  "updated_at": "2026-06-18T18:45:55.943370+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 78.83,
