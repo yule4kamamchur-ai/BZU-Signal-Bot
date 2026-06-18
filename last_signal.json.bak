@@ -2592,37 +2592,104 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-18T00:01:20.852185+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.56,
+      "quality": 55,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "setup_classifier": {
+        "type": "COUNTERTREND_SCALP",
+        "label": "🟠 Скальп проти тренду",
+        "side": "LONG",
+        "score": 78,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "контртренд дозволений тільки як scalp після локального розвороту",
+        "quality_adjustment": -3,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.8,
+          "tp2_pct": 1.22,
+          "tp3_pct": 2.0,
+          "min_stop_pct": 0.7,
+          "max_stop_pct": 1.05,
+          "quality_adjustment": -3,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "entry_rule": "тільки сильне зняття ліквідності/CHOCH + 3M розворот + CVD/потік не проти",
+        "stop_rule": "короткий стоп за екстремум, без усереднення",
+        "tp_rule": "швидший TP1, TP2 тільки якщо структура розвертається",
+        "management_rule": "агресивний контроль; якщо немає швидкого підтвердження — вихід"
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.01,
+          "move8_abs_pct": 0.531,
+          "slope15_abs_pct": 0.14,
+          "rsi15": 44.2,
+          "score_total_abs": 34,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-18T00:15:54.315353+00:00"
     }
   ],
   "regime_memory": {
     "type": "NORMAL",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-06-18T00:01:20.496449+00:00"
+    "updated_at": "2026-06-18T00:15:53.939322+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T00:01:20.852200+00:00",
-    "price": 78.73,
-    "oi": 56434.54,
-    "cvd": 88739.0,
-    "cvd_time": "2026-06-18T00:01:20.852202+00:00",
-    "last_trade_ts": 1781740871548,
+    "time": "2026-06-18T00:15:54.315424+00:00",
+    "price": 78.56,
+    "oi": 57612.58,
+    "cvd": 167046.0,
+    "cvd_time": "2026-06-18T00:15:54.315428+00:00",
+    "last_trade_ts": 1781741727140,
     "bias": "NEUTRAL",
-    "tech_score": -32,
-    "total_score": -35
+    "tech_score": -36,
+    "total_score": -34
   },
-  "updated_at": "2026-06-18T00:01:20.852206+00:00",
+  "updated_at": "2026-06-18T00:15:54.315432+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 0,
     "covered_by_active_trade": 0,
-    "missed": 5,
+    "missed": 6,
     "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY"
+      "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "LONG:CAPITULATION_RECOVERY": "MISSED"
+      "SHORT:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -2664,10 +2731,18 @@
         "episode_key": "LONG:CAPITULATION_RECOVERY",
         "status": "MISSED",
         "time": "2026-06-17T22:31:11.266012+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781740800000,
+        "episode_key": "SHORT:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-18T00:15:54.315237+00:00"
       }
     ],
     "covered_total": 0,
-    "total_opportunities": 5,
+    "total_opportunities": 6,
     "coverage_pct": 0.0
   },
   "range_boundary_state": {
@@ -2675,7 +2750,7 @@
     "high": 79.25,
     "low": 78.5,
     "created_ts": 1781720100000,
-    "updated_ts": 1781739900000,
+    "updated_ts": 1781740800000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
