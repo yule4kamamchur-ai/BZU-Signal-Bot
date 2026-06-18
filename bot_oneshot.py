@@ -116,6 +116,16 @@ EXECUTION_URGENCY_CRITICAL = int(os.getenv("EXECUTION_URGENCY_CRITICAL", "85") o
 EXECUTION_CRITICAL_CONFIRM_CHECKS = int(os.getenv("EXECUTION_CRITICAL_CONFIRM_CHECKS", "2") or 2)
 EXECUTION_MIN_MFE_PROTECT_PCT = float(os.getenv("EXECUTION_MIN_MFE_PROTECT_PCT", "0.45") or 0.45)
 EXECUTION_MAX_STOP_UPDATES_PER_STAGE = int(os.getenv("EXECUTION_MAX_STOP_UPDATES_PER_STAGE", "1") or 1)
+
+# Barrier Checkpoint Management. Strong technical levels between entry and the
+# final target are management checkpoints, not automatic entry vetoes. They are
+# monitored after entry for acceptance or confirmed rejection.
+BARRIER_CHECKPOINT_MAX_COUNT = int(os.getenv("BARRIER_CHECKPOINT_MAX_COUNT", "4") or 4)
+BARRIER_CHECKPOINT_TOUCH_ATR15 = float(os.getenv("BARRIER_CHECKPOINT_TOUCH_ATR15", "0.12") or 0.12)
+BARRIER_CHECKPOINT_ACCEPT_CLOSES_3M = int(os.getenv("BARRIER_CHECKPOINT_ACCEPT_CLOSES_3M", "2") or 2)
+BARRIER_CHECKPOINT_REJECT_CLOSES_3M = int(os.getenv("BARRIER_CHECKPOINT_REJECT_CLOSES_3M", "2") or 2)
+BARRIER_CHECKPOINT_MIN_ADVERSE_LAYERS = int(os.getenv("BARRIER_CHECKPOINT_MIN_ADVERSE_LAYERS", "2") or 2)
+BARRIER_CHECKPOINT_PROTECT_GIVEBACK = float(os.getenv("BARRIER_CHECKPOINT_PROTECT_GIVEBACK", "0.30") or 0.30)
 ABSOLUTE_RR_SANITY_LIMIT = float(os.getenv("ABSOLUTE_RR_SANITY_LIMIT", "12.0") or 12.0)
 POST_IMPULSE_MIN_RUN_ATR15 = float(os.getenv("POST_IMPULSE_MIN_RUN_ATR15", "1.00") or 1.00)
 POST_IMPULSE_MODERATE_PULLBACK_ATR15 = float(os.getenv("POST_IMPULSE_MODERATE_PULLBACK_ATR15", "0.50") or 0.50)
@@ -389,6 +399,10 @@ class TradePlan:
     barrier_mode: str = "DIRECT"
     preferred_geometry_met: bool = True
     breakout_gates: list = field(default_factory=list)
+    # Strong levels before TP1/TP2 are monitored after entry. They do not block
+    # a valid setup; acceptance keeps the runner alive, rejection triggers
+    # PROTECT / EXIT REVIEW through Institutional Execution Logic.
+    management_checkpoints: list = field(default_factory=list)
     # Setup-Aware Geometry Diagnostics. These fields explain exactly why a
     # candidate has no valid plan instead of exposing one generic fallback.
     geometry_reason_code: str = ""
@@ -472,6 +486,14 @@ class ActiveTrade:
     execution_exit_streak: int = 0
     execution_last_reason: str = ""
     execution_last_updated_at: str = ""
+    # Barrier checkpoint lifecycle persisted with the trade.
+    barrier_checkpoints: list = field(default_factory=list)
+    barrier_checkpoint_status: str = "NONE"
+    barrier_checkpoint_level: float = 0.0
+    barrier_checkpoint_basis: str = ""
+    barrier_checkpoint_acceptance_streak: int = 0
+    barrier_checkpoint_rejection_streak: int = 0
+    barrier_checkpoint_last_updated_at: str = ""
     notes: list = field(default_factory=list)
 
 
@@ -639,7 +661,7 @@ def load_state():
         state["active_trade"] = None
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
-    state["version"] = "pro-v3.3-single-file-clean-institutional-execution"
+    state["version"] = "pro-v3.5-single-file-clean-barrier-checkpoint"
     return state
 
 
@@ -651,7 +673,7 @@ def save_state(state):
 
 def load_journal():
     journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
-    journal["version"] = "pro-v3.3-single-file-clean-institutional-execution"
+    journal["version"] = "pro-v3.5-single-file-clean-barrier-checkpoint"
     if "trades" not in journal or not isinstance(journal["trades"], list):
         journal["trades"] = []
     if "signals" not in journal or not isinstance(journal["signals"], list):
@@ -736,6 +758,13 @@ def active_trade_from_state(state):
             execution_exit_streak=int(raw.get("execution_exit_streak", 0) or 0),
             execution_last_reason=str(raw.get("execution_last_reason") or ""),
             execution_last_updated_at=str(raw.get("execution_last_updated_at") or ""),
+            barrier_checkpoints=list(raw.get("barrier_checkpoints") or []),
+            barrier_checkpoint_status=str(raw.get("barrier_checkpoint_status") or "NONE"),
+            barrier_checkpoint_level=float(raw.get("barrier_checkpoint_level") or 0),
+            barrier_checkpoint_basis=str(raw.get("barrier_checkpoint_basis") or ""),
+            barrier_checkpoint_acceptance_streak=int(raw.get("barrier_checkpoint_acceptance_streak", 0) or 0),
+            barrier_checkpoint_rejection_streak=int(raw.get("barrier_checkpoint_rejection_streak", 0) or 0),
+            barrier_checkpoint_last_updated_at=str(raw.get("barrier_checkpoint_last_updated_at") or ""),
             notes=list(raw.get("notes") or []),
         )
     except Exception as error:
@@ -8200,6 +8229,52 @@ def _blocking_barriers_between(side, price, selected_level, targets, context, at
     return blocking, gates, cleared
 
 
+def _normalize_management_checkpoints(*groups):
+    """Normalize and deduplicate technical levels used as post-entry checkpoints."""
+    items = []
+    for group in groups:
+        for raw in group or []:
+            if not isinstance(raw, dict):
+                continue
+            level = safe_float(raw.get("level"), None)
+            if level is None:
+                continue
+            state = raw.get("barrier_state") or {}
+            items.append({
+                "level": round_price(level),
+                "basis": str(raw.get("basis") or "технічний рівень"),
+                "priority": int(raw.get("priority", 0) or 0),
+                "source_status": str(state.get("status") or raw.get("source_status") or "HARD"),
+                "status": str(raw.get("status") or "PENDING"),
+                "acceptance_streak": int(raw.get("acceptance_streak", 0) or 0),
+                "rejection_streak": int(raw.get("rejection_streak", 0) or 0),
+                "touched_at": str(raw.get("touched_at") or ""),
+                "accepted_at": str(raw.get("accepted_at") or ""),
+                "rejected_at": str(raw.get("rejected_at") or ""),
+            })
+    items.sort(key=lambda x: (-int(x.get("priority", 0) or 0), float(x.get("level") or 0)))
+    unique = []
+    for item in items:
+        level = float(item["level"])
+        if not any(abs(float(x["level"]) - level) <= max(abs(level) * 0.0002, 0.01) for x in unique):
+            unique.append(item)
+    return unique[:BARRIER_CHECKPOINT_MAX_COUNT]
+
+
+def _checkpoint_public_text(checkpoints):
+    checkpoints = list(checkpoints or [])
+    if not checkpoints:
+        return ""
+    first = checkpoints[0]
+    level = round_price(first.get("level"))
+    if len(checkpoints) == 1:
+        return (f"Контрольний бар’єр: {level}. Якщо рівень прийнято — тримаємо план далі; "
+                "якщо відхилено — бот перевірить 3M, структуру та потік і дасть HOLD / PROTECT / EXIT REVIEW.")
+    levels = ", ".join(str(round_price(x.get("level"))) for x in checkpoints[:3])
+    return (f"Контрольні бар’єри: {levels}. Кожний рівень супроводжується окремо: "
+            "прийняття — продовжуємо, підтверджене відхилення — аналіз захисту або виходу.")
+
+
 def _target_barrier_penalty(side, price, selected, targets):
     """Weak levels are checkpoints; strong 15M/1H barriers are hard limits."""
     level = selected["level"]
@@ -8348,7 +8423,7 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
     atr15 = safe_float(context.get("atr15"), price * 0.006 if price else 0.5) or (price * 0.006 if price else 0.5)
     policy = _setup_aware_geometry_policy(context, setup_type, price, atr15)
     base = {
-        "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V1",
+        "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V2_CHECKPOINTS",
         "setup_type": setup_type,
         "setup_label": policy.get("setup_label"),
         "setup_family": policy.get("family"),
@@ -8433,7 +8508,6 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
             if rr + 1e-9 < min_rr: failures.append("RR_BELOW_SETUP_MIN")
             if reward_pct + 1e-9 < min_pct: failures.append("TARGET_PCT_TOO_CLOSE")
             if reward_atr + 1e-9 < min_atr: failures.append("TARGET_ATR_TOO_CLOSE")
-            if blocking: failures.append("TARGET_BLOCKED_BY_BARRIER")
             pass_ratio = min(
                 rr / max(min_rr, 1e-9),
                 reward_pct / max(min_pct, 1e-9),
@@ -8454,6 +8528,7 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
                 "failures": list(dict.fromkeys(failures)),
                 "barrier": round_price(blocking[0].get("level")) if blocking else None,
                 "barrier_basis": str(blocking[0].get("basis") or "") if blocking else "",
+                "management_checkpoints": _normalize_management_checkpoints(blocking, gates),
                 "pass_ratio": round(pass_ratio, 4),
                 "priority": int(stop.get("priority", 0) or 0) + int(target.get("priority", 0) or 0),
             }
@@ -8476,6 +8551,7 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
             "failures": [],
             "barrier": None,
             "barrier_basis": "",
+            "management_checkpoints": _normalize_management_checkpoints((geometry or {}).get("management_checkpoints") or []),
             "pass_ratio": 1.0,
             "priority": 999,
         }
@@ -8484,7 +8560,6 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
             if "rr" in low: selected["failures"].append("RR_BELOW_SETUP_MIN")
             if "atr" in low: selected["failures"].append("TARGET_ATR_TOO_CLOSE")
             if "відстан" in low: selected["failures"].append("TARGET_PCT_TOO_CLOSE")
-            if "барʼєр" in low or "бар'єр" in low: selected["failures"].append("TARGET_BLOCKED_BY_BARRIER")
     if selected is None and pairs:
         selected = max(pairs, key=lambda x: (x.get("pass_ratio", 0.0), x.get("priority", 0), x.get("rr", 0.0)))
 
@@ -8495,15 +8570,14 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
         "rejection_counts": rejections,
         "best_pair": selected,
         "validation_reasons": list(validation_reasons or []),
+        "management_checkpoints": list((selected or {}).get("management_checkpoints") or []),
     }
     if selected:
         better = _geometry_better_entry_zone(side, selected.get("stop"), selected.get("target"), policy, price, atr15)
         base["better_entry"] = better
         failures = list(selected.get("failures") or [])
         # Prefer the most actionable reason, not the first generic fallback.
-        if "TARGET_BLOCKED_BY_BARRIER" in failures:
-            code = "TARGET_BLOCKED_BY_BARRIER"
-        elif "STOP_TOO_WIDE" in failures:
+        if "STOP_TOO_WIDE" in failures:
             code = "STOP_TOO_WIDE_FOR_SETUP"
         elif "TACTICAL_STOP_NOT_CONFIRMED" in failures:
             code = "TACTICAL_STOP_NOT_CONFIRMED"
@@ -8512,7 +8586,7 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
         elif "TARGET_PCT_TOO_CLOSE" in failures or "TARGET_ATR_TOO_CLOSE" in failures:
             code = "TARGET_TOO_CLOSE_FOR_SETUP"
         elif not failures:
-            code = "GEOMETRY_VALID"
+            code = "GEOMETRY_VALID_WITH_CHECKPOINTS" if selected.get("management_checkpoints") else "GEOMETRY_VALID"
         else:
             code = "NO_COMPATIBLE_STOP_TARGET_PAIR"
         base["reason_code"] = code
@@ -8524,11 +8598,10 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
         if zone.get("low") and zone.get("high"):
             zone_text = f" Краща зона входу: {zone['low']}–{zone['high']}."
         label = str(policy.get("setup_label") or setup_type)
-        if code == "GEOMETRY_VALID":
+        if code in ["GEOMETRY_VALID", "GEOMETRY_VALID_WITH_CHECKPOINTS"]:
             base["public_message"] = ""
-        elif code == "TARGET_BLOCKED_BY_BARRIER":
-            barrier = selected.get("barrier")
-            base["public_message"] = f"Перед ціллю {target} стоїть непідтверджений технічний бар’єр {barrier}; потрібне прийняття рівня або інша точка входу."
+            if selected.get("management_checkpoints"):
+                base["checkpoint_message"] = _checkpoint_public_text(selected.get("management_checkpoints"))
         elif code == "STOP_TOO_WIDE_FOR_SETUP":
             base["public_message"] = f"Технічний стоп {stop} надто далеко ({risk_pct}%) для сетапу {label}; потрібна нова 3M база або ретест для коротшої інвалідації.{zone_text}"
         elif code == "TACTICAL_STOP_NOT_CONFIRMED":
@@ -8550,9 +8623,6 @@ def _setup_aware_geometry_diagnostics(side, context, setup_type, geometry=None, 
     elif not targets:
         base["reason_code"] = "NO_TECHNICAL_TARGET"
         base["public_message"] = "Сетап є, але попереду немає підтвердженої технічної цілі для розрахунку TP1."
-    elif rejections.get("hard_barrier", 0):
-        base["reason_code"] = "TARGET_BLOCKED_BY_BARRIER"
-        base["public_message"] = "Усі доступні цілі перекриті непідтвердженим сильним 15M/1H бар’єром."
     else:
         base["reason_code"] = "NO_COMPATIBLE_STOP_TARGET_PAIR"
         base["public_message"] = "Доступні стопи й цілі не утворюють допустиму пару за RR та відстанню для цього сетапу."
@@ -8565,7 +8635,8 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
     trigger gate of a confirmed breakout, it is tracked internally and the next
     technical objective may be used. If preferred geometry is unavailable, a
     meaningful VIABLE plan can still be returned and later classified as risky.
-    True hard 1H/ICT barriers are never skipped.
+    Strong 15M/1H/ICT levels are preserved as management checkpoints rather
+    than silently skipped or used as automatic entry vetoes.
     """
     price = safe_float((context or {}).get("price"))
     if side not in ["LONG", "SHORT"] or not price:
@@ -8640,9 +8711,12 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
             blocking, gates, _ = _blocking_barriers_between(
                 side, price, projected["level"], targets, context, atr15, setup_type, snapshot
             )
-            if not blocking:
-                projected = dict(projected, breakout_gates=gates)
-                candidate_targets.append(projected)
+            projected = dict(
+                projected,
+                breakout_gates=gates,
+                management_checkpoints=_normalize_management_checkpoints(blocking, gates),
+            )
+            candidate_targets.append(projected)
 
         for target in candidate_targets:
             reward = abs(float(target["level"]) - price)
@@ -8651,8 +8725,9 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
             blocking, gates, cleared = _blocking_barriers_between(
                 side, price, target["level"], targets, context, atr15, setup_type, snapshot, exclude_level=target.get("level")
             )
-            if blocking:
-                continue
+            management_checkpoints = _normalize_management_checkpoints(
+                blocking, gates, target.get("management_checkpoints") or []
+            )
             rr = reward / risk
             reward_atr = reward / atr15
             reward_pct = reward / price * 100.0
@@ -8694,7 +8769,7 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
                 continue
 
             grade = "OPTIMAL" if preferred_met else "VIABLE"
-            barrier_mode = "BREAKOUT_GATE" if gates else "DIRECT"
+            barrier_mode = "MANAGEMENT_CHECKPOINT" if management_checkpoints else "DIRECT"
             if target.get("projected") and gates:
                 grade = "GATE_EXPANSION" if preferred_met else "VIABLE_GATE_EXPANSION"
 
@@ -8709,8 +8784,8 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
             score += 12.0 if reward_pct >= profile["min_pct"] else 5.0
             if target.get("projected"):
                 score -= 6.0
-            if gates:
-                score -= 3.0 * len(gates)
+            if management_checkpoints:
+                score -= 1.5 * len(management_checkpoints)
             if not preferred_met:
                 score -= 8.0
             if rr > RR_SANITY_REBUILD_LIMIT:
@@ -8733,6 +8808,7 @@ def _select_adaptive_technical_geometry(side, context, atr15, setup_type):
                 "allow_3m_stop": allow_3m_stop, "projection_allowed": projection_allowed,
                 "geometry_grade": grade, "barrier_mode": barrier_mode,
                 "preferred_geometry_met": preferred_met, "breakout_gates": gates,
+                "management_checkpoints": management_checkpoints,
                 "cleared_barriers": cleared,
                 "hard_min_rr": geometry_policy["min_rr"],
                 "hard_min_pct": geometry_policy["min_pct"],
@@ -8784,8 +8860,7 @@ def _select_alternative_technical_geometry(side, context, atr15, setup_type, sto
             if rr < max(ALTERNATIVE_GEOMETRY_MIN_RR1, geometry_policy["min_rr"]) or rr > RR_SANITY_REBUILD_LIMIT:
                 continue
             blocking, gates, cleared = _blocking_barriers_between(side, price, target["level"], targets, context, atr15, setup_type, snapshot, exclude_level=target.get("level"))
-            if blocking:
-                continue
+            management_checkpoints = _normalize_management_checkpoints(blocking, gates)
             score = int(stop.get("priority", 0) or 0) * 0.35 + int(target.get("priority", 0) or 0) * 0.25 + min(rr, 3.0) * 10 - risk_atr * 2
             candidate = {
                 "score": score, "stop": stop, "target": target, "risk": risk, "reward": reward,
@@ -8794,8 +8869,9 @@ def _select_alternative_technical_geometry(side, context, atr15, setup_type, sto
                 "checkpoints": [], "tp1_profile": _tp1_travel_profile(context, setup_type, price, atr15),
                 "preferred_reward": min_reward, "viable_reward": min_reward,
                 "allow_3m_stop": False, "projection_allowed": False,
-                "geometry_grade": "ALTERNATIVE_TECHNICAL", "barrier_mode": "DIRECT",
+                "geometry_grade": "ALTERNATIVE_TECHNICAL", "barrier_mode": "MANAGEMENT_CHECKPOINT" if management_checkpoints else "DIRECT",
                 "preferred_geometry_met": False, "breakout_gates": gates,
+                "management_checkpoints": management_checkpoints,
                 "cleared_barriers": cleared, "alternative_geometry_path": True,
                 "hard_min_rr": max(ALTERNATIVE_GEOMETRY_MIN_RR1, geometry_policy["min_rr"]),
                 "hard_min_pct": max(ALTERNATIVE_GEOMETRY_MIN_PCT, geometry_policy["min_pct"]),
@@ -8950,8 +9026,7 @@ def _select_geometry_candidate_recovery(side, context, atr15, setup_type):
             blocking, gates, cleared = _blocking_barriers_between(
                 side, price, target["level"], targets, context, atr15, setup_type, snapshot, exclude_level=target.get("level")
             )
-            if blocking:
-                continue
+            management_checkpoints = _normalize_management_checkpoints(blocking, gates)
             score = (
                 int(stop.get("priority", 0) or 0) * 0.35
                 + int(target.get("priority", 0) or 0) * 0.25
@@ -8967,8 +9042,8 @@ def _select_geometry_candidate_recovery(side, context, atr15, setup_type):
                 "preferred_reward": reward, "viable_reward": reward,
                 "allow_3m_stop": False, "projection_allowed": False,
                 "geometry_grade": "MISSED_CONTINUATION_ESCALATED" if thresholds["escalated"] else "MISSED_CONTINUATION_RECOVERY",
-                "barrier_mode": "DIRECT", "preferred_geometry_met": False,
-                "breakout_gates": gates, "cleared_barriers": cleared,
+                "barrier_mode": "MANAGEMENT_CHECKPOINT" if management_checkpoints else "DIRECT", "preferred_geometry_met": False,
+                "breakout_gates": gates, "management_checkpoints": management_checkpoints, "cleared_barriers": cleared,
                 "geometry_candidate_recovery": True,
                 "hard_min_rr": thresholds["min_rr"], "hard_min_atr": thresholds["min_atr"], "hard_min_pct": thresholds["min_pct"],
                 "geometry_failures": thresholds["failures"],
@@ -10234,6 +10309,7 @@ def make_plan(side, context):
             better_entry=0.0, geometry_grade="INVALID_LOCATION",
             barrier_mode="LOCATION_BLOCK", preferred_geometry_met=False,
             breakout_gates=[],
+            management_checkpoints=[],
             geometry_reason_code=location_diag.get("reason_code", "LOCATION_NOT_VIABLE"),
             geometry_diagnostics=location_diag,
             better_entry_zone_low=safe_float((location_diag.get("better_entry") or {}).get("low"), 0.0) or 0.0,
@@ -10276,18 +10352,20 @@ def make_plan(side, context):
             valid = False
             validation_reasons.append("TP1 нижче мінімальної життєздатної RR-геометрії")
         snapshot = ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
-        blocking, _, _ = _blocking_barriers_between(
+        blocking, gates_to_tp1, _ = _blocking_barriers_between(
             side, price, tp1, targets, context, atr15, setup_type, snapshot, exclude_level=tp1
         )
-        if blocking:
-            valid = False
-            validation_reasons.append("TP1 пропускає непідтверджений сильний 15M/1H барʼєр")
+        selected_target_checkpoint = [geometry.get("target") or {}] if int((geometry.get("target") or {}).get("priority", 0) or 0) >= STRONG_BARRIER_PRIORITY else []
+        management_checkpoints = _normalize_management_checkpoints(
+            (geometry or {}).get("management_checkpoints") or [], blocking, gates_to_tp1, selected_target_checkpoint
+        )
     else:
         stop = price
         tp1 = price
         stop_basis = tp1_basis = ""
         risk = reward1 = rr1 = risk_pct = 0.0
         targets = []
+        management_checkpoints = []
 
     snapshot = ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
     tf15 = context.get("tf15") or {}
@@ -10298,7 +10376,7 @@ def make_plan(side, context):
             snapshot.get("closed_confirmed")
             or (snapshot.get("fast_reversal_to_side") or {}).get("confirmed")
             or (tf15.get("bias") == side and structure.get("bias") == side)
-            or (geometry and geometry.get("barrier_mode") == "BREAKOUT_GATE")
+            or (geometry and str(geometry.get("barrier_mode") or "").upper() in {"BREAKOUT_GATE", "MANAGEMENT_CHECKPOINT"})
         )
     )
 
@@ -10370,6 +10448,7 @@ def make_plan(side, context):
             {"level": round_price(g.get("level")), "basis": str(g.get("basis") or "")}
             for g in ((geometry or {}).get("breakout_gates") or [])
         ],
+        management_checkpoints=_normalize_management_checkpoints(management_checkpoints),
         geometry_reason_code=str(geometry_diag.get("reason_code") or ("GEOMETRY_VALID" if valid else "NO_COMPATIBLE_STOP_TARGET_PAIR")),
         geometry_diagnostics=geometry_diag,
         better_entry_zone_low=safe_float(better_entry_info.get("low"), 0.0) or 0.0,
@@ -14684,7 +14763,7 @@ def apply_professional_lifecycle_to_setup(setup, context):
         and not forced_risky
         and not rejection_guard.get("block_entry")
     )
-    breakout_geometry = bool(plan and str(getattr(plan, "barrier_mode", "") or "").upper() == "BREAKOUT_GATE")
+    breakout_geometry = bool(plan and str(getattr(plan, "barrier_mode", "") or "").upper() in {"BREAKOUT_GATE", "MANAGEMENT_CHECKPOINT"})
     early_consensus = bool(
         plan_valid
         and (snapshot.get("professional_location") or breakout_geometry)
@@ -18087,7 +18166,7 @@ def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
         "setup_classifier": None,
         "entry_level": "BLOCK",
         "reason_codes": [error_code],
-        "architecture_version": "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY",
+        "architecture_version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
     }
 
 
@@ -18141,7 +18220,7 @@ def _v3_normalize_setup(setup, context, source, audit=None):
                 raw.setdefault("reason_codes", []).append("CLASSIFIER_SIDE_NOT_CONFIRMED")
     raw["current_readiness"] = quality
     raw["candidate_source"] = str(source)
-    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY"
+    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT"
     raw["confirmations"] = _v3_clean_side_messages(raw.get("confirmations"), side)
     raw["conflicts"] = _v3_clean_side_messages(raw.get("conflicts"), side)
     raw.setdefault("reason_codes", [])
@@ -18543,10 +18622,10 @@ def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
     current["current_readiness"] = current["quality"]
     current["selected_setup_score"] = _v3_setup_score(current)
     current["candidate_source"] = source
-    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY"
+    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT"
     current["decision_id"] = uuid.uuid4().hex[:12]
     current["decision_pipeline_v3"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY",
+        "version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
         "decision_id": current["decision_id"],
         "selected_source": source,
         "selected_side": fixed_side,
@@ -18648,7 +18727,7 @@ def evaluate_new_setup(context):
         )
         safe["pipeline_error"] = str(error)[:400]
         safe["decision_pipeline_v3"] = {
-            "version": "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY",
+            "version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
             "safe_mode": True,
             "audit": audit[-40:],
         }
@@ -18698,6 +18777,13 @@ def new_active_trade(setup):
         management_checks=0,
         mfe_profit_lock_streak=0,
         mfe_profit_lock_active=False,
+        barrier_checkpoints=_normalize_management_checkpoints(getattr(plan, "management_checkpoints", []) or []),
+        barrier_checkpoint_status="PENDING" if getattr(plan, "management_checkpoints", []) else "NONE",
+        barrier_checkpoint_level=float((getattr(plan, "management_checkpoints", []) or [{}])[0].get("level") or 0) if getattr(plan, "management_checkpoints", []) else 0.0,
+        barrier_checkpoint_basis=str((getattr(plan, "management_checkpoints", []) or [{}])[0].get("basis") or "") if getattr(plan, "management_checkpoints", []) else "",
+        barrier_checkpoint_acceptance_streak=0,
+        barrier_checkpoint_rejection_streak=0,
+        barrier_checkpoint_last_updated_at=iso_now(),
         notes=(
             (["RISKY_ENTRY"] if setup.get("action") == "RISKY_ENTRY" else [])
             + (["COUNTERTREND_ENTRY"] if setup.get("countertrend_entry") else [])
@@ -19288,6 +19374,23 @@ def _distinct_notification_text(first, second):
     return not (a == b or a in b or b in a)
 
 
+def _plan_checkpoint_alert_lines(plan):
+    checkpoints = list(getattr(plan, "management_checkpoints", []) or []) if plan else []
+    if not checkpoints:
+        return []
+    first = checkpoints[0]
+    lines = [
+        "",
+        f"<b>Контрольний бар’єр:</b> {_fmt_price(first.get('level'))}",
+        "Якщо рівень прийнято — тримаємо план далі; якщо відхилено — бот перевіряє 3M, структуру та потік і вирішує HOLD / PROTECT / EXIT REVIEW.",
+    ]
+    if len(checkpoints) > 1:
+        others = ", ".join(_fmt_price(x.get("level")) for x in checkpoints[1:3])
+        if others:
+            lines.append(f"Наступні контрольні рівні: {others}")
+    return lines
+
+
 def build_new_setup_message(context, setup):
     plan = setup.get("plan")
     conflicts = _short_list(setup.get("conflicts"), 3)
@@ -19329,6 +19432,7 @@ def build_new_setup_message(context, setup):
         lines.append("")
         lines.append("<b>План:</b>")
         lines.append(plan_text(plan, multiline=True))
+        lines.extend(_plan_checkpoint_alert_lines(plan))
     else:
         reason_items = _wait_reason_items(setup, 3)
         if reason_items:
@@ -19338,6 +19442,8 @@ def build_new_setup_message(context, setup):
                 lower = x.lower()
                 icon = "⚠️" if any(key in lower for key in ["локаль", "4h", "1h", "потік", "cvd", "ризик", "новин", "очіку"] ) else "❌"
                 lines.append(f"{icon} {html.escape(x)}")
+        if plan and getattr(plan, "valid", False):
+            lines.extend(_plan_checkpoint_alert_lines(plan))
         # WAIT/ЧЕКАТИ alerts stay compact: no activation and no tentative
         # entry/stop/TP plan until a real ENTRY/RISKY_ENTRY appears.
 
@@ -19436,6 +19542,16 @@ def build_follow_message(context, trade, result):
             "",
             f"<b>Терміновість супроводу:</b> {html.escape(str(execution.get('mode_label') or _execution_mode_label(execution.get('mode'))))} ({int(execution.get('score', 0) or 0)}/100)",
         ])
+        checkpoint = execution.get("barrier_checkpoint") or {}
+        if checkpoint.get("active"):
+            status_label = {
+                "PENDING": "ПОПЕРЕДУ", "TESTING": "ТЕСТУЄТЬСЯ",
+                "ACCEPTED": "ПРИЙНЯТО ✅", "REJECTED": "ВІДХИЛЕНО ⚠️",
+                "ALL_ACCEPTED": "УСІ ПРИЙНЯТО ✅",
+            }.get(str(checkpoint.get("status") or "PENDING").upper(), str(checkpoint.get("status") or ""))
+            lines.append(f"<b>Контрольний бар’єр:</b> {_fmt_price(checkpoint.get('level'))} — {status_label}")
+            if checkpoint.get("message"):
+                lines.append(html.escape(str(checkpoint.get("message"))))
 
     lines.extend([
         "",
@@ -19547,6 +19663,131 @@ def update_market_snapshot(state, context):
         "bias": context.get("bias"),
         "tech_score": context.get("tech_score"),
         "total_score": context.get("total_score"),
+    }
+
+
+def _consecutive_from_end(candles, predicate):
+    count = 0
+    for candle in reversed(list(candles or [])):
+        if predicate(candle):
+            count += 1
+        else:
+            break
+    return count
+
+
+def barrier_checkpoint_management_snapshot(trade, context):
+    """Monitor the next technical barrier without turning it into an entry veto.
+
+    Acceptance keeps the original TP path alive. A confirmed rejection raises
+    execution urgency, but never closes the trade by itself.
+    """
+    context = context or {}
+    side = str(getattr(trade, "side", "") or "").upper()
+    checkpoints = _normalize_management_checkpoints(getattr(trade, "barrier_checkpoints", []) or [])
+    price = safe_float(context.get("price"), 0.0) or 0.0
+    if side not in ["LONG", "SHORT"] or not checkpoints or not price:
+        return {"active": False, "status": "NONE", "action": "HOLD", "message": ""}
+
+    # Keep accepted checkpoints under observation: if price later loses an
+    # accepted level, it becomes a failed-acceptance review instead of being
+    # forgotten forever.
+    if side == "LONG":
+        checkpoints.sort(key=lambda x: float(x.get("level") or 0))
+    else:
+        checkpoints.sort(key=lambda x: -float(x.get("level") or 0))
+
+    atr15 = safe_float(context.get("atr15"), None) or safe_float((context.get("tf15") or {}).get("atr"), price * 0.006) or price * 0.006
+    buffer = max(float(atr15) * 0.05, price * 0.00025)
+    touch_distance = max(float(atr15) * BARRIER_CHECKPOINT_TOUCH_ATR15, price * 0.0008)
+    accepted_lost = next((
+        x for x in checkpoints
+        if str(x.get("status") or "").upper() in ["ACCEPTED", "CLEARED"]
+        and ((side == "LONG" and price < float(x.get("level") or 0) - buffer)
+             or (side == "SHORT" and price > float(x.get("level") or 0) + buffer))
+    ), None)
+    current = accepted_lost or next((
+        x for x in checkpoints
+        if str(x.get("status") or "PENDING").upper() not in ["ACCEPTED", "CLEARED"]
+    ), None)
+    if current is None:
+        trade.barrier_checkpoints = checkpoints
+        trade.barrier_checkpoint_status = "ALL_ACCEPTED"
+        return {"active": True, "status": "ALL_ACCEPTED", "action": "CONTINUE", "message": "усі контрольні бар’єри прийняті — план TP залишається активним", "checkpoints": checkpoints}
+
+    level = safe_float(current.get("level"), 0.0) or 0.0
+    previously_accepted = str(current.get("status") or "").upper() in ["ACCEPTED", "CLEARED"]
+    c3 = closed_candles(list(context.get("candles_3m") or []), 3, min_required=1)[-10:]
+    c15 = closed_candles(list(context.get("candles_15m_closed") or context.get("candles_15m") or []), 15, min_required=1)[-3:]
+
+    if side == "LONG":
+        touched = bool(price >= level - touch_distance or any(c.high >= level - buffer for c in c3))
+        accepted_count = _consecutive_from_end(c3, lambda c: c.close > level + buffer)
+        rejected_count = _consecutive_from_end(c3, lambda c: c.close < level - buffer) if touched else 0
+        closed15_accept = bool(c15 and c15[-1].close > level + buffer)
+    else:
+        touched = bool(price <= level + touch_distance or any(c.low <= level + buffer for c in c3))
+        accepted_count = _consecutive_from_end(c3, lambda c: c.close < level - buffer)
+        rejected_count = _consecutive_from_end(c3, lambda c: c.close > level + buffer) if touched else 0
+        closed15_accept = bool(c15 and c15[-1].close < level - buffer)
+
+    adverse_layers = 0
+    support_layers = 0
+    for key, threshold in [("tf3", 22), ("structure", 12), ("ict", 14), ("cvd", 12), ("flow", 10), ("liquidity", 9)]:
+        block = context.get(key) or {}
+        bias = str(block.get("bias") or "NEUTRAL").upper()
+        magnitude = abs(int(block.get("score", 0) or 0))
+        if bias == opposite(side) and magnitude >= threshold:
+            adverse_layers += 1
+        elif bias == side and magnitude >= threshold:
+            support_layers += 1
+
+    status = "PENDING"
+    action = "HOLD"
+    if closed15_accept or accepted_count >= BARRIER_CHECKPOINT_ACCEPT_CLOSES_3M:
+        status = "ACCEPTED"
+        action = "CONTINUE"
+        current["accepted_at"] = iso_now()
+    elif (touched or previously_accepted) and rejected_count >= BARRIER_CHECKPOINT_REJECT_CLOSES_3M and adverse_layers >= BARRIER_CHECKPOINT_MIN_ADVERSE_LAYERS:
+        status = "REJECTED"
+        action = "PROTECT_REVIEW"
+        current["rejected_at"] = iso_now()
+        current["lost_acceptance"] = bool(previously_accepted)
+    elif touched:
+        status = "TESTING"
+        action = "OBSERVE"
+        if not current.get("touched_at"):
+            current["touched_at"] = iso_now()
+
+    current["status"] = status
+    current["acceptance_streak"] = int(accepted_count)
+    current["rejection_streak"] = int(rejected_count)
+    trade.barrier_checkpoints = checkpoints
+    trade.barrier_checkpoint_status = status
+    trade.barrier_checkpoint_level = float(level)
+    trade.barrier_checkpoint_basis = str(current.get("basis") or "")
+    trade.barrier_checkpoint_acceptance_streak = int(accepted_count)
+    trade.barrier_checkpoint_rejection_streak = int(rejected_count)
+    trade.barrier_checkpoint_last_updated_at = iso_now()
+
+    if status == "ACCEPTED":
+        message = f"бар’єр {round_price(level)} прийнято — TP2/TP3 залишаються активними"
+    elif status == "REJECTED":
+        prefix = "раніше прийнятий бар’єр втрачено" if current.get("lost_acceptance") else "бар’єр відхилено"
+        message = f"{prefix} {round_price(level)}; перевіряємо структуру, 3M і потік перед PROTECT / EXIT REVIEW"
+    elif status == "TESTING":
+        message = f"ціна тестує бар’єр {round_price(level)}; автоматичного виходу немає"
+    else:
+        message = f"контрольний бар’єр попереду: {round_price(level)}"
+
+    return {
+        "active": True, "status": status, "action": action,
+        "level": round_price(level), "basis": str(current.get("basis") or ""),
+        "acceptance_streak": int(accepted_count), "rejection_streak": int(rejected_count),
+        "adverse_layers": int(adverse_layers), "support_layers": int(support_layers),
+        "touched": bool(touched), "message": message, "checkpoints": checkpoints,
+        "protect_evidence": bool(status == "REJECTED" and adverse_layers >= BARRIER_CHECKPOINT_MIN_ADVERSE_LAYERS),
+        "close_review": bool(status == "REJECTED" and adverse_layers >= BARRIER_CHECKPOINT_MIN_ADVERSE_LAYERS + 1),
     }
 
 
@@ -19680,6 +19921,7 @@ def institutional_execution_logic_snapshot(trade, context):
 
     rejection = post_impulse_rejection_snapshot(side, context)
     breakout_failure = bool(rejection.get("severity") in ["MODERATE", "STRONG"] and not rejection.get("recovered"))
+    barrier_checkpoint = barrier_checkpoint_management_snapshot(trade, context)
 
     score = 18.0
     reasons = []
@@ -19701,6 +19943,14 @@ def institutional_execution_logic_snapshot(trade, context):
     if breakout_failure:
         score += 10
         reasons.append("breakout/reclaim втрачає прийняття")
+    if barrier_checkpoint.get("status") == "ACCEPTED":
+        score -= 7
+        reasons.append(f"бар’єр {barrier_checkpoint.get('level')} прийнято")
+    elif barrier_checkpoint.get("status") == "REJECTED":
+        score += 14 + min(8, int(barrier_checkpoint.get("adverse_layers", 0) or 0) * 2)
+        reasons.append(f"бар’єр {barrier_checkpoint.get('level')} підтверджено відхилено")
+    elif barrier_checkpoint.get("status") == "TESTING":
+        reasons.append(f"тест контрольного бар’єра {barrier_checkpoint.get('level')}")
     if news_live:
         score += 8 if not news_against else 13
         reasons.append("активний новинний режим" + (" проти позиції" if news_against else ""))
@@ -19718,8 +19968,9 @@ def institutional_execution_logic_snapshot(trade, context):
         reasons.append("тонка ліквідність підсилює ризик виконання")
 
     protect_evidence = bool(
-        best_pct >= EXECUTION_MIN_MFE_PROTECT_PCT
-        and (giveback_ratio >= 0.28 or adverse_layers >= 2 or stage in ["POST_TP1", "POST_TP2"])
+        (best_pct >= EXECUTION_MIN_MFE_PROTECT_PCT
+         and (giveback_ratio >= 0.28 or adverse_layers >= 2 or stage in ["POST_TP1", "POST_TP2"]))
+        or barrier_checkpoint.get("protect_evidence")
     )
     close_evidence = bool(
         hard_reversal
@@ -19770,6 +20021,7 @@ def institutional_execution_logic_snapshot(trade, context):
         "ict_reversal_components": int(ict_reversal_components),
         "closed_15m_break": closed_break,
         "breakout_failure": breakout_failure,
+        "barrier_checkpoint": barrier_checkpoint,
         "news_active": news_live,
         "news_against": news_against,
         "low_liquidity": low_liquidity,
@@ -19951,7 +20203,7 @@ def manage_active_trade_v3(trade, context):
             "best_pct": max(0.0, signed_pct(before_side, safe_float(getattr(trade, "entry", 0), 0), safe_float(getattr(trade, "best_price", getattr(trade, "entry", 0)), 0))),
             "notes": [f"MANAGEMENT_SAFE_MODE: {str(error)[:240]}"],
             "institutional_execution": pre_execution,
-            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY", "safe_mode": True},
+            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT", "safe_mode": True},
         }
 
     if str(getattr(trade, "side", "") or "") != before_side:
@@ -19977,7 +20229,7 @@ def manage_active_trade_v3(trade, context):
     result.setdefault("current_pct", signed_pct(before_side, trade.entry, safe_float((context or {}).get("price"), trade.entry)))
     result.setdefault("best_pct", max(0.0, safe_float(result.get("current_pct"), 0.0) or 0.0))
     result["architecture_audit"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_4_SETUP_AWARE_GEOMETRY",
+        "version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
         "side_immutable": str(getattr(trade, "side", "") or "") == before_side,
         "stop_never_loosened": not stop_restored,
         "active_trade_never_replaced_by_watch": True,
