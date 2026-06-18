@@ -3533,27 +3533,101 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-18T03:31:16.621947+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.06,
+      "quality": 55,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "setup_classifier": {
+        "type": "SWEEP_RECLAIM_EARLY_ENTRY",
+        "label": "🟡 Раннє зняття ліквідності + повернення",
+        "side": "LONG",
+        "score": 71,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "раннє зняття ліквідності + повернення: ліквідність знята, ціна повернулась у діапазон, 3M/потік не проти",
+        "quality_adjustment": 0,
+        "quality_cap": 74,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.86,
+          "tp2_pct": 1.45,
+          "tp3_pct": 2.35,
+          "min_stop_pct": 0.74,
+          "max_stop_pct": 1.18,
+          "quality_adjustment": 0,
+          "quality_cap": 74,
+          "force_risky": true
+        },
+        "entry_rule": "раннє зняття ліквідності + повернення: ліквідність уже знята, ціна повернулась у діапазон, 3M/потік не проти, але повний CHOCH ще може формуватись",
+        "stop_rule": "стоп за хвіст sweep з ATR-буфером; не усереднювати",
+        "tp_rule": "TP1 до EQ/першої ліквідності; TP2 тільки після підтвердження 3M/структури",
+        "management_rule": "якщо повернення в діапазон не отримало продовження — швидко переводити в попередження або вихід",
+        "professional_override": true,
+        "sweep_reclaim_early": true,
+        "late_penalty": 3
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.83,
+          "move8_abs_pct": 0.115,
+          "slope15_abs_pct": 0.555,
+          "rsi15": 36.5,
+          "score_total_abs": 36,
+          "participation_same": 1,
+          "late_penalty": 7,
+          "pd": "DISCOUNT",
+          "ict_setup": "LIQUIDITY_SWEEP_LONG",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-18T03:45:49.695492+00:00"
     }
   ],
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-18T03:31:16.263812+00:00"
+    "pending_type": "REVERSAL_BUILDUP",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-18T03:45:49.284155+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T03:31:16.622037+00:00",
+    "time": "2026-06-18T03:45:49.695566+00:00",
     "price": 78.06,
-    "oi": 59401.45,
-    "cvd": 213935.0,
-    "cvd_time": "2026-06-18T03:31:16.622041+00:00",
-    "last_trade_ts": 1781753462361,
-    "bias": "SHORT",
-    "tech_score": -120,
-    "total_score": -111
+    "oi": 59347.16,
+    "cvd": 207171.0,
+    "cvd_time": "2026-06-18T03:45:49.695570+00:00",
+    "last_trade_ts": 1781754301529,
+    "bias": "NEUTRAL",
+    "tech_score": -46,
+    "total_score": -36
   },
-  "updated_at": "2026-06-18T03:31:16.622045+00:00",
+  "updated_at": "2026-06-18T03:45:49.695575+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 0,
@@ -3621,10 +3695,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 78.58,
-    "low": 78.15,
+    "high": 78.61,
+    "low": 78.14,
     "created_ts": 1781720100000,
-    "updated_ts": 1781752500000,
+    "updated_ts": 1781753400000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
