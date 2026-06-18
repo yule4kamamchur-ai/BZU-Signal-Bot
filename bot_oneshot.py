@@ -4128,81 +4128,281 @@ def _parse_iso_time(value):
         return None
 
 
-def analyze_reentry_cooldown(state, max_age_hours=6):
-    """Soft same-direction cooldown after a weak exit.
+def analyze_reentry_quality_review(state, context=None):
+    """Event-driven review after a weak/failed trade.
 
-    Old behavior was too strict: after a weak LONG/SHORT exit the bot could
-    block the same direction for hours and keep printing WATCH. New behavior:
-    - no hard ban by default;
-    - apply a quality penalty for the same direction;
-    - remove/override the penalty when a fresh BOS/reclaim/ICT continuation appears;
-    - prevent revenge-looping with a max same-side entries guard.
+    There is deliberately no timer, waiting period, fading penalty or fixed
+    cooldown. A previous STOP/weak exit matters only while the bot is trying to
+    repeat the same broken thesis without new market evidence.
+
+    The review clears immediately when the market produces a genuinely new
+    setup: a fresh closed-3M event, a rebuilt 15M base, a new BOS/CHOCH/reclaim,
+    or a fully realigned structure/ICT/flow stack. The previous loss never
+    lowers the quality of an opposite-side setup.
     """
-    history = (state or {}).get("history") or []
-    now = now_utc()
+    state = state or {}
+    context = context or {}
+    history = state.get("history") or []
     weak_actions = {
         "EXIT", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK",
+        "EXIT_STRUCTURE_BREAK", "EXIT_WARNING_CONFIRM",
         "EXIT_AFTER_TP1_GIVEBACK", "PROTECT_OR_EXIT", "STOP",
     }
 
-    def item_age_hours(item):
-        ts = _parse_iso_time(item.get("time"))
-        return ((now - ts).total_seconds() / 3600.0) if ts else 999.0
-
-    last_entry_quality_by_side = {}
-    same_side_entries_3h = {"LONG": 0, "SHORT": 0}
+    # Merge the richer state snapshot with the latest history close. This keeps
+    # backward compatibility with older last_signal.json files.
+    latest_history = None
     for item in reversed(history[-MAX_HISTORY:]):
+        if isinstance(item, dict) and item.get("type") == "TRADE_CLOSED":
+            latest_history = dict(item)
+            break
+    latest_state = state.get("last_closed_trade") if isinstance(state.get("last_closed_trade"), dict) else None
+    candidates = []
+    for item in [latest_history, latest_state]:
         if not isinstance(item, dict):
             continue
-        age_h = item_age_hours(item)
-        side_i = item.get("side")
-        if side_i in ["LONG", "SHORT"] and item.get("type") == "ENTRY":
-            if side_i not in last_entry_quality_by_side:
-                last_entry_quality_by_side[side_i] = int(item.get("quality") or 0)
-            if age_h <= 3.0:
-                same_side_entries_3h[side_i] += 1
+        stamp = item.get("closed_at") or item.get("time")
+        dt = _parse_iso_time(stamp)
+        candidates.append((dt.timestamp() if dt else 0.0, item))
+    if not candidates:
+        return {"active": False, "status": "NO_PREVIOUS_WEAK_EXIT", "quality_adjustment": 0}
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    close_item = dict(candidates[0][1])
+    if latest_history and latest_state:
+        # Prefer the newest timestamp, but preserve richer identity/context.
+        same_side = latest_history.get("side") == latest_state.get("side")
+        if same_side:
+            close_item = {**latest_history, **latest_state}
 
-    for item in reversed(history[-MAX_HISTORY:]):
-        if not isinstance(item, dict) or item.get("type") != "TRADE_CLOSED":
-            continue
-        side = item.get("side")
-        if side not in ["LONG", "SHORT"]:
-            continue
-        action = str(item.get("action") or "")
-        result_pct = safe_float(item.get("result_pct"), 0.0) or 0.0
-        age_h = item_age_hours(item)
-        if age_h > max_age_hours:
-            return {"active": False}
-
-        is_weak = (
-            action in weak_actions
-            and (
-                result_pct <= 0.25
-                or action in ["STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK", "EXIT_AFTER_TP1_GIVEBACK"]
-            )
-        )
-        if is_weak:
-            # Penalty fades with time so the bot does not sit silent all day.
-            if age_h <= 1.0:
-                penalty = 15
-            elif age_h <= 2.5:
-                penalty = 10
-            else:
-                penalty = 6
-            return {
-                "active": True,
-                "side": side,
-                "action": action,
-                "result_pct": round(result_pct, 3),
-                "age_hours": round(age_h, 2),
-                "quality_penalty": penalty,
-                "last_entry_quality": last_entry_quality_by_side.get(side, 0),
-                "same_side_entries_3h": same_side_entries_3h.get(side, 0),
-                "max_same_side_entries_3h": 2,
-                "reason": f"після слабкого виходу {side} ({action}, {round(result_pct, 3)}%) якість нового входу тимчасово знижена, але не заблокована",
+    failed_side = str(close_item.get("side") or "").upper()
+    action = str(close_item.get("action") or close_item.get("result_action") or "")
+    result_pct = safe_float(close_item.get("result_pct"), 0.0) or 0.0
+    weak = bool(
+        failed_side in ["LONG", "SHORT"]
+        and action in weak_actions
+        and (
+            result_pct <= 0.25
+            or action in {
+                "STOP", "EXIT_MFE_GIVEBACK", "EXIT_GIVEBACK", "EXIT_LOCAL_BREAK",
+                "EXIT_STRUCTURE_BREAK", "EXIT_WARNING_CONFIRM", "EXIT_AFTER_TP1_GIVEBACK",
             }
-        return {"active": False}
-    return {"active": False}
+        )
+    )
+    if not weak:
+        return {"active": False, "status": "PREVIOUS_TRADE_NOT_WEAK", "quality_adjustment": 0}
+
+    # Recover the failed setup identity from the close snapshot or the preceding
+    # same-side ENTRY. This is used only to detect an exact thesis replay.
+    failed_setup = str(close_item.get("setup_type") or "").upper()
+    failed_entry_quality = int(close_item.get("entry_quality") or close_item.get("quality") or 0)
+    if not failed_setup or not failed_entry_quality:
+        for item in reversed(history[-MAX_HISTORY:]):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "ENTRY" and str(item.get("side") or "").upper() == failed_side:
+                classifier = item.get("setup_classifier") or {}
+                failed_setup = failed_setup or str(classifier.get("type") or item.get("setup_type") or "").upper()
+                failed_entry_quality = failed_entry_quality or int(item.get("quality") or 0)
+                break
+
+    closed_at = close_item.get("closed_at") or close_item.get("time")
+    closed_dt = _parse_iso_time(closed_at)
+    closed_ms = int(closed_dt.timestamp() * 1000) if closed_dt else 0
+    setup_classifier = context.get("setup_classifier") or {}
+    current_setup = str(setup_classifier.get("type") or "").upper()
+    current_setup_score = int(setup_classifier.get("score") or 0)
+
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    structure = context.get("structure") or {}
+    ict = context.get("ict") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    derivatives = context.get("derivatives") or {}
+    liquidity = context.get("liquidity") or {}
+    phase = str(structure.get("phase") or "").upper()
+    ict_setup = str(ict.get("setup") or "").upper()
+
+    tf3_same = tf3.get("bias") == failed_side and abs(int(tf3.get("score", 0) or 0)) >= 20
+    tf15_same = tf15.get("bias") == failed_side and abs(int(tf15.get("score", 0) or 0)) >= 22
+    structure_same = bool(
+        structure.get("bias") == failed_side
+        or (failed_side == "LONG" and ("BOS LONG" in phase or "CHOCH LONG" in phase or "DOWNSIDE SWEEP" in phase))
+        or (failed_side == "SHORT" and ("BOS SHORT" in phase or "CHOCH SHORT" in phase or "UPSIDE SWEEP" in phase))
+    )
+    ict_strong = bool(
+        ict.get("bias") == failed_side
+        and (
+            ict.get("entry_ok")
+            or ict_setup in {
+                "BOS_LONG_RETRACE_FVG_OB", "BOS_LONG_CONTINUATION_HOLD", "LIQUIDITY_SWEEP_LONG",
+                "BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD", "LIQUIDITY_SWEEP_SHORT",
+                "DISCOUNT_FVG_OB_LONG", "PREMIUM_FVG_OB_SHORT",
+            }
+        )
+    )
+    flow_support = flow.get("bias") == failed_side and abs(int(flow.get("score", 0) or 0)) >= 12
+    cvd_support = cvd.get("bias") == failed_side and abs(int(cvd.get("score", 0) or 0)) >= 12
+    flow_against = flow.get("bias") == opposite(failed_side) and abs(int(flow.get("score", 0) or 0)) >= 18
+    cvd_against = cvd.get("bias") == opposite(failed_side) and abs(int(cvd.get("score", 0) or 0)) >= 20
+    oi_against = derivatives.get("bias") == opposite(failed_side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
+    liquidity_block = failed_side in (liquidity.get("blocks") or [])
+    adverse_layers = sum(bool(x) for x in [flow_against, cvd_against, oi_against, liquidity_block])
+
+    fresh_events = []
+    try:
+        fresh_events = [
+            event for event in scan_15m_interval_entry_events(context, failed_side)
+            if event.get("confirmed") and (not closed_ms or int(event.get("trigger_ts", 0) or 0) > closed_ms)
+        ]
+    except Exception:
+        fresh_events = []
+    fresh_event = max(fresh_events, key=lambda event: int(event.get("score", 0) or 0), default=None)
+
+    fresh_base = {"allowed": False}
+    reset_base = {"fresh_base_valid": False}
+    try:
+        fresh_base = fresh_base_continuation_snapshot(context, failed_side)
+    except Exception:
+        pass
+    try:
+        reset_base = fresh_base_exhaustion_reset_snapshot(context, failed_side)
+    except Exception:
+        pass
+    fresh_base_ok = bool(
+        fresh_base.get("allowed")
+        or reset_base.get("fresh_base_valid")
+        or reset_base.get("exhaustion_reset_allowed")
+    )
+
+    location = analyze_entry_location_score(failed_side, context)
+    location_state = str(location.get("state") or "NORMAL").upper()
+    location_bad = location_state in {"LATE", "VERY_LATE"}
+
+    independent_setup_types = {
+        "SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "CLOSED_15M_DIRECTION_FLIP",
+        "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY",
+        "RANGE_COMPRESSION_BREAKOUT", "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "TREND_IGNITION_ENTRY", "PRIME_ICT_LOCATION_OVERRIDE",
+    }
+    different_professional_setup = bool(
+        current_setup
+        and current_setup not in {"NO_CLEAN_SETUP", "LATE_IMPULSE_CHASE"}
+        and current_setup != failed_setup
+        and current_setup_score >= 62
+        and (tf3_same or fresh_event)
+        and (structure_same or ict_strong or fresh_base_ok)
+    )
+    fully_rebuilt_stack = bool(
+        tf3_same
+        and tf15_same
+        and (structure_same or ict_strong)
+        and adverse_layers <= 1
+        and not location_bad
+        and current_setup_score >= 60
+    )
+    new_independent_setup = bool(fresh_event or fresh_base_ok or different_professional_setup or fully_rebuilt_stack)
+
+    same_setup_family = bool(failed_setup and current_setup and failed_setup == current_setup)
+    no_fresh_rebuild = not new_independent_setup
+    exact_failed_thesis_replay = bool(
+        same_setup_family
+        and no_fresh_rebuild
+        and (
+            not tf3_same
+            or not (structure_same or ict_strong)
+            or adverse_layers >= 2
+            or location_bad
+        )
+    )
+
+    evidence = []
+    if fresh_event:
+        evidence.append(f"fresh_{fresh_event.get('type')}")
+    if fresh_base_ok:
+        evidence.append("fresh_15m_base")
+    if different_professional_setup:
+        evidence.append("different_professional_setup")
+    if fully_rebuilt_stack:
+        evidence.append("fully_rebuilt_stack")
+    if tf3_same:
+        evidence.append("3m_realigned")
+    if structure_same:
+        evidence.append("structure_realigned")
+    if ict_strong:
+        evidence.append("strong_ict")
+    if flow_support or cvd_support:
+        evidence.append("flow_or_cvd_support")
+
+    unresolved = []
+    if same_setup_family:
+        unresolved.append("same_setup_family")
+    if not fresh_event and not fresh_base_ok:
+        unresolved.append("no_fresh_event_or_base")
+    if not tf3_same:
+        unresolved.append("3m_not_realigned")
+    if not (structure_same or ict_strong):
+        unresolved.append("structure_ict_not_rebuilt")
+    if adverse_layers >= 2:
+        unresolved.append("multiple_adverse_layers")
+    if location_bad:
+        unresolved.append("poor_entry_location")
+
+    if new_independent_setup:
+        status = "NEW_INDEPENDENT_SETUP"
+        reason = (
+            f"попередній слабкий вихід {failed_side} не впливає на новий вхід: "
+            "ринок сформував новий незалежний BOS/retest/ICT/base сценарій"
+        )
+        return {
+            "active": True, "side": failed_side, "status": status,
+            "block_reentry": False, "quality_adjustment": 0,
+            "reset_confirmed": True, "reason": reason,
+            "previous_action": action, "previous_result_pct": round(result_pct, 3),
+            "previous_setup_type": failed_setup, "current_setup_type": current_setup,
+            "previous_entry_quality": failed_entry_quality,
+            "fresh_event": fresh_event, "fresh_base": fresh_base_ok,
+            "evidence": evidence, "unresolved": unresolved,
+            "policy": "EVENT_DRIVEN_NO_TIME_COOLDOWN",
+        }
+
+    if exact_failed_thesis_replay:
+        reason = (
+            f"новий {failed_side} повторює ту саму зламану тезу після {action} "
+            "без нового BOS/CHOCH, ретесту, свіжої бази або повного ICT-перезбору"
+        )
+        return {
+            "active": True, "side": failed_side, "status": "SAME_FAILED_THESIS_REPLAY",
+            "block_reentry": True, "quality_adjustment": 0,
+            "reset_confirmed": False, "reason": reason,
+            "previous_action": action, "previous_result_pct": round(result_pct, 3),
+            "previous_setup_type": failed_setup, "current_setup_type": current_setup,
+            "previous_entry_quality": failed_entry_quality,
+            "fresh_event": None, "fresh_base": False,
+            "evidence": evidence, "unresolved": unresolved,
+            "policy": "EVENT_DRIVEN_NO_TIME_COOLDOWN",
+        }
+
+    return {
+        "active": True, "side": failed_side, "status": "REASSESSED_FROM_ZERO",
+        "block_reentry": False, "quality_adjustment": 0,
+        "reset_confirmed": False,
+        "reason": (
+            f"попередній {failed_side} {action} не створює часової заборони; "
+            "поточний сетап оцінюється заново за структурою, 3M, ICT, flow і геометрією"
+        ),
+        "previous_action": action, "previous_result_pct": round(result_pct, 3),
+        "previous_setup_type": failed_setup, "current_setup_type": current_setup,
+        "previous_entry_quality": failed_entry_quality,
+        "fresh_event": fresh_event, "fresh_base": fresh_base_ok,
+        "evidence": evidence, "unresolved": unresolved,
+        "policy": "EVENT_DRIVEN_NO_TIME_COOLDOWN",
+    }
+
+
+def analyze_reentry_cooldown(state, context=None):
+    """Backward-compatible alias for older state/report integrations."""
+    return analyze_reentry_quality_review(state, context or {})
 
 
 # ==========================================================
@@ -8327,103 +8527,6 @@ def smart_money_rr_status(plan):
     return {"ok": True, "rr1": rr1, "label": label, "advisory": rr1 < TARGET_RR1_ENTRY}
 
 
-def cooldown_override_ok(side, context):
-    """Allow professional same-side re-entry after a weak exit.
-
-    Old behavior was too strict: any EXIT_LOCAL_BREAK/weak close blocked the
-    same direction until a perfect new BOS/reclaim. In a strong trend this can
-    make the bot watch the whole continuation without re-entering.
-
-    New behavior:
-    - still blocks random re-entry in RANGE/BALANCE;
-    - allows same-side continuation only when the market did NOT reverse and
-      there is fresh trend/structure/ICT evidence;
-    - does not require CVD/flow to be fully aligned, but blocks if both are
-      strongly against.
-    """
-    if side not in ["LONG", "SHORT"] or not isinstance(context, dict):
-        return False
-
-    tf3 = context.get("tf3") or {}
-    tf15 = context.get("tf15") or {}
-    tf1h = context.get("tf1h") or {}
-    tf4h = context.get("tf4h") or {}
-    structure = context.get("structure") or {}
-    ict = context.get("ict") or {}
-    cvd = context.get("cvd") or {}
-    flow = context.get("flow") or {}
-    derivatives = context.get("derivatives") or {}
-    liquidity = context.get("liquidity") or {}
-
-    phase = str(structure.get("phase") or "").upper()
-    ict_setup = str(ict.get("setup") or "").upper()
-    market_regime = context.get("market_regime") or {}
-    if isinstance(market_regime, dict):
-        regime_name = str(market_regime.get("name") or "NORMAL").upper()
-    else:
-        regime_name = str(market_regime or "NORMAL").upper()
-
-    fresh_bos = (side == "LONG" and "BOS LONG" in phase) or (side == "SHORT" and "BOS SHORT" in phase)
-    fresh_sweep = (side == "LONG" and "DOWNSIDE SWEEP" in phase) or (side == "SHORT" and "UPSIDE SWEEP" in phase)
-    fresh_choch = (side == "LONG" and "CHOCH LONG" in phase) or (side == "SHORT" and "CHOCH SHORT" in phase)
-    ict_continuation = (
-        side == "LONG" and ict_setup in ["BOS_LONG_RETRACE_FVG_OB", "BOS_LONG_CONTINUATION_HOLD", "LIQUIDITY_SWEEP_LONG"]
-    ) or (
-        side == "SHORT" and ict_setup in ["BOS_SHORT_RETRACE_FVG_OB", "BOS_SHORT_CONTINUATION_HOLD", "LIQUIDITY_SWEEP_SHORT"]
-    )
-
-    tf3_same = tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22
-    tf15_same = tf15.get("bias") == side and abs(int(tf15.get("score", 0) or 0)) >= 26
-    tf1h_support = tf1h.get("bias") == side or side_score(int(tf1h.get("score", 0) or 0), side) >= 18
-    tf4h_support = tf4h.get("bias") == side or side_score(int(tf4h.get("score", 0) or 0), side) >= 18
-    structure_support = structure.get("bias") == side or fresh_bos or fresh_sweep or fresh_choch
-    ict_support = ict.get("bias") == side and (ict.get("entry_ok") or abs(int(ict.get("score", 0) or 0)) >= 16 or ict_continuation)
-
-    # Do not override if price/liquidity model explicitly blocks this side.
-    if side in (liquidity.get("blocks") or []):
-        return False
-
-    cvd_against = cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 22
-    flow_against = flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 18
-    oi_against = derivatives.get("bias") == opposite(side) and abs(int(derivatives.get("score", 0) or 0)) >= 14
-    if sum([bool(cvd_against), bool(flow_against), bool(oi_against)]) >= 2:
-        return False
-
-    # Fresh BOS/sweep/ICT continuation is the cleanest unlock.
-    fresh_structure_unlock = bool(
-        (fresh_bos or fresh_sweep or fresh_choch or ict_continuation)
-        and (tf3_same or tf15_same)
-        and (structure_support or ict_support)
-    )
-
-    # Trend-continuation unlock: after a weak exit, allow re-entry if the trend
-    # clearly did not reverse and intraday direction is aligned again.
-    trend_continuation_unlock = bool(
-        regime_name in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]
-        and tf15_same
-        and (tf3_same or structure_support or ict_support)
-        and (tf1h_support or tf4h_support or structure_support)
-    )
-
-    # Normal continuation unlock is stricter: needs 15M + structure/ICT + 3M.
-    normal_continuation_unlock = bool(
-        tf15_same
-        and tf3_same
-        and (structure_support or ict_support)
-        and side_score(int(context.get("total_score", 0) or 0), side) >= 45
-    )
-
-    return bool(fresh_structure_unlock or trend_continuation_unlock or normal_continuation_unlock)
-
-
-def cooldown_override_reason(side, context):
-    """Short Ukrainian explanation when same-side cooldown is professionally unlocked."""
-    market_regime = context.get("market_regime") or {}
-    regime_name = market_regime.get("name") if isinstance(market_regime, dict) else market_regime
-    if str(regime_name or "").upper() in ["TREND", "PULLBACK", "IMPULSE", "NEWS_IMPULSE"]:
-        return f"після слабкого виходу {side} дозволено повторний вхід: тренд/структура продовжуються"
-    return f"після слабкого виходу {side} дозволено повторний вхід: зʼявився новий BOS/reclaim або ICT continuation"
-
 def analyze_failed_trade_reversal(state, context, max_age_minutes=150):
     """Detect a professional reversal setup after a failed trade.
 
@@ -8737,7 +8840,9 @@ def build_context(data, state=None):
     dual_speed_mtf = build_dual_speed_mtf(temp_context_for_regime)
     temp_context_for_regime["dual_speed_mtf"] = dual_speed_mtf
     setup_classifier = classify_setup(temp_context_for_regime, bias if bias in ["LONG", "SHORT"] else None)
-    reentry_cooldown = analyze_reentry_cooldown(state)
+    temp_context_for_regime["setup_classifier"] = setup_classifier
+    temp_context_for_regime["runtime_state"] = state
+    reentry_review = analyze_reentry_quality_review(state, temp_context_for_regime)
 
     # Reversal engine after a failed/weak trade. It is attached to context so
     # setup evaluation can show REVERSAL WATCH or allow a confirmed opposite entry.
@@ -8780,7 +8885,8 @@ def build_context(data, state=None):
         "market_regime": market_regime,
         "regime_engine": market_regime,
         "setup_classifier": setup_classifier,
-        "reentry_cooldown": reentry_cooldown,
+        "reentry_review": reentry_review,
+        "reentry_cooldown": reentry_review,  # compatibility alias
         "reversal_after_failed_trade": reversal_after_failed_trade,
         "pending_trigger_memory": (state or {}).get("pending_trigger") if isinstance(state, dict) else None,
         "opportunity_memory": (state or {}).get("opportunity_memory") if isinstance(state, dict) else None,
@@ -9850,6 +9956,9 @@ def _evaluate_new_setup_core(context):
     # Direction can be correct, but without a top setup the bot must stay in WATCH.
     setup_classifier = classify_setup(context, side)
     context["setup_classifier"] = setup_classifier
+    reentry_review = analyze_reentry_quality_review(context.get("runtime_state") or {}, context)
+    context["reentry_review"] = reentry_review
+    context["reentry_cooldown"] = reentry_review  # compatibility alias
     entry_risk_package = entry_risk_package_snapshot(
         context, side, {"setup_classifier": setup_classifier}
     )
@@ -9875,7 +9984,7 @@ def _evaluate_new_setup_core(context):
     regime_entry_action = str(regime_engine.get("entry_action") or "ALLOW").upper()
     regime_allowed_setups = set(regime_engine.get("allowed_setups") or [])
     regime_quality_cap = regime_engine.get("quality_cap")
-    reentry_cooldown = context.get("reentry_cooldown") or {}
+    reentry_review = context.get("reentry_review") or context.get("reentry_cooldown") or {}
     reversal_after_failed = context.get("reversal_after_failed_trade") or {}
     reversal_active_for_side = bool(reversal_after_failed.get("active") and reversal_after_failed.get("side") == side)
     reversal_entry_allowed = bool(reversal_active_for_side and reversal_after_failed.get("allow_entry"))
@@ -10085,22 +10194,15 @@ def _evaluate_new_setup_core(context):
     if plan_invalid:
         conflicts.append(getattr(plan, "validation_reason", "") or "технічний план не пройшов перевірку")
 
-    cooldown_active = bool(reentry_cooldown.get("active") and reentry_cooldown.get("side") == side)
-    cooldown_can_override = cooldown_override_ok(side, context)
-    cooldown_penalty = int(reentry_cooldown.get("quality_penalty") or 0) if cooldown_active else 0
-    cooldown_loop_guard = bool(
-        cooldown_active
-        and int(reentry_cooldown.get("same_side_entries_3h") or 0) >= int(reentry_cooldown.get("max_same_side_entries_3h") or 2)
-        and not cooldown_can_override
-    )
-    if cooldown_active and cooldown_can_override:
-        msg = cooldown_override_reason(side, context)
+    review_active = bool(reentry_review.get("active") and reentry_review.get("side") == side)
+    reentry_replay_guard = bool(review_active and reentry_review.get("block_reentry"))
+    reentry_rebuilt = bool(review_active and reentry_review.get("reset_confirmed"))
+    if reentry_rebuilt:
+        msg = reentry_review.get("reason") or "попередня невдача не впливає: сформовано новий незалежний сетап"
         if msg not in confirmations:
             confirmations.append(msg)
-    elif cooldown_active:
-        conflicts.append((reentry_cooldown.get("reason") or "після слабкого EXIT якість нового входу тимчасово знижена") + f"; штраф якості -{cooldown_penalty}")
-        if cooldown_loop_guard:
-            conflicts.append("ліміт повторних входів у цей напрям за 3 години — потрібен новий BOS/ICT для розблокування")
+    elif reentry_replay_guard:
+        conflicts.append(reentry_review.get("reason") or "повторюється та сама зламана теза без нового ринкового підтвердження")
 
     if context.get("low_liquidity_risk"):
         conflicts.append("низька ліквідність/тиха сесія — ризик спреду і slippage")
@@ -10261,7 +10363,7 @@ def _evaluate_new_setup_core(context):
         or (tf15_against and structure_against)
         or (strong_cvd_against and strong_oi_against)
         or (tf3_strong_against and strong_cvd_against)
-        or cooldown_loop_guard
+        or reentry_replay_guard
         or plan_invalid
     )
 
@@ -10370,19 +10472,9 @@ def _evaluate_new_setup_core(context):
     eq_adjust = entry_quality_adjustment(side, context, late_penalty)
     quality += int(eq_adjust.get("adjustment", 0) or 0)
 
-    # Soft same-direction cooldown after a weak exit.
-    # It no longer blocks the trade; it only lowers quality unless a fresh
-    # BOS/reclaim/ICT continuation overrides it. This prevents half-day silence
-    # while still reducing revenge entries after a bad close.
-    if cooldown_active and not cooldown_can_override and cooldown_penalty:
-        quality -= cooldown_penalty
-        previous_quality = int(reentry_cooldown.get("last_entry_quality") or 0)
-        # If the new setup is clearly better than the failed one, do not let the
-        # old loss suppress a materially stronger signal.
-        if previous_quality and quality >= previous_quality + 10:
-            quality += cooldown_penalty
-            cooldown_can_override = True
-            confirmations.append("повторний вхід дозволено: новий сетап значно якісніший за попередній")
+    # Previous trade outcome never subtracts points by time. The new setup keeps
+    # its independently calculated quality. Only an exact replay of the same
+    # broken thesis is stopped by the event-driven guard above.
 
     if calendar.get("active"):
         quality -= 8
@@ -10488,20 +10580,6 @@ def _evaluate_new_setup_core(context):
             "plan_geometry_gate": True,
             "show_wait_plan": False,
             "setup_classifier": setup_classifier,
-        }
-
-    if cooldown_loop_guard:
-        return {
-            "action": "WATCH",
-            "side": side,
-            "quality": min(quality, 58),
-            "title": f"ЧЕКАТИ — {side} НЕ ПОВТОРЮВАТИ СЕРІЮ",
-            "reason": "вже були повторні входи в цей напрям після слабкого виходу; потрібен новий BOS/reclaim або повний ICT continuation",
-            "plan": plan,
-            "confirmations": confirmations,
-            "conflicts": conflicts,
-            "reentry_cooldown": True,
-            "show_wait_plan": True,
         }
 
     if structure_gate_missing:
@@ -16761,11 +16839,9 @@ def _bridge_conflict_mentions_side(text, side):
 def _bridge_clean_conflicts(base_setup, context, final_side, lock_released=True):
     """Rebuild WATCH conflicts for the final Bridge side.
 
-    A Bridge may replace a SHORT/NEUTRAL base decision with a preserved LONG
-    candidate (or vice versa). Directional reasons produced for the old side
-    must never leak into the final message or quality explanation. Old lock and
-    geometry errors are also invalid after a confirmed release because the new
-    plan has not been rebuilt yet.
+    Opposite-side failed trades never contaminate the restored candidate. There
+    is no timed cooldown or automatic quality deduction. The only re-entry
+    warning retained is an event-driven exact replay of the same broken thesis.
     """
     base_setup = base_setup or {}
     context = context or {}
@@ -16778,9 +16854,19 @@ def _bridge_clean_conflicts(base_setup, context, final_side, lock_released=True)
         "локація нежиттєздатна до побудови rr: persistent",
         "не вдалося побудувати життєздатну технічну геометрію",
         "немає одного з топових сетапів",
+        "штраф якості",
+        "тимчасово знижена",
+        "ліміт повторних входів",
     ]
-    cooldown = context.get("reentry_cooldown") or {}
-    cooldown_side = cooldown.get("side") if cooldown.get("active") else None
+    review_context = dict(context)
+    classifier = dict((base_setup.get("setup_classifier") or context.get("setup_classifier") or {}))
+    classifier["side"] = final_side
+    review_context["setup_classifier"] = classifier
+    review = analyze_reentry_quality_review(context.get("runtime_state") or {}, review_context)
+    context["reentry_review"] = review
+    context["reentry_cooldown"] = review
+    review_side = review.get("side") if review.get("active") else None
+
     for item in raw:
         value = str(item or "").strip()
         lower = value.lower()
@@ -16788,23 +16874,14 @@ def _bridge_clean_conflicts(base_setup, context, final_side, lock_released=True)
             continue
         if lock_released and any(fragment in lower for fragment in stale_fragments):
             continue
-        if "після слабкого виходу" in lower:
-            # Same-direction cooldown only. Opposite failed trades must not
-            # lower or visually contaminate a Bridge candidate.
-            if cooldown_side != final_side:
-                continue
-            other = opposite(final_side)
-            if _bridge_conflict_mentions_side(value, other) and not _bridge_conflict_mentions_side(value, final_side):
+        if "після слабкого виходу" in lower or "попередній" in lower and "stop" in lower:
+            if review_side != final_side:
                 continue
         if value not in cleaned:
             cleaned.append(value)
 
-    # Re-add cooldown only when it genuinely belongs to the final side.
-    if cooldown_side == final_side and not cooldown_override_ok(final_side, context):
-        penalty = int(cooldown.get("quality_penalty", 0) or 0)
-        msg = (cooldown.get("reason") or "після слабкого виходу якість повторного входу тимчасово знижена")
-        if penalty:
-            msg += f"; штраф якості -{penalty}"
+    if review_side == final_side and review.get("block_reentry"):
+        msg = review.get("reason") or "повторюється та сама зламана теза без нового BOS/retest/ICT-перезбору"
         if msg not in cleaned:
             cleaned.append(msg)
     return cleaned
@@ -18059,10 +18136,28 @@ def main():
             })
             state["last_closed_trade"] = {
                 "side": active.side, "closed_at": iso_now(),
+                "entry": round_price(getattr(active, "entry", None)),
+                "stop_initial": round_price(getattr(active, "stop_initial", None)),
                 "close_price": round_price(result.get("exit_price") or context.get("price")),
                 "result_pct": closed_result_pct, "action": result.get("action"),
+                "entry_quality": int(getattr(active, "quality", 0) or 0),
                 "tp1_hit": bool(active.tp1_hit), "tp2_hit": bool(active.tp2_hit), "tp3_hit": bool(active.tp3_hit),
                 "setup_type": str(getattr(active, "setup_type", "") or ""),
+                "failure_context": {
+                    "price": round_price(context.get("price")),
+                    "regime_type": str(((context.get("regime_engine") or {}).get("regime_type") or "")),
+                    "structure_phase": str((context.get("structure") or {}).get("phase") or ""),
+                    "structure_bias": (context.get("structure") or {}).get("bias"),
+                    "ict_setup": str((context.get("ict") or {}).get("setup") or ""),
+                    "ict_bias": (context.get("ict") or {}).get("bias"),
+                    "tf3_bias": (context.get("tf3") or {}).get("bias"),
+                    "tf3_score": int((context.get("tf3") or {}).get("score", 0) or 0),
+                    "tf15_bias": (context.get("tf15") or {}).get("bias"),
+                    "tf15_score": int((context.get("tf15") or {}).get("score", 0) or 0),
+                    "flow_bias": (context.get("flow") or {}).get("bias"),
+                    "cvd_bias": (context.get("cvd") or {}).get("bias"),
+                    "entry_location": context.get("entry_location"),
+                },
             }
             if active.tp2_hit or active.tp3_hit or str(result.get("action")) == "TP3":
                 structure_now = context.get("structure") or {}
@@ -18200,7 +18295,8 @@ def main():
                 "total": context["news"]["total"],
             },
             "calendar": context["calendar"],
-            "reentry_cooldown": context.get("reentry_cooldown"),
+            "reentry_review": context.get("reentry_review"),
+            "reentry_cooldown": context.get("reentry_review") or context.get("reentry_cooldown"),  # compatibility alias
             "persistent_exhaustion_locks": context.get("persistent_exhaustion_locks") or (state.get("persistent_exhaustion_locks") if isinstance(state, dict) else None),
             "shock_lock": state.get("shock_lock") if isinstance(state, dict) else None,
             "setup_classifier": context.get("setup_classifier"),
