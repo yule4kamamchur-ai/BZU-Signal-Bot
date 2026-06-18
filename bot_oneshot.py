@@ -661,7 +661,7 @@ def load_state():
         state["active_trade"] = None
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
-    state["version"] = "pro-v3.5-single-file-clean-barrier-checkpoint"
+    state["version"] = "pro-v3.6-single-file-clean-range-entry-active-checkpoints"
     return state
 
 
@@ -673,7 +673,7 @@ def save_state(state):
 
 def load_journal():
     journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
-    journal["version"] = "pro-v3.5-single-file-clean-barrier-checkpoint"
+    journal["version"] = "pro-v3.6-single-file-clean-range-entry-active-checkpoints"
     if "trades" not in journal or not isinstance(journal["trades"], list):
         journal["trades"] = []
     if "signals" not in journal or not isinstance(journal["signals"], list):
@@ -5639,10 +5639,32 @@ def apply_post_shock_retest_gate_to_setup(setup, context):
         out = dict(setup); out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
         out["fresh_base_exhaustion_reset"] = True
         return out
-    if st == "CLOSED_15M_DIRECTION_FLIP" and _transition_priority_confirmed(setup, context) and shock_side in ["LONG", "SHORT"] and side != shock_side:
-        out = dict(setup); out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
-        out["shock_direction_isolation"] = True
-        return out
+    if st == "CLOSED_15M_DIRECTION_FLIP" and _transition_priority_confirmed(setup, context):
+        displacement = (
+            setup.get("closed_15m_displacement_override")
+            or context.get("closed_15m_displacement_override")
+            or {}
+        )
+        support, against = _fast_layer_counts(context, side)
+        full_retest = bool(
+            (displacement.get("full_confirmed") or displacement.get("confirmed"))
+            and displacement.get("retest")
+            and support >= 1
+            and against <= 1
+        )
+        # Opposite-side isolation remains valid. In addition, a full same-side
+        # 15M displacement + retest is itself a new independent market event and
+        # must be able to release an old shock lock.
+        if (shock_side in ["LONG", "SHORT"] and side != shock_side) or full_retest:
+            out = dict(setup)
+            out["action"] = "RISKY_ENTRY"
+            out["entry_level"] = "RISKY_ENTRY"
+            out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
+            out["shock_direction_isolation"] = bool(shock_side in ["LONG", "SHORT"] and side != shock_side)
+            out["post_shock_retest_confirmed"] = bool(full_retest)
+            out["shock_reset_confirmed"] = bool(full_retest)
+            out["transition_override_confirmed"] = True
+            return out
     if st in {"CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY"} and _transition_priority_confirmed(setup, context):
         return setup
     snap = post_shock_retest_snapshot(context, side)
@@ -6497,6 +6519,85 @@ def range_zone_segmentation_snapshot(context, side):
 
 
 
+
+def _range_checkpoint_entry_exception(setup, context, snap):
+    """Allow a professional early entry inside/through a 15M range.
+
+    Range boundaries are managed as active-trade checkpoints, not used as an
+    automatic veto, when a fresh independent setup already has:
+    - a valid technical plan and setup-specific RR;
+    - strong closed 3M direction or a recovered interval trigger;
+    - professional setup quality;
+    - no more than one genuinely adverse fast layer.
+
+    This is intentionally narrow: NO_CLEAN_SETUP, generic score-only bias,
+    late-chase setups and invalid geometry never receive the exception.
+    """
+    if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
+        return False
+
+    side = str(setup.get("side") or "").upper()
+    if side not in {"LONG", "SHORT"}:
+        return False
+
+    info = setup.get("setup_classifier") if isinstance(setup.get("setup_classifier"), dict) else {}
+    setup_type = str(info.get("type") or "").upper()
+    eligible = {
+        "SWEEP_REVERSAL",
+        "SWEEP_RECLAIM_EARLY_ENTRY",
+        "PULLBACK_CONTINUATION",
+        "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "TREND_IGNITION_ENTRY",
+        "BREAKOUT_ACCEPTANCE_FAST_ENTRY",
+        "CLOSED_15M_DIRECTION_FLIP",
+    }
+    if setup_type not in eligible:
+        return False
+    if info.get("block_entry") or not bool(info.get("entry_allowed", True)):
+        return False
+    if int(info.get("score", 0) or 0) < 76:
+        return False
+
+    # A late/chase classifier must never bypass range segmentation.
+    if setup_type in {"LATE_IMPULSE_CHASE", "NO_CLEAN_SETUP"}:
+        return False
+
+    plan = setup.get("plan")
+    if isinstance(plan, dict):
+        plan_valid = bool(plan.get("valid"))
+        rr1 = safe_float(plan.get("rr1"), 0.0) or 0.0
+    else:
+        plan_valid = bool(getattr(plan, "valid", False)) if plan is not None else False
+        rr1 = safe_float(getattr(plan, "rr1", 0.0), 0.0) or 0.0
+    if not plan_valid or rr1 < 1.0:
+        return False
+
+    tf3 = (context or {}).get("tf3") or {}
+    tf3_score = abs(int(tf3.get("score", 0) or 0))
+    tf3_same = bool(tf3.get("bias") == side and tf3_score >= 45)
+    recovered_interval = bool(
+        info.get("interval_rescue")
+        or str(tf3.get("state") or "").upper() == "INTERVAL_TRIGGER_RECOVERED"
+        or setup.get("pending_trigger_activated")
+        or setup.get("breakout_acceptance_fast_entry")
+    )
+
+    event = setup.get("entry_rescue_event") or (context or {}).get("entry_rescue_event") or {}
+    fresh_event = bool(
+        event.get("confirmed")
+        and event.get("side", side) == side
+        and event.get("type") in {"SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"}
+        and (event.get("follow_through") or event.get("post_confirmed") or int(event.get("score", 0) or 0) >= 76)
+    )
+
+    support, against = _fast_layer_counts(context, side)
+    micro_ok = bool(support >= 1 and against <= 1)
+
+    # Explicitly require a fresh trigger, not only a historical classifier label.
+    trigger_ok = bool(tf3_same or recovered_interval or fresh_event)
+    return bool(trigger_ok and micro_ok)
+
+
 def apply_range_midpoint_gate_to_setup(setup, context):
     if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
         return setup
@@ -6504,10 +6605,25 @@ def apply_range_midpoint_gate_to_setup(setup, context):
     setup_type = _entry_setup_type(setup)
     if not snap.get("active"):
         return setup
-    # Prime ICT in balance never bypasses zone segmentation. A generic rescue
-    # setup may not trade a range edge merely because an old/local 3M sweep was
-    # found; range entries must be classified explicitly as RANGE_EDGE_TRADE or
-    # be an accepted breakout/retest.
+
+    # Professional fresh setups with already valid geometry are not cancelled
+    # merely because a 15M boundary is ahead. The boundary remains inside the
+    # plan as an active-trade checkpoint. This prevents the old sequence:
+    # "wait before range boundary -> price breaks -> entry becomes late".
+    if _range_checkpoint_entry_exception(setup, context, snap):
+        out = dict(setup)
+        out["range_checkpoint_entry_exception"] = True
+        out["range_zone"] = snap.get("zone")
+        out["range_zone_block"] = False
+        out["confirmations"] = list(dict.fromkeys(
+            (out.get("confirmations") or [])
+            + ["15M range-рівні не блокують валідний ранній сетап; вони контролюються після відкриття угоди"]
+        ))
+        # Range entries remain risky unless an already stronger rule selected
+        # ENTRY. Do not upgrade action here.
+        return out
+
+    # Prime ICT in balance never bypasses zone segmentation by score alone.
     explicit_range_edge = setup_type == "RANGE_EDGE_TRADE"
     generic_edge_rescue = setup_type in {"SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "PULLBACK_CONTINUATION_FAST_ENTRY"}
     if snap.get("allowed") and (setup_type != "PRIME_ICT_LOCATION_OVERRIDE" or snap.get("correct_edge") or snap.get("accepted_breakout")):
@@ -18166,7 +18282,7 @@ def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
         "setup_classifier": None,
         "entry_level": "BLOCK",
         "reason_codes": [error_code],
-        "architecture_version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
+        "architecture_version": "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS",
     }
 
 
@@ -18220,7 +18336,7 @@ def _v3_normalize_setup(setup, context, source, audit=None):
                 raw.setdefault("reason_codes", []).append("CLASSIFIER_SIDE_NOT_CONFIRMED")
     raw["current_readiness"] = quality
     raw["candidate_source"] = str(source)
-    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT"
+    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS"
     raw["confirmations"] = _v3_clean_side_messages(raw.get("confirmations"), side)
     raw["conflicts"] = _v3_clean_side_messages(raw.get("conflicts"), side)
     raw.setdefault("reason_codes", [])
@@ -18516,6 +18632,8 @@ def _v3_canonical_lock_guard(context, setup, fixed_side, audit):
         or current.get("fresh_base_exhaustion_reset")
         or current.get("capitulation_recovery_confirmed")
         or current.get("fresh_base_reentry_confirmed")
+        or current.get("post_shock_retest_confirmed")
+        or current.get("shock_reset_confirmed")
     )
     current["canonical_lock_state"] = lock
     if lock["active"] and not reset_allowed:
@@ -18622,10 +18740,10 @@ def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
     current["current_readiness"] = current["quality"]
     current["selected_setup_score"] = _v3_setup_score(current)
     current["candidate_source"] = source
-    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT"
+    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS"
     current["decision_id"] = uuid.uuid4().hex[:12]
     current["decision_pipeline_v3"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
+        "version": "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS",
         "decision_id": current["decision_id"],
         "selected_source": source,
         "selected_side": fixed_side,
@@ -18727,7 +18845,7 @@ def evaluate_new_setup(context):
         )
         safe["pipeline_error"] = str(error)[:400]
         safe["decision_pipeline_v3"] = {
-            "version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
+            "version": "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS",
             "safe_mode": True,
             "audit": audit[-40:],
         }
@@ -19432,7 +19550,9 @@ def build_new_setup_message(context, setup):
         lines.append("")
         lines.append("<b>План:</b>")
         lines.append(plan_text(plan, multiline=True))
-        lines.extend(_plan_checkpoint_alert_lines(plan))
+        # Management checkpoints are intentionally hidden before and at entry.
+        # They become visible only in active-trade FOLLOW messages, where their
+        # status (PENDING/TESTING/ACCEPTED/REJECTED) can be evaluated correctly.
     else:
         reason_items = _wait_reason_items(setup, 3)
         if reason_items:
@@ -19442,8 +19562,9 @@ def build_new_setup_message(context, setup):
                 lower = x.lower()
                 icon = "⚠️" if any(key in lower for key in ["локаль", "4h", "1h", "потік", "cvd", "ризик", "новин", "очіку"] ) else "❌"
                 lines.append(f"{icon} {html.escape(x)}")
-        if plan and getattr(plan, "valid", False):
-            lines.extend(_plan_checkpoint_alert_lines(plan))
+        # Do not print management checkpoints in WATCH/NO_TRADE alerts.
+        # A checkpoint is a trade-management object and has no actionable status
+        # until a position is actually open.
         # WAIT/ЧЕКАТИ alerts stay compact: no activation and no tentative
         # entry/stop/TP plan until a real ENTRY/RISKY_ENTRY appears.
 
@@ -20203,7 +20324,7 @@ def manage_active_trade_v3(trade, context):
             "best_pct": max(0.0, signed_pct(before_side, safe_float(getattr(trade, "entry", 0), 0), safe_float(getattr(trade, "best_price", getattr(trade, "entry", 0)), 0))),
             "notes": [f"MANAGEMENT_SAFE_MODE: {str(error)[:240]}"],
             "institutional_execution": pre_execution,
-            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT", "safe_mode": True},
+            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS", "safe_mode": True},
         }
 
     if str(getattr(trade, "side", "") or "") != before_side:
@@ -20229,7 +20350,7 @@ def manage_active_trade_v3(trade, context):
     result.setdefault("current_pct", signed_pct(before_side, trade.entry, safe_float((context or {}).get("price"), trade.entry)))
     result.setdefault("best_pct", max(0.0, safe_float(result.get("current_pct"), 0.0) or 0.0))
     result["architecture_audit"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_5_BARRIER_CHECKPOINT_MANAGEMENT",
+        "version": "SINGLE_FILE_CLEAN_V3_6_RANGE_ENTRY_ACTIVE_ONLY_CHECKPOINTS",
         "side_immutable": str(getattr(trade, "side", "") or "") == before_side,
         "stop_never_loosened": not stop_restored,
         "active_trade_never_replaced_by_watch": True,
