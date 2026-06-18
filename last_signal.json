@@ -5,80 +5,6 @@
     {
       "type": "WATCH",
       "side": "SHORT",
-      "price": 78.94,
-      "quality": 62,
-      "reason": "не вдалося побудувати життєздатну технічну геометрію",
-      "setup_classifier": {
-        "type": "TREND_IGNITION_ENTRY",
-        "label": "🟢 Ранній старт тренду / пробій",
-        "side": "SHORT",
-        "score": 76,
-        "entry_allowed": true,
-        "block_entry": false,
-        "risk_mode": "RISKY",
-        "reason": "ранній старт тренду: свіжий BOS за напрямом без розтягнутого 3M імпульсу",
-        "quality_adjustment": 1,
-        "quality_cap": 79,
-        "force_risky": true,
-        "profile": {
-          "regime_override": "PULLBACK",
-          "tp1_atr_mult": 1.2,
-          "tp2_atr_mult": 2.35,
-          "tp3_tail_atr": 1.0,
-          "min_stop_pct": 0.82,
-          "max_stop_pct": 1.28,
-          "quality_adjustment": 1,
-          "quality_cap": 79,
-          "force_risky": true
-        },
-        "entry_rule": "ранній старт пробою після проторговки/мікро-BOS; тільки якщо це старт руху, а не кінець імпульсу",
-        "stop_rule": "стоп за 3M базу / мікро-swing, не всередині імпульсної свічки",
-        "tp_rule": "TP1 не ближче ризику, TP2/TP3 як продовження тренду або відкату",
-        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає продовження руху — швидке попередження на вихід",
-        "professional_override": true,
-        "trend_ignition": true,
-        "late_penalty": 0
-      },
-      "regime_engine": {
-        "name": "NEWS_IMPULSE",
-        "regime_type": "NEWS_SHOCK",
-        "label": "новинний шок",
-        "score": 78,
-        "confidence": 78,
-        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
-        "entry_action": "RISKY_ONLY",
-        "entry_quality_adjustment": -2,
-        "quality_cap": 79,
-        "hard_block": false,
-        "allowed_setups": [
-          "NEWS_IMPULSE",
-          "TREND_IGNITION_ENTRY",
-          "PRIME_ICT_LOCATION_OVERRIDE",
-          "PULLBACK_CONTINUATION_FAST_ENTRY"
-        ],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 6.79,
-          "move8_abs_pct": 1.619,
-          "slope15_abs_pct": 1.016,
-          "rsi15": 41.9,
-          "score_total_abs": 120,
-          "participation_same": 0,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "CONTEXT_ONLY"
-        },
-        "stable_count": 2,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NEWS_SHOCK"
-      },
-      "time": "2026-06-17T17:01:33.542252+00:00"
-    },
-    {
-      "type": "WATCH",
-      "side": "SHORT",
       "price": 78.99,
       "quality": 61,
       "reason": "не вдалося побудувати життєздатну технічну геометрію",
@@ -5178,39 +5104,103 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-18T10:02:41.343856+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 77.62,
+      "quality": 35,
+      "reason": "немає одного з топових сетапів для професійного входу",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "SHORT",
+        "score": 50,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 78,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.71,
+          "move8_abs_pct": 0.359,
+          "slope15_abs_pct": 0.111,
+          "rsi15": 45.3,
+          "score_total_abs": 64,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-18T10:15:59.234054+00:00"
     }
   ],
   "regime_memory": {
     "type": "TREND_EXPANSION",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-18T10:02:40.953074+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-18T10:15:58.744212+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T10:02:41.343879+00:00",
-    "price": 77.64,
-    "oi": 60138.13,
-    "cvd": 100213.0,
-    "cvd_time": "2026-06-18T10:02:41.343882+00:00",
-    "last_trade_ts": 1781776954479,
+    "time": "2026-06-18T10:15:59.234076+00:00",
+    "price": 77.62,
+    "oi": 60077.79,
+    "cvd": 103584.0,
+    "cvd_time": "2026-06-18T10:15:59.234079+00:00",
+    "last_trade_ts": 1781777741176,
     "bias": "SHORT",
-    "tech_score": -110,
-    "total_score": -112
+    "tech_score": -62,
+    "total_score": -64
   },
-  "updated_at": "2026-06-18T10:02:41.343886+00:00",
+  "updated_at": "2026-06-18T10:15:59.234083+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
     "missed": 8,
     "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY",
       "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "SHORT:CAPITULATION_RECOVERY": "MISSED",
-      "LONG:CAPITULATION_RECOVERY": "MISSED"
+      "SHORT:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -5303,7 +5293,7 @@
     "high": 78.11,
     "low": 77.47,
     "created_ts": 1781720100000,
-    "updated_ts": 1781775900000,
+    "updated_ts": 1781776800000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -5335,7 +5325,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781769420000,
-      "updated_ts": 1781776800000,
+      "updated_ts": 1781777700000,
       "origin_price": 77.85,
       "extreme_price": 77.88,
       "released_at": "2026-06-18T08:31:13.030021+00:00",
@@ -5348,7 +5338,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781773200000,
-      "updated_ts": 1781776800000,
+      "updated_ts": 1781777700000,
       "origin_price": 77.57,
       "extreme_price": 77.53,
       "released_at": "2026-06-18T09:01:50.821008+00:00",
@@ -5404,7 +5394,7 @@
       "published_at": "2026-06-18T07:41:35+00:00",
       "reference_price": 77.84,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T10:02:40.527892+00:00",
+      "last_seen_at": "2026-06-18T10:15:58.129742+00:00",
       "last_status": "CONFIRMED"
     },
     "ships surge out of hormuz as iran peace deal takes hold asian tankers european ships lead the rush gulf news": {
@@ -5412,7 +5402,7 @@
       "published_at": "2026-06-18T09:28:10+00:00",
       "reference_price": 77.83,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T10:02:40.527892+00:00",
+      "last_seen_at": "2026-06-18T10:15:58.129742+00:00",
       "last_status": "CONFIRMED"
     },
     "trump vows to reimpose us sanctions on russian crude soon as truce with iran takes shape msn": {
