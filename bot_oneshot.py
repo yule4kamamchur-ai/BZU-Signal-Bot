@@ -20,6 +20,8 @@ import requests
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
 # Version upgrade: Geometry Persistence & Missed Continuation Recovery.
+# Entry package: Persistent Exhaustion / Shock Release 2.0 / Directional News
+# Consensus / Strong ICT Override / Location Viability / Composite Exhaustion.
 # Core idea:
 # 1. Price action is the base.
 # 2. News is fuel/filter, not a standalone trade.
@@ -178,6 +180,22 @@ FRESH_BASE_EXHAUSTION_MAX_WIDTH_ATR15 = float(os.getenv("FRESH_BASE_EXHAUSTION_M
 RANGE_BOUNDARY_ROLLOVER_HOLD_BARS = int(os.getenv("RANGE_BOUNDARY_ROLLOVER_HOLD_BARS", "8") or 8)
 PRE_GATE_MEMORY_MIN_QUALITY = int(os.getenv("PRE_GATE_MEMORY_MIN_QUALITY", "57") or 57)
 RECOVERY_EXPIRY_MIN_FAST_SCORE = int(os.getenv("RECOVERY_EXPIRY_MIN_FAST_SCORE", "8") or 8)
+
+# Entry Consensus Guard Package.
+# These are not global anti-entry filters. They become hard only when several
+# independent signs agree that the market location is exhausted/late and no new
+# professional base, retest or ICT event has rebuilt the entry thesis.
+PERSISTENT_EXHAUSTION_RELOCK_ATR15 = float(os.getenv("PERSISTENT_EXHAUSTION_RELOCK_ATR15", "0.80") or 0.80)
+SHOCK_RELEASE_MIN_CONFIRMATIONS = int(os.getenv("SHOCK_RELEASE_MIN_CONFIRMATIONS", "2") or 2)
+SHOCK_RELEASE_FLOW_AGAINST_SCORE = int(os.getenv("SHOCK_RELEASE_FLOW_AGAINST_SCORE", "14") or 14)
+SHOCK_RELEASE_CVD_AGAINST_SCORE = int(os.getenv("SHOCK_RELEASE_CVD_AGAINST_SCORE", "16") or 16)
+NEWS_DIRECTIONAL_MIN_SCORE = int(os.getenv("NEWS_DIRECTIONAL_MIN_SCORE", "35") or 35)
+NEWS_OPPOSING_BLOCK_SCORE = int(os.getenv("NEWS_OPPOSING_BLOCK_SCORE", "35") or 35)
+COMPOSITE_EXHAUSTION_BLOCK_COUNT = int(os.getenv("COMPOSITE_EXHAUSTION_BLOCK_COUNT", "3") or 3)
+LOCATION_MAX_EMA_EXTENSION_ATR15 = float(os.getenv("LOCATION_MAX_EMA_EXTENSION_ATR15", "1.35") or 1.35)
+LOCATION_VERTICAL_3M_PCT = float(os.getenv("LOCATION_VERTICAL_3M_PCT", "0.55") or 0.55)
+LOCATION_MATURE_15M_MOVE_PCT = float(os.getenv("LOCATION_MATURE_15M_MOVE_PCT", "0.75") or 0.75)
+LOCATION_LOW_PARTICIPATION_RATIO = float(os.getenv("LOCATION_LOW_PARTICIPATION_RATIO", "0.18") or 0.18)
 
 # Geometry Persistence & Missed Continuation Recovery.
 # The package preserves a confirmed continuation when only stop/TP geometry is
@@ -4146,7 +4164,15 @@ def fresh_base_exhaustion_reset_snapshot(context, side):
     structure_bias = (context.get("structure") or {}).get("bias")
     regime = context.get("regime_engine") or {}
     regime_type = str(regime.get("regime_type") or regime.get("name") or "").upper()
-    active = bool(regime_type == "EXHAUSTION" or _entry_consensus_raw_post_shock_snapshot(context, side).get("active"))
+    runtime_state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else {}
+    persistent_store = runtime_state.get("persistent_exhaustion_locks") if isinstance(runtime_state, dict) else {}
+    persistent_lock = (persistent_store or {}).get(side) if isinstance(persistent_store, dict) else {}
+    persistent_active = bool(isinstance(persistent_lock, dict) and persistent_lock.get("status") == "LOCKED")
+    active = bool(
+        regime_type == "EXHAUSTION"
+        or _entry_consensus_raw_post_shock_snapshot(context, side).get("active")
+        or persistent_active
+    )
     best = None
     max_n = min(FRESH_BASE_EXHAUSTION_MAX_CANDLES, len(candles) - 2)
     for n in range(max_n, FRESH_BASE_EXHAUSTION_MIN_CANDLES - 1, -1):
@@ -4947,38 +4973,42 @@ def apply_capitulation_recovery_gate_to_setup(setup, context):
 
 
 def apply_final_same_side_exhaustion_lock(setup,context):
-    """Last lock, except when a genuinely new 6-12 candle base resets exhaustion."""
-    if not isinstance(setup,dict) or setup.get("action") not in ["ENTRY","RISKY_ENTRY"]:
+    """Final persistent same-side exhaustion lock.
+
+    The previous implementation looked only at the *current* regime name. This
+    version reads persistent state, so EXHAUSTION cannot disappear merely because
+    the next run is labelled TREND_EXPANSION or NEWS_SHOCK.
+    """
+    if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
         return setup
-    regime=(context or {}).get("regime_engine") or {}
-    regime_type=str(regime.get("regime_type") or regime.get("name") or "").upper()
-    exhausted_side=str(((regime.get("metrics") or {}).get("bias") or (context or {}).get("bias") or "")).upper()
-    side=setup.get("side")
-    if regime_type!="EXHAUSTION" or exhausted_side not in ["LONG","SHORT"] or side!=exhausted_side:
-        return setup
-    reset = setup.get("fresh_base_exhaustion_reset_snapshot") or (context or {}).get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, side)
-    if _exhaustion_reset_allowed(reset) and _entry_setup_type(setup) in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
-        out=dict(setup)
-        out["action"]="RISKY_ENTRY"; out["entry_level"]="RISKY_ENTRY"; out["entry_level_label"]=_entry_level_label("RISKY_ENTRY")
-        out["quality"]=min(79,max(RISKY_QUALITY_MIN,int(out.get("quality",0) or 0)))
-        out["fresh_base_exhaustion_reset"] = True
+    side = setup.get("side")
+    snap = persistent_exhaustion_lock_snapshot(context, side, setup)
+    if not snap.get("active"):
+        out = dict(setup)
+        if snap.get("release_reason"):
+            out["persistent_exhaustion_release"] = snap.get("release_reason")
+            if out.get("action") == "ENTRY":
+                out["action"] = "RISKY_ENTRY"
+                out["entry_level"] = "RISKY_ENTRY"
+                out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
+                out["quality"] = min(79, max(RISKY_QUALITY_MIN, int(out.get("quality", 0) or 0)))
         return out
-    shock=post_shock_retest_snapshot(context,side)
-    event=(context or {}).get("entry_rescue_event") or setup.get("entry_rescue_event") or {}
-    fresh_retest=bool(shock.get("retest_confirmed") and event.get("confirmed") and event.get("trigger_ts",0)>shock.get("extreme_ts",0))
-    if fresh_retest:
-        out=dict(setup)
-        out["action"]="RISKY_ENTRY"; out["entry_level"]="RISKY_ENTRY"; out["entry_level_label"]=_entry_level_label("RISKY_ENTRY")
-        out["quality"]=min(79,max(RISKY_QUALITY_MIN,int(out.get("quality",0) or 0)))
-        return out
-    out=dict(setup)
-    reason="виснажений рух у тому самому напрямку: потрібен новий pullback/retest або підтверджена 6-12 свічкова база після extreme"
-    out.update({"action":"WATCH","entry_level":"BLOCK","entry_level_label":_entry_level_label("BLOCK"),
-                "quality":min(55,int(out.get("quality",0) or 0)),"reason":reason,"same_side_exhaustion_lock":True})
-    out["conflicts"]=list(dict.fromkeys((out.get("conflicts") or [])+[reason]))
+
+    out = dict(setup)
+    reason = snap.get("reason") or (
+        "виснажений рух у тому самому напрямку збережений у памʼяті: "
+        "потрібен новий pullback/retest, окремий continuation/reversal сетап "
+        "або підтверджена 6-12 свічкова база"
+    )
+    out.update({
+        "action": "WATCH", "entry_level": "BLOCK",
+        "entry_level_label": _entry_level_label("BLOCK"),
+        "quality": min(55, int(out.get("quality", 0) or 0)),
+        "reason": reason, "same_side_exhaustion_lock": True,
+        "persistent_exhaustion_lock": snap, "show_wait_plan": False,
+    })
+    out["conflicts"] = list(dict.fromkeys((out.get("conflicts") or []) + [reason]))
     return out
-
-
 
 def _entry_setup_type(setup):
     return str(((setup or {}).get("setup_classifier") or {}).get("type") or "").upper()
@@ -5051,9 +5081,6 @@ def shock_lock_release_state_machine(context, side):
     event = next((e for e in events if e.get("confirmed") and e.get("anchor_confirmed")
                   and e.get("type") in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM", "SWEEP_RECLAIM"}
                   and (e.get("follow_through") or e.get("post_confirmed") or int(e.get("score", 0) or 0) >= 76)), None)
-    support, against = _fast_layer_counts(context, side)
-    flow_release = bool(support >= 1 and against <= 1)
-
     after = [c for c in candles if int(c.ts) > lock_extreme_ts]
     acceptance = False
     if len(after) >= SHOCK_LOCK_RELEASE_CLOSES:
@@ -5062,7 +5089,15 @@ def shock_lock_release_state_machine(context, side):
             acceptance = all(c.close > c.open for c in last) and last[-1].close > last[-2].high and last[-1].low > min(c.low for c in last[:-1])
         else:
             acceptance = all(c.close < c.open for c in last) and last[-1].close < last[-2].low and last[-1].high < max(c.high for c in last[:-1])
-    released = bool((event and flow_release) or (acceptance and flow_release))
+
+    # Shock Release 2.0. A single directional 3M layer is no longer enough.
+    # Require a structural anchor plus at least one independent confirmation,
+    # and never release while real flow/CVD is strongly adverse.
+    release_consensus = _shock_release_consensus_snapshot(
+        context, side, event=bool(event), acceptance=bool(acceptance)
+    )
+    flow_release = bool(release_consensus.get("allowed"))
+    released = bool(flow_release)
     if released:
         lock.update({"status": "RELEASED", "released_at": iso_now(), "released_extreme": lock.get("extreme_price")})
     elif len(after) > SHOCK_LOCK_MAX_15M_BARS and not raw_active:
@@ -5077,15 +5112,582 @@ def shock_lock_release_state_machine(context, side):
         "retest_confirmed": bool(released), "state": lock.get("status", "CLEAR"),
         "extreme_ts": lock_extreme_ts or extreme_ts, "event_fresh": bool(event),
         "acceptance_15m": bool(acceptance), "flow_release": bool(flow_release),
+        "release_consensus": release_consensus,
         "run_atr": raw.get("run_atr", 0), "run_pct": raw.get("run_pct", 0),
-        "reason": ("shock lock знято: новий ретест/прийняття + flow" if released
-                   else "після shock потрібен новий breakout-retest/reclaim або два 15M прийняття з flow; старий тригер не використовується"),
+        "reason": ("shock lock знято: структурний ретест/прийняття + щонайменше два незалежні підтвердження" if released
+                   else "після shock потрібен новий breakout-retest/reclaim або закрите 15M прийняття + друге незалежне підтвердження; flow/CVD не можуть бути сильно проти"),
     }
 
 
 def post_shock_retest_snapshot(context, side):
     return shock_lock_release_state_machine(context, side)
 
+
+# ==========================================================
+# ENTRY CONSENSUS GUARD PACKAGE
+# ==========================================================
+
+
+def _latest_context_ts(context):
+    """Best available closed-market timestamp for persistent state updates."""
+    for key in ["candles_3m", "candles_15m_closed", "candles_15m"]:
+        rows = list((context or {}).get(key) or [])
+        if rows:
+            try:
+                return int(getattr(rows[-1], "ts", 0) or 0)
+            except Exception:
+                pass
+    return int(now_utc().timestamp() * 1000)
+
+
+def _persistent_exhaustion_store(context):
+    state = (context or {}).get("runtime_state") if isinstance((context or {}).get("runtime_state"), dict) else None
+    if state is None:
+        return None, {}
+    store = state.get("persistent_exhaustion_locks")
+    if not isinstance(store, dict):
+        store = {}
+        state["persistent_exhaustion_locks"] = store
+    return state, store
+
+
+def _entry_event_is_professional(event):
+    event = event or {}
+    return bool(
+        event.get("confirmed")
+        and event.get("anchor_confirmed")
+        and event.get("type") in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM", "SWEEP_RECLAIM"}
+        and (
+            event.get("follow_through")
+            or event.get("post_confirmed")
+            or int(event.get("score", 0) or 0) >= 76
+        )
+    )
+
+
+def _fresh_professional_entry_evidence(context, side):
+    """Independent evidence that a late/exhausted move has built a new setup.
+
+    This is deliberately stricter than a directional 3M candle. It distinguishes
+    a new professional location from simple continuation of the old impulse.
+    """
+    context = context or {}
+    if side not in ["LONG", "SHORT"]:
+        return {
+            "professional_exception": False, "fresh_event": False,
+            "fresh_base": False, "micro_base_breakout": False,
+            "strong_ict_location": False,
+        }
+    event = context.get("entry_rescue_event") or best_15m_interval_entry_event(context, side) or {}
+    fresh_event = _entry_event_is_professional(event)
+    ict = context.get("ict") or {}
+    ict_setup = str(ict.get("setup") or "").upper()
+    strong_setups = {
+        "LONG": {"LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"},
+        "SHORT": {"LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"},
+    }
+    strong_ict_location = bool(
+        ict.get("bias") == side
+        and ict.get("entry_ok")
+        and ict_setup in strong_setups.get(side, set())
+        and not bool(ict.get("no_chase"))
+    )
+    try:
+        fresh_base_snapshot = fresh_base_exhaustion_reset_snapshot(context, side)
+    except Exception:
+        fresh_base_snapshot = {}
+    fresh_base = bool(_fresh_base_valid(fresh_base_snapshot))
+    try:
+        micro = _setup_micro_breakout_state(context, side)
+    except Exception:
+        micro = {}
+    micro_base_breakout = bool(
+        micro.get("micro_bos")
+        and micro.get("micro_base")
+        and safe_float(micro.get("extension_from_base_atr"), 99.0) <= 1.20
+    )
+    professional_exception = bool(
+        fresh_event or fresh_base or micro_base_breakout or strong_ict_location
+    )
+    return {
+        "professional_exception": professional_exception,
+        "fresh_event": fresh_event,
+        "event": event,
+        "fresh_base": fresh_base,
+        "fresh_base_snapshot": fresh_base_snapshot,
+        "micro_base_breakout": micro_base_breakout,
+        "micro": micro,
+        "strong_ict_location": strong_ict_location,
+    }
+
+
+def _shock_release_consensus_snapshot(context, side, event=False, acceptance=False):
+    """Shock Release 2.0: require two independent confirmations.
+
+    A directional 3M layer alone never releases the lock. A structural event or
+    closed-15M acceptance is required, plus at least one other independent layer,
+    while real flow/CVD must not be strongly adverse.
+    """
+    context = context or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    liquidity = context.get("liquidity") or {}
+    clusters = context.get("clusters") or {}
+    derivatives = context.get("derivatives") or {}
+
+    flow_support = bool(flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10)
+    cvd_support = bool(
+        cvd.get("confidence", "HIGH") != "LOW"
+        and cvd.get("bias") == side
+        and abs(int(cvd.get("score", 0) or 0)) >= 12
+    )
+    liquidity_support = bool(liquidity.get("bias") == side and abs(int(liquidity.get("score", 0) or 0)) >= 10)
+    clusters_support = bool(clusters.get("bias") == side and abs(int(clusters.get("score", 0) or 0)) >= 5)
+    derivatives_support = bool(derivatives.get("bias") == side and abs(int(derivatives.get("score", 0) or 0)) >= 10)
+
+    flow_against = bool(
+        flow.get("bias") == opposite(side)
+        and abs(int(flow.get("score", 0) or 0)) >= SHOCK_RELEASE_FLOW_AGAINST_SCORE
+    )
+    cvd_against = bool(
+        cvd.get("confidence", "HIGH") != "LOW"
+        and cvd.get("bias") == opposite(side)
+        and abs(int(cvd.get("score", 0) or 0)) >= SHOCK_RELEASE_CVD_AGAINST_SCORE
+    )
+    # Some feeds keep bias NEUTRAL but explicitly report dominant opposite trades.
+    cvd_state = str(cvd.get("state") or "").upper()
+    if side == "SHORT" and cvd_state in {"BUYERS_DOMINATE", "BULLISH_ABSORPTION"} and abs(int(cvd.get("score", 0) or 0)) >= 12:
+        cvd_against = True
+    if side == "LONG" and cvd_state in {"SELLERS_DOMINATE", "BEARISH_ABSORPTION"} and abs(int(cvd.get("score", 0) or 0)) >= 12:
+        cvd_against = True
+
+    confirmations = {
+        "professional_event": bool(event),
+        "closed_15m_acceptance": bool(acceptance),
+        "flow": flow_support,
+        "cvd": cvd_support,
+        "liquidity": liquidity_support,
+        "clusters": clusters_support,
+        "derivatives": derivatives_support,
+    }
+    confirmation_count = sum(bool(v) for v in confirmations.values())
+    structural_anchor = bool(event or acceptance)
+    allowed = bool(
+        structural_anchor
+        and confirmation_count >= SHOCK_RELEASE_MIN_CONFIRMATIONS
+        and not flow_against
+        and not cvd_against
+    )
+    return {
+        "allowed": allowed,
+        "confirmation_count": int(confirmation_count),
+        "confirmations": confirmations,
+        "structural_anchor": structural_anchor,
+        "strong_flow_against": flow_against,
+        "strong_cvd_against": cvd_against,
+    }
+
+
+def persistent_exhaustion_lock_snapshot(context, side, setup=None):
+    """Persist same-side EXHAUSTION/impulse risk across regime-name changes.
+
+    The lock is retired only by a genuinely new base, a Shock Release 2.0
+    retest/acceptance, or a separate continuation/reversal event with a fresh
+    professional anchor. Merely renaming EXHAUSTION to TREND_EXPANSION does not
+    erase the old market location.
+    """
+    context = context or {}
+    if side not in ["LONG", "SHORT"]:
+        return {"active": False, "allowed": True, "state": "CLEAR"}
+    state, store = _persistent_exhaustion_store(context)
+    lock = dict(store.get(side) or {}) if isinstance(store, dict) else {}
+    regime = context.get("regime_engine") or context.get("market_regime") or {}
+    regime_type = str(regime.get("regime_type") or regime.get("name") or "").upper()
+    regime_bias = str(((regime.get("metrics") or {}).get("bias") or context.get("bias") or "")).upper()
+    raw_shock = _entry_consensus_raw_post_shock_snapshot(context, side)
+    try:
+        detected_exhausted, detected_reason = detect_exhausted_move(side, context)
+    except Exception:
+        detected_exhausted, detected_reason = False, ""
+    current_exhausted = bool(
+        (regime_type == "EXHAUSTION" and regime_bias == side)
+        or raw_shock.get("active")
+        or detected_exhausted
+    )
+    price = safe_float(context.get("price"), None)
+    atr15 = safe_float(context.get("atr15"), None) or safe_float((context.get("tf15") or {}).get("atr"), None) or ((price or 90) * 0.006)
+    market_ts = _latest_context_ts(context)
+
+    if not lock and current_exhausted:
+        lock = {
+            "side": side, "status": "LOCKED", "origin_ts": market_ts,
+            "updated_ts": market_ts, "origin_price": round_price(price),
+            "extreme_price": round_price(price), "released_at": "",
+            "reason": detected_reason or raw_shock.get("reason") or "same-side impulse/exhaustion",
+        }
+    elif lock:
+        old_extreme = safe_float(lock.get("extreme_price"), price)
+        if price is not None:
+            if side == "LONG":
+                new_extreme = max(old_extreme if old_extreme is not None else price, price)
+            else:
+                new_extreme = min(old_extreme if old_extreme is not None else price, price)
+            lock["extreme_price"] = round_price(new_extreme)
+        lock["updated_ts"] = market_ts
+        if lock.get("status") == "RELEASED" and current_exhausted and price is not None:
+            released_extreme = safe_float(lock.get("released_extreme"), old_extreme)
+            material_extension = bool(
+                released_extreme is not None and (
+                    (side == "LONG" and price - released_extreme >= atr15 * PERSISTENT_EXHAUSTION_RELOCK_ATR15)
+                    or (side == "SHORT" and released_extreme - price >= atr15 * PERSISTENT_EXHAUSTION_RELOCK_ATR15)
+                )
+            )
+            if material_extension:
+                lock.update({
+                    "status": "LOCKED", "origin_ts": market_ts,
+                    "origin_price": round_price(price), "released_at": "",
+                    "reason": detected_reason or "нове матеріальне продовження після попереднього reset",
+                })
+
+    if not lock:
+        return {"active": False, "allowed": True, "state": "CLEAR", "current_exhausted": current_exhausted}
+
+    fresh_base = fresh_base_exhaustion_reset_snapshot(context, side)
+    shock = shock_lock_release_state_machine(context, side)
+    evidence = _fresh_professional_entry_evidence(context, side)
+    setup_type = _entry_setup_type(setup) if isinstance(setup, dict) else ""
+    separate_types = {
+        "FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT",
+        "PULLBACK_CONTINUATION", "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "TREND_CONTINUATION", "SWEEP_RECLAIM_EARLY_ENTRY", "SWEEP_REVERSAL",
+        "CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY",
+    }
+    separate_setup_release = bool(
+        setup_type in separate_types
+        and (evidence.get("fresh_event") or evidence.get("fresh_base") or evidence.get("micro_base_breakout"))
+    )
+    release_reason = ""
+    released = False
+    if lock.get("status") == "LOCKED":
+        if _exhaustion_reset_allowed(fresh_base):
+            released = True
+            release_reason = "нова 6-12 свічкова база скинула persistent EXHAUSTION"
+        elif shock.get("retest_confirmed"):
+            released = True
+            release_reason = "новий breakout-retest/reclaim пройшов Shock Release 2.0"
+        elif separate_setup_release:
+            released = True
+            release_reason = "окремий свіжий continuation/reversal сетап перебудував точку входу"
+        if released:
+            lock.update({
+                "status": "RELEASED", "released_at": iso_now(),
+                "released_ts": market_ts, "released_extreme": lock.get("extreme_price"),
+                "release_reason": release_reason,
+            })
+
+    if state is not None:
+        store[side] = lock
+        state["persistent_exhaustion_locks"] = store
+
+    active = lock.get("status") == "LOCKED"
+    return {
+        "active": active,
+        "allowed": not active,
+        "state": lock.get("status", "CLEAR"),
+        "side": side,
+        "current_exhausted": current_exhausted,
+        "fresh_base_reset": bool(_exhaustion_reset_allowed(fresh_base)),
+        "shock_retest": bool(shock.get("retest_confirmed")),
+        "separate_setup_release": separate_setup_release,
+        "release_reason": lock.get("release_reason", ""),
+        "lock": lock,
+        "reason": (
+            "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап"
+            if active else lock.get("release_reason", "")
+        ),
+    }
+
+
+def refresh_persistent_exhaustion_locks(context):
+    """Refresh both sides even on WATCH runs, so regime renaming cannot erase state."""
+    if not isinstance(context, dict):
+        return {}
+    snapshots = {}
+    for side in ["LONG", "SHORT"]:
+        snapshots[side] = persistent_exhaustion_lock_snapshot(context, side)
+    context["persistent_exhaustion_locks"] = snapshots
+    return snapshots
+
+
+def strong_ict_early_permission_snapshot(context, side):
+    """Only a full FVG/OB/sweep model or a fresh hold/retest may early-override."""
+    context = context or {}
+    ict = context.get("ict") or {}
+    setup = str(ict.get("setup") or "").upper()
+    strong = {
+        "LONG": {"LIQUIDITY_SWEEP_LONG", "BOS_LONG_RETRACE_FVG_OB", "DISCOUNT_FVG_OB_LONG"},
+        "SHORT": {"LIQUIDITY_SWEEP_SHORT", "BOS_SHORT_RETRACE_FVG_OB", "PREMIUM_FVG_OB_SHORT"},
+    }
+    weak_hold = {
+        "LONG": {"BOS_LONG_CONTINUATION_HOLD"},
+        "SHORT": {"BOS_SHORT_CONTINUATION_HOLD"},
+    }
+    evidence = _fresh_professional_entry_evidence(context, side)
+    strong_model = bool(
+        ict.get("bias") == side and ict.get("entry_ok")
+        and setup in strong.get(side, set()) and not ict.get("no_chase")
+    )
+    fresh_hold_retest = bool(
+        ict.get("bias") == side
+        and setup in weak_hold.get(side, set())
+        and evidence.get("fresh_event")
+    )
+    return {
+        "allowed": bool(strong_model or fresh_hold_retest),
+        "strong_model": strong_model,
+        "fresh_hold_retest": fresh_hold_retest,
+        "evidence": evidence,
+        "reason": (
+            "сильний FVG/OB/sweep або свіжий hold/retest підтверджено"
+            if (strong_model or fresh_hold_retest)
+            else "Early ICT override заборонено: часткового ICT-контексту недостатньо; потрібен сильний FVG/OB/sweep або свіжий hold/retest"
+        ),
+    }
+
+
+def composite_exhaustion_snapshot(context, side):
+    """Contextual hard block from 3+ independent late/exhaustion signs."""
+    context = context or {}
+    if side not in ["LONG", "SHORT"]:
+        return {"hard_block": False, "count": 0, "signals": []}
+    price = safe_float(context.get("price"), None)
+    tf15 = context.get("tf15") or {}
+    tf3 = context.get("tf3") or {}
+    structure = context.get("structure") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    clusters = context.get("clusters") or {}
+    liquidity = context.get("liquidity") or {}
+    atr15 = safe_float(context.get("atr15"), None) or safe_float(tf15.get("atr"), None) or ((price or 90) * 0.006)
+    ema20 = safe_float(tf15.get("ema20"), None)
+    distance_atr = abs(price - ema20) / max(atr15, 1e-9) if price is not None and ema20 is not None else 0.0
+    rsi15 = safe_float(tf15.get("rsi"), 50) or 50
+    fast = safe_float(tf3.get("fast_move_pct"), 0.0) or 0.0
+    drift = safe_float(tf3.get("drift_pct"), 0.0) or 0.0
+    move8 = safe_float(tf15.get("move_8_pct"), 0.0) or 0.0
+    signals = []
+
+    if distance_atr >= LOCATION_MAX_EMA_EXTENSION_ATR15:
+        signals.append(f"ціна розтягнута від EMA20 на {round(distance_atr, 2)} ATR")
+    if (side == "LONG" and rsi15 >= 70) or (side == "SHORT" and rsi15 <= 30):
+        signals.append(f"15M RSI екстремальний: {round(rsi15, 1)}")
+    vertical = bool(
+        (side == "LONG" and fast >= LOCATION_VERTICAL_3M_PCT)
+        or (side == "SHORT" and fast <= -LOCATION_VERTICAL_3M_PCT)
+    )
+    if vertical:
+        signals.append(f"3M вертикальний імпульс {round(fast, 3)}%")
+    mature = bool(
+        (side == "LONG" and move8 >= LOCATION_MATURE_15M_MOVE_PCT)
+        or (side == "SHORT" and move8 <= -LOCATION_MATURE_15M_MOVE_PCT)
+    )
+    if mature:
+        signals.append(f"15M рух уже зрілий: move8 {round(move8, 3)}%")
+    directional_drift = bool(
+        (side == "LONG" and drift >= 0.65)
+        or (side == "SHORT" and drift <= -0.65)
+    )
+    if directional_drift:
+        signals.append(f"3M drift уже відпрацював {round(drift, 3)}%")
+
+    flow_against = bool(flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 10)
+    cvd_state = str(cvd.get("state") or "").upper()
+    cvd_against = bool(
+        (cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 12)
+        or (side == "SHORT" and cvd_state in {"BUYERS_DOMINATE", "BULLISH_ABSORPTION"} and abs(int(cvd.get("score", 0) or 0)) >= 12)
+        or (side == "LONG" and cvd_state in {"SELLERS_DOMINATE", "BEARISH_ABSORPTION"} and abs(int(cvd.get("score", 0) or 0)) >= 12)
+    )
+    cluster_against = bool(clusters.get("bias") == opposite(side) or side_score(int(clusters.get("score", 0) or 0), side) <= -4)
+    if flow_against or cvd_against or cluster_against:
+        signals.append("flow/CVD/кластери показують поглинання проти входу")
+
+    recent_extreme = safe_float(structure.get("recent_high" if side == "LONG" else "recent_low"), None)
+    if price is not None and recent_extreme is not None:
+        near_extreme = bool(
+            (side == "LONG" and recent_extreme - price <= atr15 * 0.35)
+            or (side == "SHORT" and price - recent_extreme <= atr15 * 0.35)
+        )
+        if near_extreme:
+            signals.append("вхід біля/за свіжим локальним extreme")
+
+    liquidity_vol_ratio = safe_float(liquidity.get("vol_ratio"), 99.0)
+    tf3_vol_ratio = safe_float(tf3.get("vol_ratio"), 99.0)
+    vol_ratio = min(
+        99.0 if liquidity_vol_ratio is None else liquidity_vol_ratio,
+        99.0 if tf3_vol_ratio is None else tf3_vol_ratio,
+    )
+    if vertical and vol_ratio <= LOCATION_LOW_PARTICIPATION_RATIO:
+        signals.append(f"вертикальний рух на слабкій участі: vol ratio {round(vol_ratio, 2)}")
+
+    evidence = _fresh_professional_entry_evidence(context, side)
+    count = len(signals)
+    hard_reset = bool(
+        evidence.get("fresh_event")
+        or evidence.get("fresh_base")
+        or evidence.get("micro_base_breakout")
+    )
+    # A current strong ICT model can rescue a borderline 3-4 factor case, but
+    # it cannot legalize an extreme 5+ factor sell-low/buy-high location without
+    # an actual new event/base/retest.
+    ict_exception = bool(evidence.get("strong_ict_location") and count <= 4)
+    professional_exception = bool(hard_reset or ict_exception)
+    hard_block = bool(
+        count >= COMPOSITE_EXHAUSTION_BLOCK_COUNT
+        and not professional_exception
+    )
+    return {
+        "hard_block": hard_block,
+        "count": int(count),
+        "signals": signals,
+        "distance_atr": round(distance_atr, 3),
+        "rsi15": round(rsi15, 2),
+        "professional_exception": professional_exception,
+        "hard_reset_evidence": hard_reset,
+        "ict_exception": ict_exception,
+        "professional_evidence": evidence,
+        "reason": (
+            "композитна заборона: " + "; ".join(signals[:4])
+            if hard_block else
+            ("ознаки виснаження є, але новий професійний сетап перебудував локацію" if count >= COMPOSITE_EXHAUSTION_BLOCK_COUNT else "")
+        ),
+    }
+
+
+def news_directional_consensus_snapshot(context, side):
+    """Directional News Consensus plus mandatory retest for a late news entry."""
+    context = context or {}
+    news = context.get("news") or {}
+    calendar = context.get("calendar") or {}
+    regime = context.get("regime_engine") or context.get("market_regime") or {}
+    regime_name = str(regime.get("regime_type") or regime.get("name") or "").upper()
+    news_score = abs(int(news.get("score", 0) or 0))
+    active = bool(
+        calendar.get("active")
+        or regime_name in {"NEWS_IMPULSE", "NEWS_SHOCK"}
+        or news_score >= NEWS_DIRECTIONAL_MIN_SCORE
+    )
+    same = bool(news.get("bias") == side and news_score >= NEWS_DIRECTIONAL_MIN_SCORE)
+    opposing = bool(news.get("bias") == opposite(side) and news_score >= NEWS_OPPOSING_BLOCK_SCORE)
+    neutral_calendar = bool(calendar.get("active") and not same and not opposing)
+    evidence = _fresh_professional_entry_evidence(context, side)
+    shock = post_shock_retest_snapshot(context, side)
+    retest = bool(evidence.get("fresh_event") or shock.get("retest_confirmed"))
+    try:
+        late, _ = is_late_chase(side, context)
+    except Exception:
+        late = False
+    composite = composite_exhaustion_snapshot(context, side)
+    late = bool(late or composite.get("count", 0) >= COMPOSITE_EXHAUSTION_BLOCK_COUNT)
+    allowed = bool(
+        active and not opposing and (
+            (same and (not late or retest))
+            or (neutral_calendar and retest)
+        )
+    )
+    if not active:
+        reason = "новинний режим не активний"
+    elif opposing:
+        reason = "новини спрямовані проти цього NEWS_IMPULSE"
+    elif same and late and not retest:
+        reason = "новина підтримує напрям, але імпульс уже запізнілий — обовʼязковий post-news retest"
+    elif neutral_calendar and not retest:
+        reason = "календарна подія нейтральна за напрямом — потрібен підтверджений post-news retest"
+    elif not same and not neutral_calendar:
+        reason = "режим NEWS_SHOCK сам по собі не підтверджує напрям; потрібна новина у бік угоди або нейтральна подія + retest"
+    else:
+        reason = "напрям новин і post-news структура узгоджені"
+    return {
+        "active": active, "allowed": allowed, "directional_same": same,
+        "opposing": opposing, "neutral_calendar": neutral_calendar,
+        "retest_confirmed": retest, "late": late, "reason": reason,
+        "news_score": news_score, "news_bias": news.get("bias"),
+    }
+
+
+def location_viability_snapshot(context, side, setup=None):
+    """Location viability is checked before any RR/TP projection is accepted."""
+    context = context or {}
+    setup_info = ((setup or {}).get("setup_classifier") or context.get("setup_classifier") or {}) if isinstance(setup, dict) else (context.get("setup_classifier") or {})
+    setup_type = str(setup_info.get("type") or "").upper()
+    persistent = persistent_exhaustion_lock_snapshot(context, side, setup)
+    composite = composite_exhaustion_snapshot(context, side)
+    strong_ict = strong_ict_early_permission_snapshot(context, side)
+    news_consensus = news_directional_consensus_snapshot(context, side)
+    ict = context.get("ict") or {}
+    pd = str(ict.get("pd") or ict.get("pd_zone") or "").upper()
+    wrong_pd = bool((side == "LONG" and pd == "PREMIUM") or (side == "SHORT" and pd == "DISCOUNT"))
+    evidence = composite.get("professional_evidence") or _fresh_professional_entry_evidence(context, side)
+
+    reasons = []
+    if persistent.get("active"):
+        reasons.append(persistent.get("reason") or "persistent exhaustion lock")
+    if composite.get("hard_block"):
+        reasons.append(composite.get("reason") or "композитна заборона запізнілої локації")
+    if setup_type == "NEWS_IMPULSE" and news_consensus.get("active") and not news_consensus.get("allowed"):
+        reasons.append(news_consensus.get("reason"))
+    if setup_type == "PRIME_ICT_LOCATION_OVERRIDE" and not strong_ict.get("allowed"):
+        reasons.append(strong_ict.get("reason"))
+    if wrong_pd and composite.get("count", 0) >= 2 and not evidence.get("professional_exception"):
+        reasons.append("ціна знаходиться у неправильній premium/discount зоні для цього напрямку")
+
+    allowed = not reasons
+    return {
+        "allowed": allowed,
+        "reason": "; ".join(dict.fromkeys([r for r in reasons if r])),
+        "persistent_exhaustion": persistent,
+        "composite_exhaustion": composite,
+        "news_consensus": news_consensus,
+        "strong_ict_permission": strong_ict,
+        "wrong_pd": wrong_pd,
+        "setup_type": setup_type,
+    }
+
+
+def entry_risk_package_snapshot(context, side, setup=None):
+    location = location_viability_snapshot(context, side, setup)
+    return {
+        "allowed": bool(location.get("allowed")),
+        "reason": location.get("reason") or "",
+        "location_viability": location,
+        "composite_exhaustion": location.get("composite_exhaustion") or {},
+        "persistent_exhaustion": location.get("persistent_exhaustion") or {},
+        "news_consensus": location.get("news_consensus") or {},
+        "strong_ict_permission": location.get("strong_ict_permission") or {},
+    }
+
+
+def apply_entry_risk_package_gate(setup, context):
+    """Final non-bypassable gate for memory/rescue/override entry lanes."""
+    if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
+        return setup
+    side = setup.get("side")
+    snap = entry_risk_package_snapshot(context, side, setup)
+    if snap.get("allowed"):
+        out = dict(setup)
+        out["entry_risk_package"] = snap
+        return out
+    out = dict(setup)
+    reason = snap.get("reason") or "поточна локація не дає професійного входу"
+    out.update({
+        "action": "WATCH", "entry_level": "BLOCK",
+        "entry_level_label": _entry_level_label("BLOCK"),
+        "quality": min(55, int(out.get("quality", 0) or 0)),
+        "title": f"ЧЕКАТИ — {side} ЛОКАЦІЯ НЕЖИТТЄЗДАТНА",
+        "reason": reason, "entry_risk_package_block": True,
+        "show_wait_plan": False, "entry_risk_package": snap,
+    })
+    out["conflicts"] = list(dict.fromkeys((out.get("conflicts") or []) + [reason]))
+    return out
 
 
 
@@ -6131,14 +6733,23 @@ def classify_setup_candidate(context, side):
         and not exhausted
         and not (late and not ignition_from_base)
     )
+    strong_ict_permission = strong_ict_early_permission_snapshot(context, side)
+    professional_entry_evidence = _fresh_professional_entry_evidence(context, side)
+    composite_guard = composite_exhaustion_snapshot(context, side)
+    persistent_guard = persistent_exhaustion_lock_snapshot(context, side)
+    context["strong_ict_early_permission"] = strong_ict_permission
+    context["composite_exhaustion"] = composite_guard
+    context.setdefault("persistent_exhaustion_locks", {})[side] = persistent_guard
+
     prime_ict_override_ok = bool(
-        ict_same
-        and (ict_strong_zone or ict_entry_model)
-        and (correct_pd or sweep_same or ict_strong_zone)
+        strong_ict_permission.get("allowed")
+        and (correct_pd or sweep_same or professional_entry_evidence.get("fresh_event"))
         and structure_same
         and pressure_against_count < 2
         and not tf3_strong_against
         and not exhausted
+        and not composite_guard.get("hard_block")
+        and not persistent_guard.get("active")
         and late_penalty < 18
     )
     pullback_fast_entry_ok = bool(
@@ -6163,8 +6774,11 @@ def classify_setup_candidate(context, side):
     )
     professional_chase_exception = bool(
         (trend_ignition_ok or prime_ict_override_ok or range_breakout_ok or pullback_fast_entry_ok or sweep_reclaim_early_ok)
+        and professional_entry_evidence.get("professional_exception")
         and late_penalty < 18
         and not exhausted
+        and not composite_guard.get("hard_block")
+        and not persistent_guard.get("active")
     )
 
     def result(setup_type, score, entry_allowed, reason, block_entry=False, risk_mode="NORMAL", extra=None):
@@ -6211,15 +6825,31 @@ def classify_setup_candidate(context, side):
     # created a professional reason to enter from the current location:
     # fresh FVG/OB reaction, BOS hold/continuation-hold, or a real sweep/reclaim.
     # This keeps early ICT entries, but stops naked market entries after a vertical candle.
-    late_without_reset = bool(late and not (ict_strong_zone or ict_hold or sweep_same or professional_chase_exception))
-    if exhausted or late_without_reset or (late_penalty >= 15 and not professional_chase_exception) or (ict_same and ict.get("no_chase") and not ict_strong_zone and not ict_hold and not professional_chase_exception):
+    late_without_reset = bool(late and not (professional_entry_evidence.get("professional_exception") or professional_chase_exception))
+    package_block_reason = (
+        persistent_guard.get("reason") if persistent_guard.get("active") else
+        composite_guard.get("reason") if composite_guard.get("hard_block") else
+        exhausted_reason or late_reason or "рух уже розтягнутий — вхід буде доганянням; потрібен retest/FVG-OB/reclaim або проторговка"
+    )
+    if (
+        persistent_guard.get("active")
+        or composite_guard.get("hard_block")
+        or exhausted
+        or late_without_reset
+        or (late_penalty >= 15 and not professional_chase_exception)
+        or (ict_same and ict.get("no_chase") and not strong_ict_permission.get("allowed") and not professional_chase_exception)
+    ):
         return result(
             "LATE_IMPULSE_CHASE",
             30,
             False,
-            exhausted_reason or late_reason or "рух уже розтягнутий — вхід буде доганянням; потрібен retest/FVG-OB/reclaim або проторговка",
+            package_block_reason,
             block_entry=True,
-            extra={"late_penalty": int(late_penalty), "late_without_reset": late_without_reset},
+            extra={
+                "late_penalty": int(late_penalty), "late_without_reset": late_without_reset,
+                "composite_exhaustion": composite_guard,
+                "persistent_exhaustion": persistent_guard,
+            },
         )
 
     # 2) Range: only edge trades, except a confirmed compression breakout.
@@ -6296,12 +6926,23 @@ def classify_setup_candidate(context, side):
             extra={"professional_override": True, "pullback_fast_entry": True, "late_penalty": int(late_penalty)},
         )
 
-    # 7) News impulse is allowed only with structure/timing, not as a naked news chase.
-    news_active = bool(calendar.get("active") or regime_name == "NEWS_IMPULSE" or (news.get("bias") == side and abs(int(news.get("score", 0) or 0)) >= 35))
-    if news_active:
-        entry_allowed = bool(tf3_same and (structure_same or ict_entry_model or tf15_same) and pressure_against_count < 2)
+    # 7) Directional News Consensus. NEWS_SHOCK is context, not directional proof.
+    news_consensus = news_directional_consensus_snapshot(context, side)
+    if news_consensus.get("active"):
+        entry_allowed = bool(
+            news_consensus.get("allowed")
+            and tf3_same
+            and (structure_same or ict_entry_model or tf15_same)
+            and pressure_against_count < 2
+        )
         score = 56 + (12 if tf3_same else 0) + (8 if structure_same else 0) + (5 if pressure_same else 0)
-        return result("NEWS_IMPULSE", score, entry_allowed, "новинний драйвер є, але вхід тільки після 3M/структурного підтвердження" if not entry_allowed else "новина + структура/3M підтримують імпульс", risk_mode="RISKY")
+        return result(
+            "NEWS_IMPULSE", score, entry_allowed,
+            news_consensus.get("reason"),
+            block_entry=not entry_allowed,
+            risk_mode="RISKY",
+            extra={"news_consensus": news_consensus, "mandatory_retest": bool(news_consensus.get("late"))},
+        )
 
     # 4) Sweep reversal: priority over generic countertrend, because it is a real ICT model.
     if sweep_same or (ict_setup in ["LIQUIDITY_SWEEP_LONG", "LIQUIDITY_SWEEP_SHORT"] and ict_same):
@@ -8574,6 +9215,34 @@ def make_plan(side, context):
     setup_type = str(setup_info.get("type") or "NO_CLEAN_SETUP")
     setup_label_text = setup_info.get("label") or _setup_label(setup_type)
 
+    # Location Viability is evaluated BEFORE RR. A mathematically attractive
+    # projected TP may not legalize selling an exhausted low or buying an
+    # exhausted high without a new base/retest/professional ICT anchor.
+    location_viability = location_viability_snapshot(
+        context, side, {"setup_classifier": setup_info}
+    )
+    context["location_viability"] = location_viability
+    if not location_viability.get("allowed"):
+        base_price = float(price or 0.0)
+        location_reason = location_viability.get("reason") or "поточна локація не дає життєздатного технічного входу"
+        return TradePlan(
+            entry=round_price(base_price), stop=round_price(base_price),
+            tp1=round_price(base_price), tp2=round_price(base_price), tp3=round_price(base_price),
+            risk_pct=0.0, rr1=0, rr2=0, rr3=0,
+            invalidation=(
+                f"Локація заблокована до нової бази/retest. Сетап: {setup_label_text}. "
+                f"Причина: {location_reason}"
+            ),
+            valid=False,
+            validation_reason="локація нежиттєздатна до побудови RR: " + location_reason,
+            technical_stop_basis="", technical_tp1_basis="",
+            technical_tp2_basis="", technical_tp3_basis="",
+            geometry_mode="LOCATION_VIABILITY_FIRST", technical_rr_target=TARGET_RR1_ENTRY,
+            better_entry=0.0, geometry_grade="INVALID_LOCATION",
+            barrier_mode="LOCATION_BLOCK", preferred_geometry_met=False,
+            breakout_gates=[],
+        )
+
     geometry = _select_adaptive_technical_geometry(side, context, atr15, setup_type)
     if geometry is None:
         geometry = _select_geometry_candidate_recovery(side, context, atr15, setup_type)
@@ -8857,6 +9526,10 @@ def _evaluate_new_setup_core(context):
     # Direction can be correct, but without a top setup the bot must stay in WATCH.
     setup_classifier = classify_setup(context, side)
     context["setup_classifier"] = setup_classifier
+    entry_risk_package = entry_risk_package_snapshot(
+        context, side, {"setup_classifier": setup_classifier}
+    )
+    context["entry_risk_package"] = entry_risk_package
 
     # Geometry memory is captured before make_plan, so a confirmed continuation
     # is not lost merely because the first stop/TP pairing is invalid.
@@ -9188,10 +9861,17 @@ def _evaluate_new_setup_core(context):
         and setup_classifier.get("entry_allowed")
         and not setup_classifier.get("block_entry")
     )
+    strong_ict_permission_for_entry = strong_ict_early_permission_snapshot(context, side)
+    prime_override_safe = bool(
+        setup_classifier.get("type") != "PRIME_ICT_LOCATION_OVERRIDE"
+        or strong_ict_permission_for_entry.get("allowed")
+    )
     classifier_professional_override = bool(
         setup_classifier.get("type") in professional_override_types
         and setup_classifier.get("entry_allowed")
         and setup_classifier.get("professional_override")
+        and prime_override_safe
+        and entry_risk_package.get("allowed")
     )
 
     if ict_strong_model:
@@ -9251,6 +9931,7 @@ def _evaluate_new_setup_core(context):
 
     hard_conflict = (
         regime_hard_block
+        or not entry_risk_package.get("allowed")
         or side in liquidity.get("blocks", [])
         or ict_against
         or (tf15_against and structure_against)
@@ -9273,14 +9954,15 @@ def _evaluate_new_setup_core(context):
     # 3M may be neutral/weak during the retest; it must simply not be strongly
     # against together with strong CVD pressure.
     early_ict_entry_ok = bool(
-        ict_same
+        strong_ict_permission_for_entry.get("allowed")
+        and ict_same
         and structure_same
         and (setup_classifier.get("entry_allowed") or setup_classifier.get("prime_ict_override"))
         and setup_classifier.get("type") != "TREND_CONTINUATION"
-        # Early entry does not require a perfect 15M close, but it must not be
-        # completely without timing. Either 3M already agrees, or ICT must be a
-        # strong location model while 3M is not strongly against.
+        # A partial ICT context + directional 3M is no longer enough. Early
+        # override requires a full FVG/OB/sweep model or a fresh hold/retest.
         and (tf3_same or (ict_strong_model and not tf3_strong_against))
+        and entry_risk_package.get("allowed")
         and not ict_against
         and not hard_conflict
         and late_penalty < 15
@@ -9547,8 +10229,16 @@ def _evaluate_new_setup_core(context):
     # state is WATCH until a pullback/protorgovka/new FVG-OB retest appears.
     # This prevents signals like: "anti-chase -18, не доганяти" +
     # "РИЗИКОВАНИЙ ВХІД SHORT" in the same message.
-    heavy_chase = bool(late_penalty >= 15)
-    professional_chase_exception = bool(classifier_professional_override and late_penalty < 18 and not exhausted)
+    composite_guard_for_entry = entry_risk_package.get("composite_exhaustion") or {}
+    persistent_guard_for_entry = entry_risk_package.get("persistent_exhaustion") or {}
+    heavy_chase = bool(late_penalty >= 15 or composite_guard_for_entry.get("hard_block"))
+    professional_chase_exception = bool(
+        classifier_professional_override
+        and entry_risk_package.get("allowed")
+        and not persistent_guard_for_entry.get("active")
+        and late_penalty < 18
+        and not exhausted
+    )
     chase_reason = late_reason or "рух уже розтягнутий — не доганяти; чекати відкат/проторговку або новий ICT/FVG/OB retest"
     if heavy_chase and not professional_chase_exception:
         return {
@@ -15550,6 +16240,9 @@ def update_opportunity_coverage(state, context, setup=None, active_trade=None):
 
 
 def evaluate_new_setup(context):
+    # Persist exhaustion/impulse state even when the current run returns WATCH.
+    # This must happen before classification so a regime-name change cannot erase it.
+    refresh_persistent_exhaustion_locks(context)
     setup = _evaluate_new_setup_core(context)
     setup = expire_recovery_thesis_if_invalid(context, setup)
     if isinstance(setup, dict):
@@ -15582,6 +16275,7 @@ def evaluate_new_setup(context):
             ("REGIME_WHITELIST_GATE", apply_regime_allowed_setup_whitelist),
             ("PRIME_ICT_HTF_CONFLICT_CAP", apply_prime_ict_htf_conflict_cap),
             ("PRIME_ICT_ADVERSE_FLOW_GATE", apply_adverse_flow_veto_prime_ict),
+            ("ENTRY_RISK_PACKAGE_GATE", apply_entry_risk_package_gate),
             ("ENTRY_LEVEL_GATE", apply_entry_level_gate),
         ]
         for gate_name, gate_func in stages:
@@ -15650,7 +16344,7 @@ def new_active_trade(setup):
             + (["SETUP_CLASSIFIER: " + str((setup.get("setup_classifier") or {}).get("type"))] if setup.get("setup_classifier") else [])
             + (["REGIME_TYPE: " + str((setup.get("regime_engine") or {}).get("regime_type") or (setup.get("regime_engine") or {}).get("name"))] if setup.get("regime_engine") else [])
             + (["LIFECYCLE_STAGE: " + str((setup.get("lifecycle") or {}).get("stage"))] if setup.get("lifecycle") else [])
-            + (["ENGINE_VERSION: STATE_TRANSITION_MEMORY_RESET"])
+            + (["ENGINE_VERSION: GEOMETRY_PERSISTENCE_ENTRY_CONSENSUS_GUARDS"])
             + (["POST_REJECTION_RECOVERY"] if (setup.get("post_rejection_recovery") or {}).get("active") else [])
             + (["RECOVERY_TRIGGER_LEVEL: " + str((setup.get("post_rejection_recovery") or {}).get("trigger_level"))] if (setup.get("post_rejection_recovery") or {}).get("active") else [])
             + ([setup.get("reason", "")])
