@@ -5,46 +5,6 @@
     {
       "type": "NO_TRADE",
       "side": "NEUTRAL",
-      "price": 78.96,
-      "quality": 45,
-      "reason": "перевага нечітка, немає професійного входу",
-      "setup_classifier": null,
-      "regime_engine": {
-        "name": "NORMAL",
-        "regime_type": "NORMAL",
-        "label": "звичайний intraday режим",
-        "score": 50,
-        "confidence": 50,
-        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
-        "entry_action": "ALLOW",
-        "entry_quality_adjustment": 0,
-        "quality_cap": null,
-        "hard_block": false,
-        "allowed_setups": [],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 8.18,
-          "move8_abs_pct": 0.051,
-          "slope15_abs_pct": 0.172,
-          "rsi15": 45.0,
-          "score_total_abs": 15,
-          "participation_same": 1,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG",
-          "range_edge": false
-        },
-        "stable_count": 0,
-        "pending_count": 1,
-        "is_stable": false,
-        "previous_regime_type": "NEWS_SHOCK"
-      },
-      "time": "2026-06-17T19:01:21.718386+00:00"
-    },
-    {
-      "type": "NO_TRADE",
-      "side": "NEUTRAL",
       "price": 78.85,
       "quality": 39,
       "reason": "перевага нечітка, немає професійного входу",
@@ -5297,27 +5257,96 @@
         "previous_regime_type": "REVERSAL_BUILDUP"
       },
       "time": "2026-06-18T12:01:24.853560+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.32,
+      "quality": 55,
+      "reason": "не вдалося побудувати життєздатну технічну геометрію",
+      "setup_classifier": {
+        "type": "COUNTERTREND_SCALP",
+        "label": "🟠 Скальп проти тренду",
+        "side": "LONG",
+        "score": 73,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "не вдалося побудувати життєздатну технічну геометрію",
+        "quality_adjustment": -3,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.8,
+          "tp2_pct": 1.22,
+          "tp3_pct": 2.0,
+          "min_stop_pct": 0.7,
+          "max_stop_pct": 1.05,
+          "quality_adjustment": -3,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "entry_rule": "тільки сильне зняття ліквідності/CHOCH + 3M розворот + CVD/потік не проти",
+        "stop_rule": "короткий стоп за екстремум, без усереднення",
+        "tp_rule": "швидший TP1, TP2 тільки якщо структура розвертається",
+        "management_rule": "агресивний контроль; якщо немає швидкого підтвердження — вихід",
+        "bridge_saved_score": 73,
+        "bridge_current_readiness": 61
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 3.86,
+          "move8_abs_pct": 1.121,
+          "slope15_abs_pct": 0.909,
+          "rsi15": 57.7,
+          "score_total_abs": 12,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_FVG_OB_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-18T12:06:58.551334+00:00"
     }
   ],
   "regime_memory": {
     "type": "NORMAL",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-18T12:01:24.373418+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-18T12:06:58.090308+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T12:01:24.853580+00:00",
-    "price": 78.31,
-    "oi": 60923.43,
-    "cvd": 91295.0,
-    "cvd_time": "2026-06-18T12:01:24.853583+00:00",
-    "last_trade_ts": 1781784026485,
+    "time": "2026-06-18T12:06:58.551362+00:00",
+    "price": 78.32,
+    "oi": 61085.7,
+    "cvd": 53564.0,
+    "cvd_time": "2026-06-18T12:06:58.551365+00:00",
+    "last_trade_ts": 1781784406093,
     "bias": "NEUTRAL",
-    "tech_score": 0,
-    "total_score": 3
+    "tech_score": -10,
+    "total_score": -12
   },
-  "updated_at": "2026-06-18T12:01:24.853586+00:00",
+  "updated_at": "2026-06-18T12:06:58.551369+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -5486,7 +5515,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781779500000,
-      "updated_ts": 1781784000000,
+      "updated_ts": 1781784360000,
       "origin_price": 78.59,
       "extreme_price": 78.59,
       "released_at": "2026-06-18T11:58:07.628265+00:00",
@@ -5499,7 +5528,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781773200000,
-      "updated_ts": 1781784000000,
+      "updated_ts": 1781784360000,
       "origin_price": 77.57,
       "extreme_price": 77.53,
       "released_at": "2026-06-18T09:01:50.821008+00:00",
@@ -5579,7 +5608,7 @@
       "published_at": "2026-06-18T10:05:05+00:00",
       "reference_price": 77.68,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T12:01:24.101618+00:00",
+      "last_seen_at": "2026-06-18T12:06:57.809701+00:00",
       "last_status": "REJECTED"
     },
     "sensex nifty rally on us iran peace deal optimism falling crude prices rediff": {
@@ -5587,8 +5616,16 @@
       "published_at": "2026-06-18T11:21:43+00:00",
       "reference_price": 78.49,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T12:01:24.101618+00:00",
-      "last_status": "UNRESOLVED"
+      "last_seen_at": "2026-06-18T12:06:57.809701+00:00",
+      "last_status": "CONFIRMED"
+    },
+    "oman joins iran saudi arabia united arab emirates iraq kuwait and qatar in massive ninety three million barrel oil release as strait of hormuz reopens reshaping china india south k": {
+      "first_seen_at": "2026-06-18T12:06:57.809701+00:00",
+      "published_at": "2026-06-18T12:01:54+00:00",
+      "reference_price": 78.4,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-18T12:06:57.809701+00:00",
+      "last_status": "FRESH"
     }
   },
   "lock_release_opportunities": {
@@ -5598,7 +5635,7 @@
       "source": "POST_EVALUATION",
       "gate_name": "",
       "created_at": "2026-06-18T10:31:16.623355+00:00",
-      "updated_at": "2026-06-18T12:01:24.852702+00:00",
+      "updated_at": "2026-06-18T12:06:58.550460+00:00",
       "ttl_minutes": 105,
       "side": "LONG",
       "setup_type": "COUNTERTREND_SCALP",
@@ -5634,8 +5671,8 @@
         "bridge_current_readiness": 61
       },
       "quality": 73,
-      "origin_price": 78.31,
-      "trigger_level": 78.31,
+      "origin_price": 78.32,
+      "trigger_level": 78.32,
       "trigger_ts": 0,
       "trigger_type": null,
       "invalidation": null,
