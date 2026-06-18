@@ -19,7 +19,7 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
-# Version upgrade: Opportunity Persistence + Tiered Entry package.
+# Version upgrade: Geometry Persistence & Missed Continuation Recovery.
 # Core idea:
 # 1. Price action is the base.
 # 2. News is fuel/filter, not a standalone trade.
@@ -178,6 +178,27 @@ FRESH_BASE_EXHAUSTION_MAX_WIDTH_ATR15 = float(os.getenv("FRESH_BASE_EXHAUSTION_M
 RANGE_BOUNDARY_ROLLOVER_HOLD_BARS = int(os.getenv("RANGE_BOUNDARY_ROLLOVER_HOLD_BARS", "8") or 8)
 PRE_GATE_MEMORY_MIN_QUALITY = int(os.getenv("PRE_GATE_MEMORY_MIN_QUALITY", "57") or 57)
 RECOVERY_EXPIRY_MIN_FAST_SCORE = int(os.getenv("RECOVERY_EXPIRY_MIN_FAST_SCORE", "8") or 8)
+
+# Geometry Persistence & Missed Continuation Recovery.
+# The package preserves a confirmed continuation when only stop/TP geometry is
+# missing, retries real 15M/ICT invalidations on subsequent runs, and never
+# converts a late move near the target into a chase entry.
+GEOMETRY_PERSISTENCE_TTL_MINUTES = int(os.getenv("GEOMETRY_PERSISTENCE_TTL_MINUTES", "55") or 55)
+GEOMETRY_ESCALATION_FAILURES = int(os.getenv("GEOMETRY_ESCALATION_FAILURES", "2") or 2)
+GEOMETRY_RECOVERY_MIN_RR1 = float(os.getenv("GEOMETRY_RECOVERY_MIN_RR1", "1.20") or 1.20)
+GEOMETRY_RECOVERY_MIN_ATR15 = float(os.getenv("GEOMETRY_RECOVERY_MIN_ATR15", "0.90") or 0.90)
+GEOMETRY_RECOVERY_MIN_PCT = float(os.getenv("GEOMETRY_RECOVERY_MIN_PCT", "0.72") or 0.72)
+GEOMETRY_RECOVERY_ESCALATED_MIN_RR1 = float(os.getenv("GEOMETRY_RECOVERY_ESCALATED_MIN_RR1", "1.10") or 1.10)
+GEOMETRY_RECOVERY_ESCALATED_MIN_ATR15 = float(os.getenv("GEOMETRY_RECOVERY_ESCALATED_MIN_ATR15", "0.80") or 0.80)
+GEOMETRY_RECOVERY_ESCALATED_MIN_PCT = float(os.getenv("GEOMETRY_RECOVERY_ESCALATED_MIN_PCT", "0.60") or 0.60)
+GEOMETRY_RECOVERY_MAX_STOP_ATR15 = float(os.getenv("GEOMETRY_RECOVERY_MAX_STOP_ATR15", "2.40") or 2.40)
+GEOMETRY_RECOVERY_MAX_EXTENSION_ATR15 = float(os.getenv("GEOMETRY_RECOVERY_MAX_EXTENSION_ATR15", "0.72") or 0.72)
+PRIME_ICT_HTF_CONFLICT_QUALITY_CAP = int(os.getenv("PRIME_ICT_HTF_CONFLICT_QUALITY_CAP", "66") or 66)
+GEOMETRY_PERSISTENCE_SETUP_TYPES = {
+    "TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "PULLBACK_CONTINUATION",
+    "PULLBACK_CONTINUATION_FAST_ENTRY", "FRESH_BASE_CONTINUATION_REENTRY",
+    "RANGE_COMPRESSION_BREAKOUT",
+}
 OPPORTUNITY_MEMORY_SETUP_TYPES = {
     "CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY",
     "TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "PULLBACK_CONTINUATION",
@@ -5151,6 +5172,53 @@ def apply_adverse_flow_veto_prime_ict(setup, context):
 
 
 
+
+def apply_prime_ict_htf_conflict_cap(setup, context):
+    """Prevent a local Prime ICT zone from overruling a strong 4H conflict.
+
+    A fresh 3M sweep/reclaim or breakout-retest can still unlock a risky entry;
+    otherwise 4H strongly against + weak 3M + adverse sweep/premium location is
+    a WATCH_TRIGGER, not a market entry.
+    """
+    if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
+        return setup
+    if _entry_setup_type(setup) != "PRIME_ICT_LOCATION_OVERRIDE":
+        return setup
+    side = setup.get("side")
+    tf4h = (context or {}).get("tf4h") or {}
+    tf3 = (context or {}).get("tf3") or {}
+    ict = (context or {}).get("ict") or {}
+    structure = (context or {}).get("structure") or {}
+    liquidity = (context or {}).get("liquidity") or {}
+    event = setup.get("entry_rescue_event") or (context or {}).get("entry_rescue_event") or {}
+    htf_against = side_score(int(tf4h.get("score", 0) or 0), side) <= -35
+    tf3_confirmed = bool(tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 24)
+    pd = str(ict.get("premium_discount") or "").upper()
+    phase = str(structure.get("phase") or "").upper()
+    liquidity_event = str(liquidity.get("event") or "").upper()
+    adverse_location = bool(
+        side in (liquidity.get("blocks") or [])
+        or (side == "LONG" and (pd == "PREMIUM" or "UPSIDE SWEEP" in phase or "SHORT RECLAIM" in liquidity_event))
+        or (side == "SHORT" and (pd == "DISCOUNT" or "DOWNSIDE SWEEP" in phase or "LONG RECLAIM" in liquidity_event))
+    )
+    fresh_unlock = bool(
+        event.get("confirmed") and event.get("anchor_confirmed") and event.get("side") == side
+        and event.get("type") in {"SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"}
+        and (event.get("follow_through") or event.get("post_confirmed"))
+    )
+    if not (htf_against and not tf3_confirmed and adverse_location and not fresh_unlock):
+        return setup
+    out = dict(setup)
+    reason = "Prime ICT проти сильного 4H і без нового 3M retest/reclaim — лише очікування тригера"
+    out.update({
+        "action": "WATCH", "entry_level": "WATCH_TRIGGER", "entry_level_label": _entry_level_label("WATCH_TRIGGER"),
+        "quality": min(PRIME_ICT_HTF_CONFLICT_QUALITY_CAP, int(out.get("quality", 0) or 0)),
+        "reason": reason, "prime_ict_htf_conflict_cap": True,
+    })
+    out["conflicts"] = list(dict.fromkeys((out.get("conflicts") or []) + [reason]))
+    return out
+
+
 def final_stop_role_rebuild(setup, context):
     if not isinstance(setup, dict) or setup.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
         return setup
@@ -6971,6 +7039,177 @@ def _select_alternative_technical_geometry(side, context, atr15, setup_type, sto
     return best
 
 
+
+def _geometry_setup_family(setup_type):
+    setup_type = str(setup_type or "").upper()
+    if setup_type in {"TREND_IGNITION_ENTRY", "TREND_CONTINUATION", "PULLBACK_CONTINUATION", "PULLBACK_CONTINUATION_FAST_ENTRY", "FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
+        return "CONTINUATION"
+    return setup_type
+
+
+def _continuation_thesis_alignment(context, side):
+    """Return whether a missed continuation is still structurally alive."""
+    context = context or {}
+    tf15 = context.get("tf15") or {}
+    tf1h = context.get("tf1h") or {}
+    structure = context.get("structure") or {}
+    phase = str(structure.get("phase") or "").upper()
+    tf15_same = bool(tf15.get("bias") == side and abs(int(tf15.get("score", 0) or 0)) >= 34)
+    tf1_same = bool(tf1h.get("bias") == side and abs(int(tf1h.get("score", 0) or 0)) >= 20)
+    structure_same = bool(
+        structure.get("bias") == side
+        and (
+            (side == "LONG" and ("BOS LONG" in phase or "CHOCH LONG" in phase))
+            or (side == "SHORT" and ("BOS SHORT" in phase or "CHOCH SHORT" in phase))
+            or abs(int(structure.get("score", 0) or 0)) >= 18
+        )
+    )
+    fast = _fast_layer_state(context, side)
+    closed = ((context.get("dual_speed_mtf") or {}).get(side) or {}).get("closed_confirmed")
+    alive = bool(tf15_same and (tf1_same or structure_same or closed) and fast.get("against", 0) <= 1)
+    return {
+        "alive": alive, "tf15_same": tf15_same, "tf1_same": tf1_same,
+        "structure_same": structure_same, "closed_confirmed": bool(closed),
+        "fast_support": int(fast.get("support", 0) or 0),
+        "fast_against": int(fast.get("against", 0) or 0),
+    }
+
+
+def _geometry_candidate_snapshot(side, context, atr15=None):
+    """Persist real stop/target alternatives even when no final plan exists."""
+    price = safe_float((context or {}).get("price"))
+    if side not in ["LONG", "SHORT"] or not price:
+        return {"stops": [], "targets": []}
+    atr15 = safe_float(atr15, (context or {}).get("atr15")) or price * 0.006
+    stops = [x for x in _technical_stop_candidates(side, context, atr15) if x.get("timeframe") in {"15M", "ICT"}]
+    targets = [x for x in _technical_target_candidates(side, context, atr15) if not x.get("projected")]
+    return {
+        "stops": [
+            {"level": round_price(x.get("level")), "basis": x.get("basis"), "timeframe": x.get("timeframe"), "kind": x.get("kind"), "priority": x.get("priority")}
+            for x in stops[:6]
+        ],
+        "targets": [
+            {"level": round_price(x.get("level")), "basis": x.get("basis"), "priority": x.get("priority")}
+            for x in targets[:8]
+        ],
+    }
+
+
+def _geometry_recovery_thresholds(context):
+    memory = (context or {}).get("geometry_persistence_memory") or ((context or {}).get("runtime_state") or {}).get("opportunity_memory") or {}
+    failures = int(memory.get("geometry_fail_count", 0) or 0) if isinstance(memory, dict) else 0
+    escalated = bool((context or {}).get("force_geometry_recovery") or failures >= GEOMETRY_ESCALATION_FAILURES)
+    return {
+        "escalated": escalated,
+        "failures": failures,
+        "min_rr": GEOMETRY_RECOVERY_ESCALATED_MIN_RR1 if escalated else GEOMETRY_RECOVERY_MIN_RR1,
+        "min_atr": GEOMETRY_RECOVERY_ESCALATED_MIN_ATR15 if escalated else GEOMETRY_RECOVERY_MIN_ATR15,
+        "min_pct": GEOMETRY_RECOVERY_ESCALATED_MIN_PCT if escalated else GEOMETRY_RECOVERY_MIN_PCT,
+    }
+
+
+def _select_geometry_candidate_recovery(side, context, atr15, setup_type):
+    """Recover a missed continuation using only real 15M/ICT levels.
+
+    This path is intentionally unavailable to Prime ICT/reversal setups. It is
+    a continuation-only repair for the exact case where direction and trigger
+    are correct but the normal optimizer cannot pair a durable stop with the
+    nearest real liquidity objective.
+    """
+    setup_type = str(setup_type or "").upper()
+    if setup_type not in GEOMETRY_PERSISTENCE_SETUP_TYPES:
+        return None
+    price = safe_float((context or {}).get("price"))
+    if side not in ["LONG", "SHORT"] or not price:
+        return None
+    atr15 = safe_float(atr15, price * 0.006) or price * 0.006
+    thesis = _continuation_thesis_alignment(context, side)
+    if not thesis.get("alive"):
+        return None
+    late, _ = is_late_chase(side, context)
+    memory = (context or {}).get("geometry_persistence_memory") or ((context or {}).get("runtime_state") or {}).get("opportunity_memory") or {}
+    origin = safe_float(memory.get("trigger_level"), None) if isinstance(memory, dict) else None
+    if origin is None and isinstance(memory, dict):
+        origin = safe_float(memory.get("price"), None)
+    if origin is not None:
+        extension = max(0.0, ((price - origin) if side == "LONG" else (origin - price)) / max(atr15, 1e-9))
+        if extension > GEOMETRY_RECOVERY_MAX_EXTENSION_ATR15:
+            return None
+    elif late and not (context or {}).get("force_geometry_recovery"):
+        return None
+
+    thresholds = _geometry_recovery_thresholds(context)
+    stops = [x for x in _technical_stop_candidates(side, context, atr15) if x.get("timeframe") in {"15M", "ICT"}]
+    targets = [x for x in _technical_target_candidates(side, context, atr15) if not x.get("projected")]
+
+    # Explicit retest/base invalidation from the most recent closed 15M cluster.
+    candles = list((context or {}).get("candles_15m_closed") or [])
+    if len(candles) >= 4:
+        recent = candles[-min(6, len(candles)):]
+        buffer15 = max(atr15 * 0.14, price * 0.0007)
+        if side == "LONG":
+            level = min(c.low for c in recent) - buffer15
+        else:
+            level = max(c.high for c in recent) + buffer15
+        if (side == "LONG" and level < price) or (side == "SHORT" and level > price):
+            stops.append({"level": float(level), "basis": "15M lower-high/higher-low retest base invalidation", "priority": 104, "timeframe": "15M", "kind": "RETEST_BASE", "distance": abs(price-level)})
+
+    # Deduplicate and prefer the strongest nearby durable levels.
+    uniq = []
+    for item in sorted(stops, key=lambda x: (-int(x.get("priority", 0) or 0), abs(float(x.get("level")) - price))):
+        if not any(abs(float(x.get("level")) - float(item.get("level"))) <= max(atr15 * 0.08, price * 0.0003) for x in uniq):
+            uniq.append(item)
+    stops = uniq[:12]
+    best = None
+    snapshot = ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
+    for stop in stops:
+        risk = abs(price - float(stop["level"]))
+        if risk <= 0:
+            continue
+        risk_atr = risk / atr15
+        risk_pct = risk / price * 100.0
+        if risk_atr < 0.50 or risk_atr > GEOMETRY_RECOVERY_MAX_STOP_ATR15 or risk_pct > MAX_STOP_DISTANCE_PCT:
+            continue
+        for target in targets:
+            reward = abs(float(target["level"]) - price)
+            reward_atr = reward / atr15
+            reward_pct = reward / price * 100.0
+            rr = reward / risk
+            if rr + 1e-9 < thresholds["min_rr"] or rr > RR_SANITY_REBUILD_LIMIT:
+                continue
+            if reward_atr + 1e-9 < thresholds["min_atr"] or reward_pct + 1e-9 < thresholds["min_pct"]:
+                continue
+            blocking, gates, cleared = _blocking_barriers_between(
+                side, price, target["level"], targets, context, atr15, setup_type, snapshot, exclude_level=target.get("level")
+            )
+            if blocking:
+                continue
+            score = (
+                int(stop.get("priority", 0) or 0) * 0.35
+                + int(target.get("priority", 0) or 0) * 0.25
+                + min(rr, 3.0) * 9.0
+                - risk_atr * 2.0
+                - len(gates) * 2.0
+            )
+            candidate = {
+                "score": score, "stop": stop, "target": target, "risk": risk, "reward": reward,
+                "rr": rr, "risk_atr": risk_atr, "reward_atr": reward_atr, "reward_pct": reward_pct,
+                "stops": stops, "targets": targets, "checkpoints": [],
+                "tp1_profile": _tp1_travel_profile(context, setup_type, price, atr15),
+                "preferred_reward": reward, "viable_reward": reward,
+                "allow_3m_stop": False, "projection_allowed": False,
+                "geometry_grade": "MISSED_CONTINUATION_ESCALATED" if thresholds["escalated"] else "MISSED_CONTINUATION_RECOVERY",
+                "barrier_mode": "DIRECT", "preferred_geometry_met": False,
+                "breakout_gates": gates, "cleared_barriers": cleared,
+                "geometry_candidate_recovery": True,
+                "hard_min_rr": thresholds["min_rr"], "hard_min_atr": thresholds["min_atr"], "hard_min_pct": thresholds["min_pct"],
+                "geometry_failures": thresholds["failures"],
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+    return best
+
+
 def _technical_stop_from_context(side, context, atr15):
     """Compatibility wrapper returning the strongest nearby technical stop."""
     candidates = _technical_stop_candidates(side, context, atr15)
@@ -8289,6 +8528,8 @@ def make_plan(side, context):
     setup_label_text = setup_info.get("label") or _setup_label(setup_type)
 
     geometry = _select_adaptive_technical_geometry(side, context, atr15, setup_type)
+    if geometry is None:
+        geometry = _select_geometry_candidate_recovery(side, context, atr15, setup_type)
     valid = bool(side in ["LONG", "SHORT"] and price and geometry)
     validation_reasons = []
     if not valid:
@@ -8305,14 +8546,19 @@ def make_plan(side, context):
         risk_pct = risk / price * 100 if price else 0.0
         targets = geometry.get("targets") or _technical_target_candidates(side, context, atr15)
         tp1_profile = geometry.get("tp1_profile") or {}
-        # Only the viable floors are hard. Preferred floors determine ENTRY vs RISKY.
-        if reward1 / price * 100 + 1e-9 < safe_float(tp1_profile.get("viable_min_pct"), MIN_VIABLE_TP1_DISTANCE_PCT):
+        # Only the viable floors are hard. Geometry-recovery plans use a
+        # dedicated continuation floor, but still require real liquidity,
+        # durable 15M/ICT invalidation and at least 1.10-1.20R.
+        hard_min_pct = safe_float(geometry.get("hard_min_pct"), safe_float(tp1_profile.get("viable_min_pct"), MIN_VIABLE_TP1_DISTANCE_PCT))
+        hard_min_atr = safe_float(geometry.get("hard_min_atr"), safe_float(tp1_profile.get("viable_min_atr"), MIN_VIABLE_TP1_ATR_15M))
+        hard_min_rr = safe_float(geometry.get("hard_min_rr"), MIN_VIABLE_RR1_ENTRY)
+        if reward1 / price * 100 + 1e-9 < hard_min_pct:
             valid = False
             validation_reasons.append("TP1 не має мінімальної повноцінної intraday-відстані")
-        if reward1 / atr15 + 1e-9 < safe_float(tp1_profile.get("viable_min_atr"), MIN_VIABLE_TP1_ATR_15M):
+        if reward1 / atr15 + 1e-9 < hard_min_atr:
             valid = False
             validation_reasons.append("TP1 не має мінімального 15M ATR-руху")
-        if rr1 + 1e-9 < MIN_VIABLE_RR1_ENTRY:
+        if rr1 + 1e-9 < hard_min_rr:
             valid = False
             validation_reasons.append("TP1 нижче мінімальної життєздатної RR-геометрії")
         snapshot = ((context.get("dual_speed_mtf") or {}).get(side) or dual_speed_mtf_snapshot(context, side))
@@ -8565,9 +8811,14 @@ def _evaluate_new_setup_core(context):
     setup_classifier = classify_setup(context, side)
     context["setup_classifier"] = setup_classifier
 
+    # Geometry memory is captured before make_plan, so a confirmed continuation
+    # is not lost merely because the first stop/TP pairing is invalid.
+    capture_pre_geometry_opportunity(context, side, setup_classifier)
     plan = make_plan(side, context)
     rr_status = smart_money_rr_status(plan)
     plan_invalid = bool(not plan or not bool(getattr(plan, "valid", False)))
+    if plan_invalid:
+        mark_geometry_opportunity_failure(context, side, setup_classifier, plan)
     mode_profile = trade_mode_profile(context, side)
     mode_profile["atr15"] = context.get("atr15") or safe_float((context.get("tf15") or {}).get("atr"), None)
     market_regime = mode_profile.get("regime", "NORMAL")
@@ -14867,6 +15118,130 @@ def _opportunity_invalidation_from_setup(setup, context):
     return round_price(event.get("stop_level")) if side in ["LONG", "SHORT"] else None
 
 
+
+def capture_pre_geometry_opportunity(context, side, setup_info):
+    """Persist a confirmed continuation before plan construction can fail."""
+    context = context or {}
+    if side not in ["LONG", "SHORT"] or not isinstance(setup_info, dict):
+        return
+    setup_type = str(setup_info.get("type") or "").upper()
+    if setup_type not in GEOMETRY_PERSISTENCE_SETUP_TYPES or not setup_info.get("entry_allowed") or setup_info.get("block_entry"):
+        return
+    thesis = _continuation_thesis_alignment(context, side)
+    if not thesis.get("alive") or thesis.get("fast_against", 0) >= 2:
+        return
+    price = safe_float(context.get("price"))
+    if not price:
+        return
+    state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else None
+    if state is None:
+        return
+    event = context.get("entry_rescue_event") or best_15m_interval_entry_event(context, side) or {}
+    trigger = safe_float(event.get("trigger_level"), None)
+    if trigger is None:
+        trigger = price
+    atr15 = safe_float(context.get("atr15"), price * 0.006) or price * 0.006
+    extension = max(0.0, ((price-trigger) if side == "LONG" else (trigger-price)) / max(atr15, 1e-9))
+    if extension > GEOMETRY_RECOVERY_MAX_EXTENSION_ATR15:
+        return
+    old = state.get("opportunity_memory") if isinstance(state.get("opportunity_memory"), dict) else None
+    family = _geometry_setup_family(setup_type)
+    same = bool(old and old.get("source") == "GEOMETRY_PENDING" and old.get("side") == side and old.get("setup_family") == family)
+    if old and not same and old.get("source") == "PRE_GATE":
+        return
+    observations = int(old.get("observation_count", 0) or 0) + 1 if same else 1
+    created = old.get("created_at") if same else iso_now()
+    candidates = _geometry_candidate_snapshot(side, context, atr15)
+    provisional_invalidation = _opportunity_invalidation_from_setup({"side": side, "setup_classifier": setup_info}, context)
+    if provisional_invalidation is None and candidates.get("stops"):
+        provisional_invalidation = round_price(candidates["stops"][0].get("level"))
+    state["opportunity_memory"] = {
+        "active": True, "source": "GEOMETRY_PENDING", "created_at": created, "updated_at": iso_now(),
+        "ttl_minutes": GEOMETRY_PERSISTENCE_TTL_MINUTES, "side": side,
+        "setup_type": setup_type, "setup_family": family,
+        "setup_label": setup_info.get("label"), "quality": int(setup_info.get("score", 0) or 0),
+        "price": round_price(price), "trigger_level": round_price(trigger),
+        "trigger_ts": int(event.get("trigger_ts", 0) or 0), "trigger_type": event.get("type"),
+        "retest_confirmed": bool(event.get("confirmed") and event.get("anchor_confirmed")),
+        "invalidation": provisional_invalidation,
+        "initial_reason": setup_info.get("reason"), "missing_condition": "VALID_TECHNICAL_GEOMETRY",
+        "blocking_gate": "PLAN_GEOMETRY", "blocked_gates": ["PLAN_GEOMETRY"],
+        "observation_count": observations,
+        "geometry_fail_count": int(old.get("geometry_fail_count", 0) or 0) if same else 0,
+        "geometry_candidates": candidates, "plan": old.get("plan") if same else None,
+        "thesis": thesis,
+    }
+
+
+def mark_geometry_opportunity_failure(context, side, setup_info, plan):
+    if plan and getattr(plan, "valid", False):
+        return
+    capture_pre_geometry_opportunity(context, side, setup_info)
+    state = (context or {}).get("runtime_state") if isinstance((context or {}).get("runtime_state"), dict) else None
+    memory = state.get("opportunity_memory") if state and isinstance(state.get("opportunity_memory"), dict) else None
+    if not memory or memory.get("source") != "GEOMETRY_PENDING" or memory.get("side") != side:
+        return
+    memory["geometry_fail_count"] = int(memory.get("geometry_fail_count", 0) or 0) + 1
+    memory["last_geometry_failure_at"] = iso_now()
+    memory["last_geometry_reason"] = str(getattr(plan, "validation_reason", "") or "не вдалося побудувати життєздатну технічну геометрію")
+    memory["missing_condition"] = "VALID_TECHNICAL_GEOMETRY"
+    memory["updated_at"] = iso_now()
+    state["opportunity_memory"] = memory
+
+
+def resolve_geometry_persistence_entry(context, base_setup, memory):
+    """Rebuild the same continuation instead of forgetting it next run."""
+    side = memory.get("side")
+    setup_type = str(memory.get("setup_type") or "").upper()
+    if side not in ["LONG", "SHORT"] or setup_type not in GEOMETRY_PERSISTENCE_SETUP_TYPES:
+        return base_setup
+    thesis = _continuation_thesis_alignment(context, side)
+    if not thesis.get("alive") or thesis.get("fast_against", 0) >= 2:
+        return base_setup
+    price = safe_float((context or {}).get("price"))
+    atr15 = safe_float((context or {}).get("atr15"), (price or 90) * 0.006) or (price or 90) * 0.006
+    origin = safe_float(memory.get("trigger_level"), safe_float(memory.get("price"), price))
+    extension = max(0.0, ((price-origin) if side == "LONG" else (origin-price)) / max(atr15, 1e-9)) if price and origin else 0.0
+    if extension > GEOMETRY_RECOVERY_MAX_EXTENSION_ATR15:
+        return base_setup
+    late, _ = is_late_chase(side, context)
+    if late and extension > 0.45:
+        return base_setup
+    work = dict(context)
+    work["bias"] = side
+    work["geometry_persistence_memory"] = memory
+    work["force_geometry_recovery"] = int(memory.get("geometry_fail_count", 0) or 0) >= GEOMETRY_ESCALATION_FAILURES
+    work["force_durable_stop_role"] = True
+    setup_info = _memory_setup_classifier(memory, side)
+    work["setup_classifier"] = setup_info
+    event = best_15m_interval_entry_event(context, side)
+    if event:
+        work["entry_rescue_event"] = event
+    plan = make_plan(side, work)
+    state = context.get("runtime_state") if isinstance(context.get("runtime_state"), dict) else None
+    if not plan or not getattr(plan, "valid", False):
+        if state is not None:
+            memory["geometry_fail_count"] = int(memory.get("geometry_fail_count", 0) or 0) + 1
+            memory["updated_at"] = iso_now()
+            memory["last_geometry_reason"] = str(getattr(plan, "validation_reason", "") or "геометрія ще не готова")
+            state["opportunity_memory"] = memory
+        return base_setup
+    quality = int(max(RISKY_QUALITY_MIN, min(79, max(int(memory.get("quality", 0) or 0), 68))))
+    out = dict(base_setup)
+    out.update({
+        "action": "RISKY_ENTRY", "side": side, "quality": quality,
+        "title": "РИЗИКОВАНИЙ ВХІД " + side + " — ПРОПУЩЕНЕ ПРОДОВЖЕННЯ ВІДНОВЛЕНО",
+        "reason": "попередній continuation збережено; технічну 15M/ICT геометрію відновлено до того, як ціна втекла",
+        "plan": plan, "setup_classifier": setup_info, "entry_rescue_event": event,
+        "geometry_persistence_activated": True,
+        "geometry_fail_count": int(memory.get("geometry_fail_count", 0) or 0),
+        "missed_continuation_recovery": True,
+        "entry_level": "RISKY_ENTRY", "entry_level_label": _entry_level_label("RISKY_ENTRY"),
+        "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + ["15M/1H continuation залишається чинним", "реальний 15M/ICT стоп знайдено", "TP1 — найближча реальна ліквідність"])),
+    })
+    return out
+
+
 def should_store_opportunity_memory(setup, context):
     if not isinstance(setup, dict) or setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
         return False
@@ -14899,7 +15274,7 @@ def update_opportunity_memory(state, setup, context):
     # A pre-gate candidate is more informative than the final WATCH result.
     # Keep its original setup, trigger, invalidation and geometry while updating
     # the last blocking reason.
-    if old and old.get("source") == "PRE_GATE":
+    if old and old.get("source") in {"PRE_GATE", "GEOMETRY_PENDING"}:
         if isinstance(setup, dict):
             side = setup.get("side")
             if side in ["LONG", "SHORT"] and side != old.get("side") and int(setup.get("quality", 0) or 0) >= 62:
@@ -14974,6 +15349,9 @@ def activate_opportunity_memory_if_ready(context, base_setup):
     extension = max(0.0, ((price - origin) if side == "LONG" else (origin - price)) / max(atr15, 1e-9))
     if extension > OPPORTUNITY_MEMORY_MAX_EXTENSION_ATR15:
         return base_setup
+
+    if str(memory.get("source") or "").upper() == "GEOMETRY_PENDING":
+        return resolve_geometry_persistence_entry(context, base_setup, memory)
 
     fast = _professional_fast_layer_permission(context, side, strong_15m=True)
     if not fast.get("risky_ok") or fast.get("against", 0) >= 2:
@@ -15146,6 +15524,7 @@ def evaluate_new_setup(context):
             ("RANGE_SEGMENTATION_GATE", apply_range_midpoint_gate_to_setup),
             ("STRUCTURAL_RESET_GATE", apply_structural_reset_gate_to_setup),
             ("REGIME_WHITELIST_GATE", apply_regime_allowed_setup_whitelist),
+            ("PRIME_ICT_HTF_CONFLICT_CAP", apply_prime_ict_htf_conflict_cap),
             ("PRIME_ICT_ADVERSE_FLOW_GATE", apply_adverse_flow_veto_prime_ict),
             ("ENTRY_LEVEL_GATE", apply_entry_level_gate),
         ]
