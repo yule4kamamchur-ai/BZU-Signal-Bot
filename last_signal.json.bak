@@ -524,6 +524,82 @@
       "entry_window_closed": true,
       "market_direction_context": "SHORT",
       "time": "2026-06-18T14:22:37.773720+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "SHORT",
+      "price": 76.74,
+      "quality": 55,
+      "reason": "ліквідність проти: low зняли/дамп викупили, шорт не доганяти",
+      "setup_classifier": {
+        "type": "TREND_CONTINUATION",
+        "label": "🟢 Продовження тренду",
+        "side": "SHORT",
+        "score": 83,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "lock знято; збережений SHORT сценарій ще актуальний, але потрібен свіжий 3M hold, BOS/CHOCH або breakout-retest після зняття lock",
+        "quality_adjustment": 4,
+        "quality_cap": 92,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "TREND",
+          "tp1_atr_mult": 1.45,
+          "tp2_atr_mult": 3.1,
+          "tp3_tail_atr": 1.45,
+          "min_stop_pct": 0.85,
+          "max_stop_pct": 2.12,
+          "quality_adjustment": 4,
+          "quality_cap": 92
+        },
+        "interval_rescue": true,
+        "entry_rule": "BOS/утримання пробитого рівня + FVG/OB або утримання після пробою + продовження на 3M",
+        "stop_rule": "стоп за локальний swing/OB/FVG, без підтягування до TP1",
+        "tp_rule": "TP1 ATR-реалістичний, TP2/TP3 далі по тренду",
+        "management_rule": "тримати довше, але після TP1 захистити частину прибутку",
+        "bridge_saved_score": 83,
+        "bridge_current_readiness": 67
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 5.49,
+          "move8_abs_pct": 1.953,
+          "slope15_abs_pct": 2.124,
+          "rsi15": 33.4,
+          "score_total_abs": 81,
+          "participation_same": 0,
+          "late_penalty": 12,
+          "pd": "DISCOUNT",
+          "ict_setup": "LIQUIDITY_SWEEP_LONG",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "entry_window_status": "EXHAUSTED",
+      "entry_window_closed": true,
+      "market_direction_context": "SHORT",
+      "time": "2026-06-18T14:31:18.842469+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -578,17 +654,17 @@
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "",
-    "stable_count": 2,
-    "pending_count": 0,
-    "updated_at": "2026-06-18T14:22:37.466034+00:00"
+    "pending_type": "REVERSAL_BUILDUP",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-18T14:31:18.535876+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781792460000,
+      "updated_ts": 1781793000000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -611,7 +687,7 @@
     "active": true,
     "source": "PRE_GATE",
     "created_at": "2026-06-18T14:22:37.764439+00:00",
-    "updated_at": "2026-06-18T14:22:37.773059+00:00",
+    "updated_at": "2026-06-18T14:31:18.841835+00:00",
     "ttl_minutes": 45,
     "side": "SHORT",
     "setup_type": "TREND_CONTINUATION",
@@ -720,7 +796,7 @@
       "better_entry_zone_low": 0.0,
       "better_entry_zone_high": 0.0
     },
-    "last_final_reason": "ціна далеко від EMA20, 3M не підсилює",
+    "last_final_reason": "ліквідність проти: low зняли/дамп викупили, шорт не доганяти",
     "last_final_action": "NO_TRADE"
   },
   "lock_release_opportunities": {
@@ -730,7 +806,7 @@
       "source": "POST_EVALUATION",
       "gate_name": "",
       "created_at": "2026-06-18T14:22:37.764621+00:00",
-      "updated_at": "2026-06-18T14:22:37.773032+00:00",
+      "updated_at": "2026-06-18T14:31:18.841804+00:00",
       "ttl_minutes": 105,
       "side": "SHORT",
       "setup_type": "TREND_CONTINUATION",
@@ -742,11 +818,11 @@
         "score": 83,
         "entry_allowed": true,
         "block_entry": false,
-        "risk_mode": "NORMAL",
-        "reason": "3M сетап відновлено з повної послідовності свічок між 15-хвилинними запусками",
+        "risk_mode": "RISKY",
+        "reason": "lock знято; збережений SHORT сценарій ще актуальний, але потрібен свіжий 3M hold, BOS/CHOCH або breakout-retest після зняття lock",
         "quality_adjustment": 4,
         "quality_cap": 92,
-        "force_risky": false,
+        "force_risky": true,
         "profile": {
           "regime_override": "TREND",
           "tp1_atr_mult": 1.45,
@@ -761,18 +837,20 @@
         "entry_rule": "BOS/утримання пробитого рівня + FVG/OB або утримання після пробою + продовження на 3M",
         "stop_rule": "стоп за локальний swing/OB/FVG, без підтягування до TP1",
         "tp_rule": "TP1 ATR-реалістичний, TP2/TP3 далі по тренду",
-        "management_rule": "тримати довше, але після TP1 захистити частину прибутку"
+        "management_rule": "тримати довше, але після TP1 захистити частину прибутку",
+        "bridge_saved_score": 83,
+        "bridge_current_readiness": 67
       },
       "quality": 83,
-      "origin_price": 76.68,
-      "trigger_level": 76.78,
-      "trigger_ts": 1781792100000,
-      "trigger_type": "BREAKOUT_RETEST",
-      "invalidation": 76.8788,
-      "initial_reason": "ціна далеко від EMA20, 3M не підсилює",
+      "origin_price": 76.74,
+      "trigger_level": 76.74,
+      "trigger_ts": 0,
+      "trigger_type": null,
+      "invalidation": null,
+      "initial_reason": "ліквідність проти: low зняли/дамп викупили, шорт не доганяти",
       "plan": null,
-      "release_seen_at": "",
-      "release_reason": "",
+      "release_seen_at": "2026-06-18T14:31:18.829966+00:00",
+      "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу",
       "activation_count": 0
     }
   },
@@ -781,12 +859,10 @@
     "covered_by_active_trade": 0,
     "missed": 3,
     "active_episode_keys": [
-      "SHORT:CAPITULATION_RECOVERY",
-      "SHORT:TREND_CONTINUATION"
+      "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "SHORT:CAPITULATION_RECOVERY": "MISSED",
-      "SHORT:TREND_CONTINUATION": "MISSED"
+      "SHORT:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -819,23 +895,23 @@
     "coverage_pct": 0.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T14:22:37.773758+00:00",
-    "price": 76.68,
-    "oi": 61788.09,
-    "cvd": -47585.0,
-    "cvd_time": "2026-06-18T14:22:37.773762+00:00",
-    "last_trade_ts": 1781792544928,
+    "time": "2026-06-18T14:31:18.842489+00:00",
+    "price": 76.74,
+    "oi": 61712.03,
+    "cvd": -47392.0,
+    "cvd_time": "2026-06-18T14:31:18.842492+00:00",
+    "last_trade_ts": 1781793069338,
     "bias": "SHORT",
-    "tech_score": -201,
-    "total_score": -197
+    "tech_score": -92,
+    "total_score": -81
   },
-  "updated_at": "2026-06-18T14:22:37.773765+00:00",
+  "updated_at": "2026-06-18T14:31:18.842496+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 78.67,
-    "low": 76.78,
+    "high": 78.53,
+    "low": 76.57,
     "created_ts": 1781790300000,
-    "updated_ts": 1781790300000,
+    "updated_ts": 1781792100000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
