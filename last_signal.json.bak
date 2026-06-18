@@ -3977,27 +3977,98 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-18T04:31:11.177740+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 77.63,
+      "quality": 58,
+      "reason": "після shock потрібен новий breakout-retest/reclaim або два 15M прийняття з flow; старий тригер не використовується",
+      "setup_classifier": {
+        "type": "TREND_CONTINUATION",
+        "label": "🟢 Продовження тренду",
+        "side": "SHORT",
+        "score": 80,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "BOS/утримання рівня + ICT-зона/hold + 3M continuation",
+        "quality_adjustment": 4,
+        "quality_cap": 92,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "TREND",
+          "tp1_atr_mult": 1.45,
+          "tp2_atr_mult": 3.1,
+          "tp3_tail_atr": 1.45,
+          "min_stop_pct": 0.85,
+          "max_stop_pct": 2.12,
+          "quality_adjustment": 4,
+          "quality_cap": 92
+        },
+        "entry_rule": "BOS/утримання пробитого рівня + FVG/OB або утримання після пробою + продовження на 3M",
+        "stop_rule": "стоп за локальний swing/OB/FVG, без підтягування до TP1",
+        "tp_rule": "TP1 ATR-реалістичний, TP2/TP3 далі по тренду",
+        "management_rule": "тримати довше, але після TP1 захистити частину прибутку"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 82,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 5.7,
+          "move8_abs_pct": 0.88,
+          "slope15_abs_pct": 0.52,
+          "rsi15": 26.7,
+          "score_total_abs": 192,
+          "participation_same": 0,
+          "late_penalty": 10,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_CONTINUATION_HOLD",
+          "range_edge": false
+        },
+        "stable_count": 5,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-18T04:45:52.138513+00:00"
     }
   ],
   "regime_memory": {
     "type": "TREND_EXPANSION",
     "pending_type": "",
-    "stable_count": 4,
+    "stable_count": 5,
     "pending_count": 0,
-    "updated_at": "2026-06-18T04:31:10.726465+00:00"
+    "updated_at": "2026-06-18T04:45:51.730341+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T04:31:11.177787+00:00",
-    "price": 77.75,
-    "oi": 59882.45,
-    "cvd": 74241.0,
-    "cvd_time": "2026-06-18T04:31:11.177790+00:00",
-    "last_trade_ts": 1781757040072,
+    "time": "2026-06-18T04:45:52.138556+00:00",
+    "price": 77.63,
+    "oi": 59878.5,
+    "cvd": 95952.0,
+    "cvd_time": "2026-06-18T04:45:52.138559+00:00",
+    "last_trade_ts": 1781757933020,
     "bias": "SHORT",
-    "tech_score": -225,
-    "total_score": -210
+    "tech_score": -193,
+    "total_score": -192
   },
-  "updated_at": "2026-06-18T04:31:11.177794+00:00",
+  "updated_at": "2026-06-18T04:45:52.138564+00:00",
   "pending_trigger": {
     "active": true,
     "created_at": "2026-06-18T04:31:11.176876+00:00",
@@ -4136,9 +4207,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 78.58,
-    "low": 77.81,
+    "low": 77.7,
     "created_ts": 1781720100000,
-    "updated_ts": 1781756100000,
+    "updated_ts": 1781757000000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -4146,81 +4217,69 @@
   },
   "opportunity_memory": {
     "active": true,
-    "source": "GEOMETRY_PENDING",
-    "created_at": "2026-06-18T04:01:22.402969+00:00",
-    "updated_at": "2026-06-18T04:31:11.176865+00:00",
-    "ttl_minutes": 55,
+    "source": "PRE_GATE",
+    "created_at": "2026-06-18T04:45:52.137130+00:00",
+    "updated_at": "2026-06-18T04:45:52.137729+00:00",
+    "ttl_minutes": 45,
     "side": "SHORT",
-    "setup_type": "TREND_IGNITION_ENTRY",
-    "setup_family": "CONTINUATION",
-    "setup_label": "🟢 Ранній старт тренду / пробій",
-    "quality": 76,
-    "price": 77.75,
-    "trigger_level": 77.75,
+    "setup_type": "TREND_CONTINUATION",
+    "setup_label": "🟢 Продовження тренду",
+    "initial_action": "ENTRY",
+    "quality": 74,
+    "price": 77.63,
+    "trigger_level": null,
     "trigger_ts": 0,
     "trigger_type": null,
     "retest_confirmed": false,
-    "invalidation": 77.9244,
-    "initial_reason": "ранній старт тренду: свіжий BOS за напрямом без розтягнутого 3M імпульсу",
-    "missing_condition": "VALID_TECHNICAL_GEOMETRY",
-    "blocking_gate": "PLAN_GEOMETRY",
+    "invalidation": 77.9143,
+    "initial_reason": "після shock потрібен новий breakout-retest/reclaim або два 15M прийняття з flow; старий тригер не використовується",
+    "missing_condition": "після shock потрібен новий breakout-retest/reclaim або два 15M прийняття з flow; старий тригер не використовується",
+    "blocking_gate": "POST_SHOCK_RETEST_GATE",
     "blocked_gates": [
-      "PLAN_GEOMETRY"
+      "POST_SHOCK_RETEST_GATE"
     ],
-    "observation_count": 4,
-    "geometry_fail_count": 8,
-    "geometry_candidates": {
-      "stops": [
-        {
-          "level": 77.9244,
-          "basis": "bearish FVG invalidation",
-          "timeframe": "ICT",
-          "kind": "BEAR_FVG",
-          "priority": 97
-        },
-        {
-          "level": 78.0944,
-          "basis": "last closed 15M high",
-          "timeframe": "15M",
-          "kind": "CANDLE",
-          "priority": 68
-        },
-        {
-          "level": 78.6344,
-          "basis": "15M structural swing high",
-          "timeframe": "15M",
-          "kind": "STRUCTURE",
-          "priority": 88
-        },
-        {
-          "level": 79.3044,
-          "basis": "15M recent structure high",
-          "timeframe": "15M",
-          "kind": "STRUCTURE",
-          "priority": 78
-        }
-      ],
-      "targets": [
-        {
-          "level": 77.69,
-          "basis": "36-bar 1H external low",
-          "priority": 95
-        }
-      ]
+    "missing_conditions": [
+      "після shock потрібен новий breakout-retest/reclaim або два 15M прийняття з flow; старий тригер не використовується",
+      "потік локально проти",
+      "сильні новини проти",
+      "мʼякий anti-chase штраф -10: шорт після сильного 15M імпульсу: чекати відкат/проторговку",
+      "CVD/дельта поки проти — ранній вхід тільки як ризиковий"
+    ],
+    "plan": {
+      "entry": 77.63,
+      "stop": 77.9143,
+      "tp1": 76.582,
+      "tp2": 75.7669,
+      "tp3": 74.8353,
+      "risk_pct": 0.366,
+      "rr1": 3.69,
+      "rr2": 6.55,
+      "rr3": 9.83,
+      "invalidation": "15m закриття вище 77.9143 або злам 3m/структури проти SHORT. Сетап: 🟢 Продовження тренду. Режим: сильний тренд. стоп за локальний swing/OB/FVG, без підтягування до TP1 | TP1 ATR-реалістичний, TP2/TP3 далі по тренду",
+      "valid": true,
+      "validation_reason": "",
+      "technical_stop_basis": "bearish FVG invalidation",
+      "technical_tp1_basis": "15M measured range/impulse expansion objective",
+      "technical_tp2_basis": "15M measured range/impulse expansion objective",
+      "technical_tp3_basis": "15M measured range/impulse expansion objective",
+      "geometry_mode": "15M_ICT_STRUCTURAL",
+      "technical_rr_target": 1.5,
+      "better_entry": 0.0,
+      "geometry_grade": "OPTIMAL",
+      "barrier_mode": "DIRECT",
+      "preferred_geometry_met": true,
+      "breakout_gates": []
     },
-    "plan": null,
-    "thesis": {
-      "alive": true,
-      "tf15_same": true,
-      "tf1_same": true,
-      "structure_same": true,
-      "closed_confirmed": true,
-      "fast_support": 2,
-      "fast_against": 0
-    },
-    "last_geometry_failure_at": "2026-06-18T04:31:11.170651+00:00",
-    "last_geometry_reason": "не вдалося побудувати життєздатну технічну геометрію",
-    "last_final_reason": "не вдалося побудувати життєздатну технічну геометрію",
+    "last_final_reason": "після shock потрібен новий breakout-retest/reclaim або два 15M прийняття з flow; старий тригер не використовується",
     "last_final_action": "WATCH"
+  },
+  "shock_lock": {
+    "side": "SHORT",
+    "status": "LOCKED",
+    "origin_ts": 1781757000000,
+    "extreme_ts": 1781757000000,
+    "extreme_price": 77.7,
+    "released_at": "",
+    "released_extreme": null
   }
 }
