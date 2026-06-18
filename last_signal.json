@@ -1,63 +1,6 @@
 {
   "version": "pro-v2-intraday-architecture",
-  "active_trade": {
-    "id": "299e68604f",
-    "side": "SHORT",
-    "opened_at": "2026-06-18T06:31:12.699616+00:00",
-    "entry": 77.01,
-    "stop_initial": 77.6139,
-    "stop_current": 77.6139,
-    "tp1": 75.9704,
-    "tp2": 75.1618,
-    "tp3": 74.2376,
-    "quality": 75,
-    "stop_updated_at": "",
-    "status": "OPEN",
-    "tp1_hit": false,
-    "tp2_hit": false,
-    "tp3_hit": false,
-    "tp1_stop_locked": false,
-    "tp2_stop_locked": false,
-    "tp1_locked_stop": 0.0,
-    "tp2_locked_stop": 0.0,
-    "best_price": 77.01,
-    "last_action": "OPEN",
-    "last_message_key": "",
-    "entry_integrity_score": 100,
-    "entry_fail_streak": 0,
-    "entry_recovery_checks": 0,
-    "entry_last_state": "СИЛЬНА",
-    "mfe_giveback_streak": 0,
-    "mfe_giveback_last_state": "OK",
-    "setup_type": "NEWS_IMPULSE",
-    "regime_type": "NEWS_SHOCK",
-    "entry_level": "RISKY_ENTRY",
-    "lifecycle_stage": "EARLY_CONFIRMED",
-    "lifecycle_score": 75,
-    "lifecycle_confirmations": 0,
-    "lifecycle_failures": 0,
-    "lifecycle_last_transition": "2026-06-18T06:31:12.699624+00:00",
-    "structural_stop": 77.6139,
-    "profit_stop": 0.0,
-    "active_stop_source": "STRUCTURAL",
-    "recovery_after_rejection": false,
-    "recovery_trigger_ts": 0,
-    "recovery_trigger_level": 0.0,
-    "recovery_event_type": "",
-    "recovery_entry_checks": 0,
-    "management_checks": 0,
-    "mfe_profit_lock_streak": 0,
-    "mfe_profit_lock_active": false,
-    "notes": [
-      "RISKY_ENTRY",
-      "ENTRY_LEVEL: RISKY_ENTRY",
-      "SETUP_CLASSIFIER: NEWS_IMPULSE",
-      "REGIME_TYPE: NEWS_SHOCK",
-      "LIFECYCLE_STAGE: EARLY_CONFIRMED",
-      "ENGINE_VERSION: STATE_TRANSITION_MEMORY_RESET",
-      "ранній ICT/SMC вхід: ICT і структура вже за напрям, не чекаємо повного набору підтверджень; anti-chase штраф уже врахований (-14)"
-    ]
-  },
+  "active_trade": null,
   "history": [
     {
       "type": "WATCH",
@@ -4592,38 +4535,45 @@
       "tp2": 75.1618,
       "tp3": 74.2376,
       "time": "2026-06-18T06:31:12.699735+00:00"
+    },
+    {
+      "type": "TRADE_CLOSED",
+      "side": "SHORT",
+      "action": "STOP",
+      "price": 77.51,
+      "result_pct": -0.784,
+      "mfe_pct": 0.0,
+      "mfe_captured_pct": null,
+      "mfe_giveback_pct": null,
+      "time": "2026-06-18T06:45:51.764560+00:00"
     }
   ],
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-18T06:31:12.314273+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-18T06:45:51.399559+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T06:31:12.699776+00:00",
-    "price": 77.01,
-    "oi": 59698.0,
-    "cvd": 144164.0,
-    "cvd_time": "2026-06-18T06:31:12.699779+00:00",
-    "last_trade_ts": 1781764252844,
-    "bias": "SHORT",
-    "tech_score": -190,
-    "total_score": -172
+    "time": "2026-06-18T06:45:51.764584+00:00",
+    "price": 77.51,
+    "oi": 60368.41,
+    "cvd": 137298.0,
+    "cvd_time": "2026-06-18T06:45:51.764587+00:00",
+    "last_trade_ts": 1781765135131,
+    "bias": "NEUTRAL",
+    "tech_score": -43,
+    "total_score": -41
   },
-  "updated_at": "2026-06-18T06:31:12.699783+00:00",
+  "updated_at": "2026-06-18T06:45:51.764592+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
     "missed": 5,
-    "active_episode_keys": [
-      "SHORT:CAPITULATION_RECOVERY"
-    ],
-    "episode_status": {
-      "SHORT:CAPITULATION_RECOVERY": "NEW_ENTRY"
-    },
+    "active_episode_keys": [],
+    "episode_status": {},
     "recent": [
       {
         "side": "SHORT",
@@ -4688,10 +4638,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 77.91,
+    "high": 77.87,
     "low": 77.06,
     "created_ts": 1781720100000,
-    "updated_ts": 1781763300000,
+    "updated_ts": 1781764200000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -4706,5 +4656,16 @@
     "extreme_price": 77.06,
     "released_at": "2026-06-18T06:31:12.698516+00:00",
     "released_extreme": 77.06
+  },
+  "last_closed_trade": {
+    "side": "SHORT",
+    "closed_at": "2026-06-18T06:45:51.764564+00:00",
+    "close_price": 77.6139,
+    "result_pct": -0.784,
+    "action": "STOP",
+    "tp1_hit": false,
+    "tp2_hit": false,
+    "tp3_hit": false,
+    "setup_type": "NEWS_IMPULSE"
   }
 }
