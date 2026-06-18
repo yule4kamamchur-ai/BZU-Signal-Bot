@@ -5641,9 +5641,16 @@ def persistent_exhaustion_lock_snapshot(context, side, setup=None):
             lock["extreme_price"] = round_price(new_extreme)
         lock["updated_ts"] = market_ts
         if lock.get("status") == "RELEASED" and current_exhausted and price is not None:
+            # A confirmed release must remain stable for the whole market bar.
+            # Several gates call this snapshot during one bot run; without this
+            # guard the first call can RELEASE the lock and a later call can
+            # immediately LOCK it again from the same candle/context.
+            released_ts = int(lock.get("released_ts", 0) or 0)
+            same_release_bar = bool(released_ts and market_ts <= released_ts)
             released_extreme = safe_float(lock.get("released_extreme"), old_extreme)
             material_extension = bool(
-                released_extreme is not None and (
+                not same_release_bar
+                and released_extreme is not None and (
                     (side == "LONG" and price - released_extreme >= atr15 * PERSISTENT_EXHAUSTION_RELOCK_ATR15)
                     or (side == "SHORT" and released_extreme - price >= atr15 * PERSISTENT_EXHAUSTION_RELOCK_ATR15)
                 )
@@ -16746,31 +16753,118 @@ def _bridge_revalidated_classifier(memory, context, trigger):
     return original
 
 
-def _bridge_watch_setup(base_setup, memory, reason, quality=None, trigger=None):
+def _bridge_conflict_mentions_side(text, side):
+    value = str(text or "").upper()
+    return side in ["LONG", "SHORT"] and side in value
+
+
+def _bridge_clean_conflicts(base_setup, context, final_side, lock_released=True):
+    """Rebuild WATCH conflicts for the final Bridge side.
+
+    A Bridge may replace a SHORT/NEUTRAL base decision with a preserved LONG
+    candidate (or vice versa). Directional reasons produced for the old side
+    must never leak into the final message or quality explanation. Old lock and
+    geometry errors are also invalid after a confirmed release because the new
+    plan has not been rebuilt yet.
+    """
+    base_setup = base_setup or {}
+    context = context or {}
+    base_side = base_setup.get("side")
+    side_changed = bool(base_side in ["LONG", "SHORT"] and base_side != final_side)
+    raw = [] if side_changed else list(base_setup.get("conflicts") or [])
+    cleaned = []
+    stale_fragments = [
+        "persistent exhaustion/impulse lock",
+        "локація нежиттєздатна до побудови rr: persistent",
+        "не вдалося побудувати життєздатну технічну геометрію",
+        "немає одного з топових сетапів",
+    ]
+    cooldown = context.get("reentry_cooldown") or {}
+    cooldown_side = cooldown.get("side") if cooldown.get("active") else None
+    for item in raw:
+        value = str(item or "").strip()
+        lower = value.lower()
+        if not value:
+            continue
+        if lock_released and any(fragment in lower for fragment in stale_fragments):
+            continue
+        if "після слабкого виходу" in lower:
+            # Same-direction cooldown only. Opposite failed trades must not
+            # lower or visually contaminate a Bridge candidate.
+            if cooldown_side != final_side:
+                continue
+            other = opposite(final_side)
+            if _bridge_conflict_mentions_side(value, other) and not _bridge_conflict_mentions_side(value, final_side):
+                continue
+        if value not in cleaned:
+            cleaned.append(value)
+
+    # Re-add cooldown only when it genuinely belongs to the final side.
+    if cooldown_side == final_side and not cooldown_override_ok(final_side, context):
+        penalty = int(cooldown.get("quality_penalty", 0) or 0)
+        msg = (cooldown.get("reason") or "після слабкого виходу якість повторного входу тимчасово знижена")
+        if penalty:
+            msg += f"; штраф якості -{penalty}"
+        if msg not in cleaned:
+            cleaned.append(msg)
+    return cleaned
+
+
+def _bridge_clean_confirmations(base_setup, final_side):
+    base_setup = base_setup or {}
+    base_side = base_setup.get("side")
+    if base_side in ["LONG", "SHORT"] and base_side != final_side:
+        return []
+    return list(base_setup.get("confirmations") or [])
+
+
+def _bridge_watch_setup(base_setup, memory, reason, quality=None, trigger=None, context=None):
     out = dict(base_setup or {})
     side = memory.get("side")
+    saved_score = int(memory.get("quality", 0) or 0)
+    saved_label = memory.get("setup_label") or _setup_label(memory.get("setup_type"))
+    readiness = int(max(55, min(67, quality if quality is not None else max(58, saved_score - 12))))
     info = dict(memory.get("classifier") or {})
     info.update({
         "side": side, "entry_allowed": True, "block_entry": False,
         "risk_mode": "RISKY", "force_risky": True,
         "reason": reason,
+        # Keep the preserved classifier score for the engine/audit, while the
+        # public notification labels it explicitly as SAVED, not current.
+        "bridge_saved_score": saved_score,
+        "bridge_current_readiness": readiness,
     })
     out.update({
         "action": "WATCH", "side": side,
-        "quality": int(max(55, min(67, quality if quality is not None else max(58, int(memory.get("quality", 0) or 0) - 12)))),
+        "quality": readiness,
         "title": f"ЧЕКАТИ — {side} ПІСЛЯ ЗНЯТТЯ LOCK",
         "reason": reason, "setup_classifier": info,
         "entry_level": "WATCH_TRIGGER", "entry_level_label": _entry_level_label("WATCH_TRIGGER"),
-        "lock_release_bridge": True, "lock_release_bridge_status": "WAITING_TRIGGER",
+        "lock_release_bridge": True, "lock_release_bridge_activated": False,
+        "lock_release_bridge_status": "WAITING_TRIGGER",
+        "lock_release_bridge_saved_setup_score": saved_score,
+        "lock_release_bridge_saved_setup_label": saved_label,
+        "lock_release_bridge_current_readiness": readiness,
         "show_wait_plan": False,
+        # The old plan belonged to the pre-release/old-side evaluation. A new
+        # plan is built only after the fresh 3M/BOS/retest trigger.
+        "plan": None,
+        "plan_rebuild_required": True,
+        "plan_rebuild_status": "WAITING_FRESH_TRIGGER",
+        "entry_risk_package": None,
+        "persistent_exhaustion_lock": None,
+        "same_side_exhaustion_lock": False,
     })
     if trigger:
         out["lock_release_bridge_trigger"] = trigger
-    out["conflicts"] = list(dict.fromkeys((out.get("conflicts") or []) + [reason]))
+    out["confirmations"] = _bridge_clean_confirmations(base_setup, side)
+    out["conflicts"] = _bridge_clean_conflicts(base_setup, context, side, lock_released=True)
+    if reason not in out["conflicts"]:
+        out["conflicts"].append(reason)
     return out
 
 
-def activate_lock_release_opportunity_bridge(context, base_setup):
+def activate_lock_release_opportunity_bridge(context, base_setup, finalize_watch_only=False):
     """Reconnect a preserved professional setup after its lock is released.
 
     Release alone produces WATCH. Entry is possible only after a fresh 3M
@@ -16829,7 +16923,7 @@ def activate_lock_release_opportunity_bridge(context, base_setup):
         memory.update({"status": "EXPIRED_EXTENSION", "updated_at": iso_now(), "last_reason": reason})
         store[side] = memory
         state["lock_release_opportunities"] = store
-        return _bridge_watch_setup(base_setup, memory, reason, quality=55)
+        return _bridge_watch_setup(base_setup, memory, reason, quality=55, context=context)
     fast = _fast_layer_state(context, side)
     against = int(fast.get("against", 0) or 0)
     trigger = _bridge_trigger_snapshot(context, side)
@@ -16843,9 +16937,15 @@ def activate_lock_release_opportunity_bridge(context, base_setup):
     store[side] = memory
     state["lock_release_opportunities"] = store
     if against > LOCK_RELEASE_BRIDGE_MAX_ADVERSE_LAYERS:
-        return _bridge_watch_setup(base_setup, memory, "lock знято, але два швидкі шари ще проти збереженого сетапу", trigger=trigger)
+        return _bridge_watch_setup(base_setup, memory, "lock знято, але два швидкі шари ще проти збереженого сетапу", trigger=trigger, context=context)
     if not trigger.get("ready"):
-        return _bridge_watch_setup(base_setup, memory, f"lock знято; збережений {side} сценарій ще актуальний, але {trigger.get('reason')}", trigger=trigger)
+        return _bridge_watch_setup(base_setup, memory, f"lock знято; збережений {side} сценарій ще актуальний, але {trigger.get('reason')}", trigger=trigger, context=context)
+    if finalize_watch_only:
+        # This final pass runs after every hard gate. It may clean and restore a
+        # Bridge WATCH, but it must never reopen an entry that a later consensus
+        # gate rejected. The next run will rebuild the plan from fresh data.
+        final_reason = "lock знято і свіжий тригер уже є, але фінальний консенсус ще не дозволив вхід; план буде перебудовано на наступній перевірці"
+        return _bridge_watch_setup(base_setup, memory, final_reason, trigger=trigger, context=context)
     work = dict(context)
     work["bias"] = side
     setup_info = _bridge_revalidated_classifier(memory, context, trigger)
@@ -16856,9 +16956,9 @@ def activate_lock_release_opportunity_bridge(context, base_setup):
     plan = make_plan(side, work)
     if not plan or not getattr(plan, "valid", False):
         plan_reason = str(getattr(plan, "validation_reason", "") or "після зняття lock геометрія ще не життєздатна")
-        return _bridge_watch_setup(base_setup, memory, plan_reason, trigger=trigger)
+        return _bridge_watch_setup(base_setup, memory, plan_reason, trigger=trigger, context=context)
     if safe_float(getattr(plan, "rr1", 0), 0.0) < LOCK_RELEASE_BRIDGE_MIN_RR1:
-        return _bridge_watch_setup(base_setup, memory, f"свіжий тригер є, але RR1 {round(safe_float(getattr(plan, 'rr1', 0), 0.0), 2)} нижче мінімуму {LOCK_RELEASE_BRIDGE_MIN_RR1}", trigger=trigger)
+        return _bridge_watch_setup(base_setup, memory, f"свіжий тригер є, але RR1 {round(safe_float(getattr(plan, 'rr1', 0), 0.0), 2)} нижче мінімуму {LOCK_RELEASE_BRIDGE_MIN_RR1}", trigger=trigger, context=context)
     quality = int(max(RISKY_QUALITY_MIN, min(79, max(64, int(memory.get("quality", 0) or 0)))))
     out = dict(base_setup)
     out.update({
@@ -17030,7 +17130,12 @@ def evaluate_new_setup(context):
     setup = final_stop_role_rebuild(setup, context)
     capture_pre_gate_opportunity_memory(context, before_stop, setup, "FINAL_STOP_ROLE_REBUILD")
     setup = hard_consensus(setup)
-    return _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "FINAL_ENTRY_LEVEL_GATE")
+    setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "FINAL_ENTRY_LEVEL_GATE")
+    # Final consistency pass: hard gates may have attached old-side conflicts or
+    # a pre-release invalid plan after the Bridge changed the final side. Restore
+    # a clean WATCH only; never bypass a hard gate into an entry here.
+    setup = activate_lock_release_opportunity_bridge(context, setup, finalize_watch_only=True)
+    return setup
 
 
 
@@ -17575,6 +17680,11 @@ def entry_type_text(context, setup):
     if side not in ["LONG", "SHORT"]:
         return ""
 
+    if (setup or {}).get("lock_release_bridge"):
+        saved_label = (setup or {}).get("lock_release_bridge_saved_setup_label") or ((setup or {}).get("setup_classifier") or {}).get("label") or "збережений професійний сетап"
+        saved_score = int((setup or {}).get("lock_release_bridge_saved_setup_score", 0) or ((setup or {}).get("setup_classifier") or {}).get("score", 0) or 0)
+        return f"<b>Збережений сетап:</b> {html.escape(str(saved_label))} | {saved_score}/100"
+
     setup_info = (setup or {}).get("setup_classifier") or (context.get("setup_classifier") or {})
     if not setup_info or setup_info.get("side") != side:
         setup_info = classify_setup(context, side)
@@ -18050,6 +18160,11 @@ def main():
         "lock_release_bridge": bool(setup.get("lock_release_bridge")),
         "lock_release_bridge_activated": bool(setup.get("lock_release_bridge_activated")),
         "lock_release_bridge_status": setup.get("lock_release_bridge_status"),
+        "lock_release_bridge_saved_setup_score": setup.get("lock_release_bridge_saved_setup_score"),
+        "lock_release_bridge_saved_setup_label": setup.get("lock_release_bridge_saved_setup_label"),
+        "lock_release_bridge_current_readiness": setup.get("lock_release_bridge_current_readiness"),
+        "plan_rebuild_required": bool(setup.get("plan_rebuild_required")),
+        "plan_rebuild_status": setup.get("plan_rebuild_status"),
         "setup_classifier": setup.get("setup_classifier"),
         "regime_engine": setup.get("regime_engine") or context.get("regime_engine"),
         "plan": asdict(setup["plan"]) if setup.get("plan") else None,
@@ -18085,6 +18200,9 @@ def main():
                 "total": context["news"]["total"],
             },
             "calendar": context["calendar"],
+            "reentry_cooldown": context.get("reentry_cooldown"),
+            "persistent_exhaustion_locks": context.get("persistent_exhaustion_locks") or (state.get("persistent_exhaustion_locks") if isinstance(state, dict) else None),
+            "shock_lock": state.get("shock_lock") if isinstance(state, dict) else None,
             "setup_classifier": context.get("setup_classifier"),
             "regime_engine": context.get("regime_engine") or context.get("market_regime"),
         },
