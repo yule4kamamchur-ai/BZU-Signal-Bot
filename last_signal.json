@@ -5,77 +5,6 @@
     {
       "type": "WATCH",
       "side": "LONG",
-      "price": 78.98,
-      "quality": 55,
-      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
-      "setup_classifier": {
-        "type": "NEWS_IMPULSE",
-        "label": "🟠 Новинний імпульс",
-        "side": "LONG",
-        "score": 68,
-        "entry_allowed": true,
-        "block_entry": false,
-        "risk_mode": "RISKY",
-        "reason": "новина + структура/3M підтримують імпульс",
-        "quality_adjustment": -2,
-        "quality_cap": 79,
-        "force_risky": true,
-        "profile": {
-          "regime_override": "NEWS_IMPULSE",
-          "tp1_pct": 0.9,
-          "tp2_pct": 1.6,
-          "tp3_pct": 2.6,
-          "min_stop_pct": 0.82,
-          "max_stop_pct": 1.3,
-          "quality_adjustment": -2,
-          "quality_cap": 79,
-          "force_risky": true
-        },
-        "entry_rule": "новинний драйвер + 3M/структура в той самий бік; не доганяти без ретесту",
-        "stop_rule": "стоп ширший за шум, але не більше новинного максимального ризику",
-        "tp_rule": "TP ближче; новина може дати різкий відкат",
-        "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу"
-      },
-      "regime_engine": {
-        "name": "NEWS_IMPULSE",
-        "regime_type": "NEWS_SHOCK",
-        "label": "новинний шок",
-        "score": 78,
-        "confidence": 78,
-        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
-        "entry_action": "RISKY_ONLY",
-        "entry_quality_adjustment": -2,
-        "quality_cap": 79,
-        "hard_block": false,
-        "allowed_setups": [
-          "NEWS_IMPULSE",
-          "TREND_IGNITION_ENTRY",
-          "PRIME_ICT_LOCATION_OVERRIDE",
-          "PULLBACK_CONTINUATION_FAST_ENTRY"
-        ],
-        "notes": [],
-        "metrics": {
-          "bias": "LONG",
-          "range_atr": 7.82,
-          "move8_abs_pct": 0.164,
-          "slope15_abs_pct": 0.895,
-          "rsi15": 48.1,
-          "score_total_abs": 28,
-          "participation_same": 0,
-          "late_penalty": 0,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG"
-        },
-        "stable_count": 8,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NEWS_SHOCK"
-      },
-      "time": "2026-06-17T18:17:29.593273+00:00"
-    },
-    {
-      "type": "WATCH",
-      "side": "LONG",
       "price": 79.39,
       "quality": 55,
       "reason": "ліквідність/ринковий блок проти цього входу",
@@ -5298,39 +5227,77 @@
         "previous_regime_type": "REVERSAL_BUILDUP"
       },
       "time": "2026-06-18T11:15:54.484184+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 78.47,
+      "quality": 45,
+      "reason": "перевага нечітка, немає професійного входу",
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.8,
+          "move8_abs_pct": 0.951,
+          "slope15_abs_pct": 0.905,
+          "rsi15": 60.6,
+          "score_total_abs": 20,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_FVG_OB_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "REVERSAL_BUILDUP"
+      },
+      "time": "2026-06-18T11:31:20.632538+00:00"
     }
   ],
   "regime_memory": {
     "type": "REVERSAL_BUILDUP",
-    "pending_type": "",
-    "stable_count": 2,
-    "pending_count": 0,
-    "updated_at": "2026-06-18T11:15:54.084784+00:00"
+    "pending_type": "NORMAL",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-18T11:31:20.205628+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T11:15:54.484205+00:00",
-    "price": 78.33,
-    "oi": 60831.96,
-    "cvd": 112592.0,
-    "cvd_time": "2026-06-18T11:15:54.484208+00:00",
-    "last_trade_ts": 1781781330229,
-    "bias": "LONG",
-    "tech_score": 107,
-    "total_score": 108
+    "time": "2026-06-18T11:31:20.632560+00:00",
+    "price": 78.47,
+    "oi": 61142.89,
+    "cvd": 98186.0,
+    "cvd_time": "2026-06-18T11:31:20.632563+00:00",
+    "last_trade_ts": 1781782263826,
+    "bias": "NEUTRAL",
+    "tech_score": 19,
+    "total_score": 20
   },
-  "updated_at": "2026-06-18T11:15:54.484213+00:00",
+  "updated_at": "2026-06-18T11:31:20.632567+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
     "missed": 10,
     "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY",
-      "LONG:CLOSED_15M_DIRECTION_FLIP"
+      "LONG:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "LONG:CAPITULATION_RECOVERY": "MISSED",
-      "LONG:CLOSED_15M_DIRECTION_FLIP": "MISSED"
+      "LONG:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -5437,9 +5404,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 78.83,
-    "low": 77.47,
+    "low": 77.56,
     "created_ts": 1781720100000,
-    "updated_ts": 1781780400000,
+    "updated_ts": 1781781300000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -5490,7 +5457,7 @@
       "side": "LONG",
       "status": "LOCKED",
       "origin_ts": 1781779500000,
-      "updated_ts": 1781781300000,
+      "updated_ts": 1781782200000,
       "origin_price": 78.59,
       "extreme_price": 78.59,
       "released_at": "",
@@ -5503,7 +5470,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781773200000,
-      "updated_ts": 1781781300000,
+      "updated_ts": 1781782200000,
       "origin_price": 77.57,
       "extreme_price": 77.53,
       "released_at": "2026-06-18T09:01:50.821008+00:00",
@@ -5567,7 +5534,7 @@
       "published_at": "2026-06-18T09:28:10+00:00",
       "reference_price": 77.83,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T11:15:53.581379+00:00",
+      "last_seen_at": "2026-06-18T11:31:17.046571+00:00",
       "last_status": "REJECTED"
     },
     "trump vows to reimpose us sanctions on russian crude soon as truce with iran takes shape msn": {
@@ -5583,7 +5550,7 @@
       "published_at": "2026-06-18T10:05:05+00:00",
       "reference_price": 77.68,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T11:15:53.581379+00:00",
+      "last_seen_at": "2026-06-18T11:31:17.046571+00:00",
       "last_status": "REJECTED"
     }
   },
