@@ -2456,6 +2456,82 @@
       "entry_window_closed": true,
       "market_direction_context": "LONG",
       "time": "2026-06-18T20:01:22.054459+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.14,
+      "quality": 67,
+      "reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками; технічний план не пройшов фінальну перевірку сторони/геометрії",
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "label": "🟢 Ранній вхід на відкаті",
+        "side": "LONG",
+        "score": 82,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "3M сетап відновлено з повної послідовності свічок між 15-хвилинними запусками",
+        "quality_adjustment": 1,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.18,
+          "tp2_atr_mult": 2.2,
+          "tp3_tail_atr": 0.95,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.34,
+          "quality_adjustment": 1,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "interval_rescue": true,
+        "entry_rule": "ранній вхід на відкаті: 1H/15M або структура за напрям, ціна в FVG/OB/правильній PD-зоні, 3M не сильно проти",
+        "stop_rule": "стоп за low/high відкату або за межу FVG/OB з ATR-буфером",
+        "tp_rule": "TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає реакції — швидко підвищувати ризик"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 84,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 9.26,
+          "move8_abs_pct": 0.609,
+          "slope15_abs_pct": 1.722,
+          "rsi15": 65.5,
+          "score_total_abs": 78,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "EXHAUSTION"
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-18T20:15:54.959334+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2536,7 +2612,7 @@
       "published_at": "2026-06-18T17:29:32+00:00",
       "reference_price": 77.99,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T20:01:20.731266+00:00",
+      "last_seen_at": "2026-06-18T20:15:54.181900+00:00",
       "last_status": "REJECTED"
     },
     "from hormuz to chabahar how the us iran peace deal could boost india s strategic interests firstpost": {
@@ -2560,7 +2636,7 @@
       "published_at": "2026-06-18T17:45:38+00:00",
       "reference_price": 78.08,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T20:01:20.731266+00:00",
+      "last_seen_at": "2026-06-18T20:15:54.181900+00:00",
       "last_status": "REJECTED"
     },
     "crude oil prices tumble as strait of hormuz reopens barchart": {
@@ -2600,8 +2676,8 @@
       "published_at": "2026-06-18T18:20:39+00:00",
       "reference_price": 79.12,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T20:01:20.731266+00:00",
-      "last_status": "REJECTED"
+      "last_seen_at": "2026-06-18T20:15:54.181900+00:00",
+      "last_status": "ABSORBED"
     },
     "strait of hormuz reopens as lebanon fighting threatens truce honolulu star advertiser": {
       "first_seen_at": "2026-06-18T19:45:51.577733+00:00",
@@ -2613,18 +2689,18 @@
     }
   },
   "regime_memory": {
-    "type": "EXHAUSTION",
+    "type": "TREND_EXPANSION",
     "pending_type": "",
-    "stable_count": 6,
-    "pending_count": 0,
-    "updated_at": "2026-06-18T20:01:21.641269+00:00"
+    "stable_count": 1,
+    "pending_count": 1,
+    "updated_at": "2026-06-18T20:15:54.546032+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781812800000,
+      "updated_ts": 1781813700000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -2637,7 +2713,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781808300000,
-      "updated_ts": 1781812800000,
+      "updated_ts": 1781813700000,
       "origin_price": 79.26,
       "extreme_price": 79.38,
       "released_at": "2026-06-18T18:45:55.908025+00:00",
@@ -2653,10 +2729,29 @@
     "origin_ts": 1781799300000,
     "extreme_ts": 1781806500000,
     "extreme_price": 79.77,
-    "released_at": "2026-06-18T20:01:22.044646+00:00",
+    "released_at": "2026-06-18T20:15:54.936298+00:00",
     "released_extreme": 79.77
   },
-  "opportunity_memory": null,
+  "opportunity_memory": {
+    "active": true,
+    "source": "POST_GATE",
+    "created_at": "2026-06-18T20:15:54.958138+00:00",
+    "ttl_minutes": 45,
+    "side": "LONG",
+    "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+    "setup_label": "🟢 Ранній вхід на відкаті",
+    "quality": 67,
+    "price": 79.14,
+    "trigger_level": 79.065,
+    "invalidation": 78.8023,
+    "reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками; технічний план не пройшов фінальну перевірку сторони/геометрії",
+    "missing_conditions": [
+      "немає одного з топових сетапів для професійного входу",
+      "низька ліквідність/тиха сесія — ризик спреду і slippage",
+      "немає повного ICT-сетапу — якість входу обмежена"
+    ],
+    "plan": null
+  },
   "lock_release_opportunities": {
     "LONG": {
       "active": true,
@@ -2664,7 +2759,7 @@
       "source": "POST_EVALUATION",
       "gate_name": "",
       "created_at": "2026-06-18T20:01:22.053785+00:00",
-      "updated_at": "2026-06-18T20:01:22.053788+00:00",
+      "updated_at": "2026-06-18T20:15:54.958093+00:00",
       "ttl_minutes": 105,
       "side": "LONG",
       "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
@@ -2673,7 +2768,7 @@
         "type": "PULLBACK_CONTINUATION_FAST_ENTRY",
         "label": "🟢 Ранній вхід на відкаті",
         "side": "LONG",
-        "score": 89,
+        "score": 82,
         "entry_allowed": true,
         "block_entry": false,
         "risk_mode": "RISKY",
@@ -2698,25 +2793,30 @@
         "tp_rule": "TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
         "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає реакції — швидко підвищувати ризик"
       },
-      "quality": 89,
-      "origin_price": 79.38,
-      "trigger_level": 79.43,
-      "trigger_ts": 1781812620000,
-      "trigger_type": "BREAKOUT_RETEST",
-      "invalidation": 79.3022,
-      "initial_reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.76%; ціна далеко від EMA20 (2.19 ATR)",
-      "plan": null
+      "quality": 82,
+      "origin_price": 79.14,
+      "trigger_level": 79.065,
+      "trigger_ts": 1781812260000,
+      "trigger_type": "ICT_ZONE_RECLAIM",
+      "invalidation": 78.8023,
+      "initial_reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками; технічний план не пройшов фінальну перевірку сторони/геометрії",
+      "plan": null,
+      "release_seen_at": "",
+      "release_reason": "",
+      "activation_count": 0
     }
   },
   "opportunity_analytics": {
     "new_entries": 3,
     "covered_by_active_trade": 0,
-    "missed": 5,
+    "missed": 6,
     "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY"
+      "LONG:CAPITULATION_RECOVERY",
+      "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "LONG:CAPITULATION_RECOVERY": "NEW_ENTRY"
+      "LONG:CAPITULATION_RECOVERY": "NEW_ENTRY",
+      "SHORT:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -2790,24 +2890,32 @@
         "episode_key": "LONG:SWEEP_REVERSAL",
         "status": "MISSED",
         "time": "2026-06-18T19:45:52.596300+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781812800000,
+        "episode_key": "SHORT:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-18T20:15:54.959174+00:00"
       }
     ],
     "covered_total": 3,
-    "total_opportunities": 8,
-    "coverage_pct": 37.5
+    "total_opportunities": 9,
+    "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T20:01:22.054471+00:00",
-    "price": 79.38,
-    "oi": 55572.6,
-    "cvd": -191904.0,
-    "cvd_time": "2026-06-18T20:01:22.054473+00:00",
-    "last_trade_ts": 1781812870409,
+    "time": "2026-06-18T20:15:54.959354+00:00",
+    "price": 79.14,
+    "oi": 55546.52,
+    "cvd": -191146.0,
+    "cvd_time": "2026-06-18T20:15:54.959356+00:00",
+    "last_trade_ts": 1781813729577,
     "bias": "LONG",
-    "tech_score": 125,
-    "total_score": 108
+    "tech_score": 95,
+    "total_score": 78
   },
-  "updated_at": "2026-06-18T20:01:22.054475+00:00",
+  "updated_at": "2026-06-18T20:15:54.959360+00:00",
   "range_boundary_state": {
     "status": "ROLLED_OVER",
     "high": 78.83,
@@ -2864,7 +2972,7 @@
       "status": "WAITING_RECLAIM",
       "side": "LONG",
       "created_at": "2026-06-18T18:50:59.035537+00:00",
-      "updated_at": "2026-06-18T20:01:22.023074+00:00",
+      "updated_at": "2026-06-18T20:15:54.898473+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781807220000,
@@ -2885,12 +2993,12 @@
         "detected": false,
         "invalidated": false,
         "impulse_extreme": 79.77,
-        "impulse_atr15": 2.591,
+        "impulse_atr15": 2.633,
         "pullback_extreme": 79.18,
         "pullback_ts": 1781811000000,
         "pullback_ratio": 0.634,
-        "pullback_atr15": 1.644,
-        "bars_after_impulse": 30,
+        "pullback_atr15": 1.67,
+        "bars_after_impulse": 35,
         "reason": "контрольований pullback ще не завершений"
       },
       "impulse_extreme": 79.77,
