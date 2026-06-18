@@ -772,6 +772,170 @@
       "mfe_captured_pct": -57.5,
       "mfe_giveback_pct": 0.819,
       "time": "2026-06-18T15:31:15.027949+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "LONG",
+      "price": 77.24,
+      "quality": 55,
+      "reason": "основний імпульс уже відпрацьований; чекати нову базу, відкат або незалежний ретест",
+      "setup_classifier": {
+        "type": "LATE_IMPULSE_CHASE",
+        "label": "🔴 Пізній імпульс / доганяння",
+        "side": "LONG",
+        "score": 30,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап",
+        "quality_adjustment": -12,
+        "quality_cap": 61,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -12,
+          "quality_cap": 61,
+          "block_entry": true
+        },
+        "entry_rule": "вхід заборонений до проторговки, ретесту або нового FVG/OB повернення рівня",
+        "stop_rule": "план лише після нового рівня для стопу",
+        "tp_rule": "не рахувати TP від поганої локації",
+        "management_rule": "чекати перебудову; напрям може бути правильний, але точка входу погана",
+        "late_penalty": 0,
+        "late_without_reset": false,
+        "composite_exhaustion": {
+          "hard_block": false,
+          "count": 1,
+          "signals": [
+            "3M drift уже відпрацював 0.783%"
+          ],
+          "distance_atr": 0.582,
+          "rsi15": 45.5,
+          "professional_exception": true,
+          "hard_reset_evidence": true,
+          "ict_exception": false,
+          "professional_evidence": {
+            "professional_exception": true,
+            "fresh_event": true,
+            "event": {
+              "confirmed": true,
+              "side": "LONG",
+              "type": "ICT_ZONE_RECLAIM",
+              "score": 85,
+              "trigger_ts": 1781796420000,
+              "age_min": 15.0,
+              "trigger_level": 77.085,
+              "trigger_close": 77.12,
+              "stop_level": 76.6467,
+              "extension_atr15": 0.382,
+              "anchor_confirmed": true,
+              "closed_anchor": true,
+              "reset_confirmed": true,
+              "professional_location": true,
+              "evidence": [
+                "BULL_FVG",
+                "ZONE_RECLAIM",
+                "FLOW"
+              ],
+              "source": "CLOSED_3M_SEQUENCE_BETWEEN_15M_RUNS",
+              "age_tier": "FRESH",
+              "path_invalidation_checked": true
+            },
+            "fresh_base": false,
+            "fresh_base_snapshot": {
+              "active": true,
+              "fresh_base_valid": false,
+              "exhaustion_reset_allowed": false,
+              "allowed": false,
+              "side": "LONG",
+              "base_candles": 6,
+              "base_high": 77.36,
+              "base_low": 76.57,
+              "width_atr": 1.946,
+              "new_local_swing": true,
+              "accepted_breakout": false,
+              "retest": true,
+              "reacceptance": false,
+              "flow_support": true,
+              "fast_against": 0,
+              "structural": true,
+              "stop_level": 76.4432,
+              "trigger_level": 77.36,
+              "trigger_ts": 1781796600000,
+              "score": 78,
+              "reason": "старий EXHAUSTION діє, доки нова 6-12 свічкова база не дасть swing, accepted breakout, ретест і flow"
+            },
+            "micro_base_breakout": false,
+            "micro": {
+              "micro_bos": false,
+              "micro_base": false,
+              "compression": false,
+              "extension_from_base_atr": 0.55,
+              "local_high": 77.46,
+              "local_low": 76.5,
+              "reason": "мікро-BOS ще не закрився"
+            },
+            "strong_ict_location": false
+          },
+          "reason": ""
+        },
+        "persistent_exhaustion": {
+          "active": true,
+          "allowed": false,
+          "state": "LOCKED",
+          "side": "LONG",
+          "current_exhausted": true,
+          "fresh_base_reset": false,
+          "shock_retest": false,
+          "separate_setup_release": false,
+          "release_reason": "",
+          "lock": {
+            "side": "LONG",
+            "status": "LOCKED",
+            "origin_ts": 1781797500000,
+            "updated_ts": 1781797500000,
+            "origin_price": 77.24,
+            "extreme_price": 77.24,
+            "released_at": "",
+            "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock"
+          },
+          "reason": "persistent EXHAUSTION/impulse lock: потрібна нова база, ретест або окремий свіжий сетап"
+        }
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 5.74,
+          "move8_abs_pct": 0.117,
+          "slope15_abs_pct": 1.39,
+          "rsi15": 45.5,
+          "score_total_abs": 4,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "NONE",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "entry_window_status": "EXHAUSTED",
+      "entry_window_closed": true,
+      "market_direction_context": "LONG",
+      "time": "2026-06-18T15:45:58.135660+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -822,21 +986,29 @@
       "reaction_known": true,
       "last_seen_at": "2026-06-18T15:31:14.297716+00:00",
       "last_status": "REJECTED"
+    },
+    "hormuz crude oil and chabahar 3 big ways us iran truce impacts india news18": {
+      "first_seen_at": "2026-06-18T15:45:57.192413+00:00",
+      "published_at": "2026-06-18T14:45:07+00:00",
+      "reference_price": 77.02,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-18T15:45:57.192413+00:00",
+      "last_status": "REJECTED"
     }
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "REVERSAL_BUILDUP",
+    "pending_type": "NORMAL",
     "stable_count": 0,
     "pending_count": 1,
-    "updated_at": "2026-06-18T15:31:14.709405+00:00"
+    "updated_at": "2026-06-18T15:45:57.812134+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781794800000,
+      "updated_ts": 1781797500000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -844,16 +1016,26 @@
       "released_ts": 1781792460000,
       "released_extreme": 76.55,
       "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
+    },
+    "LONG": {
+      "side": "LONG",
+      "status": "LOCKED",
+      "origin_ts": 1781797500000,
+      "updated_ts": 1781797500000,
+      "origin_price": 77.24,
+      "extreme_price": 77.24,
+      "released_at": "",
+      "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock"
     }
   },
   "shock_lock": {
-    "side": "SHORT",
-    "status": "RELEASED",
-    "origin_ts": 1781790300000,
-    "extreme_ts": 1781790300000,
-    "extreme_price": 76.78,
-    "released_at": "2026-06-18T15:01:23.473451+00:00",
-    "released_extreme": 76.78
+    "side": "LONG",
+    "status": "LOCKED",
+    "origin_ts": 1781796600000,
+    "extreme_ts": 1781796600000,
+    "extreme_price": 77.46,
+    "released_at": "",
+    "released_extreme": null
   },
   "opportunity_memory": null,
   "lock_release_opportunities": {},
@@ -906,23 +1088,23 @@
     "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T15:31:15.027976+00:00",
-    "price": 77.13,
-    "oi": 60514.34,
-    "cvd": -190732.0,
-    "cvd_time": "2026-06-18T15:31:15.027979+00:00",
-    "last_trade_ts": 1781796638367,
+    "time": "2026-06-18T15:45:58.135683+00:00",
+    "price": 77.24,
+    "oi": 60492.8,
+    "cvd": -176063.0,
+    "cvd_time": "2026-06-18T15:45:58.135686+00:00",
+    "last_trade_ts": 1781797531487,
     "bias": "NEUTRAL",
-    "tech_score": -38,
-    "total_score": -34
+    "tech_score": 1,
+    "total_score": 4
   },
-  "updated_at": "2026-06-18T15:31:15.027983+00:00",
+  "updated_at": "2026-06-18T15:45:58.135690+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 77.94,
+    "high": 78.09,
     "low": 76.5,
     "created_ts": 1781790300000,
-    "updated_ts": 1781795700000,
+    "updated_ts": 1781796600000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
