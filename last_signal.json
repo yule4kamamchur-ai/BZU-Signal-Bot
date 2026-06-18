@@ -4113,27 +4113,93 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-18T05:01:23.126488+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 77.73,
+      "quality": 55,
+      "reason": "немає одного з топових сетапів для професійного входу",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "SHORT",
+        "score": 53,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 88,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 5.91,
+          "move8_abs_pct": 0.499,
+          "slope15_abs_pct": 0.681,
+          "rsi15": 31.4,
+          "score_total_abs": 194,
+          "participation_same": 1,
+          "late_penalty": 7,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_CONTINUATION_HOLD",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 0,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-18T05:15:54.576954+00:00"
     }
   ],
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "REVERSAL_BUILDUP",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-18T05:01:22.776174+00:00"
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 0,
+    "updated_at": "2026-06-18T05:15:54.348637+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T05:01:23.126564+00:00",
-    "price": 77.7,
-    "oi": 59814.69,
-    "cvd": 67604.0,
-    "cvd_time": "2026-06-18T05:01:23.126569+00:00",
-    "last_trade_ts": 1781758867161,
+    "time": "2026-06-18T05:15:54.577023+00:00",
+    "price": 77.73,
+    "oi": 59665.55,
+    "cvd": 54291.0,
+    "cvd_time": "2026-06-18T05:15:54.577027+00:00",
+    "last_trade_ts": 1781759734233,
     "bias": "SHORT",
-    "tech_score": -102,
-    "total_score": -103
+    "tech_score": -192,
+    "total_score": -194
   },
-  "updated_at": "2026-06-18T05:01:23.126573+00:00",
+  "updated_at": "2026-06-18T05:15:54.577032+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 0,
@@ -4201,10 +4267,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 78.39,
+    "high": 78.29,
     "low": 77.69,
     "created_ts": 1781720100000,
-    "updated_ts": 1781757900000,
+    "updated_ts": 1781758800000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -4214,7 +4280,7 @@
     "active": true,
     "source": "PRE_GATE",
     "created_at": "2026-06-18T04:45:52.137130+00:00",
-    "updated_at": "2026-06-18T05:01:23.125703+00:00",
+    "updated_at": "2026-06-18T05:15:54.576193+00:00",
     "ttl_minutes": 45,
     "side": "SHORT",
     "setup_type": "TREND_CONTINUATION",
@@ -4265,7 +4331,7 @@
       "preferred_geometry_met": true,
       "breakout_gates": []
     },
-    "last_final_reason": "ліквідність/ринковий блок проти цього входу",
+    "last_final_reason": "немає одного з топових сетапів для професійного входу",
     "last_final_action": "WATCH"
   },
   "shock_lock": {
