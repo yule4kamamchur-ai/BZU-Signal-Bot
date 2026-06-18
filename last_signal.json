@@ -2532,6 +2532,83 @@
       "entry_window_closed": false,
       "market_direction_context": null,
       "time": "2026-06-18T20:15:54.959334+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.97,
+      "quality": 64,
+      "reason": "після TP2/TP3 потрібні нова 15M база, відкат і новий BOS/reclaim",
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "label": "🟢 Ранній вхід на відкаті",
+        "side": "LONG",
+        "score": 80,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "3M сетап відновлено з повної послідовності свічок між 15-хвилинними запусками",
+        "quality_adjustment": 1,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.18,
+          "tp2_atr_mult": 2.2,
+          "tp3_tail_atr": 0.95,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.34,
+          "quality_adjustment": 1,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "interval_rescue": true,
+        "entry_rule": "ранній вхід на відкаті: 1H/15M або структура за напрям, ціна в FVG/OB/правильній PD-зоні, 3M не сильно проти",
+        "stop_rule": "стоп за low/high відкату або за межу FVG/OB з ATR-буфером",
+        "tp_rule": "TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає реакції — швидко підвищувати ризик"
+      },
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 7.74,
+          "move8_abs_pct": 0.653,
+          "slope15_abs_pct": 1.542,
+          "rsi15": 61.7,
+          "score_total_abs": 14,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "NONE",
+          "range_edge": true
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-18T20:31:08.756501+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2636,7 +2713,7 @@
       "published_at": "2026-06-18T17:45:38+00:00",
       "reference_price": 78.08,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T20:15:54.181900+00:00",
+      "last_seen_at": "2026-06-18T20:31:07.714453+00:00",
       "last_status": "REJECTED"
     },
     "crude oil prices tumble as strait of hormuz reopens barchart": {
@@ -2676,8 +2753,8 @@
       "published_at": "2026-06-18T18:20:39+00:00",
       "reference_price": 79.12,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T20:15:54.181900+00:00",
-      "last_status": "ABSORBED"
+      "last_seen_at": "2026-06-18T20:31:07.714453+00:00",
+      "last_status": "UNRESOLVED"
     },
     "strait of hormuz reopens as lebanon fighting threatens truce honolulu star advertiser": {
       "first_seen_at": "2026-06-18T19:45:51.577733+00:00",
@@ -2690,17 +2767,17 @@
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "",
-    "stable_count": 1,
+    "pending_type": "TREND_PULLBACK",
+    "stable_count": 0,
     "pending_count": 1,
-    "updated_at": "2026-06-18T20:15:54.546032+00:00"
+    "updated_at": "2026-06-18T20:31:08.211188+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781813700000,
+      "updated_ts": 1781814600000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -2713,7 +2790,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781808300000,
-      "updated_ts": 1781813700000,
+      "updated_ts": 1781814600000,
       "origin_price": 79.26,
       "extreme_price": 79.38,
       "released_at": "2026-06-18T18:45:55.908025+00:00",
@@ -2724,33 +2801,179 @@
     }
   },
   "shock_lock": {
-    "side": "LONG",
-    "status": "RELEASED",
-    "origin_ts": 1781799300000,
-    "extreme_ts": 1781806500000,
-    "extreme_price": 79.77,
-    "released_at": "2026-06-18T20:15:54.936298+00:00",
-    "released_extreme": 79.77
+    "side": "SHORT",
+    "status": "LOCKED",
+    "origin_ts": 1781813700000,
+    "extreme_ts": 1781813700000,
+    "extreme_price": 79.05,
+    "released_at": "",
+    "released_extreme": null
   },
   "opportunity_memory": {
     "active": true,
-    "source": "POST_GATE",
-    "created_at": "2026-06-18T20:15:54.958138+00:00",
+    "source": "PRE_GATE",
+    "created_at": "2026-06-18T20:31:08.744720+00:00",
+    "updated_at": "2026-06-18T20:31:08.755076+00:00",
     "ttl_minutes": 45,
     "side": "LONG",
     "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
     "setup_label": "🟢 Ранній вхід на відкаті",
+    "initial_action": "RISKY_ENTRY",
     "quality": 67,
-    "price": 79.14,
+    "price": 78.97,
     "trigger_level": 79.065,
-    "invalidation": 78.8023,
-    "reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками; технічний план не пройшов фінальну перевірку сторони/геометрії",
-    "missing_conditions": [
-      "немає одного з топових сетапів для професійного входу",
-      "низька ліквідність/тиха сесія — ризик спреду і slippage",
-      "немає повного ICT-сетапу — якість входу обмежена"
+    "trigger_ts": 1781813340000,
+    "trigger_type": "ICT_ZONE_RECLAIM",
+    "retest_confirmed": true,
+    "invalidation": 78.7747,
+    "initial_reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками",
+    "missing_condition": "після TP2/TP3 потрібні нова 15M база, відкат і новий BOS/reclaim",
+    "blocking_gate": "STRUCTURAL_RESET_GATE",
+    "blocked_gates": [
+      "STRUCTURAL_RESET_GATE"
     ],
-    "plan": null
+    "missing_conditions": [
+      "після TP2/TP3 потрібні нова 15M база, відкат і новий BOS/reclaim",
+      "15M ще нейтральний — вхід тільки після 3M reclaim/ретесту"
+    ],
+    "plan": {
+      "entry": 78.97,
+      "stop": 78.7747,
+      "tp1": 79.77,
+      "tp2": 82.2,
+      "tp3": 82.279,
+      "risk_pct": 0.247,
+      "rr1": 4.1,
+      "rr2": 16.54,
+      "rr3": 16.94,
+      "invalidation": "15m закриття нижче 78.7747 або злам 3m/структури проти LONG. Сетап: 🟢 Ранній вхід на відкаті. Режим: відкат у тренді. стоп за low/high відкату або за межу FVG/OB з ATR-буфером | TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+      "valid": true,
+      "validation_reason": "",
+      "technical_stop_basis": "bullish FVG invalidation",
+      "technical_tp1_basis": "ICT range high / external liquidity",
+      "technical_tp2_basis": "36-bar 1H external high",
+      "technical_tp3_basis": "15M measured range/impulse expansion objective",
+      "geometry_mode": "15M_ICT_STRUCTURAL",
+      "technical_rr_target": 1.5,
+      "better_entry": 0.0,
+      "geometry_grade": "VIABLE",
+      "barrier_mode": "MANAGEMENT_CHECKPOINT",
+      "preferred_geometry_met": false,
+      "breakout_gates": [],
+      "management_checkpoints": [
+        {
+          "level": 79.77,
+          "basis": "ICT range high / external liquidity",
+          "priority": 98,
+          "source_status": "HARD",
+          "status": "PENDING",
+          "acceptance_streak": 0,
+          "rejection_streak": 0,
+          "touched_at": "",
+          "accepted_at": "",
+          "rejected_at": ""
+        },
+        {
+          "level": 79.53,
+          "basis": "закритий 1H swing high",
+          "priority": 94,
+          "source_status": "HARD",
+          "status": "PENDING",
+          "acceptance_streak": 0,
+          "rejection_streak": 0,
+          "touched_at": "",
+          "accepted_at": "",
+          "rejected_at": ""
+        }
+      ],
+      "geometry_reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
+      "geometry_diagnostics": {
+        "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V2_CHECKPOINTS",
+        "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "setup_label": "🟢 Ранній вхід на відкаті",
+        "setup_family": "FAST_PULLBACK",
+        "side": "LONG",
+        "price": 78.97,
+        "atr15": 0.3423,
+        "policy": {
+          "min_rr": 1.15,
+          "min_target_pct": 0.72,
+          "min_target_atr15": 0.95,
+          "max_stop_pct": 1.34,
+          "tactical_family": true
+        },
+        "reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
+        "public_message": "",
+        "details": {
+          "stop_candidates": 5,
+          "target_candidates": 6,
+          "allow_3m_stop": false,
+          "rejection_counts": {
+            "tactical_stop_not_confirmed": 1,
+            "stop_too_tight": 0,
+            "stop_too_wide": 1,
+            "hard_barrier": 10
+          },
+          "best_pair": {
+            "stop": 78.7747,
+            "stop_basis": "bullish FVG invalidation",
+            "stop_timeframe": "ICT",
+            "target": 79.77,
+            "target_basis": "ICT range high / external liquidity",
+            "risk_pct": 0.247,
+            "risk_atr15": 0.57,
+            "reward_pct": 1.013,
+            "reward_atr15": 2.337,
+            "rr": 4.097,
+            "failures": [],
+            "barrier": null,
+            "barrier_basis": "",
+            "management_checkpoints": [
+              {
+                "level": 79.53,
+                "basis": "закритий 1H swing high",
+                "priority": 94,
+                "source_status": "HARD",
+                "status": "PENDING",
+                "acceptance_streak": 0,
+                "rejection_streak": 0,
+                "touched_at": "",
+                "accepted_at": "",
+                "rejected_at": ""
+              }
+            ],
+            "pass_ratio": 1.0,
+            "priority": 999
+          },
+          "validation_reasons": [],
+          "management_checkpoints": [
+            {
+              "level": 79.53,
+              "basis": "закритий 1H swing high",
+              "priority": 94,
+              "source_status": "HARD",
+              "status": "PENDING",
+              "acceptance_streak": 0,
+              "rejection_streak": 0,
+              "touched_at": "",
+              "accepted_at": "",
+              "rejected_at": ""
+            }
+          ]
+        },
+        "better_entry": {
+          "level": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "hidden_for_no_setup": false,
+        "checkpoint_message": "Контрольний бар’єр: 79.53. Якщо рівень прийнято — тримаємо план далі; якщо відхилено — бот перевірить 3M, структуру та потік і дасть HOLD / PROTECT / EXIT REVIEW."
+      },
+      "better_entry_zone_low": 0.0,
+      "better_entry_zone_high": 0.0
+    },
+    "last_final_reason": "після TP2/TP3 потрібні нова 15M база, відкат і новий BOS/reclaim",
+    "last_final_action": "WATCH"
   },
   "lock_release_opportunities": {
     "LONG": {
@@ -2759,7 +2982,7 @@
       "source": "POST_EVALUATION",
       "gate_name": "",
       "created_at": "2026-06-18T20:01:22.053785+00:00",
-      "updated_at": "2026-06-18T20:15:54.958093+00:00",
+      "updated_at": "2026-06-18T20:31:08.754822+00:00",
       "ttl_minutes": 105,
       "side": "LONG",
       "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
@@ -2768,7 +2991,7 @@
         "type": "PULLBACK_CONTINUATION_FAST_ENTRY",
         "label": "🟢 Ранній вхід на відкаті",
         "side": "LONG",
-        "score": 82,
+        "score": 80,
         "entry_allowed": true,
         "block_entry": false,
         "risk_mode": "RISKY",
@@ -2793,14 +3016,149 @@
         "tp_rule": "TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
         "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає реакції — швидко підвищувати ризик"
       },
-      "quality": 82,
-      "origin_price": 79.14,
+      "quality": 80,
+      "origin_price": 78.97,
       "trigger_level": 79.065,
-      "trigger_ts": 1781812260000,
+      "trigger_ts": 1781813340000,
       "trigger_type": "ICT_ZONE_RECLAIM",
-      "invalidation": 78.8023,
-      "initial_reason": "професійний 3M тригер знайдено у свічках між 15-хвилинними перевірками; технічний план не пройшов фінальну перевірку сторони/геометрії",
-      "plan": null,
+      "invalidation": 78.7747,
+      "initial_reason": "після TP2/TP3 потрібні нова 15M база, відкат і новий BOS/reclaim",
+      "plan": {
+        "entry": 78.97,
+        "stop": 78.7747,
+        "tp1": 79.77,
+        "tp2": 82.2,
+        "tp3": 82.279,
+        "risk_pct": 0.247,
+        "rr1": 4.1,
+        "rr2": 16.54,
+        "rr3": 16.94,
+        "invalidation": "15m закриття нижче 78.7747 або злам 3m/структури проти LONG. Сетап: 🟢 Ранній вхід на відкаті. Режим: відкат у тренді. стоп за low/high відкату або за межу FVG/OB з ATR-буфером | TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+        "valid": true,
+        "validation_reason": "",
+        "technical_stop_basis": "bullish FVG invalidation",
+        "technical_tp1_basis": "ICT range high / external liquidity",
+        "technical_tp2_basis": "36-bar 1H external high",
+        "technical_tp3_basis": "15M measured range/impulse expansion objective",
+        "geometry_mode": "15M_ICT_STRUCTURAL",
+        "technical_rr_target": 1.5,
+        "better_entry": 0.0,
+        "geometry_grade": "VIABLE",
+        "barrier_mode": "MANAGEMENT_CHECKPOINT",
+        "preferred_geometry_met": false,
+        "breakout_gates": [],
+        "management_checkpoints": [
+          {
+            "level": 79.77,
+            "basis": "ICT range high / external liquidity",
+            "priority": 98,
+            "source_status": "HARD",
+            "status": "PENDING",
+            "acceptance_streak": 0,
+            "rejection_streak": 0,
+            "touched_at": "",
+            "accepted_at": "",
+            "rejected_at": ""
+          },
+          {
+            "level": 79.53,
+            "basis": "закритий 1H swing high",
+            "priority": 94,
+            "source_status": "HARD",
+            "status": "PENDING",
+            "acceptance_streak": 0,
+            "rejection_streak": 0,
+            "touched_at": "",
+            "accepted_at": "",
+            "rejected_at": ""
+          }
+        ],
+        "geometry_reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
+        "geometry_diagnostics": {
+          "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V2_CHECKPOINTS",
+          "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "setup_label": "🟢 Ранній вхід на відкаті",
+          "setup_family": "FAST_PULLBACK",
+          "side": "LONG",
+          "price": 78.97,
+          "atr15": 0.3423,
+          "policy": {
+            "min_rr": 1.15,
+            "min_target_pct": 0.72,
+            "min_target_atr15": 0.95,
+            "max_stop_pct": 1.34,
+            "tactical_family": true
+          },
+          "reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
+          "public_message": "",
+          "details": {
+            "stop_candidates": 5,
+            "target_candidates": 6,
+            "allow_3m_stop": false,
+            "rejection_counts": {
+              "tactical_stop_not_confirmed": 1,
+              "stop_too_tight": 0,
+              "stop_too_wide": 1,
+              "hard_barrier": 10
+            },
+            "best_pair": {
+              "stop": 78.7747,
+              "stop_basis": "bullish FVG invalidation",
+              "stop_timeframe": "ICT",
+              "target": 79.77,
+              "target_basis": "ICT range high / external liquidity",
+              "risk_pct": 0.247,
+              "risk_atr15": 0.57,
+              "reward_pct": 1.013,
+              "reward_atr15": 2.337,
+              "rr": 4.097,
+              "failures": [],
+              "barrier": null,
+              "barrier_basis": "",
+              "management_checkpoints": [
+                {
+                  "level": 79.53,
+                  "basis": "закритий 1H swing high",
+                  "priority": 94,
+                  "source_status": "HARD",
+                  "status": "PENDING",
+                  "acceptance_streak": 0,
+                  "rejection_streak": 0,
+                  "touched_at": "",
+                  "accepted_at": "",
+                  "rejected_at": ""
+                }
+              ],
+              "pass_ratio": 1.0,
+              "priority": 999
+            },
+            "validation_reasons": [],
+            "management_checkpoints": [
+              {
+                "level": 79.53,
+                "basis": "закритий 1H swing high",
+                "priority": 94,
+                "source_status": "HARD",
+                "status": "PENDING",
+                "acceptance_streak": 0,
+                "rejection_streak": 0,
+                "touched_at": "",
+                "accepted_at": "",
+                "rejected_at": ""
+              }
+            ]
+          },
+          "better_entry": {
+            "level": 0.0,
+            "low": 0.0,
+            "high": 0.0
+          },
+          "hidden_for_no_setup": false,
+          "checkpoint_message": "Контрольний бар’єр: 79.53. Якщо рівень прийнято — тримаємо план далі; якщо відхилено — бот перевірить 3M, структуру та потік і дасть HOLD / PROTECT / EXIT REVIEW."
+        },
+        "better_entry_zone_low": 0.0,
+        "better_entry_zone_high": 0.0
+      },
       "release_seen_at": "",
       "release_reason": "",
       "activation_count": 0
@@ -2905,17 +3263,17 @@
     "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T20:15:54.959354+00:00",
-    "price": 79.14,
-    "oi": 55546.52,
-    "cvd": -191146.0,
-    "cvd_time": "2026-06-18T20:15:54.959356+00:00",
-    "last_trade_ts": 1781813729577,
-    "bias": "LONG",
-    "tech_score": 95,
-    "total_score": 78
+    "time": "2026-06-18T20:31:08.756726+00:00",
+    "price": 78.97,
+    "oi": 55518.14,
+    "cvd": -165919.0,
+    "cvd_time": "2026-06-18T20:31:08.756730+00:00",
+    "last_trade_ts": 1781814643408,
+    "bias": "NEUTRAL",
+    "tech_score": -17,
+    "total_score": -14
   },
-  "updated_at": "2026-06-18T20:15:54.959360+00:00",
+  "updated_at": "2026-06-18T20:31:08.756734+00:00",
   "range_boundary_state": {
     "status": "ROLLED_OVER",
     "high": 78.83,
@@ -2927,7 +3285,189 @@
     "old_high": 78.83,
     "old_low": 77.25
   },
-  "pending_trigger": null,
+  "pending_trigger": {
+    "active": true,
+    "created_at": "2026-06-18T20:31:08.755085+00:00",
+    "side": "LONG",
+    "price": 78.97,
+    "quality": 64,
+    "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+    "setup_label": "🟢 Ранній вхід на відкаті",
+    "reason": "після TP2/TP3 потрібні нова 15M база, відкат і новий BOS/reclaim",
+    "regime_engine": {
+      "name": "PULLBACK",
+      "regime_type": "TREND_PULLBACK",
+      "label": "відкат у тренді",
+      "score": 70,
+      "confidence": 70,
+      "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+      "entry_action": "ALLOW",
+      "entry_quality_adjustment": 2,
+      "quality_cap": 86,
+      "hard_block": false,
+      "allowed_setups": [
+        "PULLBACK_CONTINUATION",
+        "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "PRIME_ICT_LOCATION_OVERRIDE",
+        "SWEEP_REVERSAL",
+        "SWEEP_RECLAIM_EARLY_ENTRY"
+      ],
+      "notes": [],
+      "metrics": {
+        "bias": "SHORT",
+        "range_atr": 7.74,
+        "move8_abs_pct": 0.653,
+        "slope15_abs_pct": 1.542,
+        "rsi15": 61.7,
+        "score_total_abs": 14,
+        "participation_same": 0,
+        "late_penalty": 0,
+        "pd": "PREMIUM",
+        "ict_setup": "NONE",
+        "range_edge": true
+      },
+      "stable_count": 0,
+      "pending_count": 1,
+      "is_stable": false,
+      "previous_regime_type": "TREND_EXPANSION"
+    },
+    "plan": {
+      "entry": 78.97,
+      "stop": 78.7747,
+      "tp1": 79.77,
+      "tp2": 82.2,
+      "tp3": 82.279,
+      "risk_pct": 0.247,
+      "rr1": 4.1,
+      "rr2": 16.54,
+      "rr3": 16.94,
+      "invalidation": "15m закриття нижче 78.7747 або злам 3m/структури проти LONG. Сетап: 🟢 Ранній вхід на відкаті. Режим: відкат у тренді. стоп за low/high відкату або за межу FVG/OB з ATR-буфером | TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+      "valid": true,
+      "validation_reason": "",
+      "technical_stop_basis": "bullish FVG invalidation",
+      "technical_tp1_basis": "ICT range high / external liquidity",
+      "technical_tp2_basis": "36-bar 1H external high",
+      "technical_tp3_basis": "15M measured range/impulse expansion objective",
+      "geometry_mode": "15M_ICT_STRUCTURAL",
+      "technical_rr_target": 1.5,
+      "better_entry": 0.0,
+      "geometry_grade": "VIABLE",
+      "barrier_mode": "MANAGEMENT_CHECKPOINT",
+      "preferred_geometry_met": false,
+      "breakout_gates": [],
+      "management_checkpoints": [
+        {
+          "level": 79.77,
+          "basis": "ICT range high / external liquidity",
+          "priority": 98,
+          "source_status": "HARD",
+          "status": "PENDING",
+          "acceptance_streak": 0,
+          "rejection_streak": 0,
+          "touched_at": "",
+          "accepted_at": "",
+          "rejected_at": ""
+        },
+        {
+          "level": 79.53,
+          "basis": "закритий 1H swing high",
+          "priority": 94,
+          "source_status": "HARD",
+          "status": "PENDING",
+          "acceptance_streak": 0,
+          "rejection_streak": 0,
+          "touched_at": "",
+          "accepted_at": "",
+          "rejected_at": ""
+        }
+      ],
+      "geometry_reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
+      "geometry_diagnostics": {
+        "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V2_CHECKPOINTS",
+        "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "setup_label": "🟢 Ранній вхід на відкаті",
+        "setup_family": "FAST_PULLBACK",
+        "side": "LONG",
+        "price": 78.97,
+        "atr15": 0.3423,
+        "policy": {
+          "min_rr": 1.15,
+          "min_target_pct": 0.72,
+          "min_target_atr15": 0.95,
+          "max_stop_pct": 1.34,
+          "tactical_family": true
+        },
+        "reason_code": "GEOMETRY_VALID_WITH_CHECKPOINTS",
+        "public_message": "",
+        "details": {
+          "stop_candidates": 5,
+          "target_candidates": 6,
+          "allow_3m_stop": false,
+          "rejection_counts": {
+            "tactical_stop_not_confirmed": 1,
+            "stop_too_tight": 0,
+            "stop_too_wide": 1,
+            "hard_barrier": 10
+          },
+          "best_pair": {
+            "stop": 78.7747,
+            "stop_basis": "bullish FVG invalidation",
+            "stop_timeframe": "ICT",
+            "target": 79.77,
+            "target_basis": "ICT range high / external liquidity",
+            "risk_pct": 0.247,
+            "risk_atr15": 0.57,
+            "reward_pct": 1.013,
+            "reward_atr15": 2.337,
+            "rr": 4.097,
+            "failures": [],
+            "barrier": null,
+            "barrier_basis": "",
+            "management_checkpoints": [
+              {
+                "level": 79.53,
+                "basis": "закритий 1H swing high",
+                "priority": 94,
+                "source_status": "HARD",
+                "status": "PENDING",
+                "acceptance_streak": 0,
+                "rejection_streak": 0,
+                "touched_at": "",
+                "accepted_at": "",
+                "rejected_at": ""
+              }
+            ],
+            "pass_ratio": 1.0,
+            "priority": 999
+          },
+          "validation_reasons": [],
+          "management_checkpoints": [
+            {
+              "level": 79.53,
+              "basis": "закритий 1H swing high",
+              "priority": 94,
+              "source_status": "HARD",
+              "status": "PENDING",
+              "acceptance_streak": 0,
+              "rejection_streak": 0,
+              "touched_at": "",
+              "accepted_at": "",
+              "rejected_at": ""
+            }
+          ]
+        },
+        "better_entry": {
+          "level": 0.0,
+          "low": 0.0,
+          "high": 0.0
+        },
+        "hidden_for_no_setup": false,
+        "checkpoint_message": "Контрольний бар’єр: 79.53. Якщо рівень прийнято — тримаємо план далі; якщо відхилено — бот перевірить 3M, структуру та потік і дасть HOLD / PROTECT / EXIT REVIEW."
+      },
+      "better_entry_zone_low": 0.0,
+      "better_entry_zone_high": 0.0
+    }
+  },
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-18T18:31:13.949995+00:00",
@@ -2968,11 +3508,11 @@
   },
   "reversal_handoff": {
     "LONG": {
-      "active": true,
-      "status": "WAITING_RECLAIM",
+      "active": false,
+      "status": "EXPIRED",
       "side": "LONG",
       "created_at": "2026-06-18T18:50:59.035537+00:00",
-      "updated_at": "2026-06-18T20:15:54.898473+00:00",
+      "updated_at": "2026-06-18T20:31:08.556545+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781807220000,
@@ -2987,7 +3527,7 @@
         "MICRO_BOS",
         "RETEST_HOLD"
       ],
-      "reason": "контрольований 3M pullback сформовано; чекаємо новий micro-BOS/reclaim",
+      "reason": "reversal handoff втратив свіжість",
       "pullback_snapshot": {
         "active": true,
         "detected": false,
