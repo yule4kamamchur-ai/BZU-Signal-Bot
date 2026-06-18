@@ -2754,6 +2754,70 @@
       "entry_window_closed": false,
       "market_direction_context": null,
       "time": "2026-06-18T21:01:19.151856+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.77,
+      "quality": 51,
+      "reason": "немає одного з топових сетапів для професійного входу",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "LONG",
+        "score": 48,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 7.7,
+          "move8_abs_pct": 0.076,
+          "slope15_abs_pct": 0.368,
+          "rsi15": 63.3,
+          "score_total_abs": 42,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-18T21:14:34.424962+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2898,7 +2962,7 @@
       "published_at": "2026-06-18T18:20:39+00:00",
       "reference_price": 79.12,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T21:01:18.188648+00:00",
+      "last_seen_at": "2026-06-18T21:14:33.539426+00:00",
       "last_status": "UNRESOLVED"
     },
     "strait of hormuz reopens as lebanon fighting threatens truce honolulu star advertiser": {
@@ -2922,7 +2986,7 @@
       "published_at": "2026-06-18T19:13:29+00:00",
       "reference_price": 79.31,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T20:45:50.530717+00:00",
+      "last_seen_at": "2026-06-18T21:14:33.539426+00:00",
       "last_status": "CONFIRMED"
     },
     "brent rises after vance warns israel against breaking cease fire yahoo finance": {
@@ -2930,23 +2994,31 @@
       "published_at": "2026-06-18T20:28:37+00:00",
       "reference_price": 79.09,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T21:01:18.188648+00:00",
+      "last_seen_at": "2026-06-18T21:14:33.539426+00:00",
+      "last_status": "UNRESOLVED"
+    },
+    "trading day stocks rally oil hits pre iran war lows as strait of hormuz reopens for business reuters": {
+      "first_seen_at": "2026-06-18T21:14:33.539426+00:00",
+      "published_at": "2026-06-18T21:02:28+00:00",
+      "reference_price": 79.11,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-18T21:14:33.539426+00:00",
       "last_status": "FRESH"
     }
   },
   "regime_memory": {
-    "type": "NEWS_SHOCK",
-    "pending_type": "NORMAL",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-18T21:01:18.726791+00:00"
+    "type": "NORMAL",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-18T21:14:33.855557+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781816400000,
+      "updated_ts": 1781817120000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -2959,7 +3031,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781808300000,
-      "updated_ts": 1781816400000,
+      "updated_ts": 1781817120000,
       "origin_price": 79.26,
       "extreme_price": 79.38,
       "released_at": "2026-06-18T18:45:55.908025+00:00",
@@ -2982,7 +3054,7 @@
     "active": true,
     "source": "PRE_GATE",
     "created_at": "2026-06-18T21:01:19.138486+00:00",
-    "updated_at": "2026-06-18T21:01:19.150483+00:00",
+    "updated_at": "2026-06-18T21:14:34.423859+00:00",
     "ttl_minutes": 45,
     "side": "LONG",
     "setup_type": "SWEEP_REVERSAL",
@@ -3212,7 +3284,7 @@
       "better_entry_zone_low": 0.0,
       "better_entry_zone_high": 0.0
     },
-    "last_final_reason": "після капітуляції потрібні закритий 15M reclaim, HL/LH, новий 3M BOS/retest, flow і стоп за новою базою",
+    "last_final_reason": "немає одного з топових сетапів для професійного входу",
     "last_final_action": "WATCH"
   },
   "lock_release_opportunities": {
@@ -3618,17 +3690,17 @@
     "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T21:01:19.152174+00:00",
-    "price": 79.03,
-    "oi": 55368.91,
-    "cvd": -177498.0,
-    "cvd_time": "2026-06-18T21:01:19.152177+00:00",
-    "last_trade_ts": 1781816467517,
-    "bias": "NEUTRAL",
-    "tech_score": 33,
-    "total_score": 14
+    "time": "2026-06-18T21:14:34.425144+00:00",
+    "price": 78.77,
+    "oi": 55366.74,
+    "cvd": -206843.0,
+    "cvd_time": "2026-06-18T21:14:34.425147+00:00",
+    "last_trade_ts": 1781817252523,
+    "bias": "LONG",
+    "tech_score": 67,
+    "total_score": 42
   },
-  "updated_at": "2026-06-18T21:01:19.152182+00:00",
+  "updated_at": "2026-06-18T21:14:34.425151+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 79.5,
@@ -3685,7 +3757,7 @@
       "status": "INVALIDATED",
       "side": "LONG",
       "created_at": "2026-06-18T18:50:59.035537+00:00",
-      "updated_at": "2026-06-18T20:45:51.340116+00:00",
+      "updated_at": "2026-06-18T21:14:34.369073+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781807220000,
