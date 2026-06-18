@@ -1,6 +1,112 @@
 {
   "version": "pro-v3.6-single-file-clean-range-entry-active-checkpoints",
-  "active_trade": null,
+  "active_trade": {
+    "id": "6f392b4e41",
+    "side": "LONG",
+    "opened_at": "2026-06-18T17:16:00.164194+00:00",
+    "entry": 77.87,
+    "stop_initial": 77.3655,
+    "stop_current": 77.3655,
+    "tp1": 79.22,
+    "tp2": 79.29,
+    "tp3": 79.53,
+    "quality": 79,
+    "stop_updated_at": "",
+    "status": "OPEN",
+    "tp1_hit": false,
+    "tp2_hit": false,
+    "tp3_hit": false,
+    "tp1_stop_locked": false,
+    "tp2_stop_locked": false,
+    "tp1_locked_stop": 0.0,
+    "tp2_locked_stop": 0.0,
+    "best_price": 77.87,
+    "last_action": "OPEN",
+    "last_message_key": "",
+    "entry_integrity_score": 100,
+    "entry_fail_streak": 0,
+    "entry_recovery_checks": 0,
+    "entry_last_state": "СИЛЬНА",
+    "mfe_giveback_streak": 0,
+    "mfe_giveback_last_state": "OK",
+    "setup_type": "CLOSED_15M_DIRECTION_FLIP",
+    "regime_type": "",
+    "entry_level": "RISKY_ENTRY",
+    "lifecycle_stage": "EARLY_CONFIRMED",
+    "lifecycle_score": 86,
+    "lifecycle_confirmations": 0,
+    "lifecycle_failures": 0,
+    "lifecycle_last_transition": "2026-06-18T17:16:00.164202+00:00",
+    "structural_stop": 77.3655,
+    "profit_stop": 0.0,
+    "active_stop_source": "STRUCTURAL",
+    "recovery_after_rejection": false,
+    "recovery_trigger_ts": 0,
+    "recovery_trigger_level": 0.0,
+    "recovery_event_type": "",
+    "recovery_entry_checks": 0,
+    "management_checks": 0,
+    "mfe_profit_lock_streak": 0,
+    "mfe_profit_lock_active": false,
+    "execution_urgency_score": 0,
+    "execution_urgency_mode": "NORMAL",
+    "execution_protect_streak": 0,
+    "execution_exit_streak": 0,
+    "execution_last_reason": "",
+    "execution_last_updated_at": "",
+    "barrier_checkpoints": [
+      {
+        "level": 78.83,
+        "basis": "ICT range high / external liquidity",
+        "priority": 98,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      },
+      {
+        "level": 78.24,
+        "basis": "закритий 1H swing high",
+        "priority": 94,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      },
+      {
+        "level": 79.22,
+        "basis": "закритий 1H swing high",
+        "priority": 94,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      }
+    ],
+    "barrier_checkpoint_status": "PENDING",
+    "barrier_checkpoint_level": 78.83,
+    "barrier_checkpoint_basis": "ICT range high / external liquidity",
+    "barrier_checkpoint_acceptance_streak": 0,
+    "barrier_checkpoint_rejection_streak": 0,
+    "barrier_checkpoint_last_updated_at": "2026-06-18T17:16:00.164223+00:00",
+    "notes": [
+      "RISKY_ENTRY",
+      "ENTRY_LEVEL: RISKY_ENTRY",
+      "SETUP_CLASSIFIER: CLOSED_15M_DIRECTION_FLIP",
+      "LIFECYCLE_STAGE: EARLY_CONFIRMED",
+      "ENGINE_VERSION: GEOMETRY_PERSISTENCE_ENTRY_CONSENSUS_GUARDS",
+      "повна 15M зміна напрямку: два break-close + displacement + ретест + fast-підтвердження"
+    ]
+  },
   "history": [
     {
       "type": "WATCH",
@@ -1720,6 +1826,83 @@
       "entry_window_closed": true,
       "market_direction_context": "LONG",
       "time": "2026-06-18T17:01:21.879598+00:00"
+    },
+    {
+      "type": "ENTRY",
+      "side": "LONG",
+      "action": "RISKY_ENTRY",
+      "price": 77.87,
+      "quality": 79,
+      "setup_classifier": {
+        "type": "CLOSED_15M_DIRECTION_FLIP",
+        "label": "🟢 Закрита 15M зміна напрямку",
+        "side": "LONG",
+        "score": 88,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "force_risky": false,
+        "reason": "повна 15M зміна напрямку: два break-close + displacement + ретест + fast-підтвердження",
+        "quality_adjustment": 1,
+        "quality_cap": 84,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.2,
+          "tp2_atr_mult": 2.35,
+          "tp3_tail_atr": 1.0,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.28,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "два закриті 15M break-close + displacement + ретест/HL-LH + flow/CVD",
+        "stop_rule": "лише 15M/ICT інвалідація нової бази",
+        "tp_rule": "перша реальна 15M/1H ліквідність без погоні",
+        "management_rule": "ризиковий до підтвердження 1H",
+        "closed_15m_direction_flip": true
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 5.28,
+          "move8_abs_pct": 1.392,
+          "slope15_abs_pct": 1.184,
+          "rsi15": 56.6,
+          "score_total_abs": 85,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB"
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "entry": 77.87,
+      "stop": 77.3655,
+      "tp1": 79.22,
+      "tp2": 79.29,
+      "tp3": 79.53,
+      "time": "2026-06-18T17:16:00.164416+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1792,23 +1975,23 @@
       "published_at": "2026-06-18T15:30:09+00:00",
       "reference_price": 77.3,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T17:01:19.501279+00:00",
+      "last_seen_at": "2026-06-18T17:15:59.300722+00:00",
       "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-18T17:01:21.546665+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-18T17:15:59.767091+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781802000000,
+      "updated_ts": 1781802900000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -1819,13 +2002,16 @@
     },
     "LONG": {
       "side": "LONG",
-      "status": "LOCKED",
+      "status": "RELEASED",
       "origin_ts": 1781797500000,
-      "updated_ts": 1781802000000,
+      "updated_ts": 1781802900000,
       "origin_price": 77.24,
-      "extreme_price": 77.77,
-      "released_at": "",
-      "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock"
+      "extreme_price": 77.87,
+      "released_at": "2026-06-18T17:16:00.098988+00:00",
+      "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock",
+      "released_ts": 1781802900000,
+      "released_extreme": 77.87,
+      "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
     }
   },
   "shock_lock": {
@@ -1840,11 +2026,17 @@
   "opportunity_memory": null,
   "lock_release_opportunities": {},
   "opportunity_analytics": {
-    "new_entries": 1,
+    "new_entries": 3,
     "covered_by_active_trade": 0,
     "missed": 2,
-    "active_episode_keys": [],
-    "episode_status": {},
+    "active_episode_keys": [
+      "LONG:CAPITULATION_RECOVERY",
+      "LONG:CLOSED_15M_DIRECTION_FLIP"
+    ],
+    "episode_status": {
+      "LONG:CLOSED_15M_DIRECTION_FLIP": "NEW_ENTRY",
+      "LONG:CAPITULATION_RECOVERY": "NEW_ENTRY"
+    },
     "recent": [
       {
         "side": "SHORT",
@@ -1877,30 +2069,46 @@
         "episode_key": "SHORT:CAPITULATION_RECOVERY",
         "status": "UPGRADED_TO_NEW_ENTRY",
         "time": "2026-06-18T15:01:23.478294+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CLOSED_15M_DIRECTION_FLIP",
+        "ts": 1781802000000,
+        "episode_key": "LONG:CLOSED_15M_DIRECTION_FLIP",
+        "status": "NEW_ENTRY",
+        "time": "2026-06-18T17:16:00.164063+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781802000000,
+        "episode_key": "LONG:CAPITULATION_RECOVERY",
+        "status": "NEW_ENTRY",
+        "time": "2026-06-18T17:16:00.164071+00:00"
       }
     ],
-    "covered_total": 1,
-    "total_opportunities": 3,
-    "coverage_pct": 33.3
+    "covered_total": 3,
+    "total_opportunities": 5,
+    "coverage_pct": 60.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T17:01:21.879623+00:00",
-    "price": 77.77,
-    "oi": 59158.05,
-    "cvd": -219217.0,
-    "cvd_time": "2026-06-18T17:01:21.879627+00:00",
-    "last_trade_ts": 1781802068554,
+    "time": "2026-06-18T17:16:00.164669+00:00",
+    "price": 77.87,
+    "oi": 58864.2,
+    "cvd": -222047.0,
+    "cvd_time": "2026-06-18T17:16:00.164672+00:00",
+    "last_trade_ts": 1781802939072,
     "bias": "LONG",
-    "tech_score": 107,
-    "total_score": 99
+    "tech_score": 93,
+    "total_score": 85
   },
-  "updated_at": "2026-06-18T17:01:21.879631+00:00",
+  "updated_at": "2026-06-18T17:16:00.164676+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 77.95,
+    "high": 77.99,
     "low": 76.5,
     "created_ts": 1781790300000,
-    "updated_ts": 1781801100000,
+    "updated_ts": 1781802000000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
