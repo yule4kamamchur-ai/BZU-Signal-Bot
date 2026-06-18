@@ -210,6 +210,21 @@ LOCATION_VERTICAL_3M_PCT = float(os.getenv("LOCATION_VERTICAL_3M_PCT", "0.55") o
 LOCATION_MATURE_15M_MOVE_PCT = float(os.getenv("LOCATION_MATURE_15M_MOVE_PCT", "0.75") or 0.75)
 LOCATION_LOW_PARTICIPATION_RATIO = float(os.getenv("LOCATION_LOW_PARTICIPATION_RATIO", "0.18") or 0.18)
 
+# Lock Release Opportunity Bridge.
+# A professional setup that was blocked by persistent exhaustion/shock or by
+# missing geometry is preserved through the lock lifecycle. Releasing the lock
+# never opens a trade by itself: a fresh 3M hold/BOS/retest and viable RR are
+# still mandatory.
+LOCK_RELEASE_BRIDGE_TTL_MINUTES = int(os.getenv("LOCK_RELEASE_BRIDGE_TTL_MINUTES", "105") or 105)
+LOCK_RELEASE_BRIDGE_RELEASE_GRACE_MINUTES = int(os.getenv("LOCK_RELEASE_BRIDGE_RELEASE_GRACE_MINUTES", "45") or 45)
+LOCK_RELEASE_BRIDGE_MIN_QUALITY = int(os.getenv("LOCK_RELEASE_BRIDGE_MIN_QUALITY", "57") or 57)
+LOCK_RELEASE_BRIDGE_MIN_CLASSIFIER_SCORE = int(os.getenv("LOCK_RELEASE_BRIDGE_MIN_CLASSIFIER_SCORE", "64") or 64)
+LOCK_RELEASE_BRIDGE_MAX_EXTENSION_ATR15 = float(os.getenv("LOCK_RELEASE_BRIDGE_MAX_EXTENSION_ATR15", "0.72") or 0.72)
+LOCK_RELEASE_BRIDGE_MIN_RR1 = float(os.getenv("LOCK_RELEASE_BRIDGE_MIN_RR1", "1.20") or 1.20)
+LOCK_RELEASE_BRIDGE_MIN_3M_SCORE = int(os.getenv("LOCK_RELEASE_BRIDGE_MIN_3M_SCORE", "18") or 18)
+LOCK_RELEASE_BRIDGE_MAX_ADVERSE_LAYERS = int(os.getenv("LOCK_RELEASE_BRIDGE_MAX_ADVERSE_LAYERS", "1") or 1)
+LOCK_RELEASE_BRIDGE_EVENT_MAX_AGE_MINUTES = int(os.getenv("LOCK_RELEASE_BRIDGE_EVENT_MAX_AGE_MINUTES", "24") or 24)
+
 # Geometry Persistence & Missed Continuation Recovery.
 # The package preserves a confirmed continuation when only stop/TP geometry is
 # missing, retries real 15M/ICT invalidations on subsequent runs, and never
@@ -238,6 +253,10 @@ OPPORTUNITY_MEMORY_SETUP_TYPES = {
 }
 TRANSITION_WHITELIST_REGIMES = {"REVERSAL_BUILDUP", "EXHAUSTION", "RANGE_COMPRESSION", "COMPRESSION", "PULLBACK", "NEWS_SHOCK"}
 TRANSITION_PRIORITY_SETUPS = {"CLOSED_15M_DIRECTION_FLIP", "CAPITULATION_RECOVERY", "FRESH_BASE_CONTINUATION_REENTRY"}
+LOCK_RELEASE_BRIDGE_SETUP_TYPES = set(OPPORTUNITY_MEMORY_SETUP_TYPES) | {
+    "COUNTERTREND_SCALP", "RANGE_EDGE_TRADE", "TREND_IGNITION_ENTRY",
+    "NEWS_IMPULSE", "CAPITULATION_RECOVERY", "CLOSED_15M_DIRECTION_FLIP",
+}
 
 # Intraday filters
 # Volume is a bonus only. Low volume must NOT block entries for BZ intraday,
@@ -4680,6 +4699,10 @@ def _apply_gate_with_pre_memory(context, setup, gate_func, gate_name):
     before = setup
     after = gate_func(before, context)
     capture_pre_gate_opportunity_memory(context, before, after, gate_name)
+    # Keep a dedicated candidate through persistent/shock lock release. This is
+    # separate from generic opportunity memory because the lock may outlive the
+    # normal 45-55 minute geometry TTL.
+    capture_lock_release_bridge_candidate(context, before, after, gate_name)
     return after
 
 
@@ -16206,6 +16229,9 @@ def capture_pre_geometry_opportunity(context, side, setup_info):
         "geometry_candidates": candidates, "plan": old.get("plan") if same else None,
         "thesis": thesis,
     }
+    # Geometry may be missing while an exhaustion/shock lock is still active.
+    # Preserve the professional thesis in the longer lock-release bridge too.
+    capture_lock_release_bridge_from_setup_info(context, side, setup_info, source="GEOMETRY_PENDING")
 
 
 def mark_geometry_opportunity_failure(context, side, setup_info, plan):
@@ -16445,6 +16471,421 @@ def activate_opportunity_memory_if_ready(context, base_setup):
     return out
 
 
+def _bridge_iso_age_minutes(value):
+    try:
+        dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (now_utc() - dt.astimezone(timezone.utc)).total_seconds() / 60.0)
+    except Exception:
+        return 99999.0
+
+
+def _lock_release_bridge_store(context):
+    state = (context or {}).get("runtime_state") if isinstance((context or {}).get("runtime_state"), dict) else None
+    if state is None:
+        return None, {}
+    store = state.get("lock_release_opportunities")
+    if not isinstance(store, dict):
+        store = {}
+        state["lock_release_opportunities"] = store
+    return state, store
+
+
+def _bridge_classifier_is_professional(info):
+    if not isinstance(info, dict):
+        return False
+    st = str(info.get("type") or "").upper()
+    return bool(
+        st in LOCK_RELEASE_BRIDGE_SETUP_TYPES
+        and info.get("entry_allowed")
+        and not info.get("block_entry")
+        and int(info.get("score", 0) or 0) >= LOCK_RELEASE_BRIDGE_MIN_CLASSIFIER_SCORE
+    )
+
+
+def _bridge_memory_from_candidate(context, candidate, source, gate_name=""):
+    if not isinstance(candidate, dict):
+        return None
+    side = candidate.get("side")
+    info = candidate.get("setup_classifier") or ((context or {}).get("setup_classifier") or {})
+    if side not in ["LONG", "SHORT"] or not _bridge_classifier_is_professional(info):
+        return None
+    quality = int(candidate.get("quality", 0) or 0)
+    if quality < LOCK_RELEASE_BRIDGE_MIN_QUALITY and int(info.get("score", 0) or 0) < LOCK_RELEASE_BRIDGE_MIN_CLASSIFIER_SCORE + 8:
+        return None
+    fast = _fast_layer_state(context, side)
+    if int(fast.get("against", 0) or 0) > LOCK_RELEASE_BRIDGE_MAX_ADVERSE_LAYERS:
+        return None
+    price = safe_float((context or {}).get("price"), None)
+    event = candidate.get("entry_rescue_event") or (context or {}).get("entry_rescue_event") or {}
+    trigger = safe_float(event.get("trigger_level"), None)
+    if trigger is None:
+        trigger = safe_float(candidate.get("price"), price)
+    plan = candidate.get("plan")
+    invalidation = _opportunity_invalidation_from_setup(candidate, context)
+    return {
+        "active": True,
+        "status": "ARMED",
+        "source": source,
+        "gate_name": gate_name,
+        "created_at": iso_now(),
+        "updated_at": iso_now(),
+        "ttl_minutes": LOCK_RELEASE_BRIDGE_TTL_MINUTES,
+        "side": side,
+        "setup_type": str(info.get("type") or "").upper(),
+        "setup_label": info.get("label") or _setup_label(info.get("type")),
+        "classifier": make_json_safe(info),
+        "quality": max(quality, int(info.get("score", 0) or 0)),
+        "origin_price": round_price(price),
+        "trigger_level": round_price(trigger),
+        "trigger_ts": int(event.get("trigger_ts", 0) or 0),
+        "trigger_type": event.get("type"),
+        "invalidation": round_price(invalidation),
+        "initial_reason": candidate.get("reason") or info.get("reason"),
+        "plan": asdict(plan) if plan and hasattr(plan, "entry") else (make_json_safe(plan) if isinstance(plan, dict) else None),
+    }
+
+
+def _save_lock_release_bridge_candidate(context, memory):
+    if not isinstance(memory, dict) or memory.get("side") not in ["LONG", "SHORT"]:
+        return
+    state, store = _lock_release_bridge_store(context)
+    if state is None:
+        return
+    side = memory["side"]
+    old = store.get(side) if isinstance(store.get(side), dict) else None
+    same = bool(old and old.get("setup_type") == memory.get("setup_type"))
+    if old and not same:
+        old_score = int(old.get("quality", 0) or 0)
+        new_score = int(memory.get("quality", 0) or 0)
+        # Do not replace a stronger recent professional thesis with a weaker one.
+        if _bridge_iso_age_minutes(old.get("created_at")) <= LOCK_RELEASE_BRIDGE_TTL_MINUTES and old_score > new_score + 4:
+            return
+    if same:
+        memory["created_at"] = old.get("created_at") or memory.get("created_at")
+        memory["release_seen_at"] = old.get("release_seen_at") or ""
+        memory["release_reason"] = old.get("release_reason") or ""
+        memory["activation_count"] = int(old.get("activation_count", 0) or 0)
+    store[side] = memory
+    state["lock_release_opportunities"] = store
+
+
+def capture_lock_release_bridge_candidate(context, candidate, blocked, gate_name):
+    """Capture the professional setup before a lock/risk gate converts it to WATCH."""
+    if not isinstance(candidate, dict) or candidate.get("action") not in ["ENTRY", "RISKY_ENTRY"]:
+        return
+    if not isinstance(blocked, dict) or blocked.get("action") in ["ENTRY", "RISKY_ENTRY"]:
+        return
+    side = candidate.get("side")
+    if side not in ["LONG", "SHORT"]:
+        return
+    snap = ((blocked.get("entry_risk_package") or {}).get("persistent_exhaustion") or blocked.get("persistent_exhaustion_lock") or {})
+    reason = " ".join([str(blocked.get("reason") or ""), *[str(x) for x in (blocked.get("conflicts") or [])]]).lower()
+    lock_related = bool(
+        snap.get("active")
+        or blocked.get("same_side_exhaustion_lock")
+        or "persistent exhaustion" in reason
+        or "impulse lock" in reason
+        or "post-rejection" in reason
+        or "геометр" in reason
+        or gate_name in {"ENTRY_RISK_PACKAGE_GATE", "FINAL_SAME_SIDE_EXHAUSTION_LOCK", "FINAL_STOP_ROLE_REBUILD"}
+    )
+    if not lock_related:
+        return
+    memory = _bridge_memory_from_candidate(context, candidate, source="PRE_LOCK_GATE", gate_name=gate_name)
+    if memory:
+        _save_lock_release_bridge_candidate(context, memory)
+
+
+def capture_lock_release_bridge_from_setup_info(context, side, setup_info, source="SETUP_INFO"):
+    if side not in ["LONG", "SHORT"] or not _bridge_classifier_is_professional(setup_info):
+        return
+    candidate = {
+        "action": "RISKY_ENTRY",
+        "side": side,
+        "quality": int(setup_info.get("score", 0) or 0),
+        "reason": setup_info.get("reason"),
+        "setup_classifier": setup_info,
+        "entry_rescue_event": (context or {}).get("entry_rescue_event") or {},
+    }
+    memory = _bridge_memory_from_candidate(context, candidate, source=source)
+    if memory:
+        _save_lock_release_bridge_candidate(context, memory)
+
+
+def _backfill_lock_release_bridge_from_history(context):
+    """Migration path for states created before this package was installed."""
+    state, store = _lock_release_bridge_store(context)
+    if state is None:
+        return
+    history = list(state.get("history") or [])
+    for item in reversed(history[-40:]):
+        if not isinstance(item, dict):
+            continue
+        age = _bridge_iso_age_minutes(item.get("time"))
+        if age > LOCK_RELEASE_BRIDGE_TTL_MINUTES:
+            continue
+        side = item.get("side")
+        info = item.get("setup_classifier") or {}
+        if side not in ["LONG", "SHORT"] or side in store or not _bridge_classifier_is_professional(info):
+            continue
+        quality = int(item.get("quality", 0) or 0)
+        if quality < LOCK_RELEASE_BRIDGE_MIN_QUALITY and int(info.get("score", 0) or 0) < LOCK_RELEASE_BRIDGE_MIN_CLASSIFIER_SCORE + 8:
+            continue
+        reason = str(item.get("reason") or "").lower()
+        if not any(key in reason for key in ["геометр", "post-rejection", "retest", "bos", "reclaim", "lock", "підтвердж"]):
+            continue
+        memory = {
+            "active": True, "status": "ARMED", "source": "HISTORY_BACKFILL",
+            "created_at": item.get("time") or iso_now(), "updated_at": iso_now(),
+            "ttl_minutes": LOCK_RELEASE_BRIDGE_TTL_MINUTES, "side": side,
+            "setup_type": str(info.get("type") or "").upper(),
+            "setup_label": info.get("label") or _setup_label(info.get("type")),
+            "classifier": make_json_safe(info),
+            "quality": max(quality, int(info.get("score", 0) or 0)),
+            "origin_price": round_price(item.get("price")), "trigger_level": round_price(item.get("price")),
+            "trigger_ts": 0, "trigger_type": "HISTORY_BACKFILL", "invalidation": None,
+            "initial_reason": item.get("reason"), "plan": None,
+        }
+        store[side] = memory
+        state["lock_release_opportunities"] = store
+        break
+
+
+def update_lock_release_opportunity_bridge_memory(state, setup, context):
+    """Maintain bridge memory after each completed evaluation."""
+    if not isinstance(state, dict):
+        return
+    store = state.get("lock_release_opportunities")
+    if not isinstance(store, dict):
+        store = {}
+        state["lock_release_opportunities"] = store
+    for side in list(store):
+        memory = store.get(side) or {}
+        if _bridge_iso_age_minutes(memory.get("created_at")) > int(memory.get("ttl_minutes", LOCK_RELEASE_BRIDGE_TTL_MINUTES) or LOCK_RELEASE_BRIDGE_TTL_MINUTES):
+            store.pop(side, None)
+    if isinstance(setup, dict) and setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
+        store.pop(setup.get("side"), None)
+        state["lock_release_opportunities"] = store
+        return
+    if isinstance(setup, dict) and setup.get("side") in ["LONG", "SHORT"]:
+        info = setup.get("setup_classifier") or {}
+        if _bridge_classifier_is_professional(info):
+            reason = str(setup.get("reason") or "").lower()
+            lock = ((state.get("persistent_exhaustion_locks") or {}).get(setup.get("side")) or {})
+            shock = state.get("shock_lock") or {}
+            relevant = bool(
+                lock.get("status") in {"LOCKED", "RELEASED"}
+                or (shock.get("side") == setup.get("side") and shock.get("status") in {"LOCKED", "RELEASED"})
+                or any(k in reason for k in ["геометр", "post-rejection", "retest", "bos", "reclaim", "lock"])
+            )
+            if relevant:
+                memory = _bridge_memory_from_candidate(context, setup, source="POST_EVALUATION")
+                if memory:
+                    _save_lock_release_bridge_candidate(context, memory)
+    state["lock_release_opportunities"] = store
+
+
+def _bridge_trigger_snapshot(context, side):
+    event = best_15m_interval_entry_event(context, side) or {}
+    latest_ts = _latest_context_ts(context)
+    event_ts = int(event.get("trigger_ts", 0) or 0)
+    event_age = max(0.0, (latest_ts - event_ts) / 60000.0) if latest_ts and event_ts else 9999.0
+    event_ok = bool(
+        event
+        and event.get("confirmed")
+        and event.get("anchor_confirmed")
+        and event_age <= LOCK_RELEASE_BRIDGE_EVENT_MAX_AGE_MINUTES
+        and event.get("type") in {"SWEEP_RECLAIM", "BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"}
+        and (event.get("follow_through") or event.get("post_confirmed") or int(event.get("score", 0) or 0) >= 72)
+    )
+    structure = (context or {}).get("structure") or {}
+    phase = str(structure.get("phase") or "").upper()
+    tf3 = (context or {}).get("tf3") or {}
+    bos = bool(
+        structure.get("bias") == side
+        and ((side == "LONG" and ("BOS LONG" in phase or "CHOCH LONG" in phase))
+             or (side == "SHORT" and ("BOS SHORT" in phase or "CHOCH SHORT" in phase)))
+    )
+    tf3_ok = bool(tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= LOCK_RELEASE_BRIDGE_MIN_3M_SCORE)
+    evidence = _fresh_professional_entry_evidence(context, side)
+    hold_ok = bool(tf3_ok and (evidence.get("fresh_event") or evidence.get("micro_base_breakout") or evidence.get("fresh_base")))
+    ready = bool(event_ok or (bos and tf3_ok) or hold_ok)
+    return {
+        "ready": ready, "event": event if event_ok else {}, "event_ok": event_ok,
+        "event_age_min": round(event_age, 1) if event_age < 9999 else None,
+        "bos_or_choch": bos, "tf3_hold": tf3_ok, "fresh_hold": hold_ok,
+        "reason": ("свіжий 3M hold/BOS/retest підтверджено" if ready else "потрібен свіжий 3M hold, BOS/CHOCH або breakout-retest після зняття lock"),
+    }
+
+
+def _bridge_revalidated_classifier(memory, context, trigger):
+    original = dict(memory.get("classifier") or {})
+    side = memory.get("side")
+    event_type = str(((trigger or {}).get("event") or {}).get("type") or "").upper()
+    tf1 = (context or {}).get("tf1h") or {}
+    tf4 = (context or {}).get("tf4h") or {}
+    both_htf_against = bool(tf1.get("bias") == opposite(side) and tf4.get("bias") == opposite(side))
+    if both_htf_against:
+        st = "COUNTERTREND_SCALP"
+    elif event_type == "SWEEP_RECLAIM":
+        st = "SWEEP_RECLAIM_EARLY_ENTRY"
+    elif event_type in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM"}:
+        st = "PULLBACK_CONTINUATION_FAST_ENTRY"
+    else:
+        st = "TREND_IGNITION_ENTRY"
+    original.update({
+        "type": st, "label": _setup_label(st), "side": side,
+        "score": max(LOCK_RELEASE_BRIDGE_MIN_CLASSIFIER_SCORE, int(memory.get("quality", 0) or 0)),
+        "entry_allowed": True, "block_entry": False, "risk_mode": "RISKY",
+        "force_risky": True, "professional_override": True,
+        "reason": "збережений сетап переоцінено після зняття lock; свіжий 3M/BOS/retest підтвердив нову точку входу",
+        "quality_adjustment": 0, "quality_cap": 79, "profile": setup_trade_profile(st),
+    })
+    return original
+
+
+def _bridge_watch_setup(base_setup, memory, reason, quality=None, trigger=None):
+    out = dict(base_setup or {})
+    side = memory.get("side")
+    info = dict(memory.get("classifier") or {})
+    info.update({
+        "side": side, "entry_allowed": True, "block_entry": False,
+        "risk_mode": "RISKY", "force_risky": True,
+        "reason": reason,
+    })
+    out.update({
+        "action": "WATCH", "side": side,
+        "quality": int(max(55, min(67, quality if quality is not None else max(58, int(memory.get("quality", 0) or 0) - 12)))),
+        "title": f"ЧЕКАТИ — {side} ПІСЛЯ ЗНЯТТЯ LOCK",
+        "reason": reason, "setup_classifier": info,
+        "entry_level": "WATCH_TRIGGER", "entry_level_label": _entry_level_label("WATCH_TRIGGER"),
+        "lock_release_bridge": True, "lock_release_bridge_status": "WAITING_TRIGGER",
+        "show_wait_plan": False,
+    })
+    if trigger:
+        out["lock_release_bridge_trigger"] = trigger
+    out["conflicts"] = list(dict.fromkeys((out.get("conflicts") or []) + [reason]))
+    return out
+
+
+def activate_lock_release_opportunity_bridge(context, base_setup):
+    """Reconnect a preserved professional setup after its lock is released.
+
+    Release alone produces WATCH. Entry is possible only after a fresh 3M
+    hold/BOS/retest, no more than one adverse fast layer, no chase extension,
+    and a newly rebuilt plan with RR1 >= 1.20.
+    """
+    if not isinstance(context, dict) or not isinstance(base_setup, dict):
+        return base_setup
+    if base_setup.get("action") in ["ENTRY", "RISKY_ENTRY"]:
+        return base_setup
+    _backfill_lock_release_bridge_from_history(context)
+    state, store = _lock_release_bridge_store(context)
+    if state is None or not store:
+        return base_setup
+    candidates = []
+    for side, memory in list(store.items()):
+        if not isinstance(memory, dict) or not memory.get("active"):
+            continue
+        age = _bridge_iso_age_minutes(memory.get("created_at"))
+        if age > int(memory.get("ttl_minutes", LOCK_RELEASE_BRIDGE_TTL_MINUTES) or LOCK_RELEASE_BRIDGE_TTL_MINUTES):
+            store.pop(side, None)
+            continue
+        lock = ((state.get("persistent_exhaustion_locks") or {}).get(side) or {})
+        shock = state.get("shock_lock") or {}
+        released = bool(lock.get("status") == "RELEASED" or (shock.get("side") == side and shock.get("status") == "RELEASED"))
+        if not released:
+            continue
+        release_at = lock.get("released_at") or (shock.get("released_at") if shock.get("side") == side else "")
+        release_age = _bridge_iso_age_minutes(release_at)
+        if release_age > LOCK_RELEASE_BRIDGE_RELEASE_GRACE_MINUTES:
+            store.pop(side, None)
+            continue
+        candidates.append((age, side, memory, lock, shock, release_age))
+    if not candidates:
+        state["lock_release_opportunities"] = store
+        return base_setup
+    candidates.sort(key=lambda x: (x[0], -int(x[2].get("quality", 0) or 0)))
+    age, side, memory, lock, shock, release_age = candidates[0]
+    if base_setup.get("side") in ["LONG", "SHORT"] and base_setup.get("side") != side and int(base_setup.get("quality", 0) or 0) >= 62:
+        store.pop(side, None)
+        state["lock_release_opportunities"] = store
+        return base_setup
+    price = safe_float(context.get("price"), None)
+    atr15 = safe_float(context.get("atr15"), None) or safe_float((context.get("tf15") or {}).get("atr"), None) or ((price or 90) * 0.006)
+    invalidation = safe_float(memory.get("invalidation"), None)
+    if price is None:
+        return base_setup
+    if invalidation is not None and ((side == "LONG" and price <= invalidation) or (side == "SHORT" and price >= invalidation)):
+        store.pop(side, None)
+        state["lock_release_opportunities"] = store
+        return base_setup
+    origin = safe_float(memory.get("trigger_level"), None) or safe_float(memory.get("origin_price"), price) or price
+    extension = max(0.0, ((price - origin) if side == "LONG" else (origin - price)) / max(atr15, 1e-9))
+    if extension > LOCK_RELEASE_BRIDGE_MAX_EXTENSION_ATR15:
+        reason = f"lock знято, але ціна вже втекла на {round(extension, 2)} ATR15 — не доганяти; чекати нову базу/ретест"
+        memory.update({"status": "EXPIRED_EXTENSION", "updated_at": iso_now(), "last_reason": reason})
+        store[side] = memory
+        state["lock_release_opportunities"] = store
+        return _bridge_watch_setup(base_setup, memory, reason, quality=55)
+    fast = _fast_layer_state(context, side)
+    against = int(fast.get("against", 0) or 0)
+    trigger = _bridge_trigger_snapshot(context, side)
+    release_reason = lock.get("release_reason") or ("shock lock released" if shock.get("status") == "RELEASED" else "lock released")
+    memory.update({
+        "status": "WAITING_TRIGGER", "updated_at": iso_now(),
+        "release_seen_at": memory.get("release_seen_at") or iso_now(),
+        "release_reason": release_reason, "release_age_min": round(release_age, 1),
+        "current_extension_atr15": round(extension, 3),
+    })
+    store[side] = memory
+    state["lock_release_opportunities"] = store
+    if against > LOCK_RELEASE_BRIDGE_MAX_ADVERSE_LAYERS:
+        return _bridge_watch_setup(base_setup, memory, "lock знято, але два швидкі шари ще проти збереженого сетапу", trigger=trigger)
+    if not trigger.get("ready"):
+        return _bridge_watch_setup(base_setup, memory, f"lock знято; збережений {side} сценарій ще актуальний, але {trigger.get('reason')}", trigger=trigger)
+    work = dict(context)
+    work["bias"] = side
+    setup_info = _bridge_revalidated_classifier(memory, context, trigger)
+    work["setup_classifier"] = setup_info
+    if trigger.get("event"):
+        work["entry_rescue_event"] = trigger.get("event")
+    work["force_durable_stop_role"] = True
+    plan = make_plan(side, work)
+    if not plan or not getattr(plan, "valid", False):
+        plan_reason = str(getattr(plan, "validation_reason", "") or "після зняття lock геометрія ще не життєздатна")
+        return _bridge_watch_setup(base_setup, memory, plan_reason, trigger=trigger)
+    if safe_float(getattr(plan, "rr1", 0), 0.0) < LOCK_RELEASE_BRIDGE_MIN_RR1:
+        return _bridge_watch_setup(base_setup, memory, f"свіжий тригер є, але RR1 {round(safe_float(getattr(plan, 'rr1', 0), 0.0), 2)} нижче мінімуму {LOCK_RELEASE_BRIDGE_MIN_RR1}", trigger=trigger)
+    quality = int(max(RISKY_QUALITY_MIN, min(79, max(64, int(memory.get("quality", 0) or 0)))))
+    out = dict(base_setup)
+    out.update({
+        "action": "RISKY_ENTRY", "side": side, "quality": quality,
+        "title": f"РИЗИКОВАНИЙ ВХІД {side} — LOCK RELEASE BRIDGE ПІДТВЕРДЖЕНО",
+        "reason": "після зняття lock збережений сценарій отримав новий 3M hold/BOS/retest і життєздатну геометрію",
+        "plan": plan, "setup_classifier": setup_info,
+        "entry_rescue_event": trigger.get("event") or {},
+        "lock_release_bridge": True, "lock_release_bridge_activated": True,
+        "lock_release_bridge_status": "CONFIRMED_ENTRY",
+        "lock_release_bridge_age_min": round(age, 1),
+        "lock_release_bridge_release_age_min": round(release_age, 1),
+        "entry_level": "RISKY_ENTRY", "entry_level_label": _entry_level_label("RISKY_ENTRY"),
+        "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + [
+            "persistent/shock lock знято професійним reset",
+            trigger.get("reason"),
+            f"нова геометрія RR1 {round(safe_float(getattr(plan, 'rr1', 0), 0.0), 2)}",
+        ])),
+    })
+    memory["status"] = "CONFIRMED_ENTRY"
+    memory["activation_count"] = int(memory.get("activation_count", 0) or 0) + 1
+    memory["updated_at"] = iso_now()
+    store[side] = memory
+    state["lock_release_opportunities"] = store
+    return out
+
+
 def detect_key_opportunities(context):
     """Internal registry of stable professional opportunity episodes.
 
@@ -16539,6 +16980,9 @@ def evaluate_new_setup(context):
     refresh_persistent_exhaustion_locks(context)
     setup = _evaluate_new_setup_core(context)
     setup = expire_recovery_thesis_if_invalid(context, setup)
+    # Reconnect a professional setup that survived an exhaustion/shock lock.
+    # Lock release alone remains WATCH; a fresh 3M/BOS/retest is mandatory.
+    setup = activate_lock_release_opportunity_bridge(context, setup)
     if isinstance(setup, dict):
         regime_engine = context.get("regime_engine") or context.get("market_regime")
         if isinstance(regime_engine, dict):
@@ -16557,6 +17001,7 @@ def evaluate_new_setup(context):
     setup = resolve_capitulation_recovery_geometry_opportunity(context, setup)
     setup = resolve_fresh_base_continuation_reentry(context, setup)
     setup = activate_opportunity_memory_if_ready(context, setup)
+    setup = activate_lock_release_opportunity_bridge(context, setup)
     setup = _apply_gate_with_pre_memory(context, setup, apply_entry_level_gate, "ENTRY_LEVEL_GATE_POST_RESCUE")
 
     def hard_consensus(s):
@@ -17557,6 +18002,7 @@ def main():
         setup_classifier = setup.get("setup_classifier") or classify_setup(context, setup.get("side"))
         setup["setup_classifier"] = setup_classifier
         context["setup_classifier"] = setup_classifier
+    update_lock_release_opportunity_bridge_memory(state, setup, context)
     update_opportunity_memory(state, setup, context)
     update_pending_trigger_memory(state, setup, context)
     update_opportunity_coverage(state, context, setup=setup)
@@ -17601,6 +18047,9 @@ def main():
         "reason": setup["reason"],
         "entry_level": setup.get("entry_level"),
         "pending_trigger_activated": bool(setup.get("pending_trigger_activated")),
+        "lock_release_bridge": bool(setup.get("lock_release_bridge")),
+        "lock_release_bridge_activated": bool(setup.get("lock_release_bridge_activated")),
+        "lock_release_bridge_status": setup.get("lock_release_bridge_status"),
         "setup_classifier": setup.get("setup_classifier"),
         "regime_engine": setup.get("regime_engine") or context.get("regime_engine"),
         "plan": asdict(setup["plan"]) if setup.get("plan") else None,
