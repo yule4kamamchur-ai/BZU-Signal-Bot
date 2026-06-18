@@ -23813,14 +23813,354 @@
           "previous_regime_type": "NEWS_SHOCK"
         }
       }
+    },
+    {
+      "time": "2026-06-18T08:14:59.405054+00:00",
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 77.88,
+      "quality": 41,
+      "reason": "перевага нечітка, немає професійного входу",
+      "entry_level": "BLOCK",
+      "pending_trigger_activated": false,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 4.41,
+          "move8_abs_pct": 0.27,
+          "slope15_abs_pct": 0.176,
+          "rsi15": 48.3,
+          "score_total_abs": 30,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "plan": null,
+      "confirmations": [],
+      "conflicts": [],
+      "context": {
+        "bias": "NEUTRAL",
+        "tech_score": -31,
+        "total_score": -30,
+        "tf3": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "RANGE",
+          "fast_move_pct": 0.167,
+          "drift_pct": 0.056,
+          "vol_ratio": 0.66,
+          "note": "3m higher lows/closes; 3m lower highs/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "trend": "NEUTRAL",
+          "close": 77.89,
+          "ema20": 77.8634,
+          "ema50": 78.2529,
+          "rsi": 48.3,
+          "atr": 0.3015,
+          "slope_pct": 0.176,
+          "move_8_pct": 0.27,
+          "range_atr": 4.41,
+          "note": "EMA20 нижче EMA50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 77.89,
+          "ema20": 78.4961,
+          "ema50": 79.3314,
+          "rsi": 36.4,
+          "atr": 0.6259,
+          "slope_pct": -1.144,
+          "move_8_pct": -1.255,
+          "range_atr": 8.21,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "SHORT",
+          "score": -56,
+          "trend": "SHORT",
+          "close": 77.89,
+          "ema20": 80.2835,
+          "ema50": 83.8809,
+          "rsi": 28.0,
+          "atr": 1.3523,
+          "slope_pct": -2.174,
+          "move_8_pct": -1.778,
+          "range_atr": 4.61,
+          "note": "ціна нижче EMA20/50; нахил вниз; імпульс вниз"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "phase": "RANGE / WAIT",
+          "swing_high": 78.24,
+          "swing_low": 77.06,
+          "recent_high": 78.91,
+          "recent_low": 77.06,
+          "atr": 0.3015,
+          "note": "структура без чистого пробою"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -42.45,
+          "book_delta_pct": 28.45,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -7338.0,
+          "delta_pct": -42.45,
+          "cvd": 104754.0,
+          "cvd_change_pct": -6.546,
+          "last_trade_ts": 1781770487267,
+          "price_move_pct": 0.167,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -5,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 77.9423,
+              "imbalance_pct": -68.8,
+              "volume": 14218.0
+            },
+            {
+              "price": 77.88,
+              "imbalance_pct": 93.7,
+              "volume": 2535.0
+            }
+          ],
+          "note": "локальний продавець біля 77.9423"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 60235.11,
+          "oi_change_pct": -0.341,
+          "funding_pct": 0,
+          "price_change_pct": 0.167,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 0.71,
+          "move_1_pct": 0.154,
+          "move_6_pct": 0.077,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "blocking_bias": "NEUTRAL",
+          "blocking_score": 0,
+          "hard_block_active": false,
+          "technical_priority": true,
+          "top": "Brent Crude Oil Price Today (June 18): Oil Prices Fall as US-Iran Peace Deal Raises Hopes of Strait of Hormuz Reopening; Check Latest Brent Price & WTI Rates - The Sunday Guardian",
+          "top_age_min": 105.3,
+          "top_lifecycle": "REJECTED",
+          "top_lifecycle_label": "відхилена ринком",
+          "block_reason": "новина вже не має жорсткого пріоритету: 105 хв, відхилена ринком — Brent Crude Oil Price Today (June 18): Oil Prices Fall as US-Iran Peace Deal Raises Hopes of Strait of Hormuz ",
+          "important": [
+            {
+              "title": "Brent Crude Oil Price Today (June 18): Oil Prices Fall as US-Iran Peace Deal Raises Hopes of Strait of Hormuz Reopening; Check Latest Brent Price & WTI Rates - The Sunday Guardian",
+              "link": "https://news.google.com/rss/articles/CBMiogJBVV95cUxQalZDX09fSW9hUktLa1Y1UVFIOEdLRDV2U0JaRFdRZnh5UVJhbDByTmhRRTFXNjZqNldOck5rNTNxTnNBclRrYlNpYWo5LXBRWGc2U1lQdlNQUnJ0UDFGWVd6NVIxeU5aUTJHRUxjaF9RWG5RWms4Sk9JMkc3ZFRINXRUdGF1dnJPdVlyTnAxNXNPbWx4bWNZRi11QUFwSm94QmxYUlRiLXhOckpZUlhGSzlHZGptb01BakhoQ3dMZTAyeElqMFJickhxaFFyZW9MNmtIM0wybHNJMzFKYmNJc2FIU0MwS2Jqa055QXQ4MzRBaHcwNkxsNUdsZHVaeHNJUm4wNk5va1poeDJTN1NiVndMSTI4a2VuSFlZRkFWNFR4Z9IBpwJBVV95cUxOZzQ3Rkc2QnI5SW9TNmY2S2JPaHlhRnBGOU5ETUsybFdxSHFiVVI1elhZZVBmM3kwV3F4T3pzM2E3YnB6c2tXNmM3UXVIdjhxNFMxdl9VYXhYTkV4LTFGcmJyV0x0THl0d1VzWC1RYmFzRjhzdUY2TG50UlVWWlZCbEoxT2pFbmx2Z2hha0pXWExIYmZxMFYxdlJoNjRENVI4YlV3YWdPZ0dFN0RjYUNxZUdSUHJDTHpTdTg3ZTZpdVVFY0N6dF80Sjgwemg2YlU2THBWUE4xSTBzNEV6X3hJQ2lQZVNZOEQ0amZBbUNsWlk1dmRGdnVfLXpSTk9zQlFPWjhjQ0RRMTJQMnYxSmE2czdRbVY1QVJudi1yZ2FvU3hvY2Q1dkUw?oc=5",
+              "published_at": "2026-06-18T06:29:38+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 6,
+              "base_score": -21,
+              "score": -2,
+              "age_min": 105.3,
+              "age_factor": 0.074,
+              "event_class": "MACRO",
+              "hard_window_min": 30,
+              "lifecycle": "REJECTED",
+              "hard_block": false,
+              "reaction": {
+                "status": "REJECTED",
+                "reaction_known": true,
+                "current_signed_pct": -0.894,
+                "max_favorable_pct": 0.078,
+                "max_adverse_pct": 1.36,
+                "giveback_ratio": 12.5,
+                "acceptance_closes": 0,
+                "opposite_closes": 3,
+                "threshold_pct": 0.12,
+                "hard_block": false
+              }
+            },
+            {
+              "title": "Trump sanctions waiver on Russian crude expires: What it means for India amid US-Iran peace deal, Strait - The Times of India",
+              "link": "https://news.google.com/rss/articles/CBMirwJBVV95cUxQLVZ1ZjhvY24xTXVUUkpyajVLVlFudFBOaDVreDdBcmpmV0lTX1lNNEFCVFdWRlc1WVdwTk1ZQnZ4cUptY1VHSXBHSGxfOGdKWXJtaWxMc1EtMmNLU0E1MkFoZjdxektzSGk5UVV0UG9FU2Q1X2hTR0M5X1JmTlpiZUJEYk84TFk5ZTFueDlIc0d6RXJkOXN6b2lUZjBuWEVuOFdzTElaQTF2czk5Z253dXk5SDUxZW1OR3lDTXhTN1ZYNldNM0tjeTVZaXR5WjM0clcyc1M0MDh0bzBqVmFmbU0yd2xsTWl3ek5EWDB1UjJkRGNpUDQ3c0F2SDZ1VzRyZjhxUEFkVTN5LVhVY2hiQ3lGOW9QSVMwTjlCRl9IOUFQaklMM21Lc19DeFoyTWvSAbQCQVVfeXFMUG5mb2wyb3VEazl3ck1SaDFBSmhpSHg0VS1GbkRCeXhpbHpoTXg0YlpLdmNzS3NDczJGVm92MWZRUDczams5UnZkTFUwaFl1Y1c0V21lNVh0TWRMQjZHWWw1N3ZqVzlwYjcwSHRFbzE4N2VZaWdqaFRfcmZuRndQelhXODZCc2hyV1VXWUl1eWhCd3dXRkJLT2p2aWxQSi1mRjZwZm1nSmRvYnU2RFhWdmhkazBNWDBYOVFEejBKZy1KMmkwc2hYbFFpZlBqN3A1R2NlQnhCYW5kVnVrenNIblN3c2tjWFQyUVJjeHpmSUZuQ3djakxTcGI2UW14Sks0WnpYVUw3cWZnVWNXUElfRUVodGNRUHZCcUN3aTlEVk9qcXJmZGhYSUdtUjVBWUhkbDF1MnE?oc=5",
+              "published_at": "2026-06-18T06:27:00+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 4,
+              "base_score": -18,
+              "score": -2,
+              "age_min": 108.0,
+              "age_factor": 0.134,
+              "event_class": "GEOPOLITICAL",
+              "hard_window_min": 45,
+              "lifecycle": "REJECTED",
+              "hard_block": false,
+              "reaction": {
+                "status": "REJECTED",
+                "reaction_known": true,
+                "current_signed_pct": -0.894,
+                "max_favorable_pct": 0.078,
+                "max_adverse_pct": 1.36,
+                "giveback_ratio": 12.5,
+                "acceptance_closes": 0,
+                "opposite_closes": 3,
+                "threshold_pct": 0.12,
+                "hard_block": false
+              }
+            },
+            {
+              "title": "US-Iran deal shakes oil markets as Strait of Hormuz reopens - Latest news from Azerbaijan",
+              "link": "https://news.google.com/rss/articles/CBMihwFBVV95cUxPTGdVTGdRMkNJZlU3NmFGbV9URU9WQ3VfcURfWkc1elFkdjVac3dhaFBtNHJYSEFKdXJGMExRZ210dXlfVHJZR1dTZlpEcXYya214VHZMSUYzX21wZTJ2eU5ZT3ZCRWRCYTdQVTlhUWNlVS1MbFRDUFlxTGtjdWJ5WU5STHlfMEU?oc=5",
+              "published_at": "2026-06-18T06:20:31+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 3,
+              "base_score": -15,
+              "score": -2,
+              "age_min": 114.5,
+              "age_factor": 0.129,
+              "event_class": "GEOPOLITICAL",
+              "hard_window_min": 45,
+              "lifecycle": "REJECTED",
+              "hard_block": false,
+              "reaction": {
+                "status": "REJECTED",
+                "reaction_known": true,
+                "current_signed_pct": -0.802,
+                "max_favorable_pct": 0.168,
+                "max_adverse_pct": 1.268,
+                "giveback_ratio": 5.769,
+                "acceptance_closes": 0,
+                "opposite_closes": 3,
+                "threshold_pct": 0.12,
+                "hard_block": false
+              }
+            }
+          ],
+          "total": 14
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "setup_classifier": {
+          "type": "NO_CLEAN_SETUP",
+          "label": "⚪ Чистого сетапу немає",
+          "side": "NEUTRAL",
+          "score": 42,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "NORMAL",
+          "reason": "немає одного з топових сетапів для професійного входу",
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "force_risky": false,
+          "profile": {
+            "quality_adjustment": -6,
+            "quality_cap": 66,
+            "block_entry": true
+          },
+          "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+          "stop_rule": "стоп/TP не активувати без сетапу",
+          "tp_rule": "чекати чистішу структуру",
+          "management_rule": "чекати до появи топового сетапу"
+        },
+        "regime_engine": {
+          "name": "NORMAL",
+          "regime_type": "NORMAL",
+          "label": "звичайний intraday режим",
+          "score": 50,
+          "confidence": 50,
+          "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+          "entry_action": "ALLOW",
+          "entry_quality_adjustment": 0,
+          "quality_cap": null,
+          "hard_block": false,
+          "allowed_setups": [],
+          "notes": [],
+          "metrics": {
+            "bias": "SHORT",
+            "range_atr": 4.41,
+            "move8_abs_pct": 0.27,
+            "slope15_abs_pct": 0.176,
+            "rsi15": 48.3,
+            "score_total_abs": 30,
+            "participation_same": 1,
+            "late_penalty": 0,
+            "pd": "DISCOUNT",
+            "ict_setup": "DISCOUNT_FVG_OB_LONG",
+            "range_edge": false
+          },
+          "stable_count": 0,
+          "pending_count": 1,
+          "is_stable": false,
+          "previous_regime_type": "NEWS_SHOCK"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-18T08:01:17.260171+00:00",
+  "updated_at": "2026-06-18T08:14:59.417159+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-18T08:01:17.260817+00:00",
+    "updated_at": "2026-06-18T08:14:59.421674+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 2,
-    "signals_count": 78,
+    "signals_count": 79,
     "overall": {
       "trades": 2,
       "wins": 0,
@@ -23986,12 +24326,12 @@
       }
     },
     "signals": {
-      "total": 78,
+      "total": 79,
       "entries": 2,
       "full_entries": 0,
       "risky_entries": 2,
       "watch": 65,
-      "no_trade": 7,
+      "no_trade": 8,
       "follow": 2,
       "closed": 2,
       "pending_trigger_activations": 0
@@ -24007,12 +24347,12 @@
       "SWEEP_REVERSAL": 1,
       "TREND_CONTINUATION": 6,
       "TREND_IGNITION_ENTRY": 7,
-      "UNKNOWN": 11
+      "UNKNOWN": 12
     },
     "signal_counts_by_regime": {
       "EXHAUSTION": 2,
       "NEWS_SHOCK": 21,
-      "NORMAL": 23,
+      "NORMAL": 24,
       "REVERSAL_BUILDUP": 11,
       "TREND_EXPANSION": 21
     }
