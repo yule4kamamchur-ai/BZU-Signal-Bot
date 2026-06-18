@@ -4129,10 +4129,17 @@ def fresh_base_exhaustion_reset_snapshot(context, side):
     """Confirm a genuinely new 6-12 candle base after stale EXHAUSTION."""
     context = context or {}
     if side not in ["LONG", "SHORT"]:
-        return {"active": False, "allowed": False}
+        return {
+            "active": False, "fresh_base_valid": False,
+            "exhaustion_reset_allowed": False, "allowed": False,
+        }
     candles = list(context.get("candles_15m_closed") or [])
     if len(candles) < FRESH_BASE_EXHAUSTION_MIN_CANDLES + 2:
-        return {"active": False, "allowed": False, "reason": "для reset потрібні 6-12 закритих 15M свічок бази"}
+        return {
+            "active": False, "fresh_base_valid": False,
+            "exhaustion_reset_allowed": False, "allowed": False,
+            "reason": "для reset потрібні 6-12 закритих 15M свічок бази",
+        }
     price = safe_float(context.get("price"), candles[-1].close) or candles[-1].close
     atr15 = safe_float(context.get("atr15"), None) or safe_float((context.get("tf15") or {}).get("atr"), None) or max(price * 0.006, 0.01)
     phase = str((context.get("structure") or {}).get("phase") or "").upper()
@@ -4174,10 +4181,16 @@ def fresh_base_exhaustion_reset_snapshot(context, side):
         )
         _, against = _fast_layer_counts(context, side)
         accepted = bool(two_outside and (retest or reaccept))
-        allowed = bool(local_swing and accepted and flow_support and against <= 1 and structural)
+        fresh_base_valid = bool(local_swing and accepted and flow_support and against <= 1 and structural)
+        exhaustion_reset_allowed = bool(active and fresh_base_valid)
         score = int(70 + min(8, n - 6) + (4 if retest else 2) + (4 if flow_support else 0) - against * 5)
         candidate = {
-            "active": active, "allowed": allowed, "side": side, "base_candles": n,
+            # ``allowed`` is retained as a backward-compatible alias for the
+            # geometry of the new base.  Only ``exhaustion_reset_allowed`` may
+            # bypass an old EXHAUSTION/post-shock lock.
+            "active": active, "fresh_base_valid": fresh_base_valid,
+            "exhaustion_reset_allowed": exhaustion_reset_allowed,
+            "allowed": fresh_base_valid, "side": side, "base_candles": n,
             "base_high": round_price(base_high), "base_low": round_price(base_low),
             "width_atr": round(width_atr, 3), "new_local_swing": bool(local_swing),
             "accepted_breakout": bool(two_outside), "retest": bool(retest),
@@ -4185,14 +4198,48 @@ def fresh_base_exhaustion_reset_snapshot(context, side):
             "fast_against": int(against), "structural": bool(structural),
             "stop_level": round_price(stop_level), "trigger_level": round_price(trigger_level),
             "trigger_ts": int(confirm[-1].ts), "score": score,
-            "reason": ("нова 6-12 свічкова 15M база скинула старий EXHAUSTION: accepted breakout + ретест/повторне прийняття + flow" if allowed
-                       else "старий EXHAUSTION діє, доки нова 6-12 свічкова база не дасть swing, accepted breakout, ретест і flow"),
+            "reason": (
+                "нова 6-12 свічкова 15M база скинула старий EXHAUSTION: accepted breakout + ретест/повторне прийняття + flow"
+                if exhaustion_reset_allowed else
+                ("нова 6-12 свічкова 15M база підтверджена; EXHAUSTION/post-shock reset не потрібен"
+                 if fresh_base_valid else
+                 ("старий EXHAUSTION діє, доки нова 6-12 свічкова база не дасть swing, accepted breakout, ретест і flow"
+                  if active else
+                  "нова 6-12 свічкова база ще не підтвердила continuation"))
+            ),
         }
-        if allowed:
+        if fresh_base_valid:
             return candidate
         if best is None or score > best.get("score", 0):
             best = candidate
-    return best or {"active": active, "allowed": False, "reason": "нова 6-12 свічкова база ще не підтвердила continuation"}
+    return best or {
+        "active": active, "fresh_base_valid": False,
+        "exhaustion_reset_allowed": False, "allowed": False,
+        "reason": "нова 6-12 свічкова база ще не підтвердила continuation",
+    }
+
+
+def _fresh_base_valid(snapshot):
+    """Whether the new 6-12 candle base itself is technically valid.
+
+    Older persisted snapshots only contain ``allowed``; the fallback preserves
+    compatibility without granting them an exhaustion override automatically.
+    """
+    snapshot = snapshot or {}
+    return bool(snapshot.get("fresh_base_valid", snapshot.get("allowed", False)))
+
+
+def _exhaustion_reset_allowed(snapshot):
+    """Whether a valid fresh base may specifically retire an old lock.
+
+    The reset requires both a real stale EXHAUSTION/post-shock state and a valid
+    new base.  For older state files, ``active and allowed`` is the safe
+    equivalent of the new explicit field.
+    """
+    snapshot = snapshot or {}
+    if "exhaustion_reset_allowed" in snapshot:
+        return bool(snapshot.get("exhaustion_reset_allowed"))
+    return bool(snapshot.get("active") and snapshot.get("allowed"))
 
 
 def recovery_thesis_expiry_snapshot(context, recovery_side):
@@ -4800,7 +4847,7 @@ def apply_post_shock_retest_gate_to_setup(setup, context):
     st = _entry_setup_type(setup)
     shock_side = _dominant_shock_side(context)
     reset = setup.get("fresh_base_exhaustion_reset_snapshot") or context.get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, side)
-    if reset.get("allowed") and st in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
+    if _exhaustion_reset_allowed(reset) and st in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
         out = dict(setup); out["action"] = "RISKY_ENTRY"; out["entry_level"] = "RISKY_ENTRY"; out["entry_level_label"] = _entry_level_label("RISKY_ENTRY")
         out["fresh_base_exhaustion_reset"] = True
         return out
@@ -4910,7 +4957,7 @@ def apply_final_same_side_exhaustion_lock(setup,context):
     if regime_type!="EXHAUSTION" or exhausted_side not in ["LONG","SHORT"] or side!=exhausted_side:
         return setup
     reset = setup.get("fresh_base_exhaustion_reset_snapshot") or (context or {}).get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, side)
-    if reset.get("allowed") and _entry_setup_type(setup) in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
+    if _exhaustion_reset_allowed(reset) and _entry_setup_type(setup) in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}:
         out=dict(setup)
         out["action"]="RISKY_ENTRY"; out["entry_level"]="RISKY_ENTRY"; out["entry_level_label"]=_entry_level_label("RISKY_ENTRY")
         out["quality"]=min(79,max(RISKY_QUALITY_MIN,int(out.get("quality",0) or 0)))
@@ -5061,7 +5108,7 @@ def range_zone_segmentation_snapshot(context, side):
         rolling.get("boundary_rollover") and rolling.get("accepted_side") == side
         or (displacement.get("confirmed") and displacement.get("side") == side and displacement.get("retest") and displacement.get("fast_support", 0) >= 1)
         or (cap.get("active") and cap.get("allowed"))
-        or (reset.get("allowed"))
+        or _exhaustion_reset_allowed(reset)
         or (event.get("confirmed") and event.get("side") == side and event.get("type") in {"BREAKOUT_RETEST", "ICT_ZONE_RECLAIM", "SWEEP_RECLAIM"} and (event.get("follow_through") or event.get("post_confirmed")) and _fast_layer_counts(context, side)[0] >= 1)
     )
     accepted = bool(rolling.get("breakout_accepted") and rolling.get("accepted_side") == side or transition_override)
@@ -5109,7 +5156,7 @@ def apply_regime_allowed_setup_whitelist(setup, context):
     regime_type = str(regime.get("regime_type") or regime.get("name") or "").upper()
     priority = _transition_priority_confirmed(setup, context)
     reset = setup.get("fresh_base_exhaustion_reset_snapshot") or (context or {}).get("fresh_base_exhaustion_reset") or fresh_base_exhaustion_reset_snapshot(context, setup.get("side"))
-    reset_exception = bool(reset.get("allowed") and setup_type in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"})
+    reset_exception = bool(_exhaustion_reset_allowed(reset) and setup_type in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"})
     event = setup.get("entry_rescue_event") or (context or {}).get("entry_rescue_event") or {}
     support, against = _fast_layer_counts(context, setup.get("side"))
     transition_event = bool(event.get("confirmed") and event.get("anchor_confirmed") and event.get("type") in {"BREAKOUT_RETEST", "SWEEP_RECLAIM", "ICT_ZONE_RECLAIM"} and (event.get("follow_through") or event.get("post_confirmed")) and support >= 1 and against <= 1)
@@ -14914,10 +14961,14 @@ def resolve_fresh_base_continuation_reentry(context, base_setup):
     for side in ["LONG", "SHORT"]:
         standard = fresh_base_continuation_snapshot(context, side)
         reset = fresh_base_exhaustion_reset_snapshot(context, side)
-        snap = standard if standard.get("allowed") else reset
-        if not snap.get("allowed"):
+        standard_valid = bool(standard.get("allowed"))
+        extended_base_valid = _fresh_base_valid(reset)
+        snap = standard if standard_valid else reset
+        if not (standard_valid or extended_base_valid):
             continue
-        reset_mode = bool(snap is reset or snap.get("base_candles"))
+        # A 6-12 candle base may be a normal continuation base.  It becomes an
+        # EXHAUSTION reset only when an old EXHAUSTION/post-shock lock is active.
+        reset_mode = bool(snap is reset and _exhaustion_reset_allowed(reset))
         last_same_side = _latest_closed_trade_snapshot(context, side)
         setup_type = "FRESH_BASE_CONTINUATION_REENTRY" if last_same_side else "RANGE_COMPRESSION_BREAKOUT"
         event = snap.get("event") or {
@@ -15363,12 +15414,12 @@ def activate_opportunity_memory_if_ready(context, base_setup):
         standard = fresh_base_continuation_snapshot(context, side)
         reset = fresh_base_exhaustion_reset_snapshot(context, side)
         snap = standard if standard.get("allowed") else reset
-        ready = snap.get("allowed")
+        ready = bool(standard.get("allowed") or _fresh_base_valid(reset))
     elif st == "CAPITULATION_RECOVERY":
         snap = capitulation_recovery_snapshot(context, side); ready = snap.get("active") and snap.get("allowed")
     elif st == "RANGE_COMPRESSION_BREAKOUT":
         snap = fresh_base_exhaustion_reset_snapshot(context, side)
-        ready = snap.get("allowed") or bool(rolling_balance_detector(context).get("breakout_accepted") and rolling_balance_detector(context).get("accepted_side") == side)
+        ready = _fresh_base_valid(snap) or bool(rolling_balance_detector(context).get("breakout_accepted") and rolling_balance_detector(context).get("accepted_side") == side)
     else:
         event = best_15m_interval_entry_event(context, side)
         structure = context.get("structure") or {}; tf15 = context.get("tf15") or {}
@@ -15398,7 +15449,12 @@ def activate_opportunity_memory_if_ready(context, base_setup):
         "entry_level": "RISKY_ENTRY", "entry_level_label": _entry_level_label("RISKY_ENTRY"),
         "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + ["професійний сценарій збережено до hard gate", "відсутня умова підтверджена", "інвалідація не пробита"])),
     })
-    if st in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"} and isinstance(snap, dict) and snap.get("base_candles"):
+    if (
+        st in {"FRESH_BASE_CONTINUATION_REENTRY", "RANGE_COMPRESSION_BREAKOUT"}
+        and isinstance(snap, dict)
+        and snap.get("base_candles")
+        and _exhaustion_reset_allowed(snap)
+    ):
         out["fresh_base_exhaustion_reset_snapshot"] = snap
         out["fresh_base_exhaustion_reset"] = True
         context["fresh_base_exhaustion_reset"] = snap
