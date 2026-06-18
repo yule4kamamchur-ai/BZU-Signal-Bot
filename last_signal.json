@@ -5,50 +5,6 @@
     {
       "type": "NO_TRADE",
       "side": "NEUTRAL",
-      "price": 78.85,
-      "quality": 39,
-      "reason": "перевага нечітка, немає професійного входу",
-      "setup_classifier": null,
-      "regime_engine": {
-        "name": "NEWS_IMPULSE",
-        "regime_type": "NEWS_SHOCK",
-        "label": "новинний шок",
-        "score": 78,
-        "confidence": 78,
-        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
-        "entry_action": "RISKY_ONLY",
-        "entry_quality_adjustment": -2,
-        "quality_cap": 79,
-        "hard_block": false,
-        "allowed_setups": [
-          "NEWS_IMPULSE",
-          "TREND_IGNITION_ENTRY",
-          "PRIME_ICT_LOCATION_OVERRIDE",
-          "PULLBACK_CONTINUATION_FAST_ENTRY"
-        ],
-        "notes": [],
-        "metrics": {
-          "bias": "SHORT",
-          "range_atr": 8.45,
-          "move8_abs_pct": 0.215,
-          "slope15_abs_pct": 0.378,
-          "rsi15": 42.9,
-          "score_total_abs": 21,
-          "participation_same": 1,
-          "late_penalty": 3,
-          "pd": "DISCOUNT",
-          "ict_setup": "DISCOUNT_FVG_OB_LONG"
-        },
-        "stable_count": 1,
-        "pending_count": 0,
-        "is_stable": true,
-        "previous_regime_type": "NEWS_SHOCK"
-      },
-      "time": "2026-06-17T19:16:04.328400+00:00"
-    },
-    {
-      "type": "NO_TRADE",
-      "side": "NEUTRAL",
       "price": 78.67,
       "quality": 55,
       "reason": "перевага нечітка, немає професійного входу",
@@ -5326,27 +5282,99 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-18T12:06:58.551334+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 78.07,
+      "quality": 60,
+      "reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION",
+        "label": "🟢 Відкат у тренді",
+        "side": "SHORT",
+        "score": 78,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "відкат у правильну ICT-зону + реакція",
+        "quality_adjustment": 3,
+        "quality_cap": 86,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.3,
+          "tp2_atr_mult": 2.45,
+          "tp3_tail_atr": 1.1,
+          "min_stop_pct": 0.78,
+          "max_stop_pct": 1.45,
+          "quality_adjustment": 3,
+          "quality_cap": 86
+        },
+        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
+        "stop_rule": "стоп за low/high відкату або за OB/FVG",
+        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
+        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
+      },
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.79,
+          "move8_abs_pct": 0.656,
+          "slope15_abs_pct": 0.612,
+          "rsi15": 52.0,
+          "score_total_abs": 37,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_FVG_OB_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-18T12:15:56.719232+00:00"
     }
   ],
   "regime_memory": {
     "type": "NORMAL",
-    "pending_type": "",
-    "stable_count": 2,
-    "pending_count": 0,
-    "updated_at": "2026-06-18T12:06:58.090308+00:00"
+    "pending_type": "TREND_PULLBACK",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-18T12:15:56.360231+00:00"
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T12:06:58.551362+00:00",
-    "price": 78.32,
-    "oi": 61085.7,
-    "cvd": 53564.0,
-    "cvd_time": "2026-06-18T12:06:58.551365+00:00",
-    "last_trade_ts": 1781784406093,
+    "time": "2026-06-18T12:15:56.719252+00:00",
+    "price": 78.07,
+    "oi": 61010.49,
+    "cvd": 52847.0,
+    "cvd_time": "2026-06-18T12:15:56.719255+00:00",
+    "last_trade_ts": 1781784922378,
     "bias": "NEUTRAL",
-    "tech_score": -10,
-    "total_score": -12
+    "tech_score": -35,
+    "total_score": -37
   },
-  "updated_at": "2026-06-18T12:06:58.551369+00:00",
+  "updated_at": "2026-06-18T12:15:56.719259+00:00",
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -5465,7 +5493,7 @@
     "high": 78.83,
     "low": 77.56,
     "created_ts": 1781720100000,
-    "updated_ts": 1781783100000,
+    "updated_ts": 1781784000000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -5474,30 +5502,29 @@
   "opportunity_memory": {
     "active": true,
     "source": "POST_GATE",
-    "created_at": "2026-06-18T11:45:57.631236+00:00",
+    "created_at": "2026-06-18T12:15:56.718366+00:00",
     "ttl_minutes": 45,
     "side": "SHORT",
     "setup_type": "PULLBACK_CONTINUATION",
     "setup_label": "🟢 Відкат у тренді",
-    "quality": 61,
-    "price": 78.16,
+    "quality": 60,
+    "price": 78.07,
     "trigger_level": null,
     "invalidation": null,
-    "reason": "не вдалося побудувати життєздатну технічну геометрію",
+    "reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
     "missing_conditions": [
-      "не вдалося побудувати життєздатну технічну геометрію",
-      "відкат ще не підтверджений одночасно закритою 15M, структурою та стабільним режимом — тільки ризиковий вхід"
+      "15M ще нейтральний — вхід тільки після 3M reclaim/ретесту"
     ],
     "plan": null
   },
   "shock_lock": {
-    "side": "LONG",
-    "status": "RELEASED",
-    "origin_ts": 1781778600000,
-    "extreme_ts": 1781778600000,
-    "extreme_price": 78.69,
-    "released_at": "2026-06-18T11:58:07.628054+00:00",
-    "released_extreme": 78.69
+    "side": "SHORT",
+    "status": "LOCKED",
+    "origin_ts": 1781784000000,
+    "extreme_ts": 1781784000000,
+    "extreme_price": 78.09,
+    "released_at": "",
+    "released_extreme": null
   },
   "last_closed_trade": {
     "side": "SHORT",
@@ -5515,7 +5542,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781779500000,
-      "updated_ts": 1781784360000,
+      "updated_ts": 1781784900000,
       "origin_price": 78.59,
       "extreme_price": 78.59,
       "released_at": "2026-06-18T11:58:07.628265+00:00",
@@ -5528,7 +5555,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781773200000,
-      "updated_ts": 1781784360000,
+      "updated_ts": 1781784900000,
       "origin_price": 77.57,
       "extreme_price": 77.53,
       "released_at": "2026-06-18T09:01:50.821008+00:00",
@@ -5608,7 +5635,7 @@
       "published_at": "2026-06-18T10:05:05+00:00",
       "reference_price": 77.68,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T12:06:57.809701+00:00",
+      "last_seen_at": "2026-06-18T12:15:55.501314+00:00",
       "last_status": "REJECTED"
     },
     "sensex nifty rally on us iran peace deal optimism falling crude prices rediff": {
@@ -5616,7 +5643,7 @@
       "published_at": "2026-06-18T11:21:43+00:00",
       "reference_price": 78.49,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T12:06:57.809701+00:00",
+      "last_seen_at": "2026-06-18T12:15:55.501314+00:00",
       "last_status": "CONFIRMED"
     },
     "oman joins iran saudi arabia united arab emirates iraq kuwait and qatar in massive ninety three million barrel oil release as strait of hormuz reopens reshaping china india south k": {
@@ -5624,8 +5651,8 @@
       "published_at": "2026-06-18T12:01:54+00:00",
       "reference_price": 78.4,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T12:06:57.809701+00:00",
-      "last_status": "FRESH"
+      "last_seen_at": "2026-06-18T12:15:55.501314+00:00",
+      "last_status": "CONFIRMED"
     }
   },
   "lock_release_opportunities": {
@@ -5681,6 +5708,53 @@
       "release_seen_at": "2026-06-18T12:01:24.812936+00:00",
       "release_reason": "новий breakout-retest/reclaim пройшов Shock Release 2.0",
       "activation_count": 0
+    },
+    "SHORT": {
+      "active": true,
+      "status": "ARMED",
+      "source": "POST_EVALUATION",
+      "gate_name": "",
+      "created_at": "2026-06-18T12:15:56.718326+00:00",
+      "updated_at": "2026-06-18T12:15:56.718330+00:00",
+      "ttl_minutes": 105,
+      "side": "SHORT",
+      "setup_type": "PULLBACK_CONTINUATION",
+      "setup_label": "🟢 Відкат у тренді",
+      "classifier": {
+        "type": "PULLBACK_CONTINUATION",
+        "label": "🟢 Відкат у тренді",
+        "side": "SHORT",
+        "score": 78,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "відкат у правильну ICT-зону + реакція",
+        "quality_adjustment": 3,
+        "quality_cap": 86,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.3,
+          "tp2_atr_mult": 2.45,
+          "tp3_tail_atr": 1.1,
+          "min_stop_pct": 0.78,
+          "max_stop_pct": 1.45,
+          "quality_adjustment": 3,
+          "quality_cap": 86
+        },
+        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
+        "stop_rule": "стоп за low/high відкату або за OB/FVG",
+        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
+        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
+      },
+      "quality": 78,
+      "origin_price": 78.07,
+      "trigger_level": 78.07,
+      "trigger_ts": 0,
+      "trigger_type": null,
+      "invalidation": null,
+      "initial_reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
+      "plan": null
     }
   }
 }
