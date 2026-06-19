@@ -1897,6 +1897,77 @@
         "previous_regime_type": "TREND_PULLBACK"
       },
       "time": "2026-06-19T11:15:52.574548+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.39,
+      "quality": 63,
+      "reason": "нового post-rejection сетапу немає",
+      "market_direction_context": null,
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "label": "🟢 Ранній вхід на відкаті",
+        "side": "LONG",
+        "score": 76,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "ранній вхід на відкаті: HTF/структура за напрям, ціна у правильній ICT-зоні, 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.18,
+          "tp2_atr_mult": 2.2,
+          "tp3_tail_atr": 0.95,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.34,
+          "quality_adjustment": 1,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "entry_rule": "ранній вхід на відкаті: 1H/15M або структура за напрям, ціна в FVG/OB/правильній PD-зоні, 3M не сильно проти",
+        "stop_rule": "стоп за low/high відкату або за межу FVG/OB з ATR-буфером",
+        "tp_rule": "TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає реакції — швидко підвищувати ризик",
+        "professional_override": true,
+        "pullback_fast_entry": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.09,
+          "move8_abs_pct": 0.417,
+          "slope15_abs_pct": 0.122,
+          "rsi15": 53.5,
+          "score_total_abs": 110,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "TREND_PULLBACK"
+      },
+      "time": "2026-06-19T11:31:11.196673+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1985,8 +2056,8 @@
       "published_at": "2026-06-19T09:12:25+00:00",
       "reference_price": 79.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:31:18.423639+00:00",
-      "last_status": "FRESH"
+      "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
+      "last_status": "REJECTED"
     },
     "brent rises after vance warns israel against breaking ceasefire msn": {
       "first_seen_at": "2026-06-19T09:15:53.132447+00:00",
@@ -2001,31 +2072,39 @@
       "published_at": "2026-06-19T08:59:19+00:00",
       "reference_price": 79.27,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T11:15:51.606973+00:00",
-      "last_status": "ABSORBED"
+      "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
+      "last_status": "REJECTED"
     },
     "oil falls as strait of hormuz supply resumes in 2026 discovery alert": {
       "first_seen_at": "2026-06-19T10:15:52.786421+00:00",
       "published_at": "2026-06-19T08:55:36+00:00",
       "reference_price": 79.26,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T11:15:51.606973+00:00",
-      "last_status": "ABSORBED"
+      "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
+      "last_status": "REJECTED"
+    },
+    "brent heads for 9 weekly loss as traders weigh us iran truce outlook msn": {
+      "first_seen_at": "2026-06-19T11:31:10.246604+00:00",
+      "published_at": "2026-06-19T11:18:10+00:00",
+      "reference_price": 79.37,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
+      "last_status": "FRESH"
     }
   },
   "regime_memory": {
-    "type": "TREND_PULLBACK",
-    "pending_type": "NORMAL",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T11:15:52.254386+00:00"
+    "type": "NORMAL",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-19T11:31:10.811388+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781867700000,
+      "updated_ts": 1781868600000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -2038,7 +2117,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781867700000,
+      "updated_ts": 1781868600000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -2050,12 +2129,12 @@
   },
   "shock_lock": {
     "side": "LONG",
-    "status": "LOCKED",
+    "status": "RELEASED",
     "origin_ts": 1781866800000,
     "extreme_ts": 1781866800000,
     "extreme_price": 79.86,
-    "released_at": "",
-    "released_extreme": null
+    "released_at": "2026-06-19T11:31:11.156476+00:00",
+    "released_extreme": 79.86
   },
   "reversal_handoff": {
     "LONG": {
@@ -2112,7 +2191,7 @@
     "high": 79.86,
     "low": 78.78,
     "created_ts": 1781843400000,
-    "updated_ts": 1781866800000,
+    "updated_ts": 1781867700000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -2167,7 +2246,26 @@
       "plan": null
     }
   },
-  "opportunity_memory": null,
+  "opportunity_memory": {
+    "active": true,
+    "source": "POST_GATE",
+    "created_at": "2026-06-19T11:31:11.195730+00:00",
+    "ttl_minutes": 45,
+    "side": "LONG",
+    "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+    "setup_label": "🟢 Ранній вхід на відкаті",
+    "quality": 63,
+    "price": 79.39,
+    "trigger_level": null,
+    "invalidation": null,
+    "reason": "нового post-rejection сетапу немає",
+    "missing_conditions": [
+      "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
+      "не вдалося побудувати життєздатну технічну геометрію",
+      "відкат ще не підтверджений одночасно закритою 15M, структурою та стабільним режимом — тільки ризиковий вхід"
+    ],
+    "plan": null
+  },
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -2246,17 +2344,17 @@
     "coverage_pct": 12.5
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T11:15:52.574562+00:00",
-    "price": 79.31,
-    "oi": 58070.94,
-    "cvd": -64323.0,
-    "cvd_time": "2026-06-19T11:15:52.574563+00:00",
-    "last_trade_ts": 1781867727383,
+    "time": "2026-06-19T11:31:11.196711+00:00",
+    "price": 79.39,
+    "oi": 58232.2,
+    "cvd": -41851.0,
+    "cvd_time": "2026-06-19T11:31:11.196715+00:00",
+    "last_trade_ts": 1781868612141,
     "bias": "LONG",
-    "tech_score": 53,
-    "total_score": 54
+    "tech_score": 112,
+    "total_score": 110
   },
-  "updated_at": "2026-06-19T11:15:52.574566+00:00",
+  "updated_at": "2026-06-19T11:31:11.196718+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
