@@ -4,6 +4,7 @@ import math
 import os
 import re
 import time
+import traceback
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
@@ -21,8 +22,8 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
-BOT_VERSION = "pro-v3.13-liquidity-context-bos-retest"
-ARCHITECTURE_VERSION = "SINGLE_FILE_CLEAN_V3_13_LIQUIDITY_CONTEXT_BOS_RETEST"
+BOT_VERSION = "pro-v3.14-pipeline-finalization-safe-recovery"
+ARCHITECTURE_VERSION = "SINGLE_FILE_CLEAN_V3_14_PIPELINE_FINALIZATION_SAFE_RECOVERY"
 
 # Version upgrade: Single-File Clean Architecture V3 + deterministic decision pipeline.
 # Entry package: Persistent Exhaustion / Shock Release 2.0 / Directional News
@@ -17441,6 +17442,216 @@ def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
         "architecture_version": ARCHITECTURE_VERSION,
     }
 
+
+def _v3_pipeline_error_diagnostics(error, failed_stage, audit):
+    """Serializable diagnostics for a pipeline failure.
+
+    The traceback is journal-only metadata. Telegram keeps the market reason and
+    does not replace a valid directional candidate with a misleading
+    "no setup" message.
+    """
+    try:
+        trace = traceback.format_exc()
+    except Exception:
+        trace = ""
+    if trace.strip() == "NoneType: None":
+        trace = ""
+    return {
+        "failed_stage": str(failed_stage or "UNKNOWN"),
+        "error_type": type(error).__name__ if error is not None else "UnknownError",
+        "error": str(error or "unknown pipeline error")[:600],
+        "traceback": trace[-2400:] if trace else "",
+        "audit_tail": deepcopy(list(audit or [])[-80:]),
+    }
+
+
+def _v3_attach_pipeline_recovery_metadata(setup, diagnostics, audit, source, checkpoint_name, proposals=None):
+    """Attach immutable recovery metadata and a fresh decision fingerprint."""
+    out = dict(setup or {})
+    out["pipeline_recovered"] = True
+    out["pipeline_failed_stage"] = diagnostics.get("failed_stage")
+    out["pipeline_error_type"] = diagnostics.get("error_type")
+    out["pipeline_error"] = diagnostics.get("error")
+    out["pipeline_traceback"] = diagnostics.get("traceback")
+    out["pipeline_recovery_checkpoint"] = str(checkpoint_name or "UNKNOWN")
+    out["architecture_version"] = ARCHITECTURE_VERSION
+    out["decision_id"] = uuid.uuid4().hex[:12]
+    out["candidate_source"] = str(source or out.get("candidate_source") or "PIPELINE_RECOVERY")
+
+    proposal_rows = []
+    for proposal in proposals or []:
+        try:
+            proposal_rows.append({
+                "source": proposal.source,
+                "side": proposal.side,
+                "action": proposal.action,
+                "quality": proposal.quality,
+                "setup_score": proposal.setup_score,
+                "direction_margin": proposal.direction_margin,
+                "geometry_valid": proposal.geometry_valid,
+                "selection_score": proposal.selection_score,
+                "setup_type": _v3_setup_type(proposal.setup),
+            })
+        except Exception:
+            continue
+
+    out["decision_pipeline_v3"] = {
+        "version": ARCHITECTURE_VERSION,
+        "decision_id": out["decision_id"],
+        "safe_recovery": True,
+        "safe_mode": False,
+        "recovery_checkpoint": out["pipeline_recovery_checkpoint"],
+        "failed_stage": diagnostics.get("failed_stage"),
+        "error_type": diagnostics.get("error_type"),
+        "error": diagnostics.get("error"),
+        "traceback": diagnostics.get("traceback"),
+        "selected_source": out.get("candidate_source"),
+        "selected_side": out.get("side"),
+        "selected_action": out.get("action"),
+        "candidate_count": len(proposal_rows),
+        "candidates": sorted(proposal_rows, key=lambda row: row.get("selection_score", 0), reverse=True),
+        "audit": deepcopy(list(audit or [])[-80:]),
+        "invariants": {
+            "recovery_never_opens_trade": out.get("action") not in ["ENTRY", "RISKY_ENTRY"],
+            "recovered_plan_removed": out.get("plan") is None,
+            "directional_watch_preserved": out.get("action") != "WATCH" or out.get("side") in ["LONG", "SHORT"],
+            "technical_error_is_journaled": bool(out.get("pipeline_error")),
+            "post_decision_mutation_allowed": False,
+        },
+    }
+    out["decision_fingerprint"] = _v3_decision_fingerprint(out)
+    out["decision_pipeline_v3"]["decision_fingerprint"] = out["decision_fingerprint"]
+    return out
+
+
+def _v3_pipeline_safe_recovery(target_context, error, failed_stage, audit, checkpoint, proposals=None):
+    """Recover the last validated candidate without opening a partial trade.
+
+    Rules:
+    - A directional WATCH stays directional WATCH.
+    - A partially finalized ENTRY/RISKY_ENTRY is downgraded to WATCH.
+    - NO_CLEAN_SETUP remains canonical neutral NO_TRADE.
+    - If no trustworthy checkpoint exists, fall back to the old neutral safe mode.
+    """
+    diagnostics = _v3_pipeline_error_diagnostics(error, failed_stage, audit)
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    saved_setup = checkpoint.get("setup")
+    saved_context = checkpoint.get("context")
+    source = checkpoint.get("source") or "PIPELINE_RECOVERY"
+    checkpoint_name = checkpoint.get("name") or failed_stage or "UNKNOWN"
+    selected_quality = safe_float(checkpoint.get("selected_quality"), None)
+
+    if not isinstance(saved_setup, dict):
+        safe = _v3_safe_no_trade(
+            "внутрішній pipeline перервано до вибору надійного кандидата; вхід не відкривається",
+            "PIPELINE_SAFE_MODE_NO_CHECKPOINT",
+        )
+        safe = _v3_attach_pipeline_recovery_metadata(
+            safe, diagnostics, audit, source, checkpoint_name, proposals
+        )
+        safe["pipeline_recovered"] = False
+        safe["decision_pipeline_v3"]["safe_recovery"] = False
+        safe["decision_pipeline_v3"]["safe_mode"] = True
+        return safe
+
+    try:
+        recovered = deepcopy(saved_setup)
+        recovered_context = deepcopy(saved_context) if isinstance(saved_context, dict) else {}
+        info = recovered.get("setup_classifier") if isinstance(recovered.get("setup_classifier"), dict) else None
+        if info is None and isinstance(recovered_context.get("setup_classifier"), dict):
+            info = deepcopy(recovered_context.get("setup_classifier"))
+            recovered["setup_classifier"] = info
+
+        original_side = str(
+            recovered.get("side")
+            or checkpoint.get("fixed_side")
+            or (info or {}).get("side")
+            or "NEUTRAL"
+        ).upper()
+        original_action = str(recovered.get("action") or "NO_TRADE").upper()
+
+        if _v3_is_no_clean_setup(recovered):
+            recovered = _v3_canonicalize_no_clean_setup(recovered, audit, "PIPELINE_SAFE_RECOVERY")
+            recovered["reason_codes"] = _v3_dedupe_text(
+                list(recovered.get("reason_codes") or [])
+                + ["PIPELINE_FINALIZATION_RECOVERED", "RECOVERED_CANONICAL_NO_TRADE"]
+            )
+        elif original_side in ["LONG", "SHORT"] and original_action in ["WATCH", "ENTRY", "RISKY_ENTRY", "WAIT_RETEST"]:
+            quality = int(clamp(safe_float(recovered.get("quality"), 0) or 0, 0, 100))
+            # Respect the selected-candidate ceiling during recovery. A failure
+            # cannot manufacture a stronger score than the selector approved.
+            if selected_quality is not None:
+                quality = min(quality, int(clamp(selected_quality, 0, 100)))
+            recovered.update({
+                "action": "WATCH",
+                "side": original_side,
+                "quality": quality,
+                "current_readiness": quality,
+                "plan": None,
+                "entry_level": "WATCH_TRIGGER",
+                "entry_level_label": _entry_level_label("WATCH_TRIGGER"),
+                "title": _v3_watch_title(original_side, recovered),
+                "entry_blocked": True,
+                "watch_trigger": True,
+                "show_wait_plan": False,
+                "pending_trigger_activated": False,
+                "lock_release_bridge_activated": False,
+            })
+            if not str(recovered.get("reason") or "").strip():
+                recovered["reason"] = str((info or {}).get("reason") or "кандидат збережено; потрібне підтвердження входу")
+            recovered["confirmations"] = _v3_clean_side_messages(recovered.get("confirmations"), original_side)
+            recovered["conflicts"] = _v3_clean_side_messages(recovered.get("conflicts"), original_side)
+            recovered["selected_setup_score"] = _v3_setup_score(recovered)
+            recovered["reason_codes"] = _v3_dedupe_text(
+                list(recovered.get("reason_codes") or [])
+                + ["PIPELINE_FINALIZATION_RECOVERED", "RECOVERED_TO_DIRECTIONAL_WATCH"]
+            )
+        else:
+            recovered = _v3_safe_no_trade(
+                "внутрішній pipeline перервано після неготового кандидата; угода не відкривається",
+                "PIPELINE_SAFE_MODE_UNTRUSTED_CHECKPOINT",
+            )
+
+        untrusted_checkpoint = bool(
+            recovered.get("action") == "NO_TRADE"
+            and "PIPELINE_SAFE_MODE_UNTRUSTED_CHECKPOINT" in (recovered.get("reason_codes") or [])
+        )
+        recovered = _v3_attach_pipeline_recovery_metadata(
+            recovered, diagnostics, audit, source, checkpoint_name, proposals
+        )
+        if untrusted_checkpoint:
+            recovered["pipeline_recovered"] = False
+            recovered["decision_pipeline_v3"]["safe_recovery"] = False
+            recovered["decision_pipeline_v3"]["safe_mode"] = True
+
+        # Restore the selected lane context so opportunity/pending-trigger memory
+        # can continue on the next run. Context restore failure never opens a trade.
+        if isinstance(target_context, dict) and isinstance(recovered_context, dict) and recovered_context:
+            try:
+                _v3_commit_context(target_context, recovered_context)
+                target_context["setup_classifier"] = recovered.get("setup_classifier")
+                target_context["decision_pipeline_v3"] = recovered.get("decision_pipeline_v3")
+            except Exception as context_error:
+                recovered["pipeline_context_restore_error"] = str(context_error)[:400]
+                recovered["decision_pipeline_v3"]["context_restore_error"] = str(context_error)[:400]
+        return recovered
+    except Exception as recovery_error:
+        safe = _v3_safe_no_trade(
+            "внутрішній pipeline і резервне відновлення не завершилися; вхід не відкривається",
+            "PIPELINE_RECOVERY_FAILED",
+        )
+        secondary = _v3_pipeline_error_diagnostics(recovery_error, "PIPELINE_RECOVERY", audit)
+        safe = _v3_attach_pipeline_recovery_metadata(
+            safe, diagnostics, audit, source, checkpoint_name, proposals
+        )
+        safe["pipeline_recovered"] = False
+        safe["pipeline_recovery_error"] = secondary.get("error")
+        safe["decision_pipeline_v3"]["safe_recovery"] = False
+        safe["decision_pipeline_v3"]["safe_mode"] = True
+        safe["decision_pipeline_v3"]["recovery_error"] = secondary
+        return safe
+
+
 def _v3_normalize_setup(setup, context, source, audit=None):
     audit = audit if isinstance(audit, list) else []
     raw = dict(setup or {})
@@ -17794,7 +18005,7 @@ def _v3_canonical_lock_guard(context, setup, fixed_side, audit):
             audit.append({"stage": "CANONICAL_LOCK", "code": "ACTIVE_LOCK_DOWNGRADE", "side": fixed_side})
         current["action"] = "WATCH"
         current["plan"] = None
-        current["title"] = _v3_watch_title(effective_side, current)
+        current["title"] = _v3_watch_title(fixed_side, current)
         current["reason"] = "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event"
         current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + ["CANONICAL_LOCK_ACTIVE"])
     elif lock["released"]:
@@ -17950,20 +18161,36 @@ def _v3_commit_context(target, selected_context):
 
 
 def evaluate_new_setup(context):
-    """Deterministic one-file entry pipeline.
+    """Deterministic one-file entry pipeline with checkpointed safe recovery.
 
-    Analytical engines are preserved, but candidate lanes are isolated. Only one
-    candidate is selected, its side is frozen, gates run once and may only
-    downgrade, geometry is rebuilt once, and the final decision becomes immutable
-    for Telegram, journal and memory updates.
+    If finalization fails after a valid candidate was selected, the candidate is
+    preserved as WATCH (never as a partial ENTRY). This prevents misleading
+    NO_TRADE/NO_CLEAN_SETUP alerts and keeps pending-trigger memory alive.
     """
     audit = []
+    failed_stage = "START"
+    proposals = []
+    checkpoint = {
+        "name": "START",
+        "setup": None,
+        "context": None,
+        "source": None,
+        "fixed_side": "NEUTRAL",
+        "selected_quality": None,
+    }
     try:
+        failed_stage = "PERSISTENT_LOCK_REFRESH"
         refresh_persistent_exhaustion_locks(context)
+
+        failed_stage = "CORE_SETUP"
         base_setup = _evaluate_new_setup_core(context)
         base_setup = expire_recovery_thesis_if_invalid(context, base_setup)
+
+        failed_stage = "CANDIDATE_COLLECTION"
         seed_context = _v3_clone_context(context)
         proposals = _v3_collect_proposals(seed_context, base_setup, audit)
+
+        failed_stage = "CANDIDATE_SELECTOR"
         selected = _v3_select_proposal(proposals, audit)
         if selected is None:
             return _v3_safe_no_trade("жоден кандидат не пройшов внутрішню побудову", "NO_CANDIDATE")
@@ -17971,9 +18198,16 @@ def evaluate_new_setup(context):
         working_context = _v3_clone_context(selected.context)
         working_setup = deepcopy(selected.setup)
         fixed_side = selected.side if selected.side in ["LONG", "SHORT"] else "NEUTRAL"
+        checkpoint = {
+            "name": "SELECTED_CANDIDATE",
+            "setup": deepcopy(working_setup),
+            "context": _v3_clone_context(working_context),
+            "source": selected.source,
+            "fixed_side": fixed_side,
+            "selected_quality": selected.quality,
+        }
 
-        # Lifecycle may refine readiness once before gates. It is the only stage
-        # allowed to upgrade the selected proposal. Every later stage is monotonic.
+        failed_stage = "LIFECYCLE"
         before_lifecycle = deepcopy(working_setup)
         try:
             lifecycle_setup = apply_professional_lifecycle_to_setup(deepcopy(working_setup), working_context)
@@ -17983,29 +18217,54 @@ def evaluate_new_setup(context):
         working_setup = _v3_enforce_stage_invariants(
             before_lifecycle, lifecycle_setup, fixed_side, "LIFECYCLE", True, audit
         )
+        checkpoint.update({
+            "name": "LIFECYCLE_VALIDATED",
+            "setup": deepcopy(working_setup),
+            "context": _v3_clone_context(working_context),
+        })
 
+        failed_stage = "GATES"
         working_setup = _v3_apply_gates_once(working_context, working_setup, fixed_side, audit)
+        checkpoint.update({
+            "name": "GATES_VALIDATED",
+            "setup": deepcopy(working_setup),
+            "context": _v3_clone_context(working_context),
+        })
+
+        failed_stage = "FINAL_GEOMETRY_AND_ENTRY_LEVEL"
         working_setup = _v3_final_geometry_and_entry_level(working_context, working_setup, fixed_side, audit)
+        checkpoint.update({
+            "name": "FINAL_GEOMETRY_VALIDATED",
+            "setup": deepcopy(working_setup),
+            "context": _v3_clone_context(working_context),
+        })
+
+        failed_stage = "FINALIZE_DECISION"
         final_setup = _v3_finalize_decision(
             working_context, working_setup, fixed_side, selected.source, proposals, audit
         )
+        checkpoint.update({
+            "name": "DECISION_FINALIZED",
+            "setup": deepcopy(final_setup),
+            "context": _v3_clone_context(working_context),
+        })
+
+        failed_stage = "COMMIT_CONTEXT"
         _v3_commit_context(context, working_context)
         context["setup_classifier"] = final_setup.get("setup_classifier")
         context["decision_pipeline_v3"] = final_setup.get("decision_pipeline_v3")
         return final_setup
     except Exception as error:
-        print(f"[WARN] {ARCHITECTURE_VERSION} safe-mode: {error}")
-        safe = _v3_safe_no_trade(
-            "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
-            "PIPELINE_SAFE_MODE",
+        print(f"[WARN] {ARCHITECTURE_VERSION} recovery at {failed_stage}: {error}")
+        return _v3_pipeline_safe_recovery(
+            context,
+            error,
+            failed_stage,
+            audit,
+            checkpoint,
+            proposals,
         )
-        safe["pipeline_error"] = str(error)[:400]
-        safe["decision_pipeline_v3"] = {
-            "version": ARCHITECTURE_VERSION,
-            "safe_mode": True,
-            "audit": audit[-40:],
-        }
-        return safe
+
 
 def new_active_trade(setup):
     plan = setup["plan"]
@@ -19418,19 +19677,11 @@ def liquidity_sweep_context_resolver(context):
     cvd = context.get("cvd") or {}
     phase = str(structure.get("phase") or "").upper()
     structure_bias = str(structure.get("bias") or "NEUTRAL").upper()
-    # Idempotent by design: the resolver may be called by build_context, the
-    # setup classifier, and the BOS-retest snapshot during the same run. Keep
-    # the original hard-block evidence instead of replacing it with the
-    # already-resolved empty ``blocks`` list on the second call.
-    raw_blocks = set(raw.get("raw_blocks") or raw.get("blocks") or [])
-    resolved_blocks = set(raw.get("blocks") or raw_blocks)
-    audit = list(raw.get("context_audit") or [])
-    accepted = dict(raw.get("accepted_reclaim") or {"LONG": False, "SHORT": False})
-    accepted.setdefault("LONG", False)
-    accepted.setdefault("SHORT", False)
-    micro_only = dict(raw.get("micro_sweep_only") or {"LONG": False, "SHORT": False})
-    micro_only.setdefault("LONG", False)
-    micro_only.setdefault("SHORT", False)
+    raw_blocks = set(raw.get("blocks") or [])
+    resolved_blocks = set(raw_blocks)
+    audit = []
+    accepted = {"LONG": False, "SHORT": False}
+    micro_only = {"LONG": False, "SHORT": False}
 
     def two_closes(level, direction):
         if level is None or len(closed3) < 2:
@@ -19472,9 +19723,7 @@ def liquidity_sweep_context_resolver(context):
         if bearish_structure and below_bos and not accepted_against_short and orderflow_not_bullish:
             resolved_blocks.discard("SHORT")
             micro_only["SHORT"] = True
-            _msg = "SHORT block suppressed: micro downside sweep remained below bearish BOS level"
-            if _msg not in audit:
-                audit.append(_msg)
+            audit.append("SHORT block suppressed: micro downside sweep remained below bearish BOS level")
         else:
             accepted["SHORT"] = bool(accepted_against_short)
 
@@ -19487,9 +19736,7 @@ def liquidity_sweep_context_resolver(context):
         if bullish_structure and above_bos and not accepted_against_long and orderflow_not_bearish:
             resolved_blocks.discard("LONG")
             micro_only["LONG"] = True
-            _msg = "LONG block suppressed: micro upside sweep remained above bullish BOS level"
-            if _msg not in audit:
-                audit.append(_msg)
+            audit.append("LONG block suppressed: micro upside sweep remained above bullish BOS level")
         else:
             accepted["LONG"] = bool(accepted_against_long)
 
@@ -20252,6 +20499,9 @@ def main():
             "quality": setup["quality"],
             "reason": setup["reason"],
             "market_direction_context": setup.get("market_direction_context"),
+            "pipeline_recovered": bool(setup.get("pipeline_recovered")),
+            "pipeline_failed_stage": setup.get("pipeline_failed_stage"),
+            "pipeline_recovery_checkpoint": setup.get("pipeline_recovery_checkpoint"),
             "setup_classifier": setup.get("setup_classifier"),
             "regime_engine": setup.get("regime_engine") or context.get("regime_engine"),
         })
@@ -20280,6 +20530,13 @@ def main():
         "current_readiness": setup.get("current_readiness"),
         "selected_setup_score": setup.get("selected_setup_score"),
         "market_direction_context": setup.get("market_direction_context"),
+        "pipeline_recovered": bool(setup.get("pipeline_recovered")),
+        "pipeline_failed_stage": setup.get("pipeline_failed_stage"),
+        "pipeline_recovery_checkpoint": setup.get("pipeline_recovery_checkpoint"),
+        "pipeline_error_type": setup.get("pipeline_error_type"),
+        "pipeline_error": setup.get("pipeline_error"),
+        "pipeline_traceback": setup.get("pipeline_traceback"),
+        "pipeline_context_restore_error": setup.get("pipeline_context_restore_error"),
         "reason_codes": setup.get("reason_codes", []),
         "decision_pipeline_v3": setup.get("decision_pipeline_v3"),
         "setup_classifier": setup.get("setup_classifier"),
