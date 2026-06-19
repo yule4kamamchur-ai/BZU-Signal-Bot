@@ -2179,6 +2179,73 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-19T12:15:56.093946+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.69,
+      "quality": 55,
+      "reason": "чистого сетапу немає; немає одного з топових сетапів для професійного входу",
+      "market_direction_context": "LONG",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "NEUTRAL",
+        "score": 56,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 84,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.65,
+          "move8_abs_pct": 0.822,
+          "slope15_abs_pct": 0.619,
+          "rsi15": 58.4,
+          "score_total_abs": 163,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_FVG_OB_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-19T12:31:09.986122+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2307,23 +2374,23 @@
       "published_at": "2026-06-19T11:06:16+00:00",
       "reference_price": 79.75,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T12:15:55.386747+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T12:31:09.036790+00:00",
+      "last_status": "UNRESOLVED"
     }
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T12:15:55.762350+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-19T12:31:09.504691+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781871300000,
+      "updated_ts": 1781872200000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -2336,7 +2403,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781871300000,
+      "updated_ts": 1781872200000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -2352,7 +2419,7 @@
     "origin_ts": 1781866800000,
     "extreme_ts": 1781866800000,
     "extreme_price": 79.86,
-    "released_at": "2026-06-19T12:15:56.046861+00:00",
+    "released_at": "2026-06-19T12:31:09.936245+00:00",
     "released_extreme": 79.86
   },
   "reversal_handoff": {
@@ -2408,86 +2475,16 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 79.86,
-    "low": 79.05,
+    "low": 79.07,
     "created_ts": 1781843400000,
-    "updated_ts": 1781870400000,
+    "updated_ts": 1781871300000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
     "old_low": null
   },
-  "lock_release_opportunities": {
-    "LONG": {
-      "active": true,
-      "status": "ARMED",
-      "source": "POST_EVALUATION",
-      "gate_name": "",
-      "created_at": "2026-06-19T10:31:10.850606+00:00",
-      "updated_at": "2026-06-19T11:45:57.953531+00:00",
-      "ttl_minutes": 105,
-      "side": "LONG",
-      "setup_type": "PULLBACK_CONTINUATION",
-      "setup_label": "🟢 Відкат у тренді",
-      "classifier": {
-        "type": "PULLBACK_CONTINUATION",
-        "label": "🟢 Відкат у тренді",
-        "side": "LONG",
-        "score": 73,
-        "entry_allowed": true,
-        "block_entry": false,
-        "risk_mode": "NORMAL",
-        "reason": "відкат у правильну ICT-зону + реакція",
-        "quality_adjustment": 3,
-        "quality_cap": 86,
-        "force_risky": false,
-        "profile": {
-          "regime_override": "PULLBACK",
-          "tp1_atr_mult": 1.3,
-          "tp2_atr_mult": 2.45,
-          "tp3_tail_atr": 1.1,
-          "min_stop_pct": 0.78,
-          "max_stop_pct": 1.45,
-          "quality_adjustment": 3,
-          "quality_cap": 86
-        },
-        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
-        "stop_rule": "стоп за low/high відкату або за OB/FVG",
-        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
-        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
-      },
-      "quality": 73,
-      "origin_price": 79.19,
-      "trigger_level": 79.19,
-      "trigger_ts": 0,
-      "trigger_type": null,
-      "invalidation": null,
-      "initial_reason": "не вдалося побудувати життєздатну технічну геометрію",
-      "plan": null,
-      "release_seen_at": "",
-      "release_reason": "",
-      "activation_count": 0
-    }
-  },
-  "opportunity_memory": {
-    "active": true,
-    "source": "POST_GATE",
-    "created_at": "2026-06-19T11:31:11.195730+00:00",
-    "ttl_minutes": 45,
-    "side": "LONG",
-    "setup_type": "PULLBACK_CONTINUATION_FAST_ENTRY",
-    "setup_label": "🟢 Ранній вхід на відкаті",
-    "quality": 63,
-    "price": 79.39,
-    "trigger_level": null,
-    "invalidation": null,
-    "reason": "нового post-rejection сетапу немає",
-    "missing_conditions": [
-      "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
-      "не вдалося побудувати життєздатну технічну геометрію",
-      "відкат ще не підтверджений одночасно закритою 15M, структурою та стабільним режимом — тільки ризиковий вхід"
-    ],
-    "plan": null
-  },
+  "lock_release_opportunities": {},
+  "opportunity_memory": null,
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -2578,17 +2575,17 @@
     "coverage_pct": 11.1
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T12:15:56.093967+00:00",
-    "price": 79.5,
-    "oi": 58275.68,
-    "cvd": -65604.0,
-    "cvd_time": "2026-06-19T12:15:56.093969+00:00",
-    "last_trade_ts": 1781871335381,
+    "time": "2026-06-19T12:31:09.986143+00:00",
+    "price": 79.69,
+    "oi": 58622.92,
+    "cvd": -64667.0,
+    "cvd_time": "2026-06-19T12:31:09.986145+00:00",
+    "last_trade_ts": 1781872244607,
     "bias": "LONG",
-    "tech_score": 155,
-    "total_score": 156
+    "tech_score": 160,
+    "total_score": 163
   },
-  "updated_at": "2026-06-19T12:15:56.093973+00:00",
+  "updated_at": "2026-06-19T12:31:09.986149+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
