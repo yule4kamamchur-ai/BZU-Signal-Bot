@@ -1066,6 +1066,51 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-19T08:01:24.394387+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.57,
+      "quality": 38,
+      "reason": "ICT: ціна біля equilibrium / середина діапазону — входу немає; чекати sweep high/low або BOS + FVG/OB retest",
+      "market_direction_context": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.37,
+          "move8_abs_pct": 0.562,
+          "slope15_abs_pct": 0.222,
+          "rsi15": 53.9,
+          "score_total_abs": 28,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT"
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": true,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-19T08:15:51.646116+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1106,7 +1151,7 @@
       "published_at": "2026-06-19T06:12:14+00:00",
       "reference_price": 80.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:01:23.251841+00:00",
+      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
       "last_status": "CONFIRMED"
     },
     "global markets central banks stay vigilant despite oil price relief after us iran truce inkl": {
@@ -1122,31 +1167,39 @@
       "published_at": "2026-06-19T05:34:50+00:00",
       "reference_price": 79.76,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:01:23.251841+00:00",
-      "last_status": "UNRESOLVED"
+      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
+      "last_status": "CONFIRMED"
     },
     "brent crude oil price touches pre iran war lows after ceasefire deal et energyworld": {
       "first_seen_at": "2026-06-19T08:01:23.251841+00:00",
       "published_at": "2026-06-19T07:24:57+00:00",
       "reference_price": 79.82,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:01:23.251841+00:00",
+      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
+      "last_status": "CONFIRMED"
+    },
+    "kuwait to ramp up oil output to two million bpd within a week as strait of hormuz reopens the national": {
+      "first_seen_at": "2026-06-19T08:15:50.494099+00:00",
+      "published_at": "2026-06-19T08:09:01+00:00",
+      "reference_price": 79.47,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
       "last_status": "FRESH"
     }
   },
   "regime_memory": {
-    "type": "TREND_EXPANSION",
-    "pending_type": "NORMAL",
-    "stable_count": 0,
+    "type": "NEWS_SHOCK",
+    "pending_type": "",
+    "stable_count": 1,
     "pending_count": 1,
-    "updated_at": "2026-06-19T08:01:23.944269+00:00"
+    "updated_at": "2026-06-19T08:15:51.237583+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781856000000,
+      "updated_ts": 1781856900000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1159,7 +1212,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781856000000,
+      "updated_ts": 1781856900000,
       "origin_price": 79.31,
       "extreme_price": 79.31,
       "released_at": "2026-06-19T07:45:54.131395+00:00",
@@ -1170,13 +1223,13 @@
     }
   },
   "shock_lock": {
-    "side": "LONG",
-    "status": "RELEASED",
-    "origin_ts": 1781850600000,
-    "extreme_ts": 1781850600000,
-    "extreme_price": 80.28,
-    "released_at": "2026-06-19T08:01:24.376336+00:00",
-    "released_extreme": 80.28
+    "side": "SHORT",
+    "status": "LOCKED",
+    "origin_ts": 1781856000000,
+    "extreme_ts": 1781856000000,
+    "extreme_price": 79.45,
+    "released_at": "",
+    "released_extreme": null
   },
   "reversal_handoff": {
     "LONG": {
@@ -1231,9 +1284,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 80.28,
-    "low": 79.5,
+    "low": 79.45,
     "created_ts": 1781843400000,
-    "updated_ts": 1781855100000,
+    "updated_ts": 1781856000000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -1279,17 +1332,17 @@
     "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T08:01:24.394403+00:00",
-    "price": 79.68,
-    "oi": 58128.26,
-    "cvd": 10721.0,
-    "cvd_time": "2026-06-19T08:01:24.394405+00:00",
-    "last_trade_ts": 1781856068675,
-    "bias": "LONG",
-    "tech_score": 90,
-    "total_score": 78
+    "time": "2026-06-19T08:15:51.646136+00:00",
+    "price": 79.57,
+    "oi": 58114.15,
+    "cvd": 14832.0,
+    "cvd_time": "2026-06-19T08:15:51.646140+00:00",
+    "last_trade_ts": 1781856916364,
+    "bias": "NEUTRAL",
+    "tech_score": 36,
+    "total_score": 28
   },
-  "updated_at": "2026-06-19T08:01:24.394409+00:00",
+  "updated_at": "2026-06-19T08:15:51.646143+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
