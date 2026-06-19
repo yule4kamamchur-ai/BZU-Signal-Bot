@@ -2582,6 +2582,52 @@
         "previous_regime_type": "REVERSAL_BUILDUP"
       },
       "time": "2026-06-19T13:45:55.561123+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.57,
+      "quality": 0,
+      "reason": "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
+      "market_direction_context": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 84,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.81,
+          "move8_abs_pct": 0,
+          "slope15_abs_pct": 0.029,
+          "rsi15": 52.4,
+          "score_total_abs": 113,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-19T14:01:17.587588+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2678,7 +2724,7 @@
       "published_at": "2026-06-19T12:22:30+00:00",
       "reference_price": 80.05,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:45:54.411003+00:00",
+      "last_seen_at": "2026-06-19T14:01:16.781411+00:00",
       "last_status": "CONFIRMED"
     },
     "brent heading for over 8 weekly loss as traders weigh us iran truce outlook reuters": {
@@ -2715,11 +2761,11 @@
     },
     "strait of hormuz reopens what the move means for oil markets the siasat daily": {
       "first_seen_at": "2026-06-19T12:35:14.092862+00:00",
-      "published_at": "2026-06-19T12:15:00+00:00",
+      "published_at": "2026-06-19T12:15:28+00:00",
       "reference_price": 79.65,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:45:54.411003+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T14:01:16.781411+00:00",
+      "last_status": "UNRESOLVED"
     },
     "us iran peace deal lifts stocks and gold while oil prices plunge equiti com": {
       "first_seen_at": "2026-06-19T12:35:14.092862+00:00",
@@ -2734,7 +2780,7 @@
       "published_at": "2026-06-19T12:56:38+00:00",
       "reference_price": 78.91,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:45:54.411003+00:00",
+      "last_seen_at": "2026-06-19T14:01:16.781411+00:00",
       "last_status": "CONFIRMED"
     },
     "crude oil caught up in cautious enthusiasm over us iran peace deal but analysts don t expect further price easing soon the business times": {
@@ -2742,23 +2788,23 @@
       "published_at": "2026-06-19T12:54:00+00:00",
       "reference_price": 78.91,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:45:54.411003+00:00",
+      "last_seen_at": "2026-06-19T14:01:16.781411+00:00",
       "last_status": "REJECTED"
     }
   },
   "regime_memory": {
-    "type": "NORMAL",
+    "type": "TREND_EXPANSION",
     "pending_type": "",
     "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-19T13:45:55.194296+00:00"
+    "pending_count": 1,
+    "updated_at": "2026-06-19T14:01:17.184884+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781876700000,
+      "updated_ts": 1781877600000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -2771,7 +2817,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781876700000,
+      "updated_ts": 1781877600000,
       "origin_price": 79.02,
       "extreme_price": 78.68,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -2783,12 +2829,12 @@
   },
   "shock_lock": {
     "side": "LONG",
-    "status": "RELEASED",
-    "origin_ts": 1781875800000,
-    "extreme_ts": 1781875800000,
-    "extreme_price": 79.48,
-    "released_at": "2026-06-19T13:45:55.501494+00:00",
-    "released_extreme": 79.48
+    "status": "LOCKED",
+    "origin_ts": 1781876700000,
+    "extreme_ts": 1781876700000,
+    "extreme_price": 79.55,
+    "released_at": "",
+    "released_extreme": null
   },
   "reversal_handoff": {
     "LONG": {
@@ -2845,7 +2891,7 @@
     "high": 80.19,
     "low": 78.59,
     "created_ts": 1781843400000,
-    "updated_ts": 1781875800000,
+    "updated_ts": 1781876700000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -3003,17 +3049,17 @@
     "coverage_pct": 10.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T13:45:55.561144+00:00",
-    "price": 79.31,
-    "oi": 60899.13,
-    "cvd": 20250.0,
-    "cvd_time": "2026-06-19T13:45:55.561147+00:00",
-    "last_trade_ts": 1781876743263,
+    "time": "2026-06-19T14:01:17.587612+00:00",
+    "price": 79.57,
+    "oi": 60060.33,
+    "cvd": 35416.0,
+    "cvd_time": "2026-06-19T14:01:17.587615+00:00",
+    "last_trade_ts": 1781877670858,
     "bias": "LONG",
-    "tech_score": 124,
-    "total_score": 127
+    "tech_score": 109,
+    "total_score": 113
   },
-  "updated_at": "2026-06-19T13:45:55.561150+00:00",
+  "updated_at": "2026-06-19T14:01:17.587619+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
