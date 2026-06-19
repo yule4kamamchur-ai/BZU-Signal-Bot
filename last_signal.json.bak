@@ -3572,25 +3572,53 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-19T18:31:07.446750+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.9,
+      "quality": 41,
+      "reason": "перевага нечітка, немає професійного входу",
+      "market_direction_context": null,
+      "pipeline_recovered": false,
+      "pipeline_failed_stage": null,
+      "pipeline_recovery_checkpoint": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "NEUTRAL",
+          "range_atr": 4.75,
+          "move8_abs_pct": 0.448,
+          "slope15_abs_pct": 0.374,
+          "rsi15": 54.2,
+          "score_total_abs": 9,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_FVG_OB_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-19T18:45:51.082598+00:00"
     }
   ],
   "news_reaction_memory": {
-    "big relief for oil markets hormuz reopens crude prices fall below 80 abp news": {
-      "first_seen_at": "2026-06-19T06:31:08.628336+00:00",
-      "published_at": "2026-06-19T06:12:14+00:00",
-      "reference_price": 80.14,
-      "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:01:21.018178+00:00",
-      "last_status": "CONFIRMED"
-    },
-    "global markets central banks stay vigilant despite oil price relief after us iran truce inkl": {
-      "first_seen_at": "2026-06-19T06:31:08.628336+00:00",
-      "published_at": "2026-06-19T04:30:12+00:00",
-      "reference_price": 79.29,
-      "reaction_known": true,
-      "last_seen_at": "2026-06-19T07:15:52.426525+00:00",
-      "last_status": "REJECTED"
-    },
     "the oil market canceled the hormuz crisis before the ceasefire forbes": {
       "first_seen_at": "2026-06-19T07:15:52.426525+00:00",
       "published_at": "2026-06-19T05:34:50+00:00",
@@ -3772,7 +3800,7 @@
       "published_at": "2026-06-19T16:21:36+00:00",
       "reference_price": 80.17,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T18:31:06.646567+00:00",
+      "last_seen_at": "2026-06-19T18:45:50.196360+00:00",
       "last_status": "CONFIRMED"
     },
     "oil markets steady as hormuz reopens and shipping starts to move techstock": {
@@ -3780,7 +3808,7 @@
       "published_at": "2026-06-19T16:21:07+00:00",
       "reference_price": 80.17,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T18:31:06.646567+00:00",
+      "last_seen_at": "2026-06-19T18:45:50.196360+00:00",
       "last_status": "CONFIRMED"
     },
     "india s russian oil imports set for record high in june as hormuz disruption reshapes supply mix outlook india": {
@@ -3788,7 +3816,7 @@
       "published_at": "2026-06-19T16:18:01+00:00",
       "reference_price": 80.29,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T18:31:06.646567+00:00",
+      "last_seen_at": "2026-06-19T18:45:50.196360+00:00",
       "last_status": "REJECTED"
     },
     "brent oil remains on track for 8 weekly decline as israel hezbollah agree to ceasefire marine news magazine": {
@@ -3796,7 +3824,7 @@
       "published_at": "2026-06-19T16:35:41+00:00",
       "reference_price": 80.35,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T18:31:06.646567+00:00",
+      "last_seen_at": "2026-06-19T18:45:50.196360+00:00",
       "last_status": "CONFIRMED"
     },
     "brent on track for 8 weekly decline as israel hezbollah agree to ceasefire gv wire": {
@@ -3804,23 +3832,23 @@
       "published_at": "2026-06-19T16:38:03+00:00",
       "reference_price": 80.28,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T18:31:06.646567+00:00",
+      "last_seen_at": "2026-06-19T18:45:50.196360+00:00",
       "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
-    "pending_type": "",
-    "stable_count": 1,
+    "pending_type": "NORMAL",
+    "stable_count": 0,
     "pending_count": 1,
-    "updated_at": "2026-06-19T18:31:07.066182+00:00"
+    "updated_at": "2026-06-19T18:45:50.618930+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781893800000,
+      "updated_ts": 1781894700000,
       "origin_price": 79.99,
       "extreme_price": 80.17,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -3833,7 +3861,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781893800000,
+      "updated_ts": 1781894700000,
       "origin_price": 79.02,
       "extreme_price": 78.68,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -3907,7 +3935,7 @@
     "high": 80.48,
     "low": 79.72,
     "created_ts": 1781843400000,
-    "updated_ts": 1781892900000,
+    "updated_ts": 1781893800000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -4098,17 +4126,17 @@
     "coverage_pct": 23.1
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T18:31:07.446772+00:00",
-    "price": 79.88,
-    "oi": 58952.93,
-    "cvd": -18685.0,
-    "cvd_time": "2026-06-19T18:31:07.446775+00:00",
-    "last_trade_ts": 1781893826107,
-    "bias": "LONG",
-    "tech_score": 65,
-    "total_score": 63
+    "time": "2026-06-19T18:45:51.082624+00:00",
+    "price": 79.9,
+    "oi": 58849.83,
+    "cvd": -32361.0,
+    "cvd_time": "2026-06-19T18:45:51.082626+00:00",
+    "last_trade_ts": 1781894735179,
+    "bias": "NEUTRAL",
+    "tech_score": 12,
+    "total_score": 9
   },
-  "updated_at": "2026-06-19T18:31:07.446779+00:00",
+  "updated_at": "2026-06-19T18:45:51.082630+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T17:15:52.722412+00:00",
