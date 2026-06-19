@@ -3533,6 +3533,99 @@
       "entry_window_closed": false,
       "market_direction_context": null,
       "time": "2026-06-18T23:45:51.693155+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.84,
+      "quality": 53,
+      "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+      "setup_classifier": {
+        "type": "NEWS_IMPULSE",
+        "label": "🟠 Новинний імпульс",
+        "side": "LONG",
+        "score": 68,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "RISKY",
+        "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+        "quality_adjustment": -2,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "NEWS_IMPULSE",
+          "tp1_pct": 0.9,
+          "tp2_pct": 1.6,
+          "tp3_pct": 2.6,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.3,
+          "quality_adjustment": -2,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "новинний драйвер + 3M/структура в той самий бік; не доганяти без ретесту",
+        "stop_rule": "стоп ширший за шум, але не більше новинного максимального ризику",
+        "tp_rule": "TP ближче; новина може дати різкий відкат",
+        "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу",
+        "news_consensus": {
+          "active": true,
+          "allowed": false,
+          "directional_same": false,
+          "opposing": true,
+          "neutral_calendar": false,
+          "retest_confirmed": false,
+          "late": false,
+          "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+          "news_score": 23,
+          "blocking_score": 38,
+          "news_bias": "SHORT",
+          "blocking_bias": "SHORT",
+          "top_age_min": 76.7,
+          "top_lifecycle": "CONFIRMED",
+          "top_lifecycle_label": "підтверджена ціною",
+          "technical_priority": false
+        },
+        "mandatory_retest": false
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 2.76,
+          "move8_abs_pct": 0.013,
+          "slope15_abs_pct": 0.097,
+          "rsi15": 56.5,
+          "score_total_abs": 56,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT"
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-19T00:01:25.401495+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -3717,8 +3810,8 @@
       "published_at": "2026-06-18T21:03:43+00:00",
       "reference_price": 79.11,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T00:01:24.301302+00:00",
+      "last_status": "UNRESOLVED"
     },
     "update brent rises after vance warns israel against breaking cease fire reuters": {
       "first_seen_at": "2026-06-18T22:31:05.098221+00:00",
@@ -3733,7 +3826,7 @@
       "published_at": "2026-06-18T22:28:36+00:00",
       "reference_price": 79.22,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
+      "last_seen_at": "2026-06-19T00:01:24.301302+00:00",
       "last_status": "CONFIRMED"
     },
     "oil dips as us iran ceasefire deal takes effect ships return to hormuz the business times": {
@@ -3749,7 +3842,7 @@
       "published_at": "2026-06-18T22:44:44+00:00",
       "reference_price": 79.13,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
+      "last_seen_at": "2026-06-19T00:01:24.301302+00:00",
       "last_status": "CONFIRMED"
     },
     "iran us deal opens hormuz initiates sanctions relief and creates new opportunities for pakistan propakistani": {
@@ -3757,23 +3850,23 @@
       "published_at": "2026-06-18T22:39:02+00:00",
       "reference_price": 79.13,
       "reaction_known": true,
-      "last_seen_at": "2026-06-18T23:45:50.890679+00:00",
+      "last_seen_at": "2026-06-19T00:01:24.301302+00:00",
       "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-06-18T23:45:51.230461+00:00"
+    "updated_at": "2026-06-19T00:01:25.011888+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781826300000,
+      "updated_ts": 1781827200000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -3786,7 +3879,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781808300000,
-      "updated_ts": 1781826300000,
+      "updated_ts": 1781827200000,
       "origin_price": 79.26,
       "extreme_price": 79.38,
       "released_at": "2026-06-18T18:45:55.908025+00:00",
@@ -4336,23 +4429,23 @@
     "coverage_pct": 27.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-18T23:45:51.693175+00:00",
-    "price": 78.88,
-    "oi": 55198.94,
-    "cvd": -163706.0,
-    "cvd_time": "2026-06-18T23:45:51.693178+00:00",
-    "last_trade_ts": 1781826319813,
+    "time": "2026-06-19T00:01:25.401517+00:00",
+    "price": 78.84,
+    "oi": 54942.99,
+    "cvd": -178851.0,
+    "cvd_time": "2026-06-19T00:01:25.401520+00:00",
+    "last_trade_ts": 1781827269363,
     "bias": "LONG",
-    "tech_score": 77,
-    "total_score": 61
+    "tech_score": 67,
+    "total_score": 56
   },
-  "updated_at": "2026-06-18T23:45:51.693181+00:00",
+  "updated_at": "2026-06-19T00:01:25.401523+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 79.39,
     "low": 78.84,
     "created_ts": 1781814600000,
-    "updated_ts": 1781825400000,
+    "updated_ts": 1781826300000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -4403,7 +4496,7 @@
       "status": "INVALIDATED",
       "side": "LONG",
       "created_at": "2026-06-18T18:50:59.035537+00:00",
-      "updated_at": "2026-06-18T23:45:51.634698+00:00",
+      "updated_at": "2026-06-19T00:01:25.345193+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781807220000,

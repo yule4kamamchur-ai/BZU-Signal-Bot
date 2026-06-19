@@ -28407,14 +28407,736 @@
           "previous_regime_type": "NEWS_SHOCK"
         }
       }
+    },
+    {
+      "time": "2026-06-19T00:01:25.401502+00:00",
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.84,
+      "quality": 53,
+      "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+      "entry_level": "WATCH_TRIGGER",
+      "pending_trigger_activated": false,
+      "lock_release_bridge": false,
+      "lock_release_bridge_activated": false,
+      "lock_release_bridge_status": null,
+      "lock_release_bridge_saved_setup_score": null,
+      "lock_release_bridge_saved_setup_label": null,
+      "lock_release_bridge_current_readiness": null,
+      "plan_rebuild_required": false,
+      "plan_rebuild_status": null,
+      "architecture_version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM",
+      "decision_id": "0852bf6199fc",
+      "decision_fingerprint": "{\"action\":\"WATCH\",\"better_entry\":0.0,\"entry_level\":\"WATCH_TRIGGER\",\"entry_window_closed\":false,\"entry_window_status\":\"FORMING\",\"geometry_reason_code\":\"LOCATION_NOT_VIABLE\",\"plan\":null,\"quality\":53,\"reason_codes\":[],\"setup_score\":68,\"setup_type\":\"NEWS_IMPULSE\",\"side\":\"LONG\"}",
+      "candidate_source": "LIVE_CORE",
+      "current_readiness": 53,
+      "selected_setup_score": 68,
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "entry_window_late_penalty": null,
+      "market_direction_context": null,
+      "reversal_handoff": null,
+      "reversal_pullback_reclaim_confirmed": false,
+      "fresh_pullback_reset_confirmed": false,
+      "reason_codes": [],
+      "decision_pipeline_v3": {
+        "version": "SINGLE_FILE_CLEAN_V3_8_REVERSAL_HANDOFF_RECLAIM",
+        "decision_id": "0852bf6199fc",
+        "selected_source": "LIVE_CORE",
+        "selected_side": "LONG",
+        "selected_action": "WATCH",
+        "candidate_count": 1,
+        "candidates": [
+          {
+            "source": "LIVE_CORE",
+            "side": "LONG",
+            "action": "WATCH",
+            "quality": 56,
+            "setup_score": 68,
+            "direction_margin": 18.24,
+            "geometry_valid": false,
+            "selection_score": 1841.44,
+            "setup_type": "NEWS_IMPULSE"
+          }
+        ],
+        "audit": [
+          {
+            "stage": "SELECTOR",
+            "code": "SELECTED",
+            "source": "LIVE_CORE",
+            "side": "LONG",
+            "action": "WATCH",
+            "score": 1841.44,
+            "quality": 56,
+            "setup_score": 68,
+            "direction_margin": 18.24
+          },
+          {
+            "stage": "STRICT_TRANSITION_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "POST_SHOCK_RETEST_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "CAPITULATION_RECOVERY_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "RANGE_SEGMENTATION_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "STRUCTURAL_RESET_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "REGIME_WHITELIST_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "PRIME_ICT_HTF_CONFLICT_CAP",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "PRIME_ICT_ADVERSE_FLOW_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "ENTRY_RISK_PACKAGE_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "FINAL_SAME_SIDE_EXHAUSTION_LOCK",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          },
+          {
+            "stage": "FINAL_ENTRY_LEVEL_GATE",
+            "from_action": "WATCH",
+            "to_action": "WATCH",
+            "quality": 53
+          }
+        ],
+        "invariants": {
+          "side_frozen": true,
+          "entry_requires_valid_plan": true,
+          "single_gate_pass": true,
+          "single_geometry_rebuild": true,
+          "post_decision_mutation_allowed": false
+        },
+        "decision_fingerprint": "{\"action\":\"WATCH\",\"better_entry\":0.0,\"entry_level\":\"WATCH_TRIGGER\",\"entry_window_closed\":false,\"entry_window_status\":\"FORMING\",\"geometry_reason_code\":\"LOCATION_NOT_VIABLE\",\"plan\":null,\"quality\":53,\"reason_codes\":[],\"setup_score\":68,\"setup_type\":\"NEWS_IMPULSE\",\"side\":\"LONG\"}"
+      },
+      "setup_classifier": {
+        "type": "NEWS_IMPULSE",
+        "label": "🟠 Новинний імпульс",
+        "side": "LONG",
+        "score": 68,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "RISKY",
+        "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+        "quality_adjustment": -2,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "NEWS_IMPULSE",
+          "tp1_pct": 0.9,
+          "tp2_pct": 1.6,
+          "tp3_pct": 2.6,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.3,
+          "quality_adjustment": -2,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "новинний драйвер + 3M/структура в той самий бік; не доганяти без ретесту",
+        "stop_rule": "стоп ширший за шум, але не більше новинного максимального ризику",
+        "tp_rule": "TP ближче; новина може дати різкий відкат",
+        "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу",
+        "news_consensus": {
+          "active": true,
+          "allowed": false,
+          "directional_same": false,
+          "opposing": true,
+          "neutral_calendar": false,
+          "retest_confirmed": false,
+          "late": false,
+          "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+          "news_score": 23,
+          "blocking_score": 38,
+          "news_bias": "SHORT",
+          "blocking_bias": "SHORT",
+          "top_age_min": 76.7,
+          "top_lifecycle": "CONFIRMED",
+          "top_lifecycle_label": "підтверджена ціною",
+          "technical_priority": false
+        },
+        "mandatory_retest": false
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 2.76,
+          "move8_abs_pct": 0.013,
+          "slope15_abs_pct": 0.097,
+          "rsi15": 56.5,
+          "score_total_abs": 56,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT"
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "plan": null,
+      "confirmations": [
+        "15m за напрямом",
+        "3m дав тригер",
+        "режим ринку: новинний шок",
+        "режим: новинний імпульс — TP/стоп адаптовані",
+        "Сетап: 🟠 Новинний імпульс (68/100)"
+      ],
+      "conflicts": [
+        "локальний продавець у стакані",
+        "активна SHORT-новина: 77 хв, підтверджена ціною — Oil Prices Hit Lowest Since Ceasefire Deal: What This Means for Investors and Businesses in Oman - omanet.om",
+        "режим ринку дозволяє тільки ризиковий/обережний вхід",
+        "CVD/дельта поки проти — ранній вхід тільки як ризиковий",
+        "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+        "локація нежиттєздатна до побудови RR: активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+        "немає повного ICT-сетапу — якість входу обмежена"
+      ],
+      "context": {
+        "bias": "LONG",
+        "tech_score": 67,
+        "total_score": 56,
+        "tf3": {
+          "available": true,
+          "bias": "LONG",
+          "score": 32,
+          "state": "LONG_STRENGTHENING",
+          "fast_move_pct": 0.0,
+          "drift_pct": 0.106,
+          "vol_ratio": 1.44,
+          "note": "3m higher lows/closes"
+        },
+        "tf15": {
+          "label": "15m",
+          "available": true,
+          "bias": "LONG",
+          "score": 31,
+          "trend": "LONG",
+          "close": 79.08,
+          "ema20": 78.9669,
+          "ema50": 78.6007,
+          "rsi": 56.5,
+          "atr": 0.2394,
+          "slope_pct": -0.097,
+          "move_8_pct": 0.013,
+          "range_atr": 2.76,
+          "note": "ціна вище EMA20/50"
+        },
+        "tf1h": {
+          "label": "1h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 24,
+          "trend": "NEUTRAL",
+          "close": 79.08,
+          "ema20": 78.5337,
+          "ema50": 78.8757,
+          "rsi": 56.9,
+          "atr": 0.65,
+          "slope_pct": 1.528,
+          "move_8_pct": 2.065,
+          "range_atr": 5.03,
+          "note": "EMA20 нижче EMA50; нахил вгору; імпульс вгору"
+        },
+        "tf4h": {
+          "label": "4h",
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": -24,
+          "trend": "NEUTRAL",
+          "close": 79.08,
+          "ema20": 79.7472,
+          "ema50": 83.0024,
+          "rsi": 41.7,
+          "atr": 1.4185,
+          "slope_pct": -0.08,
+          "move_8_pct": -0.315,
+          "range_atr": 4.63,
+          "note": "ціна нижче EMA20/50"
+        },
+        "structure": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 8,
+          "phase": "RANGE / WAIT",
+          "swing_high": 79.39,
+          "swing_low": 78.89,
+          "recent_high": 79.77,
+          "recent_low": 77.31,
+          "atr": 0.2394,
+          "note": "сильне bullish-закриття"
+        },
+        "flow": {
+          "bias": "NEUTRAL",
+          "score": -6,
+          "trade_delta_pct": -71.39,
+          "book_delta_pct": 20.08,
+          "note": "угоди за продавців; стакан підтримує покупців"
+        },
+        "cvd": {
+          "bias": "NEUTRAL",
+          "score": -14,
+          "state": "SELLERS_DOMINATE",
+          "confidence": "HIGH",
+          "confidence_factor": 1.0,
+          "sample_size": 120,
+          "delta": -15145.0,
+          "delta_pct": -71.39,
+          "cvd": -178851.0,
+          "cvd_change_pct": -9.251,
+          "last_trade_ts": 1781827269363,
+          "price_move_pct": -0.076,
+          "note": "CVD падає"
+        },
+        "clusters": {
+          "bias": "SHORT",
+          "score": -7,
+          "state": "LOCAL_SELLER_RESISTANCE",
+          "zones": [
+            {
+              "price": 79.0292,
+              "imbalance_pct": -54.1,
+              "volume": 12802.0
+            },
+            {
+              "price": 78.9661,
+              "imbalance_pct": -97.7,
+              "volume": 4940.0
+            },
+            {
+              "price": 78.9031,
+              "imbalance_pct": -97.8,
+              "volume": 3471.0
+            }
+          ],
+          "note": "локальний продавець біля 79.0292; ask-стіна 79.04"
+        },
+        "derivatives": {
+          "bias": "NEUTRAL",
+          "score": 0,
+          "state": "POSITIONING_UNKNOWN",
+          "oi": 54942.99,
+          "oi_change_pct": -0.464,
+          "funding_pct": 0,
+          "price_change_pct": -0.051,
+          "note": "OI ще накопичує історію для порівняння"
+        },
+        "liquidity": {
+          "available": true,
+          "bias": "NEUTRAL",
+          "score": 0,
+          "event": "QUIET",
+          "blocks": [],
+          "vol_ratio": 1.52,
+          "move_1_pct": -0.24,
+          "move_6_pct": -0.127,
+          "note": "ліквідаційного тиску не видно"
+        },
+        "news": {
+          "bias": "SHORT",
+          "score": -23,
+          "blocking_bias": "SHORT",
+          "blocking_score": -38,
+          "hard_block_active": true,
+          "technical_priority": false,
+          "top": "Oil Prices Hit Lowest Since Ceasefire Deal: What This Means for Investors and Businesses in Oman - omanet.om",
+          "top_age_min": 76.7,
+          "top_lifecycle": "CONFIRMED",
+          "top_lifecycle_label": "підтверджена ціною",
+          "block_reason": "активна SHORT-новина: 77 хв, підтверджена ціною — Oil Prices Hit Lowest Since Ceasefire Deal: What This Means for Investors and Businesses in Oman - omanet.om",
+          "important": [
+            {
+              "title": "Oil Prices Hit Lowest Since Ceasefire Deal: What This Means for Investors and Businesses in Oman - omanet.om",
+              "link": "https://news.google.com/rss/articles/CBMiekFVX3lxTE5ZcmRYd0tYYmJKWkNQN3FvLXhIVHJUeWhxM01MVFRBZVoyRTc2WXVhcHhaRm12NndZT1licnhNcnZ6STNkQzhfQ3Rqam5WMFh0c1l3U0xwN1V6UUllR1g5c0gweG1RUW9jWFhldUh3ZUNya1R6NDk2ZEdB?oc=5",
+              "published_at": "2026-06-18T22:44:44+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 5,
+              "base_score": -15,
+              "score": -10,
+              "age_min": 76.7,
+              "age_factor": 0.642,
+              "event_class": "GEOPOLITICAL",
+              "hard_window_min": 45,
+              "lifecycle": "CONFIRMED",
+              "hard_block": true,
+              "reaction": {
+                "status": "CONFIRMED",
+                "reaction_known": true,
+                "current_signed_pct": 0.366,
+                "max_favorable_pct": 0.366,
+                "max_adverse_pct": 0.051,
+                "giveback_ratio": 0.0,
+                "acceptance_closes": 2,
+                "opposite_closes": 0,
+                "threshold_pct": 0.12,
+                "hard_block": true
+              }
+            },
+            {
+              "title": "Iran–US Deal Opens Hormuz, Initiates Sanctions Relief, and Creates New Opportunities for Pakistan - ProPakistani",
+              "link": "https://news.google.com/rss/articles/CBMizAFBVV95cUxNVG9nanFoOUhFWml4b0pZNGYtbWpXZUNmRktydG9peWRVMnd1S3JWRXVkOGJHQXh6Qzhud016U0NtbzlGd09fOUtQYk50c2stR3ZoTUQ1YWdpMkd5RUt4aXVNTkZScDIzRWZnZi1MVlhSdWVDTDUxb2lTVmFTbE1mU3RmdWxtOGhyUzBma0JabUpGUGw5WkdVSDRMTjBVS2k5UXZkdUFzZnpQWXFnaDhwTVZZWi1DcWNxOFVoQlBVMUhJa3FtUWdSUE1wczE?oc=5",
+              "published_at": "2026-06-18T22:39:02+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 4,
+              "base_score": -16,
+              "score": -10,
+              "age_min": 82.4,
+              "age_factor": 0.621,
+              "event_class": "GEOPOLITICAL",
+              "hard_window_min": 45,
+              "lifecycle": "CONFIRMED",
+              "hard_block": true,
+              "reaction": {
+                "status": "CONFIRMED",
+                "reaction_known": true,
+                "current_signed_pct": 0.366,
+                "max_favorable_pct": 0.366,
+                "max_adverse_pct": 0.051,
+                "giveback_ratio": 0.0,
+                "acceptance_closes": 2,
+                "opposite_closes": 0,
+                "threshold_pct": 0.12,
+                "hard_block": true
+              }
+            },
+            {
+              "title": "Oil Prices Dip as US and Iran Peace Deal Takes Effect - world.infonasional.com",
+              "link": "https://news.google.com/rss/articles/CBMickFVX3lxTE01WHBtam5EX3R2MWVXeHIzbGRVRmFiSjllRHBRdWJlRHBzeXlINnBERnhxSl9GWUtlbWs4RHI3SlYyZzhOajZJTkhOSFo2QndTdEZsNld6V254Z1dPcVdrYlBLREllbzB1VkJsWDd6ak9sQQ?oc=5",
+              "published_at": "2026-06-18T22:28:36+00:00",
+              "source": "Google News",
+              "priority": 0,
+              "oil_relevance": 5,
+              "base_score": -16,
+              "score": 0,
+              "age_min": 92.8,
+              "age_factor": 0.0,
+              "event_class": "GENERAL",
+              "hard_window_min": 30,
+              "lifecycle": "CONFIRMED",
+              "hard_block": true,
+              "reaction": {
+                "status": "CONFIRMED",
+                "reaction_known": true,
+                "current_signed_pct": 0.48,
+                "max_favorable_pct": 0.48,
+                "max_adverse_pct": 0.088,
+                "giveback_ratio": 0.0,
+                "acceptance_closes": 3,
+                "opposite_closes": 0,
+                "threshold_pct": 0.12,
+                "hard_block": true
+              }
+            }
+          ],
+          "total": 9
+        },
+        "calendar": {
+          "active": false,
+          "alerts": [],
+          "score": 0,
+          "note": ""
+        },
+        "reentry_review": {
+          "active": false,
+          "status": "PREVIOUS_TRADE_NOT_WEAK",
+          "quality_adjustment": 0
+        },
+        "reentry_cooldown": {
+          "active": false,
+          "status": "PREVIOUS_TRADE_NOT_WEAK",
+          "quality_adjustment": 0
+        },
+        "persistent_exhaustion_locks": {
+          "LONG": {
+            "active": false,
+            "allowed": true,
+            "state": "RELEASED",
+            "side": "LONG",
+            "current_exhausted": false,
+            "fresh_base_reset": false,
+            "shock_retest": false,
+            "separate_setup_release": false,
+            "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу",
+            "lock": {
+              "side": "LONG",
+              "status": "RELEASED",
+              "origin_ts": 1781808300000,
+              "updated_ts": 1781827200000,
+              "origin_price": 79.26,
+              "extreme_price": 79.38,
+              "released_at": "2026-06-18T18:45:55.908025+00:00",
+              "reason": "LONG вже відпрацював основний імпульс — не доганяти; чекати нову базу/відкат або окремий SHORT-сетап. від локального low вже +3.61%; ціна далеко від EMA20 (2.67 ATR); CVD/потік/кластери вже попереджають",
+              "released_ts": 1781808300000,
+              "released_extreme": 79.26,
+              "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
+            },
+            "reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
+          },
+          "SHORT": {
+            "active": false,
+            "allowed": true,
+            "state": "RELEASED",
+            "side": "SHORT",
+            "current_exhausted": true,
+            "fresh_base_reset": false,
+            "shock_retest": false,
+            "separate_setup_release": false,
+            "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу",
+            "lock": {
+              "side": "SHORT",
+              "status": "RELEASED",
+              "origin_ts": 1781791740000,
+              "updated_ts": 1781827200000,
+              "origin_price": 76.55,
+              "extreme_price": 76.55,
+              "released_at": "2026-06-18T14:22:37.755199+00:00",
+              "reason": "нове матеріальне продовження після попереднього reset",
+              "released_ts": 1781792460000,
+              "released_extreme": 76.55,
+              "release_reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
+            },
+            "reason": "окремий свіжий continuation/reversal сетап перебудував точку входу"
+          }
+        },
+        "shock_lock": {
+          "side": "SHORT",
+          "status": "EXPIRED",
+          "origin_ts": 1781813700000,
+          "extreme_ts": 1781813700000,
+          "extreme_price": 79.05,
+          "released_at": "2026-06-18T21:15:54.200329+00:00",
+          "released_extreme": 79.05
+        },
+        "reversal_handoff_memory": {
+          "LONG": {
+            "active": false,
+            "status": "INVALIDATED",
+            "side": "LONG",
+            "created_at": "2026-06-18T18:50:59.035537+00:00",
+            "updated_at": "2026-06-19T00:01:25.345193+00:00",
+            "ttl_minutes": 90,
+            "seed_type": "BREAKOUT_RETEST",
+            "seed_ts": 1781807220000,
+            "seed_level": 79.13,
+            "seed_close": 79.61,
+            "seed_score": 85,
+            "reversal_extreme": 78.84,
+            "invalidation": 78.9207,
+            "opposite_run_atr15": 0.0,
+            "closed_trade_handoff": false,
+            "evidence": [
+              "MICRO_BOS",
+              "RETEST_HOLD"
+            ],
+            "reason": "reversal handoff invalidation зламано",
+            "pullback_snapshot": {
+              "active": true,
+              "detected": false,
+              "invalidated": false,
+              "impulse_extreme": 79.77,
+              "impulse_atr15": 2.633,
+              "pullback_extreme": 79.18,
+              "pullback_ts": 1781811000000,
+              "pullback_ratio": 0.634,
+              "pullback_atr15": 1.67,
+              "bars_after_impulse": 35,
+              "reason": "контрольований pullback ще не завершений"
+            },
+            "impulse_extreme": 79.77,
+            "impulse_atr15": 2.228,
+            "pullback_extreme": 79.19,
+            "pullback_ts": 1781808840000,
+            "pullback_ratio": 0.624,
+            "pullback_atr15": 1.39,
+            "reclaim_snapshot": {
+              "active": true,
+              "allowed": false,
+              "reason": "контрольований pullback є, але свіжий закритий 3M micro-BOS/reclaim ще не сформувався"
+            }
+          },
+          "SHORT": {
+            "active": true,
+            "status": "INVALIDATED",
+            "side": "SHORT",
+            "created_at": "2026-06-18T20:45:51.340613+00:00",
+            "updated_at": "2026-06-18T21:01:19.029888+00:00",
+            "ttl_minutes": 90,
+            "seed_type": "ICT_ZONE_RECLAIM",
+            "seed_ts": 1781814600000,
+            "seed_level": 79.08,
+            "seed_close": 79.06,
+            "seed_score": 88,
+            "reversal_extreme": 79.25,
+            "invalidation": 79.1676,
+            "opposite_run_atr15": 5.569,
+            "closed_trade_handoff": false,
+            "evidence": [
+              "BEAR_FVG",
+              "ZONE_RECLAIM"
+            ],
+            "reason": "pullback зламав reversal thesis",
+            "pullback_snapshot": {
+              "active": true,
+              "detected": false,
+              "invalidated": true,
+              "impulse_extreme": 78.98,
+              "impulse_atr15": 0.845,
+              "pullback_extreme": 79.23,
+              "pullback_ts": 1781816040000,
+              "pullback_ratio": 0.926,
+              "pullback_atr15": 0.782,
+              "bars_after_impulse": 3,
+              "reason": "pullback зламав reversal thesis"
+            }
+          }
+        },
+        "setup_classifier": {
+          "type": "NEWS_IMPULSE",
+          "label": "🟠 Новинний імпульс",
+          "side": "LONG",
+          "score": 68,
+          "entry_allowed": false,
+          "block_entry": true,
+          "risk_mode": "RISKY",
+          "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+          "quality_adjustment": -2,
+          "quality_cap": 79,
+          "force_risky": true,
+          "profile": {
+            "regime_override": "NEWS_IMPULSE",
+            "tp1_pct": 0.9,
+            "tp2_pct": 1.6,
+            "tp3_pct": 2.6,
+            "min_stop_pct": 0.82,
+            "max_stop_pct": 1.3,
+            "quality_adjustment": -2,
+            "quality_cap": 79,
+            "force_risky": true
+          },
+          "entry_rule": "новинний драйвер + 3M/структура в той самий бік; не доганяти без ретесту",
+          "stop_rule": "стоп ширший за шум, але не більше новинного максимального ризику",
+          "tp_rule": "TP ближче; новина може дати різкий відкат",
+          "management_rule": "швидкий захист прибутку, уважно до розвороту після імпульсу",
+          "news_consensus": {
+            "active": true,
+            "allowed": false,
+            "directional_same": false,
+            "opposing": true,
+            "neutral_calendar": false,
+            "retest_confirmed": false,
+            "late": false,
+            "reason": "активна новина проти цього NEWS_IMPULSE (77 хв, підтверджена ціною)",
+            "news_score": 23,
+            "blocking_score": 38,
+            "news_bias": "SHORT",
+            "blocking_bias": "SHORT",
+            "top_age_min": 76.7,
+            "top_lifecycle": "CONFIRMED",
+            "top_lifecycle_label": "підтверджена ціною",
+            "technical_priority": false
+          },
+          "mandatory_retest": false
+        },
+        "regime_engine": {
+          "name": "NEWS_IMPULSE",
+          "regime_type": "NEWS_SHOCK",
+          "label": "новинний шок",
+          "score": 78,
+          "confidence": 78,
+          "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+          "entry_action": "RISKY_ONLY",
+          "entry_quality_adjustment": -2,
+          "quality_cap": 79,
+          "hard_block": false,
+          "allowed_setups": [
+            "NEWS_IMPULSE",
+            "TREND_IGNITION_ENTRY",
+            "PRIME_ICT_LOCATION_OVERRIDE",
+            "PULLBACK_CONTINUATION_FAST_ENTRY"
+          ],
+          "notes": [],
+          "metrics": {
+            "bias": "LONG",
+            "range_atr": 2.76,
+            "move8_abs_pct": 0.013,
+            "slope15_abs_pct": 0.097,
+            "rsi15": 56.5,
+            "score_total_abs": 56,
+            "participation_same": 0,
+            "late_penalty": 0,
+            "pd": "PREMIUM",
+            "ict_setup": "PREMIUM_CONTEXT"
+          },
+          "stable_count": 4,
+          "pending_count": 0,
+          "is_stable": true,
+          "previous_regime_type": "NEWS_SHOCK"
+        }
+      }
     }
   ],
-  "updated_at": "2026-06-18T23:45:51.704320+00:00",
+  "updated_at": "2026-06-19T00:01:25.412834+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-18T23:45:51.704916+00:00",
+    "updated_at": "2026-06-19T00:01:25.413382+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 2,
-    "signals_count": 46,
+    "signals_count": 47,
     "overall": {
       "trades": 2,
       "wins": 1,
@@ -28566,11 +29288,11 @@
       }
     },
     "signals": {
-      "total": 46,
+      "total": 47,
       "entries": 2,
       "full_entries": 0,
       "risky_entries": 2,
-      "watch": 18,
+      "watch": 19,
       "no_trade": 19,
       "follow": 5,
       "closed": 2,
@@ -28579,7 +29301,7 @@
     "signal_counts_by_setup": {
       "CLOSED_15M_DIRECTION_FLIP": 1,
       "LATE_IMPULSE_CHASE": 8,
-      "NEWS_IMPULSE": 1,
+      "NEWS_IMPULSE": 2,
       "NO_CLEAN_SETUP": 3,
       "PRIME_ICT_LOCATION_OVERRIDE": 2,
       "PULLBACK_CONTINUATION": 3,
@@ -28591,7 +29313,7 @@
     },
     "signal_counts_by_regime": {
       "EXHAUSTION": 6,
-      "NEWS_SHOCK": 16,
+      "NEWS_SHOCK": 17,
       "NORMAL": 10,
       "REVERSAL_BUILDUP": 6,
       "TREND_EXPANSION": 5,
