@@ -1,6 +1,124 @@
 {
   "version": "pro-v3.8-single-file-clean-reversal-handoff-reclaim",
-  "active_trade": null,
+  "active_trade": {
+    "id": "f382cf6f3c",
+    "side": "SHORT",
+    "opened_at": "2026-06-19T04:01:17.041948+00:00",
+    "entry": 78.89,
+    "stop_initial": 79.1552,
+    "stop_current": 79.1552,
+    "tp1": 77.69,
+    "tp2": 77.47,
+    "tp3": 77.31,
+    "quality": 79,
+    "stop_updated_at": "",
+    "status": "OPEN",
+    "tp1_hit": false,
+    "tp2_hit": false,
+    "tp3_hit": false,
+    "tp1_stop_locked": false,
+    "tp2_stop_locked": false,
+    "tp1_locked_stop": 0.0,
+    "tp2_locked_stop": 0.0,
+    "best_price": 78.89,
+    "last_action": "OPEN",
+    "last_message_key": "",
+    "entry_integrity_score": 100,
+    "entry_fail_streak": 0,
+    "entry_recovery_checks": 0,
+    "entry_last_state": "СИЛЬНА",
+    "mfe_giveback_streak": 0,
+    "mfe_giveback_last_state": "OK",
+    "setup_type": "CLOSED_15M_DIRECTION_FLIP",
+    "regime_type": "",
+    "entry_level": "RISKY_ENTRY",
+    "lifecycle_stage": "EARLY_CONFIRMED",
+    "lifecycle_score": 82,
+    "lifecycle_confirmations": 0,
+    "lifecycle_failures": 0,
+    "lifecycle_last_transition": "2026-06-19T04:01:17.041956+00:00",
+    "structural_stop": 79.1552,
+    "profit_stop": 0.0,
+    "active_stop_source": "STRUCTURAL",
+    "recovery_after_rejection": false,
+    "recovery_trigger_ts": 0,
+    "recovery_trigger_level": 0.0,
+    "recovery_event_type": "",
+    "recovery_entry_checks": 0,
+    "management_checks": 0,
+    "mfe_profit_lock_streak": 0,
+    "mfe_profit_lock_active": false,
+    "execution_urgency_score": 0,
+    "execution_urgency_mode": "NORMAL",
+    "execution_protect_streak": 0,
+    "execution_exit_streak": 0,
+    "execution_last_reason": "",
+    "execution_last_updated_at": "",
+    "barrier_checkpoints": [
+      {
+        "level": 78.72,
+        "basis": "15M swing low / sell-side liquidity",
+        "priority": 96,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      },
+      {
+        "level": 77.69,
+        "basis": "закритий 1H swing low",
+        "priority": 94,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      },
+      {
+        "level": 78.17,
+        "basis": "закритий 1H swing low",
+        "priority": 94,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      },
+      {
+        "level": 78.41,
+        "basis": "закритий 1H swing low",
+        "priority": 94,
+        "source_status": "HARD",
+        "status": "PENDING",
+        "acceptance_streak": 0,
+        "rejection_streak": 0,
+        "touched_at": "",
+        "accepted_at": "",
+        "rejected_at": ""
+      }
+    ],
+    "barrier_checkpoint_status": "PENDING",
+    "barrier_checkpoint_level": 78.72,
+    "barrier_checkpoint_basis": "15M swing low / sell-side liquidity",
+    "barrier_checkpoint_acceptance_streak": 0,
+    "barrier_checkpoint_rejection_streak": 0,
+    "barrier_checkpoint_last_updated_at": "2026-06-19T04:01:17.041981+00:00",
+    "notes": [
+      "RISKY_ENTRY",
+      "ENTRY_LEVEL: RISKY_ENTRY",
+      "SETUP_CLASSIFIER: CLOSED_15M_DIRECTION_FLIP",
+      "LIFECYCLE_STAGE: EARLY_CONFIRMED",
+      "ENGINE_VERSION: GEOMETRY_PERSISTENCE_ENTRY_CONSENSUS_GUARDS",
+      "повна 15M зміна напрямку: два break-close + displacement + ретест + fast-підтвердження"
+    ]
+  },
   "history": [
     {
       "type": "WATCH",
@@ -4273,17 +4391,86 @@
       "mfe_captured_pct": -59.4,
       "mfe_giveback_pct": 0.483,
       "time": "2026-06-19T03:45:56.689676+00:00"
+    },
+    {
+      "type": "ENTRY",
+      "side": "SHORT",
+      "action": "RISKY_ENTRY",
+      "price": 78.89,
+      "quality": 79,
+      "setup_classifier": {
+        "type": "CLOSED_15M_DIRECTION_FLIP",
+        "label": "🟢 Закрита 15M зміна напрямку",
+        "side": "SHORT",
+        "score": 90,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "force_risky": false,
+        "reason": "повна 15M зміна напрямку: два break-close + displacement + ретест + fast-підтвердження",
+        "quality_adjustment": 1,
+        "quality_cap": 84,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.2,
+          "tp2_atr_mult": 2.35,
+          "tp3_tail_atr": 1.0,
+          "min_stop_pct": 0.82,
+          "max_stop_pct": 1.28,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "два закриті 15M break-close + displacement + ретест/HL-LH + flow/CVD",
+        "stop_rule": "лише 15M/ICT інвалідація нової бази",
+        "tp_rule": "перша реальна 15M/1H ліквідність без погоні",
+        "management_rule": "ризиковий до підтвердження 1H",
+        "closed_15m_direction_flip": true
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.83,
+          "move8_abs_pct": 0.542,
+          "slope15_abs_pct": 0.122,
+          "rsi15": 47.0,
+          "score_total_abs": 57,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT"
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "entry": 78.89,
+      "stop": 79.1552,
+      "tp1": 77.69,
+      "tp2": 77.47,
+      "tp3": 77.31,
+      "time": "2026-06-19T04:01:17.042182+00:00"
     }
   ],
   "news_reaction_memory": {
-    "hormuz crude oil and chabahar 3 big ways us iran truce impacts india news18": {
-      "first_seen_at": "2026-06-18T15:45:57.192413+00:00",
-      "published_at": "2026-06-18T14:45:07+00:00",
-      "reference_price": 77.02,
-      "reaction_known": true,
-      "last_seen_at": "2026-06-18T16:02:00.595256+00:00",
-      "last_status": "REJECTED"
-    },
     "the oil market canceled the hormuz crisis before the ceasefire forbes": {
       "first_seen_at": "2026-06-18T16:15:56.019847+00:00",
       "published_at": "2026-06-18T16:32:49+00:00",
@@ -4473,7 +4660,7 @@
       "published_at": "2026-06-19T01:33:58+00:00",
       "reference_price": 79.23,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T03:45:55.578268+00:00",
+      "last_seen_at": "2026-06-19T04:01:16.113557+00:00",
       "last_status": "CONFIRMED"
     },
     "oil prices decline as strait of hormuz reopens under interim peace deal world infonasional com": {
@@ -4481,7 +4668,7 @@
       "published_at": "2026-06-19T02:18:22+00:00",
       "reference_price": 79.49,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T03:45:55.578268+00:00",
+      "last_seen_at": "2026-06-19T04:01:16.113557+00:00",
       "last_status": "CONFIRMED"
     },
     "brent rises after vance warns israel against breaking ceasefire by reuters investing com south africa": {
@@ -4489,15 +4676,15 @@
       "published_at": "2026-06-19T01:31:20+00:00",
       "reference_price": 79.18,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T03:31:09.891585+00:00",
-      "last_status": "DIGESTED"
+      "last_seen_at": "2026-06-19T04:01:16.113557+00:00",
+      "last_status": "CONFIRMED"
     },
     "oil prices fall as supply starts moving through strait of hormuz after us iran peace deal hindustan times": {
       "first_seen_at": "2026-06-19T03:31:09.891585+00:00",
       "published_at": "2026-06-19T02:40:58+00:00",
       "reference_price": 79.22,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T03:45:55.578268+00:00",
+      "last_seen_at": "2026-06-19T04:01:16.113557+00:00",
       "last_status": "CONFIRMED"
     },
     "brent rises after vance warns israel against breaking ceasefire by reuters investing com australia": {
@@ -4512,16 +4699,16 @@
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T03:45:56.287216+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-19T04:01:16.440329+00:00"
   },
   "persistent_exhaustion_locks": {
     "SHORT": {
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781791740000,
-      "updated_ts": 1781838000000,
+      "updated_ts": 1781841600000,
       "origin_price": 76.55,
       "extreme_price": 76.55,
       "released_at": "2026-06-18T14:22:37.755199+00:00",
@@ -4534,7 +4721,7 @@
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781808300000,
-      "updated_ts": 1781838000000,
+      "updated_ts": 1781841600000,
       "origin_price": 79.26,
       "extreme_price": 79.38,
       "released_at": "2026-06-18T18:45:55.908025+00:00",
@@ -4545,22 +4732,28 @@
     }
   },
   "shock_lock": {
-    "side": "LONG",
-    "status": "RELEASED",
-    "origin_ts": 1781832600000,
-    "extreme_ts": 1781834400000,
-    "extreme_price": 79.52,
-    "released_at": "2026-06-19T03:01:17.624227+00:00",
-    "released_extreme": 79.52
+    "side": "SHORT",
+    "status": "LOCKED",
+    "origin_ts": 1781840700000,
+    "extreme_ts": 1781840700000,
+    "extreme_price": 78.89,
+    "released_at": "",
+    "released_extreme": null
   },
   "opportunity_memory": null,
   "lock_release_opportunities": {},
   "opportunity_analytics": {
-    "new_entries": 5,
+    "new_entries": 7,
     "covered_by_active_trade": 1,
     "missed": 8,
-    "active_episode_keys": [],
-    "episode_status": {},
+    "active_episode_keys": [
+      "SHORT:CAPITULATION_RECOVERY",
+      "SHORT:CLOSED_15M_DIRECTION_FLIP"
+    ],
+    "episode_status": {
+      "SHORT:CLOSED_15M_DIRECTION_FLIP": "NEW_ENTRY",
+      "SHORT:CAPITULATION_RECOVERY": "NEW_ENTRY"
+    },
     "recent": [
       {
         "side": "SHORT",
@@ -4681,30 +4874,46 @@
         "episode_key": "LONG:FRESH_BASE_CONTINUATION_REENTRY",
         "status": "COVERED_BY_ACTIVE_TRADE",
         "time": "2026-06-19T02:01:24.357163+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CLOSED_15M_DIRECTION_FLIP",
+        "ts": 1781840700000,
+        "episode_key": "SHORT:CLOSED_15M_DIRECTION_FLIP",
+        "status": "NEW_ENTRY",
+        "time": "2026-06-19T04:01:17.041801+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781840700000,
+        "episode_key": "SHORT:CAPITULATION_RECOVERY",
+        "status": "NEW_ENTRY",
+        "time": "2026-06-19T04:01:17.041810+00:00"
       }
     ],
-    "covered_total": 6,
-    "total_opportunities": 14,
-    "coverage_pct": 42.9
+    "covered_total": 8,
+    "total_opportunities": 16,
+    "coverage_pct": 50.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T03:45:56.689715+00:00",
-    "price": 78.86,
-    "oi": 55294.21,
-    "cvd": -265430.0,
-    "cvd_time": "2026-06-19T03:45:56.689718+00:00",
-    "last_trade_ts": 1781840706611,
+    "time": "2026-06-19T04:01:17.042485+00:00",
+    "price": 78.89,
+    "oi": 55190.18,
+    "cvd": -308496.0,
+    "cvd_time": "2026-06-19T04:01:17.042488+00:00",
+    "last_trade_ts": 1781841667694,
     "bias": "SHORT",
-    "tech_score": -33,
-    "total_score": -48
+    "tech_score": -41,
+    "total_score": -57
   },
-  "updated_at": "2026-06-19T03:45:56.689723+00:00",
+  "updated_at": "2026-06-19T04:01:17.042492+00:00",
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 79.52,
-    "low": 78.94,
+    "low": 78.89,
     "created_ts": 1781814600000,
-    "updated_ts": 1781839800000,
+    "updated_ts": 1781840700000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -4755,7 +4964,7 @@
       "status": "INVALIDATED",
       "side": "LONG",
       "created_at": "2026-06-18T18:50:59.035537+00:00",
-      "updated_at": "2026-06-19T01:15:55.934521+00:00",
+      "updated_at": "2026-06-19T04:01:16.798108+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781807220000,
