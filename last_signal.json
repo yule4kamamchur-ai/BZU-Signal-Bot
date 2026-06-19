@@ -1809,6 +1809,53 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-19T10:45:53.264030+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.24,
+      "quality": 0,
+      "reason": "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
+      "market_direction_context": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.26,
+          "move8_abs_pct": 0.013,
+          "slope15_abs_pct": 0.381,
+          "rsi15": 47.7,
+          "score_total_abs": 20,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "TREND_PULLBACK"
+      },
+      "time": "2026-06-19T11:01:19.895556+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1881,8 +1928,8 @@
       "published_at": "2026-06-19T08:26:15+00:00",
       "reference_price": 79.47,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T10:45:52.308259+00:00",
-      "last_status": "UNRESOLVED"
+      "last_seen_at": "2026-06-19T11:01:19.168334+00:00",
+      "last_status": "CONFIRMED"
     },
     "strait of hormuz reopens after us iran peace deal oil flows resume what it means for prices msn": {
       "first_seen_at": "2026-06-19T08:45:53.160883+00:00",
@@ -1913,7 +1960,7 @@
       "published_at": "2026-06-19T08:59:19+00:00",
       "reference_price": 79.27,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T10:45:52.308259+00:00",
+      "last_seen_at": "2026-06-19T11:01:19.168334+00:00",
       "last_status": "ABSORBED"
     },
     "oil falls as strait of hormuz supply resumes in 2026 discovery alert": {
@@ -1921,23 +1968,23 @@
       "published_at": "2026-06-19T08:55:36+00:00",
       "reference_price": 79.26,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T10:45:52.308259+00:00",
+      "last_seen_at": "2026-06-19T11:01:19.168334+00:00",
       "last_status": "ABSORBED"
     }
   },
   "regime_memory": {
     "type": "TREND_PULLBACK",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-19T10:45:52.889199+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-19T11:01:19.495767+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781865900000,
+      "updated_ts": 1781866800000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1950,7 +1997,7 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781865900000,
+      "updated_ts": 1781866800000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "",
@@ -2021,10 +2068,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 79.73,
+    "high": 79.6,
     "low": 78.78,
     "created_ts": 1781843400000,
-    "updated_ts": 1781865000000,
+    "updated_ts": 1781865900000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -2079,34 +2126,17 @@
       "plan": null
     }
   },
-  "opportunity_memory": {
-    "active": true,
-    "source": "POST_GATE",
-    "created_at": "2026-06-19T10:01:24.472720+00:00",
-    "ttl_minutes": 45,
-    "side": "LONG",
-    "setup_type": "SWEEP_RECLAIM_EARLY_ENTRY",
-    "setup_label": "🟡 Раннє зняття ліквідності + повернення",
-    "quality": 61,
-    "price": 78.95,
-    "trigger_level": null,
-    "invalidation": null,
-    "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
-    "missing_conditions": [
-      "15M ще нейтральний — вхід тільки після 3M reclaim/ретесту"
-    ],
-    "plan": null
-  },
+  "opportunity_memory": null,
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
-    "missed": 6,
+    "missed": 7,
     "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY"
+      "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "LONG:CAPITULATION_RECOVERY": "MISSED"
+      "SHORT:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -2164,24 +2194,32 @@
         "episode_key": "LONG:CAPITULATION_RECOVERY",
         "status": "MISSED",
         "time": "2026-06-19T10:45:53.263940+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781865900000,
+        "episode_key": "SHORT:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-19T11:01:19.895469+00:00"
       }
     ],
     "covered_total": 1,
-    "total_opportunities": 7,
-    "coverage_pct": 14.3
+    "total_opportunities": 8,
+    "coverage_pct": 12.5
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T10:45:53.264047+00:00",
-    "price": 79.3,
-    "oi": 58560.33,
-    "cvd": -32234.0,
-    "cvd_time": "2026-06-19T10:45:53.264050+00:00",
-    "last_trade_ts": 1781865941383,
-    "bias": "LONG",
-    "tech_score": 42,
-    "total_score": 42
+    "time": "2026-06-19T11:01:19.895575+00:00",
+    "price": 79.24,
+    "oi": 58409.86,
+    "cvd": -54741.0,
+    "cvd_time": "2026-06-19T11:01:19.895578+00:00",
+    "last_trade_ts": 1781866866135,
+    "bias": "NEUTRAL",
+    "tech_score": 23,
+    "total_score": 20
   },
-  "updated_at": "2026-06-19T10:45:53.264053+00:00",
+  "updated_at": "2026-06-19T11:01:19.895581+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
