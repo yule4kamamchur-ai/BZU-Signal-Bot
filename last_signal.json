@@ -2041,6 +2041,77 @@
         "previous_regime_type": "NORMAL"
       },
       "time": "2026-06-19T11:45:57.954493+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.39,
+      "quality": 57,
+      "reason": "не вдалося побудувати життєздатну технічну геометрію",
+      "market_direction_context": null,
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION_FAST_ENTRY",
+        "label": "🟢 Ранній вхід на відкаті",
+        "side": "LONG",
+        "score": 72,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "ранній вхід на відкаті: HTF/структура за напрям, ціна у правильній ICT-зоні, 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 76,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.18,
+          "tp2_atr_mult": 2.2,
+          "tp3_tail_atr": 0.95,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.34,
+          "quality_adjustment": 1,
+          "quality_cap": 76,
+          "force_risky": true
+        },
+        "entry_rule": "ранній вхід на відкаті: 1H/15M або структура за напрям, ціна в FVG/OB/правильній PD-зоні, 3M не сильно проти",
+        "stop_rule": "стоп за low/high відкату або за межу FVG/OB з ATR-буфером",
+        "tp_rule": "TP1 близько 1.5R або більше; TP2/TP3 тільки якщо 3M підтвердив продовження",
+        "management_rule": "вести як ризиковий ранній вхід: якщо після входу немає реакції — швидко підвищувати ризик",
+        "professional_override": true,
+        "pullback_fast_entry": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.52,
+          "move8_abs_pct": 0.671,
+          "slope15_abs_pct": 0.32,
+          "rsi15": 53.2,
+          "score_total_abs": 75,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 0,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-19T12:01:20.002485+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2126,11 +2197,11 @@
     },
     "brent heading for over 8 weekly loss as traders weigh us iran truce outlook msn": {
       "first_seen_at": "2026-06-19T09:15:53.132447+00:00",
-      "published_at": "2026-06-19T09:12:25+00:00",
+      "published_at": "2026-06-19T09:13:37+00:00",
       "reference_price": 79.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T11:45:57.158521+00:00",
-      "last_status": "ABSORBED"
+      "last_seen_at": "2026-06-19T12:01:19.216034+00:00",
+      "last_status": "REJECTED"
     },
     "brent rises after vance warns israel against breaking ceasefire msn": {
       "first_seen_at": "2026-06-19T09:15:53.132447+00:00",
@@ -2169,23 +2240,23 @@
       "published_at": "2026-06-19T11:06:16+00:00",
       "reference_price": 79.75,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T11:45:57.158521+00:00",
+      "last_seen_at": "2026-06-19T12:01:19.216034+00:00",
       "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NORMAL",
-    "pending_type": "TREND_PULLBACK",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T11:45:57.543553+00:00"
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 0,
+    "updated_at": "2026-06-19T12:01:19.712484+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781869500000,
+      "updated_ts": 1781870400000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -2198,7 +2269,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781869500000,
+      "updated_ts": 1781870400000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -2272,7 +2343,7 @@
     "high": 79.86,
     "low": 78.78,
     "created_ts": 1781843400000,
-    "updated_ts": 1781868600000,
+    "updated_ts": 1781869500000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -2440,17 +2511,17 @@
     "coverage_pct": 11.1
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T11:45:57.954511+00:00",
-    "price": 79.19,
-    "oi": 58392.62,
-    "cvd": -40501.0,
-    "cvd_time": "2026-06-19T11:45:57.954514+00:00",
-    "last_trade_ts": 1781869533247,
+    "time": "2026-06-19T12:01:20.002507+00:00",
+    "price": 79.39,
+    "oi": 58141.19,
+    "cvd": -85784.0,
+    "cvd_time": "2026-06-19T12:01:20.002510+00:00",
+    "last_trade_ts": 1781870468604,
     "bias": "LONG",
-    "tech_score": 49,
-    "total_score": 47
+    "tech_score": 81,
+    "total_score": 75
   },
-  "updated_at": "2026-06-19T11:45:57.954517+00:00",
+  "updated_at": "2026-06-19T12:01:20.002514+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
