@@ -1177,6 +1177,81 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-19T08:31:10.809174+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "SHORT",
+      "price": 79.29,
+      "quality": 63,
+      "reason": "нового post-rejection сетапу немає",
+      "market_direction_context": null,
+      "setup_classifier": {
+        "type": "PRIME_ICT_LOCATION_OVERRIDE",
+        "label": "🟢 Сильна ICT-локація",
+        "side": "SHORT",
+        "score": 72,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.92,
+          "tp2_pct": 1.55,
+          "tp3_pct": 2.55,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.22,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+        "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+        "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+        "professional_override": true,
+        "prime_ict_override": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 4.02,
+          "move8_abs_pct": 0.725,
+          "slope15_abs_pct": 0.596,
+          "rsi15": 48.3,
+          "score_total_abs": 117,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_RETRACE_FVG_OB"
+        },
+        "stable_count": 3,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-19T08:45:53.777697+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1217,7 +1292,7 @@
       "published_at": "2026-06-19T06:12:14+00:00",
       "reference_price": 80.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:31:10.027292+00:00",
+      "last_seen_at": "2026-06-19T08:45:53.160883+00:00",
       "last_status": "CONFIRMED"
     },
     "global markets central banks stay vigilant despite oil price relief after us iran truce inkl": {
@@ -1241,7 +1316,7 @@
       "published_at": "2026-06-19T07:24:57+00:00",
       "reference_price": 79.82,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:31:10.027292+00:00",
+      "last_seen_at": "2026-06-19T08:45:53.160883+00:00",
       "last_status": "CONFIRMED"
     },
     "kuwait to ramp up oil output to two million bpd within a week as strait of hormuz reopens the national": {
@@ -1249,23 +1324,31 @@
       "published_at": "2026-06-19T08:26:15+00:00",
       "reference_price": 79.47,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:31:10.027292+00:00",
-      "last_status": "FRESH"
+      "last_seen_at": "2026-06-19T08:45:53.160883+00:00",
+      "last_status": "CONFIRMED"
+    },
+    "strait of hormuz reopens after us iran peace deal oil flows resume what it means for prices msn": {
+      "first_seen_at": "2026-06-19T08:45:53.160883+00:00",
+      "published_at": "2026-06-19T06:13:06+00:00",
+      "reference_price": 80.14,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-19T08:45:53.160883+00:00",
+      "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-06-19T08:31:10.292490+00:00"
+    "updated_at": "2026-06-19T08:45:53.416971+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781857800000,
+      "updated_ts": 1781858700000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1278,7 +1361,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781857800000,
+      "updated_ts": 1781858700000,
       "origin_price": 79.31,
       "extreme_price": 79.16,
       "released_at": "2026-06-19T07:45:54.131395+00:00",
@@ -1290,12 +1373,12 @@
   },
   "shock_lock": {
     "side": "SHORT",
-    "status": "LOCKED",
+    "status": "RELEASED",
     "origin_ts": 1781856000000,
-    "extreme_ts": 1781856000000,
-    "extreme_price": 79.45,
-    "released_at": "",
-    "released_extreme": null
+    "extreme_ts": 1781857800000,
+    "extreme_price": 78.95,
+    "released_at": "2026-06-19T08:45:53.753026+00:00",
+    "released_extreme": 78.95
   },
   "reversal_handoff": {
     "LONG": {
@@ -1349,28 +1432,97 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 80.28,
-    "low": 79.2,
+    "high": 80.1,
+    "low": 78.95,
     "created_ts": 1781843400000,
-    "updated_ts": 1781856900000,
+    "updated_ts": 1781857800000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
     "old_low": null
   },
-  "lock_release_opportunities": {},
-  "opportunity_memory": null,
+  "lock_release_opportunities": {
+    "SHORT": {
+      "active": true,
+      "status": "ARMED",
+      "source": "POST_EVALUATION",
+      "gate_name": "",
+      "created_at": "2026-06-19T08:45:53.776843+00:00",
+      "updated_at": "2026-06-19T08:45:53.776849+00:00",
+      "ttl_minutes": 105,
+      "side": "SHORT",
+      "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
+      "setup_label": "🟢 Сильна ICT-локація",
+      "classifier": {
+        "type": "PRIME_ICT_LOCATION_OVERRIDE",
+        "label": "🟢 Сильна ICT-локація",
+        "side": "SHORT",
+        "score": 72,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "prime ICT location: FVG/OB/sweep зона + структура за напрям; 3M не сильно проти",
+        "quality_adjustment": 1,
+        "quality_cap": 79,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.92,
+          "tp2_pct": 1.55,
+          "tp3_pct": 2.55,
+          "min_stop_pct": 0.76,
+          "max_stop_pct": 1.22,
+          "quality_adjustment": 1,
+          "quality_cap": 79,
+          "force_risky": true
+        },
+        "entry_rule": "сильна ICT-локація: FVG/OB/зняття ліквідності у правильній зоні + структура за напрям; 3M може бути нейтральним, але не сильно проти",
+        "stop_rule": "стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером",
+        "tp_rule": "TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
+        "management_rule": "ранній ICT-вхід; якщо 3M не підтверджує після входу — ризик швидко підвищується",
+        "professional_override": true,
+        "prime_ict_override": true,
+        "late_penalty": 0
+      },
+      "quality": 72,
+      "origin_price": 79.29,
+      "trigger_level": 79.29,
+      "trigger_ts": 0,
+      "trigger_type": null,
+      "invalidation": null,
+      "initial_reason": "нового post-rejection сетапу немає",
+      "plan": null
+    }
+  },
+  "opportunity_memory": {
+    "active": true,
+    "source": "POST_GATE",
+    "created_at": "2026-06-19T08:45:53.776887+00:00",
+    "ttl_minutes": 45,
+    "side": "SHORT",
+    "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
+    "setup_label": "🟢 Сильна ICT-локація",
+    "quality": 63,
+    "price": 79.29,
+    "trigger_level": null,
+    "invalidation": null,
+    "reason": "нового post-rejection сетапу немає",
+    "missing_conditions": [
+      "режим ринку дозволяє тільки ризиковий/обережний вхід",
+      "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
+      "не вдалося побудувати життєздатну технічну геометрію"
+    ],
+    "plan": null
+  },
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
     "missed": 4,
     "active_episode_keys": [
-      "SHORT:CAPITULATION_RECOVERY",
-      "SHORT:CLOSED_15M_DIRECTION_FLIP"
+      "SHORT:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "SHORT:CLOSED_15M_DIRECTION_FLIP": "MISSED",
       "SHORT:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
@@ -1420,17 +1572,17 @@
     "coverage_pct": 20.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T08:31:10.809192+00:00",
-    "price": 79.16,
-    "oi": 58785.39,
-    "cvd": 6227.0,
-    "cvd_time": "2026-06-19T08:31:10.809194+00:00",
-    "last_trade_ts": 1781857847601,
+    "time": "2026-06-19T08:45:53.777714+00:00",
+    "price": 79.29,
+    "oi": 59146.21,
+    "cvd": -3987.0,
+    "cvd_time": "2026-06-19T08:45:53.777717+00:00",
+    "last_trade_ts": 1781858743176,
     "bias": "SHORT",
-    "tech_score": -133,
-    "total_score": -140
+    "tech_score": -109,
+    "total_score": -117
   },
-  "updated_at": "2026-06-19T08:31:10.809199+00:00",
+  "updated_at": "2026-06-19T08:45:53.777720+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
