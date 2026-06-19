@@ -21,8 +21,8 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
-BOT_VERSION = "pro-v3.12-no-clean-setup-canonicalization"
-ARCHITECTURE_VERSION = "SINGLE_FILE_CLEAN_V3_12_NO_CLEAN_SETUP_CANONICALIZATION"
+BOT_VERSION = "pro-v3.13-liquidity-context-bos-retest"
+ARCHITECTURE_VERSION = "SINGLE_FILE_CLEAN_V3_13_LIQUIDITY_CONTEXT_BOS_RETEST"
 
 # Version upgrade: Single-File Clean Architecture V3 + deterministic decision pipeline.
 # Entry package: Persistent Exhaustion / Shock Release 2.0 / Directional News
@@ -7552,7 +7552,6 @@ def setup_watch_title(side, setup_info):
     if setup_type == "NEWS_IMPULSE":
         return f"ЧЕКАТИ — {side_text} НОВИННИЙ ІМПУЛЬС БЕЗ РЕТЕСТУ"
     return f"ЧЕКАТИ — {side_text} СЕТАП НЕ ГОТОВИЙ"
-
 
 def _zone_bounds(zone):
     if not isinstance(zone, dict):
@@ -15542,7 +15541,6 @@ PENDING_TRIGGER_SETUP_TYPES = {
 
 PENDING_TRIGGER_BLOCK_TYPES = {"LATE_IMPULSE_CHASE", "COUNTERTREND_PULLBACK_WAIT", "RANGE_MIDDLE_BLOCK", "NO_CLEAN_SETUP"}
 
-
 def _pending_trigger_age_minutes(pending):
     ts = _parse_iso_time((pending or {}).get("created_at"))
     if not ts:
@@ -17368,11 +17366,9 @@ def _v3_watch_title(side, setup):
         return f"ЧЕКАТИ — {side} НЕ ПІДТВЕРДЖЕНИЙ"
     return f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
 
-
 def _v3_is_no_clean_setup(setup):
     info = (setup or {}).get("setup_classifier") or {}
     return str(info.get("type") or "").upper() == "NO_CLEAN_SETUP"
-
 
 def _v3_canonicalize_no_clean_setup(setup, audit=None, stage="CANONICALIZE"):
     """Convert NO_CLEAN_SETUP into a neutral no-trade decision.
@@ -17428,7 +17424,6 @@ def _v3_canonicalize_no_clean_setup(setup, audit=None, stage="CANONICALIZE"):
         })
     return out
 
-
 def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
     return {
         "action": "NO_TRADE",
@@ -17445,7 +17440,6 @@ def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
         "reason_codes": [error_code],
         "architecture_version": ARCHITECTURE_VERSION,
     }
-
 
 def _v3_normalize_setup(setup, context, source, audit=None):
     audit = audit if isinstance(audit, list) else []
@@ -17538,7 +17532,6 @@ def _v3_normalize_setup(setup, context, source, audit=None):
             raw.setdefault("title", "ВХОДУ НЕМАЄ")
     raw.setdefault("reason", "перевага нечітка, немає професійного входу")
     return raw
-
 
 def _v3_proposal_score(source, setup, context):
     action = str((setup or {}).get("action") or "NO_TRADE").upper()
@@ -17723,7 +17716,6 @@ def _v3_enforce_stage_invariants(previous, current, fixed_side, stage_name, allo
     cur["conflicts"] = _v3_clean_side_messages(cur.get("conflicts"), fixed_side)
     return cur
 
-
 def _v3_run_gate_once(context, setup, gate_name, gate_func, fixed_side, audit):
     previous = deepcopy(setup)
     try:
@@ -17824,7 +17816,6 @@ def _v3_canonical_lock_guard(context, setup, fixed_side, audit):
             current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + ["STALE_PRE_RELEASE_PLAN_REMOVED"])
             audit.append({"stage": "CANONICAL_LOCK", "code": "STALE_PRE_RELEASE_PLAN_REMOVED", "side": fixed_side})
     return _v3_normalize_setup(current, context, "FINAL_PIPELINE", audit)
-
 
 def _v3_final_geometry_and_entry_level(context, setup, fixed_side, audit):
     current = deepcopy(setup)
@@ -17942,7 +17933,6 @@ def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
     current["decision_pipeline_v3"]["decision_fingerprint"] = current["decision_fingerprint"]
     return current
 
-
 def _v3_commit_context(target, selected_context):
     if not isinstance(target, dict) or not isinstance(selected_context, dict):
         return
@@ -18016,9 +18006,6 @@ def evaluate_new_setup(context):
             "audit": audit[-40:],
         }
         return safe
-
-
-
 
 def new_active_trade(setup):
     plan = setup["plan"]
@@ -18552,7 +18539,6 @@ def _compact_title(setup):
         return "⚪ " + str(setup.get("title") or "ЧЕКАТИ — ВХОДУ НЕМАЄ")
     return str(setup.get("title") or "СИГНАЛ")
 
-
 def entry_type_text(context, setup):
     """Human-readable setup classifier for Telegram.
 
@@ -18579,7 +18565,6 @@ def entry_type_text(context, setup):
     # Internal entry_rule remains in setup_classifier for the engine/journal,
     # but it is not printed in notifications.
     return line
-
 
 def _compact_notification_text(value, limit=320):
     text = " ".join(str(value or "").split()).strip(" ;")
@@ -18758,10 +18743,12 @@ def build_follow_message(context, trade, result):
         closed=bool((result or {}).get("closed")),
         exit_reason_code=(result or {}).get("exit_reason_code"),
     )
-    title = phase.get("telegram_title") or (result or {}).get("title") or f"СУПРОВІД {trade.side}"
+    thesis_snapshot = (result or {}).get("setup_thesis_persistence") or {}
+    thesis_priority = bool((result or {}).get("suppressed_exit") or thesis_snapshot.get("state") in ["THESIS_RECOVERED", "UNDER_PRESSURE"])
+    title = ((result or {}).get("title") if thesis_priority else None) or phase.get("telegram_title") or (result or {}).get("title") or f"СУПРОВІД {trade.side}"
     phase_reason = phase.get("telegram_reason") or ""
     recommendation = (result or {}).get("recommendation") or ""
-    situation_reason = phase_reason or recommendation or "супровід оновлено за поточним контекстом."
+    situation_reason = (recommendation if thesis_priority else None) or phase_reason or recommendation or "супровід оновлено за поточним контекстом."
     mae_pct = safe_float(phase.get("mae_pct"), 0.0) or 0.0
     close_mfe = safe_float(phase.get("close_mfe_pct"), 0.0) or 0.0
 
@@ -18776,6 +18763,18 @@ def build_follow_message(context, trade, result):
         "<b>Ситуація з угодою:</b>",
         f"{_follow_situation_icon(result, phase)} {html.escape(_compact_notification_text(situation_reason, 360))}",
     ]
+    if thesis_snapshot:
+        thesis_state = str(thesis_snapshot.get("state") or "")
+        thesis_base = thesis_snapshot.get("protected_base")
+        thesis_text = {
+            "THESIS_INTACT": "🟢 Теза сетапу збережена",
+            "UNDER_PRESSURE": "🟠 Теза під тиском, але ще не зламана",
+            "THESIS_RECOVERED": "🟢 Теза сетапу відновлена",
+            "THESIS_BROKEN": "🔴 Теза сетапу зламана",
+        }.get(thesis_state, "🟡 Теза сетапу перевіряється")
+        if thesis_base is not None and thesis_state != "THESIS_BROKEN":
+            thesis_text += f" | захищена база {_fmt_price(thesis_base)}"
+        lines.append(thesis_text)
     # Close/confirmed MFE is used by the engine internally, but not printed by
     # default to keep Telegram clean and fast to read.
 
@@ -18858,6 +18857,9 @@ def build_closed_trade_journal_item(trade, result, context):
         "exit_reason_code": result.get("exit_reason_code") or _exit_reason_code(result, context, trade),
         "exit_quality": result.get("exit_quality") or _exit_quality_score(trade, result, context),
         "exit_score": result.get("exit_score"),
+        "setup_thesis_persistence": result.get("setup_thesis_persistence") or getattr(trade, "thesis_last_snapshot", {}),
+        "thesis_state": getattr(trade, "thesis_state", ""),
+        "thesis_protected_base": round_price(getattr(trade, "thesis_protected_base", None)),
         "missed_continuation_check": "pending_next_runs",
         "notes": result.get("notes", []),
     }
@@ -18898,6 +18900,1152 @@ def update_market_snapshot(state, context):
         "tech_score": context.get("tech_score"),
         "total_score": context.get("total_score"),
     }
+
+
+
+# ==========================================================
+# SETUP THESIS PERSISTENCE + INDEPENDENT EVIDENCE EXIT GUARD V3.11
+# ==========================================================
+
+SETUP_THESIS_PATCH_VERSION = "SETUP_THESIS_PERSISTENCE_INDEPENDENT_EVIDENCE_V3_11"
+_THESIS_DYNAMIC_FIELDS = [
+    "thesis_hard_stop", "thesis_protected_base", "thesis_protected_structure",
+    "thesis_reclaim_level", "thesis_state", "thesis_pressure_streak",
+    "thesis_break_streak", "thesis_recovery_streak", "thesis_evidence_started_at",
+    "thesis_last_snapshot", "thesis_family_streaks", "thesis_mfe_exit_armed",
+]
+_THESIS_HARD_ACTIONS = {"STOP", "TP1", "TP2", "TP3"}
+
+
+def _thesis_iso_to_ms(value):
+    try:
+        dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.astimezone(timezone.utc).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _thesis_candle_ts(candle):
+    try:
+        return int(getattr(candle, "ts", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _thesis_post_entry_candles(trade, context, key):
+    opened_ms = _thesis_iso_to_ms(getattr(trade, "opened_at", ""))
+    values = list((context or {}).get(key) or [])
+    out = []
+    for candle in values:
+        ts = _thesis_candle_ts(candle)
+        if opened_ms and ts < opened_ms:
+            continue
+        if getattr(candle, "confirm_known", False) and not getattr(candle, "confirmed", True):
+            continue
+        if not getattr(candle, "confirmed", True):
+            continue
+        out.append(candle)
+    out.sort(key=_thesis_candle_ts)
+    return out
+
+
+def _thesis_level_candidates(side, entry, stop, context):
+    risk = max(abs(entry - stop), 1e-9)
+    minimum_gap = max(risk * 0.15, entry * 0.00035)
+    lower = min(entry, stop) + risk * 0.10
+    upper = max(entry, stop) - minimum_gap
+    values = []
+    structure = (context or {}).get("structure") or {}
+    keys = ["swing_low", "recent_low"] if side == "LONG" else ["swing_high", "recent_high"]
+    for key in keys:
+        value = safe_float(structure.get(key), None)
+        if value is not None:
+            values.append(value)
+    closed3 = _thesis_post_entry_candles(type("_T", (), {"opened_at": "1970-01-01T00:00:00+00:00"})(), context, "candles_3m")
+    recent3 = closed3[-10:]
+    if side == "LONG":
+        values.extend([safe_float(getattr(c, "low", None), None) for c in recent3])
+    else:
+        values.extend([safe_float(getattr(c, "high", None), None) for c in recent3])
+    valid = [float(v) for v in values if v is not None and lower <= float(v) <= upper]
+    return valid
+
+
+def _derive_setup_thesis_anchors(trade, context=None):
+    side = str(getattr(trade, "side", "") or "")
+    entry = safe_float(getattr(trade, "entry", 0), 0.0) or 0.0
+    stop = safe_float(getattr(trade, "stop_initial", getattr(trade, "stop_current", 0)), 0.0) or 0.0
+    setup_type = _active_trade_setup_type(trade)
+    risk = max(abs(entry - stop), entry * 0.001, 1e-9)
+    if setup_type in ["CAPITULATION_RECOVERY", "SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"]:
+        fraction = 0.35
+    elif setup_type in ["BREAKOUT_ACCEPTANCE_FAST_ENTRY", "3M_BREAKOUT_ACCEPTANCE_FAST_ENTRY", "TREND_IGNITION_ENTRY"]:
+        fraction = 0.30
+    elif setup_type in ["PULLBACK_CONTINUATION", "PULLBACK_CONTINUATION_FAST_ENTRY", "TREND_CONTINUATION", "CLOSED_15M_DIRECTION_FLIP"]:
+        fraction = 0.27
+    else:
+        fraction = 0.32
+    model_base = stop + (entry - stop) * fraction
+    candidates = _thesis_level_candidates(side, entry, stop, context or {})
+    protected = min(candidates, key=lambda x: abs(x - model_base)) if candidates else model_base
+    if side == "LONG":
+        protected = min(entry - risk * 0.15, max(stop + risk * 0.10, protected))
+    else:
+        protected = max(entry + risk * 0.15, min(stop - risk * 0.10, protected))
+    trigger = safe_float(getattr(trade, "recovery_trigger_level", 0), 0.0) or 0.0
+    reclaim = trigger if trigger else entry
+    return {
+        "hard_stop": round_price(stop),
+        "protected_base": round_price(protected),
+        "protected_structure": round_price(protected),
+        "reclaim_level": round_price(reclaim),
+        "setup_type": setup_type or "UNKNOWN",
+    }
+
+
+def _ensure_trade_thesis_state(trade, context=None):
+    anchors = _derive_setup_thesis_anchors(trade, context or {})
+    defaults = {
+        "thesis_hard_stop": anchors["hard_stop"],
+        "thesis_protected_base": anchors["protected_base"],
+        "thesis_protected_structure": anchors["protected_structure"],
+        "thesis_reclaim_level": anchors["reclaim_level"],
+        "thesis_state": "THESIS_INTACT",
+        "thesis_pressure_streak": 0,
+        "thesis_break_streak": 0,
+        "thesis_recovery_streak": 0,
+        "thesis_evidence_started_at": str(getattr(trade, "opened_at", "") or iso_now()),
+        "thesis_last_snapshot": {},
+        "thesis_family_streaks": {},
+        "thesis_mfe_exit_armed": False,
+    }
+    for key, value in defaults.items():
+        current = getattr(trade, key, None)
+        if current in [None, ""] or (isinstance(current, (int, float)) and current == 0 and key.startswith("thesis_") and key not in ["thesis_pressure_streak", "thesis_break_streak", "thesis_recovery_streak"]):
+            setattr(trade, key, value)
+    return anchors
+
+
+def _thesis_bias_against(block, side, threshold=0):
+    block = block or {}
+    return bool(block.get("bias") == opposite(side) and abs(int(block.get("score", 0) or 0)) >= threshold)
+
+
+def setup_thesis_persistence_snapshot(trade, context, proposed_result=None, update_state=True):
+    anchors = _ensure_trade_thesis_state(trade, context)
+    side = str(getattr(trade, "side", "") or "")
+    price = safe_float((context or {}).get("price"), safe_float(getattr(trade, "entry", 0), 0.0)) or 0.0
+    entry = safe_float(getattr(trade, "entry", 0), 0.0) or 0.0
+    stop = safe_float(getattr(trade, "stop_initial", 0), 0.0) or 0.0
+    protected = safe_float(getattr(trade, "thesis_protected_base", anchors["protected_base"]), anchors["protected_base"])
+    reclaim = safe_float(getattr(trade, "thesis_reclaim_level", anchors["reclaim_level"]), anchors["reclaim_level"])
+    risk_abs = max(abs(entry - stop), 1e-9)
+    initial_risk_pct = abs(pct(stop, entry)) if entry else 0.0
+    best_price = safe_float(getattr(trade, "best_price", entry), entry)
+    best_pct = max(0.0, signed_pct(side, entry, best_price)) if entry else 0.0
+    current_pct = signed_pct(side, entry, price) if entry else 0.0
+    mfe_r = best_pct / initial_risk_pct if initial_risk_pct > 0 else 0.0
+
+    post3 = _thesis_post_entry_candles(trade, context, "candles_3m")
+    post15 = _thesis_post_entry_candles(trade, context, "candles_15m")
+    atr15 = safe_float((context or {}).get("atr15"), None) or safe_float(((context or {}).get("tf15") or {}).get("atr"), risk_abs) or risk_abs
+    atr3 = safe_float(atr(post3, 14), None) if len(post3) >= 3 else None
+    if not atr3:
+        atr3 = max(atr15 * 0.30, risk_abs * 0.12, entry * 0.0005)
+    buffer_abs = max(atr3 * 0.10, entry * 0.00030)
+
+    closes3 = [safe_float(getattr(c, "close", None), None) for c in post3[-4:]]
+    closes3 = [x for x in closes3 if x is not None]
+    close15 = safe_float(getattr(post15[-1], "close", None), None) if post15 else None
+    if side == "LONG":
+        broken3 = len(closes3) >= 2 and all(x < protected - buffer_abs for x in closes3[-2:])
+        broken15 = close15 is not None and close15 < protected - buffer_abs
+        reclaim_lost = len(closes3) >= 2 and all(x < reclaim - buffer_abs for x in closes3[-2:])
+        hard_stop_cross = price <= stop
+        recovered_price = price >= reclaim + buffer_abs * 0.25
+    else:
+        broken3 = len(closes3) >= 2 and all(x > protected + buffer_abs for x in closes3[-2:])
+        broken15 = close15 is not None and close15 > protected + buffer_abs
+        reclaim_lost = len(closes3) >= 2 and all(x > reclaim + buffer_abs for x in closes3[-2:])
+        hard_stop_cross = price >= stop
+        recovered_price = price <= reclaim - buffer_abs * 0.25
+
+    tf3 = (context or {}).get("tf3") or {}
+    structure = (context or {}).get("structure") or {}
+    ict = (context or {}).get("ict") or {}
+    flow = (context or {}).get("flow") or {}
+    cvd = (context or {}).get("cvd") or {}
+    liquidity = (context or {}).get("liquidity") or {}
+    news = (context or {}).get("news") or {}
+    tf3_against = _thesis_bias_against(tf3, side, 28)
+    structure_against = _thesis_bias_against(structure, side, 12)
+    ict_against = _thesis_bias_against(ict, side, 12)
+    flow_against = _thesis_bias_against(flow, side, 10)
+    cvd_against = _thesis_bias_against(cvd, side, 10)
+    liquidity_against = _thesis_bias_against(liquidity, side, 10)
+    news_against = _thesis_bias_against(news, side, 18)
+    flow_support = (flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10)
+    cvd_support = (cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10)
+    tf3_support = (tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22)
+
+    # Independent families: correlated readings from the same price candle are
+    # deliberately collapsed into one family instead of being counted 3-4 times.
+    price_structure_family = bool(broken15 or (broken3 and (structure_against or ict_against)))
+    order_flow_family = bool(flow_against and cvd_against)
+    ict_location_family = bool(ict_against and (broken3 or broken15 or reclaim_lost))
+    liquidity_family = bool(liquidity_against and (broken3 or broken15))
+    news_family = bool(news_against and (broken3 or broken15) and str(news.get("top_lifecycle") or "").upper() in ["CONFIRMED", "ACTIVE"])
+    families = {
+        "PRICE_STRUCTURE": price_structure_family,
+        "ORDER_FLOW": order_flow_family,
+        "ICT_LOCATION": ict_location_family,
+        "LIQUIDITY": liquidity_family,
+        "NEWS": news_family,
+    }
+    family_count = sum(bool(v) for v in families.values())
+    thesis_broken = bool(broken15 or (broken3 and (structure_against or ict_against)))
+    pressure = bool(thesis_broken or reclaim_lost or tf3_against or family_count >= 1)
+    recovered = bool(recovered_price and (tf3_support or flow_support or cvd_support) and not thesis_broken)
+
+    pressure_streak = int(getattr(trade, "thesis_pressure_streak", 0) or 0)
+    break_streak = int(getattr(trade, "thesis_break_streak", 0) or 0)
+    recovery_streak = int(getattr(trade, "thesis_recovery_streak", 0) or 0)
+    if update_state:
+        pressure_streak = pressure_streak + 1 if pressure else max(0, pressure_streak - 1)
+        break_streak = break_streak + 1 if thesis_broken else 0
+        recovery_streak = recovery_streak + 1 if recovered else 0
+        trade.thesis_pressure_streak = pressure_streak
+        trade.thesis_break_streak = break_streak
+        trade.thesis_recovery_streak = recovery_streak
+
+    mfe_exit_armed = bool(getattr(trade, "tp1_hit", False) or mfe_r >= 0.50 or thesis_broken)
+    adverse_r = abs(min(0.0, current_pct)) / initial_risk_pct if initial_risk_pct > 0 else 0.0
+    action = str((proposed_result or {}).get("action") or "").upper()
+    hard_level_action = action in _THESIS_HARD_ACTIONS or action.startswith("TP")
+    recovery_failure_action = str((proposed_result or {}).get("exit_reason_code") or "") == "POST_REJECTION_RECOVERY_FAILED"
+
+    allow_close = False
+    close_reason = ""
+    if hard_level_action or hard_stop_cross:
+        allow_close = True
+        close_reason = "фактичний стоп/тейк має абсолютний пріоритет"
+    elif recovery_failure_action and reclaim_lost and family_count >= 1:
+        allow_close = True
+        close_reason = "новий recovery-trigger втрачено після входу і незалежний шар підтвердив провал"
+    elif broken15 and family_count >= 2:
+        allow_close = True
+        close_reason = "закрита post-entry 15M порушила protected base і є два незалежні сімейства проти"
+    elif broken3 and family_count >= 2 and break_streak >= 1:
+        allow_close = True
+        close_reason = "два post-entry 3M закриття порушили protected base і незалежні сімейства підтвердили"
+    elif thesis_broken and family_count >= 1 and pressure_streak >= 2:
+        allow_close = True
+        close_reason = "теза зламана і підтвердження проти повторилося на двох перевірках"
+    elif adverse_r >= 0.80 and family_count >= 1 and pressure_streak >= 1:
+        allow_close = True
+        close_reason = "ціна використала понад 80% початкового ризику та незалежне підтвердження вже проти"
+    elif mfe_exit_armed and family_count >= 2 and pressure_streak >= 2:
+        allow_close = True
+        close_reason = "MFE-захист активований після 0.5R/TP1 і два незалежні сімейства підтвердили втрату переваги"
+    else:
+        close_reason = "protected base/HL-LH не зламано або недостатньо незалежних post-entry доказів"
+
+    if thesis_broken:
+        state = "THESIS_BROKEN" if allow_close else "UNDER_PRESSURE"
+    elif recovered and recovery_streak >= 1:
+        state = "THESIS_RECOVERED"
+    elif pressure:
+        state = "UNDER_PRESSURE"
+    else:
+        state = "THESIS_INTACT"
+
+    snapshot = {
+        "version": SETUP_THESIS_PATCH_VERSION,
+        "state": state,
+        "allow_close": bool(allow_close),
+        "close_reason": close_reason,
+        "side": side,
+        "setup_type": _active_trade_setup_type(trade) or "UNKNOWN",
+        "hard_stop": round_price(stop),
+        "protected_base": round_price(protected),
+        "protected_structure": round_price(getattr(trade, "thesis_protected_structure", protected)),
+        "reclaim_level": round_price(reclaim),
+        "price": round_price(price),
+        "current_pct": round(current_pct, 3),
+        "best_pct": round(best_pct, 3),
+        "initial_risk_pct": round(initial_risk_pct, 3),
+        "mfe_r": round(mfe_r, 3),
+        "mfe_exit_armed": mfe_exit_armed,
+        "post_entry_3m_count": len(post3),
+        "post_entry_15m_count": len(post15),
+        "protected_base_broken_3m": broken3,
+        "protected_base_broken_15m": broken15,
+        "reclaim_lost": reclaim_lost,
+        "independent_families": [k for k, v in families.items() if v],
+        "independent_family_count": family_count,
+        "families": families,
+        "pressure_streak": pressure_streak,
+        "break_streak": break_streak,
+        "recovery_streak": recovery_streak,
+        "pre_entry_evidence_ignored": True,
+    }
+    if update_state:
+        trade.thesis_state = state
+        trade.thesis_mfe_exit_armed = mfe_exit_armed
+        trade.thesis_last_snapshot = snapshot
+        trade.thesis_family_streaks = dict(families)
+        if state == "THESIS_RECOVERED":
+            trade.entry_fail_streak = 0
+            trade.lifecycle_failures = 0
+            trade.lifecycle_stage = "WORKING"
+    return snapshot
+
+
+# Persist the V3.11 thesis fields without requiring a breaking dataclass migration.
+_legacy_active_trade_from_state_v310 = active_trade_from_state
+_legacy_store_active_trade_v310 = store_active_trade
+_legacy_new_active_trade_v310 = new_active_trade
+_legacy_manage_active_trade_v310 = manage_active_trade
+_legacy_decision_coherence_guard_v310 = decision_coherence_guard
+_legacy_setup_aware_exit_decision_v310 = setup_aware_exit_decision
+_legacy_mandatory_mfe_profit_lock_snapshot_v310 = mandatory_mfe_profit_lock_snapshot
+
+
+def active_trade_from_state(state):
+    trade = _legacy_active_trade_from_state_v310(state)
+    raw = (state or {}).get("active_trade") if isinstance(state, dict) else None
+    if trade is not None and isinstance(raw, dict):
+        for key in _THESIS_DYNAMIC_FIELDS:
+            if key in raw:
+                setattr(trade, key, deepcopy(raw.get(key)))
+        _ensure_trade_thesis_state(trade, {})
+    return trade
+
+
+def store_active_trade(state, trade):
+    if not trade:
+        state["active_trade"] = None
+        return
+    raw = asdict(trade)
+    for key in _THESIS_DYNAMIC_FIELDS:
+        raw[key] = deepcopy(getattr(trade, key, None))
+    raw["thesis_patch_version"] = SETUP_THESIS_PATCH_VERSION
+    state["active_trade"] = raw
+
+
+def new_active_trade(setup, context=None):
+    trade = _legacy_new_active_trade_v310(setup)
+    _ensure_trade_thesis_state(trade, context or {})
+    trade.notes.append("THESIS_PATCH: " + SETUP_THESIS_PATCH_VERSION)
+    return trade
+
+
+def setup_aware_exit_decision(trade, context, entry_state, phase_snapshot, current_pct,
+                              tf3_against=False, flow_against=False, cvd_against=False,
+                              confirmed_ict_reversal=False):
+    legacy = _legacy_setup_aware_exit_decision_v310(
+        trade, context, entry_state, phase_snapshot, current_pct,
+        tf3_against=tf3_against, flow_against=flow_against,
+        cvd_against=cvd_against, confirmed_ict_reversal=confirmed_ict_reversal,
+    )
+    if legacy.get("close"):
+        thesis = setup_thesis_persistence_snapshot(trade, context, {
+            "action": "EXIT_ENTRY_POINT_BROKEN",
+            "exit_reason_code": "SETUP_AWARE_CLOSED_MTF_BREAK",
+        }, update_state=False)
+        legacy["thesis_snapshot"] = thesis
+        if not thesis.get("allow_close"):
+            legacy["close"] = False
+            legacy["warning_only"] = True
+            legacy["reason"] = "setup thesis ще жива: protected base/HL-LH не зламано незалежними post-entry доказами"
+    return legacy
+
+
+def decision_coherence_guard(trade, context, candidate_action, current_pct, best_pct,
+                             giveback_ratio=0.0, phase_snapshot=None,
+                             confirmed_ict_reversal=False, profit_exit=False):
+    legacy = _legacy_decision_coherence_guard_v310(
+        trade, context, candidate_action, current_pct, best_pct,
+        giveback_ratio, phase_snapshot,
+        confirmed_ict_reversal=confirmed_ict_reversal, profit_exit=profit_exit,
+    )
+    action = str(candidate_action or "").upper()
+    if action in _THESIS_HARD_ACTIONS or action.startswith("TP"):
+        return legacy
+    thesis = setup_thesis_persistence_snapshot(trade, context, {
+        "action": action,
+        "exit_reason_code": legacy.get("reason_code"),
+    }, update_state=False)
+    legacy["thesis_snapshot"] = thesis
+    if legacy.get("allow_close") and not thesis.get("allow_close"):
+        return {
+            "allow_close": False,
+            "reason_code": "SETUP_THESIS_STILL_ALIVE",
+            "reason": "локальний тиск є, але protected base/HL-LH сетапу ще не зламані незалежними post-entry доказами",
+            "replacement_action": "UNDER_PRESSURE",
+            "break_snapshot": legacy.get("break_snapshot"),
+            "thesis_snapshot": thesis,
+        }
+    return legacy
+
+
+def mandatory_mfe_profit_lock_snapshot(trade, context, current_pct, best_pct, giveback_ratio, opposing_layers):
+    out = _legacy_mandatory_mfe_profit_lock_snapshot_v310(
+        trade, context, current_pct, best_pct, giveback_ratio, opposing_layers
+    )
+    if out.get("close") and not getattr(trade, "tp1_hit", False):
+        thesis = setup_thesis_persistence_snapshot(trade, context, {
+            "action": "EXIT_MANDATORY_MFE_LOCK",
+            "exit_reason_code": "MANDATORY_MFE_PROFIT_LOCK",
+        }, update_state=False)
+        out["thesis_snapshot"] = thesis
+        if not thesis.get("mfe_exit_armed") or not thesis.get("allow_close"):
+            out["close"] = False
+            out["protect"] = True
+            out["reason"] = "MFE ще менше 0.5R або setup thesis не зламана; максимум захист, без раннього повного виходу"
+    return out
+
+
+def manage_active_trade(trade, context):
+    _ensure_trade_thesis_state(trade, context or {})
+    result = _legacy_manage_active_trade_v310(trade, context)
+    thesis = setup_thesis_persistence_snapshot(trade, context, result, update_state=True)
+    result["setup_thesis_persistence"] = thesis
+    action = str(result.get("action") or "").upper()
+    hard_action = action in _THESIS_HARD_ACTIONS or action.startswith("TP")
+    if result.get("closed") and not hard_action and not thesis.get("allow_close"):
+        trade.status = "OPEN"
+        trade.last_action = "UNDER_PRESSURE" if thesis.get("state") == "UNDER_PRESSURE" else "HOLD"
+        trade.lifecycle_stage = "UNDER_PRESSURE" if thesis.get("state") == "UNDER_PRESSURE" else "WORKING"
+        trade.lifecycle_failures = min(int(getattr(trade, "lifecycle_failures", 0) or 0), 1)
+        trade.entry_fail_streak = min(int(getattr(trade, "entry_fail_streak", 0) or 0), 1)
+        original_action = action
+        original_reason = result.get("exit_reason_code") or original_action
+        result = {
+            "closed": False,
+            "action": trade.last_action,
+            "title": f"{trade.side} — ТЕЗА ЩЕ ЖИВА, ЛОКАЛЬНИЙ ТИСК",
+            "recommendation": "не закривати лише через локальне відхилення: protected base/HL-LH не зламані; чекати відновлення або незалежного підтвердженого зламу",
+            "current_pct": signed_pct(trade.side, trade.entry, safe_float((context or {}).get("price"), trade.entry)),
+            "best_pct": max(0.0, signed_pct(trade.side, trade.entry, safe_float(getattr(trade, "best_price", trade.entry), trade.entry))),
+            "notes": [
+                f"ранній вихід {original_reason} заблоковано Setup Thesis Persistence",
+                f"protected base: {thesis.get('protected_base')}",
+                f"незалежних post-entry сімейств проти: {thesis.get('independent_family_count')}",
+                thesis.get("close_reason"),
+            ],
+            "setup_thesis_persistence": thesis,
+            "suppressed_exit": {
+                "action": original_action,
+                "reason_code": original_reason,
+            },
+        }
+    else:
+        if result.get("closed"):
+            trade.status = "CLOSED"
+        if thesis.get("state") == "THESIS_RECOVERED" and not result.get("closed"):
+            result["action"] = "HOLD"
+            result["title"] = f"{trade.side} — ТЕЗУ ВІДНОВЛЕНО"
+            result["recommendation"] = "ціна повернула reclaim/entry-зону, підтримка 3M/flow відновилася; продовжувати супровід за планом"
+            result.setdefault("notes", []).append("Setup Thesis Persistence: попередній тиск скинуто після відновлення")
+    return result
+
+
+# ==========================================================
+# LIQUIDITY SWEEP CONTEXT RESOLVER + BOS BREAKDOWN RETEST FAST ENTRY V3.13
+# ==========================================================
+
+LIQUIDITY_CONTEXT_PATCH_VERSION = "LIQUIDITY_SWEEP_CONTEXT_RESOLVER_V3_13"
+BOS_RETEST_SETUP_TYPE = "BOS_BREAKDOWN_RETEST_FAST_ENTRY"
+BOS_RETEST_SOURCE = "BOS_BREAKDOWN_RETEST"
+BOS_RETEST_MAX_EXTENSION_ATR15 = 0.88
+BOS_RETEST_MAX_AGE_MINUTES = 39
+BOS_RETEST_MIN_RR1 = 1.20
+BOS_RETEST_MIN_REWARD_PCT = 0.50
+BOS_RETEST_MIN_REWARD_ATR15 = 0.85
+BOS_RETEST_MIN_STOP_ATR15 = 0.45
+BOS_RETEST_MAX_STOP_ATR15 = 1.35
+
+SETUP_CLASS_LABELS[BOS_RETEST_SETUP_TYPE] = "🟢 BOS пробій + ретест рівня"
+V3_SOURCE_PRIORITY[BOS_RETEST_SOURCE] = 95
+V3_TRANSITION_SETUPS.add(BOS_RETEST_SETUP_TYPE)
+PENDING_TRIGGER_SETUP_TYPES.add(BOS_RETEST_SETUP_TYPE)
+for _name in ["TRANSITION_PRIORITY_SETUPS", "ENTRY_CONSENSUS_KEY_SETUPS", "OPPORTUNITY_MEMORY_SETUP_TYPES", "GEOMETRY_PERSISTENCE_SETUP_TYPES"]:
+    _value = globals().get(_name)
+    if isinstance(_value, set):
+        _value.add(BOS_RETEST_SETUP_TYPE)
+
+
+def _v313_closed_3m(context, minimum=1):
+    values = list((context or {}).get("candles_3m") or [])
+    try:
+        closed = closed_candles(values, 3, min_required=minimum)
+    except Exception:
+        closed = values
+    return list(closed or [])
+
+
+def _v313_structure_bos_level(context, side):
+    structure = (context or {}).get("structure") or {}
+    if side == "SHORT":
+        return safe_float(structure.get("bos_level"), None) or safe_float(structure.get("swing_low"), None)
+    if side == "LONG":
+        return safe_float(structure.get("bos_level"), None) or safe_float(structure.get("swing_high"), None)
+    return None
+
+
+def liquidity_sweep_context_resolver(context):
+    """Resolve whether a detected sweep is a real accepted reclaim or only micro-noise.
+
+    A single close back above a freshly swept 3M low must not automatically block
+    a structurally confirmed SHORT while price remains below the accepted BOS
+    level. LONG is handled symmetrically.
+    """
+    context = context or {}
+    raw = deepcopy(context.get("liquidity") or {})
+    if not raw:
+        return raw
+    price = safe_float(context.get("price"), None)
+    atr15 = safe_float(context.get("atr15"), None) or safe_float(((context.get("tf15") or {}).get("atr")), None) or ((price or 90.0) * 0.006)
+    closed3 = _v313_closed_3m(context, 2)
+    atr3 = safe_float(atr(closed3, 14), None) if len(closed3) >= 3 else None
+    atr3 = atr3 or atr15 * 0.30
+    structure = context.get("structure") or {}
+    tf15 = context.get("tf15") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    phase = str(structure.get("phase") or "").upper()
+    structure_bias = str(structure.get("bias") or "NEUTRAL").upper()
+    # Idempotent by design: the resolver may be called by build_context, the
+    # setup classifier, and the BOS-retest snapshot during the same run. Keep
+    # the original hard-block evidence instead of replacing it with the
+    # already-resolved empty ``blocks`` list on the second call.
+    raw_blocks = set(raw.get("raw_blocks") or raw.get("blocks") or [])
+    resolved_blocks = set(raw.get("blocks") or raw_blocks)
+    audit = list(raw.get("context_audit") or [])
+    accepted = dict(raw.get("accepted_reclaim") or {"LONG": False, "SHORT": False})
+    accepted.setdefault("LONG", False)
+    accepted.setdefault("SHORT", False)
+    micro_only = dict(raw.get("micro_sweep_only") or {"LONG": False, "SHORT": False})
+    micro_only.setdefault("LONG", False)
+    micro_only.setdefault("SHORT", False)
+
+    def two_closes(level, direction):
+        if level is None or len(closed3) < 2:
+            return False
+        buffer_abs = max(atr3 * 0.06, (price or level) * 0.00012)
+        vals = [safe_float(c.close, level) for c in closed3[-2:]]
+        return all(v > level + buffer_abs for v in vals) if direction == "ABOVE" else all(v < level - buffer_abs for v in vals)
+
+    short_level = _v313_structure_bos_level(context, "SHORT")
+    long_level = _v313_structure_bos_level(context, "LONG")
+    bearish_structure = bool(structure_bias == "SHORT" or "BOS SHORT" in phase or "CHOCH SHORT" in phase)
+    bullish_structure = bool(structure_bias == "LONG" or "BOS LONG" in phase or "CHOCH LONG" in phase)
+
+    accepted_against_short = bool(
+        (short_level is not None and two_closes(short_level, "ABOVE"))
+        or bullish_structure
+        or (
+            short_level is not None
+            and tf15.get("bias") == "LONG"
+            and safe_float(tf15.get("close"), price or short_level) > short_level + atr3 * 0.08
+        )
+    )
+    accepted_against_long = bool(
+        (long_level is not None and two_closes(long_level, "BELOW"))
+        or bearish_structure
+        or (
+            long_level is not None
+            and tf15.get("bias") == "SHORT"
+            and safe_float(tf15.get("close"), price or long_level) < long_level - atr3 * 0.08
+        )
+    )
+
+    if "SHORT" in raw_blocks:
+        below_bos = bool(short_level is not None and price is not None and price <= short_level + atr15 * 0.18)
+        orderflow_not_bullish = not (
+            flow.get("bias") == "LONG" and abs(int(flow.get("score", 0) or 0)) >= 18
+            and cvd.get("bias") == "LONG" and abs(int(cvd.get("score", 0) or 0)) >= 14
+        )
+        if bearish_structure and below_bos and not accepted_against_short and orderflow_not_bullish:
+            resolved_blocks.discard("SHORT")
+            micro_only["SHORT"] = True
+            _msg = "SHORT block suppressed: micro downside sweep remained below bearish BOS level"
+            if _msg not in audit:
+                audit.append(_msg)
+        else:
+            accepted["SHORT"] = bool(accepted_against_short)
+
+    if "LONG" in raw_blocks:
+        above_bos = bool(long_level is not None and price is not None and price >= long_level - atr15 * 0.18)
+        orderflow_not_bearish = not (
+            flow.get("bias") == "SHORT" and abs(int(flow.get("score", 0) or 0)) >= 18
+            and cvd.get("bias") == "SHORT" and abs(int(cvd.get("score", 0) or 0)) >= 14
+        )
+        if bullish_structure and above_bos and not accepted_against_long and orderflow_not_bearish:
+            resolved_blocks.discard("LONG")
+            micro_only["LONG"] = True
+            _msg = "LONG block suppressed: micro upside sweep remained above bullish BOS level"
+            if _msg not in audit:
+                audit.append(_msg)
+        else:
+            accepted["LONG"] = bool(accepted_against_long)
+
+    resolved = dict(raw)
+    resolved["raw_blocks"] = sorted(raw_blocks)
+    resolved["blocks"] = sorted(resolved_blocks)
+    resolved["accepted_reclaim"] = accepted
+    resolved["micro_sweep_only"] = micro_only
+    resolved["bos_levels"] = {
+        "SHORT": round_price(short_level) if short_level is not None else None,
+        "LONG": round_price(long_level) if long_level is not None else None,
+    }
+    resolved["context_resolver_version"] = LIQUIDITY_CONTEXT_PATCH_VERSION
+    resolved["context_audit"] = audit
+
+    if micro_only["SHORT"] and str(raw.get("event") or "").upper().startswith("DOWNSIDE SWEEP"):
+        resolved["bias"] = "NEUTRAL"
+        resolved["score"] = min(6, abs(int(raw.get("score", 0) or 0)))
+        resolved["event"] = "MICRO DOWNSIDE SWEEP INSIDE BOS SHORT"
+        resolved["note"] = "локальний low знято, але bearish BOS-рівень не повернуто; SHORT не блокується"
+    elif micro_only["LONG"] and str(raw.get("event") or "").upper().startswith("UPSIDE SWEEP"):
+        resolved["bias"] = "NEUTRAL"
+        resolved["score"] = -min(6, abs(int(raw.get("score", 0) or 0)))
+        resolved["event"] = "MICRO UPSIDE SWEEP INSIDE BOS LONG"
+        resolved["note"] = "локальний high знято, але bullish BOS-рівень не втрачено; LONG не блокується"
+    return resolved
+
+
+_legacy_build_context_v313 = build_context
+
+
+def build_context(data, state):
+    context = _legacy_build_context_v313(data, state)
+    if isinstance(context, dict):
+        context["liquidity_raw"] = deepcopy(context.get("liquidity") or {})
+        context["liquidity"] = liquidity_sweep_context_resolver(context)
+    return context
+
+
+def bos_breakdown_retest_snapshot(context, side):
+    context = context or {}
+    side = str(side or "").upper()
+    price = safe_float(context.get("price"), None)
+    if side not in ["LONG", "SHORT"] or not price:
+        return {"active": False, "allowed": False, "side": side, "reason": "сторона або ціна не визначені"}
+
+    structure = context.get("structure") or {}
+    tf3 = context.get("tf3") or {}
+    tf15 = context.get("tf15") or {}
+    flow = context.get("flow") or {}
+    cvd = context.get("cvd") or {}
+    clusters = context.get("clusters") or {}
+    ict = context.get("ict") or {}
+    news = context.get("news") or {}
+    liquidity = liquidity_sweep_context_resolver(context)
+    phase = str(structure.get("phase") or "").upper()
+    level = _v313_structure_bos_level(context, side)
+    candles = _v313_closed_3m(context, 5)
+    if level is None or len(candles) < 5:
+        return {"active": False, "allowed": False, "side": side, "reason": "немає BOS-рівня або закритої 3M послідовності"}
+
+    atr15 = safe_float(context.get("atr15"), None) or safe_float(tf15.get("atr"), price * 0.006) or price * 0.006
+    atr3 = safe_float(atr(candles, 14), None) if len(candles) >= 3 else None
+    atr3 = atr3 or atr15 * 0.30
+    break_buffer = max(atr3 * 0.05, price * 0.00012)
+    retest_tolerance = max(atr15 * 0.30, atr3 * 0.80)
+    close_buffer = max(atr3 * 0.10, price * 0.00015)
+    stop_buffer = max(atr3 * 0.24, price * 0.00035)
+    recent = candles[-14:]
+
+    structure_same = bool(
+        structure.get("bias") == side
+        or (side == "SHORT" and ("BOS SHORT" in phase or "CHOCH SHORT" in phase))
+        or (side == "LONG" and ("BOS LONG" in phase or "CHOCH LONG" in phase))
+    )
+    if side == "SHORT":
+        break_candidates = [i for i, c in enumerate(recent) if c.close < level - break_buffer]
+    else:
+        break_candidates = [i for i, c in enumerate(recent) if c.close > level + break_buffer]
+    if not break_candidates and not structure_same:
+        return {"active": False, "allowed": False, "side": side, "bos_level": round_price(level), "reason": "закритого BOS ще немає"}
+    break_idx = break_candidates[0] if break_candidates else max(0, len(recent) - 6)
+    after = recent[break_idx + 1:] if break_idx + 1 < len(recent) else []
+
+    if side == "SHORT":
+        retest_candidates = [
+            (i, c) for i, c in enumerate(after, start=break_idx + 1)
+            if c.high >= level - retest_tolerance and c.close <= level + close_buffer
+        ]
+        accepted_back = bool(
+            (len(recent) >= 2 and all(c.close > level + close_buffer for c in recent[-2:]))
+            or ((liquidity.get("accepted_reclaim") or {}).get("SHORT"))
+        )
+        retest_high = max([c.high for c in after] or [recent[break_idx].high])
+        stop_level = retest_high + stop_buffer
+        current_extension = max(0.0, (level - price) / max(atr15, 1e-9))
+        directional_close = bool(tf3.get("bias") == "SHORT" and abs(int(tf3.get("score", 0) or 0)) >= 22)
+    else:
+        retest_candidates = [
+            (i, c) for i, c in enumerate(after, start=break_idx + 1)
+            if c.low <= level + retest_tolerance and c.close >= level - close_buffer
+        ]
+        accepted_back = bool(
+            (len(recent) >= 2 and all(c.close < level - close_buffer for c in recent[-2:]))
+            or ((liquidity.get("accepted_reclaim") or {}).get("LONG"))
+        )
+        retest_low = min([c.low for c in after] or [recent[break_idx].low])
+        stop_level = retest_low - stop_buffer
+        current_extension = max(0.0, (price - level) / max(atr15, 1e-9))
+        directional_close = bool(tf3.get("bias") == "LONG" and abs(int(tf3.get("score", 0) or 0)) >= 22)
+
+    retest_idx = retest_candidates[-1][0] if retest_candidates else None
+    retest_candle = retest_candidates[-1][1] if retest_candidates else None
+    latest_ts = int(recent[-1].ts)
+    trigger_ts = int((retest_candle or recent[break_idx]).ts)
+    age_min = max(0.0, (latest_ts - trigger_ts) / 60000.0)
+    stop_risk_atr = abs(stop_level - price) / max(atr15, 1e-9)
+
+    support_flags = {
+        "STRUCTURE": structure_same,
+        "TF3": directional_close,
+        "ORDER_FLOW": bool(
+            (flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 8)
+            or (cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10)
+            or (str(cvd.get("state") or "").upper() == ("SELLERS_DOMINATE" if side == "SHORT" else "BUYERS_DOMINATE") and abs(int(cvd.get("score", 0) or 0)) >= 8)
+        ),
+        "ICT": bool(ict.get("bias") == side or side in str(ict.get("setup") or "").upper()),
+        "CLUSTERS": bool(clusters.get("bias") == side and abs(int(clusters.get("score", 0) or 0)) >= 4),
+        "NEWS": bool(news.get("bias") == side and abs(int(news.get("score", 0) or 0)) >= 12),
+    }
+    adverse_flags = {
+        "TF3": bool(tf3.get("bias") == opposite(side) and abs(int(tf3.get("score", 0) or 0)) >= 34),
+        "FLOW": bool(flow.get("bias") == opposite(side) and abs(int(flow.get("score", 0) or 0)) >= 16),
+        "CVD": bool(cvd.get("bias") == opposite(side) and abs(int(cvd.get("score", 0) or 0)) >= 16),
+        "LIQUIDITY": bool(side in (liquidity.get("blocks") or [])),
+        "HTF": bool((context.get("tf1h") or {}).get("bias") == opposite(side) and abs(int((context.get("tf1h") or {}).get("score", 0) or 0)) >= 32),
+    }
+    support_count = sum(bool(v) for v in support_flags.values())
+    adverse_count = sum(bool(v) for v in adverse_flags.values())
+    retest_confirmed = retest_idx is not None
+    window_open = bool(current_extension <= BOS_RETEST_MAX_EXTENSION_ATR15 and age_min <= BOS_RETEST_MAX_AGE_MINUTES)
+    stop_valid = bool(BOS_RETEST_MIN_STOP_ATR15 <= stop_risk_atr <= BOS_RETEST_MAX_STOP_ATR15)
+    allowed = bool(
+        structure_same and retest_confirmed and not accepted_back and directional_close
+        and support_count >= 2 and adverse_count <= 1 and window_open and stop_valid
+    )
+    score = int(clamp(67 + support_count * 3 - adverse_count * 7 - current_extension * 5, 0, 84))
+    if allowed:
+        score = max(72, score)
+
+    reason = (
+        f"BOS {side} рівня {round_price(level)} підтверджено; 3M ретест утримано, локальна інвалідація {round_price(stop_level)}"
+        if allowed else
+        (f"BOS {side} є, але потрібен 3M ретест рівня {round_price(level)}" if not retest_confirmed
+         else ("рівень прийнято назад — старий BOS більше не є входом" if accepted_back
+               else ("ціна вже відійшла від BOS-рівня — не доганяти" if not window_open
+                     else "BOS-ретест ще не має достатнього незалежного підтвердження/геометрії")))
+    )
+    return {
+        "active": bool(structure_same or break_candidates),
+        "allowed": allowed,
+        "side": side,
+        "setup_type": BOS_RETEST_SETUP_TYPE,
+        "bos_level": round_price(level),
+        "break_idx": break_idx,
+        "retest_idx": retest_idx,
+        "retest_confirmed": retest_confirmed,
+        "accepted_back": accepted_back,
+        "trigger_ts": trigger_ts,
+        "age_min": round(age_min, 2),
+        "extension_atr15": round(current_extension, 3),
+        "stop_level": round_price(stop_level),
+        "stop_risk_atr15": round(stop_risk_atr, 3),
+        "support_count": support_count,
+        "adverse_count": adverse_count,
+        "support_flags": support_flags,
+        "adverse_flags": adverse_flags,
+        "score": score,
+        "reason": reason,
+        "liquidity_context": liquidity,
+    }
+
+
+_legacy_classify_setup_candidate_v313 = classify_setup_candidate
+
+
+def classify_setup_candidate(context, side):
+    if isinstance(context, dict):
+        context["liquidity"] = liquidity_sweep_context_resolver(context)
+        snap = bos_breakdown_retest_snapshot(context, side)
+        context.setdefault("bos_breakdown_retest", {})[side] = snap
+        if snap.get("allowed"):
+            profile = setup_trade_profile(BOS_RETEST_SETUP_TYPE)
+            result = {
+                "type": BOS_RETEST_SETUP_TYPE,
+                "label": SETUP_CLASS_LABELS[BOS_RETEST_SETUP_TYPE],
+                "side": side,
+                "score": int(snap.get("score", 74) or 74),
+                "entry_allowed": True,
+                "block_entry": False,
+                "risk_mode": "RISKY",
+                "force_risky": True,
+                "professional_override": True,
+                "reason": snap.get("reason"),
+                "quality_adjustment": int(profile.get("quality_adjustment", 0) or 0),
+                "quality_cap": profile.get("quality_cap", 79),
+                "profile": profile,
+            }
+            result.update(_setup_rules(BOS_RETEST_SETUP_TYPE, side))
+            return result
+    return _legacy_classify_setup_candidate_v313(context, side)
+
+
+_legacy_setup_trade_profile_v313 = setup_trade_profile
+
+
+def setup_trade_profile(setup_type):
+    if str(setup_type or "").upper() == BOS_RETEST_SETUP_TYPE:
+        return {
+            "regime_override": "PULLBACK",
+            "tp1_pct": 0.72,
+            "tp2_pct": 1.25,
+            "tp3_pct": 2.05,
+            "min_stop_pct": 0.38,
+            "max_stop_pct": 1.15,
+            "quality_adjustment": 1,
+            "quality_cap": 79,
+            "force_risky": True,
+        }
+    return _legacy_setup_trade_profile_v313(setup_type)
+
+
+_legacy_setup_rules_v313 = _setup_rules
+
+
+def _setup_rules(setup_type, side):
+    if str(setup_type or "").upper() == BOS_RETEST_SETUP_TYPE:
+        return {
+            "entry_rule": "закритий BOS + контрольований 3M ретест пробитого рівня з правильного боку + відсутність accepted reclaim назад",
+            "stop_rule": "стоп над/під локальний 3M retest-high/low з ATR3-буфером, не над усім глобальним swing",
+            "tp_rule": "TP1 до найближчої реальної 15M/ICT ліквідності при RR не нижче 1.20",
+            "management_rule": "ризиковий fast-entry; втрата BOS-рівня після входу переводить у PROTECT/EXIT REVIEW",
+        }
+    return _legacy_setup_rules_v313(setup_type, side)
+
+
+_legacy_tp1_travel_profile_v313 = _tp1_travel_profile
+
+
+def _tp1_travel_profile(context, setup_type, price, atr15):
+    if str(setup_type or "").upper() == BOS_RETEST_SETUP_TYPE:
+        return {
+            "min_pct": 0.85,
+            "min_atr": 1.10,
+            "pct_distance": float(price) * 0.0085,
+            "atr_distance": float(atr15) * 1.10,
+            "absolute_floor": max(float(price) * 0.0085, float(atr15) * 1.10),
+            "viable_min_pct": BOS_RETEST_MIN_REWARD_PCT,
+            "viable_min_atr": BOS_RETEST_MIN_REWARD_ATR15,
+            "viable_pct_distance": float(price) * BOS_RETEST_MIN_REWARD_PCT / 100.0,
+            "viable_atr_distance": float(atr15) * BOS_RETEST_MIN_REWARD_ATR15,
+            "viable_absolute_floor": max(float(price) * BOS_RETEST_MIN_REWARD_PCT / 100.0, float(atr15) * BOS_RETEST_MIN_REWARD_ATR15),
+        }
+    return _legacy_tp1_travel_profile_v313(context, setup_type, price, atr15)
+
+
+_legacy_technical_stop_candidates_v313 = _technical_stop_candidates
+
+
+def _technical_stop_candidates(side, context, atr15):
+    out = list(_legacy_technical_stop_candidates_v313(side, context, atr15) or [])
+    geo = (context or {}).get("bos_breakdown_retest_geometry") or {}
+    if geo.get("confirmed") and geo.get("side") == side:
+        price = safe_float((context or {}).get("price"), None)
+        level = safe_float(geo.get("stop_level"), None)
+        if price and level and ((side == "LONG" and level < price) or (side == "SHORT" and level > price)):
+            item = {
+                "level": float(level),
+                "basis": "local 3M BOS retest invalidation",
+                "priority": 118,
+                "timeframe": "3M",
+                "kind": "BOS_RETEST",
+                "distance": abs(float(level) - price),
+            }
+            out = [x for x in out if abs(float(x.get("level", 0)) - level) > max(atr15 * 0.08, price * 0.00025)]
+            out.insert(0, item)
+    return out[:16]
+
+
+_legacy_three_minute_stop_allowed_v313 = _three_minute_stop_allowed
+
+
+def _three_minute_stop_allowed(side, context, setup_type, snapshot):
+    if str(setup_type or "").upper() == BOS_RETEST_SETUP_TYPE:
+        snap = ((context or {}).get("bos_breakdown_retest") or {}).get(side) or bos_breakdown_retest_snapshot(context, side)
+        return bool(snap.get("allowed"))
+    return _legacy_three_minute_stop_allowed_v313(side, context, setup_type, snapshot)
+
+
+_legacy_location_viability_snapshot_v313 = location_viability_snapshot
+
+
+def location_viability_snapshot(context, side, setup=None):
+    setup_type = _entry_setup_type(setup) if isinstance(setup, dict) else str(((context or {}).get("setup_classifier") or {}).get("type") or "").upper()
+    if setup_type == BOS_RETEST_SETUP_TYPE:
+        snap = ((context or {}).get("bos_breakdown_retest") or {}).get(side) or bos_breakdown_retest_snapshot(context, side)
+        if snap.get("allowed"):
+            return {
+                "allowed": True,
+                "reason": "fresh BOS-retest created a new independent entry location",
+                "persistent_exhaustion": {"active": False, "released_by": BOS_RETEST_SETUP_TYPE},
+                "composite_exhaustion": {"hard_block": False},
+                "news_consensus": news_directional_consensus_snapshot(context, side),
+                "strong_ict_permission": {"allowed": True},
+                "wrong_pd": False,
+                "setup_type": BOS_RETEST_SETUP_TYPE,
+                "bos_breakdown_retest": snap,
+            }
+    return _legacy_location_viability_snapshot_v313(context, side, setup)
+
+
+_legacy_post_impulse_rejection_snapshot_v313 = post_impulse_rejection_snapshot
+
+
+def post_impulse_rejection_snapshot(side, context):
+    snap = ((context or {}).get("bos_breakdown_retest") or {}).get(side)
+    if isinstance(snap, dict) and snap.get("allowed"):
+        legacy = _legacy_post_impulse_rejection_snapshot_v313(side, context)
+        out = dict(legacy or {})
+        out.update({
+            "active": False,
+            "block_entry": False,
+            "recovered": True,
+            "fresh_recovery": True,
+            "severity": "RECOVERED",
+            "reason": "fresh BOS breakdown retest occurred after the prior rejection",
+        })
+        return out
+    return _legacy_post_impulse_rejection_snapshot_v313(side, context)
+
+
+def _build_bos_retest_tactical_plan(side, context, snap):
+    price = safe_float((context or {}).get("price"), None)
+    stop = safe_float((snap or {}).get("stop_level"), None)
+    if side not in ["LONG", "SHORT"] or not price or not stop:
+        return None
+    risk = abs(stop - price)
+    atr15 = safe_float((context or {}).get("atr15"), None) or safe_float(((context or {}).get("tf15") or {}).get("atr"), price * 0.006) or price * 0.006
+    if risk <= 0 or risk / atr15 < BOS_RETEST_MIN_STOP_ATR15 or risk / atr15 > BOS_RETEST_MAX_STOP_ATR15:
+        return None
+    targets = _technical_target_candidates(side, context, atr15)
+    valid_targets = []
+    for t in targets:
+        level = safe_float(t.get("level"), None)
+        if level is None or t.get("projected"):
+            continue
+        reward = (level - price) if side == "LONG" else (price - level)
+        if reward <= 0:
+            continue
+        rr = reward / risk
+        reward_pct = reward / price * 100.0
+        reward_atr = reward / atr15
+        if rr >= BOS_RETEST_MIN_RR1 and reward_pct >= BOS_RETEST_MIN_REWARD_PCT and reward_atr >= BOS_RETEST_MIN_REWARD_ATR15:
+            valid_targets.append((reward, level, t, rr))
+    if not valid_targets:
+        return None
+    valid_targets.sort(key=lambda x: x[0])
+    chosen = valid_targets[0]
+    following = [x for x in valid_targets[1:] if (x[1] > chosen[1] if side == "LONG" else x[1] < chosen[1])]
+    tp1 = chosen[1]
+    tp2 = following[0][1] if following else (tp1 + atr15 * 0.75 if side == "LONG" else tp1 - atr15 * 0.75)
+    tp3 = following[1][1] if len(following) > 1 else (tp2 + atr15 * 0.90 if side == "LONG" else tp2 - atr15 * 0.90)
+    rr1 = abs(tp1 - price) / risk
+    rr2 = abs(tp2 - price) / risk
+    rr3 = abs(tp3 - price) / risk
+    return TradePlan(
+        entry=round_price(price), stop=round_price(stop), tp1=round_price(tp1), tp2=round_price(tp2), tp3=round_price(tp3),
+        risk_pct=round(risk / price * 100.0, 3), rr1=round(rr1, 2), rr2=round(rr2, 2), rr3=round(rr3, 2),
+        invalidation=f"3M закриття назад за BOS-рівнем {round_price(snap.get('bos_level'))} або пробій local retest stop {round_price(stop)}",
+        valid=True, validation_reason="", technical_stop_basis="local 3M BOS retest invalidation",
+        technical_tp1_basis=str(chosen[2].get("basis") or "nearest real liquidity"),
+        technical_tp2_basis="next real liquidity / ATR continuation", technical_tp3_basis="continuation tail",
+        geometry_mode="BOS_BREAKDOWN_RETEST_TACTICAL", technical_rr_target=BOS_RETEST_MIN_RR1,
+        geometry_grade="TACTICAL_BOS_RETEST", barrier_mode="MANAGEMENT_CHECKPOINT", preferred_geometry_met=rr1 >= 1.50,
+        breakout_gates=[],
+    )
+
+
+def resolve_bos_breakdown_retest_fast_entry(context, base_setup):
+    if not isinstance(context, dict) or not isinstance(base_setup, dict):
+        return base_setup
+    candidates = []
+    for side in ["LONG", "SHORT"]:
+        work = _v3_clone_context(context)
+        work["liquidity"] = liquidity_sweep_context_resolver(work)
+        snap = bos_breakdown_retest_snapshot(work, side)
+        work.setdefault("bos_breakdown_retest", {})[side] = snap
+        if not snap.get("allowed"):
+            continue
+        event = {
+            "confirmed": True,
+            "anchor_confirmed": True,
+            "professional_location": True,
+            "side": side,
+            "type": "BOS_BREAKDOWN_RETEST",
+            "score": int(snap.get("score", 74) or 74),
+            "trigger_ts": snap.get("trigger_ts"),
+            "trigger_level": snap.get("bos_level"),
+            "stop_level": snap.get("stop_level"),
+            "extension_atr15": snap.get("extension_atr15"),
+            "follow_through": True,
+            "post_confirmed": True,
+            "reset_confirmed": True,
+            "evidence": [
+                f"закритий BOS {side}",
+                "3M ретест пробитого рівня утримано",
+                "accepted reclaim назад відсутній",
+                "локальна 3M інвалідація",
+            ],
+            "source": BOS_RETEST_SOURCE,
+        }
+        setup_info = {
+            "type": BOS_RETEST_SETUP_TYPE,
+            "label": SETUP_CLASS_LABELS[BOS_RETEST_SETUP_TYPE],
+            "side": side,
+            "score": int(snap.get("score", 74) or 74),
+            "entry_allowed": True,
+            "block_entry": False,
+            "risk_mode": "RISKY",
+            "force_risky": True,
+            "professional_override": True,
+            "reason": snap.get("reason"),
+            "quality_adjustment": 1,
+            "quality_cap": 79,
+            "profile": setup_trade_profile(BOS_RETEST_SETUP_TYPE),
+        }
+        setup_info.update(_setup_rules(BOS_RETEST_SETUP_TYPE, side))
+        work.update({
+            "bias": side,
+            "setup_classifier": setup_info,
+            "entry_rescue_event": event,
+            "bos_breakdown_retest_geometry": {"confirmed": True, "side": side, "stop_level": snap.get("stop_level")},
+            "fresh_pullback_reset_confirmed": True,
+            "transition_override_confirmed": True,
+            "bos_breakdown_retest_confirmed": True,
+        })
+        work["dual_speed_mtf"] = build_dual_speed_mtf(work)
+        plan = make_plan(side, work)
+        if not plan or not getattr(plan, "valid", False):
+            plan = _build_bos_retest_tactical_plan(side, work, snap)
+        if not plan or not getattr(plan, "valid", False) or safe_float(getattr(plan, "rr1", 0), 0) < BOS_RETEST_MIN_RR1:
+            continue
+        quality = int(clamp(max(RISKY_QUALITY_MIN, snap.get("score", 74)), RISKY_QUALITY_MIN, 79))
+        candidate = dict(base_setup)
+        candidate.update({
+            "action": "RISKY_ENTRY",
+            "side": side,
+            "quality": quality,
+            "title": "РИЗИКОВАНИЙ ВХІД " + side,
+            "reason": snap.get("reason"),
+            "plan": plan,
+            "setup_classifier": setup_info,
+            "entry_rescue_event": event,
+            "bos_breakdown_retest": snap,
+            "bos_breakdown_retest_confirmed": True,
+            "fresh_pullback_reset_confirmed": True,
+            "transition_override_confirmed": True,
+            "entry_level": "RISKY_ENTRY",
+            "entry_level_label": _entry_level_label("RISKY_ENTRY"),
+            "confirmations": list(dict.fromkeys((base_setup.get("confirmations") or []) + event["evidence"])),
+            "conflicts": [x for x in (base_setup.get("conflicts") or []) if "ліквідність/ринковий блок" not in str(x).lower()],
+        })
+        candidates.append((quality + min(safe_float(getattr(plan, "rr1", 0), 0), 3.0) * 5.0, candidate, work))
+    if not candidates:
+        return base_setup
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _, candidate, work = candidates[0]
+    context.clear()
+    context.update(work)
+    return candidate
+
+
+# New BOS-retest setup is a separate fresh event. Existing gates remain hard for
+# every other setup, but they must not downgrade this confirmed tactical entry.
+_legacy_apply_strict_transition_gate_v313 = apply_strict_transition_gate_to_setup
+_legacy_apply_post_shock_retest_gate_v313 = apply_post_shock_retest_gate_to_setup
+_legacy_apply_range_midpoint_gate_v313 = apply_range_midpoint_gate_to_setup
+_legacy_apply_structural_reset_gate_v313 = apply_structural_reset_gate_to_setup
+_legacy_apply_regime_whitelist_v313 = apply_regime_allowed_setup_whitelist
+_legacy_apply_final_exhaustion_v313 = apply_final_same_side_exhaustion_lock
+
+
+def _v313_is_confirmed_bos_retest(setup, context):
+    if _entry_setup_type(setup) != BOS_RETEST_SETUP_TYPE:
+        return False
+    side = (setup or {}).get("side")
+    snap = (setup or {}).get("bos_breakdown_retest") or ((context or {}).get("bos_breakdown_retest") or {}).get(side) or {}
+    return bool((setup or {}).get("bos_breakdown_retest_confirmed") and snap.get("allowed"))
+
+
+def apply_strict_transition_gate_to_setup(setup, context):
+    if _v313_is_confirmed_bos_retest(setup, context):
+        out = dict(setup); out["action"] = "RISKY_ENTRY"; return out
+    return _legacy_apply_strict_transition_gate_v313(setup, context)
+
+
+def apply_post_shock_retest_gate_to_setup(setup, context):
+    if _v313_is_confirmed_bos_retest(setup, context):
+        out = dict(setup); out["action"] = "RISKY_ENTRY"; out["post_shock_bos_retest_release"] = True; return out
+    return _legacy_apply_post_shock_retest_gate_v313(setup, context)
+
+
+def apply_range_midpoint_gate_to_setup(setup, context):
+    if _v313_is_confirmed_bos_retest(setup, context):
+        return setup
+    return _legacy_apply_range_midpoint_gate_v313(setup, context)
+
+
+def apply_structural_reset_gate_to_setup(setup, context):
+    if _v313_is_confirmed_bos_retest(setup, context):
+        return setup
+    return _legacy_apply_structural_reset_gate_v313(setup, context)
+
+
+def apply_regime_allowed_setup_whitelist(setup, context):
+    if _v313_is_confirmed_bos_retest(setup, context):
+        out = dict(setup); out["action"] = "RISKY_ENTRY"; out["regime_transition_exception"] = True; return out
+    return _legacy_apply_regime_whitelist_v313(setup, context)
+
+
+def apply_final_same_side_exhaustion_lock(setup, context):
+    if _v313_is_confirmed_bos_retest(setup, context):
+        out = dict(setup); out["action"] = "RISKY_ENTRY"; out["persistent_exhaustion_release"] = "fresh BOS breakdown retest"; return out
+    return _legacy_apply_final_exhaustion_v313(setup, context)
+
+
+_legacy_v3_collect_proposals_v313 = _v3_collect_proposals
+
+
+def _v3_collect_proposals(context, base_setup, audit):
+    proposals = list(_legacy_v3_collect_proposals_v313(context, base_setup, audit) or [])
+    proposal = _v3_run_candidate_lane(BOS_RETEST_SOURCE, resolve_bos_breakdown_retest_fast_entry, _v3_clone_context(context), deepcopy(base_setup), audit)
+    if proposal is not None:
+        proposals.append(proposal)
+    unique = {}
+    for item in proposals:
+        plan = _v3_plan_values(item.setup.get("plan")) or {}
+        signature = (
+            item.side, item.action, _v3_setup_type(item.setup),
+            round(safe_float(plan.get("entry"), 0.0) or 0.0, 4),
+            round(safe_float(plan.get("stop"), 0.0) or 0.0, 4),
+        )
+        old = unique.get(signature)
+        if old is None or item.selection_score > old.selection_score:
+            unique[signature] = item
+    return list(unique.values())
 
 
 # ==========================================================
@@ -19054,6 +20202,8 @@ def main():
             "tech_score": context["tech_score"],
             "total_score": context["total_score"],
             "regime_engine": context.get("regime_engine") or context.get("market_regime"),
+            "setup_thesis_persistence": result.get("setup_thesis_persistence") or getattr(active, "thesis_last_snapshot", {}),
+            "thesis_state": getattr(active, "thesis_state", ""),
         })
         state["pending_trigger"] = None
         update_market_snapshot(state, context)
@@ -19077,7 +20227,7 @@ def main():
 
     if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
         state["opportunity_memory"] = None
-        active = new_active_trade(setup)
+        active = new_active_trade(setup, context)
         store_active_trade(state, active)
         append_history(state, {
             "type": "ENTRY",
