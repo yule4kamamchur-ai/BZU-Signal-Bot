@@ -3026,6 +3026,76 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-19T15:31:09.268268+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.92,
+      "quality": 55,
+      "reason": "чистого сетапу немає; немає одного з топових сетапів для професійного входу",
+      "market_direction_context": "LONG",
+      "pipeline_recovered": false,
+      "pipeline_failed_stage": null,
+      "pipeline_recovery_checkpoint": null,
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "NEUTRAL",
+        "score": 53,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 82,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 5.08,
+          "move8_abs_pct": 0.982,
+          "slope15_abs_pct": 1.001,
+          "rsi15": 64.1,
+          "score_total_abs": 129,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 4,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-19T15:45:51.524557+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -3178,7 +3248,7 @@
       "published_at": "2026-06-19T12:56:38+00:00",
       "reference_price": 78.91,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
       "last_status": "CONFIRMED"
     },
     "crude oil caught up in cautious enthusiasm over us iran peace deal but analysts don t expect further price easing soon the business times": {
@@ -3186,7 +3256,7 @@
       "published_at": "2026-06-19T12:54:00+00:00",
       "reference_price": 78.91,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
       "last_status": "REJECTED"
     },
     "trump iran deal changes everything oil crashes hormuz reopens hokanews com": {
@@ -3194,7 +3264,7 @@
       "published_at": "2026-06-19T14:04:00+00:00",
       "reference_price": 79.61,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
       "last_status": "REJECTED"
     },
     "brent falls as israel hezbollah agree to ceasefire the business times": {
@@ -3218,15 +3288,15 @@
       "published_at": "2026-06-19T15:19:16+00:00",
       "reference_price": 79.96,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
-      "last_status": "FRESH"
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
+      "last_status": "REJECTED"
     },
     "brent falls as israel hizbollah agree to ceasefire the business times": {
       "first_seen_at": "2026-06-19T15:31:08.076445+00:00",
       "published_at": "2026-06-19T14:17:00+00:00",
       "reference_price": 79.58,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
       "last_status": "REJECTED"
     },
     "brent falls as israel hezbollah agree to ceasefire msn": {
@@ -3234,7 +3304,7 @@
       "published_at": "2026-06-19T13:52:44+00:00",
       "reference_price": 79.42,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
       "last_status": "REJECTED"
     },
     "strait of hormuz reopens after us iran deal offering relief to global energy markets the federal": {
@@ -3242,23 +3312,23 @@
       "published_at": "2026-06-19T12:59:07+00:00",
       "reference_price": 78.82,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T15:31:08.076445+00:00",
+      "last_seen_at": "2026-06-19T15:45:50.660994+00:00",
       "last_status": "REJECTED"
     }
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-06-19T15:31:08.775870+00:00"
+    "updated_at": "2026-06-19T15:45:51.178669+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781883000000,
+      "updated_ts": 1781883900000,
       "origin_price": 79.99,
       "extreme_price": 80.01,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -3271,7 +3341,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781883000000,
+      "updated_ts": 1781883900000,
       "origin_price": 79.02,
       "extreme_price": 78.68,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -3342,10 +3412,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 80.13,
+    "high": 80.35,
     "low": 79.14,
     "created_ts": 1781843400000,
-    "updated_ts": 1781882100000,
+    "updated_ts": 1781883000000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -3411,7 +3481,7 @@
     "active": true,
     "source": "GEOMETRY_PENDING",
     "created_at": "2026-06-19T15:01:20.846316+00:00",
-    "updated_at": "2026-06-19T15:31:09.267276+00:00",
+    "updated_at": "2026-06-19T15:45:51.456881+00:00",
     "ttl_minutes": 55,
     "side": "LONG",
     "setup_type": "TREND_IGNITION_ENTRY",
@@ -3431,7 +3501,7 @@
       "PLAN_GEOMETRY"
     ],
     "observation_count": 2,
-    "geometry_fail_count": 3,
+    "geometry_fail_count": 4,
     "geometry_candidates": {
       "stops": [
         {
@@ -3525,7 +3595,7 @@
       "fast_support": 1,
       "fast_against": 0
     },
-    "last_geometry_failure_at": "2026-06-19T15:31:09.204423+00:00",
+    "last_geometry_failure_at": "2026-06-19T15:45:51.456875+00:00",
     "last_geometry_reason": "не вдалося побудувати життєздатну технічну геометрію",
     "last_final_reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
     "last_final_action": "WATCH"
@@ -3636,17 +3706,17 @@
     "coverage_pct": 9.1
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T15:31:09.268290+00:00",
-    "price": 80.01,
-    "oi": 59626.16,
-    "cvd": -7714.0,
-    "cvd_time": "2026-06-19T15:31:09.268292+00:00",
-    "last_trade_ts": 1781883056113,
+    "time": "2026-06-19T15:45:51.524579+00:00",
+    "price": 79.92,
+    "oi": 59633.74,
+    "cvd": -11577.0,
+    "cvd_time": "2026-06-19T15:45:51.524582+00:00",
+    "last_trade_ts": 1781883922107,
     "bias": "LONG",
-    "tech_score": 106,
-    "total_score": 106
+    "tech_score": 125,
+    "total_score": 129
   },
-  "updated_at": "2026-06-19T15:31:09.268296+00:00",
+  "updated_at": "2026-06-19T15:45:51.524586+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
