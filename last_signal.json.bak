@@ -2479,6 +2479,47 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-19T13:15:56.001472+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.21,
+      "quality": 0,
+      "reason": "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
+      "market_direction_context": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 3.71,
+          "move8_abs_pct": 0.402,
+          "slope15_abs_pct": 0.286,
+          "rsi15": 46.9,
+          "score_total_abs": 56,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "REVERSAL_BUILDUP"
+      },
+      "time": "2026-06-19T13:31:13.096014+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2575,7 +2616,7 @@
       "published_at": "2026-06-19T12:22:30+00:00",
       "reference_price": 80.05,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:15:55.205465+00:00",
+      "last_seen_at": "2026-06-19T13:31:12.159463+00:00",
       "last_status": "CONFIRMED"
     },
     "brent heading for over 8 weekly loss as traders weigh us iran truce outlook reuters": {
@@ -2612,10 +2653,10 @@
     },
     "strait of hormuz reopens what the move means for oil markets the siasat daily": {
       "first_seen_at": "2026-06-19T12:35:14.092862+00:00",
-      "published_at": "2026-06-19T12:15:28+00:00",
+      "published_at": "2026-06-19T12:15:00+00:00",
       "reference_price": 79.65,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:15:55.205465+00:00",
+      "last_seen_at": "2026-06-19T13:31:12.159463+00:00",
       "last_status": "CONFIRMED"
     },
     "us iran peace deal lifts stocks and gold while oil prices plunge equiti com": {
@@ -2623,31 +2664,39 @@
       "published_at": "2026-06-19T11:00:25+00:00",
       "reference_price": 79.27,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:15:55.205465+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T13:31:12.159463+00:00",
+      "last_status": "UNRESOLVED"
     },
     "india s russian oil imports at record high in june amid hormuz closure the indian express": {
       "first_seen_at": "2026-06-19T13:01:18.853464+00:00",
       "published_at": "2026-06-19T12:56:38+00:00",
       "reference_price": 78.91,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T13:15:55.205465+00:00",
-      "last_status": "FRESH"
+      "last_seen_at": "2026-06-19T13:31:12.159463+00:00",
+      "last_status": "CONFIRMED"
+    },
+    "crude oil caught up in cautious enthusiasm over us iran peace deal but analysts don t expect further price easing soon the business times": {
+      "first_seen_at": "2026-06-19T13:31:12.159463+00:00",
+      "published_at": "2026-06-19T12:54:00+00:00",
+      "reference_price": 78.91,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-19T13:31:12.159463+00:00",
+      "last_status": "REJECTED"
     }
   },
   "regime_memory": {
     "type": "REVERSAL_BUILDUP",
-    "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-19T13:15:55.690124+00:00"
+    "pending_type": "NORMAL",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-19T13:31:12.653572+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781874900000,
+      "updated_ts": 1781875800000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -2660,7 +2709,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781874900000,
+      "updated_ts": 1781875800000,
       "origin_price": 79.02,
       "extreme_price": 78.68,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -2734,7 +2783,7 @@
     "high": 80.19,
     "low": 78.59,
     "created_ts": 1781843400000,
-    "updated_ts": 1781874000000,
+    "updated_ts": 1781874900000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -2793,25 +2842,7 @@
       "plan": null
     }
   },
-  "opportunity_memory": {
-    "active": true,
-    "source": "POST_GATE",
-    "created_at": "2026-06-19T12:45:53.841521+00:00",
-    "ttl_minutes": 45,
-    "side": "LONG",
-    "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
-    "setup_label": "🟢 Сильна ICT-локація",
-    "quality": 63,
-    "price": 79.8,
-    "trigger_level": null,
-    "invalidation": null,
-    "reason": "не вдалося побудувати життєздатну технічну геометрію",
-    "missing_conditions": [
-      "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
-      "не вдалося побудувати життєздатну технічну геометрію"
-    ],
-    "plan": null
-  },
+  "opportunity_memory": null,
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -2910,17 +2941,17 @@
     "coverage_pct": 10.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T13:15:56.001490+00:00",
-    "price": 78.94,
-    "oi": 60858.17,
-    "cvd": 17676.0,
-    "cvd_time": "2026-06-19T13:15:56.001493+00:00",
-    "last_trade_ts": 1781874938606,
-    "bias": "NEUTRAL",
-    "tech_score": 17,
-    "total_score": 18
+    "time": "2026-06-19T13:31:13.096037+00:00",
+    "price": 79.21,
+    "oi": 60981.77,
+    "cvd": 15035.0,
+    "cvd_time": "2026-06-19T13:31:13.096039+00:00",
+    "last_trade_ts": 1781875862632,
+    "bias": "SHORT",
+    "tech_score": -58,
+    "total_score": -56
   },
-  "updated_at": "2026-06-19T13:15:56.001497+00:00",
+  "updated_at": "2026-06-19T13:31:13.096044+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
