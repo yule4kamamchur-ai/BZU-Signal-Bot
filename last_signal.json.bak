@@ -614,6 +614,75 @@
       "entry_window_closed": false,
       "market_direction_context": null,
       "time": "2026-06-19T06:45:57.900401+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.44,
+      "quality": 55,
+      "reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "LONG",
+        "score": 53,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "TREND",
+        "regime_type": "TREND_EXPANSION",
+        "label": "сильне продовження тренду",
+        "score": 82,
+        "confidence": 82,
+        "reason": "сильне продовження: continuation дозволений, TP2/TP3 можна тримати довше, але без доганяння",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 3,
+        "quality_cap": 90,
+        "hard_block": false,
+        "allowed_setups": [
+          "TREND_CONTINUATION",
+          "TREND_IGNITION_ENTRY",
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.68,
+          "move8_abs_pct": 0.492,
+          "slope15_abs_pct": 0.991,
+          "rsi15": 56.7,
+          "score_total_abs": 101,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "MIDRANGE",
+          "ict_setup": "BOS_LONG_CONTINUATION_HOLD",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 0,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-19T07:01:21.703924+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -646,7 +715,7 @@
       "published_at": "2026-06-19T04:17:00+00:00",
       "reference_price": 79.16,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T06:45:56.879052+00:00",
+      "last_seen_at": "2026-06-19T07:01:20.659548+00:00",
       "last_status": "REJECTED"
     },
     "big relief for oil markets hormuz reopens crude prices fall below 80 abp news": {
@@ -654,7 +723,7 @@
       "published_at": "2026-06-19T06:12:14+00:00",
       "reference_price": 80.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T06:45:56.879052+00:00",
+      "last_seen_at": "2026-06-19T07:01:20.659548+00:00",
       "last_status": "CONFIRMED"
     },
     "global markets central banks stay vigilant despite oil price relief after us iran truce inkl": {
@@ -662,23 +731,23 @@
       "published_at": "2026-06-19T04:30:12+00:00",
       "reference_price": 79.29,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T06:45:56.879052+00:00",
+      "last_seen_at": "2026-06-19T07:01:20.659548+00:00",
       "last_status": "REJECTED"
     }
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "REVERSAL_BUILDUP",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T06:45:57.463833+00:00"
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 0,
+    "updated_at": "2026-06-19T07:01:21.343139+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781851500000,
+      "updated_ts": 1781852400000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -691,7 +760,7 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781851500000,
+      "updated_ts": 1781852400000,
       "origin_price": 79.31,
       "extreme_price": 79.31,
       "released_at": "",
@@ -705,15 +774,15 @@
     "extreme_ts": 1781850600000,
     "extreme_price": 80.28,
     "released_at": "",
-    "released_extreme": 80.02
+    "released_extreme": null
   },
   "reversal_handoff": {
     "LONG": {
-      "active": true,
-      "status": "WAITING_RECLAIM",
+      "active": false,
+      "status": "EXPIRED",
       "side": "LONG",
       "created_at": "2026-06-19T05:31:09.972921+00:00",
-      "updated_at": "2026-06-19T06:45:57.865674+00:00",
+      "updated_at": "2026-06-19T07:01:21.684181+00:00",
       "ttl_minutes": 90,
       "seed_type": "BREAKOUT_RETEST",
       "seed_ts": 1781845740000,
@@ -729,7 +798,7 @@
         "RETEST_HOLD",
         "FLOW"
       ],
-      "reason": "контрольований 3M pullback сформовано; чекаємо новий micro-BOS/reclaim",
+      "reason": "reversal handoff втратив свіжість",
       "pullback_snapshot": {
         "active": true,
         "detected": true,
@@ -760,9 +829,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 80.28,
-    "low": 79.05,
+    "low": 79.29,
     "created_ts": 1781843400000,
-    "updated_ts": 1781850600000,
+    "updated_ts": 1781851500000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -824,121 +893,7 @@
       "activation_count": 0
     }
   },
-  "opportunity_memory": {
-    "active": true,
-    "source": "PRE_GATE",
-    "created_at": "2026-06-19T06:15:50.651076+00:00",
-    "updated_at": "2026-06-19T06:45:57.899400+00:00",
-    "ttl_minutes": 45,
-    "side": "LONG",
-    "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
-    "setup_label": "🟢 Сильна ICT-локація",
-    "initial_action": "RISKY_ENTRY",
-    "quality": 73,
-    "price": 79.99,
-    "trigger_level": null,
-    "trigger_ts": 0,
-    "trigger_type": null,
-    "retest_confirmed": false,
-    "invalidation": 79.744,
-    "initial_reason": "ранній Prime ICT: локація FVG/OB/sweep вже професійна, 3M не сильно проти; anti-chase штраф врахований (-6)",
-    "missing_condition": "середина/неприйнятий вихід із 15M range: потрібен край діапазону або закритий breakout-retest",
-    "blocking_gate": "RANGE_SEGMENTATION_GATE",
-    "blocked_gates": [
-      "RANGE_SEGMENTATION_GATE"
-    ],
-    "missing_conditions": [
-      "середина/неприйнятий вихід із 15M range: потрібен край діапазону або закритий breakout-retest",
-      "мʼякий anti-chase штраф -6: лонг після сильного 15M імпульсу: чекати відкат/проторговку",
-      "класифікатор: сетап дозволений тільки як ризиковий/швидкий"
-    ],
-    "plan": {
-      "entry": 79.99,
-      "stop": 79.744,
-      "tp1": 81.189,
-      "tp2": 82.2,
-      "tp3": 82.8696,
-      "risk_pct": 0.308,
-      "rr1": 4.87,
-      "rr2": 8.98,
-      "rr3": 11.71,
-      "invalidation": "15m закриття нижче 79.744 або злам 3m/структури проти LONG. Сетап: 🟢 Сильна ICT-локація. Режим: розворот. стоп за екстремум FVG/OB/зняття ліквідності з ATR-буфером | TP1 до першої ліквідності/EQ, далі тільки якщо 3M підтвердив продовження",
-      "valid": true,
-      "validation_reason": "",
-      "technical_stop_basis": "last closed 15M low",
-      "technical_tp1_basis": "15M measured range/impulse expansion objective",
-      "technical_tp2_basis": "закритий 1H swing high",
-      "technical_tp3_basis": "15M measured range/impulse expansion objective",
-      "geometry_mode": "15M_ICT_STRUCTURAL",
-      "technical_rr_target": 1.5,
-      "better_entry": 0.0,
-      "geometry_grade": "OPTIMAL",
-      "barrier_mode": "DIRECT",
-      "preferred_geometry_met": true,
-      "breakout_gates": [],
-      "management_checkpoints": [],
-      "geometry_reason_code": "GEOMETRY_VALID",
-      "geometry_diagnostics": {
-        "version": "SETUP_AWARE_GEOMETRY_DIAGNOSTICS_V2_CHECKPOINTS",
-        "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
-        "setup_label": "🟢 Сильна ICT-локація",
-        "setup_family": "PRIME_ICT",
-        "side": "LONG",
-        "price": 79.99,
-        "atr15": 0.2716,
-        "policy": {
-          "min_rr": 1.15,
-          "min_target_pct": 0.72,
-          "min_target_atr15": 0.95,
-          "max_stop_pct": 1.22,
-          "tactical_family": false
-        },
-        "reason_code": "GEOMETRY_VALID",
-        "public_message": "",
-        "details": {
-          "stop_candidates": 6,
-          "target_candidates": 3,
-          "allow_3m_stop": false,
-          "rejection_counts": {
-            "tactical_stop_not_confirmed": 1,
-            "stop_too_tight": 0,
-            "stop_too_wide": 2,
-            "hard_barrier": 0
-          },
-          "best_pair": {
-            "stop": 79.744,
-            "stop_basis": "last closed 15M low",
-            "stop_timeframe": "15M",
-            "target": 81.189,
-            "target_basis": "15M measured range/impulse expansion objective",
-            "risk_pct": 0.308,
-            "risk_atr15": 0.906,
-            "reward_pct": 1.499,
-            "reward_atr15": 4.415,
-            "rr": 4.874,
-            "failures": [],
-            "barrier": null,
-            "barrier_basis": "",
-            "management_checkpoints": [],
-            "pass_ratio": 1.0,
-            "priority": 999
-          },
-          "validation_reasons": [],
-          "management_checkpoints": []
-        },
-        "better_entry": {
-          "level": 0.0,
-          "low": 0.0,
-          "high": 0.0
-        },
-        "hidden_for_no_setup": false
-      },
-      "better_entry_zone_low": 0.0,
-      "better_entry_zone_high": 0.0
-    },
-    "last_final_reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
-    "last_final_action": "WATCH"
-  },
+  "opportunity_memory": null,
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -981,17 +936,17 @@
     "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T06:45:57.900423+00:00",
-    "price": 79.88,
-    "oi": 59590.3,
-    "cvd": 97968.0,
-    "cvd_time": "2026-06-19T06:45:57.900426+00:00",
-    "last_trade_ts": 1781851533502,
+    "time": "2026-06-19T07:01:21.703940+00:00",
+    "price": 79.44,
+    "oi": 58758.94,
+    "cvd": 63385.0,
+    "cvd_time": "2026-06-19T07:01:21.703942+00:00",
+    "last_trade_ts": 1781852470839,
     "bias": "LONG",
-    "tech_score": 64,
-    "total_score": 54
+    "tech_score": 102,
+    "total_score": 101
   },
-  "updated_at": "2026-06-19T06:45:57.900429+00:00",
+  "updated_at": "2026-06-19T07:01:21.703945+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
