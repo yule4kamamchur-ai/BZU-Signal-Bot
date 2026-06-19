@@ -21,6 +21,9 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL SIGNAL BOT
 # ==========================================================
+BOT_VERSION = "pro-v3.12-no-clean-setup-canonicalization"
+ARCHITECTURE_VERSION = "SINGLE_FILE_CLEAN_V3_12_NO_CLEAN_SETUP_CANONICALIZATION"
+
 # Version upgrade: Single-File Clean Architecture V3 + deterministic decision pipeline.
 # Entry package: Persistent Exhaustion / Shock Release 2.0 / Directional News
 # Consensus / Strong ICT Override / Location Viability / Composite Exhaustion.
@@ -599,7 +602,7 @@ def load_state():
         state["active_trade"] = None
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
-    state["version"] = "pro-v3.11-setup-thesis-persistence-exit-guard"
+    state["version"] = BOT_VERSION
     return state
 
 
@@ -611,7 +614,7 @@ def save_state(state):
 
 def load_journal():
     journal = load_json(JOURNAL_FILE, {"version": "pro-v2", "trades": [], "signals": []})
-    journal["version"] = "pro-v3.11-setup-thesis-persistence-exit-guard"
+    journal["version"] = BOT_VERSION
     if "trades" not in journal or not isinstance(journal["trades"], list):
         journal["trades"] = []
     if "signals" not in journal or not isinstance(journal["signals"], list):
@@ -7528,6 +7531,8 @@ def setup_classifier_text(setup_info, short=False):
 def setup_watch_title(side, setup_info):
     setup_type = str((setup_info or {}).get("type") or "NO_CLEAN_SETUP")
     side_text = _side_label(side)
+    if setup_type == "NO_CLEAN_SETUP":
+        return "ВХОДУ НЕМАЄ — ЧИСТОГО СЕТАПУ НЕМАЄ"
     if setup_type == "LATE_IMPULSE_CHASE":
         return f"ЧЕКАТИ — {side_text} НЕ ДОГАНЯТИ"
     if setup_type == "RANGE_MIDDLE_BLOCK":
@@ -15473,6 +15478,8 @@ def apply_entry_level_gate(setup, context=None):
     action = str(out.get("action") or "NO_TRADE").upper()
     setup_info = out.get("setup_classifier") or context.get("setup_classifier") or {}
     setup_type = str((setup_info or {}).get("type") or "")
+    if setup_type == "NO_CLEAN_SETUP":
+        return _v3_canonicalize_no_clean_setup(out, stage="ENTRY_LEVEL_GATE")
     conflicts = out.get("conflicts") or []
     reason = str(out.get("reason") or "")
     quality = int(max(0, min(100, out.get("quality", 0) or 0)))
@@ -17353,10 +17360,73 @@ def _v3_clean_side_messages(items, final_side):
 
 def _v3_watch_title(side, setup):
     info = (setup or {}).get("setup_classifier") or {}
+    setup_type = str(info.get("type") or "").upper()
+    if setup_type == "NO_CLEAN_SETUP":
+        return "ВХОДУ НЕМАЄ — ЧИСТОГО СЕТАПУ НЕМАЄ"
     label = str(info.get("label") or "").strip()
     if label:
         return f"ЧЕКАТИ — {side} НЕ ПІДТВЕРДЖЕНИЙ"
     return f"ЧЕКАТИ — {side} ГОТУЄТЬСЯ"
+
+
+def _v3_is_no_clean_setup(setup):
+    info = (setup or {}).get("setup_classifier") or {}
+    return str(info.get("type") or "").upper() == "NO_CLEAN_SETUP"
+
+
+def _v3_canonicalize_no_clean_setup(setup, audit=None, stage="CANONICALIZE"):
+    """Convert NO_CLEAN_SETUP into a neutral no-trade decision.
+
+    A directional bias may still exist internally, but it is market context, not
+    an entry candidate. This prevents Telegram and the journal from presenting
+    LONG/SHORT as "preparing" when the classifier explicitly blocks entry.
+    """
+    if not isinstance(setup, dict) or not _v3_is_no_clean_setup(setup):
+        return setup
+
+    out = dict(setup)
+    original_side = str(out.get("side") or "NEUTRAL").upper()
+    if original_side in ["LONG", "SHORT"]:
+        out["market_direction_context"] = original_side
+
+    info = dict(out.get("setup_classifier") or {})
+    info["type"] = "NO_CLEAN_SETUP"
+    info["label"] = info.get("label") or "⚪ Чистого сетапу немає"
+    info["side"] = "NEUTRAL"
+    info["entry_allowed"] = False
+    info["block_entry"] = True
+    out["setup_classifier"] = info
+
+    quality = int(clamp(safe_float(out.get("quality"), 0) or 0, 0, 55))
+    prior_reason = str(out.get("reason") or "").strip()
+    if "чистого сетапу" not in prior_reason.lower():
+        prior_reason = ("чистого сетапу немає; " + prior_reason).strip(" ;")
+
+    out.update({
+        "action": "NO_TRADE",
+        "side": "NEUTRAL",
+        "quality": quality,
+        "current_readiness": quality,
+        "plan": None,
+        "title": "ВХОДУ НЕМАЄ — ЧИСТОГО СЕТАПУ НЕМАЄ",
+        "reason": prior_reason or "чистого сетапу немає",
+        "entry_level": "BLOCK",
+        "entry_level_label": "⚪ ВХОДУ НЕМАЄ — чистого сетапу немає",
+        "entry_blocked": True,
+        "watch_trigger": False,
+        "show_wait_plan": False,
+        "pending_trigger_activated": False,
+        "lock_release_bridge_activated": False,
+    })
+    out["reason_codes"] = _v3_dedupe_text(list(out.get("reason_codes") or []) + ["NO_CLEAN_SETUP_CANONICALIZED"])
+
+    if isinstance(audit, list):
+        audit.append({
+            "stage": stage,
+            "code": "NO_CLEAN_SETUP_TO_NEUTRAL_NO_TRADE",
+            "market_direction_context": original_side if original_side in ["LONG", "SHORT"] else None,
+        })
+    return out
 
 
 def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
@@ -17373,7 +17443,7 @@ def _v3_safe_no_trade(reason, error_code="SAFE_MODE"):
         "setup_classifier": None,
         "entry_level": "BLOCK",
         "reason_codes": [error_code],
-        "architecture_version": "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD",
+        "architecture_version": ARCHITECTURE_VERSION,
     }
 
 
@@ -17425,9 +17495,14 @@ def _v3_normalize_setup(setup, context, source, audit=None):
                 raw["plan"] = None
                 raw["reason"] = "обраний кандидат не має узгодженого класифікатора для своєї сторони"
                 raw.setdefault("reason_codes", []).append("CLASSIFIER_SIDE_NOT_CONFIRMED")
+
+    raw = _v3_canonicalize_no_clean_setup(raw, audit, "NORMALIZE")
+    action = str(raw.get("action") or "NO_TRADE").upper()
+    side = str(raw.get("side") or "NEUTRAL").upper()
+    quality = int(clamp(safe_float(raw.get("quality"), 0) or 0, 0, 100))
     raw["current_readiness"] = quality
     raw["candidate_source"] = str(source)
-    raw["architecture_version"] = "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD"
+    raw["architecture_version"] = ARCHITECTURE_VERSION
     raw["confirmations"] = _v3_clean_side_messages(raw.get("confirmations"), side)
     raw["conflicts"] = _v3_clean_side_messages(raw.get("conflicts"), side)
     raw.setdefault("reason_codes", [])
@@ -17455,8 +17530,12 @@ def _v3_normalize_setup(setup, context, source, audit=None):
         raw.setdefault("title", _v3_watch_title(side, raw))
     else:
         raw["entry_level"] = "BLOCK"
-        raw["entry_level_label"] = _entry_level_label("BLOCK")
-        raw.setdefault("title", "ВХОДУ НЕМАЄ")
+        if _v3_is_no_clean_setup(raw):
+            raw["entry_level_label"] = "⚪ ВХОДУ НЕМАЄ — чистого сетапу немає"
+            raw["title"] = "ВХОДУ НЕМАЄ — ЧИСТОГО СЕТАПУ НЕМАЄ"
+        else:
+            raw["entry_level_label"] = _entry_level_label("BLOCK")
+            raw.setdefault("title", "ВХОДУ НЕМАЄ")
     raw.setdefault("reason", "перевага нечітка, немає професійного входу")
     return raw
 
@@ -17603,7 +17682,12 @@ def _v3_select_proposal(proposals, audit):
 def _v3_enforce_stage_invariants(previous, current, fixed_side, stage_name, allow_upgrade, audit):
     prev = dict(previous or {})
     cur = _v3_normalize_setup(current, {}, "FINAL_PIPELINE", audit)
-    if fixed_side in ["LONG", "SHORT"] and cur.get("side") != fixed_side:
+    canonical_no_clean = bool(
+        _v3_is_no_clean_setup(cur)
+        and cur.get("action") == "NO_TRADE"
+        and cur.get("side") == "NEUTRAL"
+    )
+    if fixed_side in ["LONG", "SHORT"] and cur.get("side") != fixed_side and not canonical_no_clean:
         audit.append({
             "stage": stage_name, "code": "SIDE_MUTATION_BLOCKED",
             "from": fixed_side, "to": cur.get("side"),
@@ -17617,6 +17701,12 @@ def _v3_enforce_stage_invariants(previous, current, fixed_side, stage_name, allo
         cur["title"] = _v3_watch_title(fixed_side, cur)
         cur["reason"] = "модуль спробував змінити вже вибрану сторону; рішення зупинено до нового незалежного кандидата"
         cur["reason_codes"] = _v3_dedupe_text(list(cur.get("reason_codes") or []) + ["SIDE_MUTATION_PREVENTED"])
+    elif canonical_no_clean and fixed_side in ["LONG", "SHORT"]:
+        audit.append({
+            "stage": stage_name,
+            "code": "NO_CLEAN_NEUTRALIZATION_ALLOWED",
+            "market_direction_context": fixed_side,
+        })
     if not allow_upgrade and _v3_action_rank(cur.get("action")) > _v3_action_rank(prev.get("action")):
         audit.append({
             "stage": stage_name, "code": "NON_MONOTONIC_UPGRADE_BLOCKED",
@@ -17712,7 +17802,7 @@ def _v3_canonical_lock_guard(context, setup, fixed_side, audit):
             audit.append({"stage": "CANONICAL_LOCK", "code": "ACTIVE_LOCK_DOWNGRADE", "side": fixed_side})
         current["action"] = "WATCH"
         current["plan"] = None
-        current["title"] = _v3_watch_title(fixed_side, current)
+        current["title"] = _v3_watch_title(effective_side, current)
         current["reason"] = "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event"
         current["reason_codes"] = _v3_dedupe_text(list(current.get("reason_codes") or []) + ["CANONICAL_LOCK_ACTIVE"])
     elif lock["released"]:
@@ -17794,10 +17884,12 @@ def _v3_verify_post_decision_integrity(setup):
 def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
     current = _v3_normalize_setup(setup, context, source, audit)
     current = _v3_canonical_lock_guard(context, current, fixed_side, audit)
-    current["confirmations"] = _v3_clean_side_messages(current.get("confirmations"), fixed_side)
-    current["conflicts"] = _v3_clean_side_messages(current.get("conflicts"), fixed_side)
+    current = _v3_canonicalize_no_clean_setup(current, audit, "FINALIZE")
+    effective_side = str(current.get("side") or "NEUTRAL").upper()
+    current["confirmations"] = _v3_clean_side_messages(current.get("confirmations"), effective_side)
+    current["conflicts"] = _v3_clean_side_messages(current.get("conflicts"), effective_side)
 
-    if current.get("action") in ["ENTRY", "RISKY_ENTRY"] and not _v3_plan_valid_for_side(current.get("plan"), fixed_side):
+    if current.get("action") in ["ENTRY", "RISKY_ENTRY"] and not _v3_plan_valid_for_side(current.get("plan"), effective_side):
         current["action"] = "WATCH"
         current["plan"] = None
         current["title"] = _v3_watch_title(fixed_side, current)
@@ -17809,13 +17901,13 @@ def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
     current["current_readiness"] = current["quality"]
     current["selected_setup_score"] = _v3_setup_score(current)
     current["candidate_source"] = source
-    current["architecture_version"] = "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD"
+    current["architecture_version"] = ARCHITECTURE_VERSION
     current["decision_id"] = uuid.uuid4().hex[:12]
     current["decision_pipeline_v3"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD",
+        "version": ARCHITECTURE_VERSION,
         "decision_id": current["decision_id"],
         "selected_source": source,
-        "selected_side": fixed_side,
+        "selected_side": effective_side,
         "selected_action": current.get("action"),
         "candidate_count": len(proposals),
         "candidates": [
@@ -17834,8 +17926,13 @@ def _v3_finalize_decision(context, setup, fixed_side, source, proposals, audit):
         ],
         "audit": audit[-80:],
         "invariants": {
-            "side_frozen": fixed_side in ["LONG", "SHORT"] or current.get("side") == "NEUTRAL",
-            "entry_requires_valid_plan": current.get("action") not in ["ENTRY", "RISKY_ENTRY"] or _v3_plan_valid_for_side(current.get("plan"), fixed_side),
+            "side_frozen": (
+                current.get("side") == fixed_side
+                or (current.get("side") == "NEUTRAL" and _v3_is_no_clean_setup(current))
+                or fixed_side not in ["LONG", "SHORT"]
+            ),
+            "entry_requires_valid_plan": current.get("action") not in ["ENTRY", "RISKY_ENTRY"] or _v3_plan_valid_for_side(current.get("plan"), effective_side),
+            "no_clean_setup_is_neutral_no_trade": not _v3_is_no_clean_setup(current) or (current.get("action") == "NO_TRADE" and current.get("side") == "NEUTRAL"),
             "single_gate_pass": True,
             "single_geometry_rebuild": True,
             "post_decision_mutation_allowed": False,
@@ -17907,14 +18004,14 @@ def evaluate_new_setup(context):
         context["decision_pipeline_v3"] = final_setup.get("decision_pipeline_v3")
         return final_setup
     except Exception as error:
-        print(f"[WARN] SINGLE_FILE_CLEAN_V3 safe-mode: {error}")
+        print(f"[WARN] {ARCHITECTURE_VERSION} safe-mode: {error}")
         safe = _v3_safe_no_trade(
             "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
             "PIPELINE_SAFE_MODE",
         )
         safe["pipeline_error"] = str(error)[:400]
         safe["decision_pipeline_v3"] = {
-            "version": "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD",
+            "version": ARCHITECTURE_VERSION,
             "safe_mode": True,
             "audit": audit[-40:],
         }
@@ -18434,6 +18531,9 @@ def _compact_title(setup):
     side = setup.get("side")
     side_text = _side_label(side)
     level = setup.get("entry_level")
+    setup_type = str(((setup.get("setup_classifier") or {}).get("type") or "")).upper()
+    if setup_type == "NO_CLEAN_SETUP":
+        return "⚪ ВХОДУ НЕМАЄ — ЧИСТОГО СЕТАПУ НЕМАЄ"
     if level == "BLOCK" and side in ["LONG", "SHORT"]:
         return f"🔴 ВХОДУ НЕМАЄ — {side_text} НЕ ПІДТВЕРДЖЕНИЙ"
     if level == "BLOCK":
@@ -18469,6 +18569,8 @@ def entry_type_text(context, setup):
         return f"<b>Збережений сетап:</b> {html.escape(str(saved_label))} | {saved_score}/100"
 
     setup_info = (setup or {}).get("setup_classifier") or {}
+    if str(setup_info.get("type") or "").upper() == "NO_CLEAN_SETUP":
+        return ""
     if not setup_info or str(setup_info.get("side") or "").upper() != side:
         return "<b>Сетап:</b> ⚪ класифікатор сторони не підтверджений"
 
@@ -18656,12 +18758,10 @@ def build_follow_message(context, trade, result):
         closed=bool((result or {}).get("closed")),
         exit_reason_code=(result or {}).get("exit_reason_code"),
     )
-    thesis_snapshot = (result or {}).get("setup_thesis_persistence") or {}
-    thesis_priority = bool((result or {}).get("suppressed_exit") or thesis_snapshot.get("state") in ["THESIS_RECOVERED", "UNDER_PRESSURE"])
-    title = ((result or {}).get("title") if thesis_priority else None) or phase.get("telegram_title") or (result or {}).get("title") or f"СУПРОВІД {trade.side}"
+    title = phase.get("telegram_title") or (result or {}).get("title") or f"СУПРОВІД {trade.side}"
     phase_reason = phase.get("telegram_reason") or ""
     recommendation = (result or {}).get("recommendation") or ""
-    situation_reason = (recommendation if thesis_priority else None) or phase_reason or recommendation or "супровід оновлено за поточним контекстом."
+    situation_reason = phase_reason or recommendation or "супровід оновлено за поточним контекстом."
     mae_pct = safe_float(phase.get("mae_pct"), 0.0) or 0.0
     close_mfe = safe_float(phase.get("close_mfe_pct"), 0.0) or 0.0
 
@@ -18676,18 +18776,6 @@ def build_follow_message(context, trade, result):
         "<b>Ситуація з угодою:</b>",
         f"{_follow_situation_icon(result, phase)} {html.escape(_compact_notification_text(situation_reason, 360))}",
     ]
-    if thesis_snapshot:
-        thesis_state = str(thesis_snapshot.get("state") or "")
-        thesis_base = thesis_snapshot.get("protected_base")
-        thesis_text = {
-            "THESIS_INTACT": "🟢 Теза сетапу збережена",
-            "UNDER_PRESSURE": "🟠 Теза під тиском, але ще не зламана",
-            "THESIS_RECOVERED": "🟢 Теза сетапу відновлена",
-            "THESIS_BROKEN": "🔴 Теза сетапу зламана",
-        }.get(thesis_state, "🟡 Теза сетапу перевіряється")
-        if thesis_base is not None and thesis_state != "THESIS_BROKEN":
-            thesis_text += f" | захищена база {_fmt_price(thesis_base)}"
-        lines.append(thesis_text)
     # Close/confirmed MFE is used by the engine internally, but not printed by
     # default to keep Telegram clean and fast to read.
 
@@ -18770,9 +18858,6 @@ def build_closed_trade_journal_item(trade, result, context):
         "exit_reason_code": result.get("exit_reason_code") or _exit_reason_code(result, context, trade),
         "exit_quality": result.get("exit_quality") or _exit_quality_score(trade, result, context),
         "exit_score": result.get("exit_score"),
-        "setup_thesis_persistence": result.get("setup_thesis_persistence") or getattr(trade, "thesis_last_snapshot", {}),
-        "thesis_state": getattr(trade, "thesis_state", ""),
-        "thesis_protected_base": round_price(getattr(trade, "thesis_protected_base", None)),
         "missed_continuation_check": "pending_next_runs",
         "notes": result.get("notes", []),
     }
@@ -18815,457 +18900,6 @@ def update_market_snapshot(state, context):
     }
 
 
-
-# ==========================================================
-# SETUP THESIS PERSISTENCE + INDEPENDENT EVIDENCE EXIT GUARD V3.11
-# ==========================================================
-
-SETUP_THESIS_PATCH_VERSION = "SETUP_THESIS_PERSISTENCE_INDEPENDENT_EVIDENCE_V3_11"
-_THESIS_DYNAMIC_FIELDS = [
-    "thesis_hard_stop", "thesis_protected_base", "thesis_protected_structure",
-    "thesis_reclaim_level", "thesis_state", "thesis_pressure_streak",
-    "thesis_break_streak", "thesis_recovery_streak", "thesis_evidence_started_at",
-    "thesis_last_snapshot", "thesis_family_streaks", "thesis_mfe_exit_armed",
-]
-_THESIS_HARD_ACTIONS = {"STOP", "TP1", "TP2", "TP3"}
-
-
-def _thesis_iso_to_ms(value):
-    try:
-        dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.astimezone(timezone.utc).timestamp() * 1000)
-    except Exception:
-        return 0
-
-
-def _thesis_candle_ts(candle):
-    try:
-        return int(getattr(candle, "ts", 0) or 0)
-    except Exception:
-        return 0
-
-
-def _thesis_post_entry_candles(trade, context, key):
-    opened_ms = _thesis_iso_to_ms(getattr(trade, "opened_at", ""))
-    values = list((context or {}).get(key) or [])
-    out = []
-    for candle in values:
-        ts = _thesis_candle_ts(candle)
-        if opened_ms and ts < opened_ms:
-            continue
-        if getattr(candle, "confirm_known", False) and not getattr(candle, "confirmed", True):
-            continue
-        if not getattr(candle, "confirmed", True):
-            continue
-        out.append(candle)
-    out.sort(key=_thesis_candle_ts)
-    return out
-
-
-def _thesis_level_candidates(side, entry, stop, context):
-    risk = max(abs(entry - stop), 1e-9)
-    minimum_gap = max(risk * 0.15, entry * 0.00035)
-    lower = min(entry, stop) + risk * 0.10
-    upper = max(entry, stop) - minimum_gap
-    values = []
-    structure = (context or {}).get("structure") or {}
-    keys = ["swing_low", "recent_low"] if side == "LONG" else ["swing_high", "recent_high"]
-    for key in keys:
-        value = safe_float(structure.get(key), None)
-        if value is not None:
-            values.append(value)
-    closed3 = _thesis_post_entry_candles(type("_T", (), {"opened_at": "1970-01-01T00:00:00+00:00"})(), context, "candles_3m")
-    recent3 = closed3[-10:]
-    if side == "LONG":
-        values.extend([safe_float(getattr(c, "low", None), None) for c in recent3])
-    else:
-        values.extend([safe_float(getattr(c, "high", None), None) for c in recent3])
-    valid = [float(v) for v in values if v is not None and lower <= float(v) <= upper]
-    return valid
-
-
-def _derive_setup_thesis_anchors(trade, context=None):
-    side = str(getattr(trade, "side", "") or "")
-    entry = safe_float(getattr(trade, "entry", 0), 0.0) or 0.0
-    stop = safe_float(getattr(trade, "stop_initial", getattr(trade, "stop_current", 0)), 0.0) or 0.0
-    setup_type = _active_trade_setup_type(trade)
-    risk = max(abs(entry - stop), entry * 0.001, 1e-9)
-    if setup_type in ["CAPITULATION_RECOVERY", "SWEEP_REVERSAL", "SWEEP_RECLAIM_EARLY_ENTRY", "REVERSAL_PULLBACK_RECLAIM_ENTRY"]:
-        fraction = 0.35
-    elif setup_type in ["BREAKOUT_ACCEPTANCE_FAST_ENTRY", "3M_BREAKOUT_ACCEPTANCE_FAST_ENTRY", "TREND_IGNITION_ENTRY"]:
-        fraction = 0.30
-    elif setup_type in ["PULLBACK_CONTINUATION", "PULLBACK_CONTINUATION_FAST_ENTRY", "TREND_CONTINUATION", "CLOSED_15M_DIRECTION_FLIP"]:
-        fraction = 0.27
-    else:
-        fraction = 0.32
-    model_base = stop + (entry - stop) * fraction
-    candidates = _thesis_level_candidates(side, entry, stop, context or {})
-    protected = min(candidates, key=lambda x: abs(x - model_base)) if candidates else model_base
-    if side == "LONG":
-        protected = min(entry - risk * 0.15, max(stop + risk * 0.10, protected))
-    else:
-        protected = max(entry + risk * 0.15, min(stop - risk * 0.10, protected))
-    trigger = safe_float(getattr(trade, "recovery_trigger_level", 0), 0.0) or 0.0
-    reclaim = trigger if trigger else entry
-    return {
-        "hard_stop": round_price(stop),
-        "protected_base": round_price(protected),
-        "protected_structure": round_price(protected),
-        "reclaim_level": round_price(reclaim),
-        "setup_type": setup_type or "UNKNOWN",
-    }
-
-
-def _ensure_trade_thesis_state(trade, context=None):
-    anchors = _derive_setup_thesis_anchors(trade, context or {})
-    defaults = {
-        "thesis_hard_stop": anchors["hard_stop"],
-        "thesis_protected_base": anchors["protected_base"],
-        "thesis_protected_structure": anchors["protected_structure"],
-        "thesis_reclaim_level": anchors["reclaim_level"],
-        "thesis_state": "THESIS_INTACT",
-        "thesis_pressure_streak": 0,
-        "thesis_break_streak": 0,
-        "thesis_recovery_streak": 0,
-        "thesis_evidence_started_at": str(getattr(trade, "opened_at", "") or iso_now()),
-        "thesis_last_snapshot": {},
-        "thesis_family_streaks": {},
-        "thesis_mfe_exit_armed": False,
-    }
-    for key, value in defaults.items():
-        current = getattr(trade, key, None)
-        if current in [None, ""] or (isinstance(current, (int, float)) and current == 0 and key.startswith("thesis_") and key not in ["thesis_pressure_streak", "thesis_break_streak", "thesis_recovery_streak"]):
-            setattr(trade, key, value)
-    return anchors
-
-
-def _thesis_bias_against(block, side, threshold=0):
-    block = block or {}
-    return bool(block.get("bias") == opposite(side) and abs(int(block.get("score", 0) or 0)) >= threshold)
-
-
-def setup_thesis_persistence_snapshot(trade, context, proposed_result=None, update_state=True):
-    anchors = _ensure_trade_thesis_state(trade, context)
-    side = str(getattr(trade, "side", "") or "")
-    price = safe_float((context or {}).get("price"), safe_float(getattr(trade, "entry", 0), 0.0)) or 0.0
-    entry = safe_float(getattr(trade, "entry", 0), 0.0) or 0.0
-    stop = safe_float(getattr(trade, "stop_initial", 0), 0.0) or 0.0
-    protected = safe_float(getattr(trade, "thesis_protected_base", anchors["protected_base"]), anchors["protected_base"])
-    reclaim = safe_float(getattr(trade, "thesis_reclaim_level", anchors["reclaim_level"]), anchors["reclaim_level"])
-    risk_abs = max(abs(entry - stop), 1e-9)
-    initial_risk_pct = abs(pct(stop, entry)) if entry else 0.0
-    best_price = safe_float(getattr(trade, "best_price", entry), entry)
-    best_pct = max(0.0, signed_pct(side, entry, best_price)) if entry else 0.0
-    current_pct = signed_pct(side, entry, price) if entry else 0.0
-    mfe_r = best_pct / initial_risk_pct if initial_risk_pct > 0 else 0.0
-
-    post3 = _thesis_post_entry_candles(trade, context, "candles_3m")
-    post15 = _thesis_post_entry_candles(trade, context, "candles_15m")
-    atr15 = safe_float((context or {}).get("atr15"), None) or safe_float(((context or {}).get("tf15") or {}).get("atr"), risk_abs) or risk_abs
-    atr3 = safe_float(atr(post3, 14), None) if len(post3) >= 3 else None
-    if not atr3:
-        atr3 = max(atr15 * 0.30, risk_abs * 0.12, entry * 0.0005)
-    buffer_abs = max(atr3 * 0.10, entry * 0.00030)
-
-    closes3 = [safe_float(getattr(c, "close", None), None) for c in post3[-4:]]
-    closes3 = [x for x in closes3 if x is not None]
-    close15 = safe_float(getattr(post15[-1], "close", None), None) if post15 else None
-    if side == "LONG":
-        broken3 = len(closes3) >= 2 and all(x < protected - buffer_abs for x in closes3[-2:])
-        broken15 = close15 is not None and close15 < protected - buffer_abs
-        reclaim_lost = len(closes3) >= 2 and all(x < reclaim - buffer_abs for x in closes3[-2:])
-        hard_stop_cross = price <= stop
-        recovered_price = price >= reclaim + buffer_abs * 0.25
-    else:
-        broken3 = len(closes3) >= 2 and all(x > protected + buffer_abs for x in closes3[-2:])
-        broken15 = close15 is not None and close15 > protected + buffer_abs
-        reclaim_lost = len(closes3) >= 2 and all(x > reclaim + buffer_abs for x in closes3[-2:])
-        hard_stop_cross = price >= stop
-        recovered_price = price <= reclaim - buffer_abs * 0.25
-
-    tf3 = (context or {}).get("tf3") or {}
-    structure = (context or {}).get("structure") or {}
-    ict = (context or {}).get("ict") or {}
-    flow = (context or {}).get("flow") or {}
-    cvd = (context or {}).get("cvd") or {}
-    liquidity = (context or {}).get("liquidity") or {}
-    news = (context or {}).get("news") or {}
-    tf3_against = _thesis_bias_against(tf3, side, 28)
-    structure_against = _thesis_bias_against(structure, side, 12)
-    ict_against = _thesis_bias_against(ict, side, 12)
-    flow_against = _thesis_bias_against(flow, side, 10)
-    cvd_against = _thesis_bias_against(cvd, side, 10)
-    liquidity_against = _thesis_bias_against(liquidity, side, 10)
-    news_against = _thesis_bias_against(news, side, 18)
-    flow_support = (flow.get("bias") == side and abs(int(flow.get("score", 0) or 0)) >= 10)
-    cvd_support = (cvd.get("bias") == side and abs(int(cvd.get("score", 0) or 0)) >= 10)
-    tf3_support = (tf3.get("bias") == side and abs(int(tf3.get("score", 0) or 0)) >= 22)
-
-    # Independent families: correlated readings from the same price candle are
-    # deliberately collapsed into one family instead of being counted 3-4 times.
-    price_structure_family = bool(broken15 or (broken3 and (structure_against or ict_against)))
-    order_flow_family = bool(flow_against and cvd_against)
-    ict_location_family = bool(ict_against and (broken3 or broken15 or reclaim_lost))
-    liquidity_family = bool(liquidity_against and (broken3 or broken15))
-    news_family = bool(news_against and (broken3 or broken15) and str(news.get("top_lifecycle") or "").upper() in ["CONFIRMED", "ACTIVE"])
-    families = {
-        "PRICE_STRUCTURE": price_structure_family,
-        "ORDER_FLOW": order_flow_family,
-        "ICT_LOCATION": ict_location_family,
-        "LIQUIDITY": liquidity_family,
-        "NEWS": news_family,
-    }
-    family_count = sum(bool(v) for v in families.values())
-    thesis_broken = bool(broken15 or (broken3 and (structure_against or ict_against)))
-    pressure = bool(thesis_broken or reclaim_lost or tf3_against or family_count >= 1)
-    recovered = bool(recovered_price and (tf3_support or flow_support or cvd_support) and not thesis_broken)
-
-    pressure_streak = int(getattr(trade, "thesis_pressure_streak", 0) or 0)
-    break_streak = int(getattr(trade, "thesis_break_streak", 0) or 0)
-    recovery_streak = int(getattr(trade, "thesis_recovery_streak", 0) or 0)
-    if update_state:
-        pressure_streak = pressure_streak + 1 if pressure else max(0, pressure_streak - 1)
-        break_streak = break_streak + 1 if thesis_broken else 0
-        recovery_streak = recovery_streak + 1 if recovered else 0
-        trade.thesis_pressure_streak = pressure_streak
-        trade.thesis_break_streak = break_streak
-        trade.thesis_recovery_streak = recovery_streak
-
-    mfe_exit_armed = bool(getattr(trade, "tp1_hit", False) or mfe_r >= 0.50 or thesis_broken)
-    adverse_r = abs(min(0.0, current_pct)) / initial_risk_pct if initial_risk_pct > 0 else 0.0
-    action = str((proposed_result or {}).get("action") or "").upper()
-    hard_level_action = action in _THESIS_HARD_ACTIONS or action.startswith("TP")
-    recovery_failure_action = str((proposed_result or {}).get("exit_reason_code") or "") == "POST_REJECTION_RECOVERY_FAILED"
-
-    allow_close = False
-    close_reason = ""
-    if hard_level_action or hard_stop_cross:
-        allow_close = True
-        close_reason = "фактичний стоп/тейк має абсолютний пріоритет"
-    elif recovery_failure_action and reclaim_lost and family_count >= 1:
-        allow_close = True
-        close_reason = "новий recovery-trigger втрачено після входу і незалежний шар підтвердив провал"
-    elif broken15 and family_count >= 2:
-        allow_close = True
-        close_reason = "закрита post-entry 15M порушила protected base і є два незалежні сімейства проти"
-    elif broken3 and family_count >= 2 and break_streak >= 1:
-        allow_close = True
-        close_reason = "два post-entry 3M закриття порушили protected base і незалежні сімейства підтвердили"
-    elif thesis_broken and family_count >= 1 and pressure_streak >= 2:
-        allow_close = True
-        close_reason = "теза зламана і підтвердження проти повторилося на двох перевірках"
-    elif adverse_r >= 0.80 and family_count >= 1 and pressure_streak >= 1:
-        allow_close = True
-        close_reason = "ціна використала понад 80% початкового ризику та незалежне підтвердження вже проти"
-    elif mfe_exit_armed and family_count >= 2 and pressure_streak >= 2:
-        allow_close = True
-        close_reason = "MFE-захист активований після 0.5R/TP1 і два незалежні сімейства підтвердили втрату переваги"
-    else:
-        close_reason = "protected base/HL-LH не зламано або недостатньо незалежних post-entry доказів"
-
-    if thesis_broken:
-        state = "THESIS_BROKEN" if allow_close else "UNDER_PRESSURE"
-    elif recovered and recovery_streak >= 1:
-        state = "THESIS_RECOVERED"
-    elif pressure:
-        state = "UNDER_PRESSURE"
-    else:
-        state = "THESIS_INTACT"
-
-    snapshot = {
-        "version": SETUP_THESIS_PATCH_VERSION,
-        "state": state,
-        "allow_close": bool(allow_close),
-        "close_reason": close_reason,
-        "side": side,
-        "setup_type": _active_trade_setup_type(trade) or "UNKNOWN",
-        "hard_stop": round_price(stop),
-        "protected_base": round_price(protected),
-        "protected_structure": round_price(getattr(trade, "thesis_protected_structure", protected)),
-        "reclaim_level": round_price(reclaim),
-        "price": round_price(price),
-        "current_pct": round(current_pct, 3),
-        "best_pct": round(best_pct, 3),
-        "initial_risk_pct": round(initial_risk_pct, 3),
-        "mfe_r": round(mfe_r, 3),
-        "mfe_exit_armed": mfe_exit_armed,
-        "post_entry_3m_count": len(post3),
-        "post_entry_15m_count": len(post15),
-        "protected_base_broken_3m": broken3,
-        "protected_base_broken_15m": broken15,
-        "reclaim_lost": reclaim_lost,
-        "independent_families": [k for k, v in families.items() if v],
-        "independent_family_count": family_count,
-        "families": families,
-        "pressure_streak": pressure_streak,
-        "break_streak": break_streak,
-        "recovery_streak": recovery_streak,
-        "pre_entry_evidence_ignored": True,
-    }
-    if update_state:
-        trade.thesis_state = state
-        trade.thesis_mfe_exit_armed = mfe_exit_armed
-        trade.thesis_last_snapshot = snapshot
-        trade.thesis_family_streaks = dict(families)
-        if state == "THESIS_RECOVERED":
-            trade.entry_fail_streak = 0
-            trade.lifecycle_failures = 0
-            trade.lifecycle_stage = "WORKING"
-    return snapshot
-
-
-# Persist the V3.11 thesis fields without requiring a breaking dataclass migration.
-_legacy_active_trade_from_state_v310 = active_trade_from_state
-_legacy_store_active_trade_v310 = store_active_trade
-_legacy_new_active_trade_v310 = new_active_trade
-_legacy_manage_active_trade_v310 = manage_active_trade
-_legacy_decision_coherence_guard_v310 = decision_coherence_guard
-_legacy_setup_aware_exit_decision_v310 = setup_aware_exit_decision
-_legacy_mandatory_mfe_profit_lock_snapshot_v310 = mandatory_mfe_profit_lock_snapshot
-
-
-def active_trade_from_state(state):
-    trade = _legacy_active_trade_from_state_v310(state)
-    raw = (state or {}).get("active_trade") if isinstance(state, dict) else None
-    if trade is not None and isinstance(raw, dict):
-        for key in _THESIS_DYNAMIC_FIELDS:
-            if key in raw:
-                setattr(trade, key, deepcopy(raw.get(key)))
-        _ensure_trade_thesis_state(trade, {})
-    return trade
-
-
-def store_active_trade(state, trade):
-    if not trade:
-        state["active_trade"] = None
-        return
-    raw = asdict(trade)
-    for key in _THESIS_DYNAMIC_FIELDS:
-        raw[key] = deepcopy(getattr(trade, key, None))
-    raw["thesis_patch_version"] = SETUP_THESIS_PATCH_VERSION
-    state["active_trade"] = raw
-
-
-def new_active_trade(setup, context=None):
-    trade = _legacy_new_active_trade_v310(setup)
-    _ensure_trade_thesis_state(trade, context or {})
-    trade.notes.append("THESIS_PATCH: " + SETUP_THESIS_PATCH_VERSION)
-    return trade
-
-
-def setup_aware_exit_decision(trade, context, entry_state, phase_snapshot, current_pct,
-                              tf3_against=False, flow_against=False, cvd_against=False,
-                              confirmed_ict_reversal=False):
-    legacy = _legacy_setup_aware_exit_decision_v310(
-        trade, context, entry_state, phase_snapshot, current_pct,
-        tf3_against=tf3_against, flow_against=flow_against,
-        cvd_against=cvd_against, confirmed_ict_reversal=confirmed_ict_reversal,
-    )
-    if legacy.get("close"):
-        thesis = setup_thesis_persistence_snapshot(trade, context, {
-            "action": "EXIT_ENTRY_POINT_BROKEN",
-            "exit_reason_code": "SETUP_AWARE_CLOSED_MTF_BREAK",
-        }, update_state=False)
-        legacy["thesis_snapshot"] = thesis
-        if not thesis.get("allow_close"):
-            legacy["close"] = False
-            legacy["warning_only"] = True
-            legacy["reason"] = "setup thesis ще жива: protected base/HL-LH не зламано незалежними post-entry доказами"
-    return legacy
-
-
-def decision_coherence_guard(trade, context, candidate_action, current_pct, best_pct,
-                             giveback_ratio=0.0, phase_snapshot=None,
-                             confirmed_ict_reversal=False, profit_exit=False):
-    legacy = _legacy_decision_coherence_guard_v310(
-        trade, context, candidate_action, current_pct, best_pct,
-        giveback_ratio, phase_snapshot,
-        confirmed_ict_reversal=confirmed_ict_reversal, profit_exit=profit_exit,
-    )
-    action = str(candidate_action or "").upper()
-    if action in _THESIS_HARD_ACTIONS or action.startswith("TP"):
-        return legacy
-    thesis = setup_thesis_persistence_snapshot(trade, context, {
-        "action": action,
-        "exit_reason_code": legacy.get("reason_code"),
-    }, update_state=False)
-    legacy["thesis_snapshot"] = thesis
-    if legacy.get("allow_close") and not thesis.get("allow_close"):
-        return {
-            "allow_close": False,
-            "reason_code": "SETUP_THESIS_STILL_ALIVE",
-            "reason": "локальний тиск є, але protected base/HL-LH сетапу ще не зламані незалежними post-entry доказами",
-            "replacement_action": "UNDER_PRESSURE",
-            "break_snapshot": legacy.get("break_snapshot"),
-            "thesis_snapshot": thesis,
-        }
-    return legacy
-
-
-def mandatory_mfe_profit_lock_snapshot(trade, context, current_pct, best_pct, giveback_ratio, opposing_layers):
-    out = _legacy_mandatory_mfe_profit_lock_snapshot_v310(
-        trade, context, current_pct, best_pct, giveback_ratio, opposing_layers
-    )
-    if out.get("close") and not getattr(trade, "tp1_hit", False):
-        thesis = setup_thesis_persistence_snapshot(trade, context, {
-            "action": "EXIT_MANDATORY_MFE_LOCK",
-            "exit_reason_code": "MANDATORY_MFE_PROFIT_LOCK",
-        }, update_state=False)
-        out["thesis_snapshot"] = thesis
-        if not thesis.get("mfe_exit_armed") or not thesis.get("allow_close"):
-            out["close"] = False
-            out["protect"] = True
-            out["reason"] = "MFE ще менше 0.5R або setup thesis не зламана; максимум захист, без раннього повного виходу"
-    return out
-
-
-def manage_active_trade(trade, context):
-    _ensure_trade_thesis_state(trade, context or {})
-    result = _legacy_manage_active_trade_v310(trade, context)
-    thesis = setup_thesis_persistence_snapshot(trade, context, result, update_state=True)
-    result["setup_thesis_persistence"] = thesis
-    action = str(result.get("action") or "").upper()
-    hard_action = action in _THESIS_HARD_ACTIONS or action.startswith("TP")
-    if result.get("closed") and not hard_action and not thesis.get("allow_close"):
-        trade.status = "OPEN"
-        trade.last_action = "UNDER_PRESSURE" if thesis.get("state") == "UNDER_PRESSURE" else "HOLD"
-        trade.lifecycle_stage = "UNDER_PRESSURE" if thesis.get("state") == "UNDER_PRESSURE" else "WORKING"
-        trade.lifecycle_failures = min(int(getattr(trade, "lifecycle_failures", 0) or 0), 1)
-        trade.entry_fail_streak = min(int(getattr(trade, "entry_fail_streak", 0) or 0), 1)
-        original_action = action
-        original_reason = result.get("exit_reason_code") or original_action
-        result = {
-            "closed": False,
-            "action": trade.last_action,
-            "title": f"{trade.side} — ТЕЗА ЩЕ ЖИВА, ЛОКАЛЬНИЙ ТИСК",
-            "recommendation": "не закривати лише через локальне відхилення: protected base/HL-LH не зламані; чекати відновлення або незалежного підтвердженого зламу",
-            "current_pct": signed_pct(trade.side, trade.entry, safe_float((context or {}).get("price"), trade.entry)),
-            "best_pct": max(0.0, signed_pct(trade.side, trade.entry, safe_float(getattr(trade, "best_price", trade.entry), trade.entry))),
-            "notes": [
-                f"ранній вихід {original_reason} заблоковано Setup Thesis Persistence",
-                f"protected base: {thesis.get('protected_base')}",
-                f"незалежних post-entry сімейств проти: {thesis.get('independent_family_count')}",
-                thesis.get("close_reason"),
-            ],
-            "setup_thesis_persistence": thesis,
-            "suppressed_exit": {
-                "action": original_action,
-                "reason_code": original_reason,
-            },
-        }
-    else:
-        if result.get("closed"):
-            trade.status = "CLOSED"
-        if thesis.get("state") == "THESIS_RECOVERED" and not result.get("closed"):
-            result["action"] = "HOLD"
-            result["title"] = f"{trade.side} — ТЕЗУ ВІДНОВЛЕНО"
-            result["recommendation"] = "ціна повернула reclaim/entry-зону, підтримка 3M/flow відновилася; продовжувати супровід за планом"
-            result.setdefault("notes", []).append("Setup Thesis Persistence: попередній тиск скинуто після відновлення")
-    return result
-
-
 # ==========================================================
 # SINGLE-FILE ACTIVE-TRADE INVARIANT WRAPPER V3
 # ==========================================================
@@ -19287,7 +18921,7 @@ def manage_active_trade_v3(trade, context):
             "current_pct": current_pct,
             "best_pct": max(0.0, signed_pct(before_side, safe_float(getattr(trade, "entry", 0), 0), safe_float(getattr(trade, "best_price", getattr(trade, "entry", 0)), 0))),
             "notes": [f"MANAGEMENT_SAFE_MODE: {str(error)[:240]}"],
-            "architecture_audit": {"version": "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD", "safe_mode": True},
+            "architecture_audit": {"version": ARCHITECTURE_VERSION, "safe_mode": True},
         }
 
     if str(getattr(trade, "side", "") or "") != before_side:
@@ -19313,7 +18947,7 @@ def manage_active_trade_v3(trade, context):
     result.setdefault("current_pct", signed_pct(before_side, trade.entry, safe_float((context or {}).get("price"), trade.entry)))
     result.setdefault("best_pct", max(0.0, safe_float(result.get("current_pct"), 0.0) or 0.0))
     result["architecture_audit"] = {
-        "version": "SINGLE_FILE_CLEAN_V3_11_SETUP_THESIS_PERSISTENCE_EXIT_GUARD",
+        "version": ARCHITECTURE_VERSION,
         "side_immutable": str(getattr(trade, "side", "") or "") == before_side,
         "stop_never_loosened": not stop_restored,
         "active_trade_never_replaced_by_watch": True,
@@ -19420,8 +19054,6 @@ def main():
             "tech_score": context["tech_score"],
             "total_score": context["total_score"],
             "regime_engine": context.get("regime_engine") or context.get("market_regime"),
-            "setup_thesis_persistence": result.get("setup_thesis_persistence") or getattr(active, "thesis_last_snapshot", {}),
-            "thesis_state": getattr(active, "thesis_state", ""),
         })
         state["pending_trigger"] = None
         update_market_snapshot(state, context)
@@ -19445,7 +19077,7 @@ def main():
 
     if setup["action"] in ["ENTRY", "RISKY_ENTRY"]:
         state["opportunity_memory"] = None
-        active = new_active_trade(setup, context)
+        active = new_active_trade(setup)
         store_active_trade(state, active)
         append_history(state, {
             "type": "ENTRY",
@@ -19469,6 +19101,7 @@ def main():
             "price": round_price(context["price"]),
             "quality": setup["quality"],
             "reason": setup["reason"],
+            "market_direction_context": setup.get("market_direction_context"),
             "setup_classifier": setup.get("setup_classifier"),
             "regime_engine": setup.get("regime_engine") or context.get("regime_engine"),
         })
@@ -19496,6 +19129,7 @@ def main():
         "candidate_source": setup.get("candidate_source"),
         "current_readiness": setup.get("current_readiness"),
         "selected_setup_score": setup.get("selected_setup_score"),
+        "market_direction_context": setup.get("market_direction_context"),
         "reason_codes": setup.get("reason_codes", []),
         "decision_pipeline_v3": setup.get("decision_pipeline_v3"),
         "setup_classifier": setup.get("setup_classifier"),
