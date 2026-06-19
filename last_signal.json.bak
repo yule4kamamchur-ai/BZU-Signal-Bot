@@ -1968,6 +1968,79 @@
         "previous_regime_type": "TREND_PULLBACK"
       },
       "time": "2026-06-19T11:31:11.196673+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.19,
+      "quality": 55,
+      "reason": "не вдалося побудувати життєздатну технічну геометрію",
+      "market_direction_context": null,
+      "setup_classifier": {
+        "type": "PULLBACK_CONTINUATION",
+        "label": "🟢 Відкат у тренді",
+        "side": "LONG",
+        "score": 73,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "NORMAL",
+        "reason": "відкат у правильну ICT-зону + реакція",
+        "quality_adjustment": 3,
+        "quality_cap": 86,
+        "force_risky": false,
+        "profile": {
+          "regime_override": "PULLBACK",
+          "tp1_atr_mult": 1.3,
+          "tp2_atr_mult": 2.45,
+          "tp3_tail_atr": 1.1,
+          "min_stop_pct": 0.78,
+          "max_stop_pct": 1.45,
+          "quality_adjustment": 3,
+          "quality_cap": 86
+        },
+        "entry_rule": "відкат у правильну premium/discount зону + реакція FVG/OB + 3M повернення рівня/відбій",
+        "stop_rule": "стоп за low/high відкату або за OB/FVG",
+        "tp_rule": "TP1 ближче, TP2 до продовження тренду",
+        "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
+      },
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.64,
+          "move8_abs_pct": 0.088,
+          "slope15_abs_pct": 0.181,
+          "rsi15": 48.8,
+          "score_total_abs": 47,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NORMAL"
+      },
+      "time": "2026-06-19T11:45:57.954493+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -2056,8 +2129,8 @@
       "published_at": "2026-06-19T09:12:25+00:00",
       "reference_price": 79.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
-      "last_status": "REJECTED"
+      "last_seen_at": "2026-06-19T11:45:57.158521+00:00",
+      "last_status": "ABSORBED"
     },
     "brent rises after vance warns israel against breaking ceasefire msn": {
       "first_seen_at": "2026-06-19T09:15:53.132447+00:00",
@@ -2080,8 +2153,8 @@
       "published_at": "2026-06-19T08:55:36+00:00",
       "reference_price": 79.26,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
-      "last_status": "REJECTED"
+      "last_seen_at": "2026-06-19T11:45:57.158521+00:00",
+      "last_status": "UNRESOLVED"
     },
     "brent heads for 9 weekly loss as traders weigh us iran truce outlook msn": {
       "first_seen_at": "2026-06-19T11:31:10.246604+00:00",
@@ -2090,21 +2163,29 @@
       "reaction_known": true,
       "last_seen_at": "2026-06-19T11:31:10.246604+00:00",
       "last_status": "FRESH"
+    },
+    "brent heads for 9 weekly loss as traders weigh us iran truce outlook reuters": {
+      "first_seen_at": "2026-06-19T11:45:57.158521+00:00",
+      "published_at": "2026-06-19T11:06:16+00:00",
+      "reference_price": 79.75,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-19T11:45:57.158521+00:00",
+      "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NORMAL",
-    "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-06-19T11:31:10.811388+00:00"
+    "pending_type": "TREND_PULLBACK",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-19T11:45:57.543553+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781868600000,
+      "updated_ts": 1781869500000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -2117,7 +2198,7 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781868600000,
+      "updated_ts": 1781869500000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "2026-06-19T11:15:52.553683+00:00",
@@ -2191,7 +2272,7 @@
     "high": 79.86,
     "low": 78.78,
     "created_ts": 1781843400000,
-    "updated_ts": 1781867700000,
+    "updated_ts": 1781868600000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -2204,7 +2285,7 @@
       "source": "POST_EVALUATION",
       "gate_name": "",
       "created_at": "2026-06-19T10:31:10.850606+00:00",
-      "updated_at": "2026-06-19T10:31:10.850611+00:00",
+      "updated_at": "2026-06-19T11:45:57.953531+00:00",
       "ttl_minutes": 105,
       "side": "LONG",
       "setup_type": "PULLBACK_CONTINUATION",
@@ -2213,7 +2294,7 @@
         "type": "PULLBACK_CONTINUATION",
         "label": "🟢 Відкат у тренді",
         "side": "LONG",
-        "score": 83,
+        "score": 73,
         "entry_allowed": true,
         "block_entry": false,
         "risk_mode": "NORMAL",
@@ -2236,14 +2317,17 @@
         "tp_rule": "TP1 ближче, TP2 до продовження тренду",
         "management_rule": "якщо 3M не підтвердив після входу — швидке попередження на вихід"
       },
-      "quality": 83,
-      "origin_price": 79.07,
-      "trigger_level": 79.07,
+      "quality": 73,
+      "origin_price": 79.19,
+      "trigger_level": 79.19,
       "trigger_ts": 0,
       "trigger_type": null,
       "invalidation": null,
       "initial_reason": "не вдалося побудувати життєздатну технічну геометрію",
-      "plan": null
+      "plan": null,
+      "release_seen_at": "",
+      "release_reason": "",
+      "activation_count": 0
     }
   },
   "opportunity_memory": {
@@ -2270,9 +2354,13 @@
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
-    "missed": 7,
-    "active_episode_keys": [],
-    "episode_status": {},
+    "missed": 8,
+    "active_episode_keys": [
+      "LONG:CAPITULATION_RECOVERY"
+    ],
+    "episode_status": {
+      "LONG:CAPITULATION_RECOVERY": "MISSED"
+    },
     "recent": [
       {
         "side": "LONG",
@@ -2337,24 +2425,32 @@
         "episode_key": "SHORT:CAPITULATION_RECOVERY",
         "status": "MISSED",
         "time": "2026-06-19T11:01:19.895469+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781868600000,
+        "episode_key": "LONG:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-19T11:45:57.954339+00:00"
       }
     ],
     "covered_total": 1,
-    "total_opportunities": 8,
-    "coverage_pct": 12.5
+    "total_opportunities": 9,
+    "coverage_pct": 11.1
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T11:31:11.196711+00:00",
-    "price": 79.39,
-    "oi": 58232.2,
-    "cvd": -41851.0,
-    "cvd_time": "2026-06-19T11:31:11.196715+00:00",
-    "last_trade_ts": 1781868612141,
+    "time": "2026-06-19T11:45:57.954511+00:00",
+    "price": 79.19,
+    "oi": 58392.62,
+    "cvd": -40501.0,
+    "cvd_time": "2026-06-19T11:45:57.954514+00:00",
+    "last_trade_ts": 1781869533247,
     "bias": "LONG",
-    "tech_score": 112,
-    "total_score": 110
+    "tech_score": 49,
+    "total_score": 47
   },
-  "updated_at": "2026-06-19T11:31:11.196718+00:00",
+  "updated_at": "2026-06-19T11:45:57.954517+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
