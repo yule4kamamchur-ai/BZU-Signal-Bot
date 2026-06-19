@@ -36698,14 +36698,141 @@
           "previous_regime_type": "TREND_EXPANSION"
         }
       }
+    },
+    {
+      "time": "2026-06-19T03:15:53.609358+00:00",
+      "type": "FOLLOW",
+      "side": "LONG",
+      "action": "HOLD",
+      "price": 79.24,
+      "quality": 79,
+      "entry_level": "RISKY_ENTRY",
+      "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
+      "regime_type": null,
+      "context_bias": "LONG",
+      "tech_score": 147,
+      "total_score": 135,
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 3.8,
+          "move8_abs_pct": 0.443,
+          "slope15_abs_pct": 0.605,
+          "rsi15": 59.6,
+          "score_total_abs": 135,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "BOS_LONG_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "institutional_execution": {
+        "active": true,
+        "score": 32,
+        "mode": "NORMAL",
+        "mode_label": "НОРМАЛЬНА",
+        "stage": "PRE_TP1",
+        "current_pct": 0.076,
+        "best_pct": 0.303,
+        "giveback_pct": 0.227,
+        "giveback_ratio": 0.75,
+        "initial_risk_pct": 0.18,
+        "risk_used": 0.0,
+        "hard_layers_against": 0,
+        "fast_layers_against": 0,
+        "support_layers": 3,
+        "hard_reversal": false,
+        "confirmed_ict_reversal": false,
+        "ict_reversal_components": 0,
+        "closed_15m_break": false,
+        "breakout_failure": false,
+        "barrier_checkpoint": {
+          "active": true,
+          "status": "PENDING",
+          "action": "HOLD",
+          "level": 79.53,
+          "basis": "закритий 1H swing high",
+          "acceptance_streak": 0,
+          "rejection_streak": 0,
+          "adverse_layers": 0,
+          "support_layers": 3,
+          "touched": false,
+          "message": "контрольний бар’єр попереду: 79.53",
+          "checkpoints": [
+            {
+              "level": 79.53,
+              "basis": "закритий 1H swing high",
+              "priority": 94,
+              "source_status": "HARD",
+              "status": "PENDING",
+              "acceptance_streak": 0,
+              "rejection_streak": 0,
+              "touched_at": "",
+              "accepted_at": "",
+              "rejected_at": ""
+            },
+            {
+              "level": 79.77,
+              "basis": "ICT range high / external liquidity",
+              "priority": 98,
+              "source_status": "HARD",
+              "status": "PENDING",
+              "acceptance_streak": 0,
+              "rejection_streak": 0,
+              "touched_at": "",
+              "accepted_at": "",
+              "rejected_at": ""
+            }
+          ],
+          "protect_evidence": false,
+          "close_review": false
+        },
+        "news_active": true,
+        "news_against": true,
+        "low_liquidity": false,
+        "avoid_noise_stop": false,
+        "protect_evidence": false,
+        "close_evidence": false,
+        "emergency": false,
+        "allow_stop_update": false,
+        "reason": "активний новинний режим проти позиції; режим REVERSAL: рухи швидше віддаються",
+        "reasons": [
+          "активний новинний режим проти позиції",
+          "режим REVERSAL: рухи швидше віддаються"
+        ],
+        "policy": "STANDARD_MANAGEMENT",
+        "protect_streak": 0,
+        "exit_streak": 0
+      }
     }
   ],
-  "updated_at": "2026-06-19T03:01:17.646221+00:00",
+  "updated_at": "2026-06-19T03:15:53.621301+00:00",
   "outcome_analytics": {
-    "updated_at": "2026-06-19T03:01:17.651550+00:00",
+    "updated_at": "2026-06-19T03:15:53.628465+00:00",
     "lookback_limit": 120,
     "closed_trades_count": 3,
-    "signals_count": 59,
+    "signals_count": 60,
     "overall": {
       "trades": 3,
       "wins": 2,
@@ -36871,13 +36998,13 @@
       }
     },
     "signals": {
-      "total": 59,
+      "total": 60,
       "entries": 4,
       "full_entries": 0,
       "risky_entries": 4,
       "watch": 24,
       "no_trade": 20,
-      "follow": 8,
+      "follow": 9,
       "closed": 3,
       "pending_trigger_activations": 0
     },
@@ -36893,13 +37020,13 @@
       "SWEEP_REVERSAL": 3,
       "TREND_CONTINUATION": 4,
       "TREND_IGNITION_ENTRY": 2,
-      "UNKNOWN": 16
+      "UNKNOWN": 17
     },
     "signal_counts_by_regime": {
       "EXHAUSTION": 6,
       "NEWS_SHOCK": 22,
       "NORMAL": 11,
-      "REVERSAL_BUILDUP": 8,
+      "REVERSAL_BUILDUP": 9,
       "TREND_EXPANSION": 9,
       "TREND_PULLBACK": 3
     }
