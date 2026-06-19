@@ -749,6 +749,67 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-19T07:06:42.562559+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.58,
+      "quality": 47,
+      "reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "LONG",
+        "score": 48,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "немає одного з топових сетапів для професійного входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "NORMAL",
+        "regime_type": "NORMAL",
+        "label": "звичайний intraday режим",
+        "score": 50,
+        "confidence": 50,
+        "reason": "звичайний intraday режим: головний фільтр — Setup Classifier і RR",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 0,
+        "quality_cap": null,
+        "hard_block": false,
+        "allowed_setups": [],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.69,
+          "move8_abs_pct": 0.239,
+          "slope15_abs_pct": 0.753,
+          "rsi15": 56.9,
+          "score_total_abs": 83,
+          "participation_same": 2,
+          "late_penalty": 0,
+          "pd": "PREMIUM",
+          "ict_setup": "PREMIUM_CONTEXT",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "TREND_EXPANSION"
+      },
+      "time": "2026-06-19T07:15:53.474378+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -781,7 +842,7 @@
       "published_at": "2026-06-19T04:17:00+00:00",
       "reference_price": 79.16,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T07:06:41.748062+00:00",
+      "last_seen_at": "2026-06-19T07:15:52.426525+00:00",
       "last_status": "REJECTED"
     },
     "big relief for oil markets hormuz reopens crude prices fall below 80 abp news": {
@@ -789,7 +850,7 @@
       "published_at": "2026-06-19T06:12:14+00:00",
       "reference_price": 80.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T07:06:41.748062+00:00",
+      "last_seen_at": "2026-06-19T07:15:52.426525+00:00",
       "last_status": "CONFIRMED"
     },
     "global markets central banks stay vigilant despite oil price relief after us iran truce inkl": {
@@ -797,23 +858,31 @@
       "published_at": "2026-06-19T04:30:12+00:00",
       "reference_price": 79.29,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T07:06:41.748062+00:00",
+      "last_seen_at": "2026-06-19T07:15:52.426525+00:00",
       "last_status": "REJECTED"
+    },
+    "the oil market canceled the hormuz crisis before the ceasefire forbes": {
+      "first_seen_at": "2026-06-19T07:15:52.426525+00:00",
+      "published_at": "2026-06-19T05:34:50+00:00",
+      "reference_price": 79.76,
+      "reaction_known": true,
+      "last_seen_at": "2026-06-19T07:15:52.426525+00:00",
+      "last_status": "UNRESOLVED"
     }
   },
   "regime_memory": {
     "type": "TREND_EXPANSION",
-    "pending_type": "",
-    "stable_count": 2,
-    "pending_count": 0,
-    "updated_at": "2026-06-19T07:06:42.237894+00:00"
+    "pending_type": "NORMAL",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-19T07:15:53.114704+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781852760000,
+      "updated_ts": 1781853300000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -826,7 +895,7 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781852760000,
+      "updated_ts": 1781853300000,
       "origin_price": 79.31,
       "extreme_price": 79.31,
       "released_at": "",
@@ -895,9 +964,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 80.28,
-    "low": 79.29,
+    "low": 79.5,
     "created_ts": 1781843400000,
-    "updated_ts": 1781851500000,
+    "updated_ts": 1781852400000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -965,12 +1034,8 @@
     "new_entries": 1,
     "covered_by_active_trade": 0,
     "missed": 2,
-    "active_episode_keys": [
-      "LONG:CAPITULATION_RECOVERY"
-    ],
-    "episode_status": {
-      "LONG:CAPITULATION_RECOVERY": "MISSED"
-    },
+    "active_episode_keys": [],
+    "episode_status": {},
     "recent": [
       {
         "side": "LONG",
@@ -1002,17 +1067,17 @@
     "coverage_pct": 33.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T07:06:42.562580+00:00",
-    "price": 79.42,
-    "oi": 58774.29,
-    "cvd": 34956.0,
-    "cvd_time": "2026-06-19T07:06:42.562583+00:00",
-    "last_trade_ts": 1781852782155,
+    "time": "2026-06-19T07:15:53.474399+00:00",
+    "price": 79.58,
+    "oi": 58522.24,
+    "cvd": 49948.0,
+    "cvd_time": "2026-06-19T07:15:53.474402+00:00",
+    "last_trade_ts": 1781853318611,
     "bias": "LONG",
-    "tech_score": 110,
-    "total_score": 100
+    "tech_score": 92,
+    "total_score": 83
   },
-  "updated_at": "2026-06-19T07:06:42.562587+00:00",
+  "updated_at": "2026-06-19T07:15:53.474406+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
