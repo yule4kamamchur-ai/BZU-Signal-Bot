@@ -1523,6 +1523,81 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-19T09:47:47.302592+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 78.95,
+      "quality": 61,
+      "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "market_direction_context": null,
+      "setup_classifier": {
+        "type": "SWEEP_RECLAIM_EARLY_ENTRY",
+        "label": "🟡 Раннє зняття ліквідності + повернення",
+        "side": "LONG",
+        "score": 71,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "раннє зняття ліквідності + повернення: ліквідність знята, ціна повернулась у діапазон, 3M/потік не проти",
+        "quality_adjustment": 0,
+        "quality_cap": 74,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.86,
+          "tp2_pct": 1.45,
+          "tp3_pct": 2.35,
+          "min_stop_pct": 0.74,
+          "max_stop_pct": 1.18,
+          "quality_adjustment": 0,
+          "quality_cap": 74,
+          "force_risky": true
+        },
+        "entry_rule": "раннє зняття ліквідності + повернення: ліквідність уже знята, ціна повернулась у діапазон, 3M/потік не проти, але повний CHOCH ще може формуватись",
+        "stop_rule": "стоп за хвіст sweep з ATR-буфером; не усереднювати",
+        "tp_rule": "TP1 до EQ/першої ліквідності; TP2 тільки після підтвердження 3M/структури",
+        "management_rule": "якщо повернення в діапазон не отримало продовження — швидко переводити в попередження або вихід",
+        "professional_override": true,
+        "sweep_reclaim_early": true,
+        "late_penalty": 0
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.38,
+          "move8_abs_pct": 1.003,
+          "slope15_abs_pct": 0.732,
+          "rsi15": 40.4,
+          "score_total_abs": 39,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "LIQUIDITY_SWEEP_LONG"
+        },
+        "stable_count": 3,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-19T10:01:24.473605+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1587,7 +1662,7 @@
       "published_at": "2026-06-19T07:24:57+00:00",
       "reference_price": 79.82,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:47:46.544624+00:00",
+      "last_seen_at": "2026-06-19T10:01:23.381355+00:00",
       "last_status": "CONFIRMED"
     },
     "kuwait to ramp up oil output to two million bpd within a week as strait of hormuz reopens the national": {
@@ -1595,7 +1670,7 @@
       "published_at": "2026-06-19T08:26:15+00:00",
       "reference_price": 79.47,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:47:46.544624+00:00",
+      "last_seen_at": "2026-06-19T10:01:23.381355+00:00",
       "last_status": "CONFIRMED"
     },
     "strait of hormuz reopens after us iran peace deal oil flows resume what it means for prices msn": {
@@ -1627,23 +1702,23 @@
       "published_at": "2026-06-19T08:59:19+00:00",
       "reference_price": 79.27,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:47:46.544624+00:00",
+      "last_seen_at": "2026-06-19T10:01:23.381355+00:00",
       "last_status": "CONFIRMED"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-06-19T09:47:46.917278+00:00"
+    "updated_at": "2026-06-19T10:01:24.004130+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781862300000,
+      "updated_ts": 1781863200000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1656,7 +1731,7 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781862300000,
+      "updated_ts": 1781863200000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "",
@@ -1727,10 +1802,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 80.1,
-    "low": 78.91,
+    "high": 79.99,
+    "low": 78.78,
     "created_ts": 1781843400000,
-    "updated_ts": 1781861400000,
+    "updated_ts": 1781862300000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -1787,9 +1862,77 @@
       "invalidation": null,
       "initial_reason": "нового post-rejection сетапу немає",
       "plan": null
+    },
+    "LONG": {
+      "active": true,
+      "status": "ARMED",
+      "source": "POST_EVALUATION",
+      "gate_name": "",
+      "created_at": "2026-06-19T10:01:24.472676+00:00",
+      "updated_at": "2026-06-19T10:01:24.472684+00:00",
+      "ttl_minutes": 105,
+      "side": "LONG",
+      "setup_type": "SWEEP_RECLAIM_EARLY_ENTRY",
+      "setup_label": "🟡 Раннє зняття ліквідності + повернення",
+      "classifier": {
+        "type": "SWEEP_RECLAIM_EARLY_ENTRY",
+        "label": "🟡 Раннє зняття ліквідності + повернення",
+        "side": "LONG",
+        "score": 71,
+        "entry_allowed": true,
+        "block_entry": false,
+        "risk_mode": "RISKY",
+        "reason": "раннє зняття ліквідності + повернення: ліквідність знята, ціна повернулась у діапазон, 3M/потік не проти",
+        "quality_adjustment": 0,
+        "quality_cap": 74,
+        "force_risky": true,
+        "profile": {
+          "regime_override": "REVERSAL",
+          "tp1_pct": 0.86,
+          "tp2_pct": 1.45,
+          "tp3_pct": 2.35,
+          "min_stop_pct": 0.74,
+          "max_stop_pct": 1.18,
+          "quality_adjustment": 0,
+          "quality_cap": 74,
+          "force_risky": true
+        },
+        "entry_rule": "раннє зняття ліквідності + повернення: ліквідність уже знята, ціна повернулась у діапазон, 3M/потік не проти, але повний CHOCH ще може формуватись",
+        "stop_rule": "стоп за хвіст sweep з ATR-буфером; не усереднювати",
+        "tp_rule": "TP1 до EQ/першої ліквідності; TP2 тільки після підтвердження 3M/структури",
+        "management_rule": "якщо повернення в діапазон не отримало продовження — швидко переводити в попередження або вихід",
+        "professional_override": true,
+        "sweep_reclaim_early": true,
+        "late_penalty": 0
+      },
+      "quality": 71,
+      "origin_price": 78.95,
+      "trigger_level": 78.95,
+      "trigger_ts": 0,
+      "trigger_type": null,
+      "invalidation": null,
+      "initial_reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+      "plan": null
     }
   },
-  "opportunity_memory": null,
+  "opportunity_memory": {
+    "active": true,
+    "source": "POST_GATE",
+    "created_at": "2026-06-19T10:01:24.472720+00:00",
+    "ttl_minutes": 45,
+    "side": "LONG",
+    "setup_type": "SWEEP_RECLAIM_EARLY_ENTRY",
+    "setup_label": "🟡 Раннє зняття ліквідності + повернення",
+    "quality": 61,
+    "price": 78.95,
+    "trigger_level": null,
+    "invalidation": null,
+    "reason": "напрям формується, але потрібна ціна-тригер: reclaim/ретест на 3M",
+    "missing_conditions": [
+      "15M ще нейтральний — вхід тільки після 3M reclaim/ретесту"
+    ],
+    "plan": null
+  },
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -1856,17 +1999,17 @@
     "coverage_pct": 16.7
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T09:47:47.302611+00:00",
-    "price": 79.01,
-    "oi": 59065.02,
-    "cvd": -44109.0,
-    "cvd_time": "2026-06-19T09:47:47.302614+00:00",
-    "last_trade_ts": 1781862458560,
+    "time": "2026-06-19T10:01:24.473625+00:00",
+    "price": 78.95,
+    "oi": 58462.84,
+    "cvd": -47150.0,
+    "cvd_time": "2026-06-19T10:01:24.473628+00:00",
+    "last_trade_ts": 1781863267583,
     "bias": "NEUTRAL",
-    "tech_score": 18,
-    "total_score": 12
+    "tech_score": 44,
+    "total_score": 39
   },
-  "updated_at": "2026-06-19T09:47:47.302617+00:00",
+  "updated_at": "2026-06-19T10:01:24.473632+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
