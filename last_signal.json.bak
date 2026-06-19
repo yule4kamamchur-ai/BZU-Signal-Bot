@@ -1762,6 +1762,53 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-19T10:31:10.851684+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.3,
+      "quality": 0,
+      "reason": "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
+      "market_direction_context": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "PULLBACK",
+        "regime_type": "TREND_PULLBACK",
+        "label": "відкат у тренді",
+        "score": 70,
+        "confidence": 70,
+        "reason": "відкат у тренді: шукати FVG/OB/reclaim, не плутати з боковиком",
+        "entry_action": "ALLOW",
+        "entry_quality_adjustment": 2,
+        "quality_cap": 86,
+        "hard_block": false,
+        "allowed_setups": [
+          "PULLBACK_CONTINUATION",
+          "PULLBACK_CONTINUATION_FAST_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "SWEEP_REVERSAL",
+          "SWEEP_RECLAIM_EARLY_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.42,
+          "move8_abs_pct": 0.025,
+          "slope15_abs_pct": 0.752,
+          "rsi15": 51.0,
+          "score_total_abs": 42,
+          "participation_same": 0,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "DISCOUNT_FVG_OB_LONG",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-19T10:45:53.264030+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1834,8 +1881,8 @@
       "published_at": "2026-06-19T08:26:15+00:00",
       "reference_price": 79.47,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T10:31:09.977041+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T10:45:52.308259+00:00",
+      "last_status": "UNRESOLVED"
     },
     "strait of hormuz reopens after us iran peace deal oil flows resume what it means for prices msn": {
       "first_seen_at": "2026-06-19T08:45:53.160883+00:00",
@@ -1866,31 +1913,31 @@
       "published_at": "2026-06-19T08:59:19+00:00",
       "reference_price": 79.27,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T10:31:09.977041+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T10:45:52.308259+00:00",
+      "last_status": "ABSORBED"
     },
     "oil falls as strait of hormuz supply resumes in 2026 discovery alert": {
       "first_seen_at": "2026-06-19T10:15:52.786421+00:00",
       "published_at": "2026-06-19T08:55:36+00:00",
       "reference_price": 79.26,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T10:31:09.977041+00:00",
-      "last_status": "UNRESOLVED"
+      "last_seen_at": "2026-06-19T10:45:52.308259+00:00",
+      "last_status": "ABSORBED"
     }
   },
   "regime_memory": {
-    "type": "NEWS_SHOCK",
-    "pending_type": "TREND_PULLBACK",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T10:31:10.498059+00:00"
+    "type": "TREND_PULLBACK",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-19T10:45:52.889199+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781865000000,
+      "updated_ts": 1781865900000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1903,7 +1950,7 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781865000000,
+      "updated_ts": 1781865900000,
       "origin_price": 79.02,
       "extreme_price": 78.95,
       "released_at": "",
@@ -1914,13 +1961,13 @@
     }
   },
   "shock_lock": {
-    "side": "SHORT",
-    "status": "RELEASED",
-    "origin_ts": 1781856000000,
-    "extreme_ts": 1781857800000,
-    "extreme_price": 78.95,
-    "released_at": "2026-06-19T08:45:53.753026+00:00",
-    "released_extreme": 78.95
+    "side": "LONG",
+    "status": "LOCKED",
+    "origin_ts": 1781865000000,
+    "extreme_ts": 1781865000000,
+    "extreme_price": 79.6,
+    "released_at": "",
+    "released_extreme": null
   },
   "reversal_handoff": {
     "LONG": {
@@ -1974,10 +2021,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 79.99,
+    "high": 79.73,
     "low": 78.78,
     "created_ts": 1781843400000,
-    "updated_ts": 1781864100000,
+    "updated_ts": 1781865000000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -2054,12 +2101,12 @@
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
-    "missed": 5,
+    "missed": 6,
     "active_episode_keys": [
-      "SHORT:CAPITULATION_RECOVERY"
+      "LONG:CAPITULATION_RECOVERY"
     ],
     "episode_status": {
-      "SHORT:CAPITULATION_RECOVERY": "MISSED"
+      "LONG:CAPITULATION_RECOVERY": "MISSED"
     },
     "recent": [
       {
@@ -2109,24 +2156,32 @@
         "episode_key": "SHORT:CLOSED_15M_DIRECTION_FLIP",
         "status": "MISSED",
         "time": "2026-06-19T09:01:22.388723+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781864640000,
+        "episode_key": "LONG:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-19T10:45:53.263940+00:00"
       }
     ],
     "covered_total": 1,
-    "total_opportunities": 6,
-    "coverage_pct": 16.7
+    "total_opportunities": 7,
+    "coverage_pct": 14.3
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T10:31:10.851705+00:00",
-    "price": 79.07,
-    "oi": 58544.11,
-    "cvd": -30646.0,
-    "cvd_time": "2026-06-19T10:31:10.851708+00:00",
-    "last_trade_ts": 1781865025913,
+    "time": "2026-06-19T10:45:53.264047+00:00",
+    "price": 79.3,
+    "oi": 58560.33,
+    "cvd": -32234.0,
+    "cvd_time": "2026-06-19T10:45:53.264050+00:00",
+    "last_trade_ts": 1781865941383,
     "bias": "LONG",
-    "tech_score": 56,
-    "total_score": 53
+    "tech_score": 42,
+    "total_score": 42
   },
-  "updated_at": "2026-06-19T10:31:10.851711+00:00",
+  "updated_at": "2026-06-19T10:45:53.264053+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
