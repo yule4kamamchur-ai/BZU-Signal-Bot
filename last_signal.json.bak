@@ -1111,6 +1111,72 @@
         "previous_regime_type": "TREND_EXPANSION"
       },
       "time": "2026-06-19T08:15:51.646116+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 79.16,
+      "quality": 55,
+      "reason": "чистого сетапу немає; ліквідність/ринковий блок проти цього входу",
+      "market_direction_context": "SHORT",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "NEUTRAL",
+        "score": 35,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ліквідність/ринковий блок проти цього входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для шорт потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "NEWS_IMPULSE",
+        "regime_type": "NEWS_SHOCK",
+        "label": "новинний шок",
+        "score": 78,
+        "confidence": 78,
+        "reason": "новинний шок/подія: вхід тільки після 3M/структурного підтвердження, не доганяти першу свічку",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -2,
+        "quality_cap": 79,
+        "hard_block": false,
+        "allowed_setups": [
+          "NEWS_IMPULSE",
+          "TREND_IGNITION_ENTRY",
+          "PRIME_ICT_LOCATION_OVERRIDE",
+          "PULLBACK_CONTINUATION_FAST_ENTRY"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 4.17,
+          "move8_abs_pct": 0.789,
+          "slope15_abs_pct": 0.213,
+          "rsi15": 43.5,
+          "score_total_abs": 140,
+          "participation_same": 2,
+          "late_penalty": 4,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_RETRACE_FVG_OB"
+        },
+        "stable_count": 2,
+        "pending_count": 0,
+        "is_stable": true,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-19T08:31:10.809174+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1151,7 +1217,7 @@
       "published_at": "2026-06-19T06:12:14+00:00",
       "reference_price": 80.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
+      "last_seen_at": "2026-06-19T08:31:10.027292+00:00",
       "last_status": "CONFIRMED"
     },
     "global markets central banks stay vigilant despite oil price relief after us iran truce inkl": {
@@ -1175,31 +1241,31 @@
       "published_at": "2026-06-19T07:24:57+00:00",
       "reference_price": 79.82,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
+      "last_seen_at": "2026-06-19T08:31:10.027292+00:00",
       "last_status": "CONFIRMED"
     },
     "kuwait to ramp up oil output to two million bpd within a week as strait of hormuz reopens the national": {
       "first_seen_at": "2026-06-19T08:15:50.494099+00:00",
-      "published_at": "2026-06-19T08:09:01+00:00",
+      "published_at": "2026-06-19T08:26:15+00:00",
       "reference_price": 79.47,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T08:15:50.494099+00:00",
+      "last_seen_at": "2026-06-19T08:31:10.027292+00:00",
       "last_status": "FRESH"
     }
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
     "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T08:15:51.237583+00:00"
+    "stable_count": 2,
+    "pending_count": 0,
+    "updated_at": "2026-06-19T08:31:10.292490+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781856900000,
+      "updated_ts": 1781857800000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1212,9 +1278,9 @@
       "side": "SHORT",
       "status": "RELEASED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781856900000,
+      "updated_ts": 1781857800000,
       "origin_price": 79.31,
-      "extreme_price": 79.31,
+      "extreme_price": 79.16,
       "released_at": "2026-06-19T07:45:54.131395+00:00",
       "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock",
       "released_ts": 1781855100000,
@@ -1284,9 +1350,9 @@
   "range_boundary_state": {
     "status": "ACTIVE",
     "high": 80.28,
-    "low": 79.45,
+    "low": 79.2,
     "created_ts": 1781843400000,
-    "updated_ts": 1781856000000,
+    "updated_ts": 1781856900000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -1298,9 +1364,15 @@
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
-    "missed": 2,
-    "active_episode_keys": [],
-    "episode_status": {},
+    "missed": 4,
+    "active_episode_keys": [
+      "SHORT:CAPITULATION_RECOVERY",
+      "SHORT:CLOSED_15M_DIRECTION_FLIP"
+    ],
+    "episode_status": {
+      "SHORT:CLOSED_15M_DIRECTION_FLIP": "MISSED",
+      "SHORT:CAPITULATION_RECOVERY": "MISSED"
+    },
     "recent": [
       {
         "side": "LONG",
@@ -1325,24 +1397,40 @@
         "episode_key": "LONG:CLOSED_15M_DIRECTION_FLIP",
         "status": "MISSED",
         "time": "2026-06-19T05:45:52.423115+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CLOSED_15M_DIRECTION_FLIP",
+        "ts": 1781856900000,
+        "episode_key": "SHORT:CLOSED_15M_DIRECTION_FLIP",
+        "status": "MISSED",
+        "time": "2026-06-19T08:31:10.809050+00:00"
+      },
+      {
+        "side": "SHORT",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781856900000,
+        "episode_key": "SHORT:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-19T08:31:10.809057+00:00"
       }
     ],
     "covered_total": 1,
-    "total_opportunities": 3,
-    "coverage_pct": 33.3
+    "total_opportunities": 5,
+    "coverage_pct": 20.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T08:15:51.646136+00:00",
-    "price": 79.57,
-    "oi": 58114.15,
-    "cvd": 14832.0,
-    "cvd_time": "2026-06-19T08:15:51.646140+00:00",
-    "last_trade_ts": 1781856916364,
-    "bias": "NEUTRAL",
-    "tech_score": 36,
-    "total_score": 28
+    "time": "2026-06-19T08:31:10.809192+00:00",
+    "price": 79.16,
+    "oi": 58785.39,
+    "cvd": 6227.0,
+    "cvd_time": "2026-06-19T08:31:10.809194+00:00",
+    "last_trade_ts": 1781857847601,
+    "bias": "SHORT",
+    "tech_score": -133,
+    "total_score": -140
   },
-  "updated_at": "2026-06-19T08:15:51.646143+00:00",
+  "updated_at": "2026-06-19T08:31:10.809199+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
