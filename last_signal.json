@@ -84,6 +84,74 @@
       "mfe_captured_pct": -7.9,
       "mfe_giveback_pct": 0.34,
       "time": "2026-06-19T05:01:20.136967+00:00"
+    },
+    {
+      "type": "WATCH",
+      "side": "LONG",
+      "price": 79.44,
+      "quality": 28,
+      "reason": "активний exhaustion/shock lock: потрібен новий незалежний ретест, база або reversal/continuation event",
+      "setup_classifier": {
+        "type": "NO_CLEAN_SETUP",
+        "label": "⚪ Чистого сетапу немає",
+        "side": "LONG",
+        "score": 35,
+        "entry_allowed": false,
+        "block_entry": true,
+        "risk_mode": "NORMAL",
+        "reason": "ліквідність/ринковий блок проти цього входу",
+        "quality_adjustment": -6,
+        "quality_cap": 66,
+        "force_risky": false,
+        "profile": {
+          "quality_adjustment": -6,
+          "quality_cap": 66,
+          "block_entry": true
+        },
+        "entry_rule": "для лонг потрібен один з топ-сетапів: продовження тренду, відкат, зняття ліквідності, край діапазону або новинний імпульс",
+        "stop_rule": "стоп/TP не активувати без сетапу",
+        "tp_rule": "чекати чистішу структуру",
+        "management_rule": "чекати до появи топового сетапу"
+      },
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "LONG",
+          "range_atr": 4.51,
+          "move8_abs_pct": 0.227,
+          "slope15_abs_pct": 0.13,
+          "rsi15": 61.9,
+          "score_total_abs": 46,
+          "participation_same": 1,
+          "late_penalty": 5,
+          "pd": "PREMIUM",
+          "ict_setup": "LIQUIDITY_SWEEP_SHORT",
+          "range_edge": false
+        },
+        "stable_count": 1,
+        "pending_count": 2,
+        "is_stable": false,
+        "previous_regime_type": ""
+      },
+      "entry_window_status": "FORMING",
+      "entry_window_closed": false,
+      "market_direction_context": null,
+      "time": "2026-06-19T05:15:59.328341+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -92,8 +160,8 @@
       "published_at": "2026-06-19T02:18:22+00:00",
       "reference_price": 79.49,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T05:01:19.236576+00:00",
-      "last_status": "CONFIRMED"
+      "last_seen_at": "2026-06-19T05:15:58.510003+00:00",
+      "last_status": "UNRESOLVED"
     },
     "corrected update 7 brent rises after vance warns israel against breaking ceasefire metrobank wealth insights": {
       "first_seen_at": "2026-06-19T04:50:08.641977+00:00",
@@ -108,25 +176,25 @@
       "published_at": "2026-06-19T02:40:58+00:00",
       "reference_price": 79.22,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T05:01:19.236576+00:00",
-      "last_status": "ABSORBED"
+      "last_seen_at": "2026-06-19T05:15:58.510003+00:00",
+      "last_status": "REJECTED"
     }
   },
   "regime_memory": {
-    "type": "",
-    "pending_type": "REVERSAL_BUILDUP",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-19T05:01:19.685738+00:00"
+    "type": "REVERSAL_BUILDUP",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-19T05:15:58.997325+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781844480000,
+      "updated_ts": 1781846100000,
       "origin_price": 79.31,
-      "extreme_price": 79.31,
+      "extreme_price": 79.44,
       "released_at": "2026-06-19T04:50:09.693393+00:00",
       "reason": "після вертикального руху потрібен новий 15M/3M pullback-retest; не доганяти shock",
       "released_ts": 1781844480000,
@@ -137,7 +205,7 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781844480000,
-      "updated_ts": 1781844480000,
+      "updated_ts": 1781846100000,
       "origin_price": 79.31,
       "extreme_price": 79.31,
       "released_at": "",
@@ -148,8 +216,8 @@
     "side": "LONG",
     "status": "LOCKED",
     "origin_ts": 1781843400000,
-    "extreme_ts": 1781843400000,
-    "extreme_price": 79.51,
+    "extreme_ts": 1781845200000,
+    "extreme_price": 79.81,
     "released_at": "",
     "released_extreme": null
   },
@@ -159,10 +227,10 @@
   },
   "range_boundary_state": {
     "status": "ACTIVE",
-    "high": 79.56,
+    "high": 79.81,
     "low": 78.89,
     "created_ts": 1781843400000,
-    "updated_ts": 1781844300000,
+    "updated_ts": 1781845200000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -174,9 +242,13 @@
   "opportunity_analytics": {
     "new_entries": 1,
     "covered_by_active_trade": 0,
-    "missed": 0,
-    "active_episode_keys": [],
-    "episode_status": {},
+    "missed": 1,
+    "active_episode_keys": [
+      "LONG:CAPITULATION_RECOVERY"
+    ],
+    "episode_status": {
+      "LONG:CAPITULATION_RECOVERY": "MISSED"
+    },
     "recent": [
       {
         "side": "LONG",
@@ -185,24 +257,32 @@
         "episode_key": "LONG:CAPITULATION_RECOVERY",
         "status": "NEW_ENTRY",
         "time": "2026-06-19T04:50:09.739733+00:00"
+      },
+      {
+        "side": "LONG",
+        "type": "CAPITULATION_RECOVERY",
+        "ts": 1781845200000,
+        "episode_key": "LONG:CAPITULATION_RECOVERY",
+        "status": "MISSED",
+        "time": "2026-06-19T05:15:59.328206+00:00"
       }
     ],
     "covered_total": 1,
-    "total_opportunities": 1,
-    "coverage_pct": 100.0
+    "total_opportunities": 2,
+    "coverage_pct": 50.0
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T05:01:20.137139+00:00",
-    "price": 79.29,
-    "oi": 56318.94,
-    "cvd": 56205.0,
-    "cvd_time": "2026-06-19T05:01:20.137142+00:00",
-    "last_trade_ts": 1781845269551,
-    "bias": "NEUTRAL",
-    "tech_score": -13,
-    "total_score": -24
+    "time": "2026-06-19T05:15:59.328360+00:00",
+    "price": 79.44,
+    "oi": 57135.98,
+    "cvd": 39595.0,
+    "cvd_time": "2026-06-19T05:15:59.328363+00:00",
+    "last_trade_ts": 1781846144621,
+    "bias": "LONG",
+    "tech_score": 54,
+    "total_score": 46
   },
-  "updated_at": "2026-06-19T05:01:20.137146+00:00",
+  "updated_at": "2026-06-19T05:15:59.328367+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
