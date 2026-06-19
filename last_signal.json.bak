@@ -1388,6 +1388,51 @@
         "previous_regime_type": "NEWS_SHOCK"
       },
       "time": "2026-06-19T09:15:53.914667+00:00"
+    },
+    {
+      "type": "NO_TRADE",
+      "side": "NEUTRAL",
+      "price": 78.95,
+      "quality": 0,
+      "reason": "внутрішній pipeline не завершив усі перевірки; угода не відкривається",
+      "market_direction_context": null,
+      "setup_classifier": null,
+      "regime_engine": {
+        "name": "REVERSAL",
+        "regime_type": "REVERSAL_BUILDUP",
+        "label": "формується розворот",
+        "score": 65,
+        "confidence": 66,
+        "reason": "формується розворот: потрібні sweep/CHOCH + 3M/flow підтвердження, прибуток захищати швидше",
+        "entry_action": "RISKY_ONLY",
+        "entry_quality_adjustment": -1,
+        "quality_cap": 84,
+        "hard_block": false,
+        "allowed_setups": [
+          "SWEEP_REVERSAL",
+          "COUNTERTREND_SCALP",
+          "PRIME_ICT_LOCATION_OVERRIDE"
+        ],
+        "notes": [],
+        "metrics": {
+          "bias": "SHORT",
+          "range_atr": 4.08,
+          "move8_abs_pct": 0.702,
+          "slope15_abs_pct": 0.822,
+          "rsi15": 44.0,
+          "score_total_abs": 101,
+          "participation_same": 1,
+          "late_penalty": 0,
+          "pd": "DISCOUNT",
+          "ict_setup": "BOS_SHORT_RETRACE_FVG_OB",
+          "range_edge": false
+        },
+        "stable_count": 0,
+        "pending_count": 1,
+        "is_stable": false,
+        "previous_regime_type": "NEWS_SHOCK"
+      },
+      "time": "2026-06-19T09:31:19.181187+00:00"
     }
   ],
   "news_reaction_memory": {
@@ -1460,7 +1505,7 @@
       "published_at": "2026-06-19T08:26:15+00:00",
       "reference_price": 79.47,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:15:53.132447+00:00",
+      "last_seen_at": "2026-06-19T09:31:18.423639+00:00",
       "last_status": "CONFIRMED"
     },
     "strait of hormuz reopens after us iran peace deal oil flows resume what it means for prices msn": {
@@ -1476,7 +1521,7 @@
       "published_at": "2026-06-19T09:12:25+00:00",
       "reference_price": 79.14,
       "reaction_known": true,
-      "last_seen_at": "2026-06-19T09:15:53.132447+00:00",
+      "last_seen_at": "2026-06-19T09:31:18.423639+00:00",
       "last_status": "FRESH"
     },
     "brent rises after vance warns israel against breaking ceasefire msn": {
@@ -1490,17 +1535,17 @@
   },
   "regime_memory": {
     "type": "NEWS_SHOCK",
-    "pending_type": "",
-    "stable_count": 5,
-    "pending_count": 0,
-    "updated_at": "2026-06-19T09:15:53.615931+00:00"
+    "pending_type": "REVERSAL_BUILDUP",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-06-19T09:31:18.836103+00:00"
   },
   "persistent_exhaustion_locks": {
     "LONG": {
       "side": "LONG",
       "status": "RELEASED",
       "origin_ts": 1781849700000,
-      "updated_ts": 1781860500000,
+      "updated_ts": 1781861400000,
       "origin_price": 79.99,
       "extreme_price": 79.99,
       "released_at": "2026-06-19T06:15:50.621523+00:00",
@@ -1513,9 +1558,9 @@
       "side": "SHORT",
       "status": "LOCKED",
       "origin_ts": 1781860500000,
-      "updated_ts": 1781860500000,
+      "updated_ts": 1781861400000,
       "origin_price": 79.02,
-      "extreme_price": 79.02,
+      "extreme_price": 78.95,
       "released_at": "",
       "reason": "нове матеріальне продовження після попереднього reset",
       "released_ts": 1781855100000,
@@ -1587,7 +1632,7 @@
     "high": 80.1,
     "low": 78.91,
     "created_ts": 1781843400000,
-    "updated_ts": 1781859600000,
+    "updated_ts": 1781860500000,
     "rollover_ts": 0,
     "rollover_side": "",
     "old_high": null,
@@ -1646,26 +1691,7 @@
       "plan": null
     }
   },
-  "opportunity_memory": {
-    "active": true,
-    "source": "POST_GATE",
-    "created_at": "2026-06-19T08:45:53.776887+00:00",
-    "ttl_minutes": 45,
-    "side": "SHORT",
-    "setup_type": "PRIME_ICT_LOCATION_OVERRIDE",
-    "setup_label": "🟢 Сильна ICT-локація",
-    "quality": 63,
-    "price": 79.29,
-    "trigger_level": null,
-    "invalidation": null,
-    "reason": "нового post-rejection сетапу немає",
-    "missing_conditions": [
-      "режим ринку дозволяє тільки ризиковий/обережний вхід",
-      "класифікатор: сетап дозволений тільки як ризиковий/швидкий",
-      "не вдалося побудувати життєздатну технічну геометрію"
-    ],
-    "plan": null
-  },
+  "opportunity_memory": null,
   "pending_trigger": null,
   "opportunity_analytics": {
     "new_entries": 1,
@@ -1732,17 +1758,17 @@
     "coverage_pct": 16.7
   },
   "last_market_snapshot": {
-    "time": "2026-06-19T09:15:53.914687+00:00",
-    "price": 79.02,
-    "oi": 59201.49,
-    "cvd": -36051.0,
-    "cvd_time": "2026-06-19T09:15:53.914690+00:00",
-    "last_trade_ts": 1781860523243,
+    "time": "2026-06-19T09:31:19.181208+00:00",
+    "price": 78.95,
+    "oi": 59004.99,
+    "cvd": -51279.0,
+    "cvd_time": "2026-06-19T09:31:19.181211+00:00",
+    "last_trade_ts": 1781861462300,
     "bias": "SHORT",
-    "tech_score": -90,
-    "total_score": -96
+    "tech_score": -107,
+    "total_score": -101
   },
-  "updated_at": "2026-06-19T09:15:53.914694+00:00",
+  "updated_at": "2026-06-19T09:31:19.181214+00:00",
   "last_closed_trade": {
     "side": "LONG",
     "closed_at": "2026-06-19T05:01:20.136970+00:00",
