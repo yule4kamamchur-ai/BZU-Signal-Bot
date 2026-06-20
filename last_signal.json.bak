@@ -4,14 +4,14 @@
   "active_trade": null,
   "opportunity": null,
   "latest_signal": {
-    "id": "47b0b33497ed",
-    "time": "2026-06-20T14:01:13.858754+00:00",
+    "id": "51937631650c",
+    "time": "2026-06-20T14:15:51.461050+00:00",
     "action": "NO_SETUP",
     "side": "NEUTRAL",
     "setup_type": "NONE",
-    "quality": 45,
+    "quality": 43,
     "reason": "ринок не сформував незалежний професійний ланцюжок: location/liquidity → structure → execution",
-    "regime": "SHOCK",
+    "regime": "TRANSITION",
     "candidate": null,
     "plan": null,
     "audit": {
@@ -22,9 +22,9 @@
           "setup_family": "CONTINUATION",
           "variant": "FAST_PULLBACK_RECLAIM",
           "stage": "EXECUTABLE",
-          "raw_score": 59,
-          "final_score": 45,
-          "selection_score": 63.8,
+          "raw_score": 55,
+          "final_score": 43,
+          "selection_score": 61.8,
           "trigger_ready": true,
           "risk_mode": "RISKY",
           "evidence_families": [
@@ -34,16 +34,16 @@
             "HTF_CONTEXT"
           ],
           "evidence_count": 4,
-          "late_extension_atr": 0.451,
-          "execution_anchor": 81.92,
+          "late_extension_atr": 0.14,
+          "execution_anchor": 82.21,
           "trigger_age_minutes": 3.0,
           "hard_reject_reason": "",
           "score_components": {
             "location": 7,
             "structure": 17,
             "liquidity": 14,
-            "trigger": 13,
-            "flow": 5,
+            "trigger": 14,
+            "flow": 0,
             "htf": 3
           }
         }
@@ -52,41 +52,41 @@
     "version": "pro-ict-v2.1.1-entry-map-rr2-telegram-fix",
     "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2_TELEGRAM_FIX",
     "context": {
-      "time": "2026-06-20T14:01:13.828180+00:00",
-      "price": 82.07,
+      "time": "2026-06-20T14:15:51.426659+00:00",
+      "price": 82.26,
       "price_source": "OKX",
-      "reference_price": 81.85,
-      "cross_price_diff_pct": 0.2681,
-      "regime": "SHOCK",
-      "regime_reason": "останні три 15M свічки пройшли понад 2 ATR",
+      "reference_price": 82.06,
+      "cross_price_diff_pct": 0.2431,
+      "regime": "TRANSITION",
+      "regime_reason": "15M структура змінюється або не узгоджена з 1H",
       "tf3": {
         "timeframe": "3m",
         "available": true,
         "bias": "LONG",
-        "score": 35,
-        "close": 81.96,
-        "ema20": 81.6211,
-        "ema50": 81.2205,
-        "rsi": 65.2,
-        "atr": 0.27329,
-        "move8_pct": 0.061,
-        "efficiency": 0.659,
-        "volume_ratio": 0.582,
+        "score": 40,
+        "close": 82.19,
+        "ema20": 81.8557,
+        "ema50": 81.4001,
+        "rsi": 63.9,
+        "atr": 0.28341,
+        "move8_pct": 0.538,
+        "efficiency": 0.277,
+        "volume_ratio": 0.875,
         "structure": {
           "timeframe": "3m",
           "bias": "LONG",
-          "trend": "NEUTRAL",
+          "trend": "LONG",
           "bos": "NEUTRAL",
           "choch": "NEUTRAL",
-          "swing_high": 82.12,
+          "swing_high": 82.63,
           "swing_low": 81.7,
-          "prior_break_high": 82.12,
+          "prior_break_high": 82.63,
           "prior_break_low": 81.7,
           "recent_highs": [
-            80.52,
             80.49,
             82.63,
-            82.12
+            82.12,
+            82.63
           ],
           "recent_lows": [
             80.39,
@@ -94,8 +94,8 @@
             81.45,
             81.7
           ],
-          "ema20": 81.6211,
-          "ema50": 81.2205
+          "ema20": 81.8557,
+          "ema50": 81.4001
         }
       },
       "tf15": {
@@ -103,14 +103,14 @@
         "available": true,
         "bias": "LONG",
         "score": 40,
-        "close": 81.96,
-        "ema20": 81.1009,
-        "ema50": 80.877,
-        "rsi": 69.4,
-        "atr": 0.33277,
-        "move8_pct": 1.763,
-        "efficiency": 0.389,
-        "volume_ratio": 4.057,
+        "close": 82.19,
+        "ema20": 81.2046,
+        "ema50": 80.9246,
+        "rsi": 72.4,
+        "atr": 0.3572,
+        "move8_pct": 2.061,
+        "efficiency": 0.552,
+        "volume_ratio": 2.385,
         "structure": {
           "timeframe": "15m",
           "bias": "LONG",
@@ -133,8 +133,8 @@
             80.31,
             80.36
           ],
-          "ema20": 81.1009,
-          "ema50": 80.877
+          "ema20": 81.2046,
+          "ema50": 80.9246
         }
       },
       "tf1h": {
@@ -231,26 +231,26 @@
         "low": 80.31,
         "high": 82.63,
         "equilibrium": 81.47,
-        "position": 0.759,
+        "position": 0.841,
         "zone": "PREMIUM",
         "at_lower_edge": false,
-        "at_upper_edge": false
+        "at_upper_edge": true
       },
       "flow": {
-        "bias": "NEUTRAL",
-        "score": 3,
-        "trade_delta": 7704.0,
-        "trade_delta_pct": 20.8,
-        "book_delta_pct": -8.15,
-        "price_move_pct": 0.208,
-        "cvd_acceleration": -5638.0,
-        "absorption_bias": "NEUTRAL",
-        "confidence": "MEDIUM",
+        "bias": "LONG",
+        "score": 10,
+        "trade_delta": 48435.0,
+        "trade_delta_pct": 67.23,
+        "book_delta_pct": 2.12,
+        "price_move_pct": -0.085,
+        "cvd_acceleration": 57923.0,
+        "absorption_bias": "SHORT",
+        "confidence": "HIGH",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 6163636.0,
-        "funding_rate": 0.0005203822654346
+        "oi": 6134900.0,
+        "funding_rate": 0.0006604063097782
       },
       "zones": [
         {
@@ -260,7 +260,7 @@
           "high": 80.86,
           "created_ts": 1781960940000,
           "timeframe": "3m",
-          "strength": 1.46363090231041,
+          "strength": 1.411366710413557,
           "mitigated": false
         },
         {
@@ -270,7 +270,7 @@
           "high": 81.48,
           "created_ts": 1781961120000,
           "timeframe": "3m",
-          "strength": 2.1588555809078365,
+          "strength": 2.081765897859979,
           "mitigated": false
         },
         {
@@ -280,7 +280,7 @@
           "high": 81.9,
           "created_ts": 1781963640000,
           "timeframe": "3m",
-          "strength": 0.2927261804621236,
+          "strength": 0.2822733420827515,
           "mitigated": false
         },
         {
@@ -290,7 +290,17 @@
           "high": 82.63,
           "created_ts": 1781961660000,
           "timeframe": "3m",
-          "strength": 2.671126396716423,
+          "strength": 2.575744246504669,
+          "mitigated": false
+        },
+        {
+          "kind": "OB",
+          "side": "LONG",
+          "low": 82.06,
+          "high": 82.17,
+          "created_ts": 1781964180000,
+          "timeframe": "3m",
+          "strength": 1.0585250328101428,
           "mitigated": false
         },
         {
@@ -300,7 +310,7 @@
           "high": 81.45,
           "created_ts": 1781960400000,
           "timeframe": "15m",
-          "strength": 2.8848689794646,
+          "strength": 2.6875364185287807,
           "mitigated": false
         },
         {
@@ -310,13 +320,13 @@
           "high": 80.45,
           "created_ts": 1781959500000,
           "timeframe": "15m",
-          "strength": 3.666187661402895,
+          "strength": 3.4154108652136275,
           "mitigated": false
         }
       ]
     }
   },
-  "last_message_key": "{\"action\": \"NO_SETUP\", \"plan_valid\": null, \"quality_bucket\": 9, \"setup_type\": \"NONE\", \"side\": \"NEUTRAL\"}",
+  "last_message_key": "{\"action\": \"NO_SETUP\", \"plan_valid\": null, \"quality_bucket\": 8, \"setup_type\": \"NONE\", \"side\": \"NEUTRAL\"}",
   "history": [
     {
       "type": "ENTRY",
@@ -1807,9 +1817,19 @@
       "reason": "ринок не сформував незалежний професійний ланцюжок: location/liquidity → structure → execution",
       "plan": null,
       "time": "2026-06-20T14:01:13.858957+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "price": 82.26,
+      "quality": 43,
+      "reason": "ринок не сформував незалежний професійний ланцюжок: location/liquidity → structure → execution",
+      "plan": null,
+      "time": "2026-06-20T14:15:51.461262+00:00"
     }
   ],
-  "last_telegram_success_at": "2026-06-20T14:01:14.332018+00:00",
+  "last_telegram_success_at": "2026-06-20T14:15:51.931102+00:00",
   "last_telegram_error": "",
-  "updated_at": "2026-06-20T14:01:14.332037+00:00"
+  "updated_at": "2026-06-20T14:15:51.931117+00:00"
 }
