@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v2.0.0"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V2"
+BOT_VERSION = "pro-ict-v2.1.0-entry-map-rr2"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -49,11 +49,17 @@ DIRECTION_MARGIN = int(os.getenv("ICT_DIRECTION_MARGIN", "8") or 8)
 
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
 RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.25") or 0.25)
-MIN_STOP_ATR15 = float(os.getenv("MIN_STOP_ATR15", "0.48") or 0.48)
-MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.40") or 2.40)
-MIN_TP1_ATR15 = float(os.getenv("MIN_TP1_ATR15", "0.80") or 0.80)
-MIN_RR1 = float(os.getenv("MIN_RR1", "1.20") or 1.20)
-PREFERRED_RR1 = float(os.getenv("PREFERRED_RR1", "1.50") or 1.50)
+# The public plan is built around a real 1:2 minimum. A stale environment
+# variable may raise these floors, but it cannot silently lower them.
+MIN_STOP_ATR15 = max(0.82, float(os.getenv("MIN_STOP_ATR15", "0.82") or 0.82))
+MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.60") or 2.60)
+MIN_TP1_ATR15 = max(1.35, float(os.getenv("MIN_TP1_ATR15", "1.35") or 1.35))
+MIN_RR1 = max(2.00, float(os.getenv("MIN_RR1", "2.00") or 2.00))
+PREFERRED_RR1 = max(2.20, float(os.getenv("PREFERRED_RR1", "2.20") or 2.20))
+MIN_RR2 = max(3.00, float(os.getenv("MIN_RR2", "3.00") or 3.00))
+MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
+ENTRY_ZONE_EXTENSION_ATR15 = float(os.getenv("ENTRY_ZONE_EXTENSION_ATR15", "0.24") or 0.24)
+ENTRY_ZONE_RETEST_ATR15 = float(os.getenv("ENTRY_ZONE_RETEST_ATR15", "0.08") or 0.08)
 OPPORTUNITY_TTL_MIN = int(os.getenv("OPPORTUNITY_TTL_MIN", "60") or 60)
 LATE_EXTENSION_ATR15 = float(os.getenv("LATE_EXTENSION_ATR15", "1.05") or 1.05)
 
@@ -227,6 +233,15 @@ class TradePlan:
     valid: bool = True
     reason: str = ""
     better_entry: float = 0.0
+    structural_invalidation: float = 0.0
+    wait_zone_low: float = 0.0
+    wait_zone_high: float = 0.0
+    entry_zone_low: float = 0.0
+    entry_zone_high: float = 0.0
+    trigger_level: float = 0.0
+    trigger_condition: str = ""
+    execution_ready: bool = False
+    execution_reason: str = ""
 
 
 @dataclass
@@ -2388,35 +2403,193 @@ def choose_target(levels: list[float], entry: float, side: str, minimum_distance
     return 0.0, checkpoints
 
 
+def _context_structure(context: dict[str, Any], timeframe: str) -> dict[str, Any]:
+    direct = context.get(f"s{timeframe}")
+    if isinstance(direct, dict):
+        return direct
+    tf = context.get(f"tf{timeframe}") or {}
+    return tf.get("structure") or {}
+
+
+def _zone_objects(context: dict[str, Any]) -> list[Zone]:
+    result: list[Zone] = []
+    for item in context.get("zones") or []:
+        if isinstance(item, Zone):
+            result.append(item)
+            continue
+        if isinstance(item, dict):
+            try:
+                clean = {k: item[k] for k in Zone.__dataclass_fields__ if k in item}
+                result.append(Zone(**clean))
+            except Exception:
+                continue
+    return result
+
+
+def select_robust_invalidation(
+    context: dict[str, Any], candidate: Candidate, entry: float, atr15: float, minimum_structure_atr: float
+) -> tuple[float, str]:
+    """Replace a micro 3M invalidation with the nearest defensible 15M ICT structure."""
+    side = candidate.side
+    raw = safe_float(candidate.invalidation_level)
+    min_distance = minimum_structure_atr * atr15
+    raw_distance = side_sign(side) * (entry - raw)
+    if raw > 0 and raw_distance >= min_distance:
+        return raw, f"{candidate.variant or candidate.setup_type}: власна структурна ICT-інвалідація"
+
+    s15 = _context_structure(context, "15")
+    robust: list[tuple[float, str]] = []
+    swing = safe_float(s15.get("swing_low" if side == Side.LONG.value else "swing_high"))
+    if swing > 0:
+        distance = side_sign(side) * (entry - swing)
+        if distance >= min_distance:
+            robust.append((swing, "закритий 15M swing low" if side == Side.LONG.value else "закритий 15M swing high"))
+
+    for zone in _zone_objects(context):
+        if zone.mitigated or zone.timeframe != "15m" or zone.side != side:
+            continue
+        boundary = zone.low if side == Side.LONG.value else zone.high
+        distance = side_sign(side) * (entry - boundary)
+        if distance >= min_distance:
+            robust.append((boundary, f"15M {zone.kind} {'low' if side == Side.LONG.value else 'high'}"))
+
+    dr = context.get("dealing_range") or {}
+    boundary = safe_float(dr.get("low" if side == Side.LONG.value else "high"))
+    if boundary > 0:
+        distance = side_sign(side) * (entry - boundary)
+        if distance >= min_distance:
+            robust.append((boundary, "15M dealing-range boundary"))
+
+    if robust:
+        # Nearest level that is still outside normal 3M noise.
+        level, basis = min(robust, key=lambda item: abs(entry - item[0]))
+        return level, f"{candidate.variant or candidate.setup_type}: {basis} замість мікро-інвалідації"
+
+    return raw, f"{candidate.variant or candidate.setup_type}: власна ICT-інвалідація; ширшої 15M опори не знайдено"
+
+
+def build_entry_map(
+    context: dict[str, Any], candidate: Candidate, structural: float, atr15: float
+) -> dict[str, Any]:
+    """Build an explicit wait zone, trigger and executable entry zone."""
+    current = safe_float(context.get("price"))
+    side = candidate.side
+    anchor = safe_float(candidate.execution_anchor or candidate.trigger_level or current)
+    trigger = safe_float(candidate.trigger_level or anchor or current)
+    zones = []
+    for zone in _zone_objects(context):
+        if zone.mitigated or zone.side != side:
+            continue
+        if side == Side.LONG.value:
+            if zone.high > max(current, anchor) + 0.30 * atr15 or zone.low <= structural - 0.15 * atr15:
+                continue
+        else:
+            if zone.low < min(current, anchor) - 0.30 * atr15 or zone.high >= structural + 0.15 * atr15:
+                continue
+        reference = anchor or trigger or current
+        distance = zone_distance(reference, zone) / max(atr15, 1e-9)
+        contains_trigger = zone.low - 0.05 * atr15 <= trigger <= zone.high + 0.05 * atr15
+        contains_anchor = zone.low - 0.05 * atr15 <= anchor <= zone.high + 0.05 * atr15
+        score = (24 if contains_trigger else 0) + (18 if contains_anchor else 0)
+        score += 12 if zone.timeframe == "15m" else 10
+        score += min(8.0, max(0.0, safe_float(zone.strength) * 4.0))
+        score -= distance * 12.0
+        zones.append((score, zone))
+
+    if zones:
+        wait = max(zones, key=lambda item: item[0])[1]
+        wait_low, wait_high = wait.low, wait.high
+    else:
+        center = trigger or anchor or current
+        wait_low = center - 0.18 * atr15
+        wait_high = center + 0.18 * atr15
+
+    if side == Side.LONG.value:
+        confirmed_trigger = max(trigger, anchor, wait_high)
+        entry_low = wait_high - ENTRY_ZONE_RETEST_ATR15 * atr15
+        entry_high = confirmed_trigger + ENTRY_ZONE_EXTENSION_ATR15 * atr15
+        condition = (
+            f"закрита 3M свічка вище {round_price(confirmed_trigger)}; "
+            f"після цього ретест/утримання {round_price(entry_low)}–{round_price(entry_high)}"
+        )
+    else:
+        confirmed_trigger = min(trigger, anchor, wait_low)
+        entry_low = confirmed_trigger - ENTRY_ZONE_EXTENSION_ATR15 * atr15
+        entry_high = wait_low + ENTRY_ZONE_RETEST_ATR15 * atr15
+        condition = (
+            f"закрита 3M свічка нижче {round_price(confirmed_trigger)}; "
+            f"після цього ретест/утримання {round_price(entry_low)}–{round_price(entry_high)}"
+        )
+
+    entry_low, entry_high = sorted((entry_low, entry_high))
+    tolerance = 0.05 * atr15
+    inside = entry_low - tolerance <= current <= entry_high + tolerance
+    execution_ready = bool(candidate.trigger_ready and inside)
+    if not candidate.trigger_ready:
+        execution_reason = "execution-trigger ще не закритий"
+    elif not inside:
+        execution_reason = (
+            f"ціна {round_price(current)} поза робочою зоною входу "
+            f"{round_price(entry_low)}–{round_price(entry_high)}; чекаємо ретест, не наздоганяємо"
+        )
+    else:
+        execution_reason = "закритий 3M trigger підтверджений, ціна в робочій зоні"
+
+    ideal_entry = (entry_low + entry_high) / 2.0
+    return {
+        "wait_zone_low": round_price(wait_low),
+        "wait_zone_high": round_price(wait_high),
+        "entry_zone_low": round_price(entry_low),
+        "entry_zone_high": round_price(entry_high),
+        "trigger_level": round_price(confirmed_trigger),
+        "trigger_condition": condition,
+        "execution_ready": execution_ready,
+        "execution_reason": execution_reason,
+        "ideal_entry": round_price(ideal_entry),
+    }
+
+
 def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan:
-    entry = context["price"]
+    current_price = safe_float(context["price"])
     side = candidate.side
     sign = side_sign(side)
-    atr15 = max(safe_float(context["tf15"].get("atr")), entry * 0.001)
+    atr15 = max(safe_float(context["tf15"].get("atr")), current_price * 0.001)
     profiles = {
-        "TACTICAL": {"buffer": 0.10, "min_stop": 0.52, "max_stop": 1.80, "min_tp_atr": 0.75, "min_rr": 1.20},
-        "RECOVERY": {"buffer": 0.14, "min_stop": 0.68, "max_stop": 2.25, "min_tp_atr": 0.90, "min_rr": 1.25},
-        "TRANSITION": {"buffer": 0.14, "min_stop": 0.62, "max_stop": 2.10, "min_tp_atr": 0.90, "min_rr": 1.25},
-        "BASE_REENTRY": {"buffer": 0.12, "min_stop": 0.58, "max_stop": 2.00, "min_tp_atr": 0.85, "min_rr": 1.25},
-        "RANGE": {"buffer": 0.10, "min_stop": 0.52, "max_stop": 1.70, "min_tp_atr": 0.70, "min_rr": 1.20},
-        "STANDARD": {"buffer": 0.12, "min_stop": 0.58, "max_stop": MAX_STOP_ATR15, "min_tp_atr": MIN_TP1_ATR15, "min_rr": MIN_RR1},
+        "TACTICAL": {"buffer": 0.12, "min_stop": 0.82, "structure_floor": 0.72, "max_stop": 1.95, "min_tp_atr": 1.35, "min_rr": 2.00},
+        "RECOVERY": {"buffer": 0.16, "min_stop": 1.00, "structure_floor": 0.88, "max_stop": 2.50, "min_tp_atr": 1.55, "min_rr": 2.00},
+        "TRANSITION": {"buffer": 0.15, "min_stop": 0.92, "structure_floor": 0.82, "max_stop": 2.35, "min_tp_atr": 1.50, "min_rr": 2.00},
+        "BASE_REENTRY": {"buffer": 0.14, "min_stop": 0.88, "structure_floor": 0.78, "max_stop": 2.20, "min_tp_atr": 1.45, "min_rr": 2.00},
+        "RANGE": {"buffer": 0.12, "min_stop": 0.82, "structure_floor": 0.72, "max_stop": 1.95, "min_tp_atr": 1.35, "min_rr": 2.00},
+        "STANDARD": {"buffer": 0.14, "min_stop": 0.90, "structure_floor": 0.82, "max_stop": MAX_STOP_ATR15, "min_tp_atr": MIN_TP1_ATR15, "min_rr": MIN_RR1},
     }
     cfg = profiles.get(candidate.execution_profile, profiles["STANDARD"])
-    structural = candidate.invalidation_level
+
+    provisional_structural, _ = select_robust_invalidation(
+        context, candidate, current_price, atr15, cfg["structure_floor"]
+    )
+    entry_map = build_entry_map(context, candidate, provisional_structural, atr15)
+    entry = current_price if entry_map["execution_ready"] else safe_float(entry_map["ideal_entry"])
+
+    structural, structural_basis = select_robust_invalidation(
+        context, candidate, entry, atr15, cfg["structure_floor"]
+    )
     raw_stop = structural - cfg["buffer"] * atr15 if side == Side.LONG.value else structural + cfg["buffer"] * atr15
     raw_risk = abs(entry - raw_stop)
     min_risk = max(MIN_STOP_ATR15, cfg["min_stop"]) * atr15
     max_risk = min(MAX_STOP_ATR15, cfg["max_stop"]) * atr15
     stop = raw_stop
-    stop_basis = f"{candidate.variant or candidate.setup_type}: structural invalidation + {cfg['buffer']:.2f} ATR buffer"
+    stop_basis = f"{structural_basis} + {cfg['buffer']:.2f} ATR buffer"
     if raw_risk < min_risk:
         stop = entry - sign * min_risk
-        stop_basis = f"{candidate.variant or candidate.setup_type}: anti-noise stop {min_risk / atr15:.2f} ATR"
+        stop_basis = (
+            f"{structural_basis}; anti-noise floor {min_risk / atr15:.2f} ATR "
+            f"(3M мікро-стоп не використовується)"
+        )
     risk = abs(entry - stop)
 
     position_risk = RISKY_RISK_PCT if candidate.risk_mode == "RISKY" else NORMAL_RISK_PCT
     invalid = ""
-    better_entry = 0.0
+    better_entry = 0.0 if entry_map["execution_ready"] else safe_float(entry_map["ideal_entry"])
     if risk > max_risk:
         invalid = f"структурний стоп {risk / atr15:.2f} ATR ширший за профіль {max_risk / atr15:.2f} ATR"
         better_entry = stop + sign * max_risk
@@ -2426,36 +2599,37 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
     required_rr = max(MIN_RR1, cfg["min_rr"])
     min_tp1_distance = max(cfg["min_tp_atr"] * atr15, required_rr * risk)
     tp1, checkpoints = choose_target(candidate.target_levels, entry, side, min_tp1_distance)
+    tp1_natural = bool(tp1)
     if not tp1:
-        tp1 = entry + sign * max(PREFERRED_RR1 * risk, max(1.05, cfg["min_tp_atr"]) * atr15)
+        tp1 = entry + sign * max(PREFERRED_RR1 * risk, max(1.75, cfg["min_tp_atr"]) * atr15)
     rr1 = target_rr(entry, stop, tp1)
 
     later_levels = [v for v in candidate.target_levels if level_in_direction(v, tp1, side)]
-    tp2, checkpoints2 = choose_target(later_levels, entry, side, max(2.20 * risk, 1.60 * atr15))
+    tp2, checkpoints2 = choose_target(later_levels, entry, side, max(MIN_RR2 * risk, 2.35 * atr15))
+    tp2_natural = bool(tp2)
     if not tp2:
-        tp2 = entry + sign * max(2.30 * risk, 1.70 * atr15)
+        tp2 = entry + sign * max(MIN_RR2 * risk, 2.50 * atr15)
     later_levels_3 = [v for v in candidate.target_levels if level_in_direction(v, tp2, side)]
-    tp3, checkpoints3 = choose_target(later_levels_3, entry, side, max(3.20 * risk, 2.50 * atr15))
+    tp3, checkpoints3 = choose_target(later_levels_3, entry, side, max(MIN_RR3 * risk, 3.15 * atr15))
+    tp3_natural = bool(tp3)
     if not tp3:
-        tp3 = entry + sign * max(3.50 * risk, 2.70 * atr15)
+        tp3 = entry + sign * max(MIN_RR3 * risk, 3.30 * atr15)
 
     if side == Side.LONG.value:
-        tp2 = max(tp2, tp1 + 0.45 * atr15)
-        tp3 = max(tp3, tp2 + 0.55 * atr15)
+        tp2 = max(tp2, tp1 + 0.65 * atr15)
+        tp3 = max(tp3, tp2 + 0.80 * atr15)
     else:
-        tp2 = min(tp2, tp1 - 0.45 * atr15)
-        tp3 = min(tp3, tp2 - 0.55 * atr15)
+        tp2 = min(tp2, tp1 - 0.65 * atr15)
+        tp3 = min(tp3, tp2 - 0.80 * atr15)
 
     rr2 = target_rr(entry, stop, tp2)
     rr3 = target_rr(entry, stop, tp3)
     if rr1 < required_rr:
-        invalid = f"TP1 дає лише {rr1:.2f}R при мінімумі {required_rr:.2f}R"
+        invalid = f"перша професійна ціль дає лише {rr1:.2f}R при обов'язковому мінімумі {required_rr:.2f}R"
         better_entry = (tp1 + required_rr * stop) / (1 + required_rr)
 
-    # Extreme RR caused by a micro-stop is not treated as extra quality. The
-    # profile floor above normalizes the stop; the value remains in diagnostics.
-    if rr1 > 7.0 and risk < 0.75 * atr15:
-        invalid = "аномально високий RR утворений мікро-стопом; потрібна ширша структурна інвалідація"
+    if rr1 > 7.0 and risk < 0.90 * atr15:
+        invalid = "аномально високий RR утворений мікро-стопом; потрібна ширша 15M/ICT інвалідація"
         better_entry = 0.0
 
     position_size = 0.0
@@ -2464,6 +2638,11 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
         cash_risk = ACCOUNT_BALANCE * position_risk / 100.0
         position_size = cash_risk / risk
         notional = position_size * entry
+
+    natural_text = []
+    natural_text.append("TP1 — реальна ICT/технічна ліквідність за 2R" if tp1_natural else "TP1 — 2.2R measured 15M expansion")
+    natural_text.append("TP2 — наступна ліквідність" if tp2_natural else "TP2 — 3R measured expansion")
+    natural_text.append("TP3 — зовнішня ліквідність" if tp3_natural else "TP3 — 4R measured expansion")
 
     return TradePlan(
         entry=round_price(entry),
@@ -2479,15 +2658,24 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
         position_size=round(position_size, 6),
         notional=round(notional, 2),
         invalidation=(
-            f"закриття 15M за ICT-інвалідацією {round_price(structural)}; "
+            f"закриття 15M за професійною ICT-інвалідацією {round_price(structural)}; "
             f"сетап {candidate.variant or candidate.setup_type}"
         ),
         stop_basis=stop_basis,
-        target_basis="перша реальна протилежна ліквідність після мінімального RR; ближчі рівні — management checkpoints",
-        checkpoints=[round_price(v) for v in (checkpoints + checkpoints2 + checkpoints3)[:5]],
+        target_basis="; ".join(natural_text),
+        checkpoints=[round_price(v) for v in (checkpoints + checkpoints2 + checkpoints3)[:6]],
         valid=not invalid,
         reason=invalid,
         better_entry=round_price(better_entry),
+        structural_invalidation=round_price(structural),
+        wait_zone_low=entry_map["wait_zone_low"],
+        wait_zone_high=entry_map["wait_zone_high"],
+        entry_zone_low=entry_map["entry_zone_low"],
+        entry_zone_high=entry_map["entry_zone_high"],
+        trigger_level=entry_map["trigger_level"],
+        trigger_condition=entry_map["trigger_condition"],
+        execution_ready=bool(entry_map["execution_ready"]),
+        execution_reason=str(entry_map["execution_reason"]),
     )
 
 
@@ -2624,7 +2812,7 @@ def evaluate_new_setup(context: dict[str, Any], state: dict[str, Any]) -> Decisi
     evidence_count = len(best.evidence_families)
     extension_limit = 0.82 if best.execution_profile in {"TACTICAL", "RECOVERY"} else LATE_EXTENSION_ATR15
     action = Action.ARMED.value
-    if best.trigger_ready and plan.valid and best.late_extension_atr <= extension_limit:
+    if best.trigger_ready and plan.valid and plan.execution_ready and best.late_extension_atr <= extension_limit:
         if best.risk_mode == "NORMAL" and best.final_score >= full_threshold and evidence_count >= MIN_ENTRY_EVIDENCE:
             action = Action.ENTRY.value
         elif best.final_score >= risky_threshold and evidence_count >= MIN_RISKY_EVIDENCE:
@@ -2636,6 +2824,8 @@ def evaluate_new_setup(context: dict[str, Any], state: dict[str, Any]) -> Decisi
         reason = f"тригер є, але незалежних доказів лише {evidence_count}; мінімум {MIN_RISKY_EVIDENCE}"
     elif not plan.valid:
         reason = f"сетап професійно підтверджений, але геометрія не готова: {plan.reason}"
+    elif not plan.execution_ready:
+        reason = f"сетап сформований; {plan.execution_reason}"
     elif best.late_extension_atr > extension_limit:
         reason = "сетап підтверджений, але execution window закрилось; потрібен новий відкат/ретест"
     elif action in {Action.ENTRY.value, Action.RISKY_ENTRY.value}:
@@ -2703,7 +2893,7 @@ def new_active_trade(decision: Decision) -> ActiveTrade:
         entry=plan.entry,
         stop_initial=plan.stop,
         stop_current=plan.stop,
-        structural_invalidation=decision.candidate.invalidation_level,
+        structural_invalidation=plan.structural_invalidation or decision.candidate.invalidation_level,
         tp1=plan.tp1,
         tp2=plan.tp2,
         tp3=plan.tp3,
@@ -3018,7 +3208,7 @@ def action_label(action: str) -> str:
     return {
         Action.ENTRY.value: "ВХІД",
         Action.RISKY_ENTRY.value: "РИЗИКОВАНИЙ РАННІЙ ВХІД",
-        Action.ARMED.value: "ICT-СЦЕНАРІЙ СФОРМОВАНИЙ",
+        Action.ARMED.value: "ЗОНА ОЧІКУВАННЯ — ВХІД ЩЕ НЕ АКТИВНИЙ",
         Action.NO_SETUP.value: "ЧИСТОГО СЕТАПУ НЕМАЄ",
         Action.HOLD.value: "УТРИМУВАТИ",
         Action.PROTECT.value: "ЗАХИСТ ПРИБУТКУ",
@@ -3064,19 +3254,36 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
         p = decision.plan
         lines.extend([
             "",
-            "План:",
-            f"Вхід: {p.entry}",
-            f"Стоп: {p.stop}",
-            f"TP1: {p.tp1}",
-            f"TP2: {p.tp2}",
-            f"TP3: {p.tp3}",
-            f"RR: {p.rr1} / {p.rr2} / {p.rr3}",
+            "<b>Карта входу:</b>",
+            f"Де очікувати (ICT): {p.wait_zone_low}–{p.wait_zone_high}",
+            f"Робоча зона входу: {p.entry_zone_low}–{p.entry_zone_high}",
+            f"Тригер: {html.escape(p.trigger_condition)}",
+        ])
+        if decision.action == Action.ARMED.value:
+            lines.extend([
+                f"Орієнтир входу після підтвердження: близько {p.entry}",
+                "Статус: зараз не входити; чекати виконання тригера та ціни у робочій зоні",
+            ])
+        else:
+            lines.extend([
+                f"Вхід підтверджено від ціни: {p.entry}",
+                f"Статус виконання: {html.escape(p.execution_reason)}",
+            ])
+        lines.extend([
+            "",
+            "<b>Ризик-план 1:2+:</b>",
+            f"Стоп: {p.stop} ({p.risk_pct}%)",
+            f"TP1: {p.tp1} — {p.rr1}R",
+            f"TP2: {p.tp2} — {p.rr2}R",
+            f"TP3: {p.tp3} — {p.rr3}R",
             f"Ризик позиції: {p.position_risk_pct}%",
+            f"Основа стопа: {html.escape(p.stop_basis)}",
+            f"Основа тейків: {html.escape(p.target_basis)}",
         ])
         if p.checkpoints:
-            lines.append("Контрольні ліквідності: " + ", ".join(str(x) for x in p.checkpoints[:3]))
-        if not p.valid and p.better_entry:
-            lines.append(f"Краща ціна для входу: близько {p.better_entry}")
+            lines.append("Проміжні бар’єри, не тейки: " + ", ".join(str(x) for x in p.checkpoints[:4]))
+        if p.better_entry and decision.action == Action.ARMED.value:
+            lines.append(f"Оптимальний орієнтир входу: близько {p.better_entry}")
         lines.append("Скасування: " + html.escape(p.invalidation))
     if decision.candidate and decision.candidate.risks:
         lines.extend(["", "Ризики:", *[f"⚠️ {html.escape(x)}" for x in decision.candidate.risks[:3]]])
@@ -3311,7 +3518,7 @@ def run_self_test() -> None:
     )
     plan = build_trade_plan(context, candidate)
     assert plan.stop <= 99.52 + 1e-6, plan
-    assert plan.rr1 >= MIN_RR1, plan
+    assert plan.rr1 >= 2.0, plan
     assert plan.tp1 < plan.tp2 < plan.tp3, plan
 
     opened = datetime.fromtimestamp((c3[-3].ts - 60_000) / 1000, tz=timezone.utc).isoformat()
