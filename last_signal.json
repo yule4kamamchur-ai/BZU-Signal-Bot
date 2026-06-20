@@ -1,75 +1,81 @@
 {
   "version": "pro-ict-v2.1.1-entry-map-rr2-telegram-fix",
   "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2_TELEGRAM_FIX",
-  "active_trade": null,
-  "opportunity": {
+  "active_trade": {
+    "id": "38f00c9b66",
     "side": "LONG",
     "setup_type": "BREAKOUT_RETEST",
-    "created_at": "2026-06-20T07:01:14.622048+00:00",
-    "expires_at": "2026-06-20T07:46:14.622048+00:00",
-    "score": 64,
-    "trigger_level": 81.05,
-    "invalidation_level": 81.0273,
-    "confirmations": [
-      "ціна біля свіжої 3m OB зони",
-      "15M закрив BOS за напрямком",
-      "3M повернувся до BOS-рівня і втримав його",
-      "15M і 1H узгоджені"
+    "opened_at": "2026-06-20T07:15:47.463963+00:00",
+    "entry": 81.3,
+    "stop_initial": 80.9992,
+    "stop_current": 80.9992,
+    "structural_invalidation": 81.0269,
+    "tp1": 81.9617,
+    "tp2": 82.2024,
+    "tp3": 82.5032,
+    "quality": 76,
+    "position_risk_pct": 0.5,
+    "best_price": 81.3,
+    "worst_price": 81.3,
+    "last_checked_3m_ts": 0,
+    "tp1_hit": false,
+    "tp2_hit": false,
+    "tp3_hit": false,
+    "tp1_stop_locked": false,
+    "tp2_stop_locked": false,
+    "status": "OPEN",
+    "last_action": "ENTRY",
+    "notes": [
+      "ENTRY_ACTION:ENTRY",
+      "REGIME:TREND",
+      "FAMILY:EXPANSION",
+      "VARIANT:CONFIRMED_BOS_RETEST",
+      "EVIDENCE:ICT_LOCATION,PRICE_STRUCTURE,LIQUIDITY,EXECUTION_TRIGGER,HTF_CONTEXT",
+      "RR:2.2/3.0/4.0"
     ],
     "setup_family": "EXPANSION",
     "variant": "CONFIRMED_BOS_RETEST",
-    "stage": "EXECUTABLE",
-    "evidence_families": [
-      "ICT_LOCATION",
-      "PRICE_STRUCTURE",
-      "LIQUIDITY",
-      "EXECUTION_TRIGGER",
-      "HTF_CONTEXT"
-    ],
-    "execution_profile": "TACTICAL",
-    "execution_anchor": 81.2
+    "execution_profile": "TACTICAL"
   },
+  "opportunity": null,
   "latest_signal": {
-    "id": "f7000867775d",
-    "time": "2026-06-20T07:01:14.621505+00:00",
-    "action": "ARMED",
+    "id": "4a2de7b21d40",
+    "time": "2026-06-20T07:15:47.463963+00:00",
+    "action": "ENTRY",
     "side": "LONG",
     "setup_type": "BREAKOUT_RETEST",
-    "quality": 64,
-    "reason": "CONFIRMED_BOS_RETEST: якість 64, очікується повне виконання порогів 74/68",
-    "regime": "NORMAL",
+    "quality": 76,
+    "reason": "Закритий BOS + ретест — CONFIRMED_BOS_RETEST; незалежних доказів 5, геометрія валідна",
+    "regime": "TREND",
     "candidate": {
       "side": "LONG",
       "setup_type": "BREAKOUT_RETEST",
-      "raw_score": 69,
-      "final_score": 64,
+      "raw_score": 76,
+      "final_score": 76,
       "score_components": {
         "location": 10,
         "structure": 24,
         "liquidity": 17,
-        "trigger": 13,
-        "flow": 0,
+        "trigger": 15,
+        "flow": 5,
         "htf": 5
       },
       "trigger_ready": true,
       "trigger_level": 81.05,
-      "invalidation_level": 81.0273,
+      "invalidation_level": 81.0269,
       "target_levels": [
         81.31,
         81.67
       ],
       "confirmations": [
-        "ціна біля свіжої 3m OB зони",
         "15M закрив BOS за напрямком",
         "3M повернувся до BOS-рівня і втримав його",
         "15M і 1H узгоджені"
       ],
-      "risks": [
-        "короткий flow зараз проти напрямку"
-      ],
+      "risks": [],
       "hard_reject_reason": "",
       "risk_mode": "NORMAL",
-      "late_extension_atr": 0.044,
+      "late_extension_atr": 0.26,
       "setup_family": "EXPANSION",
       "variant": "CONFIRMED_BOS_RETEST",
       "stage": "EXECUTABLE",
@@ -80,41 +86,42 @@
         "EXECUTION_TRIGGER",
         "HTF_CONTEXT"
       ],
-      "trigger_ts": 1781938620000,
+      "trigger_ts": 1781939520000,
       "execution_profile": "TACTICAL",
       "specificity": 39,
-      "execution_anchor": 81.2,
-      "trigger_age_minutes": 12.0
+      "execution_anchor": 81.24,
+      "trigger_age_minutes": 0.0
     },
     "plan": {
-      "entry": 81.21,
-      "stop": 81.0,
-      "tp1": 81.67,
-      "tp2": 81.8399,
-      "tp3": 82.0499,
-      "risk_pct": 0.259,
-      "rr1": 2.19,
+      "entry": 81.3,
+      "stop": 80.9992,
+      "tp1": 81.9617,
+      "tp2": 82.2024,
+      "tp3": 82.5032,
+      "risk_pct": 0.37,
+      "rr1": 2.2,
       "rr2": 3.0,
       "rr3": 4.0,
       "position_risk_pct": 0.5,
       "position_size": 0.0,
       "notional": 0.0,
-      "invalidation": "закриття 15M за професійною ICT-інвалідацією 81.0273; сетап CONFIRMED_BOS_RETEST",
+      "invalidation": "закриття 15M за професійною ICT-інвалідацією 81.0269; сетап CONFIRMED_BOS_RETEST",
       "stop_basis": "CONFIRMED_BOS_RETEST: власна структурна ICT-інвалідація + 0.12 ATR buffer",
-      "target_basis": "TP1 — реальна ICT/технічна ліквідність за 2R; TP2 — 3R measured expansion; TP3 — 4R measured expansion",
+      "target_basis": "TP1 — 2.2R measured 15M expansion; TP2 — 3R measured expansion; TP3 — 4R measured expansion",
       "checkpoints": [
-        81.31
+        81.31,
+        81.67
       ],
       "valid": true,
       "reason": "",
       "better_entry": 0.0,
-      "structural_invalidation": 81.0273,
+      "structural_invalidation": 81.0269,
       "wait_zone_low": 81.01,
       "wait_zone_high": 81.08,
-      "entry_zone_low": 81.0618,
-      "entry_zone_high": 81.2545,
-      "trigger_level": 81.2,
-      "trigger_condition": "закрита 3M свічка вище 81.2; після цього ретест/утримання 81.0618–81.2545",
+      "entry_zone_low": 81.0615,
+      "entry_zone_high": 81.2954,
+      "trigger_level": 81.24,
+      "trigger_condition": "закрита 3M свічка вище 81.24; після цього ретест/утримання 81.0615–81.2954",
       "execution_ready": true,
       "execution_reason": "закритий 3M trigger підтверджений, ціна в робочій зоні"
     },
@@ -126,9 +133,9 @@
           "setup_family": "EXPANSION",
           "variant": "CONFIRMED_BOS_RETEST",
           "stage": "EXECUTABLE",
-          "raw_score": 69,
-          "final_score": 64,
-          "selection_score": 91.3,
+          "raw_score": 76,
+          "final_score": 76,
+          "selection_score": 103.3,
           "trigger_ready": true,
           "risk_mode": "NORMAL",
           "evidence_families": [
@@ -139,28 +146,28 @@
             "HTF_CONTEXT"
           ],
           "evidence_count": 5,
-          "late_extension_atr": 0.044,
-          "execution_anchor": 81.2,
-          "trigger_age_minutes": 12.0,
+          "late_extension_atr": 0.26,
+          "execution_anchor": 81.24,
+          "trigger_age_minutes": 0.0,
           "hard_reject_reason": "",
           "score_components": {
             "location": 10,
             "structure": 24,
             "liquidity": 17,
-            "trigger": 13,
-            "flow": 0,
+            "trigger": 15,
+            "flow": 5,
             "htf": 5
           }
         },
         {
           "side": "LONG",
-          "setup_type": "FRESH_BASE_CONTINUATION_REENTRY",
-          "setup_family": "CONTINUATION",
-          "variant": "FULL_15M_BASE",
+          "setup_type": "TREND_IGNITION_ENTRY",
+          "setup_family": "STRUCTURAL_TRANSITION",
+          "variant": "COMPRESSION_LAUNCH",
           "stage": "EXECUTABLE",
-          "raw_score": 69,
-          "final_score": 64,
-          "selection_score": 90.7,
+          "raw_score": 73,
+          "final_score": 66,
+          "selection_score": 88.9,
           "trigger_ready": true,
           "risk_mode": "NORMAL",
           "evidence_families": [
@@ -171,47 +178,16 @@
             "HTF_CONTEXT"
           ],
           "evidence_count": 5,
-          "late_extension_atr": 0.044,
-          "execution_anchor": 81.2,
-          "trigger_age_minutes": 12.0,
+          "late_extension_atr": 0.26,
+          "execution_anchor": 81.24,
+          "trigger_age_minutes": 0.0,
           "hard_reject_reason": "",
           "score_components": {
-            "location": 11,
-            "structure": 24,
-            "liquidity": 16,
-            "trigger": 13,
-            "flow": 0,
-            "htf": 5
-          }
-        },
-        {
-          "side": "LONG",
-          "setup_type": "CLOSED_15M_DIRECTION_FLIP",
-          "setup_family": "STRUCTURAL_TRANSITION",
-          "variant": "EARLY_15M_FLIP",
-          "stage": "EXECUTABLE",
-          "raw_score": 62,
-          "final_score": 57,
-          "selection_score": 78.2,
-          "trigger_ready": true,
-          "risk_mode": "RISKY",
-          "evidence_families": [
-            "PRICE_STRUCTURE",
-            "LIQUIDITY",
-            "EXECUTION_TRIGGER",
-            "HTF_CONTEXT"
-          ],
-          "evidence_count": 4,
-          "late_extension_atr": 0.044,
-          "execution_anchor": 81.2,
-          "trigger_age_minutes": 12.0,
-          "hard_reject_reason": "",
-          "score_components": {
-            "location": 9,
-            "structure": 21,
-            "liquidity": 14,
-            "trigger": 13,
-            "flow": 0,
+            "location": 10,
+            "structure": 23,
+            "liquidity": 15,
+            "trigger": 15,
+            "flow": 5,
             "htf": 5
           }
         },
@@ -221,19 +197,18 @@
           "setup_family": "LIQUIDITY_RECOVERY",
           "variant": "EARLY_RECLAIM",
           "stage": "REJECTED",
-          "raw_score": 46,
-          "final_score": 36,
-          "selection_score": 48.3,
+          "raw_score": 41,
+          "final_score": 17,
+          "selection_score": 26.8,
           "trigger_ready": false,
           "risk_mode": "RISKY",
           "evidence_families": [
             "ICT_LOCATION",
-            "LIQUIDITY",
-            "ORDER_FLOW"
+            "LIQUIDITY"
           ],
-          "evidence_count": 3,
+          "evidence_count": 2,
           "late_extension_atr": 0.0,
-          "execution_anchor": 81.21,
+          "execution_anchor": 81.3,
           "trigger_age_minutes": 999.0,
           "hard_reject_reason": "SHORT-інвалідація знаходиться нижче ціни",
           "score_components": {
@@ -241,7 +216,7 @@
             "structure": 0,
             "liquidity": 20,
             "trigger": 0,
-            "flow": 10,
+            "flow": 5,
             "htf": 0
           }
         }
@@ -252,12 +227,12 @@
         "setup_family": "EXPANSION",
         "variant": "CONFIRMED_BOS_RETEST",
         "stage": "EXECUTABLE",
-        "score": 64,
+        "score": 76,
         "evidence_count": 5,
         "full_threshold": 74,
         "risky_threshold": 68
       },
-      "direction_margin": 91.3,
+      "direction_margin": 103.3,
       "invariants": {
         "single_selector": true,
         "one_candidate_per_family_and_side": true,
@@ -271,50 +246,50 @@
     "version": "pro-ict-v2.1.1-entry-map-rr2-telegram-fix",
     "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2_TELEGRAM_FIX",
     "context": {
-      "time": "2026-06-20T07:01:14.585864+00:00",
-      "price": 81.21,
+      "time": "2026-06-20T07:15:47.435507+00:00",
+      "price": 81.3,
       "price_source": "OKX",
-      "reference_price": 81.05,
-      "cross_price_diff_pct": 0.197,
-      "regime": "NORMAL",
-      "regime_reason": "ринок без стійкого тренду або чистого діапазону",
+      "reference_price": 81.1,
+      "cross_price_diff_pct": 0.246,
+      "regime": "TREND",
+      "regime_reason": "15M і 1H структура узгоджені та рух ефективний",
       "tf3": {
         "timeframe": "3m",
         "available": true,
         "bias": "LONG",
         "score": 35,
-        "close": 81.18,
-        "ema20": 81.0668,
-        "ema50": 80.9174,
-        "rsi": 63.5,
-        "atr": 0.11168,
-        "move8_pct": 0.123,
-        "efficiency": 0.349,
-        "volume_ratio": 0.923,
+        "close": 81.24,
+        "ema20": 81.0973,
+        "ema50": 80.9583,
+        "rsi": 61.9,
+        "atr": 0.12895,
+        "move8_pct": 0.074,
+        "efficiency": 0.188,
+        "volume_ratio": 0.872,
         "structure": {
           "timeframe": "3m",
           "bias": "LONG",
           "trend": "NEUTRAL",
           "bos": "NEUTRAL",
           "choch": "NEUTRAL",
-          "swing_high": 81.31,
-          "swing_low": 80.82,
-          "prior_break_high": 81.31,
-          "prior_break_low": 80.82,
+          "swing_high": 81.26,
+          "swing_low": 81.05,
+          "prior_break_high": 81.26,
+          "prior_break_low": 81.05,
           "recent_highs": [
-            80.99,
-            81.07,
             81.14,
-            81.31
+            81.31,
+            81.3,
+            81.26
           ],
           "recent_lows": [
             80.82,
             80.82,
             80.82,
-            80.82
+            81.05
           ],
-          "ema20": 81.0668,
-          "ema50": 80.9174
+          "ema20": 81.0973,
+          "ema50": 80.9583
         }
       },
       "tf15": {
@@ -322,14 +297,14 @@
         "available": true,
         "bias": "LONG",
         "score": 40,
-        "close": 81.18,
-        "ema20": 80.8002,
-        "ema50": 80.5291,
-        "rsi": 67.6,
-        "atr": 0.2272,
-        "move8_pct": 0.845,
-        "efficiency": 0.417,
-        "volume_ratio": 1.976,
+        "close": 81.24,
+        "ema20": 80.8421,
+        "ema50": 80.5577,
+        "rsi": 68.4,
+        "atr": 0.23079,
+        "move8_pct": 0.819,
+        "efficiency": 0.535,
+        "volume_ratio": 1.901,
         "structure": {
           "timeframe": "15m",
           "bias": "LONG",
@@ -352,8 +327,8 @@
             80.46,
             80.47
           ],
-          "ema20": 80.8002,
-          "ema50": 80.5291
+          "ema20": 80.8421,
+          "ema50": 80.5577
         }
       },
       "tf1h": {
@@ -445,55 +420,35 @@
         "level": 81.05,
         "extreme": 81.07,
         "reclaim": true,
-        "age": 2,
+        "age": 3,
         "ts": 1781936100000
       },
       "dealing_range": {
         "low": 80.04,
         "high": 81.31,
         "equilibrium": 80.675,
-        "position": 0.921,
+        "position": 0.992,
         "zone": "PREMIUM",
         "at_lower_edge": false,
         "at_upper_edge": true
       },
       "flow": {
-        "bias": "SHORT",
-        "score": -10,
-        "trade_delta": -35769.0,
-        "trade_delta_pct": -70.05,
-        "book_delta_pct": -10.27,
-        "price_move_pct": 0.074,
-        "cvd_acceleration": 18785.0,
+        "bias": "NEUTRAL",
+        "score": 4,
+        "trade_delta": 21407.0,
+        "trade_delta_pct": 48.65,
+        "book_delta_pct": -41.74,
+        "price_move_pct": 0.284,
+        "cvd_acceleration": -24569.0,
         "absorption_bias": "NEUTRAL",
-        "confidence": "HIGH",
+        "confidence": "MEDIUM",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 5996726.0,
-        "funding_rate": 4.99449790092e-05
+        "oi": 6024966.0,
+        "funding_rate": 4.98049797047e-05
       },
       "zones": [
-        {
-          "kind": "FVG",
-          "side": "LONG",
-          "low": 80.52,
-          "high": 80.55,
-          "created_ts": 1781931780000,
-          "timeframe": "3m",
-          "strength": 0.2686187628670477,
-          "mitigated": false
-        },
-        {
-          "kind": "FVG",
-          "side": "LONG",
-          "low": 80.55,
-          "high": 80.6,
-          "created_ts": 1781931960000,
-          "timeframe": "3m",
-          "strength": 0.4476979381117038,
-          "mitigated": false
-        },
         {
           "kind": "FVG",
           "side": "LONG",
@@ -501,7 +456,7 @@
           "high": 80.65,
           "created_ts": 1781932500000,
           "timeframe": "3m",
-          "strength": 0.08953958762239166,
+          "strength": 0.07755055063855351,
           "mitigated": false
         },
         {
@@ -511,7 +466,7 @@
           "high": 80.73,
           "created_ts": 1781932680000,
           "timeframe": "3m",
-          "strength": 0.2686187628670477,
+          "strength": 0.23265165191555034,
           "mitigated": false
         },
         {
@@ -521,7 +476,7 @@
           "high": 80.82,
           "created_ts": 1781932860000,
           "timeframe": "3m",
-          "strength": 0.8058562886010159,
+          "strength": 0.6979549557465408,
           "mitigated": false
         },
         {
@@ -531,7 +486,7 @@
           "high": 80.91,
           "created_ts": 1781934300000,
           "timeframe": "3m",
-          "strength": 1.074475051468191,
+          "strength": 0.9306066076622014,
           "mitigated": false
         },
         {
@@ -541,7 +496,7 @@
           "high": 81.08,
           "created_ts": 1781937540000,
           "timeframe": "3m",
-          "strength": 1.3430938143352387,
+          "strength": 1.1632582595777516,
           "mitigated": false
         },
         {
@@ -551,7 +506,7 @@
           "high": 80.36,
           "created_ts": 1781919000000,
           "timeframe": "15m",
-          "strength": 0.3961306283413141,
+          "strength": 0.38997050677101525,
           "mitigated": false
         },
         {
@@ -561,7 +516,7 @@
           "high": 80.5,
           "created_ts": 1781919900000,
           "timeframe": "15m",
-          "strength": 0.5721886853818564,
+          "strength": 0.5632907320025365,
           "mitigated": false
         },
         {
@@ -571,7 +526,7 @@
           "high": 80.78,
           "created_ts": 1781932500000,
           "timeframe": "15m",
-          "strength": 0.35211611408114724,
+          "strength": 0.34664045046310415,
           "mitigated": false
         },
         {
@@ -581,13 +536,13 @@
           "high": 80.18,
           "created_ts": 1781918100000,
           "timeframe": "15m",
-          "strength": 1.0563483422435043,
+          "strength": 1.039921351389374,
           "mitigated": false
         }
       ]
     }
   },
-  "last_message_key": "{\"action\": \"ARMED\", \"plan_valid\": true, \"quality_bucket\": 12, \"setup_type\": \"BREAKOUT_RETEST\", \"side\": \"LONG\"}",
+  "last_message_key": "{\"action\": \"ENTRY\", \"plan_valid\": true, \"quality_bucket\": 15, \"setup_type\": \"BREAKOUT_RETEST\", \"side\": \"LONG\"}",
   "history": [
     {
       "type": "ENTRY",
@@ -1564,9 +1519,51 @@
         "execution_reason": "закритий 3M trigger підтверджений, ціна в робочій зоні"
       },
       "time": "2026-06-20T07:01:14.622037+00:00"
+    },
+    {
+      "type": "ENTRY",
+      "side": "LONG",
+      "setup_type": "BREAKOUT_RETEST",
+      "price": 81.3,
+      "quality": 76,
+      "reason": "Закритий BOS + ретест — CONFIRMED_BOS_RETEST; незалежних доказів 5, геометрія валідна",
+      "plan": {
+        "entry": 81.3,
+        "stop": 80.9992,
+        "tp1": 81.9617,
+        "tp2": 82.2024,
+        "tp3": 82.5032,
+        "risk_pct": 0.37,
+        "rr1": 2.2,
+        "rr2": 3.0,
+        "rr3": 4.0,
+        "position_risk_pct": 0.5,
+        "position_size": 0.0,
+        "notional": 0.0,
+        "invalidation": "закриття 15M за професійною ICT-інвалідацією 81.0269; сетап CONFIRMED_BOS_RETEST",
+        "stop_basis": "CONFIRMED_BOS_RETEST: власна структурна ICT-інвалідація + 0.12 ATR buffer",
+        "target_basis": "TP1 — 2.2R measured 15M expansion; TP2 — 3R measured expansion; TP3 — 4R measured expansion",
+        "checkpoints": [
+          81.31,
+          81.67
+        ],
+        "valid": true,
+        "reason": "",
+        "better_entry": 0.0,
+        "structural_invalidation": 81.0269,
+        "wait_zone_low": 81.01,
+        "wait_zone_high": 81.08,
+        "entry_zone_low": 81.0615,
+        "entry_zone_high": 81.2954,
+        "trigger_level": 81.24,
+        "trigger_condition": "закрита 3M свічка вище 81.24; після цього ретест/утримання 81.0615–81.2954",
+        "execution_ready": true,
+        "execution_reason": "закритий 3M trigger підтверджений, ціна в робочій зоні"
+      },
+      "time": "2026-06-20T07:15:47.464407+00:00"
     }
   ],
-  "last_telegram_success_at": "2026-06-20T07:01:14.946945+00:00",
+  "last_telegram_success_at": "2026-06-20T07:15:47.839269+00:00",
   "last_telegram_error": "",
-  "updated_at": "2026-06-20T07:01:14.946954+00:00"
+  "updated_at": "2026-06-20T07:15:47.839286+00:00"
 }
