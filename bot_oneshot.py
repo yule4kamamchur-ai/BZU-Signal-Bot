@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v2.1.0-entry-map-rr2"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2"
+BOT_VERSION = "pro-ict-v2.1.1-entry-map-rr2-telegram-fix"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2_TELEGRAM_FIX"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -80,8 +80,13 @@ COMPRESSION_MAX_WIDTH_ATR = float(os.getenv("COMPRESSION_MAX_WIDTH_ATR", "2.35")
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "27") or 27)
 MAX_ADVERSE_EVIDENCE = int(os.getenv("MAX_ADVERSE_EVIDENCE", "1") or 1)
 
-SEND_NO_SETUP = os.getenv("SEND_NO_SETUP", "false").strip().lower() in {"1", "true", "yes"}
-SEND_DUPLICATE_STATUS = os.getenv("SEND_DUPLICATE_STATUS", "false").strip().lower() in {"1", "true", "yes"}
+# Telegram delivery policy. The bot is scheduled every 15 minutes, therefore a
+# status message is delivered on every successful run by default. Users may
+# explicitly disable this with TELEGRAM_NOTIFY_EVERY_RUN=false.
+TELEGRAM_NOTIFY_EVERY_RUN = os.getenv("TELEGRAM_NOTIFY_EVERY_RUN", "true").strip().lower() in {"1", "true", "yes"}
+SEND_NO_SETUP = os.getenv("SEND_NO_SETUP", "true").strip().lower() in {"1", "true", "yes"}
+SEND_DUPLICATE_STATUS = os.getenv("SEND_DUPLICATE_STATUS", "true").strip().lower() in {"1", "true", "yes"}
+TELEGRAM_MAX_LENGTH = max(500, min(4000, int(os.getenv("TELEGRAM_MAX_LENGTH", "3900") or 3900)))
 
 
 class Side(str, Enum):
@@ -3317,28 +3322,99 @@ def message_key(payload: dict[str, Any]) -> str:
 
 
 def should_send_message(state: dict[str, Any], key: str, force: bool = False) -> bool:
-    if force or SEND_DUPLICATE_STATUS:
-        state["last_message_key"] = key
+    # This function is intentionally side-effect free. The delivery key is
+    # persisted only after Telegram confirms a successful send. Otherwise a
+    # temporary API/network error would suppress the retry on the next run.
+    if force or TELEGRAM_NOTIFY_EVERY_RUN or SEND_DUPLICATE_STATUS:
         return True
-    if state.get("last_message_key") == key:
-        return False
+    return state.get("last_message_key") != key
+
+
+def mark_message_sent(state: dict[str, Any], key: str) -> None:
     state["last_message_key"] = key
-    return True
+    state["last_telegram_success_at"] = iso_now()
+    state["last_telegram_error"] = ""
 
 
-def send_telegram(text: str) -> None:
+def telegram_chunks(text: str, limit: int = TELEGRAM_MAX_LENGTH) -> list[str]:
+    # Messages are built line-by-line and every HTML tag is closed on the same
+    # line, so splitting only between lines keeps HTML valid in each chunk.
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in text.splitlines():
+        addition = len(line) + (1 if current else 0)
+        if current and size + addition > limit:
+            chunks.append("\n".join(current))
+            current = []
+            size = 0
+        if len(line) > limit:
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+                size = 0
+            for start in range(0, len(line), limit):
+                chunks.append(line[start:start + limit])
+            continue
+        current.append(line)
+        size += addition
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def plain_telegram_text(text: str) -> str:
+    return html.unescape(text.replace("<b>", "").replace("</b>", ""))
+
+
+def send_telegram(text: str) -> bool:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[INFO] Telegram credentials absent; message not sent")
-        print(text.replace("<b>", "").replace("</b>", ""))
-        return
+        missing = []
+        if not TELEGRAM_TOKEN:
+            missing.append("TELEGRAM_TOKEN")
+        if not TELEGRAM_CHAT_ID:
+            missing.append("TELEGRAM_CHAT_ID")
+        print(f"[ERROR] Telegram credentials absent: {', '.join(missing)}")
+        print(plain_telegram_text(text))
+        return False
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
-    try:
-        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
-        if not response.ok:
-            print(f"[WARN] Telegram failed {response.status_code}: {response.text[:300]}")
-    except Exception as exc:
-        print(f"[WARN] Telegram exception: {exc}")
+    chunks = telegram_chunks(text)
+    for index, chunk in enumerate(chunks, start=1):
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": chunk,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        except Exception as exc:
+            print(f"[ERROR] Telegram exception on chunk {index}/{len(chunks)}: {exc}")
+            return False
+
+        if response.ok:
+            print(f"Telegram status: {response.status_code} chunk {index}/{len(chunks)}")
+            continue
+
+        # Telegram may reject malformed HTML. Retry the same chunk as plain
+        # text before declaring delivery failure.
+        print(f"[WARN] Telegram HTML failed {response.status_code}: {response.text[:300]}")
+        fallback = dict(payload)
+        fallback.pop("parse_mode", None)
+        fallback["text"] = plain_telegram_text(chunk)
+        try:
+            retry = requests.post(url, json=fallback, timeout=REQUEST_TIMEOUT)
+        except Exception as exc:
+            print(f"[ERROR] Telegram plain-text retry exception: {exc}")
+            return False
+        if not retry.ok:
+            print(f"[ERROR] Telegram retry failed {retry.status_code}: {retry.text[:300]}")
+            return False
+        print(f"Telegram fallback status: {retry.status_code} chunk {index}/{len(chunks)}")
+    return True
 
 
 def public_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -3378,6 +3454,13 @@ def decision_payload(decision: Decision, context: dict[str, Any]) -> dict[str, A
 
 def run_bot() -> None:
     print(f"START {BOT_VERSION}")
+    print(
+        "Telegram delivery: "
+        f"token={'OK' if TELEGRAM_TOKEN else 'MISSING'}, "
+        f"chat_id={'OK' if TELEGRAM_CHAT_ID else 'MISSING'}, "
+        f"every_run={TELEGRAM_NOTIFY_EVERY_RUN}, "
+        f"no_setup={SEND_NO_SETUP}, duplicates={SEND_DUPLICATE_STATUS}"
+    )
     state = load_state()
     journal = load_journal()
     data = collect_market_data()
@@ -3416,7 +3499,10 @@ def run_bot() -> None:
         key = message_key({"action": result.get("action"), "side": active.side, "stop": active.stop_current, "tp1": active.tp1_hit, "tp2": active.tp2_hit})
         force = bool(result.get("closed") or result.get("action") in {Action.TP1.value, Action.TP2.value, Action.TP3.value, Action.STOP.value, Action.EXIT.value})
         if should_send_message(state, key, force=force):
-            send_telegram(build_follow_message(active, result))
+            if send_telegram(build_follow_message(active, result)):
+                mark_message_sent(state, key)
+            else:
+                state["last_telegram_error"] = "FOLLOW_DELIVERY_FAILED"
         save_state(state)
         save_journal(journal)
         print("BOT COMPLETE: ACTIVE TRADE")
@@ -3457,9 +3543,12 @@ def run_bot() -> None:
         "plan_valid": decision.plan.valid if decision.plan else None,
     })
     force = decision.action in {Action.ENTRY.value, Action.RISKY_ENTRY.value}
-    send_allowed = decision.action != Action.NO_SETUP.value or SEND_NO_SETUP
+    send_allowed = decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN
     if send_allowed and should_send_message(state, key, force=force):
-        send_telegram(build_decision_message(context, decision))
+        if send_telegram(build_decision_message(context, decision)):
+            mark_message_sent(state, key)
+        else:
+            state["last_telegram_error"] = "DECISION_DELIVERY_FAILED"
 
     save_state(state)
     save_journal(journal)
