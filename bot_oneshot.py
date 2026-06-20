@@ -20,13 +20,13 @@ import requests
 # ==========================================================
 # BZU PROFESSIONAL ICT SIGNAL BOT
 # ==========================================================
-# One market snapshot -> one professional ICT opportunity graph -> one decision.
+# One market snapshot -> one multi-timeframe ICT map -> one execution decision.
 # Setup variants share five semantic families, so overlapping detectors cannot
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v2.1.1-entry-map-rr2-telegram-fix"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V2_1_ENTRY_MAP_RR2_TELEGRAM_FIX"
+BOT_VERSION = "pro-ict-v3.0.0-mtf-professional-execution"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_MTF_EXECUTION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -79,6 +79,25 @@ FRESH_BASE_MAX_WIDTH_ATR = float(os.getenv("FRESH_BASE_MAX_WIDTH_ATR", "1.60") o
 COMPRESSION_MAX_WIDTH_ATR = float(os.getenv("COMPRESSION_MAX_WIDTH_ATR", "2.35") or 2.35)
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "27") or 27)
 MAX_ADVERSE_EVIDENCE = int(os.getenv("MAX_ADVERSE_EVIDENCE", "1") or 1)
+
+# Multi-timeframe professional execution. 4H defines the scenario, 1H defines
+# the institutional area, 15M defines the trade invalidation, and 3M is only
+# the execution trigger. A stop is never created by mechanically widening a
+# micro 3M level: it must sit beyond an actual protected structure/zone.
+HTF_ZONE_ACCEPTANCE_3M_CLOSES = int(os.getenv("HTF_ZONE_ACCEPTANCE_3M_CLOSES", "2") or 2)
+HTF_ZONE_RETEST_ATR15 = float(os.getenv("HTF_ZONE_RETEST_ATR15", "0.14") or 0.14)
+HTF_ZONE_BUFFER_ATR15 = float(os.getenv("HTF_ZONE_BUFFER_ATR15", "0.05") or 0.05)
+MAX_ENTRY_EXTENSION_TACTICAL = float(os.getenv("MAX_ENTRY_EXTENSION_TACTICAL", "0.35") or 0.35)
+MAX_ENTRY_EXTENSION_STANDARD = float(os.getenv("MAX_ENTRY_EXTENSION_STANDARD", "0.50") or 0.50)
+MAX_ENTRY_EXTENSION_RECOVERY = float(os.getenv("MAX_ENTRY_EXTENSION_RECOVERY", "0.60") or 0.60)
+MAX_ENTRY_EXTENSION_TRANSITION = float(os.getenv("MAX_ENTRY_EXTENSION_TRANSITION", "0.40") or 0.40)
+MAX_ENTRY_EXTENSION_BASE = float(os.getenv("MAX_ENTRY_EXTENSION_BASE", "0.45") or 0.45)
+MAX_ENTRY_EXTENSION_RANGE = float(os.getenv("MAX_ENTRY_EXTENSION_RANGE", "0.35") or 0.35)
+FAILED_EXPANSION_MINUTES = int(os.getenv("FAILED_EXPANSION_MINUTES", "35") or 35)
+FAILED_CONTINUATION_MINUTES = int(os.getenv("FAILED_CONTINUATION_MINUTES", "50") or 50)
+FAILED_ENTRY_MIN_MFE_R = float(os.getenv("FAILED_ENTRY_MIN_MFE_R", "0.35") or 0.35)
+SAME_SIDE_STOP_COOLDOWN_MINUTES = int(os.getenv("SAME_SIDE_STOP_COOLDOWN_MINUTES", "120") or 120)
+REQUIRE_NATURAL_TP1 = os.getenv("REQUIRE_NATURAL_TP1", "true").strip().lower() in {"1", "true", "yes"}
 
 # Telegram delivery policy. The bot is scheduled every 15 minutes, therefore a
 # status message is delivered on every successful run by default. Users may
@@ -247,6 +266,13 @@ class TradePlan:
     trigger_condition: str = ""
     execution_ready: bool = False
     execution_reason: str = ""
+    stop_timeframe: str = ""
+    stop_source_level: float = 0.0
+    htf_scenario: str = ""
+    blocking_zone: str = ""
+    acceptance_status: str = ""
+    natural_tp1: bool = False
+    max_entry_extension_atr: float = 0.0
 
 
 @dataclass
@@ -311,6 +337,12 @@ class ActiveTrade:
     setup_family: str = ""
     variant: str = ""
     execution_profile: str = "STANDARD"
+    trigger_level: float = 0.0
+    entry_zone_low: float = 0.0
+    entry_zone_high: float = 0.0
+    initial_atr15: float = 0.0
+    opened_regime: str = ""
+    failure_checks: int = 0
 
 
 # ==========================================================
@@ -466,6 +498,12 @@ def active_trade_from_state(state: dict[str, Any]) -> Optional[ActiveTrade]:
         clean.setdefault("best_price", safe_float(raw.get("best_price") or raw.get("entry")))
         clean.setdefault("worst_price", safe_float(raw.get("entry")))
         clean.setdefault("last_checked_3m_ts", 0)
+        clean.setdefault("trigger_level", safe_float(raw.get("trigger_level") or raw.get("entry")))
+        clean.setdefault("entry_zone_low", safe_float(raw.get("entry_zone_low") or raw.get("entry")))
+        clean.setdefault("entry_zone_high", safe_float(raw.get("entry_zone_high") or raw.get("entry")))
+        clean.setdefault("initial_atr15", 0.0)
+        clean.setdefault("opened_regime", str(raw.get("opened_regime") or "MIGRATED"))
+        clean.setdefault("failure_checks", 0)
         return ActiveTrade(**clean)
     except Exception as exc:
         print(f"[WARN] Active trade migration skipped: {exc}")
@@ -492,7 +530,7 @@ def opportunity_from_state(state: dict[str, Any]) -> Optional[Opportunity]:
 
 
 def http_get(url: str, timeout: Optional[int] = None, retries: int = 2) -> Optional[requests.Response]:
-    headers = {"User-Agent": "Mozilla/5.0 BZU-Professional-ICT/2.0"}
+    headers = {"User-Agent": "Mozilla/5.0 BZU-Professional-ICT/3.0"}
     for attempt in range(max(1, retries)):
         try:
             response = requests.get(url, headers=headers, timeout=timeout or REQUEST_TIMEOUT)
@@ -1218,7 +1256,7 @@ def detect_regime(context: dict[str, Any]) -> tuple[str, str]:
 def collect_liquidity_targets(context: dict[str, Any], side: str) -> list[float]:
     price = context["price"]
     levels: list[float] = []
-    for key in ("s3", "s15", "s1h"):
+    for key in ("s3", "s15", "s1h", "s4h"):
         structure = context[key]
         values = structure.get("recent_highs", []) if side == Side.LONG.value else structure.get("recent_lows", [])
         levels.extend(safe_float(v) for v in values)
@@ -1252,11 +1290,16 @@ def build_context(data: dict[str, Any]) -> dict[str, Any]:
     s3 = tf3.get("structure") or structure_snapshot(c3, "3m")
     s15 = tf15.get("structure") or structure_snapshot(c15, "15m")
     s1h = tf1h.get("structure") or structure_snapshot(c1h, "1h")
+    s4h = tf4h.get("structure") or structure_snapshot(c4h, "4h")
     zones = (
         detect_fvgs(c3, "3m")
         + detect_order_blocks(c3, "3m")
         + detect_fvgs(c15, "15m")
         + detect_order_blocks(c15, "15m")
+        + detect_fvgs(c1h, "1h", max_age=48)
+        + detect_order_blocks(c1h, "1h", max_age=42)
+        + detect_fvgs(c4h, "4h", max_age=36)
+        + detect_order_blocks(c4h, "4h", max_age=30)
     )
     context: dict[str, Any] = {
         "time": iso_now(),
@@ -1273,6 +1316,7 @@ def build_context(data: dict[str, Any]) -> dict[str, Any]:
         "s3": s3,
         "s15": s15,
         "s1h": s1h,
+        "s4h": s4h,
         "zones": zones,
         "sweep3": liquidity_sweep_snapshot(c3, 18),
         "sweep15": liquidity_sweep_snapshot(c15, 16),
@@ -2117,7 +2161,7 @@ def candidate_breakout_retest(context: dict[str, Any], side: str) -> Optional[Ca
         trigger_ts=int((recent[-1].ts if recent else 0)),
         execution_profile="TACTICAL",
         specificity=39,
-        execution_anchor=safe_float(trigger.get("event_price")) or context["price"],
+        execution_anchor=round_price(level),
         trigger_age_minutes=safe_float(trigger.get("age_minutes")),
     )
     candidate.raw_score = sum(candidate.score_components.values())
@@ -2176,7 +2220,7 @@ def candidate_range_compression_breakout(context: dict[str, Any], side: str) -> 
         trigger_ts=int(micro.get("trigger_ts", 0) or 0),
         execution_profile="TACTICAL",
         specificity=32 if accepted15 else 27,
-        execution_anchor=safe_float(trigger.get("event_price")) or context["price"],
+        execution_anchor=safe_float(micro.get("boundary")) or context["price"],
         trigger_age_minutes=safe_float(trigger.get("age_minutes")),
     )
     candidate.raw_score = sum(candidate.score_components.values())
@@ -2228,21 +2272,240 @@ def candidate_range_edge(context: dict[str, Any], side: str) -> Optional[Candida
     return finalize_candidate(context, candidate)
 
 
+
+def timeframe_rank(timeframe: str) -> int:
+    return {"3m": 1, "15m": 2, "1h": 3, "4h": 4}.get(str(timeframe).lower(), 0)
+
+
+def entry_extension_limit(candidate: Candidate) -> float:
+    return {
+        "TACTICAL": MAX_ENTRY_EXTENSION_TACTICAL,
+        "STANDARD": MAX_ENTRY_EXTENSION_STANDARD,
+        "RECOVERY": MAX_ENTRY_EXTENSION_RECOVERY,
+        "TRANSITION": MAX_ENTRY_EXTENSION_TRANSITION,
+        "BASE_REENTRY": MAX_ENTRY_EXTENSION_BASE,
+        "RANGE": MAX_ENTRY_EXTENSION_RANGE,
+    }.get(candidate.execution_profile, MAX_ENTRY_EXTENSION_STANDARD)
+
+
+def zone_text(zone: Optional[Zone]) -> str:
+    if not zone:
+        return ""
+    return f"{zone.timeframe} {zone.kind} {round_price(zone.low)}–{round_price(zone.high)}"
+
+
+def zones_relevant_to_price(context: dict[str, Any], side: str, price: float, max_ahead_atr: float = 3.5) -> list[Zone]:
+    atr15 = max(safe_float(context["tf15"].get("atr")), price * 0.001)
+    result: list[Zone] = []
+    for zone in _zone_objects(context):
+        if zone.mitigated or zone.side != opposite(side) or zone.timeframe not in {"15m", "1h", "4h"}:
+            continue
+        if zone.low <= price <= zone.high:
+            result.append(zone)
+            continue
+        if side == Side.LONG.value and zone.low > price and (zone.low - price) / atr15 <= max_ahead_atr:
+            result.append(zone)
+        if side == Side.SHORT.value and zone.high < price and (price - zone.high) / atr15 <= max_ahead_atr:
+            result.append(zone)
+    return result
+
+
+def strongest_opposing_zone(context: dict[str, Any], side: str, price: float) -> Optional[Zone]:
+    atr15 = max(safe_float(context["tf15"].get("atr")), price * 0.001)
+    zones = zones_relevant_to_price(context, side, price)
+    if not zones:
+        return None
+    def score(zone: Zone) -> float:
+        inside = zone.low <= price <= zone.high
+        if inside:
+            distance = 0.0
+        elif side == Side.LONG.value:
+            distance = max(0.0, zone.low - price) / atr15
+        else:
+            distance = max(0.0, price - zone.high) / atr15
+        return timeframe_rank(zone.timeframe) * 100 + min(30.0, safe_float(zone.strength) * 8.0) + (45 if inside else 0) - distance * 12.0
+    return max(zones, key=score)
+
+
+def zone_acceptance_snapshot(context: dict[str, Any], side: str, zone: Optional[Zone]) -> dict[str, Any]:
+    if not zone:
+        return {"required": False, "accepted": True, "reason": "немає протилежної HTF-зони"}
+    price = safe_float(context["price"])
+    atr15 = max(safe_float(context["tf15"].get("atr")), price * 0.001)
+    boundary = zone.high if side == Side.LONG.value else zone.low
+    c3 = closed(context.get("candles", {}).get("3m", []))[-12:]
+    c15 = closed(context.get("candles", {}).get("15m", []))[-4:]
+    def beyond(c: Candle) -> bool:
+        return c.close > boundary + HTF_ZONE_BUFFER_ATR15 * atr15 if side == Side.LONG.value else c.close < boundary - HTF_ZONE_BUFFER_ATR15 * atr15
+    beyond_idx = [i for i, c in enumerate(c3) if beyond(c)]
+    consecutive = 0
+    for c in reversed(c3):
+        if beyond(c):
+            consecutive += 1
+        else:
+            break
+    retest = False
+    if beyond_idx:
+        first = beyond_idx[0]
+        for c in c3[first + 1:]:
+            if side == Side.LONG.value:
+                if c.low <= boundary + HTF_ZONE_RETEST_ATR15 * atr15 and c.close > boundary:
+                    retest = True
+                    break
+            else:
+                if c.high >= boundary - HTF_ZONE_RETEST_ATR15 * atr15 and c.close < boundary:
+                    retest = True
+                    break
+    accepted15 = bool(c15 and beyond(c15[-1]))
+    accepted = bool((consecutive >= HTF_ZONE_ACCEPTANCE_3M_CLOSES or accepted15) and retest)
+    inside_or_near = zone.low - 0.10 * atr15 <= price <= zone.high + 0.10 * atr15
+    return {
+        "required": inside_or_near,
+        "accepted": accepted,
+        "boundary": round_price(boundary),
+        "consecutive_3m": consecutive,
+        "accepted_15m": accepted15,
+        "retest": retest,
+        "zone": zone_text(zone),
+        "reason": (
+            f"{zone_text(zone)} прийнята і підтверджена ретестом"
+            if accepted
+            else f"потрібне прийняття {zone_text(zone)}: 2 закриті 3M або 15M close за межею {round_price(boundary)} + ретест"
+        ),
+    }
+
+
+def setup_acceptance_snapshot(context: dict[str, Any], candidate: Candidate) -> dict[str, Any]:
+    family = candidate.setup_family or SETUP_FAMILY.get(candidate.setup_type, SetupFamily.NONE.value)
+    if family not in {SetupFamily.EXPANSION.value, SetupFamily.STRUCTURAL_TRANSITION.value}:
+        return {"required": False, "accepted": True, "reason": "окреме breakout acceptance не потрібне"}
+    level = safe_float(candidate.trigger_level)
+    if level <= 0:
+        return {"required": True, "accepted": False, "reason": "немає структурного breakout-рівня"}
+    atr15 = max(safe_float(context["tf15"].get("atr")), context["price"] * 0.001)
+    c3 = closed(context["candles"]["3m"])[-12:]
+    c15 = closed(context["candles"]["15m"])[-4:]
+    def beyond(c: Candle) -> bool:
+        return c.close > level + 0.03 * atr15 if candidate.side == Side.LONG.value else c.close < level - 0.03 * atr15
+    beyond_idx = [i for i, c in enumerate(c3) if beyond(c)]
+    consecutive = 0
+    for c in reversed(c3):
+        if beyond(c):
+            consecutive += 1
+        else:
+            break
+    retest = False
+    if beyond_idx:
+        first = beyond_idx[0]
+        for c in c3[first + 1:]:
+            if candidate.side == Side.LONG.value:
+                if c.low <= level + 0.16 * atr15 and c.close > level:
+                    retest = True
+                    break
+            else:
+                if c.high >= level - 0.16 * atr15 and c.close < level:
+                    retest = True
+                    break
+    accepted15 = bool(c15 and beyond(c15[-1]) and context["s15"].get("bos") == candidate.side)
+    detector_retest = candidate.setup_type == SetupType.BREAKOUT_RETEST.value and "CONFIRMED" in candidate.variant
+    accepted = bool(detector_retest or ((consecutive >= 2 or accepted15) and retest))
+    if context["regime"] == Regime.RANGE.value and candidate.setup_type in {
+        SetupType.TREND_IGNITION.value, SetupType.RANGE_COMPRESSION_BREAKOUT.value
+    }:
+        accepted = bool(accepted15 and retest)
+    return {
+        "required": True,
+        "accepted": accepted,
+        "level": round_price(level),
+        "consecutive_3m": consecutive,
+        "accepted_15m": accepted15,
+        "retest": retest or detector_retest,
+        "reason": (
+            "breakout прийнятий і ретест підтверджений"
+            if accepted
+            else f"потрібне прийняття рівня {round_price(level)}: 2 закриті 3M/15M BOS та ретест; ранній micro-break не є входом"
+        ),
+    }
+
+
+def higher_timeframe_scenario(context: dict[str, Any], side: str) -> str:
+    b4 = (context.get("tf4h") or {}).get("bias", Side.NEUTRAL.value)
+    b1 = (context.get("tf1h") or {}).get("bias", Side.NEUTRAL.value)
+    b15 = (context.get("tf15") or {}).get("bias", Side.NEUTRAL.value)
+    if b4 == side and b1 == side:
+        return f"4H/1H підтримують {side}; 15M визначає інвалідацію"
+    if b4 == opposite(side) and b1 == opposite(side):
+        return f"4H/1H проти {side}; потрібен повний 15M direction flip"
+    if b1 == side:
+        return f"1H підтримує {side}, 4H нейтральний/перехідний"
+    return "старший контекст змішаний; тільки підтверджена 15M структура"
+
+
+def natural_target_blocker(context: dict[str, Any], side: str, entry: float, required_distance: float) -> Optional[Zone]:
+    for zone in zones_relevant_to_price(context, side, entry, max_ahead_atr=8.0):
+        near_edge = zone.low if side == Side.LONG.value else zone.high
+        distance = side_sign(side) * (near_edge - entry)
+        if 0 < distance < required_distance and timeframe_rank(zone.timeframe) >= 2:
+            acceptance = zone_acceptance_snapshot(context, side, zone)
+            if not acceptance.get("accepted"):
+                return zone
+    return None
+
+
+def recent_same_side_stop_guard(state: dict[str, Any], candidate: Candidate) -> dict[str, Any]:
+    history = list(state.get("history") or [])
+    for item in reversed(history):
+        if item.get("type") != "CLOSE" or item.get("side") != candidate.side:
+            continue
+        if item.get("action") not in {Action.STOP.value, Action.EXIT.value}:
+            return {"blocked": False, "reason": ""}
+        closed_at = parse_iso(str(item.get("time") or ""))
+        if not closed_at:
+            return {"blocked": False, "reason": ""}
+        age = (now_utc() - closed_at).total_seconds() / 60.0
+        if age > SAME_SIDE_STOP_COOLDOWN_MINUTES:
+            return {"blocked": False, "reason": ""}
+        fresh_types = {
+            SetupType.DIRECTION_FLIP.value,
+            SetupType.CAPITULATION_RECOVERY.value,
+            SetupType.FRESH_BASE_CONTINUATION.value,
+            SetupType.BREAKOUT_RETEST.value,
+        }
+        fresh = candidate.setup_type in fresh_types and candidate.trigger_ts > int(closed_at.timestamp() * 1000)
+        return {
+            "blocked": not fresh,
+            "reason": (
+                f"після стопа {candidate.side} минуло {age:.0f} хв; потрібен новий 15M reset/BOS/base, не повтор старої тези"
+                if not fresh else ""
+            ),
+        }
+    return {"blocked": False, "reason": ""}
+
+
 def apply_candidate_risk_adjustments(context: dict[str, Any], candidate: Candidate) -> Candidate:
     penalty = 0
     price = context["price"]
     atr15 = max(safe_float(context["tf15"].get("atr")), price * 0.001)
-    anchor = candidate.execution_anchor or candidate.trigger_level or price
+    family = candidate.setup_family or SETUP_FAMILY.get(candidate.setup_type, SetupFamily.NONE.value)
+    # Expansion/transition must be measured from the structural level, not from
+    # the latest event candle. Otherwise a late candle can redefine the anchor
+    # and make a chase look timely.
+    if family in {SetupFamily.EXPANSION.value, SetupFamily.STRUCTURAL_TRANSITION.value}:
+        anchor = candidate.trigger_level or candidate.execution_anchor or price
+    else:
+        anchor = candidate.execution_anchor or candidate.trigger_level or price
     extension = abs(price - anchor) / atr15
     candidate.late_extension_atr = round(extension, 3)
     if candidate.trigger_ready and candidate.trigger_age_minutes > TRIGGER_MAX_AGE_MINUTES:
         candidate.hard_reject_reason = "3M execution-trigger застарів; потрібна нова закрита подія"
-    extension_limit = 0.82 if candidate.execution_profile in {"TACTICAL", "RECOVERY"} else LATE_EXTENSION_ATR15
+    extension_limit = entry_extension_limit(candidate)
     if extension > extension_limit:
-        penalty += 10
-        candidate.risks.append("ціна відійшла від професійного trigger-рівня; потрібен новий відкат")
-    if extension > max(1.45, extension_limit + 0.60):
-        candidate.hard_reject_reason = "сетап уже запізнений відносно свого trigger-рівня"
+        penalty += 12
+        candidate.risks.append(
+            f"ціна відійшла від структурного trigger-рівня на {extension:.2f} ATR; максимум {extension_limit:.2f} ATR"
+        )
+    if extension > extension_limit + 0.55:
+        candidate.hard_reject_reason = "execution window закрилось; новий вхід тільки після окремого ретесту"
 
     adverse = candidate_adverse_families(context, candidate)
     penalty += 5 * len(adverse)
@@ -2252,35 +2515,41 @@ def apply_candidate_risk_adjustments(context: dict[str, Any], candidate: Candida
     if len(adverse) >= 3 and candidate.variant.startswith("EARLY"):
         candidate.hard_reject_reason = "ранній варіант має три незалежні шари проти"
 
+    blocking = strongest_opposing_zone(context, candidate.side, price)
+    acceptance = zone_acceptance_snapshot(context, candidate.side, blocking)
+    if blocking and acceptance.get("required") and not acceptance.get("accepted"):
+        penalty += 10 + timeframe_rank(blocking.timeframe) * 2
+        candidate.risk_mode = "RISKY"
+        candidate.risks.append(acceptance["reason"])
+
     regime = context["regime"]
-    family = candidate.setup_family or SETUP_FAMILY.get(candidate.setup_type, SetupFamily.NONE.value)
     preferred = {
         Regime.TREND.value: {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value},
         Regime.RANGE.value: {SetupFamily.RANGE_EXECUTION.value, SetupFamily.EXPANSION.value},
         Regime.TRANSITION.value: {SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.LIQUIDITY_RECOVERY.value},
         Regime.SHOCK.value: {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value},
-        Regime.NORMAL.value: {
-            SetupFamily.LIQUIDITY_RECOVERY.value,
-            SetupFamily.STRUCTURAL_TRANSITION.value,
-            SetupFamily.CONTINUATION.value,
-            SetupFamily.EXPANSION.value,
-            SetupFamily.RANGE_EXECUTION.value,
-        },
+        Regime.NORMAL.value: set(x.value for x in SetupFamily if x != SetupFamily.NONE),
     }
     if family not in preferred.get(regime, set()):
-        penalty += 7
+        penalty += 8
         candidate.risks.append(f"сімейство {family} не є пріоритетним для режиму {regime}")
+    if regime == Regime.RANGE.value and candidate.setup_type in {
+        SetupType.TREND_IGNITION.value, SetupType.RANGE_COMPRESSION_BREAKOUT.value
+    } and context["s15"].get("bos") != candidate.side:
+        penalty += 9
+        candidate.risk_mode = "RISKY"
+        candidate.risks.append("у RANGE ранній micro-break лише ARMED; потрібне 15M acceptance + ретест")
     if regime == Regime.SHOCK.value and candidate.setup_type not in {
         SetupType.CAPITULATION_RECOVERY.value,
         SetupType.SWEEP_RECLAIM.value,
         SetupType.DIRECTION_FLIP.value,
     }:
-        penalty += 7
+        penalty += 8
         candidate.risk_mode = "RISKY"
-    if regime == Regime.TREND.value and family in {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.RANGE_EXECUTION.value}:
-        if context["s15"].get("choch") != candidate.side:
-            penalty += 7
-            candidate.risk_mode = "RISKY"
+    if context["tf4h"].get("bias") == opposite(candidate.side) and context["tf1h"].get("bias") == opposite(candidate.side):
+        if candidate.setup_type not in {SetupType.DIRECTION_FLIP.value, SetupType.CAPITULATION_RECOVERY.value}:
+            penalty += 12
+            candidate.risks.append("4H і 1H одночасно проти; звичайний continuation не дозволяється")
 
     if candidate.invalidation_level <= 0:
         candidate.hard_reject_reason = "немає об'єктивної ICT-інвалідації"
@@ -2291,7 +2560,6 @@ def apply_candidate_risk_adjustments(context: dict[str, Any], candidate: Candida
 
     candidate.final_score = max(0, min(100, candidate.raw_score - penalty))
     return candidate
-
 
 def finalize_candidate(context: dict[str, Any], candidate: Candidate) -> Candidate:
     candidate.setup_family = candidate.setup_family or SETUP_FAMILY.get(candidate.setup_type, SetupFamily.NONE.value)
@@ -2432,113 +2700,151 @@ def _zone_objects(context: dict[str, Any]) -> list[Zone]:
 
 
 def select_robust_invalidation(
-    context: dict[str, Any], candidate: Candidate, entry: float, atr15: float, minimum_structure_atr: float
-) -> tuple[float, str]:
-    """Replace a micro 3M invalidation with the nearest defensible 15M ICT structure."""
+    context: dict[str, Any], candidate: Candidate, entry: float, atr15: float,
+    minimum_stop_atr: float, maximum_stop_atr: float, buffer_atr: float
+) -> tuple[float, str, str]:
+    """Select the nearest defensible protected level in the correct hierarchy.
+
+    Filtering uses the *final* stop distance (structural level plus buffer), so a
+    valid 15M swing is not skipped merely because the bare level is slightly
+    closer than the anti-noise floor. Distance is heavily penalized to avoid
+    choosing a remote old OB when a nearer protected FVG/swing is sufficient.
+    """
     side = candidate.side
+    sign = side_sign(side)
+    minimum = minimum_stop_atr * atr15
+    maximum = maximum_stop_atr * atr15
+    family = candidate.setup_family or SETUP_FAMILY.get(candidate.setup_type, SetupFamily.NONE.value)
+    options: list[tuple[float, float, str, str]] = []
+
+    def add(level: float, basis: str, timeframe: str, quality: float) -> None:
+        level = safe_float(level)
+        if level <= 0:
+            return
+        structure_distance = sign * (entry - level)
+        final_distance = structure_distance + buffer_atr * atr15
+        if structure_distance <= 0 or final_distance < minimum or final_distance > maximum:
+            return
+        distance_atr = final_distance / max(atr15, 1e-9)
+        options.append((quality - distance_atr * 2.6, level, basis, timeframe))
+
     raw = safe_float(candidate.invalidation_level)
-    min_distance = minimum_structure_atr * atr15
-    raw_distance = side_sign(side) * (entry - raw)
-    if raw > 0 and raw_distance >= min_distance:
-        return raw, f"{candidate.variant or candidate.setup_type}: власна структурна ICT-інвалідація"
+    add(raw, f"{candidate.variant or candidate.setup_type}: власна setup-інвалідація", "SETUP", 16.0)
 
     s15 = _context_structure(context, "15")
-    robust: list[tuple[float, str]] = []
-    swing = safe_float(s15.get("swing_low" if side == Side.LONG.value else "swing_high"))
-    if swing > 0:
-        distance = side_sign(side) * (entry - swing)
-        if distance >= min_distance:
-            robust.append((swing, "закритий 15M swing low" if side == Side.LONG.value else "закритий 15M swing high"))
+    add(s15.get("swing_low" if side == Side.LONG.value else "swing_high"),
+        "закритий 15M protected swing", "15M", 38.0)
+    for value in s15.get("recent_lows" if side == Side.LONG.value else "recent_highs", [])[-4:]:
+        add(value, "закритий 15M структурний pivot", "15M", 33.0)
+
+    s1h = _context_structure(context, "1h")
+    add(s1h.get("swing_low" if side == Side.LONG.value else "swing_high"),
+        "закритий 1H protected swing", "1H", 31.0)
+    for value in s1h.get("recent_lows" if side == Side.LONG.value else "recent_highs", [])[-4:]:
+        add(value, "закритий 1H структурний pivot", "1H", 27.0)
 
     for zone in _zone_objects(context):
-        if zone.mitigated or zone.timeframe != "15m" or zone.side != side:
+        if zone.mitigated or zone.side != side or zone.timeframe not in {"15m", "1h", "4h"}:
             continue
         boundary = zone.low if side == Side.LONG.value else zone.high
-        distance = side_sign(side) * (entry - boundary)
-        if distance >= min_distance:
-            robust.append((boundary, f"15M {zone.kind} {'low' if side == Side.LONG.value else 'high'}"))
+        if zone.timeframe == "15m":
+            quality = 41.0 + min(5.0, safe_float(zone.strength) * 1.5)
+        elif zone.timeframe == "1h":
+            quality = 33.0 + min(6.0, safe_float(zone.strength) * 1.5)
+        else:
+            if family not in {
+                SetupFamily.LIQUIDITY_RECOVERY.value,
+                SetupFamily.STRUCTURAL_TRANSITION.value,
+                SetupFamily.RANGE_EXECUTION.value,
+            }:
+                continue
+            quality = 24.0 + min(6.0, safe_float(zone.strength) * 1.5)
+        add(boundary, f"{zone.timeframe} {zone.kind} outer boundary", zone.timeframe.upper(), quality)
 
-    dr = context.get("dealing_range") or {}
-    boundary = safe_float(dr.get("low" if side == Side.LONG.value else "high"))
-    if boundary > 0:
-        distance = side_sign(side) * (entry - boundary)
-        if distance >= min_distance:
-            robust.append((boundary, "15M dealing-range boundary"))
-
-    if robust:
-        # Nearest level that is still outside normal 3M noise.
-        level, basis = min(robust, key=lambda item: abs(entry - item[0]))
-        return level, f"{candidate.variant or candidate.setup_type}: {basis} замість мікро-інвалідації"
-
-    return raw, f"{candidate.variant or candidate.setup_type}: власна ICT-інвалідація; ширшої 15M опори не знайдено"
+    if not options:
+        return 0.0, "не знайдено реальної 15M/1H ICT-інвалідації в допустимому ризику", ""
+    _, level, basis, timeframe = max(options, key=lambda item: item[0])
+    return level, basis, timeframe
 
 
 def build_entry_map(
     context: dict[str, Any], candidate: Candidate, structural: float, atr15: float
 ) -> dict[str, Any]:
-    """Build an explicit wait zone, trigger and executable entry zone."""
+    """Build location -> trigger -> acceptance -> retest -> executable zone."""
     current = safe_float(context.get("price"))
     side = candidate.side
-    anchor = safe_float(candidate.execution_anchor or candidate.trigger_level or current)
-    trigger = safe_float(candidate.trigger_level or anchor or current)
-    zones = []
+    trigger = safe_float(candidate.trigger_level or candidate.execution_anchor or current)
+    anchor = trigger if candidate.setup_family in {SetupFamily.EXPANSION.value, SetupFamily.STRUCTURAL_TRANSITION.value} else safe_float(candidate.execution_anchor or trigger)
+    limit = entry_extension_limit(candidate)
+
+    ranked: list[tuple[float, Zone]] = []
     for zone in _zone_objects(context):
         if zone.mitigated or zone.side != side:
             continue
-        if side == Side.LONG.value:
-            if zone.high > max(current, anchor) + 0.30 * atr15 or zone.low <= structural - 0.15 * atr15:
-                continue
-        else:
-            if zone.low < min(current, anchor) - 0.30 * atr15 or zone.high >= structural + 0.15 * atr15:
-                continue
-        reference = anchor or trigger or current
+        if zone.timeframe not in {"3m", "15m", "1h"}:
+            continue
+        if side == Side.LONG.value and zone.low <= structural - 0.10 * atr15:
+            continue
+        if side == Side.SHORT.value and zone.high >= structural + 0.10 * atr15:
+            continue
+        reference = trigger or anchor or current
         distance = zone_distance(reference, zone) / max(atr15, 1e-9)
-        contains_trigger = zone.low - 0.05 * atr15 <= trigger <= zone.high + 0.05 * atr15
-        contains_anchor = zone.low - 0.05 * atr15 <= anchor <= zone.high + 0.05 * atr15
-        score = (24 if contains_trigger else 0) + (18 if contains_anchor else 0)
-        score += 12 if zone.timeframe == "15m" else 10
-        score += min(8.0, max(0.0, safe_float(zone.strength) * 4.0))
-        score -= distance * 12.0
-        zones.append((score, zone))
+        if distance > 1.40:
+            continue
+        contains_trigger = zone.low - 0.08 * atr15 <= trigger <= zone.high + 0.08 * atr15
+        score = (28 if contains_trigger else 0) + timeframe_rank(zone.timeframe) * 7
+        score += min(10.0, safe_float(zone.strength) * 3.0) - distance * 10.0
+        ranked.append((score, zone))
 
-    if zones:
-        wait = max(zones, key=lambda item: item[0])[1]
+    if ranked:
+        wait = max(ranked, key=lambda item: item[0])[1]
         wait_low, wait_high = wait.low, wait.high
     else:
-        center = trigger or anchor or current
-        wait_low = center - 0.18 * atr15
-        wait_high = center + 0.18 * atr15
+        wait_low = trigger - 0.18 * atr15
+        wait_high = trigger + 0.18 * atr15
 
     if side == Side.LONG.value:
-        confirmed_trigger = max(trigger, anchor, wait_high)
-        entry_low = wait_high - ENTRY_ZONE_RETEST_ATR15 * atr15
-        entry_high = confirmed_trigger + ENTRY_ZONE_EXTENSION_ATR15 * atr15
+        entry_low = min(trigger, wait_high) - ENTRY_ZONE_RETEST_ATR15 * atr15
+        entry_high = trigger + limit * atr15
         condition = (
-            f"закрита 3M свічка вище {round_price(confirmed_trigger)}; "
-            f"після цього ретест/утримання {round_price(entry_low)}–{round_price(entry_high)}"
+            f"закрита 3M свічка вище {round_price(trigger)}; далі acceptance та ретест/утримання "
+            f"{round_price(entry_low)}–{round_price(entry_high)}"
         )
+        extension = max(0.0, current - trigger) / atr15
     else:
-        confirmed_trigger = min(trigger, anchor, wait_low)
-        entry_low = confirmed_trigger - ENTRY_ZONE_EXTENSION_ATR15 * atr15
-        entry_high = wait_low + ENTRY_ZONE_RETEST_ATR15 * atr15
+        entry_low = trigger - limit * atr15
+        entry_high = max(trigger, wait_low) + ENTRY_ZONE_RETEST_ATR15 * atr15
         condition = (
-            f"закрита 3M свічка нижче {round_price(confirmed_trigger)}; "
-            f"після цього ретест/утримання {round_price(entry_low)}–{round_price(entry_high)}"
+            f"закрита 3M свічка нижче {round_price(trigger)}; далі acceptance та ретест/утримання "
+            f"{round_price(entry_low)}–{round_price(entry_high)}"
         )
+        extension = max(0.0, trigger - current) / atr15
 
     entry_low, entry_high = sorted((entry_low, entry_high))
-    tolerance = 0.05 * atr15
+    tolerance = 0.04 * atr15
     inside = entry_low - tolerance <= current <= entry_high + tolerance
-    execution_ready = bool(candidate.trigger_ready and inside)
+    blocking = strongest_opposing_zone(context, side, current)
+    zone_acceptance = zone_acceptance_snapshot(context, side, blocking)
+    setup_acceptance = setup_acceptance_snapshot(context, candidate)
+    zone_ready = bool((not zone_acceptance.get("required")) or zone_acceptance.get("accepted"))
+    acceptance_ready = bool(zone_ready and setup_acceptance.get("accepted"))
+    execution_ready = bool(candidate.trigger_ready and inside and extension <= limit and acceptance_ready)
+
+    reasons: list[str] = []
     if not candidate.trigger_ready:
-        execution_reason = "execution-trigger ще не закритий"
-    elif not inside:
-        execution_reason = (
-            f"ціна {round_price(current)} поза робочою зоною входу "
-            f"{round_price(entry_low)}–{round_price(entry_high)}; чекаємо ретест, не наздоганяємо"
+        reasons.append("execution-trigger ще не закритий")
+    if candidate.trigger_ready and not setup_acceptance.get("accepted"):
+        reasons.append(setup_acceptance["reason"])
+    if zone_acceptance.get("required") and not zone_acceptance.get("accepted"):
+        reasons.append(zone_acceptance["reason"])
+    if extension > limit:
+        reasons.append(f"ціна відійшла на {extension:.2f} ATR при максимумі {limit:.2f}; не наздоганяємо")
+    if not inside:
+        reasons.append(
+            f"ціна {round_price(current)} поза робочою зоною {round_price(entry_low)}–{round_price(entry_high)}"
         )
-    else:
-        execution_reason = "закритий 3M trigger підтверджений, ціна в робочій зоні"
+    if not reasons:
+        reasons.append("location, trigger, acceptance і retest узгоджені")
 
     ideal_entry = (entry_low + entry_high) / 2.0
     return {
@@ -2546,13 +2852,15 @@ def build_entry_map(
         "wait_zone_high": round_price(wait_high),
         "entry_zone_low": round_price(entry_low),
         "entry_zone_high": round_price(entry_high),
-        "trigger_level": round_price(confirmed_trigger),
+        "trigger_level": round_price(trigger),
         "trigger_condition": condition,
         "execution_ready": execution_ready,
-        "execution_reason": execution_reason,
+        "execution_reason": "; ".join(reasons),
         "ideal_entry": round_price(ideal_entry),
+        "blocking_zone": zone_text(blocking),
+        "acceptance_status": f"SETUP: {setup_acceptance['reason']} | HTF: {zone_acceptance['reason']}",
+        "max_entry_extension_atr": round(limit, 2),
     }
-
 
 def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan:
     current_price = safe_float(context["price"])
@@ -2560,82 +2868,87 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
     sign = side_sign(side)
     atr15 = max(safe_float(context["tf15"].get("atr")), current_price * 0.001)
     profiles = {
-        "TACTICAL": {"buffer": 0.12, "min_stop": 0.82, "structure_floor": 0.72, "max_stop": 1.95, "min_tp_atr": 1.35, "min_rr": 2.00},
-        "RECOVERY": {"buffer": 0.16, "min_stop": 1.00, "structure_floor": 0.88, "max_stop": 2.50, "min_tp_atr": 1.55, "min_rr": 2.00},
-        "TRANSITION": {"buffer": 0.15, "min_stop": 0.92, "structure_floor": 0.82, "max_stop": 2.35, "min_tp_atr": 1.50, "min_rr": 2.00},
-        "BASE_REENTRY": {"buffer": 0.14, "min_stop": 0.88, "structure_floor": 0.78, "max_stop": 2.20, "min_tp_atr": 1.45, "min_rr": 2.00},
-        "RANGE": {"buffer": 0.12, "min_stop": 0.82, "structure_floor": 0.72, "max_stop": 1.95, "min_tp_atr": 1.35, "min_rr": 2.00},
-        "STANDARD": {"buffer": 0.14, "min_stop": 0.90, "structure_floor": 0.82, "max_stop": MAX_STOP_ATR15, "min_tp_atr": MIN_TP1_ATR15, "min_rr": MIN_RR1},
+        "TACTICAL": {"buffer": 0.15, "min_stop": 1.00, "max_stop": 2.60, "min_tp_atr": 1.60, "min_rr": 2.00},
+        "RECOVERY": {"buffer": 0.18, "min_stop": 1.20, "max_stop": 3.40, "min_tp_atr": 1.80, "min_rr": 2.00},
+        "TRANSITION": {"buffer": 0.17, "min_stop": 1.10, "max_stop": 3.20, "min_tp_atr": 1.70, "min_rr": 2.00},
+        "BASE_REENTRY": {"buffer": 0.16, "min_stop": 1.05, "max_stop": 2.80, "min_tp_atr": 1.65, "min_rr": 2.00},
+        "RANGE": {"buffer": 0.15, "min_stop": 1.00, "max_stop": 2.50, "min_tp_atr": 1.55, "min_rr": 2.00},
+        "STANDARD": {"buffer": 0.16, "min_stop": 1.10, "max_stop": 3.00, "min_tp_atr": 1.70, "min_rr": 2.00},
     }
     cfg = profiles.get(candidate.execution_profile, profiles["STANDARD"])
 
-    provisional_structural, _ = select_robust_invalidation(
-        context, candidate, current_price, atr15, cfg["structure_floor"]
+    provisional, _, _ = select_robust_invalidation(
+        context, candidate, current_price, atr15, cfg["min_stop"], cfg["max_stop"], cfg["buffer"]
     )
-    entry_map = build_entry_map(context, candidate, provisional_structural, atr15)
+    entry_map = build_entry_map(context, candidate, provisional or candidate.invalidation_level, atr15)
     entry = current_price if entry_map["execution_ready"] else safe_float(entry_map["ideal_entry"])
 
-    structural, structural_basis = select_robust_invalidation(
-        context, candidate, entry, atr15, cfg["structure_floor"]
+    structural, structural_basis, stop_timeframe = select_robust_invalidation(
+        context, candidate, entry, atr15, cfg["min_stop"], cfg["max_stop"], cfg["buffer"]
     )
-    raw_stop = structural - cfg["buffer"] * atr15 if side == Side.LONG.value else structural + cfg["buffer"] * atr15
-    raw_risk = abs(entry - raw_stop)
-    min_risk = max(MIN_STOP_ATR15, cfg["min_stop"]) * atr15
-    max_risk = min(MAX_STOP_ATR15, cfg["max_stop"]) * atr15
-    stop = raw_stop
-    stop_basis = f"{structural_basis} + {cfg['buffer']:.2f} ATR buffer"
-    if raw_risk < min_risk:
-        stop = entry - sign * min_risk
-        stop_basis = (
-            f"{structural_basis}; anti-noise floor {min_risk / atr15:.2f} ATR "
-            f"(3M мікро-стоп не використовується)"
-        )
-    risk = abs(entry - stop)
-
-    position_risk = RISKY_RISK_PCT if candidate.risk_mode == "RISKY" else NORMAL_RISK_PCT
     invalid = ""
+    if structural <= 0:
+        invalid = structural_basis
+        structural = safe_float(candidate.invalidation_level)
+    buffer_mult = cfg["buffer"]
+    raw_stop = structural - buffer_mult * atr15 if side == Side.LONG.value else structural + buffer_mult * atr15
+    risk = abs(entry - raw_stop)
+    max_risk = cfg["max_stop"] * atr15
+    stop = raw_stop
+    stop_basis = f"{structural_basis}; стоп ЗА рівнем + {buffer_mult:.2f} ATR, не всередині зони"
     better_entry = 0.0 if entry_map["execution_ready"] else safe_float(entry_map["ideal_entry"])
+
     if risk > max_risk:
-        invalid = f"структурний стоп {risk / atr15:.2f} ATR ширший за профіль {max_risk / atr15:.2f} ATR"
+        invalid = f"реальна {stop_timeframe or 'ICT'} інвалідація потребує {risk / atr15:.2f} ATR, максимум профілю {cfg['max_stop']:.2f} ATR; чекати кращу ціну"
         better_entry = stop + sign * max_risk
+    if risk < cfg["min_stop"] * atr15:
+        invalid = "не знайдено достатньо глибокої структурної інвалідації; штучний ATR-стоп не створюється"
     if not ((side == Side.LONG.value and stop < entry) or (side == Side.SHORT.value and stop > entry)):
         invalid = "стоп знаходиться з неправильної сторони від входу"
 
+    position_risk = RISKY_RISK_PCT if candidate.risk_mode == "RISKY" else NORMAL_RISK_PCT
     required_rr = max(MIN_RR1, cfg["min_rr"])
     min_tp1_distance = max(cfg["min_tp_atr"] * atr15, required_rr * risk)
+    blocker = natural_target_blocker(context, side, entry, min_tp1_distance)
+    if blocker:
+        invalid = f"до 2R шлях перекриває неприйнята протилежна зона {zone_text(blocker)}; чекати acceptance або кращу ціну"
+
     tp1, checkpoints = choose_target(candidate.target_levels, entry, side, min_tp1_distance)
     tp1_natural = bool(tp1)
     if not tp1:
-        tp1 = entry + sign * max(PREFERRED_RR1 * risk, max(1.75, cfg["min_tp_atr"]) * atr15)
+        # A measured projection is technical only for continuation/expansion and
+        # only when no HTF zone blocks the path. Reversal setups require actual
+        # opposing liquidity.
+        if candidate.setup_family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value} and not blocker:
+            dr = context.get("dealing_range") or {}
+            width = max(atr15, safe_float(dr.get("high")) - safe_float(dr.get("low")))
+            projection = entry + sign * max(PREFERRED_RR1 * risk, width)
+            tp1 = projection
+        else:
+            invalid = invalid or "після 2R немає реальної ICT/1H ліквідності; не вигадуємо тейк"
+            tp1 = entry + sign * max(PREFERRED_RR1 * risk, 2.0 * atr15)
     rr1 = target_rr(entry, stop, tp1)
 
     later_levels = [v for v in candidate.target_levels if level_in_direction(v, tp1, side)]
-    tp2, checkpoints2 = choose_target(later_levels, entry, side, max(MIN_RR2 * risk, 2.35 * atr15))
-    tp2_natural = bool(tp2)
+    tp2, checkpoints2 = choose_target(later_levels, entry, side, max(MIN_RR2 * risk, 2.60 * atr15))
     if not tp2:
-        tp2 = entry + sign * max(MIN_RR2 * risk, 2.50 * atr15)
+        tp2 = entry + sign * max(MIN_RR2 * risk, 2.80 * atr15)
     later_levels_3 = [v for v in candidate.target_levels if level_in_direction(v, tp2, side)]
-    tp3, checkpoints3 = choose_target(later_levels_3, entry, side, max(MIN_RR3 * risk, 3.15 * atr15))
-    tp3_natural = bool(tp3)
+    tp3, checkpoints3 = choose_target(later_levels_3, entry, side, max(MIN_RR3 * risk, 3.40 * atr15))
     if not tp3:
-        tp3 = entry + sign * max(MIN_RR3 * risk, 3.30 * atr15)
+        tp3 = entry + sign * max(MIN_RR3 * risk, 3.60 * atr15)
 
     if side == Side.LONG.value:
-        tp2 = max(tp2, tp1 + 0.65 * atr15)
-        tp3 = max(tp3, tp2 + 0.80 * atr15)
+        tp2 = max(tp2, tp1 + 0.70 * atr15)
+        tp3 = max(tp3, tp2 + 0.90 * atr15)
     else:
-        tp2 = min(tp2, tp1 - 0.65 * atr15)
-        tp3 = min(tp3, tp2 - 0.80 * atr15)
-
+        tp2 = min(tp2, tp1 - 0.70 * atr15)
+        tp3 = min(tp3, tp2 - 0.90 * atr15)
     rr2 = target_rr(entry, stop, tp2)
     rr3 = target_rr(entry, stop, tp3)
     if rr1 < required_rr:
-        invalid = f"перша професійна ціль дає лише {rr1:.2f}R при обов'язковому мінімумі {required_rr:.2f}R"
+        invalid = f"перша ціль дає лише {rr1:.2f}R при обов'язковому мінімумі {required_rr:.2f}R"
         better_entry = (tp1 + required_rr * stop) / (1 + required_rr)
-
-    if rr1 > 7.0 and risk < 0.90 * atr15:
-        invalid = "аномально високий RR утворений мікро-стопом; потрібна ширша 15M/ICT інвалідація"
-        better_entry = 0.0
 
     position_size = 0.0
     notional = 0.0
@@ -2644,45 +2957,24 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
         position_size = cash_risk / risk
         notional = position_size * entry
 
-    natural_text = []
-    natural_text.append("TP1 — реальна ICT/технічна ліквідність за 2R" if tp1_natural else "TP1 — 2.2R measured 15M expansion")
-    natural_text.append("TP2 — наступна ліквідність" if tp2_natural else "TP2 — 3R measured expansion")
-    natural_text.append("TP3 — зовнішня ліквідність" if tp3_natural else "TP3 — 4R measured expansion")
-
     return TradePlan(
-        entry=round_price(entry),
-        stop=round_price(stop),
-        tp1=round_price(tp1),
-        tp2=round_price(tp2),
-        tp3=round_price(tp3),
-        risk_pct=round(abs(entry - stop) / entry * 100.0, 3),
-        rr1=round(rr1, 2),
-        rr2=round(rr2, 2),
-        rr3=round(rr3, 2),
-        position_risk_pct=position_risk,
-        position_size=round(position_size, 6),
-        notional=round(notional, 2),
-        invalidation=(
-            f"закриття 15M за професійною ICT-інвалідацією {round_price(structural)}; "
-            f"сетап {candidate.variant or candidate.setup_type}"
-        ),
+        entry=round_price(entry), stop=round_price(stop), tp1=round_price(tp1), tp2=round_price(tp2), tp3=round_price(tp3),
+        risk_pct=round(abs(entry - stop) / entry * 100.0, 3), rr1=round(rr1, 2), rr2=round(rr2, 2), rr3=round(rr3, 2),
+        position_risk_pct=position_risk, position_size=round(position_size, 6), notional=round(notional, 2),
+        invalidation=(f"закриття 15M за {round_price(structural)}; якщо стоп базується на 1H/4H зоні — її зовнішня межа має абсолютний пріоритет"),
         stop_basis=stop_basis,
-        target_basis="; ".join(natural_text),
-        checkpoints=[round_price(v) for v in (checkpoints + checkpoints2 + checkpoints3)[:6]],
-        valid=not invalid,
-        reason=invalid,
-        better_entry=round_price(better_entry),
-        structural_invalidation=round_price(structural),
-        wait_zone_low=entry_map["wait_zone_low"],
-        wait_zone_high=entry_map["wait_zone_high"],
-        entry_zone_low=entry_map["entry_zone_low"],
-        entry_zone_high=entry_map["entry_zone_high"],
-        trigger_level=entry_map["trigger_level"],
-        trigger_condition=entry_map["trigger_condition"],
-        execution_ready=bool(entry_map["execution_ready"]),
-        execution_reason=str(entry_map["execution_reason"]),
+        target_basis=("TP1 — реальна ICT/1H ліквідність ≥2R" if tp1_natural else "TP1 — валідована 15M measured expansion ≥2.2R") + "; TP2/TP3 — наступна зовнішня ліквідність/3R/4R",
+        checkpoints=[round_price(v) for v in (checkpoints + checkpoints2 + checkpoints3)[:8]],
+        valid=not invalid, reason=invalid, better_entry=round_price(better_entry), structural_invalidation=round_price(structural),
+        wait_zone_low=entry_map["wait_zone_low"], wait_zone_high=entry_map["wait_zone_high"],
+        entry_zone_low=entry_map["entry_zone_low"], entry_zone_high=entry_map["entry_zone_high"],
+        trigger_level=entry_map["trigger_level"], trigger_condition=entry_map["trigger_condition"],
+        execution_ready=bool(entry_map["execution_ready"]), execution_reason=str(entry_map["execution_reason"]),
+        stop_timeframe=stop_timeframe, stop_source_level=round_price(structural),
+        htf_scenario=higher_timeframe_scenario(context, side), blocking_zone=entry_map["blocking_zone"],
+        acceptance_status=entry_map["acceptance_status"], natural_tp1=tp1_natural,
+        max_entry_extension_atr=entry_map["max_entry_extension_atr"],
     )
-
 
 def opportunity_is_valid(opportunity: Opportunity, context: dict[str, Any]) -> bool:
     expires = parse_iso(opportunity.expires_at)
@@ -2735,151 +3027,106 @@ def candidate_is_executable(candidate: Candidate) -> bool:
 def evaluate_new_setup(context: dict[str, Any], state: dict[str, Any]) -> Decision:
     candidates = build_candidates(context)
     viable = [c for c in candidates if not c.hard_reject_reason]
-    audit_candidates = [
-        {
-            "side": c.side,
-            "setup_type": c.setup_type,
-            "setup_family": c.setup_family,
-            "variant": c.variant,
-            "stage": c.stage,
-            "raw_score": c.raw_score,
-            "final_score": c.final_score,
-            "selection_score": round(candidate_selection_score(c), 2),
-            "trigger_ready": c.trigger_ready,
-            "risk_mode": c.risk_mode,
-            "evidence_families": c.evidence_families,
-            "evidence_count": len(c.evidence_families),
-            "late_extension_atr": c.late_extension_atr,
-            "execution_anchor": c.execution_anchor,
-            "trigger_age_minutes": c.trigger_age_minutes,
-            "hard_reject_reason": c.hard_reject_reason,
-            "score_components": c.score_components,
-        }
-        for c in candidates
-    ]
+    planned: list[tuple[Candidate, TradePlan]] = []
+    for candidate in viable:
+        try:
+            planned.append((candidate, build_trade_plan(context, candidate)))
+        except Exception as exc:
+            candidate.risks.append(f"помилка побудови плану: {exc}")
 
-    executable = [c for c in viable if candidate_is_executable(c)]
-    if executable:
-        best = max(executable, key=candidate_selection_score)
-    elif viable:
-        best = max(viable, key=candidate_selection_score)
+    audit_candidates = []
+    for c in candidates:
+        plan = next((p for cc, p in planned if cc is c), None)
+        audit_candidates.append({
+            "side": c.side, "setup_type": c.setup_type, "setup_family": c.setup_family, "variant": c.variant,
+            "stage": c.stage, "raw_score": c.raw_score, "final_score": c.final_score,
+            "selection_score": round(candidate_selection_score(c), 2), "trigger_ready": c.trigger_ready,
+            "risk_mode": c.risk_mode, "evidence_families": c.evidence_families,
+            "evidence_count": len(c.evidence_families), "late_extension_atr": c.late_extension_atr,
+            "execution_anchor": c.execution_anchor, "trigger_level": c.trigger_level,
+            "trigger_age_minutes": c.trigger_age_minutes, "hard_reject_reason": c.hard_reject_reason,
+            "score_components": c.score_components,
+            "geometry_valid": bool(plan and plan.valid), "execution_ready": bool(plan and plan.execution_ready),
+            "geometry_reason": plan.reason if plan else "",
+            "blocking_zone": plan.blocking_zone if plan else "",
+            "acceptance_status": plan.acceptance_status if plan else "",
+        })
+
+    entry_pool: list[tuple[Candidate, TradePlan]] = []
+    for c, p in planned:
+        cooldown = recent_same_side_stop_guard(state, c)
+        if cooldown.get("blocked"):
+            c.risks.append(cooldown["reason"])
+            continue
+        if candidate_is_executable(c) and p.valid and p.execution_ready:
+            entry_pool.append((c, p))
+
+    if entry_pool:
+        best, plan = max(entry_pool, key=lambda pair: candidate_selection_score(pair[0]))
+    elif planned:
+        best, plan = max(planned, key=lambda pair: candidate_selection_score(pair[0]))
     else:
-        best = None
+        best, plan = None, None
 
     if best is None or best.final_score < ARMED_SCORE:
         saved = opportunity_from_state(state)
         if saved and opportunity_is_valid(saved, context):
-            return Decision(
-                id=uuid.uuid4().hex[:12],
-                time=iso_now(),
-                action=Action.ARMED.value,
-                side=saved.side,
-                setup_type=saved.setup_type,
-                quality=saved.score,
+            return Decision(id=uuid.uuid4().hex[:12], time=iso_now(), action=Action.ARMED.value,
+                side=saved.side, setup_type=saved.setup_type, quality=saved.score,
                 reason=f"{saved.variant or saved.setup_type} ще чинний, але нового execution-trigger немає",
-                regime=context["regime"],
-                audit={"candidates": audit_candidates, "opportunity_memory": asdict(saved)},
-            )
-        return Decision(
-            id=uuid.uuid4().hex[:12],
-            time=iso_now(),
-            action=Action.NO_SETUP.value,
-            side=Side.NEUTRAL.value,
-            setup_type=SetupType.NONE.value,
-            quality=best.final_score if best else 0,
-            reason="ринок не сформував незалежний професійний ланцюжок: location/liquidity → structure → execution",
-            regime=context["regime"],
-            audit={"candidates": audit_candidates},
-        )
+                regime=context["regime"], audit={"candidates": audit_candidates, "opportunity_memory": asdict(saved)})
+        return Decision(id=uuid.uuid4().hex[:12], time=iso_now(), action=Action.NO_SETUP.value,
+            side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value, quality=best.final_score if best else 0,
+            reason="ринок не сформував узгоджений ланцюжок 4H/1H location → 15M invalidation → 3M trigger/acceptance/retest",
+            regime=context["regime"], audit={"candidates": audit_candidates})
 
-    executable_opposite = [c for c in executable if c.side == opposite(best.side)]
-    strongest_opposite = max(executable_opposite, key=candidate_selection_score, default=None)
+    executable_opposite = [(c, p) for c, p in entry_pool if c.side == opposite(best.side)]
+    strongest_opposite = max(executable_opposite, key=lambda pair: candidate_selection_score(pair[0]), default=None)
     if strongest_opposite:
-        margin = candidate_selection_score(best) - candidate_selection_score(strongest_opposite)
+        margin = candidate_selection_score(best) - candidate_selection_score(strongest_opposite[0])
         if margin < DIRECTION_MARGIN:
-            return Decision(
-                id=uuid.uuid4().hex[:12],
-                time=iso_now(),
-                action=Action.NO_SETUP.value,
-                side=Side.NEUTRAL.value,
-                setup_type=SetupType.NONE.value,
-                quality=max(best.final_score, strongest_opposite.final_score),
-                reason=(
-                    f"два незалежно підтверджені напрями мають недостатню перевагу: "
-                    f"{best.side} {best.final_score} проти {strongest_opposite.side} {strongest_opposite.final_score}"
-                ),
-                regime=context["regime"],
-                audit={"candidates": audit_candidates, "direction_conflict": True, "selection_margin": round(margin, 2)},
-            )
+            return Decision(id=uuid.uuid4().hex[:12], time=iso_now(), action=Action.NO_SETUP.value,
+                side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value,
+                quality=max(best.final_score, strongest_opposite[0].final_score),
+                reason=f"два повністю виконувані напрями мають недостатню перевагу: {best.side} проти {strongest_opposite[0].side}",
+                regime=context["regime"], audit={"candidates": audit_candidates, "direction_conflict": True})
 
-    plan = build_trade_plan(context, best)
     full_threshold, risky_threshold = setup_thresholds(best)
     evidence_count = len(best.evidence_families)
-    extension_limit = 0.82 if best.execution_profile in {"TACTICAL", "RECOVERY"} else LATE_EXTENSION_ATR15
     action = Action.ARMED.value
-    if best.trigger_ready and plan.valid and plan.execution_ready and best.late_extension_atr <= extension_limit:
+    in_entry_pool = any(c is best for c, _ in entry_pool)
+    if in_entry_pool:
         if best.risk_mode == "NORMAL" and best.final_score >= full_threshold and evidence_count >= MIN_ENTRY_EVIDENCE:
             action = Action.ENTRY.value
         elif best.final_score >= risky_threshold and evidence_count >= MIN_RISKY_EVIDENCE:
             action = Action.RISKY_ENTRY.value
 
-    if not best.trigger_ready:
-        reason = f"{SETUP_LABELS.get(best.setup_type, best.setup_type)} сформовано; потрібен свіжий закритий 3M execution-trigger"
-    elif evidence_count < MIN_RISKY_EVIDENCE:
-        reason = f"тригер є, але незалежних доказів лише {evidence_count}; мінімум {MIN_RISKY_EVIDENCE}"
-    elif not plan.valid:
-        reason = f"сетап професійно підтверджений, але геометрія не готова: {plan.reason}"
-    elif not plan.execution_ready:
-        reason = f"сетап сформований; {plan.execution_reason}"
-    elif best.late_extension_atr > extension_limit:
-        reason = "сетап підтверджений, але execution window закрилось; потрібен новий відкат/ретест"
+    cooldown = recent_same_side_stop_guard(state, best)
+    if cooldown.get("blocked"):
+        reason = cooldown["reason"]
+    elif not best.trigger_ready:
+        reason = f"{SETUP_LABELS.get(best.setup_type, best.setup_type)} сформовано; потрібен свіжий закритий 3M trigger"
+    elif plan and not plan.valid:
+        reason = f"сетап підтверджений, але професійна геометрія не готова: {plan.reason}"
+    elif plan and not plan.execution_ready:
+        reason = f"сетап сформований; зараз не входити: {plan.execution_reason}"
     elif action in {Action.ENTRY.value, Action.RISKY_ENTRY.value}:
-        reason = (
-            f"{SETUP_LABELS.get(best.setup_type, best.setup_type)} — {best.variant}; "
-            f"незалежних доказів {evidence_count}, геометрія валідна"
-        )
+        reason = f"{SETUP_LABELS.get(best.setup_type, best.setup_type)} — {best.variant}; 4H/1H/15M/3M узгоджені, 2R шлях валідний"
     else:
         reason = f"{best.variant}: якість {best.final_score}, очікується повне виконання порогів {full_threshold}/{risky_threshold}"
 
-    return Decision(
-        id=uuid.uuid4().hex[:12],
-        time=iso_now(),
-        action=action,
-        side=best.side,
-        setup_type=best.setup_type,
-        quality=best.final_score,
-        reason=reason,
-        regime=context["regime"],
-        candidate=best,
-        plan=plan,
-        audit={
-            "candidates": audit_candidates,
-            "selected": {
-                "side": best.side,
-                "setup_type": best.setup_type,
-                "setup_family": best.setup_family,
-                "variant": best.variant,
-                "stage": best.stage,
-                "score": best.final_score,
-                "evidence_count": evidence_count,
-                "full_threshold": full_threshold,
-                "risky_threshold": risky_threshold,
-            },
-            "direction_margin": round(
-                candidate_selection_score(best) - (candidate_selection_score(strongest_opposite) if strongest_opposite else 0.0), 2
-            ),
-            "invariants": {
-                "single_selector": True,
-                "one_candidate_per_family_and_side": True,
-                "single_geometry_builder": True,
-                "independent_evidence_required": True,
-                "no_post_decision_mutation": True,
-                "flow_cannot_create_direction": True,
-                "prime_ict_is_context_not_standalone_setup": True,
-            },
-        },
-    )
-
+    return Decision(id=uuid.uuid4().hex[:12], time=iso_now(), action=action, side=best.side,
+        setup_type=best.setup_type, quality=best.final_score, reason=reason, regime=context["regime"],
+        candidate=best, plan=plan,
+        audit={"candidates": audit_candidates,
+            "selected": {"side": best.side, "setup_type": best.setup_type, "setup_family": best.setup_family,
+                "variant": best.variant, "stage": best.stage, "score": best.final_score,
+                "evidence_count": evidence_count, "full_threshold": full_threshold, "risky_threshold": risky_threshold},
+            "invariants": {"single_selector": True, "geometry_aware_selection": True,
+                "one_candidate_per_family_and_side": True, "single_geometry_builder": True,
+                "4h_scenario_1h_location_15m_invalidation_3m_execution": True,
+                "no_artificial_micro_stop": True, "opposing_zone_acceptance_required": True,
+                "flow_cannot_create_direction": True}})
 
 # ==========================================================
 # ACTIVE TRADE MANAGEMENT — SIMPLE STATE MACHINE
@@ -2918,6 +3165,12 @@ def new_active_trade(decision: Decision) -> ActiveTrade:
         setup_family=decision.candidate.setup_family,
         variant=decision.candidate.variant,
         execution_profile=decision.candidate.execution_profile,
+        trigger_level=plan.trigger_level,
+        entry_zone_low=plan.entry_zone_low,
+        entry_zone_high=plan.entry_zone_high,
+        initial_atr15=max(0.0, abs(plan.entry - plan.stop) / max(plan.rr1 / 2.0, 1.0)),
+        opened_regime=decision.regime,
+        failure_checks=0,
     )
 
 
@@ -2993,14 +3246,38 @@ def stop_after_tp2(trade: ActiveTrade, context: dict[str, Any], current_price: f
 
 def thesis_broken(trade: ActiveTrade, context: dict[str, Any]) -> bool:
     c15 = closed(context["candles"]["15m"])
-    if len(c15) < 2:
+    c3 = closed(context["candles"]["3m"])
+    if len(c15) < 2 or len(c3) < 3:
         return False
     if trade.side == Side.LONG.value:
         closed_break = c15[-1].close < trade.structural_invalidation and c15[-2].close < trade.structural_invalidation
+        trigger_lost = sum(c.close < trade.trigger_level for c in c3[-3:]) >= 2 if trade.trigger_level else False
     else:
         closed_break = c15[-1].close > trade.structural_invalidation and c15[-2].close > trade.structural_invalidation
-    return bool(closed_break and context["s3"].get("bias") == opposite(trade.side))
+        trigger_lost = sum(c.close > trade.trigger_level for c in c3[-3:]) >= 2 if trade.trigger_level else False
+    fast_against = context["s3"].get("bias") == opposite(trade.side)
+    if trade.setup_family in {SetupFamily.EXPANSION.value, SetupFamily.STRUCTURAL_TRANSITION.value}:
+        return bool((closed_break and fast_against) or (trigger_lost and context["s15"].get("bias") == opposite(trade.side)))
+    return bool(closed_break and fast_against)
 
+
+def failed_entry_snapshot(trade: ActiveTrade, context: dict[str, Any]) -> dict[str, Any]:
+    opened = parse_iso(trade.opened_at)
+    elapsed = (now_utc() - opened).total_seconds() / 60.0 if opened else 0.0
+    mfe_r = trade_r_multiple(trade, trade.best_price)
+    c3 = closed(context["candles"]["3m"])[-4:]
+    if trade.side == Side.LONG.value:
+        trigger_lost = bool(trade.trigger_level and sum(c.close < trade.trigger_level for c in c3) >= 2)
+    else:
+        trigger_lost = bool(trade.trigger_level and sum(c.close > trade.trigger_level for c in c3) >= 2)
+    adverse = 0
+    if context["tf3"].get("bias") == opposite(trade.side): adverse += 1
+    if context["flow"].get("bias") == opposite(trade.side) or context["flow"].get("absorption_bias") == opposite(trade.side): adverse += 1
+    if context["s15"].get("choch") == opposite(trade.side) or context["s15"].get("bos") == opposite(trade.side): adverse += 1
+    timeout = FAILED_EXPANSION_MINUTES if trade.setup_family in {SetupFamily.EXPANSION.value, SetupFamily.STRUCTURAL_TRANSITION.value} else FAILED_CONTINUATION_MINUTES
+    failed = bool(elapsed >= timeout and mfe_r < FAILED_ENTRY_MIN_MFE_R and trigger_lost and adverse >= 2)
+    return {"failed": failed, "elapsed": elapsed, "mfe_r": mfe_r, "trigger_lost": trigger_lost, "adverse": adverse,
+            "reason": f"за {elapsed:.0f} хв угода не дала {FAILED_ENTRY_MIN_MFE_R:.2f}R, втратила trigger і має {adverse} незалежні шари проти"}
 
 def close_result(trade: ActiveTrade, action: str, exit_price: float, reason: str, context: dict[str, Any]) -> dict[str, Any]:
     result_pct = trade_pct(trade, exit_price)
@@ -3076,8 +3353,13 @@ def manage_active_trade(trade: ActiveTrade, context: dict[str, Any]) -> dict[str
         event_action = Action.TP2.value
         event_price = event_price or trade.tp2
 
+    failed_entry = failed_entry_snapshot(trade, context)
+    if not trade.tp1_hit and failed_entry.get("failed"):
+        trade.failure_checks += 1
+        return close_result(trade, Action.EXIT.value, current_price, f"failed expansion/entry guard: {failed_entry['reason']}", context)
+
     if thesis_broken(trade, context):
-        return close_result(trade, Action.EXIT.value, current_price, "два закриті 15M close зламали ICT-інвалідацію та 3M підтвердив напрям проти", context)
+        return close_result(trade, Action.EXIT.value, current_price, "setup-aware ICT thesis broken: 15M/trigger structure підтвердила напрям проти", context)
 
     current_pct = trade_pct(trade, current_price)
     mfe_pct = max(0.0, trade_pct(trade, trade.best_price))
@@ -3283,8 +3565,13 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
             f"TP3: {p.tp3} — {p.rr3}R",
             f"Ризик позиції: {p.position_risk_pct}%",
             f"Основа стопа: {html.escape(p.stop_basis)}",
+            f"Таймфрейм стопа: {html.escape(p.stop_timeframe or 'ICT')} | структурний рівень: {p.stop_source_level}",
+            f"HTF-сценарій: {html.escape(p.htf_scenario)}",
+            f"Acceptance: {html.escape(p.acceptance_status)}",
             f"Основа тейків: {html.escape(p.target_basis)}",
         ])
+        if p.blocking_zone:
+            lines.append(f"Протилежна зона: {html.escape(p.blocking_zone)}")
         if p.checkpoints:
             lines.append("Проміжні бар’єри, не тейки: " + ", ".join(str(x) for x in p.checkpoints[:4]))
         if p.better_entry and decision.action == Action.ARMED.value:
@@ -3435,7 +3722,7 @@ def public_context(context: dict[str, Any]) -> dict[str, Any]:
         "dealing_range": context["dealing_range"],
         "flow": context["flow"],
         "derivatives": context["derivatives"],
-        "zones": [asdict(z) for z in context["zones"][-12:]],
+        "zones": [asdict(z) for z in context["zones"][-28:]],
     }
 
 
@@ -3580,79 +3867,122 @@ def synthetic_candles(base: float, count: int, step: float = 0.05, interval_ms: 
 
 
 def run_self_test() -> None:
-    # Geometry: a microscopic structural stop must be expanded once, not used to
-    # manufacture absurd 10R+ plans.
-    c3 = synthetic_candles(99.0, 60, 0.02)
-    c15 = synthetic_candles(96.0, 60, 0.07, 900_000)
-    context = {
+    def flat_candles(price: float, count: int, interval_ms: int) -> list[Candle]:
+        start = int(now_utc().timestamp() * 1000) - count * interval_ms
+        return [Candle(start + i * interval_ms, price, price + 0.08, price - 0.08, price, 100 + i, True) for i in range(count)]
+
+    c3 = flat_candles(100.0, 70, 180_000)
+    c15 = flat_candles(100.0, 70, 900_000)
+    c1h = flat_candles(100.0, 60, 3_600_000)
+    c4h = flat_candles(100.0, 50, 14_400_000)
+    base_context = {
         "price": 100.0,
+        "tf3": {"atr": 0.25, "bias": Side.LONG.value, "score": 30},
         "tf15": {"atr": 1.0, "bias": Side.LONG.value},
-        "tf4h": {"bias": Side.NEUTRAL.value},
-        "flow": {"bias": Side.LONG.value},
+        "tf1h": {"atr": 2.0, "bias": Side.LONG.value},
+        "tf4h": {"atr": 4.0, "bias": Side.NEUTRAL.value},
+        "flow": {"bias": Side.LONG.value, "absorption_bias": Side.NEUTRAL.value},
         "regime": Regime.TREND.value,
-        "candles": {"3m": c3, "15m": c15},
+        "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
         "s3": {"bias": Side.LONG.value, "bos": Side.NEUTRAL.value, "choch": Side.NEUTRAL.value},
-        "s15": {"bias": Side.LONG.value, "bos": Side.NEUTRAL.value, "choch": Side.NEUTRAL.value},
+        "s15": {"bias": Side.LONG.value, "bos": Side.NEUTRAL.value, "choch": Side.NEUTRAL.value,
+                 "swing_low": 98.8, "swing_high": 101.0, "recent_lows": [98.8, 99.1], "recent_highs": [101.0]},
+        "s1h": {"bias": Side.LONG.value, "bos": Side.NEUTRAL.value, "choch": Side.NEUTRAL.value,
+                 "swing_low": 97.5, "swing_high": 103.0, "recent_lows": [97.5], "recent_highs": [103.0]},
+        "dealing_range": {"low": 98.8, "high": 103.0, "equilibrium": 100.9},
+        "zones": [Zone("OB", Side.LONG.value, 98.9, 99.2, c15[-8].ts, "15m", 1.4, False)],
     }
     candidate = Candidate(
-        side=Side.LONG.value,
-        setup_type=SetupType.PULLBACK_CONTINUATION.value,
-        raw_score=80,
-        final_score=80,
-        score_components={},
-        trigger_ready=True,
-        trigger_level=99.8,
-        invalidation_level=99.75,
-        target_levels=[100.4, 101.5, 102.4, 103.6],
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        raw_score=82, final_score=82, score_components={"location": 14, "structure": 20, "liquidity": 14, "trigger": 14, "flow": 10, "htf": 5},
+        trigger_ready=True, trigger_level=99.9, invalidation_level=99.75,
+        target_levels=[102.5, 103.5, 105.0], setup_family=SetupFamily.CONTINUATION.value,
+        variant="FULL_PULLBACK", execution_profile="STANDARD", execution_anchor=99.9,
     )
-    plan = build_trade_plan(context, candidate)
-    assert plan.stop <= 99.52 + 1e-6, plan
-    assert plan.rr1 >= 2.0, plan
-    assert plan.tp1 < plan.tp2 < plan.tp3, plan
+    plan = build_trade_plan(base_context, candidate)
+    assert plan.valid, plan
+    assert plan.stop_timeframe == "15M", plan
+    assert plan.stop < 98.9, "stop must be behind the 15M zone, not inside it"
+    assert abs(plan.entry - plan.stop) >= 1.10, plan
+    assert plan.rr1 >= 2.0 and plan.tp1 < plan.tp2 < plan.tp3, plan
 
+    # Opposing 15M/1H zone: trigger alone cannot open a position inside it.
+    blocked_context = dict(base_context)
+    blocked_context["zones"] = list(base_context["zones"]) + [Zone("FVG", Side.SHORT.value, 99.85, 100.25, c15[-5].ts, "15m", 1.2, False)]
+    blocked_plan = build_trade_plan(blocked_context, candidate)
+    assert not blocked_plan.execution_ready and blocked_plan.blocking_zone, blocked_plan
+
+    # Late entry is measured from the structural trigger, not the newest event candle.
+    late_context = dict(base_context)
+    late_context["price"] = 100.75
+    late_candidate = Candidate(**{**asdict(candidate), "trigger_level": 100.0, "execution_anchor": 100.7})
+    late_plan = build_trade_plan(late_context, late_candidate)
+    assert not late_plan.execution_ready and "не наздоганяємо" in late_plan.execution_reason, late_plan
+
+    # RANGE micro-break remains ARMED until 15M acceptance plus retest.
+    range_context = dict(base_context)
+    range_context["regime"] = Regime.RANGE.value
+    range_context["s15"] = dict(base_context["s15"], bos=Side.NEUTRAL.value)
+    breakout_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+        raw_score=75, final_score=75, score_components={"location": 12, "structure": 19, "liquidity": 16, "trigger": 14, "flow": 9, "htf": 5},
+        trigger_ready=True, trigger_level=100.0, invalidation_level=98.8, target_levels=[103.0, 104.0],
+        setup_family=SetupFamily.EXPANSION.value, variant="EARLY_MICRO_COMPRESSION_BREAK",
+        execution_profile="TACTICAL", execution_anchor=100.0,
+    )
+    range_plan = build_trade_plan(range_context, breakout_candidate)
+    assert not range_plan.execution_ready, range_plan
+    assert "потрібне прийняття" in range_plan.execution_reason, range_plan
+
+    # Failed-entry guard exits a breakout that never expands and loses its trigger.
+    lost_c3 = c3[:-4] + [
+        Candle(c3[-4].ts, 100.0, 100.05, 99.85, 99.90, 150, True),
+        Candle(c3[-3].ts, 99.90, 99.95, 99.75, 99.82, 160, True),
+        Candle(c3[-2].ts, 99.82, 99.88, 99.70, 99.78, 170, True),
+        Candle(c3[-1].ts, 99.78, 99.84, 99.65, 99.72, 180, True),
+    ]
+    old_open = datetime.fromtimestamp((lost_c3[-1].ts / 1000) - 3600, tz=timezone.utc).isoformat()
+    failed_trade = ActiveTrade(
+        id="failed", side=Side.LONG.value, setup_type=SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+        opened_at=old_open, entry=100.0, stop_initial=98.8, stop_current=98.8,
+        structural_invalidation=98.9, tp1=102.4, tp2=103.6, tp3=104.8,
+        quality=75, position_risk_pct=0.25, best_price=100.1, worst_price=99.7,
+        setup_family=SetupFamily.EXPANSION.value, variant="EARLY_MICRO_COMPRESSION_BREAK",
+        execution_profile="TACTICAL", trigger_level=100.0,
+    )
+    failed_context = dict(base_context)
+    failed_context["price"] = 99.72
+    failed_context["candles"] = {"3m": lost_c3, "15m": c15, "1h": c1h, "4h": c4h}
+    failed_context["tf3"] = {"bias": Side.SHORT.value, "score": -35}
+    failed_context["flow"] = {"bias": Side.SHORT.value, "absorption_bias": Side.NEUTRAL.value}
+    snap = failed_entry_snapshot(failed_trade, failed_context)
+    assert snap["failed"], snap
+
+    # Management: no pre-TP1 stop tightening, one stop lock after TP1.
     opened = datetime.fromtimestamp((c3[-3].ts - 60_000) / 1000, tz=timezone.utc).isoformat()
-    trade = ActiveTrade(
-        id="selftest",
-        side=Side.LONG.value,
-        setup_type=SetupType.PULLBACK_CONTINUATION.value,
-        opened_at=opened,
-        entry=100.0,
-        stop_initial=99.4,
-        stop_current=99.4,
-        structural_invalidation=99.55,
-        tp1=101.0,
-        tp2=102.0,
-        tp3=103.0,
-        quality=80,
-        position_risk_pct=0.5,
-        best_price=100.0,
-        worst_price=100.0,
-    )
-    quiet_context = dict(context)
+    trade = ActiveTrade(id="selftest", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        opened_at=opened, entry=100.0, stop_initial=98.8, stop_current=98.8, structural_invalidation=98.9,
+        tp1=102.4, tp2=103.6, tp3=104.8, quality=80, position_risk_pct=0.5,
+        best_price=100.0, worst_price=100.0, setup_family=SetupFamily.CONTINUATION.value,
+        trigger_level=99.9)
+    quiet_context = dict(base_context)
     quiet_context["price"] = 100.4
-    quiet_context["candles"] = {"3m": c3[-2:], "15m": c15[-5:]}
+    quiet_context["candles"] = {"3m": c3[-2:], "15m": c15[-5:], "1h": c1h, "4h": c4h}
     first = manage_active_trade(trade, quiet_context)
-    assert not first["closed"]
-    assert trade.stop_current == 99.4, "Pre-TP1 stop changed without structural invalidation"
-
-    # Force a TP1 candle and verify the stop is updated once and then locked.
-    tp_candle = Candle(ts=trade.last_checked_3m_ts + 180_000, open=100.4, high=101.1, low=100.2, close=100.9, volume=150)
+    assert not first["closed"] and trade.stop_current == 98.8
+    tp_candle = Candle(ts=trade.last_checked_3m_ts + 180_000, open=100.4, high=102.5, low=100.2, close=102.3, volume=150)
     tp_context = dict(quiet_context)
-    tp_context["price"] = 100.9
-    tp_context["candles"] = {"3m": c3[-8:] + [tp_candle], "15m": c15[-8:]}
+    tp_context["price"] = 102.3
+    tp_context["candles"] = {"3m": c3[-8:] + [tp_candle], "15m": c15[-8:], "1h": c1h, "4h": c4h}
     second = manage_active_trade(trade, tp_context)
     assert not second["closed"] and trade.tp1_hit and trade.tp1_stop_locked
     locked_stop = trade.stop_current
-    third = manage_active_trade(trade, tp_context)
-    assert trade.stop_current == locked_stop, "TP1 stop was recalculated twice"
+    manage_active_trade(trade, tp_context)
+    assert trade.stop_current == locked_stop
 
-    # Central 3M execution scanner: an event between 15-minute runs remains
-    # usable while its level holds, and dies after true invalidation.
+    # Central 3M scanner retains a valid event and drops it after invalidation.
     start = 1_780_000_000_000
-    trigger_candles = [
-        Candle(start + i * 180_000, 100.0, 100.05, 99.95, 100.0, 100, True)
-        for i in range(18)
-    ]
+    trigger_candles = [Candle(start + i * 180_000, 100.0, 100.05, 99.95, 100.0, 100, True) for i in range(18)]
     trigger_candles.extend([
         Candle(start + 18 * 180_000, 100.0, 100.35, 99.98, 100.30, 200, True),
         Candle(start + 19 * 180_000, 100.30, 100.62, 100.26, 100.58, 210, True),
@@ -3661,43 +3991,26 @@ def run_self_test() -> None:
     ])
     scanned = trigger_snapshot(trigger_candles, Side.LONG.value, 100.05)
     assert scanned.get("ready") and scanned.get("age_bars") == 2, scanned
-    invalidated = trigger_snapshot(
-        trigger_candles + [Candle(start + 22 * 180_000, 100.59, 100.61, 99.70, 99.80, 300, True)],
-        Side.LONG.value,
-        100.05,
-    )
+    invalidated = trigger_snapshot(trigger_candles + [Candle(start + 22 * 180_000, 100.59, 100.61, 99.70, 99.80, 300, True)], Side.LONG.value, 100.05)
     assert not invalidated.get("ready"), invalidated
 
-    # Semantic de-duplication: only one candidate per side/family survives.
-    low_rank = Candidate(
-        side=Side.LONG.value, setup_type=SetupType.SWEEP_RECLAIM.value,
-        raw_score=70, final_score=70, score_components={}, trigger_ready=True,
-        trigger_level=100.0, invalidation_level=99.0, target_levels=[102.0],
-        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value, specificity=20,
-    )
-    high_rank = Candidate(
-        side=Side.LONG.value, setup_type=SetupType.CAPITULATION_RECOVERY.value,
-        raw_score=82, final_score=82, score_components={}, trigger_ready=True,
-        trigger_level=100.0, invalidation_level=99.0, target_levels=[102.0],
-        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value, specificity=40,
-    )
+    low_rank = Candidate(side=Side.LONG.value, setup_type=SetupType.SWEEP_RECLAIM.value,
+        raw_score=70, final_score=70, score_components={}, trigger_ready=True, trigger_level=100.0,
+        invalidation_level=99.0, target_levels=[102.0], setup_family=SetupFamily.LIQUIDITY_RECOVERY.value, specificity=20)
+    high_rank = Candidate(side=Side.LONG.value, setup_type=SetupType.CAPITULATION_RECOVERY.value,
+        raw_score=82, final_score=82, score_components={}, trigger_ready=True, trigger_level=100.0,
+        invalidation_level=99.0, target_levels=[102.0], setup_family=SetupFamily.LIQUIDITY_RECOVERY.value, specificity=40)
     collapsed = collapse_candidates([low_rank, high_rank])
-    assert len(collapsed) == 1 and collapsed[0].setup_type == SetupType.CAPITULATION_RECOVERY.value, collapsed
+    assert len(collapsed) == 1 and collapsed[0].setup_type == SetupType.CAPITULATION_RECOVERY.value
 
-    # Flow intelligence: aggressive sells with rising price are recognized as
-    # bullish absorption rather than blindly interpreted as SHORT pressure.
     absorption_trades = [
-        {"price": 100.00 + i * 0.01, "size": 2.0, "side": "sell", "ts": start + i * 1_000}
-        for i in range(20)
-    ] + [
-        {"price": 100.20 + i * 0.01, "size": 0.5, "side": "buy", "ts": start + (20 + i) * 1_000}
-        for i in range(10)
-    ]
+        {"price": 100.00 + i * 0.01, "size": 2.0, "side": "sell", "ts": start + i * 1_000} for i in range(20)
+    ] + [{"price": 100.20 + i * 0.01, "size": 0.5, "side": "buy", "ts": start + (20 + i) * 1_000} for i in range(10)]
     absorption = flow_snapshot(absorption_trades, {"bids": [(100.0, 20.0)], "asks": [(100.5, 20.0)]})
     assert absorption.get("absorption_bias") == Side.LONG.value, absorption
 
     print("SELF TEST PASSED")
-    print(json.dumps({"plan": asdict(plan), "tp1_result": second, "repeat_result": third}, ensure_ascii=False, indent=2, default=str))
+    print(json.dumps({"structural_plan": asdict(plan), "blocked_plan": asdict(blocked_plan), "failed_guard": snap}, ensure_ascii=False, indent=2, default=str))
 
 
 def main() -> None:
