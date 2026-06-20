@@ -165,15 +165,15 @@ class SetupType(str, Enum):
 
 
 SETUP_LABELS = {
-    SetupType.SWEEP_RECLAIM.value: "Зняття ліквідності + reclaim",
-    SetupType.CAPITULATION_RECOVERY.value: "Відновлення після капітуляції",
-    SetupType.DIRECTION_FLIP.value: "Закрита 15M зміна напрямку",
-    SetupType.TREND_IGNITION.value: "Запуск нового трендового імпульсу",
-    SetupType.PULLBACK_CONTINUATION.value: "ICT-відкат у напрямку тренду",
-    SetupType.FRESH_BASE_CONTINUATION.value: "Продовження з нової 15M бази",
-    SetupType.BREAKOUT_RETEST.value: "Закритий BOS + ретест",
-    SetupType.RANGE_COMPRESSION_BREAKOUT.value: "Вихід із стиснення діапазону",
-    SetupType.RANGE_EDGE_REVERSAL.value: "Розворот від краю діапазону",
+    SetupType.SWEEP_RECLAIM.value: "Зняття ліквідності та повернення за рівень",
+    SetupType.CAPITULATION_RECOVERY.value: "Відновлення після капітуляційного руху",
+    SetupType.DIRECTION_FLIP.value: "Підтверджена зміна напрямку на 15M",
+    SetupType.TREND_IGNITION.value: "Запуск нового тренду",
+    SetupType.PULLBACK_CONTINUATION.value: "Продовження тренду після ICT-відкату",
+    SetupType.FRESH_BASE_CONTINUATION.value: "Повторний вхід із нової 15M бази",
+    SetupType.BREAKOUT_RETEST.value: "Пробій структури та підтверджений ретест",
+    SetupType.RANGE_COMPRESSION_BREAKOUT.value: "Пробій після стиснення діапазону",
+    SetupType.RANGE_EDGE_REVERSAL.value: "Розворот від межі діапазону",
     SetupType.NONE.value: "Чистого професійного сетапу немає",
 }
 
