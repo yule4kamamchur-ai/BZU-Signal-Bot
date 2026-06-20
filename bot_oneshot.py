@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v3.1.1-telegram-clean"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_1_EVENT_EDGE_TELEGRAM_CLEAN"
+BOT_VERSION = "pro-ict-v3.1.2-ua-regime-fix"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_1_EVENT_EDGE_UA_REGIME_FIX"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -163,6 +163,75 @@ class SetupType(str, Enum):
     RANGE_EDGE_REVERSAL = "RANGE_EDGE_REVERSAL"
     NONE = "NONE"
 
+
+
+REGIME_LABELS = {
+    "TREND": "ТРЕНД",
+    "RANGE": "ДІАПАЗОН",
+    "SHOCK": "ІМПУЛЬСНИЙ РЕЖИМ",
+    "NORMAL": "ЗВИЧАЙНИЙ РИНОК",
+}
+
+FAMILY_LABELS = {
+    "CONTINUATION": "ПРОДОВЖЕННЯ ТРЕНДУ",
+    "LIQUIDITY_RECOVERY": "ВІДНОВЛЕННЯ ПІСЛЯ ЛІКВІДНОСТІ",
+    "STRUCTURAL_TRANSITION": "СТРУКТУРНА ЗМІНА",
+    "EXPANSION": "РОЗШИРЕННЯ РУХУ",
+    "RANGE_EXECUTION": "ТОРГІВЛЯ В ДІАПАЗОНІ",
+    "NONE": "НЕ ВИЗНАЧЕНО",
+}
+
+STAGE_LABELS = {
+    "DISCOVERED": "ВИЯВЛЕНО",
+    "FORMING": "ФОРМУЄТЬСЯ",
+    "ARMED": "ГОТОВИЙ ДО ПІДТВЕРДЖЕННЯ",
+    "EXECUTABLE": "ГОТОВИЙ ДО ВХОДУ",
+    "READY": "ГОТОВО",
+    "INVALIDATED": "СКАСОВАНО",
+    "EXPIRED": "ВТРАТИВ АКТУАЛЬНІСТЬ",
+}
+
+def _normalize_service_code(value: object) -> str:
+    text = str(value or "").strip().upper()
+    # Handles Enum values such as Regime.RANGE and serialized forms.
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    return text.strip().strip("<>'\"")
+
+
+def regime_label(value: str) -> str:
+    code = _normalize_service_code(value)
+    return REGIME_LABELS.get(code, "НЕ ВИЗНАЧЕНО")
+
+def family_label(value: str) -> str:
+    code = _normalize_service_code(value)
+    return FAMILY_LABELS.get(code, "НЕ ВИЗНАЧЕНО")
+
+def stage_label(value: str) -> str:
+    code = _normalize_service_code(value)
+    return STAGE_LABELS.get(code, "НЕ ВИЗНАЧЕНО")
+
+def ua_service_text(value: str) -> str:
+    text = str(value or "")
+    replacements = {
+        "RANGE": "діапазон",
+        "TREND": "тренд",
+        "SHOCK": "імпульсний режим",
+        "NORMAL": "звичайний ринок",
+        "LIQUIDITY_RECOVERY": "відновлення після ліквідності",
+        "STRUCTURAL_TRANSITION": "структурна зміна",
+        "CONTINUATION": "продовження тренду",
+        "EXPANSION": "розширення руху",
+        "RANGE_EXECUTION": "торгівля в діапазоні",
+        "micro-break": "локальний мікропробій",
+        "acceptance": "прийняття рівня",
+        "ARMED": "очікування підтвердження",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 SETUP_LABELS = {
     SetupType.SWEEP_RECLAIM.value: "Зняття ліквідності та повернення за рівень",
@@ -3887,9 +3956,9 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
         # remain available in Decision/Candidate, state and journal analytics.
         if not compact_early:
             lines.extend([
-                f"Варіант: {html.escape(decision.candidate.variant if decision.candidate else '')}",
-                f"Сімейство: {html.escape(decision.candidate.setup_family if decision.candidate else '')}",
-                f"Стадія: {html.escape(decision.candidate.stage if decision.candidate else '')}",
+                f"Варіант: {html.escape(ua_service_text(decision.candidate.variant if decision.candidate else ''))}",
+                f"Сімейство: {html.escape(family_label(decision.candidate.setup_family if decision.candidate else ''))}",
+                f"Стадія: {html.escape(stage_label(decision.candidate.stage if decision.candidate else ''))}",
             ])
         lines.extend([
             f"Незалежні докази: {len(decision.candidate.evidence_families) if decision.candidate else 0}",
@@ -3897,7 +3966,7 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
             f"Якість: {decision.quality}/100",
         ])
         if not compact_early:
-            lines.append(f"Режим: {html.escape(decision.regime)}")
+            lines.append(f"Режим: {html.escape(regime_label(decision.regime))}")
         lines.append(
             f"Edge-модель: {decision.candidate.edge_sample_size if decision.candidate else 0} угод | "
             f"expectancy {decision.candidate.edge_expectancy_r if decision.candidate else 0}R"
@@ -3905,10 +3974,10 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
     else:
         lines.extend([
             f"Ціна: {round_price(context['price'])}",
-            f"Режим: {html.escape(decision.regime)}",
+            f"Режим: {html.escape(regime_label(decision.regime))}",
         ])
 
-    lines.extend(["", f"Причина: {html.escape(decision.reason)}"])
+    lines.extend(["", f"Причина: {html.escape(ua_service_text(decision.reason))}"])
     if decision.candidate:
         reasons = candidate_reason_lines(decision.candidate)
         if reasons:
@@ -3951,8 +4020,8 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
             lines.append(f"Основа стопа: {html.escape(p.stop_basis)}")
         lines.extend([
             f"Таймфрейм стопа: {html.escape(p.stop_timeframe or 'ICT')} | структурний рівень: {p.stop_source_level}",
-            f"HTF-сценарій: {html.escape(p.htf_scenario)}",
-            f"Acceptance: {html.escape(p.acceptance_status)}",
+            f"Старший сценарій: {html.escape(ua_service_text(p.htf_scenario))}",
+            f"Прийняття рівня: {html.escape(ua_service_text(p.acceptance_status))}",
         ])
         if not compact_early:
             lines.append(f"Основа тейків: {html.escape(p.target_basis)}")
@@ -3970,8 +4039,17 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
             lines.append("Скасування: " + html.escape(p.invalidation))
 
     if not compact_early and decision.candidate and decision.candidate.risks:
-        lines.extend(["", "Ризики:", *[f"⚠️ {html.escape(x)}" for x in decision.candidate.risks[:3]]])
-    return "\n".join(lines)
+        lines.extend(["", "Ризики:", *[f"⚠️ {html.escape(ua_service_text(x))}" for x in decision.candidate.risks[:3]]])
+    message = "\n".join(lines)
+    # Final presentation guard: internal service codes must never reach Telegram.
+    for raw, translated in {
+        "Regime.RANGE": "ДІАПАЗОН", "Regime.TREND": "ТРЕНД",
+        "Regime.SHOCK": "ІМПУЛЬСНИЙ РЕЖИМ", "Regime.NORMAL": "ЗВИЧАЙНИЙ РИНОК",
+        "RANGE": "ДІАПАЗОН", "TREND": "ТРЕНД",
+        "SHOCK": "ІМПУЛЬСНИЙ РЕЖИМ", "NORMAL": "ЗВИЧАЙНИЙ РИНОК",
+    }.items():
+        message = message.replace(raw, translated)
+    return message
 
 
 def build_follow_message(trade: ActiveTrade, result: dict[str, Any]) -> str:
@@ -3980,12 +4058,12 @@ def build_follow_message(trade: ActiveTrade, result: dict[str, Any]) -> str:
         "",
         f"<b>{side_icon(trade.side)} {trade.side} — {html.escape(action_label(str(result.get('action'))))}</b>",
         f"Сетап: {html.escape(SETUP_LABELS.get(trade.setup_type, trade.setup_type))}",
-        f"Сімейство: {html.escape(trade.setup_family or SETUP_FAMILY.get(trade.setup_type, ''))}",
+        f"Сімейство: {html.escape(family_label(trade.setup_family or SETUP_FAMILY.get(trade.setup_type, '')))}",
         f"Ціна: {result.get('exit_price') or result.get('current_price')}",
         f"Результат: {result.get('current_pct', 0)}% | з плечем {result.get('leveraged_pct', 0)}%",
         f"MFE: {result.get('mfe_pct', 0)}%",
         "",
-        f"Дія: {html.escape(str(result.get('reason') or ''))}",
+        f"Дія: {html.escape(ua_service_text(str(result.get('reason') or '')))}",
     ]
     if not result.get("closed"):
         lines.extend([
