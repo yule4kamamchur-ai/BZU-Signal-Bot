@@ -15,16 +15,16 @@
     "tp3": 82.6812,
     "quality": 70,
     "position_risk_pct": 0.5,
-    "best_price": 80.77,
-    "worst_price": 80.77,
-    "last_checked_3m_ts": 0,
+    "best_price": 80.78,
+    "worst_price": 80.53,
+    "last_checked_3m_ts": 1781914320000,
     "tp1_hit": false,
     "tp2_hit": false,
     "tp3_hit": false,
     "tp1_stop_locked": false,
     "tp2_stop_locked": false,
     "status": "OPEN",
-    "last_action": "RISKY_ENTRY",
+    "last_action": "HOLD",
     "notes": [
       "ENTRY_ACTION:RISKY_ENTRY",
       "REGIME:NORMAL",
@@ -39,197 +39,112 @@
   },
   "opportunity": null,
   "latest_signal": {
-    "id": "78a3d3b8a520",
-    "time": "2026-06-20T00:01:19.651748+00:00",
-    "action": "RISKY_ENTRY",
-    "side": "LONG",
-    "setup_type": "PULLBACK_CONTINUATION",
-    "quality": 70,
-    "reason": "ICT-відкат у напрямку тренду — FULL_PULLBACK; незалежних доказів 5, геометрія валідна",
-    "regime": "NORMAL",
-    "candidate": {
-      "side": "LONG",
-      "setup_type": "PULLBACK_CONTINUATION",
-      "raw_score": 70,
-      "final_score": 70,
-      "score_components": {
-        "location": 7,
-        "structure": 25,
-        "liquidity": 10,
-        "trigger": 13,
-        "flow": 10,
-        "htf": 5
-      },
-      "trigger_ready": true,
-      "trigger_level": 80.26,
-      "invalidation_level": 80.26,
-      "target_levels": [
-        80.83,
-        80.85,
-        80.99,
-        81.0,
-        81.02,
-        81.05,
-        81.18,
-        81.67
-      ],
-      "confirmations": [
-        "15M структура тримає напрям",
-        "1H підтримує продовження",
-        "агресивний flow і стакан підтримують напрям",
-        "15M і 1H узгоджені"
-      ],
-      "risks": [],
-      "hard_reject_reason": "",
-      "risk_mode": "NORMAL",
-      "late_extension_atr": 0.732,
-      "setup_family": "CONTINUATION",
-      "variant": "FULL_PULLBACK",
-      "stage": "EXECUTABLE",
-      "evidence_families": [
-        "PRICE_STRUCTURE",
-        "LIQUIDITY",
-        "EXECUTION_TRIGGER",
-        "ORDER_FLOW",
-        "HTF_CONTEXT"
-      ],
-      "trigger_ts": 1781913420000,
-      "execution_profile": "STANDARD",
-      "specificity": 25,
-      "execution_anchor": 80.55,
-      "trigger_age_minutes": 0.0
-    },
-    "plan": {
-      "entry": 80.77,
-      "stop": 80.2239,
-      "tp1": 81.67,
-      "tp2": 82.026,
-      "tp3": 82.6812,
-      "risk_pct": 0.676,
-      "rr1": 1.65,
-      "rr2": 2.3,
-      "rr3": 3.5,
-      "position_risk_pct": 0.5,
-      "position_size": 0.0,
-      "notional": 0.0,
-      "invalidation": "закриття 15M за ICT-інвалідацією 80.26; сетап FULL_PULLBACK",
-      "stop_basis": "FULL_PULLBACK: structural invalidation + 0.12 ATR buffer",
-      "target_basis": "перша реальна протилежна ліквідність після мінімального RR; ближчі рівні — management checkpoints",
-      "checkpoints": [
-        80.83,
-        80.85,
-        80.99,
-        81.0,
-        81.02
-      ],
-      "valid": true,
-      "reason": "",
-      "better_entry": 0.0
-    },
-    "audit": {
-      "candidates": [
-        {
-          "side": "LONG",
-          "setup_type": "PULLBACK_CONTINUATION",
-          "setup_family": "CONTINUATION",
-          "variant": "FULL_PULLBACK",
-          "stage": "EXECUTABLE",
-          "raw_score": 70,
-          "final_score": 70,
-          "selection_score": 94.5,
-          "trigger_ready": true,
-          "risk_mode": "NORMAL",
-          "evidence_families": [
-            "PRICE_STRUCTURE",
-            "LIQUIDITY",
-            "EXECUTION_TRIGGER",
-            "ORDER_FLOW",
-            "HTF_CONTEXT"
-          ],
-          "evidence_count": 5,
-          "late_extension_atr": 0.732,
-          "execution_anchor": 80.55,
-          "trigger_age_minutes": 0.0,
-          "hard_reject_reason": "",
-          "score_components": {
-            "location": 7,
-            "structure": 25,
-            "liquidity": 10,
-            "trigger": 13,
-            "flow": 10,
-            "htf": 5
-          }
-        }
-      ],
-      "selected": {
-        "side": "LONG",
-        "setup_type": "PULLBACK_CONTINUATION",
-        "setup_family": "CONTINUATION",
-        "variant": "FULL_PULLBACK",
-        "stage": "EXECUTABLE",
-        "score": 70,
-        "evidence_count": 5,
-        "full_threshold": 75,
-        "risky_threshold": 66
-      },
-      "direction_margin": 94.5,
-      "invariants": {
-        "single_selector": true,
-        "one_candidate_per_family_and_side": true,
-        "single_geometry_builder": true,
-        "independent_evidence_required": true,
-        "no_post_decision_mutation": true,
-        "flow_cannot_create_direction": true,
-        "prime_ict_is_context_not_standalone_setup": true
-      }
-    },
     "version": "pro-ict-v2.0.0",
     "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V2",
+    "time": "2026-06-20T00:15:51.636409+00:00",
+    "type": "FOLLOW",
+    "action": "HOLD",
+    "side": "LONG",
+    "setup_type": "PULLBACK_CONTINUATION",
+    "price": 80.53,
+    "result": {
+      "closed": false,
+      "action": "HOLD",
+      "side": "LONG",
+      "title": "LONG — HOLD",
+      "reason": "структурна теза чинна; до TP1 стоп не рухається через локальний шум",
+      "event_price": 0.0,
+      "current_price": 80.53,
+      "current_pct": -0.297,
+      "leveraged_pct": -1.486,
+      "mfe_pct": 0.012,
+      "giveback_ratio": 25.0,
+      "stop_current": 80.2239,
+      "tp1_hit": false,
+      "tp2_hit": false,
+      "tp3_hit": false,
+      "trade": {
+        "id": "cebfec3ed9",
+        "side": "LONG",
+        "setup_type": "PULLBACK_CONTINUATION",
+        "opened_at": "2026-06-20T00:01:19.651748+00:00",
+        "entry": 80.77,
+        "stop_initial": 80.2239,
+        "stop_current": 80.2239,
+        "structural_invalidation": 80.26,
+        "tp1": 81.67,
+        "tp2": 82.026,
+        "tp3": 82.6812,
+        "quality": 70,
+        "position_risk_pct": 0.5,
+        "best_price": 80.78,
+        "worst_price": 80.53,
+        "last_checked_3m_ts": 1781914320000,
+        "tp1_hit": false,
+        "tp2_hit": false,
+        "tp3_hit": false,
+        "tp1_stop_locked": false,
+        "tp2_stop_locked": false,
+        "status": "OPEN",
+        "last_action": "HOLD",
+        "notes": [
+          "ENTRY_ACTION:RISKY_ENTRY",
+          "REGIME:NORMAL",
+          "FAMILY:CONTINUATION",
+          "VARIANT:FULL_PULLBACK",
+          "EVIDENCE:PRICE_STRUCTURE,LIQUIDITY,EXECUTION_TRIGGER,ORDER_FLOW,HTF_CONTEXT",
+          "RR:1.65/2.3/3.5"
+        ],
+        "setup_family": "CONTINUATION",
+        "variant": "FULL_PULLBACK",
+        "execution_profile": "STANDARD"
+      }
+    },
     "context": {
-      "time": "2026-06-20T00:01:19.619456+00:00",
-      "price": 80.77,
+      "time": "2026-06-20T00:15:51.635636+00:00",
+      "price": 80.53,
       "price_source": "OKX",
-      "reference_price": 80.67,
-      "cross_price_diff_pct": 0.1238,
-      "regime": "NORMAL",
-      "regime_reason": "ринок без стійкого тренду або чистого діапазону",
+      "reference_price": 80.41,
+      "cross_price_diff_pct": 0.149,
+      "regime": "RANGE",
+      "regime_reason": "15M рух перекривається і не має ефективного напрямку",
       "tf3": {
         "timeframe": "3m",
         "available": true,
-        "bias": "LONG",
-        "score": 15,
-        "close": 80.55,
-        "ema20": 80.6262,
-        "ema50": 80.609,
-        "rsi": 47.7,
-        "atr": 0.1354,
-        "move8_pct": 0.137,
-        "efficiency": 0.205,
-        "volume_ratio": 0.689,
+        "bias": "NEUTRAL",
+        "score": 0,
+        "close": 80.57,
+        "ema20": 80.6345,
+        "ema50": 80.6164,
+        "rsi": 43.8,
+        "atr": 0.13062,
+        "move8_pct": -0.223,
+        "efficiency": 0.069,
+        "volume_ratio": 0.85,
         "structure": {
           "timeframe": "3m",
-          "bias": "LONG",
+          "bias": "NEUTRAL",
           "trend": "NEUTRAL",
-          "bos": "LONG",
+          "bos": "NEUTRAL",
           "choch": "NEUTRAL",
-          "swing_high": 80.53,
-          "swing_low": 80.43,
-          "prior_break_high": 80.53,
-          "prior_break_low": 80.43,
+          "swing_high": 80.85,
+          "swing_low": 80.53,
+          "prior_break_high": 80.85,
+          "prior_break_low": 80.53,
           "recent_highs": [
-            81.02,
-            81.02,
             80.99,
-            80.53
+            80.53,
+            80.85,
+            80.85
           ],
           "recent_lows": [
-            80.79,
             80.76,
             80.26,
-            80.43
+            80.43,
+            80.53
           ],
-          "ema20": 80.6262,
-          "ema50": 80.609
+          "ema20": 80.6345,
+          "ema50": 80.6164
         }
       },
       "tf15": {
@@ -237,14 +152,14 @@
         "available": true,
         "bias": "LONG",
         "score": 30,
-        "close": 80.55,
-        "ema20": 80.4634,
-        "ema50": 80.1307,
+        "close": 80.57,
+        "ema20": 80.4736,
+        "ema50": 80.155,
         "rsi": 55.0,
-        "atr": 0.30057,
-        "move8_pct": -1.238,
-        "efficiency": 0.13,
-        "volume_ratio": 0.724,
+        "atr": 0.29891,
+        "move8_pct": -0.874,
+        "efficiency": 0.126,
+        "volume_ratio": 0.781,
         "structure": {
           "timeframe": "15m",
           "bias": "LONG",
@@ -267,8 +182,8 @@
             79.78,
             80.26
           ],
-          "ema20": 80.4634,
-          "ema50": 80.1307
+          "ema20": 80.4736,
+          "ema50": 80.155
         }
       },
       "tf1h": {
@@ -365,25 +280,25 @@
         "low": 79.78,
         "high": 81.67,
         "equilibrium": 80.725,
-        "position": 0.524,
-        "zone": "MID",
+        "position": 0.397,
+        "zone": "DISCOUNT",
         "at_lower_edge": false,
         "at_upper_edge": false
       },
       "flow": {
         "bias": "LONG",
         "score": 5,
-        "trade_delta": 4264.0,
-        "trade_delta_pct": 36.31,
-        "book_delta_pct": -6.0,
-        "price_move_pct": 0.211,
-        "cvd_acceleration": 1970.0,
-        "absorption_bias": "NEUTRAL",
+        "trade_delta": 10369.0,
+        "trade_delta_pct": 28.04,
+        "book_delta_pct": 6.99,
+        "price_move_pct": -0.211,
+        "cvd_acceleration": -21379.0,
+        "absorption_bias": "SHORT",
         "confidence": "MEDIUM",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 5743223.0,
+        "oi": 5757972.0,
         "funding_rate": 0.0
       },
       "zones": [
@@ -394,7 +309,7 @@
           "high": 81.05,
           "created_ts": 1781908020000,
           "timeframe": "3m",
-          "strength": 0.3692647401049269,
+          "strength": 0.3827971979760884,
           "mitigated": false
         },
         {
@@ -404,7 +319,7 @@
           "high": 80.4,
           "created_ts": 1781911260000,
           "timeframe": "3m",
-          "strength": 0.14770589604205472,
+          "strength": 0.15311887919052242,
           "mitigated": false
         },
         {
@@ -414,7 +329,7 @@
           "high": 80.42,
           "created_ts": 1781911440000,
           "timeframe": "3m",
-          "strength": 0.22155884406297713,
+          "strength": 0.22967831878567482,
           "mitigated": false
         },
         {
@@ -424,7 +339,7 @@
           "high": 80.5,
           "created_ts": 1781912160000,
           "timeframe": "3m",
-          "strength": 0.22155884406297713,
+          "strength": 0.22967831878567482,
           "mitigated": false
         },
         {
@@ -434,7 +349,7 @@
           "high": 80.5,
           "created_ts": 1781912340000,
           "timeframe": "3m",
-          "strength": 0.07385294802102736,
+          "strength": 0.07655943959526121,
           "mitigated": false
         },
         {
@@ -444,7 +359,7 @@
           "high": 80.85,
           "created_ts": 1781913240000,
           "timeframe": "3m",
-          "strength": 2.2155884406296664,
+          "strength": 2.296783187856639,
           "mitigated": false
         },
         {
@@ -454,7 +369,7 @@
           "high": 80.0,
           "created_ts": 1781901000000,
           "timeframe": "15m",
-          "strength": 0.13308244314375306,
+          "strength": 0.13381917271302352,
           "mitigated": false
         },
         {
@@ -464,7 +379,7 @@
           "high": 80.13,
           "created_ts": 1781901900000,
           "timeframe": "15m",
-          "strength": 0.19962366471560597,
+          "strength": 0.2007287590695115,
           "mitigated": false
         },
         {
@@ -474,7 +389,7 @@
           "high": 80.21,
           "created_ts": 1781902800000,
           "timeframe": "15m",
-          "strength": 0.0998118323577557,
+          "strength": 0.1003643795347082,
           "mitigated": false
         },
         {
@@ -484,7 +399,7 @@
           "high": 81.18,
           "created_ts": 1781907300000,
           "timeframe": "15m",
-          "strength": 0.5323297725749649,
+          "strength": 0.5352766908520464,
           "mitigated": false
         },
         {
@@ -494,13 +409,13 @@
           "high": 80.46,
           "created_ts": 1781904600000,
           "timeframe": "15m",
-          "strength": 3.7595790188104212,
+          "strength": 3.780391629142308,
           "mitigated": false
         }
       ]
     }
   },
-  "last_message_key": "{\"action\": \"RISKY_ENTRY\", \"plan_valid\": true, \"quality_bucket\": 14, \"setup_type\": \"PULLBACK_CONTINUATION\", \"side\": \"LONG\"}",
+  "last_message_key": "{\"action\": \"HOLD\", \"side\": \"LONG\", \"stop\": 80.2239, \"tp1\": false, \"tp2\": false}",
   "history": [
     {
       "type": "ENTRY",
@@ -876,7 +791,16 @@
         "better_entry": 0.0
       },
       "time": "2026-06-20T00:01:19.652125+00:00"
+    },
+    {
+      "type": "FOLLOW",
+      "side": "LONG",
+      "action": "HOLD",
+      "price": 80.53,
+      "result_pct": -0.297,
+      "stop_current": 80.2239,
+      "time": "2026-06-20T00:15:51.636543+00:00"
     }
   ],
-  "updated_at": "2026-06-20T00:01:20.035038+00:00"
+  "updated_at": "2026-06-20T00:15:52.040402+00:00"
 }
