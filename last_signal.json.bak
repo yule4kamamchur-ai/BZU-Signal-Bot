@@ -31,18 +31,50 @@
     "execution_anchor": 80.42
   },
   "latest_signal": {
-    "id": "fb71dfa9a183",
-    "time": "2026-06-20T02:01:14.417987+00:00",
+    "id": "3a71798b0b9e",
+    "time": "2026-06-20T02:15:47.140317+00:00",
     "action": "ARMED",
     "side": "LONG",
     "setup_type": "RANGE_COMPRESSION_BREAKOUT",
     "quality": 58,
     "reason": "EARLY_MICRO_COMPRESSION_BREAK ще чинний, але нового execution-trigger немає",
-    "regime": "RANGE",
+    "regime": "NORMAL",
     "candidate": null,
     "plan": null,
     "audit": {
       "candidates": [
+        {
+          "side": "LONG",
+          "setup_type": "PULLBACK_CONTINUATION",
+          "setup_family": "CONTINUATION",
+          "variant": "FAST_PULLBACK_RECLAIM",
+          "stage": "EXECUTABLE",
+          "raw_score": 58,
+          "final_score": 53,
+          "selection_score": 74.3,
+          "trigger_ready": true,
+          "risk_mode": "RISKY",
+          "evidence_families": [
+            "ICT_LOCATION",
+            "PRICE_STRUCTURE",
+            "LIQUIDITY",
+            "EXECUTION_TRIGGER",
+            "HTF_CONTEXT"
+          ],
+          "evidence_count": 5,
+          "late_extension_atr": 0.218,
+          "execution_anchor": 80.64,
+          "trigger_age_minutes": 3.0,
+          "hard_reject_reason": "",
+          "score_components": {
+            "location": 14,
+            "structure": 13,
+            "liquidity": 14,
+            "trigger": 14,
+            "flow": 0,
+            "htf": 3
+          }
+        },
         {
           "side": "SHORT",
           "setup_type": "SWEEP_RECLAIM",
@@ -50,8 +82,8 @@
           "variant": "EARLY_RECLAIM",
           "stage": "DISCOVERED",
           "raw_score": 43,
-          "final_score": 36,
-          "selection_score": 48.3,
+          "final_score": 38,
+          "selection_score": 50.3,
           "trigger_ready": false,
           "risk_mode": "RISKY",
           "evidence_families": [
@@ -61,7 +93,7 @@
           ],
           "evidence_count": 3,
           "late_extension_atr": 0.0,
-          "execution_anchor": 80.53,
+          "execution_anchor": 80.7,
           "trigger_age_minutes": 999.0,
           "hard_reject_reason": "",
           "score_components": {
@@ -106,26 +138,26 @@
     "version": "pro-ict-v2.0.0",
     "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V2",
     "context": {
-      "time": "2026-06-20T02:01:14.396126+00:00",
-      "price": 80.53,
+      "time": "2026-06-20T02:15:47.111844+00:00",
+      "price": 80.7,
       "price_source": "OKX",
-      "reference_price": 80.37,
-      "cross_price_diff_pct": 0.1987,
-      "regime": "RANGE",
-      "regime_reason": "15M рух перекривається і не має ефективного напрямку",
+      "reference_price": 80.5,
+      "cross_price_diff_pct": 0.2478,
+      "regime": "NORMAL",
+      "regime_reason": "ринок без стійкого тренду або чистого діапазону",
       "tf3": {
         "timeframe": "3m",
         "available": true,
         "bias": "LONG",
-        "score": 15,
-        "close": 80.54,
-        "ema20": 80.3263,
-        "ema50": 80.3628,
-        "rsi": 62.5,
-        "atr": 0.08992,
-        "move8_pct": 0.424,
-        "efficiency": 0.745,
-        "volume_ratio": 1.308,
+        "score": 35,
+        "close": 80.64,
+        "ema20": 80.4529,
+        "ema50": 80.4137,
+        "rsi": 61.7,
+        "atr": 0.10296,
+        "move8_pct": 0.236,
+        "efficiency": 0.592,
+        "volume_ratio": 1.478,
         "structure": {
           "timeframe": "3m",
           "bias": "LONG",
@@ -148,8 +180,8 @@
             80.03,
             80.04
           ],
-          "ema20": 80.3263,
-          "ema50": 80.3628
+          "ema20": 80.4529,
+          "ema50": 80.4137
         }
       },
       "tf15": {
@@ -157,14 +189,14 @@
         "available": true,
         "bias": "NEUTRAL",
         "score": 5,
-        "close": 80.54,
-        "ema20": 80.3928,
-        "ema50": 80.1894,
-        "rsi": 53.8,
-        "atr": 0.26909,
-        "move8_pct": -0.012,
-        "efficiency": 0.248,
-        "volume_ratio": 0.861,
+        "close": 80.64,
+        "ema20": 80.4163,
+        "ema50": 80.2058,
+        "rsi": 55.6,
+        "atr": 0.2747,
+        "move8_pct": 0.087,
+        "efficiency": 0.301,
+        "volume_ratio": 1.049,
         "structure": {
           "timeframe": "15m",
           "bias": "SHORT",
@@ -187,8 +219,8 @@
             80.26,
             80.03
           ],
-          "ema20": 80.3928,
-          "ema50": 80.1894
+          "ema20": 80.4163,
+          "ema50": 80.2058
         }
       },
       "tf1h": {
@@ -271,11 +303,11 @@
       },
       "sweep3": {
         "side": "SHORT",
-        "level": 80.48,
-        "extreme": 80.49,
+        "level": 80.79,
+        "extreme": 80.85,
         "reclaim": true,
         "age": 1,
-        "ts": 1781920440000
+        "ts": 1781921340000
       },
       "sweep15": {
         "side": "NEUTRAL",
@@ -287,86 +319,56 @@
         "low": 79.79,
         "high": 81.67,
         "equilibrium": 80.73,
-        "position": 0.394,
-        "zone": "DISCOUNT",
+        "position": 0.484,
+        "zone": "MID",
         "at_lower_edge": false,
         "at_upper_edge": false
       },
       "flow": {
         "bias": "SHORT",
-        "score": -5,
-        "trade_delta": -12143.0,
-        "trade_delta_pct": -26.16,
-        "book_delta_pct": -9.08,
-        "price_move_pct": 0.037,
-        "cvd_acceleration": 23369.0,
+        "score": -10,
+        "trade_delta": -28326.0,
+        "trade_delta_pct": -68.69,
+        "book_delta_pct": -5.35,
+        "price_move_pct": -0.062,
+        "cvd_acceleration": -23840.0,
         "absorption_bias": "NEUTRAL",
-        "confidence": "MEDIUM",
+        "confidence": "HIGH",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 5813540.0,
+        "oi": 5844192.0,
         "funding_rate": 0.0
       },
       "zones": [
         {
           "kind": "FVG",
-          "side": "SHORT",
-          "low": 80.5,
-          "high": 80.57,
-          "created_ts": 1781914500000,
+          "side": "LONG",
+          "low": 80.49,
+          "high": 80.5,
+          "created_ts": 1781920620000,
           "timeframe": "3m",
-          "strength": 0.7784771756649604,
+          "strength": 0.09712433384221411,
           "mitigated": false
         },
         {
           "kind": "FVG",
           "side": "LONG",
-          "low": 80.13,
-          "high": 80.14,
-          "created_ts": 1781919000000,
+          "low": 80.54,
+          "high": 80.55,
+          "created_ts": 1781920800000,
           "timeframe": "3m",
-          "strength": 0.11121102509506207,
+          "strength": 0.0971243338420761,
           "mitigated": false
         },
         {
           "kind": "FVG",
           "side": "LONG",
-          "low": 80.16,
-          "high": 80.2,
-          "created_ts": 1781919180000,
+          "low": 80.54,
+          "high": 80.67,
+          "created_ts": 1781920980000,
           "timeframe": "3m",
-          "strength": 0.44484410038009026,
-          "mitigated": false
-        },
-        {
-          "kind": "FVG",
-          "side": "LONG",
-          "low": 80.31,
-          "high": 80.36,
-          "created_ts": 1781919720000,
-          "timeframe": "3m",
-          "strength": 0.5560551254749944,
-          "mitigated": false
-        },
-        {
-          "kind": "FVG",
-          "side": "LONG",
-          "low": 80.37,
-          "high": 80.39,
-          "created_ts": 1781919900000,
-          "timeframe": "3m",
-          "strength": 0.2224220501899661,
-          "mitigated": false
-        },
-        {
-          "kind": "FVG",
-          "side": "LONG",
-          "low": 80.42,
-          "high": 80.44,
-          "created_ts": 1781920080000,
-          "timeframe": "3m",
-          "strength": 0.2224220501899661,
+          "strength": 1.2626163399480934,
           "mitigated": false
         },
         {
@@ -376,7 +378,27 @@
           "high": 80.49,
           "created_ts": 1781920440000,
           "timeframe": "3m",
-          "strength": 0.8896882007601805,
+          "strength": 0.7769946707374369,
+          "mitigated": false
+        },
+        {
+          "kind": "OB",
+          "side": "LONG",
+          "low": 80.5,
+          "high": 80.54,
+          "created_ts": 1781920800000,
+          "timeframe": "3m",
+          "strength": 0.7769946707372989,
+          "mitigated": false
+        },
+        {
+          "kind": "OB",
+          "side": "SHORT",
+          "low": 80.67,
+          "high": 80.79,
+          "created_ts": 1781921160000,
+          "timeframe": "3m",
+          "strength": 1.4568650076325216,
           "mitigated": false
         },
         {
@@ -386,7 +408,7 @@
           "high": 80.0,
           "created_ts": 1781901000000,
           "timeframe": "15m",
-          "strength": 0.14864971193156395,
+          "strength": 0.14561584216654322,
           "mitigated": false
         },
         {
@@ -396,7 +418,7 @@
           "high": 81.18,
           "created_ts": 1781907300000,
           "timeframe": "15m",
-          "strength": 0.594598847726203,
+          "strength": 0.5824633686661211,
           "mitigated": false
         },
         {
@@ -406,7 +428,17 @@
           "high": 80.36,
           "created_ts": 1781919000000,
           "timeframe": "15m",
-          "strength": 0.33446185184597926,
+          "strength": 0.32763564487468344,
+          "mitigated": false
+        },
+        {
+          "kind": "FVG",
+          "side": "LONG",
+          "low": 80.37,
+          "high": 80.5,
+          "created_ts": 1781919900000,
+          "timeframe": "15m",
+          "strength": 0.4732514870411749,
           "mitigated": false
         },
         {
@@ -416,7 +448,7 @@
           "high": 80.81,
           "created_ts": 1781913600000,
           "timeframe": "15m",
-          "strength": 0.7804109876406183,
+          "strength": 0.7644831713742614,
           "mitigated": false
         },
         {
@@ -426,7 +458,7 @@
           "high": 80.18,
           "created_ts": 1781918100000,
           "timeframe": "15m",
-          "strength": 0.891898271589278,
+          "strength": 0.8736950529991558,
           "mitigated": false
         }
       ]
@@ -961,7 +993,17 @@
       "reason": "EARLY_MICRO_COMPRESSION_BREAK ще чинний, але нового execution-trigger немає",
       "plan": null,
       "time": "2026-06-20T02:01:14.418250+00:00"
+    },
+    {
+      "type": "ARMED",
+      "side": "LONG",
+      "setup_type": "RANGE_COMPRESSION_BREAKOUT",
+      "price": 80.7,
+      "quality": 58,
+      "reason": "EARLY_MICRO_COMPRESSION_BREAK ще чинний, але нового execution-trigger немає",
+      "plan": null,
+      "time": "2026-06-20T02:15:47.140670+00:00"
     }
   ],
-  "updated_at": "2026-06-20T02:01:14.915871+00:00"
+  "updated_at": "2026-06-20T02:15:47.140720+00:00"
 }
