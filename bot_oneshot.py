@@ -586,11 +586,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     ]
     if decision.candidate:
         c = decision.candidate
-        lines.append(f"<b>Confluence:</b> {len(c.evidence_families)}/9 | Lane: {c.execution_lane} | 3M: {c.scan_event_stage or '—'} | Acceptance: {c.acceptance_quality}")
-        if c.volume_cluster_support:
-            lines.append("✅ Підтримка Volume Cluster")
-        if c.thesis:
-            lines.append(f"<b>Thesis:</b> {html.escape(c.thesis[:130])}")
         if c.confirmations:
             lines.append("")
             lines.append("<b>Підтвердження:</b>")
