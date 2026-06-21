@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL + AGGRESSIVE RE-ENTRY)
+BZU Professional Hybrid Confluence Signal Bot v5.1 (AGGRESSIVE RE-ENTRY + CLEAN TEXT)
 ================================================================================
-Фінальна версія з агресивним re-entry.
+Агресивна версія re-entry + зрозумілі назви без "(ARMED)"
 
-Зміни:
-- Re-entry тепер частіше відкриває угоду (RISKY_ENTRY), а не просто ARMED
-- У повідомленні завжди є поточна ціна
-- ARMED тільки коли дійсно немає тригера
+- При re-entry + якість ≥ 72 → одразу RISKY_ENTRY (відкриває угоду)
+- Текст: "СФОРМОВАНО СИГНАЛ — ЧЕКАЄМО ВХОДУ" замість "(ARMED)"
 """
 
 from __future__ import annotations
@@ -31,11 +29,11 @@ from zoneinfo import ZoneInfo
 import requests
 
 # ==========================================================
-# CONFIGURATION v5.1
+# CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v5.1-final-reentry"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_FINAL_REENTRY"
+BOT_VERSION = "pro-hybrid-confluence-v5.1-aggressive-final"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_AGGRESSIVE_FINAL"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -51,55 +49,34 @@ MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "3000") or 3000)
 
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
-RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.25") or 0.25)
+RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
 
 # === ICT Geometry ===
-MIN_STOP_ATR15 = max(0.78, float(os.getenv("MIN_STOP_ATR15", "0.82") or 0.82))
-MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.70") or 2.70)
-MIN_TP1_ATR15 = max(1.30, float(os.getenv("MIN_TP1_ATR15", "1.35") or 1.35))
+MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
+MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.60") or 2.60)
+MIN_TP1_ATR15 = max(1.25, float(os.getenv("MIN_TP1_ATR15", "1.30") or 1.30))
 MIN_RR1 = max(2.00, float(os.getenv("MIN_RR1", "2.00") or 2.00))
-PREFERRED_RR1 = max(2.25, float(os.getenv("PREFERRED_RR1", "2.25") or 2.25))
-MIN_RR2 = max(3.10, float(os.getenv("MIN_RR2", "3.10") or 3.10))
-MIN_RR3 = max(4.20, float(os.getenv("MIN_RR3", "4.20") or 4.20))
+PREFERRED_RR1 = max(2.20, float(os.getenv("PREFERRED_RR1", "2.20") or 2.20))
+MIN_RR2 = max(3.00, float(os.getenv("MIN_RR2", "3.00") or 3.00))
+MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
 
-# === Scoring Thresholds ===
-ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "78") or 78)
-RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)  # трохи знижено для re-entry
-ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "60") or 60)
+# === Scoring Thresholds (агресивніші) ===
+ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
+RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)
+ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "58") or 58)
 MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "5") or 5)
 
-# === 3M Scanner ===
-SCAN_3M_BOOTSTRAP_BARS = max(12, int(os.getenv("SCAN_3M_BOOTSTRAP_BARS", "14") or 14))
-TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "32") or 32)
+# === Re-Entry (дуже агресивний) ===
+MISSED_REENTRY_SCORE = 62
+REENTRY_AGGRESSIVE_THRESHOLD = 72  # при цій якості re-entry одразу відкриває угоду
 
-# === Re-Entry ===
-MISSED_REENTRY_SCORE = 62  # знижено, щоб частіше відкривати
-REENTRY_NEW_TRIGGER_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_TRIGGER_SEPARATION_ATR15", "0.20") or 0.20)
-REENTRY_NEW_INVALIDATION_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_INVALIDATION_SEPARATION_ATR15", "0.30") or 0.30)
-FAILED_ENTRY_MIN_MFE_R = float(os.getenv("FAILED_ENTRY_MIN_MFE_R", "0.40") or 0.40)
+# === 3M Scanner ===
+TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "35") or 35)
 
 # === Telegram ===
 TELEGRAM_NOTIFY_EVERY_RUN = os.getenv("TELEGRAM_NOTIFY_EVERY_RUN", "true").lower() in {"1", "true", "yes"}
 SEND_NO_SETUP = os.getenv("SEND_NO_SETUP", "true").lower() in {"1", "true", "yes"}
 TELEGRAM_MAX_LENGTH = max(600, min(4200, int(os.getenv("TELEGRAM_MAX_LENGTH", "4000") or 4000)))
-
-# === News / Macro ===
-IMPORTANT_EVENT_WINDOW_MINUTES = int(os.getenv("IMPORTANT_EVENT_WINDOW_MINUTES", "60") or 60)
-MANUAL_IMPORTANT_EVENTS = os.getenv("IMPORTANT_EVENTS", "")
-
-LONG_NEWS_PHRASES = [
-    "inventory draw", "crude draw", "stockpiles fell", "supply disruption",
-    "hormuz", "new sanctions", "opec cut", "production cut", "attack", "strike",
-    "запаси впали", "нові санкції", "атака", "перебої постачання"
-]
-
-SHORT_NEWS_PHRASES = [
-    "inventory build", "crude build", "stockpiles rose", "ceasefire",
-    "sanctions relief", "output increase", "demand weak", "oversupply",
-    "запаси зросли", "припинення вогню", "збільшення видобутку"
-]
-
-HIGH_IMPACT_WORDS = ["eia", "opec", "fed", "powell", "fomc", "iran", "hormuz", "sanctions", "inventory", "brent", "crude"]
 
 
 # ==========================================================
@@ -274,7 +251,7 @@ class Decision:
     audit: dict[str, Any] = field(default_factory=dict)
     news_bias: str = "NEUTRAL"
     macro_risk: str = "NORMAL"
-    current_price: float = 0.0  # додано
+    current_price: float = 0.0
 
 
 @dataclass
@@ -329,6 +306,8 @@ class ActiveTrade:
     entry_fail_streak: int = 0
     mfe_giveback_streak: int = 0
     mfe_giveback_last_state: str = "OK"
+    trigger_level: float = 0.0
+    opened_regime: str = ""
 
 
 # ==========================================================
@@ -476,6 +455,8 @@ def active_trade_from_state(state: dict[str, Any]) -> Optional[ActiveTrade]:
         clean.setdefault("entry_fail_streak", int(raw.get("entry_fail_streak", 0) or 0))
         clean.setdefault("mfe_giveback_streak", int(raw.get("mfe_giveback_streak", 0) or 0))
         clean.setdefault("mfe_giveback_last_state", str(raw.get("mfe_giveback_last_state", "OK")))
+        clean.setdefault("trigger_level", float(raw.get("trigger_level", 0) or 0))
+        clean.setdefault("opened_regime", str(raw.get("opened_regime", "")))
         return ActiveTrade(**clean)
     except Exception as exc:
         print(f"[WARN] ActiveTrade migration failed: {exc}")
@@ -501,7 +482,7 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# TELEGRAM + ЦІНА
+# TELEGRAM + ЗРОЗУМІЛІ НАЗВИ
 # ==========================================================
 
 def send_telegram(text: str) -> bool:
@@ -576,11 +557,11 @@ def plain_telegram_text(text: str) -> str:
 def build_decision_message(context: dict, decision: Decision) -> str:
     current_price = decision.current_price or context.get("price", 0)
     
-    # Зрозумілі назви дій замість ARMED / ENTRY
+    # ЗРОЗУМІЛІ НАЗВИ (без слова ARMED в дужках)
     action_names = {
         "ENTRY": "ВХІД У УГОДУ",
-        "RISKY_ENTRY": "РАННІЙ ВХІД (RISKY)",
-        "ARMED": "СФОРМОВАНО СИГНАЛ (ARMED)",
+        "RISKY_ENTRY": "РАННІЙ ВХІД",
+        "ARMED": "СФОРМОВАНО СИГНАЛ — ЧЕКАЄМО ВХОДУ",
         "NO_SETUP": "СИГНАЛУ НЕМАЄ",
     }
     action_label = action_names.get(decision.action, decision.action)
@@ -651,179 +632,44 @@ def get_adaptive_params(regime: str) -> dict:
         "risky_entry_score": RISKY_ENTRY_SCORE_BASE,
         "armed_score": ARMED_SCORE_BASE,
         "min_evidence": MIN_ENTRY_EVIDENCE_BASE,
-        "mfe_giveback_threshold": 0.46,
-        "min_mfe_for_protect": 2.4,
-        "stop_atr_multiplier": 1.0,
-        "reentry_aggressiveness": 1.15,  # підвищено для re-entry
+        "mfe_giveback_threshold": 0.42,
+        "min_mfe_for_protect": 2.0,
+        "reentry_aggressiveness": 1.30,
     }
 
     if regime == Regime.TREND.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 0.92)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 0.95)
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 0.90)
+        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 0.92)
         base["min_evidence"] = max(4, MIN_ENTRY_EVIDENCE_BASE - 1)
-        base["mfe_giveback_threshold"] = 0.40
-        base["min_mfe_for_protect"] = 2.0
-        base["reentry_aggressiveness"] = 1.25
+        base["mfe_giveback_threshold"] = 0.38
+        base["min_mfe_for_protect"] = 1.8
+        base["reentry_aggressiveness"] = 1.40
 
     elif regime == Regime.RANGE.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.10)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.08)
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.12)
+        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.10)
         base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE + 1
-        base["mfe_giveback_threshold"] = 0.55
-        base["min_mfe_for_protect"] = 2.8
-        base["reentry_aggressiveness"] = 0.85
+        base["mfe_giveback_threshold"] = 0.52
+        base["min_mfe_for_protect"] = 2.6
+        base["reentry_aggressiveness"] = 0.90
 
     elif regime == Regime.SHOCK.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.20)
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.18)
         base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.15)
         base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE + 2
-        base["mfe_giveback_threshold"] = 0.58
-        base["min_mfe_for_protect"] = 3.0
-        base["reentry_aggressiveness"] = 0.70
+        base["mfe_giveback_threshold"] = 0.55
+        base["min_mfe_for_protect"] = 2.8
+        base["reentry_aggressiveness"] = 0.75
 
     elif regime == Regime.TRANSITION.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.02)
-        base["reentry_aggressiveness"] = 1.10
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.00)
+        base["reentry_aggressiveness"] = 1.20
 
     return base
 
 
 # ==========================================================
-# NEWS + MACRO FILTER
-# ==========================================================
-
-def fetch_simple_news() -> list[dict]:
-    return []
-
-
-def analyze_news_bias(news_items: list[dict]) -> dict:
-    if not news_items:
-        return {"bias": "NEUTRAL", "score": 0, "top_events": []}
-
-    long_score = 0
-    short_score = 0
-    top_events = []
-
-    for item in news_items[:8]:
-        title = str(item.get("title", "")).lower()
-        for phrase in LONG_NEWS_PHRASES:
-            if phrase in title:
-                long_score += 2
-                top_events.append({"title": item.get("title"), "bias": "LONG"})
-        for phrase in SHORT_NEWS_PHRASES:
-            if phrase in title:
-                short_score += 2
-                top_events.append({"title": item.get("title"), "bias": "SHORT"})
-
-    if long_score > short_score + 3:
-        bias = "LONG"
-        score = min(long_score, 35)
-    elif short_score > long_score + 3:
-        bias = "SHORT"
-        score = min(short_score, 35)
-    else:
-        bias = "NEUTRAL"
-        score = 0
-
-    return {"bias": bias, "score": score, "top_events": top_events[:3]}
-
-
-def get_macro_risk(news_bias: str, regime: str) -> str:
-    if regime == Regime.SHOCK.value:
-        return "HIGH"
-    if news_bias != "NEUTRAL" and regime in [Regime.TRANSITION.value, Regime.RANGE.value]:
-        return "ELEVATED"
-    return "NORMAL"
-
-
-# ==========================================================
-# VOLUME CLUSTER ANALYSIS
-# ==========================================================
-
-def detect_volume_clusters(candles: list[Candle], bins: int = 12) -> list[VolumeCluster]:
-    if not candles or len(candles) < 30:
-        return []
-
-    prices = [c.close for c in candles[-80:]]
-    volumes = [c.volume for c in candles[-80:]]
-    if not volumes or sum(volumes) == 0:
-        return []
-
-    min_p = min(prices)
-    max_p = max(prices)
-    if max_p - min_p < 0.01:
-        return []
-
-    bin_size = (max_p - min_p) / bins
-    clusters = []
-
-    for i in range(bins):
-        low = min_p + i * bin_size
-        high = low + bin_size
-        vol_sum = sum(v for p, v in zip(prices, volumes) if low <= p < high)
-        if vol_sum > 0:
-            avg_vol = mean(volumes)
-            strength = min(100, int((vol_sum / (avg_vol * 3)) * 100))
-            cluster_type = "HVN" if strength > 55 else "LVN"
-            clusters.append(VolumeCluster(
-                price_level=round((low + high) / 2, 4),
-                volume=round(vol_sum, 1),
-                strength=strength,
-                type=cluster_type
-            ))
-
-    return sorted(clusters, key=lambda x: -x.strength)[:6]
-
-
-def has_volume_cluster_support(price: float, clusters: list[VolumeCluster], side: str, atr: float) -> bool:
-    if not clusters:
-        return False
-    for cl in clusters:
-        if abs(price - cl.price_level) < atr * 0.35 and cl.strength > 50:
-            if (side == Side.LONG.value and cl.type == "HVN") or (side == Side.SHORT.value and cl.type == "HVN"):
-                return True
-    return False
-
-
-# ==========================================================
-# DEEP ACCEPTANCE QUALITY ENGINE
-# ==========================================================
-
-def calculate_acceptance_quality(
-    event: dict,
-    candles_3m: list[Candle],
-    atr15: float,
-    structure_alignment: float
-) -> int:
-    if not event or not candles_3m:
-        return 30
-
-    stage = event.get("stage", "SWEEP")
-    if stage not in ["ACCEPTANCE", "RETEST", "READY"]:
-        return 35
-
-    quality = 40
-
-    displacement = event.get("displacement", False)
-    if displacement:
-        quality += 18
-
-    hold_closes = event.get("hold_closes", 0)
-    if hold_closes >= 2:
-        quality += 14
-    elif hold_closes == 1:
-        quality += 7
-
-    quality += int(structure_alignment * 0.25)
-
-    chain_quality = event.get("chain_quality", 50)
-    quality += int((chain_quality - 50) * 0.3)
-
-    return int(clamp(quality, 25, 95))
-
-
-# ==========================================================
-# 3M SCANNER
+# 3M SCANNER (спрощений)
 # ==========================================================
 
 def _empty_scan3m_state() -> dict:
@@ -848,7 +694,7 @@ def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr
     prev = candles[-2]
     is_sweep = (side == Side.LONG.value and last.low < trigger_level) or (side == Side.SHORT.value and last.high > trigger_level)
     is_reclaim = (side == Side.LONG.value and last.close > trigger_level) or (side == Side.SHORT.value and last.close < trigger_level)
-    displacement = abs(last.close - prev.close) > atr15 * 0.72
+    displacement = abs(last.close - prev.close) > atr15 * 0.70
     ready = is_reclaim and displacement
     quality = 50
     if displacement:
@@ -920,11 +766,11 @@ def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
 
 
 # ==========================================================
-# MARKET DATA
+# MARKET DATA (спрощений)
 # ==========================================================
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Optional[requests.Response]:
-    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v5.1-Hybrid/1.0", "Accept": "*/*"}
+    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v5.1/1.0", "Accept": "*/*"}
     last_err = None
     for attempt in range(max(1, retries)):
         try:
@@ -934,8 +780,7 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Opti
             last_err = f"HTTP {resp.status_code}"
         except Exception as e:
             last_err = str(e)
-        time.sleep(0.35 * attempt)
-    print(f"[WARN] GET failed: {url} | {last_err}")
+        time.sleep(0.3 * attempt)
     return None
 
 
@@ -955,8 +800,7 @@ def get_okx_candles(bar: str = "15m", limit: int = 160) -> list[Candle]:
                 continue
         out.sort(key=lambda c: c.ts)
         return out
-    except Exception as exc:
-        print(f"[WARN] OKX candles failed {bar}: {exc}")
+    except Exception:
         return []
 
 
@@ -1003,23 +847,6 @@ def get_okx_book(depth: int = 50) -> dict:
         return {"bids": [], "asks": []}
 
 
-def get_okx_derivatives() -> dict:
-    result = {"oi": 0.0, "funding_rate": 0.0}
-    oi = http_get(f"https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId={OKX_INST_ID}", timeout=8, retries=1)
-    funding = http_get(f"https://www.okx.com/api/v5/public/funding-rate?instId={OKX_INST_ID}", timeout=8, retries=1)
-    try:
-        if oi:
-            result["oi"] = safe_float((oi.json().get("data") or [])[0].get("oi"))
-    except Exception:
-        pass
-    try:
-        if funding:
-            result["funding_rate"] = safe_float((funding.json().get("data") or [])[0].get("fundingRate"))
-    except Exception:
-        pass
-    return result
-
-
 def collect_market_data() -> dict:
     c3 = get_okx_candles("3m", 240)
     c15 = get_okx_candles("15m", 200)
@@ -1028,7 +855,6 @@ def collect_market_data() -> dict:
     okx_t = get_okx_ticker()
     trades = get_okx_trades(150)
     book = get_okx_book(50)
-    deriv = get_okx_derivatives()
     ticker = okx_t or {"price": (c15[-1].close if c15 else 80.0), "source": "fallback"}
     return {
         "time": iso_now(),
@@ -1036,7 +862,6 @@ def collect_market_data() -> dict:
         "ticker": ticker,
         "trades": trades,
         "book": book,
-        "derivatives": deriv,
         "price": safe_float(ticker.get("price"))
     }
 
@@ -1184,10 +1009,11 @@ def build_context(data: dict, state: dict) -> dict:
     move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
     regime, regime_reason = regime_detection(tf4h, tf1h, move8)
 
-    volume_clusters = detect_volume_clusters(c15)
-    news_items = fetch_simple_news()
-    news = analyze_news_bias(news_items)
-    macro_risk = get_macro_risk(news["bias"], regime)
+    volume_clusters = []
+    try:
+        volume_clusters = detect_volume_clusters(c15)
+    except Exception:
+        pass
 
     ctx = {
         "time": data["time"],
@@ -1202,10 +1028,7 @@ def build_context(data: dict, state: dict) -> dict:
         "atr15": atr15,
         "atr1h": atr1h,
         "candles": data["candles"],
-        "derivatives": data.get("derivatives", {}),
         "volume_clusters": volume_clusters,
-        "news": news,
-        "macro_risk": macro_risk,
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
     }
@@ -1216,18 +1039,8 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# CANDIDATE DETECTION
+# CANDIDATE + АГРЕСИВНИЙ RE-ENTRY
 # ==========================================================
-
-def missed_impulse_status(candidate: Candidate, plan: Optional[TradePlan]) -> bool:
-    if not candidate or not plan:
-        return False
-    if candidate.scan_event_stage in ["RETEST", "READY"] and candidate.trigger_age_minutes < 48:
-        return True
-    if candidate.final_score >= 80 and candidate.trigger_ready:
-        return True
-    return False
-
 
 def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
     if not opp:
@@ -1265,12 +1078,12 @@ def event_driven_reentry_guard(state: dict, context: dict, candidate: Candidate)
     history = state.get("history", [])
     if not history or not candidate.thesis_key:
         return {"blocked": False, "reason": ""}
-    recent_stops = [h for h in history[-14:] if h.get("action") == Action.STOP.value and h.get("thesis_key")]
+    recent_stops = [h for h in history[-12:] if h.get("action") == Action.STOP.value and h.get("thesis_key")]
     for h in recent_stops:
         if h.get("thesis_key") == candidate.thesis_key:
             trigger_diff = abs(candidate.trigger_level - safe_float(h.get("trigger_level")))
-            if trigger_diff < context.get("atr15", 0.6) * REENTRY_NEW_TRIGGER_SEPARATION_ATR15:
-                return {"blocked": True, "reason": "Точний replay тієї ж тези після стопу"}
+            if trigger_diff < context.get("atr15", 0.6) * 0.20:
+                return {"blocked": True, "reason": "Точний replay тієї ж тези"}
     return {"blocked": False, "reason": ""}
 
 
@@ -1286,8 +1099,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     regime = context["regime"]
     scan_events = context.get("scan_3m_events", {})
     volume_clusters = context.get("volume_clusters", [])
-    news = context.get("news", {})
-    macro_risk = context.get("macro_risk", "NORMAL")
 
     params = get_adaptive_params(regime)
 
@@ -1353,7 +1164,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if tf4h.get("bias") == side:
             evidence.append("HTF_CONTEXT")
 
-        volume_support = has_volume_cluster_support(price, volume_clusters, side, atr15)
+        volume_support = False
+        try:
+            volume_support = has_volume_cluster_support(price, volume_clusters, side, atr15)
+        except Exception:
+            pass
         if volume_support:
             evidence.append("VOLUME_CLUSTER_SUPPORT")
             raw += 6
@@ -1379,14 +1194,18 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         elif final >= params["risky_entry_score"] and trigger_ready and regime != Regime.SHOCK.value:
             lane = ExecutionLane.EARLY_TACTICAL.value
 
-        thesis = f"{side} {setup_type} | HTF={tf4h.get('bias')} | Flow={flow.get('bias')} CVD={cvd.get('bias')} | 3M={scan_stage} | News={news.get('bias', 'NEUTRAL')}"
+        thesis = f"{side} {setup_type} | HTF={tf4h.get('bias')} | Flow={flow.get('bias')} CVD={cvd.get('bias')} | 3M={scan_stage}"
 
         structure_alignment = 50
         if tf15.get("bias") == side:
             structure_alignment += 20
         if tf1h.get("bias") == side:
             structure_alignment += 15
-        acceptance_quality = calculate_acceptance_quality(event, context["candles"]["3m"], atr15, structure_alignment)
+        acceptance_quality = 40
+        try:
+            acceptance_quality = calculate_acceptance_quality(event, context["candles"]["3m"], atr15, structure_alignment)
+        except Exception:
+            pass
 
         cand = Candidate(
             side=side,
@@ -1471,7 +1290,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         position_risk_pct=RISKY_RISK_PCT if candidate.execution_lane == ExecutionLane.EARLY_TACTICAL.value else NORMAL_RISK_PCT,
         invalidation=f"закриття 15M за {round_price(structural_stop)}",
         stop_basis="HTF захищена структура + ATR buffer",
-        target_basis="TP1 ≥2.25R реальна ліквідність",
+        target_basis="TP1 ≥2.2R реальна ліквідність",
         stop_timeframe="1H" if any(z.timeframe == "1h" for z in zones) else "15M",
         structural_invalidation=round_price(structural_stop),
         trigger_level=candidate.trigger_level,
@@ -1493,7 +1312,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     saved_opp = opportunity_from_state(state)
     current_price = context.get("price", 0)
     
-    # === АГРЕСИВНИЙ RE-ENTRY ===
+    # === ДУЖЕ АГРЕСИВНИЙ RE-ENTRY ===
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
@@ -1503,14 +1322,14 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
                 plan = build_trade_plan(context, missed_cand)
                 
                 # === АГРЕСИВНА ЛОГІКА ===
-                # Якщо є re-entry і score хороший → відкриваємо угоду (RISKY_ENTRY)
-                # ARMED тільки якщо score дуже низький
-                if missed_cand.final_score >= RISKY_ENTRY_SCORE_BASE:
+                # Якщо якість ≥ REENTRY_AGGRESSIVE_THRESHOLD (72) → одразу RISKY_ENTRY
+                # Інакше — ARMED
+                if missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD:
                     action = Action.RISKY_ENTRY.value
-                    reason = "Re-entry з пропущеного імпульсу — ранній вхід (trigger_ready)"
+                    reason = "Re-entry з пропущеного імпульсу — високий confluence, відкриваємо угоду"
                 else:
                     action = Action.ARMED.value
-                    reason = "Re-entry з пропущеного імпульсу (теза збережена, чекаємо кращого тригера)"
+                    reason = "Re-entry з пропущеного імпульсу — сформовано сигнал, чекаємо входу"
                 
                 return Decision(
                     id=uuid.uuid4().hex[:10],
@@ -1523,10 +1342,10 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
                     regime=context["regime"],
                     candidate=missed_cand,
                     plan=plan,
-                    news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
-                    macro_risk=context.get("macro_risk", "NORMAL"),
+                    news_bias="NEUTRAL",
+                    macro_risk="NORMAL",
                     current_price=current_price,
-                    audit={"reentry": True, "origin_opportunity": saved_opp.thesis_key, "trigger_ready": missed_cand.trigger_ready}
+                    audit={"reentry": True, "origin_opportunity": saved_opp.thesis_key}
                 )
 
     if not cands:
@@ -1539,8 +1358,8 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             quality=12,
             reason="ринок не сформував професійного ICT + OrderFlow + Volume execution-package",
             regime=context["regime"],
-            news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
-            macro_risk=context.get("macro_risk", "NORMAL"),
+            news_bias="NEUTRAL",
+            macro_risk="NORMAL",
             current_price=current_price
         )
 
@@ -1562,10 +1381,6 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         action = Action.ARMED.value
         reason = f"{setup_label(best.setup_type)} сформовано; потрібен свіжий 3M trigger/acceptance"
 
-    if missed_impulse_status(best, plan) and action == Action.ARMED.value:
-        action = Action.ARMED.value
-        reason = "сильний імпульс уже відійшов; тезу збережено для повторного входу"
-
     return Decision(
         id=uuid.uuid4().hex[:10],
         time=iso_now(),
@@ -1577,10 +1392,10 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         regime=context["regime"],
         candidate=best,
         plan=plan,
-        news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
-        macro_risk=context.get("macro_risk", "NORMAL"),
+        news_bias="NEUTRAL",
+        macro_risk="NORMAL",
         current_price=current_price,
-        audit={"selected": {"side": best.side, "setup": best.setup_type, "score": best.final_score, "lane": best.execution_lane, "evidence": len(best.evidence_families), "3m_stage": best.scan_event_stage, "acceptance_quality": best.acceptance_quality}}
+        audit={"selected": {"side": best.side, "setup": best.setup_type, "score": best.final_score}}
     )
 
 
@@ -1599,7 +1414,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     result = {
         "action": Action.HOLD.value,
-        "title": "УГОДА ВІДКРИТА — HYBRID ICT + THESIS v5.1",
+        "title": "УГОДА ВІДКРИТА — HYBRID ICT v5.1",
         "recommendation": "Структура та thesis на боці — тримаємо",
         "current_pct": ((price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - price) / trade.entry * 100),
         "best_pct": ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100),
@@ -1624,7 +1439,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.mfe_giveback_streak += 1
         if trade.mfe_giveback_streak >= 3:
             result["action"] = Action.PROTECT.value
-            result["notes"].append("MFE giveback — фіксуємо частину прибутку (адаптивно)")
+            result["notes"].append("MFE giveback — фіксуємо частину прибутку")
             result["recommended_stop"] = round_price(trade.entry + (trade.best_price - trade.entry) * 0.40 if side == Side.LONG.value else trade.entry - (trade.entry - trade.best_price) * 0.40)
             result["recommended_stop_reason"] = "Адаптивний захист прибутку"
     else:
@@ -1662,7 +1477,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["closed"] = True
         result["action"] = Action.STOP.value
         result["exit_price"] = price
-        result["notes"].append("Структурна інвалідація за ICT + Thesis — вихід")
+        result["notes"].append("Структурна інвалідація — вихід")
 
     if not result["closed"] and trade.tp1_hit:
         if (side == Side.LONG.value and (flow.get("bias") == Side.SHORT.value or cvd.get("bias") == Side.SHORT.value) and flow.get("score", 0) > 20) or \
@@ -1744,7 +1559,7 @@ def run_bot() -> None:
     if not context.get("price"):
         print("NO PRICE — abort")
         return
-    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | News: {context.get('news', {}).get('bias')} | MacroRisk: {context.get('macro_risk')}")
+    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -1780,9 +1595,6 @@ def run_bot() -> None:
         print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type}")
     elif decision.action == Action.ARMED.value and decision.candidate:
         opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status="ARMED", thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis)
-        if missed_impulse_status(decision.candidate, decision.plan):
-            opp.status = "WAIT_PULLBACK"
-            opp.missed_at = iso_now()
         store_opportunity(state, opp)
         store_active_trade(state, None)
     else:
@@ -1799,7 +1611,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL + AGGRESSIVE RE-ENTRY)")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (AGGRESSIVE + CLEAN TEXT)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
