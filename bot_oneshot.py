@@ -39,6 +39,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # === DATA SOURCES ===
 OKX_BASE_URL = "https://www.okx.com/api/v5/market"
 TRADINGVIEW_SCAN_URL = "https://scanner.tradingview.com/crypto/scan"
+OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
 
@@ -841,16 +842,16 @@ def get_tradingview_price_fallback() -> dict:
 def collect_market_data() -> dict:
     """
     TradingView як ОСНОВНЕ джерело ціни
-    OKX — тільки як fallback
+    OKX swap-свічки — основа для 3m/15m/1h/4h сканера
     """
-    c3 = get_okx_candles("BZ-USDT", "3m", 240)
-    c15 = get_okx_candles("BZ-USDT", "15m", 200)
-    c1h = get_okx_candles("BZ-USDT", "1h", 160)
-    c4h = get_okx_candles("BZ-USDT", "4h", 140)
+    c3 = get_okx_candles(OKX_INST_ID, "3m", 240)
+    c15 = get_okx_candles(OKX_INST_ID, "15m", 200)
+    c1h = get_okx_candles(OKX_INST_ID, "1h", 160)
+    c4h = get_okx_candles(OKX_INST_ID, "4h", 140)
     
     # TradingView — ПРІОРИТЕТ
     tv_ticker = get_tradingview_price_fallback()
-    okx_ticker = get_okx_ticker()
+    okx_ticker = get_okx_ticker(OKX_INST_ID)
     
     ticker = tv_ticker or okx_ticker
     
@@ -860,7 +861,7 @@ def collect_market_data() -> dict:
             "change24h": 0,
             "volume24h": 0,
             "source": "OKX candles fallback",
-            "symbol": "BZ-USDT",
+            "symbol": OKX_INST_ID,
         }
     
     price = ticker.get("price") if ticker else 82.5
