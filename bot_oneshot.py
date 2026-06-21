@@ -1295,9 +1295,6 @@ def _new_scan3m_event(
         "acceptance_quality": 0,       # 0-100, якість acceptance
         "retest_quality": 0,           # 0-100, якість retest/hold
     }
-        "processed_bars": 1,
-        "valid": True,
-    }
 
 
 def scan_closed_3m_sequence(state: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
