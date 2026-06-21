@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v3.2.5-htf-confluence-high-quality-lane"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_5_HTF_CONFLUENCE_HIGH_QUALITY_LANE"
+BOT_VERSION = "pro-ict-v3.2.7-event-chain-confirmation-tiers"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_7_EVENT_CHAIN_CONFIRMATION_TIERS"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -115,6 +115,12 @@ MISSED_REENTRY_SCORE = max(64, int(os.getenv("MISSED_REENTRY_SCORE", "64") or 64
 HIGH_QUALITY_CONTINUATION_SCORE = max(78, int(os.getenv("HIGH_QUALITY_CONTINUATION_SCORE", "78") or 78))
 HIGH_QUALITY_HTF_BONUS = 12
 TRANSITION_HTF_PENALTY = -20
+
+# Confirmation Tiers (Етап 3)
+TIER_MICRO = 1
+TIER_STANDARD = 2
+TIER_HIGH_QUALITY = 3
+TIER_PREMIUM = 4
 TACTICAL_MIN_STOP_ATR15 = max(0.58, float(os.getenv("TACTICAL_MIN_STOP_ATR15", "0.58") or 0.58))
 TACTICAL_MAX_STOP_ATR15 = max(1.40, float(os.getenv("TACTICAL_MAX_STOP_ATR15", "1.90") or 1.90))
 REENTRY_ZONE_TOLERANCE_ATR15 = float(os.getenv("REENTRY_ZONE_TOLERANCE_ATR15", "0.12") or 0.12)
@@ -333,6 +339,7 @@ class Candidate:
     thesis_key: str = ""
     execution_lane: str = "STANDARD_CONFIRMED"
     scan_event_stage: str = ""
+    confirmation_tier: int = 1  # 1=Micro, 2=Standard, 3=High Quality, 4=Premium
 
 
 @dataclass
@@ -1282,6 +1289,12 @@ def _new_scan3m_event(
         "retest_ts": 0,
         "ready_ts": 0,
         "hold_closes": 0,
+        "previous_stage": "",
+        "chain_quality": 50,           # 0-100, якість ланцюжка подій
+        "confirmation_quality": 40,    # 0-100, наскільки добре підтверджена подія
+        "acceptance_quality": 0,       # 0-100, якість acceptance
+        "retest_quality": 0,           # 0-100, якість retest/hold
+    }
         "processed_bars": 1,
         "valid": True,
     }
@@ -1519,6 +1532,74 @@ def classify_execution_lane(candidate: Candidate) -> str:
     ):
         return "EARLY_TACTICAL"
     return "STANDARD_CONFIRMED"
+
+
+def update_event_chain_quality(event: dict, new_stage: str, candle: Candle, atr: float) -> None:
+    """
+    Покращує якість ланцюжка подій (event-chain).
+    Кожна нова стадія (особливо ACCEPTANCE і RETEST) підвищує confirmation_quality.
+    """
+    prev_stage = event.get("stage", "")
+    event["previous_stage"] = prev_stage
+
+    quality = int(event.get("confirmation_quality", 40))
+
+    # Покращення якості при переході по ланцюжку
+    if new_stage == "STRUCTURE_SHIFT" and event.get("displacement"):
+        quality = max(quality, 55)
+    if new_stage == "ACCEPTANCE":
+        quality = max(quality, 70)
+        event["acceptance_quality"] = 75
+    if new_stage == "RETEST":
+        quality = max(quality, 82)
+        event["retest_quality"] = 80
+    if new_stage == "READY":
+        quality = max(quality, 90)
+
+    # Бонус за тривале утримання (hold)
+    hold = int(event.get("hold_closes", 0))
+    if hold >= 2:
+        quality = min(100, quality + 5)
+
+    event["confirmation_quality"] = min(100, quality)
+    event["chain_quality"] = min(100, quality + (5 if event.get("displacement") else 0))
+
+
+def calculate_confirmation_tier(context: dict[str, Any], candidate: Candidate, htf_result: dict) -> int:
+    """
+    Confirmation Tiers system (Етап 1 + 3).
+    Determines how strongly the setup is confirmed on 3M microstructure + HTF confluence.
+    Higher tier = higher confidence, better position sizing, slightly more aggressive execution.
+    """
+    tier = TIER_MICRO
+
+    evidence_count = len(getattr(candidate, 'evidence_families', []))
+    has_strong_3m_event = False
+    has_good_acceptance = False
+
+    # Check 3M scan event quality
+    scan_events = context.get("scan_3m_events") or {}
+    event = scan_events.get(candidate.side) or {}
+    if event:
+        stage = str(event.get("stage", ""))
+        displacement = bool(event.get("displacement"))
+        has_strong_3m_event = displacement or stage in {"READY", "RETEST"}
+        has_good_acceptance = stage in {"ACCEPTANCE", "RETEST", "READY"}
+
+    htf_aligned = htf_result.get("htf_aligned", False)
+    score = getattr(candidate, 'final_score', 0) or getattr(candidate, 'raw_score', 0)
+
+    # Tier assignment logic
+    if evidence_count >= 5 and htf_aligned and has_strong_3m_event and score >= 78:
+        tier = TIER_PREMIUM
+    elif evidence_count >= 5 and htf_aligned and has_strong_3m_event:
+        tier = TIER_HIGH_QUALITY
+    elif evidence_count >= 4 and (htf_aligned or has_good_acceptance) and score >= 65:
+        tier = TIER_STANDARD
+    else:
+        tier = TIER_MICRO
+
+    return tier
 
 
 def evaluate_htf_confluence(context: dict[str, Any], candidate: Candidate, regime: str) -> dict[str, Any]:
@@ -3204,12 +3285,15 @@ def finalize_candidate(context: dict[str, Any], candidate: Candidate) -> Candida
     else:
         candidate.final_score = max(0, candidate.raw_score + htf_result["bonus"])
 
-    # High Quality Continuation lane assignment
+    # === Confirmation Tiers (Етап 1 + 3) ===
+    candidate.confirmation_tier = calculate_confirmation_tier(context, candidate, htf_result)
+
+    # High Quality Continuation lane assignment (тільки для Tier 3+)
     is_high_quality = (
         candidate.setup_family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
         and candidate.final_score >= HIGH_QUALITY_CONTINUATION_SCORE
         and htf_result["htf_aligned"]
-        and len(candidate.evidence_families) >= 5
+        and candidate.confirmation_tier >= TIER_HIGH_QUALITY
         and not candidate.hard_reject_reason
     )
     if is_high_quality:
@@ -3712,7 +3796,9 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
         if candidate.risk_mode == "RISKY" or candidate.execution_lane in {"EARLY_TACTICAL", "MISSED_IMPULSE_REENTRY"}
         else NORMAL_RISK_PCT
     )
-    # High Quality lane always gets full (normal) size
+    # Higher Confirmation Tiers get better position sizing
+    if getattr(candidate, 'confirmation_tier', 1) >= TIER_HIGH_QUALITY:
+        position_risk_base = NORMAL_RISK_PCT
     if candidate.execution_lane == "HIGH_QUALITY_CONTINUATION":
         position_risk_base = NORMAL_RISK_PCT
     position_risk = round(position_risk_base * clamp(candidate.edge_risk_multiplier, 0.35, 1.10), 3)
@@ -4538,7 +4624,11 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
     if decision.candidate:
         reasons = candidate_reason_lines(decision.candidate)
         if reasons:
-            lines.extend(["", "Підтвердження:", *[html.escape(x) for x in reasons]])
+            tier = getattr(decision.candidate, 'confirmation_tier', 1)
+            tier_name = {1: "Micro", 2: "Standard", 3: "High Quality", 4: "Premium"}.get(tier, "Standard")
+            tier_emoji = {1: "🔹", 2: "🔸", 3: "⭐", 4: "🌟"}.get(tier, "🔸")
+            lines.extend(["", f"Рівень підтвердження: {tier_emoji} Tier {tier} — {tier_name}"])
+            lines.extend(["Підтвердження:", *[html.escape(x) for x in reasons]])
 
     if decision.plan and decision.action in {Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value}:
         p = decision.plan
