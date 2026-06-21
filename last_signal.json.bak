@@ -5,9 +5,9 @@
   "opportunity": {
     "side": "LONG",
     "setup_type": "RANGE_COMPRESSION_BREAKOUT",
-    "created_at": "2026-06-21T11:45:49.955575+00:00",
-    "expires_at": "2026-06-22T11:45:49.955575+00:00",
-    "score": 67,
+    "created_at": "2026-06-21T11:47:02.586477+00:00",
+    "expires_at": "2026-06-22T11:47:02.586477+00:00",
+    "score": 60,
     "trigger_level": 80.98,
     "invalidation_level": 80.66,
     "confirmations": [
@@ -24,8 +24,7 @@
     "evidence_families": [
       "ICT_LOCATION",
       "PRICE_STRUCTURE",
-      "LIQUIDITY",
-      "ORDER_FLOW"
+      "LIQUIDITY"
     ],
     "execution_profile": "TACTICAL",
     "execution_anchor": 80.98,
@@ -40,7 +39,7 @@
   },
   "scan_3m": {
     "last_scanned_3m_ts": 1782042120000,
-    "last_run_processed": 5,
+    "last_run_processed": 0,
     "processed_count": 84,
     "events": {
       "SHORT": {
@@ -64,25 +63,25 @@
     }
   },
   "latest_signal": {
-    "id": "281addd2442a",
-    "time": "2026-06-21T11:45:49.954966+00:00",
+    "id": "536f3cbbafee",
+    "time": "2026-06-21T11:47:02.585929+00:00",
     "action": "ARMED",
     "side": "LONG",
     "setup_type": "RANGE_COMPRESSION_BREAKOUT",
-    "quality": 67,
+    "quality": 60,
     "reason": "Пробій після стиснення діапазону сформовано; потрібен свіжий закритий 3M trigger",
     "regime": "RANGE",
     "candidate": {
       "side": "LONG",
       "setup_type": "RANGE_COMPRESSION_BREAKOUT",
-      "raw_score": 76,
-      "final_score": 67,
+      "raw_score": 74,
+      "final_score": 60,
       "score_components": {
         "location": 19,
         "structure": 19,
         "liquidity": 16,
         "trigger": 13,
-        "flow": 9,
+        "flow": 7,
         "htf": 0
       },
       "trigger_ready": false,
@@ -121,20 +120,20 @@
         "CVD/ціна показують поглинання потоку на користь напрямку"
       ],
       "risks": [
+        "агресивний delta проти, але його поглинає ціна",
         "старший таймфрейм не підтримує напрям",
         "у RANGE ранній micro-break лише ARMED; потрібне 15M acceptance + ретест"
       ],
       "hard_reject_reason": "",
       "risk_mode": "RISKY",
-      "late_extension_atr": 0.267,
+      "late_extension_atr": 0.334,
       "setup_family": "EXPANSION",
       "variant": "EARLY_MICRO_COMPRESSION_BREAK",
       "stage": "ARMED",
       "evidence_families": [
         "ICT_LOCATION",
         "PRICE_STRUCTURE",
-        "LIQUIDITY",
-        "ORDER_FLOW"
+        "LIQUIDITY"
       ],
       "trigger_ts": 1782042120000,
       "execution_profile": "TACTICAL",
@@ -186,7 +185,7 @@
       "trigger_level": 80.98,
       "trigger_condition": "закрита 3M подія вище 80.98 та утримання 80.918–81.0324",
       "execution_ready": false,
-      "execution_reason": "execution-trigger ще не закритий; поточна ціна дає 0.32R до найближчої реальної ліквідності 81.08; оптимальний 2R-вхід близько 80.9147; чекати ціну в оптимальній зоні 80.7731–80.803; не доганяти",
+      "execution_reason": "execution-trigger ще не закритий; поточна ціна дає 0.25R до найближчої реальної ліквідності 81.08; оптимальний 2R-вхід близько 80.9147; чекати ціну в оптимальній зоні 80.7731–80.803; не доганяти",
       "stop_timeframe": "15M",
       "stop_source_level": 80.66,
       "htf_scenario": "старший контекст змішаний; тільки підтверджена 15M структура",
@@ -208,19 +207,18 @@
           "stage": "ARMED",
           "execution_lane": "STANDARD_CONFIRMED",
           "lane_threshold": 76,
-          "raw_score": 76,
-          "final_score": 67,
-          "selection_score": 82.4,
+          "raw_score": 74,
+          "final_score": 60,
+          "selection_score": 72.9,
           "trigger_ready": false,
           "risk_mode": "RISKY",
           "evidence_families": [
             "ICT_LOCATION",
             "PRICE_STRUCTURE",
-            "LIQUIDITY",
-            "ORDER_FLOW"
+            "LIQUIDITY"
           ],
-          "evidence_count": 4,
-          "late_extension_atr": 0.267,
+          "evidence_count": 3,
+          "late_extension_atr": 0.334,
           "execution_anchor": 80.98,
           "trigger_level": 80.98,
           "trigger_age_minutes": 999.0,
@@ -231,7 +229,7 @@
             "structure": 19,
             "liquidity": 16,
             "trigger": 13,
-            "flow": 9,
+            "flow": 7,
             "htf": 0
           },
           "geometry_valid": true,
@@ -248,15 +246,15 @@
         "setup_family": "EXPANSION",
         "variant": "EARLY_MICRO_COMPRESSION_BREAK",
         "stage": "ARMED",
-        "score": 67,
+        "score": 60,
         "execution_lane": "STANDARD_CONFIRMED",
         "lane_threshold": 76,
-        "evidence_count": 4,
+        "evidence_count": 3,
         "missed_impulse": false
       },
       "scan_3m": {
         "last_scanned_3m_ts": 1782042120000,
-        "last_run_processed": 5,
+        "last_run_processed": 0,
         "processed_count": 84,
         "events": {
           "SHORT": {
@@ -294,11 +292,11 @@
     "version": "pro-ict-v3.2.3-full-core-3m-three-lanes-audited",
     "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V3_2_3_FULL_CORE_3M_THREE_LANES_AUDITED",
     "context": {
-      "time": "2026-06-21T11:45:49.918982+00:00",
-      "price": 81.02,
+      "time": "2026-06-21T11:47:02.553136+00:00",
+      "price": 81.03,
       "price_source": "OKX",
       "reference_price": 80.89,
-      "cross_price_diff_pct": 0.1605,
+      "cross_price_diff_pct": 0.1728,
       "regime": "RANGE",
       "regime_reason": "15M рух перекривається і не має ефективного напрямку",
       "tf3": {
@@ -473,25 +471,25 @@
         "low": 80.66,
         "high": 81.65,
         "equilibrium": 81.155,
-        "position": 0.364,
+        "position": 0.374,
         "zone": "DISCOUNT",
         "at_lower_edge": false,
         "at_upper_edge": false
       },
       "flow": {
-        "bias": "NEUTRAL",
-        "score": -4,
-        "trade_delta": -11446.0,
-        "trade_delta_pct": -30.34,
-        "book_delta_pct": 5.47,
-        "price_move_pct": 0.198,
-        "cvd_acceleration": 12146.0,
+        "bias": "SHORT",
+        "score": -5,
+        "trade_delta": -12321.0,
+        "trade_delta_pct": -33.4,
+        "book_delta_pct": 0.52,
+        "price_move_pct": 0.185,
+        "cvd_acceleration": 15453.0,
         "absorption_bias": "LONG",
         "confidence": "MEDIUM",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 5675135.0,
+        "oi": 5675361.0,
         "funding_rate": 0.0
       },
       "zones": [
@@ -658,7 +656,7 @@
       ],
       "scan_3m": {
         "last_scanned_3m_ts": 1782042120000,
-        "last_run_processed": 5,
+        "last_run_processed": 0,
         "processed_count": 84,
         "events": {
           "SHORT": {
@@ -683,7 +681,7 @@
       }
     }
   },
-  "last_message_key": "{\"action\": \"ARMED\", \"plan_valid\": true, \"quality_bucket\": 13, \"setup_type\": \"RANGE_COMPRESSION_BREAKOUT\", \"side\": \"LONG\"}",
+  "last_message_key": "{\"action\": \"ARMED\", \"plan_valid\": true, \"quality_bucket\": 12, \"setup_type\": \"RANGE_COMPRESSION_BREAKOUT\", \"side\": \"LONG\"}",
   "history": [
     {
       "type": "NO_SETUP",
@@ -1760,9 +1758,67 @@
         "entry_logic": "ICT location → 3M trigger → acceptance → retest/hold → standard structural stop → 2R"
       },
       "time": "2026-06-21T11:45:49.955561+00:00"
+    },
+    {
+      "type": "ARMED",
+      "side": "LONG",
+      "setup_type": "RANGE_COMPRESSION_BREAKOUT",
+      "price": 81.03,
+      "quality": 60,
+      "reason": "Пробій після стиснення діапазону сформовано; потрібен свіжий закритий 3M trigger",
+      "plan": {
+        "entry": 80.788,
+        "stop": 80.642,
+        "tp1": 81.09,
+        "tp2": 81.24,
+        "tp3": 81.39,
+        "risk_pct": 0.181,
+        "rr1": 2.07,
+        "rr2": 3.1,
+        "rr3": 4.12,
+        "position_risk_pct": 0.25,
+        "position_size": 0.0,
+        "notional": 0.0,
+        "invalidation": "закриття 15M за 80.66; 1H/4H outer boundary має пріоритет лише коли саме вона захищає тезу",
+        "stop_basis": "закритий 15M protected swing; стоп ЗА рівнем + 0.12 ATR, не всередині зони",
+        "target_basis": "TP1 — реальна ICT/1H ліквідність ≥2R; TP2/TP3 — наступна зовнішня ліквідність/3R/4R",
+        "checkpoints": [
+          81.08,
+          81.1,
+          81.15,
+          81.17,
+          81.21,
+          81.22,
+          81.26,
+          81.35
+        ],
+        "valid": true,
+        "reason": "",
+        "better_entry": 80.788,
+        "structural_invalidation": 80.66,
+        "wait_zone_low": 80.92,
+        "wait_zone_high": 80.93,
+        "entry_zone_low": 80.7731,
+        "entry_zone_high": 80.803,
+        "trigger_level": 80.98,
+        "trigger_condition": "закрита 3M подія вище 80.98 та утримання 80.918–81.0324",
+        "execution_ready": false,
+        "execution_reason": "execution-trigger ще не закритий; поточна ціна дає 0.25R до найближчої реальної ліквідності 81.08; оптимальний 2R-вхід близько 80.9147; чекати ціну в оптимальній зоні 80.7731–80.803; не доганяти",
+        "stop_timeframe": "15M",
+        "stop_source_level": 80.66,
+        "htf_scenario": "старший контекст змішаний; тільки підтверджена 15M структура",
+        "blocking_zone": "1h FVG 81.43–81.51",
+        "acceptance_status": "SETUP: потрібне прийняття рівня 80.98: 2 закриті 3M/15M BOS та ретест; ранній micro-break не є входом | HTF: потрібне прийняття 1h FVG 81.43–81.51: 2 закриті 3M або 15M close за межею 81.51 + ретест",
+        "natural_tp1": true,
+        "max_entry_extension_atr": 0.35,
+        "optimal_entry_for_rr": 80.788,
+        "natural_target_level": 81.08,
+        "entry_logic": "ICT location → 3M trigger → acceptance → retest/hold → standard structural stop → 2R"
+      },
+      "time": "2026-06-21T11:47:02.586467+00:00"
     }
   ],
-  "last_telegram_success_at": "2026-06-21T11:45:50.338378+00:00",
+  "last_telegram_success_at": "2026-06-21T11:47:03.027498+00:00",
   "last_telegram_error": "",
-  "updated_at": "2026-06-21T11:45:50.338393+00:00"
+  "updated_at": "2026-06-21T11:47:03.027518+00:00"
 }
