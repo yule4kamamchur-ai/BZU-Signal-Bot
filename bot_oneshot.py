@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v5.1
+BZU Professional Hybrid Confluence Signal Bot v5.1 (FIXED)
 ================================================================================
-По-справжньому топова версія.
+Виправлена версія з реальною відправкою в Telegram.
 
 v5.1 — Hybrid ICT + Order Flow + Volume Profile + Macro/News + Adaptive Parameters
 
-Ключові інновації v5.1:
-- Глибока модель Acceptance Quality (дисплейсмент + холд + структура + об'єм)
-- Volume Cluster Analysis (HVN / LVN як підтримка/опір)
-- Повноцінні Macro + News фільтри (EIA, Fed, OPEC, Reuters-style)
-- Adaptive Parameter Engine (параметри залежать від режиму ринку)
-- Thesis Engine + Multi-Layer Confluence Scoring
-- Професійне управління з ICT + MFE + Thesis Validation
-
-Це вже близький до топового професійного продукту рівень.
+Виправлення в цій версії:
+- Додано повноцінну функцію send_telegram()
+- Виправлено відправку повідомлень для DECISION
+- Виправлено відправку повідомлень для FOLLOW (manage_active_trade)
+- Додано обробку помилок Telegram
 """
 
 from __future__ import annotations
@@ -60,7 +56,7 @@ LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
 RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.25") or 0.25)
 
-# === ICT Geometry (базові) ===
+# === ICT Geometry ===
 MIN_STOP_ATR15 = max(0.78, float(os.getenv("MIN_STOP_ATR15", "0.82") or 0.82))
 MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.70") or 2.70)
 MIN_TP1_ATR15 = max(1.30, float(os.getenv("MIN_TP1_ATR15", "1.35") or 1.35))
@@ -69,7 +65,7 @@ PREFERRED_RR1 = max(2.25, float(os.getenv("PREFERRED_RR1", "2.25") or 2.25))
 MIN_RR2 = max(3.10, float(os.getenv("MIN_RR2", "3.10") or 3.10))
 MIN_RR3 = max(4.20, float(os.getenv("MIN_RR3", "4.20") or 4.20))
 
-# === Scoring Thresholds (базові, адаптивні нижче) ===
+# === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "78") or 78)
 RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "70") or 70)
 ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "62") or 62)
@@ -89,7 +85,7 @@ TELEGRAM_NOTIFY_EVERY_RUN = os.getenv("TELEGRAM_NOTIFY_EVERY_RUN", "true").lower
 SEND_NO_SETUP = os.getenv("SEND_NO_SETUP", "true").lower() in {"1", "true", "yes"}
 TELEGRAM_MAX_LENGTH = max(600, min(4200, int(os.getenv("TELEGRAM_MAX_LENGTH", "4000") or 4000)))
 
-# === News / Macro (з v2) ===
+# === News / Macro ===
 IMPORTANT_EVENT_WINDOW_MINUTES = int(os.getenv("IMPORTANT_EVENT_WINDOW_MINUTES", "60") or 60)
 MANUAL_IMPORTANT_EVENTS = os.getenv("IMPORTANT_EVENTS", "")
 
@@ -206,17 +202,8 @@ class Zone:
 class VolumeCluster:
     price_level: float
     volume: float
-    strength: float  # 0-100
-    type: str  # "HVN" or "LVN"
-
-
-@dataclass
-class NewsEvent:
-    source: str
-    title: str
-    impact: str  # HIGH / MEDIUM / LOW
-    bias: str  # LONG / SHORT / NEUTRAL
-    time: str
+    strength: float
+    type: str
 
 
 @dataclass
@@ -247,8 +234,8 @@ class Candidate:
     thesis: str = ""
     scan_event_stage: str = ""
     confluence_layers: dict[str, int] = field(default_factory=dict)
-    acceptance_quality: int = 0  # v5.1
-    volume_cluster_support: bool = False  # v5.1
+    acceptance_quality: int = 0
+    volume_cluster_support: bool = False
 
 
 @dataclass
@@ -287,8 +274,8 @@ class Decision:
     candidate: Optional[Candidate] = None
     plan: Optional[TradePlan] = None
     audit: dict[str, Any] = field(default_factory=dict)
-    news_bias: str = "NEUTRAL"  # v5.1
-    macro_risk: str = "NORMAL"  # v5.1
+    news_bias: str = "NEUTRAL"
+    macro_risk: str = "NORMAL"
 
 
 @dataclass
@@ -515,14 +502,147 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# ADAPTIVE PARAMETER ENGINE v5.1
+# TELEGRAM (ВИПРАВЛЕНО)
+# ==========================================================
+
+def send_telegram(text: str) -> bool:
+    """Повна функція відправки в Telegram з обробкою помилок"""
+    text = clean_telegram_message(text)
+    
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[ERROR] Telegram credentials absent (TELEGRAM_TOKEN або TELEGRAM_CHAT_ID порожні)")
+        print(plain_telegram_text(text)[:500])
+        return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text[:TELEGRAM_MAX_LENGTH],
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        if response.ok:
+            print(f"Telegram status: {response.status_code}")
+            return True
+        else:
+            print(f"[ERROR] Telegram failed {response.status_code}: {response.text[:300]}")
+            # Спроба відправити без HTML
+            fallback = dict(payload)
+            fallback.pop("parse_mode", None)
+            fallback["text"] = plain_telegram_text(text)[:TELEGRAM_MAX_LENGTH]
+            retry = requests.post(url, json=fallback, timeout=REQUEST_TIMEOUT)
+            if retry.ok:
+                print(f"Telegram fallback status: {retry.status_code}")
+                return True
+            return False
+    except Exception as exc:
+        print(f"[ERROR] Telegram exception: {exc}")
+        return False
+
+
+def clean_telegram_message(text: str) -> str:
+    """Очищення повідомлення від заборонених полів"""
+    forbidden_prefixes = (
+        "Варіант:", "Сімейство:", "Стадія:", "Карта входу:",
+        "Де очікувати", "Робоча зона входу:", "Тригер:", "Логіка виконання:",
+        "Основа стопа:", "Таймфрейм стопа:", "Старший сценарій:",
+        "Прийняття рівня:", "Основа тейків:", "Протилежна зона:",
+        "Проміжні бар’єри", "Проміжні бар'єри", "Найближча реальна ліквідність:",
+        "Оптимальний вхід", "Оптимальний орієнтир", "Скасування:", "Ризики:",
+        "Edge-модель:", "Статус виконання:", "Статус:", "Орієнтир входу",
+    )
+    cleaned: list[str] = []
+    for line in str(text or "").splitlines():
+        plain = html.unescape(line.replace("<b>", "").replace("</b>", "")).strip()
+        if plain.startswith(forbidden_prefixes) or plain.startswith("⚠️"):
+            continue
+        cleaned.append(line)
+    message = "\n".join(cleaned)
+    replacements = {
+        "Regime.RANGE": "ДІАПАЗОН", "Regime.TREND": "ТРЕНД",
+        "Regime.TRANSITION": "ПЕРЕХІДНИЙ РЕЖИМ",
+        "Regime.SHOCK": "ІМПУЛЬСНИЙ РЕЖИМ", "Regime.NORMAL": "ЗВИЧАЙНИЙ РИНОК",
+    }
+    for raw, translated in replacements.items():
+        message = message.replace(raw, translated)
+    while "\n\n\n" in message:
+        message = message.replace("\n\n\n", "\n\n")
+    return message.strip()
+
+
+def plain_telegram_text(text: str) -> str:
+    return html.unescape(text.replace("<b>", "").replace("</b>", ""))
+
+
+def build_decision_message(context: dict, decision: Decision) -> str:
+    lines = [
+        "<b>BZU PRO HYBRID CONFLUENCE v5.1</b>",
+        "",
+        f"<b>{decision.action}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
+        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}"
+    ]
+    if decision.candidate:
+        c = decision.candidate
+        lines.append(f"<b>Confluence:</b> {len(c.evidence_families)}/9 | Lane: {c.execution_lane} | 3M: {c.scan_event_stage or '—'} | Acceptance: {c.acceptance_quality}")
+        if c.volume_cluster_support:
+            lines.append("✅ Підтримка Volume Cluster")
+        if c.thesis:
+            lines.append(f"<b>Thesis:</b> {html.escape(c.thesis[:130])}")
+        if c.confirmations:
+            lines.append("")
+            lines.append("<b>Підтвердження:</b>")
+            for x in c.confirmations[:4]:
+                lines.append(f"✅ {html.escape(x)}")
+    if decision.plan and decision.plan.valid:
+        p = decision.plan
+        lines.append("")
+        lines.append("<b>План:</b>")
+        lines.append(f"Вхід <b>{_fmt_price(p.entry)}</b> | Стоп <b>{_fmt_price(p.stop)}</b>")
+        lines.append(f"TP1 {_fmt_price(p.tp1)} (RR {p.rr1}) | TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
+    lines.append("")
+    lines.append(f"<i>{html.escape(decision.reason)}</i>")
+    return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
+
+
+def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str:
+    lines = [
+        "<b>BZU PRO — HYBRID ICT + THESIS v5.1</b>",
+        "",
+        f"<b>{result.get('title', 'MONITOR')}</b>",
+        f"{result.get('recommendation', '')}",
+        "",
+        f"<b>Ціна:</b> {_fmt_price(context['price'])} | Від входу: {result.get('current_pct', 0):.2f}% | Макс: {result.get('best_pct', 0):.2f}%"
+    ]
+    if result.get("notes"):
+        lines.append("")
+        lines.append("<b>Дії / ICT-нотатки:</b>")
+        for n in result["notes"][:3]:
+            lines.append(f"• {html.escape(n)}")
+    if result.get("recommended_stop"):
+        lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result['recommended_stop'])}")
+    lines.append("")
+    lines.append(f"<i>Оновлено: {iso_now()[:19]}</i>")
+    return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
+
+
+def side_word(side: str) -> str:
+    return {"LONG": "ЛОНГ", "SHORT": "ШОРТ"}.get(side, "НЕЙТРАЛЬНО")
+
+
+def _fmt_price(v: Any) -> str:
+    if v is None:
+        return "-"
+    return f"{float(v):.4f}".rstrip("0").rstrip(".")
+
+
+# ==========================================================
+# ADAPTIVE PARAMETER ENGINE
 # ==========================================================
 
 def get_adaptive_params(regime: str) -> dict:
-    """
-    Адаптивні параметри залежно від режиму ринку.
-    Це одна з ключових інновацій v5.1.
-    """
     base = {
         "entry_score": ENTRY_SCORE_BASE,
         "risky_entry_score": RISKY_ENTRY_SCORE_BASE,
@@ -566,18 +686,14 @@ def get_adaptive_params(regime: str) -> dict:
 
 
 # ==========================================================
-# NEWS + MACRO FILTER v5.1 (з v2)
+# NEWS + MACRO FILTER
 # ==========================================================
 
 def fetch_simple_news() -> list[dict]:
-    """Спрощений парсер новин (можна розширити)"""
-    # В реальному боті тут можна додати RSS/Telegram-канали
-    # Поки що повертаємо порожній список (заглушка)
     return []
 
 
 def analyze_news_bias(news_items: list[dict]) -> dict:
-    """Аналіз новинного біасу"""
     if not news_items:
         return {"bias": "NEUTRAL", "score": 0, "top_events": []}
 
@@ -610,7 +726,6 @@ def analyze_news_bias(news_items: list[dict]) -> dict:
 
 
 def get_macro_risk(news_bias: str, regime: str) -> str:
-    """Оцінка макро-ризику"""
     if regime == Regime.SHOCK.value:
         return "HIGH"
     if news_bias != "NEUTRAL" and regime in [Regime.TRANSITION.value, Regime.RANGE.value]:
@@ -619,11 +734,10 @@ def get_macro_risk(news_bias: str, regime: str) -> str:
 
 
 # ==========================================================
-# VOLUME CLUSTER ANALYSIS v5.1
+# VOLUME CLUSTER ANALYSIS
 # ==========================================================
 
 def detect_volume_clusters(candles: list[Candle], bins: int = 12) -> list[VolumeCluster]:
-    """Проста модель Volume Profile / Cluster Detection"""
     if not candles or len(candles) < 30:
         return []
 
@@ -655,12 +769,10 @@ def detect_volume_clusters(candles: list[Candle], bins: int = 12) -> list[Volume
                 type=cluster_type
             ))
 
-    # Повертаємо топ-6 за силою
     return sorted(clusters, key=lambda x: -x.strength)[:6]
 
 
 def has_volume_cluster_support(price: float, clusters: list[VolumeCluster], side: str, atr: float) -> bool:
-    """Чи є підтримка з боку Volume Cluster"""
     if not clusters:
         return False
     for cl in clusters:
@@ -671,7 +783,7 @@ def has_volume_cluster_support(price: float, clusters: list[VolumeCluster], side
 
 
 # ==========================================================
-# DEEP ACCEPTANCE QUALITY ENGINE v5.1
+# DEEP ACCEPTANCE QUALITY ENGINE
 # ==========================================================
 
 def calculate_acceptance_quality(
@@ -680,10 +792,6 @@ def calculate_acceptance_quality(
     atr15: float,
     structure_alignment: float
 ) -> int:
-    """
-    Глибока модель якості прийняття зони.
-    Це одна з найважливіших інновацій v5.1.
-    """
     if not event or not candles_3m:
         return 30
 
@@ -693,25 +801,18 @@ def calculate_acceptance_quality(
 
     quality = 40
 
-    # 1. Displacement strength
     displacement = event.get("displacement", False)
     if displacement:
         quality += 18
 
-    # 2. Hold closes (скільки свічок утримує рівень)
     hold_closes = event.get("hold_closes", 0)
     if hold_closes >= 2:
         quality += 14
     elif hold_closes == 1:
         quality += 7
 
-    # 3. Structure alignment (наскільки структура вища підтримує)
     quality += int(structure_alignment * 0.25)
 
-    # 4. Volume confirmation (якщо є)
-    # (спрощено — в реальності можна додати volume delta)
-
-    # 5. Chain quality (якість ланцюжка подій)
     chain_quality = event.get("chain_quality", 50)
     quality += int((chain_quality - 50) * 0.3)
 
@@ -719,7 +820,7 @@ def calculate_acceptance_quality(
 
 
 # ==========================================================
-# 3M SCANNER v5.1
+# 3M SCANNER
 # ==========================================================
 
 def _empty_scan3m_state() -> dict:
@@ -1080,10 +1181,7 @@ def build_context(data: dict, state: dict) -> dict:
     move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
     regime, regime_reason = regime_detection(tf4h, tf1h, move8)
 
-    # Volume Clusters v5.1
     volume_clusters = detect_volume_clusters(c15)
-
-    # News (спрощено)
     news_items = fetch_simple_news()
     news = analyze_news_bias(news_items)
     macro_risk = get_macro_risk(news["bias"], regime)
@@ -1115,7 +1213,7 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# CANDIDATE DETECTION v5.1 (з acceptance + volume clusters)
+# CANDIDATE DETECTION
 # ==========================================================
 
 def missed_impulse_status(candidate: Candidate, plan: Optional[TradePlan]) -> bool:
@@ -1198,7 +1296,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
         scan_stage = event.get("stage", "")
 
-        # === LAYERS ===
         loc_score = 14
         loc_conf = ["біля свіжої зони"]
         for z in zones:
@@ -1253,13 +1350,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if tf4h.get("bias") == side:
             evidence.append("HTF_CONTEXT")
 
-        # === Volume Cluster Support v5.1 ===
         volume_support = has_volume_cluster_support(price, volume_clusters, side, atr15)
         if volume_support:
             evidence.append("VOLUME_CLUSTER_SUPPORT")
             raw += 6
 
-        # === Setup Type ===
         setup_type = SetupType.PULLBACK_CONTINUATION.value
         variant = "PULLBACK_FORMING"
         if trigger_ready and scan_stage in ["RETEST", "READY"]:
@@ -1271,7 +1366,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
 
-        # === Lane + Tier ===
         lane = ExecutionLane.STANDARD_CONFIRMED.value
         tier = ConfirmationTier.STANDARD.value
         final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
@@ -1282,10 +1376,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         elif final >= params["risky_entry_score"] and trigger_ready and regime != Regime.SHOCK.value:
             lane = ExecutionLane.EARLY_TACTICAL.value
 
-        # === Thesis ===
         thesis = f"{side} {setup_type} | HTF={tf4h.get('bias')} | Flow={flow.get('bias')} CVD={cvd.get('bias')} | 3M={scan_stage} | News={news.get('bias', 'NEUTRAL')}"
 
-        # === Deep Acceptance Quality v5.1 ===
         structure_alignment = 50
         if tf15.get("bias") == side:
             structure_alignment += 20
@@ -1472,7 +1564,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
 
 # ==========================================================
-# TRADE MANAGEMENT v5.1
+# TRADE MANAGEMENT
 # ==========================================================
 
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
@@ -1507,7 +1599,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     params = get_adaptive_params(context.get("regime", "NORMAL"))
 
-    # MFE Giveback Guard (адаптивний)
     if mfe > params["min_mfe_for_protect"] and current_r < mfe * params["mfe_giveback_threshold"]:
         trade.mfe_giveback_streak += 1
         if trade.mfe_giveback_streak >= 3:
@@ -1518,7 +1609,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     else:
         trade.mfe_giveback_streak = max(0, trade.mfe_giveback_streak - 1)
 
-    # TP1 / TP2 locks
     if not trade.tp1_hit and ((side == Side.LONG.value and price >= trade.tp1) or (side == Side.SHORT.value and price <= trade.tp1)):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
@@ -1533,7 +1623,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP2.value
         result["notes"].append("TP2 досягнуто — стоп на TP1")
 
-    # Structural Invalidation (ICT)
     structural_break = False
     if side == Side.LONG.value:
         if price < trade.structural_invalidation:
@@ -1554,7 +1643,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["exit_price"] = price
         result["notes"].append("Структурна інвалідація за ICT + Thesis — вихід")
 
-    # Flow + CVD exit
     if not result["closed"] and trade.tp1_hit:
         if (side == Side.LONG.value and (flow.get("bias") == Side.SHORT.value or cvd.get("bias") == Side.SHORT.value) and flow.get("score", 0) > 20) or \
            (side == Side.SHORT.value and (flow.get("bias") == Side.LONG.value or cvd.get("bias") == Side.LONG.value) and flow.get("score", 0) > 20):
@@ -1564,71 +1652,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     trade.last_checked_3m_ts = int(now_utc().timestamp() * 1000)
     trade.last_action = result["action"]
     return result
-
-
-# ==========================================================
-# MESSAGING
-# ==========================================================
-
-def _fmt_price(v: Any) -> str:
-    if v is None:
-        return "-"
-    return f"{float(v):.4f}".rstrip("0").rstrip(".")
-
-
-def build_decision_message(context: dict, decision: Decision) -> str:
-    lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v5.1</b>",
-        "",
-        f"<b>{decision.action}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
-        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}"
-    ]
-    if decision.candidate:
-        c = decision.candidate
-        lines.append(f"<b>Confluence:</b> {len(c.evidence_families)}/9 | Lane: {c.execution_lane} | 3M: {c.scan_event_stage or '—'} | Acceptance: {c.acceptance_quality}")
-        if c.volume_cluster_support:
-            lines.append("✅ Підтримка Volume Cluster")
-        if c.thesis:
-            lines.append(f"<b>Thesis:</b> {html.escape(c.thesis[:130])}")
-        if c.confirmations:
-            lines.append("")
-            lines.append("<b>Підтвердження:</b>")
-            for x in c.confirmations[:4]:
-                lines.append(f"✅ {html.escape(x)}")
-    if decision.plan and decision.plan.valid:
-        p = decision.plan
-        lines.append("")
-        lines.append("<b>План:</b>")
-        lines.append(f"Вхід <b>{_fmt_price(p.entry)}</b> | Стоп <b>{_fmt_price(p.stop)}</b>")
-        lines.append(f"TP1 {_fmt_price(p.tp1)} (RR {p.rr1}) | TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
-    lines.append("")
-    lines.append(f"<i>{html.escape(decision.reason)}</i>")
-    return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
-
-
-def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str:
-    lines = [
-        "<b>BZU PRO — HYBRID ICT + THESIS v5.1</b>",
-        "",
-        f"<b>{result.get('title', 'MONITOR')}</b>",
-        f"{result.get('recommendation', '')}",
-        "",
-        f"<b>Ціна:</b> {_fmt_price(context['price'])} | Від входу: {result.get('current_pct', 0):.2f}% | Макс: {result.get('best_pct', 0):.2f}%"
-    ]
-    if result.get("notes"):
-        lines.append("")
-        lines.append("<b>Дії / ICT-нотатки:</b>")
-        for n in result["notes"][:3]:
-            lines.append(f"• {html.escape(n)}")
-    if result.get("recommended_stop"):
-        lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result['recommended_stop'])}")
-    lines.append("")
-    lines.append(f"<i>Оновлено: {iso_now()[:19]}</i>")
-    return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
-
-
-def side_word(side: str) -> str:
-    return {"LONG": "ЛОНГ", "SHORT": "ШОРТ"}.get(side, "НЕЙТРАЛЬНО")
 
 
 # ==========================================================
@@ -1688,7 +1711,7 @@ def compute_analytics(journal: dict) -> dict:
 
 
 # ==========================================================
-# MAIN
+# MAIN (ВИПРАВЛЕНО)
 # ==========================================================
 
 def run_bot() -> None:
@@ -1706,6 +1729,14 @@ def run_bot() -> None:
     if active and active.status != "CLOSED":
         res = manage_active_trade(active, context)
         msg = build_follow_message(context, active, res)
+        
+        # === ВИПРАВЛЕНО: реальна відправка FOLLOW ===
+        if TELEGRAM_NOTIFY_EVERY_RUN or res.get("closed"):
+            if send_telegram(msg):
+                print("Telegram FOLLOW: повідомлення надіслано")
+            else:
+                print("[ERROR] Не вдалося надіслати FOLLOW повідомлення")
+        
         if res.get("closed"):
             journal["trades"].append({"id": active.id, "side": active.side, "setup_type": active.setup_type, "result_pct": res.get("current_pct"), "mfe_pct": res.get("best_pct")})
             store_active_trade(state, None)
@@ -1716,8 +1747,6 @@ def run_bot() -> None:
         journal["signals"].append({"time": iso_now(), "type": "FOLLOW", "action": res.get("action"), "side": active.side, "price": context["price"]})
         save_state(state)
         save_journal(journal)
-        if TELEGRAM_NOTIFY_EVERY_RUN or res.get("closed"):
-            print("TELEGRAM (FOLLOW):", msg[:280])
         print("BOT COMPLETE: ACTIVE TRADE MANAGED")
         return
 
@@ -1741,9 +1770,15 @@ def run_bot() -> None:
     else:
         store_active_trade(state, None)
 
+    # === ВИПРАВЛЕНО: реальна відправка DECISION ===
     if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN:
         msg = build_decision_message(context, decision)
         print("TELEGRAM (DECISION):", msg[:320])
+        
+        if send_telegram(msg):
+            print("Telegram DECISION: повідомлення надіслано")
+        else:
+            print("[ERROR] Не вдалося надіслати DECISION повідомлення")
 
     save_state(state)
     save_journal(journal)
@@ -1751,7 +1786,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (Top Level)")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (FIXED)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
