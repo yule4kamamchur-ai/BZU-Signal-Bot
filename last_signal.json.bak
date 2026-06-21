@@ -1,36 +1,100 @@
 {
-  "version": "pro-ict-v3.2.5-htf-confluence-high-quality-lane",
-  "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V3_2_5_HTF_CONFLUENCE_HIGH_QUALITY_LANE",
+  "version": "pro-ict-v3.2.7-event-chain-confirmation-tiers",
+  "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V3_2_7_EVENT_CHAIN_CONFIRMATION_TIERS",
   "active_trade": null,
   "opportunity": null,
   "scan_3m": {
-    "last_scanned_3m_ts": 1782051120000,
-    "last_run_processed": 0,
-    "processed_count": 18,
-    "events": {}
+    "last_scanned_3m_ts": 1782051840000,
+    "last_run_processed": 12,
+    "processed_count": 12,
+    "events": {
+      "SHORT": {
+        "side": "SHORT",
+        "stage": "SWEEP",
+        "source": "LIQUIDITY_SWEEP",
+        "event_ts": 1782051480000,
+        "last_event_ts": 1782051840000,
+        "trigger_level": 81.8,
+        "event_price": 81.78,
+        "invalidation_level": 81.86,
+        "sweep_level": 81.8,
+        "extreme": 81.86,
+        "displacement": false,
+        "retest_ts": 0,
+        "ready_ts": 0,
+        "hold_closes": 0,
+        "previous_stage": "",
+        "chain_quality": 50,
+        "confirmation_quality": 40,
+        "acceptance_quality": 0,
+        "retest_quality": 0,
+        "processed_bars": 2
+      }
+    }
   },
   "latest_signal": {
-    "id": "4441ef53d89b",
-    "time": "2026-06-21T14:17:33.496419+00:00",
+    "id": "e9cd108022d2",
+    "time": "2026-06-21T14:27:47.784603+00:00",
     "action": "NO_SETUP",
     "side": "NEUTRAL",
     "setup_type": "NONE",
-    "quality": 0,
+    "quality": 38,
     "reason": "ринок не сформував професійний ICT execution-package",
     "regime": "RANGE",
     "candidate": null,
     "plan": null,
     "audit": {
-      "candidates": []
+      "candidates": [
+        {
+          "side": "SHORT",
+          "setup_type": "SWEEP_RECLAIM",
+          "setup_family": "LIQUIDITY_RECOVERY",
+          "variant": "EARLY_RECLAIM",
+          "stage": "DISCOVERED",
+          "execution_lane": "EARLY_TACTICAL",
+          "lane_threshold": 68,
+          "raw_score": 38,
+          "final_score": 38,
+          "selection_score": 50.3,
+          "trigger_ready": false,
+          "risk_mode": "RISKY",
+          "evidence_families": [
+            "ICT_LOCATION",
+            "LIQUIDITY",
+            "ORDER_FLOW"
+          ],
+          "evidence_count": 3,
+          "late_extension_atr": 0.0,
+          "execution_anchor": 81.79,
+          "trigger_level": 81.8,
+          "trigger_age_minutes": 999.0,
+          "scan_event_stage": "",
+          "hard_reject_reason": "",
+          "score_components": {
+            "location": 10,
+            "structure": 0,
+            "liquidity": 18,
+            "trigger": 0,
+            "flow": 10,
+            "htf": 0
+          },
+          "geometry_valid": false,
+          "execution_ready": false,
+          "lane_ready": false,
+          "geometry_reason": "не знайдено достатньо глибокої 15M/1H ICT-інвалідації; 3M micro-stop не використовується",
+          "blocking_zone": "4h OB 81.07–81.55",
+          "acceptance_status": "SETUP: окреме breakout acceptance не потрібне | HTF: потрібне прийняття 4h OB 81.07–81.55: 2 закриті 3M або 15M close за межею 81.07 + ретест"
+        }
+      ]
     },
-    "version": "pro-ict-v3.2.5-htf-confluence-high-quality-lane",
-    "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V3_2_5_HTF_CONFLUENCE_HIGH_QUALITY_LANE",
+    "version": "pro-ict-v3.2.7-event-chain-confirmation-tiers",
+    "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V3_2_7_EVENT_CHAIN_CONFIRMATION_TIERS",
     "context": {
-      "time": "2026-06-21T14:17:33.465807+00:00",
-      "price": 81.66,
+      "time": "2026-06-21T14:27:47.749562+00:00",
+      "price": 81.79,
       "price_source": "OKX",
-      "reference_price": 81.55,
-      "cross_price_diff_pct": 0.1347,
+      "reference_price": 81.65,
+      "cross_price_diff_pct": 0.1712,
       "regime": "RANGE",
       "regime_reason": "15M рух перекривається і не має ефективного напрямку",
       "tf3": {
@@ -38,38 +102,38 @@
         "available": true,
         "bias": "LONG",
         "score": 35,
-        "close": 81.65,
-        "ema20": 81.5278,
-        "ema50": 81.4817,
-        "rsi": 54.7,
-        "atr": 0.17231,
-        "move8_pct": 0.295,
-        "efficiency": 0.095,
-        "volume_ratio": 0.585,
+        "close": 81.78,
+        "ema20": 81.6048,
+        "ema50": 81.5231,
+        "rsi": 57.6,
+        "atr": 0.16519,
+        "move8_pct": 0.27,
+        "efficiency": 0.59,
+        "volume_ratio": 0.672,
         "structure": {
           "timeframe": "3m",
           "bias": "LONG",
-          "trend": "NEUTRAL",
+          "trend": "LONG",
           "bos": "NEUTRAL",
           "choch": "NEUTRAL",
-          "swing_high": 81.69,
-          "swing_low": 81.48,
-          "prior_break_high": 81.69,
-          "prior_break_low": 81.48,
+          "swing_high": 81.86,
+          "swing_low": 81.56,
+          "prior_break_high": 81.86,
+          "prior_break_low": 81.56,
           "recent_highs": [
-            82.2,
             81.8,
             81.76,
-            81.69
+            81.69,
+            81.86
           ],
           "recent_lows": [
-            81.25,
             80.83,
             81.23,
-            81.48
+            81.48,
+            81.56
           ],
-          "ema20": 81.5278,
-          "ema50": 81.4817
+          "ema20": 81.6048,
+          "ema50": 81.5231
         }
       },
       "tf15": {
@@ -190,10 +254,12 @@
         }
       },
       "sweep3": {
-        "side": "NEUTRAL",
-        "level": 0.0,
-        "reclaim": false,
-        "age": 999
+        "side": "SHORT",
+        "level": 81.8,
+        "extreme": 81.86,
+        "reclaim": true,
+        "age": 2,
+        "ts": 1782051480000
       },
       "sweep15": {
         "side": "NEUTRAL",
@@ -205,25 +271,25 @@
         "low": 80.66,
         "high": 83.0,
         "equilibrium": 81.83,
-        "position": 0.427,
+        "position": 0.483,
         "zone": "MID",
         "at_lower_edge": false,
         "at_upper_edge": false
       },
       "flow": {
-        "bias": "LONG",
-        "score": 6,
-        "trade_delta": 11205.0,
-        "trade_delta_pct": 32.32,
-        "book_delta_pct": 11.48,
-        "price_move_pct": -0.11,
-        "cvd_acceleration": 17551.0,
-        "absorption_bias": "SHORT",
-        "confidence": "MEDIUM",
+        "bias": "SHORT",
+        "score": -10,
+        "trade_delta": -43183.0,
+        "trade_delta_pct": -74.17,
+        "book_delta_pct": -0.13,
+        "price_move_pct": 0.024,
+        "cvd_acceleration": -1121.0,
+        "absorption_bias": "NEUTRAL",
+        "confidence": "HIGH",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 5879590.0,
+        "oi": 5854639.0,
         "funding_rate": 0.0
       },
       "zones": [
@@ -234,7 +300,7 @@
           "high": 82.09,
           "created_ts": 1782046260000,
           "timeframe": "3m",
-          "strength": 2.959860173645635,
+          "strength": 3.087281462047533,
           "mitigated": false
         },
         {
@@ -244,7 +310,7 @@
           "high": 81.06,
           "created_ts": 1782048060000,
           "timeframe": "3m",
-          "strength": 0.17410942197915988,
+          "strength": 0.18160479188515408,
           "mitigated": false
         },
         {
@@ -254,7 +320,7 @@
           "high": 81.14,
           "created_ts": 1782048420000,
           "timeframe": "3m",
-          "strength": 0.23214589597224064,
+          "strength": 0.24213972251356744,
           "mitigated": false
         },
         {
@@ -264,7 +330,7 @@
           "high": 81.51,
           "created_ts": 1782049860000,
           "timeframe": "3m",
-          "strength": 0.5223282659374796,
+          "strength": 0.5448143756554622,
           "mitigated": false
         },
         {
@@ -274,17 +340,7 @@
           "high": 80.94,
           "created_ts": 1782047340000,
           "timeframe": "3m",
-          "strength": 1.1026930058679576,
-          "mitigated": false
-        },
-        {
-          "kind": "OB",
-          "side": "SHORT",
-          "low": 81.62,
-          "high": 81.74,
-          "created_ts": 1782049320000,
-          "timeframe": "3m",
-          "strength": 2.089313063749836,
+          "strength": 1.1501636819392518,
           "mitigated": false
         },
         {
@@ -369,14 +425,37 @@
         }
       ],
       "scan_3m": {
-        "last_scanned_3m_ts": 1782051120000,
-        "last_run_processed": 0,
-        "processed_count": 18,
-        "events": {}
+        "last_scanned_3m_ts": 1782051840000,
+        "last_run_processed": 12,
+        "processed_count": 12,
+        "events": {
+          "SHORT": {
+            "side": "SHORT",
+            "stage": "SWEEP",
+            "source": "LIQUIDITY_SWEEP",
+            "event_ts": 1782051480000,
+            "last_event_ts": 1782051840000,
+            "trigger_level": 81.8,
+            "event_price": 81.78,
+            "invalidation_level": 81.86,
+            "sweep_level": 81.8,
+            "extreme": 81.86,
+            "displacement": false,
+            "retest_ts": 0,
+            "ready_ts": 0,
+            "hold_closes": 0,
+            "previous_stage": "",
+            "chain_quality": 50,
+            "confirmation_quality": 40,
+            "acceptance_quality": 0,
+            "retest_quality": 0,
+            "processed_bars": 2
+          }
+        }
       }
     }
   },
-  "last_message_key": "{\"action\": \"NO_SETUP\", \"plan_valid\": null, \"quality_bucket\": 0, \"setup_type\": \"NONE\", \"side\": \"NEUTRAL\"}",
+  "last_message_key": "{\"action\": \"NO_SETUP\", \"plan_valid\": null, \"quality_bucket\": 7, \"setup_type\": \"NONE\", \"side\": \"NEUTRAL\"}",
   "history": [
     {
       "type": "NO_SETUP",
@@ -437,9 +516,19 @@
       "reason": "ринок не сформував професійний ICT execution-package",
       "plan": null,
       "time": "2026-06-21T14:17:33.496621+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "price": 81.79,
+      "quality": 38,
+      "reason": "ринок не сформував професійний ICT execution-package",
+      "plan": null,
+      "time": "2026-06-21T14:27:47.784883+00:00"
     }
   ],
-  "last_telegram_success_at": "2026-06-21T14:17:33.943001+00:00",
+  "last_telegram_success_at": "2026-06-21T14:27:48.189131+00:00",
   "last_telegram_error": "",
-  "updated_at": "2026-06-21T14:17:33.943017+00:00"
+  "updated_at": "2026-06-21T14:27:48.189149+00:00"
 }
