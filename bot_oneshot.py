@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.3
+BZU Professional Hybrid Confluence Signal Bot v6.4
 ================================================================================
-Зміни v6.3:
-- Повернено джерело даних OKX + TradingView fallback (як у старих версіях)
-- Покращені повідомлення в Telegram (не показує "План" при слабкому сигналі)
-- Залишені всі покращення v6.2 (3M scanner, Forward Zone, Location Score, SMC Trailing)
+Виправлення v6.4:
+- TradingView (BINANCE:BZUSDT.P) як ОСНОВНЕ джерело ціни (як у старому файлі)
+- OKX — тільки як fallback
+- Залишені всі покращення v6.3 (чисті повідомлення, без фейкового плану при NO_SETUP)
 """
 
 from __future__ import annotations
@@ -30,19 +30,19 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.3"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_3"
+BOT_VERSION = "pro-hybrid-confluence-v6.4"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# === DATA SOURCES (OKX + TradingView fallback) ===
+# === DATA SOURCES (TradingView пріоритет, як у старому файлі) ===
 OKX_BASE_URL = "https://www.okx.com/api/v5/market"
-TRADINGVIEW_SYMBOL = "BINANCE:BZUSDT"
+TRADINGVIEW_SCAN_URL = "https://scanner.tradingview.com/crypto/scan"
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
-STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_3.json")))
-JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_3.json")))
+STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_4.json")))
+JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_4.json")))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
@@ -490,7 +490,7 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# TELEGRAM (ПОКРАЩЕНИЙ v6.3 - БЕЗ ФЕЙКОВОГО ПЛАНУ)
+# TELEGRAM (ПОКРАЩЕНИЙ)
 # ==========================================================
 
 def send_telegram(text: str) -> bool:
@@ -574,14 +574,13 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_label = action_names.get(decision.action, decision.action)
     
     lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v6.3</b>",
+        "<b>BZU PRO HYBRID CONFLUENCE v6.4</b>",
         "",
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
     
-    # Показуємо підтвердження тільки якщо є реальні дані
     if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
         if c.confirmations:
@@ -590,7 +589,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             for x in c.confirmations[:3]:
                 lines.append(f"✅ {html.escape(x)}")
     
-    # Показуємо ПЛАН тільки якщо є реальний вхід (не NO_SETUP і не WATCH)
     show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value)
     
     if show_plan:
@@ -607,7 +605,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
 
 def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str:
     lines = [
-        "<b>BZU PRO — HYBRID ICT v6.3</b>",
+        "<b>BZU PRO — HYBRID ICT v6.4</b>",
         "",
         f"<b>{result.get('title', 'МОНІТОРИНГ УГОДИ')}</b>",
         f"{result.get('recommendation', '')}",
@@ -725,11 +723,11 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
 
 
 # ==========================================================
-# DATA SOURCES: OKX + TradingView fallback (v6.3)
+# DATA SOURCES: TradingView ПРІОРИТЕТ (як у старому файлі)
 # ==========================================================
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Optional[requests.Response]:
-    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v6.3/1.0", "Accept": "*/*"}
+    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v6.4/1.0", "Accept": "*/*"}
     last_err = None
     for attempt in range(max(1, retries)):
         try:
@@ -743,8 +741,22 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Opti
     return None
 
 
+def http_post(url: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> Optional[requests.Response]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 BZU-Pro-v6.4/1.0",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if resp.status_code < 400:
+            return resp
+    except Exception:
+        pass
+    return None
+
+
 def get_okx_candles(inst_id: str = "BZ-USDT", bar: str = "15m", limit: int = 200) -> list[Candle]:
-    """OKX як основне джерело (як у старих версіях)"""
     url = f"{OKX_BASE_URL}/candles?instId={inst_id}&bar={bar}&limit={limit}"
     resp = http_get(url)
     if not resp:
@@ -795,34 +807,61 @@ def get_okx_ticker(inst_id: str = "BZ-USDT") -> dict:
         return {}
 
 
-def get_tradingview_price_fallback() -> float:
-    """Fallback на TradingView (спрощений)"""
-    # Спрощений варіант — можна розширити парсингом при потребі
-    # Поки що повертаємо 0, щоб OKX був пріоритетним
-    return 0.0
+def get_tradingview_price_fallback() -> dict:
+    """TradingView як ОСНОВНЕ джерело ціни (як у старому файлі)"""
+    payload = {
+        "symbols": {
+            "tickers": ["BINANCE:BZUSDT.P", "BINANCE:BZUSDT"],
+            "query": {"types": []}
+        },
+        "columns": ["close", "change", "volume"]
+    }
+    resp = http_post(TRADINGVIEW_SCAN_URL, payload)
+    if not resp:
+        return {}
+    try:
+        rows = resp.json().get("data", [])
+        if not rows:
+            return {}
+        values = rows[0].get("d") or []
+        return {
+            "price": float(values[0]),
+            "change24h": safe_float(values[1], 0),
+            "volume24h": safe_float(values[2], 0),
+            "source": "TradingView",
+            "symbol": rows[0].get("s", "BINANCE:BZUSDT.P"),
+        }
+    except Exception as error:
+        print(f"[WARN] TradingView fallback parse failed: {error}")
+        return {}
 
 
 def collect_market_data() -> dict:
-    """OKX як основне джерело + fallback"""
-    # OKX свічки
+    """
+    TradingView як ОСНОВНЕ джерело ціни (як у старому файлі користувача)
+    OKX — тільки як fallback
+    """
     c3 = get_okx_candles("BZ-USDT", "3m", 240)
     c15 = get_okx_candles("BZ-USDT", "15m", 200)
     c1h = get_okx_candles("BZ-USDT", "1h", 160)
     c4h = get_okx_candles("BZ-USDT", "4h", 140)
     
-    ticker = get_okx_ticker("BZ-USDT")
-    price = ticker.get("price") or get_tradingview_price_fallback() or (c15[-1].close if c15 else 80.0)
+    # TradingView — ПРІОРИТЕТ (як у старому файлі)
+    tv_ticker = get_tradingview_price_fallback()
+    okx_ticker = get_okx_ticker()
     
-    # Якщо OKX не дав ціну — пробуємо Binance як останній fallback
-    if not ticker.get("price"):
-        try:
-            from binance_data import get_binance_ticker  # якщо є
-            binance_ticker = get_binance_ticker()
-            if binance_ticker.get("price"):
-                price = binance_ticker["price"]
-                ticker = binance_ticker
-        except Exception:
-            pass
+    ticker = tv_ticker or okx_ticker
+    
+    if not ticker and c15:
+        ticker = {
+            "price": c15[-1].close,
+            "change24h": 0,
+            "volume24h": 0,
+            "source": "OKX candles fallback",
+            "symbol": "BZ-USDT",
+        }
+    
+    price = ticker.get("price") if ticker else 82.5
     
     return {
         "time": iso_now(),
@@ -831,7 +870,7 @@ def collect_market_data() -> dict:
         "trades": [],
         "book": {"bids": [], "asks": []},
         "price": price,
-        "price_source": ticker.get("source", "OKX")
+        "price_source": ticker.get("source", "TradingView") if ticker else "fallback",
     }
 
 
@@ -915,7 +954,7 @@ def build_context(data: dict, state: dict) -> dict:
     c15 = data["candles"]["15m"]
     c1h = data["candles"]["1h"]
     c4h = data["candles"]["4h"]
-    price = data["price"] or (c15[-1].close if c15 else 80.0)
+    price = data["price"] or (c15[-1].close if c15 else 82.5)
     atr3 = atr(c3, 14)
     atr15 = atr(c15, 14) or (atr3 * 3.8 if atr3 else 0.6)
     atr1h = atr(c1h, 14) or (atr15 * 3.2)
@@ -947,7 +986,7 @@ def build_context(data: dict, state: dict) -> dict:
     ctx = {
         "time": data["time"],
         "price": price,
-        "price_source": data.get("price_source", "OKX"),
+        "price_source": data.get("price_source", "TradingView"),
         "regime": regime,
         "regime_reason": regime_reason,
         "tf3": tf3, "tf15": tf15, "tf1h": tf1h, "tf4h": tf4h,
@@ -968,7 +1007,7 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# 3M SCANNER + LOCATION + FORWARD ZONE (з v6.2)
+# 3M SCANNER + LOCATION + FORWARD ZONE
 # ==========================================================
 
 def _empty_scan3m_state() -> dict:
@@ -1484,7 +1523,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
 
 # ==========================================================
-# MANAGE ACTIVE TRADE (з v6.2)
+# MANAGE ACTIVE TRADE
 # ==========================================================
 
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
@@ -1498,7 +1537,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     result = {
         "action": Action.HOLD.value,
-        "title": "УГОДА ВІДКРИТА — HYBRID ICT v6.3",
+        "title": "УГОДА ВІДКРИТА — HYBRID ICT v6.4",
         "recommendation": "Структура та теза на боці — тримаємо",
         "current_pct": ((price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - price) / trade.entry * 100),
         "best_pct": ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100),
@@ -1668,7 +1707,7 @@ def run_bot() -> None:
     if not context.get("price"):
         print("NO PRICE — abort")
         return
-    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'OKX')}")
+    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'TradingView')}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -1720,7 +1759,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.3")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.4")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
