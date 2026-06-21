@@ -16,7 +16,6 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,11 +43,9 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
           git pull --rebase origin main || true
-
-          git add last_signal.json signal_journal.json last_signal.json.bak signal_journal.json.bak
-
-          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update signal memory and journal"
-
+          git add last_signal_v5_1.json signal_journal_v5_1.json \
+                  last_signal_v5_1.json.bak signal_journal_v5_1.json.bak \
+                  last_signal_v5_1.json.tmp signal_journal_v5_1.json.tmp || true
+          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update signal memory and journal v5.1"
           git push origin HEAD:main
