@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v3.2.2-full-core-3m-three-lanes"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_2_FULL_CORE_3M_THREE_LANES"
+BOT_VERSION = "pro-ict-v3.2.3-full-core-3m-three-lanes-audited"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_3_FULL_CORE_3M_THREE_LANES_AUDITED"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -555,7 +555,10 @@ def load_state() -> dict[str, Any]:
         "architecture_version": ARCHITECTURE_VERSION,
         "active_trade": raw.get("active_trade"),
         "opportunity": raw.get("opportunity") if same_architecture else None,
-        "scan_3m": _normalize_scan3m_state(raw.get("scan_3m")),
+        # A scanner timestamp/event belongs to one architecture only. Carrying
+        # it across versions can skip fresh candles or revive an incompatible
+        # event shape, so a version migration deliberately bootstraps anew.
+        "scan_3m": _normalize_scan3m_state(raw.get("scan_3m")) if same_architecture else _empty_scan3m_state(),
         "latest_signal": raw.get("latest_signal"),
         "last_message_key": raw.get("last_message_key", "") if same_architecture else "",
         "history": list(raw.get("history") or [])[-MAX_HISTORY:],
@@ -1274,6 +1277,7 @@ def _new_scan3m_event(
         "extreme": round_price(candle.low if side == Side.LONG.value else candle.high),
         "displacement": bool(displacement),
         "retest_ts": 0,
+        "ready_ts": 0,
         "hold_closes": 0,
         "processed_bars": 1,
         "valid": True,
@@ -1399,6 +1403,7 @@ def scan_closed_3m_sequence(state: dict[str, Any], context: dict[str, Any]) -> d
                         event["hold_closes"] = int(event.get("hold_closes", 0) or 0) + 1
                         if int(event.get("hold_closes", 0) or 0) >= 2:
                             event["stage"] = "READY"
+                            event["ready_ts"] = int(candle.ts)
                 events[side] = event
 
     memory["events"] = events
@@ -1413,6 +1418,27 @@ def scan_closed_3m_sequence(state: dict[str, Any], context: dict[str, Any]) -> d
     context["scan_3m"] = memory
     context["scan_3m_events"] = events
     return memory
+
+
+def scan_execution_event_ts(event: dict[str, Any]) -> int:
+    """Timestamp of the newest execution-relevant event, not the old impulse.
+
+    A missed-impulse re-entry must be unlocked by a genuinely new retest/hold.
+    Using the original displacement timestamp would incorrectly suppress that
+    re-entry even though the market produced a fresh execution event.
+    """
+    if not isinstance(event, dict):
+        return 0
+    stage = str(event.get("stage") or "")
+    if stage == "READY":
+        return max(
+            int(event.get("ready_ts", 0) or 0),
+            int(event.get("retest_ts", 0) or 0),
+            int(event.get("event_ts", 0) or 0),
+        )
+    if stage == "RETEST":
+        return max(int(event.get("retest_ts", 0) or 0), int(event.get("event_ts", 0) or 0))
+    return int(event.get("event_ts", 0) or 0)
 
 
 def scan_event_for_side(context: dict[str, Any], side: str) -> dict[str, Any]:
@@ -1461,7 +1487,7 @@ def apply_scan_event_to_candidate(context: dict[str, Any], candidate: Candidate)
     ready = early_ready if candidate.setup_type in early_types else standard_ready
     if ready:
         candidate.trigger_ready = True
-        candidate.trigger_ts = max(int(candidate.trigger_ts or 0), int(event.get("event_ts", 0) or 0))
+        candidate.trigger_ts = max(int(candidate.trigger_ts or 0), scan_execution_event_ts(event))
         candidate.trigger_level = round_price(candidate.trigger_level or event_level)
         candidate.execution_anchor = round_price(event.get("event_price") or candidate.execution_anchor or event_level)
         latest_ts = int(closed(context["candles"]["3m"])[-1].ts)
@@ -3705,7 +3731,9 @@ def opportunity_is_valid(opportunity: Opportunity, context: dict[str, Any]) -> b
         return False
     if opportunity.status == "WAIT_PULLBACK":
         s15 = context.get("s15") or {}
-        if s15.get("bos") == opposite(opportunity.side) and s15.get("choch") == opposite(opportunity.side):
+        # Either a closed opposite BOS or CHOCH is enough to cancel the stored
+        # thesis. Requiring both simultaneously kept broken opportunities alive.
+        if s15.get("bos") == opposite(opportunity.side) or s15.get("choch") == opposite(opportunity.side):
             return False
         return True
     atr15 = max(safe_float(context["tf15"].get("atr")), price * 0.001)
@@ -3746,13 +3774,41 @@ def make_opportunity(candidate: Candidate, plan: Optional[TradePlan] = None, sta
 
 
 
+def choose_persisted_opportunity(
+    existing: Optional[Opportunity], incoming: Opportunity, context: dict[str, Any]
+) -> Opportunity:
+    """Protect a valid missed-impulse thesis from weaker ARMED overwrites.
+
+    A stored WAIT_PULLBACK survives ordinary discovered/armed candidates. It is
+    replaced only by another missed-impulse thesis of equal or greater quality,
+    or by a confirmed opposite 15M structural shift with a clear score margin.
+    """
+    if not existing or not opportunity_is_valid(existing, context):
+        return incoming
+    if existing.status != "WAIT_PULLBACK":
+        return incoming
+    if incoming.status == "WAIT_PULLBACK":
+        if incoming.side == existing.side:
+            return incoming if incoming.score >= existing.score else existing
+        s15 = context.get("s15") or {}
+        opposite_shift = s15.get("bos") == incoming.side or s15.get("choch") == incoming.side
+        return incoming if opposite_shift and incoming.score >= existing.score + DIRECTION_MARGIN else existing
+    if incoming.side == existing.side:
+        return existing
+    s15 = context.get("s15") or {}
+    opposite_shift = s15.get("bos") == incoming.side or s15.get("choch") == incoming.side
+    if opposite_shift and incoming.score >= existing.score + DIRECTION_MARGIN:
+        return incoming
+    return existing
+
+
 def candidate_from_missed_opportunity(opportunity: Opportunity, context: dict[str, Any]) -> Optional[Candidate]:
     if opportunity.status != "WAIT_PULLBACK" or not opportunity_is_valid(opportunity, context):
         return None
     event = scan_event_for_side(context, opportunity.side)
     if not event or str(event.get("stage") or "") not in {"RETEST", "READY"}:
         return None
-    event_ts = int(event.get("event_ts", 0) or 0)
+    event_ts = scan_execution_event_ts(event)
     if event_ts <= int(opportunity.origin_trigger_ts or 0):
         return None
     price = safe_float(context.get("price"))
@@ -4697,7 +4753,9 @@ def run_bot() -> None:
         state["opportunity"] = None
     elif decision.action == Action.ARMED.value and decision.candidate:
         status = "WAIT_PULLBACK" if missed_impulse_status(decision.candidate, decision.plan) else "ARMED"
-        state["opportunity"] = asdict(make_opportunity(decision.candidate, decision.plan, status=status))
+        incoming = make_opportunity(decision.candidate, decision.plan, status=status)
+        existing = opportunity_from_state(state)
+        state["opportunity"] = asdict(choose_persisted_opportunity(existing, incoming, context))
         store_active_trade(state, None)
     else:
         saved = opportunity_from_state(state)
@@ -4936,6 +4994,49 @@ def run_self_test() -> None:
     scan_context["candles"]["3m"] = trigger_candles + [extra_candle]
     third_scan = scan_closed_3m_sequence(scan_state, scan_context)
     assert third_scan["last_run_processed"] == 1, third_scan
+
+    # A new retest/hold timestamp, not the old displacement timestamp, unlocks
+    # missed-impulse re-entry. This catches the former event-time conflict.
+    retest_event = {
+        "side": Side.LONG.value, "stage": "READY",
+        "event_ts": start + 18 * 180_000,
+        "retest_ts": start + 22 * 180_000,
+        "ready_ts": start + 23 * 180_000,
+        "trigger_level": 100.05, "event_price": 100.08,
+        "invalidation_level": 99.70, "valid": True,
+    }
+    assert scan_execution_event_ts(retest_event) == start + 23 * 180_000
+    missed_opportunity = Opportunity(
+        side=Side.LONG.value, setup_type=SetupType.SWEEP_RECLAIM.value,
+        created_at=iso_now(), expires_at=iso_now(), score=70,
+        trigger_level=100.05, invalidation_level=99.70,
+        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value,
+        status="WAIT_PULLBACK", execution_lane="MISSED_IMPULSE_REENTRY",
+        origin_trigger_ts=start + 18 * 180_000,
+        reentry_zone_low=99.8, reentry_zone_high=100.3,
+        evidence_families=["ICT_LOCATION", "LIQUIDITY", "EXECUTION_TRIGGER"],
+    )
+    reentry_scan_context = dict(base_context)
+    reentry_scan_context["price"] = 100.08
+    reentry_scan_context["targets_long"] = [102.5, 103.5]
+    reentry_scan_context["targets_short"] = [98.0, 97.0]
+    reentry_scan_context["scan_3m_events"] = {Side.LONG.value: retest_event}
+    reentry_scan_context["scan_3m"] = {"events": {Side.LONG.value: retest_event}}
+    recovered_candidate = candidate_from_missed_opportunity(missed_opportunity, reentry_scan_context)
+    assert recovered_candidate is not None and recovered_candidate.execution_lane == "MISSED_IMPULSE_REENTRY"
+
+    # WAIT_PULLBACK memory is not overwritten by a weaker ordinary ARMED idea,
+    # but a confirmed opposite structural shift invalidates the old thesis.
+    weak_armed = Opportunity(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        created_at=iso_now(), expires_at=iso_now(), score=60,
+        trigger_level=100.0, invalidation_level=99.6, status="ARMED",
+    )
+    kept = choose_persisted_opportunity(missed_opportunity, weak_armed, reentry_scan_context)
+    assert kept.status == "WAIT_PULLBACK" and kept.setup_type == missed_opportunity.setup_type
+    invalidation_context = dict(reentry_scan_context)
+    invalidation_context["s15"] = {"bos": Side.SHORT.value, "choch": Side.NEUTRAL.value}
+    assert not opportunity_is_valid(missed_opportunity, invalidation_context)
 
     # Three execution lanes keep separate thresholds and actions.
     early_test = Candidate(**{**asdict(candidate), "setup_type": SetupType.SWEEP_RECLAIM.value,
