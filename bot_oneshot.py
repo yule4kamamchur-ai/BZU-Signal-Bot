@@ -3,9 +3,9 @@
 BZU Professional Hybrid Confluence Signal Bot v6.4
 ================================================================================
 Виправлення v6.4:
-- TradingView (BINANCE:BZUSDT.P) як ОСНОВНЕ джерело ціни (як у старому файлі)
+- TradingView (BINANCE:BZUSDT.P) як ОСНОВНЕ джерело ціни
 - OKX — тільки як fallback
-- Залишені всі покращення v6.3 (чисті повідомлення, без фейкового плану при NO_SETUP)
+- Явні назви файлів: last_signal_v6_4.json / signal_journal_v6_4.json
 """
 
 from __future__ import annotations
@@ -36,11 +36,13 @@ ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# === DATA SOURCES (TradingView пріоритет, як у старому файлі) ===
+# === DATA SOURCES ===
 OKX_BASE_URL = "https://www.okx.com/api/v5/market"
 TRADINGVIEW_SCAN_URL = "https://scanner.tradingview.com/crypto/scan"
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
+
+# === ЯВНІ НАЗВИ ФАЙЛІВ v6.4 ===
 STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_4.json")))
 JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_4.json")))
 
@@ -490,7 +492,7 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# TELEGRAM (ПОКРАЩЕНИЙ)
+# TELEGRAM
 # ==========================================================
 
 def send_telegram(text: str) -> bool:
@@ -723,7 +725,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
 
 
 # ==========================================================
-# DATA SOURCES: TradingView ПРІОРИТЕТ (як у старому файлі)
+# DATA SOURCES: TradingView ПРІОРИТЕТ
 # ==========================================================
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Optional[requests.Response]:
@@ -808,7 +810,7 @@ def get_okx_ticker(inst_id: str = "BZ-USDT") -> dict:
 
 
 def get_tradingview_price_fallback() -> dict:
-    """TradingView як ОСНОВНЕ джерело ціни (як у старому файлі)"""
+    """TradingView як ОСНОВНЕ джерело ціни"""
     payload = {
         "symbols": {
             "tickers": ["BINANCE:BZUSDT.P", "BINANCE:BZUSDT"],
@@ -838,7 +840,7 @@ def get_tradingview_price_fallback() -> dict:
 
 def collect_market_data() -> dict:
     """
-    TradingView як ОСНОВНЕ джерело ціни (як у старому файлі користувача)
+    TradingView як ОСНОВНЕ джерело ціни
     OKX — тільки як fallback
     """
     c3 = get_okx_candles("BZ-USDT", "3m", 240)
@@ -846,7 +848,7 @@ def collect_market_data() -> dict:
     c1h = get_okx_candles("BZ-USDT", "1h", 160)
     c4h = get_okx_candles("BZ-USDT", "4h", 140)
     
-    # TradingView — ПРІОРИТЕТ (як у старому файлі)
+    # TradingView — ПРІОРИТЕТ
     tv_ticker = get_tradingview_price_fallback()
     okx_ticker = get_okx_ticker()
     
