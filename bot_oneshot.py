@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v3.2.3-full-core-3m-three-lanes-audited"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_3_FULL_CORE_3M_THREE_LANES_AUDITED"
+BOT_VERSION = "pro-ict-v3.2.5-htf-confluence-high-quality-lane"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_5_HTF_CONFLUENCE_HIGH_QUALITY_LANE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -112,6 +112,9 @@ REQUIRE_NATURAL_TP1 = os.getenv("REQUIRE_NATURAL_TP1", "true").strip().lower() i
 EARLY_TACTICAL_SCORE = max(64, int(os.getenv("EARLY_TACTICAL_SCORE", "64") or 64))
 STANDARD_CONFIRMED_SCORE = max(72, int(os.getenv("STANDARD_CONFIRMED_SCORE", "72") or 72))
 MISSED_REENTRY_SCORE = max(64, int(os.getenv("MISSED_REENTRY_SCORE", "64") or 64))
+HIGH_QUALITY_CONTINUATION_SCORE = max(78, int(os.getenv("HIGH_QUALITY_CONTINUATION_SCORE", "78") or 78))
+HIGH_QUALITY_HTF_BONUS = 12
+TRANSITION_HTF_PENALTY = -20
 TACTICAL_MIN_STOP_ATR15 = max(0.58, float(os.getenv("TACTICAL_MIN_STOP_ATR15", "0.58") or 0.58))
 TACTICAL_MAX_STOP_ATR15 = max(1.40, float(os.getenv("TACTICAL_MAX_STOP_ATR15", "1.90") or 1.90))
 REENTRY_ZONE_TOLERANCE_ATR15 = float(os.getenv("REENTRY_ZONE_TOLERANCE_ATR15", "0.12") or 0.12)
@@ -1507,7 +1510,7 @@ def classify_execution_lane(candidate: Candidate) -> str:
         SetupType.DIRECTION_FLIP.value,
         SetupType.TREND_IGNITION.value,
     }
-    if candidate.execution_lane == "MISSED_IMPULSE_REENTRY":
+    if candidate.execution_lane in {"MISSED_IMPULSE_REENTRY", "HIGH_QUALITY_CONTINUATION"}:
         return candidate.execution_lane
     if candidate.setup_type in early_types and (
         candidate.risk_mode == "RISKY"
@@ -1516,6 +1519,50 @@ def classify_execution_lane(candidate: Candidate) -> str:
     ):
         return "EARLY_TACTICAL"
     return "STANDARD_CONFIRMED"
+
+
+def evaluate_htf_confluence(context: dict[str, Any], candidate: Candidate, regime: str) -> dict[str, Any]:
+    """
+    Compromise HTF Confluence Gate (regime-aware).
+    - In TRANSITION: strict for CONTINUATION/EXPANSION (hard penalty or block)
+    - In TREND / aligned SHOCK: light bonus only
+    - Does NOT add extra waiting time — only affects score and lane assignment.
+    Goal: improve quality without making good entries too late.
+    """
+    side = candidate.side
+    htf1 = str((context.get("tf1h") or {}).get("bias", "")).upper()
+    htf4 = str((context.get("tf4h") or {}).get("bias", "")).upper()
+
+    htf_aligned = (htf1 == side) or (htf4 == side)
+    is_continuation_family = candidate.setup_family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+    is_transition = regime.upper() == "TRANSITION"
+
+    bonus = 0
+    hard_block = False
+    reason = ""
+
+    if is_continuation_family:
+        if htf_aligned:
+            bonus = HIGH_QUALITY_HTF_BONUS
+        else:
+            if is_transition:
+                bonus = TRANSITION_HTF_PENALTY
+                # In Transition we penalize heavily but do not always hard-block
+                # so that very strong setups (high raw_score) can still pass.
+                if candidate.raw_score < 68:
+                    hard_block = True
+                    reason = "немає confluence з 1H/4H у Transition режимі"
+            else:
+                bonus = -8  # light penalty outside Transition
+
+    return {
+        "htf_aligned": htf_aligned,
+        "bonus": bonus,
+        "hard_block": hard_block,
+        "reason": reason,
+        "regime": regime,
+    }
+
 
 def timeframe_snapshot(candles: list[Candle], timeframe: str) -> dict[str, Any]:
     items = closed(candles)
@@ -2700,6 +2747,9 @@ def timeframe_rank(timeframe: str) -> int:
 
 
 def entry_extension_limit(candidate: Candidate) -> float:
+    # High Quality Continuation uses standard/good limits so entries are not delayed
+    if candidate.execution_lane == "HIGH_QUALITY_CONTINUATION":
+        return max(MAX_ENTRY_EXTENSION_STANDARD, 0.55)
     return {
         "TACTICAL": MAX_ENTRY_EXTENSION_TACTICAL,
         "STANDARD": MAX_ENTRY_EXTENSION_STANDARD,
@@ -3143,7 +3193,30 @@ def finalize_candidate(context: dict[str, Any], candidate: Candidate) -> Candida
     candidate = apply_scan_event_to_candidate(context, candidate)
     candidate = apply_candidate_risk_adjustments(context, candidate)
     candidate.evidence_families = candidate_evidence_families(context, candidate)
-    candidate.execution_lane = classify_execution_lane(candidate)
+
+    # === Компромісний HTF Confluence Gate (regime-aware) ===
+    regime = str(context.get("regime", "NORMAL")).upper()
+    htf_result = evaluate_htf_confluence(context, candidate, regime)
+
+    if htf_result["hard_block"]:
+        candidate.hard_reject_reason = htf_result["reason"]
+        candidate.final_score = 0
+    else:
+        candidate.final_score = max(0, candidate.raw_score + htf_result["bonus"])
+
+    # High Quality Continuation lane assignment
+    is_high_quality = (
+        candidate.setup_family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+        and candidate.final_score >= HIGH_QUALITY_CONTINUATION_SCORE
+        and htf_result["htf_aligned"]
+        and len(candidate.evidence_families) >= 5
+        and not candidate.hard_reject_reason
+    )
+    if is_high_quality:
+        candidate.execution_lane = "HIGH_QUALITY_CONTINUATION"
+    else:
+        candidate.execution_lane = classify_execution_lane(candidate)
+
     evidence_count = len(candidate.evidence_families)
     if candidate.hard_reject_reason:
         candidate.stage = "REJECTED"
@@ -3639,6 +3712,9 @@ def build_trade_plan(context: dict[str, Any], candidate: Candidate) -> TradePlan
         if candidate.risk_mode == "RISKY" or candidate.execution_lane in {"EARLY_TACTICAL", "MISSED_IMPULSE_REENTRY"}
         else NORMAL_RISK_PCT
     )
+    # High Quality lane always gets full (normal) size
+    if candidate.execution_lane == "HIGH_QUALITY_CONTINUATION":
+        position_risk_base = NORMAL_RISK_PCT
     position_risk = round(position_risk_base * clamp(candidate.edge_risk_multiplier, 0.35, 1.10), 3)
 
     min_tp1_distance = max(cfg["min_tp_atr"] * atr15, required_rr * risk)
