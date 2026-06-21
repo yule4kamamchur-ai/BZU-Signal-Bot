@@ -1,4 +1,4 @@
-name: BZU Bot
+name: BZU Bot v6.3
 
 on:
   schedule:
@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: bzu-bot-v6-3
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
 
     steps:
       - uses: actions/checkout@v4
@@ -23,13 +28,14 @@ jobs:
 
       - run: pip install requests
 
-      - name: Create memory files if missing
+      - name: Create memory files if missing (v6.3)
         run: |
-          if [ ! -f last_signal_v6_2.json ]; then
-            echo '{"version":"pro-hybrid-confluence-v6.2","active_trade":null,"history":[]}' > last_signal_v6_2.json
+          if [ ! -f last_signal_v6_3.json ]; then
+            echo '{"version":"pro-hybrid-confluence-v6.3","architecture_version":"HYBRID_CONFLUENCE_V6_3","active_trade":null,"opportunity":null,"scan_3m":{"last_scanned_3m_ts":0,"last_run_processed":0,"processed_count":0,"events":{}},"latest_signal":null,"last_message_key":"","history":[],"updated_at":""}' > last_signal_v6_3.json
           fi
-          if [ ! -f signal_journal_v6_2.json ]; then
-            echo '{"version":"pro-hybrid-confluence-v6.2","signals":[],"trades":[]}' > signal_journal_v6_2.json
+
+          if [ ! -f signal_journal_v6_3.json ]; then
+            echo '{"version":"pro-hybrid-confluence-v6.3","architecture_version":"HYBRID_CONFLUENCE_V6_3","signals":[],"trades":[],"analytics":{"closed_trades":0,"wins":0,"losses":0,"win_rate":0.0,"net_r":0.0,"expectancy_r":0.0,"by_family":{}},"updated_at":""}' > signal_journal_v6_3.json
           fi
 
       - name: Run bot
@@ -38,10 +44,16 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot_oneshot.py
 
-      - name: Save memory files
+      - name: Save memory files (v6.3)
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add last_signal_v6_2.json signal_journal_v6_2.json
-          git diff --cached --quiet || git commit -m "Update memory"
-          git push origin main || echo "Push done or skipped"
+
+          git add last_signal_v6_3.json signal_journal_v6_3.json 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "No memory changes"
+          else
+            git commit -m "Update BZU memory v6.3"
+            git push origin main || echo "Push completed or skipped"
+          fi
