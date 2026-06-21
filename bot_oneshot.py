@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL)
+BZU Professional Hybrid Confluence Signal Bot v5.1 (RE-ENTRY FIXED)
 ================================================================================
-Фінальна стабільна версія v5.1
+Виправлена версія з правильною логікою re-entry.
 
-Виправлення:
-- Додано MISSED_REENTRY_SCORE
-- Прибрано всі NameError
-- Покращена логіка re-entry
-- Стабільна робота в GitHub Actions
+Зміни:
+- Коли є missed_cand і trigger_ready=True → ставиться ENTRY / RISKY_ENTRY
+- Коли є missed_cand, але trigger_ready=False → ставиться ARMED
+- Тепер re-entry може відкривати угоду і показувати супровід
 """
 
 from __future__ import annotations
@@ -32,11 +31,11 @@ from zoneinfo import ZoneInfo
 import requests
 
 # ==========================================================
-# CONFIGURATION v5.1 (FINAL)
+# CONFIGURATION v5.1
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v5.1"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_ACCEPTANCE_VOLUME_MACRO_ADAPTIVE"
+BOT_VERSION = "pro-hybrid-confluence-v5.1-reentry-fixed"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_REENTRY_FIXED"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -74,7 +73,7 @@ SCAN_3M_BOOTSTRAP_BARS = max(12, int(os.getenv("SCAN_3M_BOOTSTRAP_BARS", "14") o
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "28") or 28)
 
 # === Re-Entry ===
-MISSED_REENTRY_SCORE = 65  # <-- ВИПРАВЛЕНО: додано
+MISSED_REENTRY_SCORE = 65
 REENTRY_NEW_TRIGGER_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_TRIGGER_SEPARATION_ATR15", "0.22") or 0.22)
 REENTRY_NEW_INVALIDATION_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_INVALIDATION_SEPARATION_ATR15", "0.32") or 0.32)
 FAILED_ENTRY_MIN_MFE_R = float(os.getenv("FAILED_ENTRY_MIN_MFE_R", "0.45") or 0.45)
@@ -575,7 +574,7 @@ def plain_telegram_text(text: str) -> str:
 
 def build_decision_message(context: dict, decision: Decision) -> str:
     lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v5.1</b>",
+        "<b>BZU PRO HYBRID CONFLUENCE v5.1 (RE-ENTRY FIXED)</b>",
         "",
         f"<b>{decision.action}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}"
@@ -1204,7 +1203,7 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# CANDIDATE DETECTION
+# CANDIDATE DETECTION + RE-ENTRY LOGIC (ВИПРАВЛЕНО)
 # ==========================================================
 
 def missed_impulse_status(candidate: Candidate, plan: Optional[TradePlan]) -> bool:
@@ -1471,7 +1470,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
 
 # ==========================================================
-# EVALUATION
+# EVALUATION (ВИПРАВЛЕНА ЛОГІКА RE-ENTRY)
 # ==========================================================
 
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
@@ -1479,27 +1478,44 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     cands = collapse_candidates(cands)
 
     saved_opp = opportunity_from_state(state)
+    
+    # === ВИПРАВЛЕНА ЛОГІКА RE-ENTRY ===
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
             guard = event_driven_reentry_guard(state, context, missed_cand)
-            # ВИПРАВЛЕНО: використовуємо MISSED_REENTRY_SCORE
+            
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
+                
+                # === ГОЛОВНЕ ВИПРАВЛЕННЯ ===
+                # Якщо тригер готовий (trigger_ready) → ставимо ENTRY / RISKY_ENTRY
+                # Якщо тригер НЕ готовий → ставимо ARMED
+                if missed_cand.trigger_ready:
+                    if missed_cand.final_score >= ENTRY_SCORE_BASE:
+                        action = Action.ENTRY.value
+                        reason = "Re-entry з пропущеного імпульсу — тригер готовий, входимо"
+                    else:
+                        action = Action.RISKY_ENTRY.value
+                        reason = "Re-entry з пропущеного імпульсу — ранній вхід (trigger_ready)"
+                else:
+                    action = Action.ARMED.value
+                    reason = "Re-entry з пропущеного імпульсу (теза збережена, чекаємо тригер)"
+                
                 return Decision(
                     id=uuid.uuid4().hex[:10],
                     time=iso_now(),
-                    action=Action.ARMED.value if not missed_cand.trigger_ready else Action.RISKY_ENTRY.value,
+                    action=action,
                     side=missed_cand.side,
                     setup_type=missed_cand.setup_type,
                     quality=missed_cand.final_score,
-                    reason="Re-entry з пропущеного імпульсу (thesis збережений)",
+                    reason=reason,
                     regime=context["regime"],
                     candidate=missed_cand,
                     plan=plan,
                     news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
                     macro_risk=context.get("macro_risk", "NORMAL"),
-                    audit={"reentry": True, "origin_opportunity": saved_opp.thesis_key}
+                    audit={"reentry": True, "origin_opportunity": saved_opp.thesis_key, "trigger_ready": missed_cand.trigger_ready}
                 )
 
     if not cands:
@@ -1744,10 +1760,12 @@ def run_bot() -> None:
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
     journal["signals"].append(payload)
 
+    # === ВИПРАВЛЕНО: тепер ENTRY і RISKY_ENTRY створюють ActiveTrade ===
     if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
         active = ActiveTrade(id=uuid.uuid4().hex[:10], side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime)
         store_active_trade(state, active)
         state["opportunity"] = None
+        print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type}")
     elif decision.action == Action.ARMED.value and decision.candidate:
         opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status="ARMED", thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis)
         if missed_impulse_status(decision.candidate, decision.plan):
@@ -1769,7 +1787,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL)")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (RE-ENTRY FIXED)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
