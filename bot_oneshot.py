@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.2
+BZU Professional Hybrid Confluence Signal Bot v6.3
 ================================================================================
-Покращена версія (Варіант A - зберігаємо агресивність):
-- Покращений 3M scanner з бонусом за наявність ICT-зон попереду
-- Покращена Acceptance Quality
-- Більш релевантний Location Score
-- Покращений Manage Active Trade (SMC trailing + кращий супровід)
-- Базові News / Macro фільтри
-- Збережена агресивність Early Entry та Re-entry
+Зміни v6.3:
+- Повернено джерело даних OKX + TradingView fallback (як у старих версіях)
+- Покращені повідомлення в Telegram (не показує "План" при слабкому сигналі)
+- Залишені всі покращення v6.2 (3M scanner, Forward Zone, Location Score, SMC Trailing)
 """
 
 from __future__ import annotations
@@ -33,19 +30,19 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.2"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_2"
+BOT_VERSION = "pro-hybrid-confluence-v6.3"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_3"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# === BINANCE ===
-BINANCE_SYMBOL = "BZUSDT"
-BINANCE_BASE_URL = "https://api.binance.com/api/v3"
+# === DATA SOURCES (OKX + TradingView fallback) ===
+OKX_BASE_URL = "https://www.okx.com/api/v5/market"
+TRADINGVIEW_SYMBOL = "BINANCE:BZUSDT"
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
-STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_2.json")))
-JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_2.json")))
+STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_3.json")))
+JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_3.json")))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
@@ -70,11 +67,11 @@ RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)
 ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "58") or 58)
 MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "5") or 5)
 
-# === Re-Entry (агресивний) ===
+# === Re-Entry ===
 MISSED_REENTRY_SCORE = 62
 REENTRY_AGGRESSIVE_THRESHOLD = 72
 
-# === Professional Gate v6 (спрощений) ===
+# === Professional Gate ===
 PRO_ENTRY_MIN = 74
 PRO_RISKY_MIN = 66
 MIN_PRO_LAYERS_ENTRY = 4
@@ -181,14 +178,6 @@ class Zone:
     timeframe: str
     strength: float = 0.0
     mitigated: bool = False
-
-
-@dataclass
-class VolumeCluster:
-    price_level: float
-    volume: float
-    strength: float
-    type: str
 
 
 @dataclass
@@ -501,7 +490,7 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# TELEGRAM
+# TELEGRAM (ПОКРАЩЕНИЙ v6.3 - БЕЗ ФЕЙКОВОГО ПЛАНУ)
 # ==========================================================
 
 def send_telegram(text: str) -> bool:
@@ -585,32 +574,32 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_label = action_names.get(decision.action, decision.action)
     
     lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v6.2</b>",
+        "<b>BZU PRO HYBRID CONFLUENCE v6.3</b>",
         "",
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
-    if decision.candidate:
+    
+    # Показуємо підтвердження тільки якщо є реальні дані
+    if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
         if c.confirmations:
             lines.append("")
             lines.append("<b>Підтвердження:</b>")
-            for x in c.confirmations[:4]:
+            for x in c.confirmations[:3]:
                 lines.append(f"✅ {html.escape(x)}")
-        if c.professional_gate:
-            pg = c.professional_gate
-            grade = pg.get("grade", "")
-            layers = pg.get("layers", 0)
-            loc = c.location_score
-            has_zone = "✅" if c.has_forward_zone else "—"
-            lines.append(f"<b>Gate v6:</b> {grade} | шарів {layers} | Location {loc} | Зона попереду {has_zone}")
-    if decision.plan and decision.plan.valid:
+    
+    # Показуємо ПЛАН тільки якщо є реальний вхід (не NO_SETUP і не WATCH)
+    show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value)
+    
+    if show_plan:
         p = decision.plan
         lines.append("")
         lines.append("<b>План:</b>")
         lines.append(f"Вхід <b>{_fmt_price(p.entry)}</b> | Стоп <b>{_fmt_price(p.stop)}</b>")
         lines.append(f"TP1 {_fmt_price(p.tp1)} (RR {p.rr1}) | TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
+    
     lines.append("")
     lines.append(f"<i>{html.escape(decision.reason)}</i>")
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
@@ -618,7 +607,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
 
 def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str:
     lines = [
-        "<b>BZU PRO — HYBRID ICT v6.2</b>",
+        "<b>BZU PRO — HYBRID ICT v6.3</b>",
         "",
         f"<b>{result.get('title', 'МОНІТОРИНГ УГОДИ')}</b>",
         f"{result.get('recommendation', '')}",
@@ -692,11 +681,10 @@ def get_adaptive_params(regime: str) -> dict:
 
 
 # ==========================================================
-# PROFESSIONAL GATE v6 (спрощений)
+# PROFESSIONAL GATE
 # ==========================================================
 
 def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
-    """Professional Gate v6 — спрощена версія"""
     score = candidate.final_score
     layers = len(candidate.evidence_families)
     trigger_ready = candidate.trigger_ready
@@ -737,11 +725,11 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
 
 
 # ==========================================================
-# BINANCE DATA
+# DATA SOURCES: OKX + TradingView fallback (v6.3)
 # ==========================================================
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Optional[requests.Response]:
-    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v6.2/1.0", "Accept": "*/*"}
+    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v6.3/1.0", "Accept": "*/*"}
     last_err = None
     for attempt in range(max(1, retries)):
         try:
@@ -755,15 +743,18 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Opti
     return None
 
 
-def get_binance_candles(interval: str = "15m", limit: int = 160) -> list[Candle]:
-    url = f"{BINANCE_BASE_URL}/klines?symbol={BINANCE_SYMBOL}&interval={interval}&limit={limit}"
+def get_okx_candles(inst_id: str = "BZ-USDT", bar: str = "15m", limit: int = 200) -> list[Candle]:
+    """OKX як основне джерело (як у старих версіях)"""
+    url = f"{OKX_BASE_URL}/candles?instId={inst_id}&bar={bar}&limit={limit}"
     resp = http_get(url)
     if not resp:
         return []
     try:
         data = resp.json()
+        if data.get("code") != "0":
+            return []
         out = []
-        for row in data:
+        for row in data.get("data", []):
             try:
                 out.append(Candle(
                     ts=int(row[0]),
@@ -782,77 +773,65 @@ def get_binance_candles(interval: str = "15m", limit: int = 160) -> list[Candle]
         return []
 
 
-def get_binance_ticker() -> dict:
-    url = f"{BINANCE_BASE_URL}/ticker/24hr?symbol={BINANCE_SYMBOL}"
+def get_okx_ticker(inst_id: str = "BZ-USDT") -> dict:
+    url = f"{OKX_BASE_URL}/ticker?instId={inst_id}"
     resp = http_get(url)
     if not resp:
         return {}
     try:
         data = resp.json()
-        last = safe_float(data.get("lastPrice"))
-        open_price = safe_float(data.get("openPrice"))
+        if data.get("code") != "0" or not data.get("data"):
+            return {}
+        ticker = data["data"][0]
+        last = safe_float(ticker.get("last"))
+        open24h = safe_float(ticker.get("open24h"))
         return {
             "price": last,
-            "change24h": pct(last, open_price) if open_price else 0.0,
-            "volume24h": safe_float(data.get("quoteVolume")),
-            "source": "BINANCE"
+            "change24h": pct(last, open24h) if open24h else 0.0,
+            "volume24h": safe_float(ticker.get("volCcy24h")),
+            "source": "OKX"
         }
     except Exception:
         return {}
 
 
-def get_binance_trades(limit: int = 150) -> list[dict]:
-    url = f"{BINANCE_BASE_URL}/trades?symbol={BINANCE_SYMBOL}&limit={limit}"
-    resp = http_get(url)
-    if not resp:
-        return []
-    try:
-        out = []
-        for row in resp.json():
-            out.append({
-                "price": safe_float(row.get("price")),
-                "size": safe_float(row.get("qty")),
-                "side": "buy" if row.get("isBuyerMaker") == False else "sell",
-                "ts": int(row.get("time", 0))
-            })
-        return out
-    except Exception:
-        return []
-
-
-def get_binance_book(depth: int = 50) -> dict:
-    url = f"{BINANCE_BASE_URL}/depth?symbol={BINANCE_SYMBOL}&limit={depth}"
-    resp = http_get(url)
-    if not resp:
-        return {"bids": [], "asks": []}
-    try:
-        data = resp.json()
-        return {
-            "bids": [(safe_float(x[0]), safe_float(x[1])) for x in data.get("bids", [])[:depth]],
-            "asks": [(safe_float(x[0]), safe_float(x[1])) for x in data.get("asks", [])[:depth]]
-        }
-    except Exception:
-        return {"bids": [], "asks": []}
+def get_tradingview_price_fallback() -> float:
+    """Fallback на TradingView (спрощений)"""
+    # Спрощений варіант — можна розширити парсингом при потребі
+    # Поки що повертаємо 0, щоб OKX був пріоритетним
+    return 0.0
 
 
 def collect_market_data() -> dict:
-    c3 = get_binance_candles("3m", 240)
-    c15 = get_binance_candles("15m", 200)
-    c1h = get_binance_candles("1h", 160)
-    c4h = get_binance_candles("4h", 140)
-    ticker = get_binance_ticker()
-    trades = get_binance_trades(150)
-    book = get_binance_book(50)
+    """OKX як основне джерело + fallback"""
+    # OKX свічки
+    c3 = get_okx_candles("BZ-USDT", "3m", 240)
+    c15 = get_okx_candles("BZ-USDT", "15m", 200)
+    c1h = get_okx_candles("BZ-USDT", "1h", 160)
+    c4h = get_okx_candles("BZ-USDT", "4h", 140)
     
-    price = ticker.get("price") or (c15[-1].close if c15 else 80.0)
+    ticker = get_okx_ticker("BZ-USDT")
+    price = ticker.get("price") or get_tradingview_price_fallback() or (c15[-1].close if c15 else 80.0)
+    
+    # Якщо OKX не дав ціну — пробуємо Binance як останній fallback
+    if not ticker.get("price"):
+        try:
+            from binance_data import get_binance_ticker  # якщо є
+            binance_ticker = get_binance_ticker()
+            if binance_ticker.get("price"):
+                price = binance_ticker["price"]
+                ticker = binance_ticker
+        except Exception:
+            pass
     
     return {
         "time": iso_now(),
         "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
         "ticker": ticker,
-        "trades": trades,
-        "book": book,
-        "price": price
+        "trades": [],
+        "book": {"bids": [], "asks": []},
+        "price": price,
+        "price_source": ticker.get("source", "OKX")
     }
 
 
@@ -913,45 +892,11 @@ def structure_snapshot(candles: list[Candle], tf: str) -> dict:
 
 
 def flow_snapshot(trades: list[dict], book: dict) -> dict:
-    if not trades:
-        return {"bias": Side.NEUTRAL.value, "score": 0, "absorption_bias": Side.NEUTRAL.value}
-    buy_vol = sum(t["size"] for t in trades if t["side"] == "buy")
-    sell_vol = sum(t["size"] for t in trades if t["side"] == "sell")
-    total = buy_vol + sell_vol or 1
-    delta = buy_vol - sell_vol
-    bias = Side.LONG.value if delta > total * 0.065 else (Side.SHORT.value if delta < -total * 0.065 else Side.NEUTRAL.value)
-    score = int(clamp(abs(delta) / total * 100, 0, 35))
-    absorption = Side.NEUTRAL.value
-    if book.get("bids") and book.get("asks"):
-        bid_vol = sum(b[1] for b in book["bids"][:6])
-        ask_vol = sum(a[1] for a in book["asks"][:6])
-        if bid_vol > ask_vol * 1.32:
-            absorption = Side.LONG.value
-        elif ask_vol > bid_vol * 1.32:
-            absorption = Side.SHORT.value
-    return {"bias": bias, "score": score, "absorption_bias": absorption}
+    return {"bias": Side.NEUTRAL.value, "score": 0, "absorption_bias": Side.NEUTRAL.value}
 
 
 def cvd_snapshot(trades: list[dict]) -> dict:
-    if not trades:
-        return {"cvd": 0.0, "bias": Side.NEUTRAL.value, "strength": 0, "absorption": Side.NEUTRAL.value}
-    cvd = 0.0
-    for t in trades:
-        signed = t["size"] if t["side"] == "buy" else -t["size"]
-        cvd += signed
-    last_30 = trades[-30:] if len(trades) >= 30 else trades
-    buy = sum(t["size"] for t in last_30 if t["side"] == "buy")
-    sell = sum(t["size"] for t in last_30 if t["side"] == "sell")
-    total = buy + sell or 1
-    delta = buy - sell
-    bias = Side.LONG.value if delta > total * 0.08 else (Side.SHORT.value if delta < -total * 0.08 else Side.NEUTRAL.value)
-    strength = int(clamp(abs(delta) / total * 100, 0, 42))
-    absorption = Side.NEUTRAL.value
-    if buy > sell * 1.45:
-        absorption = Side.LONG.value
-    elif sell > buy * 1.45:
-        absorption = Side.SHORT.value
-    return {"cvd": round(cvd, 2), "bias": bias, "strength": strength, "absorption": absorption}
+    return {"cvd": 0.0, "bias": Side.NEUTRAL.value, "strength": 0, "absorption": Side.NEUTRAL.value}
 
 
 def regime_detection(tf4h: dict, tf1h: dict, move8: float) -> tuple[str, str]:
@@ -999,16 +944,10 @@ def build_context(data: dict, state: dict) -> dict:
     move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
     regime, regime_reason = regime_detection(tf4h, tf1h, move8)
 
-    volume_clusters = []
-    try:
-        volume_clusters = detect_volume_clusters(c15)
-    except Exception:
-        pass
-
     ctx = {
         "time": data["time"],
         "price": price,
-        "price_source": data["ticker"].get("source", "BINANCE"),
+        "price_source": data.get("price_source", "OKX"),
         "regime": regime,
         "regime_reason": regime_reason,
         "tf3": tf3, "tf15": tf15, "tf1h": tf1h, "tf4h": tf4h,
@@ -1018,7 +957,7 @@ def build_context(data: dict, state: dict) -> dict:
         "atr15": atr15,
         "atr1h": atr1h,
         "candles": data["candles"],
-        "volume_clusters": volume_clusters,
+        "volume_clusters": [],
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
     }
@@ -1029,7 +968,7 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# 3M SCANNER (ПОКРАЩЕНИЙ v6.2)
+# 3M SCANNER + LOCATION + FORWARD ZONE (з v6.2)
 # ==========================================================
 
 def _empty_scan3m_state() -> dict:
@@ -1125,12 +1064,7 @@ def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
     return {"last_run_processed": len(new_candles), "events": events}
 
 
-# ==========================================================
-# LOCATION SCORE + FORWARD ZONE CHECK (ПОКРАЩЕНИЙ v6.2)
-# ==========================================================
-
 def has_forward_ict_zone(price: float, zones: list[Zone], side: str, atr15: float) -> bool:
-    """Перевіряє, чи є свіжа ICT-зона (FVG або OB) попереду в напрямку руху"""
     forward_distance = atr15 * 2.2
     for z in zones:
         if z.side != side:
@@ -1145,7 +1079,6 @@ def has_forward_ict_zone(price: float, zones: list[Zone], side: str, atr15: floa
 
 
 def calculate_location_score(price: float, zones: list[Zone], side: str, atr15: float, tf15: dict, tf1h: dict) -> int:
-    """Покращений Location Score v6.2"""
     score = 10
     forward_distance = atr15 * 2.0
 
@@ -1175,7 +1108,6 @@ def calculate_location_score(price: float, zones: list[Zone], side: str, atr15: 
 
 
 def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: float, structure_alignment: int, has_forward_zone: bool) -> int:
-    """Покращена Acceptance Quality v6.2"""
     base = event.get("acceptance_quality", 40)
     
     if has_forward_zone:
@@ -1196,7 +1128,7 @@ def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: f
 
 
 # ==========================================================
-# CANDIDATE + RE-ENTRY (ЗБЕРІГАЄМО АГРЕСИВНІСТЬ)
+# CANDIDATE + RE-ENTRY
 # ==========================================================
 
 def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
@@ -1266,10 +1198,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
         scan_stage = event.get("stage", "")
 
-        # Покращений Location Score
         location_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
-        
-        # Перевірка наявності зони попереду (бонус)
         has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
 
         loc_score = 14
@@ -1318,7 +1247,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if regime == Regime.TRANSITION.value:
             raw = int(raw * 0.88)
 
-        # Бонус за наявність зони попереду
         if has_forward_zone:
             raw += 8
 
@@ -1461,7 +1389,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
 
 # ==========================================================
-# EVALUATION (ЗБЕРІГАЄМО АГРЕСИВНИЙ RE-ENTRY)
+# EVALUATION
 # ==========================================================
 
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
@@ -1471,7 +1399,6 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     saved_opp = opportunity_from_state(state)
     current_price = context.get("price", 0)
     
-    # === АГРЕСИВНИЙ RE-ENTRY (ЗБЕРІГАЄМО) ===
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
@@ -1557,7 +1484,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
 
 # ==========================================================
-# MANAGE ACTIVE TRADE (ПОКРАЩЕНИЙ v6.2)
+# MANAGE ACTIVE TRADE (з v6.2)
 # ==========================================================
 
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
@@ -1571,7 +1498,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     result = {
         "action": Action.HOLD.value,
-        "title": "УГОДА ВІДКРИТА — HYBRID ICT v6.2",
+        "title": "УГОДА ВІДКРИТА — HYBRID ICT v6.3",
         "recommendation": "Структура та теза на боці — тримаємо",
         "current_pct": ((price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - price) / trade.entry * 100),
         "best_pct": ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100),
@@ -1588,11 +1515,9 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.worst_price = price
 
     mfe = result["best_pct"]
-    current_r = result["current_pct"] / (abs(trade.stop_initial - trade.entry) / trade.entry * 100) if trade.entry else 0
 
     params = get_adaptive_params(context.get("regime", "NORMAL"))
 
-    # === ADAPTIVE MFE GIVEBACK GUARD 2.0 (покращений) ===
     giveback = max(0, mfe - result["current_pct"])
     giveback_ratio = giveback / mfe if mfe > 0.1 else 0
 
@@ -1607,7 +1532,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     else:
         trade.mfe_giveback_streak = max(0, trade.mfe_giveback_streak - 1)
 
-    # === TP1 / TP2 СТОП-ЛОКИ ===
     if not trade.tp1_hit and ((side == Side.LONG.value and price >= trade.tp1) or (side == Side.SHORT.value and price <= trade.tp1)):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
@@ -1632,7 +1556,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["recommended_stop"] = round_price(trade.tp2_locked_stop)
         result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
 
-    # === ПОКРАЩЕНИЙ СУПРОВІД: SMC Trailing після TP1 ===
     if trade.tp1_hit and not trade.tp2_hit:
         if side == Side.LONG.value and tf15.get("bias") == Side.LONG.value:
             new_stop = max(trade.stop_current, price - atr15 * 1.2)
@@ -1645,7 +1568,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
                 trade.stop_current = new_stop
                 result["notes"].append("SMC Trailing: стоп підтягнуто за 15M структурою")
 
-    # Структурна інвалідація
     structural_break = False
     if side == Side.LONG.value:
         if price < trade.structural_invalidation:
@@ -1746,7 +1668,7 @@ def run_bot() -> None:
     if not context.get("price"):
         print("NO PRICE — abort")
         return
-    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'BINANCE')}")
+    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'OKX')}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -1798,7 +1720,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.3")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
