@@ -1,0 +1,36 @@
+name: BZU Bot v6.4 (Final)
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install requests
+
+      - name: Run BZU Pro v6.4
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python BZU_Pro_Hybrid_v6_4.py
+
+      - name: Save memory files v6.4
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add last_signal_v6_4.json signal_journal_v6_4.json || true
+          git diff --cached --quiet && echo "No changes" || git commit -m "Update BZU v6.4 memory"
+          git push || echo "Push skipped"
