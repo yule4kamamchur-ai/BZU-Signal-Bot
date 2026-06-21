@@ -4,12 +4,12 @@
   "active_trade": null,
   "opportunity": null,
   "latest_signal": {
-    "id": "94cf3c2d95f2",
-    "time": "2026-06-21T07:15:48.497979+00:00",
+    "id": "493876623824",
+    "time": "2026-06-21T07:31:03.909249+00:00",
     "action": "NO_SETUP",
     "side": "NEUTRAL",
     "setup_type": "NONE",
-    "quality": 38,
+    "quality": 22,
     "reason": "ринок не сформував узгоджений ланцюжок 4H/1H location → 15M invalidation → 3M trigger/acceptance/retest",
     "regime": "SHOCK",
     "candidate": null,
@@ -18,35 +18,144 @@
       "candidates": [
         {
           "side": "SHORT",
+          "setup_type": "CLOSED_15M_DIRECTION_FLIP",
+          "setup_family": "STRUCTURAL_TRANSITION",
+          "variant": "FULL_15M_FLIP",
+          "stage": "REJECTED",
+          "raw_score": 68,
+          "final_score": 51,
+          "selection_score": 75.6,
+          "trigger_ready": true,
+          "risk_mode": "RISKY",
+          "evidence_families": [
+            "PRICE_STRUCTURE",
+            "LIQUIDITY",
+            "EXECUTION_TRIGGER",
+            "HTF_CONTEXT"
+          ],
+          "evidence_count": 4,
+          "late_extension_atr": 1.891,
+          "execution_anchor": 81.19,
+          "trigger_level": 81.45,
+          "trigger_age_minutes": 9.0,
+          "hard_reject_reason": "execution window закрилось; новий вхід тільки після окремого ретесту",
+          "score_components": {
+            "location": 9,
+            "structure": 25,
+            "liquidity": 17,
+            "trigger": 14,
+            "flow": 0,
+            "htf": 3
+          },
+          "geometry_valid": false,
+          "execution_ready": false,
+          "geometry_reason": "",
+          "blocking_zone": "",
+          "acceptance_status": ""
+        },
+        {
+          "side": "LONG",
+          "setup_type": "SWEEP_RECLAIM",
+          "setup_family": "LIQUIDITY_RECOVERY",
+          "variant": "EARLY_RECLAIM",
+          "stage": "REJECTED",
+          "raw_score": 56,
+          "final_score": 51,
+          "selection_score": 65.8,
+          "trigger_ready": false,
+          "risk_mode": "RISKY",
+          "evidence_families": [
+            "ICT_LOCATION",
+            "LIQUIDITY",
+            "ORDER_FLOW",
+            "HTF_CONTEXT"
+          ],
+          "evidence_count": 4,
+          "late_extension_atr": 0.0,
+          "execution_anchor": 81.2,
+          "trigger_level": 81.41,
+          "trigger_age_minutes": 999.0,
+          "hard_reject_reason": "LONG-інвалідація знаходиться вище ціни",
+          "score_components": {
+            "location": 23,
+            "structure": 0,
+            "liquidity": 20,
+            "trigger": 0,
+            "flow": 10,
+            "htf": 3
+          },
+          "geometry_valid": false,
+          "execution_ready": false,
+          "geometry_reason": "",
+          "blocking_zone": "",
+          "acceptance_status": ""
+        },
+        {
+          "side": "LONG",
+          "setup_type": "PULLBACK_CONTINUATION",
+          "setup_family": "CONTINUATION",
+          "variant": "PULLBACK_FORMING",
+          "stage": "REJECTED",
+          "raw_score": 60,
+          "final_score": 39,
+          "selection_score": 52.8,
+          "trigger_ready": false,
+          "risk_mode": "RISKY",
+          "evidence_families": [
+            "ICT_LOCATION",
+            "LIQUIDITY",
+            "ORDER_FLOW",
+            "HTF_CONTEXT"
+          ],
+          "evidence_count": 4,
+          "late_extension_atr": 0.0,
+          "execution_anchor": 81.2,
+          "trigger_level": 81.35,
+          "trigger_age_minutes": 999.0,
+          "hard_reject_reason": "LONG-інвалідація знаходиться вище ціни",
+          "score_components": {
+            "location": 25,
+            "structure": 8,
+            "liquidity": 14,
+            "trigger": 0,
+            "flow": 10,
+            "htf": 3
+          },
+          "geometry_valid": false,
+          "execution_ready": false,
+          "geometry_reason": "",
+          "blocking_zone": "",
+          "acceptance_status": ""
+        },
+        {
+          "side": "SHORT",
           "setup_type": "BREAKOUT_RETEST",
           "setup_family": "EXPANSION",
-          "variant": "CONFIRMED_BOS_RETEST",
+          "variant": "RETEST_FORMING",
           "stage": "REJECTED",
-          "raw_score": 79,
-          "final_score": 39,
-          "selection_score": 68.8,
-          "trigger_ready": true,
+          "raw_score": 61,
+          "final_score": 16,
+          "selection_score": 33.8,
+          "trigger_ready": false,
           "risk_mode": "RISKY",
           "evidence_families": [
             "ICT_LOCATION",
             "PRICE_STRUCTURE",
             "LIQUIDITY",
-            "EXECUTION_TRIGGER",
-            "ORDER_FLOW",
             "HTF_CONTEXT"
           ],
-          "evidence_count": 6,
-          "late_extension_atr": 2.495,
+          "evidence_count": 4,
+          "late_extension_atr": 1.891,
           "execution_anchor": 81.45,
           "trigger_level": 81.45,
-          "trigger_age_minutes": 0.0,
+          "trigger_age_minutes": 9.0,
           "hard_reject_reason": "execution window закрилось; новий вхід тільки після окремого ретесту",
           "score_components": {
             "location": 10,
-            "structure": 24,
+            "structure": 17,
             "liquidity": 17,
-            "trigger": 15,
-            "flow": 10,
+            "trigger": 14,
+            "flow": 0,
             "htf": 3
           },
           "geometry_valid": false,
@@ -61,29 +170,28 @@
           "setup_family": "CONTINUATION",
           "variant": "PULLBACK_FORMING",
           "stage": "DISCOVERED",
-          "raw_score": 66,
-          "final_score": 38,
-          "selection_score": 51.8,
+          "raw_score": 55,
+          "final_score": 22,
+          "selection_score": 33.3,
           "trigger_ready": false,
           "risk_mode": "RISKY",
           "evidence_families": [
             "PRICE_STRUCTURE",
             "LIQUIDITY",
-            "ORDER_FLOW",
             "HTF_CONTEXT"
           ],
-          "evidence_count": 4,
-          "late_extension_atr": 0.151,
-          "execution_anchor": 81.1,
+          "evidence_count": 3,
+          "late_extension_atr": 0.076,
+          "execution_anchor": 81.19,
           "trigger_level": 81.2,
-          "trigger_age_minutes": 0.0,
+          "trigger_age_minutes": 9.0,
           "hard_reject_reason": "",
           "score_components": {
             "location": 7,
             "structure": 17,
             "liquidity": 14,
-            "trigger": 15,
-            "flow": 10,
+            "trigger": 14,
+            "flow": 0,
             "htf": 3
           },
           "geometry_valid": true,
@@ -91,89 +199,17 @@
           "geometry_reason": "",
           "blocking_zone": "",
           "acceptance_status": "SETUP: окреме breakout acceptance не потрібне | HTF: немає протилежної HTF-зони"
-        },
-        {
-          "side": "LONG",
-          "setup_type": "SWEEP_RECLAIM",
-          "setup_family": "LIQUIDITY_RECOVERY",
-          "variant": "EARLY_RECLAIM",
-          "stage": "REJECTED",
-          "raw_score": 39,
-          "final_score": 29,
-          "selection_score": 41.3,
-          "trigger_ready": false,
-          "risk_mode": "RISKY",
-          "evidence_families": [
-            "ICT_LOCATION",
-            "LIQUIDITY",
-            "HTF_CONTEXT"
-          ],
-          "evidence_count": 3,
-          "late_extension_atr": 0.0,
-          "execution_anchor": 81.12,
-          "trigger_level": 81.17,
-          "trigger_age_minutes": 999.0,
-          "hard_reject_reason": "LONG-інвалідація знаходиться вище ціни",
-          "score_components": {
-            "location": 16,
-            "structure": 0,
-            "liquidity": 20,
-            "trigger": 0,
-            "flow": 0,
-            "htf": 3
-          },
-          "geometry_valid": false,
-          "execution_ready": false,
-          "geometry_reason": "",
-          "blocking_zone": "",
-          "acceptance_status": ""
-        },
-        {
-          "side": "LONG",
-          "setup_type": "PULLBACK_CONTINUATION",
-          "setup_family": "CONTINUATION",
-          "variant": "PULLBACK_FORMING",
-          "stage": "REJECTED",
-          "raw_score": 47,
-          "final_score": 21,
-          "selection_score": 32.3,
-          "trigger_ready": false,
-          "risk_mode": "RISKY",
-          "evidence_families": [
-            "ICT_LOCATION",
-            "LIQUIDITY",
-            "HTF_CONTEXT"
-          ],
-          "evidence_count": 3,
-          "late_extension_atr": 0.0,
-          "execution_anchor": 81.12,
-          "trigger_level": 81.45,
-          "trigger_age_minutes": 999.0,
-          "hard_reject_reason": "LONG-інвалідація знаходиться вище ціни",
-          "score_components": {
-            "location": 20,
-            "structure": 8,
-            "liquidity": 16,
-            "trigger": 0,
-            "flow": 0,
-            "htf": 3
-          },
-          "geometry_valid": false,
-          "execution_ready": false,
-          "geometry_reason": "",
-          "blocking_zone": "",
-          "acceptance_status": ""
         }
       ]
     },
     "version": "pro-ict-v3.1.2-ua-regime-fix",
     "architecture_version": "DETERMINISTIC_PRO_ICT_CORE_V3_1_EVENT_EDGE_UA_REGIME_FIX",
     "context": {
-      "time": "2026-06-21T07:15:48.468779+00:00",
-      "price": 81.12,
+      "time": "2026-06-21T07:31:03.870879+00:00",
+      "price": 81.2,
       "price_source": "OKX",
-      "reference_price": 80.96,
-      "cross_price_diff_pct": 0.1972,
+      "reference_price": 81.07,
+      "cross_price_diff_pct": 0.1601,
       "regime": "SHOCK",
       "regime_reason": "останні три 15M свічки пройшли понад 2 ATR",
       "tf3": {
@@ -181,53 +217,53 @@
         "available": true,
         "bias": "SHORT",
         "score": -35,
-        "close": 81.1,
-        "ema20": 81.3841,
-        "ema50": 81.4777,
-        "rsi": 21.8,
-        "atr": 0.07203,
-        "move8_pct": -0.405,
-        "efficiency": 0.83,
-        "volume_ratio": 0.853,
+        "close": 81.19,
+        "ema20": 81.3037,
+        "ema50": 81.4236,
+        "rsi": 33.8,
+        "atr": 0.06834,
+        "move8_pct": -0.074,
+        "efficiency": 0.531,
+        "volume_ratio": 0.542,
         "structure": {
           "timeframe": "3m",
           "bias": "SHORT",
           "trend": "SHORT",
-          "bos": "SHORT",
+          "bos": "NEUTRAL",
           "choch": "NEUTRAL",
-          "swing_high": 81.47,
-          "swing_low": 81.32,
-          "prior_break_high": 81.47,
-          "prior_break_low": 81.32,
+          "swing_high": 81.23,
+          "swing_low": 81.1,
+          "prior_break_high": 81.23,
+          "prior_break_low": 81.1,
           "recent_highs": [
-            81.65,
             81.59,
             81.61,
-            81.47
+            81.47,
+            81.23
           ],
           "recent_lows": [
             81.45,
-            81.45,
             81.5,
-            81.32
+            81.32,
+            81.1
           ],
-          "ema20": 81.3841,
-          "ema50": 81.4777
+          "ema20": 81.3037,
+          "ema50": 81.4236
         }
       },
       "tf15": {
         "timeframe": "15m",
         "available": true,
         "bias": "SHORT",
-        "score": -20,
-        "close": 81.1,
-        "ema20": 81.4963,
-        "ema50": 81.4567,
-        "rsi": 29.9,
-        "atr": 0.13226,
-        "move8_pct": -0.576,
-        "efficiency": 0.781,
-        "volume_ratio": 1.962,
+        "score": -15,
+        "close": 81.19,
+        "ema20": 81.4671,
+        "ema50": 81.4482,
+        "rsi": 35.3,
+        "atr": 0.13222,
+        "move8_pct": -0.478,
+        "efficiency": 0.62,
+        "volume_ratio": 1.743,
         "structure": {
           "timeframe": "15m",
           "bias": "SHORT",
@@ -250,8 +286,8 @@
             81.55,
             81.45
           ],
-          "ema20": 81.4963,
-          "ema50": 81.4567
+          "ema20": 81.4671,
+          "ema50": 81.4482
         }
       },
       "tf1h": {
@@ -333,44 +369,42 @@
         }
       },
       "sweep3": {
-        "side": "LONG",
-        "level": 81.17,
-        "extreme": 81.16,
-        "reclaim": true,
-        "age": 2,
-        "ts": 1782025560000
+        "side": "NEUTRAL",
+        "level": 0.0,
+        "reclaim": false,
+        "age": 999
       },
       "sweep15": {
         "side": "LONG",
         "level": 81.41,
         "extreme": 81.32,
         "reclaim": true,
-        "age": 1,
+        "age": 2,
         "ts": 1782024300000
       },
       "dealing_range": {
         "low": 81.1,
         "high": 81.69,
         "equilibrium": 81.395,
-        "position": 0.034,
+        "position": 0.169,
         "zone": "DISCOUNT",
         "at_lower_edge": true,
         "at_upper_edge": false
       },
       "flow": {
-        "bias": "SHORT",
-        "score": -7,
-        "trade_delta": -11437.0,
-        "trade_delta_pct": -41.87,
-        "book_delta_pct": -5.69,
-        "price_move_pct": -0.221,
-        "cvd_acceleration": -1025.0,
+        "bias": "LONG",
+        "score": 7,
+        "trade_delta": 18381.0,
+        "trade_delta_pct": 40.13,
+        "book_delta_pct": 9.52,
+        "price_move_pct": 0.012,
+        "cvd_acceleration": -15179.0,
         "absorption_bias": "NEUTRAL",
         "confidence": "MEDIUM",
         "sample_size": 200
       },
       "derivatives": {
-        "oi": 5694347.0,
+        "oi": 5684944.0,
         "funding_rate": 0.0
       },
       "zones": [
@@ -381,7 +415,7 @@
           "high": 81.53,
           "created_ts": 1782024120000,
           "timeframe": "3m",
-          "strength": 0.5553117748558288,
+          "strength": 0.5852725335317065,
           "mitigated": false
         },
         {
@@ -391,7 +425,7 @@
           "high": 81.48,
           "created_ts": 1782024300000,
           "timeframe": "3m",
-          "strength": 0.27765588742801306,
+          "strength": 0.2926362667659572,
           "mitigated": false
         },
         {
@@ -401,7 +435,7 @@
           "high": 81.44,
           "created_ts": 1782025020000,
           "timeframe": "3m",
-          "strength": 0.13882794371380924,
+          "strength": 0.14631813338277067,
           "mitigated": false
         },
         {
@@ -411,7 +445,7 @@
           "high": 81.44,
           "created_ts": 1782025200000,
           "timeframe": "3m",
-          "strength": 1.9435912119951049,
+          "strength": 2.048453867360661,
           "mitigated": false
         },
         {
@@ -421,7 +455,7 @@
           "high": 81.28,
           "created_ts": 1782025380000,
           "timeframe": "3m",
-          "strength": 0.13882794371400653,
+          "strength": 0.1463181333829786,
           "mitigated": false
         },
         {
@@ -431,7 +465,7 @@
           "high": 81.65,
           "created_ts": 1782020700000,
           "timeframe": "3m",
-          "strength": 0.971795605997651,
+          "strength": 1.0242269336804344,
           "mitigated": false
         },
         {
@@ -441,7 +475,7 @@
           "high": 81.59,
           "created_ts": 1782023940000,
           "timeframe": "3m",
-          "strength": 1.1106235497114603,
+          "strength": 1.170545067063205,
           "mitigated": false
         },
         {
@@ -451,7 +485,7 @@
           "high": 81.22,
           "created_ts": 1782025740000,
           "timeframe": "3m",
-          "strength": 1.2494514934254668,
+          "strength": 1.3168632004461835,
           "mitigated": false
         },
         {
@@ -461,7 +495,17 @@
           "high": 81.48,
           "created_ts": 1782024300000,
           "timeframe": "15m",
-          "strength": 0.37804658832362986,
+          "strength": 0.3781599145398331,
+          "mitigated": false
+        },
+        {
+          "kind": "FVG",
+          "side": "SHORT",
+          "low": 81.23,
+          "high": 81.32,
+          "created_ts": 1782025200000,
+          "timeframe": "15m",
+          "strength": 0.6806878461716567,
           "mitigated": false
         },
         {
@@ -471,7 +515,7 @@
           "high": 81.67,
           "created_ts": 1782002700000,
           "timeframe": "15m",
-          "strength": 1.2853584003004275,
+          "strength": 1.2857437094355186,
           "mitigated": false
         },
         {
@@ -537,7 +581,7 @@
       ]
     }
   },
-  "last_message_key": "{\"action\": \"NO_SETUP\", \"plan_valid\": null, \"quality_bucket\": 7, \"setup_type\": \"NONE\", \"side\": \"NEUTRAL\"}",
+  "last_message_key": "{\"action\": \"NO_SETUP\", \"plan_valid\": null, \"quality_bucket\": 4, \"setup_type\": \"NONE\", \"side\": \"NEUTRAL\"}",
   "history": [
     {
       "type": "NO_SETUP",
@@ -1346,9 +1390,19 @@
       "reason": "ринок не сформував узгоджений ланцюжок 4H/1H location → 15M invalidation → 3M trigger/acceptance/retest",
       "plan": null,
       "time": "2026-06-21T07:15:48.498436+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "price": 81.2,
+      "quality": 22,
+      "reason": "ринок не сформував узгоджений ланцюжок 4H/1H location → 15M invalidation → 3M trigger/acceptance/retest",
+      "plan": null,
+      "time": "2026-06-21T07:31:03.909865+00:00"
     }
   ],
-  "last_telegram_success_at": "2026-06-21T07:15:48.828141+00:00",
+  "last_telegram_success_at": "2026-06-21T07:31:04.471651+00:00",
   "last_telegram_error": "",
-  "updated_at": "2026-06-21T07:15:48.828151+00:00"
+  "updated_at": "2026-06-21T07:31:04.471667+00:00"
 }
