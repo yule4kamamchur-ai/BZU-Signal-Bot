@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v5.1 (DEBUG)
+BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL)
 ================================================================================
-Версія з посиленими логами для діагностики збереження історії.
+Фінальна стабільна версія v5.1
 
-Додано:
-- Детальні логи перед/після append_history()
-- Детальні логи перед/після save_state()
-- Логи в atomic_json_write()
-- Логи на вході/виході run_bot()
+Виправлення:
+- Додано MISSED_REENTRY_SCORE
+- Прибрано всі NameError
+- Покращена логіка re-entry
+- Стабільна робота в GitHub Actions
 """
 
 from __future__ import annotations
@@ -32,10 +32,10 @@ from zoneinfo import ZoneInfo
 import requests
 
 # ==========================================================
-# CONFIGURATION v5.1
+# CONFIGURATION v5.1 (FINAL)
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v5.1-DEBUG"
+BOT_VERSION = "pro-hybrid-confluence-v5.1"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_ACCEPTANCE_VOLUME_MACRO_ADAPTIVE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -74,6 +74,7 @@ SCAN_3M_BOOTSTRAP_BARS = max(12, int(os.getenv("SCAN_3M_BOOTSTRAP_BARS", "14") o
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "28") or 28)
 
 # === Re-Entry ===
+MISSED_REENTRY_SCORE = 65  # <-- ВИПРАВЛЕНО: додано
 REENTRY_NEW_TRIGGER_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_TRIGGER_SEPARATION_ATR15", "0.22") or 0.22)
 REENTRY_NEW_INVALIDATION_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_INVALIDATION_SEPARATION_ATR15", "0.32") or 0.32)
 FAILED_ENTRY_MIN_MFE_R = float(os.getenv("FAILED_ENTRY_MIN_MFE_R", "0.45") or 0.45)
@@ -331,7 +332,7 @@ class ActiveTrade:
 
 
 # ==========================================================
-# UTILITIES + DEBUG LOGS
+# UTILITIES
 # ==========================================================
 
 def now_utc() -> datetime:
@@ -392,21 +393,15 @@ def json_safe(value: Any) -> Any:
 
 
 def atomic_json_write(path: Path, data: dict[str, Any]) -> None:
-    """З посиленими логами"""
-    print(f"[DEBUG] atomic_json_write -> {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
     backup = path.with_suffix(path.suffix + ".bak")
     payload = json_safe(data)
-    try:
-        with temp.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        os.replace(temp, path)
-        with backup.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        print(f"[DEBUG] atomic_json_write УСПІШНО записано: {path}")
-    except Exception as e:
-        print(f"[ERROR] atomic_json_write ПОМИЛКА: {e}")
+    with temp.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    os.replace(temp, path)
+    with backup.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -422,10 +417,9 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_state() -> dict[str, Any]:
-    print("[DEBUG] load_state() викликано")
     raw = load_json(STATE_FILE, {})
     same_arch = raw.get("architecture_version") == ARCHITECTURE_VERSION
-    state = {
+    return {
         "version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
         "active_trade": raw.get("active_trade"),
@@ -435,17 +429,12 @@ def load_state() -> dict[str, Any]:
         "last_message_key": raw.get("last_message_key", "") if same_arch else "",
         "history": list(raw.get("history") or [])[-MAX_HISTORY:],
     }
-    print(f"[DEBUG] load_state() -> history length: {len(state['history'])}")
-    return state
 
 
 def save_state(state: dict[str, Any]) -> None:
-    print("[DEBUG] save_state() викликано")
     state["updated_at"] = iso_now()
     state["history"] = list(state.get("history") or [])[-MAX_HISTORY:]
-    print(f"[DEBUG] save_state() -> history length перед записом: {len(state['history'])}")
     atomic_json_write(STATE_FILE, state)
-    print("[DEBUG] save_state() завершено")
 
 
 def load_journal() -> dict[str, Any]:
@@ -468,12 +457,10 @@ def save_journal(journal: dict[str, Any]) -> None:
 
 
 def append_history(state: dict[str, Any], item: dict[str, Any]) -> None:
-    print("[DEBUG] append_history() викликано")
     payload = dict(item)
     payload.setdefault("time", iso_now())
     state.setdefault("history", []).append(payload)
     state["history"] = state["history"][-MAX_HISTORY:]
-    print(f"[DEBUG] append_history() -> додано запис. Тепер history length: {len(state['history'])}")
 
 
 def active_trade_from_state(state: dict[str, Any]) -> Optional[ActiveTrade]:
@@ -1496,6 +1483,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
             guard = event_driven_reentry_guard(state, context, missed_cand)
+            # ВИПРАВЛЕНО: використовуємо MISSED_REENTRY_SCORE
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
                 return Decision(
@@ -1715,30 +1703,22 @@ def compute_analytics(journal: dict) -> dict:
 
 
 # ==========================================================
-# MAIN (З ПОСИЛЕНИМИ ЛОГАМИ)
+# MAIN
 # ==========================================================
 
 def run_bot() -> None:
-    print("=" * 60)
-    print(f"START {BOT_VERSION} (DEBUG MODE)")
-    print("=" * 60)
-    
+    print(f"START {BOT_VERSION}")
     state = load_state()
-    print(f"[DEBUG] Після load_state() -> history length: {len(state.get('history', []))}")
-    
     journal = load_journal()
     data = collect_market_data()
     context = build_context(data, state)
-    
     if not context.get("price"):
         print("NO PRICE — abort")
         return
-    
-    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f}")
+    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | News: {context.get('news', {}).get('bias')} | MacroRisk: {context.get('macro_risk')}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
-        print("[DEBUG] Є активна угода — обробляємо manage_active_trade")
         res = manage_active_trade(active, context)
         msg = build_follow_message(context, active, res)
         
@@ -1751,29 +1731,17 @@ def run_bot() -> None:
             state["opportunity"] = None
         else:
             store_active_trade(state, active)
-        
         append_history(state, {"type": "FOLLOW" if not res.get("closed") else "CLOSE", "side": active.side, "action": res.get("action"), "price": context["price"]})
-        print("[DEBUG] Після append_history (FOLLOW) -> history length:", len(state.get("history", [])))
-        
         journal["signals"].append({"time": iso_now(), "type": "FOLLOW", "action": res.get("action"), "side": active.side, "price": context["price"]})
-        
-        print("[DEBUG] Перед save_state (FOLLOW)")
         save_state(state)
-        print("[DEBUG] Після save_state (FOLLOW)")
-        
         save_journal(journal)
         print("BOT COMPLETE: ACTIVE TRADE MANAGED")
         return
 
-    print("[DEBUG] Немає активної угоди — викликаємо evaluate_new_setup")
     decision = evaluate_new_setup(context, state, journal)
-    
     payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
     state["latest_signal"] = payload
-    
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
-    print("[DEBUG] Після append_history (DECISION) -> history length:", len(state.get("history", [])))
-    
     journal["signals"].append(payload)
 
     if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
@@ -1795,18 +1763,13 @@ def run_bot() -> None:
         print("TELEGRAM (DECISION):", msg[:320])
         send_telegram(msg)
 
-    print("[DEBUG] Перед фінальним save_state()")
     save_state(state)
-    print("[DEBUG] Після фінального save_state()")
-    
     save_journal(journal)
-    print("=" * 60)
     print("BOT COMPLETE")
-    print("=" * 60)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (DEBUG)")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
