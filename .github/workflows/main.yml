@@ -1,4 +1,4 @@
-name: BZU Signal Bot
+name: BZU Bot
 
 on:
   schedule:
@@ -8,47 +8,20 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: bzu-main
-  cancel-in-progress: false
-
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install deps
-        run: pip install requests
-
-      - name: Create memory files if missing
-        run: |
-          [ -f last_signal_v6_2.json ] || cat > last_signal_v6_2.json << 'EOT'
-{"version":"pro-hybrid-confluence-v6.2","architecture_version":"HYBRID_CONFLUENCE_V6_2","active_trade":null,"opportunity":null,"scan_3m":{"last_scanned_3m_ts":0,"last_run_processed":0,"processed_count":0,"events":{}},"latest_signal":null,"last_message_key":"","history":[],"updated_at":""}
-EOT
-
-          [ -f signal_journal_v6_2.json ] || cat > signal_journal_v6_2.json << 'EOT'
-{"version":"pro-hybrid-confluence-v6.2","architecture_version":"HYBRID_CONFLUENCE_V6_2","signals":[],"trades":[],"analytics":{"closed_trades":0,"wins":0,"losses":0,"win_rate":0.0,"net_r":0.0,"expectancy_r":0.0,"by_family":{}},"updated_at":""}
-EOT
+      - run: pip install requests
 
       - name: Run bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot_oneshot.py
-
-      - name: Save memory
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add last_signal_v6_2.json signal_journal_v6_2.json 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "Update memory v6.2"
-          git push origin main || echo "Push skipped"
