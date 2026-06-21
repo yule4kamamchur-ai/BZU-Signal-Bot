@@ -1,26 +1,28 @@
-name: BZU Auto Bot
+name: BZU Hybrid Signal Bot v6.2
 
-'on':
+on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+    - cron: '*/15 * * * *'   # Кожні 15 хвилин
+  workflow_dispatch:         # Можна запустити вручну
 
 permissions:
   contents: write
 
 concurrency:
-  group: bzu-signal-memory
+  group: bzu-signal-memory-v6-2
   cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -32,17 +34,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run bot
+      - name: Run BZU Hybrid v6.2 Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot_oneshot.py
+        run: python BZU_Pro_Hybrid_v6_2.py
 
-      - name: Save signal memory and journal
+      - name: Save signal memory and journal (v6.2)
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
+
           git pull --rebase origin main || true
-          git add last_signal_v5_1.json signal_journal_v5_1.json last_signal_v5_1.json.bak signal_journal_v5_1.json.bak || true
-          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update signal memory and journal v5.1"
-          git push origin HEAD:main || echo "Push failed or nothing to push"
+
+          # Додаємо файли нової версії v6.2
+          git add last_signal_v6_2.json signal_journal_v6_2.json last_signal_v6_2.json.bak signal_journal_v6_2.json.bak 2>/dev/null || true
+
+          if git diff --cached --quiet; then
+            echo "No memory changes to commit"
+          else
+            git commit -m "Update BZU Hybrid v6.2 signal memory and journal"
+            git push origin HEAD:main || git push origin HEAD:master
+            echo "Memory files saved successfully"
+          fi
