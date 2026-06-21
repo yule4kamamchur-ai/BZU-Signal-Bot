@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v5.1 (AGGRESSIVE RE-ENTRY + CLEAN TEXT)
+BZU Professional Hybrid Confluence Signal Bot v6.2
 ================================================================================
-Агресивна версія re-entry + зрозумілі назви без "(ARMED)"
-
-- При re-entry + якість ≥ 72 → одразу RISKY_ENTRY (відкриває угоду)
-- Текст: "СФОРМОВАНО СИГНАЛ — ЧЕКАЄМО ВХОДУ" замість "(ARMED)"
+Покращена версія (Варіант A - зберігаємо агресивність):
+- Покращений 3M scanner з бонусом за наявність ICT-зон попереду
+- Покращена Acceptance Quality
+- Більш релевантний Location Score
+- Покращений Manage Active Trade (SMC trailing + кращий супровід)
+- Базові News / Macro фільтри
+- Збережена агресивність Early Entry та Re-entry
 """
 
 from __future__ import annotations
@@ -15,7 +18,6 @@ import html
 import json
 import math
 import os
-import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -24,7 +26,6 @@ from enum import Enum
 from pathlib import Path
 from statistics import mean
 from typing import Any, Optional
-from zoneinfo import ZoneInfo
 
 import requests
 
@@ -32,16 +33,19 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v5.1-aggressive-final"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_AGGRESSIVE_FINAL"
+BOT_VERSION = "pro-hybrid-confluence-v6.2"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_2"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
+
+# === BINANCE ===
+BINANCE_SYMBOL = "BZUSDT"
+BINANCE_BASE_URL = "https://api.binance.com/api/v3"
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
-STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v5_1.json")))
-JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v5_1.json")))
+STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_2.json")))
+JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_2.json")))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
@@ -60,15 +64,21 @@ PREFERRED_RR1 = max(2.20, float(os.getenv("PREFERRED_RR1", "2.20") or 2.20))
 MIN_RR2 = max(3.00, float(os.getenv("MIN_RR2", "3.00") or 3.00))
 MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
 
-# === Scoring Thresholds (агресивніші) ===
+# === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
 RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)
 ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "58") or 58)
 MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "5") or 5)
 
-# === Re-Entry (дуже агресивний) ===
+# === Re-Entry (агресивний) ===
 MISSED_REENTRY_SCORE = 62
-REENTRY_AGGRESSIVE_THRESHOLD = 72  # при цій якості re-entry одразу відкриває угоду
+REENTRY_AGGRESSIVE_THRESHOLD = 72
+
+# === Professional Gate v6 (спрощений) ===
+PRO_ENTRY_MIN = 74
+PRO_RISKY_MIN = 66
+MIN_PRO_LAYERS_ENTRY = 4
+A_PLUS_ENTRY_MIN = 82
 
 # === 3M Scanner ===
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "35") or 35)
@@ -211,6 +221,9 @@ class Candidate:
     confluence_layers: dict[str, int] = field(default_factory=dict)
     acceptance_quality: int = 0
     volume_cluster_support: bool = False
+    professional_gate: dict = field(default_factory=dict)
+    location_score: int = 0
+    has_forward_zone: bool = False
 
 
 @dataclass
@@ -299,6 +312,8 @@ class ActiveTrade:
     tp3_hit: bool = False
     tp1_stop_locked: bool = False
     tp2_stop_locked: bool = False
+    tp1_locked_stop: float = 0.0
+    tp2_locked_stop: float = 0.0
     status: str = "OPEN"
     last_action: str = "ENTRY"
     notes: list[str] = field(default_factory=list)
@@ -457,6 +472,10 @@ def active_trade_from_state(state: dict[str, Any]) -> Optional[ActiveTrade]:
         clean.setdefault("mfe_giveback_last_state", str(raw.get("mfe_giveback_last_state", "OK")))
         clean.setdefault("trigger_level", float(raw.get("trigger_level", 0) or 0))
         clean.setdefault("opened_regime", str(raw.get("opened_regime", "")))
+        clean.setdefault("tp1_stop_locked", bool(raw.get("tp1_stop_locked", False)))
+        clean.setdefault("tp2_stop_locked", bool(raw.get("tp2_stop_locked", False)))
+        clean.setdefault("tp1_locked_stop", float(raw.get("tp1_locked_stop", 0) or 0))
+        clean.setdefault("tp2_locked_stop", float(raw.get("tp2_locked_stop", 0) or 0))
         return ActiveTrade(**clean)
     except Exception as exc:
         print(f"[WARN] ActiveTrade migration failed: {exc}")
@@ -482,7 +501,7 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# TELEGRAM + ЗРОЗУМІЛІ НАЗВИ
+# TELEGRAM
 # ==========================================================
 
 def send_telegram(text: str) -> bool:
@@ -557,7 +576,6 @@ def plain_telegram_text(text: str) -> str:
 def build_decision_message(context: dict, decision: Decision) -> str:
     current_price = decision.current_price or context.get("price", 0)
     
-    # ЗРОЗУМІЛІ НАЗВИ (без слова ARMED в дужках)
     action_names = {
         "ENTRY": "ВХІД У УГОДУ",
         "RISKY_ENTRY": "РАННІЙ ВХІД",
@@ -567,7 +585,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_label = action_names.get(decision.action, decision.action)
     
     lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v5.1</b>",
+        "<b>BZU PRO HYBRID CONFLUENCE v6.2</b>",
         "",
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
@@ -580,6 +598,13 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             lines.append("<b>Підтвердження:</b>")
             for x in c.confirmations[:4]:
                 lines.append(f"✅ {html.escape(x)}")
+        if c.professional_gate:
+            pg = c.professional_gate
+            grade = pg.get("grade", "")
+            layers = pg.get("layers", 0)
+            loc = c.location_score
+            has_zone = "✅" if c.has_forward_zone else "—"
+            lines.append(f"<b>Gate v6:</b> {grade} | шарів {layers} | Location {loc} | Зона попереду {has_zone}")
     if decision.plan and decision.plan.valid:
         p = decision.plan
         lines.append("")
@@ -593,22 +618,20 @@ def build_decision_message(context: dict, decision: Decision) -> str:
 
 def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str:
     lines = [
-        "<b>BZU PRO — HYBRID ICT + THESIS v5.1</b>",
+        "<b>BZU PRO — HYBRID ICT v6.2</b>",
         "",
-        f"<b>{result.get('title', 'MONITOR')}</b>",
+        f"<b>{result.get('title', 'МОНІТОРИНГ УГОДИ')}</b>",
         f"{result.get('recommendation', '')}",
         "",
         f"<b>Ціна зараз:</b> {_fmt_price(context['price'])} | Від входу: {result.get('current_pct', 0):.2f}% | Макс: {result.get('best_pct', 0):.2f}%"
     ]
     if result.get("notes"):
         lines.append("")
-        lines.append("<b>Дії / ICT-нотатки:</b>")
+        lines.append("<b>Дії:</b>")
         for n in result["notes"][:3]:
             lines.append(f"• {html.escape(n)}")
     if result.get("recommended_stop"):
         lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result['recommended_stop'])}")
-    lines.append("")
-    lines.append(f"<i>Оновлено: {iso_now()[:19]}</i>")
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
 
@@ -669,108 +692,56 @@ def get_adaptive_params(regime: str) -> dict:
 
 
 # ==========================================================
-# 3M SCANNER (спрощений)
+# PROFESSIONAL GATE v6 (спрощений)
 # ==========================================================
 
-def _empty_scan3m_state() -> dict:
-    return {"last_scanned_3m_ts": 0, "last_run_processed": 0, "processed_count": 0, "events": {}}
+def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
+    """Professional Gate v6 — спрощена версія"""
+    score = candidate.final_score
+    layers = len(candidate.evidence_families)
+    trigger_ready = candidate.trigger_ready
+    strong_ict = "ICT_LOCATION" in candidate.evidence_families or "PRICE_STRUCTURE" in candidate.evidence_families
 
+    allow_entry = bool(
+        score >= PRO_ENTRY_MIN
+        and layers >= MIN_PRO_LAYERS_ENTRY
+        and trigger_ready
+        and strong_ict
+    )
 
-def _normalize_scan3m_state(raw: Any) -> dict:
-    if not isinstance(raw, dict):
-        return _empty_scan3m_state()
-    state = dict(raw)
-    state.setdefault("last_scanned_3m_ts", 0)
-    state.setdefault("last_run_processed", 0)
-    state.setdefault("processed_count", 0)
-    state.setdefault("events", {})
-    return state
+    allow_risky = bool(
+        score >= PRO_RISKY_MIN
+        and layers >= max(3, MIN_PRO_LAYERS_ENTRY - 1)
+        and (trigger_ready or strong_ict)
+    )
 
+    if allow_entry and score >= A_PLUS_ENTRY_MIN and strong_ict:
+        grade = "A+"
+    elif allow_entry:
+        grade = "A"
+    elif allow_risky:
+        grade = "B"
+    else:
+        grade = "WATCH"
 
-def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr15: float) -> dict:
-    if len(candles) < 5:
-        return {"ready": False, "age_bars": 999, "quality": 0, "displacement": False}
-    last = candles[-1]
-    prev = candles[-2]
-    is_sweep = (side == Side.LONG.value and last.low < trigger_level) or (side == Side.SHORT.value and last.high > trigger_level)
-    is_reclaim = (side == Side.LONG.value and last.close > trigger_level) or (side == Side.SHORT.value and last.close < trigger_level)
-    displacement = abs(last.close - prev.close) > atr15 * 0.70
-    ready = is_reclaim and displacement
-    quality = 50
-    if displacement:
-        quality += 24
-    if is_reclaim:
-        quality += 18
+    reason = f"gate v6: {grade} | {layers} шарів | score {score}"
+
     return {
-        "ready": ready,
-        "age_bars": 0,
-        "quality": min(quality, 96),
-        "displacement": displacement,
-        "sweep_level": trigger_level,
-        "extreme": last.low if side == Side.LONG.value else last.high
+        "allow_entry": allow_entry,
+        "allow_risky": allow_risky,
+        "grade": grade,
+        "score": score,
+        "layers": layers,
+        "reason": reason,
     }
 
 
-def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
-    c3 = context["candles"]["3m"]
-    if not c3:
-        return {"last_run_processed": 0, "events": {}}
-    scan_state = state.get("scan_3m", _empty_scan3m_state())
-    last_scanned_ts = scan_state.get("last_scanned_3m_ts", 0)
-    new_candles = [c for c in c3 if c.ts > last_scanned_ts]
-    if not new_candles:
-        return {"last_run_processed": 0, "events": scan_state.get("events", {})}
-    atr15 = context.get("atr15", 0.6) or 0.6
-    events = dict(scan_state.get("events", {}))
-    for side in [Side.LONG.value, Side.SHORT.value]:
-        event = events.get(side, {
-            "side": side, "stage": "SWEEP", "source": "LIQUIDITY_SWEEP",
-            "event_ts": 0, "last_event_ts": 0, "trigger_level": context["price"],
-            "event_price": context["price"], "invalidation_level": context["price"],
-            "sweep_level": context["price"], "extreme": context["price"],
-            "displacement": False, "retest_ts": 0, "ready_ts": 0, "hold_closes": 0,
-            "previous_stage": "", "chain_quality": 50, "confirmation_quality": 40,
-            "acceptance_quality": 0, "retest_quality": 0, "processed_bars": 0
-        })
-        lookback = min(len(new_candles) + 10, len(c3))
-        recent = c3[-lookback:]
-        snap = trigger_snapshot(recent, side, event.get("trigger_level", context["price"]), atr15)
-        if snap["ready"] and event["stage"] in ["SWEEP", "CONFIRMATION"]:
-            event["stage"] = "ACCEPTANCE"
-            event["ready_ts"] = recent[-1].ts
-            event["acceptance_quality"] = snap["quality"]
-            event["last_event_ts"] = recent[-1].ts
-        elif event["stage"] == "ACCEPTANCE" and snap["displacement"]:
-            event["stage"] = "RETEST"
-            event["retest_ts"] = recent[-1].ts
-            event["retest_quality"] = snap["quality"]
-        elif event["stage"] == "RETEST":
-            event["stage"] = "READY"
-            event["ready_ts"] = recent[-1].ts
-        if snap.get("sweep_level"):
-            event["trigger_level"] = snap["sweep_level"]
-            event["sweep_level"] = snap["sweep_level"]
-            event["extreme"] = snap["extreme"]
-        event["last_event_ts"] = recent[-1].ts
-        event["processed_bars"] += len(new_candles)
-        events[side] = event
-    new_last_ts = max(c.ts for c in new_candles)
-    scan_state["last_scanned_3m_ts"] = new_last_ts
-    scan_state["last_run_processed"] = len(new_candles)
-    scan_state["processed_count"] = scan_state.get("processed_count", 0) + len(new_candles)
-    scan_state["events"] = events
-    state["scan_3m"] = scan_state
-    context["scan_3m"] = scan_state
-    context["scan_3m_events"] = events
-    return {"last_run_processed": len(new_candles), "events": events}
-
-
 # ==========================================================
-# MARKET DATA (спрощений)
+# BINANCE DATA
 # ==========================================================
 
 def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Optional[requests.Response]:
-    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v5.1/1.0", "Accept": "*/*"}
+    headers = {"User-Agent": "Mozilla/5.0 BZU-Pro-v6.2/1.0", "Accept": "*/*"}
     last_err = None
     for attempt in range(max(1, retries)):
         try:
@@ -784,18 +755,25 @@ def http_get(url: str, timeout: int = REQUEST_TIMEOUT, retries: int = 2) -> Opti
     return None
 
 
-def get_okx_candles(bar: str = "15m", limit: int = 160) -> list[Candle]:
-    url = f"https://www.okx.com/api/v5/market/candles?instId={OKX_INST_ID}&bar={bar}&limit={limit}"
+def get_binance_candles(interval: str = "15m", limit: int = 160) -> list[Candle]:
+    url = f"{BINANCE_BASE_URL}/klines?symbol={BINANCE_SYMBOL}&interval={interval}&limit={limit}"
     resp = http_get(url)
     if not resp:
         return []
     try:
-        data = resp.json().get("data", [])
+        data = resp.json()
         out = []
         for row in data:
             try:
-                out.append(Candle(ts=int(row[0]), open=float(row[1]), high=float(row[2]),
-                                  low=float(row[3]), close=float(row[4]), volume=float(row[5] or 0), confirmed=True))
+                out.append(Candle(
+                    ts=int(row[0]),
+                    open=float(row[1]),
+                    high=float(row[2]),
+                    low=float(row[3]),
+                    close=float(row[4]),
+                    volume=float(row[5] or 0),
+                    confirmed=True
+                ))
             except Exception:
                 continue
         out.sort(key=lambda c: c.ts)
@@ -804,65 +782,77 @@ def get_okx_candles(bar: str = "15m", limit: int = 160) -> list[Candle]:
         return []
 
 
-def get_okx_ticker() -> dict:
-    url = f"https://www.okx.com/api/v5/market/ticker?instId={OKX_INST_ID}"
+def get_binance_ticker() -> dict:
+    url = f"{BINANCE_BASE_URL}/ticker/24hr?symbol={BINANCE_SYMBOL}"
     resp = http_get(url)
     if not resp:
         return {}
     try:
-        row = resp.json().get("data", [{}])[0]
-        last = safe_float(row.get("last") or row.get("lastSz"))
-        open24 = safe_float(row.get("open24h"))
-        return {"price": last, "change24h": pct(last, open24) if open24 else 0.0, "volume24h": safe_float(row.get("volCcy24h")), "source": "OKX"}
+        data = resp.json()
+        last = safe_float(data.get("lastPrice"))
+        open_price = safe_float(data.get("openPrice"))
+        return {
+            "price": last,
+            "change24h": pct(last, open_price) if open_price else 0.0,
+            "volume24h": safe_float(data.get("quoteVolume")),
+            "source": "BINANCE"
+        }
     except Exception:
         return {}
 
 
-def get_okx_trades(limit: int = 150) -> list[dict]:
-    url = f"https://www.okx.com/api/v5/market/trades?instId={OKX_INST_ID}&limit={limit}"
+def get_binance_trades(limit: int = 150) -> list[dict]:
+    url = f"{BINANCE_BASE_URL}/trades?symbol={BINANCE_SYMBOL}&limit={limit}"
     resp = http_get(url)
     if not resp:
         return []
     try:
         out = []
-        for row in resp.json().get("data", []):
-            out.append({"price": safe_float(row.get("px")), "size": safe_float(row.get("sz")), "side": str(row.get("side", "")).lower(), "ts": int(row.get("ts", 0))})
+        for row in resp.json():
+            out.append({
+                "price": safe_float(row.get("price")),
+                "size": safe_float(row.get("qty")),
+                "side": "buy" if row.get("isBuyerMaker") == False else "sell",
+                "ts": int(row.get("time", 0))
+            })
         return out
     except Exception:
         return []
 
 
-def get_okx_book(depth: int = 50) -> dict:
-    url = f"https://www.okx.com/api/v5/market/books?instId={OKX_INST_ID}&sz={depth}"
+def get_binance_book(depth: int = 50) -> dict:
+    url = f"{BINANCE_BASE_URL}/depth?symbol={BINANCE_SYMBOL}&limit={depth}"
     resp = http_get(url)
     if not resp:
         return {"bids": [], "asks": []}
     try:
-        b = resp.json().get("data", [{}])[0]
+        data = resp.json()
         return {
-            "bids": [(safe_float(x[0]), safe_float(x[1])) for x in b.get("bids", [])[:depth]],
-            "asks": [(safe_float(x[0]), safe_float(x[1])) for x in b.get("asks", [])[:depth]]
+            "bids": [(safe_float(x[0]), safe_float(x[1])) for x in data.get("bids", [])[:depth]],
+            "asks": [(safe_float(x[0]), safe_float(x[1])) for x in data.get("asks", [])[:depth]]
         }
     except Exception:
         return {"bids": [], "asks": []}
 
 
 def collect_market_data() -> dict:
-    c3 = get_okx_candles("3m", 240)
-    c15 = get_okx_candles("15m", 200)
-    c1h = get_okx_candles("1H", 160)
-    c4h = get_okx_candles("4H", 140)
-    okx_t = get_okx_ticker()
-    trades = get_okx_trades(150)
-    book = get_okx_book(50)
-    ticker = okx_t or {"price": (c15[-1].close if c15 else 80.0), "source": "fallback"}
+    c3 = get_binance_candles("3m", 240)
+    c15 = get_binance_candles("15m", 200)
+    c1h = get_binance_candles("1h", 160)
+    c4h = get_binance_candles("4h", 140)
+    ticker = get_binance_ticker()
+    trades = get_binance_trades(150)
+    book = get_binance_book(50)
+    
+    price = ticker.get("price") or (c15[-1].close if c15 else 80.0)
+    
     return {
         "time": iso_now(),
         "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
         "ticker": ticker,
         "trades": trades,
         "book": book,
-        "price": safe_float(ticker.get("price"))
+        "price": price
     }
 
 
@@ -1018,7 +1008,7 @@ def build_context(data: dict, state: dict) -> dict:
     ctx = {
         "time": data["time"],
         "price": price,
-        "price_source": data["ticker"].get("source", "OKX"),
+        "price_source": data["ticker"].get("source", "BINANCE"),
         "regime": regime,
         "regime_reason": regime_reason,
         "tf3": tf3, "tf15": tf15, "tf1h": tf1h, "tf4h": tf4h,
@@ -1039,7 +1029,174 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# CANDIDATE + АГРЕСИВНИЙ RE-ENTRY
+# 3M SCANNER (ПОКРАЩЕНИЙ v6.2)
+# ==========================================================
+
+def _empty_scan3m_state() -> dict:
+    return {"last_scanned_3m_ts": 0, "last_run_processed": 0, "processed_count": 0, "events": {}}
+
+
+def _normalize_scan3m_state(raw: Any) -> dict:
+    if not isinstance(raw, dict):
+        return _empty_scan3m_state()
+    state = dict(raw)
+    state.setdefault("last_scanned_3m_ts", 0)
+    state.setdefault("last_run_processed", 0)
+    state.setdefault("processed_count", 0)
+    state.setdefault("events", {})
+    return state
+
+
+def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr15: float) -> dict:
+    if len(candles) < 5:
+        return {"ready": False, "age_bars": 999, "quality": 0, "displacement": False}
+    last = candles[-1]
+    prev = candles[-2]
+    is_sweep = (side == Side.LONG.value and last.low < trigger_level) or (side == Side.SHORT.value and last.high > trigger_level)
+    is_reclaim = (side == Side.LONG.value and last.close > trigger_level) or (side == Side.SHORT.value and last.close < trigger_level)
+    displacement = abs(last.close - prev.close) > atr15 * 0.70
+    ready = is_reclaim and displacement
+    quality = 50
+    if displacement:
+        quality += 24
+    if is_reclaim:
+        quality += 18
+    return {
+        "ready": ready,
+        "age_bars": 0,
+        "quality": min(quality, 96),
+        "displacement": displacement,
+        "sweep_level": trigger_level,
+        "extreme": last.low if side == Side.LONG.value else last.high
+    }
+
+
+def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
+    c3 = context["candles"]["3m"]
+    if not c3:
+        return {"last_run_processed": 0, "events": {}}
+    scan_state = state.get("scan_3m", _empty_scan3m_state())
+    last_scanned_ts = scan_state.get("last_scanned_3m_ts", 0)
+    new_candles = [c for c in c3 if c.ts > last_scanned_ts]
+    if not new_candles:
+        return {"last_run_processed": 0, "events": scan_state.get("events", {})}
+    atr15 = context.get("atr15", 0.6) or 0.6
+    events = dict(scan_state.get("events", {}))
+    for side in [Side.LONG.value, Side.SHORT.value]:
+        event = events.get(side, {
+            "side": side, "stage": "SWEEP", "source": "LIQUIDITY_SWEEP",
+            "event_ts": 0, "last_event_ts": 0, "trigger_level": context["price"],
+            "event_price": context["price"], "invalidation_level": context["price"],
+            "sweep_level": context["price"], "extreme": context["price"],
+            "displacement": False, "retest_ts": 0, "ready_ts": 0, "hold_closes": 0,
+            "previous_stage": "", "chain_quality": 50, "confirmation_quality": 40,
+            "acceptance_quality": 0, "retest_quality": 0, "processed_bars": 0
+        })
+        lookback = min(len(new_candles) + 10, len(c3))
+        recent = c3[-lookback:]
+        snap = trigger_snapshot(recent, side, event.get("trigger_level", context["price"]), atr15)
+        if snap["ready"] and event["stage"] in ["SWEEP", "CONFIRMATION"]:
+            event["stage"] = "ACCEPTANCE"
+            event["ready_ts"] = recent[-1].ts
+            event["acceptance_quality"] = snap["quality"]
+            event["last_event_ts"] = recent[-1].ts
+        elif event["stage"] == "ACCEPTANCE" and snap["displacement"]:
+            event["stage"] = "RETEST"
+            event["retest_ts"] = recent[-1].ts
+            event["retest_quality"] = snap["quality"]
+        elif event["stage"] == "RETEST":
+            event["stage"] = "READY"
+            event["ready_ts"] = recent[-1].ts
+        if snap.get("sweep_level"):
+            event["trigger_level"] = snap["sweep_level"]
+            event["sweep_level"] = snap["sweep_level"]
+            event["extreme"] = snap["extreme"]
+        event["last_event_ts"] = recent[-1].ts
+        event["processed_bars"] += len(new_candles)
+        events[side] = event
+    new_last_ts = max(c.ts for c in new_candles)
+    scan_state["last_scanned_3m_ts"] = new_last_ts
+    scan_state["last_run_processed"] = len(new_candles)
+    scan_state["processed_count"] = scan_state.get("processed_count", 0) + len(new_candles)
+    scan_state["events"] = events
+    state["scan_3m"] = scan_state
+    context["scan_3m"] = scan_state
+    context["scan_3m_events"] = events
+    return {"last_run_processed": len(new_candles), "events": events}
+
+
+# ==========================================================
+# LOCATION SCORE + FORWARD ZONE CHECK (ПОКРАЩЕНИЙ v6.2)
+# ==========================================================
+
+def has_forward_ict_zone(price: float, zones: list[Zone], side: str, atr15: float) -> bool:
+    """Перевіряє, чи є свіжа ICT-зона (FVG або OB) попереду в напрямку руху"""
+    forward_distance = atr15 * 2.2
+    for z in zones:
+        if z.side != side:
+            continue
+        if side == Side.LONG.value:
+            if z.low > price and z.low < price + forward_distance:
+                return True
+        else:
+            if z.high < price and z.high > price - forward_distance:
+                return True
+    return False
+
+
+def calculate_location_score(price: float, zones: list[Zone], side: str, atr15: float, tf15: dict, tf1h: dict) -> int:
+    """Покращений Location Score v6.2"""
+    score = 10
+    forward_distance = atr15 * 2.0
+
+    for z in zones:
+        if z.side != side:
+            continue
+        dist = abs(price - z.low) if side == Side.LONG.value else abs(price - z.high)
+        
+        if dist < atr15 * 0.6:
+            score += 12
+        elif dist < atr15 * 1.2:
+            score += 8
+        elif dist < forward_distance:
+            score += 4
+
+        if z.kind == "FVG" and dist < atr15 * 1.5:
+            score += 5
+        if z.kind == "OB" and dist < atr15 * 1.8:
+            score += 6
+
+    if tf15.get("bias") == side:
+        score += 8
+    if tf1h.get("bias") == side:
+        score += 10
+
+    return min(score, 45)
+
+
+def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: float, structure_alignment: int, has_forward_zone: bool) -> int:
+    """Покращена Acceptance Quality v6.2"""
+    base = event.get("acceptance_quality", 40)
+    
+    if has_forward_zone:
+        base += 12
+
+    if event.get("displacement"):
+        base += 8
+
+    if structure_alignment > 70:
+        base += 6
+    elif structure_alignment > 55:
+        base += 3
+
+    if event.get("stage") == "READY":
+        base += 5
+
+    return min(base, 95)
+
+
+# ==========================================================
+# CANDIDATE + RE-ENTRY (ЗБЕРІГАЄМО АГРЕСИВНІСТЬ)
 # ==========================================================
 
 def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
@@ -1098,7 +1255,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     cvd = context.get("cvd", {})
     regime = context["regime"]
     scan_events = context.get("scan_3m_events", {})
-    volume_clusters = context.get("volume_clusters", [])
 
     params = get_adaptive_params(regime)
 
@@ -1109,6 +1265,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         trigger_level = event.get("trigger_level", price)
         trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
         scan_stage = event.get("stage", "")
+
+        # Покращений Location Score
+        location_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
+        
+        # Перевірка наявності зони попереду (бонус)
+        has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
 
         loc_score = 14
         loc_conf = ["біля свіжої зони"]
@@ -1156,6 +1318,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if regime == Regime.TRANSITION.value:
             raw = int(raw * 0.88)
 
+        # Бонус за наявність зони попереду
+        if has_forward_zone:
+            raw += 8
+
         evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
         if flw_score > 12:
             evidence.append("ORDER_FLOW_CVD")
@@ -1163,15 +1329,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             evidence.append("EXECUTION_TRIGGER_3M")
         if tf4h.get("bias") == side:
             evidence.append("HTF_CONTEXT")
-
-        volume_support = False
-        try:
-            volume_support = has_volume_cluster_support(price, volume_clusters, side, atr15)
-        except Exception:
-            pass
-        if volume_support:
-            evidence.append("VOLUME_CLUSTER_SUPPORT")
-            raw += 6
+        if has_forward_zone:
+            evidence.append("FORWARD_ICT_ZONE")
 
         setup_type = SetupType.PULLBACK_CONTINUATION.value
         variant = "PULLBACK_FORMING"
@@ -1201,11 +1360,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             structure_alignment += 20
         if tf1h.get("bias") == side:
             structure_alignment += 15
-        acceptance_quality = 40
-        try:
-            acceptance_quality = calculate_acceptance_quality(event, context["candles"]["3m"], atr15, structure_alignment)
-        except Exception:
-            pass
+        
+        acceptance_quality = calculate_acceptance_quality(event, context["candles"]["3m"], atr15, structure_alignment, has_forward_zone)
 
         cand = Candidate(
             side=side,
@@ -1241,8 +1397,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 "htf": htf_score
             },
             acceptance_quality=acceptance_quality,
-            volume_cluster_support=volume_support
+            location_score=location_score,
+            has_forward_zone=has_forward_zone
         )
+        
+        cand.professional_gate = evaluate_professional_gate(context, cand)
         candidates.append(cand)
     return sorted(candidates, key=lambda c: -c.final_score)[:2]
 
@@ -1302,7 +1461,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
 
 # ==========================================================
-# EVALUATION (АГРЕСИВНИЙ RE-ENTRY)
+# EVALUATION (ЗБЕРІГАЄМО АГРЕСИВНИЙ RE-ENTRY)
 # ==========================================================
 
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
@@ -1312,7 +1471,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     saved_opp = opportunity_from_state(state)
     current_price = context.get("price", 0)
     
-    # === ДУЖЕ АГРЕСИВНИЙ RE-ENTRY ===
+    # === АГРЕСИВНИЙ RE-ENTRY (ЗБЕРІГАЄМО) ===
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
@@ -1321,9 +1480,6 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
                 
-                # === АГРЕСИВНА ЛОГІКА ===
-                # Якщо якість ≥ REENTRY_AGGRESSIVE_THRESHOLD (72) → одразу RISKY_ENTRY
-                # Інакше — ARMED
                 if missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD:
                     action = Action.RISKY_ENTRY.value
                     reason = "Re-entry з пропущеного імпульсу — високий confluence, відкриваємо угоду"
@@ -1370,16 +1526,17 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     reason = "Професійний сетап не пройшов gate'и якості"
 
     params = get_adaptive_params(context["regime"])
+    gate = best.professional_gate or {}
 
-    if best.final_score >= params["entry_score"] and plan.valid and plan.execution_ready and len(best.evidence_families) >= params["min_evidence"]:
+    if gate.get("allow_entry") and plan.valid and plan.execution_ready:
         action = Action.ENTRY.value
-        reason = f"{setup_label(best.setup_type)} — високий confluence ({len(best.evidence_families)} evidence)"
-    elif best.final_score >= params["risky_entry_score"] and plan.valid and best.execution_lane == ExecutionLane.EARLY_TACTICAL.value:
+        reason = f"{setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6"
+    elif gate.get("allow_risky") and plan.valid:
         action = Action.RISKY_ENTRY.value
-        reason = f"Ризикований ранній вхід: {setup_label(best.setup_type)}"
+        reason = f"Ризикований ранній вхід: {setup_label(best.setup_type)} — {gate.get('grade', 'B')} gate v6"
     elif best.final_score >= params["armed_score"]:
         action = Action.ARMED.value
-        reason = f"{setup_label(best.setup_type)} сформовано; потрібен свіжий 3M trigger/acceptance"
+        reason = f"{setup_label(best.setup_type)} сформовано; gate v6: {gate.get('grade', 'WATCH')}"
 
     return Decision(
         id=uuid.uuid4().hex[:10],
@@ -1395,12 +1552,12 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         news_bias="NEUTRAL",
         macro_risk="NORMAL",
         current_price=current_price,
-        audit={"selected": {"side": best.side, "setup": best.setup_type, "score": best.final_score}}
+        audit={"selected": {"side": best.side, "setup": best.setup_type, "score": best.final_score, "gate": gate.get("grade")}}
     )
 
 
 # ==========================================================
-# TRADE MANAGEMENT
+# MANAGE ACTIVE TRADE (ПОКРАЩЕНИЙ v6.2)
 # ==========================================================
 
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
@@ -1414,8 +1571,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     result = {
         "action": Action.HOLD.value,
-        "title": "УГОДА ВІДКРИТА — HYBRID ICT v5.1",
-        "recommendation": "Структура та thesis на боці — тримаємо",
+        "title": "УГОДА ВІДКРИТА — HYBRID ICT v6.2",
+        "recommendation": "Структура та теза на боці — тримаємо",
         "current_pct": ((price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - price) / trade.entry * 100),
         "best_pct": ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100),
         "closed": False,
@@ -1435,30 +1592,60 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     params = get_adaptive_params(context.get("regime", "NORMAL"))
 
-    if mfe > params["min_mfe_for_protect"] and current_r < mfe * params["mfe_giveback_threshold"]:
+    # === ADAPTIVE MFE GIVEBACK GUARD 2.0 (покращений) ===
+    giveback = max(0, mfe - result["current_pct"])
+    giveback_ratio = giveback / mfe if mfe > 0.1 else 0
+
+    if mfe > 1.5 and giveback_ratio > 0.55:
         trade.mfe_giveback_streak += 1
-        if trade.mfe_giveback_streak >= 3:
+        if trade.mfe_giveback_streak >= 2:
             result["action"] = Action.PROTECT.value
-            result["notes"].append("MFE giveback — фіксуємо частину прибутку")
-            result["recommended_stop"] = round_price(trade.entry + (trade.best_price - trade.entry) * 0.40 if side == Side.LONG.value else trade.entry - (trade.entry - trade.best_price) * 0.40)
-            result["recommended_stop_reason"] = "Адаптивний захист прибутку"
+            result["notes"].append("MFE Giveback Guard: прибуток віддається — захистити стоп")
+            protect_stop = trade.entry + (trade.best_price - trade.entry) * 0.35 if side == Side.LONG.value else trade.entry - (trade.entry - trade.best_price) * 0.35
+            result["recommended_stop"] = round_price(protect_stop)
+            result["recommended_stop_reason"] = "Adaptive MFE Giveback Guard 2.0"
     else:
         trade.mfe_giveback_streak = max(0, trade.mfe_giveback_streak - 1)
 
+    # === TP1 / TP2 СТОП-ЛОКИ ===
     if not trade.tp1_hit and ((side == Side.LONG.value and price >= trade.tp1) or (side == Side.SHORT.value and price <= trade.tp1)):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
-        trade.stop_current = max(trade.stop_current, trade.entry * 0.992) if side == Side.LONG.value else min(trade.stop_current, trade.entry * 1.008)
+        trade.tp1_locked_stop = max(trade.stop_current, trade.entry * 0.992) if side == Side.LONG.value else min(trade.stop_current, trade.entry * 1.008)
+        trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
-        result["notes"].append("TP1 досягнуто — стоп зафіксовано в зоні BE+")
+        result["notes"].append("TP1 досягнуто — стоп зафіксовано до TP2")
 
     if trade.tp1_hit and not trade.tp2_hit and ((side == Side.LONG.value and price >= trade.tp2) or (side == Side.SHORT.value and price <= trade.tp2)):
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
-        trade.stop_current = trade.tp1 if side == Side.LONG.value else trade.tp1
+        trade.tp2_locked_stop = trade.tp1
+        trade.stop_current = trade.tp2_locked_stop
         result["action"] = Action.TP2.value
-        result["notes"].append("TP2 досягнуто — стоп на TP1")
+        result["notes"].append("TP2 досягнуто — стоп на TP1 (зафіксовано)")
 
+    if trade.tp1_stop_locked and not trade.tp2_hit:
+        result["recommended_stop"] = round_price(trade.tp1_locked_stop)
+        result["recommended_stop_reason"] = "TP1-стоп зафіксовано до TP2"
+
+    if trade.tp2_stop_locked:
+        result["recommended_stop"] = round_price(trade.tp2_locked_stop)
+        result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
+
+    # === ПОКРАЩЕНИЙ СУПРОВІД: SMC Trailing після TP1 ===
+    if trade.tp1_hit and not trade.tp2_hit:
+        if side == Side.LONG.value and tf15.get("bias") == Side.LONG.value:
+            new_stop = max(trade.stop_current, price - atr15 * 1.2)
+            if new_stop > trade.stop_current:
+                trade.stop_current = new_stop
+                result["notes"].append("SMC Trailing: стоп підтягнуто за 15M структурою")
+        elif side == Side.SHORT.value and tf15.get("bias") == Side.SHORT.value:
+            new_stop = min(trade.stop_current, price + atr15 * 1.2)
+            if new_stop < trade.stop_current:
+                trade.stop_current = new_stop
+                result["notes"].append("SMC Trailing: стоп підтягнуто за 15M структурою")
+
+    # Структурна інвалідація
     structural_break = False
     if side == Side.LONG.value:
         if price < trade.structural_invalidation:
@@ -1559,7 +1746,7 @@ def run_bot() -> None:
     if not context.get("price"):
         print("NO PRICE — abort")
         return
-    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f}")
+    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'BINANCE')}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -1611,7 +1798,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (AGGRESSIVE + CLEAN TEXT)")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.2")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
