@@ -1,15 +1,15 @@
-name: BZU Hybrid Signal Bot v6.2
+name: BZU Signal Bot (Main)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # Кожні 15 хвилин
-  workflow_dispatch:         # Можна запустити вручну
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: bzu-signal-memory-v6-2
+  group: bzu-signal-memory-main
   cancel-in-progress: false
 
 jobs:
@@ -34,26 +34,71 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run BZU Hybrid v6.2 Bot
+      - name: Ensure memory files exist (create if missing)
+        run: |
+          if [ ! -f last_signal_v6_2.json ]; then
+            echo "Creating last_signal_v6_2.json..."
+            cat > last_signal_v6_2.json << 'EOF'
+{
+  "version": "pro-hybrid-confluence-v6.2",
+  "architecture_version": "HYBRID_CONFLUENCE_V6_2",
+  "active_trade": null,
+  "opportunity": null,
+  "scan_3m": {
+    "last_scanned_3m_ts": 0,
+    "last_run_processed": 0,
+    "processed_count": 0,
+    "events": {}
+  },
+  "latest_signal": null,
+  "last_message_key": "",
+  "history": [],
+  "updated_at": ""
+}
+EOF
+          fi
+
+          if [ ! -f signal_journal_v6_2.json ]; then
+            echo "Creating signal_journal_v6_2.json..."
+            cat > signal_journal_v6_2.json << 'EOF'
+{
+  "version": "pro-hybrid-confluence-v6.2",
+  "architecture_version": "HYBRID_CONFLUENCE_V6_2",
+  "signals": [],
+  "trades": [],
+  "analytics": {
+    "closed_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0.0,
+    "net_r": 0.0,
+    "expectancy_r": 0.0,
+    "by_family": {}
+  },
+  "updated_at": ""
+}
+EOF
+          fi
+
+      - name: Run BZU Bot (bot_oneshot.py)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python BZU_Pro_Hybrid_v6_2.py
+        run: python bot_oneshot.py
 
-      - name: Save signal memory and journal (v6.2)
+      - name: Save signal memory and journal
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
           git pull --rebase origin main || true
 
-          # Додаємо файли нової версії v6.2
           git add last_signal_v6_2.json signal_journal_v6_2.json last_signal_v6_2.json.bak signal_journal_v6_2.json.bak 2>/dev/null || true
 
           if git diff --cached --quiet; then
             echo "No memory changes to commit"
           else
-            git commit -m "Update BZU Hybrid v6.2 signal memory and journal"
+            git commit -m "Update BZU signal memory and journal (v6.2)"
             git push origin HEAD:main || git push origin HEAD:master
             echo "Memory files saved successfully"
           fi
