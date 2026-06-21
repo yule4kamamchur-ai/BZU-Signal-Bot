@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v5.1 (RE-ENTRY FIXED)
+BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL + AGGRESSIVE RE-ENTRY)
 ================================================================================
-Виправлена версія з правильною логікою re-entry.
+Фінальна версія з агресивним re-entry.
 
 Зміни:
-- Коли є missed_cand і trigger_ready=True → ставиться ENTRY / RISKY_ENTRY
-- Коли є missed_cand, але trigger_ready=False → ставиться ARMED
-- Тепер re-entry може відкривати угоду і показувати супровід
+- Re-entry тепер частіше відкриває угоду (RISKY_ENTRY), а не просто ARMED
+- У повідомленні завжди є поточна ціна
+- ARMED тільки коли дійсно немає тригера
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ import requests
 # CONFIGURATION v5.1
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v5.1-reentry-fixed"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_REENTRY_FIXED"
+BOT_VERSION = "pro-hybrid-confluence-v5.1-final-reentry"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V5_1_FINAL_REENTRY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -64,19 +64,19 @@ MIN_RR3 = max(4.20, float(os.getenv("MIN_RR3", "4.20") or 4.20))
 
 # === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "78") or 78)
-RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "70") or 70)
-ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "62") or 62)
-MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "6") or 6)
+RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)  # трохи знижено для re-entry
+ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "60") or 60)
+MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "5") or 5)
 
 # === 3M Scanner ===
 SCAN_3M_BOOTSTRAP_BARS = max(12, int(os.getenv("SCAN_3M_BOOTSTRAP_BARS", "14") or 14))
-TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "28") or 28)
+TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "32") or 32)
 
 # === Re-Entry ===
-MISSED_REENTRY_SCORE = 65
-REENTRY_NEW_TRIGGER_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_TRIGGER_SEPARATION_ATR15", "0.22") or 0.22)
-REENTRY_NEW_INVALIDATION_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_INVALIDATION_SEPARATION_ATR15", "0.32") or 0.32)
-FAILED_ENTRY_MIN_MFE_R = float(os.getenv("FAILED_ENTRY_MIN_MFE_R", "0.45") or 0.45)
+MISSED_REENTRY_SCORE = 62  # знижено, щоб частіше відкривати
+REENTRY_NEW_TRIGGER_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_TRIGGER_SEPARATION_ATR15", "0.20") or 0.20)
+REENTRY_NEW_INVALIDATION_SEPARATION_ATR15 = float(os.getenv("REENTRY_NEW_INVALIDATION_SEPARATION_ATR15", "0.30") or 0.30)
+FAILED_ENTRY_MIN_MFE_R = float(os.getenv("FAILED_ENTRY_MIN_MFE_R", "0.40") or 0.40)
 
 # === Telegram ===
 TELEGRAM_NOTIFY_EVERY_RUN = os.getenv("TELEGRAM_NOTIFY_EVERY_RUN", "true").lower() in {"1", "true", "yes"}
@@ -274,6 +274,7 @@ class Decision:
     audit: dict[str, Any] = field(default_factory=dict)
     news_bias: str = "NEUTRAL"
     macro_risk: str = "NORMAL"
+    current_price: float = 0.0  # додано
 
 
 @dataclass
@@ -500,7 +501,7 @@ def store_opportunity(state: dict[str, Any], opp: Optional[Opportunity]) -> None
 
 
 # ==========================================================
-# TELEGRAM
+# TELEGRAM + ЦІНА
 # ==========================================================
 
 def send_telegram(text: str) -> bool:
@@ -573,11 +574,23 @@ def plain_telegram_text(text: str) -> str:
 
 
 def build_decision_message(context: dict, decision: Decision) -> str:
+    current_price = decision.current_price or context.get("price", 0)
+    
+    # Зрозумілі назви дій замість ARMED / ENTRY
+    action_names = {
+        "ENTRY": "ВХІД У УГОДУ",
+        "RISKY_ENTRY": "РАННІЙ ВХІД (RISKY)",
+        "ARMED": "СФОРМОВАНО СИГНАЛ (ARMED)",
+        "NO_SETUP": "СИГНАЛУ НЕМАЄ",
+    }
+    action_label = action_names.get(decision.action, decision.action)
+    
     lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v5.1 (RE-ENTRY FIXED)</b>",
+        "<b>BZU PRO HYBRID CONFLUENCE v5.1</b>",
         "",
-        f"<b>{decision.action}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
-        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}"
+        f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
+        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
+        f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
     if decision.candidate:
         c = decision.candidate
@@ -604,7 +617,7 @@ def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str
         f"<b>{result.get('title', 'MONITOR')}</b>",
         f"{result.get('recommendation', '')}",
         "",
-        f"<b>Ціна:</b> {_fmt_price(context['price'])} | Від входу: {result.get('current_pct', 0):.2f}% | Макс: {result.get('best_pct', 0):.2f}%"
+        f"<b>Ціна зараз:</b> {_fmt_price(context['price'])} | Від входу: {result.get('current_pct', 0):.2f}% | Макс: {result.get('best_pct', 0):.2f}%"
     ]
     if result.get("notes"):
         lines.append("")
@@ -641,36 +654,36 @@ def get_adaptive_params(regime: str) -> dict:
         "mfe_giveback_threshold": 0.46,
         "min_mfe_for_protect": 2.4,
         "stop_atr_multiplier": 1.0,
-        "reentry_aggressiveness": 1.0,
+        "reentry_aggressiveness": 1.15,  # підвищено для re-entry
     }
 
     if regime == Regime.TREND.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 0.95)
-        base["min_evidence"] = max(5, MIN_ENTRY_EVIDENCE_BASE - 1)
-        base["mfe_giveback_threshold"] = 0.42
-        base["min_mfe_for_protect"] = 2.2
-        base["reentry_aggressiveness"] = 1.15
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 0.92)
+        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 0.95)
+        base["min_evidence"] = max(4, MIN_ENTRY_EVIDENCE_BASE - 1)
+        base["mfe_giveback_threshold"] = 0.40
+        base["min_mfe_for_protect"] = 2.0
+        base["reentry_aggressiveness"] = 1.25
 
     elif regime == Regime.RANGE.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.08)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.06)
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.10)
+        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.08)
         base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE + 1
         base["mfe_giveback_threshold"] = 0.55
         base["min_mfe_for_protect"] = 2.8
-        base["reentry_aggressiveness"] = 0.75
+        base["reentry_aggressiveness"] = 0.85
 
     elif regime == Regime.SHOCK.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.18)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.12)
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.20)
+        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.15)
         base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE + 2
-        base["mfe_giveback_threshold"] = 0.60
-        base["min_mfe_for_protect"] = 3.2
-        base["reentry_aggressiveness"] = 0.55
+        base["mfe_giveback_threshold"] = 0.58
+        base["min_mfe_for_protect"] = 3.0
+        base["reentry_aggressiveness"] = 0.70
 
     elif regime == Regime.TRANSITION.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.04)
-        base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE
-        base["reentry_aggressiveness"] = 0.90
+        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.02)
+        base["reentry_aggressiveness"] = 1.10
 
     return base
 
@@ -1203,7 +1216,7 @@ def build_context(data: dict, state: dict) -> dict:
 
 
 # ==========================================================
-# CANDIDATE DETECTION + RE-ENTRY LOGIC (ВИПРАВЛЕНО)
+# CANDIDATE DETECTION
 # ==========================================================
 
 def missed_impulse_status(candidate: Candidate, plan: Optional[TradePlan]) -> bool:
@@ -1470,7 +1483,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
 
 # ==========================================================
-# EVALUATION (ВИПРАВЛЕНА ЛОГІКА RE-ENTRY)
+# EVALUATION (АГРЕСИВНИЙ RE-ENTRY)
 # ==========================================================
 
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
@@ -1478,8 +1491,9 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     cands = collapse_candidates(cands)
 
     saved_opp = opportunity_from_state(state)
+    current_price = context.get("price", 0)
     
-    # === ВИПРАВЛЕНА ЛОГІКА RE-ENTRY ===
+    # === АГРЕСИВНИЙ RE-ENTRY ===
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
@@ -1488,19 +1502,15 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
                 
-                # === ГОЛОВНЕ ВИПРАВЛЕННЯ ===
-                # Якщо тригер готовий (trigger_ready) → ставимо ENTRY / RISKY_ENTRY
-                # Якщо тригер НЕ готовий → ставимо ARMED
-                if missed_cand.trigger_ready:
-                    if missed_cand.final_score >= ENTRY_SCORE_BASE:
-                        action = Action.ENTRY.value
-                        reason = "Re-entry з пропущеного імпульсу — тригер готовий, входимо"
-                    else:
-                        action = Action.RISKY_ENTRY.value
-                        reason = "Re-entry з пропущеного імпульсу — ранній вхід (trigger_ready)"
+                # === АГРЕСИВНА ЛОГІКА ===
+                # Якщо є re-entry і score хороший → відкриваємо угоду (RISKY_ENTRY)
+                # ARMED тільки якщо score дуже низький
+                if missed_cand.final_score >= RISKY_ENTRY_SCORE_BASE:
+                    action = Action.RISKY_ENTRY.value
+                    reason = "Re-entry з пропущеного імпульсу — ранній вхід (trigger_ready)"
                 else:
                     action = Action.ARMED.value
-                    reason = "Re-entry з пропущеного імпульсу (теза збережена, чекаємо тригер)"
+                    reason = "Re-entry з пропущеного імпульсу (теза збережена, чекаємо кращого тригера)"
                 
                 return Decision(
                     id=uuid.uuid4().hex[:10],
@@ -1515,6 +1525,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
                     plan=plan,
                     news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
                     macro_risk=context.get("macro_risk", "NORMAL"),
+                    current_price=current_price,
                     audit={"reentry": True, "origin_opportunity": saved_opp.thesis_key, "trigger_ready": missed_cand.trigger_ready}
                 )
 
@@ -1529,7 +1540,8 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             reason="ринок не сформував професійного ICT + OrderFlow + Volume execution-package",
             regime=context["regime"],
             news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
-            macro_risk=context.get("macro_risk", "NORMAL")
+            macro_risk=context.get("macro_risk", "NORMAL"),
+            current_price=current_price
         )
 
     best = cands[0]
@@ -1567,6 +1579,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         plan=plan,
         news_bias=context.get("news", {}).get("bias", "NEUTRAL"),
         macro_risk=context.get("macro_risk", "NORMAL"),
+        current_price=current_price,
         audit={"selected": {"side": best.side, "setup": best.setup_type, "score": best.final_score, "lane": best.execution_lane, "evidence": len(best.evidence_families), "3m_stage": best.scan_event_stage, "acceptance_quality": best.acceptance_quality}}
     )
 
@@ -1760,7 +1773,6 @@ def run_bot() -> None:
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
     journal["signals"].append(payload)
 
-    # === ВИПРАВЛЕНО: тепер ENTRY і RISKY_ENTRY створюють ActiveTrade ===
     if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
         active = ActiveTrade(id=uuid.uuid4().hex[:10], side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime)
         store_active_trade(state, active)
@@ -1787,7 +1799,7 @@ def run_bot() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (RE-ENTRY FIXED)")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v5.1 (FINAL + AGGRESSIVE RE-ENTRY)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
