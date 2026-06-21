@@ -80,7 +80,7 @@ EOF
 EOF
           fi
 
-      - name: Run BZU Bot (bot_oneshot.py)
+      - name: Run BZU Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -91,14 +91,17 @@ EOF
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git pull --rebase origin main || true
+          # Більш стабільний git flow
+          git fetch origin main || true
+          git checkout main || true
+          git pull --ff-only origin main || true
 
-          git add last_signal_v6_2.json signal_journal_v6_2.json last_signal_v6_2.json.bak signal_journal_v6_2.json.bak 2>/dev/null || true
+          git add last_signal_v6_2.json signal_journal_v6_2.json *.bak 2>/dev/null || true
 
           if git diff --cached --quiet; then
             echo "No memory changes to commit"
           else
             git commit -m "Update BZU signal memory and journal (v6.2)"
-            git push origin HEAD:main || git push origin HEAD:master
-            echo "Memory files saved successfully"
+            git push origin main || echo "Push failed, will retry next run"
+            echo "Memory files saved"
           fi
