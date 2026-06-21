@@ -25,8 +25,8 @@ import requests
 # issue competing permissions for the same market episode.
 # ==========================================================
 
-BOT_VERSION = "pro-ict-v3.2.7-event-chain-confirmation-tiers"
-ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_7_EVENT_CHAIN_CONFIRMATION_TIERS"
+BOT_VERSION = "pro-ict-v3.2.8-tiers-alignment-thesis"
+ARCHITECTURE_VERSION = "DETERMINISTIC_PRO_ICT_CORE_V3_2_8_TIERS_ALIGNMENT_THESIS"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -1562,11 +1562,46 @@ def update_event_chain_quality(event: dict, new_stage: str, candle: Candle, atr:
     event["chain_quality"] = min(100, quality + (5 if event.get("displacement") else 0))
 
 
+def calculate_multi_tf_alignment_score(context: dict[str, Any]) -> int:
+    """
+    Етап 5: Multi-TF Structure Alignment Score (0-100)
+    Оцінює, наскільки узгоджена структура на 4H, 1H, 15M і 3M.
+    """
+    tf4 = context.get("tf4h") or {}
+    tf1 = context.get("tf1h") or {}
+    tf15 = context.get("tf15") or {}
+    tf3 = context.get("tf3") or {}
+
+    score = 50
+
+    # 4H trend
+    if tf4.get("bias") == "LONG" and tf4.get("trend") == "LONG":
+        score += 15
+    elif tf4.get("bias") == "SHORT" and tf4.get("trend") == "SHORT":
+        score += 15
+
+    # 1H vs 4H
+    if tf1.get("bias") == tf4.get("bias"):
+        score += 12
+
+    # 15M vs 1H
+    if tf15.get("bias") == tf1.get("bias"):
+        score += 10
+
+    # 3M vs 15M
+    if tf3.get("bias") == tf15.get("bias"):
+        score += 8
+
+    # Structure strength
+    if tf4.get("structure", {}).get("trend") in ["LONG", "SHORT"]:
+        score += 5
+
+    return max(0, min(100, score))
+
+
 def calculate_confirmation_tier(context: dict[str, Any], candidate: Candidate, htf_result: dict) -> int:
     """
-    Confirmation Tiers system (Етап 1 + 3).
-    Determines how strongly the setup is confirmed on 3M microstructure + HTF confluence.
-    Higher tier = higher confidence, better position sizing, slightly more aggressive execution.
+    Confirmation Tiers system (Етап 1 + 3 + 5).
     """
     tier = TIER_MICRO
 
@@ -1574,7 +1609,6 @@ def calculate_confirmation_tier(context: dict[str, Any], candidate: Candidate, h
     has_strong_3m_event = False
     has_good_acceptance = False
 
-    # Check 3M scan event quality
     scan_events = context.get("scan_3m_events") or {}
     event = scan_events.get(candidate.side) or {}
     if event:
@@ -1586,10 +1620,14 @@ def calculate_confirmation_tier(context: dict[str, Any], candidate: Candidate, h
     htf_aligned = htf_result.get("htf_aligned", False)
     score = getattr(candidate, 'final_score', 0) or getattr(candidate, 'raw_score', 0)
 
-    # Tier assignment logic
-    if evidence_count >= 5 and htf_aligned and has_strong_3m_event and score >= 78:
+    # Етап 5: Multi-TF Alignment
+    alignment_score = calculate_multi_tf_alignment_score(context)
+    candidate.structure_alignment_score = alignment_score
+
+    # Tier logic з урахуванням alignment
+    if evidence_count >= 5 and htf_aligned and has_strong_3m_event and score >= 78 and alignment_score >= 75:
         tier = TIER_PREMIUM
-    elif evidence_count >= 5 and htf_aligned and has_strong_3m_event:
+    elif evidence_count >= 5 and htf_aligned and has_strong_3m_event and alignment_score >= 65:
         tier = TIER_HIGH_QUALITY
     elif evidence_count >= 4 and (htf_aligned or has_good_acceptance) and score >= 65:
         tier = TIER_STANDARD
@@ -2825,10 +2863,7 @@ def timeframe_rank(timeframe: str) -> int:
 
 
 def entry_extension_limit(candidate: Candidate) -> float:
-    # High Quality Continuation uses standard/good limits so entries are not delayed
-    if candidate.execution_lane == "HIGH_QUALITY_CONTINUATION":
-        return max(MAX_ENTRY_EXTENSION_STANDARD, 0.55)
-    return {
+    base_limit = {
         "TACTICAL": MAX_ENTRY_EXTENSION_TACTICAL,
         "STANDARD": MAX_ENTRY_EXTENSION_STANDARD,
         "RECOVERY": MAX_ENTRY_EXTENSION_RECOVERY,
@@ -2836,6 +2871,18 @@ def entry_extension_limit(candidate: Candidate) -> float:
         "BASE_REENTRY": MAX_ENTRY_EXTENSION_BASE,
         "RANGE": MAX_ENTRY_EXTENSION_RANGE,
     }.get(candidate.execution_profile, MAX_ENTRY_EXTENSION_STANDARD)
+
+    # Етап 4: Tier 3 і 4 отримують трохи вищий tolerance (щоб не бути занадто пізніми на сильних ходах)
+    tier = getattr(candidate, 'confirmation_tier', 1)
+    if tier >= TIER_HIGH_QUALITY:
+        base_limit = max(base_limit, 0.65)
+    elif tier == TIER_MICRO:
+        base_limit = min(base_limit, 0.40)
+
+    if candidate.execution_lane == "HIGH_QUALITY_CONTINUATION":
+        base_limit = max(base_limit, 0.60)
+
+    return base_limit
 
 
 def zone_text(zone: Optional[Zone]) -> str:
@@ -3284,6 +3331,11 @@ def finalize_candidate(context: dict[str, Any], candidate: Candidate) -> Candida
 
     # === Confirmation Tiers (Етап 1 + 3) ===
     candidate.confirmation_tier = calculate_confirmation_tier(context, candidate, htf_result)
+
+    # Генерація короткої тези (Етап 6)
+    tier_name = {1: "Micro", 2: "Standard", 3: "High Quality", 4: "Premium"}.get(candidate.confirmation_tier, "Standard")
+    alignment = getattr(candidate, 'structure_alignment_score', 50)
+    candidate.thesis = f"{tier_name} continuation. HTF alignment: {alignment}%. 3M event quality: {getattr(candidate, 'confirmation_quality', 0)}."
 
     # High Quality Continuation lane assignment (тільки для Tier 3+)
     is_high_quality = (
@@ -4619,12 +4671,18 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
 
     lines.extend(["", f"Причина: {html.escape(ua_service_text(decision.reason))}"])
     if decision.candidate:
+        tier = getattr(decision.candidate, 'confirmation_tier', 1)
+        tier_name = {1: "Micro", 2: "Standard", 3: "High Quality", 4: "Premium"}.get(tier, "Standard")
+        tier_emoji = {1: "🔹", 2: "🔸", 3: "⭐", 4: "🌟"}.get(tier, "🔸")
+        alignment = getattr(decision.candidate, 'structure_alignment_score', 50)
+        thesis = getattr(decision.candidate, 'thesis', '')
+
+        lines.extend(["", f"Рівень підтвердження: {tier_emoji} Tier {tier} — {tier_name} (Alignment: {alignment}%)"])
+        if thesis:
+            lines.extend(["", f"<b>Теза:</b> {html.escape(thesis)}"])
+
         reasons = candidate_reason_lines(decision.candidate)
         if reasons:
-            tier = getattr(decision.candidate, 'confirmation_tier', 1)
-            tier_name = {1: "Micro", 2: "Standard", 3: "High Quality", 4: "Premium"}.get(tier, "Standard")
-            tier_emoji = {1: "🔹", 2: "🔸", 3: "⭐", 4: "🌟"}.get(tier, "🔸")
-            lines.extend(["", f"Рівень підтвердження: {tier_emoji} Tier {tier} — {tier_name}"])
             lines.extend(["Підтвердження:", *[html.escape(x) for x in reasons]])
 
     if decision.plan and decision.action in {Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value}:
