@@ -586,10 +586,11 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     
     if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
-        if c.confirmations:
+        unique_confirmations = _short_list(c.confirmations, 3)
+        if unique_confirmations:
             lines.append("")
             lines.append("<b>Підтвердження:</b>")
-            for x in c.confirmations[:3]:
+            for x in unique_confirmations:
                 lines.append(f"✅ {html.escape(x)}")
     
     show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value)
@@ -606,22 +607,100 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
 
+def _short_list(items: Any, limit: int = 3) -> list[str]:
+    out: list[str] = []
+    for item in items or []:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _bias_label(block: dict) -> str:
+    value = str((block or {}).get("bias") or Side.NEUTRAL.value).upper()
+    if value in {Side.LONG.value, Side.SHORT.value}:
+        return value
+    return Side.NEUTRAL.value
+
+
+def _opposite_side(side: str) -> str:
+    return Side.SHORT.value if side == Side.LONG.value else Side.LONG.value
+
+
+def _follow_reversal_risk(trade: ActiveTrade, result: dict, context: dict) -> tuple[str, int]:
+    opposite = _opposite_side(trade.side)
+    current_pct = float(result.get("current_pct") or 0)
+    score = 10
+    if current_pct < 0:
+        score += 16
+    if current_pct <= -0.50:
+        score += 10
+    for block, weight in ((context.get("tf3", {}), 18), (context.get("tf15", {}), 22), (context.get("flow", {}), 8), (context.get("cvd", {}), 8)):
+        if _bias_label(block) == opposite:
+            score += weight
+    if result.get("action") == Action.PROTECT.value:
+        score += 14
+    if result.get("closed"):
+        score = max(score, 80)
+    score = max(0, min(100, int(score)))
+    if score < 20:
+        label = "НИЗЬКИЙ"
+    elif score < 45:
+        label = "ПОМІРНИЙ"
+    elif score < 70:
+        label = "ВИСОКИЙ"
+    else:
+        label = "КРИТИЧНИЙ"
+    return label, score
+
+
+def _follow_title(trade: ActiveTrade, result: dict, context: dict) -> str:
+    side = side_word(trade.side)
+    action = str(result.get("action") or Action.HOLD.value)
+    current_pct = float(result.get("current_pct") or 0)
+    opposite = _opposite_side(trade.side)
+    tf3_opposite = _bias_label(context.get("tf3", {})) == opposite
+    tf15_opposite = _bias_label(context.get("tf15", {})) == opposite
+
+    if result.get("closed") or action in {Action.STOP.value, Action.EXIT.value}:
+        return f"🔴 СУПРОВІД {side} — УГОДУ ЗАКРИТО"
+    if action == Action.TP3.value:
+        return f"🟢 СУПРОВІД {side} — TP3 ВЗЯТО"
+    if action == Action.TP2.value:
+        return f"🟢 СУПРОВІД {side} — TP2 ВЗЯТО"
+    if action == Action.TP1.value:
+        return f"🟢 СУПРОВІД {side} — TP1 ВЗЯТО"
+    if action == Action.PROTECT.value:
+        return f"🟠 СУПРОВІД {side} — ЗАХИСТ ПОЗИЦІЇ"
+    if current_pct < 0 or tf3_opposite or tf15_opposite:
+        return f"🟠 СУПРОВІД {side} — СЕТАП СЛАБШАЄ"
+    return f"🟢 СУПРОВІД {side} — СЕТАП ТРИМАЄТЬСЯ"
+
+
 def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str:
+    price = context.get("price", 0)
+    recommended_stop = result.get("recommended_stop")
+    stop_to_show = recommended_stop if recommended_stop is not None else trade.stop_current
+    reversal_side = side_word(_opposite_side(trade.side))
+    reversal_label, reversal_score = _follow_reversal_risk(trade, result, context)
+    tp_status = f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}"
+
     lines = [
-        "<b>BZU PRO — HYBRID ICT v6.4</b>",
+        _follow_title(trade, result, context),
         "",
-        f"<b>{result.get('title', 'МОНІТОРИНГ УГОДИ')}</b>",
-        f"{result.get('recommendation', '')}",
+        f"Ціна: {_fmt_price(price)}",
+        f"Від входу: {result.get('current_pct', 0):.3f}% | Макс. прибуток: {result.get('best_pct', 0):.2f}% | Макс. просадка: {result.get('worst_pct', 0):.2f}%",
         "",
-        f"<b>Ціна зараз:</b> {_fmt_price(context['price'])} | Від входу: {result.get('current_pct', 0):.2f}% | Макс: {result.get('best_pct', 0):.2f}%"
+        f"Ризик розвороту в {reversal_side}: {reversal_label} ({reversal_score}%)",
+        "",
+        "Позиція:",
+        f"Вхід {_fmt_price(trade.entry)} | Стоп {_fmt_price(stop_to_show)}",
+        f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
+        tp_status,
     ]
-    if result.get("notes"):
-        lines.append("")
-        lines.append("<b>Дії:</b>")
-        for n in result["notes"][:3]:
-            lines.append(f"• {html.escape(n)}")
-    if result.get("recommended_stop"):
-        lines.append(f"<b>Рекомендований стоп:</b> {_fmt_price(result['recommended_stop'])}")
+
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
 
@@ -1556,6 +1635,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     if (side == Side.LONG.value and price < trade.worst_price) or (side == Side.SHORT.value and price > trade.worst_price):
         trade.worst_price = price
 
+    result["best_pct"] = ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100)
+    result["worst_pct"] = max(0.0, ((trade.entry - trade.worst_price) / trade.entry * 100) if side == Side.LONG.value else ((trade.worst_price - trade.entry) / trade.entry * 100))
     mfe = result["best_pct"]
 
     params = get_adaptive_params(context.get("regime", "NORMAL"))
