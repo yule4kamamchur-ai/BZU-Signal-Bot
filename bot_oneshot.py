@@ -315,6 +315,7 @@ class ActiveTrade:
     mfe_giveback_last_state: str = "OK"
     trigger_level: float = 0.0
     opened_regime: str = ""
+    entry_level: str = "ENTRY"
 
 
 # ==========================================================
@@ -1653,6 +1654,26 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     profile["quality_cap"] = setup_profile.get("quality_cap", regime.get("quality_cap"))
     profile["force_risky"] = bool(setup_profile.get("force_risky") or regime.get("entry_action") == "RISKY_ONLY")
     profile["reason"] = regime.get("reason", "")
+    if profile["force_risky"]:
+        profile["be_trigger"] = min(float(profile.get("be_trigger", 0.55)), 0.42)
+        profile["protect_trigger"] = min(float(profile.get("protect_trigger", 0.88)), 0.68)
+        profile["giveback"] = min(float(profile.get("giveback", 0.35)), 0.24)
+        profile["tp1_rr"] = min(float(profile.get("tp1_rr", PREFERRED_RR1)), 1.90)
+        profile["tp2_rr"] = min(float(profile.get("tp2_rr", MIN_RR2)), 2.65)
+        profile["tp3_rr"] = min(float(profile.get("tp3_rr", MIN_RR3)), 3.55)
+    return profile
+
+
+def trade_management_profile(context: dict, trade: ActiveTrade) -> dict:
+    profile = trade_mode_profile(context, trade.side, trade.setup_type)
+    if str(getattr(trade, "entry_level", "") or "").upper() == Action.RISKY_ENTRY.value:
+        profile["force_risky"] = True
+        profile["be_trigger"] = min(float(profile.get("be_trigger", 0.55)), 0.40)
+        profile["protect_trigger"] = min(float(profile.get("protect_trigger", 0.88)), 0.62)
+        profile["giveback"] = min(float(profile.get("giveback", 0.35)), 0.22)
+        profile["management_mode"] = "RISKY_PROTECTIVE"
+    else:
+        profile["management_mode"] = "STANDARD"
     return profile
 
 
@@ -1873,6 +1894,71 @@ def _apply_protective_stop(trade: ActiveTrade, context: dict, stop: Optional[flo
     return True
 
 
+def _trade_pct(side: str, entry: float, price: float) -> float:
+    if not entry:
+        return 0.0
+    if side == Side.LONG.value:
+        return (price - entry) / entry * 100
+    return (entry - price) / entry * 100
+
+
+def _stop_hit(trade: ActiveTrade, context: dict) -> bool:
+    stop = float(trade.stop_current or 0)
+    if not stop:
+        return False
+    price = float(context.get("price") or 0)
+    c3 = (context.get("candles", {}) or {}).get("3m", [])
+    last_high = c3[-1].high if c3 else price
+    last_low = c3[-1].low if c3 else price
+    if trade.side == Side.LONG.value:
+        return price <= stop or last_low <= stop
+    return price >= stop or last_high >= stop
+
+
+def _tp1_locked_stop_level(trade: ActiveTrade) -> float:
+    if trade.side == Side.LONG.value:
+        midpoint = trade.entry + (trade.tp1 - trade.entry) * 0.45
+        minimum = trade.entry * 1.001
+        return round_price(max(trade.stop_current, minimum, midpoint))
+    midpoint = trade.entry - (trade.entry - trade.tp1) * 0.45
+    maximum = trade.entry * 0.999
+    return round_price(min(trade.stop_current, maximum, midpoint))
+
+
+def _risky_pre_tp1_guard(trade: ActiveTrade, context: dict, result: dict, profile: dict, giveback_ratio: float) -> dict:
+    entry_level = str(getattr(trade, "entry_level", "") or "").upper()
+    risky = entry_level == Action.RISKY_ENTRY.value or bool(profile.get("force_risky"))
+    if not risky or trade.tp1_hit:
+        return {"active": False}
+    current_pct = float(result.get("current_pct") or 0)
+    best_pct = float(result.get("best_pct") or 0)
+    if best_pct < max(0.38, float(profile.get("be_trigger", 0.42))):
+        return {"active": False}
+
+    opposite_side = opposite(trade.side)
+    tf3_against = _bias_label(context.get("tf3", {})) == opposite_side
+    tf15_against = _bias_label(context.get("tf15", {})) == opposite_side
+    flow_against = _bias_label(context.get("flow", {})) == opposite_side
+    cvd_against = _bias_label(context.get("cvd", {})) == opposite_side
+    pressure_against = sum([tf3_against, tf15_against, flow_against, cvd_against])
+
+    protect = bool(giveback_ratio >= 0.28 or current_pct <= 0.12 or pressure_against >= 1)
+    close = bool(giveback_ratio >= 0.62 and current_pct <= 0.08 and pressure_against >= 2)
+    stop = None
+    if protect:
+        if trade.side == Side.LONG.value:
+            stop = trade.entry * 1.0008
+        else:
+            stop = trade.entry * 0.9992
+    return {
+        "active": protect or close,
+        "protect": protect,
+        "close": close,
+        "stop": round_price(stop) if stop else None,
+        "reason": "Risky pre-TP1 guard: ранній вхід уже давав MFE, не даємо плюсу перейти в мінус",
+    }
+
+
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     price = context["price"]
     atr15 = context.get("atr15", 0.6) or 0.6
@@ -1904,7 +1990,18 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     result["worst_pct"] = max(0.0, ((trade.entry - trade.worst_price) / trade.entry * 100) if side == Side.LONG.value else ((trade.worst_price - trade.entry) / trade.entry * 100))
     mfe = result["best_pct"]
 
-    profile = trade_mode_profile(context, side, trade.setup_type)
+    if _stop_hit(trade, context):
+        exit_price = round_price(trade.stop_current)
+        result["closed"] = True
+        result["action"] = Action.STOP.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["notes"].append(f"Поточний стоп {exit_price} зачеплено — угоду закрито")
+        trade.status = "CLOSED"
+        trade.last_action = Action.STOP.value
+        return result
+
+    profile = trade_management_profile(context, trade)
 
     giveback = max(0, mfe - result["current_pct"])
     giveback_ratio = giveback / mfe if mfe > 0.1 else 0
@@ -1935,10 +2032,24 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     else:
         trade.mfe_giveback_streak = max(0, trade.mfe_giveback_streak - 1)
 
+    risky_guard = _risky_pre_tp1_guard(trade, context, result, profile, giveback_ratio)
+    if risky_guard.get("active") and not result["closed"]:
+        guard_stop = risky_guard.get("stop")
+        if risky_guard.get("protect") and guard_stop is not None and _apply_protective_stop(trade, context, guard_stop):
+            result["action"] = Action.PROTECT.value
+            result["recommended_stop"] = round_price(trade.stop_current)
+            result["recommended_stop_reason"] = risky_guard.get("reason", "")
+            result["notes"].append(risky_guard.get("reason", "Risky pre-TP1 guard"))
+        if risky_guard.get("close"):
+            result["action"] = Action.EXIT.value
+            result["closed"] = True
+            result["exit_price"] = price
+            result["notes"].append("Risky entry втратив перевагу до TP1 — вихід біля входу")
+
     if not result["closed"] and not trade.tp1_hit and ((side == Side.LONG.value and price >= trade.tp1) or (side == Side.SHORT.value and price <= trade.tp1)):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
-        trade.tp1_locked_stop = max(trade.stop_current, trade.entry * 0.992) if side == Side.LONG.value else min(trade.stop_current, trade.entry * 1.008)
+        trade.tp1_locked_stop = _tp1_locked_stop_level(trade)
         trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
         result["notes"].append("TP1 досягнуто — стоп зафіксовано до TP2")
@@ -1960,16 +2071,10 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
 
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit:
-        if side == Side.LONG.value and tf15.get("bias") == Side.LONG.value:
-            new_stop = max(trade.stop_current, price - atr15 * 1.2)
-            if new_stop > trade.stop_current:
-                trade.stop_current = new_stop
-                result["notes"].append("SMC Trailing: стоп підтягнуто за 15M структурою")
-        elif side == Side.SHORT.value and tf15.get("bias") == Side.SHORT.value:
-            new_stop = min(trade.stop_current, price + atr15 * 1.2)
-            if new_stop < trade.stop_current:
-                trade.stop_current = new_stop
-                result["notes"].append("SMC Trailing: стоп підтягнуто за 15M структурою")
+        locked = trade.tp1_locked_stop or trade.stop_current
+        trade.stop_current = float(locked)
+        result["recommended_stop"] = round_price(trade.stop_current)
+        result["recommended_stop_reason"] = "TP1-стоп зафіксований; до TP2 не рухати без окремого exit-сигналу"
 
     structural_break = False
     if side == Side.LONG.value:
@@ -2114,7 +2219,7 @@ def run_bot() -> None:
     journal["signals"].append(payload)
 
     if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
-        active = ActiveTrade(id=uuid.uuid4().hex[:10], side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime)
+        active = ActiveTrade(id=uuid.uuid4().hex[:10], side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action)
         store_active_trade(state, active)
         state["opportunity"] = None
         print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type}")
