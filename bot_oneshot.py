@@ -579,8 +579,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_label = action_names.get(decision.action, decision.action)
     
     lines = [
-        "<b>BZU PRO HYBRID CONFLUENCE v6.4</b>",
-        "",
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
@@ -693,7 +691,7 @@ def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str
         _follow_title(trade, result, context),
         "",
         f"Ціна: {_fmt_price(price)}",
-        f"Від входу: {result.get('current_pct', 0):.3f}% | Макс. прибуток: {result.get('best_pct', 0):.2f}% | Макс. просадка: {result.get('worst_pct', 0):.2f}%",
+        f"Від входу: {result.get('current_pct', 0):.3f}% | Макс. прибуток: {result.get('best_pct', 0):.2f}% | Відкат від макс.: {result.get('giveback_pct', 0):.2f}%",
         "",
         f"Ризик розвороту в {reversal_side}: {reversal_label} ({reversal_score}%)",
         "",
@@ -1988,6 +1986,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     result["best_pct"] = ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100)
     result["worst_pct"] = max(0.0, ((trade.entry - trade.worst_price) / trade.entry * 100) if side == Side.LONG.value else ((trade.worst_price - trade.entry) / trade.entry * 100))
+    result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
     mfe = result["best_pct"]
 
     if _stop_hit(trade, context):
