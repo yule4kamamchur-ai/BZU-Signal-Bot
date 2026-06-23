@@ -1012,6 +1012,51 @@ def structure_snapshot(candles: list[Candle], tf: str) -> dict:
     return {"timeframe": tf, "bias": bias, "bos": bos, "swing_high": swing_high, "swing_low": swing_low}
 
 
+def detect_recent_structure_shift(candles: list[Candle], lookback: int = 7) -> dict:
+    if len(candles) < max(6, lookback + 2):
+        return {"bullish_shift": False, "bearish_shift": False, "strength": 0}
+
+    recent = candles[-lookback:]
+    previous = candles[-lookback * 2:-lookback] if len(candles) >= lookback * 2 else candles[:-lookback]
+    if not previous:
+        return {"bullish_shift": False, "bearish_shift": False, "strength": 0}
+
+    recent_high = max(c.high for c in recent)
+    recent_low = min(c.low for c in recent)
+    previous_high = max(c.high for c in previous)
+    previous_low = min(c.low for c in previous)
+    last_close = candles[-1].close
+    avg_range = mean(max(c.high - c.low, 0.0) for c in recent) or 0.0
+    buffer = avg_range * 0.08
+
+    bullish_shift = recent_high > previous_high + buffer and recent_low > previous_low + buffer
+    bearish_shift = recent_low < previous_low - buffer and recent_high < previous_high - buffer
+
+    if not bullish_shift and not bearish_shift:
+        return {"bullish_shift": False, "bearish_shift": False, "strength": 0}
+
+    closes_up = sum(1 for c in recent[-3:] if c.close > c.open)
+    closes_down = sum(1 for c in recent[-3:] if c.close < c.open)
+    strength = 1
+
+    if bullish_shift:
+        if closes_up >= 2:
+            strength += 1
+        if last_close > previous_high:
+            strength += 1
+    elif bearish_shift:
+        if closes_down >= 2:
+            strength += 1
+        if last_close < previous_low:
+            strength += 1
+
+    return {
+        "bullish_shift": bullish_shift,
+        "bearish_shift": bearish_shift,
+        "strength": min(strength, 3),
+    }
+
+
 def flow_snapshot(trades: list[dict], book: dict) -> dict:
     return {"bias": Side.NEUTRAL.value, "score": 0, "absorption_bias": Side.NEUTRAL.value}
 
@@ -1443,6 +1488,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     cvd = context.get("cvd", {})
     regime = context["regime"]
     scan_events = context.get("scan_3m_events", {})
+    c15 = (context.get("candles", {}) or {}).get("15m", [])
 
     params = get_adaptive_params(regime)
 
