@@ -580,7 +580,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
-        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
+        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
     
@@ -1287,25 +1287,81 @@ def _normalize_scan3m_state(raw: Any) -> dict:
     return state
 
 
+def calculate_impulse_strength(candles: list[Candle], side: str, atr15: float) -> dict:
+    """Оцінка сили імпульсу (0-3)."""
+    if len(candles) < 4:
+        return {"score": 0, "level": "WEAK", "body_strength": 0, "consecutive": 0}
+    last = candles[-1]
+    prev = candles[-2]
+    displacement = abs(last.close - prev.close)
+    atr_ratio = displacement / atr15 if atr15 > 0 else 0
+    body = abs(last.close - last.open)
+    candle_range = max(last.high - last.low, 0.0001)
+    body_strength = body / candle_range
+    consecutive = 0
+    for i in range(min(3, len(candles) - 1)):
+        c = candles[-(i+1)]
+        pc = candles[-(i+2)]
+        if abs(c.close - c.open) / max(c.high - c.low, 0.0001) > 0.6 and (
+            (side == Side.LONG.value and c.close > pc.close) or (side == Side.SHORT.value and c.close < pc.close)
+        ):
+            consecutive += 1
+        else:
+            break
+    score = 0
+    if atr_ratio > 0.7: score += 1
+    if atr_ratio > 1.15: score += 1
+    if atr_ratio > 1.7: score += 1
+    if body_strength > 0.65: score += 1
+    if consecutive >= 2: score += 1
+    score = min(score, 3)
+    level = {0: "WEAK", 1: "NORMAL", 2: "STRONG", 3: "EXTREME"}[score]
+    return {"score": score, "level": level, "body_strength": round(body_strength, 2), "consecutive": consecutive}
+
+
 def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr15: float) -> dict:
     if len(candles) < 5:
-        return {"ready": False, "age_bars": 999, "quality": 0, "displacement": False}
+        return {"ready": False, "age_bars": 999, "quality": 0, "displacement": False,
+                "strong_displacement": False, "retest": False, "mitigation": False,
+                "impulse_strength": {"score": 0, "level": "WEAK"}}
     last = candles[-1]
     prev = candles[-2]
     is_sweep = (side == Side.LONG.value and last.low < trigger_level) or (side == Side.SHORT.value and last.high > trigger_level)
     is_reclaim = (side == Side.LONG.value and last.close > trigger_level) or (side == Side.SHORT.value and last.close < trigger_level)
-    displacement = abs(last.close - prev.close) > atr15 * 0.70
-    ready = is_reclaim and displacement
-    quality = 50
-    if displacement:
-        quality += 24
+    displacement_size = abs(last.close - prev.close)
+    displacement = displacement_size > atr15 * 0.65
+    strong_displacement = displacement_size > atr15 * 0.95 and (
+        (side == Side.LONG.value and last.close > prev.close) or (side == Side.SHORT.value and last.close < prev.close)
+    )
+    retest = False
+    if len(candles) >= 4:
+        prev2 = candles[-3]
+        if side == Side.LONG.value:
+            retest = prev2.low <= trigger_level * 1.0015 and last.close > trigger_level
+        else:
+            retest = prev2.high >= trigger_level * 0.9985 and last.close < trigger_level
+    mitigation = False
     if is_reclaim:
-        quality += 18
+        mitigation = (last.close >= trigger_level and (last.close - trigger_level) < atr15 * 0.55) if side == Side.LONG.value else \
+                     (last.close <= trigger_level and (trigger_level - last.close) < atr15 * 0.55)
+    ready = is_reclaim and (displacement or retest)
+    impulse = calculate_impulse_strength(candles, side, atr15)
+    quality = 40
+    if displacement: quality += 18
+    if strong_displacement: quality += 15
+    if retest: quality += 20
+    if mitigation: quality += 12
+    if is_reclaim: quality += 8
+    if impulse["score"] >= 3: quality -= 14
     return {
         "ready": ready,
         "age_bars": 0,
-        "quality": min(quality, 96),
+        "quality": max(0, min(quality, 98)),
         "displacement": displacement,
+        "strong_displacement": strong_displacement,
+        "retest": retest,
+        "mitigation": mitigation,
+        "impulse_strength": impulse,
         "sweep_level": trigger_level,
         "extreme": last.low if side == Side.LONG.value else last.high
     }
