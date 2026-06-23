@@ -580,7 +580,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
-        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
+        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
     
