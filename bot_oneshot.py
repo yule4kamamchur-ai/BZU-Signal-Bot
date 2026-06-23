@@ -664,10 +664,10 @@ def _follow_title(trade: ActiveTrade, result: dict, context: dict) -> str:
     tf3_opposite = _bias_label(context.get("tf3", {})) == opposite
     tf15_opposite = _bias_label(context.get("tf15", {})) == opposite
 
+    if action == Action.TP3.value:
+        return f"🟢 СУПРОВІД {side} — TP3 ВЗЯТО, УГОДУ ЗАКРИТО"
     if result.get("closed") or action in {Action.STOP.value, Action.EXIT.value}:
         return f"🔴 СУПРОВІД {side} — УГОДУ ЗАКРИТО"
-    if action == Action.TP3.value:
-        return f"🟢 СУПРОВІД {side} — TP3 ВЗЯТО"
     if action == Action.TP2.value:
         return f"🟢 СУПРОВІД {side} — TP2 ВЗЯТО"
     if action == Action.TP1.value:
@@ -1913,6 +1913,16 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> bool:
     return price >= stop or last_high >= stop
 
 
+def _target_hit(side: str, context: dict, level: float) -> bool:
+    price = float(context.get("price") or 0)
+    c3 = (context.get("candles", {}) or {}).get("3m", [])
+    last_high = c3[-1].high if c3 else price
+    last_low = c3[-1].low if c3 else price
+    if side == Side.LONG.value:
+        return price >= level or last_high >= level
+    return price <= level or last_low <= level
+
+
 def _tp1_locked_stop_level(trade: ActiveTrade) -> float:
     if trade.side == Side.LONG.value:
         midpoint = trade.entry + (trade.tp1 - trade.entry) * 0.45
@@ -1921,6 +1931,14 @@ def _tp1_locked_stop_level(trade: ActiveTrade) -> float:
     midpoint = trade.entry - (trade.entry - trade.tp1) * 0.45
     maximum = trade.entry * 0.999
     return round_price(min(trade.stop_current, maximum, midpoint))
+
+
+def _tp2_locked_stop_level(trade: ActiveTrade) -> float:
+    if trade.side == Side.LONG.value:
+        near_tp2 = trade.tp2 - abs(trade.tp2 - trade.tp1) * 0.12
+        return round_price(max(trade.stop_current, trade.tp1, near_tp2))
+    near_tp2 = trade.tp2 + abs(trade.tp1 - trade.tp2) * 0.12
+    return round_price(min(trade.stop_current, trade.tp1, near_tp2))
 
 
 def _risky_pre_tp1_guard(trade: ActiveTrade, context: dict, result: dict, profile: dict, giveback_ratio: float) -> dict:
@@ -2000,6 +2018,21 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.last_action = Action.STOP.value
         return result
 
+    if _target_hit(side, context, trade.tp3):
+        trade.tp1_hit = True
+        trade.tp2_hit = True
+        trade.tp3_hit = True
+        result["closed"] = True
+        result["action"] = Action.TP3.value
+        result["exit_price"] = round_price(trade.tp3)
+        result["current_pct"] = _trade_pct(side, trade.entry, trade.tp3)
+        result["best_pct"] = max(result["best_pct"], result["current_pct"])
+        result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
+        result["notes"].append("TP3 досягнуто — угоду повністю закрито")
+        trade.status = "CLOSED"
+        trade.last_action = Action.TP3.value
+        return result
+
     profile = trade_management_profile(context, trade)
 
     giveback = max(0, mfe - result["current_pct"])
@@ -2045,7 +2078,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
             result["exit_price"] = price
             result["notes"].append("Risky entry втратив перевагу до TP1 — вихід біля входу")
 
-    if not result["closed"] and not trade.tp1_hit and ((side == Side.LONG.value and price >= trade.tp1) or (side == Side.SHORT.value and price <= trade.tp1)):
+    if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
         trade.tp1_locked_stop = _tp1_locked_stop_level(trade)
@@ -2053,13 +2086,13 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP1.value
         result["notes"].append("TP1 досягнуто — стоп зафіксовано до TP2")
 
-    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and ((side == Side.LONG.value and price >= trade.tp2) or (side == Side.SHORT.value and price <= trade.tp2)):
+    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
-        trade.tp2_locked_stop = trade.tp1
+        trade.tp2_locked_stop = _tp2_locked_stop_level(trade)
         trade.stop_current = trade.tp2_locked_stop
         result["action"] = Action.TP2.value
-        result["notes"].append("TP2 досягнуто — стоп на TP1 (зафіксовано)")
+        result["notes"].append("TP2 досягнуто — стоп підтягнуто біля TP2")
 
     if not result["closed"] and trade.tp1_stop_locked and not trade.tp2_hit:
         result["recommended_stop"] = round_price(trade.tp1_locked_stop)
