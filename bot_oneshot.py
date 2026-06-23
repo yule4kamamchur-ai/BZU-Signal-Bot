@@ -1383,47 +1383,6 @@ def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: f
     return min(base, 95)
 
 
-def detect_recent_structure_shift(candles: list[Candle], lookback: int = 8) -> dict:
-    if len(candles) < lookback + 3:
-        return {"bullish_shift": False, "bearish_shift": False, "strength": 0, "reason": "недостатньо даних"}
-
-    recent = candles[-lookback:]
-    swing_highs = []
-    swing_lows = []
-
-    for i in range(1, len(recent) - 1):
-        if recent[i].high > recent[i-1].high and recent[i].high > recent[i+1].high:
-            swing_highs.append(recent[i].high)
-        if recent[i].low < recent[i-1].low and recent[i].low < recent[i+1].low:
-            swing_lows.append(recent[i].low)
-
-    if len(swing_highs) < 2 or len(swing_lows) < 2:
-        return {"bullish_shift": False, "bearish_shift": False, "strength": 0, "reason": "мало свінгових точок"}
-
-    latest_hh = swing_highs[-1] > swing_highs[-2]
-    latest_hl = swing_lows[-1] > swing_lows[-2]
-    latest_lh = swing_highs[-1] < swing_highs[-2]
-    latest_ll = swing_lows[-1] < swing_lows[-2]
-
-    bullish_shift = latest_hh and latest_hl
-    bearish_shift = latest_lh and latest_ll
-
-    strength = 0
-    if bullish_shift and len(swing_highs) >= 3:
-        strength = sum(1 for i in range(1, min(3, len(swing_highs))) if swing_highs[-i] > swing_highs[-i-1])
-    if bearish_shift and len(swing_lows) >= 3:
-        strength = sum(1 for i in range(1, min(3, len(swing_lows))) if swing_lows[-i] < swing_lows[-i-1])
-
-    reason = "Higher Highs + Higher Lows" if bullish_shift else ("Lower Highs + Lower Lows" if bearish_shift else "без чіткої зміни")
-
-    return {
-        "bullish_shift": bullish_shift,
-        "bearish_shift": bearish_shift,
-        "strength": min(strength, 3),
-        "reason": reason
-    }
-
-
 # ==========================================================
 # CANDIDATE + RE-ENTRY
 # ==========================================================
@@ -1480,6 +1439,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     tf15 = context["tf15"]
     tf1h = context["tf1h"]
     tf4h = context["tf4h"]
+    c15 = context["candles"]["15m"]
     flow = context["flow"]
     cvd = context.get("cvd", {})
     regime = context["regime"]
@@ -1547,50 +1507,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if has_forward_zone:
             raw += 8
 
-        # ТЕХНІЧНА ПЕРЕВІРКА СТРУКТУРИ
-        recent_struct = detect_recent_structure_shift(c15, lookback=7)
-        recent_structure_score = 0
-        recent_structure_conf = []
-
-        if recent_struct["bullish_shift"] or recent_struct["bearish_shift"]:
-            base_structure_adj = 7
-            approx_quality = loc_score + str_score + trig_score + htf_score
-            if approx_quality >= 55:
-                base_structure_adj = 5
-            elif approx_quality <= 38:
-                base_structure_adj = 10
-
-            if regime == Regime.TREND.value:
-                base_structure_adj = int(base_structure_adj * 1.25)
-            elif regime == Regime.RANGE.value:
-                base_structure_adj = int(base_structure_adj * 0.75)
-
-            structure_penalty = base_structure_adj + recent_struct["strength"] * 5
-
-            structure_bonus = 0
-            is_aligned = False
-
-            if recent_struct["bullish_shift"] and tf15.get("bias") == Side.LONG.value:
-                structure_bonus = 5
-                is_aligned = True
-            elif recent_struct["bearish_shift"] and tf15.get("bias") == Side.SHORT.value:
-                structure_bonus = 5
-                is_aligned = True
-
-            if side == Side.SHORT.value and recent_struct["bullish_shift"]:
-                raw -= structure_penalty
-                recent_structure_score = -structure_penalty
-                recent_structure_conf.append(f"вищі хай/лоу (сила {recent_struct['strength']}) → SHORT послаблено (-{structure_penalty})")
-            elif side == Side.LONG.value and recent_struct["bearish_shift"]:
-                raw -= structure_penalty
-                recent_structure_score = -structure_penalty
-                recent_structure_conf.append(f"нижчі хай/лоу (сила {recent_struct['strength']}) → LONG послаблено (-{structure_penalty})")
-
-            if is_aligned:
-                raw += structure_bonus
-                recent_structure_score += structure_bonus
-                recent_structure_conf.append(f"+{structure_bonus} балів: структура узгоджена з 15M bias")
-
         evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
         if flw_score > 12:
             evidence.append("ORDER_FLOW_CVD")
@@ -1640,11 +1556,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             final_score=final,
             score_components={
                 "location": loc_score, "structure": str_score, "liquidity": liq_score,
-                "flow_cvd": flw_score, "trigger_3m": trig_score, "htf": htf_score,
-                "recent_structure": recent_structure_score
+                "flow_cvd": flw_score, "trigger_3m": trig_score, "htf": htf_score
             },
             evidence_families=evidence,
-            confirmations=loc_conf + str_conf + flw_conf + recent_structure_conf,
+            confirmations=loc_conf + str_conf + flw_conf,
             risks=[] if final > 70 else ["потрібне підтвердження acceptance"],
             trigger_ready=trigger_ready,
             trigger_level=round_price(trigger_level),
