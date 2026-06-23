@@ -1645,7 +1645,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             p = pattern_registry[best_pattern]
             if p["allow_early"]:
                 htf_ok = tf1h.get("bias") != opposite(side)
-                score_ok = final >= 65
+                # Використовуємо поточний raw для оцінки якості
+                temp_final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98)) if 'evidence' in locals() else int(clamp(raw, 12, 98))
+                score_ok = temp_final >= 65
                 if htf_ok and score_ok:
                     allow_early_entry_for_pattern = True
 
