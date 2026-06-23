@@ -664,10 +664,10 @@ def _follow_title(trade: ActiveTrade, result: dict, context: dict) -> str:
     tf3_opposite = _bias_label(context.get("tf3", {})) == opposite
     tf15_opposite = _bias_label(context.get("tf15", {})) == opposite
 
+    if action == Action.TP3.value:
+        return f"🟢 СУПРОВІД {side} — TP3 ВЗЯТО, УГОДУ ЗАКРИТО"
     if result.get("closed") or action in {Action.STOP.value, Action.EXIT.value}:
         return f"🔴 СУПРОВІД {side} — УГОДУ ЗАКРИТО"
-    if action == Action.TP3.value:
-        return f"🟢 СУПРОВІД {side} — TP3 ВЗЯТО"
     if action == Action.TP2.value:
         return f"🟢 СУПРОВІД {side} — TP2 ВЗЯТО"
     if action == Action.TP1.value:
@@ -1383,6 +1383,47 @@ def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: f
     return min(base, 95)
 
 
+def detect_recent_structure_shift(candles: list[Candle], lookback: int = 8) -> dict:
+    if len(candles) < lookback + 3:
+        return {"bullish_shift": False, "bearish_shift": False, "strength": 0, "reason": "недостатньо даних"}
+
+    recent = candles[-lookback:]
+    swing_highs = []
+    swing_lows = []
+
+    for i in range(1, len(recent) - 1):
+        if recent[i].high > recent[i-1].high and recent[i].high > recent[i+1].high:
+            swing_highs.append(recent[i].high)
+        if recent[i].low < recent[i-1].low and recent[i].low < recent[i+1].low:
+            swing_lows.append(recent[i].low)
+
+    if len(swing_highs) < 2 or len(swing_lows) < 2:
+        return {"bullish_shift": False, "bearish_shift": False, "strength": 0, "reason": "мало свінгових точок"}
+
+    latest_hh = swing_highs[-1] > swing_highs[-2]
+    latest_hl = swing_lows[-1] > swing_lows[-2]
+    latest_lh = swing_highs[-1] < swing_highs[-2]
+    latest_ll = swing_lows[-1] < swing_lows[-2]
+
+    bullish_shift = latest_hh and latest_hl
+    bearish_shift = latest_lh and latest_ll
+
+    strength = 0
+    if bullish_shift and len(swing_highs) >= 3:
+        strength = sum(1 for i in range(1, min(3, len(swing_highs))) if swing_highs[-i] > swing_highs[-i-1])
+    if bearish_shift and len(swing_lows) >= 3:
+        strength = sum(1 for i in range(1, min(3, len(swing_lows))) if swing_lows[-i] < swing_lows[-i-1])
+
+    reason = "Higher Highs + Higher Lows" if bullish_shift else ("Lower Highs + Lower Lows" if bearish_shift else "без чіткої зміни")
+
+    return {
+        "bullish_shift": bullish_shift,
+        "bearish_shift": bearish_shift,
+        "strength": min(strength, 3),
+        "reason": reason
+    }
+
+
 # ==========================================================
 # CANDIDATE + RE-ENTRY
 # ==========================================================
@@ -1506,26 +1547,19 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if has_forward_zone:
             raw += 8
 
-        # ==========================================================
-        # ТЕХНІЧНА ПЕРЕВІРКА СТРУКТУРИ (динамічний штраф/бонус)
-        # ==========================================================
+        # ТЕХНІЧНА ПЕРЕВІРКА СТРУКТУРИ
         recent_struct = detect_recent_structure_shift(c15, lookback=7)
         recent_structure_score = 0
         recent_structure_conf = []
 
         if recent_struct["bullish_shift"] or recent_struct["bearish_shift"]:
-            # === Динамічний розрахунок (технічний підхід) ===
-            # Штраф залежить від якості кандидата + режиму ринку
             base_structure_adj = 7
-
-            # 1. Залежність від якості кандидата (чим сильніший контекст — тим м'якше караємо)
             approx_quality = loc_score + str_score + trig_score + htf_score
             if approx_quality >= 55:
                 base_structure_adj = 5
             elif approx_quality <= 38:
                 base_structure_adj = 10
 
-            # 2. Залежність від режиму
             if regime == Regime.TREND.value:
                 base_structure_adj = int(base_structure_adj * 1.25)
             elif regime == Regime.RANGE.value:
@@ -1533,7 +1567,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
             structure_penalty = base_structure_adj + recent_struct["strength"] * 5
 
-            # === Бонус за узгодженість з 15M bias ===
             structure_bonus = 0
             is_aligned = False
 
@@ -1544,116 +1577,19 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 structure_bonus = 5
                 is_aligned = True
 
-            # Застосовуємо
             if side == Side.SHORT.value and recent_struct["bullish_shift"]:
                 raw -= structure_penalty
                 recent_structure_score = -structure_penalty
-                recent_structure_conf.append(
-                    f"вищі хай/лоу (сила {recent_struct['strength']}) → SHORT послаблено (-{structure_penalty})"
-                )
+                recent_structure_conf.append(f"вищі хай/лоу (сила {recent_struct['strength']}) → SHORT послаблено (-{structure_penalty})")
             elif side == Side.LONG.value and recent_struct["bearish_shift"]:
                 raw -= structure_penalty
                 recent_structure_score = -structure_penalty
-                recent_structure_conf.append(
-                    f"нижчі хай/лоу (сила {recent_struct['strength']}) → LONG послаблено (-{structure_penalty})"
-                )
+                recent_structure_conf.append(f"нижчі хай/лоу (сила {recent_struct['strength']}) → LONG послаблено (-{structure_penalty})")
 
             if is_aligned:
                 raw += structure_bonus
                 recent_structure_score += structure_bonus
-                recent_structure_conf.append(
-                    f"+{structure_bonus} балів: структура узгоджена з 15M bias"
-                )
-
-        # ==========================================================
-        # МОДУЛЬНА СИСТЕМА ПАТЕРНІВ (PATTERN REGISTRY)
-        # ==========================================================
-        # Тут описані всі патерни. Легко додавати нові без конфліктів.
-
-        pattern_registry = {
-            "OB_RECLAIM": {
-                "name": "15M OB + 3M Confirmed Reclaim",
-                "priority": 90,
-                "allow_early": True,
-                "preferred_setup": SetupType.PULLBACK_CONTINUATION.value,
-                "score_bonus": 18,
-            },
-            "HTF_TREND_OB_PULLBACK": {
-                "name": "1H Trend + 15M OB Pullback + 3M Reclaim",
-                "priority": 95,
-                "allow_early": True,
-                "preferred_setup": SetupType.PULLBACK_CONTINUATION.value,
-                "score_bonus": 22,
-            },
-            "CHOCH_RECLAIM": {
-                "name": "15M CHOCH + 3M Liquidity Sweep Reclaim",
-                "priority": 85,
-                "allow_early": True,
-                "preferred_setup": SetupType.BREAKOUT_RETEST.value,
-                "score_bonus": 16,
-            },
-        }
-
-        active_patterns = []
-        pattern_conf = []
-        best_pattern = None
-        best_priority = 0
-
-        # --- Перевірка патернів ---
-        has_fresh_ob = any(
-            z.side == side and z.kind == "OB" and abs(price - z.low) < atr15 * 1.7
-            for z in zones
-        )
-        has_quality_reclaim = trigger_ready and (
-            event.get("strong_displacement") or
-            event.get("mitigation") or
-            event.get("inducement")
-        )
-        htf_trend = tf1h.get("bias") == side
-        tf15_bias = tf15.get("bias")
-
-        # Патерн OB_RECLAIM
-        if has_fresh_ob and has_quality_reclaim:
-            active_patterns.append("OB_RECLAIM")
-            p = pattern_registry["OB_RECLAIM"]
-            pattern_conf.append(p["name"])
-            if p["priority"] > best_priority:
-                best_priority = p["priority"]
-                best_pattern = "OB_RECLAIM"
-
-        # Патерн HTF_TREND_OB_PULLBACK
-        if htf_trend and has_fresh_ob and has_quality_reclaim:
-            active_patterns.append("HTF_TREND_OB_PULLBACK")
-            p = pattern_registry["HTF_TREND_OB_PULLBACK"]
-            pattern_conf.append(p["name"])
-            if p["priority"] > best_priority:
-                best_priority = p["priority"]
-                best_pattern = "HTF_TREND_OB_PULLBACK"
-
-        # Патерн CHOCH_RECLAIM
-        if tf15_bias == side and has_quality_reclaim:
-            active_patterns.append("CHOCH_RECLAIM")
-            p = pattern_registry["CHOCH_RECLAIM"]
-            pattern_conf.append(p["name"])
-            if p["priority"] > best_priority:
-                best_priority = p["priority"]
-                best_pattern = "CHOCH_RECLAIM"
-
-        # Визначаємо, чи дозволяти ранній вхід
-        allow_early_entry_for_pattern = False
-        if best_pattern:
-            p = pattern_registry[best_pattern]
-            if p["allow_early"]:
-                htf_ok = tf1h.get("bias") != opposite(side)
-                # Використовуємо поточний raw для оцінки якості
-                temp_final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98)) if 'evidence' in locals() else int(clamp(raw, 12, 98))
-                score_ok = temp_final >= 65
-                if htf_ok and score_ok:
-                    allow_early_entry_for_pattern = True
-
-        # Бонус до score від найкращого патерну
-        if best_pattern:
-            raw += pattern_registry[best_pattern]["score_bonus"]
+                recent_structure_conf.append(f"+{structure_bonus} балів: структура узгоджена з 15M bias")
 
         evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
         if flw_score > 12:
@@ -1665,23 +1601,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if has_forward_zone:
             evidence.append("FORWARD_ICT_ZONE")
 
-        # Визначення setup_type на основі найкращого патерну
         setup_type = SetupType.PULLBACK_CONTINUATION.value
         variant = "PULLBACK_FORMING"
-
-        if best_pattern:
-            setup_type = pattern_registry[best_pattern]["preferred_setup"]
-            if setup_type == SetupType.BREAKOUT_RETEST.value:
-                variant = "CONFIRMED_BOS_RETEST"
-            elif setup_type == SetupType.PULLBACK_CONTINUATION.value:
-                variant = "PATTERN_PULLBACK"
-        else:
-            if trigger_ready and scan_stage in ["RETEST", "READY"]:
-                setup_type = SetupType.BREAKOUT_RETEST.value
-                variant = "CONFIRMED_BOS_RETEST"
-            elif event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready:
-                setup_type = SetupType.SWEEP_RECLAIM.value
-                variant = "EARLY_RECLAIM"
+        if trigger_ready and scan_stage in ["RETEST", "READY"]:
+            setup_type = SetupType.BREAKOUT_RETEST.value
+            variant = "CONFIRMED_BOS_RETEST"
+        if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready:
+            setup_type = SetupType.SWEEP_RECLAIM.value
+            variant = "EARLY_RECLAIM"
 
         family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
 
@@ -1689,10 +1616,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         tier = ConfirmationTier.STANDARD.value
         final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
 
-        if allow_early_entry_for_pattern:
-            lane = ExecutionLane.EARLY_TACTICAL.value
-            tier = ConfirmationTier.HIGH_QUALITY.value
-        elif final >= params["entry_score"] and len(evidence) >= params["min_evidence"] and trigger_ready:
+        if final >= params["entry_score"] and len(evidence) >= params["min_evidence"] and trigger_ready:
             lane = ExecutionLane.STANDARD_CONFIRMED.value
             tier = ConfirmationTier.HIGH_QUALITY.value
         elif final >= params["risky_entry_score"] and trigger_ready and regime != Regime.SHOCK.value:
@@ -1720,7 +1644,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 "recent_structure": recent_structure_score
             },
             evidence_families=evidence,
-            confirmations=loc_conf + str_conf + flw_conf + pattern_conf + recent_structure_conf,
+            confirmations=loc_conf + str_conf + flw_conf + recent_structure_conf,
             risks=[] if final > 70 else ["потрібне підтвердження acceptance"],
             trigger_ready=trigger_ready,
             trigger_level=round_price(trigger_level),
@@ -2075,30 +1999,14 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> bool:
     return price >= stop or last_high >= stop
 
 
-def _target_hit(side: str, context: dict, level: float, lookback: int = 4) -> bool:
-    """
-    Покращена перевірка тейк-профіту (з lookback по свічках).
-    Вирішує проблему пропуску TP через polling + гібридні дані (TradingView + OKX).
-    """
+def _target_hit(side: str, context: dict, level: float) -> bool:
     price = float(context.get("price") or 0)
     c3 = (context.get("candles", {}) or {}).get("3m", [])
-
+    last_high = c3[-1].high if c3 else price
+    last_low = c3[-1].low if c3 else price
     if side == Side.LONG.value:
-        if price >= level:
-            return True
-        if c3:
-            recent = c3[-lookback:] if len(c3) >= lookback else c3
-            recent_high = max((c.high for c in recent), default=price)
-            return recent_high >= level
-        return False
-    else:
-        if price <= level:
-            return True
-        if c3:
-            recent = c3[-lookback:] if len(c3) >= lookback else c3
-            recent_low = min((c.low for c in recent), default=price)
-            return recent_low <= level
-        return False
+        return price >= level or last_high >= level
+    return price <= level or last_low <= level
 
 
 def _tp1_locked_stop_level(trade: ActiveTrade) -> float:
@@ -2109,6 +2017,14 @@ def _tp1_locked_stop_level(trade: ActiveTrade) -> float:
     midpoint = trade.entry - (trade.entry - trade.tp1) * 0.45
     maximum = trade.entry * 0.999
     return round_price(min(trade.stop_current, maximum, midpoint))
+
+
+def _tp2_locked_stop_level(trade: ActiveTrade) -> float:
+    if trade.side == Side.LONG.value:
+        near_tp2 = trade.tp2 - abs(trade.tp2 - trade.tp1) * 0.12
+        return round_price(max(trade.stop_current, trade.tp1, near_tp2))
+    near_tp2 = trade.tp2 + abs(trade.tp1 - trade.tp2) * 0.12
+    return round_price(min(trade.stop_current, trade.tp1, near_tp2))
 
 
 def _risky_pre_tp1_guard(trade: ActiveTrade, context: dict, result: dict, profile: dict, giveback_ratio: float) -> dict:
@@ -2188,6 +2104,21 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.last_action = Action.STOP.value
         return result
 
+    if _target_hit(side, context, trade.tp3):
+        trade.tp1_hit = True
+        trade.tp2_hit = True
+        trade.tp3_hit = True
+        result["closed"] = True
+        result["action"] = Action.TP3.value
+        result["exit_price"] = round_price(trade.tp3)
+        result["current_pct"] = _trade_pct(side, trade.entry, trade.tp3)
+        result["best_pct"] = max(result["best_pct"], result["current_pct"])
+        result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
+        result["notes"].append("TP3 досягнуто — угоду повністю закрито")
+        trade.status = "CLOSED"
+        trade.last_action = Action.TP3.value
+        return result
+
     profile = trade_management_profile(context, trade)
 
     giveback = max(0, mfe - result["current_pct"])
@@ -2244,10 +2175,10 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
-        trade.tp2_locked_stop = trade.tp1
+        trade.tp2_locked_stop = _tp2_locked_stop_level(trade)
         trade.stop_current = trade.tp2_locked_stop
         result["action"] = Action.TP2.value
-        result["notes"].append("TP2 досягнуто — стоп на TP1 (зафіксовано)")
+        result["notes"].append("TP2 досягнуто — стоп підтягнуто біля TP2")
 
     if not result["closed"] and trade.tp1_stop_locked and not trade.tp2_hit:
         result["recommended_stop"] = round_price(trade.tp1_locked_stop)
