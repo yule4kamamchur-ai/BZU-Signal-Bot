@@ -1507,6 +1507,65 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             raw += 8
 
         # ==========================================================
+        # ТЕХНІЧНА ПЕРЕВІРКА СТРУКТУРИ (динамічний штраф/бонус)
+        # ==========================================================
+        recent_struct = detect_recent_structure_shift(c15, lookback=7)
+        recent_structure_score = 0
+        recent_structure_conf = []
+
+        if recent_struct["bullish_shift"] or recent_struct["bearish_shift"]:
+            # === Динамічний розрахунок (технічний підхід) ===
+            # Штраф залежить від якості кандидата + режиму ринку
+            base_structure_adj = 7
+
+            # 1. Залежність від якості кандидата (чим сильніший контекст — тим м'якше караємо)
+            approx_quality = loc_score + str_score + trig_score + htf_score
+            if approx_quality >= 55:
+                base_structure_adj = 5
+            elif approx_quality <= 38:
+                base_structure_adj = 10
+
+            # 2. Залежність від режиму
+            if regime == Regime.TREND.value:
+                base_structure_adj = int(base_structure_adj * 1.25)
+            elif regime == Regime.RANGE.value:
+                base_structure_adj = int(base_structure_adj * 0.75)
+
+            structure_penalty = base_structure_adj + recent_struct["strength"] * 5
+
+            # === Бонус за узгодженість з 15M bias ===
+            structure_bonus = 0
+            is_aligned = False
+
+            if recent_struct["bullish_shift"] and tf15.get("bias") == Side.LONG.value:
+                structure_bonus = 5
+                is_aligned = True
+            elif recent_struct["bearish_shift"] and tf15.get("bias") == Side.SHORT.value:
+                structure_bonus = 5
+                is_aligned = True
+
+            # Застосовуємо
+            if side == Side.SHORT.value and recent_struct["bullish_shift"]:
+                raw -= structure_penalty
+                recent_structure_score = -structure_penalty
+                recent_structure_conf.append(
+                    f"вищі хай/лоу (сила {recent_struct['strength']}) → SHORT послаблено (-{structure_penalty})"
+                )
+            elif side == Side.LONG.value and recent_struct["bearish_shift"]:
+                raw -= structure_penalty
+                recent_structure_score = -structure_penalty
+                recent_structure_conf.append(
+                    f"нижчі хай/лоу (сила {recent_struct['strength']}) → LONG послаблено (-{structure_penalty})"
+                )
+
+            if is_aligned:
+                raw += structure_bonus
+                recent_structure_score += structure_bonus
+                recent_structure_conf.append(
+                    f"+{structure_bonus} балів: структура узгоджена з 15M bias"
+                )
+
+        # ==========================================================
         # МОДУЛЬНА СИСТЕМА ПАТЕРНІВ (PATTERN REGISTRY)
         # ==========================================================
         # Тут описані всі патерни. Легко додавати нові без конфліктів.
@@ -1655,10 +1714,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             final_score=final,
             score_components={
                 "location": loc_score, "structure": str_score, "liquidity": liq_score,
-                "flow_cvd": flw_score, "trigger_3m": trig_score, "htf": htf_score
+                "flow_cvd": flw_score, "trigger_3m": trig_score, "htf": htf_score,
+                "recent_structure": recent_structure_score
             },
             evidence_families=evidence,
-            confirmations=loc_conf + str_conf + flw_conf + pattern_conf,
+            confirmations=loc_conf + str_conf + flw_conf + pattern_conf + recent_structure_conf,
             risks=[] if final > 70 else ["потрібне підтвердження acceptance"],
             trigger_ready=trigger_ready,
             trigger_level=round_price(trigger_level),
@@ -2180,8 +2240,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["notes"].append("TP1 досягнуто — стоп зафіксовано до TP2")
 
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
-        # Виправлення: після TP2 фіксуємо стоп на рівні TP1 (а не близько до TP2)
-        # Це дає достатньо "повітря" для відкатів і захищає прибуток TP1 на runner'і
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
         trade.tp2_locked_stop = trade.tp1
