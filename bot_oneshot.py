@@ -82,6 +82,9 @@ A_PLUS_ENTRY_MIN = 82
 
 # === 3M Scanner ===
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "35") or 35)
+RECLAIM_MIN_QUALITY = int(os.getenv("RECLAIM_MIN_QUALITY", "58") or 58)
+EARLY_ENTRY_MIN_SCORE = int(os.getenv("EARLY_ENTRY_MIN_SCORE", "68") or 68)
+STRONG_IMPULSE_CHASE_PENALTY = int(os.getenv("STRONG_IMPULSE_CHASE_PENALTY", "12") or 12)
 
 # === Telegram ===
 TELEGRAM_NOTIFY_EVERY_RUN = os.getenv("TELEGRAM_NOTIFY_EVERY_RUN", "true").lower() in {"1", "true", "yes"}
@@ -580,7 +583,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
-        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)} | News: {decision.news_bias} | Macro: {decision.macro_risk}",
+        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
     
@@ -1323,23 +1326,25 @@ def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr
     if len(candles) < 5:
         return {"ready": False, "age_bars": 999, "quality": 0, "displacement": False,
                 "strong_displacement": False, "retest": False, "mitigation": False,
+                "reclaim": False, "chase_risk": False,
                 "impulse_strength": {"score": 0, "level": "WEAK"}}
     last = candles[-1]
     prev = candles[-2]
     is_sweep = (side == Side.LONG.value and last.low < trigger_level) or (side == Side.SHORT.value and last.high > trigger_level)
     is_reclaim = (side == Side.LONG.value and last.close > trigger_level) or (side == Side.SHORT.value and last.close < trigger_level)
     displacement_size = abs(last.close - prev.close)
-    displacement = displacement_size > atr15 * 0.65
+    directional_displacement = (side == Side.LONG.value and last.close > prev.close) or (side == Side.SHORT.value and last.close < prev.close)
+    displacement = displacement_size > atr15 * 0.65 and directional_displacement
     strong_displacement = displacement_size > atr15 * 0.95 and (
         (side == Side.LONG.value and last.close > prev.close) or (side == Side.SHORT.value and last.close < prev.close)
     )
     retest = False
-    if len(candles) >= 4:
-        prev2 = candles[-3]
+    if len(candles) >= 4 and is_reclaim:
+        recent_retest_bars = candles[-4:-1]
         if side == Side.LONG.value:
-            retest = prev2.low <= trigger_level * 1.0015 and last.close > trigger_level
+            retest = any(c.low <= trigger_level * 1.0015 for c in recent_retest_bars)
         else:
-            retest = prev2.high >= trigger_level * 0.9985 and last.close < trigger_level
+            retest = any(c.high >= trigger_level * 0.9985 for c in recent_retest_bars)
     mitigation = False
     if is_reclaim:
         mitigation = (last.close >= trigger_level and (last.close - trigger_level) < atr15 * 0.55) if side == Side.LONG.value else \
@@ -1353,6 +1358,7 @@ def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr
     if mitigation: quality += 12
     if is_reclaim: quality += 8
     if impulse["score"] >= 3: quality -= 14
+    chase_risk = bool(strong_displacement and not retest)
     return {
         "ready": ready,
         "age_bars": 0,
@@ -1361,10 +1367,23 @@ def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr
         "strong_displacement": strong_displacement,
         "retest": retest,
         "mitigation": mitigation,
+        "reclaim": is_reclaim,
+        "chase_risk": chase_risk,
         "impulse_strength": impulse,
         "sweep_level": trigger_level,
         "extreme": last.low if side == Side.LONG.value else last.high
     }
+
+
+def has_quality_reclaim(event: dict, min_quality: int = RECLAIM_MIN_QUALITY) -> bool:
+    if not isinstance(event, dict):
+        return False
+    stage_ok = event.get("stage") in {"ACCEPTANCE", "RETEST", "READY"}
+    quality_ok = int(event.get("acceptance_quality", 0) or 0) >= min_quality
+    professional_trigger = bool(event.get("strong_displacement") or event.get("retest"))
+    impulse = event.get("impulse_strength") if isinstance(event.get("impulse_strength"), dict) else {}
+    overextended_without_retest = int(impulse.get("score", 0) or 0) >= 3 and not event.get("retest")
+    return bool(stage_ok and quality_ok and professional_trigger and not overextended_without_retest)
 
 
 def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
@@ -1386,28 +1405,42 @@ def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
             "sweep_level": context["price"], "extreme": context["price"],
             "displacement": False, "retest_ts": 0, "ready_ts": 0, "hold_closes": 0,
             "previous_stage": "", "chain_quality": 50, "confirmation_quality": 40,
-            "acceptance_quality": 0, "retest_quality": 0, "processed_bars": 0
+            "acceptance_quality": 0, "retest_quality": 0, "processed_bars": 0,
+            "strong_displacement": False, "retest": False, "mitigation": False,
+            "impulse_strength": {"score": 0, "level": "WEAK"}, "chase_risk": False
         })
         lookback = min(len(new_candles) + 10, len(c3))
         recent = c3[-lookback:]
         snap = trigger_snapshot(recent, side, event.get("trigger_level", context["price"]), atr15)
+        event["displacement"] = bool(event.get("displacement") or snap.get("displacement"))
+        event["strong_displacement"] = bool(event.get("strong_displacement") or snap.get("strong_displacement"))
+        event["retest"] = bool(event.get("retest") or snap.get("retest"))
+        event["mitigation"] = bool(event.get("mitigation") or snap.get("mitigation"))
+        event["chase_risk"] = bool(event["strong_displacement"] and not event["retest"])
+        event["impulse_strength"] = snap.get("impulse_strength", {"score": 0, "level": "WEAK"})
+        event["confirmation_quality"] = max(int(event.get("confirmation_quality", 0) or 0), int(snap.get("quality", 0) or 0))
+
         if snap["ready"] and event["stage"] in ["SWEEP", "CONFIRMATION"]:
+            event["previous_stage"] = event["stage"]
             event["stage"] = "ACCEPTANCE"
             event["ready_ts"] = recent[-1].ts
-            event["acceptance_quality"] = snap["quality"]
+            event["acceptance_quality"] = max(int(event.get("acceptance_quality", 0) or 0), int(snap["quality"]))
             event["last_event_ts"] = recent[-1].ts
-        elif event["stage"] == "ACCEPTANCE" and snap["displacement"]:
+        elif event["stage"] == "ACCEPTANCE" and snap["retest"]:
+            event["previous_stage"] = event["stage"]
             event["stage"] = "RETEST"
             event["retest_ts"] = recent[-1].ts
-            event["retest_quality"] = snap["quality"]
-        elif event["stage"] == "RETEST":
+            event["retest_quality"] = max(int(event.get("retest_quality", 0) or 0), int(snap["quality"]))
+            event["last_event_ts"] = recent[-1].ts
+        elif event["stage"] == "RETEST" and (snap["reclaim"] or snap["ready"]):
+            event["previous_stage"] = event["stage"]
             event["stage"] = "READY"
             event["ready_ts"] = recent[-1].ts
+            event["last_event_ts"] = recent[-1].ts
         if snap.get("sweep_level"):
             event["trigger_level"] = snap["sweep_level"]
             event["sweep_level"] = snap["sweep_level"]
             event["extreme"] = snap["extreme"]
-        event["last_event_ts"] = recent[-1].ts
         event["processed_bars"] += len(new_candles)
         events[side] = event
     new_last_ts = max(c.ts for c in new_candles)
@@ -1465,12 +1498,18 @@ def calculate_location_score(price: float, zones: list[Zone], side: str, atr15: 
 
 
 def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: float, structure_alignment: int, has_forward_zone: bool) -> int:
-    base = event.get("acceptance_quality", 40)
+    base = int(event.get("acceptance_quality", 40) or 40)
     
     if has_forward_zone:
         base += 12
 
     if event.get("displacement"):
+        base += 8
+    if event.get("strong_displacement"):
+        base += 10
+    if event.get("retest"):
+        base += 16
+    if event.get("mitigation"):
         base += 8
 
     if structure_alignment > 70:
@@ -1481,7 +1520,17 @@ def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: f
     if event.get("stage") == "READY":
         base += 5
 
-    return min(base, 95)
+    impulse = event.get("impulse_strength") if isinstance(event.get("impulse_strength"), dict) else {}
+    impulse_score = int(impulse.get("score", 0) or 0)
+    if impulse_score >= 3 and not event.get("retest"):
+        base -= 16
+    elif impulse_score == 2 and not (event.get("retest") or event.get("mitigation")):
+        base -= 6
+
+    if not (event.get("strong_displacement") or event.get("retest")):
+        base -= 10
+
+    return int(clamp(base, 0, 95))
 
 
 # ==========================================================
@@ -1551,9 +1600,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     candidates = []
     for side in [Side.LONG.value, Side.SHORT.value]:
         event = scan_events.get(side, {})
-        trigger_ready = event.get("stage") in ["ACCEPTANCE", "RETEST", "READY"]
-        trigger_level = event.get("trigger_level", price)
         trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
+        trigger_ready = event.get("stage") in ["ACCEPTANCE", "RETEST", "READY"] and trigger_age <= TRIGGER_MAX_AGE_MINUTES
+        trigger_level = event.get("trigger_level", price)
         scan_stage = event.get("stage", "")
 
         location_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
@@ -1582,7 +1631,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready:
             liq_score += 10
 
-        flw_score = 5
+        flw_score = 0
         flw_conf = []
         if flow.get("bias") == side:
             flw_score += 9
@@ -1706,16 +1755,20 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             z.side == side and z.kind == "OB" and abs(price - z.low) < atr15 * 1.7
             for z in zones
         )
-        has_quality_reclaim = trigger_ready and (
-            event.get("strong_displacement") or
-            event.get("mitigation") or
-            event.get("inducement")
-        )
         htf_trend = tf1h.get("bias") == side
         tf15_bias = tf15.get("bias")
+        impulse = event.get("impulse_strength") if isinstance(event.get("impulse_strength"), dict) else {}
+        impulse_score = int(impulse.get("score", 0) or 0)
+        has_good_reclaim = has_quality_reclaim(event)
+        has_strong_reclaim = bool(
+            trigger_ready
+            and event.get("strong_displacement")
+            and event.get("acceptance_quality", 0) >= RECLAIM_MIN_QUALITY
+            and not (impulse_score >= 3 and not event.get("retest"))
+        )
 
         # Патерн OB_RECLAIM
-        if has_fresh_ob and has_quality_reclaim:
+        if has_fresh_ob and has_good_reclaim:
             active_patterns.append("OB_RECLAIM")
             p = pattern_registry["OB_RECLAIM"]
             pattern_conf.append(p["name"])
@@ -1724,7 +1777,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 best_pattern = "OB_RECLAIM"
 
         # Патерн HTF_TREND_OB_PULLBACK
-        if htf_trend and has_fresh_ob and has_quality_reclaim:
+        if htf_trend and has_fresh_ob and has_good_reclaim:
             active_patterns.append("HTF_TREND_OB_PULLBACK")
             p = pattern_registry["HTF_TREND_OB_PULLBACK"]
             pattern_conf.append(p["name"])
@@ -1733,7 +1786,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 best_pattern = "HTF_TREND_OB_PULLBACK"
 
         # Патерн CHOCH_RECLAIM
-        if tf15_bias == side and has_quality_reclaim:
+        if tf15_bias == side and has_strong_reclaim:
             active_patterns.append("CHOCH_RECLAIM")
             p = pattern_registry["CHOCH_RECLAIM"]
             pattern_conf.append(p["name"])
@@ -1741,19 +1794,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 best_priority = p["priority"]
                 best_pattern = "CHOCH_RECLAIM"
 
-        # Визначаємо, чи дозволяти ранній вхід
-        allow_early_entry_for_pattern = False
-        if best_pattern:
-            p = pattern_registry[best_pattern]
-            if p["allow_early"]:
-                htf_ok = tf1h.get("bias") != opposite(side)
-                score_ok = final >= 65
-                if htf_ok and score_ok:
-                    allow_early_entry_for_pattern = True
-
         # Бонус до score від найкращого патерну
         if best_pattern:
             raw += pattern_registry[best_pattern]["score_bonus"]
+        if event.get("strong_displacement") and not event.get("retest"):
+            raw -= STRONG_IMPULSE_CHASE_PENALTY
+            pattern_conf.append(f"штраф -{STRONG_IMPULSE_CHASE_PENALTY}: сильний displacement без retest")
 
         evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
         if flw_score > 12:
@@ -1789,6 +1835,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         tier = ConfirmationTier.STANDARD.value
         final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
 
+        # Визначаємо, чи дозволяти ранній вхід
+        allow_early_entry_for_pattern = False
+        if best_pattern:
+            p = pattern_registry[best_pattern]
+            if p["allow_early"]:
+                htf_ok = tf1h.get("bias") == side or tf4h.get("bias") == side
+                score_ok = final >= EARLY_ENTRY_MIN_SCORE
+                if htf_ok and score_ok and has_good_reclaim:
+                    allow_early_entry_for_pattern = True
+
         if allow_early_entry_for_pattern:
             lane = ExecutionLane.EARLY_TACTICAL.value
             tier = ConfirmationTier.HIGH_QUALITY.value
@@ -1798,7 +1854,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         elif final >= params["risky_entry_score"] and trigger_ready and regime != Regime.SHOCK.value:
             lane = ExecutionLane.EARLY_TACTICAL.value
 
-        thesis = f"{side} {setup_type} | HTF={tf4h.get('bias')} | Flow={flow.get('bias')} CVD={cvd.get('bias')} | 3M={scan_stage}"
+        thesis = f"{side} {setup_type} | HTF={tf4h.get('bias')} | 3M={scan_stage}"
 
         structure_alignment = 50
         if tf15.get("bias") == side:
@@ -2056,7 +2112,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             side=Side.NEUTRAL.value,
             setup_type=SetupType.NONE.value,
             quality=12,
-            reason="ринок не сформував професійного ICT + OrderFlow + Volume execution-package",
+            reason="ринок не сформував професійного ICT + 3M execution-package",
             regime=context["regime"],
             news_bias="NEUTRAL",
             macro_risk="NORMAL",
