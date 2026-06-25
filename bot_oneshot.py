@@ -998,7 +998,7 @@ def collect_market_data() -> dict:
     c15 = get_okx_candles(OKX_INST_ID, "15m", 200)
     c1h = get_okx_candles(OKX_INST_ID, "1h", 160)
     c4h = get_okx_candles(OKX_INST_ID, "4h", 140)
-    smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200) # Дані корелюючого активу (WTI тощо)
+    smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200) # Адаптовано для нафти
     
     # TradingView — ПРІОРИТЕТ
     tv_ticker = get_tradingview_price_fallback()
@@ -1347,7 +1347,7 @@ def build_context(data: dict, state: dict) -> dict:
         "atr15": atr15,
         "atr1h": atr1h,
         "candles": data["candles"],
-        "smt_candles": data.get("smt_candles", {}), # Адаптовано для нафти
+        "btc_candles": data.get("btc_candles", {}), # ДОДАНО
         "volume_clusters": [],
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
@@ -2542,6 +2542,19 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.stop_current = trade.tp2_locked_stop
         result["action"] = Action.TP2.value
         result["notes"].append("TP2 досягнуто — стоп на TP1 (зафіксовано)")
+
+    # ДОДАНИЙ БЛОК ДЛЯ TP3 (ПОВНЕ ЗАКРИТТЯ УГОДИ)
+    if not result["closed"] and trade.tp2_hit and not trade.tp3_hit and _target_hit(side, context, trade.tp3):
+        trade.tp3_hit = True
+        exit_price = round_price(trade.tp3)
+        result["closed"] = True
+        result["action"] = Action.TP3.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["notes"].append(f"TP3 досягнуто ({exit_price}) — угоду повністю закрито")
+        trade.status = "CLOSED"
+        trade.last_action = Action.TP3.value
+        return result
 
     if not result["closed"] and trade.tp1_stop_locked and not trade.tp2_hit:
         result["recommended_stop"] = round_price(trade.tp1_locked_stop)
