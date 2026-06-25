@@ -6,8 +6,8 @@
     "side": "LONG",
     "setup_type": "PULLBACK_CONTINUATION",
     "setup_family": "CONTINUATION",
-    "created_at": "2026-06-25T05:23:38.204327+00:00",
-    "expires_at": "2026-06-25T23:23:38.204332+00:00",
+    "created_at": "2026-06-25T05:24:59.166715+00:00",
+    "expires_at": "2026-06-25T23:24:59.166718+00:00",
     "score": 68,
     "trigger_level": 72.99,
     "invalidation_level": 72.7095,
@@ -20,45 +20,23 @@
       "ICT_LOCATION",
       "PRICE_STRUCTURE"
     ],
-    "execution_lane": "STANDARD_CONFIRMED",
+    "execution_lane": "MISSED_IMPULSE_REENTRY",
     "status": "ARMED",
     "thesis_key": "LONG|CONTINUATION|PULLBACK_CONTINUATION|729",
     "thesis": "LONG PULLBACK_CONTINUATION | HTF=NEUTRAL | Flow=NEUTRAL CVD=NEUTRAL | 3M=SWEEP",
     "missed_at": ""
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1782364860000,
-    "last_run_processed": 240,
-    "processed_count": 240,
+    "last_scanned_3m_ts": 1782365040000,
+    "last_run_processed": 1,
+    "processed_count": 241,
     "events": {
       "LONG": {
         "side": "LONG",
         "stage": "SWEEP",
         "source": "LIQUIDITY_SWEEP",
         "event_ts": 0,
-        "last_event_ts": 1782364860000,
-        "trigger_level": 72.99,
-        "event_price": 72.99,
-        "invalidation_level": 72.99,
-        "sweep_level": 72.99,
-        "extreme": 73.08,
-        "displacement": false,
-        "retest_ts": 0,
-        "ready_ts": 0,
-        "hold_closes": 0,
-        "previous_stage": "",
-        "chain_quality": 50,
-        "confirmation_quality": 40,
-        "acceptance_quality": 0,
-        "retest_quality": 0,
-        "processed_bars": 240
-      },
-      "SHORT": {
-        "side": "SHORT",
-        "stage": "SWEEP",
-        "source": "LIQUIDITY_SWEEP",
-        "event_ts": 0,
-        "last_event_ts": 1782364860000,
+        "last_event_ts": 1782365040000,
         "trigger_level": 72.99,
         "event_price": 72.99,
         "invalidation_level": 72.99,
@@ -73,25 +51,47 @@
         "confirmation_quality": 40,
         "acceptance_quality": 0,
         "retest_quality": 0,
-        "processed_bars": 240
+        "processed_bars": 241
+      },
+      "SHORT": {
+        "side": "SHORT",
+        "stage": "SWEEP",
+        "source": "LIQUIDITY_SWEEP",
+        "event_ts": 0,
+        "last_event_ts": 1782365040000,
+        "trigger_level": 72.99,
+        "event_price": 72.99,
+        "invalidation_level": 72.99,
+        "sweep_level": 72.99,
+        "extreme": 73.14,
+        "displacement": false,
+        "retest_ts": 0,
+        "ready_ts": 0,
+        "hold_closes": 0,
+        "previous_stage": "",
+        "chain_quality": 50,
+        "confirmation_quality": 40,
+        "acceptance_quality": 0,
+        "retest_quality": 0,
+        "processed_bars": 241
       }
     }
   },
   "regime_memory": {
-    "type": "",
-    "pending_type": "RANGE_COMPRESSION",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-06-25T05:23:38.203787+00:00"
+    "type": "RANGE_COMPRESSION",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-06-25T05:24:59.166223+00:00"
   },
   "latest_signal": {
-    "id": "5a0bdcc44b",
-    "time": "2026-06-25T05:23:38.204287+00:00",
+    "id": "53e88107c3",
+    "time": "2026-06-25T05:24:59.166690+00:00",
     "action": "ARMED",
     "side": "LONG",
     "setup_type": "PULLBACK_CONTINUATION",
     "quality": 68,
-    "reason": "Продовження тренду після ICT-відкату сформовано; gate v6: WATCH | RANGE_COMPRESSION",
+    "reason": "Re-entry з пропущеного імпульсу — сформовано сигнал, чекаємо входу",
     "regime": "RANGE",
     "news_bias": "NEUTRAL",
     "macro_risk": "NORMAL",
@@ -107,7 +107,15 @@
       "quality": 68,
       "price": 72.99,
       "time": "2026-06-25T05:23:38.204314+00:00"
+    },
+    {
+      "type": "ARMED",
+      "side": "LONG",
+      "setup_type": "PULLBACK_CONTINUATION",
+      "quality": 68,
+      "price": 73.01,
+      "time": "2026-06-25T05:24:59.166707+00:00"
     }
   ],
-  "updated_at": "2026-06-25T05:23:38.753590+00:00"
+  "updated_at": "2026-06-25T05:24:59.726264+00:00"
 }
