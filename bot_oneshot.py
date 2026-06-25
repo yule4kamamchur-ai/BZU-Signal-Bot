@@ -11,6 +11,7 @@ BZU Professional Hybrid Confluence Signal Bot v6.4
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import math
@@ -409,6 +410,7 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 def load_state() -> dict[str, Any]:
     raw = load_json(STATE_FILE, {})
     same_arch = raw.get("architecture_version") == ARCHITECTURE_VERSION
+    last_message_keys = raw.get("last_message_keys") if same_arch and isinstance(raw.get("last_message_keys"), dict) else {}
     return {
         "version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
@@ -418,6 +420,7 @@ def load_state() -> dict[str, Any]:
         "regime_memory": raw.get("regime_memory", {}) if same_arch and isinstance(raw.get("regime_memory"), dict) else {},
         "latest_signal": raw.get("latest_signal"),
         "last_message_key": raw.get("last_message_key", "") if same_arch else "",
+        "last_message_keys": last_message_keys,
         "history": list(raw.get("history") or [])[-MAX_HISTORY:],
     }
 
@@ -568,6 +571,63 @@ def clean_telegram_message(text: str) -> str:
 
 def plain_telegram_text(text: str) -> str:
     return html.unescape(text.replace("<b>", "").replace("</b>", ""))
+
+
+def build_message_key(kind: str, payload: dict[str, Any]) -> str:
+    stable_payload = json.dumps(json_safe(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(stable_payload.encode("utf-8")).hexdigest()[:16]
+    return f"{kind}:{digest}"
+
+
+def send_telegram_once(state: dict[str, Any], slot: str, message_key: str, text: str, force: bool = False) -> bool:
+    keys = state.setdefault("last_message_keys", {})
+    last_key = keys.get(slot) or state.get("last_message_key", "")
+    if not force and last_key == message_key:
+        print(f"TELEGRAM SKIPPED: duplicate {slot} message ({message_key})")
+        return False
+
+    sent = send_telegram(text)
+    if sent:
+        keys[slot] = message_key
+        state["last_message_key"] = message_key
+    return sent
+
+
+def decision_message_payload(decision: Decision) -> dict[str, Any]:
+    return {
+        "action": decision.action,
+        "side": decision.side,
+        "setup_type": decision.setup_type,
+        "quality": decision.quality,
+        "reason": decision.reason,
+        "regime": decision.regime,
+        "news_bias": decision.news_bias,
+        "macro_risk": decision.macro_risk,
+        "entry": round_price(decision.plan.entry) if decision.plan else 0,
+        "stop": round_price(decision.plan.stop) if decision.plan else 0,
+        "tp1": round_price(decision.plan.tp1) if decision.plan else 0,
+        "trigger_level": round_price(decision.candidate.trigger_level) if decision.candidate else 0,
+        "thesis_key": decision.candidate.thesis_key if decision.candidate else "",
+    }
+
+
+def stored_decision_message_payload(signal: dict[str, Any], opportunity: Any = None) -> dict[str, Any]:
+    opp = opportunity if isinstance(opportunity, dict) else {}
+    return {
+        "action": signal.get("action", ""),
+        "side": signal.get("side", ""),
+        "setup_type": signal.get("setup_type", ""),
+        "quality": signal.get("quality", 0),
+        "reason": signal.get("reason", ""),
+        "regime": signal.get("regime", ""),
+        "news_bias": signal.get("news_bias", "NEUTRAL"),
+        "macro_risk": signal.get("macro_risk", "NORMAL"),
+        "entry": 0,
+        "stop": 0,
+        "tp1": 0,
+        "trigger_level": round_price(opp.get("trigger_level")) if opp else 0,
+        "thesis_key": opp.get("thesis_key", "") if opp else "",
+    }
 
 
 def build_decision_message(context: dict, decision: Decision) -> str:
@@ -2540,7 +2600,20 @@ def run_bot() -> None:
         msg = build_follow_message(context, active, res)
         
         if TELEGRAM_NOTIFY_EVERY_RUN or res.get("closed"):
-            send_telegram(msg)
+            follow_key = build_message_key("follow", {
+                "trade_id": active.id,
+                "side": active.side,
+                "setup_type": active.setup_type,
+                "action": res.get("action"),
+                "closed": bool(res.get("closed")),
+                "tp1_hit": active.tp1_hit,
+                "tp2_hit": active.tp2_hit,
+                "tp3_hit": active.tp3_hit,
+                "stop_current": round_price(active.stop_current),
+                "recommended_stop": round_price(res.get("recommended_stop")),
+                "reversal_title": _follow_title(active, res, context),
+            })
+            send_telegram_once(state, "follow", follow_key, msg, force=bool(res.get("closed")))
         
         if res.get("closed"):
             journal["trades"].append({"id": active.id, "side": active.side, "setup_type": active.setup_type, "result_pct": res.get("current_pct"), "mfe_pct": res.get("best_pct")})
@@ -2555,6 +2628,8 @@ def run_bot() -> None:
         print("BOT COMPLETE: ACTIVE TRADE MANAGED")
         return
 
+    previous_latest_signal = dict(state.get("latest_signal") or {})
+    previous_opportunity = dict(state.get("opportunity") or {})
     decision = evaluate_new_setup(context, state, journal)
     payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
     state["latest_signal"] = payload
@@ -2576,7 +2651,17 @@ def run_bot() -> None:
     if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN:
         msg = build_decision_message(context, decision)
         print("TELEGRAM (DECISION):", msg[:320])
-        send_telegram(msg)
+        decision_key = build_message_key("decision", decision_message_payload(decision))
+        previous_decision_key = build_message_key(
+            "decision",
+            stored_decision_message_payload(previous_latest_signal, previous_opportunity),
+        ) if previous_latest_signal else ""
+        if not state.get("last_message_keys", {}).get("decision") and previous_decision_key == decision_key:
+            state.setdefault("last_message_keys", {})["decision"] = decision_key
+            state["last_message_key"] = decision_key
+            print(f"TELEGRAM SKIPPED: duplicate decision from existing state ({decision_key})")
+        else:
+            send_telegram_once(state, "decision", decision_key, msg)
 
     save_state(state)
     save_journal(journal)
