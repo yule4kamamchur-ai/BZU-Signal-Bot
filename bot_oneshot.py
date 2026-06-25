@@ -1,3 +1,10 @@
+Ви маєте цілковиту рацію. Оскільки ви торгуєте нафтою (BZ — Brent), шукати SMT-дивергенцію з біткоїном (BTC) немає жодного сенсу, адже між ними немає прямої ринкової кореляції. Класичний інструмент SMT (Smart Money Tool) від ICT працює лише для тісно пов'язаних активів (наприклад, порівняння нафти Brent та WTI, або EURUSD та GBPUSD).
+
+Я переробив логіку: тепер бот використовує змінну `SMT_ASSET_ID`, яка за замовчуванням налаштована на WTI (US Oil), але ви зможете гнучко змінити її через змінні середовища. Всі змінні, пов'язані з `btc`, були замінені на універсальні `smt`, а текст повідомлень у Telegram адаптовано під новий актив. Алгоритм порівняння локальних максимумів та мінімумів залишено без змін, оскільки його геометрія однакова для будь-якого ринку.
+
+Ось повністю виправлений код файлу, без жодних скорочень чи обрізань:
+
+```python
 #!/usr/bin/env python3
 """
 BZU Professional Hybrid Confluence Signal Bot v6.6 (Time-Warp Edition)
@@ -5,7 +12,7 @@ BZU Professional Hybrid Confluence Signal Bot v6.6 (Time-Warp Edition)
 Виправлення v6.6:
 - Інновація: Time-Warp Validation (Ретроспективний 3M Пул-Аналіз)
 - Інтеграція Premium/Discount (PD Arrays)
-- SMT Divergence (BTC)
+- SMT Divergence (Адаптовано для нафти: Brent vs WTI)
 - Killzones (Торгові сесії)
 - Валідація FVG (Consequent Encroachment)
 (Усі попередні алгоритми супроводу угод та логування повністю збережено)
@@ -43,7 +50,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 OKX_BASE_URL = "https://www.okx.com/api/v5/market"
 TRADINGVIEW_SCAN_URL = "https://scanner.tradingview.com/crypto/scan"
 OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-BTC_INST_ID = "BTC-USDT-SWAP" # Додано для SMT Divergence
+SMT_ASSET_ID = os.getenv("SMT_ASSET_ID", "WTI-USDT-SWAP") # Корелюючий актив для SMT (наприклад, WTI)
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
 
@@ -844,32 +851,32 @@ def identify_liquidity_and_range(candles: list[Candle], left_bars: int = 5, righ
         "eq": eq,
     }
 
-def detect_smt_divergence(asset_candles: list[Candle], btc_candles: list[Candle]) -> str:
-    """Шукає розбіжності між активом та BTC."""
-    if len(asset_candles) < 20 or len(btc_candles) < 20:
+def detect_smt_divergence(asset_candles: list[Candle], smt_candles: list[Candle]) -> str:
+    """Шукає розбіжності між активом та корелюючим активом (наприклад, Brent vs WTI)."""
+    if len(asset_candles) < 20 or len(smt_candles) < 20:
         return Side.NEUTRAL.value
         
     asset_lows = [c.low for c in asset_candles[-10:]]
-    btc_lows = [c.low for c in btc_candles[-10:]]
+    smt_lows = [c.low for c in smt_candles[-10:]]
     asset_highs = [c.high for c in asset_candles[-10:]]
-    btc_highs = [c.high for c in btc_candles[-10:]]
+    smt_highs = [c.high for c in smt_candles[-10:]]
     
     asset_current_low = min(asset_lows[-3:])
     asset_prev_low = min(asset_lows[:-3])
-    btc_current_low = min(btc_lows[-3:])
-    btc_prev_low = min(btc_lows[:-3])
+    smt_current_low = min(smt_lows[-3:])
+    smt_prev_low = min(smt_lows[:-3])
     
     # Bullish SMT
-    if btc_current_low < btc_prev_low and asset_current_low >= asset_prev_low:
+    if smt_current_low < smt_prev_low and asset_current_low >= asset_prev_low:
         return Side.LONG.value
         
     asset_current_high = max(asset_highs[-3:])
     asset_prev_high = max(asset_highs[:-3])
-    btc_current_high = max(btc_highs[-3:])
-    btc_prev_high = max(btc_highs[:-3])
+    smt_current_high = max(smt_highs[-3:])
+    smt_prev_high = max(smt_highs[:-3])
     
     # Bearish SMT
-    if btc_current_high > btc_prev_high and asset_current_high <= asset_prev_high:
+    if smt_current_high > smt_prev_high and asset_current_high <= asset_prev_high:
         return Side.SHORT.value
         
     return Side.NEUTRAL.value
@@ -998,7 +1005,7 @@ def collect_market_data() -> dict:
     c15 = get_okx_candles(OKX_INST_ID, "15m", 200)
     c1h = get_okx_candles(OKX_INST_ID, "1h", 160)
     c4h = get_okx_candles(OKX_INST_ID, "4h", 140)
-    btc_c15 = get_okx_candles(BTC_INST_ID, "15m", 200) # ДОДАНО ДЛЯ SMT
+    smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200) # Дані корелюючого активу (WTI тощо)
     
     # TradingView — ПРІОРИТЕТ
     tv_ticker = get_tradingview_price_fallback()
@@ -1020,7 +1027,7 @@ def collect_market_data() -> dict:
     return {
         "time": iso_now(),
         "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
-        "btc_candles": {"15m": btc_c15}, # ДОДАНО ДЛЯ SMT
+        "smt_candles": {"15m": smt_c15}, # Адаптовано для нафти
         "ticker": ticker,
         "trades": [],
         "book": {"bids": [], "asks": []},
@@ -1347,7 +1354,7 @@ def build_context(data: dict, state: dict) -> dict:
         "atr15": atr15,
         "atr1h": atr1h,
         "candles": data["candles"],
-        "btc_candles": data.get("btc_candles", {}), # ДОДАНО
+        "smt_candles": data.get("smt_candles", {}), # Адаптовано для нафти
         "volume_clusters": [],
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
@@ -1708,12 +1715,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     regime = context["regime"]
     scan_events = context.get("scan_3m_events", {})
     c15 = (context.get("candles", {}) or {}).get("15m", [])
-    btc_c15 = (context.get("btc_candles", {}) or {}).get("15m", [])
+    smt_c15 = (context.get("smt_candles", {}) or {}).get("15m", [])
 
     # === ICT PD Array / SMT Data ===
     range_data = identify_liquidity_and_range(c15)
     eq_level = range_data.get("eq", 0.0)
-    smt_bias = detect_smt_divergence(c15, btc_c15)
+    smt_bias = detect_smt_divergence(c15, smt_c15)
     now_hour = now_utc().hour
     is_killzone = (7 <= now_hour < 10) or (12 <= now_hour < 15) or (18 <= now_hour < 21)
 
@@ -1850,7 +1857,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         if smt_bias == side:
             raw += 20
-            flw_conf.append("🔥 SMT Divergence з BTC підтверджує рух")
+            asset_name = str(SMT_ASSET_ID).split("-")[0]
+            flw_conf.append(f"🔥 SMT Divergence з {asset_name} підтверджує рух")
 
         if is_killzone:
             raw += 5
@@ -2554,7 +2562,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         locked = trade.tp1_locked_stop or trade.stop_current
         trade.stop_current = float(locked)
         result["recommended_stop"] = round_price(trade.stop_current)
-        result["recommended_stop_reason"] = "TP1-стоп зафіксований; до TP2 не рухати без окремого exit-сигналу"
+        result["recommended_stop_reason"] = "TP1-стоп зафікваний; до TP2 не рухати без окремого exit-сигналу"
 
     structural_break = False
     if side == Side.LONG.value:
@@ -2732,3 +2740,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+```
