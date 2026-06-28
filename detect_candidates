@@ -210,6 +210,7 @@ class Candidate:
     confirmation_tier: int = 2
     stage: str = "DISCOVERED"
     variant: str = ""
+    ict_model: str = "NONE"  # НОВЕ ПОЛЕ: Визначена ICT-модель
     execution_anchor: float = 0.0
     trigger_ts: int = 0
     trigger_age_minutes: float = 0.0
@@ -1781,6 +1782,142 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     eq_level = range_data.get("eq", 0.0)
     smt_bias = detect_smt_divergence(c15, smt_c15)
     
+    kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
+    now_kyiv = datetime.now(kyiv_tz)
+    k_hour = now_kyiv.hour
+    is_killzone = (8 <= k_hour < 17) or (15 <= k_hour <= 23)
+
+    params = get_adaptive_params(regime)
+    candidates = []
+
+    # ==========================================================
+    # РЕЄСТР 10 ICT-МОДЕЛЕЙ (Адаптовано під BZ)
+    # ==========================================================
+    pattern_registry = {
+        "2022_MODEL": {"name": "2022 Model", "priority": 100, "allow_early": True, "preferred_setup": SetupType.SWEEP_RECLAIM.value, "score_bonus": 22, "stop_min_atr": 0.8, "stop_max_atr": 1.5, "favored": [Regime.TRANSITION.value, Regime.TREND.value], "penalty": [Regime.RANGE.value]},
+        "SILVER_BULLET": {"name": "Silver Bullet", "priority": 95, "allow_early": False, "preferred_setup": SetupType.PULLBACK_CONTINUATION.value, "score_bonus": 18, "stop_min_atr": 0.5, "stop_max_atr": 1.2, "favored": [Regime.TREND.value], "penalty": [Regime.SHOCK.value]},
+        "PO3": {"name": "Power of 3 (AMD)", "priority": 90, "allow_early": True, "preferred_setup": SetupType.RANGE_EDGE_REVERSAL.value, "score_bonus": 16, "stop_min_atr": 1.0, "stop_max_atr": 2.0, "favored": [Regime.NORMAL.value, Regime.RANGE.value], "penalty": [Regime.SHOCK.value]},
+        "TURTLE_SOUP": {"name": "Turtle Soup", "priority": 85, "allow_early": True, "preferred_setup": SetupType.SWEEP_RECLAIM.value, "score_bonus": 18, "stop_min_atr": 0.6, "stop_max_atr": 1.4, "favored": [Regime.RANGE.value, Regime.SHOCK.value], "penalty": [Regime.TREND.value]},
+        "BREAKER_BLOCK": {"name": "Breaker Block", "priority": 80, "allow_early": False, "preferred_setup": SetupType.BREAKOUT_RETEST.value, "score_bonus": 14, "stop_min_atr": 0.8, "stop_max_atr": 1.8, "favored": [Regime.TREND.value, Regime.TRANSITION.value], "penalty": [Regime.RANGE.value]},
+        "FVG_ENTRY": {"name": "FVG Entry", "priority": 75, "allow_early": False, "preferred_setup": SetupType.PULLBACK_CONTINUATION.value, "score_bonus": 12, "stop_min_atr": 0.7, "stop_max_atr": 1.6, "favored": [Regime.TREND.value], "penalty": [Regime.RANGE.value, Regime.SHOCK.value]},
+        "OB_RECLAIM": {"name": "OB Reclaim", "priority": 88, "allow_early": True, "preferred_setup": SetupType.FRESH_BASE_CONTINUATION.value, "score_bonus": 15, "stop_min_atr": 0.9, "stop_max_atr": 2.2, "favored": [Regime.TREND.value, Regime.NORMAL.value], "penalty": []},
+        "JUDAS_SWING": {"name": "Judas Swing", "priority": 92, "allow_early": True, "preferred_setup": SetupType.CAPITULATION_RECOVERY.value, "score_bonus": 20, "stop_min_atr": 1.0, "stop_max_atr": 2.5, "favored": [Regime.SHOCK.value, Regime.TRANSITION.value], "penalty": [Regime.RANGE.value]},
+        "MMBM": {"name": "MMBM/MMSM", "priority": 98, "allow_early": True, "preferred_setup": SetupType.DIRECTION_FLIP.value, "score_bonus": 25, "stop_min_atr": 0.8, "stop_max_atr": 1.5, "favored": [Regime.TRANSITION.value, Regime.TREND.value], "penalty": [Regime.RANGE.value]},
+        "BMS_RETEST": {"name": "BMS Retest", "priority": 70, "allow_early": False, "preferred_setup": SetupType.BREAKOUT_RETEST.value, "score_bonus": 12, "stop_min_atr": 0.9, "stop_max_atr": 1.9, "favored": [Regime.TREND.value], "penalty": [Regime.RANGE.value]}
+    }
+
+    for side in [Side.LONG.value, Side.SHORT.value]:
+        event = scan_events.get(side, {})
+        trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
+        trigger_ready = event.get("stage") in ["ACCEPTANCE", "RETEST", "READY"] and trigger_age <= TRIGGER_MAX_AGE_MINUTES
+        trigger_level = event.get("trigger_level", price)
+        scan_stage = event.get("stage", "")
+        time_warp_opportunity = event.get("time_warp_opportunity", False)
+
+        has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
+        recent_struct = detect_recent_structure_shift(c15, lookback=7)
+        move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
+        
+        # Евристики для розпізнавання моделей
+        has_fvg = any(z.side == side and z.kind == "FVG" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
+        has_ob = any(z.side == side and z.kind == "OB" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
+        is_sweep = event.get("source") == "LIQUIDITY_SWEEP"
+        has_choch = recent_struct["bullish_shift"] if side == Side.LONG.value else recent_struct["bearish_shift"]
+        strong_displacement = event.get("strong_displacement")
+        has_good_reclaim = has_quality_reclaim(event)
+        
+        active_patterns = []
+        if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
+        if is_killzone and has_fvg and strong_displacement: active_patterns.append("SILVER_BULLET")
+        if regime == Regime.RANGE.value and is_sweep and has_good_reclaim: active_patterns.append("PO3")
+        if is_sweep and not strong_displacement: active_patterns.append("TURTLE_SOUP")
+        if has_choch and has_good_reclaim: active_patterns.append("BREAKER_BLOCK")
+        if has_fvg and tf1h.get("bias") == side: active_patterns.append("FVG_ENTRY")
+        if has_ob and has_good_reclaim: active_patterns.append("OB_RECLAIM")
+        if is_killzone and is_sweep and abs(move8) > 1.5: active_patterns.append("JUDAS_SWING")
+        if tf1h.get("bias") == side and tf15.get("bias") == side and has_choch and is_sweep: active_patterns.append("MMBM")
+        if tf15.get("bias") == side and event.get("retest"): active_patterns.append("BMS_RETEST")
+
+        best_pattern = None
+        best_priority = 0
+        pattern_conf = []
+        raw_bonus = 0
+
+        for pat_id in active_patterns:
+            p_data = pattern_registry[pat_id]
+            if p_data["priority"] > best_priority:
+                best_priority = p_data["priority"]
+                best_pattern = pat_id
+
+        if best_pattern:
+            p_data = pattern_registry[best_pattern]
+            raw_bonus = p_data["score_bonus"]
+            pattern_conf.append(f"Модель: {p_data['name']}")
+            
+            # Органічна стабільність (Regime Matching)
+            if regime in p_data["favored"]:
+                raw_bonus += 5
+                pattern_conf.append("✅ Модель узгоджена з режимом ринку (+5)")
+            elif regime in p_data["penalty"]:
+                raw_bonus -= 10
+                pattern_conf.append("⚠️ Конфлікт моделі з режимом ринку (-10)")
+
+        # Базові обчислення якості (збережено існуючу логіку)
+        loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
+        str_score = 19 if tf15.get("bias") == side else 10
+        liq_score = 16 if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready else 6
+        flw_score = 17 if flow.get("bias") == side and cvd.get("bias") == side else 0
+        trig_score = 22 if trigger_ready else 8
+        htf_score = 20 if tf4h.get("bias") == side else 6
+        
+        raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus
+        
+        setup_type = SetupType.PULLBACK_CONTINUATION.value
+        if best_pattern:
+            setup_type = pattern_registry[best_pattern]["preferred_setup"]
+        elif trigger_ready and scan_stage in ["RETEST", "READY"]:
+            setup_type = SetupType.BREAKOUT_RETEST.value
+        elif is_sweep and trigger_ready:
+            setup_type = SetupType.SWEEP_RECLAIM.value
+
+        evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
+        if flw_score > 0: evidence.append("ORDER_FLOW_CVD")
+        if trigger_ready: evidence.append("EXECUTION_TRIGGER_3M")
+        
+        final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
+        
+        lane = ExecutionLane.EARLY_TACTICAL.value if (best_pattern and pattern_registry[best_pattern]["allow_early"]) or time_warp_opportunity else ExecutionLane.STANDARD_CONFIRMED.value
+
+        cand = Candidate(
+            side=side,
+            setup_type=setup_type,
+            setup_family=SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value),
+            raw_score=raw,
+            final_score=final,
+            evidence_families=evidence,
+            confirmations=pattern_conf,
+            trigger_ready=trigger_ready,
+            trigger_level=round_price(trigger_level),
+            invalidation_level=round_price(price - (atr15 * 1.65 if side == Side.LONG.value else -atr15 * 1.65)),
+            target_levels=[round_price(price + (atr15 * 2.4 if side == Side.LONG.value else -atr15 * 2.4))],
+            execution_lane=lane,
+            stage="ARMED" if final >= params["armed_score"] else "DISCOVERED",
+            variant="PATTERN_TRIGGERED" if best_pattern else "STANDARD",
+            ict_model=best_pattern or "NONE",  # Передаємо модель далі
+            execution_anchor=price,
+            trigger_age_minutes=trigger_age,
+            thesis_key=f"{side}|{setup_type}|{int(price*10)}",
+            thesis=f"{side} {setup_type} | 3M={scan_stage}",
+            professional_gate={}
+        )
+        cand.professional_gate = evaluate_professional_gate(context, cand)
+        
+        # Не обрізаємо до 2-х, повертаємо всіх з базовою якістю
+        if cand.final_score >= params["armed_score"] - 10:
+            candidates.append(cand)
+            
+    return candidates
+    
     # === Визначення торгових сесій (Київський час) ===
     kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
     now_kyiv = datetime.now(kyiv_tz)
@@ -2140,14 +2277,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     return sorted(candidates, key=lambda c: -c.final_score)[:2]
 
 
-def collapse_candidates(cands: list[Candidate]) -> list[Candidate]:
-    if not cands:
-        return []
-    best_long = max([c for c in cands if c.side == Side.LONG.value], key=lambda x: x.final_score, default=None)
-    best_short = max([c for c in cands if c.side == Side.SHORT.value], key=lambda x: x.final_score, default=None)
-    return sorted([c for c in [best_long, best_short] if c], key=lambda c: -c.final_score)
-
-
 # ==========================================================
 # TRADE PLAN
 # ==========================================================
@@ -2256,38 +2385,58 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     side = candidate.side
     profile = trade_mode_profile(context, side, candidate.setup_type)
     zones = context["zones"]
+
+    # ДИНАМІЧНИЙ RISK PROFILE на основі Реєстру 10 моделей
+    registry_stop_min = MIN_STOP_ATR15
+    registry_stop_max = MAX_STOP_ATR15
+    
+    # Визначаємо профіль, якщо кандидат має конкретну ICT модель
+    if candidate.ict_model != "NONE":
+        # Hardcoded копія реєстру для ризик-менеджменту (щоб не тягнути залежності)
+        atr_limits = {
+            "2022_MODEL": (0.8, 1.5), "SILVER_BULLET": (0.5, 1.2), "PO3": (1.0, 2.0),
+            "TURTLE_SOUP": (0.6, 1.4), "BREAKER_BLOCK": (0.8, 1.8), "FVG_ENTRY": (0.7, 1.6),
+            "OB_RECLAIM": (0.9, 2.2), "JUDAS_SWING": (1.0, 2.5), "MMBM": (0.8, 1.5),
+            "BMS_RETEST": (0.9, 1.9)
+        }
+        if candidate.ict_model in atr_limits:
+            registry_stop_min, registry_stop_max = atr_limits[candidate.ict_model]
+            profile["stop_min_atr"] = registry_stop_min
+            profile["stop_max_atr"] = registry_stop_max
+
     structural_stop = candidate.invalidation_level
     for z in sorted(zones, key=lambda x: -x.strength):
         if z.side == opposite(side) and z.timeframe in ("1h", "4h"):
             structural_stop = z.low if side == Side.LONG.value else z.high
             break
+            
     stop_dist = abs(price - structural_stop)
     stop_dist = max(stop_dist, atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15)))
     stop_dist = min(stop_dist, atr15 * float(profile.get("stop_max_atr", MAX_STOP_ATR15)))
+    
     stop = price - stop_dist if side == Side.LONG.value else price + stop_dist
     tp1_dist = max(stop_dist * float(profile.get("tp1_rr", PREFERRED_RR1)), atr15 * MIN_TP1_ATR15)
     tp2_dist = max(stop_dist * float(profile.get("tp2_rr", MIN_RR2)), tp1_dist + atr15 * 0.45)
     tp3_dist = max(stop_dist * float(profile.get("tp3_rr", MIN_RR3)), tp2_dist + atr15 * 0.55)
+    
     tp1 = price + tp1_dist if side == Side.LONG.value else price - tp1_dist
     tp2 = price + tp2_dist if side == Side.LONG.value else price - tp2_dist
     tp3 = price + tp3_dist if side == Side.LONG.value else price - tp3_dist
     stop, tp1, tp2, tp3 = enforce_smart_money_rr(side, price, stop, tp1, tp2, tp3, atr15)
+    
     rr1 = abs(tp1 - price) / abs(stop - price) if abs(stop - price) > 1e-9 else 2.1
     regime_action = str(profile.get("entry_action", "ALLOW")).upper()
     execution_ready = candidate.trigger_ready and candidate.final_score >= ENTRY_SCORE_BASE and not profile.get("hard_block") and regime_action in {"ALLOW", "RISKY_ONLY"}
+    
     plan = TradePlan(
         entry=round_price(price),
         stop=round_price(stop),
-        tp1=round_price(tp1),
-        tp2=round_price(tp2),
-        tp3=round_price(tp3),
+        tp1=round_price(tp1), tp2=round_price(tp2), tp3=round_price(tp3),
         risk_pct=NORMAL_RISK_PCT if candidate.execution_lane != ExecutionLane.EARLY_TACTICAL.value else RISKY_RISK_PCT,
-        rr1=round(rr1, 2),
-        rr2=round(abs(tp2 - price) / abs(stop - price), 2),
-        rr3=round(abs(tp3 - price) / abs(stop - price), 2),
+        rr1=round(rr1, 2), rr2=round(abs(tp2 - price) / abs(stop - price), 2), rr3=round(abs(tp3 - price) / abs(stop - price), 2),
         position_risk_pct=RISKY_RISK_PCT if candidate.execution_lane == ExecutionLane.EARLY_TACTICAL.value else NORMAL_RISK_PCT,
         invalidation=f"закриття 15M за {round_price(structural_stop)}",
-        stop_basis=f"{profile.get('regime_type', context.get('regime'))}: структура + ATR buffer",
+        stop_basis=f"Модель: {candidate.ict_model} | ATR: {registry_stop_min}-{registry_stop_max}",
         target_basis=f"динамічні TP за regime/setup profile ({profile.get('regime_type')})",
         stop_timeframe="1H" if any(z.timeframe == "1h" for z in zones) else "15M",
         structural_invalidation=round_price(structural_stop),
@@ -2305,59 +2454,41 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     cands = detect_candidates(context, state, journal)
-    cands = collapse_candidates(cands)
-
-    saved_opp = opportunity_from_state(state)
     current_price = context.get("price", 0)
     
+    # 1. Перевірка ре-ентрі (залишається незмінною)
+    saved_opp = opportunity_from_state(state)
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
             guard = event_driven_reentry_guard(state, context, missed_cand)
-            
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
-                
-                if missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD:
-                    action = Action.RISKY_ENTRY.value
-                    reason = "Re-entry з пропущеного імпульсу — високий confluence, відкриваємо угоду"
-                else:
-                    action = Action.ARMED.value
-                    reason = "Re-entry з пропущеного імпульсу — сформовано сигнал, чекаємо входу"
-                
+                action = Action.RISKY_ENTRY.value if missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD else Action.ARMED.value
                 return Decision(
-                    id=uuid.uuid4().hex[:10],
-                    time=iso_now(),
-                    action=action,
-                    side=missed_cand.side,
-                    setup_type=missed_cand.setup_type,
-                    quality=missed_cand.final_score,
-                    reason=reason,
-                    regime=context["regime"],
-                    candidate=missed_cand,
-                    plan=plan,
-                    news_bias="NEUTRAL",
-                    macro_risk="NORMAL",
-                    current_price=current_price,
-                    audit={"reentry": True, "origin_opportunity": saved_opp.thesis_key}
+                    id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=missed_cand.side, setup_type=missed_cand.setup_type,
+                    quality=missed_cand.final_score, reason="Re-entry з пропущеного імпульсу", regime=context["regime"],
+                    candidate=missed_cand, plan=plan, current_price=current_price
                 )
 
-    if not cands:
+    # 2. БАГАТОПОТОКОВИЙ СКАНЕР: Відбір усіх валідних кандидатів
+    valid_candidates = []
+    for cand in cands:
+        gate = cand.professional_gate or evaluate_professional_gate(context, cand)
+        # Додаємо кандидата, якщо він проходить хоча б один Gate
+        if gate.get("allow_entry") or gate.get("allow_risky") or cand.final_score >= get_adaptive_params(context["regime"])["armed_score"]:
+            valid_candidates.append(cand)
+
+    if not valid_candidates:
         return Decision(
-            id=uuid.uuid4().hex[:10],
-            time=iso_now(),
-            action=Action.NO_SETUP.value,
-            side=Side.NEUTRAL.value,
-            setup_type=SetupType.NONE.value,
-            quality=12,
-            reason="ринок не сформував професійного ICT + 3M execution-package",
-            regime=context["regime"],
-            news_bias="NEUTRAL",
-            macro_risk="NORMAL",
-            current_price=current_price
+            id=uuid.uuid4().hex[:10], time=iso_now(), action=Action.NO_SETUP.value, side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value,
+            quality=12, reason="Ринок не сформував професійного ICT + 3M execution-package", regime=context["regime"], current_price=current_price
         )
 
-    best = cands[0]
+    # 3. Вибір абсолютного переможця за сукупним рейтингом
+    valid_candidates.sort(key=lambda c: c.final_score, reverse=True)
+    best = valid_candidates[0]
+    
     plan = build_trade_plan(context, best)
     action = Action.NO_SETUP.value
     mode_profile = trade_mode_profile(context, best.side, best.setup_type)
@@ -2377,31 +2508,19 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         reason = f"Regime Engine 2.0 блокує вхід: {mode_profile.get('reason', 'режим не підтримує вхід')}"
     elif gate.get("allow_entry") and plan.valid and plan.execution_ready and entry_action == "ALLOW" and not mode_profile.get("force_risky"):
         action = Action.ENTRY.value
-        reason = f"{setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6 + {mode_profile.get('regime_type')} profile"
+        reason = f"[{best.ict_model}] {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6"
     elif (gate.get("allow_risky") or entry_action == "RISKY_ONLY" or mode_profile.get("force_risky")) and plan.valid and not hard_block:
         action = Action.RISKY_ENTRY.value
-        reason = f"Ризикований ранній вхід: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
+        reason = f"[{best.ict_model}] Ризикований вхід: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
     elif best.final_score >= params["armed_score"]:
         action = Action.ARMED.value
-        reason = f"{setup_label(best.setup_type)} сформовано; gate v6: {gate.get('grade', 'WATCH')} | {mode_profile.get('regime_type')}"
+        reason = f"[{best.ict_model}] {setup_label(best.setup_type)} сформовано; gate v6: {gate.get('grade', 'WATCH')}"
 
     return Decision(
-        id=uuid.uuid4().hex[:10],
-        time=iso_now(),
-        action=action,
-        side=best.side,
-        setup_type=best.setup_type,
-        quality=quality,
-        reason=reason,
-        regime=context["regime"],
-        candidate=best,
-        plan=plan,
-        news_bias="NEUTRAL",
-        macro_risk="NORMAL",
-        current_price=current_price,
-        audit={"selected": {"side": best.side, "setup": best.setup_type, "score": best.final_score, "quality_after_regime": quality, "gate": gate.get("grade"), "regime_engine": context.get("market_regime")}}
+        id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=best.side, setup_type=best.setup_type,
+        quality=quality, reason=reason, regime=context["regime"], candidate=best, plan=plan, current_price=current_price,
+        audit={"selected": {"side": best.side, "model": best.ict_model, "score": best.final_score}}
     )
-
 
 # ==========================================================
 # MANAGE ACTIVE TRADE
