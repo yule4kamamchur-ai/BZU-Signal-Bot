@@ -20,6 +20,13 @@ import math
 import os
 import time
 import uuid
+import zoneinfo
+from datetime import datetime, timezone, timedelta
+from enum import Enum
+from pathlib import Path
+from statistics import mean
+from typing import Any, Optional
+import requests
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -1714,8 +1721,32 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     range_data = identify_liquidity_and_range(c15)
     eq_level = range_data.get("eq", 0.0)
     smt_bias = detect_smt_divergence(c15, smt_c15)
-    now_hour = now_utc().hour
-    is_killzone = (7 <= now_hour < 10) or (12 <= now_hour < 15) or (18 <= now_hour < 21)
+    
+    # === Визначення торгових сесій (Київський час) ===
+    kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
+    now_kyiv = datetime.now(kyiv_tz)
+    k_hour = now_kyiv.hour
+
+    is_pacific = 0 <= k_hour < 9
+    is_asian = 2 <= k_hour < 11
+    is_european = 8 <= k_hour < 17
+    is_american = 15 <= k_hour <= 23  # до 00:00 наступного дня
+
+    # Для нафти (BZ) найвища волатильність припадає на Європу та Америку
+    is_killzone = is_european or is_american
+    
+    # Визначення поточної активної сесії для логування (за пріоритетом волатильності)
+    active_session_name = "ПОЗА СЕСІЄЮ"
+    if 15 <= k_hour < 17:
+        active_session_name = "ЄВРОПА + АМЕРИКА (ПЕРЕТИН)"
+    elif is_american:
+        active_session_name = "АМЕРИКАНСЬКА"
+    elif is_european:
+        active_session_name = "ЄВРОПЕЙСЬКА"
+    elif is_asian:
+        active_session_name = "АЗІЙСЬКА"
+    elif is_pacific:
+        active_session_name = "ТИХООКЕАНСЬКА"
 
     params = get_adaptive_params(regime)
 
@@ -1855,10 +1886,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         if is_killzone:
             raw += 5
-            pattern_conf.append("✅ Угода в активну Killzone")
+            pattern_conf.append(f"✅ Активна сесія: {active_session_name}")
         else:
             raw -= 8
-            pattern_conf.append("⚠️ Поза активними торговими сесіями")
+            pattern_conf.append(f"⚠️ Низька ліквідність ({active_session_name})")
 
         # ==========================================================
         # МОДУЛЬНА СИСТЕМА ПАТЕРНІВ
