@@ -69,11 +69,11 @@ RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
 # === ICT Geometry ===
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
 MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.60") or 2.60)
-MIN_TP1_ATR15 = max(1.25, float(os.getenv("MIN_TP1_ATR15", "1.30") or 1.30))
-MIN_RR1 = max(2.00, float(os.getenv("MIN_RR1", "2.00") or 2.00))
-PREFERRED_RR1 = max(2.20, float(os.getenv("PREFERRED_RR1", "2.20") or 2.20))
-MIN_RR2 = max(3.00, float(os.getenv("MIN_RR2", "3.00") or 3.00))
-MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
+MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.00") or 1.00))
+MIN_RR1 = max(1.00, float(os.getenv("MIN_RR1", "1.00") or 1.00))  # Змінено з 2.00 на 1.00
+PREFERRED_RR1 = max(1.10, float(os.getenv("PREFERRED_RR1", "1.10") or 1.10))
+MIN_RR2 = max(2.00, float(os.getenv("MIN_RR2", "2.00") or 2.00))
+MIN_RR3 = max(3.00, float(os.getenv("MIN_RR3", "3.00") or 3.00))
 
 # === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
@@ -1161,8 +1161,51 @@ def flow_snapshot(trades: list[dict], book: dict) -> dict:
     return {"bias": Side.NEUTRAL.value, "score": 0, "absorption_bias": Side.NEUTRAL.value}
 
 
-def cvd_snapshot(trades: list[dict]) -> dict:
-    return {"cvd": 0.0, "bias": Side.NEUTRAL.value, "strength": 0, "absorption": Side.NEUTRAL.value}
+def cvd_snapshot(candles: list[Candle]) -> dict:
+    """Апроксимація Cumulative Volume Delta (CVD) на основі внутрішнього тиску свічок"""
+    if len(candles) < 15:
+        return {"cvd": 0.0, "bias": Side.NEUTRAL.value, "strength": 0, "score": 0}
+    
+    delta = 0.0
+    total_vol = 0.0
+    
+    # Аналізуємо останні 10 свічок для розуміння локального тиску
+    for c in candles[-10:]:
+        rng = c.high - c.low
+        if rng <= 0:
+            continue
+            
+        # Розраховуємо, яка частка свічки контролювалася покупцями/продавцями
+        buy_pressure = (c.close - c.low) / rng
+        sell_pressure = (c.high - c.close) / rng
+        
+        # Обсяг ділиться пропорційно до сили тиску
+        candle_delta = c.volume * (buy_pressure - sell_pressure)
+        delta += candle_delta
+        total_vol += c.volume
+
+    if total_vol == 0:
+        return {"cvd": 0.0, "bias": Side.NEUTRAL.value, "strength": 0, "score": 0}
+
+    # Визначаємо критичний перекіс дельти
+    delta_ratio = abs(delta) / total_vol
+    bias = Side.LONG.value if delta > 0 else Side.SHORT.value
+    
+    strength = 0
+    score = 0
+    if delta_ratio > 0.15:  # 15% обсягу йде агресивно в один бік
+        strength = 1
+        score = 8
+    if delta_ratio > 0.30:  # 30% перекіс - це інституційний тиск
+        strength = 2
+        score = 15
+
+    return {
+        "cvd": round(delta, 2), 
+        "bias": bias if strength > 0 else Side.NEUTRAL.value, 
+        "strength": strength, 
+        "score": score
+    }
 
 
 def regime_detection(tf4h: dict, tf1h: dict, move8: float) -> tuple[str, str]:
@@ -1213,7 +1256,29 @@ def detect_regime_engine_2(context: dict, side: Optional[str] = None) -> dict:
     tf3_same = bias in {Side.LONG.value, Side.SHORT.value} and tf3.get("bias") == bias
     tf3_against = bias in {Side.LONG.value, Side.SHORT.value} and tf3.get("bias") == opposite(bias)
     near_range_mid = bool(range_atr and abs(move8) < 0.38 and tf15.get("score", 0) <= 28)
+# === VOLATILITY SQUEEZE FILTER ===
+    atr5 = atr(c15, 5)
+    atr20 = atr(c15, 20)
+    # Якщо поточна волатильність становить менше 40% від звичайної - це аномальний штиль
+    is_squeeze = bool(atr5 > 0 and atr20 > 0 and (atr5 / atr20) < 0.40)
+    
+    metrics = {
+        "bias": bias,
+        "move8_pct": round(move8, 3),
+        "range_atr": round(range_atr, 2),
+        "tf3": tf3.get("bias"),
+        "tf15": tf15.get("bias"),
+        "tf1h": tf1h.get("bias"),
+        "tf4h": tf4h.get("bias"),
+        "is_squeeze": is_squeeze
+    }
 
+    if is_squeeze:
+        return _regime_engine_result(
+            "VOLATILITY_SQUEEZE", Regime.RANGE.value, 40, 90,
+            "Аномальне стискання волатильності (Squeeze). Наближається викид. Торги заборонено.",
+            entry_action="BLOCK", quality_adjustment=-25, quality_cap=50, hard_block=True, metrics=metrics,
+        )
     metrics = {
         "bias": bias,
         "move8_pct": round(move8, 3),
@@ -1336,8 +1401,8 @@ def build_context(data: dict, state: dict) -> dict:
         tf4h["score"] = 30 if abs(c4h[-1].close - ema) / ema > 0.005 else 18
 
     zones = detect_zones(c15, "15m") + detect_zones(c1h, "1h", 42) + detect_zones(c4h, "4h", 28)
-    flow = flow_snapshot(data.get("trades", []), data.get("book", {}))
-    cvd = cvd_snapshot(data.get("trades", []))
+  flow = flow_snapshot(data.get("trades", []), data.get("book", {}))
+    cvd = cvd_snapshot(c15)  # Передаємо 15М свічки для розрахунку синтетичного CVD
     move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
     regime, regime_reason = regime_detection(tf4h, tf1h, move8)
 
