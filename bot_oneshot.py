@@ -21,12 +21,6 @@ import os
 import time
 import uuid
 import zoneinfo
-from datetime import datetime, timezone, timedelta
-from enum import Enum
-from pathlib import Path
-from statistics import mean
-from typing import Any, Optional
-import requests
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -783,6 +777,11 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
     layers = len(candidate.evidence_families)
     trigger_ready = candidate.trigger_ready
     strong_ict = "ICT_LOCATION" in candidate.evidence_families or "PRICE_STRUCTURE" in candidate.evidence_families
+    
+    # ПЕРЕВІРКА ТРЕНДУ (Новий логічний блок)
+    tf1h_bias = context.get("tf1h", {}).get("bias")
+    tf4h_bias = context.get("tf4h", {}).get("bias")
+    htf_aligned = (tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)
 
     allow_entry = bool(
         score >= PRO_ENTRY_MIN
@@ -795,6 +794,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         score >= PRO_RISKY_MIN
         and layers >= max(3, MIN_PRO_LAYERS_ENTRY - 1)
         and (trigger_ready or strong_ict)
+        and htf_aligned
     )
 
     if allow_entry and score >= A_PLUS_ENTRY_MIN and strong_ict:
@@ -807,6 +807,8 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         grade = "WATCH"
 
     reason = f"gate v6: {grade} | {layers} шарів | score {score}"
+    if not htf_aligned and not allow_entry:
+        reason += " | БЛОК: HTF проти risky-входу"
 
     return {
         "allow_entry": allow_entry,
@@ -1256,7 +1258,8 @@ def detect_regime_engine_2(context: dict, side: Optional[str] = None) -> dict:
     tf3_same = bias in {Side.LONG.value, Side.SHORT.value} and tf3.get("bias") == bias
     tf3_against = bias in {Side.LONG.value, Side.SHORT.value} and tf3.get("bias") == opposite(bias)
     near_range_mid = bool(range_atr and abs(move8) < 0.38 and tf15.get("score", 0) <= 28)
-# === VOLATILITY SQUEEZE FILTER ===
+
+    # === VOLATILITY SQUEEZE FILTER ===
     atr5 = atr(c15, 5)
     atr20 = atr(c15, 20)
     # Якщо поточна волатильність становить менше 40% від звичайної - це аномальний штиль
@@ -1279,15 +1282,6 @@ def detect_regime_engine_2(context: dict, side: Optional[str] = None) -> dict:
             "Аномальне стискання волатильності (Squeeze). Наближається викид. Торги заборонено.",
             entry_action="BLOCK", quality_adjustment=-25, quality_cap=50, hard_block=True, metrics=metrics,
         )
-    metrics = {
-        "bias": bias,
-        "move8_pct": round(move8, 3),
-        "range_atr": round(range_atr, 2),
-        "tf3": tf3.get("bias"),
-        "tf15": tf15.get("bias"),
-        "tf1h": tf1h.get("bias"),
-        "tf4h": tf4h.get("bias"),
-    }
 
     if abs(move8) >= 2.8 or regime == Regime.SHOCK.value:
         return _regime_engine_result(
@@ -1401,7 +1395,7 @@ def build_context(data: dict, state: dict) -> dict:
         tf4h["score"] = 30 if abs(c4h[-1].close - ema) / ema > 0.005 else 18
 
     zones = detect_zones(c15, "15m") + detect_zones(c1h, "1h", 42) + detect_zones(c4h, "4h", 28)
-  flow = flow_snapshot(data.get("trades", []), data.get("book", {}))
+    flow = flow_snapshot(data.get("trades", []), data.get("book", {}))
     cvd = cvd_snapshot(c15)  # Передаємо 15М свічки для розрахунку синтетичного CVD
     move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
     regime, regime_reason = regime_detection(tf4h, tf1h, move8)
@@ -1945,9 +1939,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 pattern_conf.append("⚠️ Вхід поза оптимальним PD Array")
 
         if smt_bias == side:
-            raw += 20
-            asset_name = str(SMT_ASSET_ID).split("-")[0]
-            flw_conf.append(f"🔥 SMT Divergence з {asset_name} підтверджує рух")
+            if loc_score >= 18 or has_forward_zone:
+                raw += 22
+                asset_name = str(SMT_ASSET_ID).split("-")[0]
+                flw_conf.append(f"🔥 SMT Divergence з {asset_name} підтверджено POI")
+            else:
+                raw += 5
+                pattern_conf.append("⚠️ SMT дивергенція поза ключовими зонами (слабкий сигнал)")
 
         if is_killzone:
             raw += 5
@@ -2156,46 +2154,51 @@ def collapse_candidates(cands: list[Candidate]) -> list[Candidate]:
 
 def setup_trade_profile(setup_type: str) -> dict:
     profiles = {
-        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 2.10, "tp2_rr": 3.10, "tp3_rr": 4.20, "tp1_atr": 1.25, "stop_min_atr": 0.78, "stop_max_atr": 2.35, "quality_adjustment": 2},
-        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 2.00, "tp2_rr": 3.00, "tp3_rr": 4.10, "tp1_atr": 1.15, "stop_min_atr": 0.75, "stop_max_atr": 2.15, "force_risky": True},
-        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.85, "tp2_rr": 2.70, "tp3_rr": 3.70, "tp1_atr": 1.05, "stop_min_atr": 0.72, "stop_max_atr": 1.85, "force_risky": True},
-        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.80, "tp2_rr": 2.65, "tp3_rr": 3.60, "tp1_atr": 1.00, "stop_min_atr": 0.76, "stop_max_atr": 1.95, "force_risky": True},
-        SetupType.TREND_IGNITION.value: {"tp1_rr": 1.95, "tp2_rr": 3.00, "tp3_rr": 4.35, "tp1_atr": 1.20, "stop_min_atr": 0.78, "stop_max_atr": 2.20, "force_risky": True},
-        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.70, "tp2_rr": 2.35, "tp3_rr": 3.10, "tp1_atr": 0.95, "stop_min_atr": 0.70, "stop_max_atr": 1.55, "force_risky": True},
-        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.65, "tp2_rr": 2.25, "tp3_rr": 3.00, "tp1_atr": 0.90, "stop_min_atr": 0.70, "stop_max_atr": 1.45, "force_risky": True},
+        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.15, "tp2_rr": 2.50, "tp3_rr": 4.00, "tp1_atr": 1.00, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
+        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 1.10, "tp2_rr": 2.20, "tp3_rr": 3.50, "tp1_atr": 1.00, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
+        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.00, "tp2_rr": 2.00, "tp3_rr": 3.00, "tp1_atr": 0.90, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
+        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.05, "tp2_rr": 2.20, "tp3_rr": 3.20, "tp1_atr": 0.90, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
+        SetupType.TREND_IGNITION.value: {"tp1_rr": 1.20, "tp2_rr": 2.50, "tp3_rr": 4.00, "tp1_atr": 1.10, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True},
+        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.00, "tp2_rr": 1.80, "tp3_rr": 2.50, "tp1_atr": 0.85, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True},
+        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.00, "tp2_rr": 1.85, "tp3_rr": 2.60, "tp1_atr": 0.85, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True},
     }
-    return dict(profiles.get(str(setup_type or ""), {"tp1_rr": PREFERRED_RR1, "tp2_rr": MIN_RR2, "tp3_rr": MIN_RR3, "tp1_atr": MIN_TP1_ATR15, "stop_min_atr": MIN_STOP_ATR15, "stop_max_atr": MAX_STOP_ATR15}))
+    return dict(profiles.get(str(setup_type or ""), {"tp1_rr": 1.10, "tp2_rr": 2.20, "tp3_rr": 3.00, "tp1_atr": 1.00, "stop_min_atr": 0.90, "stop_max_atr": 2.20}))
 
 
 def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Optional[str] = None) -> dict:
     regime = context.get("market_regime") if isinstance(context.get("market_regime"), dict) else detect_regime_engine_2(context, side)
     name = str(regime.get("name", context.get("regime", Regime.NORMAL.value)) or Regime.NORMAL.value).upper()
     regime_type = str(regime.get("regime_type", name) or name).upper()
+    
     profiles = {
-        Regime.RANGE.value: {"tp1_rr": 1.65, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_min_atr": 0.72, "stop_max_atr": 1.55, "be_trigger": 0.40, "protect_trigger": 0.62, "giveback": 0.22},
-        Regime.TRANSITION.value: {"tp1_rr": 1.95, "tp2_rr": 2.85, "tp3_rr": 3.85, "stop_min_atr": 0.78, "stop_max_atr": 2.10, "be_trigger": 0.52, "protect_trigger": 0.82, "giveback": 0.32},
-        Regime.TREND.value: {"tp1_rr": 2.20, "tp2_rr": 3.35, "tp3_rr": 4.70, "stop_min_atr": 0.85, "stop_max_atr": 2.60, "be_trigger": 0.70, "protect_trigger": 1.05, "giveback": 0.42},
-        Regime.SHOCK.value: {"tp1_rr": 1.70, "tp2_rr": 2.45, "tp3_rr": 3.30, "stop_min_atr": 0.82, "stop_max_atr": 1.90, "be_trigger": 0.46, "protect_trigger": 0.74, "giveback": 0.50},
-        Regime.NORMAL.value: {"tp1_rr": 2.00, "tp2_rr": 3.00, "tp3_rr": 4.00, "stop_min_atr": 0.80, "stop_max_atr": 2.30, "be_trigger": 0.55, "protect_trigger": 0.88, "giveback": 0.35},
+        Regime.RANGE.value: {"tp1_rr": 1.00, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_min_atr": 0.80, "stop_max_atr": 1.55, "be_trigger": 0.35, "protect_trigger": 0.60, "giveback": 0.20},
+        Regime.TRANSITION.value: {"tp1_rr": 1.10, "tp2_rr": 2.85, "tp3_rr": 3.85, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "be_trigger": 0.40, "protect_trigger": 0.70, "giveback": 0.28},
+        Regime.TREND.value: {"tp1_rr": 1.20, "tp2_rr": 3.35, "tp3_rr": 4.70, "stop_min_atr": 0.90, "stop_max_atr": 2.60, "be_trigger": 0.50, "protect_trigger": 0.85, "giveback": 0.38},
+        Regime.SHOCK.value: {"tp1_rr": 1.00, "tp2_rr": 2.45, "tp3_rr": 3.30, "stop_min_atr": 0.90, "stop_max_atr": 1.90, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.45},
+        Regime.NORMAL.value: {"tp1_rr": 1.10, "tp2_rr": 3.00, "tp3_rr": 4.00, "stop_min_atr": 0.85, "stop_max_atr": 2.30, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.30},
     }
+    
     overrides = {
-        "TREND_EXPANSION": {"tp1_rr": 2.20, "tp2_rr": 3.55, "tp3_rr": 4.90, "protect_trigger": 1.05, "giveback": 0.44},
-        "TREND_PULLBACK": {"tp1_rr": 2.05, "tp2_rr": 3.15, "tp3_rr": 4.20, "stop_max_atr": 2.20, "protect_trigger": 0.84, "giveback": 0.31},
-        "RANGE_COMPRESSION": {"tp1_rr": 1.65, "tp2_rr": 2.25, "tp3_rr": 2.95, "stop_max_atr": 1.45, "be_trigger": 0.38, "protect_trigger": 0.60, "giveback": 0.20},
-        "RANGE_EDGE": {"tp1_rr": 1.70, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_max_atr": 1.50, "be_trigger": 0.40, "protect_trigger": 0.62, "giveback": 0.22},
-        "REVERSAL_BUILDUP": {"tp1_rr": 1.80, "tp2_rr": 2.55, "tp3_rr": 3.45, "stop_max_atr": 1.85, "be_trigger": 0.46, "protect_trigger": 0.74, "giveback": 0.26},
-        "NEWS_SHOCK": {"tp1_rr": 1.70, "tp2_rr": 2.40, "tp3_rr": 3.20, "stop_max_atr": 1.80, "be_trigger": 0.48, "protect_trigger": 0.76, "giveback": 0.52},
-        "EXHAUSTION": {"tp1_rr": 1.55, "tp2_rr": 2.10, "tp3_rr": 2.80, "stop_max_atr": 1.35, "be_trigger": 0.36, "protect_trigger": 0.56, "giveback": 0.18},
+        "TREND_EXPANSION": {"tp1_rr": 1.25, "tp2_rr": 3.55, "tp3_rr": 4.90, "protect_trigger": 0.95, "giveback": 0.40},
+        "TREND_PULLBACK": {"tp1_rr": 1.15, "tp2_rr": 3.15, "tp3_rr": 4.20, "stop_max_atr": 2.20, "protect_trigger": 0.75, "giveback": 0.28},
+        "RANGE_COMPRESSION": {"tp1_rr": 1.00, "tp2_rr": 2.25, "tp3_rr": 2.95, "stop_max_atr": 1.45, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.18},
+        "RANGE_EDGE": {"tp1_rr": 1.05, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_max_atr": 1.50, "be_trigger": 0.35, "protect_trigger": 0.55, "giveback": 0.20},
+        "REVERSAL_BUILDUP": {"tp1_rr": 1.05, "tp2_rr": 2.55, "tp3_rr": 3.45, "stop_max_atr": 1.85, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.24},
+        "NEWS_SHOCK": {"tp1_rr": 1.00, "tp2_rr": 2.40, "tp3_rr": 3.20, "stop_max_atr": 1.80, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.48},
+        "EXHAUSTION": {"tp1_rr": 1.00, "tp2_rr": 2.10, "tp3_rr": 2.80, "stop_max_atr": 1.35, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.15},
     }
+    
     profile = dict(profiles.get(name, profiles[Regime.NORMAL.value]))
     profile.update(overrides.get(regime_type, {}))
     setup_profile = setup_trade_profile(setup_type or "")
+    
     for key in ("tp1_rr", "tp2_rr", "tp3_rr", "stop_min_atr", "stop_max_atr"):
         if key in setup_profile:
             if key.startswith("tp"):
                 profile[key] = max(float(profile.get(key, 0)), float(setup_profile[key]))
             else:
                 profile[key] = float(setup_profile[key])
+                
     profile["regime"] = name
     profile["regime_type"] = regime_type
     profile["entry_action"] = regime.get("entry_action", "ALLOW")
@@ -2204,13 +2207,14 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     profile["quality_cap"] = setup_profile.get("quality_cap", regime.get("quality_cap"))
     profile["force_risky"] = bool(setup_profile.get("force_risky") or regime.get("entry_action") == "RISKY_ONLY")
     profile["reason"] = regime.get("reason", "")
+    
     if profile["force_risky"]:
-        profile["be_trigger"] = min(float(profile.get("be_trigger", 0.55)), 0.42)
-        profile["protect_trigger"] = min(float(profile.get("protect_trigger", 0.88)), 0.68)
-        profile["giveback"] = min(float(profile.get("giveback", 0.35)), 0.24)
-        profile["tp1_rr"] = min(float(profile.get("tp1_rr", PREFERRED_RR1)), 1.90)
-        profile["tp2_rr"] = min(float(profile.get("tp2_rr", MIN_RR2)), 2.65)
-        profile["tp3_rr"] = min(float(profile.get("tp3_rr", MIN_RR3)), 3.55)
+        profile["be_trigger"] = min(float(profile.get("be_trigger", 0.45)), 0.35)
+        profile["protect_trigger"] = min(float(profile.get("protect_trigger", 0.70)), 0.58)
+        profile["giveback"] = min(float(profile.get("giveback", 0.35)), 0.20)
+        profile["tp1_rr"] = min(float(profile.get("tp1_rr", PREFERRED_RR1)), 1.10)
+        profile["tp2_rr"] = min(float(profile.get("tp2_rr", MIN_RR2)), 2.00)
+    
     return profile
 
 
