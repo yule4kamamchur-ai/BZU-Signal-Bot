@@ -2075,7 +2075,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 raw -= 15
                 pattern_conf.append("⚠️ Вхід поза оптимальним PD Array")
 
-        if smt_bias == side:
+        # ОНОВЛЕНО: Жорсткий фільтр SMT Divergence
+        is_reversal = (best_pattern in {"PO3", "TURTLE_SOUP", "JUDAS_SWING"} or 
+                       setup_type in {SetupType.RANGE_EDGE_REVERSAL.value, SetupType.SWEEP_RECLAIM.value})
+        
+        if is_reversal and smt_bias != Side.NEUTRAL.value and smt_bias != side:
+            raw -= 35  # Жорсткий штраф блокує сетап
+            pattern_conf.append("🚫 БЛОК: SMT Divergence вказує у протилежний бік")
+        elif smt_bias == side:
             if loc_score >= 18 or has_forward_zone:
                 raw += 22
                 asset_name = str(SMT_ASSET_ID).split("-")[0]
@@ -2083,13 +2090,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             else:
                 raw += 5
                 pattern_conf.append("⚠️ SMT дивергенція поза ключовими зонами (слабкий сигнал)")
-
-        if is_killzone:
-            raw += 5
-            pattern_conf.append(f"✅ Активна сесія: {active_session_name}")
-        else:
-            raw -= 8
-            pattern_conf.append(f"⚠️ Низька ліквідність ({active_session_name})")
 
         # ==========================================================
         # МОДУЛЬНА СИСТЕМА ПАТЕРНІВ
@@ -2161,9 +2161,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if best_pattern:
             raw += pattern_registry[best_pattern]["score_bonus"]
             
-        if event.get("strong_displacement") and not event.get("retest"):
-            raw -= STRONG_IMPULSE_CHASE_PENALTY
-            pattern_conf.append(f"штраф -{STRONG_IMPULSE_CHASE_PENALTY}: сильний displacement без retest")
+       # ОНОВЛЕНО: Strict Time-Warp Validation (No Chase Guard)
+        if event.get("strong_displacement") and not event.get("retest") and not event.get("mitigation"):
+            raw -= 35  # Жорсткий штраф замість м'якого
+            pattern_conf.append("🚫 БЛОК: Сильний імпульс без пом'якшення (Time-Warp Guard)")
+            time_warp_opportunity = False # Скасовуємо будь-які спроби раннього входу
+
+        if time_warp_opportunity:
+            raw += 14
+            pattern_conf.append("⏳ Time-Warp: ретроспективна валідація всередині 15хв (Limit Entry)")
 
         if time_warp_opportunity:
             raw += 14
@@ -2202,7 +2208,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         tier = ConfirmationTier.STANDARD.value
         final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
 
-        allow_early_entry_for_pattern = False
+       allow_early_entry_for_pattern = False
         if best_pattern:
             p = pattern_registry[best_pattern]
             if p["allow_early"]:
@@ -2213,6 +2219,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         if time_warp_opportunity:
             allow_early_entry_for_pattern = True
+
+        # === ОНОВЛЕНО: Жорсткий CVD-фільтр для ранніх входів ===
+        if allow_early_entry_for_pattern and cvd.get("bias") != Side.NEUTRAL.value and cvd.get("bias") != side:
+            allow_early_entry_for_pattern = False
+            pattern_conf.append("⚠️ CVD проти імпульсу: RISKY_ENTRY скасовано, чекаємо повного підтвердження")
+        # ========================================================
 
         if allow_early_entry_for_pattern:
             lane = ExecutionLane.EARLY_TACTICAL.value
@@ -2283,7 +2295,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
 def setup_trade_profile(setup_type: str) -> dict:
     profiles = {
-        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.15, "tp2_rr": 2.50, "tp3_rr": 4.00, "tp1_atr": 1.00, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
+        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.25, "tp2_rr": 2.80, "tp3_rr": 4.50, "tp1_atr": 1.20, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
         SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 1.10, "tp2_rr": 2.20, "tp3_rr": 3.50, "tp1_atr": 1.00, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
         SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.00, "tp2_rr": 2.00, "tp3_rr": 3.00, "tp1_atr": 0.90, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
         SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.05, "tp2_rr": 2.20, "tp3_rr": 3.20, "tp1_atr": 0.90, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
@@ -2308,8 +2320,10 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     }
     
     overrides = {
-        "TREND_EXPANSION": {"tp1_rr": 1.25, "tp2_rr": 3.55, "tp3_rr": 4.90, "protect_trigger": 0.95, "giveback": 0.40},
-        "TREND_PULLBACK": {"tp1_rr": 1.15, "tp2_rr": 3.15, "tp3_rr": 4.20, "stop_max_atr": 2.20, "protect_trigger": 0.75, "giveback": 0.28},
+        overrides = {
+        "TREND_EXPANSION": {"tp1_rr": 1.50, "tp2_rr": 3.80, "tp3_rr": 5.50, "protect_trigger": 1.20, "giveback": 0.50},
+        "TREND_PULLBACK": {"tp1_rr": 1.30, "tp2_rr": 3.20, "tp3_rr": 4.50, "stop_max_atr": 2.20, "protect_trigger": 0.90, "giveback": 0.35},
+        # ... інші залишаються без змін
         "RANGE_COMPRESSION": {"tp1_rr": 1.00, "tp2_rr": 2.25, "tp3_rr": 2.95, "stop_max_atr": 1.45, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.18},
         "RANGE_EDGE": {"tp1_rr": 1.05, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_max_atr": 1.50, "be_trigger": 0.35, "protect_trigger": 0.55, "giveback": 0.20},
         "REVERSAL_BUILDUP": {"tp1_rr": 1.05, "tp2_rr": 2.55, "tp3_rr": 3.45, "stop_max_atr": 1.85, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.24},
