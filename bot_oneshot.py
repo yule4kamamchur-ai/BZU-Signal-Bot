@@ -2328,7 +2328,6 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
         "NEWS_SHOCK": {"tp1_rr": 1.00, "tp2_rr": 2.40, "tp3_rr": 3.20, "stop_max_atr": 1.80, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.48},
         "EXHAUSTION": {"tp1_rr": 1.00, "tp2_rr": 2.10, "tp3_rr": 2.80, "stop_max_atr": 1.35, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.15},
     }
-    }
     
     profile = dict(profiles.get(name, profiles[Regime.NORMAL.value]))
     profile.update(overrides.get(regime_type, {}))
