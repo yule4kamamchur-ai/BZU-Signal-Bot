@@ -2202,13 +2202,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 setup_type = SetupType.SWEEP_RECLAIM.value
                 variant = "EARLY_RECLAIM"
 
-        family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
+       family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
 
         lane = ExecutionLane.STANDARD_CONFIRMED.value
         tier = ConfirmationTier.STANDARD.value
         final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
 
-       allow_early_entry_for_pattern = False
+        allow_early_entry_for_pattern = False
         if best_pattern:
             p = pattern_registry[best_pattern]
             if p["allow_early"]:
@@ -2320,15 +2320,14 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     }
     
     overrides = {
-        overrides = {
         "TREND_EXPANSION": {"tp1_rr": 1.50, "tp2_rr": 3.80, "tp3_rr": 5.50, "protect_trigger": 1.20, "giveback": 0.50},
         "TREND_PULLBACK": {"tp1_rr": 1.30, "tp2_rr": 3.20, "tp3_rr": 4.50, "stop_max_atr": 2.20, "protect_trigger": 0.90, "giveback": 0.35},
-        # ... інші залишаються без змін
         "RANGE_COMPRESSION": {"tp1_rr": 1.00, "tp2_rr": 2.25, "tp3_rr": 2.95, "stop_max_atr": 1.45, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.18},
         "RANGE_EDGE": {"tp1_rr": 1.05, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_max_atr": 1.50, "be_trigger": 0.35, "protect_trigger": 0.55, "giveback": 0.20},
         "REVERSAL_BUILDUP": {"tp1_rr": 1.05, "tp2_rr": 2.55, "tp3_rr": 3.45, "stop_max_atr": 1.85, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.24},
         "NEWS_SHOCK": {"tp1_rr": 1.00, "tp2_rr": 2.40, "tp3_rr": 3.20, "stop_max_atr": 1.80, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.48},
         "EXHAUSTION": {"tp1_rr": 1.00, "tp2_rr": 2.10, "tp3_rr": 2.80, "stop_max_atr": 1.35, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.15},
+    }
     }
     
     profile = dict(profiles.get(name, profiles[Regime.NORMAL.value]))
