@@ -2202,7 +2202,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 setup_type = SetupType.SWEEP_RECLAIM.value
                 variant = "EARLY_RECLAIM"
 
-       family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
+      family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
 
         lane = ExecutionLane.STANDARD_CONFIRMED.value
         tier = ConfirmationTier.STANDARD.value
