@@ -1017,15 +1017,9 @@ def collect_market_data() -> dict:
     ticker = tv_ticker or okx_ticker
     
     if not ticker and c15:
-        ticker = {
-            "price": c15[-1].close,
-            "change24h": 0,
-            "volume24h": 0,
-            "source": "OKX candles fallback",
-            "symbol": OKX_INST_ID,
-        }
-    
-    price = ticker.get("price") if ticker else 82.5
+        price = c15[-1].close
+    else:
+        price = ticker.get("price") if ticker else None
     
     return {
         "time": iso_now(),
@@ -1372,7 +1366,7 @@ def build_context(data: dict, state: dict) -> dict:
     c15 = data["candles"]["15m"]
     c1h = data["candles"]["1h"]
     c4h = data["candles"]["4h"]
-    price = data["price"] or (c15[-1].close if c15 else 82.5)
+    price = data["price"] if data.get("price") is not None else (c15[-1].close if c15 else None)
     atr3 = atr(c3, 14)
     atr15 = atr(c15, 14) or (atr3 * 3.8 if atr3 else 0.6)
     atr1h = atr(c1h, 14) or (atr15 * 3.2)
@@ -2183,10 +2177,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             raw += 14
             pattern_conf.append("⏳ Time-Warp: ретроспективна валідація всередині 15хв (Limit Entry)")
 
-        if time_warp_opportunity:
-            raw += 14
-            pattern_conf.append("⏳ Time-Warp: ретроспективна валідація всередині 15хв (Limit Entry)")
-
         evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
         if flw_score > 12:
             evidence.append("ORDER_FLOW_CVD")
@@ -2711,7 +2701,11 @@ def _risky_pre_tp1_guard(trade: ActiveTrade, context: dict, result: dict, profil
 
 
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
-    price = context["price"]
+    price = context.get("price")
+    # Якщо ціна None через збій API, тримаємо позицію, щоб не наробити помилок
+    if price is None:
+        return {"action": Action.HOLD.value, "closed": False, "notes": ["Очікування даних ціни..."]}
+        
     atr15 = context.get("atr15", 0.6) or 0.6
     side = trade.side
     tf3 = context.get("tf3", {})
@@ -2741,7 +2735,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     result["worst_pct"] = max(0.0, ((trade.entry - trade.worst_price) / trade.entry * 100) if side == Side.LONG.value else ((trade.worst_price - trade.entry) / trade.entry * 100))
     result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
 
-    # НОВА СИСТЕМА: Дворівневий Wick Defense (Soft / Hard Stop)
+    # --- Дворівневий Wick Defense ---
     is_stop, stop_reason = _stop_hit(trade, context)
     if is_stop:
         exit_price = round_price(trade.stop_current)
@@ -2753,6 +2747,80 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.status = "CLOSED"
         trade.last_action = Action.STOP.value
         return result
+
+    # --- 1. Фіксація TP1 (Delayed Breakeven) ---
+    if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
+        trade.tp1_hit = True
+        trade.tp1_stop_locked = True
+        trade.tp1_locked_stop = trade.stop_initial 
+        trade.stop_current = trade.tp1_locked_stop
+        result["action"] = Action.TP1.value
+        result["notes"].append("TP1 досягнуто (зняття ризику) — стоп залишається початковим (Delayed BE)")
+
+    # --- 2. Переведення в БУ на 50% шляху до TP2 ---
+    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit:
+        distance = abs(trade.tp2 - trade.tp1)
+        if side == Side.LONG.value:
+            be_trigger = trade.tp1 + distance * 0.5
+            if price >= be_trigger and trade.stop_current < trade.entry:
+                trade.stop_current = max(trade.stop_current, trade.entry)
+                trade.tp1_locked_stop = trade.stop_current
+                result["notes"].append(f"Ціна пройшла 50% до TP2 ({be_trigger}) — стоп переведено у беззбиток")
+        else:
+            be_trigger = trade.tp1 - distance * 0.5
+            if price <= be_trigger and trade.stop_current > trade.entry:
+                trade.stop_current = min(trade.stop_current, trade.entry)
+                trade.tp1_locked_stop = trade.stop_current
+                result["notes"].append(f"Ціна пройшла 50% до TP2 ({be_trigger}) — стоп переведено у беззбиток")
+
+    # --- 3. Фіксація TP2 ---
+    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
+        trade.tp2_hit = True
+        trade.tp2_stop_locked = True
+        trade.tp2_locked_stop = trade.tp1
+        trade.stop_current = trade.tp2_locked_stop
+        result["action"] = Action.TP2.value
+        result["notes"].append("TP2 досягнуто — стоп перенесено на TP1")
+
+    # --- 4. Фіксація TP3 (Повне закриття) ---
+    if not result["closed"] and trade.tp2_hit and not trade.tp3_hit and _target_hit(side, context, trade.tp3):
+        trade.tp3_hit = True
+        exit_price = round_price(trade.tp3)
+        result["closed"] = True
+        result["action"] = Action.TP3.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["notes"].append(f"TP3 досягнуто ({exit_price}) — угоду повністю закрито")
+        trade.status = "CLOSED"
+        trade.last_action = Action.TP3.value
+        return result
+
+    # --- Відображення рекомендованого стопу ---
+    if not result["closed"]:
+        result["recommended_stop"] = round_price(trade.stop_current)
+        if trade.tp2_stop_locked:
+            result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
+        elif trade.tp1_stop_locked:
+            result["recommended_stop_reason"] = "TP1-стоп активний (можливий Delayed BE)"
+
+    # --- Структурна інвалідація ---
+    structural_break = False
+    if side == Side.LONG.value:
+        if price < trade.structural_invalidation:
+            structural_break = True
+    else:
+        if price > trade.structural_invalidation:
+            structural_break = True
+
+    if not result["closed"] and structural_break:
+        result["closed"] = True
+        result["action"] = Action.STOP.value
+        result["exit_price"] = price
+        result["notes"].append("Структурна інвалідація (закриття 15M) — вихід")
+
+    trade.last_checked_3m_ts = int(now_utc().timestamp() * 1000)
+    trade.last_action = result["action"]
+    return result
 
     profile = trade_management_profile(context, trade)
 
