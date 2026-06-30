@@ -1825,6 +1825,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         has_choch = recent_struct["bullish_shift"] if side == Side.LONG.value else recent_struct["bearish_shift"]
         strong_displacement = event.get("strong_displacement")
         has_good_reclaim = has_quality_reclaim(event)
+        is_limit_armed = False
+        ce_level = 0.0
+        if has_choch and has_fvg:
+            fvg_zones = [z for z in zones if z.side == side and z.kind == "FVG"]
+            if fvg_zones:
+                best_fvg = fvg_zones[0]
+                ce_level = best_fvg.low + (best_fvg.high - best_fvg.low) / 2
+                is_limit_armed = True
         
         active_patterns = []
         if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
@@ -1871,7 +1879,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         htf_score = 20 if tf4h.get("bias") == side else 6
         
         raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus
-        
+        if is_limit_armed:
+            trigger_ready = True  # Ігноруємо відсутність 3M сигналу
+            trigger_level = ce_level
+            pattern_conf.append(f"🔥 LIMIT_ARMED: Злам структури (CHoCH) + FVG, виставлено ліміт на CE ({ce_level:.2f})")
+            raw += 25 # Гарантуємо високий пріоритет сетапу
         setup_type = SetupType.PULLBACK_CONTINUATION.value
         if best_pattern:
             setup_type = pattern_registry[best_pattern]["preferred_setup"]
@@ -2587,17 +2599,45 @@ def _trade_pct(side: str, entry: float, price: float) -> float:
     return (entry - price) / entry * 100
 
 
-def _stop_hit(trade: ActiveTrade, context: dict) -> bool:
+def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
+    """Дворівневий стоп-лос: Hard Stop (по тіні) та Soft Stop (по закриттю свічки)"""
     stop = float(trade.stop_current or 0)
     if not stop:
-        return False
+        return False, ""
+    
     price = float(context.get("price") or 0)
     c3 = (context.get("candles", {}) or {}).get("3m", [])
-    last_high = c3[-1].high if c3 else price
-    last_low = c3[-1].low if c3 else price
+    atr15 = float(context.get("atr15") or 0.6)
+
+    if not c3:
+        # Fallback, якщо немає свічок
+        if trade.side == Side.LONG.value:
+            if price <= stop: return True, "Stop hit (fallback)"
+        else:
+            if price >= stop: return True, "Stop hit (fallback)"
+        return False, ""
+
+    last_candle = c3[-1]
+    hard_stop_dist = atr15 * 1.5
+
     if trade.side == Side.LONG.value:
-        return price <= stop or last_low <= stop
-    return price >= stop or last_high >= stop
+        hard_stop = trade.stop_initial - hard_stop_dist
+        # Hard Stop (вибивання по тіні)
+        if last_candle.low <= hard_stop:
+            return True, f"Hard Stop hit ({last_candle.low} <= {hard_stop})"
+        # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
+        if last_candle.close <= stop:
+            return True, f"Soft Stop hit: свічка закрилася нижче ({last_candle.close} <= {stop})"
+    else:
+        hard_stop = trade.stop_initial + hard_stop_dist
+        # Hard Stop (вибивання по тіні)
+        if last_candle.high >= hard_stop:
+            return True, f"Hard Stop hit ({last_candle.high} >= {hard_stop})"
+        # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
+        if last_candle.close >= stop:
+            return True, f"Soft Stop hit: свічка закрилася вище ({last_candle.close} >= {stop})"
+
+    return False, ""
 
 
 def _target_hit(side: str, context: dict, level: float, lookback: int = 4) -> bool:
@@ -2702,13 +2742,15 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
     mfe = result["best_pct"]
 
-    if _stop_hit(trade, context):
+    # ЗАМІНИТИ СТАРИЙ БЛОК: if _stop_hit(trade, context):
+    is_stop, stop_reason = _stop_hit(trade, context)
+    if is_stop:
         exit_price = round_price(trade.stop_current)
         result["closed"] = True
         result["action"] = Action.STOP.value
         result["exit_price"] = exit_price
         result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
-        result["notes"].append(f"Поточний стоп {exit_price} зачеплено — угоду закрито")
+        result["notes"].append(f"Вихід по стопу: {stop_reason}")
         trade.status = "CLOSED"
         trade.last_action = Action.STOP.value
         return result
@@ -2758,13 +2800,31 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
             result["exit_price"] = price
             result["notes"].append("Risky entry втратив перевагу до TP1 — вихід біля входу")
 
+    # 1. Фіксація TP1 (Зняття ризику без перенесення стопу)
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
-        trade.tp1_locked_stop = _tp1_locked_stop_level(trade)
+        # Delayed BE: залишаємо стоп на початковому місці!
+        trade.tp1_locked_stop = trade.stop_initial 
         trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
-        result["notes"].append("TP1 досягнуто — стоп зафіксовано до TP2")
+        result["notes"].append("TP1 досягнуто (зняття ризику) — стоп залишається початковим (Delayed BE)")
+
+    # 2. Delayed Breakeven Trigger (Переведення в БУ на 50% шляху до TP2)
+    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit:
+        distance = abs(trade.tp2 - trade.tp1)
+        if side == Side.LONG.value:
+            be_trigger = trade.tp1 + distance * 0.5
+            if price >= be_trigger and trade.stop_current < trade.entry:
+                trade.stop_current = max(trade.stop_current, trade.entry)
+                trade.tp1_locked_stop = trade.stop_current
+                result["notes"].append(f"Ціна пройшла 50% до TP2 ({be_trigger}) — стоп переведено у беззбиток")
+        else:
+            be_trigger = trade.tp1 - distance * 0.5
+            if price <= be_trigger and trade.stop_current > trade.entry:
+                trade.stop_current = min(trade.stop_current, trade.entry)
+                trade.tp1_locked_stop = trade.stop_current
+                result["notes"].append(f"Ціна пройшла 50% до TP2 ({be_trigger}) — стоп переведено у беззбиток")
 
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
         trade.tp2_hit = True
