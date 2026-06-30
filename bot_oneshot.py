@@ -2740,9 +2740,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     result["best_pct"] = ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100)
     result["worst_pct"] = max(0.0, ((trade.entry - trade.worst_price) / trade.entry * 100) if side == Side.LONG.value else ((trade.worst_price - trade.entry) / trade.entry * 100))
     result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
-    mfe = result["best_pct"]
 
-    # ЗАМІНИТИ СТАРИЙ БЛОК: if _stop_hit(trade, context):
+    # НОВА СИСТЕМА: Дворівневий Wick Defense (Soft / Hard Stop)
     is_stop, stop_reason = _stop_hit(trade, context)
     if is_stop:
         exit_price = round_price(trade.stop_current)
@@ -2757,54 +2756,11 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     profile = trade_management_profile(context, trade)
 
-    giveback = max(0, mfe - result["current_pct"])
-    giveback_ratio = giveback / mfe if mfe > 0.1 else 0
-
-    lock_stop, lock_reason = _profit_lock_stop_level(trade, context, mfe, result["current_pct"], profile)
-    if lock_stop is not None and result["action"] == Action.HOLD.value and _apply_protective_stop(trade, context, lock_stop):
-        result["action"] = Action.PROTECT.value
-        result["recommended_stop"] = round_price(trade.stop_current)
-        result["recommended_stop_reason"] = lock_reason
-        result["notes"].append(lock_reason)
-
-    guard_trigger = float(profile.get("be_trigger", 0.55))
-    giveback_limit = float(profile.get("giveback", 0.35))
-    if mfe >= guard_trigger and giveback_ratio >= giveback_limit:
-        trade.mfe_giveback_streak += 1
-        if trade.mfe_giveback_streak >= 2:
-            result["action"] = Action.PROTECT.value
-            protect_stop, protect_reason = _profit_lock_stop_level(trade, context, mfe, max(result["current_pct"], 0.10), profile)
-            if protect_stop is not None and _apply_protective_stop(trade, context, protect_stop):
-                result["recommended_stop"] = round_price(trade.stop_current)
-                result["recommended_stop_reason"] = protect_reason
-            result["notes"].append(f"MFE Guard: прибуток віддається ({giveback_ratio:.0%}) — захистити позицію")
-            if trade.tp1_hit and result["current_pct"] <= 0.18 and giveback_ratio >= min(0.72, giveback_limit + 0.22):
-                result["action"] = Action.EXIT.value
-                result["closed"] = True
-                result["exit_price"] = price
-                result["notes"].append("Після TP1 MFE майже віддано назад — закриття залишку")
-    else:
-        trade.mfe_giveback_streak = max(0, trade.mfe_giveback_streak - 1)
-
-    risky_guard = _risky_pre_tp1_guard(trade, context, result, profile, giveback_ratio)
-    if risky_guard.get("active") and not result["closed"]:
-        guard_stop = risky_guard.get("stop")
-        if risky_guard.get("protect") and guard_stop is not None and _apply_protective_stop(trade, context, guard_stop):
-            result["action"] = Action.PROTECT.value
-            result["recommended_stop"] = round_price(trade.stop_current)
-            result["recommended_stop_reason"] = risky_guard.get("reason", "")
-            result["notes"].append(risky_guard.get("reason", "Risky pre-TP1 guard"))
-        if risky_guard.get("close"):
-            result["action"] = Action.EXIT.value
-            result["closed"] = True
-            result["exit_price"] = price
-            result["notes"].append("Risky entry втратив перевагу до TP1 — вихід біля входу")
-
-    # 1. Фіксація TP1 (Зняття ризику без перенесення стопу)
+    # 1. Фіксація TP1 (Зняття ризику без перенесення стопу - Delayed BE)
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
-        # Delayed BE: залишаємо стоп на початковому місці!
+        # Залишаємо стоп на початковому місці!
         trade.tp1_locked_stop = trade.stop_initial 
         trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
@@ -2834,7 +2790,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP2.value
         result["notes"].append("TP2 досягнуто — стоп на TP1 (зафіксовано)")
 
-    # ДОДАНИЙ БЛОК ДЛЯ TP3 (ПОВНЕ ЗАКРИТТЯ УГОДИ)
+    # 3. ДОДАНИЙ БЛОК ДЛЯ TP3 (ПОВНЕ ЗАКРИТТЯ УГОДИ)
     if not result["closed"] and trade.tp2_hit and not trade.tp3_hit and _target_hit(side, context, trade.tp3):
         trade.tp3_hit = True
         exit_price = round_price(trade.tp3)
@@ -2849,7 +2805,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
 
     if not result["closed"] and trade.tp1_stop_locked and not trade.tp2_hit:
         result["recommended_stop"] = round_price(trade.tp1_locked_stop)
-        result["recommended_stop_reason"] = "TP1-стоп зафіксовано до TP2"
+        result["recommended_stop_reason"] = "TP1-стоп зафіксовано (Delayed BE)"
 
     if not result["closed"] and trade.tp2_stop_locked:
         result["recommended_stop"] = round_price(trade.tp2_locked_stop)
@@ -2859,7 +2815,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         locked = trade.tp1_locked_stop or trade.stop_current
         trade.stop_current = float(locked)
         result["recommended_stop"] = round_price(trade.stop_current)
-        result["recommended_stop_reason"] = "TP1-стоп зафікваний; до TP2 не рухати без окремого exit-сигналу"
+        result["recommended_stop_reason"] = "TP1-стоп зафіксований; до TP2 не рухати без окремого exit-сигналу"
 
     structural_break = False
     if side == Side.LONG.value:
