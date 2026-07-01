@@ -63,11 +63,11 @@ RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
 # === ICT Geometry ===
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
 MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.60") or 2.60)
-MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.00") or 1.00))
-MIN_RR1 = max(1.00, float(os.getenv("MIN_RR1", "1.00") or 1.00))  # Змінено з 2.00 на 1.00
-PREFERRED_RR1 = max(1.10, float(os.getenv("PREFERRED_RR1", "1.10") or 1.10))
-MIN_RR2 = max(2.00, float(os.getenv("MIN_RR2", "2.00") or 2.00))
-MIN_RR3 = max(3.00, float(os.getenv("MIN_RR3", "3.00") or 3.00))
+MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.15") or 1.15))
+MIN_RR1 = max(1.50, float(os.getenv("MIN_RR1", "1.50") or 1.50))  # Професійний мінімум: TP1 не ближче 1.5R
+PREFERRED_RR1 = max(1.60, float(os.getenv("PREFERRED_RR1", "1.60") or 1.60))
+MIN_RR2 = max(2.50, float(os.getenv("MIN_RR2", "2.50") or 2.50))
+MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
 
 # === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
@@ -2297,15 +2297,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
 def setup_trade_profile(setup_type: str) -> dict:
     profiles = {
-        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.25, "tp2_rr": 2.80, "tp3_rr": 4.50, "tp1_atr": 1.20, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
-        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 1.10, "tp2_rr": 2.20, "tp3_rr": 3.50, "tp1_atr": 1.00, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
-        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.00, "tp2_rr": 2.00, "tp3_rr": 3.00, "tp1_atr": 0.90, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
-        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.05, "tp2_rr": 2.20, "tp3_rr": 3.20, "tp1_atr": 0.90, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
-        SetupType.TREND_IGNITION.value: {"tp1_rr": 1.20, "tp2_rr": 2.50, "tp3_rr": 4.00, "tp1_atr": 1.10, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True},
-        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.00, "tp2_rr": 1.80, "tp3_rr": 2.50, "tp1_atr": 0.85, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True},
-        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.00, "tp2_rr": 1.85, "tp3_rr": 2.60, "tp1_atr": 0.85, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True},
+        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.30, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
+        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 4.40, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
+        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.50, "tp2_rr": 2.70, "tp3_rr": 4.00, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
+        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.55, "tp2_rr": 2.80, "tp3_rr": 4.10, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
+        SetupType.TREND_IGNITION.value: {"tp1_rr": 1.70, "tp2_rr": 3.30, "tp3_rr": 5.60, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True},
+        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True},
+        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.50, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True},
     }
-    return dict(profiles.get(str(setup_type or ""), {"tp1_rr": 1.10, "tp2_rr": 2.20, "tp3_rr": 3.00, "tp1_atr": 1.00, "stop_min_atr": 0.90, "stop_max_atr": 2.20}))
+    return dict(profiles.get(str(setup_type or ""), {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 3.90, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20}))
 
 
 def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Optional[str] = None) -> dict:
@@ -2314,21 +2314,21 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     regime_type = str(regime.get("regime_type", name) or name).upper()
     
     profiles = {
-        Regime.RANGE.value: {"tp1_rr": 1.00, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_min_atr": 0.80, "stop_max_atr": 1.55, "be_trigger": 0.35, "protect_trigger": 0.60, "giveback": 0.20},
-        Regime.TRANSITION.value: {"tp1_rr": 1.10, "tp2_rr": 2.85, "tp3_rr": 3.85, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "be_trigger": 0.40, "protect_trigger": 0.70, "giveback": 0.28},
-        Regime.TREND.value: {"tp1_rr": 1.20, "tp2_rr": 3.35, "tp3_rr": 4.70, "stop_min_atr": 0.90, "stop_max_atr": 2.60, "be_trigger": 0.50, "protect_trigger": 0.85, "giveback": 0.38},
-        Regime.SHOCK.value: {"tp1_rr": 1.00, "tp2_rr": 2.45, "tp3_rr": 3.30, "stop_min_atr": 0.90, "stop_max_atr": 1.90, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.45},
-        Regime.NORMAL.value: {"tp1_rr": 1.10, "tp2_rr": 3.00, "tp3_rr": 4.00, "stop_min_atr": 0.85, "stop_max_atr": 2.30, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.30},
+        Regime.RANGE.value: {"tp1_rr": 1.45, "tp2_rr": 2.95, "tp3_rr": 3.95, "stop_min_atr": 0.80, "stop_max_atr": 1.55, "be_trigger": 0.35, "protect_trigger": 0.60, "giveback": 0.20},
+        Regime.TRANSITION.value: {"tp1_rr": 1.55, "tp2_rr": 3.45, "tp3_rr": 4.75, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "be_trigger": 0.40, "protect_trigger": 0.70, "giveback": 0.28},
+        Regime.TREND.value: {"tp1_rr": 1.70, "tp2_rr": 4.05, "tp3_rr": 5.90, "stop_min_atr": 0.90, "stop_max_atr": 2.60, "be_trigger": 0.50, "protect_trigger": 0.85, "giveback": 0.38},
+        Regime.SHOCK.value: {"tp1_rr": 1.45, "tp2_rr": 3.05, "tp3_rr": 4.15, "stop_min_atr": 0.90, "stop_max_atr": 1.90, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.45},
+        Regime.NORMAL.value: {"tp1_rr": 1.55, "tp2_rr": 3.65, "tp3_rr": 5.00, "stop_min_atr": 0.85, "stop_max_atr": 2.30, "be_trigger": 0.45, "protect_trigger": 0.75, "giveback": 0.30},
     }
     
     overrides = {
-        "TREND_EXPANSION": {"tp1_rr": 1.50, "tp2_rr": 3.80, "tp3_rr": 5.50, "protect_trigger": 1.20, "giveback": 0.50},
-        "TREND_PULLBACK": {"tp1_rr": 1.30, "tp2_rr": 3.20, "tp3_rr": 4.50, "stop_max_atr": 2.20, "protect_trigger": 0.90, "giveback": 0.35},
-        "RANGE_COMPRESSION": {"tp1_rr": 1.00, "tp2_rr": 2.25, "tp3_rr": 2.95, "stop_max_atr": 1.45, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.18},
-        "RANGE_EDGE": {"tp1_rr": 1.05, "tp2_rr": 2.35, "tp3_rr": 3.10, "stop_max_atr": 1.50, "be_trigger": 0.35, "protect_trigger": 0.55, "giveback": 0.20},
-        "REVERSAL_BUILDUP": {"tp1_rr": 1.05, "tp2_rr": 2.55, "tp3_rr": 3.45, "stop_max_atr": 1.85, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.24},
-        "NEWS_SHOCK": {"tp1_rr": 1.00, "tp2_rr": 2.40, "tp3_rr": 3.20, "stop_max_atr": 1.80, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.48},
-        "EXHAUSTION": {"tp1_rr": 1.00, "tp2_rr": 2.10, "tp3_rr": 2.80, "stop_max_atr": 1.35, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.15},
+        "TREND_EXPANSION": {"tp1_rr": 1.90, "tp2_rr": 4.60, "tp3_rr": 6.70, "protect_trigger": 1.20, "giveback": 0.50},
+        "TREND_PULLBACK": {"tp1_rr": 1.75, "tp2_rr": 3.85, "tp3_rr": 5.60, "stop_max_atr": 2.20, "protect_trigger": 0.90, "giveback": 0.35},
+        "RANGE_COMPRESSION": {"tp1_rr": 1.45, "tp2_rr": 2.85, "tp3_rr": 3.75, "stop_max_atr": 1.45, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.18},
+        "RANGE_EDGE": {"tp1_rr": 1.50, "tp2_rr": 2.95, "tp3_rr": 3.95, "stop_max_atr": 1.50, "be_trigger": 0.35, "protect_trigger": 0.55, "giveback": 0.20},
+        "REVERSAL_BUILDUP": {"tp1_rr": 1.50, "tp2_rr": 3.15, "tp3_rr": 4.35, "stop_max_atr": 1.85, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.24},
+        "NEWS_SHOCK": {"tp1_rr": 1.45, "tp2_rr": 3.05, "tp3_rr": 4.05, "stop_max_atr": 1.80, "be_trigger": 0.40, "protect_trigger": 0.65, "giveback": 0.48},
+        "EXHAUSTION": {"tp1_rr": 1.40, "tp2_rr": 2.70, "tp3_rr": 3.55, "stop_max_atr": 1.35, "be_trigger": 0.30, "protect_trigger": 0.50, "giveback": 0.15},
     }
     
     profile = dict(profiles.get(name, profiles[Regime.NORMAL.value]))
@@ -2355,8 +2355,12 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
         profile["be_trigger"] = min(float(profile.get("be_trigger", 0.45)), 0.35)
         profile["protect_trigger"] = min(float(profile.get("protect_trigger", 0.70)), 0.58)
         profile["giveback"] = min(float(profile.get("giveback", 0.35)), 0.20)
-        profile["tp1_rr"] = min(float(profile.get("tp1_rr", PREFERRED_RR1)), 1.10)
-        profile["tp2_rr"] = min(float(profile.get("tp2_rr", MIN_RR2)), 2.00)
+        # Раніше тут стояло min(..., 1.10) / min(..., 2.00) — саме це й "зрізало" TP1
+        # майже до 1:1 для 6 із 7 типів сетапів (у них force_risky=True). RISKY-вхід
+        # означає менший розмір позиції (RISKY_RISK_PCT), а не право ставити тейк
+        # практично на стопі — професійний RR від цього не повинен страждати.
+        profile["tp1_rr"] = min(float(profile.get("tp1_rr", PREFERRED_RR1)), 1.55)
+        profile["tp2_rr"] = min(float(profile.get("tp2_rr", MIN_RR2)), 2.65)
     
     return profile
 
@@ -2365,9 +2369,14 @@ def enforce_smart_money_rr(side: str, price: float, stop: float, tp1: float, tp2
     risk = abs(price - stop)
     if side not in {Side.LONG.value, Side.SHORT.value} or risk <= 1e-9:
         return stop, tp1, tp2, tp3
+    # Це і є гарантія від "блокування" угоди через далекий TP1: ми не відхиляємо
+    # сетап, якщо запланований TP1 виявився заскромним — ми примусово ВІДСУВАЄМО
+    # його до професійного мінімуму. rr1 у build_trade_plan рахується вже ПІСЛЯ
+    # цього ratchet'а, тож valid=rr1>=MIN_RR1 виконується автоматично й ніколи
+    # не відхиляє вхід через "надто близький TP1".
     min_tp1_distance = risk * max(1.0, MIN_RR1)
-    min_tp2_distance = risk * max(1.45, MIN_RR1 + 0.45)
-    min_tp3_distance = risk * max(2.10, MIN_RR1 + 1.10)
+    min_tp2_distance = risk * max(1.45, MIN_RR1 + 1.00)
+    min_tp3_distance = risk * max(2.10, MIN_RR1 + 2.50)
     step = max(atr15 * 0.45, price * 0.003)
     if side == Side.LONG.value:
         tp1 = max(tp1, price + min_tp1_distance)
@@ -2437,6 +2446,15 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     RISKY_EXECUTION_LANES = {ExecutionLane.EARLY_TACTICAL.value, ExecutionLane.MISSED_IMPULSE_REENTRY.value}
     is_risky_lane = candidate.execution_lane in RISKY_EXECUTION_LANES
 
+    # enforce_smart_money_rr() вище математично гарантує |tp1-price| >= risk*MIN_RR1,
+    # тож rr1 не повинен опускатись нижче MIN_RR1. Але коли профіль якогось сетапу
+    # виставляє tp1_rr РІВНО на рівні MIN_RR1 (межовий, а не із запасом), ланцюжок
+    # округлень stop_dist -> tp1_dist -> rr1 іноді дає щось на кшталт 1.4999999999998
+    # замість точних 1.5 — суто похибка float. Без допуску це БЛОКУВАЛО Б угоду
+    # (valid=False) через математично неіснуючу різницю в 13-му знаку.
+    RR_EPSILON = 1e-6
+    rr1_valid = rr1 >= (MIN_RR1 - RR_EPSILON)
+
     plan = TradePlan(
         entry=round_price(price),
         stop=round_price(stop),
@@ -2451,8 +2469,8 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         structural_invalidation=round_price(structural_stop),
         trigger_level=candidate.trigger_level,
         execution_ready=execution_ready,
-        valid=rr1 >= MIN_RR1,
-        reason="" if rr1 >= MIN_RR1 else "RR1 нижче мінімуму",
+        valid=rr1_valid,
+        reason="" if rr1_valid else "RR1 нижче мінімуму",
     )
     return plan
 
