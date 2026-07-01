@@ -1478,7 +1478,10 @@ def build_context(data: dict, state: dict) -> dict:
         "15m": identify_liquidity_and_range(c15),
         "1h": identify_liquidity_and_range(c1h, left_bars=3, right_bars=3),
     }
+  # 1. СПОЧАТКУ викликаємо функцію і записуємо результат у змінну (ДО словника ctx)
+    amd_profile = profile_amd_sessions(c15, atr15)
 
+    # 2. ПОТІМ відкриваємо словник ctx і передаємо туди цю змінну
     ctx = {
         "time": data["time"],
         "price": price,
@@ -1491,14 +1494,14 @@ def build_context(data: dict, state: dict) -> dict:
         "flow": flow,
         "cvd": cvd,
         "atr15": atr15,
-        amd_profile = profile_amd_sessions(c15, atr15)
         "atr1h": atr1h,
         "candles": data["candles"],
-        "btc_candles": data.get("btc_candles", {}), # ДОДАНО
+        "btc_candles": data.get("btc_candles", {}),
         "volume_clusters": [],
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
-        "amd_profile": amd_profile,
+        # 3. ТУТ використовуємо двокрапку, бо це словник
+        "amd_profile": amd_profile
     }
     market_regime = stabilize_regime_engine(state, detect_regime_engine_2(ctx))
     ctx["market_regime"] = market_regime
