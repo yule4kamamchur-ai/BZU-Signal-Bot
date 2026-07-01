@@ -1818,7 +1818,23 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
         recent_struct = detect_recent_structure_shift(c15, lookback=7)
         move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
-        
+
+        # Довший лукбек тренду (20 свічок 15m ≈ 5 годин) — на додачу до короткого
+        # move8 (8 свічок), який regime_detection() використовує для класифікації RANGE.
+        # Повільний, розтягнутий у часі рух (напр. -0.6% за 2 години) може НЕ перевищити
+        # короткий 8-свічковий поріг у кожен окремий момент, тож regime лишається "RANGE",
+        # хоча по суті це вже м'який тренд. PO3/RANGE_EDGE_REVERSAL — це купівля "відкату
+        # від межі діапазону", і вона не повинна відкриватись проти такого встановленого
+        # дрейфу (реальний кейс 01.07: 2 підряд LONG RANGE_EDGE_REVERSAL програли під час
+        # повільного зниження 73.23 -> 72.44, яке "RANGE"-класифікатор не бачив як тренд).
+        drift_lookback_n = 20
+        if len(c15) >= drift_lookback_n:
+            drift_atr = (c15[-1].close - c15[-drift_lookback_n].close) / atr15 if atr15 else 0.0
+        else:
+            drift_atr = 0.0
+        trend_against_reversal = (side == Side.LONG.value and drift_atr < -1.6) or \
+                                  (side == Side.SHORT.value and drift_atr > 1.6)
+
         # Евристики для розпізнавання моделей
         has_fvg = any(z.side == side and z.kind == "FVG" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
         has_ob = any(z.side == side and z.kind == "OB" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
@@ -1838,7 +1854,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         active_patterns = []
         if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
         if is_killzone and has_fvg and strong_displacement: active_patterns.append("SILVER_BULLET")
-        if regime == Regime.RANGE.value and is_sweep and has_good_reclaim: active_patterns.append("PO3")
+        if regime == Regime.RANGE.value and is_sweep and has_good_reclaim and not trend_against_reversal: active_patterns.append("PO3")
         if is_sweep and not strong_displacement: active_patterns.append("TURTLE_SOUP")
         if has_choch and has_good_reclaim: active_patterns.append("BREAKER_BLOCK")
         if has_fvg and tf1h.get("bias") == side: active_patterns.append("FVG_ENTRY")
@@ -2760,6 +2776,58 @@ def _mfe_guard_stop(trade: ActiveTrade, context: dict, profile: dict, best_pct: 
     return round_price(stop)
 
 
+def _post_tp1_guard_stop(trade: ActiveTrade, context: dict, profile: dict) -> Optional[float]:
+    """
+    Post-TP1 Guard — закриває риск-вікно МІЖ TP1 і Delayed-BE-тригером (50% шляху до TP2).
+
+    До цього патчу: одразу після TP1 стоп лишався на початковому рівні (Delayed BE)
+    аж до моменту, коли ціна проходила 50% шляху від TP1 до TP2. Якщо цей рівень
+    так і не досягався, угода могла повністю розвернутись і закритись повним збитком
+    навіть після офіційного "TP1 hit" — реальний кейс з 01.07: угода f6401fc62a
+    (RANGE_EDGE_REVERSAL LONG) сягнула TP1, п'ять годин ходила боком/вниз і закрилась
+    стопом по ПОЧАТКОВОМУ рівню з результатом -0.328%.
+
+    Логіка: щойно ціна пройшла ПОМІТНУ (але не обов'язково 50%) частку шляху TP1->TP2,
+    підтягуємо стоп так, щоб зафіксувати частину саме цього відрізка руху. Це проміжний
+    ratchet — Delayed BE на 50% лишається на місці як другий, різкіший рубіж захисту.
+    Спрацьовує лише в діапазоні TP1_hit=True .. TP2_hit=False; ратчет у
+    _apply_protective_stop і надалі гарантує, що стоп ніколи не послабиться.
+    """
+    if not trade.tp1_hit or trade.tp2_hit:
+        return None
+
+    side = trade.side
+    tp1 = trade.tp1
+    tp2 = trade.tp2
+    leg_dist = abs(tp2 - tp1)
+    if leg_dist <= 1e-9:
+        return None
+
+    # Прогрес рахуємо від TP1 у бік TP2 за найкращою досягнутою ціною (best_price
+    # вже оновлюється в manage_active_trade на кожному виклику незалежно від tp1_hit).
+    progress = abs(trade.best_price - tp1)
+    trigger_fraction = float(profile.get("post_tp1_trigger_fraction", 0.25))
+    if progress < leg_dist * trigger_fraction:
+        return None  # ще замало пройдено від TP1 до TP2 — не заважаємо угоді дихати
+
+    lock_fraction = float(profile.get("post_tp1_lock_fraction", 0.35))
+    lock_dist = progress * lock_fraction
+
+    price = context.get("price", trade.entry)
+    atr15 = context.get("atr15", 0.6) or 0.6
+
+    if side == Side.LONG.value:
+        raw_stop = tp1 + lock_dist
+        air_stop = price - atr15 * 0.55  # буфер під шум: не тісніше пів-ATR від поточної ціни
+        stop = min(raw_stop, air_stop)
+    else:
+        raw_stop = tp1 - lock_dist
+        air_stop = price + atr15 * 0.55
+        stop = max(raw_stop, air_stop)
+
+    return round_price(stop)
+
+
 def _trade_pct(side: str, entry: float, price: float) -> float:
     if not entry:
         return 0.0
@@ -2885,6 +2953,21 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
             result["recommended_stop"] = round_price(trade.stop_current)
             result["recommended_stop_reason"] = "MFE Guard активний (захист нереалізованого прибутку до TP1)"
 
+    # --- Post-TP1 Guard (закриває "сліпу зону" між TP1 і 50%-Delayed-BE-тригером) ---
+    # Без цього патчу стоп після TP1 лишався на початковому рівні аж до 50% шляху
+    # до TP2, тож угода могла повністю розвернутись і закритись повним збитком навіть
+    # після офіційного TP1 (реальний кейс 01.07: f6401fc62a, -0.328% попри TP1 hit).
+    elif not trade.tp2_hit:
+        post_profile = trade_mode_profile(context, side, trade.setup_type)
+        is_risky_entry = str(getattr(trade, "entry_level", "") or "").upper() == Action.RISKY_ENTRY.value
+        post_profile["post_tp1_trigger_fraction"] = 0.18 if is_risky_entry else 0.25
+        post_profile["post_tp1_lock_fraction"] = 0.45 if is_risky_entry else 0.35
+        post_stop = _post_tp1_guard_stop(trade, context, post_profile)
+        if _apply_protective_stop(trade, context, post_stop):
+            result["notes"].append(f"Post-TP1 Guard: прогрес до TP2 частково зафіксовано, стоп підтягнуто до {trade.stop_current}")
+            result["recommended_stop"] = round_price(trade.stop_current)
+            result["recommended_stop_reason"] = "Post-TP1 Guard активний (захист прогресу між TP1 і TP2)"
+
     # --- Дворівневий Wick Defense ---
     is_stop, stop_reason = _stop_hit(trade, context)
     if is_stop:
@@ -2902,7 +2985,12 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
-        trade.tp1_locked_stop = trade.stop_initial 
+        # Не послаблюємо стоп: якщо MFE Guard уже підтягнув його ще ДО TP1 (у ту саму
+        # свічку), лишаємо тісніший з двох, а не відкочуємо назад до stop_initial.
+        if side == Side.LONG.value:
+            trade.tp1_locked_stop = max(trade.stop_initial, trade.stop_current)
+        else:
+            trade.tp1_locked_stop = min(trade.stop_initial, trade.stop_current)
         trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
         result["notes"].append("TP1 досягнуто (зняття ризику) — стоп залишається початковим (Delayed BE)")
@@ -2927,7 +3015,12 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
-        trade.tp2_locked_stop = trade.tp1
+        # Так само, як і на TP1: не послаблюємо стоп, якщо Post-TP1 Guard уже
+        # підтягнув його тісніше за рівень TP1 в межах цієї ж свічки.
+        if side == Side.LONG.value:
+            trade.tp2_locked_stop = max(trade.tp1, trade.stop_current)
+        else:
+            trade.tp2_locked_stop = min(trade.tp1, trade.stop_current)
         trade.stop_current = trade.tp2_locked_stop
         result["action"] = Action.TP2.value
         result["notes"].append("TP2 досягнуто — стоп перенесено на TP1")
