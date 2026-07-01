@@ -1394,6 +1394,12 @@ def build_context(data: dict, state: dict) -> dict:
     cvd = cvd_snapshot(c15)  # Передаємо 15М свічки для розрахунку синтетичного CVD
     move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
     regime, regime_reason = regime_detection(tf4h, tf1h, move8)
+    # Пули ліквідності (BSL/SSL) — потрібні для розміщення TP за технічними рівнями,
+    # а не лише за фіксованим RR. 1H — для дальніх/старших цілей (TP2/TP3).
+    liquidity = {
+        "15m": identify_liquidity_and_range(c15),
+        "1h": identify_liquidity_and_range(c1h, left_bars=3, right_bars=3),
+    }
 
     ctx = {
         "time": data["time"],
@@ -1403,6 +1409,7 @@ def build_context(data: dict, state: dict) -> dict:
         "regime_reason": regime_reason,
         "tf3": tf3, "tf15": tf15, "tf1h": tf1h, "tf4h": tf4h,
         "zones": zones[-38:],
+        "liquidity": liquidity,
         "flow": flow,
         "cvd": cvd,
         "atr15": atr15,
@@ -2389,6 +2396,81 @@ def enforce_smart_money_rr(side: str, price: float, stop: float, tp1: float, tp2
     return stop, tp1, tp2, tp3
 
 
+def find_technical_targets(side: str, price: float, zones: list, liquidity: dict, atr15: float) -> list[dict]:
+    """
+    Збирає РЕАЛЬНІ технічні цілі попереду ціни за напрямком угоди:
+    - протилежні Order Block / FVG (供供 supply/demand, з яких очікується реакція)
+    - пули ліквідності BSL/SSL (equal highs/lows — типова "приманка" для ціни за ICT)
+    - межі поточного 15M-діапазону (range_high/range_low)
+
+    TP1/TP2/TP3 в build_trade_plan обираються З ЦЬОГО списку (найближча кваліфікована
+    ціль для TP1, наступна — для TP2, і т.д.), а не просто розраховуються математично
+    від RR. Формула (stop_dist * tp_rr) лишається ЛИШЕ як fallback, коли структурних
+    рівнів бракує — саме це гарантує, що вхід ніколи не блокується через "відсутність
+    зручного рівня".
+    """
+    opp = opposite(side)
+    targets: list[dict] = []
+
+    # 1) Протилежні OB/FVG попереду ціни — типові точки реакції (supply для LONG, demand для SHORT)
+    for z in zones:
+        if z.side != opp:
+            continue
+        level = z.low if side == Side.LONG.value else z.high
+        if side == Side.LONG.value and level <= price:
+            continue
+        if side == Side.SHORT.value and level >= price:
+            continue
+        tf_weight = {"4h": 1.35, "1h": 1.15, "15m": 1.0}.get(z.timeframe, 1.0)
+        targets.append({
+            "level": level, "kind": z.kind, "timeframe": z.timeframe,
+            "strength": float(z.strength) * tf_weight,
+        })
+
+    # 2) Пули ліквідності (BSL для LONG вище ціни, SSL для SHORT нижче ціни)
+    for tf_label, tf_weight in (("15m", 1.0), ("1h", 1.30)):
+        liq = liquidity.get(tf_label, {}) if isinstance(liquidity, dict) else {}
+        if side == Side.LONG.value:
+            for lvl in liq.get("bsl", []) or []:
+                if lvl > price:
+                    targets.append({"level": lvl, "kind": "BSL_LIQUIDITY", "timeframe": tf_label, "strength": 1.4 * tf_weight})
+            range_high = liq.get("range_high") or 0
+            if range_high > price:
+                targets.append({"level": range_high, "kind": "RANGE_HIGH", "timeframe": tf_label, "strength": 1.1 * tf_weight})
+        else:
+            for lvl in liq.get("ssl", []) or []:
+                if 0 < lvl < price:
+                    targets.append({"level": lvl, "kind": "SSL_LIQUIDITY", "timeframe": tf_label, "strength": 1.4 * tf_weight})
+            range_low = liq.get("range_low") or 0
+            if 0 < range_low < price:
+                targets.append({"level": range_low, "kind": "RANGE_LOW", "timeframe": tf_label, "strength": 1.1 * tf_weight})
+
+    if not targets:
+        return []
+
+    for t in targets:
+        t["distance"] = abs(t["level"] - price)
+    targets.sort(key=lambda t: t["distance"])
+
+    # Кластеризація близьких рівнів (OB+ліквідність часто збігаються в один "магніт") —
+    # лишаємо в кожному кластері найсильнішу (не обов'язково найближчу) ціль.
+    cluster_tol = max(atr15 * 0.15, price * 0.0008)
+    clustered: list[dict] = []
+    for t in targets:
+        merged = False
+        for c in clustered:
+            if abs(t["level"] - c["level"]) <= cluster_tol:
+                if t["strength"] > c["strength"]:
+                    c.update(t)
+                merged = True
+                break
+        if not merged:
+            clustered.append(dict(t))
+
+    clustered.sort(key=lambda t: t["distance"])
+    return clustered
+
+
 def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     price = context["price"]
     atr15 = context["atr15"] or 0.6
@@ -2433,6 +2515,62 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     tp2 = price + tp2_dist if side == Side.LONG.value else price - tp2_dist
     tp3 = price + tp3_dist if side == Side.LONG.value else price - tp3_dist
     stop, tp1, tp2, tp3 = enforce_smart_money_rr(side, price, stop, tp1, tp2, tp3, atr15)
+
+    # === Технічне розміщення TP: Order Block / FVG / BSL-SSL ліквідність / межі діапазону ===
+    # Формула вище (stop_dist * tp_rr) лишається ЛИШЕ страховим floor'ом — вона вже
+    # гарантувала мінімальний професійний RR. Тепер намагаємось "прив'язати" кожен TP
+    # до РЕАЛЬНОГО рівня, куди ринок технічно тяжіє (а не просто до математичної точки):
+    #   TP1 — найближча кваліфікована ціль (найчастіше 15M OB/FVG або локальна ліквідність)
+    #   TP2 — наступна ціль далі, зазвичай 1H рівень або BSL/SSL пул
+    #   TP3 — старша/сильніша ціль (1H/4H зона, дальня ліквідність, межа діапазону)
+    # Якщо для якогось TP немає кваліфікованого технічного рівня — просто лишається
+    # RR-фолбек, тому вхід НІКОЛИ не блокується через "немає зручного рівня".
+    step = max(atr15 * 0.45, price * 0.003)
+    min_tp1_distance = stop_dist * max(1.0, MIN_RR1)
+    min_tp2_distance = stop_dist * max(1.45, MIN_RR1 + 1.00)
+    min_tp3_distance = stop_dist * max(2.10, MIN_RR1 + 2.50)
+    tech_targets = find_technical_targets(side, price, zones, context.get("liquidity", {}), atr15)
+    tp_sources = {"tp1": "RR-профіль", "tp2": "RR-профіль", "tp3": "RR-профіль"}
+
+    def _pick_technical(floor_dist: float, cap_mult: float, used_levels: list[float]) -> Optional[dict]:
+        for t in tech_targets:
+            if t["distance"] < floor_dist - 1e-9:
+                continue
+            if t["distance"] > floor_dist * cap_mult:
+                break  # список відсортований за відстанню — далі буде ще далі
+            if any(abs(t["level"] - u) < step for u in used_levels):
+                continue
+            return t
+        return None
+
+    used_levels: list[float] = []
+    tp1_tech = _pick_technical(min_tp1_distance, 3.2, used_levels)
+    if tp1_tech:
+        tp1 = tp1_tech["level"]
+        tp_sources["tp1"] = f"{tp1_tech['kind']} ({tp1_tech['timeframe']})"
+    used_levels.append(tp1)
+
+    tp2_floor = max(min_tp2_distance, abs(tp1 - price) + step)
+    tp2_tech = _pick_technical(tp2_floor, 2.4, used_levels)
+    if tp2_tech:
+        tp2 = tp2_tech["level"]
+        tp_sources["tp2"] = f"{tp2_tech['kind']} ({tp2_tech['timeframe']})"
+    else:
+        tp2 = max(tp2, price + tp2_floor) if side == Side.LONG.value else min(tp2, price - tp2_floor)
+    used_levels.append(tp2)
+
+    tp3_floor = max(min_tp3_distance, abs(tp2 - price) + step)
+    tp3_tech = _pick_technical(tp3_floor, 2.2, used_levels)
+    if tp3_tech:
+        tp3 = tp3_tech["level"]
+        tp_sources["tp3"] = f"{tp3_tech['kind']} ({tp3_tech['timeframe']})"
+    else:
+        tp3 = max(tp3, price + tp3_floor) if side == Side.LONG.value else min(tp3, price - tp3_floor)
+
+    # Фінальний прогін через ratchet — навіть якщо snap до технічного рівня чомусь
+    # порушив монотонність (TP2 ближче за TP1 тощо), тут це виправляється і
+    # професійний RR-floor лишається непорушним у будь-якому випадку.
+    stop, tp1, tp2, tp3 = enforce_smart_money_rr(side, price, stop, tp1, tp2, tp3, atr15)
     
     rr1 = abs(tp1 - price) / abs(stop - price) if abs(stop - price) > 1e-9 else 2.1
     regime_action = str(profile.get("entry_action", "ALLOW")).upper()
@@ -2464,7 +2602,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         position_risk_pct=RISKY_RISK_PCT if is_risky_lane else NORMAL_RISK_PCT,
         invalidation=f"закриття 15M за {round_price(structural_stop)}",
         stop_basis=f"Модель: {candidate.ict_model} | ATR: {registry_stop_min}-{registry_stop_max}",
-        target_basis=f"динамічні TP за regime/setup profile ({profile.get('regime_type')})",
+        target_basis=f"TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
         stop_timeframe="1H" if any(z.timeframe == "1h" for z in zones) else "15M",
         structural_invalidation=round_price(structural_stop),
         trigger_level=candidate.trigger_level,
