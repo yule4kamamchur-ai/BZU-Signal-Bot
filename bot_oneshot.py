@@ -1203,7 +1203,85 @@ def cvd_snapshot(candles: list[Candle]) -> dict:
         "strength": strength, 
         "score": score
     }
+def profile_amd_sessions(candles: list[Candle], atr15: float) -> dict:
+    """
+    Інституційний AMD профайлер. 
+    Знаходить найсвіжіший Asian Range, розраховує Chop Zone та виявляє маніпуляції (Judas Swing).
+    """
+    if not candles or len(candles) < 20:
+        return {"asian_high": 0.0, "asian_low": 0.0, "status": "NO_DATA"}
 
+    kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
+    
+    asian_candles = []
+    post_asian_candles = []
+    found_asia_end = False
+
+    # Йдемо з кінця в початок, щоб знайти найсвіжішу Азію (02:00 - 10:00 за Києвом)
+    for c in reversed(candles):
+        dt = datetime.fromtimestamp(c.ts / 1000, tz=kyiv_tz)
+        hour = dt.hour
+
+        if 2 <= hour < 10: 
+            asian_candles.append(c)
+            found_asia_end = True
+        elif found_asia_end and hour >= 10:
+            # Це вже попередня сесія (або вчорашня), зупиняємось
+            break
+        elif not found_asia_end:
+            # Свічки ПІСЛЯ Азії (Лондон, Нью-Йорк поточного дня)
+            post_asian_candles.insert(0, c) # Зберігаємо правильну хронологію
+
+    if not asian_candles:
+         return {"asian_high": 0.0, "asian_low": 0.0, "status": "WAITING_ASIA"}
+
+    asian_high = max(c.high for c in asian_candles)
+    asian_low = min(c.low for c in asian_candles)
+    asian_range = asian_high - asian_low
+
+    # Захист: якщо Азія була абсолютно мертвою (< 1 ATR), AMD не дасть чистого сигналу
+    if asian_range < atr15 * 1.0:
+         return {"asian_high": asian_high, "asian_low": asian_low, "status": "RANGE_TOO_TIGHT"}
+
+    # Визначення Chop Zone (середня третина діапазону)
+    chop_top = asian_high - (asian_range / 3)
+    chop_bottom = asian_low + (asian_range / 3)
+
+    swept_high = False
+    swept_low = False
+    judas_bias = Side.NEUTRAL.value
+    fresh_reclaim = False
+
+    # Аналіз маніпуляції (Лондон/Нью-Йорк)
+    for c in post_asian_candles:
+        if c.high > asian_high:
+            swept_high = True
+        if c.low < asian_low:
+            swept_low = True
+
+    # Перевірка на "Свіжий Reclaim" (останні 4 свічки - 1 година)
+    recent_post = post_asian_candles[-4:] if len(post_asian_candles) >= 4 else post_asian_candles
+    for c in recent_post:
+        # Якщо зняли Хай і повернулися під нього (закриття нижче Хая) -> це ведмежий Judas Swing
+        if swept_high and c.close < asian_high:
+            judas_bias = Side.SHORT.value 
+            fresh_reclaim = True
+        # Якщо зняли Лоу і повернулися над ним -> це бичий Judas Swing
+        elif swept_low and c.close > asian_low:
+            judas_bias = Side.LONG.value  
+            fresh_reclaim = True
+
+    return {
+        "asian_high": round(asian_high, 3),
+        "asian_low": round(asian_low, 3),
+        "chop_top": round(chop_top, 3),
+        "chop_bottom": round(chop_bottom, 3),
+        "swept_high": swept_high,
+        "swept_low": swept_low,
+        "judas_bias": judas_bias,
+        "fresh_reclaim": fresh_reclaim,
+        "status": "AMD_ACTIVE"
+    }
 
 def regime_detection(tf4h: dict, tf1h: dict, move8: float) -> tuple[str, str]:
     htf_aligned = tf4h.get("bias") == tf1h.get("bias") and tf1h.get("bias") != Side.NEUTRAL.value
@@ -1413,12 +1491,14 @@ def build_context(data: dict, state: dict) -> dict:
         "flow": flow,
         "cvd": cvd,
         "atr15": atr15,
+        amd_profile = profile_amd_sessions(c15, atr15)
         "atr1h": atr1h,
         "candles": data["candles"],
         "btc_candles": data.get("btc_candles", {}), # ДОДАНО
         "volume_clusters": [],
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
+        "amd_profile": amd_profile,
     }
     market_regime = stabilize_regime_engine(state, detect_regime_engine_2(ctx))
     ctx["market_regime"] = market_regime
@@ -1952,30 +2032,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     now_kyiv = datetime.now(kyiv_tz)
     k_hour = now_kyiv.hour
 
-    is_pacific = 0 <= k_hour < 9
-    is_asian = 2 <= k_hour < 11
-    is_european = 8 <= k_hour < 17
-    is_american = 15 <= k_hour <= 23  # до 00:00 наступного дня
-
     # Для нафти (BZ) найвища волатильність припадає на Європу та Америку
-    is_killzone = is_european or is_american
-    
-    # Визначення поточної активної сесії для логування (за пріоритетом волатильності)
-    active_session_name = "ПОЗА СЕСІЄЮ"
-    if 15 <= k_hour < 17:
-        active_session_name = "ЄВРОПА + АМЕРИКА (ПЕРЕТИН)"
-    elif is_american:
-        active_session_name = "АМЕРИКАНСЬКА"
-    elif is_european:
-        active_session_name = "ЄВРОПЕЙСЬКА"
-    elif is_asian:
-        active_session_name = "АЗІЙСЬКА"
-    elif is_pacific:
-        active_session_name = "ТИХООКЕАНСЬКА"
+    is_killzone = (8 <= k_hour < 17) or (15 <= k_hour <= 23)
 
     params = get_adaptive_params(regime)
 
     candidates = []
+    for side in [Side.LONG.value, Side.SHORT.value]:
+        event = scan_events.get(side, {})
     for side in [Side.LONG.value, Side.SHORT.value]:
         event = scan_events.get(side, {})
         trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
@@ -2035,7 +2099,35 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         if has_forward_zone:
             raw += 8
+# ==========================================================
+        # AMD SESSION MACRO-FILTER (Chop Zone & Judas Swing)
+        # ==========================================================
+        amd = context.get("amd_profile", {})
+        
+        # Дозволяємо логіку AMD тільки якщо Азія не була аномально стиснутою
+        if amd.get("status") == "AMD_ACTIVE":
+            
+            # 1. ЗАХИСТ ВІД "М'ЯСОРУБКИ" (Chop Zone Penalty)
+            # Якщо ціна бовтається в середній третині Азії, і ще не було свіжого маніпулятивного виходу
+            if amd["chop_bottom"] < price < amd["chop_top"] and not amd["fresh_reclaim"]:
+                raw -= 25
+                pattern_conf.append("🚫 БЛОК: Ціна в Chop Zone Азії (середина діапазону, чекаємо маніпуляцію)")
+                
+            # 2. СНАЙПЕРСЬКИЙ ВХІД (Judas Swing)
+            # Якщо був свіжий зйом ліквідності та закріплення назад у діапазон
+            if amd["fresh_reclaim"]:
+                if side == amd["judas_bias"]:
+                    raw += 35
+                    loc_conf.append("🔥 AMD: Свіжий Judas Swing (Маніпуляція завершена, вхід з Розумними Грошима)")
+                    # Примусово ідентифікуємо патерн для подальшої обробки
+                    best_pattern = "JUDAS_SWING"
+                    
+                # Якщо алгоритм намагається торгувати ПРОТИ свіжого повернення (наприклад, шортить після зйому лоу)
+                elif side != amd["judas_bias"]:
+                    raw -= 40
+                    pattern_conf.append("🚫 FATAL: Спроба входу ПРОТИ свіжого Judas Swing")
 
+        # ==========================================================
         # ==========================================================
         # ТЕХНІЧНА ПЕРЕВІРКА СТРУКТУРИ (динамічний штраф/бонус)
         # ==========================================================
