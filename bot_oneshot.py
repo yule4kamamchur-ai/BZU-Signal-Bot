@@ -85,6 +85,30 @@ PRO_RISKY_MIN = 66
 MIN_PRO_LAYERS_ENTRY = 4
 A_PLUS_ENTRY_MIN = 82
 
+# === Vector Scoring Weights (v6.7 — Pattern-Specific Weights) ===
+# Reversal-родина (LIQUIDITY_RECOVERY / STRUCTURAL_TRANSITION / RANGE_EXECUTION):
+# ідеальне вирівнювання HTF у бік входу означає ПІЗНІЙ вхід — штрафуємо його,
+# натомість максимізуємо вагу ліквідності/тригера/SMT.
+REVERSAL_LIQ_WEIGHT = float(os.getenv("REVERSAL_LIQ_WEIGHT", "1.35") or 1.35)
+REVERSAL_TRIGGER_WEIGHT = float(os.getenv("REVERSAL_TRIGGER_WEIGHT", "1.30") or 1.30)
+REVERSAL_HTF_WEIGHT = float(os.getenv("REVERSAL_HTF_WEIGHT", "0.35") or 0.35)
+REVERSAL_SMT_BONUS = int(os.getenv("REVERSAL_SMT_BONUS", "9") or 9)
+REVERSAL_LATE_ENTRY_PENALTY = int(os.getenv("REVERSAL_LATE_ENTRY_PENALTY", "9") or 9)
+
+# Trend/Expansion-родина (CONTINUATION / EXPANSION): HTF і CVD критичні,
+# преміюємо узгодження; додатково штрафуємо "погоню" за виснаженим рухом.
+TREND_STRUCTURE_WEIGHT = float(os.getenv("TREND_STRUCTURE_WEIGHT", "1.15") or 1.15)
+TREND_FLOW_WEIGHT = float(os.getenv("TREND_FLOW_WEIGHT", "1.30") or 1.30)
+TREND_HTF_WEIGHT = float(os.getenv("TREND_HTF_WEIGHT", "1.25") or 1.25)
+TREND_SMT_BONUS = int(os.getenv("TREND_SMT_BONUS", "4") or 4)
+EXHAUSTION_ATR_THRESHOLD = float(os.getenv("EXHAUSTION_ATR_THRESHOLD", "1.5") or 1.5)
+EXHAUSTION_SCORE_MULTIPLIER = float(os.getenv("EXHAUSTION_SCORE_MULTIPLIER", "0.5") or 0.5)
+
+# No-Pattern Fallback Penalty: коли ЖОДНА з 10 іменних ICT-моделей не
+# підтверджена, сетап деградує до generic PULLBACK_CONTINUATION — раніше це
+# траплялось з майже нормальною впевненістю (16 угод, 12.5% winrate, -5.63%).
+NO_PATTERN_PENALTY = int(os.getenv("NO_PATTERN_PENALTY", "14") or 14)
+
 # === 3M Scanner ===
 TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "35") or 35)
 RECLAIM_MIN_QUALITY = int(os.getenv("RECLAIM_MIN_QUALITY", "58") or 58)
@@ -2092,11 +2116,30 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 best_priority = p_data["priority"]
                 best_pattern = pat_id
 
+        # ==========================================================
+        # VECTOR SCORING (v6.7): кожна родина сетапів рахується за
+        # власною логікою замість єдиної лінійної формули.
+        #   - REVERSAL (SWEEP_RECLAIM/JUDAS_SWING/TURTLE_SOUP/PO3/MMBM/2022_MODEL):
+        #     штраф за ідеальне вирівнювання HTF (= пізній вхід), максимум ваги
+        #     на ліквідність/тригер/SMT Divergence.
+        #   - TREND (BREAKOUT_RETEST/FVG_ENTRY/BREAKER_BLOCK/OB_RECLAIM/BMS_RETEST):
+        #     HTF і CVD критичні, але Exhaustion Penalty ріже скор навпіл, якщо
+        #     рух вже пройшов > EXHAUSTION_ATR_THRESHOLD ATR без глибокого відкату.
+        #   - Fallback без жодної підтвердженої моделі (генерик PULLBACK_CONTINUATION)
+        #     отримує NO_PATTERN_PENALTY — саме ця комбінація була "дірою" v6.6
+        #     (16 угод, 12.5% winrate, -5.63%), бо торгувалась з майже нормальною
+        #     впевненістю, хоча по суті означає "нічого конкретного не спрацювало".
+        # ==========================================================
+        reversal_families = {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.RANGE_EXECUTION.value}
+        trend_families = {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+
+        pattern_family = None
         if best_pattern:
             p_data = pattern_registry[best_pattern]
             raw_bonus = p_data["score_bonus"]
             pattern_conf.append(f"Модель: {p_data['name']}")
-            
+            pattern_family = SETUP_FAMILY_MAP.get(p_data["preferred_setup"], SetupFamily.CONTINUATION.value)
+
             # Органічна стабільність (Regime Matching)
             if regime in p_data["favored"]:
                 raw_bonus += 5
@@ -2104,16 +2147,50 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             elif regime in p_data["penalty"]:
                 raw_bonus -= 10
                 pattern_conf.append("⚠️ Конфлікт моделі з режимом ринку (-10)")
+        else:
+            raw_bonus -= NO_PATTERN_PENALTY
+            pattern_conf.append(f"⚠️ Жодна з 10 ICT-моделей не підтверджена — generic fallback (-{NO_PATTERN_PENALTY})")
 
-        # Базові обчислення якості (збережено існуючу логіку)
+        htf_aligned_strong = (tf4h.get("bias") == side) and (tf1h.get("bias") == side)
+        liq_weight = trig_weight = htf_weight = str_weight = flw_weight = 1.0
+        vector_bonus = 0.0
+        exhaustion_multiplier = 1.0
+
+        if pattern_family in reversal_families:
+            liq_weight, trig_weight, htf_weight = REVERSAL_LIQ_WEIGHT, REVERSAL_TRIGGER_WEIGHT, REVERSAL_HTF_WEIGHT
+            if smt_bias == side:
+                vector_bonus += REVERSAL_SMT_BONUS
+                pattern_conf.append(f"🧭 SMT Divergence на користь входу (+{REVERSAL_SMT_BONUS})")
+            elif smt_bias == opposite(side):
+                vector_bonus -= REVERSAL_SMT_BONUS
+                pattern_conf.append(f"⚠️ SMT Divergence проти входу (-{REVERSAL_SMT_BONUS})")
+            if htf_aligned_strong:
+                # Ідеальне вирівнювання HTF по розворотній моделі означає, що ринок
+                # вже розвернувся і ми заходимо пізно — це не підтвердження, а ризик.
+                vector_bonus -= REVERSAL_LATE_ENTRY_PENALTY
+                pattern_conf.append(f"⏱️ Ідеальне вирівнювання HTF для розвороту = пізній вхід (-{REVERSAL_LATE_ENTRY_PENALTY})")
+        elif pattern_family in trend_families:
+            str_weight, flw_weight, htf_weight = TREND_STRUCTURE_WEIGHT, TREND_FLOW_WEIGHT, TREND_HTF_WEIGHT
+            if smt_bias == side:
+                vector_bonus += TREND_SMT_BONUS
+                pattern_conf.append(f"🧭 SMT Divergence підтверджує тренд (+{TREND_SMT_BONUS})")
+            if len(c15) >= 8 and atr15:
+                impulse_run_atr = abs(c15[-1].close - c15[-8].close) / atr15
+                extreme8 = max(c.high for c in c15[-8:]) if side == Side.LONG.value else min(c.low for c in c15[-8:])
+                retracement_atr = abs(price - extreme8) / atr15
+                if impulse_run_atr > EXHAUSTION_ATR_THRESHOLD and retracement_atr < 0.35:
+                    exhaustion_multiplier = EXHAUSTION_SCORE_MULTIPLIER
+                    pattern_conf.append(f"🔻 Exhaustion Penalty: рух {impulse_run_atr:.2f} ATR без відкату — скор x{EXHAUSTION_SCORE_MULTIPLIER}")
+
+        # Базові обчислення якості (збережено існуючу логіку, зважено за родиною сетапу)
         loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
-        str_score = 19 if tf15.get("bias") == side else 10
-        liq_score = 16 if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready else 6
-        flw_score = 17 if flow.get("bias") == side and cvd.get("bias") == side else 0
-        trig_score = 22 if trigger_ready else 8
-        htf_score = 20 if tf4h.get("bias") == side else 6
+        str_score = (19 if tf15.get("bias") == side else 10) * str_weight
+        liq_score = (16 if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready else 6) * liq_weight
+        flw_score = (17 if flow.get("bias") == side and cvd.get("bias") == side else 0) * flw_weight
+        trig_score = (22 if trigger_ready else 8) * trig_weight
+        htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
         
-        raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus
+        raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus + vector_bonus
 
         # === Session Profiling & AMD: макро-скор-коригування найвищого рівня ===
         # Це БАЛОВЕ коригування (як і всі інші бонуси/штрафи вище), не жорсткий
@@ -2128,6 +2205,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             session_bonus -= chop["penalty_magnitude"]
             pattern_conf.extend(session_profile["notes"])
         raw += session_bonus
+
+        if exhaustion_multiplier < 1.0:
+            raw *= exhaustion_multiplier
 
         if is_limit_armed:
             trigger_ready = True  # Ігноруємо відсутність 3M сигналу
