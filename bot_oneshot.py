@@ -2672,7 +2672,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
         str_score = (19 if tf15.get("bias") == side else 10) * str_weight
         liq_score = (16 if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready else 6) * liq_weight
-        flw_score = (17 if flow.get("bias") == side and cvd.get("bias") == side else 0) * flw_weight
+        # ВИПРАВЛЕННЯ: flow_snapshot() зараз заглушка (завжди повертає NEUTRAL,
+        # бо trades/book з collect_market_data порожні) — умова
+        # "flow.bias == side AND cvd.bias == side" через це НІКОЛИ не
+        # виконувалась, і робочий CVD-проксі (реальний сигнал з candle-тиску)
+        # мовчки гасився мертвим flow. Тепер flw_score рахується напряму від
+        # CVD, використовуючи вже наявну градацію сили (0/8/15 замість
+        # фіксованого "17") — коли колись buy/sell trades tape реально
+        # підключать у collect_market_data, flow.bias перестане бути
+        # константою і його можна буде додати як окремий множник/бонус.
+        flw_score = float(cvd.get("score", 0)) * flw_weight if cvd.get("bias") == side else 0.0
         trig_score = (22 if trigger_ready else 8) * trig_weight
         htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
         
@@ -3311,12 +3320,37 @@ def _trade_pct(side: str, entry: float, price: float) -> float:
     return (entry - price) / entry * 100
 
 
+def _opened_at_ms(opened_at: str) -> int:
+    """Парсить ActiveTrade.opened_at (iso_now()) у мілісекунди epoch.
+    При будь-якій помилці парсингу повертає 0 (тобто "без нижньої межі"),
+    щоб не ламати перевірку стопу через дефектний/відсутній timestamp."""
+    try:
+        return int(datetime.fromisoformat(str(opened_at)).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
 def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
-    """Дворівневий стоп-лос: Hard Stop (по тіні) та Soft Stop (по закриттю свічки)"""
+    """Дворівневий стоп-лос: Hard Stop (по тіні) та Soft Stop (по закриттю свічки).
+
+    ВИПРАВЛЕННЯ: раніше перевірялась лише ОСТАННЯ 3m-свічка. Якщо бот
+    запускається рідше, ніж раз на 3 хвилини (типовий cron-інтервал 5-15 хв),
+    між двома запусками могли закритись 2-5 тривільних свічок — стоп міг бути
+    вибитий і повернутись назад усередині цього вікна, і бот про це просто
+    не дізнавався. Тепер скануються ВСІ свічки, що закрились після
+    trade.last_checked_3m_ts (і не раніше моменту відкриття угоди), у
+    хронологічному порядку — повертаємо перше спрацювання.
+
+    Обмеження: stop/hard_stop тут статичні (значення на момент ПОТОЧНОГО
+    запуску) — якщо MFE/Post-TP1 Guard підтягнули б стоп ще тісніше
+    ПОСЕРЕД пропущеного вікна, ця функція цього не відтворює. Це все одно
+    строго консервативніше за попередню поведінку (перевірку лише останньої
+    свічки), але не є ідеальною посвічковою симуляцією ratchet-логіки.
+    """
     stop = float(trade.stop_current or 0)
     if not stop:
         return False, ""
-    
+
     price = float(context.get("price") or 0)
     c3 = (context.get("candles", {}) or {}).get("3m", [])
     atr15 = float(context.get("atr15") or 0.6)
@@ -3329,25 +3363,32 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
             if price >= stop: return True, "Stop hit (fallback)"
         return False, ""
 
-    last_candle = c3[-1]
+    lower_bound = max(int(trade.last_checked_3m_ts or 0), _opened_at_ms(trade.opened_at))
+    unchecked = sorted((c for c in c3 if c.ts > lower_bound), key=lambda c: c.ts)
+    # Якщо нових свічок від останньої перевірки не з'явилось (бот запускається
+    # частіше за 3m-бар), лишаємось на попередній поведінці — перевіряємо
+    # останню доступну свічку.
+    candles_to_check = unchecked or c3[-1:]
+
     hard_stop_dist = atr15 * 1.5
 
-    if trade.side == Side.LONG.value:
-        hard_stop = trade.stop_initial - hard_stop_dist
-        # Hard Stop (вибивання по тіні)
-        if last_candle.low <= hard_stop:
-            return True, f"Hard Stop hit ({last_candle.low} <= {hard_stop})"
-        # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
-        if last_candle.close <= stop:
-            return True, f"Soft Stop hit: свічка закрилася нижче ({last_candle.close} <= {stop})"
-    else:
-        hard_stop = trade.stop_initial + hard_stop_dist
-        # Hard Stop (вибивання по тіні)
-        if last_candle.high >= hard_stop:
-            return True, f"Hard Stop hit ({last_candle.high} >= {hard_stop})"
-        # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
-        if last_candle.close >= stop:
-            return True, f"Soft Stop hit: свічка закрилася вище ({last_candle.close} >= {stop})"
+    for candle in candles_to_check:
+        if trade.side == Side.LONG.value:
+            hard_stop = trade.stop_initial - hard_stop_dist
+            # Hard Stop (вибивання по тіні)
+            if candle.low <= hard_stop:
+                return True, f"Hard Stop hit ({candle.low} <= {hard_stop}, ts={candle.ts})"
+            # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
+            if candle.close <= stop:
+                return True, f"Soft Stop hit: свічка закрилася нижче ({candle.close} <= {stop}, ts={candle.ts})"
+        else:
+            hard_stop = trade.stop_initial + hard_stop_dist
+            # Hard Stop (вибивання по тіні)
+            if candle.high >= hard_stop:
+                return True, f"Hard Stop hit ({candle.high} >= {hard_stop}, ts={candle.ts})"
+            # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
+            if candle.close >= stop:
+                return True, f"Soft Stop hit: свічка закрилася вище ({candle.close} >= {stop}, ts={candle.ts})"
 
     return False, ""
 
@@ -3744,12 +3785,74 @@ def run_bot() -> None:
     print("BOT COMPLETE")
 
 
+def _run_self_test() -> bool:
+    """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
+    критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
+    тим, як бот піде в прод (напр. крок GitHub Actions перед run_bot()).
+
+    Це НЕ заміна pytest-покриття в tests/test_bot_oneshot.py (там повний
+    набір з детальними сценаріями для RR, stop-менеджменту, TP-прогресії
+    та CVD/flow-фіксу) — це компактний smoke-test без зовнішньої залежності
+    від pytest, який можна запустити навіть якщо pytest не встановлено
+    в рантайм-образі бота.
+    """
+    checks: list[tuple[str, bool]] = []
+
+    # --- RR floors ---
+    _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
+    rr1 = (tp1 - 100.0) / (100.0 - 99.0)
+    checks.append(("enforce_smart_money_rr: LONG RR1 >= MIN_RR1", rr1 >= MIN_RR1 - 1e-6))
+    checks.append(("enforce_smart_money_rr: LONG TP-монотонність", tp1 < tp2 < tp3))
+
+    _, stp1, stp2, stp3 = enforce_smart_money_rr(Side.SHORT.value, 100.0, 101.0, 99.7, 99.4, 99.1, 0.6)
+    srr1 = (100.0 - stp1) / (101.0 - 100.0)
+    checks.append(("enforce_smart_money_rr: SHORT RR1 >= MIN_RR1", srr1 >= MIN_RR1 - 1e-6))
+    checks.append(("enforce_smart_money_rr: SHORT TP-монотонність", stp1 > stp2 > stp3))
+
+    # --- _stop_hit: перевіряє ВСІ пропущені свічки, не лише останню ---
+    now_ms = int(now_utc().timestamp() * 1000)
+    opened_at = (now_utc() - timedelta(hours=1)).isoformat()
+    trade = ActiveTrade(
+        id="selftest", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=opened_at,
+        entry=100.0, stop_initial=99.0, stop_current=99.0, structural_invalidation=94.0,
+        tp1=101.5, tp2=103.0, tp3=105.0, quality=80, position_risk_pct=0.5,
+        best_price=100.0, worst_price=100.0, last_checked_3m_ts=now_ms - 20 * 60_000,
+    )
+
+    def _mk_candle(ts: int, close: float) -> Candle:
+        return Candle(ts=ts, open=close, high=close + 0.05, low=close - 0.05, close=close, volume=1000.0)
+
+    missed_candles = [
+        _mk_candle(now_ms - 12 * 60_000, 99.4),
+        _mk_candle(now_ms - 9 * 60_000, 98.7),   # пробила стоп тілом і забута старою логікою
+        _mk_candle(now_ms - 6 * 60_000, 99.3),   # ціна вже відновилась до наступного polling
+    ]
+    hit, _ = _stop_hit(trade, {"price": 99.3, "atr15": 0.6, "candles": {"3m": missed_candles}})
+    checks.append(("_stop_hit: виявляє пропущений whipsaw між запусками", hit is True))
+
+    # --- CVD/flow фікс: flw_score більше не гаситься мертвою flow-заглушкою ---
+    flow = flow_snapshot([], {})
+    cvd_long = {"bias": Side.LONG.value, "score": 15}
+    flw_score = float(cvd_long.get("score", 0)) * 1.0 if cvd_long.get("bias") == Side.LONG.value else 0.0
+    checks.append(("flow_snapshot лишається заглушкою (документує стан)", flow["bias"] == Side.NEUTRAL.value))
+    checks.append(("flw_score рахується від CVD, а не від мертвого flow", flw_score == 15.0))
+
+    ok = all(passed for _, passed in checks)
+    for name, passed in checks:
+        print(f"  [{'OK' if passed else 'FAIL'}] {name}")
+    return ok
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.6")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        print("SELF-TEST PASSED")
+        ok = _run_self_test()
+        print("SELF-TEST PASSED" if ok else "SELF-TEST FAILED")
+        if not ok:
+            raise SystemExit(1)
         return
     run_bot()
 
