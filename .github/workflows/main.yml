@@ -47,7 +47,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          for file in last_signal_v6_4.json signal_journal_v6_4.json last_signal_v6_4.json.bak signal_journal_v6_4.json.bak; do
+          git rm --cached -q last_signal_v6_4.json.bak signal_journal_v6_4.json.bak 2>/dev/null || true
+
+          for file in last_signal_v6_4.json signal_journal_v6_4.json; do
             if [ -f "$file" ]; then
               git add "$file"
             else
