@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.6 (Time-Warp Edition)
+BZU Professional Hybrid Confluence Signal Bot v6.8 (Data-Integrity Edition)
 ================================================================================
+Виправлення v6.8 (інфраструктурний борг):
+- КРИТИЧНО: ActiveTrade/Opportunity тепер несуть signal_id = Decision.id.
+  Раніше trade.id генерувався НЕЗАЛЕЖНИМ uuid.uuid4(), тому жоден запис
+  journal["trades"] не збігався за id з жодним journal["signals"] (0/64) —
+  будь-яка аналітика "модель/score/regime -> результат" трималась лише на
+  крихкому зіставленні "за порядком у часі". Тепер signal_id — надійний
+  зовнішній ключ, присутній у trades, у FOLLOW/CLOSE записах journal["signals"]
+  і в history.
+- Прибрано orphaned-код незавершених рефакторів у detect_candidates()
+  (eq_level з PD Array-логіки, k_hour зі старої killzone-формули, дубльований
+  move8 — усе рахувалось і одразу відкидалось) та у manage_active_trade()
+  (локальний atr15, якого жоден хелпер уже не приймає аргументом).
+- has_forward_zone тепер справді записується в Candidate (поле існувало в
+  dataclass, але ніколи не заповнювалось) — без зміни формул скорингу.
+
 Виправлення v6.6:
 - Інновація: Time-Warp Validation (Ретроспективний 3M Пул-Аналіз)
 - Інтеграція Premium/Discount (PD Arrays)
@@ -34,7 +49,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.6"
+BOT_VERSION = "pro-hybrid-confluence-v6.8"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -309,6 +324,10 @@ class Opportunity:
     thesis_key: str = ""
     thesis: str = ""
     missed_at: str = ""
+    # ID сигналу (Decision.id), яким цю можливість було породжено. Дозволяє
+    # відстежити ланцюжок ARMED-сигнал -> (можливий) re-entry Decision, навіть
+    # якщо сама Opportunity так і не конвертувалась у ActiveTrade.
+    signal_id: str = ""
 
 
 @dataclass
@@ -349,6 +368,15 @@ class ActiveTrade:
     trigger_level: float = 0.0
     opened_regime: str = ""
     entry_level: str = "ENTRY"
+    # ID вихідного сигналу (Decision.id з evaluate_new_setup), який відкрив цю
+    # угоду. Це надійний зовнішній ключ для аналітики "сигнал -> угода":
+    # journal["signals"] містить запис з id == signal_id, journal["trades"]
+    # містить запис з id == trade.id і signal_id == signal_id. Раніше trade.id
+    # генерувався ЗАНОВО (uuid.uuid4()) і ніяк не збігався з id сигналу, тому
+    # 0 з 64 угод у журналі можна було приєднати до сигналу, що їх породив —
+    # будь-яка аналітика "яка модель/score/regime дає найкращий результат"
+    # трималась лише на крихкому зіставленні "за порядком у часі".
+    signal_id: str = ""
 
 
 # ==========================================================
@@ -2012,13 +2040,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     smt_c15 = (context.get("smt_candles", {}) or {}).get("15m", [])
 
     # === ICT PD Array / SMT Data ===
+    # ПРИМІТКА: identify_liquidity_and_range() тут викликається лише заради
+    # SMT/range-контексту нижче; поле "eq" (рівень рівноваги PD Array) раніше
+    # рахувалось у eq_level, але ніде не читалось — приберено як orphaned-код
+    # незавершеного PD Array рефактору (Premium/Discount вирівнювання зараз
+    # не входить у vector scoring нижче).
     range_data = identify_liquidity_and_range(c15)
-    eq_level = range_data.get("eq", 0.0)
     smt_bias = detect_smt_divergence(c15, smt_c15)
-    
+
     kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
     now_kyiv = datetime.now(kyiv_tz)
-    k_hour = now_kyiv.hour
     session_profile = analyze_session_profile(c15, now_kyiv, atr15)
     # is_killzone тепер відображає ПОВЕДІНКОВУ фазу (маніпуляція/дистрибуція
     # Лондона чи Нью-Йорка), а не сирий діапазон годин — раніше формула
@@ -2055,10 +2086,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
         recent_struct = detect_recent_structure_shift(c15, lookback=7)
-        move8 = pct(c15[-1].close, c15[-8].close) if len(c15) >= 8 else 0.0
 
         # Довший лукбек тренду (20 свічок 15m ≈ 5 годин) — на додачу до короткого
-        # move8 (8 свічок), який regime_detection() використовує для класифікації RANGE.
+        # 8-свічкового руху, який regime_detection() використовує для класифікації RANGE
+        # (тут локально він більше не рахується — недороблений refactor лишав "move8"
+        # обчисленим, але непрочитаним; сама метрика й досі жива в regime_detection()).
         # Повільний, розтягнутий у часі рух (напр. -0.6% за 2 години) може НЕ перевищити
         # короткий 8-свічковий поріг у кожен окремий момент, тож regime лишається "RANGE",
         # хоча по суті це вже м'який тренд. PO3/RANGE_EDGE_REVERSAL — це купівля "відкату
@@ -2250,7 +2282,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             trigger_age_minutes=trigger_age,
             thesis_key=f"{side}|{setup_type}|{int(price*10)}",
             thesis=f"{side} {setup_type} | 3M={scan_stage}",
-            professional_gate={}
+            professional_gate={},
+            has_forward_zone=has_forward_zone,
         )
         cand.professional_gate = evaluate_professional_gate(context, cand)
         
@@ -2852,15 +2885,32 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     if price is None:
         return {"action": Action.HOLD.value, "closed": False, "notes": ["Очікування даних ціни..."]}
         
-    atr15 = context.get("atr15", 0.6) or 0.6
+    # ПРИМІТКА: atr15 тут раніше рахувався локально, але жоден з хелперів
+    # нижче (_stop_hit, _target_hit, _mfe_guard_stop, _post_tp1_guard_stop,
+    # trade_mode_profile) не приймає його аргументом — усі й так читають
+    # atr15 напряму з context. Orphaned-змінна від старішої версії видалена.
     side = trade.side
 
+    # 1. Спочатку оновлюємо екстремуми ціни ДО формування словника результату
+    if (side == Side.LONG.value and price > trade.best_price) or (side == Side.SHORT.value and price < trade.best_price):
+        trade.best_price = price
+    if (side == Side.LONG.value and price < trade.worst_price) or (side == Side.SHORT.value and price > trade.worst_price):
+        trade.worst_price = price
+
+    # 2. Виконуємо розрахунки відсотків один раз
+    current_pct = _trade_pct(side, trade.entry, price)
+    best_pct = _trade_pct(side, trade.entry, trade.best_price)
+    worst_pct = max(0.0, _trade_pct(opposite(side), trade.entry, trade.worst_price))
+
+    # 3. Формуємо чистий словник результату без дублювання та перезапису полів
     result = {
         "action": Action.HOLD.value,
         "title": "УГОДА ВІДКРИТА — HYBRID ICT v6.6",
         "recommendation": "Структура та теза на боці — тримаємо",
-        "current_pct": ((price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - price) / trade.entry * 100),
-        "best_pct": ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100),
+        "current_pct": current_pct,
+        "best_pct": best_pct,
+        "worst_pct": worst_pct,
+        "giveback_pct": max(0.0, best_pct - current_pct),
         "closed": False,
         "exit_price": None,
         "notes": [],
@@ -3102,13 +3152,13 @@ def run_bot() -> None:
             send_telegram(msg)
         
         if res.get("closed"):
-            journal["trades"].append({"id": active.id, "side": active.side, "setup_type": active.setup_type, "result_pct": res.get("current_pct"), "mfe_pct": res.get("best_pct")})
+            journal["trades"].append({"id": active.id, "signal_id": active.signal_id, "side": active.side, "setup_type": active.setup_type, "setup_family": active.setup_family, "opened_regime": active.opened_regime, "entry_level": active.entry_level, "quality": active.quality, "result_pct": res.get("current_pct"), "mfe_pct": res.get("best_pct")})
             store_active_trade(state, None)
             state["opportunity"] = None
         else:
             store_active_trade(state, active)
-        append_history(state, {"type": "FOLLOW" if not res.get("closed") else "CLOSE", "side": active.side, "action": res.get("action"), "price": context["price"]})
-        journal["signals"].append({"time": iso_now(), "type": "FOLLOW", "action": res.get("action"), "side": active.side, "price": context["price"]})
+        append_history(state, {"type": "FOLLOW" if not res.get("closed") else "CLOSE", "side": active.side, "action": res.get("action"), "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
+        journal["signals"].append({"time": iso_now(), "type": "FOLLOW", "action": res.get("action"), "side": active.side, "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
         save_state(state)
         save_journal(journal)
         print("BOT COMPLETE: ACTIVE TRADE MANAGED")
@@ -3121,12 +3171,16 @@ def run_bot() -> None:
     journal["signals"].append(payload)
 
     if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
-        active = ActiveTrade(id=uuid.uuid4().hex[:10], side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action)
+        # signal_id = decision.id: угода тепер завжди трасується до сигналу,
+        # який її відкрив. trade.id лишається окремим (власним) ідентифікатором
+        # угоди — це важливо для re-entry-сценаріїв, де одна Opportunity/сигнал
+        # може породжувати кілька спроб входу.
+        active = ActiveTrade(id=uuid.uuid4().hex[:10], signal_id=decision.id, side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action)
         store_active_trade(state, active)
         state["opportunity"] = None
-        print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type}")
+        print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type} | signal_id={active.signal_id} trade_id={active.id}")
     elif decision.action == Action.ARMED.value and decision.candidate:
-        opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status="ARMED", thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis)
+        opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status="ARMED", thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, signal_id=decision.id)
         store_opportunity(state, opp)
         store_active_trade(state, None)
     else:
