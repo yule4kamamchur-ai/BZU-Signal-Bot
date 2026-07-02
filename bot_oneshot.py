@@ -1203,85 +1203,7 @@ def cvd_snapshot(candles: list[Candle]) -> dict:
         "strength": strength, 
         "score": score
     }
-def profile_amd_sessions(candles: list[Candle], atr15: float) -> dict:
-    """
-    Інституційний AMD профайлер. 
-    Знаходить найсвіжіший Asian Range, розраховує Chop Zone та виявляє маніпуляції (Judas Swing).
-    """
-    if not candles or len(candles) < 20:
-        return {"asian_high": 0.0, "asian_low": 0.0, "status": "NO_DATA"}
 
-    kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
-    
-    asian_candles = []
-    post_asian_candles = []
-    found_asia_end = False
-
-    # Йдемо з кінця в початок, щоб знайти найсвіжішу Азію (02:00 - 10:00 за Києвом)
-    for c in reversed(candles):
-        dt = datetime.fromtimestamp(c.ts / 1000, tz=kyiv_tz)
-        hour = dt.hour
-
-        if 2 <= hour < 10: 
-            asian_candles.append(c)
-            found_asia_end = True
-        elif found_asia_end and hour >= 10:
-            # Це вже попередня сесія (або вчорашня), зупиняємось
-            break
-        elif not found_asia_end:
-            # Свічки ПІСЛЯ Азії (Лондон, Нью-Йорк поточного дня)
-            post_asian_candles.insert(0, c) # Зберігаємо правильну хронологію
-
-    if not asian_candles:
-         return {"asian_high": 0.0, "asian_low": 0.0, "status": "WAITING_ASIA"}
-
-    asian_high = max(c.high for c in asian_candles)
-    asian_low = min(c.low for c in asian_candles)
-    asian_range = asian_high - asian_low
-
-    # Захист: якщо Азія була абсолютно мертвою (< 1 ATR), AMD не дасть чистого сигналу
-    if asian_range < atr15 * 1.0:
-         return {"asian_high": asian_high, "asian_low": asian_low, "status": "RANGE_TOO_TIGHT"}
-
-    # Визначення Chop Zone (середня третина діапазону)
-    chop_top = asian_high - (asian_range / 3)
-    chop_bottom = asian_low + (asian_range / 3)
-
-    swept_high = False
-    swept_low = False
-    judas_bias = Side.NEUTRAL.value
-    fresh_reclaim = False
-
-    # Аналіз маніпуляції (Лондон/Нью-Йорк)
-    for c in post_asian_candles:
-        if c.high > asian_high:
-            swept_high = True
-        if c.low < asian_low:
-            swept_low = True
-
-    # Перевірка на "Свіжий Reclaim" (останні 4 свічки - 1 година)
-    recent_post = post_asian_candles[-4:] if len(post_asian_candles) >= 4 else post_asian_candles
-    for c in recent_post:
-        # Якщо зняли Хай і повернулися під нього (закриття нижче Хая) -> це ведмежий Judas Swing
-        if swept_high and c.close < asian_high:
-            judas_bias = Side.SHORT.value 
-            fresh_reclaim = True
-        # Якщо зняли Лоу і повернулися над ним -> це бичий Judas Swing
-        elif swept_low and c.close > asian_low:
-            judas_bias = Side.LONG.value  
-            fresh_reclaim = True
-
-    return {
-        "asian_high": round(asian_high, 3),
-        "asian_low": round(asian_low, 3),
-        "chop_top": round(chop_top, 3),
-        "chop_bottom": round(chop_bottom, 3),
-        "swept_high": swept_high,
-        "swept_low": swept_low,
-        "judas_bias": judas_bias,
-        "fresh_reclaim": fresh_reclaim,
-        "status": "AMD_ACTIVE"
-    }
 
 def regime_detection(tf4h: dict, tf1h: dict, move8: float) -> tuple[str, str]:
     htf_aligned = tf4h.get("bias") == tf1h.get("bias") and tf1h.get("bias") != Side.NEUTRAL.value
@@ -1478,10 +1400,7 @@ def build_context(data: dict, state: dict) -> dict:
         "15m": identify_liquidity_and_range(c15),
         "1h": identify_liquidity_and_range(c1h, left_bars=3, right_bars=3),
     }
-  # 1. СПОЧАТКУ викликаємо функцію і записуємо результат у змінну (ДО словника ctx)
-    amd_profile = profile_amd_sessions(c15, atr15)
 
-    # 2. ПОТІМ відкриваємо словник ctx і передаємо туди цю змінну
     ctx = {
         "time": data["time"],
         "price": price,
@@ -1496,12 +1415,10 @@ def build_context(data: dict, state: dict) -> dict:
         "atr15": atr15,
         "atr1h": atr1h,
         "candles": data["candles"],
-        "btc_candles": data.get("btc_candles", {}),
+        "btc_candles": data.get("btc_candles", {}), # ДОДАНО
         "volume_clusters": [],
         "scan_3m": state.get("scan_3m", {}),
         "scan_3m_events": {},
-        # 3. ТУТ використовуємо двокрапку, бо це словник
-        "amd_profile": amd_profile
     }
     market_regime = stabilize_regime_engine(state, detect_regime_engine_2(ctx))
     ctx["market_regime"] = market_regime
@@ -1847,6 +1764,215 @@ def event_driven_reentry_guard(state: dict, context: dict, candidate: Candidate)
     return {"blocked": False, "reason": ""}
 
 
+# ==========================================================
+# SESSION PROFILING & AMD (Accumulation — Manipulation — Distribution)
+# ==========================================================
+# Інституційна логіка (за Київським часом): Азія (02:00-10:00) формує діапазон
+# АКУМУЛЯЦІЇ. Лондон і Нью-Йорк не торгуються "у вакуумі" — вони або:
+#   (a) знімають ліквідність за межами Азійського діапазону і різко повертаються
+#       назад (МАНІПУЛЯЦІЯ / Judas Swing) — найточніший вхід дня, або
+#   (b) "перемелюють" ціну ВСЕРЕДИНІ Азійського діапазону, не знявши ліквідність
+#       (CHOP ZONE / "м'ясорубка") — статистично найгірші умови для входу.
+#
+# "Контекстуальна пам'ять" реалізована БЕЗ крихкого стану між запусками бота:
+# Азійський діапазон і факт свіпу/реклейму рахуються щоразу заново напряму зі
+# свічок (c15), тож система завжди самоузгоджена з реальним ринком, навіть якщо
+# бот перезапускався або пропустив кілька циклів сканування.
+
+ASIA_START_H, ASIA_END_H = 2, 10          # Accumulation
+LONDON_START_H, LONDON_END_H = 10, 15     # Manipulation (перші 2 год) + Distribution
+NY_START_H, NY_END_H = 15, 23             # Manipulation (перші 2 год) + Distribution
+MANIP_WINDOW_H = 2                        # тривалість "вікна маніпуляції" на старті сесії
+SESSION_MIN_CANDLES = 4                   # мінімум свічок в Азії, щоб довіряти діапазону
+SWEEP_BUFFER_ATR = 0.12                   # наскільки далеко за рівень має пройти свіп
+JUDAS_LOOKBACK_CANDLES = 8                # ~2 год на 15m — як далеко назад шукати свіжий свіп
+JUDAS_FRESH_CANDLES = 6                   # бонус плавно згасає за цей проміжок (без різкого блоку)
+JUDAS_MAX_BONUS = 35.0
+JUDAS_DOUBLE_SWEEP_BONUS = 8.0
+CHOP_MAX_PENALTY = 25.0
+CHOP_MIN_PENALTY_FRACTION = 0.55          # на межі chop-зони штраф м'якший, ніж у центрі
+
+
+def _candle_kyiv_dt(ts_ms: int, kyiv_tz) -> datetime:
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).astimezone(kyiv_tz)
+
+
+def _session_range(candles: list, kyiv_tz, ref_date, start_h: int, end_h: int) -> Optional[dict]:
+    """Хай/лоу конкретної сесії конкретної календарної дати (за Київським часом)."""
+    highs, lows = [], []
+    for c in candles:
+        dt = _candle_kyiv_dt(c.ts, kyiv_tz)
+        if dt.date() == ref_date and start_h <= dt.hour < end_h:
+            highs.append(c.high)
+            lows.append(c.low)
+    if len(highs) < SESSION_MIN_CANDLES:
+        return None
+    return {"high": max(highs), "low": min(lows), "n": len(highs)}
+
+
+def _find_recent_session_range(candles: list, kyiv_tz, now_kyiv, start_h: int, end_h: int,
+                                start_days_back: int = 0, max_days_back: int = 5) -> Optional[dict]:
+    """
+    Стійкість до розривів вихідних/свят: якщо на очікуваній даті замало свічок
+    (гепи в даних, вихідні на нафті), шукаємо найближчу попередню завершену сесію.
+    """
+    for days_back in range(start_days_back, start_days_back + max_days_back):
+        ref_date = (now_kyiv - timedelta(days=days_back)).date()
+        rng = _session_range(candles, kyiv_tz, ref_date, start_h, end_h)
+        if rng:
+            return rng
+    return None
+
+
+def _sweep_and_reclaim(candles: list, level: float, direction: str, buffer: float, lookback: int) -> Optional[dict]:
+    """
+    direction='above': шукаємо свічку, чий high пробив level+buffer, а close (цієї ж
+    або однієї з наступних 2 свічок) повернувся під level -> свіп верхньої
+    ліквідності + реклейм (ведмежий Judas Swing).
+    direction='below': дзеркально знизу (бичачий Judas Swing).
+    """
+    if not candles or level <= 0:
+        return None
+    window = candles[-lookback:]
+    for i, c in enumerate(window):
+        swept = (direction == "above" and c.high > level + buffer) or \
+                (direction == "below" and c.low < level - buffer)
+        if not swept:
+            continue
+        reclaim_window = window[i:i + 3]
+        reclaimed = any((rc.close < level) if direction == "above" else (rc.close > level) for rc in reclaim_window)
+        if reclaimed:
+            return {"level": level, "candles_since": len(window) - 1 - i}
+    return None
+
+
+def analyze_session_profile(c15: list, now_kyiv: datetime, atr15: float) -> dict:
+    """
+    Повертає повний поведінковий профіль поточного моменту:
+    фаза AMD, Азійський діапазон, chop-зона (з градацією штрафу за глибиною),
+    і Judas Swing bias (з плавним згасанням бонусу за часом, а не різким блоком).
+    """
+    kyiv_tz = now_kyiv.tzinfo
+    hour = now_kyiv.hour
+    today = now_kyiv.date()
+
+    session_name = "ПОЗА СЕСІЄЮ"
+    phase = "OFF_SESSION"
+    session_start_h: Optional[int] = None
+
+    if ASIA_START_H <= hour < ASIA_END_H:
+        phase = "ACCUMULATION"
+        session_name = "АЗІЯ (Накопичення)"
+    elif LONDON_START_H <= hour < LONDON_END_H:
+        session_start_h = LONDON_START_H
+        session_name = "ЛОНДОН"
+        phase = "MANIPULATION" if hour < LONDON_START_H + MANIP_WINDOW_H else "DISTRIBUTION"
+    elif NY_START_H <= hour < NY_END_H:
+        session_start_h = NY_START_H
+        session_name = "НЬЮ-ЙОРК"
+        phase = "MANIPULATION" if hour < NY_START_H + MANIP_WINDOW_H else "DISTRIBUTION"
+
+    # Азійський діапазон-референс: якщо ми ще ВСЕРЕДИНІ сьогоднішньої Азії, вона ще
+    # не завершена — довіряти їй як фінальному "магніту" зарано, тож головний
+    # референс під час ACCUMULATION лишається None (лише жива інформативна межа).
+    if hour < ASIA_END_H:
+        asia_live = _session_range(c15, kyiv_tz, today, ASIA_START_H, hour + 1)
+        asia_ref = None
+    else:
+        asia_live = None
+        asia_ref = _find_recent_session_range(c15, kyiv_tz, now_kyiv, ASIA_START_H, ASIA_END_H, start_days_back=0)
+
+    result = {
+        "phase": phase,
+        "session_name": session_name,
+        "asia": asia_ref or asia_live,
+        "asia_is_live": asia_ref is None and asia_live is not None,
+        "asia_range_valid": False,
+        "chop_zone": {"active": False, "low": None, "high": None, "penalty_magnitude": 0.0},
+        "judas": {"bias": None, "bonus": 0.0, "double_sweep": False, "candles_since": None},
+        "notes": [],
+    }
+
+    if not asia_ref or atr15 <= 0:
+        return result
+
+    asia_high, asia_low = asia_ref["high"], asia_ref["low"]
+    asia_range = asia_high - asia_low
+    # Занадто вузька/пласка Азія — слабкий референс, не варто на ній будувати
+    # ні chop-штраф, ні judas-бонус (немає реальної ліквідності, яку варто "знімати").
+    asia_range_valid = asia_range >= atr15 * 0.8
+    result["asia_range_valid"] = asia_range_valid
+    if not asia_range_valid:
+        return result
+
+    # Judas Swing: рахуємо лише в межах Лондона/Нью-Йорка (не в самій Азії — там
+    # немає ще завершеного діапазону, який можна було б "зняти").
+    if session_start_h is not None:
+        buf = atr15 * SWEEP_BUFFER_ATR
+        high_sweep = _sweep_and_reclaim(c15, asia_high, "above", buf, JUDAS_LOOKBACK_CANDLES)
+        low_sweep = _sweep_and_reclaim(c15, asia_low, "below", buf, JUDAS_LOOKBACK_CANDLES)
+
+        chosen, bias, double_sweep = None, None, False
+        if high_sweep and low_sweep:
+            # Обидві сторони Азії знято — "полювання" в обидва боки. Довіряємо
+            # СВІЖІШОМУ свіпу (останній замір ринку зазвичай і є справжнім наміром),
+            # і додаємо надбавку за подвійну маніпуляцію (сильніший сигнал).
+            double_sweep = True
+            if high_sweep["candles_since"] <= low_sweep["candles_since"]:
+                chosen, bias = high_sweep, Side.SHORT.value
+            else:
+                chosen, bias = low_sweep, Side.LONG.value
+        elif high_sweep:
+            chosen, bias = high_sweep, Side.SHORT.value
+        elif low_sweep:
+            chosen, bias = low_sweep, Side.LONG.value
+
+        if chosen:
+            since = chosen["candles_since"]
+            if since <= JUDAS_FRESH_CANDLES:
+                # Плавне згасання бонусу (без різкого "блоку" на 7-й свічці) —
+                # 35 балів одразу після реклейму, ~10 балів на межі "свіжості".
+                decay = 1.0 - (since / JUDAS_FRESH_CANDLES) * 0.71
+                bonus = JUDAS_MAX_BONUS * max(0.0, decay)
+                if double_sweep:
+                    bonus += JUDAS_DOUBLE_SWEEP_BONUS
+                result["judas"] = {
+                    "bias": bias, "bonus": round(bonus, 1),
+                    "double_sweep": double_sweep, "candles_since": since,
+                }
+                side_label = "хай" if bias == Side.SHORT.value else "лоу"
+                result["notes"].append(
+                    f"🎯 Judas Swing: свіп Азійського {side_label} + реклейм "
+                    f"({since} св. тому){' [подвійний свіп]' if double_sweep else ''} → +{bonus:.0f}"
+                )
+
+    # Chop Zone: середня третина Азійського діапазону. Штраф градуйований за
+    # глибиною занурення в зону (м'якший на краю, максимальний у центрі) — а не
+    # єдине фіксоване число, і НЕ застосовується, якщо саме в цю сторону вже
+    # підтверджено свіжу маніпуляцію (тоді відповідний бік отримує Judas-бонус,
+    # а не штраф).
+    price_now = c15[-1].close if c15 else None
+    if session_start_h is not None and price_now is not None:
+        third = asia_range / 3.0
+        chop_low = asia_low + third
+        chop_high = asia_high - third
+        if chop_low <= price_now <= chop_high:
+            mid = (chop_low + chop_high) / 2.0
+            half = max((chop_high - chop_low) / 2.0, 1e-9)
+            depth = 1.0 - min(abs(price_now - mid), half) / half  # 0 на межі -> 1 в центрі
+            magnitude = CHOP_MAX_PENALTY * (CHOP_MIN_PENALTY_FRACTION + (1 - CHOP_MIN_PENALTY_FRACTION) * depth)
+            result["chop_zone"] = {
+                "active": True, "low": round_price(chop_low), "high": round_price(chop_high),
+                "penalty_magnitude": round(magnitude, 1),
+            }
+            result["notes"].append(
+                f"⚠️ Chop Zone: ціна в середній третині Азійського діапазону "
+                f"({round_price(chop_low)}-{round_price(chop_high)}), ліквідність ще не знята → -{magnitude:.0f}"
+            )
+
+    return result
+
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
     atr15 = context["atr15"] or 0.6
@@ -1869,7 +1995,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
     now_kyiv = datetime.now(kyiv_tz)
     k_hour = now_kyiv.hour
-    is_killzone = (8 <= k_hour < 17) or (15 <= k_hour <= 23)
+    session_profile = analyze_session_profile(c15, now_kyiv, atr15)
+    # is_killzone тепер відображає ПОВЕДІНКОВУ фазу (маніпуляція/дистрибуція
+    # Лондона чи Нью-Йорка), а не сирий діапазон годин — раніше формула
+    # `(8<=h<17) or (15<=h<=23)` фактично покривала майже цілу добу (8:00-23:00)
+    # і не розрізняла Азію/затишшя від реальних інституційних вікон.
+    is_killzone = session_profile["phase"] in ("MANIPULATION", "DISTRIBUTION")
 
     params = get_adaptive_params(regime)
     candidates = []
@@ -1934,6 +2065,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 ce_level = best_fvg.low + (best_fvg.high - best_fvg.low) / 2
                 is_limit_armed = True
         
+        judas = session_profile["judas"]
+        chop = session_profile["chop_zone"]
         active_patterns = []
         if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
         if is_killzone and has_fvg and strong_displacement: active_patterns.append("SILVER_BULLET")
@@ -1942,7 +2075,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if has_choch and has_good_reclaim: active_patterns.append("BREAKER_BLOCK")
         if has_fvg and tf1h.get("bias") == side: active_patterns.append("FVG_ENTRY")
         if has_ob and has_good_reclaim: active_patterns.append("OB_RECLAIM")
-        if is_killzone and is_sweep and abs(move8) > 1.5: active_patterns.append("JUDAS_SWING")
+        # Замість крудого "is_killzone + sweep + рух>1.5%" — точний AMD-детект:
+        # свіжий свіп Азійського хая/лоу з підтвердженим реклеймом у цю ж сторону.
+        if judas["bias"] == side and judas["bonus"] > 0: active_patterns.append("JUDAS_SWING")
         if tf1h.get("bias") == side and tf15.get("bias") == side and has_choch and is_sweep: active_patterns.append("MMBM")
         if tf15.get("bias") == side and event.get("retest"): active_patterns.append("BMS_RETEST")
 
@@ -1979,6 +2114,21 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         htf_score = 20 if tf4h.get("bias") == side else 6
         
         raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus
+
+        # === Session Profiling & AMD: макро-скор-коригування найвищого рівня ===
+        # Це БАЛОВЕ коригування (як і всі інші бонуси/штрафи вище), не жорсткий
+        # блок — сильний сетап з інших джерел все одно може пройти навіть у chop-зоні.
+        session_bonus = 0.0
+        if judas["bias"] == side and judas["bonus"] > 0:
+            session_bonus += judas["bonus"]
+            pattern_conf.extend(session_profile["notes"])
+        elif chop["active"]:
+            # М'ясорубка: ліквідність Азії ще не знята, і саме цей бік не
+            # підтверджений свіжою маніпуляцією — типова пастка посеред діапазону.
+            session_bonus -= chop["penalty_magnitude"]
+            pattern_conf.extend(session_profile["notes"])
+        raw += session_bonus
+
         if is_limit_armed:
             trigger_ready = True  # Ігноруємо відсутність 3M сигналу
             trigger_level = ce_level
@@ -2029,389 +2179,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             candidates.append(cand)
             
     return candidates
-    
-    # === Визначення торгових сесій (Київський час) ===
-    kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
-    now_kyiv = datetime.now(kyiv_tz)
-    k_hour = now_kyiv.hour
 
-    # Для нафти (BZ) найвища волатильність припадає на Європу та Америку
-    is_killzone = (8 <= k_hour < 17) or (15 <= k_hour <= 23)
-
-    params = get_adaptive_params(regime)
-
-    candidates = []
-    for side in [Side.LONG.value, Side.SHORT.value]:
-        event = scan_events.get(side, {})
-    for side in [Side.LONG.value, Side.SHORT.value]:
-        event = scan_events.get(side, {})
-        trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
-        trigger_ready = event.get("stage") in ["ACCEPTANCE", "RETEST", "READY"] and trigger_age <= TRIGGER_MAX_AGE_MINUTES
-        trigger_level = event.get("trigger_level", price)
-        scan_stage = event.get("stage", "")
-        time_warp_opportunity = event.get("time_warp_opportunity", False)
-
-        location_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
-        has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
-
-        loc_score = 14
-        loc_conf = ["біля свіжої зони"]
-        for z in zones:
-            if z.side == side and abs(price - z.low) < atr15 * 1.55:
-                loc_score = min(22, loc_score + 7)
-                loc_conf.append(f"біля {z.kind} {z.timeframe}")
-
-        str_score = 10
-        str_conf = []
-        if tf15.get("bias") == side:
-            str_score += 9
-            str_conf.append("15M структура підтримує")
-        if tf1h.get("bias") == side:
-            str_score += 11
-            str_conf.append("1H підтримує")
-        if tf4h.get("bias") == side:
-            str_score += 7
-            str_conf.append("4H контекст")
-
-        liq_score = 6
-        if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready:
-            liq_score += 10
-
-        flw_score = 0
-        flw_conf = []
-        if flow.get("bias") == side:
-            flw_score += 9
-            flw_conf.append("flow на боці")
-        if cvd.get("bias") == side:
-            flw_score += 8
-            flw_conf.append("CVD на боці")
-
-        trig_score = 8
-        if trigger_ready:
-            trig_score += 14
-
-        htf_score = 6
-        if regime == Regime.TREND.value and tf4h.get("bias") == side:
-            htf_score += 14
-        if regime == Regime.SHOCK.value:
-            htf_score = int(htf_score * 0.55)
-
-        raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + 6
-        if regime == Regime.TRANSITION.value:
-            raw = int(raw * 0.88)
-
-        if has_forward_zone:
-            raw += 8
-# ==========================================================
-        # AMD SESSION MACRO-FILTER (Chop Zone & Judas Swing)
-        # ==========================================================
-        amd = context.get("amd_profile", {})
-        
-        # Дозволяємо логіку AMD тільки якщо Азія не була аномально стиснутою
-        if amd.get("status") == "AMD_ACTIVE":
-            
-            # 1. ЗАХИСТ ВІД "М'ЯСОРУБКИ" (Chop Zone Penalty)
-            # Якщо ціна бовтається в середній третині Азії, і ще не було свіжого маніпулятивного виходу
-            if amd["chop_bottom"] < price < amd["chop_top"] and not amd["fresh_reclaim"]:
-                raw -= 25
-                pattern_conf.append("🚫 БЛОК: Ціна в Chop Zone Азії (середина діапазону, чекаємо маніпуляцію)")
-                
-            # 2. СНАЙПЕРСЬКИЙ ВХІД (Judas Swing)
-            # Якщо був свіжий зйом ліквідності та закріплення назад у діапазон
-            if amd["fresh_reclaim"]:
-                if side == amd["judas_bias"]:
-                    raw += 35
-                    loc_conf.append("🔥 AMD: Свіжий Judas Swing (Маніпуляція завершена, вхід з Розумними Грошима)")
-                    # Примусово ідентифікуємо патерн для подальшої обробки
-                    best_pattern = "JUDAS_SWING"
-                    
-                # Якщо алгоритм намагається торгувати ПРОТИ свіжого повернення (наприклад, шортить після зйому лоу)
-                elif side != amd["judas_bias"]:
-                    raw -= 40
-                    pattern_conf.append("🚫 FATAL: Спроба входу ПРОТИ свіжого Judas Swing")
-
-        # ==========================================================
-        # ==========================================================
-        # ТЕХНІЧНА ПЕРЕВІРКА СТРУКТУРИ (динамічний штраф/бонус)
-        # ==========================================================
-        recent_struct = detect_recent_structure_shift(c15, lookback=7)
-        recent_structure_score = 0
-        recent_structure_conf = []
-
-        if recent_struct["bullish_shift"] or recent_struct["bearish_shift"]:
-            base_structure_adj = 7
-            approx_quality = loc_score + str_score + trig_score + htf_score
-            if approx_quality >= 55:
-                base_structure_adj = 5
-            elif approx_quality <= 38:
-                base_structure_adj = 10
-
-            if regime == Regime.TREND.value:
-                base_structure_adj = int(base_structure_adj * 1.25)
-            elif regime == Regime.RANGE.value:
-                base_structure_adj = int(base_structure_adj * 0.75)
-
-            structure_penalty = base_structure_adj + recent_struct["strength"] * 5
-            structure_bonus = 0
-            is_aligned = False
-
-            if recent_struct["bullish_shift"] and tf15.get("bias") == Side.LONG.value:
-                structure_bonus = 5
-                is_aligned = True
-            elif recent_struct["bearish_shift"] and tf15.get("bias") == Side.SHORT.value:
-                structure_bonus = 5
-                is_aligned = True
-
-            if side == Side.SHORT.value and recent_struct["bullish_shift"]:
-                raw -= structure_penalty
-                recent_structure_score = -structure_penalty
-                recent_structure_conf.append(
-                    f"вищі хай/лоу (сила {recent_struct['strength']}) → SHORT послаблено (-{structure_penalty})"
-                )
-            elif side == Side.LONG.value and recent_struct["bearish_shift"]:
-                raw -= structure_penalty
-                recent_structure_score = -structure_penalty
-                recent_structure_conf.append(
-                    f"нижчі хай/лоу (сила {recent_struct['strength']}) → LONG послаблено (-{structure_penalty})"
-                )
-
-            if is_aligned:
-                raw += structure_bonus
-                recent_structure_score += structure_bonus
-                recent_structure_conf.append(
-                    f"+{structure_bonus} балів: структура узгоджена з 15M bias"
-                )
-
-        active_patterns = []
-        pattern_conf = []
-        best_pattern = None
-        best_priority = 0
-
-        # === ICT CORE LOGIC (Premium/Discount, SMT, Killzone) ===
-        if eq_level > 0:
-            if side == Side.LONG.value and price <= eq_level:
-                raw += 15
-                loc_conf.append("LONG у Discount зоні (PD Array)")
-            elif side == Side.SHORT.value and price >= eq_level:
-                raw += 15
-                loc_conf.append("SHORT у Premium зоні (PD Array)")
-            else:
-                raw -= 15
-                pattern_conf.append("⚠️ Вхід поза оптимальним PD Array")
-
-        # ОНОВЛЕНО: Жорсткий фільтр SMT Divergence
-        is_reversal = (best_pattern in {"PO3", "TURTLE_SOUP", "JUDAS_SWING"} or 
-                       setup_type in {SetupType.RANGE_EDGE_REVERSAL.value, SetupType.SWEEP_RECLAIM.value})
-        
-        if is_reversal and smt_bias != Side.NEUTRAL.value and smt_bias != side:
-            raw -= 35  # Жорсткий штраф блокує сетап
-            pattern_conf.append("🚫 БЛОК: SMT Divergence вказує у протилежний бік")
-        elif smt_bias == side:
-            if loc_score >= 18 or has_forward_zone:
-                raw += 22
-                asset_name = str(SMT_ASSET_ID).split("-")[0]
-                flw_conf.append(f"🔥 SMT Divergence з {asset_name} підтверджено POI")
-            else:
-                raw += 5
-                pattern_conf.append("⚠️ SMT дивергенція поза ключовими зонами (слабкий сигнал)")
-
-        # ==========================================================
-        # МОДУЛЬНА СИСТЕМА ПАТЕРНІВ
-        # ==========================================================
-        pattern_registry = {
-            "OB_RECLAIM": {
-                "name": "15M OB + 3M Confirmed Reclaim",
-                "priority": 90,
-                "allow_early": True,
-                "preferred_setup": SetupType.PULLBACK_CONTINUATION.value,
-                "score_bonus": 18,
-            },
-            "HTF_TREND_OB_PULLBACK": {
-                "name": "1H Trend + 15M OB Pullback + 3M Reclaim",
-                "priority": 95,
-                "allow_early": True,
-                "preferred_setup": SetupType.PULLBACK_CONTINUATION.value,
-                "score_bonus": 22,
-            },
-            "CHOCH_RECLAIM": {
-                "name": "15M CHOCH + 3M Liquidity Sweep Reclaim",
-                "priority": 85,
-                "allow_early": True,
-                "preferred_setup": SetupType.BREAKOUT_RETEST.value,
-                "score_bonus": 16,
-            },
-        }
-
-        has_fresh_ob = any(
-            z.side == side and z.kind == "OB" and abs(price - z.low) < atr15 * 1.7
-            for z in zones
-        )
-        htf_trend = tf1h.get("bias") == side
-        tf15_bias = tf15.get("bias")
-        impulse = event.get("impulse_strength") if isinstance(event.get("impulse_strength"), dict) else {}
-        impulse_score = int(impulse.get("score", 0) or 0)
-        has_good_reclaim = has_quality_reclaim(event)
-        has_strong_reclaim = bool(
-            trigger_ready
-            and event.get("strong_displacement")
-            and event.get("acceptance_quality", 0) >= RECLAIM_MIN_QUALITY
-            and not (impulse_score >= 3 and not event.get("retest"))
-        )
-
-        if has_fresh_ob and has_good_reclaim:
-            active_patterns.append("OB_RECLAIM")
-            p = pattern_registry["OB_RECLAIM"]
-            pattern_conf.append(p["name"])
-            if p["priority"] > best_priority:
-                best_priority = p["priority"]
-                best_pattern = "OB_RECLAIM"
-
-        if htf_trend and has_fresh_ob and has_good_reclaim:
-            active_patterns.append("HTF_TREND_OB_PULLBACK")
-            p = pattern_registry["HTF_TREND_OB_PULLBACK"]
-            pattern_conf.append(p["name"])
-            if p["priority"] > best_priority:
-                best_priority = p["priority"]
-                best_pattern = "HTF_TREND_OB_PULLBACK"
-
-        if tf15_bias == side and has_strong_reclaim:
-            active_patterns.append("CHOCH_RECLAIM")
-            p = pattern_registry["CHOCH_RECLAIM"]
-            pattern_conf.append(p["name"])
-            if p["priority"] > best_priority:
-                best_priority = p["priority"]
-                best_pattern = "CHOCH_RECLAIM"
-
-        if best_pattern:
-            raw += pattern_registry[best_pattern]["score_bonus"]
-            
-       # ОНОВЛЕНО: Strict Time-Warp Validation (No Chase Guard)
-        if event.get("strong_displacement") and not event.get("retest") and not event.get("mitigation"):
-            raw -= 35  # Жорсткий штраф замість м'якого
-            pattern_conf.append("🚫 БЛОК: Сильний імпульс без пом'якшення (Time-Warp Guard)")
-            time_warp_opportunity = False # Скасовуємо будь-які спроби раннього входу
-
-        if time_warp_opportunity:
-            raw += 14
-            pattern_conf.append("⏳ Time-Warp: ретроспективна валідація всередині 15хв (Limit Entry)")
-
-        evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
-        if flw_score > 12:
-            evidence.append("ORDER_FLOW_CVD")
-        if trigger_ready:
-            evidence.append("EXECUTION_TRIGGER_3M")
-        if tf4h.get("bias") == side:
-            evidence.append("HTF_CONTEXT")
-        if has_forward_zone:
-            evidence.append("FORWARD_ICT_ZONE")
-
-        setup_type = SetupType.PULLBACK_CONTINUATION.value
-        variant = "PULLBACK_FORMING"
-
-        if best_pattern:
-            setup_type = pattern_registry[best_pattern]["preferred_setup"]
-            if setup_type == SetupType.BREAKOUT_RETEST.value:
-                variant = "CONFIRMED_BOS_RETEST"
-            elif setup_type == SetupType.PULLBACK_CONTINUATION.value:
-                variant = "PATTERN_PULLBACK"
-        else:
-            if trigger_ready and scan_stage in ["RETEST", "READY"]:
-                setup_type = SetupType.BREAKOUT_RETEST.value
-                variant = "CONFIRMED_BOS_RETEST"
-            elif event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready:
-                setup_type = SetupType.SWEEP_RECLAIM.value
-                variant = "EARLY_RECLAIM"
-
-        family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
-
-        lane = ExecutionLane.STANDARD_CONFIRMED.value
-        tier = ConfirmationTier.STANDARD.value
-        final = int(clamp(raw + (len(evidence) - 3) * 2.8, 12, 98))
-
-        allow_early_entry_for_pattern = False
-        if best_pattern:
-            p = pattern_registry[best_pattern]
-            if p["allow_early"]:
-                htf_ok = tf1h.get("bias") == side or tf4h.get("bias") == side
-                score_ok = final >= EARLY_ENTRY_MIN_SCORE
-                if htf_ok and score_ok and has_good_reclaim:
-                    allow_early_entry_for_pattern = True
-
-        if time_warp_opportunity:
-            allow_early_entry_for_pattern = True
-
-        # === ОНОВЛЕНО: Жорсткий CVD-фільтр для ранніх входів ===
-        if allow_early_entry_for_pattern and cvd.get("bias") != Side.NEUTRAL.value and cvd.get("bias") != side:
-            allow_early_entry_for_pattern = False
-            pattern_conf.append("⚠️ CVD проти імпульсу: RISKY_ENTRY скасовано, чекаємо повного підтвердження")
-        # ========================================================
-
-        if allow_early_entry_for_pattern:
-            lane = ExecutionLane.EARLY_TACTICAL.value
-            tier = ConfirmationTier.HIGH_QUALITY.value
-        elif final >= params["entry_score"] and len(evidence) >= params["min_evidence"] and trigger_ready:
-            lane = ExecutionLane.STANDARD_CONFIRMED.value
-            tier = ConfirmationTier.HIGH_QUALITY.value
-        elif final >= params["risky_entry_score"] and trigger_ready and regime != Regime.SHOCK.value:
-            lane = ExecutionLane.EARLY_TACTICAL.value
-
-        thesis = f"{side} {setup_type} | HTF={tf4h.get('bias')} | 3M={scan_stage}"
-
-        structure_alignment = 50
-        if tf15.get("bias") == side:
-            structure_alignment += 20
-        if tf1h.get("bias") == side:
-            structure_alignment += 15
-        
-        acceptance_quality = calculate_acceptance_quality(event, context["candles"]["3m"], atr15, structure_alignment, has_forward_zone)
-
-        cand = Candidate(
-            side=side,
-            setup_type=setup_type,
-            setup_family=family,
-            raw_score=raw,
-            final_score=final,
-            score_components={
-                "location": loc_score, "structure": str_score, "liquidity": liq_score,
-                "flow_cvd": flw_score, "trigger_3m": trig_score, "htf": htf_score,
-                "recent_structure": recent_structure_score
-            },
-            evidence_families=evidence,
-            confirmations=loc_conf + str_conf + flw_conf + pattern_conf + recent_structure_conf,
-            risks=[] if final > 70 else ["потрібне підтвердження acceptance"],
-            trigger_ready=trigger_ready,
-            trigger_level=round_price(trigger_level),
-            invalidation_level=round_price(price - (atr15 * 1.65 if side == Side.LONG.value else -atr15 * 1.65)),
-            target_levels=[round_price(price + (atr15 * 2.4 if side == Side.LONG.value else -atr15 * 2.4))],
-            execution_lane=lane,
-            confirmation_tier=tier,
-            stage="ARMED" if final >= params["armed_score"] else "DISCOVERED",
-            variant=variant,
-            execution_anchor=price,
-            trigger_age_minutes=trigger_age,
-            specificity=len(evidence) * 5,
-            thesis_key=f"{side}|{family}|{setup_type}|{int(price*10)}",
-            thesis=thesis,
-            scan_event_stage=scan_stage,
-            confluence_layers={
-                "ict": loc_score + str_score,
-                "flow_cvd": flw_score,
-                "execution": trig_score,
-                "htf": htf_score
-            },
-            acceptance_quality=acceptance_quality,
-            location_score=location_score,
-            has_forward_zone=has_forward_zone
-        )
-        
-        cand.professional_gate = evaluate_professional_gate(context, cand)
-        candidates.append(cand)
-    return sorted(candidates, key=lambda c: -c.final_score)[:2]
-
-
-# ==========================================================
-# TRADE PLAN
-# ==========================================================
 
 def setup_trade_profile(setup_type: str) -> dict:
     profiles = {
