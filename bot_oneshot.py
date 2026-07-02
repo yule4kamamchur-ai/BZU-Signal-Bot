@@ -549,7 +549,14 @@ def save_state(state: dict[str, Any]) -> None:
 def load_journal() -> dict[str, Any]:
     journal = load_json(JOURNAL_FILE, {})
     journal.setdefault("signals", [])
+    journal.setdefault("training_signals", [])
+    journal.setdefault("signal_events", [])
     journal.setdefault("trades", [])
+    if not journal["training_signals"]:
+        journal["training_signals"] = [
+            s for s in journal.get("signals", [])
+            if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
+        ]
     journal["version"] = BOT_VERSION
     journal["architecture_version"] = ARCHITECTURE_VERSION
     if "analytics" not in journal:
@@ -559,7 +566,15 @@ def load_journal() -> dict[str, Any]:
 
 def save_journal(journal: dict[str, Any]) -> None:
     journal["updated_at"] = iso_now()
-    journal["signals"] = list(journal.get("signals") or [])[-MAX_JOURNAL:]
+    journal["signals"] = [
+        s for s in list(journal.get("signals") or [])
+        if isinstance(s, dict) and s.get("id")
+    ][-MAX_JOURNAL:]
+    journal["training_signals"] = [
+        s for s in list(journal.get("training_signals") or [])
+        if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
+    ][-MAX_JOURNAL:]
+    journal["signal_events"] = list(journal.get("signal_events") or [])[-MAX_JOURNAL:]
     journal["trades"] = list(journal.get("trades") or [])[-MAX_JOURNAL:]
     journal["analytics"] = compute_analytics(journal)
     atomic_json_write(JOURNAL_FILE, journal)
@@ -2144,8 +2159,9 @@ def _trade_ground_truth(trade: dict) -> tuple[int, float, str]:
 
 
 def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[str, float], int, float]]:
+    signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     signals = {
-        str(s.get("id")): s for s in journal.get("signals", [])
+        str(s.get("id")): s for s in signal_records
         if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
     }
     rows: list[tuple[dict[str, float], int, float]] = []
@@ -3475,7 +3491,25 @@ def compute_analytics(journal: dict) -> dict:
     closed = len(trades)
     win_rate = round(wins / closed * 100, 1) if closed else 0.0
     net_r = round(sum((t.get("result_pct") or 0) / 100 for t in trades), 2)
-    return {"closed_trades": closed, "wins": wins, "losses": closed - wins, "win_rate": win_rate, "net_r": net_r, "expectancy_r": round(net_r / max(closed, 1), 3), "by_family": {}}
+    by_family: dict[str, dict[str, Any]] = {}
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        family = str(trade.get("setup_family") or SetupFamily.NONE.value)
+        row = by_family.setdefault(family, {"closed_trades": 0, "wins": 0, "losses": 0, "net_r": 0.0})
+        result_pct = safe_float(trade.get("result_pct"), 0.0)
+        row["closed_trades"] += 1
+        if result_pct > 0:
+            row["wins"] += 1
+        else:
+            row["losses"] += 1
+        row["net_r"] += result_pct / 100.0
+    for row in by_family.values():
+        family_closed = max(int(row["closed_trades"]), 1)
+        row["net_r"] = round(row["net_r"], 2)
+        row["win_rate"] = round(row["wins"] / family_closed * 100, 1)
+        row["expectancy_r"] = round(row["net_r"] / family_closed, 3)
+    return {"closed_trades": closed, "wins": wins, "losses": closed - wins, "win_rate": win_rate, "net_r": net_r, "expectancy_r": round(net_r / max(closed, 1), 3), "by_family": by_family}
 
 
 # ==========================================================
@@ -3523,19 +3557,21 @@ def run_bot() -> None:
         else:
             store_active_trade(state, active)
         append_history(state, {"type": "FOLLOW" if not res.get("closed") else "CLOSE", "side": active.side, "action": res.get("action"), "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
-        journal["signals"].append({"time": iso_now(), "type": "FOLLOW", "action": res.get("action"), "side": active.side, "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
+        journal.setdefault("signal_events", []).append({"time": iso_now(), "type": "FOLLOW" if not res.get("closed") else "CLOSE", "action": res.get("action"), "side": active.side, "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
         save_state(state)
         save_journal(journal)
         print("BOT COMPLETE: ACTIVE TRADE MANAGED")
         return
 
     decision = evaluate_new_setup(context, state, journal)
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
             "setup_family": decision.candidate.setup_family,
             "ict_model": decision.candidate.ict_model,
+            "candidate_final_score": decision.candidate.final_score,
+            "candidate_raw_score": decision.candidate.raw_score,
             "execution_lane": decision.candidate.execution_lane,
             "trigger_ready": decision.candidate.trigger_ready,
             "trigger_age_minutes": round(float(decision.candidate.trigger_age_minutes or 0.0), 2),
@@ -3549,6 +3585,8 @@ def run_bot() -> None:
     state["latest_signal"] = payload
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
     journal["signals"].append(payload)
+    if payload.get("score_features"):
+        journal.setdefault("training_signals", []).append(payload)
 
     if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
         # signal_id = decision.id: угода тепер завжди трасується до сигналу,
