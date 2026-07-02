@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: true
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -36,13 +37,29 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOURNAL_PERSISTENCE_CONFIRMED: "true"
+          SIGNAL_MEMORY_FILE: last_signal_v6_4.json
+          SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
         run: python bot_oneshot.py
 
       - name: Save signal memory and journal
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git pull --rebase origin main || true
-          git add last_signal_v6_4.json signal_journal_v6_4.json last_signal_v6_4.json.bak signal_journal_v6_4.json.bak || true
-          git diff --cached --quiet && echo "No memory changes" || git commit -m "Update signal memory and journal v6.4"
-          git push origin HEAD:main || echo "Push failed or nothing to push"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          for file in last_signal_v6_4.json signal_journal_v6_4.json last_signal_v6_4.json.bak signal_journal_v6_4.json.bak; do
+            if [ -f "$file" ]; then
+              git add "$file"
+            else
+              echo "Skip missing $file"
+            fi
+          done
+
+          if git diff --cached --quiet; then
+            echo "No memory/journal changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update signal memory and journal v6.4 [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
