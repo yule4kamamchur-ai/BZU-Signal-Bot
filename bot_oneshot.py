@@ -18,9 +18,10 @@ BZU Professional Hybrid Confluence Signal Bot v6.8 (Data-Integrity Edition)
   dataclass, але ніколи не заповнювалось) — без зміни формул скорингу.
 
 Виправлення v6.6:
-- Інновація: Time-Warp Validation (Ретроспективний 3M Пул-Аналіз)
+- Time-Warp execution flag (ретроспективний 3M пул-аналіз для тактики входу,
+  не ML/backtest validation)
 - Інтеграція Premium/Discount (PD Arrays)
-- SMT Divergence (Адаптовано для нафти: Brent vs WTI)
+- SMT Divergence між OKX crypto-proxy свопами BZ/WTI
 - Killzones (Торгові сесії)
 - Валідація FVG (Consequent Encroachment)
 (Усі попередні алгоритми супроводу угод та логування повністю збережено)
@@ -59,7 +60,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 OKX_BASE_URL = "https://www.okx.com/api/v5/market"
 TRADINGVIEW_SCAN_URL = "https://scanner.tradingview.com/crypto/scan"
 OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-SMT_ASSET_ID = os.getenv("SMT_ASSET_ID", "WTI-USDT-SWAP") # Корелюючий актив для SMT (наприклад, WTI)
+SMT_ASSET_ID = os.getenv("SMT_ASSET_ID", "WTI-USDT-SWAP") # Корелюючий OKX crypto-proxy своп для SMT
+INSTRUMENT_LABEL = os.getenv("INSTRUMENT_LABEL", f"{OKX_INST_ID} crypto Brent proxy")
+INSTRUMENT_KIND = os.getenv("INSTRUMENT_KIND", "OKX crypto perpetual swap proxy, not ICE/CME oil futures")
+JOURNAL_PERSISTENCE_CONFIRMED = os.getenv("JOURNAL_PERSISTENCE_CONFIRMED", "").lower() in {"1", "true", "yes"}
 
 WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
 
@@ -577,6 +581,7 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["signal_events"] = list(journal.get("signal_events") or [])[-MAX_JOURNAL:]
     journal["trades"] = list(journal.get("trades") or [])[-MAX_JOURNAL:]
     journal["analytics"] = compute_analytics(journal)
+    journal["learning_status"] = compute_learning_status(journal)
     atomic_json_write(JOURNAL_FILE, journal)
 
 
@@ -717,8 +722,11 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
+        f"<b>Інструмент:</b> {html.escape(context.get('instrument_label', INSTRUMENT_LABEL))}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
+    if context.get("instrument_kind"):
+        lines.append(f"<i>{html.escape(context['instrument_kind'])}</i>")
     
     if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
@@ -728,6 +736,15 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             lines.append("<b>Підтвердження:</b>")
             for x in unique_confirmations:
                 lines.append(f"✅ {html.escape(x)}")
+        if context.get("flow_quality") or context.get("cvd_quality"):
+            lines.append("")
+            lines.append(
+                "<i>Flow/CVD: "
+                f"{html.escape(context.get('flow_quality', 'UNKNOWN'))}; "
+                f"{html.escape(context.get('cvd_quality', 'UNKNOWN'))}</i>"
+            )
+    for warning in context.get("learning_warnings", [])[:2]:
+        lines.append(f"⚠️ {html.escape(warning)}")
     
     show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value)
     
@@ -996,7 +1013,7 @@ def identify_liquidity_and_range(candles: list[Candle], left_bars: int = 5, righ
     }
 
 def detect_smt_divergence(asset_candles: list[Candle], smt_candles: list[Candle]) -> str:
-    """Шукає розбіжності між активом та корелюючим активом (наприклад, Brent vs WTI)."""
+    """Шукає SMT-розбіжності між OKX crypto-proxy свопами, не між ICE/CME futures."""
     if len(asset_candles) < 20 or len(smt_candles) < 20:
         return Side.NEUTRAL.value
         
@@ -1149,7 +1166,7 @@ def collect_market_data() -> dict:
     c15 = get_okx_candles(OKX_INST_ID, "15m", 200)
     c1h = get_okx_candles(OKX_INST_ID, "1h", 160)
     c4h = get_okx_candles(OKX_INST_ID, "4h", 140)
-    smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200) # Адаптовано для нафти
+    smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200)
     
     # TradingView — ПРІОРИТЕТ
     tv_ticker = get_tradingview_price_fallback()
@@ -1164,8 +1181,12 @@ def collect_market_data() -> dict:
     
     return {
         "time": iso_now(),
+        "instrument": OKX_INST_ID,
+        "instrument_label": INSTRUMENT_LABEL,
+        "instrument_kind": INSTRUMENT_KIND,
+        "smt_instrument": SMT_ASSET_ID,
         "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
-        "smt_candles": {"15m": smt_c15}, # Адаптовано для нафти
+        "smt_candles": {"15m": smt_c15},
         "ticker": ticker,
         "trades": [],
         "book": {"bids": [], "asks": []},
@@ -1546,6 +1567,10 @@ def build_context(data: dict, state: dict) -> dict:
         "time": data["time"],
         "price": price,
         "price_source": data.get("price_source", "TradingView"),
+        "instrument": data.get("instrument", OKX_INST_ID),
+        "instrument_label": data.get("instrument_label", INSTRUMENT_LABEL),
+        "instrument_kind": data.get("instrument_kind", INSTRUMENT_KIND),
+        "smt_instrument": data.get("smt_instrument", SMT_ASSET_ID),
         "regime": regime,
         "regime_reason": regime_reason,
         "tf3": tf3, "tf15": tf15, "tf1h": tf1h, "tf4h": tf4h,
@@ -1553,6 +1578,8 @@ def build_context(data: dict, state: dict) -> dict:
         "liquidity": liquidity,
         "flow": flow,
         "cvd": cvd,
+        "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
+        "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
         "atr15": atr15,
         "atr1h": atr1h,
         "candles": data["candles"],
@@ -1955,7 +1982,7 @@ def _find_recent_session_range(candles: list, kyiv_tz, now_kyiv, start_h: int, e
                                 start_days_back: int = 0, max_days_back: int = 5) -> Optional[dict]:
     """
     Стійкість до розривів вихідних/свят: якщо на очікуваній даті замало свічок
-    (гепи в даних, вихідні на нафті), шукаємо найближчу попередню завершену сесію.
+    (гепи в даних або нерівномірна активність crypto-proxy свопу), шукаємо найближчу попередню завершену сесію.
     """
     for days_back in range(start_days_back, start_days_back + max_days_back):
         ref_date = (now_kyiv - timedelta(days=days_back)).date()
@@ -2183,6 +2210,97 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
         }
         rows.append((features, label, sample_weight))
     return rows
+
+
+def _validation_metrics(rows: list[tuple[dict[str, float], int, float]], default: dict[str, float]) -> dict[str, Any]:
+    if len(rows) < SCORING_MODEL_MIN_TRADES:
+        return {"enabled": False, "reason": "not_enough_rows"}
+    split_at = max(1, int(len(rows) * 0.8))
+    train_rows = rows[:split_at]
+    validation_rows = rows[split_at:]
+    if len(validation_rows) < 8:
+        return {"enabled": False, "reason": "validation_too_small"}
+    learned = _fit_logistic_coefficients(train_rows, default)
+    learned_weight = _learned_model_weight(len(train_rows), SCORING_MODEL_MIN_TRADES, SCORING_MODEL_FULL_TRADES)
+    coef = _blend_coefficients(default, learned, learned_weight)
+    weighted_loss = 0.0
+    total_weight = 0.0
+    correct = 0.0
+    for features, label, sample_weight in validation_rows:
+        weight = max(float(sample_weight or 0.0), 0.05)
+        probability = _sigmoid(coef.get("bias", 0.0) + sum(coef.get(key, 0.0) * features.get(key, 0.0) for key in QUALITY_FEATURE_KEYS))
+        probability = clamp(probability, 1e-5, 1.0 - 1e-5)
+        weighted_loss += weight * (-(label * math.log(probability) + (1 - label) * math.log(1.0 - probability)))
+        total_weight += weight
+        if (probability >= 0.5) == bool(label):
+            correct += weight
+    return {
+        "enabled": True,
+        "train_rows": len(train_rows),
+        "validation_rows": len(validation_rows),
+        "learned_weight": round(learned_weight, 4),
+        "log_loss": round(weighted_loss / max(total_weight, 1.0), 4),
+        "accuracy": round(correct / max(total_weight, 1.0), 4),
+    }
+
+
+def compute_learning_status(journal: dict) -> dict[str, Any]:
+    training_signals = [
+        s for s in journal.get("training_signals", [])
+        if isinstance(s, dict) and isinstance(s.get("score_features"), dict)
+    ]
+    global_rows = _quality_training_rows(journal)
+    families = sorted({
+        str(s.get("setup_family") or "")
+        for s in training_signals
+        if s.get("setup_family")
+    })
+    by_family: dict[str, Any] = {}
+    for family in families:
+        rows = _quality_training_rows(journal, family)
+        if not rows:
+            continue
+        by_family[family] = {
+            "rows": len(rows),
+            "ready": len(rows) >= SCORING_MODEL_MIN_FAMILY_TRADES,
+            "learned_weight": round(_learned_model_weight(len(rows), SCORING_MODEL_MIN_FAMILY_TRADES, SCORING_MODEL_FULL_FAMILY_TRADES), 4),
+        }
+    global_ready = len(global_rows) >= SCORING_MODEL_MIN_TRADES
+    return {
+        "updated_at": iso_now(),
+        "journal_file": str(JOURNAL_FILE),
+        "state_file": str(STATE_FILE),
+        "instrument_label": INSTRUMENT_LABEL,
+        "instrument_kind": INSTRUMENT_KIND,
+        "training_signals": len(training_signals),
+        "signal_events": len(journal.get("signal_events", []) or []),
+        "closed_trades": len(journal.get("trades", []) or []),
+        "training_rows": len(global_rows),
+        "global_ready": global_ready,
+        "global_learned_weight": round(_learned_model_weight(len(global_rows), SCORING_MODEL_MIN_TRADES, SCORING_MODEL_FULL_TRADES), 4),
+        "by_family": by_family,
+        "validation": _validation_metrics(global_rows, DEFAULT_QUALITY_COEFFICIENTS["_global"]),
+        "github_actions": bool(os.getenv("GITHUB_ACTIONS")),
+        "journal_persistence_confirmed": JOURNAL_PERSISTENCE_CONFIRMED,
+        "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
+        "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
+    }
+
+
+def learning_health_warnings(journal: dict) -> list[str]:
+    status = journal.get("learning_status") if isinstance(journal.get("learning_status"), dict) else compute_learning_status(journal)
+    warnings: list[str] = []
+    if status.get("training_signals", 0) == 0:
+        warnings.append("ML dataset порожній: training_signals ще не накопичені.")
+    if status.get("closed_trades", 0) == 0:
+        warnings.append("Ground truth порожній: ще немає закритих trades для навчання.")
+    elif status.get("training_rows", 0) == 0:
+        warnings.append("Closed trades є, але signal_id не з'єднався з training_signals.")
+    elif not status.get("global_ready"):
+        warnings.append(f"ML ще в bootstrap: {status.get('training_rows', 0)}/{SCORING_MODEL_MIN_TRADES} training rows.")
+    if os.getenv("GITHUB_ACTIONS") and not JOURNAL_PERSISTENCE_CONFIRMED:
+        warnings.append("GitHub Actions: не підтверджено commit/cache persistence для journal/state.")
+    return warnings
 
 
 def _fit_logistic_coefficients(rows: list[tuple[dict[str, float], int, float]], default: dict[str, float]) -> dict[str, float]:
@@ -3520,12 +3638,18 @@ def run_bot() -> None:
     print(f"START {BOT_VERSION}")
     state = load_state()
     journal = load_journal()
+    journal["learning_status"] = compute_learning_status(journal)
+    learning_warnings = learning_health_warnings(journal)
+    for warning in learning_warnings:
+        print(f"[WARN] {warning}")
     data = collect_market_data()
     context = build_context(data, state)
+    context["learning_status"] = journal.get("learning_status", {})
+    context["learning_warnings"] = learning_warnings
     if not context.get("price"):
         print("NO PRICE — abort")
         return
-    print(f"PRICE {context['price']:.4f} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'TradingView')}")
+    print(f"PRICE {context['price']:.4f} | {context.get('instrument_label', INSTRUMENT_LABEL)} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'TradingView')}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -3564,7 +3688,7 @@ def run_bot() -> None:
         return
 
     decision = evaluate_new_setup(context, state, journal)
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
