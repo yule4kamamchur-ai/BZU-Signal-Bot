@@ -2918,15 +2918,6 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         "recommended_stop_reason": "",
     }
 
-    if (side == Side.LONG.value and price > trade.best_price) or (side == Side.SHORT.value and price < trade.best_price):
-        trade.best_price = price
-    if (side == Side.LONG.value and price < trade.worst_price) or (side == Side.SHORT.value and price > trade.worst_price):
-        trade.worst_price = price
-
-    result["best_pct"] = ((trade.best_price - trade.entry) / trade.entry * 100) if side == Side.LONG.value else ((trade.entry - trade.best_price) / trade.entry * 100)
-    result["worst_pct"] = max(0.0, ((trade.entry - trade.worst_price) / trade.entry * 100) if side == Side.LONG.value else ((trade.worst_price - trade.entry) / trade.entry * 100))
-    result["giveback_pct"] = max(0.0, result["best_pct"] - result["current_pct"])
-
     # --- MFE Guard (органічно доповнює Wick Defense + Delayed BE) ---
     # Працює тільки до TP1 — саме там зараз "сліпа зона": Delayed BE свідомо
     # лишає стоп на початковому рівні аж до TP1, тож без цього модуля рух,
