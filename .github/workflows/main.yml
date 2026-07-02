@@ -20,6 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: main
           persist-credentials: true
           fetch-depth: 0
 
@@ -32,6 +33,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests
+
+      - name: Sync latest state before run
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
 
       - name: Run bot
         env:
@@ -63,5 +69,24 @@ jobs:
           fi
 
           git commit -m "Update signal memory and journal v6.4 [skip ci]"
-          git pull --rebase origin main
-          git push origin HEAD:main
+
+          for i in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              echo "Pushed successfully."
+              break
+            fi
+            echo "Push rejected, resyncing with latest main (attempt $i)..."
+            git fetch origin main
+            git reset --soft origin/main
+            for file in last_signal_v6_4.json signal_journal_v6_4.json; do
+              if [ -f "$file" ]; then
+                git add "$file"
+              fi
+            done
+            if git diff --cached --quiet; then
+              echo "State already up to date on remote, nothing left to commit."
+              exit 0
+            fi
+            git commit -m "Update signal memory and journal v6.4 [skip ci]"
+            sleep 3
+          done
