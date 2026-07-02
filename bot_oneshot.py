@@ -718,15 +718,21 @@ def build_decision_message(context: dict, decision: Decision) -> str:
         "NO_SETUP": "СИГНАЛУ НЕМАЄ",
     }
     action_label = action_names.get(decision.action, decision.action)
+
+    if decision.action == Action.NO_SETUP.value:
+        lines = [
+            "<b>Входу немає</b>",
+            f"<b>Ціна зараз:</b> {_fmt_price(current_price)}",
+        ]
+        for warning in context.get("learning_warnings", [])[:2]:
+            lines.append(f"⚠️ {html.escape(warning)}")
+        return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
     
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
-        f"<b>Інструмент:</b> {html.escape(context.get('instrument_label', INSTRUMENT_LABEL))}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
-    if context.get("instrument_kind"):
-        lines.append(f"<i>{html.escape(context['instrument_kind'])}</i>")
     
     if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
