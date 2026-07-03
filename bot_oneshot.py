@@ -2523,7 +2523,20 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         "OB_RECLAIM": {"name": "OB Reclaim", "priority": 88, "allow_early": True, "preferred_setup": SetupType.FRESH_BASE_CONTINUATION.value, "score_bonus": 15, "stop_min_atr": 0.9, "stop_max_atr": 2.2, "favored": [Regime.TREND.value, Regime.NORMAL.value], "penalty": []},
         "JUDAS_SWING": {"name": "Judas Swing", "priority": 92, "allow_early": True, "preferred_setup": SetupType.CAPITULATION_RECOVERY.value, "score_bonus": 20, "stop_min_atr": 1.0, "stop_max_atr": 2.5, "favored": [Regime.SHOCK.value, Regime.TRANSITION.value], "penalty": [Regime.RANGE.value]},
         "MMBM": {"name": "MMBM/MMSM", "priority": 98, "allow_early": True, "preferred_setup": SetupType.DIRECTION_FLIP.value, "score_bonus": 25, "stop_min_atr": 0.8, "stop_max_atr": 1.5, "favored": [Regime.TRANSITION.value, Regime.TREND.value], "penalty": [Regime.RANGE.value]},
-        "BMS_RETEST": {"name": "BMS Retest", "priority": 70, "allow_early": False, "preferred_setup": SetupType.BREAKOUT_RETEST.value, "score_bonus": 12, "stop_min_atr": 0.9, "stop_max_atr": 1.9, "favored": [Regime.TREND.value], "penalty": [Regime.RANGE.value]}
+        "BMS_RETEST": {"name": "BMS Retest", "priority": 70, "allow_early": False, "preferred_setup": SetupType.BREAKOUT_RETEST.value, "score_bonus": 12, "stop_min_atr": 0.9, "stop_max_atr": 1.9, "favored": [Regime.TREND.value], "penalty": [Regime.RANGE.value]},
+        # Додано: раніше TREND_IGNITION існував лише в enum/профілях TP-SL, але жоден
+        # детектор його не продукував (мертвий setup_type, 0 угод за жоден період).
+        # Ловить момент ЗАРОДЖЕННЯ тренду: свіжий злам структури (CHoCH) + сильний
+        # displacement-рух, поки регім ще TRANSITION/NORMAL (не встановлений TREND —
+        # для встановленого тренду вже є BREAKER_BLOCK/FVG_ENTRY/OB_RECLAIM).
+        "TREND_IGNITION_MODEL": {"name": "Trend Ignition", "priority": 82, "allow_early": True, "preferred_setup": SetupType.TREND_IGNITION.value, "score_bonus": 16, "stop_min_atr": 0.95, "stop_max_atr": 2.5, "favored": [Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.RANGE.value]},
+        # Додано: RANGE_COMPRESSION_BREAKOUT — так само мертвий setup_type без детектора.
+        # Ловить пробій ПІСЛЯ стиснення діапазону: попередні 12 свічок 15m стискались у
+        # вузький діапазон (<=1.6 ATR), а зараз — тригер-готовність + сильний displacement
+        # за його межі. Це м'якше за жорсткий VOLATILITY_SQUEEZE-блок у detect_regime_engine_2
+        # (atr5/atr20<0.40, який повністю забороняє вхід) — тут компресія ширша й дозволяє
+        # саме пробій, а не сам сквіз.
+        "RANGE_COMPRESSION_MODEL": {"name": "Range Compression Breakout", "priority": 65, "allow_early": False, "preferred_setup": SetupType.RANGE_COMPRESSION_BREAKOUT.value, "score_bonus": 12, "stop_min_atr": 0.8, "stop_max_atr": 1.6, "favored": [Regime.RANGE.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]}
     }
 
     for side in [Side.LONG.value, Side.SHORT.value]:
@@ -2573,6 +2586,18 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         
         judas = session_profile["judas"]
         chop = session_profile["chop_zone"]
+
+        # Компресія діапазону за останні 12 закритих 15m-свічок (без поточної, щоб
+        # мірялась саме ПОПЕРЕДНЯ консолідація, а не сам поточний пробійний бар).
+        # Використовується для RANGE_COMPRESSION_MODEL нижче.
+        if len(c15) >= 13:
+            compression_window = c15[-13:-1]
+            compression_range = max(c.high for c in compression_window) - min(c.low for c in compression_window)
+            compression_atr = compression_range / atr15 if atr15 else 0.0
+        else:
+            compression_atr = 0.0
+        is_range_compressed = 0 < compression_atr <= 1.6
+
         active_patterns = []
         if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
         if is_killzone and has_fvg and strong_displacement: active_patterns.append("SILVER_BULLET")
@@ -2584,8 +2609,31 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # Замість крудого "is_killzone + sweep + рух>1.5%" — точний AMD-детект:
         # свіжий свіп Азійського хая/лоу з підтвердженим реклеймом у цю ж сторону.
         if judas["bias"] == side and judas["bonus"] > 0: active_patterns.append("JUDAS_SWING")
-        if tf1h.get("bias") == side and tf15.get("bias") == side and has_choch and is_sweep: active_patterns.append("MMBM")
+
+        # MMBM (v6.8 fix): раніше вимагав ОДНОЧАСНО tf1h==side AND tf15==side AND
+        # CHoCH AND sweep — жорсткий AND 4 незалежних умов, який жодного разу не
+        # спрацював за весь видимий журнал при score_bonus=25 (найдорожчий паттерн).
+        # Послаблено: HTF-вирівнювання тепер OR (tf1h ЛІБО tf15), CHoCH і sweep
+        # лишаються обов'язковими (вони і є структурна суть MMBM/MMSM).
+        mmbm_tf1h_ok = tf1h.get("bias") == side
+        mmbm_tf15_ok = tf15.get("bias") == side
+        mmbm_htf_ok = mmbm_tf1h_ok or mmbm_tf15_ok
+        if mmbm_htf_ok and has_choch and is_sweep:
+            active_patterns.append("MMBM")
+        if os.getenv("MMBM_DEBUG_LOG"):
+            print(
+                f"[MMBM_DEBUG] side={side} tf1h_ok={mmbm_tf1h_ok} tf15_ok={mmbm_tf15_ok} "
+                f"has_choch={has_choch} is_sweep={is_sweep} -> "
+                f"{'FIRED' if (mmbm_htf_ok and has_choch and is_sweep) else 'skip'}"
+            )
+
         if tf15.get("bias") == side and event.get("retest"): active_patterns.append("BMS_RETEST")
+
+        # Нові детектори — див. коментарі в pattern_registry вище.
+        if has_choch and strong_displacement and regime in (Regime.TRANSITION.value, Regime.NORMAL.value) and tf15.get("bias") == side:
+            active_patterns.append("TREND_IGNITION_MODEL")
+        if is_range_compressed and strong_displacement and trigger_ready:
+            active_patterns.append("RANGE_COMPRESSION_MODEL")
 
         best_pattern = None
         best_priority = 0
@@ -2794,9 +2842,19 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             has_forward_zone=has_forward_zone,
         )
         cand.professional_gate = evaluate_professional_gate(context, cand)
-        
+
+        # v6.8 fix: раніше generic PULLBACK_CONTINUATION-фолбек (жодна з 10 ICT-моделей
+        # не підтверджена) проходив за тим самим порогом armed_score-10, що й
+        # паттерн-підтверджені сетапи, отримуючи лише -NO_PATTERN_PENALTY(=14) до raw score.
+        # Це вже спалювало капітал у v6.6 (16 угод, 12.5% winrate, -5.63%) — штраф до
+        # скору не є жорстким фільтром і фактично торгується з майже нормальною
+        # впевненістю. Тепер без підтвердженої моделі поріг входу піднято суттєво
+        # вище (armed_score + NO_PATTERN_EXTRA_MARGIN), а не просто занижено на -10.
+        NO_PATTERN_EXTRA_MARGIN = int(os.getenv("NO_PATTERN_EXTRA_MARGIN", "12") or 12)
+        min_score_required = params["armed_score"] - 10 if best_pattern else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
+
         # Не обрізаємо до 2-х, повертаємо всіх з базовою якістю
-        if cand.final_score >= params["armed_score"] - 10:
+        if cand.final_score >= min_score_required:
             candidates.append(cand)
             
     return candidates
@@ -2989,7 +3047,8 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
             "2022_MODEL": (0.8, 1.5), "SILVER_BULLET": (0.5, 1.2), "PO3": (1.0, 2.0),
             "TURTLE_SOUP": (0.6, 1.4), "BREAKER_BLOCK": (0.8, 1.8), "FVG_ENTRY": (0.7, 1.6),
             "OB_RECLAIM": (0.9, 2.2), "JUDAS_SWING": (1.0, 2.5), "MMBM": (0.8, 1.5),
-            "BMS_RETEST": (0.9, 1.9)
+            "BMS_RETEST": (0.9, 1.9),
+            "TREND_IGNITION_MODEL": (0.95, 2.5), "RANGE_COMPRESSION_MODEL": (0.8, 1.6),
         }
         if candidate.ict_model in atr_limits:
             registry_stop_min, registry_stop_max = atr_limits[candidate.ict_model]
