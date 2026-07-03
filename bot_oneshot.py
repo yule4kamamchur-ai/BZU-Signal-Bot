@@ -2155,7 +2155,21 @@ def _sigmoid(value: float) -> float:
     return z / (1.0 + z)
 
 
-def _trade_ground_truth(trade: dict) -> tuple[int, float, str]:
+def _trade_ground_truth(trade: dict) -> Optional[tuple[int, float, str]]:
+    """Повертає (label, sample_weight, reason) або None, якщо результат угоди
+    занадто неоднозначний, щоб бути ground truth.
+
+    v6.8 fix: "mfe_only" гілки (і legacy, і TP-based) раніше форсували
+    label=1 ("win") для угод, які НЕ закрились у прибуток (result_pct між
+    -0.10% і 0%), лише тому, що ціна колись торкнулась сприятливого
+    excursion (mfe_pct>=0.55%). Це шумна мітка: вона вчить модель, що
+    сетапи з раннім рухом у потрібний бік, який потім розвернувся й не
+    реалізувався — "перемоги", хоча по факту це радше ознака слабкого
+    follow-through / поганого менеджменту виходу, а не якості сетапу.
+    Занижена вага (0.20/0.35) лише притлумлювала шум, а не прибирала
+    саму помилку напрямку мітки. Тепер такі угоди виключаються з
+    тренувальної вибірки повністю (None), а не вчать модель у "неправильний" бік.
+    """
     result_pct = safe_float(trade.get("result_pct"), 0.0)
     mfe_pct = safe_float(trade.get("mfe_pct"), 0.0)
     has_tp_fields = any(key in trade for key in ("tp1_hit", "tp2_hit", "tp3_hit"))
@@ -2169,7 +2183,7 @@ def _trade_ground_truth(trade: dict) -> tuple[int, float, str]:
         if result_pct > 0.0:
             return 1, 0.55, "legacy_small_profit"
         if mfe_pct >= 0.55 and result_pct >= -0.10:
-            return 1, 0.20, "legacy_mfe_only"
+            return None
         if result_pct <= -0.35:
             return 0, 0.85, "legacy_hard_loss"
         return 0, 0.60, "legacy_loss_or_noise"
@@ -2185,10 +2199,11 @@ def _trade_ground_truth(trade: dict) -> tuple[int, float, str]:
     if result_pct > 0.0:
         return 1, 0.75, "small_realized_profit"
     if mfe_pct >= 0.55 and result_pct >= -0.10:
-        return 1, 0.35, "mfe_only_weak_positive"
+        return None
     if result_pct <= -0.35:
         return 0, 1.25, "hard_loss"
     return 0, 1.00, "loss_or_noise"
+
 
 
 def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[str, float], int, float]]:
@@ -2209,7 +2224,10 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
         has_tp_fields = any(key in trade for key in ("tp1_hit", "tp2_hit", "tp3_hit"))
         if family and not has_tp_fields:
             continue
-        label, sample_weight, _ = _trade_ground_truth(trade)
+        ground_truth = _trade_ground_truth(trade)
+        if ground_truth is None:
+            continue
+        label, sample_weight, _ = ground_truth
         features = {
             key: clamp(safe_float(signal["score_features"].get(key), 0.0), -1.0, 1.0)
             for key in QUALITY_FEATURE_KEYS
@@ -2370,8 +2388,28 @@ def _quality_coefficients(journal: dict, setup_family: str) -> tuple[dict[str, f
 
     if len(rows) < min_rows:
         return dict(family_default), "bootstrap", len(rows), 0.0
-    learned = _fit_logistic_coefficients(rows, family_default)
+
     learned_weight = _learned_model_weight(len(rows), min_rows, full_rows)
+
+    # v6.8: кешування навченого logistic-fit у journal. Раніше _fit_logistic_coefficients
+    # (SCORING_MODEL_EPOCHS ітерацій градієнтного спуску по всіх training rows)
+    # перераховувався заново на КОЖЕН запуск бота — а це scheduled one-shot скрипт,
+    # який може запускатись кожні кілька хвилин, тоді як training rows між запусками
+    # найчастіше взагалі не змінюються (нова угода закривається рідко). Кеш
+    # інвалідується за відбитком стану journal["trades"] (кількість + id останньої
+    # угоди + фактична кількість rows) — детермінований fit на тих самих rows завжди
+    # дає той самий результат, тож пропуск обчислення безпечний, а не апроксимація.
+    trades_list = journal.get("trades") or []
+    fingerprint = f"{len(trades_list)}:{trades_list[-1].get('id') if trades_list else ''}:{len(rows)}"
+    cache = journal.setdefault("_model_coef_cache", {})
+    cache_key = f"{setup_family}:{source}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("coef"), dict):
+        learned = cached["coef"]
+    else:
+        learned = _fit_logistic_coefficients(rows, family_default)
+        cache[cache_key] = {"fingerprint": fingerprint, "coef": learned, "computed_at": iso_now()}
+
     blended = _blend_coefficients(family_default, learned, learned_weight)
     return blended, f"{source}:blend{learned_weight:.2f}", len(rows), learned_weight
 
