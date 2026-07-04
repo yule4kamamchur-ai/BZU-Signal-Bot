@@ -742,13 +742,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             lines.append("<b>Підтвердження:</b>")
             for x in unique_confirmations:
                 lines.append(f"✅ {html.escape(x)}")
-        if context.get("flow_quality") or context.get("cvd_quality"):
-            lines.append("")
-            lines.append(
-                "<i>Flow/CVD: "
-                f"{html.escape(context.get('flow_quality', 'UNKNOWN'))}; "
-                f"{html.escape(context.get('cvd_quality', 'UNKNOWN'))}</i>"
-            )
     for warning in context.get("learning_warnings", [])[:2]:
         lines.append(f"⚠️ {html.escape(warning)}")
     
@@ -761,8 +754,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
         lines.append(f"Вхід <b>{_fmt_price(p.entry)}</b> | Стоп <b>{_fmt_price(p.stop)}</b>")
         lines.append(f"TP1 {_fmt_price(p.tp1)} (RR {p.rr1}) | TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
     
-    lines.append("")
-    lines.append(f"<i>{html.escape(decision.reason)}</i>")
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
 
@@ -859,6 +850,12 @@ def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str
         f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
         tp_status,
     ]
+
+    if result.get("stop_changed"):
+        lines.insert(
+            1,
+            f"🔔 <b>СТОП ЛОСС ЗМІНЕНО!</b> {_fmt_price(result.get('stop_before'))} → {_fmt_price(result.get('stop_after'))}",
+        )
 
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
@@ -3797,10 +3794,15 @@ def run_bot() -> None:
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
+        stop_before = active.stop_current
         res = manage_active_trade(active, context)
+        stop_after = active.stop_current
+        res["stop_changed"] = bool(stop_after) and round_price(stop_after) != round_price(stop_before)
+        res["stop_before"] = stop_before
+        res["stop_after"] = stop_after
         msg = build_follow_message(context, active, res)
         
-        if TELEGRAM_NOTIFY_EVERY_RUN or res.get("closed"):
+        if TELEGRAM_NOTIFY_EVERY_RUN or res.get("closed") or res.get("stop_changed"):
             send_telegram(msg)
         
         if res.get("closed"):
