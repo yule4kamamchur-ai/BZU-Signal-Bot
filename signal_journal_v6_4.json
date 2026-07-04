@@ -1133,6 +1133,15 @@
       "price": 72.04,
       "trade_id": "f320c8f130",
       "signal_id": "e8e9641514"
+    },
+    {
+      "time": "2026-07-04T23:56:34.041932+00:00",
+      "type": "CLOSE",
+      "action": "STOP",
+      "side": "LONG",
+      "price": 71.98,
+      "trade_id": "f320c8f130",
+      "signal_id": "e8e9641514"
     }
   ],
   "trades": [
@@ -1151,41 +1160,63 @@
       "tp2_hit": true,
       "tp3_hit": false,
       "close_action": "STOP"
+    },
+    {
+      "id": "f320c8f130",
+      "signal_id": "e8e9641514",
+      "side": "LONG",
+      "setup_type": "SWEEP_RECLAIM",
+      "setup_family": "LIQUIDITY_RECOVERY",
+      "opened_regime": "RANGE",
+      "entry_level": "RISKY_ENTRY",
+      "quality": 65,
+      "result_pct": -0.24944567627493433,
+      "mfe_pct": 0.0,
+      "tp1_hit": false,
+      "tp2_hit": false,
+      "tp3_hit": false,
+      "close_action": "STOP"
     }
   ],
   "version": "pro-hybrid-confluence-v6.8",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
   "analytics": {
-    "closed_trades": 1,
+    "closed_trades": 2,
     "wins": 1,
-    "losses": 0,
-    "win_rate": 100.0,
-    "net_r": 0.0,
-    "expectancy_r": 0.0,
+    "losses": 1,
+    "win_rate": 50.0,
+    "net_r": -0.0,
+    "expectancy_r": -0.0,
     "by_family": {
       "LIQUIDITY_RECOVERY": {
-        "closed_trades": 1,
+        "closed_trades": 2,
         "wins": 1,
-        "losses": 0,
-        "net_r": 0.0,
-        "win_rate": 100.0,
-        "expectancy_r": 0.0
+        "losses": 1,
+        "net_r": -0.0,
+        "win_rate": 50.0,
+        "expectancy_r": -0.0
       }
     }
   },
   "learning_status": {
-    "updated_at": "2026-07-04T23:45:51.263107+00:00",
+    "updated_at": "2026-07-04T23:56:34.046219+00:00",
     "journal_file": "signal_journal_v6_4.json",
     "state_file": "last_signal_v6_4.json",
     "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
     "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
     "training_signals": 1,
-    "signal_events": 3,
-    "closed_trades": 1,
-    "training_rows": 0,
+    "signal_events": 4,
+    "closed_trades": 2,
+    "training_rows": 1,
     "global_ready": false,
     "global_learned_weight": 0.0,
-    "by_family": {},
+    "by_family": {
+      "LIQUIDITY_RECOVERY": {
+        "rows": 1,
+        "ready": false,
+        "learned_weight": 0.0
+      }
+    },
     "validation": {
       "enabled": false,
       "reason": "not_enough_rows"
@@ -1195,5 +1226,5 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY"
   },
-  "updated_at": "2026-07-04T23:45:51.263033+00:00"
+  "updated_at": "2026-07-04T23:56:34.046104+00:00"
 }
