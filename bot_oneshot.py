@@ -83,6 +83,18 @@ RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
 MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.60") or 2.60)
 MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.15") or 1.15))
+
+# === DOL (Draw on Liquidity) Hard Floors ===
+# ATR-множники вище деградують до сміття, коли сам atr15 стискається до
+# ринкового шуму (тиха Азія / low-liquidity години) — 0.80*atr15 від
+# atr15=0.09 дає стоп у 7 центів на BZ, де звичайний спред+ковзання здатні
+# з'їсти половину цієї відстані. ABS_MIN_STOP_DOLLARS — абсолютна "підлога" в
+# пунктах ціни: стоп ніколи не може бути тіснішим за неї, НЕЗАЛЕЖНО від ATR
+# чи мікроструктури 3M/15M. ABS_MIN_TP1_DOLLARS — дзеркальний "speed bump"
+# фільтр для TP1: не дозволяє снепати тейк на мікро-FVG/пул, що лежить
+# занадто близько, щоб бути реалістичною ціллю, а не ринковим шумом.
+ABS_MIN_STOP_DOLLARS = float(os.getenv("ABS_MIN_STOP_DOLLARS", "0.15") or 0.15)
+ABS_MIN_TP1_DOLLARS = float(os.getenv("ABS_MIN_TP1_DOLLARS", "0.30") or 0.30)
 MIN_RR1 = max(1.50, float(os.getenv("MIN_RR1", "1.50") or 1.50))  # Професійний мінімум: TP1 не ближче 1.5R
 PREFERRED_RR1 = max(1.60, float(os.getenv("PREFERRED_RR1", "1.60") or 1.60))
 MIN_RR2 = max(2.50, float(os.getenv("MIN_RR2", "2.50") or 2.50))
@@ -1616,6 +1628,17 @@ def build_context(data: dict, state: dict) -> dict:
     except Exception:
         ctx["session_name"] = "UNKNOWN"
 
+    # Макро-ліквідність (DOL): Asian High/Low, PDH/PDL, макро-EQ — використовуються
+    # у find_technical_targets() як зовнішні "магніти", коли поруч бракує технічної
+    # структури для TP. Обчислення не має падати весь build_context, якщо з
+    # історією c15 щось не так (замало днів даних тощо, або перший try вище
+    # не встиг визначити _now_kyiv).
+    try:
+        _now_kyiv_macro = _now_kyiv if "_now_kyiv" in dir() else datetime.now(zoneinfo.ZoneInfo("Europe/Kyiv"))
+        ctx["macro_liquidity"] = compute_macro_liquidity(c15, _now_kyiv_macro)
+    except Exception:
+        ctx["macro_liquidity"] = {"asian_high": None, "asian_low": None, "pdh": None, "pdl": None, "macro_eq": None}
+
     return ctx
 
 
@@ -2011,6 +2034,58 @@ def _find_recent_session_range(candles: list, kyiv_tz, now_kyiv, start_h: int, e
         if rng:
             return rng
     return None
+
+
+def _prev_day_high_low(candles: list, kyiv_tz, now_kyiv: datetime, max_days_back: int = 5) -> Optional[dict]:
+    """
+    PDH/PDL (Previous Day High/Low) — хай/лоу останнього ПОВНІСТЮ завершеного
+    календарного дня за Київським часом. Це один з ключових "макро-магнітів"
+    DOL (Draw on Liquidity): якщо поруч немає технічної структури (тонкий
+    ринок / хай історичного діапазону), розумні гроші штовхають ціну саме
+    сюди, бо там лежать стопи ритейл-трейдерів з учорашньої сесії.
+
+    Так само, як і _find_recent_session_range, стійкий до гепів у даних —
+    якщо вчорашній день має замало свічок, відступає на день глибше.
+    """
+    for days_back in range(1, 1 + max_days_back):
+        ref_date = (now_kyiv - timedelta(days=days_back)).date()
+        highs = [c.high for c in candles if _candle_kyiv_dt(c.ts, kyiv_tz).date() == ref_date]
+        lows = [c.low for c in candles if _candle_kyiv_dt(c.ts, kyiv_tz).date() == ref_date]
+        if len(highs) >= SESSION_MIN_CANDLES:
+            return {"high": max(highs), "low": min(lows), "n": len(highs)}
+    return None
+
+
+def compute_macro_liquidity(c15: list, now_kyiv: datetime) -> dict:
+    """
+    Зовнішні (макро) цілі ліквідності для DOL-архітектури: Asian High/Low,
+    PDH/PDL, і EQ (еквілібріум) макро-діапазону між ними. Використовуються
+    у find_technical_targets() як "магніти", коли поруч бракує технічної
+    структури (OB/FVG/внутрішньоденна ліквідність) — угода НЕ стискає тейки
+    і НЕ скасовується через відсутність зручного близького рівня, а
+    перемикається на таргетування зовнішньої ліквідності, як це робить
+    інституційний трейдер.
+    """
+    kyiv_tz = now_kyiv.tzinfo
+    asian = _find_recent_session_range(c15, kyiv_tz, now_kyiv, ASIA_START_H, ASIA_END_H, start_days_back=0)
+    pdhl = _prev_day_high_low(c15, kyiv_tz, now_kyiv)
+
+    asian_high = asian["high"] if asian else None
+    asian_low = asian["low"] if asian else None
+    pdh = pdhl["high"] if pdhl else None
+    pdl = pdhl["low"] if pdhl else None
+
+    macro_eq = None
+    highs = [v for v in (asian_high, pdh) if v]
+    lows = [v for v in (asian_low, pdl) if v]
+    if highs and lows:
+        macro_eq = (max(highs) + min(lows)) / 2
+
+    return {
+        "asian_high": asian_high, "asian_low": asian_low,
+        "pdh": pdh, "pdl": pdl,
+        "macro_eq": macro_eq,
+    }
 
 
 def _sweep_and_reclaim(candles: list, level: float, direction: str, buffer: float, lookback: int) -> Optional[dict]:
@@ -3007,7 +3082,8 @@ def enforce_smart_money_rr(side: str, price: float, stop: float, tp1: float, tp2
     return stop, tp1, tp2, tp3
 
 
-def find_technical_targets(side: str, price: float, zones: list, liquidity: dict, atr15: float) -> list[dict]:
+def find_technical_targets(side: str, price: float, zones: list, liquidity: dict, atr15: float,
+                            macro: Optional[dict] = None) -> list[dict]:
     """
     Збирає РЕАЛЬНІ технічні цілі попереду ціни за напрямком угоди:
     - протилежні Order Block / FVG (供供 supply/demand, з яких очікується реакція)
@@ -3055,6 +3131,29 @@ def find_technical_targets(side: str, price: float, zones: list, liquidity: dict
             range_low = liq.get("range_low") or 0
             if 0 < range_low < price:
                 targets.append({"level": range_low, "kind": "RANGE_LOW", "timeframe": tf_label, "strength": 1.1 * tf_weight})
+
+    # 3) Макро-магніти зовнішньої ліквідності (DOL): Asian High/Low, PDH/PDL,
+    #    макро-EQ. Це "справжній ICT" з розбору Юлії — коли поруч бракує
+    #    технічної структури (вільне падіння / хай історичного діапазону),
+    #    бот не стискає тейки й не скасовує угоду, а перемикається на
+    #    таргетування зовнішньої ліквідності, куди розумні гроші штовхають
+    #    ціну, бо там лежать стопи інших трейдерів. Ставимо strength вищим
+    #    за типовий внутрішньоденний OB/FVG (1.4) — це старші, "жирніші" пули.
+    macro = macro or {}
+    if side == Side.LONG.value:
+        for kind, lvl in (("ASIAN_HIGH", macro.get("asian_high")), ("PDH", macro.get("pdh"))):
+            if lvl and lvl > price:
+                targets.append({"level": lvl, "kind": kind, "timeframe": "1D", "strength": 1.6})
+        eq = macro.get("macro_eq")
+        if eq and eq > price:
+            targets.append({"level": eq, "kind": "MACRO_EQ", "timeframe": "1D", "strength": 1.2})
+    else:
+        for kind, lvl in (("ASIAN_LOW", macro.get("asian_low")), ("PDL", macro.get("pdl"))):
+            if lvl and 0 < lvl < price:
+                targets.append({"level": lvl, "kind": kind, "timeframe": "1D", "strength": 1.6})
+        eq = macro.get("macro_eq")
+        if eq and 0 < eq < price:
+            targets.append({"level": eq, "kind": "MACRO_EQ", "timeframe": "1D", "strength": 1.2})
 
     if not targets:
         return []
@@ -3239,6 +3338,15 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     stop_ceiling_mult = 1.6 if structural_from_zone else 1.0
     stop_dist = min(stop_dist, effective_atr15 * float(profile.get("stop_max_atr", MAX_STOP_ATR15)) * stop_ceiling_mult)
 
+    # === DOL Rule 1: Абсолютна "підлога" для стопу (Hard Floor) ===
+    # Усе вище рахувалось відносно atr15 — але коли ATR стискається до
+    # мікроскопічних значень (тиха сесія / низька волатильність), навіть
+    # stop_min_atr * effective_atr15 дає стоп у кілька центів (напр. 7 центів
+    # на BZ при entry~72 — ризик, який звичайний спред+ковзання здатні з'їсти
+    # наполовину). Незалежно від ATR чи мікроструктури, стоп ніколи не може
+    # бути тіснішим за ABS_MIN_STOP_DOLLARS: угода повинна мати змогу "дихати".
+    stop_dist = max(stop_dist, ABS_MIN_STOP_DOLLARS)
+
     stop = price - stop_dist if side == Side.LONG.value else price + stop_dist
     tp1_dist = max(stop_dist * float(profile.get("tp1_rr", PREFERRED_RR1)), effective_atr15 * MIN_TP1_ATR15)
     tp2_dist = max(stop_dist * float(profile.get("tp2_rr", MIN_RR2)), tp1_dist + effective_atr15 * 0.45)
@@ -3260,10 +3368,19 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     # RR-фолбек, тому вхід НІКОЛИ не блокується через "немає зручного рівня".
     step = max(atr15 * 0.45, price * 0.003)
     min_tp1_distance = stop_dist * max(1.0, MIN_RR1)
+    # === DOL Rule 2: "Speed Bump Filter" — ігноруємо надто близькі зустрічні зони ===
+    # Без цієї підлоги TP1 міг снепнутись на мікро-FVG/пул за кілька центів від
+    # входу (той самий "лежачий поліцейський", який ціна пробиває імпульсом,
+    # а не точка реакції). TP1 не може бути ближче за ABS_MIN_TP1_DOLLARS,
+    # навіть якщо RR-floor формально вже задоволений.
+    min_tp1_distance = max(min_tp1_distance, ABS_MIN_TP1_DOLLARS)
     min_tp2_distance = stop_dist * max(1.45, MIN_RR1 + 1.00)
     min_tp3_distance = stop_dist * max(2.10, MIN_RR1 + 2.50)
-    tech_targets = find_technical_targets(side, price, zones, context.get("liquidity", {}), atr15)
+    tech_targets = find_technical_targets(side, price, zones, context.get("liquidity", {}), atr15,
+                                           macro=context.get("macro_liquidity", {}))
     tp_sources = {"tp1": "RR-профіль", "tp2": "RR-профіль", "tp3": "RR-профіль"}
+
+    MACRO_KINDS = {"ASIAN_HIGH", "ASIAN_LOW", "PDH", "PDL", "MACRO_EQ"}
 
     def _pick_technical(floor_dist: float, cap_mult: float, used_levels: list[float]) -> Optional[dict]:
         for t in tech_targets:
@@ -3271,6 +3388,27 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
                 continue
             if t["distance"] > floor_dist * cap_mult:
                 break  # список відсортований за відстанню — далі буде ще далі
+            if any(abs(t["level"] - u) < step for u in used_levels):
+                continue
+            return t
+        return None
+
+    def _pick_macro(floor_dist: float, used_levels: list[float]) -> Optional[dict]:
+        """
+        === DOL Rule 3: Макро-Магніти (External Liquidity) ===
+        Викликається ЛИШЕ якщо _pick_technical() у межах свого cap_mult не
+        знайшов жодного якісного внутрішньоденного рівня — тобто ринок
+        "тонкий" (вільне падіння / хай історичного діапазону). У цьому
+        випадку бот не стискає TP і не скасовує угоду, а свідомо перемикається
+        на найближчий макро-магніт (Asian High/Low, PDH/PDL, macro EQ) БЕЗ
+        верхнього cap — це і є справжня зовнішня ліквідність, куди розумні
+        гроші штовхають ціну, навіть якщо вона далеко.
+        """
+        for t in tech_targets:
+            if t["kind"] not in MACRO_KINDS:
+                continue
+            if t["distance"] < floor_dist - 1e-9:
+                continue
             if any(abs(t["level"] - u) < step for u in used_levels):
                 continue
             return t
@@ -3284,7 +3422,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     used_levels.append(tp1)
 
     tp2_floor = max(min_tp2_distance, abs(tp1 - price) + step)
-    tp2_tech = _pick_technical(tp2_floor, 2.4, used_levels)
+    tp2_tech = _pick_technical(tp2_floor, 2.4, used_levels) or _pick_macro(tp2_floor, used_levels)
     if tp2_tech:
         tp2 = tp2_tech["level"]
         tp_sources["tp2"] = f"{tp2_tech['kind']} ({tp2_tech['timeframe']})"
@@ -3293,7 +3431,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     used_levels.append(tp2)
 
     tp3_floor = max(min_tp3_distance, abs(tp2 - price) + step)
-    tp3_tech = _pick_technical(tp3_floor, 2.2, used_levels)
+    tp3_tech = _pick_technical(tp3_floor, 2.2, used_levels) or _pick_macro(tp3_floor, used_levels)
     if tp3_tech:
         tp3 = tp3_tech["level"]
         tp_sources["tp3"] = f"{tp3_tech['kind']} ({tp3_tech['timeframe']})"
