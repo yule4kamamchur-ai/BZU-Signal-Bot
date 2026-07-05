@@ -4,9 +4,9 @@
   "active_trade": null,
   "opportunity": null,
   "scan_3m": {
-    "last_scanned_3m_ts": 1783253700000,
+    "last_scanned_3m_ts": 1783254600000,
     "last_run_processed": 5,
-    "processed_count": 5173,
+    "processed_count": 5178,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -18,7 +18,7 @@
         "event_price": 72.99,
         "invalidation_level": 72.99,
         "sweep_level": 72.99,
-        "extreme": 72.27,
+        "extreme": 72.23,
         "displacement": true,
         "retest_ts": 1782462780000,
         "ready_ts": 1782462960000,
@@ -28,7 +28,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 80,
-        "processed_bars": 5178,
+        "processed_bars": 5183,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -51,7 +51,7 @@
         "event_price": 72.99,
         "invalidation_level": 72.99,
         "sweep_level": 72.99,
-        "extreme": 72.27,
+        "extreme": 72.25,
         "displacement": true,
         "retest_ts": 1782462420000,
         "ready_ts": 1782462600000,
@@ -61,7 +61,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 87,
-        "processed_bars": 5178,
+        "processed_bars": 5183,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -79,19 +79,19 @@
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
     "pending_type": "",
-    "stable_count": 120,
+    "stable_count": 121,
     "pending_count": 0,
-    "updated_at": "2026-07-05T12:15:47.894590+00:00"
+    "updated_at": "2026-07-05T12:31:26.458822+00:00"
   },
   "latest_signal": {
-    "id": "eb1dd80300",
-    "time": "2026-07-05T07:45:49.088102+00:00",
-    "action": "RISKY_ENTRY",
-    "side": "LONG",
-    "setup_type": "SWEEP_RECLAIM",
-    "quality": 64,
-    "decision_quality": 64,
-    "reason": "[2022_MODEL] Ризикований вхід: Зняття ліквідності + повернення за рівень — RANGE_COMPRESSION profile",
+    "id": "12c4d35a5e",
+    "time": "2026-07-05T12:31:26.464727+00:00",
+    "action": "NO_SETUP",
+    "side": "NEUTRAL",
+    "setup_type": "NONE",
+    "quality": 12,
+    "decision_quality": 12,
+    "reason": "Ринок не сформував професійного ICT + 3M execution-package",
     "regime": "RANGE",
     "news_bias": "NEUTRAL",
     "macro_risk": "NORMAL",
@@ -100,20 +100,20 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
     "learning_status": {
-      "updated_at": "2026-07-05T07:45:47.709675+00:00",
+      "updated_at": "2026-07-05T12:31:24.608530+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
       "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-      "training_signals": 2,
-      "signal_events": 37,
-      "closed_trades": 3,
-      "training_rows": 2,
+      "training_signals": 3,
+      "signal_events": 58,
+      "closed_trades": 4,
+      "training_rows": 3,
       "global_ready": false,
       "global_learned_weight": 0.0,
       "by_family": {
         "LIQUIDITY_RECOVERY": {
-          "rows": 2,
+          "rows": 3,
           "ready": false,
           "learned_weight": 0.0
         }
@@ -128,101 +128,13 @@
       "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY"
     },
     "learning_warnings": [
-      "ML ще в bootstrap: 2/60 training rows."
+      "ML ще в bootstrap: 3/60 training rows."
     ],
     "version": "pro-hybrid-confluence-v6.8",
-    "architecture_version": "HYBRID_CONFLUENCE_V6_4",
-    "setup_family": "LIQUIDITY_RECOVERY",
-    "ict_model": "2022_MODEL",
-    "candidate_final_score": 66,
-    "candidate_raw_score": 122,
-    "execution_lane": "EARLY_TACTICAL",
-    "trigger_ready": true,
-    "trigger_age_minutes": 12909.82,
-    "score_components": {
-      "legacy_raw_score": 121.6,
-      "loc_score": 45,
-      "str_score": 19.0,
-      "liq_score": 8.1,
-      "flw_score": 0.0,
-      "trig_score": 10.4,
-      "htf_score": 2.1,
-      "pattern_bonus": 12,
-      "session_bonus": 0.0,
-      "vector_bonus": 0.0,
-      "features": {
-        "loc": 1.0,
-        "structure": 0.7917,
-        "liquidity": 0.3375,
-        "flow": 0.0,
-        "trigger": 1.0,
-        "htf": 0.175,
-        "pattern": 0.619,
-        "session": 0.0,
-        "smt": 0.0,
-        "regime_fit": -1.0,
-        "freshness": 0.0,
-        "exhaustion": 0.0,
-        "no_pattern": 0.0
-      },
-      "gates": {
-        "trigger_gate": 1.0,
-        "location_gate": 1.0,
-        "pattern_gate": 1.0,
-        "forward_zone_gate": 1.0,
-        "exhaustion_gate": 1.0,
-        "liquidity_gate": 0.722,
-        "trend_gate": 1.0,
-        "htf_late_gate": 1.0,
-        "product": 0.722
-      },
-      "probability": 0.6562,
-      "base_probability": 0.9088,
-      "model_source": "bootstrap",
-      "sample_size": 2,
-      "learned_weight": 0.0
-    },
-    "score_features": {
-      "loc": 1.0,
-      "structure": 0.7917,
-      "liquidity": 0.3375,
-      "flow": 0.0,
-      "trigger": 1.0,
-      "htf": 0.175,
-      "pattern": 0.619,
-      "session": 0.0,
-      "smt": 0.0,
-      "regime_fit": -1.0,
-      "freshness": 0.0,
-      "exhaustion": 0.0,
-      "no_pattern": 0.0
-    },
-    "score_gates": {
-      "trigger_gate": 1.0,
-      "location_gate": 1.0,
-      "pattern_gate": 1.0,
-      "forward_zone_gate": 1.0,
-      "exhaustion_gate": 1.0,
-      "liquidity_gate": 0.722,
-      "trend_gate": 1.0,
-      "htf_late_gate": 1.0,
-      "product": 0.722
-    },
-    "score_model_source": "bootstrap",
-    "score_model_sample_size": 2,
-    "score_model_learned_weight": 0.0
+    "architecture_version": "HYBRID_CONFLUENCE_V6_4"
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "FOLLOW",
-      "side": "LONG",
-      "action": "HOLD",
-      "price": 72.09,
-      "trade_id": "84526024ac",
-      "signal_id": "031373ad84",
-      "time": "2026-07-03T17:31:21.099363+00:00"
-    },
     {
       "type": "FOLLOW",
       "side": "LONG",
@@ -1951,7 +1863,15 @@
       "trade_id": "8f56ce2227",
       "signal_id": "eb1dd80300",
       "time": "2026-07-05T12:15:48.232969+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "quality": 12,
+      "price": 72.12,
+      "time": "2026-07-05T12:31:26.464752+00:00"
     }
   ],
-  "updated_at": "2026-07-05T12:15:48.233162+00:00"
+  "updated_at": "2026-07-05T12:31:26.829282+00:00"
 }
