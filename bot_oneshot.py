@@ -3153,6 +3153,17 @@ def find_protective_stop_level(side: str, price: float, zones: list, liquidity: 
     return candidates[0]
 
 
+def _effective_atr15(atr15: float, price: float) -> float:
+    """
+    Нижня межа ATR15 у абсолютних одиницях ціни. Без цього floor'у будь-яка
+    формула виду `atr15 * коефіцієнт` (розмір стопа, TP1-floor, буфер гардів)
+    схлопується до шуму в тихі періоди (Азія, низька ліквідність), навіть якщо
+    технічний/структурний рівень поруч цілком реальний і ширший за цей шум.
+    """
+    atr_floor_pct = 0.0006  # 0.06% від ціни — абсолютний мінімум "дихання"
+    return max(atr15, price * atr_floor_pct)
+
+
 def _session_stop_buffer_mult(context: dict) -> float:
     """
     Множник ATR-буфера протективних гардів залежно від сесії. Проблема, яку це
@@ -3176,7 +3187,7 @@ def _atr_guard_buffer(context: dict, atr15: float, price: float) -> float:
     до шуму (типово для Азійської сесії / низьколіквідних годин).
     """
     atr_floor_pct = 0.0006  # 0.06% від ціни — абсолютний мінімум "дихання" для стопа
-    effective_atr = max(atr15, price * atr_floor_pct)
+    effective_atr = _effective_atr15(atr15, price)
     return effective_atr * _session_stop_buffer_mult(context)
 
 
@@ -3207,19 +3218,31 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
             profile["stop_max_atr"] = registry_stop_max
 
     structural_stop = candidate.invalidation_level
+    structural_from_zone = False
     for z in sorted(zones, key=lambda x: -x.strength):
         if z.side == opposite(side) and z.timeframe in ("1h", "4h"):
             structural_stop = z.low if side == Side.LONG.value else z.high
+            structural_from_zone = True
             break
-            
+
+    # ВИПРАВЛЕНО: та сама хвороба, що й у трейлінгових гардах, але на етапі
+    # відкриття угоди — стоп рахувався як max(structural_dist, atr15*min), потім
+    # МІНІМІЗУВАВСЯ до atr15*max. У тиху сесію (мала atr15) цей "max"-стеля міг
+    # обрізати РЕАЛЬНИЙ структурний рівень (1H/4H OB/FVG) до значення тіснішого,
+    # ніж сама структура — угода відкривалась зі стопом БЛИЖЧЕ за технічну точку
+    # інвалідації тези, а не на ній. effective_atr15 дає нижню межу ATR, а для
+    # стопів, знайдених від СПРАВЖНЬОЇ старшої зони (не fallback candidate-рівня),
+    # стеля лише щедро обмежує абсурдну ширину — не підрізає легітимну структуру.
+    effective_atr15 = _effective_atr15(atr15, price)
     stop_dist = abs(price - structural_stop)
-    stop_dist = max(stop_dist, atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15)))
-    stop_dist = min(stop_dist, atr15 * float(profile.get("stop_max_atr", MAX_STOP_ATR15)))
-    
+    stop_dist = max(stop_dist, effective_atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15)))
+    stop_ceiling_mult = 1.6 if structural_from_zone else 1.0
+    stop_dist = min(stop_dist, effective_atr15 * float(profile.get("stop_max_atr", MAX_STOP_ATR15)) * stop_ceiling_mult)
+
     stop = price - stop_dist if side == Side.LONG.value else price + stop_dist
-    tp1_dist = max(stop_dist * float(profile.get("tp1_rr", PREFERRED_RR1)), atr15 * MIN_TP1_ATR15)
-    tp2_dist = max(stop_dist * float(profile.get("tp2_rr", MIN_RR2)), tp1_dist + atr15 * 0.45)
-    tp3_dist = max(stop_dist * float(profile.get("tp3_rr", MIN_RR3)), tp2_dist + atr15 * 0.55)
+    tp1_dist = max(stop_dist * float(profile.get("tp1_rr", PREFERRED_RR1)), effective_atr15 * MIN_TP1_ATR15)
+    tp2_dist = max(stop_dist * float(profile.get("tp2_rr", MIN_RR2)), tp1_dist + effective_atr15 * 0.45)
+    tp3_dist = max(stop_dist * float(profile.get("tp3_rr", MIN_RR3)), tp2_dist + effective_atr15 * 0.55)
     
     tp1 = price + tp1_dist if side == Side.LONG.value else price - tp1_dist
     tp2 = price + tp2_dist if side == Side.LONG.value else price - tp2_dist
