@@ -3686,21 +3686,16 @@ def _opened_at_ms(opened_at: str) -> int:
 
 
 def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
-    """Дворівневий стоп-лос: Hard Stop (по тіні) та Soft Stop (по закриттю свічки).
+    """
+    Жорсткий стоп-лос: будь-який дотик до рівня стопу (навіть тінню свічки)
+    означає негайний вихід. Без розділення на Hard/Soft стопи, без додаткового
+    запасу в 1.5 ATR і без очікування закриття свічки — щойно ціна торкнулась
+    рівня інвалідації, теза вважається зламаною.
 
-    ВИПРАВЛЕННЯ: раніше перевірялась лише ОСТАННЯ 3m-свічка. Якщо бот
-    запускається рідше, ніж раз на 3 хвилини (типовий cron-інтервал 5-15 хв),
-    між двома запусками могли закритись 2-5 тривільних свічок — стоп міг бути
-    вибитий і повернутись назад усередині цього вікна, і бот про це просто
-    не дізнавався. Тепер скануються ВСІ свічки, що закрились після
+    ВИПРАВЛЕННЯ (успадковане з попередньої версії): перевіряється не лише
+    ОСТАННЯ 3m-свічка, а ВСІ свічки, що закрились після
     trade.last_checked_3m_ts (і не раніше моменту відкриття угоди), у
-    хронологічному порядку — повертаємо перше спрацювання.
-
-    Обмеження: stop/hard_stop тут статичні (значення на момент ПОТОЧНОГО
-    запуску) — якщо структурний трейлінг підтягнув би стоп ще тісніше
-    ПОСЕРЕД пропущеного вікна, ця функція цього не відтворює. Це все одно
-    строго консервативніше за попередню поведінку (перевірку лише останньої
-    свічки), але не є ідеальною посвічковою симуляцією ratchet-логіки.
+    хронологічному порядку — щоб не пропустити whipsaw між запусками бота.
     """
     stop = float(trade.stop_current or 0)
     if not stop:
@@ -3708,14 +3703,13 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
 
     price = float(context.get("price") or 0)
     c3 = (context.get("candles", {}) or {}).get("3m", [])
-    atr15 = float(context.get("atr15") or 0.6)
 
     if not c3:
         # Fallback, якщо немає свічок
         if trade.side == Side.LONG.value:
-            if price <= stop: return True, "Stop hit (fallback)"
+            if price <= stop: return True, "Stop hit (жива ціна)"
         else:
-            if price >= stop: return True, "Stop hit (fallback)"
+            if price >= stop: return True, "Stop hit (жива ціна)"
         return False, ""
 
     lower_bound = max(int(trade.last_checked_3m_ts or 0), _opened_at_ms(trade.opened_at))
@@ -3725,32 +3719,16 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
     # останню доступну свічку.
     candles_to_check = unchecked or c3[-1:]
 
-    hard_stop_dist = atr15 * 1.5
-
+    # Перевіряємо всі свічки між запусками бота: будь-який дотик тінню = вихід
     for candle in candles_to_check:
         if trade.side == Side.LONG.value:
-            hard_stop = trade.stop_initial - hard_stop_dist
-            # Hard Stop (вибивання по тіні)
-            if candle.low <= hard_stop:
-                return True, f"Hard Stop hit ({candle.low} <= {hard_stop}, ts={candle.ts})"
-            # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
-            if candle.close <= stop:
-                return True, f"Soft Stop hit: свічка закрилася нижче ({candle.close} <= {stop}, ts={candle.ts})"
+            if candle.low <= stop:
+                return True, f"Stop hit: ціна пробила стоп ({candle.low} <= {stop}, ts={candle.ts})"
         else:
-            hard_stop = trade.stop_initial + hard_stop_dist
-            # Hard Stop (вибивання по тіні)
-            if candle.high >= hard_stop:
-                return True, f"Hard Stop hit ({candle.high} >= {hard_stop}, ts={candle.ts})"
-            # Soft Stop (вибивання ТІЛЬКИ по тілу свічки)
-            if candle.close >= stop:
-                return True, f"Soft Stop hit: свічка закрилася вище ({candle.close} >= {stop}, ts={candle.ts})"
+            if candle.high >= stop:
+                return True, f"Stop hit: ціна пробила стоп ({candle.high} >= {stop}, ts={candle.ts})"
 
-    # ВИПРАВЛЕННЯ: усі перевірки вище дивляться лише НА ЗАКРИТІ 3m-свічки. Свічка,
-    # що формується просто зараз, у c3 ще не потрапляє — тож якщо жива ціна вже
-    # перетнула стоп ПОСЕРЕД поточного бару, угода могла лишатись "OPEN" аж до
-    # наступного запуску бота, коли ця свічка нарешті закриється. Це і є причина,
-    # чому угода не закривалась автоматично, хоча ціна вже була в стопі. Пряма
-    # перевірка живою ціною закриває цю прогалину незалежно від стану свічок.
+    # Перевірка живою ціною (для свічки, що ще формується і не потрапила в c3)
     if price:
         if trade.side == Side.LONG.value and price <= stop:
             return True, f"Stop hit (жива ціна {price} <= {stop})"
