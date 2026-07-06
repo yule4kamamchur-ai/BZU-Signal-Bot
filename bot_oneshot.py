@@ -84,6 +84,14 @@ MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
 MAX_STOP_ATR15 = float(os.getenv("MAX_STOP_ATR15", "2.60") or 2.60)
 MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.15") or 1.15))
 
+# === Структурний трейлінг ПІСЛЯ TP1 (Swing Points) ===
+# Замінює фіксований $/ATR трейлінг: стоп рухається лише під/над останній
+# ПІДТВЕРДЖЕНИЙ 15M swing low/high у бік угоди, а не на довільну відстань
+# за ціною — так угода ловить розширені імпульси, не вилітаючи на кожному
+# випадковому відкаті.
+SWING_LOOKBACK_15M = int(os.getenv("SWING_LOOKBACK_15M", "40") or 40)
+SWING_PIVOT_STRENGTH = int(os.getenv("SWING_PIVOT_STRENGTH", "2") or 2)  # свічок з кожного боку для підтвердження пивота
+
 # === DOL (Draw on Liquidity) Hard Floors ===
 # ATR-множники вище деградують до сміття, коли сам atr15 стискається до
 # ринкового шуму (тиха Азія / low-liquidity години) — 0.80*atr15 від
@@ -94,7 +102,15 @@ MIN_TP1_ATR15 = max(0.90, float(os.getenv("MIN_TP1_ATR15", "1.15") or 1.15))
 # фільтр для TP1: не дозволяє снепати тейк на мікро-FVG/пул, що лежить
 # занадто близько, щоб бути реалістичною ціллю, а не ринковим шумом.
 ABS_MIN_STOP_DOLLARS = float(os.getenv("ABS_MIN_STOP_DOLLARS", "0.15") or 0.15)
-ABS_MIN_TP1_DOLLARS = float(os.getenv("ABS_MIN_TP1_DOLLARS", "0.30") or 0.30)
+# ВИПРАВЛЕНО (дихання угоди): 0.30$ давав мікро-TP1, який знімався першим-ліпшим
+# відкатом і не відповідав реальному розміру імпульсу на BZ 15M (ATR ~0.15-0.25$,
+# адекватний перший імпульс — 2.5-3x ATR). Підлогу піднято до 0.65$ (середина
+# рекомендованого діапазону 0.60-0.75$), щоб TP1 забирав рух одної торгової
+# сесії (Лондон/Нью-Йорк), а не шум окремої свічки.
+ABS_MIN_TP1_DOLLARS = float(os.getenv("ABS_MIN_TP1_DOLLARS", "0.65") or 0.65)
+# Буфер понад ціну входу для строгого беззбитку на TP1 — покриває комісію біржі,
+# щоб "безризикова" угода не закрилась технічним мінус-нулем через фі.
+COMMISSION_BUFFER_DOLLARS = float(os.getenv("COMMISSION_BUFFER_DOLLARS", "0.02") or 0.02)
 MIN_RR1 = max(1.50, float(os.getenv("MIN_RR1", "1.50") or 1.50))  # Професійний мінімум: TP1 не ближче 1.5R
 PREFERRED_RR1 = max(1.60, float(os.getenv("PREFERRED_RR1", "1.60") or 1.60))
 MIN_RR2 = max(2.50, float(os.getenv("MIN_RR2", "2.50") or 2.50))
@@ -1611,7 +1627,7 @@ def build_context(data: dict, state: dict) -> dict:
     ctx["scan_3m"] = state.get("scan_3m", {})
     ctx["scan_3m_events"] = scan_result.get("events", {})
 
-    # Сесія (Київ) — потрібна протективним гардам (MFE/Post-TP1 Guard), щоб не
+    # Сесія (Київ) — потрібна структурному трейлінгу (пивот-буфер), щоб не
     # стискати ATR-буфер до шуму саме в тихі години Азії. Рахується напряму з
     # годинника, без залежності від наявності свічок, тож завжди визначена.
     try:
@@ -3581,151 +3597,72 @@ def _apply_protective_stop(trade: ActiveTrade, context: dict, stop: Optional[flo
     return True
 
 
-def _mfe_guard_stop(trade: ActiveTrade, context: dict, profile: dict, best_pct: float, current_pct: float) -> Optional[float]:
+def _find_last_swing_point(side: str, candles: list) -> Optional[float]:
     """
-    MFE Guard — закриває "сліпу зону" ДО TP1, де Delayed BE ще не діє і стоп
-    лишається на початковому рівні. Якщо угода вже пройшла суттєву частку
-    шляху до TP1 (а не сягнула фіксованого абсолютного %), підтягуємо
-    trade.stop_current слідом за ринком.
+    Знаходить останній ПІДТВЕРДЖЕНИЙ 15M swing-пункт у бік угоди:
+    swing low для LONG (під нього трейлимо стоп), swing high для SHORT.
 
-    Поріг навмисно прив'язаний до ВІДСТАНІ ДО TP1 (а не до абсолютного % депозиту):
-    у різних режимах/ATR/інструментах сам TP1 може стояти на різній % відстані,
-    і фіксований поріг або взагалі не встигає спрацювати до TP1 (як було б,
-    наприклад, для тісних сетапів з TP1 ближче 0.3%), або, навпаки, надто рано
-    ріже простір для дихання угоди в розширених трендових сетапах.
-
-    Це НЕ окремий механізм виходу — фактичний вихід все одно вирішує
-    Wick Defense нижче (Hard по тіні / Soft по тілу свічки). Ратчет у
-    _apply_protective_stop гарантує, що MFE Guard ніколи не послабить
-    стоп, уже зафіксований TP1/TP2-ladder'ом.
+    Пивот на індексі i вважається підтвердженим, якщо його low/high є
+    екстремумом серед SWING_PIVOT_STRENGTH свічок з КОЖНОГО боку — тобто
+    ринок уже намалював відкат і пішов далі, підтвердивши точку як реальний
+    структурний мінімум/максимум, а не просто останню хвилю. Останні
+    SWING_PIVOT_STRENGTH свічок (та будь-яка ще не закрита) не мають
+    достатнього підтвердження праворуч і пропускаються.
     """
-    side = trade.side
-    entry = trade.entry
-    if not entry:
+    if not candles:
         return None
-
-    tp1_dist_pct = abs(trade.tp1 - entry) / entry * 100
-    if tp1_dist_pct <= 0:
+    confirmed = [c for c in candles if getattr(c, "confirmed", True)]
+    ordered = sorted(confirmed, key=lambda c: c.ts)
+    if len(ordered) > SWING_LOOKBACK_15M:
+        ordered = ordered[-SWING_LOOKBACK_15M:]
+    n = len(ordered)
+    strength = SWING_PIVOT_STRENGTH
+    if n < strength * 2 + 1:
         return None
-
-    trigger_fraction = float(profile.get("mfe_trigger_fraction", 0.55))
-    protect_trigger = tp1_dist_pct * trigger_fraction
-    if best_pct < protect_trigger:
-        return None  # ще недостатньо просунулись до TP1 — даємо угоді дихати
-
-    lock_fraction = float(profile.get("mfe_lock_fraction", 0.35))
-    lock_pct = max(0.04, best_pct * lock_fraction)
-
-    price = context.get("price", entry)
-    atr15 = context.get("atr15", 0.6) or 0.6
-    # ВИПРАВЛЕНО: раніше буфер був фіксовано atr15*0.55 — у тиху Азійську сесію
-    # atr15 сам стискається майже до нуля, і буфер схлопувався до шуму спреду
-    # (звідси стоп за пару пунктів від ціни). Тепер атр має нижню межу від ціни
-    # і множник, що ЗБІЛЬШУЄТЬСЯ саме в тихі години замість того, щоб зникати.
-    guard_buffer = _atr_guard_buffer(context, atr15, price)
-
-    if side == Side.LONG.value:
-        raw_stop = entry * (1 + lock_pct / 100)
-        air_stop = price - guard_buffer  # буфер під шум з нижньою межею (не сесійний нуль)
-        stop = min(raw_stop, air_stop)
-    else:
-        raw_stop = entry * (1 - lock_pct / 100)
-        air_stop = price + guard_buffer
-        stop = max(raw_stop, air_stop)
-
-    # ICT-якір: якщо в коридорі між поточним стопом і air_stop є реальний
-    # структурний рівень (OB/FVG підтримки або SSL-свіп), тягнемо стоп ТУДИ,
-    # а не в довільну математичну точку — так робив би дискреційний трейдер.
-    zones = context.get("zones", []) or []
-    liquidity = context.get("liquidity", {}) or {}
-    corridor_min_dist = max(guard_buffer * 0.5, price * 0.0004)
-    corridor_max_dist = abs(price - stop) if abs(price - stop) > corridor_min_dist else corridor_min_dist * 3
-    structural = find_protective_stop_level(side, price, zones, liquidity, corridor_min_dist, corridor_max_dist)
-    if structural is not None:
-        if side == Side.LONG.value and structural["level"] > stop:
-            stop = structural["level"]
-        elif side == Side.SHORT.value and structural["level"] < stop:
-            stop = structural["level"]
-
-    return round_price(stop)
+    # Йдемо від найновішого підтвердженого пивота назад — саме він визначає
+    # трейлінг ПРЯМО ЗАРАЗ (найближчий до ринку відкат, а не старіший).
+    for i in range(n - strength - 1, strength - 1, -1):
+        window = ordered[i - strength:i + strength + 1]
+        if side == Side.LONG.value:
+            if ordered[i].low == min(c.low for c in window):
+                return ordered[i].low
+        else:
+            if ordered[i].high == max(c.high for c in window):
+                return ordered[i].high
+    return None
 
 
-def _post_tp1_guard_stop(trade: ActiveTrade, context: dict, profile: dict) -> Optional[float]:
+def _structural_trailing_stop(trade: ActiveTrade, context: dict) -> Optional[float]:
     """
-    Post-TP1 Guard — закриває риск-вікно МІЖ TP1 і Delayed-BE-тригером (50% шляху до TP2).
+    Структурний трейлінг ПІСЛЯ TP1 — єдиний механізм підтягування стопу з
+    моменту TP1 і до повного закриття угоди (замінює MFE Guard + Post-TP1
+    Guard + "БУ на 50% до TP2", які тягнули стоп на довільну $/ATR-відстань
+    і вибивали угоду першим-ліпшим випадковим відкатом).
 
-    До цього патчу: одразу після TP1 стоп лишався на початковому рівні (Delayed BE)
-    аж до моменту, коли ціна проходила 50% шляху від TP1 до TP2. Якщо цей рівень
-    так і не досягався, угода могла повністю розвернутись і закритись повним збитком
-    навіть після офіційного "TP1 hit" — реальний кейс з 01.07: угода f6401fc62a
-    (RANGE_EDGE_REVERSAL LONG) сягнула TP1, п'ять годин ходила боком/вниз і закрилась
-    стопом по ПОЧАТКОВОМУ рівню з результатом -0.328%.
-
-    Логіка: щойно ціна пройшла ПОМІТНУ (але не обов'язково 50%) частку шляху TP1->TP2,
-    підтягуємо стоп так, щоб зафіксувати частину саме цього відрізка руху. Це проміжний
-    ratchet — Delayed BE на 50% лишається на місці як другий, різкіший рубіж захисту.
-    Спрацьовує лише в діапазоні TP1_hit=True .. TP2_hit=False; ратчет у
-    _apply_protective_stop і надалі гарантує, що стоп ніколи не послабиться.
+    Логіка: стоп переноситься під останній сформований 15M мінімум (LONG)
+    або над останній сформований 15M максимум (SHORT). Ціна зробила імпульс,
+    намалювала відкат, пішла далі — стоп переноситься під/над цей новий
+    відкат. Ратчет у _apply_protective_stop гарантує, що стоп ніколи не
+    послабиться нижче/вище вже зафіксованого рівня (зокрема нижче строгого
+    беззбитку, встановленого на TP1).
     """
-    if not trade.tp1_hit or trade.tp2_hit:
+    c15 = (context.get("candles", {}) or {}).get("15m", []) or []
+    swing = _find_last_swing_point(trade.side, c15)
+    if swing is None:
         return None
 
     side = trade.side
-    tp1 = trade.tp1
-    tp2 = trade.tp2
-    leg_dist = abs(tp2 - tp1)
-    if leg_dist <= 1e-9:
-        return None
-
-    # Прогрес рахуємо від TP1 у бік TP2 за найкращою досягнутою ціною (best_price
-    # вже оновлюється в manage_active_trade на кожному виклику незалежно від tp1_hit).
-    # ВИПРАВЛЕНО: раніше тут стояв abs(trade.best_price - tp1) — якщо TP1 зарахувався
-    # по хвостику свічки (_target_hit дивиться high/low), а best_price (за ціною
-    # закриття/поточним тіком) так і не втримався вище tp1, abs() все одно повертав
-    # додатне число і код рахував це "прогресом до TP2", хоча ринок туди не доходив.
-    # Тепер прогрес напрямлений і обнуляється, якщо ціна фактично не пройшла TP1 у
-    # потрібний бік — жодного фантомного підтягування стопа.
-    if side == Side.LONG.value:
-        progress = trade.best_price - tp1
-    else:
-        progress = tp1 - trade.best_price
-    if progress <= 0:
-        return None  # TP1 зарахований по вудом, але ціна фактично не втрималась вище — не гардимо
-
-    trigger_fraction = float(profile.get("post_tp1_trigger_fraction", 0.25))
-    if progress < leg_dist * trigger_fraction:
-        return None  # ще замало пройдено від TP1 до TP2 — не заважаємо угоді дихати
-
-    lock_fraction = float(profile.get("post_tp1_lock_fraction", 0.35))
-    lock_dist = progress * lock_fraction
-
     price = context.get("price", trade.entry)
     atr15 = context.get("atr15", 0.6) or 0.6
-    # Той самий сесійно-адаптивний ATR-буфер з нижньою межею, що й у MFE Guard —
-    # без цього стоп так само міг схлопнутись до шуму саме в тихі години.
-    guard_buffer = _atr_guard_buffer(context, atr15, price)
+    # Невеликий буфер під сам пивот (частка сесійно-адаптивного ATR-буфера),
+    # щоб стоп не стояв точно на рівні, який часто зачіпається тінню без
+    # реального пробою структури.
+    pivot_buffer = _atr_guard_buffer(context, atr15, price) * 0.3
 
     if side == Side.LONG.value:
-        raw_stop = tp1 + lock_dist
-        air_stop = price - guard_buffer
-        stop = min(raw_stop, air_stop)
+        stop = swing - pivot_buffer
     else:
-        raw_stop = tp1 - lock_dist
-        air_stop = price + guard_buffer
-        stop = max(raw_stop, air_stop)
-
-    # ICT-якір: віддаємо перевагу реальному структурному рівню (OB/FVG/SSL) у
-    # коридорі, а не довільній математичній точці lock_fraction * ATR.
-    zones = context.get("zones", []) or []
-    liquidity = context.get("liquidity", {}) or {}
-    corridor_min_dist = max(guard_buffer * 0.5, price * 0.0004)
-    corridor_max_dist = abs(price - stop) if abs(price - stop) > corridor_min_dist else corridor_min_dist * 3
-    structural = find_protective_stop_level(side, price, zones, liquidity, corridor_min_dist, corridor_max_dist)
-    if structural is not None:
-        if side == Side.LONG.value and structural["level"] > stop:
-            stop = structural["level"]
-        elif side == Side.SHORT.value and structural["level"] < stop:
-            stop = structural["level"]
+        stop = swing + pivot_buffer
 
     return round_price(stop)
 
@@ -3760,7 +3697,7 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
     хронологічному порядку — повертаємо перше спрацювання.
 
     Обмеження: stop/hard_stop тут статичні (значення на момент ПОТОЧНОГО
-    запуску) — якщо MFE/Post-TP1 Guard підтягнули б стоп ще тісніше
+    запуску) — якщо структурний трейлінг підтягнув би стоп ще тісніше
     ПОСЕРЕД пропущеного вікна, ця функція цього не відтворює. Це все одно
     строго консервативніше за попередню поведінку (перевірку лише останньої
     свічки), але не є ідеальною посвічковою симуляцією ratchet-логіки.
@@ -3856,9 +3793,9 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         return {"action": Action.HOLD.value, "closed": False, "notes": ["Очікування даних ціни..."]}
         
     # ПРИМІТКА: atr15 тут раніше рахувався локально, але жоден з хелперів
-    # нижче (_stop_hit, _target_hit, _mfe_guard_stop, _post_tp1_guard_stop,
-    # trade_mode_profile) не приймає його аргументом — усі й так читають
-    # atr15 напряму з context. Orphaned-змінна від старішої версії видалена.
+    # нижче (_stop_hit, _target_hit, _structural_trailing_stop) не приймає
+    # його аргументом — усі й так читають atr15 напряму з context.
+    # Orphaned-змінна від старішої версії видалена.
     side = trade.side
 
     # 1. Спочатку оновлюємо екстремуми ціни ДО формування словника результату
@@ -3888,39 +3825,23 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         "recommended_stop_reason": "",
     }
 
-    # --- MFE Guard (органічно доповнює Wick Defense + Delayed BE) ---
-    # Працює тільки до TP1 — саме там зараз "сліпа зона": Delayed BE свідомо
-    # лишає стоп на початковому рівні аж до TP1, тож без цього модуля рух,
-    # що не дійшов до TP1 і розвернувся, міг піти аж до повного SL.
-    # Підтягує лише trade.stop_current; реальний вихід все одно вирішує
-    # Wick Defense нижче (Hard по тіні / Soft по тілу свічки).
-    if not trade.tp1_hit:
-        mgmt_profile = trade_mode_profile(context, side, trade.setup_type)
-        is_risky_entry = str(getattr(trade, "entry_level", "") or "").upper() == Action.RISKY_ENTRY.value
-        # RISKY_ENTRY: вмикаємо захист раніше (40% шляху до TP1) і фіксуємо більшу
-        # частку пройденого руху (45%), бо такі входи апріорі менш підтверджені.
-        mgmt_profile["mfe_trigger_fraction"] = 0.40 if is_risky_entry else 0.55
-        mgmt_profile["mfe_lock_fraction"] = 0.45 if is_risky_entry else 0.35
-        mfe_stop = _mfe_guard_stop(trade, context, mgmt_profile, result["best_pct"], result["current_pct"])
-        if _apply_protective_stop(trade, context, mfe_stop):
-            result["notes"].append(f"MFE Guard: було +{result['best_pct']:.2f}%, стоп підтягнуто до {trade.stop_current}")
-            result["recommended_stop"] = round_price(trade.stop_current)
-            result["recommended_stop_reason"] = "MFE Guard активний (захист нереалізованого прибутку до TP1)"
+    # --- "Дати дихати" ДО TP1: жодного підтягування стопу ---
+    # До TP1 позиція має рівно два виходи: початковий стоп-лос (за технічним
+    # рівнем/структурою) або TP1. Жодних проміжних рухів стопу в цій зоні —
+    # ринок завжди робить відкати, і угода має пережити їх без "задушливого"
+    # трейлінгу (колишній MFE Guard тут прибрано повністю).
 
-    # --- Post-TP1 Guard (закриває "сліпу зону" між TP1 і 50%-Delayed-BE-тригером) ---
-    # Без цього патчу стоп після TP1 лишався на початковому рівні аж до 50% шляху
-    # до TP2, тож угода могла повністю розвернутись і закритись повним збитком навіть
-    # після офіційного TP1 (реальний кейс 01.07: f6401fc62a, -0.328% попри TP1 hit).
-    elif not trade.tp2_hit:
-        post_profile = trade_mode_profile(context, side, trade.setup_type)
-        is_risky_entry = str(getattr(trade, "entry_level", "") or "").upper() == Action.RISKY_ENTRY.value
-        post_profile["post_tp1_trigger_fraction"] = 0.18 if is_risky_entry else 0.25
-        post_profile["post_tp1_lock_fraction"] = 0.45 if is_risky_entry else 0.35
-        post_stop = _post_tp1_guard_stop(trade, context, post_profile)
-        if _apply_protective_stop(trade, context, post_stop):
-            result["notes"].append(f"Post-TP1 Guard: прогрес до TP2 частково зафіксовано, стоп підтягнуто до {trade.stop_current}")
+    # --- Структурний трейлінг ПІСЛЯ TP1 (по 15M swing points) ---
+    # Єдиний механізм підтягування стопу з моменту TP1 і до закриття угоди:
+    # стоп рухається під/над останній сформований 15M мінімум/максимум, а не
+    # на довільну $/ATR-відстань — це і дозволяє забирати розширені рухи
+    # (1.50$-2.00$+), не вилітаючи з ринку на першому випадковому відкаті.
+    if trade.tp1_hit:
+        structural_stop = _structural_trailing_stop(trade, context)
+        if _apply_protective_stop(trade, context, structural_stop):
+            result["notes"].append(f"Структурний трейлінг: стоп перенесено під/над останній 15M swing до {trade.stop_current}")
             result["recommended_stop"] = round_price(trade.stop_current)
-            result["recommended_stop_reason"] = "Post-TP1 Guard активний (захист прогресу між TP1 і TP2)"
+            result["recommended_stop_reason"] = "Структурний трейлінг активний (15M swing points) після TP1"
 
     # --- Дворівневий Wick Defense ---
     is_stop, stop_reason = _stop_hit(trade, context)
@@ -3935,42 +3856,29 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.last_action = Action.STOP.value
         return result
 
-    # --- 1. Фіксація TP1 (Delayed Breakeven) ---
+    # --- 1. Фіксація TP1 (Строгий Беззбиток, миттєво) ---
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
         trade.tp1_stop_locked = True
-        # Не послаблюємо стоп: якщо MFE Guard уже підтягнув його ще ДО TP1 (у ту саму
-        # свічку), лишаємо тісніший з двох, а не відкочуємо назад до stop_initial.
+        # СТРОГИЙ БЕЗЗБИТОК: щойно ціна торкнулась TP1 (навіть тінню свічки),
+        # стоп МИТТЄВО (без затримок і без очікування 50% шляху до TP2)
+        # переноситься на вхід + буфер комісії. Це і психологічно, і
+        # математично захищає капітал — залишок угоди стає безризиковим.
+        # Рекомендація: зафіксувати ~50% позиції саме на цьому рівні.
         if side == Side.LONG.value:
-            trade.tp1_locked_stop = max(trade.stop_initial, trade.stop_current)
+            trade.tp1_locked_stop = round_price(trade.entry + COMMISSION_BUFFER_DOLLARS)
         else:
-            trade.tp1_locked_stop = min(trade.stop_initial, trade.stop_current)
+            trade.tp1_locked_stop = round_price(trade.entry - COMMISSION_BUFFER_DOLLARS)
         trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
-        result["notes"].append("TP1 досягнуто (зняття ризику) — стоп залишається початковим (Delayed BE)")
+        result["notes"].append(f"TP1 досягнуто — зафіксуйте ~50% позиції; стоп негайно переведено у строгий беззбиток ({trade.stop_current})")
 
-    # --- 2. Переведення в БУ на 50% шляху до TP2 ---
-    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit:
-        distance = abs(trade.tp2 - trade.tp1)
-        if side == Side.LONG.value:
-            be_trigger = trade.tp1 + distance * 0.5
-            if price >= be_trigger and trade.stop_current < trade.entry:
-                trade.stop_current = max(trade.stop_current, trade.entry)
-                trade.tp1_locked_stop = trade.stop_current
-                result["notes"].append(f"Ціна пройшла 50% до TP2 ({be_trigger}) — стоп переведено у беззбиток")
-        else:
-            be_trigger = trade.tp1 - distance * 0.5
-            if price <= be_trigger and trade.stop_current > trade.entry:
-                trade.stop_current = min(trade.stop_current, trade.entry)
-                trade.tp1_locked_stop = trade.stop_current
-                result["notes"].append(f"Ціна пройшла 50% до TP2 ({be_trigger}) — стоп переведено у беззбиток")
-
-    # --- 3. Фіксація TP2 ---
+    # --- 2. Фіксація TP2 ---
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
-        # Так само, як і на TP1: не послаблюємо стоп, якщо Post-TP1 Guard уже
-        # підтягнув його тісніше за рівень TP1 в межах цієї ж свічки.
+        # Так само, як і на TP1: не послаблюємо стоп, якщо структурний трейлінг
+        # уже підтягнув його тісніше за рівень TP1 в межах цієї ж свічки.
         if side == Side.LONG.value:
             trade.tp2_locked_stop = max(trade.tp1, trade.stop_current)
         else:
@@ -3979,7 +3887,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP2.value
         result["notes"].append("TP2 досягнуто — стоп перенесено на TP1")
 
-    # --- 4. Фіксація TP3 (Повне закриття) ---
+    # --- 3. Фіксація TP3 (Повне закриття) ---
     if not result["closed"] and trade.tp2_hit and not trade.tp3_hit and _target_hit(side, context, trade.tp3):
         trade.tp3_hit = True
         exit_price = round_price(trade.tp3)
@@ -3998,7 +3906,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         if trade.tp2_stop_locked:
             result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
         elif trade.tp1_stop_locked:
-            result["recommended_stop_reason"] = "TP1-стоп активний (можливий Delayed BE)"
+            result["recommended_stop_reason"] = "Строгий беззбиток активний (TP1 зафіксовано)"
 
     # --- Структурна інвалідація ---
     structural_break = False
