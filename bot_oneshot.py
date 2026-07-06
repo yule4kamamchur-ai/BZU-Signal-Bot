@@ -2715,7 +2715,58 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # Евристики для розпізнавання моделей
         has_fvg = any(z.side == side and z.kind == "FVG" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
         has_ob = any(z.side == side and z.kind == "OB" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
-        is_sweep = event.get("source") == "LIQUIDITY_SWEEP"
+
+        # === Динамічна валідація свіпу (Dynamic Sweep Validation Engine) ===
+        # Замість жорсткого is_sweep = (source == LIQUIDITY_SWEEP) оцінюємо
+        # свіп за трьома вимірами інституційного сліду:
+        #   1. Топологія — близькість до реальних пулів ліквідності 15m/1h;
+        #   2. SMT Divergence — підтвердження розбіжністю з іншим активом;
+        #   3. CVD Absorption — підтвердження внутрішнім тиском свічок.
+        # У боковику (RANGE/TRANSITION/chop) звичайний свіп без підтверджень
+        # деградується нижче прохідного порогу; у тренді вимоги м'якші
+        # (структурний pullback вже підтверджений іншими факторами).
+        is_raw_sweep = event.get("source") == "LIQUIDITY_SWEEP"
+        sweep_quality_multiplier = 1.0
+        valid_institutional_sweep = False
+
+        if is_raw_sweep:
+            # 1. Топологічна вага (відстань до реальних пулів старшого TF)
+            major_pools = []
+            for tf in ["15m", "1h"]:
+                major_pools.extend(context.get("liquidity", {}).get(tf, {}).get("bsl", []))
+                major_pools.extend(context.get("liquidity", {}).get(tf, {}).get("ssl", []))
+
+            sweep_lvl = event.get("trigger_level", price)
+            nearest_pool_dist = min([abs(sweep_lvl - p) for p in major_pools]) if major_pools else atr15
+
+            # Чим ближче свіп до старшої ліквідності, тим вища його технічна вага (0.3–1.2)
+            topology_weight = max(0.3, min(1.2, 1.0 - (nearest_pool_dist / (atr15 * 1.5)))) if atr15 else 0.3
+
+            # 2. Інституційний footprint (SMT та CVD)
+            has_smt_support = (smt_bias == side)
+            has_cvd_absorption = (cvd.get("bias") == side and cvd.get("strength", 0) > 0)
+
+            # 3. Динамічна оцінка середовища
+            in_chop = session_profile.get("chop_zone", {}).get("active", False)
+
+            if regime in (Regime.RANGE.value, Regime.TRANSITION.value) or in_chop:
+                # У боковику звичайна тінь не працює — свіп повинен мати підтвердження.
+                smt_mult = 1.4 if has_smt_support else 0.7
+                cvd_mult = 1.25 if has_cvd_absorption else 0.8
+
+                footprint_score = smt_mult * cvd_mult
+                sweep_quality_multiplier = topology_weight * footprint_score
+
+                # Замість жорсткого блоку — вимагаємо, щоб якість свіпу перекрила "шум" боковика
+                valid_institutional_sweep = (sweep_quality_multiplier >= 0.85)
+            else:
+                # У тренді вимоги до свіпів м'якші (структурний pullback)
+                sweep_quality_multiplier = topology_weight
+                valid_institutional_sweep = True
+
+        is_sweep = is_raw_sweep and valid_institutional_sweep
+        # ==========================================================
+
         has_choch = recent_struct["bullish_shift"] if side == Side.LONG.value else recent_struct["bearish_shift"]
         strong_displacement = event.get("strong_displacement")
         has_good_reclaim = has_quality_reclaim(event)
@@ -2863,7 +2914,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # Базові обчислення якості (збережено існуючу логіку, зважено за родиною сетапу)
         loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
         str_score = (19 if tf15.get("bias") == side else 10) * str_weight
-        liq_score = (16 if event.get("source") == "LIQUIDITY_SWEEP" and trigger_ready else 6) * liq_weight
+        # Застосовуємо розраховану якість свіпу (Dynamic Sweep Validation Engine)
+        # до балів ліквідності — неякісний свіп у боковику деградує бал плавно,
+        # а не через жорсткий блок.
+        liq_base = 16 if is_sweep and trigger_ready else 6
+        liq_score = liq_base * liq_weight * sweep_quality_multiplier
         # ВИПРАВЛЕННЯ: flow_snapshot() зараз заглушка (завжди повертає NEUTRAL,
         # бо trades/book з collect_market_data порожні) — умова
         # "flow.bias == side AND cvd.bias == side" через це НІКОЛИ не
