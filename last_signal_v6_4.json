@@ -6,22 +6,23 @@
     "side": "LONG",
     "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
     "setup_family": "CONTINUATION",
-    "created_at": "2026-07-07T20:25:17.327999+00:00",
-    "expires_at": "2026-07-08T14:25:17.328001+00:00",
-    "score": 63,
+    "created_at": "2026-07-07T20:31:36.975067+00:00",
+    "expires_at": "2026-07-08T14:31:36.975069+00:00",
+    "score": 65,
     "trigger_level": 72.93,
     "invalidation_level": 75.14,
     "confirmations": [
       "Модель: Acceptance Retest Continuation (ACCEPTANCE_RETEST_CONTINUATION)",
       "✅ Модель узгоджена з режимом ринку (+5)",
-      "🔁 Acceptance-retest: pullback=1.83 ATR | zone=15m OB | acceptance=True",
+      "🔁 Acceptance-retest: pullback=1.65 ATR | zone=15m OB | acceptance=True",
       "🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком",
-      "📊 Hypothesis score: final=63 | setup=100 execution=73 plan=46 | model=bootstrap n=12 p=0.52"
+      "📊 Hypothesis score: final=65 | setup=100 execution=78 plan=45 | model=bootstrap n=12 p=0.54"
     ],
     "evidence_families": [
       "ICT_LOCATION",
       "PRICE_STRUCTURE",
       "ICT_MODEL_ACCEPTANCE_RETEST_CONTINUATION",
+      "ORDER_FLOW_CVD",
       "EXECUTION_TIME_WARP_WAIT_RETEST",
       "EXECUTION_ACCEPTANCE_RETEST"
     ],
@@ -30,12 +31,12 @@
     "thesis_key": "LONG|ACCEPTANCE_RETEST_CONTINUATION|ACCEPTANCE_RETEST_CONTINUATION|755",
     "thesis": "LONG ACCEPTANCE_RETEST_CONTINUATION → ACCEPTANCE_RETEST_CONTINUATION | src=ACCEPTANCE_RETEST | stage=READY",
     "missed_at": "",
-    "signal_id": "8d549fa7e7"
+    "signal_id": "0bc9ac878f"
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1783455840000,
-    "last_run_processed": 3,
-    "processed_count": 470,
+    "last_scanned_3m_ts": 1783456200000,
+    "last_run_processed": 2,
+    "processed_count": 472,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -47,7 +48,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 75.81,
+        "extreme": 75.85,
         "displacement": true,
         "retest_ts": 1783403640000,
         "ready_ts": 1783403820000,
@@ -57,7 +58,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 470,
+        "processed_bars": 472,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -80,7 +81,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 75.85,
+        "extreme": 76.03,
         "displacement": true,
         "retest_ts": 1783391760000,
         "ready_ts": 1783391940000,
@@ -90,7 +91,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 470,
+        "processed_bars": 472,
         "strong_displacement": false,
         "retest": true,
         "mitigation": true,
@@ -108,18 +109,18 @@
   "regime_memory": {
     "type": "NORMAL",
     "pending_type": "",
-    "stable_count": 6,
+    "stable_count": 7,
     "pending_count": 0,
-    "updated_at": "2026-07-07T20:25:17.321940+00:00"
+    "updated_at": "2026-07-07T20:31:36.964560+00:00"
   },
   "latest_signal": {
-    "id": "8d549fa7e7",
-    "time": "2026-07-07T20:25:17.327934+00:00",
+    "id": "0bc9ac878f",
+    "time": "2026-07-07T20:31:36.975003+00:00",
     "action": "ARMED",
     "side": "LONG",
     "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
-    "quality": 63,
-    "decision_quality": 63,
+    "quality": 65,
+    "decision_quality": 65,
     "reason": "[ACCEPTANCE_RETEST_CONTINUATION] PROBE/ACCEPTANCE_RETEST: сетап сформовано; gate v6.10: WATCH",
     "regime": "TRANSITION",
     "news_bias": "NEUTRAL",
@@ -129,12 +130,12 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
     "learning_status": {
-      "updated_at": "2026-07-07T20:25:15.278471+00:00",
+      "updated_at": "2026-07-07T20:31:35.087633+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
       "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-      "training_signals": 23,
+      "training_signals": 24,
       "signal_events": 166,
       "closed_trades": 13,
       "training_rows": 12,
@@ -226,15 +227,15 @@
         "side": "LONG",
         "model": "ACCEPTANCE_RETEST_CONTINUATION",
         "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
-        "final_score": 63,
-        "hypothesis_score": 64.71,
+        "final_score": 65,
+        "hypothesis_score": 66.72,
         "setup_q": 100,
-        "execution_q": 73,
-        "plan_q": 46,
+        "execution_q": 78,
+        "plan_q": 45,
         "execution_source": "ACCEPTANCE_RETEST",
         "entry_stage": "PROBE",
-        "trigger_age_min": 868.3,
-        "target_magnet": 1.09
+        "trigger_age_min": 874.6,
+        "target_magnet": 1.72
       },
       "hypothesis_matrix": [
         {
@@ -242,23 +243,23 @@
           "side": "LONG",
           "model": "ACCEPTANCE_RETEST_CONTINUATION",
           "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
-          "final_score": 63,
-          "hypothesis_score": 64.71,
+          "final_score": 65,
+          "hypothesis_score": 66.72,
           "setup_q": 100,
-          "execution_q": 73,
-          "plan_q": 46,
+          "execution_q": 78,
+          "plan_q": 45,
           "execution_source": "ACCEPTANCE_RETEST",
           "entry_stage": "PROBE",
-          "trigger_age_min": 868.3,
-          "target_magnet": 1.09
+          "trigger_age_min": 874.6,
+          "target_magnet": 1.72
         }
       ],
       "candidate_count": 1
     },
     "setup_family": "CONTINUATION",
     "ict_model": "ACCEPTANCE_RETEST_CONTINUATION",
-    "candidate_final_score": 63,
-    "candidate_raw_score": 118,
+    "candidate_final_score": 65,
+    "candidate_raw_score": 123,
     "execution_lane": "EARLY_TACTICAL",
     "execution_source": "ACCEPTANCE_RETEST",
     "entry_stage": "PROBE",
@@ -283,10 +284,10 @@
         "tp1_floor_distance": 1.16,
         "tp0_floor_distance": 0.58,
         "noise": {
-          "tr_p70": 0.299,
-          "tr_p85": 0.409,
-          "current_tr": 0.25875,
-          "fallback": 0.345,
+          "tr_p70": 0.29,
+          "tr_p85": 0.389,
+          "current_tr": 0.255,
+          "fallback": 0.34,
           "sample_size": 48
         },
         "mode": "TRADE_BREATHING_GEOMETRY"
@@ -296,23 +297,23 @@
     "live_3m_trigger_ready": false,
     "limit_armed_ready": false,
     "time_warp_ready": true,
-    "trigger_age_minutes": 868.29,
+    "trigger_age_minutes": 874.62,
     "score_components": {
-      "legacy_raw_score": 118.19,
-      "loc_score": 32,
+      "legacy_raw_score": 122.74,
+      "loc_score": 26,
       "str_score": 21.85,
-      "liq_score": 2.84,
-      "flw_score": 0.0,
+      "liq_score": 2.99,
+      "flw_score": 10.4,
       "trig_score": 8.0,
       "htf_score": 7.5,
       "pattern_bonus": 39.0,
       "session_bonus": 0.0,
       "vector_bonus": 0.0,
       "features": {
-        "loc": 0.7111,
+        "loc": 0.5778,
         "structure": 0.9104,
-        "liquidity": 0.1184,
-        "flow": 0.0,
+        "liquidity": 0.1244,
+        "flow": 0.4333,
         "trigger": 1.0,
         "htf": 0.3125,
         "pattern": 1.0,
@@ -325,25 +326,25 @@
       },
       "gates": {
         "trigger_gate": 1.0,
-        "location_gate": 0.89,
+        "location_gate": 0.84,
         "pattern_gate": 1.0,
         "forward_zone_gate": 0.9,
         "exhaustion_gate": 1.0,
         "liquidity_gate": 1.0,
-        "trend_gate": 0.691,
+        "trend_gate": 0.745,
         "htf_late_gate": 1.0,
-        "product": 0.553
+        "product": 0.563
       },
-      "probability": 0.5217,
-      "base_probability": 0.9434,
+      "probability": 0.5402,
+      "base_probability": 0.9595,
       "model_source": "bootstrap",
       "sample_size": 12,
       "learned_weight": 0.0,
       "setup_quality": 100,
-      "execution_quality": 73,
-      "trade_plan_quality": 46,
-      "organic_score": 77,
-      "hypothesis_score": 64.71,
+      "execution_quality": 78,
+      "trade_plan_quality": 45,
+      "organic_score": 79,
+      "hypothesis_score": 66.72,
       "active_model_count": 4,
       "execution_source": "ACCEPTANCE_RETEST",
       "execution_freshness_multiplier": 0.92,
@@ -366,14 +367,14 @@
         "invalidation_level": 75.14,
         "invalidation_basis": "ACCEPTANCE_RETEST structural probe invalidation",
         "target_level": 76.38,
-        "target_basis": "RANGE_HIGH 15m magnet",
-        "target_magnet_score": 1.09
+        "target_basis": "BSL_LIQUIDITY 15m magnet",
+        "target_magnet_score": 1.72
       },
       "acceptance_retest": {
         "active": true,
         "score_bonus": 20,
-        "impulse_atr": 6.67,
-        "pullback_atr": 1.83,
+        "impulse_atr": 6.65,
+        "pullback_atr": 1.65,
         "zone_ok": true,
         "zone_mid": 75.54,
         "zone_label": "15m OB",
@@ -389,23 +390,23 @@
           "side": "LONG",
           "model": "ACCEPTANCE_RETEST_CONTINUATION",
           "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
-          "final_score": 63,
-          "hypothesis_score": 64.71,
+          "final_score": 65,
+          "hypothesis_score": 66.72,
           "setup_q": 100,
-          "execution_q": 73,
-          "plan_q": 46,
+          "execution_q": 78,
+          "plan_q": 45,
           "execution_source": "ACCEPTANCE_RETEST",
           "entry_stage": "PROBE",
-          "trigger_age_min": 868.3,
-          "target_magnet": 1.09
+          "trigger_age_min": 874.6,
+          "target_magnet": 1.72
         }
       ]
     },
     "score_features": {
-      "loc": 0.7111,
+      "loc": 0.5778,
       "structure": 0.9104,
-      "liquidity": 0.1184,
-      "flow": 0.0,
+      "liquidity": 0.1244,
+      "flow": 0.4333,
       "trigger": 1.0,
       "htf": 0.3125,
       "pattern": 1.0,
@@ -418,14 +419,14 @@
     },
     "score_gates": {
       "trigger_gate": 1.0,
-      "location_gate": 0.89,
+      "location_gate": 0.84,
       "pattern_gate": 1.0,
       "forward_zone_gate": 0.9,
       "exhaustion_gate": 1.0,
       "liquidity_gate": 1.0,
-      "trend_gate": 0.691,
+      "trend_gate": 0.745,
       "htf_late_gate": 1.0,
-      "product": 0.553
+      "product": 0.563
     },
     "score_model_source": "bootstrap",
     "score_model_sample_size": 12,
@@ -456,10 +457,10 @@
       "tp1_floor_distance": 1.16,
       "tp0_floor_distance": 0.58,
       "noise": {
-        "tr_p70": 0.299,
-        "tr_p85": 0.409,
-        "current_tr": 0.25875,
-        "fallback": 0.345,
+        "tr_p70": 0.29,
+        "tr_p85": 0.389,
+        "current_tr": 0.255,
+        "fallback": 0.34,
         "sample_size": 48
       },
       "mode": "TRADE_BREATHING_GEOMETRY"
@@ -467,14 +468,6 @@
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "NO_SETUP",
-      "side": "NEUTRAL",
-      "setup_type": "NONE",
-      "quality": 12,
-      "price": 71.62,
-      "time": "2026-07-05T23:45:51.876954+00:00"
-    },
     {
       "type": "NO_SETUP",
       "side": "NEUTRAL",
@@ -2169,7 +2162,15 @@
       "quality": 63,
       "price": 75.75,
       "time": "2026-07-07T20:25:17.327986+00:00"
+    },
+    {
+      "type": "ARMED",
+      "side": "LONG",
+      "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
+      "quality": 65,
+      "price": 75.82,
+      "time": "2026-07-07T20:31:36.975055+00:00"
     }
   ],
-  "updated_at": "2026-07-07T20:25:17.760352+00:00"
+  "updated_at": "2026-07-07T20:31:37.353744+00:00"
 }
