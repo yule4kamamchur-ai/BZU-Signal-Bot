@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.10 (Hypothesis-Matrix Edition)
+BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Edition)
 ================================================================================
+Виправлення v6.11 (Execution-Audit / Continuation-Probe Edition):
+- Додано full rejection audit для NO_SETUP: бот тепер зберігає rejected_hypotheses і failed_gate, щоб кожен пропущений рух мав пояснення, а не шаманський “не було сетапу”.
+- Додано ACCEPTANCE_RETEST_CONTINUATION: early continuation-probe після ретесту OB/FVG/discount, якщо структура не зламана і є acceptance.
+- Додано ACCELERATION_PULLBACK_REENTRY: якщо імпульс уже пішов без входу, бот не женеться market на піку, а ставить WAIT_PULLBACK до 38–50% імпульсу.
+- Додано дедуплікацію journal["trades"], щоб ML не вчився на дублях однієї угоди.
+
 Виправлення v6.10 (Hypothesis-Matrix Edition):
 - Розділено trigger_ready на джерела виконання: LIVE_3M / LIMIT_ARMED / TIME_WARP / REENTRY.
   Старий 3M/time-warp більше не маскується під живий market-entry, а переводиться у WAIT_RETEST/LIMIT_ONLY.
@@ -62,7 +68,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.10-hypothesis-matrix"
+BOT_VERSION = "pro-hybrid-confluence-v6.12-market-structure-plus"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -109,6 +115,16 @@ WEAK_DIRECTION_RISK_MULTIPLIER = float(os.getenv("WEAK_DIRECTION_RISK_MULTIPLIER
 TIME_WARP_SCORE_MULTIPLIER = float(os.getenv("TIME_WARP_SCORE_MULTIPLIER", "0.70") or 0.70)
 STALE_TRIGGER_SCORE_MULTIPLIER = float(os.getenv("STALE_TRIGGER_SCORE_MULTIPLIER", "0.62") or 0.62)
 LIMIT_ARMED_SCORE_MULTIPLIER = float(os.getenv("LIMIT_ARMED_SCORE_MULTIPLIER", "0.88") or 0.88)
+
+# === Market-Structure Plus v6.12 ===
+# Soft detectors: не блокують сетапи, а створюють окремі гіпотези в matrix.
+SESSION_MEAN_MAX_DIST_ATR = float(os.getenv("SESSION_MEAN_MAX_DIST_ATR", "1.15") or 1.15)
+OPEN_RECLAIM_MAX_DIST_ATR = float(os.getenv("OPEN_RECLAIM_MAX_DIST_ATR", "1.25") or 1.25)
+ORB_BREAK_BUFFER_ATR = float(os.getenv("ORB_BREAK_BUFFER_ATR", "0.16") or 0.16)
+ORB_RETEST_MAX_DIST_ATR = float(os.getenv("ORB_RETEST_MAX_DIST_ATR", "0.90") or 0.90)
+FAILED_AUCTION_MIN_TAIL_RATIO = float(os.getenv("FAILED_AUCTION_MIN_TAIL_RATIO", "0.54") or 0.54)
+LIQUIDITY_LADDER_MIN_TARGETS = int(os.getenv("LIQUIDITY_LADDER_MIN_TARGETS", "3") or 3)
+LIQUIDITY_LADDER_MIN_SCORE = float(os.getenv("LIQUIDITY_LADDER_MIN_SCORE", "3.20") or 3.20)
 
 # === ICT Geometry ===
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
@@ -314,6 +330,15 @@ class SetupType(str, Enum):
     BREAKOUT_RETEST = "BREAKOUT_RETEST"
     RANGE_COMPRESSION_BREAKOUT = "RANGE_COMPRESSION_BREAKOUT"
     RANGE_EDGE_REVERSAL = "RANGE_EDGE_REVERSAL"
+    ACCEPTANCE_RETEST_CONTINUATION = "ACCEPTANCE_RETEST_CONTINUATION"
+    ACCELERATION_PULLBACK_REENTRY = "ACCELERATION_PULLBACK_REENTRY"
+    SESSION_MEAN_RECLAIM = "SESSION_MEAN_RECLAIM"
+    OPENING_RANGE_BREAKOUT = "OPENING_RANGE_BREAKOUT"
+    FAILED_OPENING_RANGE_BREAKOUT = "FAILED_OPENING_RANGE_BREAKOUT"
+    DAILY_WEEKLY_OPEN_RECLAIM = "DAILY_WEEKLY_OPEN_RECLAIM"
+    LIQUIDITY_LADDER = "LIQUIDITY_LADDER"
+    FAILED_AUCTION_REJECTION = "FAILED_AUCTION_REJECTION"
+    TIME_OF_DAY_ADAPTIVE = "TIME_OF_DAY_ADAPTIVE"
     NONE = "NONE"
 
 
@@ -330,6 +355,14 @@ class ExecutionSource(str, Enum):
     LIMIT_ARMED = "LIMIT_ARMED"
     TIME_WARP = "TIME_WARP"
     REENTRY = "REENTRY"
+    ACCEPTANCE_RETEST = "ACCEPTANCE_RETEST"
+    ACCELERATION_PULLBACK = "ACCELERATION_PULLBACK"
+    SESSION_MEAN = "SESSION_MEAN"
+    OPENING_RANGE = "OPENING_RANGE"
+    OPEN_RECLAIM = "OPEN_RECLAIM"
+    LIQUIDITY_LADDER = "LIQUIDITY_LADDER"
+    FAILED_AUCTION = "FAILED_AUCTION"
+    TIME_OF_DAY = "TIME_OF_DAY"
     NONE = "NONE"
 
 
@@ -647,6 +680,12 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "time_warp_score_multiplier": TIME_WARP_SCORE_MULTIPLIER,
         "stale_trigger_score_multiplier": STALE_TRIGGER_SCORE_MULTIPLIER,
         "limit_armed_score_multiplier": LIMIT_ARMED_SCORE_MULTIPLIER,
+        "session_mean_max_dist_atr": SESSION_MEAN_MAX_DIST_ATR,
+        "open_reclaim_max_dist_atr": OPEN_RECLAIM_MAX_DIST_ATR,
+        "orb_break_buffer_atr": ORB_BREAK_BUFFER_ATR,
+        "failed_auction_min_tail_ratio": FAILED_AUCTION_MIN_TAIL_RATIO,
+        "liquidity_ladder_min_targets": LIQUIDITY_LADDER_MIN_TARGETS,
+        "liquidity_ladder_min_score": LIQUIDITY_LADDER_MIN_SCORE,
         "bootstrap_risk_multiplier": BOOTSTRAP_RISK_MULTIPLIER,
         "weak_direction_risk_multiplier": WEAK_DIRECTION_RISK_MULTIPLIER,
     }
@@ -662,6 +701,22 @@ def execution_freshness_multiplier(execution_source: str, trigger_age_minutes: f
         return clamp(0.55 + 0.45 * decay, 0.55, 1.0)
     if src == ExecutionSource.LIMIT_ARMED.value:
         return clamp(LIMIT_ARMED_SCORE_MULTIPLIER, 0.50, 1.0)
+    if src == ExecutionSource.ACCEPTANCE_RETEST.value:
+        return 0.92
+    if src == ExecutionSource.ACCELERATION_PULLBACK.value:
+        return 0.78
+    if src == ExecutionSource.SESSION_MEAN.value:
+        return 0.90
+    if src == ExecutionSource.OPENING_RANGE.value:
+        return 0.88
+    if src == ExecutionSource.OPEN_RECLAIM.value:
+        return 0.90
+    if src == ExecutionSource.LIQUIDITY_LADDER.value:
+        return 0.82
+    if src == ExecutionSource.FAILED_AUCTION.value:
+        return 0.93
+    if src == ExecutionSource.TIME_OF_DAY.value:
+        return 0.84
     if src == ExecutionSource.TIME_WARP.value:
         return clamp(TIME_WARP_SCORE_MULTIPLIER, 0.40, 0.95)
     return clamp(STALE_TRIGGER_SCORE_MULTIPLIER, 0.35, 1.0)
@@ -706,6 +761,30 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         stage = EntryStage.RETEST_ADD.value
         base_risk = RETEST_ADD_RISK_PCT
         add_plan.append("Ліміт на CE/FVG; додавання тільки після acceptance close")
+    elif src == ExecutionSource.ACCEPTANCE_RETEST.value:
+        stage = EntryStage.PROBE.value if score < ENTRY_SCORE_BASE else EntryStage.ACCEPTANCE.value
+        base_risk = PROBE_RISK_PCT if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
+        add_plan.append("Continuation-probe після ретесту: ранній вхід малим ризиком, добір тільки після підтвердження")
+    elif src == ExecutionSource.ACCELERATION_PULLBACK.value:
+        stage = EntryStage.WAIT_RETEST.value
+        base_risk = PROBE_RISK_PCT * 0.50
+        add_plan.append("Імпульс уже пішов: не market на піку, чекати 38–50% pullback")
+    elif src in {ExecutionSource.SESSION_MEAN.value, ExecutionSource.OPEN_RECLAIM.value, ExecutionSource.FAILED_AUCTION.value}:
+        stage = EntryStage.PROBE.value if score < ENTRY_SCORE_BASE else EntryStage.ACCEPTANCE.value
+        base_risk = PROBE_RISK_PCT if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
+        add_plan.append("Market-structure probe: вхід малим ризиком, добір тільки після acceptance/continuation")
+    elif src == ExecutionSource.OPENING_RANGE.value:
+        stage = EntryStage.ACCEPTANCE.value if score >= ENTRY_SCORE_BASE else EntryStage.PROBE.value
+        base_risk = ACCEPTANCE_RISK_PCT if stage == EntryStage.ACCEPTANCE.value else PROBE_RISK_PCT
+        add_plan.append("ORB/Failed-ORB: дозволений тільки staged entry, без full-size на першій свічці пробою")
+    elif src == ExecutionSource.LIQUIDITY_LADDER.value:
+        stage = EntryStage.WAIT_RETEST.value if score < ENTRY_SCORE_BASE else EntryStage.RETEST_ADD.value
+        base_risk = PROBE_RISK_PCT if stage == EntryStage.WAIT_RETEST.value else RETEST_ADD_RISK_PCT
+        add_plan.append("Liquidity ladder: позиція будується тільки якщо є DOL-маршрут і нормальний ретест")
+    elif src == ExecutionSource.TIME_OF_DAY.value:
+        stage = EntryStage.PROBE.value
+        base_risk = PROBE_RISK_PCT * 0.75
+        add_plan.append("Time-of-day edge: сесійний бонус не дає full-size без окремого structural trigger")
     elif score >= max(A_PLUS_ENTRY_MIN, ENTRY_SCORE_BASE + 7) and candidate.confirmation_tier >= ConfirmationTier.HIGH_QUALITY.value:
         stage = EntryStage.CORE.value
         base_risk = CORE_RISK_PCT
@@ -824,6 +903,28 @@ def load_journal() -> dict[str, Any]:
     return journal
 
 
+def deduplicate_closed_trades(trades: list[Any]) -> list[dict[str, Any]]:
+    """Не даємо ML двічі вчитись на одній і тій самій закритій угоді.
+    Ключ максимально консервативний: trade id + signal_id + close_action; якщо id
+    порожній, лишаємо запис, бо це старий/пошкоджений журнал і краще не робити
+    вигляд, що ми всевидяче божество з JSON-скальпелем."""
+    cleaned: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in trades or []:
+        if not isinstance(item, dict):
+            continue
+        tid = str(item.get("id") or "").strip()
+        sid = str(item.get("signal_id") or "").strip()
+        action = str(item.get("close_action") or item.get("action") or "").strip()
+        if tid:
+            key = (tid, sid, action)
+            if key in seen:
+                continue
+            seen.add(key)
+        cleaned.append(item)
+    return cleaned
+
+
 def save_journal(journal: dict[str, Any]) -> None:
     journal["updated_at"] = iso_now()
     journal["signals"] = [
@@ -835,7 +936,7 @@ def save_journal(journal: dict[str, Any]) -> None:
         if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
     ][-MAX_JOURNAL:]
     journal["signal_events"] = list(journal.get("signal_events") or [])[-MAX_JOURNAL:]
-    journal["trades"] = list(journal.get("trades") or [])[-MAX_JOURNAL:]
+    journal["trades"] = deduplicate_closed_trades(list(journal.get("trades") or []))[-MAX_JOURNAL:]
     journal["analytics"] = compute_analytics(journal)
     journal["learning_status"] = compute_learning_status(journal)
     atomic_json_write(JOURNAL_FILE, journal)
@@ -980,6 +1081,11 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             "<b>Входу немає</b>",
             f"<b>Ціна зараз:</b> {_fmt_price(current_price)}",
         ]
+        rejected = ((decision.audit or {}).get("rejected_hypotheses") or [])
+        if rejected:
+            top = rejected[0]
+            lines.append(f"<b>Найближча гіпотеза:</b> {html.escape(str(top.get('side', '')))} {html.escape(str(top.get('model', '')))} | score {html.escape(str(top.get('final_score', '')))}")
+            lines.append(f"<b>Чому ні:</b> {html.escape(str(top.get('failed_gate', ''))[:180])}")
         for warning in context.get("learning_warnings", [])[:2]:
             lines.append(f"⚠️ {html.escape(warning)}")
         return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
@@ -2339,10 +2445,27 @@ def compute_macro_liquidity(c15: list, now_kyiv: datetime) -> dict:
     if highs and lows:
         macro_eq = (max(highs) + min(lows)) / 2
 
+    daily_open = None
+    weekly_open = None
+    # Daily/Weekly open — ключові intraday bias-рівні. Беремо першу доступну
+    # 15M свічку поточного дня/тижня за Києвом, без зовнішніх даних.
+    try:
+        today = now_kyiv.date()
+        week_key = now_kyiv.isocalendar()[:2]
+        today_candles = [c for c in c15 if _candle_kyiv_dt(c.ts, kyiv_tz).date() == today]
+        week_candles = [c for c in c15 if _candle_kyiv_dt(c.ts, kyiv_tz).isocalendar()[:2] == week_key]
+        if today_candles:
+            daily_open = sorted(today_candles, key=lambda c: c.ts)[0].open
+        if week_candles:
+            weekly_open = sorted(week_candles, key=lambda c: c.ts)[0].open
+    except Exception:
+        daily_open = weekly_open = None
+
     return {
         "asian_high": asian_high, "asian_low": asian_low,
         "pdh": pdh, "pdl": pdl,
         "macro_eq": macro_eq,
+        "daily_open": daily_open, "weekly_open": weekly_open,
     }
 
 
@@ -2898,6 +3021,7 @@ def ict_model_execution_contract(
     trigger_level: float,
     ce_level: float,
     is_limit_armed: bool,
+    model_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Кожна ICT-модель отримує власний execution-contract: entry anchor,
     structural invalidation і первинну target-логіку. Це усуває стару поведінку,
@@ -2907,6 +3031,7 @@ def ict_model_execution_contract(
     zones = context.get("zones") or []
     buffer = max(atr15 * 0.18, price * 0.00035)
     model = str(model_id or "GENERIC_FALLBACK")
+    model_context = model_context or {}
 
     entry_anchor = price
     entry_basis = "current_price"
@@ -2934,6 +3059,56 @@ def ict_model_execution_contract(
         entry_basis = f"{model} {z.kind} reclaim midpoint"
         invalidation = (safe_float(z.low) - buffer) if side == Side.LONG.value else (safe_float(z.high) + buffer)
         invalidation_basis = f"{model} {z.kind} invalidation"
+    elif model == "ACCEPTANCE_RETEST_CONTINUATION":
+        if safe_float(model_context.get("zone_mid"), 0.0):
+            entry_anchor = safe_float(model_context.get("zone_mid"), price)
+            entry_basis = f"ACCEPTANCE_RETEST zone midpoint ({model_context.get('zone_label', 'OB/FVG')})"
+        else:
+            entry_anchor = price
+            entry_basis = "ACCEPTANCE_RETEST current acceptance price"
+        invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.05)
+        invalidation_basis = "ACCEPTANCE_RETEST structural probe invalidation"
+    elif model == "ACCELERATION_PULLBACK_REENTRY":
+        pull50 = safe_float(model_context.get("pullback_50"), 0.0)
+        pull382 = safe_float(model_context.get("pullback_382"), 0.0)
+        entry_anchor = pull50 or pull382 or price
+        entry_basis = "ACCELERATION_PULLBACK 50% impulse retrace"
+        invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.20)
+        invalidation_basis = "ACCELERATION_PULLBACK failed retrace invalidation"
+    elif model == "VWAP_SESSION_MEAN_RECLAIM":
+        entry_anchor = safe_float(model_context.get("level"), price) or price
+        entry_basis = f"VWAP/Session mean reclaim ({model_context.get('level_name', 'mean')})"
+        invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.05)
+        invalidation_basis = "VWAP/mean reclaim failure"
+    elif model in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
+        entry_anchor = safe_float(model_context.get("entry_level"), price) or price
+        entry_basis = f"{model} opening-range boundary"
+        invalidation = safe_float(model_context.get("invalidation"), 0.0) or (entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.15))
+        invalidation_basis = f"{model} OR invalidation"
+    elif model == "DAILY_WEEKLY_OPEN_RECLAIM":
+        entry_anchor = safe_float(model_context.get("level"), price) or price
+        entry_basis = f"{model_context.get('level_name', 'OPEN')} reclaim"
+        invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.10)
+        invalidation_basis = "Daily/Weekly open reclaim failure"
+    elif model == "LIQUIDITY_LADDER_MODEL":
+        entry_anchor = price
+        entry_basis = "Liquidity ladder current/retest anchor"
+        invalidation = price - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.25)
+        invalidation_basis = "Liquidity ladder structural failure"
+    elif model == "FAILED_AUCTION_REJECTION":
+        entry_anchor = price
+        entry_basis = f"Failed auction rejection from {model_context.get('level_name', 'liquidity')}"
+        extreme = safe_float(model_context.get("rejection_extreme"), 0.0)
+        if extreme:
+            invalidation = (extreme - buffer) if side == Side.LONG.value else (extreme + buffer)
+        else:
+            invalidation = price - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.10)
+        invalidation_basis = "Failed auction tail invalidation"
+    elif model == "TIME_OF_DAY_ADAPTIVE":
+        entry_anchor = price
+        entry_basis = f"Time-of-day adaptive execution ({model_context.get('phase', 'session')})"
+        invalidation = price - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.15)
+        invalidation_basis = "Session timing thesis invalidation"
     elif model in {"2022_MODEL", "TURTLE_SOUP", "PO3", "JUDAS_SWING", "MMBM"}:
         sweep_level = safe_float(event.get("sweep_level"), safe_float(trigger_level, price))
         if sweep_level:
@@ -3029,6 +3204,14 @@ def score_hypothesis_layers(
         ExecutionSource.LIVE_3M.value: 82,
         ExecutionSource.LIMIT_ARMED.value: 70,
         ExecutionSource.REENTRY.value: 62,
+        ExecutionSource.ACCEPTANCE_RETEST.value: 76,
+        ExecutionSource.ACCELERATION_PULLBACK.value: 58,
+        ExecutionSource.SESSION_MEAN.value: 74,
+        ExecutionSource.OPENING_RANGE.value: 72,
+        ExecutionSource.OPEN_RECLAIM.value: 73,
+        ExecutionSource.LIQUIDITY_LADDER.value: 66,
+        ExecutionSource.FAILED_AUCTION.value: 78,
+        ExecutionSource.TIME_OF_DAY.value: 62,
         ExecutionSource.TIME_WARP.value: 44,
         ExecutionSource.NONE.value: 34,
     }.get(str(execution_source), 34)
@@ -3165,6 +3348,354 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
     return candidate
 
+def _same_side_zone_support(zones: list, side: str, price: float, atr15: float, kinds: set[str] = {"FVG", "OB"}) -> tuple[bool, float, str]:
+    best_dist = 999.0
+    best_mid = 0.0
+    best_label = ""
+    for z in zones or []:
+        if getattr(z, "side", "") != side or getattr(z, "kind", "") not in kinds:
+            continue
+        low = safe_float(getattr(z, "low", 0.0), 0.0)
+        high = safe_float(getattr(z, "high", 0.0), 0.0)
+        mid = (low + high) / 2.0
+        inside = low <= price <= high if low <= high else high <= price <= low
+        dist = 0.0 if inside else min(abs(price - low), abs(price - high), abs(price - mid))
+        if dist < best_dist:
+            best_dist = dist
+            best_mid = mid
+            best_label = f"{getattr(z, 'timeframe', '')} {getattr(z, 'kind', '')}".strip()
+    return bool(best_dist <= max(atr15 * 1.35, ABS_MIN_STOP_DOLLARS * 0.75)), best_mid, best_label
+
+
+def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: float, atr15: float, zones: list, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    """Early continuation-probe після ретесту.
+    Модель ловить не повний ICT-package, а саме момент, коли після імпульсу ціна
+    повернулась у OB/FVG/discount і не зламала структуру. Це був клас сценарію
+    біля 72.60: не треба послаблювати gate, треба окремо оцінити acceptance-рetest."""
+    if len(c15) < 8 or atr15 <= 0:
+        return {"active": False, "score_bonus": 0, "reason": "not_enough_candles"}
+    sign = side_sign(side)
+    recent = c15[-8:]
+    prev = c15[-8:-1]
+    last = c15[-1]
+    zone_ok, zone_mid, zone_label = _same_side_zone_support(zones, side, price, atr15)
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    if side == Side.LONG.value:
+        impulse_low = min(c.low for c in prev)
+        impulse_high = max(c.high for c in prev)
+        impulse_atr = (impulse_high - impulse_low) / atr15
+        pullback_atr = (impulse_high - price) / atr15
+        no_break = price > impulse_low + atr15 * 0.20
+        acceptance = (last.close >= last.open) or (len(c15) >= 2 and last.close > c15[-2].close) or ((last.close - last.low) / max(last.high - last.low, 1e-9) >= 0.55)
+    else:
+        impulse_high = max(c.high for c in prev)
+        impulse_low = min(c.low for c in prev)
+        impulse_atr = (impulse_high - impulse_low) / atr15
+        pullback_atr = (price - impulse_low) / atr15
+        no_break = price < impulse_high - atr15 * 0.20
+        acceptance = (last.close <= last.open) or (len(c15) >= 2 and last.close < c15[-2].close) or ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.55)
+    retest_depth_ok = 0.55 <= pullback_atr <= 3.75
+    active = bool(tf_ok and no_break and retest_depth_ok and (zone_ok or acceptance) and impulse_atr >= 1.15)
+    score_bonus = 0
+    if active:
+        score_bonus += 8
+        score_bonus += 5 if zone_ok else 0
+        score_bonus += 4 if acceptance else 0
+        score_bonus += 3 if tf_ok else 0
+    return {
+        "active": active,
+        "score_bonus": score_bonus,
+        "impulse_atr": round(impulse_atr, 2),
+        "pullback_atr": round(pullback_atr, 2),
+        "zone_ok": zone_ok,
+        "zone_mid": round_price(zone_mid) if zone_mid else 0.0,
+        "zone_label": zone_label,
+        "acceptance": acceptance,
+        "tf_ok": tf_ok,
+        "no_break": no_break,
+    }
+
+
+def detect_acceleration_pullback_reentry(c15: list[Candle], side: str, price: float, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    """Після пропущеного імпульсу не женемося market на піку.
+    Якщо остання 15M свічка пробила локальний high/low після невзятого входу,
+    створюємо WAIT_PULLBACK до 38–50% імпульсу."""
+    if len(c15) < 9 or atr15 <= 0:
+        return {"active": False, "reason": "not_enough_candles"}
+    last = c15[-1]
+    prior = c15[-9:-1]
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    if side == Side.LONG.value:
+        local_high = max(c.high for c in prior)
+        swing_low = min(c.low for c in prior[-5:])
+        breakout = last.close > local_high + atr15 * 0.08
+        impulse_atr = (last.close - swing_low) / atr15
+        pullback_50 = last.close - (last.close - swing_low) * 0.50
+        pullback_382 = last.close - (last.close - swing_low) * 0.382
+    else:
+        local_low = min(c.low for c in prior)
+        swing_high = max(c.high for c in prior[-5:])
+        breakout = last.close < local_low - atr15 * 0.08
+        impulse_atr = (swing_high - last.close) / atr15
+        pullback_50 = last.close + (swing_high - last.close) * 0.50
+        pullback_382 = last.close + (swing_high - last.close) * 0.382
+    active = bool(tf_ok and breakout and impulse_atr >= 1.45)
+    return {
+        "active": active,
+        "score_bonus": 10 if active else 0,
+        "impulse_atr": round(impulse_atr, 2),
+        "pullback_50": round_price(pullback_50),
+        "pullback_382": round_price(pullback_382),
+        "breakout": breakout,
+        "tf_ok": tf_ok,
+    }
+
+
+
+def _current_session_window(now_kyiv: datetime) -> dict[str, Any]:
+    """Повертає поточну торгову сесію за Києвом і її opening-range вікно.
+    Це не фільтр часу, а execution context: різні сесії мають різні моделі входу."""
+    hour = now_kyiv.hour
+    if ASIA_START_H <= hour < ASIA_END_H:
+        return {"name": "ASIA", "start_h": ASIA_START_H, "end_h": ASIA_END_H, "phase": "ACCUMULATION"}
+    if LONDON_START_H <= hour < LONDON_END_H:
+        phase = "MANIPULATION" if hour < LONDON_START_H + MANIP_WINDOW_H else "DISTRIBUTION"
+        return {"name": "LONDON", "start_h": LONDON_START_H, "end_h": LONDON_END_H, "phase": phase}
+    if NY_START_H <= hour < NY_END_H:
+        phase = "MANIPULATION" if hour < NY_START_H + MANIP_WINDOW_H else "DISTRIBUTION"
+        return {"name": "NY", "start_h": NY_START_H, "end_h": NY_END_H, "phase": phase}
+    return {"name": "OFF_HOURS", "start_h": None, "end_h": None, "phase": "OFF_SESSION"}
+
+
+def _anchored_session_vwap_and_mean(c15: list[Candle], now_kyiv: datetime) -> dict[str, Any]:
+    """VWAP / session mean без зовнішнього feed: використовує typical price × volume.
+    Якщо volume відсутній/нульовий, деградує до time-weighted mean. Так ми не
+    вигадуємо order-flow там, де його немає, але все одно маємо fair-value якір."""
+    session = _current_session_window(now_kyiv)
+    if session.get("start_h") is None:
+        return {"valid": False, "session": session.get("name"), "vwap": 0.0, "mean": 0.0, "n": 0}
+    today = now_kyiv.date()
+    candles = [c for c in c15 if _candle_kyiv_dt(c.ts, now_kyiv.tzinfo).date() == today and session["start_h"] <= _candle_kyiv_dt(c.ts, now_kyiv.tzinfo).hour < session["end_h"]]
+    if len(candles) < 3:
+        return {"valid": False, "session": session.get("name"), "vwap": 0.0, "mean": 0.0, "n": len(candles)}
+    typical = [((c.high + c.low + c.close) / 3.0, max(float(c.volume or 0.0), 0.0)) for c in candles]
+    vol_sum = sum(v for _, v in typical)
+    if vol_sum > 0:
+        vwap = sum(tp * v for tp, v in typical) / vol_sum
+    else:
+        vwap = sum(tp for tp, _ in typical) / len(typical)
+    mean = sum(c.close for c in candles) / len(candles)
+    return {"valid": True, "session": session.get("name"), "phase": session.get("phase"), "vwap": round_price(vwap), "mean": round_price(mean), "n": len(candles)}
+
+
+def _nearest_key_level(price: float, levels: list[tuple[str, float]], atr15: float, max_atr: float = 1.0) -> tuple[str, float, float]:
+    clean = [(name, safe_float(level, 0.0)) for name, level in levels if safe_float(level, 0.0) > 0]
+    if not clean:
+        return "", 0.0, 999.0
+    name, level = min(clean, key=lambda x: abs(x[1] - price))
+    dist_atr = abs(price - level) / max(atr15, 1e-9)
+    if dist_atr > max_atr:
+        return "", 0.0, dist_atr
+    return name, level, dist_atr
+
+
+def detect_vwap_session_mean_reclaim(c15: list[Candle], side: str, price: float, atr15: float, now_kyiv: datetime, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    """VWAP / Session Mean Reclaim.
+    Вхід не в середині нічого: ціна має або повернути session mean/VWAP, або
+    ретестнути його як підтримку/опір після імпульсу."""
+    if len(c15) < 6 or atr15 <= 0:
+        return {"active": False, "reason": "not_enough_candles"}
+    anchor = _anchored_session_vwap_and_mean(c15, now_kyiv)
+    if not anchor.get("valid"):
+        return {"active": False, "reason": "no_session_anchor"}
+    level_name, level, dist_atr = _nearest_key_level(price, [("VWAP", anchor.get("vwap")), ("SESSION_MEAN", anchor.get("mean"))], atr15, SESSION_MEAN_MAX_DIST_ATR)
+    if not level:
+        return {"active": False, "reason": "far_from_mean", "dist_atr": round(dist_atr, 2)}
+    last, prev = c15[-1], c15[-2]
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    if side == Side.LONG.value:
+        reclaimed = (prev.close <= level and last.close > level) or (last.low <= level <= last.close)
+        acceptance = last.close >= last.open and ((last.close - last.low) / max(last.high - last.low, 1e-9) >= 0.55)
+    else:
+        reclaimed = (prev.close >= level and last.close < level) or (last.high >= level >= last.close)
+        acceptance = last.close <= last.open and ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.55)
+    active = bool(tf_ok and reclaimed and acceptance)
+    score_bonus = 0
+    if active:
+        score_bonus = 10 + (4 if level_name == "VWAP" else 2) + (3 if anchor.get("phase") in {"MANIPULATION", "DISTRIBUTION"} else 0)
+    return {
+        "active": active,
+        "score_bonus": score_bonus,
+        "level_name": level_name,
+        "level": round_price(level),
+        "dist_atr": round(dist_atr, 2),
+        "session": anchor.get("session"),
+        "phase": anchor.get("phase"),
+        "reclaimed": reclaimed,
+        "acceptance": acceptance,
+        "tf_ok": tf_ok,
+    }
+
+
+def detect_opening_range_model(c15: list[Candle], side: str, price: float, atr15: float, now_kyiv: datetime, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    """Opening Range Breakout / Failed ORB.
+    ORB — це не будь-який пробій. Беремо першу годину поточної сесії, нормалізуємо
+    ширину по ATR і відокремлюємо справжній breakout від failed auction назад у range."""
+    if len(c15) < 12 or atr15 <= 0:
+        return {"breakout_active": False, "failed_active": False, "reason": "not_enough_candles"}
+    session = _current_session_window(now_kyiv)
+    if session.get("start_h") is None or now_kyiv.hour < session["start_h"] + 1:
+        return {"breakout_active": False, "failed_active": False, "reason": "opening_range_not_complete", "session": session.get("name")}
+    today = now_kyiv.date()
+    or_rng = _session_range(c15, now_kyiv.tzinfo, today, session["start_h"], session["start_h"] + 1)
+    if not or_rng:
+        return {"breakout_active": False, "failed_active": False, "reason": "no_or_range", "session": session.get("name")}
+    high, low = safe_float(or_rng.get("high")), safe_float(or_rng.get("low"))
+    width_atr = (high - low) / max(atr15, 1e-9)
+    if width_atr < 0.35 or width_atr > 4.5:
+        return {"breakout_active": False, "failed_active": False, "reason": "or_width_invalid", "width_atr": round(width_atr, 2), "or_high": high, "or_low": low}
+    buf = atr15 * ORB_BREAK_BUFFER_ATR
+    last = c15[-1]
+    recent = c15[-8:]
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    if side == Side.LONG.value:
+        breakout = last.close > high + buf and (last.low <= high + atr15 * ORB_RETEST_MAX_DIST_ATR or price <= high + atr15 * ORB_RETEST_MAX_DIST_ATR)
+        swept_wrong_way = any(c.low < low - buf for c in recent)
+        failed = swept_wrong_way and last.close > low + buf and ((last.close - last.low) / max(last.high - last.low, 1e-9) >= 0.55)
+        entry_level = high if breakout else low
+        invalidation = low if breakout else min(c.low for c in recent)
+    else:
+        breakout = last.close < low - buf and (last.high >= low - atr15 * ORB_RETEST_MAX_DIST_ATR or price >= low - atr15 * ORB_RETEST_MAX_DIST_ATR)
+        swept_wrong_way = any(c.high > high + buf for c in recent)
+        failed = swept_wrong_way and last.close < high - buf and ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.55)
+        entry_level = low if breakout else high
+        invalidation = high if breakout else max(c.high for c in recent)
+    return {
+        "breakout_active": bool(tf_ok and breakout),
+        "failed_active": bool(failed),
+        "score_bonus": (12 if breakout else 0) + (14 if failed else 0),
+        "session": session.get("name"),
+        "phase": session.get("phase"),
+        "or_high": round_price(high),
+        "or_low": round_price(low),
+        "or_width_atr": round(width_atr, 2),
+        "entry_level": round_price(entry_level),
+        "invalidation": round_price(invalidation),
+        "tf_ok": tf_ok,
+    }
+
+
+def detect_daily_weekly_open_reclaim(c15: list[Candle], side: str, price: float, atr15: float, macro: dict, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    if len(c15) < 4 or atr15 <= 0:
+        return {"active": False, "reason": "not_enough_candles"}
+    name, level, dist_atr = _nearest_key_level(price, [("DAILY_OPEN", macro.get("daily_open")), ("WEEKLY_OPEN", macro.get("weekly_open"))], atr15, OPEN_RECLAIM_MAX_DIST_ATR)
+    if not level:
+        return {"active": False, "reason": "far_from_open", "dist_atr": round(dist_atr, 2)}
+    last = c15[-1]
+    recent = c15[-5:]
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    if side == Side.LONG.value:
+        reclaimed = any(c.low < level - atr15 * 0.08 for c in recent) and last.close > level
+        acceptance = last.close >= last.open or ((last.close - last.low) / max(last.high - last.low, 1e-9) >= 0.58)
+    else:
+        reclaimed = any(c.high > level + atr15 * 0.08 for c in recent) and last.close < level
+        acceptance = last.close <= last.open or ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.58)
+    active = bool(tf_ok and reclaimed and acceptance)
+    return {"active": active, "score_bonus": 12 if active and name == "WEEKLY_OPEN" else (9 if active else 0), "level_name": name, "level": round_price(level), "dist_atr": round(dist_atr, 2), "reclaimed": reclaimed, "acceptance": acceptance, "tf_ok": tf_ok}
+
+
+def detect_liquidity_ladder_model(side: str, price: float, context: dict, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    targets = find_technical_targets(side, price, context.get("zones") or [], context.get("liquidity", {}) or {}, atr15, macro=context.get("macro_liquidity", {}) or {})
+    min_dist = max(ABS_MIN_TP1_DOLLARS, atr15 * 1.05)
+    eligible = [t for t in targets if safe_float(t.get("distance"), 0.0) >= min_dist]
+    top = sorted(eligible, key=lambda t: (-safe_float(t.get("magnet_score"), 0.0), safe_float(t.get("distance"), 999)))[:4]
+    ladder_score = sum(safe_float(t.get("magnet_score"), 0.0) for t in top)
+    kinds = {str(t.get("kind")) for t in top}
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    # Це DOL-модель: сама по собі не є market trigger, але стає actionable,
+    # якщо структура/напрям підтримують маршрут до ліквідності.
+    active = bool(tf_ok and len(top) >= LIQUIDITY_LADDER_MIN_TARGETS and ladder_score >= LIQUIDITY_LADDER_MIN_SCORE and len(kinds) >= 2)
+    return {"active": active, "score_bonus": min(16, 5 + int(ladder_score)) if active else 0, "ladder_score": round(ladder_score, 2), "target_count": len(top), "targets": [{"kind": t.get("kind"), "level": round_price(t.get("level")), "score": round(safe_float(t.get("magnet_score"), 0.0), 2)} for t in top], "tf_ok": tf_ok, "entry_ok": active}
+
+
+def detect_failed_auction_rejection_tail(c15: list[Candle], side: str, price: float, atr15: float, context: dict) -> dict[str, Any]:
+    """Failed Auction / Rejection Tail.
+    Ловить різку відмову від ліквідності/open/OR/сесійного рівня. Не потребує
+    book/tape, але чесно нормалізується хвостом і ATR, щоб не вважати кожен wick сигналом."""
+    if len(c15) < 4 or atr15 <= 0:
+        return {"active": False, "reason": "not_enough_candles"}
+    last = c15[-1]
+    rng = max(last.high - last.low, 1e-9)
+    lower_tail = (min(last.open, last.close) - last.low) / rng
+    upper_tail = (last.high - max(last.open, last.close)) / rng
+    macro = context.get("macro_liquidity", {}) or {}
+    liq15 = (context.get("liquidity") or {}).get("15m", {}) if isinstance(context.get("liquidity"), dict) else {}
+    levels: list[tuple[str, float]] = []
+    if side == Side.LONG.value:
+        for lvl in liq15.get("ssl", []) or []: levels.append(("SSL", lvl))
+        for key, label in (("asian_low", "ASIAN_LOW"), ("pdl", "PDL"), ("daily_open", "DAILY_OPEN"), ("weekly_open", "WEEKLY_OPEN")): levels.append((label, macro.get(key)))
+        name, level, dist_atr = _nearest_key_level(last.low, levels, atr15, 0.75)
+        tail_ok = lower_tail >= FAILED_AUCTION_MIN_TAIL_RATIO and ((last.close - last.low) / rng >= 0.62)
+        active = bool(tail_ok and level > 0 and last.close > level)
+        rejection_extreme = last.low
+    else:
+        for lvl in liq15.get("bsl", []) or []: levels.append(("BSL", lvl))
+        for key, label in (("asian_high", "ASIAN_HIGH"), ("pdh", "PDH"), ("daily_open", "DAILY_OPEN"), ("weekly_open", "WEEKLY_OPEN")): levels.append((label, macro.get(key)))
+        name, level, dist_atr = _nearest_key_level(last.high, levels, atr15, 0.75)
+        tail_ok = upper_tail >= FAILED_AUCTION_MIN_TAIL_RATIO and ((last.high - last.close) / rng >= 0.62)
+        active = bool(tail_ok and level > 0 and last.close < level)
+        rejection_extreme = last.high
+    return {"active": active, "score_bonus": 14 if active else 0, "level_name": name, "level": round_price(level), "dist_atr": round(dist_atr, 2), "tail_ratio": round(lower_tail if side == Side.LONG.value else upper_tail, 2), "rejection_extreme": round_price(rejection_extreme)}
+
+
+def detect_time_of_day_adaptive_execution(session_profile: dict, side: str, tf15: dict, tf1h: dict, c15: list[Candle], atr15: float) -> dict[str, Any]:
+    phase = str(session_profile.get("phase") or "")
+    chop = bool((session_profile.get("chop_zone") or {}).get("active"))
+    judas = session_profile.get("judas") or {}
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    # Сесійна модель не має права сама відкривати угоду в chop; вона має підсилювати
+    # тільки поведінково логічні фази: manipulation/distribution London/NY.
+    session_ok = phase in {"MANIPULATION", "DISTRIBUTION"} and not chop
+    side_ok = (judas.get("bias") == side and safe_float(judas.get("bonus"), 0.0) > 0) or tf_ok
+    active = bool(session_ok and side_ok)
+    score_bonus = 7 if active and phase == "DISTRIBUTION" else (5 if active else 0)
+    return {"active": active, "score_bonus": score_bonus, "phase": phase, "session": session_profile.get("session_name"), "tf_ok": tf_ok, "judas_bias": judas.get("bias"), "entry_ok": active and tf_ok}
+
+def explain_candidate_gate_failure(context: dict, candidate: Candidate, gate: Optional[dict] = None) -> str:
+    gate = gate or candidate.professional_gate or evaluate_professional_gate(context, candidate)
+    reasons: list[str] = []
+    if candidate.final_score < PRO_RISKY_MIN:
+        reasons.append(f"score {candidate.final_score} < risky_min {PRO_RISKY_MIN}")
+    if len(candidate.evidence_families or []) < max(3, MIN_PRO_LAYERS_ENTRY - 1):
+        reasons.append(f"layers {len(candidate.evidence_families or [])} замало")
+    if not candidate.trigger_ready:
+        reasons.append(f"execution not ready ({candidate.execution_source})")
+    gates = ((candidate.score_components or {}).get("gates") or {})
+    if safe_float(gates.get("product"), 1.0) < 0.46:
+        reasons.append(f"gate_product {safe_float(gates.get('product'), 0.0):.2f} < 0.46")
+    if safe_float(gates.get("pattern_gate"), 1.0) < 0.70:
+        reasons.append(f"pattern_gate {safe_float(gates.get('pattern_gate'), 0.0):.2f} < 0.70")
+    tf1h_bias = (context.get("tf1h") or {}).get("bias")
+    tf4h_bias = (context.get("tf4h") or {}).get("bias")
+    if not ((tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)) and not gate.get("allow_entry"):
+        reasons.append("HTF не підтримує risky-entry")
+    return "; ".join(reasons) if reasons else str(gate.get("reason") or "did_not_pass_entry_gate")
+
+
+def rejected_hypotheses_audit(context: dict, candidates: list[Candidate], limit: int = 10) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    ranked = finalize_hypothesis_ranking(list(candidates or [])) if candidates else []
+    for c in ranked[:limit]:
+        gate = c.professional_gate or evaluate_professional_gate(context, c)
+        row = hypothesis_audit_row(c)
+        row["failed_gate"] = explain_candidate_gate_failure(context, c, gate)
+        row["evidence_layers"] = list(c.evidence_families or [])
+        row["entry_anchor"] = round_price(getattr(c, "execution_anchor", 0.0))
+        row["invalidation"] = round_price(getattr(c, "invalidation_level", 0.0))
+        rows.append(row)
+    return rows
+
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
     atr15 = context["atr15"] or 0.6
@@ -3226,7 +3757,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # за його межі. Це м'якше за жорсткий VOLATILITY_SQUEEZE-блок у detect_regime_engine_2
         # (atr5/atr20<0.40, який повністю забороняє вхід) — тут компресія ширша й дозволяє
         # саме пробій, а не сам сквіз.
-        "RANGE_COMPRESSION_MODEL": {"name": "Range Compression Breakout", "priority": 65, "allow_early": False, "preferred_setup": SetupType.RANGE_COMPRESSION_BREAKOUT.value, "score_bonus": 12, "stop_min_atr": 0.8, "stop_max_atr": 1.6, "favored": [Regime.RANGE.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]}
+        "RANGE_COMPRESSION_MODEL": {"name": "Range Compression Breakout", "priority": 65, "allow_early": False, "preferred_setup": SetupType.RANGE_COMPRESSION_BREAKOUT.value, "score_bonus": 12, "stop_min_atr": 0.8, "stop_max_atr": 1.6, "favored": [Regime.RANGE.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
+        "ACCEPTANCE_RETEST_CONTINUATION": {"name": "Acceptance Retest Continuation", "priority": 84, "allow_early": True, "preferred_setup": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "score_bonus": 14, "stop_min_atr": 0.85, "stop_max_atr": 2.0, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
+        "ACCELERATION_PULLBACK_REENTRY": {"name": "Acceleration Pullback Re-entry", "priority": 76, "allow_early": False, "preferred_setup": SetupType.ACCELERATION_PULLBACK_REENTRY.value, "score_bonus": 10, "stop_min_atr": 0.95, "stop_max_atr": 2.4, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": [Regime.RANGE.value]},
+        "VWAP_SESSION_MEAN_RECLAIM": {"name": "VWAP / Session Mean Reclaim", "priority": 87, "allow_early": True, "preferred_setup": SetupType.SESSION_MEAN_RECLAIM.value, "score_bonus": 13, "stop_min_atr": 0.85, "stop_max_atr": 1.8, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
+        "OPENING_RANGE_BREAKOUT": {"name": "Opening Range Breakout", "priority": 83, "allow_early": True, "preferred_setup": SetupType.OPENING_RANGE_BREAKOUT.value, "score_bonus": 14, "stop_min_atr": 0.75, "stop_max_atr": 1.9, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.RANGE.value]},
+        "FAILED_ORB": {"name": "Failed Opening Range Breakout", "priority": 86, "allow_early": True, "preferred_setup": SetupType.FAILED_OPENING_RANGE_BREAKOUT.value, "score_bonus": 16, "stop_min_atr": 0.85, "stop_max_atr": 2.1, "favored": [Regime.RANGE.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": []},
+        "DAILY_WEEKLY_OPEN_RECLAIM": {"name": "Daily/Weekly Open Reclaim", "priority": 81, "allow_early": True, "preferred_setup": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, "score_bonus": 12, "stop_min_atr": 0.85, "stop_max_atr": 2.0, "favored": [Regime.NORMAL.value, Regime.TRANSITION.value, Regime.TREND.value], "penalty": []},
+        "LIQUIDITY_LADDER_MODEL": {"name": "Liquidity Ladder Model", "priority": 72, "allow_early": False, "preferred_setup": SetupType.LIQUIDITY_LADDER.value, "score_bonus": 10, "stop_min_atr": 0.95, "stop_max_atr": 2.3, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": []},
+        "FAILED_AUCTION_REJECTION": {"name": "Failed Auction / Rejection Tail", "priority": 89, "allow_early": True, "preferred_setup": SetupType.FAILED_AUCTION_REJECTION.value, "score_bonus": 17, "stop_min_atr": 0.75, "stop_max_atr": 1.8, "favored": [Regime.RANGE.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": []},
+        "TIME_OF_DAY_ADAPTIVE": {"name": "Time-of-Day Adaptive Execution", "priority": 60, "allow_early": True, "preferred_setup": SetupType.TIME_OF_DAY_ADAPTIVE.value, "score_bonus": 7, "stop_min_atr": 0.90, "stop_max_atr": 2.1, "favored": [Regime.NORMAL.value, Regime.TRANSITION.value, Regime.TREND.value], "penalty": [Regime.RANGE.value]}
     }
 
     for side in [Side.LONG.value, Side.SHORT.value]:
@@ -3343,6 +3883,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         else:
             compression_atr = 0.0
         is_range_compressed = 0 < compression_atr <= 1.6
+        acceptance_retest = detect_acceptance_retest_continuation(c15, side, price, atr15, zones, tf15, tf1h)
+        acceleration_reentry = detect_acceleration_pullback_reentry(c15, side, price, atr15, tf15, tf1h)
+        session_mean_reclaim = detect_vwap_session_mean_reclaim(c15, side, price, atr15, now_kyiv, tf15, tf1h)
+        opening_range = detect_opening_range_model(c15, side, price, atr15, now_kyiv, tf15, tf1h)
+        open_reclaim = detect_daily_weekly_open_reclaim(c15, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
+        liquidity_ladder = detect_liquidity_ladder_model(side, price, context, atr15, tf15, tf1h)
+        failed_auction = detect_failed_auction_rejection_tail(c15, side, price, atr15, context)
+        time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
 
         active_patterns = []
         if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
@@ -3380,6 +3928,24 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             active_patterns.append("TREND_IGNITION_MODEL")
         if is_range_compressed and strong_displacement and trigger_ready:
             active_patterns.append("RANGE_COMPRESSION_MODEL")
+        if acceptance_retest.get("active"):
+            active_patterns.append("ACCEPTANCE_RETEST_CONTINUATION")
+        if acceleration_reentry.get("active"):
+            active_patterns.append("ACCELERATION_PULLBACK_REENTRY")
+        if session_mean_reclaim.get("active"):
+            active_patterns.append("VWAP_SESSION_MEAN_RECLAIM")
+        if opening_range.get("breakout_active"):
+            active_patterns.append("OPENING_RANGE_BREAKOUT")
+        if opening_range.get("failed_active"):
+            active_patterns.append("FAILED_ORB")
+        if open_reclaim.get("active"):
+            active_patterns.append("DAILY_WEEKLY_OPEN_RECLAIM")
+        if liquidity_ladder.get("active"):
+            active_patterns.append("LIQUIDITY_LADDER_MODEL")
+        if failed_auction.get("active"):
+            active_patterns.append("FAILED_AUCTION_REJECTION")
+        if time_of_day_adaptive.get("active"):
+            active_patterns.append("TIME_OF_DAY_ADAPTIVE")
 
         # ==========================================================
         # v6.10 HYPOTHESIS MATRIX: кожна активна ICT-модель створює
@@ -3427,6 +3993,37 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     pattern_conf.append("⚠️ Конфлікт моделі з режимом ринку (-10)")
             else:
                 pattern_conf.append(f"⚠️ Жодна ICT-модель не підтверджена — generic fallback (-{NO_PATTERN_PENALTY})")
+
+            if model_id == "ACCEPTANCE_RETEST_CONTINUATION":
+                raw_bonus += safe_float(acceptance_retest.get("score_bonus"), 0.0)
+                pattern_conf.append(
+                    f"🔁 Acceptance-retest: pullback={acceptance_retest.get('pullback_atr')} ATR | "
+                    f"zone={acceptance_retest.get('zone_label') or 'none'} | acceptance={acceptance_retest.get('acceptance')}"
+                )
+            if model_id == "ACCELERATION_PULLBACK_REENTRY":
+                raw_bonus += safe_float(acceleration_reentry.get("score_bonus"), 0.0)
+                pattern_conf.append(
+                    f"🚀 Acceleration re-entry: impulse={acceleration_reentry.get('impulse_atr')} ATR | "
+                    f"WAIT_PULLBACK {acceleration_reentry.get('pullback_382')}–{acceleration_reentry.get('pullback_50')}"
+                )
+            if model_id == "VWAP_SESSION_MEAN_RECLAIM":
+                raw_bonus += safe_float(session_mean_reclaim.get("score_bonus"), 0.0)
+                pattern_conf.append(f"📈 VWAP/Mean reclaim: {session_mean_reclaim.get('level_name')}={session_mean_reclaim.get('level')} | session={session_mean_reclaim.get('session')} | dist={session_mean_reclaim.get('dist_atr')} ATR")
+            if model_id in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
+                raw_bonus += safe_float(opening_range.get("score_bonus"), 0.0)
+                pattern_conf.append(f"⏱️ OR model: {opening_range.get('session')} OR {opening_range.get('or_low')}–{opening_range.get('or_high')} | width={opening_range.get('or_width_atr')} ATR")
+            if model_id == "DAILY_WEEKLY_OPEN_RECLAIM":
+                raw_bonus += safe_float(open_reclaim.get("score_bonus"), 0.0)
+                pattern_conf.append(f"🧲 Open reclaim: {open_reclaim.get('level_name')}={open_reclaim.get('level')} | dist={open_reclaim.get('dist_atr')} ATR")
+            if model_id == "LIQUIDITY_LADDER_MODEL":
+                raw_bonus += safe_float(liquidity_ladder.get("score_bonus"), 0.0)
+                pattern_conf.append(f"🪜 Liquidity ladder: targets={liquidity_ladder.get('target_count')} | ladder_score={liquidity_ladder.get('ladder_score')} | {liquidity_ladder.get('targets')}")
+            if model_id == "FAILED_AUCTION_REJECTION":
+                raw_bonus += safe_float(failed_auction.get("score_bonus"), 0.0)
+                pattern_conf.append(f"🧨 Failed auction: reject={failed_auction.get('level_name')} {failed_auction.get('level')} | tail={failed_auction.get('tail_ratio')}")
+            if model_id == "TIME_OF_DAY_ADAPTIVE":
+                raw_bonus += safe_float(time_of_day_adaptive.get("score_bonus"), 0.0)
+                pattern_conf.append(f"🕒 Time-of-day adaptive: session={time_of_day_adaptive.get('session')} | phase={time_of_day_adaptive.get('phase')} | judas={time_of_day_adaptive.get('judas_bias')}")
 
             reversal_families = {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.RANGE_EXECUTION.value}
             trend_families = {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
@@ -3482,7 +4079,51 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             limit_armed_ready = bool(is_limit_armed)
             time_warp_ready = bool(time_warp_opportunity and stale_3m_trigger_ready and not live_3m_trigger_ready)
             local_trigger_level = trigger_level
-            if live_3m_trigger_ready:
+            if model_id == "ACCELERATION_PULLBACK_REENTRY":
+                execution_source = ExecutionSource.ACCELERATION_PULLBACK.value
+                actionable_trigger_ready = False
+                execution_lane_source = ExecutionLane.WAIT_RETEST.value
+                pattern_conf.append("⏳ ACCELERATION_PULLBACK: імпульс уже відірвався — чекати 38–50% ретест, не market")
+            elif model_id == "ACCEPTANCE_RETEST_CONTINUATION" and acceptance_retest.get("active"):
+                execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                raw += safe_float(acceptance_retest.get("score_bonus"), 0.0) * 0.35
+                pattern_conf.append("🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком")
+            elif model_id == "VWAP_SESSION_MEAN_RECLAIM":
+                execution_source = ExecutionSource.SESSION_MEAN.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                local_trigger_level = safe_float(session_mean_reclaim.get("level"), trigger_level) or trigger_level
+                raw += safe_float(session_mean_reclaim.get("score_bonus"), 0.0) * 0.30
+            elif model_id in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
+                execution_source = ExecutionSource.OPENING_RANGE.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if model_id == "FAILED_ORB" else ExecutionLane.STANDARD_CONFIRMED.value
+                local_trigger_level = safe_float(opening_range.get("entry_level"), trigger_level) or trigger_level
+                raw += safe_float(opening_range.get("score_bonus"), 0.0) * 0.25
+            elif model_id == "DAILY_WEEKLY_OPEN_RECLAIM":
+                execution_source = ExecutionSource.OPEN_RECLAIM.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                local_trigger_level = safe_float(open_reclaim.get("level"), trigger_level) or trigger_level
+                raw += safe_float(open_reclaim.get("score_bonus"), 0.0) * 0.30
+            elif model_id == "LIQUIDITY_LADDER_MODEL":
+                execution_source = ExecutionSource.LIQUIDITY_LADDER.value
+                actionable_trigger_ready = bool(liquidity_ladder.get("entry_ok"))
+                execution_lane_source = ExecutionLane.LIMIT_ONLY.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
+                raw += safe_float(liquidity_ladder.get("score_bonus"), 0.0) * 0.20
+            elif model_id == "FAILED_AUCTION_REJECTION":
+                execution_source = ExecutionSource.FAILED_AUCTION.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                raw += safe_float(failed_auction.get("score_bonus"), 0.0) * 0.35
+            elif model_id == "TIME_OF_DAY_ADAPTIVE":
+                execution_source = ExecutionSource.TIME_OF_DAY.value
+                actionable_trigger_ready = bool(time_of_day_adaptive.get("entry_ok"))
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
+                raw += safe_float(time_of_day_adaptive.get("score_bonus"), 0.0) * 0.20
+            elif live_3m_trigger_ready:
                 execution_source = ExecutionSource.LIVE_3M.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
@@ -3519,6 +4160,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 trigger_level=local_trigger_level,
                 ce_level=ce_level,
                 is_limit_armed=limit_armed_ready,
+                model_context={
+                    "ACCEPTANCE_RETEST_CONTINUATION": acceptance_retest,
+                    "ACCELERATION_PULLBACK_REENTRY": acceleration_reentry,
+                    "VWAP_SESSION_MEAN_RECLAIM": session_mean_reclaim,
+                    "OPENING_RANGE_BREAKOUT": opening_range,
+                    "FAILED_ORB": opening_range,
+                    "DAILY_WEEKLY_OPEN_RECLAIM": open_reclaim,
+                    "LIQUIDITY_LADDER_MODEL": liquidity_ladder,
+                    "FAILED_AUCTION_REJECTION": failed_auction,
+                    "TIME_OF_DAY_ADAPTIVE": time_of_day_adaptive,
+                }.get(model_id, {}),
             )
 
             evidence = ["ICT_LOCATION", "PRICE_STRUCTURE", f"ICT_MODEL_{model_id}"]
@@ -3530,6 +4182,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 evidence.append("EXECUTION_LIMIT_ARMED")
             if time_warp_ready:
                 evidence.append("EXECUTION_TIME_WARP_WAIT_RETEST")
+            if execution_source not in {ExecutionSource.NONE.value, ExecutionSource.LIVE_3M.value, ExecutionSource.LIMIT_ARMED.value, ExecutionSource.TIME_WARP.value}:
+                evidence.append(f"EXECUTION_{execution_source}")
 
             quality_features = _build_quality_features(
                 loc_score=loc_score,
@@ -3628,6 +4282,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "direction_performance": direction_perf,
                     "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
                     "entry_contract": contract,
+                    "acceptance_retest": acceptance_retest if model_id == "ACCEPTANCE_RETEST_CONTINUATION" else {},
+                    "acceleration_reentry": acceleration_reentry if model_id == "ACCELERATION_PULLBACK_REENTRY" else {},
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -3680,6 +4336,15 @@ def setup_trade_profile(setup_type: str) -> dict:
         SetupType.TREND_IGNITION.value: {"tp1_rr": 1.70, "tp2_rr": 3.30, "tp3_rr": 5.60, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True},
         SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True},
         SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.50, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True},
+        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.10, "tp3_rr": 5.00, "tp1_atr": 1.35, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
+        SetupType.ACCELERATION_PULLBACK_REENTRY.value: {"tp1_rr": 1.70, "tp2_rr": 3.20, "tp3_rr": 5.20, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.40, "force_risky": True},
+        SetupType.SESSION_MEAN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.80, "force_risky": True},
+        SetupType.OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.60, "tp2_rr": 3.20, "tp3_rr": 5.10, "tp1_atr": 1.35, "stop_min_atr": 0.75, "stop_max_atr": 1.90, "force_risky": True},
+        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.85, "tp3_rr": 4.00, "tp1_atr": 1.20, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
+        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.10, "tp3_rr": 4.80, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
+        SetupType.LIQUIDITY_LADDER.value: {"tp1_rr": 1.75, "tp2_rr": 3.80, "tp3_rr": 6.00, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.30},
+        SetupType.FAILED_AUCTION_REJECTION.value: {"tp1_rr": 1.50, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.20, "stop_min_atr": 0.75, "stop_max_atr": 1.80, "force_risky": True},
+        SetupType.TIME_OF_DAY_ADAPTIVE.value: {"tp1_rr": 1.55, "tp2_rr": 3.10, "tp3_rr": 4.70, "tp1_atr": 1.25, "stop_min_atr": 0.90, "stop_max_atr": 2.10},
     }
     return dict(profiles.get(str(setup_type or ""), {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 3.90, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20}))
 
@@ -3778,6 +4443,9 @@ def target_magnet_score(target: dict, price: float, atr15: float) -> float:
         "ASIAN_HIGH": 1.65, "ASIAN_LOW": 1.65,
         "RANGE_HIGH": 1.25, "RANGE_LOW": 1.25,
         "MACRO_EQ": 1.15,
+        "DAILY_OPEN": 1.45, "WEEKLY_OPEN": 1.70,
+        "VWAP": 1.38, "SESSION_MEAN": 1.28,
+        "OR_HIGH": 1.42, "OR_LOW": 1.42,
         "OB": 1.10, "FVG": 1.05,
     }.get(kind, 1.0)
     tf_weight = {"4h": 1.45, "1d": 1.55, "1h": 1.30, "15m": 1.0}.get(tf, 1.0)
@@ -3854,6 +4522,10 @@ def find_technical_targets(side: str, price: float, zones: list, liquidity: dict
         eq = macro.get("macro_eq")
         if eq and eq > price:
             targets.append({"level": eq, "kind": "MACRO_EQ", "timeframe": "1D", "strength": 1.2})
+        for key, kind, strength in (("daily_open", "DAILY_OPEN", 1.25), ("weekly_open", "WEEKLY_OPEN", 1.45)):
+            lvl = macro.get(key)
+            if lvl and lvl > price:
+                targets.append({"level": lvl, "kind": kind, "timeframe": "1D", "strength": strength})
     else:
         for kind, lvl in (("ASIAN_LOW", macro.get("asian_low")), ("PDL", macro.get("pdl"))):
             if lvl and 0 < lvl < price:
@@ -3861,6 +4533,10 @@ def find_technical_targets(side: str, price: float, zones: list, liquidity: dict
         eq = macro.get("macro_eq")
         if eq and 0 < eq < price:
             targets.append({"level": eq, "kind": "MACRO_EQ", "timeframe": "1D", "strength": 1.2})
+        for key, kind, strength in (("daily_open", "DAILY_OPEN", 1.25), ("weekly_open", "WEEKLY_OPEN", 1.45)):
+            lvl = macro.get(key)
+            if lvl and 0 < lvl < price:
+                targets.append({"level": lvl, "kind": kind, "timeframe": "1D", "strength": strength})
 
     if not targets:
         return []
@@ -4018,6 +4694,11 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
             "OB_RECLAIM": (0.9, 2.2), "JUDAS_SWING": (1.0, 2.5), "MMBM": (0.8, 1.5),
             "BMS_RETEST": (0.9, 1.9),
             "TREND_IGNITION_MODEL": (0.95, 2.5), "RANGE_COMPRESSION_MODEL": (0.8, 1.6),
+            "ACCEPTANCE_RETEST_CONTINUATION": (0.85, 2.0), "ACCELERATION_PULLBACK_REENTRY": (0.95, 2.4),
+            "VWAP_SESSION_MEAN_RECLAIM": (0.85, 1.8), "OPENING_RANGE_BREAKOUT": (0.75, 1.9),
+            "FAILED_ORB": (0.85, 2.1), "DAILY_WEEKLY_OPEN_RECLAIM": (0.85, 2.0),
+            "LIQUIDITY_LADDER_MODEL": (0.95, 2.3), "FAILED_AUCTION_REJECTION": (0.75, 1.8),
+            "TIME_OF_DAY_ADAPTIVE": (0.90, 2.1),
         }
         if candidate.ict_model in atr_limits:
             registry_stop_min, registry_stop_max = atr_limits[candidate.ict_model]
@@ -4266,9 +4947,11 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             valid_candidates.append(cand)
 
     if not valid_candidates:
+        rejected = rejected_hypotheses_audit(context, cands, limit=10)
         return Decision(
             id=uuid.uuid4().hex[:10], time=iso_now(), action=Action.NO_SETUP.value, side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value,
-            quality=12, reason="Ринок не сформував професійного ICT + 3M execution-package", regime=context["regime"], current_price=current_price
+            quality=12, reason="Ринок не сформував професійного ICT + 3M execution-package", regime=context["regime"], current_price=current_price,
+            audit={"rejected_hypotheses": rejected, "candidate_count": len(cands), "audit_note": "NO_SETUP now stores why hypotheses failed"}
         )
 
     # 3. Вибір переможця за hypothesis_score, а не лише за final_score.
@@ -4666,6 +5349,15 @@ SETUP_FAMILY_MAP = {
     SetupType.BREAKOUT_RETEST.value: SetupFamily.EXPANSION.value,
     SetupType.RANGE_COMPRESSION_BREAKOUT.value: SetupFamily.EXPANSION.value,
     SetupType.RANGE_EDGE_REVERSAL.value: SetupFamily.RANGE_EXECUTION.value,
+    SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: SetupFamily.CONTINUATION.value,
+    SetupType.ACCELERATION_PULLBACK_REENTRY.value: SetupFamily.CONTINUATION.value,
+    SetupType.SESSION_MEAN_RECLAIM.value: SetupFamily.CONTINUATION.value,
+    SetupType.OPENING_RANGE_BREAKOUT.value: SetupFamily.EXPANSION.value,
+    SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: SetupFamily.RANGE_EXECUTION.value,
+    SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: SetupFamily.STRUCTURAL_TRANSITION.value,
+    SetupType.LIQUIDITY_LADDER.value: SetupFamily.EXPANSION.value,
+    SetupType.FAILED_AUCTION_REJECTION.value: SetupFamily.LIQUIDITY_RECOVERY.value,
+    SetupType.TIME_OF_DAY_ADAPTIVE.value: SetupFamily.CONTINUATION.value,
     SetupType.NONE.value: SetupFamily.NONE.value,
 }
 
@@ -4694,6 +5386,15 @@ SETUP_LABELS = {
     SetupType.BREAKOUT_RETEST.value: "Пробій структури + підтверджений ретест",
     SetupType.RANGE_COMPRESSION_BREAKOUT.value: "Пробій після стиснення діапазону",
     SetupType.RANGE_EDGE_REVERSAL.value: "Розворот від межі діапазону",
+    SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: "Ранній continuation-probe після acceptance-ретесту",
+    SetupType.ACCELERATION_PULLBACK_REENTRY.value: "Re-entry після пропущеного імпульсу через 38–50% pullback",
+    SetupType.SESSION_MEAN_RECLAIM.value: "VWAP / Session Mean Reclaim",
+    SetupType.OPENING_RANGE_BREAKOUT.value: "Opening Range Breakout з ретестом",
+    SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: "Failed ORB: фейковий пробій opening range",
+    SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: "Daily / Weekly Open Reclaim",
+    SetupType.LIQUIDITY_LADDER.value: "Liquidity Ladder: каскад цілей ліквідності",
+    SetupType.FAILED_AUCTION_REJECTION.value: "Failed Auction / Rejection Tail",
+    SetupType.TIME_OF_DAY_ADAPTIVE.value: "Time-of-Day Adaptive Execution",
     SetupType.NONE.value: "Професійного сетапу немає",
 }
 
@@ -4811,7 +5512,7 @@ def run_bot() -> None:
         return
 
     decision = evaluate_new_setup(context, state, journal)
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot()}
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "audit": decision.audit or {}}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
