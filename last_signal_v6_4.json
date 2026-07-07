@@ -2,11 +2,37 @@
   "version": "pro-hybrid-confluence-v6.8",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
   "active_trade": null,
-  "opportunity": null,
+  "opportunity": {
+    "side": "LONG",
+    "setup_type": "FRESH_BASE_CONTINUATION",
+    "setup_family": "CONTINUATION",
+    "created_at": "2026-07-07T00:01:45.061610+00:00",
+    "expires_at": "2026-07-07T18:01:45.061612+00:00",
+    "score": 67,
+    "trigger_level": 71.92,
+    "invalidation_level": 72.098,
+    "confirmations": [
+      "Модель: OB Reclaim",
+      "🔥 LIMIT_ARMED: Злам структури (CHoCH) + FVG, виставлено ліміт на CE (71.92)",
+      "📊 Quality model: bootstrap n=10 | p=0.69 | gates x0.74"
+    ],
+    "evidence_families": [
+      "ICT_LOCATION",
+      "PRICE_STRUCTURE",
+      "ORDER_FLOW_CVD",
+      "EXECUTION_TRIGGER_3M"
+    ],
+    "execution_lane": "EARLY_TACTICAL",
+    "status": "ARMED",
+    "thesis_key": "LONG|FRESH_BASE_CONTINUATION|722",
+    "thesis": "LONG FRESH_BASE_CONTINUATION | 3M=READY",
+    "missed_at": "",
+    "signal_id": "31b87fc309"
+  },
   "scan_3m": {
-    "last_scanned_3m_ts": 1783381500000,
-    "last_run_processed": 4,
-    "processed_count": 5883,
+    "last_scanned_3m_ts": 1783382400000,
+    "last_run_processed": 5,
+    "processed_count": 5888,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -18,7 +44,7 @@
         "event_price": 72.99,
         "invalidation_level": 72.99,
         "sweep_level": 72.99,
-        "extreme": 72.3,
+        "extreme": 72.26,
         "displacement": true,
         "retest_ts": 1782462780000,
         "ready_ts": 1782462960000,
@@ -28,7 +54,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 80,
-        "processed_bars": 5888,
+        "processed_bars": 5893,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -51,7 +77,7 @@
         "event_price": 72.99,
         "invalidation_level": 72.99,
         "sweep_level": 72.99,
-        "extreme": 72.31,
+        "extreme": 72.29,
         "displacement": true,
         "retest_ts": 1782462420000,
         "ready_ts": 1782462600000,
@@ -61,7 +87,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 87,
-        "processed_bars": 5888,
+        "processed_bars": 5893,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -79,19 +105,19 @@
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
     "pending_type": "",
-    "stable_count": 18,
+    "stable_count": 19,
     "pending_count": 0,
-    "updated_at": "2026-07-06T23:45:51.665812+00:00"
+    "updated_at": "2026-07-07T00:01:45.054728+00:00"
   },
   "latest_signal": {
-    "id": "a9d262bd0a",
-    "time": "2026-07-06T23:45:51.668563+00:00",
-    "action": "NO_SETUP",
-    "side": "NEUTRAL",
-    "setup_type": "NONE",
-    "quality": 12,
-    "decision_quality": 12,
-    "reason": "Ринок не сформував професійного ICT + 3M execution-package",
+    "id": "31b87fc309",
+    "time": "2026-07-07T00:01:45.061569+00:00",
+    "action": "ARMED",
+    "side": "LONG",
+    "setup_type": "FRESH_BASE_CONTINUATION",
+    "quality": 67,
+    "decision_quality": 67,
+    "reason": "[OB_RECLAIM] Повторний вхід з нової 15M бази сформовано; gate v6: WATCH",
     "regime": "RANGE",
     "news_bias": "NEUTRAL",
     "macro_risk": "NORMAL",
@@ -100,7 +126,7 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
     "learning_status": {
-      "updated_at": "2026-07-06T23:45:50.028962+00:00",
+      "updated_at": "2026-07-07T00:01:43.159416+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
@@ -131,19 +157,89 @@
       "ML ще в bootstrap: 10/60 training rows."
     ],
     "version": "pro-hybrid-confluence-v6.8",
-    "architecture_version": "HYBRID_CONFLUENCE_V6_4"
+    "architecture_version": "HYBRID_CONFLUENCE_V6_4",
+    "setup_family": "CONTINUATION",
+    "ict_model": "OB_RECLAIM",
+    "candidate_final_score": 69,
+    "candidate_raw_score": 134,
+    "execution_lane": "EARLY_TACTICAL",
+    "trigger_ready": true,
+    "trigger_age_minutes": 15325.75,
+    "score_components": {
+      "legacy_raw_score": 134.32,
+      "loc_score": 45,
+      "str_score": 21.85,
+      "liq_score": 1.58,
+      "flw_score": 10.4,
+      "trig_score": 8.0,
+      "htf_score": 7.5,
+      "pattern_bonus": 15,
+      "session_bonus": 0.0,
+      "vector_bonus": 0.0,
+      "features": {
+        "loc": 1.0,
+        "structure": 0.9104,
+        "liquidity": 0.0656,
+        "flow": 0.4333,
+        "trigger": 1.0,
+        "htf": 0.3125,
+        "pattern": 0.6905,
+        "session": 0.0,
+        "smt": 0.0,
+        "regime_fit": 0.0,
+        "freshness": 0.0,
+        "exhaustion": 0.0,
+        "no_pattern": 0.0
+      },
+      "gates": {
+        "trigger_gate": 1.0,
+        "location_gate": 1.0,
+        "pattern_gate": 1.0,
+        "forward_zone_gate": 1.0,
+        "exhaustion_gate": 1.0,
+        "liquidity_gate": 1.0,
+        "trend_gate": 0.745,
+        "htf_late_gate": 1.0,
+        "product": 0.745
+      },
+      "probability": 0.6908,
+      "base_probability": 0.9272,
+      "model_source": "bootstrap",
+      "sample_size": 10,
+      "learned_weight": 0.0
+    },
+    "score_features": {
+      "loc": 1.0,
+      "structure": 0.9104,
+      "liquidity": 0.0656,
+      "flow": 0.4333,
+      "trigger": 1.0,
+      "htf": 0.3125,
+      "pattern": 0.6905,
+      "session": 0.0,
+      "smt": 0.0,
+      "regime_fit": 0.0,
+      "freshness": 0.0,
+      "exhaustion": 0.0,
+      "no_pattern": 0.0
+    },
+    "score_gates": {
+      "trigger_gate": 1.0,
+      "location_gate": 1.0,
+      "pattern_gate": 1.0,
+      "forward_zone_gate": 1.0,
+      "exhaustion_gate": 1.0,
+      "liquidity_gate": 1.0,
+      "trend_gate": 0.745,
+      "htf_late_gate": 1.0,
+      "product": 0.745
+    },
+    "score_model_source": "bootstrap",
+    "score_model_sample_size": 10,
+    "score_model_learned_weight": 0.0
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "FOLLOW",
-      "side": "LONG",
-      "action": "HOLD",
-      "price": 72.14,
-      "trade_id": "f3ffa4c8fd",
-      "signal_id": "ffcfe3c599",
-      "time": "2026-07-05T04:45:52.840720+00:00"
-    },
     {
       "type": "FOLLOW",
       "side": "LONG",
@@ -1842,7 +1938,15 @@
       "quality": 12,
       "price": 72.22,
       "time": "2026-07-06T23:45:51.668585+00:00"
+    },
+    {
+      "type": "ARMED",
+      "side": "LONG",
+      "setup_type": "FRESH_BASE_CONTINUATION",
+      "quality": 67,
+      "price": 72.21,
+      "time": "2026-07-07T00:01:45.061597+00:00"
     }
   ],
-  "updated_at": "2026-07-06T23:45:52.245190+00:00"
+  "updated_at": "2026-07-07T00:01:45.367428+00:00"
 }
