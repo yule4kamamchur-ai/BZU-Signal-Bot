@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.8 (Data-Integrity Edition)
+BZU Professional Hybrid Confluence Signal Bot v6.9 (Execution-Intelligence Edition)
 ================================================================================
+Виправлення v6.9 (Execution-Intelligence Edition):
+- Розділено trigger_ready на джерела виконання: LIVE_3M / LIMIT_ARMED / TIME_WARP / REENTRY.
+  Старий 3M/time-warp більше не маскується під живий market-entry, а переводиться у WAIT_RETEST/LIMIT_ONLY.
+- Додано staged entry ladder: PROBE / ACCEPTANCE / RETEST_ADD / CORE з адаптивним sizing,
+  замість одного грубого RISKY_ENTRY на повний ризик.
+- Додано TP0 як мікрофіксацію без пересування стопа, щоб підвищувати реалізований hit-rate
+  без задушення TP1/TP2/TP3.
+- Target Magnet Scoring: TP обираються не просто за найближчою відстанню, а за магнітністю
+  цілі (тип ліквідності, TF, strength, distance).
+- Додано runtime_config_snapshot у signal/trade/state для аудиту ENV overrides.
+- ML у bootstrap режимі використовується як soft sizing/stage adjustment, а не як фальшивий
+  професійний gate.
 Виправлення v6.8 (інфраструктурний борг):
 - КРИТИЧНО: ActiveTrade/Opportunity тепер несуть signal_id = Decision.id.
   Раніше trade.id генерувався НЕЗАЛЕЖНИМ uuid.uuid4(), тому жоден запис
@@ -50,7 +62,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.8"
+BOT_VERSION = "pro-hybrid-confluence-v6.9-execution-intelligence"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -78,6 +90,25 @@ MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "3000") or 3000)
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
 RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
+
+# === Execution Intelligence v6.9 ===
+# Не блокує сетапи фільтрами: замість цього зменшує/збільшує розмір позиції
+# і переводить вхід у відповідну стадію. Це дає ранній вхід без дурного full-size FOMO.
+TP0_RR = float(os.getenv("TP0_RR", "0.75") or 0.75)
+TP0_SIZE_PCT = float(os.getenv("TP0_SIZE_PCT", "0.20") or 0.20)
+TP1_SIZE_PCT = float(os.getenv("TP1_SIZE_PCT", "0.35") or 0.35)
+TP2_SIZE_PCT = float(os.getenv("TP2_SIZE_PCT", "0.25") or 0.25)
+TP3_RUNNER_PCT = max(0.0, 1.0 - TP0_SIZE_PCT - TP1_SIZE_PCT - TP2_SIZE_PCT)
+
+PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
+ACCEPTANCE_RISK_PCT = float(os.getenv("ACCEPTANCE_RISK_PCT", "0.22") or 0.22)
+RETEST_ADD_RISK_PCT = float(os.getenv("RETEST_ADD_RISK_PCT", "0.30") or 0.30)
+CORE_RISK_PCT = float(os.getenv("CORE_RISK_PCT", str(NORMAL_RISK_PCT)) or NORMAL_RISK_PCT)
+BOOTSTRAP_RISK_MULTIPLIER = float(os.getenv("BOOTSTRAP_RISK_MULTIPLIER", "0.75") or 0.75)
+WEAK_DIRECTION_RISK_MULTIPLIER = float(os.getenv("WEAK_DIRECTION_RISK_MULTIPLIER", "0.55") or 0.55)
+TIME_WARP_SCORE_MULTIPLIER = float(os.getenv("TIME_WARP_SCORE_MULTIPLIER", "0.70") or 0.70)
+STALE_TRIGGER_SCORE_MULTIPLIER = float(os.getenv("STALE_TRIGGER_SCORE_MULTIPLIER", "0.62") or 0.62)
+LIMIT_ARMED_SCORE_MULTIPLIER = float(os.getenv("LIMIT_ARMED_SCORE_MULTIPLIER", "0.88") or 0.88)
 
 # === ICT Geometry ===
 MIN_STOP_ATR15 = max(0.75, float(os.getenv("MIN_STOP_ATR15", "0.80") or 0.80))
@@ -248,6 +279,7 @@ class Action(str, Enum):
     NO_SETUP = "NO_SETUP"
     HOLD = "HOLD"
     PROTECT = "PROTECT"
+    TP0 = "TP0"
     TP1 = "TP1"
     TP2 = "TP2"
     TP3 = "TP3"
@@ -289,6 +321,24 @@ class ExecutionLane(str, Enum):
     EARLY_TACTICAL = "EARLY_TACTICAL"
     STANDARD_CONFIRMED = "STANDARD_CONFIRMED"
     MISSED_IMPULSE_REENTRY = "MISSED_IMPULSE_REENTRY"
+    WAIT_RETEST = "WAIT_RETEST"
+    LIMIT_ONLY = "LIMIT_ONLY"
+
+
+class ExecutionSource(str, Enum):
+    LIVE_3M = "LIVE_3M"
+    LIMIT_ARMED = "LIMIT_ARMED"
+    TIME_WARP = "TIME_WARP"
+    REENTRY = "REENTRY"
+    NONE = "NONE"
+
+
+class EntryStage(str, Enum):
+    PROBE = "PROBE"
+    ACCEPTANCE = "ACCEPTANCE"
+    RETEST_ADD = "RETEST_ADD"
+    CORE = "CORE"
+    WAIT_RETEST = "WAIT_RETEST"
 
 
 class ConfirmationTier(int, Enum):
@@ -359,6 +409,15 @@ class Candidate:
     professional_gate: dict = field(default_factory=dict)
     location_score: int = 0
     has_forward_zone: bool = False
+    live_3m_trigger_ready: bool = False
+    limit_armed_ready: bool = False
+    time_warp_ready: bool = False
+    reentry_ready: bool = False
+    execution_source: str = "NONE"
+    entry_stage: str = "PROBE"
+    stage_plan: dict[str, Any] = field(default_factory=dict)
+    risk_multiplier: float = 1.0
+    target_magnet_score: float = 0.0
 
 
 @dataclass
@@ -380,6 +439,13 @@ class TradePlan:
     structural_invalidation: float = 0.0
     trigger_level: float = 0.0
     execution_ready: bool = False
+    tp0: float = 0.0
+    rr0: float = 0.0
+    entry_stage: str = "PROBE"
+    execution_source: str = "NONE"
+    stage_plan: dict[str, Any] = field(default_factory=dict)
+    partial_plan: dict[str, float] = field(default_factory=dict)
+    runtime_config_snapshot: dict[str, Any] = field(default_factory=dict)
     valid: bool = True
     reason: str = ""
 
@@ -472,6 +538,16 @@ class ActiveTrade:
     # будь-яка аналітика "яка модель/score/regime дає найкращий результат"
     # трималась лише на крихкому зіставленні "за порядком у часі".
     signal_id: str = ""
+    tp0: float = 0.0
+    tp0_hit: bool = False
+    tp0_size_pct: float = TP0_SIZE_PCT
+    tp1_size_pct: float = TP1_SIZE_PCT
+    tp2_size_pct: float = TP2_SIZE_PCT
+    tp3_runner_pct: float = TP3_RUNNER_PCT
+    execution_source: str = "NONE"
+    entry_stage: str = "PROBE"
+    stage_plan: dict[str, Any] = field(default_factory=dict)
+    runtime_config_snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 # ==========================================================
@@ -533,6 +609,148 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [json_safe(v) for v in value]
     return str(value)
+
+
+def runtime_config_snapshot() -> dict[str, Any]:
+    """Аудит ENV/runtime-параметрів, які напряму впливають на TP/SL/entry.
+    Без цього неможливо довести, чому фактичні рівні відрізняються від дефолтів коду."""
+    return {
+        "bot_version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "leverage": LEVERAGE,
+        "normal_risk_pct": NORMAL_RISK_PCT,
+        "risky_risk_pct": RISKY_RISK_PCT,
+        "probe_risk_pct": PROBE_RISK_PCT,
+        "acceptance_risk_pct": ACCEPTANCE_RISK_PCT,
+        "retest_add_risk_pct": RETEST_ADD_RISK_PCT,
+        "core_risk_pct": CORE_RISK_PCT,
+        "tp0_rr": TP0_RR,
+        "tp0_size_pct": TP0_SIZE_PCT,
+        "tp1_size_pct": TP1_SIZE_PCT,
+        "tp2_size_pct": TP2_SIZE_PCT,
+        "tp3_runner_pct": TP3_RUNNER_PCT,
+        "abs_min_stop_dollars": ABS_MIN_STOP_DOLLARS,
+        "abs_min_tp1_dollars": ABS_MIN_TP1_DOLLARS,
+        "commission_buffer_dollars": COMMISSION_BUFFER_DOLLARS,
+        "min_rr1": MIN_RR1,
+        "preferred_rr1": PREFERRED_RR1,
+        "min_rr2": MIN_RR2,
+        "min_rr3": MIN_RR3,
+        "trigger_max_age_minutes": TRIGGER_MAX_AGE_MINUTES,
+        "time_warp_score_multiplier": TIME_WARP_SCORE_MULTIPLIER,
+        "stale_trigger_score_multiplier": STALE_TRIGGER_SCORE_MULTIPLIER,
+        "limit_armed_score_multiplier": LIMIT_ARMED_SCORE_MULTIPLIER,
+        "bootstrap_risk_multiplier": BOOTSTRAP_RISK_MULTIPLIER,
+        "weak_direction_risk_multiplier": WEAK_DIRECTION_RISK_MULTIPLIER,
+    }
+
+
+def execution_freshness_multiplier(execution_source: str, trigger_age_minutes: float) -> float:
+    """Soft decay замість hard filter: старий/ретроспективний trigger не блокує сетап,
+    але не має права поводитися як живий market-entry."""
+    src = str(execution_source or ExecutionSource.NONE.value).upper()
+    age = max(float(trigger_age_minutes or 0.0), 0.0)
+    if src == ExecutionSource.LIVE_3M.value:
+        decay = math.exp(-age / max(float(TRIGGER_MAX_AGE_MINUTES), 1.0))
+        return clamp(0.55 + 0.45 * decay, 0.55, 1.0)
+    if src == ExecutionSource.LIMIT_ARMED.value:
+        return clamp(LIMIT_ARMED_SCORE_MULTIPLIER, 0.50, 1.0)
+    if src == ExecutionSource.TIME_WARP.value:
+        return clamp(TIME_WARP_SCORE_MULTIPLIER, 0.40, 0.95)
+    return clamp(STALE_TRIGGER_SCORE_MULTIPLIER, 0.35, 1.0)
+
+
+def direction_recent_performance(journal: dict, side: str, lookback: int = 12) -> dict[str, Any]:
+    """Оцінка останніх результатів напрямку без блокування: слабкий бік переводиться
+    у менший sizing / PROBE_ONLY, але не забороняється."""
+    trades = [t for t in list(journal.get("trades") or []) if isinstance(t, dict) and t.get("side") == side]
+    recent = trades[-lookback:]
+    closed = len(recent)
+    wins = sum(1 for t in recent if safe_float(t.get("result_pct"), 0.0) > 0)
+    win_rate = wins / closed if closed else None
+    weak = bool(closed >= 3 and wins == 0) or bool(closed >= 5 and (win_rate or 0.0) < 0.25)
+    risk_multiplier = WEAK_DIRECTION_RISK_MULTIPLIER if weak else 1.0
+    score_multiplier = 0.93 if weak else 1.0
+    return {
+        "closed": closed,
+        "wins": wins,
+        "win_rate": round((win_rate or 0.0) * 100, 1) if win_rate is not None else None,
+        "weak": weak,
+        "risk_multiplier": risk_multiplier,
+        "score_multiplier": score_multiplier,
+        "mode": "PROBE_ONLY" if weak else "NORMAL",
+    }
+
+
+def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optional[dict] = None) -> dict[str, Any]:
+    """Ladder execution: один сигнал описує, яку частину і на якій стадії брати.
+    Це не block-filter, а position construction."""
+    src = str(getattr(candidate, "execution_source", "") or ExecutionSource.NONE.value)
+    score = int(candidate.final_score or 0)
+    stage = EntryStage.PROBE.value
+    base_risk = PROBE_RISK_PCT
+    add_plan = []
+
+    if src == ExecutionSource.TIME_WARP.value:
+        stage = EntryStage.WAIT_RETEST.value
+        base_risk = PROBE_RISK_PCT * 0.50
+        add_plan.append("Не market-entry: чекати живий retest/limit у зоні")
+    elif src == ExecutionSource.LIMIT_ARMED.value:
+        stage = EntryStage.RETEST_ADD.value
+        base_risk = RETEST_ADD_RISK_PCT
+        add_plan.append("Ліміт на CE/FVG; додавання тільки після acceptance close")
+    elif score >= max(A_PLUS_ENTRY_MIN, ENTRY_SCORE_BASE + 7) and candidate.confirmation_tier >= ConfirmationTier.HIGH_QUALITY.value:
+        stage = EntryStage.CORE.value
+        base_risk = CORE_RISK_PCT
+        add_plan.append("Core-size дозволений: якість/підтвердження достатні")
+    elif score >= ENTRY_SCORE_BASE:
+        stage = EntryStage.ACCEPTANCE.value
+        base_risk = ACCEPTANCE_RISK_PCT
+        add_plan.append("Acceptance-size: вхід є, але добір тільки після retest")
+    else:
+        stage = EntryStage.PROBE.value
+        base_risk = PROBE_RISK_PCT
+        add_plan.append("Probe-size: рання гіпотеза, не full-size")
+
+    direction_perf = direction_perf or {}
+    if direction_perf.get("weak"):
+        stage = EntryStage.PROBE.value
+        base_risk = min(base_risk, PROBE_RISK_PCT)
+        add_plan.append(f"{candidate.side} тимчасово PROBE_ONLY через слабку недавню статистику")
+
+    return {
+        "stage": stage,
+        "base_risk_pct": round(float(base_risk), 4),
+        "scale_plan": add_plan,
+        "probe_pct": PROBE_RISK_PCT,
+        "acceptance_pct": ACCEPTANCE_RISK_PCT,
+        "retest_add_pct": RETEST_ADD_RISK_PCT,
+        "core_pct": CORE_RISK_PCT,
+    }
+
+
+def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk_pct: float) -> float:
+    """ML-aware soft sizing. У bootstrap-режимі модель не удає оракула: ризик зменшується.
+    Коли learned_weight виросте, sizing плавно більше довірятиме моделі."""
+    comps = candidate.score_components or {}
+    stage_plan = candidate.stage_plan or {}
+    risk = float(stage_plan.get("base_risk_pct", default_risk_pct) or default_risk_pct)
+
+    learned_weight = float(comps.get("learned_weight", 0.0) or 0.0)
+    probability = float(comps.get("probability", 0.0) or 0.0)
+    risk *= float(comps.get("direction_risk_multiplier", 1.0) or 1.0)
+
+    if learned_weight <= 0.05:
+        risk *= BOOTSTRAP_RISK_MULTIPLIER
+    elif probability >= 0.80 and learned_weight >= 0.30:
+        risk *= 1.10
+    elif probability < 0.62:
+        risk *= 0.70
+
+    if candidate.execution_source == ExecutionSource.TIME_WARP.value:
+        risk *= 0.50
+
+    return round(clamp(risk, 0.03, CORE_RISK_PCT), 4)
 
 
 def atomic_json_write(path: Path, data: dict[str, Any]) -> None:
@@ -744,7 +962,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     
     action_names = {
         "ENTRY": "ВХІД У УГОДУ",
-        "RISKY_ENTRY": "РАННІЙ ВХІД",
+        "RISKY_ENTRY": "РАННІЙ / СТАДІЙНИЙ ВХІД",
         "ARMED": "СФОРМОВАНО СИГНАЛ — ЧЕКАЄМО ВХОДУ",
         "NO_SETUP": "СИГНАЛУ НЕМАЄ",
     }
@@ -783,7 +1001,13 @@ def build_decision_message(context: dict, decision: Decision) -> str:
         lines.append("")
         lines.append("<b>План:</b>")
         lines.append(f"Вхід <b>{_fmt_price(p.entry)}</b> | Стоп <b>{_fmt_price(p.stop)}</b>")
-        lines.append(f"TP1 {_fmt_price(p.tp1)} (RR {p.rr1}) | TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
+        if getattr(p, "tp0", 0):
+            lines.append(f"TP0 {_fmt_price(p.tp0)} (RR {p.rr0}) | TP1 {_fmt_price(p.tp1)} (RR {p.rr1})")
+            lines.append(f"TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
+        else:
+            lines.append(f"TP1 {_fmt_price(p.tp1)} (RR {p.rr1}) | TP2 {_fmt_price(p.tp2)} | TP3 {_fmt_price(p.tp3)}")
+        if getattr(p, "entry_stage", ""):
+            lines.append(f"Стадія: <b>{html.escape(p.entry_stage)}</b> | Джерело: {html.escape(p.execution_source)} | Ризик: {p.position_risk_pct}%")
     
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
@@ -866,7 +1090,7 @@ def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str
     stop_to_show = recommended_stop if recommended_stop is not None else trade.stop_current
     reversal_side = side_word(_opposite_side(trade.side))
     reversal_label, reversal_score = _follow_reversal_risk(trade, result, context)
-    tp_status = f"TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}"
+    tp_status = f"TP0 {'✅' if getattr(trade, 'tp0_hit', False) else '—'} | TP1 {'✅' if trade.tp1_hit else '—'} | TP2 {'✅' if trade.tp2_hit else '—'} | TP3 {'✅' if trade.tp3_hit else '—'}"
 
     lines = [
         _follow_title(trade, result, context),
@@ -878,7 +1102,8 @@ def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str
         "",
         "Позиція:",
         f"Вхід {_fmt_price(trade.entry)} | Стоп {_fmt_price(stop_to_show)}",
-        f"TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
+        f"TP0 {_fmt_price(getattr(trade, 'tp0', 0.0)) if getattr(trade, 'tp0', 0.0) else '—'} | TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
+        f"Стадія: {html.escape(getattr(trade, 'entry_stage', ''))} | Джерело: {html.escape(getattr(trade, 'execution_source', ''))}",
         tp_status,
     ]
 
@@ -1957,7 +2182,8 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
     atr15 = context.get("atr15", 0.6) or 0.6
     scan_events = context.get("scan_3m_events", {})
     event = scan_events.get(opp.side, {})
-    trigger_ready = event.get("stage") in ["RETEST", "READY", "ACCEPTANCE"]
+    trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
+    trigger_ready = event.get("stage") in ["RETEST", "READY", "ACCEPTANCE"] and trigger_age <= TRIGGER_MAX_AGE_MINUTES
     return Candidate(
         side=opp.side,
         setup_type=opp.setup_type,
@@ -1975,10 +2201,16 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         stage="EXECUTABLE" if trigger_ready else "ARMED",
         variant="MISSED_IMPULSE_REENTRY",
         execution_anchor=price,
-        trigger_age_minutes=14.0,
+        trigger_age_minutes=trigger_age,
         thesis_key=opp.thesis_key,
         thesis=opp.thesis,
         scan_event_stage=event.get("stage", ""),
+        live_3m_trigger_ready=trigger_ready,
+        reentry_ready=trigger_ready,
+        execution_source=ExecutionSource.REENTRY.value,
+        entry_stage=EntryStage.PROBE.value if not trigger_ready else EntryStage.ACCEPTANCE.value,
+        stage_plan={"stage": EntryStage.PROBE.value if not trigger_ready else EntryStage.ACCEPTANCE.value, "base_risk_pct": PROBE_RISK_PCT if not trigger_ready else ACCEPTANCE_RISK_PCT},
+        risk_multiplier=0.75,
     )
 
 
@@ -2689,9 +2921,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     for side in [Side.LONG.value, Side.SHORT.value]:
         event = scan_events.get(side, {})
         trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
-        trigger_ready = event.get("stage") in ["ACCEPTANCE", "RETEST", "READY"] and trigger_age <= TRIGGER_MAX_AGE_MINUTES
-        trigger_level = event.get("trigger_level", price)
         scan_stage = event.get("stage", "")
+        stage_is_ready = scan_stage in ["ACCEPTANCE", "RETEST", "READY"]
+        live_3m_trigger_ready = bool(stage_is_ready and trigger_age <= TRIGGER_MAX_AGE_MINUTES)
+        stale_3m_trigger_ready = bool(stage_is_ready and trigger_age > TRIGGER_MAX_AGE_MINUTES)
+        # trigger_ready нижче означає тільки ЖИВИЙ 3M execution package. LIMIT/TIME_WARP
+        # отримують власні execution_source, щоб не підміняти live market-entry.
+        trigger_ready = live_3m_trigger_ready
+        trigger_level = event.get("trigger_level", price)
         time_warp_opportunity = event.get("time_warp_opportunity", False)
 
         has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
@@ -2954,11 +3191,31 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if exhaustion_multiplier < 1.0:
             raw *= exhaustion_multiplier
 
-        if is_limit_armed:
-            trigger_ready = True  # Ігноруємо відсутність 3M сигналу
+        limit_armed_ready = bool(is_limit_armed)
+        time_warp_ready = bool(time_warp_opportunity and stale_3m_trigger_ready and not live_3m_trigger_ready)
+
+        if live_3m_trigger_ready:
+            execution_source = ExecutionSource.LIVE_3M.value
+            actionable_trigger_ready = True
+            execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+        elif limit_armed_ready:
+            execution_source = ExecutionSource.LIMIT_ARMED.value
+            actionable_trigger_ready = True
+            execution_lane_source = ExecutionLane.LIMIT_ONLY.value
             trigger_level = ce_level
-            pattern_conf.append(f"🔥 LIMIT_ARMED: Злам структури (CHoCH) + FVG, виставлено ліміт на CE ({ce_level:.2f})")
-            raw += 25 # Гарантуємо високий пріоритет сетапу
+            pattern_conf.append(f"🔥 LIMIT_ARMED: Злам структури (CHoCH) + FVG, ліміт на CE ({ce_level:.2f})")
+            raw += 18  # soft-priority, але не фальшивий live 3M
+        elif time_warp_ready:
+            execution_source = ExecutionSource.TIME_WARP.value
+            actionable_trigger_ready = False
+            execution_lane_source = ExecutionLane.WAIT_RETEST.value
+            pattern_conf.append(f"⏳ TIME_WARP: старий 3M event {trigger_age:.0f} хв — тільки WAIT_RETEST/LIMIT, не market-entry")
+        else:
+            execution_source = ExecutionSource.NONE.value
+            actionable_trigger_ready = False
+            execution_lane_source = ExecutionLane.STANDARD_CONFIRMED.value
+
+        trigger_ready = actionable_trigger_ready
         setup_type = SetupType.PULLBACK_CONTINUATION.value
         if best_pattern:
             setup_type = pattern_registry[best_pattern]["preferred_setup"]
@@ -2969,7 +3226,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
         if flw_score > 0: evidence.append("ORDER_FLOW_CVD")
-        if trigger_ready: evidence.append("EXECUTION_TRIGGER_3M")
+        if live_3m_trigger_ready: evidence.append("EXECUTION_TRIGGER_LIVE_3M")
+        if limit_armed_ready: evidence.append("EXECUTION_LIMIT_ARMED")
+        if time_warp_ready: evidence.append("EXECUTION_TIME_WARP_WAIT_RETEST")
 
         setup_family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
         quality_features = _build_quality_features(
@@ -2991,15 +3250,23 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             pattern_family=setup_family,
         )
         calibration = calibrate_candidate_quality(
-            journal, quality_features, setup_family, trigger_ready, is_limit_armed, has_forward_zone
+            journal, quality_features, setup_family, actionable_trigger_ready, limit_armed_ready, has_forward_zone
         )
-        final = int(calibration["score"])
+        freshness_mult = execution_freshness_multiplier(execution_source, trigger_age)
+        direction_perf = direction_recent_performance(journal, side)
+        final = int(round(int(calibration["score"]) * freshness_mult * float(direction_perf.get("score_multiplier", 1.0))))
+        final = int(clamp(final, 12, 98))
         pattern_conf.append(
             f"📊 Quality model: {calibration['model_source']} n={calibration['sample_size']} "
-            f"| p={calibration['probability']:.2f} | gates x{calibration['gates']['product']:.2f}"
+            f"| p={calibration['probability']:.2f} | gates x{calibration['gates']['product']:.2f} "
+            f"| exec={execution_source} x{freshness_mult:.2f}"
         )
+        if direction_perf.get("weak"):
+            pattern_conf.append(f"📉 {side} recent performance слабкий: {direction_perf.get('wins')}/{direction_perf.get('closed')} wins — PROBE_ONLY sizing")
         
-        lane = ExecutionLane.EARLY_TACTICAL.value if (best_pattern and pattern_registry[best_pattern]["allow_early"]) or time_warp_opportunity else ExecutionLane.STANDARD_CONFIRMED.value
+        lane = execution_lane_source
+        if lane == ExecutionLane.EARLY_TACTICAL.value and not (best_pattern and pattern_registry[best_pattern]["allow_early"]):
+            lane = ExecutionLane.STANDARD_CONFIRMED.value
 
         cand = Candidate(
             side=side,
@@ -3025,10 +3292,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 "model_source": calibration["model_source"],
                 "sample_size": calibration["sample_size"],
                 "learned_weight": calibration["learned_weight"],
+                "execution_source": execution_source,
+                "execution_freshness_multiplier": round(freshness_mult, 4),
+                "live_3m_trigger_ready": live_3m_trigger_ready,
+                "limit_armed_ready": limit_armed_ready,
+                "time_warp_ready": time_warp_ready,
+                "direction_performance": direction_perf,
+                "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
             },
             evidence_families=evidence,
             confirmations=pattern_conf,
-            trigger_ready=trigger_ready,
+            trigger_ready=actionable_trigger_ready,
             trigger_level=round_price(trigger_level),
             invalidation_level=round_price(price - (atr15 * 1.65 if side == Side.LONG.value else -atr15 * 1.65)),
             target_levels=[round_price(price + (atr15 * 2.4 if side == Side.LONG.value else -atr15 * 2.4))],
@@ -3042,8 +3316,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             thesis=f"{side} {setup_type} | 3M={scan_stage}",
             professional_gate={},
             has_forward_zone=has_forward_zone,
+            live_3m_trigger_ready=live_3m_trigger_ready,
+            limit_armed_ready=limit_armed_ready,
+            time_warp_ready=time_warp_ready,
+            execution_source=execution_source,
+            risk_multiplier=float(direction_perf.get("risk_multiplier", 1.0) or 1.0),
         )
         cand.professional_gate = evaluate_professional_gate(context, cand)
+        cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
+        cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
 
         # v6.8 fix: раніше generic PULLBACK_CONTINUATION-фолбек (жодна з 10 ICT-моделей
         # не підтверджена) проходив за тим самим порогом armed_score-10, що й
@@ -3156,6 +3437,30 @@ def enforce_smart_money_rr(side: str, price: float, stop: float, tp1: float, tp2
     return stop, tp1, tp2, tp3
 
 
+def target_magnet_score(target: dict, price: float, atr15: float) -> float:
+    """Оцінює не просто близькість TP, а силу цільового магніту.
+    Ближче не завжди краще: дрібна 15M FVG за 0.2R слабша за 1H/PDH liquidity pool."""
+    kind = str(target.get("kind", "")).upper()
+    tf = str(target.get("timeframe", "15m")).lower()
+    distance = max(float(target.get("distance", abs(float(target.get("level", price)) - price)) or 0.0), 1e-9)
+    strength = max(float(target.get("strength", 1.0) or 1.0), 0.1)
+    kind_weight = {
+        "BSL_LIQUIDITY": 1.55, "SSL_LIQUIDITY": 1.55,
+        "PDH": 1.85, "PDL": 1.85,
+        "ASIAN_HIGH": 1.65, "ASIAN_LOW": 1.65,
+        "RANGE_HIGH": 1.25, "RANGE_LOW": 1.25,
+        "MACRO_EQ": 1.15,
+        "OB": 1.10, "FVG": 1.05,
+    }.get(kind, 1.0)
+    tf_weight = {"4h": 1.45, "1d": 1.55, "1h": 1.30, "15m": 1.0}.get(tf, 1.0)
+    atr = max(float(atr15 or 0.0), price * 0.0006, 1e-9)
+    distance_atr = distance / atr
+    # Плавний penalty за відстань: не вбиває далекі DOL, але не дає випадково
+    # обрати космічну ціль замість нормального intraday magnet.
+    distance_penalty = 1.0 / (1.0 + max(distance_atr - 1.0, 0.0) * 0.18)
+    return round(strength * kind_weight * tf_weight * distance_penalty, 4)
+
+
 def find_technical_targets(side: str, price: float, zones: list, liquidity: dict, atr15: float,
                             macro: Optional[dict] = None) -> list[dict]:
     """
@@ -3234,6 +3539,7 @@ def find_technical_targets(side: str, price: float, zones: list, liquidity: dict
 
     for t in targets:
         t["distance"] = abs(t["level"] - price)
+        t["magnet_score"] = target_magnet_score(t, price, atr15)
     targets.sort(key=lambda t: t["distance"])
 
     # Кластеризація близьких рівнів (OB+ліквідність часто збігаються в один "магніт") —
@@ -3457,6 +3763,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     MACRO_KINDS = {"ASIAN_HIGH", "ASIAN_LOW", "PDH", "PDL", "MACRO_EQ"}
 
     def _pick_technical(floor_dist: float, cap_mult: float, used_levels: list[float]) -> Optional[dict]:
+        eligible = []
         for t in tech_targets:
             if t["distance"] < floor_dist - 1e-9:
                 continue
@@ -3464,8 +3771,11 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
                 break  # список відсортований за відстанню — далі буде ще далі
             if any(abs(t["level"] - u) < step for u in used_levels):
                 continue
-            return t
-        return None
+            eligible.append(t)
+        if not eligible:
+            return None
+        eligible.sort(key=lambda t: (-float(t.get("magnet_score", 0.0)), t["distance"]))
+        return eligible[0]
 
     def _pick_macro(floor_dist: float, used_levels: list[float]) -> Optional[dict]:
         """
@@ -3478,6 +3788,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         верхнього cap — це і є справжня зовнішня ліквідність, куди розумні
         гроші штовхають ціну, навіть якщо вона далеко.
         """
+        eligible = []
         for t in tech_targets:
             if t["kind"] not in MACRO_KINDS:
                 continue
@@ -3485,21 +3796,24 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
                 continue
             if any(abs(t["level"] - u) < step for u in used_levels):
                 continue
-            return t
-        return None
+            eligible.append(t)
+        if not eligible:
+            return None
+        eligible.sort(key=lambda t: (-float(t.get("magnet_score", 0.0)), t["distance"]))
+        return eligible[0]
 
     used_levels: list[float] = []
     tp1_tech = _pick_technical(min_tp1_distance, 3.2, used_levels)
     if tp1_tech:
         tp1 = tp1_tech["level"]
-        tp_sources["tp1"] = f"{tp1_tech['kind']} ({tp1_tech['timeframe']})"
+        tp_sources["tp1"] = f"{tp1_tech['kind']} ({tp1_tech['timeframe']}, magnet {tp1_tech.get('magnet_score', 0)})"
     used_levels.append(tp1)
 
     tp2_floor = max(min_tp2_distance, abs(tp1 - price) + step)
     tp2_tech = _pick_technical(tp2_floor, 2.4, used_levels) or _pick_macro(tp2_floor, used_levels)
     if tp2_tech:
         tp2 = tp2_tech["level"]
-        tp_sources["tp2"] = f"{tp2_tech['kind']} ({tp2_tech['timeframe']})"
+        tp_sources["tp2"] = f"{tp2_tech['kind']} ({tp2_tech['timeframe']}, magnet {tp2_tech.get('magnet_score', 0)})"
     else:
         tp2 = max(tp2, price + tp2_floor) if side == Side.LONG.value else min(tp2, price - tp2_floor)
     used_levels.append(tp2)
@@ -3508,7 +3822,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     tp3_tech = _pick_technical(tp3_floor, 2.2, used_levels) or _pick_macro(tp3_floor, used_levels)
     if tp3_tech:
         tp3 = tp3_tech["level"]
-        tp_sources["tp3"] = f"{tp3_tech['kind']} ({tp3_tech['timeframe']})"
+        tp_sources["tp3"] = f"{tp3_tech['kind']} ({tp3_tech['timeframe']}, magnet {tp3_tech.get('magnet_score', 0)})"
     else:
         tp3 = max(tp3, price + tp3_floor) if side == Side.LONG.value else min(tp3, price - tp3_floor)
 
@@ -3526,7 +3840,12 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     # Раніше перевірявся лише EARLY_TACTICAL, через що RISKY_ENTRY угоди типу
     # "Re-entry з пропущеного імпульсу" (MISSED_IMPULSE_REENTRY) помилково
     # відкривались з повним NORMAL_RISK_PCT замість зменшеного RISKY_RISK_PCT.
-    RISKY_EXECUTION_LANES = {ExecutionLane.EARLY_TACTICAL.value, ExecutionLane.MISSED_IMPULSE_REENTRY.value}
+    RISKY_EXECUTION_LANES = {
+        ExecutionLane.EARLY_TACTICAL.value,
+        ExecutionLane.MISSED_IMPULSE_REENTRY.value,
+        ExecutionLane.LIMIT_ONLY.value,
+        ExecutionLane.WAIT_RETEST.value,
+    }
     is_risky_lane = candidate.execution_lane in RISKY_EXECUTION_LANES
 
     # enforce_smart_money_rr() вище математично гарантує |tp1-price| >= risk*MIN_RR1,
@@ -3538,20 +3857,47 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     RR_EPSILON = 1e-6
     rr1_valid = rr1 >= (MIN_RR1 - RR_EPSILON)
 
+    risk_distance = abs(stop - price) if abs(stop - price) > 1e-9 else stop_dist
+    tp1_distance = abs(tp1 - price)
+    # TP0 — мікрофіксація win-rate без переводу стопа в БУ. Вона не душить TP1/TP2,
+    # бо TP1 лишається професійним target-magnet/RR рівнем.
+    tp0_floor = max(risk_distance * TP0_RR, effective_atr15 * 0.75)
+    tp0_cap = max(tp1_distance - max(step * 0.25, price * 0.0002), risk_distance * 0.35)
+    tp0_dist = min(tp0_floor, tp0_cap)
+    tp0_dist = max(tp0_dist, risk_distance * 0.35)
+    if side == Side.LONG.value:
+        tp0 = min(price + tp0_dist, tp1 - max(step * 0.10, price * 0.0001))
+    else:
+        tp0 = max(price - tp0_dist, tp1 + max(step * 0.10, price * 0.0001))
+    rr0 = abs(tp0 - price) / risk_distance if risk_distance > 1e-9 else TP0_RR
+
+    default_risk = RISKY_RISK_PCT if is_risky_lane or profile.get("force_risky") else NORMAL_RISK_PCT
+    if not candidate.stage_plan:
+        candidate.stage_plan = staged_entry_plan(candidate, context)
+        candidate.entry_stage = str(candidate.stage_plan.get("stage", EntryStage.PROBE.value))
+    position_risk_pct = adaptive_position_risk_pct(candidate, context, default_risk)
+
     plan = TradePlan(
         entry=round_price(price),
         stop=round_price(stop),
         tp1=round_price(tp1), tp2=round_price(tp2), tp3=round_price(tp3),
-        risk_pct=RISKY_RISK_PCT if is_risky_lane else NORMAL_RISK_PCT,
+        risk_pct=position_risk_pct,
         rr1=round(rr1, 2), rr2=round(abs(tp2 - price) / abs(stop - price), 2), rr3=round(abs(tp3 - price) / abs(stop - price), 2),
-        position_risk_pct=RISKY_RISK_PCT if is_risky_lane else NORMAL_RISK_PCT,
+        position_risk_pct=position_risk_pct,
         invalidation=f"закриття 15M за {round_price(structural_stop)}",
         stop_basis=f"Модель: {candidate.ict_model} | ATR: {registry_stop_min}-{registry_stop_max}",
-        target_basis=f"TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
+        target_basis=f"TP0: {TP0_RR}R micro-fix | TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
         stop_timeframe="1H" if any(z.timeframe == "1h" for z in zones) else "15M",
         structural_invalidation=round_price(structural_stop),
         trigger_level=candidate.trigger_level,
         execution_ready=execution_ready,
+        tp0=round_price(tp0),
+        rr0=round(rr0, 2),
+        entry_stage=candidate.entry_stage,
+        execution_source=candidate.execution_source,
+        stage_plan=candidate.stage_plan,
+        partial_plan={"tp0": TP0_SIZE_PCT, "tp1": TP1_SIZE_PCT, "tp2": TP2_SIZE_PCT, "tp3_runner": TP3_RUNNER_PCT},
+        runtime_config_snapshot=runtime_config_snapshot(),
         valid=rr1_valid,
         reason="" if rr1_valid else "RR1 нижче мінімуму",
     )
@@ -3618,13 +3964,13 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         reason = f"Regime Engine 2.0 блокує вхід: {mode_profile.get('reason', 'режим не підтримує вхід')}"
     elif gate.get("allow_entry") and plan.valid and plan.execution_ready and entry_action == "ALLOW" and not mode_profile.get("force_risky"):
         action = Action.ENTRY.value
-        reason = f"[{best.ict_model}] {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6"
-    elif (gate.get("allow_risky") or entry_action == "RISKY_ONLY" or mode_profile.get("force_risky")) and plan.valid and not hard_block:
+        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6.9"
+    elif (gate.get("allow_risky") or entry_action == "RISKY_ONLY" or mode_profile.get("force_risky")) and plan.valid and plan.execution_ready and not hard_block:
         action = Action.RISKY_ENTRY.value
-        reason = f"[{best.ict_model}] Ризикований вхід: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
+        reason = f"[{best.ict_model}] Стадійний {best.entry_stage}: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
     elif best.final_score >= params["armed_score"]:
         action = Action.ARMED.value
-        reason = f"[{best.ict_model}] {setup_label(best.setup_type)} сформовано; gate v6: {gate.get('grade', 'WATCH')}"
+        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: сетап сформовано; gate v6.9: {gate.get('grade', 'WATCH')}"
 
     return Decision(
         id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=best.side, setup_type=best.setup_type,
@@ -3892,6 +4238,14 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.last_action = Action.STOP.value
         return result
 
+    # --- 0. TP0: мікрофіксація для win-rate без задушення угоди ---
+    # На TP0 бот НЕ рухає стоп у БУ. Інакше ми знову отримаємо стару хворобу:
+    # мікро-прибуток є, але нормальний TP1/TP2 задушений першим відкатом.
+    if not result["closed"] and getattr(trade, "tp0", 0.0) and not getattr(trade, "tp0_hit", False) and _target_hit(side, context, trade.tp0):
+        trade.tp0_hit = True
+        result["action"] = Action.TP0.value
+        result["notes"].append(f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції; стоп НЕ рухаємо, TP1/TP2 лишаються живими")
+
     # --- 1. Фіксація TP1 (Строгий Беззбиток, миттєво) ---
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
@@ -3900,14 +4254,14 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         # стоп МИТТЄВО (без затримок і без очікування 50% шляху до TP2)
         # переноситься на вхід + буфер комісії. Це і психологічно, і
         # математично захищає капітал — залишок угоди стає безризиковим.
-        # Рекомендація: зафіксувати ~50% позиції саме на цьому рівні.
+        # Рекомендація: зафіксувати частку з partial_plan саме на цьому рівні.
         if side == Side.LONG.value:
             trade.tp1_locked_stop = round_price(trade.entry + COMMISSION_BUFFER_DOLLARS)
         else:
             trade.tp1_locked_stop = round_price(trade.entry - COMMISSION_BUFFER_DOLLARS)
         trade.stop_current = trade.tp1_locked_stop
         result["action"] = Action.TP1.value
-        result["notes"].append(f"TP1 досягнуто — зафіксуйте ~50% позиції; стоп негайно переведено у строгий беззбиток ({trade.stop_current})")
+        result["notes"].append(f"TP1 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp1_size_pct', TP1_SIZE_PCT) * 100)}% позиції; стоп негайно переведено у строгий беззбиток ({trade.stop_current})")
 
     # --- 2. Фіксація TP2 ---
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
@@ -4097,9 +4451,18 @@ def run_bot() -> None:
                 "quality": active.quality,
                 "result_pct": res.get("current_pct"),
                 "mfe_pct": res.get("best_pct"),
+                "tp0_hit": getattr(active, "tp0_hit", False),
                 "tp1_hit": active.tp1_hit,
                 "tp2_hit": active.tp2_hit,
                 "tp3_hit": active.tp3_hit,
+                "tp0": getattr(active, "tp0", 0.0),
+                "tp1": active.tp1,
+                "tp2": active.tp2,
+                "tp3": active.tp3,
+                "entry_stage": getattr(active, "entry_stage", ""),
+                "execution_source": getattr(active, "execution_source", ""),
+                "position_risk_pct": active.position_risk_pct,
+                "runtime_config_snapshot": getattr(active, "runtime_config_snapshot", {}),
                 "close_action": res.get("action"),
             })
             store_active_trade(state, None)
@@ -4114,7 +4477,7 @@ def run_bot() -> None:
         return
 
     decision = evaluate_new_setup(context, state, journal)
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION}
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "decision_quality": decision.quality, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot()}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
@@ -4123,7 +4486,13 @@ def run_bot() -> None:
             "candidate_final_score": decision.candidate.final_score,
             "candidate_raw_score": decision.candidate.raw_score,
             "execution_lane": decision.candidate.execution_lane,
+            "execution_source": decision.candidate.execution_source,
+            "entry_stage": decision.candidate.entry_stage,
+            "stage_plan": decision.candidate.stage_plan,
             "trigger_ready": decision.candidate.trigger_ready,
+            "live_3m_trigger_ready": decision.candidate.live_3m_trigger_ready,
+            "limit_armed_ready": decision.candidate.limit_armed_ready,
+            "time_warp_ready": decision.candidate.time_warp_ready,
             "trigger_age_minutes": round(float(decision.candidate.trigger_age_minutes or 0.0), 2),
             "score_components": components,
             "score_features": components.get("features", {}),
@@ -4132,6 +4501,18 @@ def run_bot() -> None:
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
         })
+        if decision.plan:
+            payload.update({
+                "plan_tp0": decision.plan.tp0,
+                "plan_tp1": decision.plan.tp1,
+                "plan_tp2": decision.plan.tp2,
+                "plan_tp3": decision.plan.tp3,
+                "plan_rr0": decision.plan.rr0,
+                "plan_rr1": decision.plan.rr1,
+                "plan_position_risk_pct": decision.plan.position_risk_pct,
+                "partial_plan": decision.plan.partial_plan,
+                "target_basis": decision.plan.target_basis,
+            })
     state["latest_signal"] = payload
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
     journal["signals"].append(payload)
@@ -4143,12 +4524,27 @@ def run_bot() -> None:
         # який її відкрив. trade.id лишається окремим (власним) ідентифікатором
         # угоди — це важливо для re-entry-сценаріїв, де одна Opportunity/сигнал
         # може породжувати кілька спроб входу.
-        active = ActiveTrade(id=uuid.uuid4().hex[:10], signal_id=decision.id, side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop, stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation, tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3, quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct, best_price=decision.plan.entry, worst_price=decision.plan.entry, trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action)
+        active = ActiveTrade(
+            id=uuid.uuid4().hex[:10], signal_id=decision.id, side=decision.side,
+            setup_type=decision.setup_type, setup_family=decision.candidate.setup_family,
+            opened_at=iso_now(), entry=decision.plan.entry, stop_initial=decision.plan.stop,
+            stop_current=decision.plan.stop, structural_invalidation=decision.plan.structural_invalidation,
+            tp1=decision.plan.tp1, tp2=decision.plan.tp2, tp3=decision.plan.tp3,
+            quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct,
+            best_price=decision.plan.entry, worst_price=decision.plan.entry,
+            trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key,
+            thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action,
+            tp0=decision.plan.tp0, tp0_size_pct=TP0_SIZE_PCT, tp1_size_pct=TP1_SIZE_PCT,
+            tp2_size_pct=TP2_SIZE_PCT, tp3_runner_pct=TP3_RUNNER_PCT,
+            execution_source=decision.candidate.execution_source, entry_stage=decision.candidate.entry_stage,
+            stage_plan=decision.candidate.stage_plan, runtime_config_snapshot=decision.plan.runtime_config_snapshot,
+        )
         store_active_trade(state, active)
         state["opportunity"] = None
         print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type} | signal_id={active.signal_id} trade_id={active.id}")
     elif decision.action == Action.ARMED.value and decision.candidate:
-        opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status="ARMED", thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, signal_id=decision.id)
+        opp_status = "WAIT_PULLBACK" if decision.candidate.execution_lane in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.LIMIT_ONLY.value} else "ARMED"
+        opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status=opp_status, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, signal_id=decision.id)
         store_opportunity(state, opp)
         store_active_trade(state, None)
     else:
