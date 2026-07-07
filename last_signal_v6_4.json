@@ -1,70 +1,91 @@
 {
-  "version": "pro-hybrid-confluence-v6.9",
+  "version": "pro-hybrid-confluence-v6.9-execution-intelligence",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
-  "active_trade": {
-    "id": "d6b13a3aa9",
-    "side": "LONG",
-    "setup_type": "FRESH_BASE_CONTINUATION",
-    "setup_family": "CONTINUATION",
-    "opened_at": "2026-07-07T06:01:44.143798+00:00",
-    "entry": 72.84,
-    "stop_initial": 72.6338,
-    "stop_current": 72.8923,
-    "structural_invalidation": 72.6338,
-    "tp1": 73.1596,
-    "tp2": 73.5514,
-    "tp3": 73.8195,
-    "quality": 75,
-    "position_risk_pct": 0.3,
-    "best_price": 72.99,
-    "worst_price": 72.75,
-    "thesis_key": "LONG|FRESH_BASE_CONTINUATION|728",
-    "thesis": "LONG FRESH_BASE_CONTINUATION | 3M=READY",
-    "last_checked_3m_ts": 1783411303576,
-    "tp1_hit": true,
-    "tp2_hit": false,
-    "tp3_hit": false,
-    "tp1_stop_locked": true,
-    "tp2_stop_locked": false,
-    "tp1_locked_stop": 72.86,
-    "tp2_locked_stop": 0.0,
-    "status": "OPEN",
-    "last_action": "HOLD",
-    "notes": [],
-    "entry_integrity_score": 100,
-    "entry_fail_streak": 0,
-    "mfe_giveback_streak": 0,
-    "mfe_giveback_last_state": "OK",
-    "trigger_level": 71.92,
-    "opened_regime": "TRANSITION",
-    "entry_level": "ENTRY",
-    "signal_id": "83c9b2a59c"
-  },
+  "active_trade": null,
   "opportunity": null,
   "scan_3m": {
-    "last_scanned_3m_ts": 0,
-    "last_run_processed": 0,
-    "processed_count": 0,
-    "events": {}
+    "last_scanned_3m_ts": 1783411560000,
+    "last_run_processed": 240,
+    "processed_count": 240,
+    "events": {
+      "LONG": {
+        "side": "LONG",
+        "stage": "READY",
+        "source": "LIQUIDITY_SWEEP",
+        "event_ts": 0,
+        "last_event_ts": 1783402740000,
+        "trigger_level": 72.8,
+        "event_price": 72.8,
+        "invalidation_level": 72.8,
+        "sweep_level": 72.8,
+        "extreme": 72.88,
+        "displacement": true,
+        "retest_ts": 1783402200000,
+        "ready_ts": 1783402740000,
+        "hold_closes": 0,
+        "previous_stage": "RETEST",
+        "chain_quality": 50,
+        "confirmation_quality": 86,
+        "acceptance_quality": 80,
+        "retest_quality": 80,
+        "processed_bars": 240,
+        "strong_displacement": false,
+        "retest": true,
+        "mitigation": true,
+        "impulse_strength": {
+          "score": 2,
+          "level": "STRONG",
+          "body_strength": 1.0,
+          "consecutive": 0
+        },
+        "chase_risk": false,
+        "time_warp_opportunity": true
+      },
+      "SHORT": {
+        "side": "SHORT",
+        "stage": "READY",
+        "source": "LIQUIDITY_SWEEP",
+        "event_ts": 0,
+        "last_event_ts": 1783390680000,
+        "trigger_level": 72.8,
+        "event_price": 72.8,
+        "invalidation_level": 72.8,
+        "sweep_level": 72.8,
+        "extreme": 72.9,
+        "displacement": true,
+        "retest_ts": 1783390320000,
+        "ready_ts": 1783390680000,
+        "hold_closes": 0,
+        "previous_stage": "RETEST",
+        "chain_quality": 50,
+        "confirmation_quality": 80,
+        "acceptance_quality": 80,
+        "retest_quality": 80,
+        "processed_bars": 240,
+        "strong_displacement": false,
+        "retest": true,
+        "mitigation": true,
+        "impulse_strength": {
+          "score": 3,
+          "level": "EXTREME",
+          "body_strength": 1.0,
+          "consecutive": 2
+        },
+        "chase_risk": false,
+        "time_warp_opportunity": true
+      }
+    }
   },
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-07-07T08:01:43.574860+00:00"
+    "updated_at": "2026-07-07T08:06:09.227440+00:00"
   },
   "latest_signal": null,
   "last_message_key": "",
   "history": [
-    {
-      "type": "NO_SETUP",
-      "side": "NEUTRAL",
-      "setup_type": "NONE",
-      "quality": 12,
-      "price": 72.12,
-      "time": "2026-07-05T12:31:26.464752+00:00"
-    },
     {
       "type": "NO_SETUP",
       "side": "NEUTRAL",
@@ -1738,7 +1759,16 @@
       "trade_id": "d6b13a3aa9",
       "signal_id": "83c9b2a59c",
       "time": "2026-07-07T08:01:43.915505+00:00"
+    },
+    {
+      "type": "CLOSE",
+      "side": "LONG",
+      "action": "STOP",
+      "price": 72.8,
+      "trade_id": "d6b13a3aa9",
+      "signal_id": "83c9b2a59c",
+      "time": "2026-07-07T08:06:09.811544+00:00"
     }
   ],
-  "updated_at": "2026-07-07T08:02:56.532596+00:00"
+  "updated_at": "2026-07-07T08:06:09.811736+00:00"
 }

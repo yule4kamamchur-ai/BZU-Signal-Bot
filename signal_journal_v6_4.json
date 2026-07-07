@@ -11135,6 +11135,15 @@
       "price": 72.91,
       "trade_id": "d6b13a3aa9",
       "signal_id": "83c9b2a59c"
+    },
+    {
+      "time": "2026-07-07T08:06:09.811731+00:00",
+      "type": "CLOSE",
+      "action": "STOP",
+      "side": "LONG",
+      "price": 72.8,
+      "trade_id": "d6b13a3aa9",
+      "signal_id": "83c9b2a59c"
     }
   ],
   "trades": [
@@ -11313,15 +11322,40 @@
       "tp2_hit": false,
       "tp3_hit": false,
       "close_action": "STOP"
+    },
+    {
+      "id": "d6b13a3aa9",
+      "signal_id": "83c9b2a59c",
+      "side": "LONG",
+      "setup_type": "FRESH_BASE_CONTINUATION",
+      "setup_family": "CONTINUATION",
+      "opened_regime": "TRANSITION",
+      "entry_level": "ENTRY",
+      "quality": 75,
+      "result_pct": 0.0718012081274059,
+      "mfe_pct": 0.2059308072487527,
+      "tp0_hit": false,
+      "tp1_hit": true,
+      "tp2_hit": false,
+      "tp3_hit": false,
+      "tp0": 0.0,
+      "tp1": 73.1596,
+      "tp2": 73.5514,
+      "tp3": 73.8195,
+      "entry_stage": "PROBE",
+      "execution_source": "NONE",
+      "position_risk_pct": 0.3,
+      "runtime_config_snapshot": {},
+      "close_action": "STOP"
     }
   ],
-  "version": "pro-hybrid-confluence-v6.8",
+  "version": "pro-hybrid-confluence-v6.9-execution-intelligence",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
   "analytics": {
-    "closed_trades": 11,
-    "wins": 3,
+    "closed_trades": 12,
+    "wins": 4,
     "losses": 8,
-    "win_rate": 27.3,
+    "win_rate": 33.3,
     "net_r": -0.02,
     "expectancy_r": -0.002,
     "by_family": {
@@ -11332,22 +11366,35 @@
         "net_r": -0.02,
         "win_rate": 27.3,
         "expectancy_r": -0.002
+      },
+      "CONTINUATION": {
+        "closed_trades": 1,
+        "wins": 1,
+        "losses": 0,
+        "net_r": 0.0,
+        "win_rate": 100.0,
+        "expectancy_r": 0.0
       }
     }
   },
   "learning_status": {
-    "updated_at": "2026-07-07T08:01:43.920161+00:00",
+    "updated_at": "2026-07-07T08:06:09.815793+00:00",
     "journal_file": "signal_journal_v6_4.json",
     "state_file": "last_signal_v6_4.json",
     "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
     "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
     "training_signals": 13,
-    "signal_events": 140,
-    "closed_trades": 11,
-    "training_rows": 10,
+    "signal_events": 141,
+    "closed_trades": 12,
+    "training_rows": 11,
     "global_ready": false,
     "global_learned_weight": 0.0,
     "by_family": {
+      "CONTINUATION": {
+        "rows": 1,
+        "ready": false,
+        "learned_weight": 0.0
+      },
       "LIQUIDITY_RECOVERY": {
         "rows": 10,
         "ready": false,
@@ -11363,5 +11410,5 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY"
   },
-  "updated_at": "2026-07-07T08:01:43.919775+00:00"
+  "updated_at": "2026-07-07T08:06:09.815410+00:00"
 }
