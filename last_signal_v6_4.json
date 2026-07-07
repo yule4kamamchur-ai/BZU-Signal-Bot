@@ -1,5 +1,5 @@
 {
-  "version": "pro-hybrid-confluence-v6.8",
+  "version": "pro-hybrid-confluence-v6.9",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
   "active_trade": {
     "id": "d6b13a3aa9",
@@ -42,77 +42,10 @@
   },
   "opportunity": null,
   "scan_3m": {
-    "last_scanned_3m_ts": 1783411200000,
-    "last_run_processed": 5,
-    "processed_count": 6048,
-    "events": {
-      "LONG": {
-        "side": "LONG",
-        "stage": "READY",
-        "source": "LIQUIDITY_SWEEP",
-        "event_ts": 0,
-        "last_event_ts": 1782462960000,
-        "trigger_level": 72.99,
-        "event_price": 72.99,
-        "invalidation_level": 72.99,
-        "sweep_level": 72.99,
-        "extreme": 72.95,
-        "displacement": true,
-        "retest_ts": 1782462780000,
-        "ready_ts": 1782462960000,
-        "hold_closes": 0,
-        "previous_stage": "RETEST",
-        "chain_quality": 50,
-        "confirmation_quality": 98,
-        "acceptance_quality": 68,
-        "retest_quality": 80,
-        "processed_bars": 6053,
-        "strong_displacement": true,
-        "retest": true,
-        "mitigation": true,
-        "chase_risk": false,
-        "impulse_strength": {
-          "score": 3,
-          "level": "EXTREME",
-          "body_strength": 1.0,
-          "consecutive": 2
-        },
-        "time_warp_opportunity": true
-      },
-      "SHORT": {
-        "side": "SHORT",
-        "stage": "READY",
-        "source": "LIQUIDITY_SWEEP",
-        "event_ts": 0,
-        "last_event_ts": 1782462600000,
-        "trigger_level": 72.99,
-        "event_price": 72.99,
-        "invalidation_level": 72.99,
-        "sweep_level": 72.99,
-        "extreme": 73.02,
-        "displacement": true,
-        "retest_ts": 1782462420000,
-        "ready_ts": 1782462600000,
-        "hold_closes": 0,
-        "previous_stage": "RETEST",
-        "chain_quality": 50,
-        "confirmation_quality": 98,
-        "acceptance_quality": 80,
-        "retest_quality": 87,
-        "processed_bars": 6053,
-        "strong_displacement": true,
-        "retest": true,
-        "mitigation": true,
-        "chase_risk": false,
-        "impulse_strength": {
-          "score": 3,
-          "level": "EXTREME",
-          "body_strength": 1.0,
-          "consecutive": 2
-        },
-        "time_warp_opportunity": true
-      }
-    }
+    "last_scanned_3m_ts": 0,
+    "last_run_processed": 0,
+    "processed_count": 0,
+    "events": {}
   },
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
@@ -121,135 +54,7 @@
     "pending_count": 0,
     "updated_at": "2026-07-07T08:01:43.574860+00:00"
   },
-  "latest_signal": {
-    "id": "83c9b2a59c",
-    "time": "2026-07-07T06:01:44.143749+00:00",
-    "action": "ENTRY",
-    "side": "LONG",
-    "setup_type": "FRESH_BASE_CONTINUATION",
-    "quality": 75,
-    "decision_quality": 75,
-    "reason": "[OB_RECLAIM] Повторний вхід з нової 15M бази — A gate v6",
-    "regime": "TRANSITION",
-    "news_bias": "NEUTRAL",
-    "macro_risk": "NORMAL",
-    "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
-    "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-    "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
-    "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
-    "learning_status": {
-      "updated_at": "2026-07-07T06:01:42.343379+00:00",
-      "journal_file": "signal_journal_v6_4.json",
-      "state_file": "last_signal_v6_4.json",
-      "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
-      "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-      "training_signals": 12,
-      "signal_events": 131,
-      "closed_trades": 11,
-      "training_rows": 10,
-      "global_ready": false,
-      "global_learned_weight": 0.0,
-      "by_family": {
-        "LIQUIDITY_RECOVERY": {
-          "rows": 10,
-          "ready": false,
-          "learned_weight": 0.0
-        }
-      },
-      "validation": {
-        "enabled": false,
-        "reason": "not_enough_rows"
-      },
-      "github_actions": true,
-      "journal_persistence_confirmed": true,
-      "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
-      "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY"
-    },
-    "learning_warnings": [
-      "ML ще в bootstrap: 10/60 training rows."
-    ],
-    "version": "pro-hybrid-confluence-v6.8",
-    "architecture_version": "HYBRID_CONFLUENCE_V6_4",
-    "setup_family": "CONTINUATION",
-    "ict_model": "OB_RECLAIM",
-    "candidate_final_score": 75,
-    "candidate_raw_score": 139,
-    "execution_lane": "EARLY_TACTICAL",
-    "trigger_ready": true,
-    "trigger_age_minutes": 15685.74,
-    "score_components": {
-      "legacy_raw_score": 139.43,
-      "loc_score": 41,
-      "str_score": 21.85,
-      "liq_score": 1.58,
-      "flw_score": 19.5,
-      "trig_score": 8.0,
-      "htf_score": 7.5,
-      "pattern_bonus": 15,
-      "session_bonus": 0.0,
-      "vector_bonus": 0.0,
-      "features": {
-        "loc": 0.9111,
-        "structure": 0.9104,
-        "liquidity": 0.0656,
-        "flow": 0.8125,
-        "trigger": 1.0,
-        "htf": 0.3125,
-        "pattern": 0.6905,
-        "session": 0.0,
-        "smt": 0.0,
-        "regime_fit": 0.0,
-        "freshness": 0.0,
-        "exhaustion": 0.0,
-        "no_pattern": 0.0
-      },
-      "gates": {
-        "trigger_gate": 1.0,
-        "location_gate": 0.966,
-        "pattern_gate": 1.0,
-        "forward_zone_gate": 0.9,
-        "exhaustion_gate": 1.0,
-        "liquidity_gate": 1.0,
-        "trend_gate": 0.916,
-        "htf_late_gate": 1.0,
-        "product": 0.796
-      },
-      "probability": 0.7533,
-      "base_probability": 0.9464,
-      "model_source": "bootstrap",
-      "sample_size": 10,
-      "learned_weight": 0.0
-    },
-    "score_features": {
-      "loc": 0.9111,
-      "structure": 0.9104,
-      "liquidity": 0.0656,
-      "flow": 0.8125,
-      "trigger": 1.0,
-      "htf": 0.3125,
-      "pattern": 0.6905,
-      "session": 0.0,
-      "smt": 0.0,
-      "regime_fit": 0.0,
-      "freshness": 0.0,
-      "exhaustion": 0.0,
-      "no_pattern": 0.0
-    },
-    "score_gates": {
-      "trigger_gate": 1.0,
-      "location_gate": 0.966,
-      "pattern_gate": 1.0,
-      "forward_zone_gate": 0.9,
-      "exhaustion_gate": 1.0,
-      "liquidity_gate": 1.0,
-      "trend_gate": 0.916,
-      "htf_late_gate": 1.0,
-      "product": 0.796
-    },
-    "score_model_source": "bootstrap",
-    "score_model_sample_size": 10,
-    "score_model_learned_weight": 0.0
-  },
+  "latest_signal": null,
   "last_message_key": "",
   "history": [
     {
@@ -1935,5 +1740,5 @@
       "time": "2026-07-07T08:01:43.915505+00:00"
     }
   ],
-  "updated_at": "2026-07-07T08:01:43.915692+00:00"
+  "updated_at": "2026-07-07T08:02:56.532596+00:00"
 }
