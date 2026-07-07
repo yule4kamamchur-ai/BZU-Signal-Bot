@@ -2,6 +2,13 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Edition)
 ================================================================================
+Виправлення v6.13 (Trade-Breathing Geometry Edition):
+- Додано noise-adjusted structural stop: стоп ставиться за межі нормального 15M шуму, а не просто біля входу.
+- Додано catastrophic_stop + decision_stop: wick не вбиває угоду без close-confirm, але emergency stop лишається жорстким.
+- TP0/TP1 тепер враховують 15M true-range envelope: тейки не мають лежати всередині однієї шумової свічки.
+- Після TP1 стоп НЕ переноситься миттєво у БУ: додано BE_DELAY_ENGINE з підтвердженням 15M close / MFE / кількості свічок.
+- Ризик контролюється sizing multiplier, а не тісним стопом: ширший stop-distance автоматично зменшує position_risk_pct.
+
 Виправлення v6.11 (Execution-Audit / Continuation-Probe Edition):
 - Додано full rejection audit для NO_SETUP: бот тепер зберігає rejected_hypotheses і failed_gate, щоб кожен пропущений рух мав пояснення, а не шаманський “не було сетапу”.
 - Додано ACCEPTANCE_RETEST_CONTINUATION: early continuation-probe після ретесту OB/FVG/discount, якщо структура не зламана і є acceptance.
@@ -68,7 +75,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.12-market-structure-plus"
+BOT_VERSION = "pro-hybrid-confluence-v6.13-trade-breathing-geometry"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -105,6 +112,24 @@ TP0_SIZE_PCT = float(os.getenv("TP0_SIZE_PCT", "0.20") or 0.20)
 TP1_SIZE_PCT = float(os.getenv("TP1_SIZE_PCT", "0.35") or 0.35)
 TP2_SIZE_PCT = float(os.getenv("TP2_SIZE_PCT", "0.25") or 0.25)
 TP3_RUNNER_PCT = max(0.0, 1.0 - TP0_SIZE_PCT - TP1_SIZE_PCT - TP2_SIZE_PCT)
+
+# === v6.13 Trade-Breathing Geometry ===
+# Це НЕ фільтри входу. Це геометрія угоди: ширший шумовий стоп + менший sizing,
+# TP за межами однієї 15M свічки, delayed-BE після підтвердження.
+STOP_NOISE_PERCENTILE = float(os.getenv("STOP_NOISE_PERCENTILE", "0.70") or 0.70)
+TP_NOISE_PERCENTILE = float(os.getenv("TP_NOISE_PERCENTILE", "0.85") or 0.85)
+MIN_STOP_TRUE_RANGE_MULT = float(os.getenv("MIN_STOP_TRUE_RANGE_MULT", "1.10") or 1.10)
+MIN_TP1_TRUE_RANGE_MULT = float(os.getenv("MIN_TP1_TRUE_RANGE_MULT", "1.25") or 1.25)
+CURRENT_CANDLE_STOP_MULT = float(os.getenv("CURRENT_CANDLE_STOP_MULT", "0.85") or 0.85)
+TP0_MIN_RR = float(os.getenv("TP0_MIN_RR", "1.00") or 1.00)
+TP1_MIN_RR_PRO = float(os.getenv("TP1_MIN_RR_PRO", "2.00") or 2.00)
+TP1_MIN_ATR_PRO = float(os.getenv("TP1_MIN_ATR_PRO", "3.00") or 3.00)
+BE_DELAY_BARS_AFTER_TP1 = int(os.getenv("BE_DELAY_BARS_AFTER_TP1", "2") or 2)
+BE_DELAY_MIN_MFE_R = float(os.getenv("BE_DELAY_MIN_MFE_R", "1.80") or 1.80)
+BE_LOCK_R_MULT = float(os.getenv("BE_LOCK_R_MULT", "0.10") or 0.10)
+CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.45") or 1.45)
+DECISION_STOP_CLOSE_CONFIRM = os.getenv("DECISION_STOP_CLOSE_CONFIRM", "true").lower() in {"1", "true", "yes"}
+MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
 
 PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
 ACCEPTANCE_RISK_PCT = float(os.getenv("ACCEPTANCE_RISK_PCT", "0.22") or 0.22)
@@ -486,6 +511,9 @@ class TradePlan:
     stage_plan: dict[str, Any] = field(default_factory=dict)
     partial_plan: dict[str, float] = field(default_factory=dict)
     runtime_config_snapshot: dict[str, Any] = field(default_factory=dict)
+    decision_stop: float = 0.0
+    catastrophic_stop: float = 0.0
+    breathing_profile: dict[str, Any] = field(default_factory=dict)
     valid: bool = True
     reason: str = ""
 
@@ -588,6 +616,12 @@ class ActiveTrade:
     entry_stage: str = "PROBE"
     stage_plan: dict[str, Any] = field(default_factory=dict)
     runtime_config_snapshot: dict[str, Any] = field(default_factory=dict)
+    decision_stop: float = 0.0
+    catastrophic_stop: float = 0.0
+    breathing_profile: dict[str, Any] = field(default_factory=dict)
+    tp1_hit_at: str = ""
+    tp1_hit_ts: int = 0
+    tp1_close_confirmed: bool = False
 
 
 # ==========================================================
@@ -688,6 +722,20 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "liquidity_ladder_min_score": LIQUIDITY_LADDER_MIN_SCORE,
         "bootstrap_risk_multiplier": BOOTSTRAP_RISK_MULTIPLIER,
         "weak_direction_risk_multiplier": WEAK_DIRECTION_RISK_MULTIPLIER,
+        "stop_noise_percentile": STOP_NOISE_PERCENTILE,
+        "tp_noise_percentile": TP_NOISE_PERCENTILE,
+        "min_stop_true_range_mult": MIN_STOP_TRUE_RANGE_MULT,
+        "min_tp1_true_range_mult": MIN_TP1_TRUE_RANGE_MULT,
+        "current_candle_stop_mult": CURRENT_CANDLE_STOP_MULT,
+        "tp0_min_rr": TP0_MIN_RR,
+        "tp1_min_rr_pro": TP1_MIN_RR_PRO,
+        "tp1_min_atr_pro": TP1_MIN_ATR_PRO,
+        "be_delay_bars_after_tp1": BE_DELAY_BARS_AFTER_TP1,
+        "be_delay_min_mfe_r": BE_DELAY_MIN_MFE_R,
+        "be_lock_r_mult": BE_LOCK_R_MULT,
+        "catastrophic_stop_mult": CATASTROPHIC_STOP_MULT,
+        "decision_stop_close_confirm": DECISION_STOP_CLOSE_CONFIRM,
+        "min_breathing_risk_multiplier": MIN_BREATHING_RISK_MULTIPLIER,
     }
 
 
@@ -4327,6 +4375,139 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     return finalize_hypothesis_ranking(candidates)
 
 
+
+def _true_range_values(candles: list[Candle]) -> list[float]:
+    """True Range без залежності від pandas/numpy. Беремо тільки підтверджені 15M.
+    Якщо volume/feed кривий, TR все одно стабільно описує фактичний шум свічки."""
+    confirmed = [c for c in (candles or []) if getattr(c, "confirmed", True)]
+    if not confirmed:
+        return []
+    ordered = sorted(confirmed, key=lambda c: c.ts)
+    values: list[float] = []
+    prev_close: Optional[float] = None
+    for c in ordered:
+        hl = max(float(c.high) - float(c.low), 0.0)
+        if prev_close is None:
+            tr = hl
+        else:
+            tr = max(hl, abs(float(c.high) - prev_close), abs(float(c.low) - prev_close))
+        if tr > 0 and math.isfinite(tr):
+            values.append(tr)
+        prev_close = float(c.close)
+    return values
+
+
+def _percentile(values: list[float], q: float, default: float = 0.0) -> float:
+    clean = sorted(float(v) for v in values if v is not None and math.isfinite(float(v)) and float(v) >= 0)
+    if not clean:
+        return float(default)
+    q = clamp(float(q), 0.0, 1.0)
+    if len(clean) == 1:
+        return clean[0]
+    idx = q * (len(clean) - 1)
+    lo = int(math.floor(idx))
+    hi = int(math.ceil(idx))
+    if lo == hi:
+        return clean[lo]
+    return clean[lo] * (hi - idx) + clean[hi] * (idx - lo)
+
+
+def candle_noise_profile(context: dict, price: float, atr15: float) -> dict[str, float]:
+    """Оцінка 15M шуму, яку використовуємо для TP/SL.
+    Це не фільтр. Якщо шум широкий, бот не відмовляється від угоди, а дає їй більший stop-distance
+    і зменшує sizing."""
+    c15 = (context.get("candles", {}) or {}).get("15m", []) or []
+    recent = sorted([c for c in c15 if getattr(c, "confirmed", True)], key=lambda c: c.ts)[-48:]
+    tr_values = _true_range_values(recent)
+    fallback = max(float(atr15 or 0.0), price * 0.0012, ABS_MIN_STOP_DOLLARS * 0.50)
+    p70 = _percentile(tr_values, STOP_NOISE_PERCENTILE, fallback)
+    p85 = _percentile(tr_values, TP_NOISE_PERCENTILE, max(fallback, p70))
+    current = 0.0
+    if c15:
+        last = c15[-1]
+        current = max(float(last.high) - float(last.low), 0.0)
+    return {
+        "tr_p70": round(float(max(p70, fallback * 0.75)), 6),
+        "tr_p85": round(float(max(p85, p70, fallback)), 6),
+        "current_tr": round(float(max(current, fallback * 0.75)), 6),
+        "fallback": round(float(fallback), 6),
+        "sample_size": len(tr_values),
+    }
+
+
+def build_trade_breathing_geometry(side: str, price: float, structural_stop: float, effective_atr15: float,
+                                   profile: dict, context: dict, structural_from_zone: bool = False) -> dict[str, Any]:
+    """Trade Breathing Geometry Engine.
+
+    Повертає два стопи:
+    - decision_stop: thesis invalidation по 15M close-confirm;
+    - catastrophic_stop: реальний hard stop за межами wick/noise envelope.
+
+    Ширший стоп не блокує угоду. Він зменшує position_risk_pct через risk_size_multiplier.
+    """
+    noise = candle_noise_profile(context, price, effective_atr15)
+    raw_structural_distance = abs(price - float(structural_stop or price))
+    model_min = effective_atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15))
+    model_max = effective_atr15 * float(profile.get("stop_max_atr", MAX_STOP_ATR15)) * (1.75 if structural_from_zone else 1.25)
+
+    decision_distance = max(
+        raw_structural_distance,
+        model_min,
+        ABS_MIN_STOP_DOLLARS * 0.95,
+        float(noise["tr_p70"]) * 0.85,
+    )
+    # Не дозволяємо fallback-геометрії ставати абсурдною, але не зрізаємо справжню старшу структуру.
+    if not structural_from_zone:
+        decision_distance = min(decision_distance, max(model_max, ABS_MIN_STOP_DOLLARS))
+
+    catastrophic_distance = max(
+        decision_distance * CATASTROPHIC_STOP_MULT,
+        ABS_MIN_STOP_DOLLARS,
+        float(noise["tr_p70"]) * MIN_STOP_TRUE_RANGE_MULT,
+        float(noise["current_tr"]) * CURRENT_CANDLE_STOP_MULT,
+        effective_atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15)) * 1.15,
+    )
+    catastrophic_distance = max(catastrophic_distance, decision_distance + max(price * 0.0005, effective_atr15 * 0.15))
+
+    if side == Side.LONG.value:
+        decision_stop = price - decision_distance
+        catastrophic_stop = price - catastrophic_distance
+    else:
+        decision_stop = price + decision_distance
+        catastrophic_stop = price + catastrophic_distance
+
+    conventional = max(raw_structural_distance, model_min, ABS_MIN_STOP_DOLLARS)
+    if conventional <= 1e-9:
+        risk_size_multiplier = 1.0
+    else:
+        risk_size_multiplier = clamp(conventional / max(catastrophic_distance, conventional), MIN_BREATHING_RISK_MULTIPLIER, 1.0)
+
+    tp1_floor_distance = max(
+        catastrophic_distance * TP1_MIN_RR_PRO,
+        ABS_MIN_TP1_DOLLARS,
+        float(noise["tr_p85"]) * MIN_TP1_TRUE_RANGE_MULT,
+        effective_atr15 * TP1_MIN_ATR_PRO,
+    )
+    tp0_floor_distance = max(
+        catastrophic_distance * TP0_MIN_RR,
+        float(noise["tr_p70"]),
+        effective_atr15 * 1.10,
+    )
+
+    return {
+        "decision_stop": round_price(decision_stop),
+        "catastrophic_stop": round_price(catastrophic_stop),
+        "decision_distance": round(float(decision_distance), 6),
+        "catastrophic_distance": round(float(catastrophic_distance), 6),
+        "conventional_distance": round(float(conventional), 6),
+        "risk_size_multiplier": round(float(risk_size_multiplier), 4),
+        "tp1_floor_distance": round(float(tp1_floor_distance), 6),
+        "tp0_floor_distance": round(float(tp0_floor_distance), 6),
+        "noise": noise,
+        "mode": "TRADE_BREATHING_GEOMETRY",
+    }
+
+
 def setup_trade_profile(setup_type: str) -> dict:
     profiles = {
         SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.30, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
@@ -4400,8 +4581,10 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
         # майже до 1:1 для 6 із 7 типів сетапів (у них force_risky=True). RISKY-вхід
         # означає менший розмір позиції (RISKY_RISK_PCT), а не право ставити тейк
         # практично на стопі — професійний RR від цього не повинен страждати.
-        profile["tp1_rr"] = min(float(profile.get("tp1_rr", PREFERRED_RR1)), 1.55)
-        profile["tp2_rr"] = min(float(profile.get("tp2_rr", MIN_RR2)), 2.65)
+        # v6.13: RISKY означає менший sizing, а не близькі тейки.
+        # Тому не стискаємо RR, а навпаки тримаємо TP1 за межами шуму/1-свічкового руху.
+        profile["tp1_rr"] = max(float(profile.get("tp1_rr", PREFERRED_RR1)), TP1_MIN_RR_PRO)
+        profile["tp2_rr"] = max(float(profile.get("tp2_rr", MIN_RR2)), max(MIN_RR2, TP1_MIN_RR_PRO + 1.00))
     
     return profile
 
@@ -4415,10 +4598,14 @@ def enforce_smart_money_rr(side: str, price: float, stop: float, tp1: float, tp2
     # його до професійного мінімуму. rr1 у build_trade_plan рахується вже ПІСЛЯ
     # цього ratchet'а, тож valid=rr1>=MIN_RR1 виконується автоматично й ніколи
     # не відхиляє вхід через "надто близький TP1".
-    min_tp1_distance = risk * max(1.0, MIN_RR1)
-    min_tp2_distance = risk * max(1.45, MIN_RR1 + 1.00)
-    min_tp3_distance = risk * max(2.10, MIN_RR1 + 2.50)
-    step = max(atr15 * 0.45, price * 0.003)
+    min_tp1_distance = max(
+        risk * max(TP1_MIN_RR_PRO, MIN_RR1),
+        ABS_MIN_TP1_DOLLARS,
+        max(float(atr15 or 0.0), price * 0.0008) * TP1_MIN_ATR_PRO,
+    )
+    min_tp2_distance = risk * max(3.00, MIN_RR1 + 1.25)
+    min_tp3_distance = risk * max(4.60, MIN_RR1 + 3.10)
+    step = max(atr15 * 0.65, price * 0.0035)
     if side == Side.LONG.value:
         tp1 = max(tp1, price + min_tp1_distance)
         tp2 = max(tp2, price + min_tp2_distance, tp1 + step)
@@ -4713,31 +4900,23 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
             structural_from_zone = True
             break
 
-    # ВИПРАВЛЕНО: та сама хвороба, що й у трейлінгових гардах, але на етапі
-    # відкриття угоди — стоп рахувався як max(structural_dist, atr15*min), потім
-    # МІНІМІЗУВАВСЯ до atr15*max. У тиху сесію (мала atr15) цей "max"-стеля міг
-    # обрізати РЕАЛЬНИЙ структурний рівень (1H/4H OB/FVG) до значення тіснішого,
-    # ніж сама структура — угода відкривалась зі стопом БЛИЖЧЕ за технічну точку
-    # інвалідації тези, а не на ній. effective_atr15 дає нижню межу ATR, а для
-    # стопів, знайдених від СПРАВЖНЬОЇ старшої зони (не fallback candidate-рівня),
-    # стеля лише щедро обмежує абсурдну ширину — не підрізає легітимну структуру.
+    # v6.13 Trade-Breathing Geometry:
+    # decision_stop = close-confirm інвалідація тези; catastrophic_stop = реальний hard stop.
+    # Стоп не стискається всередину однієї 15M свічки. Якщо він стає ширшим — sizing зменшується.
     effective_atr15 = _effective_atr15(atr15, price)
-    stop_dist = abs(price - structural_stop)
-    stop_dist = max(stop_dist, effective_atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15)))
-    stop_ceiling_mult = 1.6 if structural_from_zone else 1.0
-    stop_dist = min(stop_dist, effective_atr15 * float(profile.get("stop_max_atr", MAX_STOP_ATR15)) * stop_ceiling_mult)
+    breathing = build_trade_breathing_geometry(
+        side=side, price=price, structural_stop=structural_stop, effective_atr15=effective_atr15,
+        profile=profile, context=context, structural_from_zone=structural_from_zone,
+    )
+    structural_stop = float(breathing["decision_stop"])
+    stop = float(breathing["catastrophic_stop"])
+    stop_dist = abs(price - stop)
 
-    # === DOL Rule 1: Абсолютна "підлога" для стопу (Hard Floor) ===
-    # Усе вище рахувалось відносно atr15 — але коли ATR стискається до
-    # мікроскопічних значень (тиха сесія / низька волатильність), навіть
-    # stop_min_atr * effective_atr15 дає стоп у кілька центів (напр. 7 центів
-    # на BZ при entry~72 — ризик, який звичайний спред+ковзання здатні з'їсти
-    # наполовину). Незалежно від ATR чи мікроструктури, стоп ніколи не може
-    # бути тіснішим за ABS_MIN_STOP_DOLLARS: угода повинна мати змогу "дихати".
-    stop_dist = max(stop_dist, ABS_MIN_STOP_DOLLARS)
-
-    stop = price - stop_dist if side == Side.LONG.value else price + stop_dist
-    tp1_dist = max(stop_dist * float(profile.get("tp1_rr", PREFERRED_RR1)), effective_atr15 * MIN_TP1_ATR15)
+    tp1_dist = max(
+        stop_dist * float(profile.get("tp1_rr", TP1_MIN_RR_PRO)),
+        effective_atr15 * max(MIN_TP1_ATR15, TP1_MIN_ATR_PRO),
+        float(breathing["tp1_floor_distance"]),
+    )
     tp2_dist = max(stop_dist * float(profile.get("tp2_rr", MIN_RR2)), tp1_dist + effective_atr15 * 0.45)
     tp3_dist = max(stop_dist * float(profile.get("tp3_rr", MIN_RR3)), tp2_dist + effective_atr15 * 0.55)
     
@@ -4756,20 +4935,22 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     # Якщо для якогось TP немає кваліфікованого технічного рівня — просто лишається
     # RR-фолбек, тому вхід НІКОЛИ не блокується через "немає зручного рівня".
     step = max(atr15 * 0.45, price * 0.003)
-    min_tp1_distance = stop_dist * max(1.0, MIN_RR1)
-    # === DOL Rule 2: "Speed Bump Filter" — ігноруємо надто близькі зустрічні зони ===
-    # Без цієї підлоги TP1 міг снепнутись на мікро-FVG/пул за кілька центів від
-    # входу (той самий "лежачий поліцейський", який ціна пробиває імпульсом,
-    # а не точка реакції). TP1 не може бути ближче за ABS_MIN_TP1_DOLLARS,
-    # навіть якщо RR-floor формально вже задоволений.
-    min_tp1_distance = max(min_tp1_distance, ABS_MIN_TP1_DOLLARS)
-    min_tp2_distance = stop_dist * max(1.45, MIN_RR1 + 1.00)
-    min_tp3_distance = stop_dist * max(2.10, MIN_RR1 + 2.50)
+    min_tp1_distance = max(
+        stop_dist * max(TP1_MIN_RR_PRO, MIN_RR1),
+        ABS_MIN_TP1_DOLLARS,
+        effective_atr15 * TP1_MIN_ATR_PRO,
+        float(breathing["tp1_floor_distance"]),
+    )
+    # === Speed Bump Filter v6.13 ===
+    # TP1 не може лежати всередині одного нормального 15M noise-envelope. Інакше це не тейк,
+    # а декоративна монетка перед катком.
+    min_tp2_distance = stop_dist * max(3.00, MIN_RR1 + 1.25)
+    min_tp3_distance = stop_dist * max(4.60, MIN_RR1 + 3.10)
     tech_targets = find_technical_targets(side, price, zones, context.get("liquidity", {}), atr15,
                                            macro=context.get("macro_liquidity", {}))
     tp_sources = {"tp1": "RR-профіль", "tp2": "RR-профіль", "tp3": "RR-профіль"}
 
-    MACRO_KINDS = {"ASIAN_HIGH", "ASIAN_LOW", "PDH", "PDL", "MACRO_EQ"}
+    MACRO_KINDS = {"ASIAN_HIGH", "ASIAN_LOW", "PDH", "PDL", "MACRO_EQ", "DAILY_OPEN", "WEEKLY_OPEN", "VWAP", "SESSION_MEAN", "OR_HIGH", "OR_LOW"}
 
     def _pick_technical(floor_dist: float, cap_mult: float, used_levels: list[float]) -> Optional[dict]:
         eligible = []
@@ -4870,10 +5051,10 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     tp1_distance = abs(tp1 - price)
     # TP0 — мікрофіксація win-rate без переводу стопа в БУ. Вона не душить TP1/TP2,
     # бо TP1 лишається професійним target-magnet/RR рівнем.
-    tp0_floor = max(risk_distance * TP0_RR, effective_atr15 * 0.75)
-    tp0_cap = max(tp1_distance - max(step * 0.25, price * 0.0002), risk_distance * 0.35)
+    tp0_floor = max(risk_distance * TP0_MIN_RR, float(breathing["tp0_floor_distance"]))
+    tp0_cap = max(tp1_distance - max(step * 0.35, price * 0.00025), risk_distance * 0.65)
     tp0_dist = min(tp0_floor, tp0_cap)
-    tp0_dist = max(tp0_dist, risk_distance * 0.35)
+    tp0_dist = max(tp0_dist, risk_distance * 0.65)
     if side == Side.LONG.value:
         tp0 = min(price + tp0_dist, tp1 - max(step * 0.10, price * 0.0001))
     else:
@@ -4885,6 +5066,11 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         candidate.stage_plan = staged_entry_plan(candidate, context)
         candidate.entry_stage = str(candidate.stage_plan.get("stage", EntryStage.PROBE.value))
     position_risk_pct = adaptive_position_risk_pct(candidate, context, default_risk)
+    position_risk_pct = round(clamp(position_risk_pct * float(breathing.get("risk_size_multiplier", 1.0)), 0.02, CORE_RISK_PCT), 4)
+    candidate.stage_plan.setdefault("breathing_geometry", breathing)
+    candidate.stage_plan.setdefault("scale_plan", []).append(
+        f"v6.13 breathing: hard stop ширший за noise envelope; sizing x{breathing.get('risk_size_multiplier')}"
+    )
 
     plan = TradePlan(
         entry=round_price(price),
@@ -4893,9 +5079,9 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         risk_pct=position_risk_pct,
         rr1=round(rr1, 2), rr2=round(abs(tp2 - price) / abs(stop - price), 2), rr3=round(abs(tp3 - price) / abs(stop - price), 2),
         position_risk_pct=position_risk_pct,
-        invalidation=f"закриття 15M за {round_price(structural_stop)}",
-        stop_basis=f"Модель: {candidate.ict_model} | ATR: {registry_stop_min}-{registry_stop_max}",
-        target_basis=f"TP0: {TP0_RR}R micro-fix | TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
+        invalidation=f"decision stop: 15M close за {round_price(structural_stop)} | hard stop: {round_price(stop)}",
+        stop_basis=f"v6.13 breathing geometry | decision={round_price(structural_stop)} catastrophic={round_price(stop)} | noise={breathing['noise']}",
+        target_basis=f"TP0: {TP0_MIN_RR}R/noise service fix | TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
         stop_timeframe="1H" if any(z.timeframe == "1h" for z in zones) else "15M",
         structural_invalidation=round_price(structural_stop),
         trigger_level=candidate.trigger_level,
@@ -4907,6 +5093,9 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         stage_plan=candidate.stage_plan,
         partial_plan={"tp0": TP0_SIZE_PCT, "tp1": TP1_SIZE_PCT, "tp2": TP2_SIZE_PCT, "tp3_runner": TP3_RUNNER_PCT},
         runtime_config_snapshot=runtime_config_snapshot(),
+        decision_stop=round_price(structural_stop),
+        catastrophic_stop=round_price(stop),
+        breathing_profile=breathing,
         valid=rr1_valid,
         reason="" if rr1_valid else "RR1 нижче мінімуму",
     )
@@ -5185,6 +5374,84 @@ def _target_hit(side: str, context: dict, level: float, lookback: int = 4) -> bo
         return False
 
 
+
+def _latest_confirmed_candle(candles: list[Candle]) -> Optional[Candle]:
+    confirmed = [c for c in (candles or []) if getattr(c, "confirmed", True)]
+    return sorted(confirmed, key=lambda c: c.ts)[-1] if confirmed else None
+
+
+def _trade_risk_distance(trade: ActiveTrade) -> float:
+    return max(abs(float(trade.entry) - float(trade.stop_initial or trade.stop_current or trade.entry)), 1e-9)
+
+
+def _decision_stop_breached_by_close(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
+    if not DECISION_STOP_CLOSE_CONFIRM:
+        return False, ""
+    level = float(getattr(trade, "decision_stop", 0.0) or getattr(trade, "structural_invalidation", 0.0) or 0.0)
+    if not level:
+        return False, ""
+    c15 = (context.get("candles", {}) or {}).get("15m", []) or []
+    last = _latest_confirmed_candle(c15)
+    if not last:
+        return False, ""
+    lower_bound = max(_opened_at_ms(trade.opened_at), int(getattr(trade, "tp1_hit_ts", 0) or 0))
+    if last.ts <= lower_bound:
+        return False, ""
+    if trade.side == Side.LONG.value and float(last.close) < level:
+        return True, f"Decision stop close-confirm: 15M close {last.close} < {level}"
+    if trade.side == Side.SHORT.value and float(last.close) > level:
+        return True, f"Decision stop close-confirm: 15M close {last.close} > {level}"
+    return False, ""
+
+
+def _bars_after_ts(candles: list[Candle], ts: int) -> int:
+    if not ts:
+        return 0
+    return len([c for c in (candles or []) if getattr(c, "confirmed", True) and int(c.ts) > int(ts)])
+
+
+def _close_confirmed_beyond_level(side: str, candles: list[Candle], level: float) -> bool:
+    last = _latest_confirmed_candle(candles)
+    if not last:
+        return False
+    return float(last.close) >= level if side == Side.LONG.value else float(last.close) <= level
+
+
+def _tp1_protection_ready(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
+    if not trade.tp1_hit:
+        return False, "TP1 ще не взято"
+    if getattr(trade, "tp1_stop_locked", False) and trade.stop_current != trade.stop_initial:
+        return True, "захист уже активний"
+    c15 = (context.get("candles", {}) or {}).get("15m", []) or []
+    bars = _bars_after_ts(c15, int(getattr(trade, "tp1_hit_ts", 0) or 0))
+    risk = _trade_risk_distance(trade)
+    mfe_r = abs(float(trade.best_price) - float(trade.entry)) / risk if risk > 1e-9 else 0.0
+    close_ok = _close_confirmed_beyond_level(trade.side, c15, float(trade.tp1))
+    votes = int(bars >= BE_DELAY_BARS_AFTER_TP1) + int(mfe_r >= BE_DELAY_MIN_MFE_R) + int(close_ok)
+    if votes >= 2:
+        return True, f"BE_DELAY ready: bars={bars}, mfe_r={mfe_r:.2f}, close_confirm={close_ok}"
+    return False, f"BE_DELAY waiting: bars={bars}/{BE_DELAY_BARS_AFTER_TP1}, mfe_r={mfe_r:.2f}/{BE_DELAY_MIN_MFE_R}, close_confirm={close_ok}"
+
+
+def _delayed_tp1_lock_stop(trade: ActiveTrade, context: dict) -> Optional[float]:
+    ready, _ = _tp1_protection_ready(trade, context)
+    if not ready:
+        return None
+    risk = _trade_risk_distance(trade)
+    # Мінімальний lock не на +0.02, а на entry + частка R: достатньо, щоб пережити комісію,
+    # але не душити угоду впритул до входу.
+    if trade.side == Side.LONG.value:
+        base_lock = float(trade.entry) + max(COMMISSION_BUFFER_DOLLARS, risk * BE_LOCK_R_MULT)
+    else:
+        base_lock = float(trade.entry) - max(COMMISSION_BUFFER_DOLLARS, risk * BE_LOCK_R_MULT)
+    structural = _structural_trailing_stop(trade, context)
+    if structural is None:
+        return round_price(base_lock)
+    if trade.side == Side.LONG.value:
+        return round_price(max(base_lock, structural))
+    return round_price(min(base_lock, structural))
+
+
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     price = context.get("price")
     # Якщо ціна None через збій API, тримаємо позицію, щоб не наробити помилок
@@ -5236,11 +5503,16 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     # на довільну $/ATR-відстань — це і дозволяє забирати розширені рухи
     # (1.50$-2.00$+), не вилітаючи з ринку на першому випадковому відкаті.
     if trade.tp1_hit:
-        structural_stop = _structural_trailing_stop(trade, context)
-        if _apply_protective_stop(trade, context, structural_stop):
-            result["notes"].append(f"Структурний трейлінг: стоп перенесено під/над останній 15M swing до {trade.stop_current}")
+        delayed_stop = _delayed_tp1_lock_stop(trade, context)
+        ready, ready_reason = _tp1_protection_ready(trade, context)
+        if delayed_stop is not None and _apply_protective_stop(trade, context, delayed_stop):
+            trade.tp1_stop_locked = True
+            trade.tp1_locked_stop = round_price(trade.stop_current)
+            result["notes"].append(f"Delayed BE/structural lock активовано: стоп перенесено до {trade.stop_current} | {ready_reason}")
             result["recommended_stop"] = round_price(trade.stop_current)
-            result["recommended_stop_reason"] = "Структурний трейлінг активний (15M swing points) після TP1"
+            result["recommended_stop_reason"] = "v6.13 BE_DELAY + structural swing lock після TP1"
+        elif not ready:
+            result["notes"].append(ready_reason)
 
     # --- Дворівневий Wick Defense ---
     is_stop, stop_reason = _stop_hit(trade, context)
@@ -5250,12 +5522,24 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.STOP.value
         result["exit_price"] = exit_price
         result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
-        result["notes"].append(f"Вихід по стопу: {stop_reason}")
+        result["notes"].append(f"Вихід по catastrophic stop: {stop_reason}")
         trade.status = "CLOSED"
         trade.last_action = Action.STOP.value
         return result
 
-    # --- 0. TP0: мікрофіксація для win-rate без задушення угоди ---
+    decision_break, decision_reason = _decision_stop_breached_by_close(trade, context)
+    if decision_break:
+        exit_price = round_price(price)
+        result["closed"] = True
+        result["action"] = Action.EXIT.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["notes"].append(decision_reason)
+        trade.status = "CLOSED"
+        trade.last_action = Action.EXIT.value
+        return result
+
+    # --- 0. TP0: службова фіксація без задушення угоди ---
     # На TP0 бот НЕ рухає стоп у БУ. Інакше ми знову отримаємо стару хворобу:
     # мікро-прибуток є, але нормальний TP1/TP2 задушений першим відкатом.
     if not result["closed"] and getattr(trade, "tp0", 0.0) and not getattr(trade, "tp0_hit", False) and _target_hit(side, context, trade.tp0):
@@ -5263,22 +5547,18 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP0.value
         result["notes"].append(f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції; стоп НЕ рухаємо, TP1/TP2 лишаються живими")
 
-    # --- 1. Фіксація TP1 (Строгий Беззбиток, миттєво) ---
+    # --- 1. Фіксація TP1 (v6.13 delayed protection, НЕ миттєвий BE) ---
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
-        trade.tp1_stop_locked = True
-        # СТРОГИЙ БЕЗЗБИТОК: щойно ціна торкнулась TP1 (навіть тінню свічки),
-        # стоп МИТТЄВО (без затримок і без очікування 50% шляху до TP2)
-        # переноситься на вхід + буфер комісії. Це і психологічно, і
-        # математично захищає капітал — залишок угоди стає безризиковим.
-        # Рекомендація: зафіксувати частку з partial_plan саме на цьому рівні.
-        if side == Side.LONG.value:
-            trade.tp1_locked_stop = round_price(trade.entry + COMMISSION_BUFFER_DOLLARS)
-        else:
-            trade.tp1_locked_stop = round_price(trade.entry - COMMISSION_BUFFER_DOLLARS)
-        trade.stop_current = trade.tp1_locked_stop
+        trade.tp1_hit_at = iso_now()
+        c3 = (context.get("candles", {}) or {}).get("3m", []) or []
+        trade.tp1_hit_ts = int(c3[-1].ts) if c3 else int(time.time() * 1000)
+        trade.tp1_stop_locked = False
         result["action"] = Action.TP1.value
-        result["notes"].append(f"TP1 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp1_size_pct', TP1_SIZE_PCT) * 100)}% позиції; стоп негайно переведено у строгий беззбиток ({trade.stop_current})")
+        result["notes"].append(
+            f"TP1 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp1_size_pct', TP1_SIZE_PCT) * 100)}% позиції; "
+            f"стоп НЕ рухаємо миттєво. BE_DELAY_ENGINE чекає {BE_DELAY_BARS_AFTER_TP1}x15M / MFE {BE_DELAY_MIN_MFE_R}R / close-confirm"
+        )
 
     # --- 2. Фіксація TP2 ---
     if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
@@ -5313,7 +5593,9 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         if trade.tp2_stop_locked:
             result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
         elif trade.tp1_stop_locked:
-            result["recommended_stop_reason"] = "Строгий беззбиток активний (TP1 зафіксовано)"
+            result["recommended_stop_reason"] = "Delayed BE/structural lock активний після TP1"
+        elif trade.tp1_hit:
+            result["recommended_stop_reason"] = "TP1 взято, але BE_DELAY_ENGINE ще не підтвердив перенос стопа"
 
     # --- Структурна інвалідація ---
     structural_break = False
@@ -5547,6 +5829,9 @@ def run_bot() -> None:
                 "plan_position_risk_pct": decision.plan.position_risk_pct,
                 "partial_plan": decision.plan.partial_plan,
                 "target_basis": decision.plan.target_basis,
+                "decision_stop": decision.plan.decision_stop,
+                "catastrophic_stop": decision.plan.catastrophic_stop,
+                "breathing_profile": decision.plan.breathing_profile,
             })
     state["latest_signal"] = payload
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
@@ -5573,6 +5858,8 @@ def run_bot() -> None:
             tp2_size_pct=TP2_SIZE_PCT, tp3_runner_pct=TP3_RUNNER_PCT,
             execution_source=decision.candidate.execution_source, entry_stage=decision.candidate.entry_stage,
             stage_plan=decision.candidate.stage_plan, runtime_config_snapshot=decision.plan.runtime_config_snapshot,
+            decision_stop=decision.plan.decision_stop, catastrophic_stop=decision.plan.catastrophic_stop,
+            breathing_profile=decision.plan.breathing_profile,
         )
         store_active_trade(state, active)
         state["opportunity"] = None
