@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.9 (Execution-Intelligence Edition)
+BZU Professional Hybrid Confluence Signal Bot v6.10 (Hypothesis-Matrix Edition)
 ================================================================================
-Виправлення v6.9 (Execution-Intelligence Edition):
+Виправлення v6.10 (Hypothesis-Matrix Edition):
 - Розділено trigger_ready на джерела виконання: LIVE_3M / LIMIT_ARMED / TIME_WARP / REENTRY.
   Старий 3M/time-warp більше не маскується під живий market-entry, а переводиться у WAIT_RETEST/LIMIT_ONLY.
 - Додано staged entry ladder: PROBE / ACCEPTANCE / RETEST_ADD / CORE з адаптивним sizing,
@@ -62,7 +62,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.9-execution-intelligence"
+BOT_VERSION = "pro-hybrid-confluence-v6.10-hypothesis-matrix"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -91,7 +91,7 @@ LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
 RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
 
-# === Execution Intelligence v6.9 ===
+# === Execution Intelligence v6.10 ===
 # Не блокує сетапи фільтрами: замість цього зменшує/збільшує розмір позиції
 # і переводить вхід у відповідну стадію. Це дає ранній вхід без дурного full-size FOMO.
 TP0_RR = float(os.getenv("TP0_RR", "0.75") or 0.75)
@@ -418,6 +418,13 @@ class Candidate:
     stage_plan: dict[str, Any] = field(default_factory=dict)
     risk_multiplier: float = 1.0
     target_magnet_score: float = 0.0
+    setup_quality_score: int = 0
+    execution_quality_score: int = 0
+    trade_plan_quality_score: int = 0
+    hypothesis_score: float = 0.0
+    hypothesis_rank: int = 0
+    active_model_count: int = 0
+    competing_hypotheses: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -2854,6 +2861,310 @@ def calibrate_candidate_quality(journal: dict, features: dict[str, float], setup
     }
 
 
+
+# ==========================================================
+# ICT HYPOTHESIS MATRIX ENGINE (v6.10)
+# ==========================================================
+
+def _zone_midpoint(z: Zone) -> float:
+    return safe_float(z.low) + (safe_float(z.high) - safe_float(z.low)) / 2.0
+
+
+def _nearest_same_side_zone(zones: list, side: str, kinds: set[str], price: float) -> Optional[Zone]:
+    matching = [z for z in zones if getattr(z, "side", "") == side and getattr(z, "kind", "") in kinds]
+    if not matching:
+        return None
+    return sorted(matching, key=lambda z: (abs(_zone_midpoint(z) - price), -safe_float(getattr(z, "strength", 0.0))))[0]
+
+
+def _nearest_opposite_structural_zone(zones: list, side: str, price: float) -> Optional[Zone]:
+    opposite_zones = [
+        z for z in zones
+        if getattr(z, "side", "") == opposite(side)
+        and getattr(z, "timeframe", "") in {"1h", "4h", "15m"}
+        and getattr(z, "kind", "") in {"OB", "FVG"}
+    ]
+    if not opposite_zones:
+        return None
+    return sorted(opposite_zones, key=lambda z: (-safe_float(getattr(z, "strength", 0.0)), abs(_zone_midpoint(z) - price)))[0]
+
+
+def ict_model_execution_contract(
+    model_id: str,
+    setup_type: str,
+    side: str,
+    context: dict,
+    event: dict,
+    trigger_level: float,
+    ce_level: float,
+    is_limit_armed: bool,
+) -> dict[str, Any]:
+    """Кожна ICT-модель отримує власний execution-contract: entry anchor,
+    structural invalidation і первинну target-логіку. Це усуває стару поведінку,
+    де 10 моделей були лише labels над одним універсальним Candidate."""
+    price = safe_float(context.get("price"), 0.0)
+    atr15 = safe_float(context.get("atr15"), 0.6) or 0.6
+    zones = context.get("zones") or []
+    buffer = max(atr15 * 0.18, price * 0.00035)
+    model = str(model_id or "GENERIC_FALLBACK")
+
+    entry_anchor = price
+    entry_basis = "current_price"
+    invalidation = price - side_sign(side) * atr15 * 1.65
+    invalidation_basis = "ATR fallback"
+    target_level = price + side_sign(side) * atr15 * 2.40
+    target_basis = "ATR expansion preview"
+
+    fvg = _nearest_same_side_zone(zones, side, {"FVG"}, price)
+    ob = _nearest_same_side_zone(zones, side, {"OB"}, price)
+    opp_struct = _nearest_opposite_structural_zone(zones, side, price)
+
+    if opp_struct:
+        invalidation = (safe_float(opp_struct.low) - buffer) if side == Side.LONG.value else (safe_float(opp_struct.high) + buffer)
+        invalidation_basis = f"opposite {opp_struct.timeframe} {opp_struct.kind} guard"
+
+    if model in {"FVG_ENTRY", "SILVER_BULLET", "BMS_RETEST", "RANGE_COMPRESSION_MODEL"} and fvg:
+        entry_anchor = _zone_midpoint(fvg)
+        entry_basis = f"{model} CE/FVG midpoint"
+        invalidation = (safe_float(fvg.low) - buffer) if side == Side.LONG.value else (safe_float(fvg.high) + buffer)
+        invalidation_basis = f"{model} FVG invalidation"
+    elif model in {"OB_RECLAIM", "BREAKER_BLOCK"} and (ob or fvg):
+        z = ob or fvg
+        entry_anchor = _zone_midpoint(z)
+        entry_basis = f"{model} {z.kind} reclaim midpoint"
+        invalidation = (safe_float(z.low) - buffer) if side == Side.LONG.value else (safe_float(z.high) + buffer)
+        invalidation_basis = f"{model} {z.kind} invalidation"
+    elif model in {"2022_MODEL", "TURTLE_SOUP", "PO3", "JUDAS_SWING", "MMBM"}:
+        sweep_level = safe_float(event.get("sweep_level"), safe_float(trigger_level, price))
+        if sweep_level:
+            # Reversal-family entry anchor не женеться за ціною: якщо свіп/реклейм близько,
+            # anchor лишається біля reclaim-рівня; якщо далеко, лишаємо current price.
+            if abs(sweep_level - price) <= atr15 * 0.75:
+                entry_anchor = sweep_level
+                entry_basis = f"{model} sweep/reclaim level"
+        invalidation = safe_float(event.get("invalidation_level"), 0.0) or invalidation
+        if not invalidation or abs(invalidation - price) < atr15 * 0.25:
+            invalidation = price - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.25)
+        invalidation_basis = f"{model} sweep invalidation"
+    elif is_limit_armed and ce_level:
+        entry_anchor = ce_level
+        entry_basis = "LIMIT_ARMED CE/FVG"
+
+    # Нормалізація: стоп завжди має бути по правильний бік entry.
+    min_stop_dist = max(ABS_MIN_STOP_DOLLARS, atr15 * 0.75)
+    if side == Side.LONG.value and invalidation >= entry_anchor:
+        invalidation = entry_anchor - min_stop_dist
+    elif side == Side.SHORT.value and invalidation <= entry_anchor:
+        invalidation = entry_anchor + min_stop_dist
+
+    target = find_target_magnet_preview(side, entry_anchor, context, atr15)
+    if target:
+        target_level = safe_float(target.get("level"), target_level)
+        target_basis = f"{target.get('kind')} {target.get('timeframe')} magnet"
+        target_magnet_score = float(target.get("magnet_score", 0.0) or 0.0)
+    else:
+        target_magnet_score = 0.0
+
+    return {
+        "entry_anchor": round_price(entry_anchor),
+        "entry_basis": entry_basis,
+        "invalidation_level": round_price(invalidation),
+        "invalidation_basis": invalidation_basis,
+        "target_level": round_price(target_level),
+        "target_basis": target_basis,
+        "target_magnet_score": round(target_magnet_score, 2),
+    }
+
+
+def find_target_magnet_preview(side: str, entry_anchor: float, context: dict, atr15: float) -> Optional[dict[str, Any]]:
+    """Невеликий preview-магніт для ранжування гіпотез. Повний TP-алгоритм
+    лишається у build_trade_plan(); тут ми тільки оцінюємо, чи є куди йти."""
+    targets = find_technical_targets(
+        side,
+        entry_anchor,
+        context.get("zones") or [],
+        context.get("liquidity", {}) or {},
+        atr15,
+        macro=context.get("macro_liquidity", {}) or {},
+    )
+    min_dist = max(ABS_MIN_TP1_DOLLARS, atr15 * 1.25)
+    eligible = [t for t in targets if safe_float(t.get("distance"), 0.0) >= min_dist]
+    if not eligible:
+        return None
+    eligible.sort(key=lambda t: (-float(t.get("magnet_score", 0.0) or 0.0), safe_float(t.get("distance"), 999.0)))
+    return eligible[0]
+
+
+def score_hypothesis_layers(
+    *,
+    loc_score: float,
+    str_score: float,
+    liq_score: float,
+    flw_score: float,
+    trig_score: float,
+    htf_score: float,
+    raw_bonus: float,
+    session_bonus: float,
+    vector_bonus: float,
+    execution_source: str,
+    trigger_age: float,
+    has_forward_zone: bool,
+    target_magnet_score: float,
+    regime_matched: int,
+    regime_conflict: int,
+) -> dict[str, Any]:
+    """Три незалежні шари якості:
+    setup_quality — чи правильна ідея;
+    execution_quality — чи правильний момент;
+    trade_plan_quality — чи математично/структурно є нормальна угода."""
+    setup_quality = (
+        loc_score * 0.95 + str_score * 0.90 + liq_score * 0.70 + htf_score * 0.70
+        + max(raw_bonus, -12) * 1.15 + session_bonus * 0.85 + vector_bonus * 0.75
+        + (6 if regime_matched else 0) - (10 if regime_conflict else 0)
+    )
+    setup_quality = int(clamp(setup_quality, 0, 100))
+
+    freshness = execution_freshness_multiplier(execution_source, trigger_age)
+    source_base = {
+        ExecutionSource.LIVE_3M.value: 82,
+        ExecutionSource.LIMIT_ARMED.value: 70,
+        ExecutionSource.REENTRY.value: 62,
+        ExecutionSource.TIME_WARP.value: 44,
+        ExecutionSource.NONE.value: 34,
+    }.get(str(execution_source), 34)
+    execution_quality = source_base + trig_score * 0.55 + flw_score * 0.45
+    execution_quality *= freshness
+    execution_quality = int(clamp(execution_quality, 0, 100))
+
+    trade_plan_quality = 48
+    trade_plan_quality += 18 if has_forward_zone else -8
+    trade_plan_quality += min(float(target_magnet_score or 0.0) * 0.32, 22)
+    trade_plan_quality += min(max(loc_score, 0.0) * 0.20, 12)
+    trade_plan_quality = int(clamp(trade_plan_quality, 0, 100))
+
+    organic_score = int(round(0.40 * setup_quality + 0.35 * execution_quality + 0.25 * trade_plan_quality))
+    return {
+        "setup_quality": setup_quality,
+        "execution_quality": execution_quality,
+        "trade_plan_quality": trade_plan_quality,
+        "organic_score": organic_score,
+        "freshness_multiplier": round(freshness, 4),
+    }
+
+
+def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
+    comps = c.score_components or {}
+    return {
+        "rank": c.hypothesis_rank,
+        "side": c.side,
+        "model": c.ict_model,
+        "setup_type": c.setup_type,
+        "final_score": c.final_score,
+        "hypothesis_score": round(float(c.hypothesis_score or comps.get("hypothesis_score", c.final_score)), 2),
+        "setup_q": c.setup_quality_score,
+        "execution_q": c.execution_quality_score,
+        "plan_q": c.trade_plan_quality_score,
+        "execution_source": c.execution_source,
+        "entry_stage": c.entry_stage,
+        "trigger_age_min": round(float(c.trigger_age_minutes or 0.0), 1),
+        "target_magnet": round(float(c.target_magnet_score or 0.0), 2),
+    }
+
+
+def finalize_hypothesis_ranking(candidates: list[Candidate]) -> list[Candidate]:
+    candidates.sort(key=lambda c: (float(c.hypothesis_score or c.final_score), c.final_score), reverse=True)
+    matrix = [hypothesis_audit_row(c) for c in candidates]
+    for idx, cand in enumerate(candidates, start=1):
+        cand.hypothesis_rank = idx
+        cand.competing_hypotheses = matrix[:10]
+        if cand.score_components is not None:
+            cand.score_components["hypothesis_rank"] = idx
+            cand.score_components["hypothesis_matrix_top"] = matrix[:10]
+    return candidates
+
+
+def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict) -> Candidate:
+    """Re-entry більше не обходить score engine. Він отримує ті самі quality layers,
+    gates і ML/bootstrap audit, але лишається REENTRY execution_source."""
+    price = context.get("price", 0.0)
+    atr15 = context.get("atr15", 0.6) or 0.6
+    side = candidate.side
+    loc_score = calculate_location_score(price, context.get("zones") or [], side, atr15, context.get("tf15", {}), context.get("tf1h", {}))
+    str_score = 19 if context.get("tf15", {}).get("bias") == side else 10
+    htf_score = 20 if context.get("tf4h", {}).get("bias") == side else 6
+    cvd = context.get("cvd", {}) or {}
+    flw_score = float(cvd.get("score", 0)) if cvd.get("bias") == side else 0.0
+    trig_score = 18 if candidate.trigger_ready else 7
+    liq_score = 12 if "ICT_LOCATION" in (candidate.evidence_families or []) else 6
+    setup_family = candidate.setup_family or SETUP_FAMILY_MAP.get(candidate.setup_type, SetupFamily.CONTINUATION.value)
+    quality_features = _build_quality_features(
+        loc_score=loc_score,
+        str_score=str_score,
+        liq_score=liq_score,
+        flw_score=flw_score,
+        trig_score=trig_score,
+        htf_score=htf_score,
+        raw_bonus=8,
+        session_bonus=0,
+        vector_bonus=0,
+        trigger_age=candidate.trigger_age_minutes,
+        trigger_ready=candidate.trigger_ready,
+        best_pattern="REENTRY",
+        regime_matched=0,
+        regime_conflict=0,
+        exhaustion_multiplier=1.0,
+        pattern_family=setup_family,
+    )
+    calibration = calibrate_candidate_quality(journal, quality_features, setup_family, candidate.trigger_ready, False, True)
+    direction_perf = direction_recent_performance(journal, side)
+    layers = score_hypothesis_layers(
+        loc_score=loc_score,
+        str_score=str_score,
+        liq_score=liq_score,
+        flw_score=flw_score,
+        trig_score=trig_score,
+        htf_score=htf_score,
+        raw_bonus=8,
+        session_bonus=0,
+        vector_bonus=0,
+        execution_source=ExecutionSource.REENTRY.value,
+        trigger_age=candidate.trigger_age_minutes,
+        has_forward_zone=True,
+        target_magnet_score=0.0,
+        regime_matched=0,
+        regime_conflict=0,
+    )
+    blended = int(round(0.55 * int(calibration["score"]) + 0.45 * layers["organic_score"]))
+    blended = int(round(blended * float(direction_perf.get("score_multiplier", 1.0))))
+    candidate.final_score = int(clamp(blended, 12, 98))
+    candidate.raw_score = max(candidate.raw_score, candidate.final_score)
+    candidate.score_components = {
+        "reentry_rescored": True,
+        "features": calibration["features"],
+        "gates": calibration["gates"],
+        "probability": calibration["probability"],
+        "base_probability": calibration["base_probability"],
+        "model_source": calibration["model_source"],
+        "sample_size": calibration["sample_size"],
+        "learned_weight": calibration["learned_weight"],
+        "setup_quality": layers["setup_quality"],
+        "execution_quality": layers["execution_quality"],
+        "trade_plan_quality": layers["trade_plan_quality"],
+        "organic_score": layers["organic_score"],
+        "hypothesis_score": candidate.final_score,
+        "direction_performance": direction_perf,
+        "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
+    }
+    candidate.setup_quality_score = layers["setup_quality"]
+    candidate.execution_quality_score = layers["execution_quality"]
+    candidate.trade_plan_quality_score = layers["trade_plan_quality"]
+    candidate.hypothesis_score = float(candidate.final_score)
+    candidate.risk_multiplier = float(direction_perf.get("risk_multiplier", 1.0) or 1.0) * 0.75
+    candidate.professional_gate = evaluate_professional_gate(context, candidate)
+    candidate.stage_plan = staged_entry_plan(candidate, context, direction_perf)
+    candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
+    return candidate
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
     atr15 = context["atr15"] or 0.6
@@ -3070,277 +3381,294 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if is_range_compressed and strong_displacement and trigger_ready:
             active_patterns.append("RANGE_COMPRESSION_MODEL")
 
-        best_pattern = None
-        best_priority = 0
-        pattern_conf = []
-        raw_bonus = 0
-        regime_matched = 0
-        regime_conflict = 0
-
-        for pat_id in active_patterns:
-            p_data = pattern_registry[pat_id]
-            if p_data["priority"] > best_priority:
-                best_priority = p_data["priority"]
-                best_pattern = pat_id
-
         # ==========================================================
-        # VECTOR SCORING (v6.7): кожна родина сетапів рахується за
-        # власною логікою замість єдиної лінійної формули.
-        #   - REVERSAL (SWEEP_RECLAIM/JUDAS_SWING/TURTLE_SOUP/PO3/MMBM/2022_MODEL):
-        #     штраф за ідеальне вирівнювання HTF (= пізній вхід), максимум ваги
-        #     на ліквідність/тригер/SMT Divergence.
-        #   - TREND (BREAKOUT_RETEST/FVG_ENTRY/BREAKER_BLOCK/OB_RECLAIM/BMS_RETEST):
-        #     HTF і CVD критичні, але Exhaustion Penalty ріже скор навпіл, якщо
-        #     рух вже пройшов > EXHAUSTION_ATR_THRESHOLD ATR без глибокого відкату.
-        #   - Fallback без жодної підтвердженої моделі (генерик PULLBACK_CONTINUATION)
-        #     отримує NO_PATTERN_PENALTY — саме ця комбінація була "дірою" v6.6
-        #     (16 угод, 12.5% winrate, -5.63%), бо торгувалась з майже нормальною
-        #     впевненістю, хоча по суті означає "нічого конкретного не спрацювало".
+        # v6.10 HYPOTHESIS MATRIX: кожна активна ICT-модель створює
+        # окрему trade hypothesis з власним entry anchor / invalidation / score.
+        # Priority лишається tie-breaker, а не заміна професійної оцінки.
         # ==========================================================
-        reversal_families = {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.RANGE_EXECUTION.value}
-        trend_families = {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+        model_ids = list(dict.fromkeys(active_patterns))
+        if not model_ids:
+            model_ids = ["GENERIC_FALLBACK"]
 
-        pattern_family = None
-        if best_pattern:
-            p_data = pattern_registry[best_pattern]
-            raw_bonus = p_data["score_bonus"]
-            pattern_conf.append(f"Модель: {p_data['name']}")
-            pattern_family = SETUP_FAMILY_MAP.get(p_data["preferred_setup"], SetupFamily.CONTINUATION.value)
-
-            # Органічна стабільність (Regime Matching)
-            if regime in p_data["favored"]:
-                raw_bonus += 5
-                regime_matched = 1
-                pattern_conf.append("✅ Модель узгоджена з режимом ринку (+5)")
-            elif regime in p_data["penalty"]:
-                raw_bonus -= 10
-                regime_conflict = 1
-                pattern_conf.append("⚠️ Конфлікт моделі з режимом ринку (-10)")
-        else:
-            raw_bonus -= NO_PATTERN_PENALTY
-            pattern_conf.append(f"⚠️ Жодна з 10 ICT-моделей не підтверджена — generic fallback (-{NO_PATTERN_PENALTY})")
-
-        htf_aligned_strong = (tf4h.get("bias") == side) and (tf1h.get("bias") == side)
-        liq_weight = trig_weight = htf_weight = str_weight = flw_weight = 1.0
-        vector_bonus = 0.0
-        exhaustion_multiplier = 1.0
-
-        if pattern_family in reversal_families:
-            liq_weight, trig_weight, htf_weight = REVERSAL_LIQ_WEIGHT, REVERSAL_TRIGGER_WEIGHT, REVERSAL_HTF_WEIGHT
-            if smt_bias == side:
-                vector_bonus += REVERSAL_SMT_BONUS
-                pattern_conf.append(f"🧭 SMT Divergence на користь входу (+{REVERSAL_SMT_BONUS})")
-            elif smt_bias == opposite(side):
-                vector_bonus -= REVERSAL_SMT_BONUS
-                pattern_conf.append(f"⚠️ SMT Divergence проти входу (-{REVERSAL_SMT_BONUS})")
-            if htf_aligned_strong:
-                # Ідеальне вирівнювання HTF по розворотній моделі означає, що ринок
-                # вже розвернувся і ми заходимо пізно — це не підтвердження, а ризик.
-                vector_bonus -= REVERSAL_LATE_ENTRY_PENALTY
-                pattern_conf.append(f"⏱️ Ідеальне вирівнювання HTF для розвороту = пізній вхід (-{REVERSAL_LATE_ENTRY_PENALTY})")
-        elif pattern_family in trend_families:
-            str_weight, flw_weight, htf_weight = TREND_STRUCTURE_WEIGHT, TREND_FLOW_WEIGHT, TREND_HTF_WEIGHT
-            if smt_bias == side:
-                vector_bonus += TREND_SMT_BONUS
-                pattern_conf.append(f"🧭 SMT Divergence підтверджує тренд (+{TREND_SMT_BONUS})")
-            if len(c15) >= 8 and atr15:
-                impulse_run_atr = abs(c15[-1].close - c15[-8].close) / atr15
-                extreme8 = max(c.high for c in c15[-8:]) if side == Side.LONG.value else min(c.low for c in c15[-8:])
-                retracement_atr = abs(price - extreme8) / atr15
-                if impulse_run_atr > EXHAUSTION_ATR_THRESHOLD and retracement_atr < 0.35:
-                    exhaustion_multiplier = EXHAUSTION_SCORE_MULTIPLIER
-                    pattern_conf.append(f"🔻 Exhaustion Penalty: рух {impulse_run_atr:.2f} ATR без відкату — скор x{EXHAUSTION_SCORE_MULTIPLIER}")
-
-        # Базові обчислення якості (збережено існуючу логіку, зважено за родиною сетапу)
-        loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
-        str_score = (19 if tf15.get("bias") == side else 10) * str_weight
-        # Застосовуємо розраховану якість свіпу (Dynamic Sweep Validation Engine)
-        # до балів ліквідності — неякісний свіп у боковику деградує бал плавно,
-        # а не через жорсткий блок.
-        liq_base = 16 if is_sweep and trigger_ready else 6
-        liq_score = liq_base * liq_weight * sweep_quality_multiplier
-        # ВИПРАВЛЕННЯ: flow_snapshot() зараз заглушка (завжди повертає NEUTRAL,
-        # бо trades/book з collect_market_data порожні) — умова
-        # "flow.bias == side AND cvd.bias == side" через це НІКОЛИ не
-        # виконувалась, і робочий CVD-проксі (реальний сигнал з candle-тиску)
-        # мовчки гасився мертвим flow. Тепер flw_score рахується напряму від
-        # CVD, використовуючи вже наявну градацію сили (0/8/15 замість
-        # фіксованого "17") — коли колись buy/sell trades tape реально
-        # підключать у collect_market_data, flow.bias перестане бути
-        # константою і його можна буде додати як окремий множник/бонус.
-        flw_score = float(cvd.get("score", 0)) * flw_weight if cvd.get("bias") == side else 0.0
-        trig_score = (22 if trigger_ready else 8) * trig_weight
-        htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
-        
-        raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus + vector_bonus
-
-        # === Session Profiling & AMD: макро-скор-коригування найвищого рівня ===
-        # Це БАЛОВЕ коригування (як і всі інші бонуси/штрафи вище), не жорсткий
-        # блок — сильний сетап з інших джерел все одно може пройти навіть у chop-зоні.
-        session_bonus = 0.0
-        if judas["bias"] == side and judas["bonus"] > 0:
-            session_bonus += judas["bonus"]
-            pattern_conf.extend(session_profile["notes"])
-        elif chop["active"]:
-            # М'ясорубка: ліквідність Азії ще не знята, і саме цей бік не
-            # підтверджений свіжою маніпуляцією — типова пастка посеред діапазону.
-            session_bonus -= chop["penalty_magnitude"]
-            pattern_conf.extend(session_profile["notes"])
-        raw += session_bonus
-
-        if exhaustion_multiplier < 1.0:
-            raw *= exhaustion_multiplier
-
-        limit_armed_ready = bool(is_limit_armed)
-        time_warp_ready = bool(time_warp_opportunity and stale_3m_trigger_ready and not live_3m_trigger_ready)
-
-        if live_3m_trigger_ready:
-            execution_source = ExecutionSource.LIVE_3M.value
-            actionable_trigger_ready = True
-            execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
-        elif limit_armed_ready:
-            execution_source = ExecutionSource.LIMIT_ARMED.value
-            actionable_trigger_ready = True
-            execution_lane_source = ExecutionLane.LIMIT_ONLY.value
-            trigger_level = ce_level
-            pattern_conf.append(f"🔥 LIMIT_ARMED: Злам структури (CHoCH) + FVG, ліміт на CE ({ce_level:.2f})")
-            raw += 18  # soft-priority, але не фальшивий live 3M
-        elif time_warp_ready:
-            execution_source = ExecutionSource.TIME_WARP.value
-            actionable_trigger_ready = False
-            execution_lane_source = ExecutionLane.WAIT_RETEST.value
-            pattern_conf.append(f"⏳ TIME_WARP: старий 3M event {trigger_age:.0f} хв — тільки WAIT_RETEST/LIMIT, не market-entry")
-        else:
-            execution_source = ExecutionSource.NONE.value
-            actionable_trigger_ready = False
-            execution_lane_source = ExecutionLane.STANDARD_CONFIRMED.value
-
-        trigger_ready = actionable_trigger_ready
-        setup_type = SetupType.PULLBACK_CONTINUATION.value
-        if best_pattern:
-            setup_type = pattern_registry[best_pattern]["preferred_setup"]
-        elif trigger_ready and scan_stage in ["RETEST", "READY"]:
-            setup_type = SetupType.BREAKOUT_RETEST.value
-        elif is_sweep and trigger_ready:
-            setup_type = SetupType.SWEEP_RECLAIM.value
-
-        evidence = ["ICT_LOCATION", "PRICE_STRUCTURE"]
-        if flw_score > 0: evidence.append("ORDER_FLOW_CVD")
-        if live_3m_trigger_ready: evidence.append("EXECUTION_TRIGGER_LIVE_3M")
-        if limit_armed_ready: evidence.append("EXECUTION_LIMIT_ARMED")
-        if time_warp_ready: evidence.append("EXECUTION_TIME_WARP_WAIT_RETEST")
-
-        setup_family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
-        quality_features = _build_quality_features(
-            loc_score=loc_score,
-            str_score=str_score,
-            liq_score=liq_score,
-            flw_score=flw_score,
-            trig_score=trig_score,
-            htf_score=htf_score,
-            raw_bonus=raw_bonus,
-            session_bonus=session_bonus,
-            vector_bonus=vector_bonus,
-            trigger_age=trigger_age,
-            trigger_ready=trigger_ready,
-            best_pattern=best_pattern,
-            regime_matched=regime_matched,
-            regime_conflict=regime_conflict,
-            exhaustion_multiplier=exhaustion_multiplier,
-            pattern_family=setup_family,
-        )
-        calibration = calibrate_candidate_quality(
-            journal, quality_features, setup_family, actionable_trigger_ready, limit_armed_ready, has_forward_zone
-        )
-        freshness_mult = execution_freshness_multiplier(execution_source, trigger_age)
         direction_perf = direction_recent_performance(journal, side)
-        final = int(round(int(calibration["score"]) * freshness_mult * float(direction_perf.get("score_multiplier", 1.0))))
-        final = int(clamp(final, 12, 98))
-        pattern_conf.append(
-            f"📊 Quality model: {calibration['model_source']} n={calibration['sample_size']} "
-            f"| p={calibration['probability']:.2f} | gates x{calibration['gates']['product']:.2f} "
-            f"| exec={execution_source} x{freshness_mult:.2f}"
-        )
-        if direction_perf.get("weak"):
-            pattern_conf.append(f"📉 {side} recent performance слабкий: {direction_perf.get('wins')}/{direction_perf.get('closed')} wins — PROBE_ONLY sizing")
-        
-        lane = execution_lane_source
-        if lane == ExecutionLane.EARLY_TACTICAL.value and not (best_pattern and pattern_registry[best_pattern]["allow_early"]):
-            lane = ExecutionLane.STANDARD_CONFIRMED.value
-
-        cand = Candidate(
-            side=side,
-            setup_type=setup_type,
-            setup_family=setup_family,
-            raw_score=int(round(raw)),
-            final_score=final,
-            score_components={
-                "legacy_raw_score": round(raw, 2),
-                "loc_score": round(loc_score, 2),
-                "str_score": round(str_score, 2),
-                "liq_score": round(liq_score, 2),
-                "flw_score": round(flw_score, 2),
-                "trig_score": round(trig_score, 2),
-                "htf_score": round(htf_score, 2),
-                "pattern_bonus": round(raw_bonus, 2),
-                "session_bonus": round(session_bonus, 2),
-                "vector_bonus": round(vector_bonus, 2),
-                "features": calibration["features"],
-                "gates": calibration["gates"],
-                "probability": calibration["probability"],
-                "base_probability": calibration["base_probability"],
-                "model_source": calibration["model_source"],
-                "sample_size": calibration["sample_size"],
-                "learned_weight": calibration["learned_weight"],
-                "execution_source": execution_source,
-                "execution_freshness_multiplier": round(freshness_mult, 4),
-                "live_3m_trigger_ready": live_3m_trigger_ready,
-                "limit_armed_ready": limit_armed_ready,
-                "time_warp_ready": time_warp_ready,
-                "direction_performance": direction_perf,
-                "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
-            },
-            evidence_families=evidence,
-            confirmations=pattern_conf,
-            trigger_ready=actionable_trigger_ready,
-            trigger_level=round_price(trigger_level),
-            invalidation_level=round_price(price - (atr15 * 1.65 if side == Side.LONG.value else -atr15 * 1.65)),
-            target_levels=[round_price(price + (atr15 * 2.4 if side == Side.LONG.value else -atr15 * 2.4))],
-            execution_lane=lane,
-            stage="ARMED" if final >= params["armed_score"] else "DISCOVERED",
-            variant="PATTERN_TRIGGERED" if best_pattern else "STANDARD",
-            ict_model=best_pattern or "NONE",  # Передаємо модель далі
-            execution_anchor=price,
-            trigger_age_minutes=trigger_age,
-            thesis_key=f"{side}|{setup_type}|{int(price*10)}",
-            thesis=f"{side} {setup_type} | 3M={scan_stage}",
-            professional_gate={},
-            has_forward_zone=has_forward_zone,
-            live_3m_trigger_ready=live_3m_trigger_ready,
-            limit_armed_ready=limit_armed_ready,
-            time_warp_ready=time_warp_ready,
-            execution_source=execution_source,
-            risk_multiplier=float(direction_perf.get("risk_multiplier", 1.0) or 1.0),
-        )
-        cand.professional_gate = evaluate_professional_gate(context, cand)
-        cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
-        cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
-
-        # v6.8 fix: раніше generic PULLBACK_CONTINUATION-фолбек (жодна з 10 ICT-моделей
-        # не підтверджена) проходив за тим самим порогом armed_score-10, що й
-        # паттерн-підтверджені сетапи, отримуючи лише -NO_PATTERN_PENALTY(=14) до raw score.
-        # Це вже спалювало капітал у v6.6 (16 угод, 12.5% winrate, -5.63%) — штраф до
-        # скору не є жорстким фільтром і фактично торгується з майже нормальною
-        # впевненістю. Тепер без підтвердженої моделі поріг входу піднято суттєво
-        # вище (armed_score + NO_PATTERN_EXTRA_MARGIN), а не просто занижено на -10.
         NO_PATTERN_EXTRA_MARGIN = int(os.getenv("NO_PATTERN_EXTRA_MARGIN", "12") or 12)
-        min_score_required = params["armed_score"] - 10 if best_pattern else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
 
-        # Не обрізаємо до 2-х, повертаємо всіх з базовою якістю
-        if cand.final_score >= min_score_required:
-            candidates.append(cand)
-            
-    return candidates
+        for model_id in model_ids:
+            is_fallback = model_id == "GENERIC_FALLBACK"
+            p_data = pattern_registry.get(model_id, {
+                "name": "Generic fallback",
+                "priority": 0,
+                "allow_early": False,
+                "preferred_setup": SetupType.PULLBACK_CONTINUATION.value,
+                "score_bonus": -NO_PATTERN_PENALTY,
+                "stop_min_atr": 0.90,
+                "stop_max_atr": 2.20,
+                "favored": [],
+                "penalty": [Regime.RANGE.value, Regime.SHOCK.value],
+            })
+            best_pattern = None if is_fallback else model_id
+            pattern_conf = []
+            raw_bonus = float(p_data.get("score_bonus", 0.0))
+            regime_matched = 0
+            regime_conflict = 0
+            setup_type = str(p_data.get("preferred_setup", SetupType.PULLBACK_CONTINUATION.value))
+            setup_family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
+            pattern_family = setup_family
+
+            if not is_fallback:
+                pattern_conf.append(f"Модель: {p_data['name']} ({model_id})")
+                if regime in p_data.get("favored", []):
+                    raw_bonus += 5
+                    regime_matched = 1
+                    pattern_conf.append("✅ Модель узгоджена з режимом ринку (+5)")
+                elif regime in p_data.get("penalty", []):
+                    raw_bonus -= 10
+                    regime_conflict = 1
+                    pattern_conf.append("⚠️ Конфлікт моделі з режимом ринку (-10)")
+            else:
+                pattern_conf.append(f"⚠️ Жодна ICT-модель не підтверджена — generic fallback (-{NO_PATTERN_PENALTY})")
+
+            reversal_families = {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.RANGE_EXECUTION.value}
+            trend_families = {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+            htf_aligned_strong = (tf4h.get("bias") == side) and (tf1h.get("bias") == side)
+            liq_weight = trig_weight = htf_weight = str_weight = flw_weight = 1.0
+            vector_bonus = 0.0
+            exhaustion_multiplier = 1.0
+
+            if pattern_family in reversal_families:
+                liq_weight, trig_weight, htf_weight = REVERSAL_LIQ_WEIGHT, REVERSAL_TRIGGER_WEIGHT, REVERSAL_HTF_WEIGHT
+                if smt_bias == side:
+                    vector_bonus += REVERSAL_SMT_BONUS
+                    pattern_conf.append(f"🧭 SMT Divergence на користь входу (+{REVERSAL_SMT_BONUS})")
+                elif smt_bias == opposite(side):
+                    vector_bonus -= REVERSAL_SMT_BONUS
+                    pattern_conf.append(f"⚠️ SMT Divergence проти входу (-{REVERSAL_SMT_BONUS})")
+                if htf_aligned_strong:
+                    vector_bonus -= REVERSAL_LATE_ENTRY_PENALTY
+                    pattern_conf.append(f"⏱️ Ідеальне HTF-вирівнювання для reversal = ризик пізнього входу (-{REVERSAL_LATE_ENTRY_PENALTY})")
+            elif pattern_family in trend_families:
+                str_weight, flw_weight, htf_weight = TREND_STRUCTURE_WEIGHT, TREND_FLOW_WEIGHT, TREND_HTF_WEIGHT
+                if smt_bias == side:
+                    vector_bonus += TREND_SMT_BONUS
+                    pattern_conf.append(f"🧭 SMT Divergence підтверджує тренд (+{TREND_SMT_BONUS})")
+                if len(c15) >= 8 and atr15:
+                    impulse_run_atr = abs(c15[-1].close - c15[-8].close) / atr15
+                    extreme8 = max(c.high for c in c15[-8:]) if side == Side.LONG.value else min(c.low for c in c15[-8:])
+                    retracement_atr = abs(price - extreme8) / atr15
+                    if impulse_run_atr > EXHAUSTION_ATR_THRESHOLD and retracement_atr < 0.35:
+                        exhaustion_multiplier = EXHAUSTION_SCORE_MULTIPLIER
+                        pattern_conf.append(f"🔻 Exhaustion Penalty: рух {impulse_run_atr:.2f} ATR без відкату — скор x{EXHAUSTION_SCORE_MULTIPLIER}")
+
+            loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
+            str_score = (19 if tf15.get("bias") == side else 10) * str_weight
+            liq_base = 16 if is_sweep and live_3m_trigger_ready else 6
+            liq_score = liq_base * liq_weight * sweep_quality_multiplier
+            flw_score = float(cvd.get("score", 0)) * flw_weight if cvd.get("bias") == side else 0.0
+            trig_score = (22 if live_3m_trigger_ready else 8) * trig_weight
+            htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
+
+            raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus + vector_bonus
+            session_bonus = 0.0
+            if judas["bias"] == side and judas["bonus"] > 0:
+                session_bonus += judas["bonus"]
+                pattern_conf.extend(session_profile["notes"])
+            elif chop["active"]:
+                session_bonus -= chop["penalty_magnitude"]
+                pattern_conf.extend(session_profile["notes"])
+            raw += session_bonus
+            if exhaustion_multiplier < 1.0:
+                raw *= exhaustion_multiplier
+
+            limit_armed_ready = bool(is_limit_armed)
+            time_warp_ready = bool(time_warp_opportunity and stale_3m_trigger_ready and not live_3m_trigger_ready)
+            local_trigger_level = trigger_level
+            if live_3m_trigger_ready:
+                execution_source = ExecutionSource.LIVE_3M.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+            elif limit_armed_ready:
+                execution_source = ExecutionSource.LIMIT_ARMED.value
+                actionable_trigger_ready = True
+                execution_lane_source = ExecutionLane.LIMIT_ONLY.value
+                local_trigger_level = ce_level or trigger_level
+                pattern_conf.append(f"🔥 LIMIT_ARMED: CHoCH + FVG, ліміт на CE ({local_trigger_level:.2f})")
+                raw += 18
+            elif time_warp_ready:
+                execution_source = ExecutionSource.TIME_WARP.value
+                actionable_trigger_ready = False
+                execution_lane_source = ExecutionLane.WAIT_RETEST.value
+                pattern_conf.append(f"⏳ TIME_WARP: старий 3M event {trigger_age:.0f} хв — тільки WAIT_RETEST/LIMIT")
+            else:
+                execution_source = ExecutionSource.NONE.value
+                actionable_trigger_ready = False
+                execution_lane_source = ExecutionLane.STANDARD_CONFIRMED.value
+
+            if is_fallback:
+                if actionable_trigger_ready and scan_stage in ["RETEST", "READY"]:
+                    setup_type = SetupType.BREAKOUT_RETEST.value
+                elif is_sweep and actionable_trigger_ready:
+                    setup_type = SetupType.SWEEP_RECLAIM.value
+                setup_family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
+
+            contract = ict_model_execution_contract(
+                model_id=model_id,
+                setup_type=setup_type,
+                side=side,
+                context=context,
+                event=event,
+                trigger_level=local_trigger_level,
+                ce_level=ce_level,
+                is_limit_armed=limit_armed_ready,
+            )
+
+            evidence = ["ICT_LOCATION", "PRICE_STRUCTURE", f"ICT_MODEL_{model_id}"]
+            if flw_score > 0:
+                evidence.append("ORDER_FLOW_CVD")
+            if live_3m_trigger_ready:
+                evidence.append("EXECUTION_TRIGGER_LIVE_3M")
+            if limit_armed_ready:
+                evidence.append("EXECUTION_LIMIT_ARMED")
+            if time_warp_ready:
+                evidence.append("EXECUTION_TIME_WARP_WAIT_RETEST")
+
+            quality_features = _build_quality_features(
+                loc_score=loc_score,
+                str_score=str_score,
+                liq_score=liq_score,
+                flw_score=flw_score,
+                trig_score=trig_score,
+                htf_score=htf_score,
+                raw_bonus=raw_bonus,
+                session_bonus=session_bonus,
+                vector_bonus=vector_bonus,
+                trigger_age=trigger_age,
+                trigger_ready=actionable_trigger_ready,
+                best_pattern=best_pattern,
+                regime_matched=regime_matched,
+                regime_conflict=regime_conflict,
+                exhaustion_multiplier=exhaustion_multiplier,
+                pattern_family=setup_family,
+            )
+            calibration = calibrate_candidate_quality(
+                journal, quality_features, setup_family, actionable_trigger_ready, limit_armed_ready, has_forward_zone
+            )
+            layers = score_hypothesis_layers(
+                loc_score=loc_score,
+                str_score=str_score,
+                liq_score=liq_score,
+                flw_score=flw_score,
+                trig_score=trig_score,
+                htf_score=htf_score,
+                raw_bonus=raw_bonus,
+                session_bonus=session_bonus,
+                vector_bonus=vector_bonus,
+                execution_source=execution_source,
+                trigger_age=trigger_age,
+                has_forward_zone=has_forward_zone,
+                target_magnet_score=float(contract.get("target_magnet_score", 0.0) or 0.0),
+                regime_matched=regime_matched,
+                regime_conflict=regime_conflict,
+            )
+            freshness_mult = float(layers["freshness_multiplier"])
+            calibrated_score = int(calibration["score"])
+            organic_score = int(layers["organic_score"])
+            final = int(round((0.55 * calibrated_score + 0.45 * organic_score) * float(direction_perf.get("score_multiplier", 1.0))))
+            final = int(clamp(final, 12, 98))
+            priority_tiebreaker = float(p_data.get("priority", 0.0)) / 100.0
+            hypothesis_score = float(final) + priority_tiebreaker * 2.0 + float(contract.get("target_magnet_score", 0.0) or 0.0) * 0.025
+
+            pattern_conf.append(
+                f"📊 Hypothesis score: final={final} | setup={layers['setup_quality']} "
+                f"execution={layers['execution_quality']} plan={layers['trade_plan_quality']} "
+                f"| model={calibration['model_source']} n={calibration['sample_size']} p={calibration['probability']:.2f}"
+            )
+            pattern_conf.append(f"🎯 Entry contract: {contract['entry_basis']} | invalidation: {contract['invalidation_basis']} | target: {contract['target_basis']}")
+            if direction_perf.get("weak"):
+                pattern_conf.append(f"📉 {side} recent performance слабкий: {direction_perf.get('wins')}/{direction_perf.get('closed')} wins — PROBE_ONLY sizing")
+
+            lane = execution_lane_source
+            if lane == ExecutionLane.EARLY_TACTICAL.value and not bool(p_data.get("allow_early", False)):
+                lane = ExecutionLane.STANDARD_CONFIRMED.value
+
+            cand = Candidate(
+                side=side,
+                setup_type=setup_type,
+                setup_family=setup_family,
+                raw_score=int(round(raw)),
+                final_score=final,
+                score_components={
+                    "legacy_raw_score": round(raw, 2),
+                    "loc_score": round(loc_score, 2),
+                    "str_score": round(str_score, 2),
+                    "liq_score": round(liq_score, 2),
+                    "flw_score": round(flw_score, 2),
+                    "trig_score": round(trig_score, 2),
+                    "htf_score": round(htf_score, 2),
+                    "pattern_bonus": round(raw_bonus, 2),
+                    "session_bonus": round(session_bonus, 2),
+                    "vector_bonus": round(vector_bonus, 2),
+                    "features": calibration["features"],
+                    "gates": calibration["gates"],
+                    "probability": calibration["probability"],
+                    "base_probability": calibration["base_probability"],
+                    "model_source": calibration["model_source"],
+                    "sample_size": calibration["sample_size"],
+                    "learned_weight": calibration["learned_weight"],
+                    "setup_quality": layers["setup_quality"],
+                    "execution_quality": layers["execution_quality"],
+                    "trade_plan_quality": layers["trade_plan_quality"],
+                    "organic_score": layers["organic_score"],
+                    "hypothesis_score": round(hypothesis_score, 2),
+                    "active_model_count": len(active_patterns),
+                    "execution_source": execution_source,
+                    "execution_freshness_multiplier": freshness_mult,
+                    "live_3m_trigger_ready": live_3m_trigger_ready,
+                    "limit_armed_ready": limit_armed_ready,
+                    "time_warp_ready": time_warp_ready,
+                    "direction_performance": direction_perf,
+                    "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
+                    "entry_contract": contract,
+                },
+                evidence_families=evidence,
+                confirmations=pattern_conf,
+                trigger_ready=actionable_trigger_ready,
+                trigger_level=round_price(local_trigger_level),
+                invalidation_level=round_price(contract["invalidation_level"]),
+                target_levels=[round_price(contract["target_level"])],
+                execution_lane=lane,
+                stage="ARMED" if final >= params["armed_score"] else "DISCOVERED",
+                variant="MODEL_HYPOTHESIS" if not is_fallback else "GENERIC_FALLBACK",
+                ict_model=best_pattern or "NONE",
+                execution_anchor=round_price(contract["entry_anchor"]),
+                trigger_age_minutes=trigger_age,
+                thesis_key=f"{side}|{model_id}|{setup_type}|{int(round(contract['entry_anchor']*10))}",
+                thesis=f"{side} {model_id} → {setup_type} | src={execution_source} | stage={scan_stage}",
+                professional_gate={},
+                has_forward_zone=has_forward_zone,
+                live_3m_trigger_ready=live_3m_trigger_ready,
+                limit_armed_ready=limit_armed_ready,
+                time_warp_ready=time_warp_ready,
+                execution_source=execution_source,
+                risk_multiplier=float(direction_perf.get("risk_multiplier", 1.0) or 1.0),
+                target_magnet_score=float(contract.get("target_magnet_score", 0.0) or 0.0),
+                setup_quality_score=int(layers["setup_quality"]),
+                execution_quality_score=int(layers["execution_quality"]),
+                trade_plan_quality_score=int(layers["trade_plan_quality"]),
+                hypothesis_score=round(hypothesis_score, 2),
+                active_model_count=len(active_patterns),
+            )
+            cand.professional_gate = evaluate_professional_gate(context, cand)
+            cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
+            cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
+
+            min_score_required = params["armed_score"] - 10 if not is_fallback else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
+            # TIME_WARP не блокується, але мусить бути достатньо сильним, щоб хоча б ARMED/WATCH.
+            if cand.execution_source == ExecutionSource.TIME_WARP.value:
+                min_score_required += 4
+            if cand.final_score >= min_score_required:
+                candidates.append(cand)
+
+    return finalize_hypothesis_ranking(candidates)
 
 
 def setup_trade_profile(setup_type: str) -> dict:
@@ -3671,7 +3999,7 @@ def _atr_guard_buffer(context: dict, atr15: float, price: float) -> float:
 
 
 def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
-    price = context["price"]
+    price = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0) or safe_float(context.get("price"), 0.0)
     atr15 = context["atr15"] or 0.6
     side = candidate.side
     profile = trade_mode_profile(context, side, candidate.setup_type)
@@ -3917,6 +4245,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
+            missed_cand = rescore_reentry_candidate(missed_cand, context, journal)
             guard = event_driven_reentry_guard(state, context, missed_cand)
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
@@ -3924,7 +4253,8 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
                 return Decision(
                     id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=missed_cand.side, setup_type=missed_cand.setup_type,
                     quality=missed_cand.final_score, reason="Re-entry з пропущеного імпульсу", regime=context["regime"],
-                    candidate=missed_cand, plan=plan, current_price=current_price
+                    candidate=missed_cand, plan=plan, current_price=current_price,
+                    audit={"selected": hypothesis_audit_row(missed_cand), "reentry_rescored": True}
                 )
 
     # 2. БАГАТОПОТОКОВИЙ СКАНЕР: Відбір усіх валідних кандидатів
@@ -3941,8 +4271,8 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             quality=12, reason="Ринок не сформував професійного ICT + 3M execution-package", regime=context["regime"], current_price=current_price
         )
 
-    # 3. Вибір абсолютного переможця за сукупним рейтингом
-    valid_candidates.sort(key=lambda c: c.final_score, reverse=True)
+    # 3. Вибір переможця за hypothesis_score, а не лише за final_score.
+    valid_candidates = finalize_hypothesis_ranking(valid_candidates)
     best = valid_candidates[0]
     
     plan = build_trade_plan(context, best)
@@ -3964,18 +4294,22 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         reason = f"Regime Engine 2.0 блокує вхід: {mode_profile.get('reason', 'режим не підтримує вхід')}"
     elif gate.get("allow_entry") and plan.valid and plan.execution_ready and entry_action == "ALLOW" and not mode_profile.get("force_risky"):
         action = Action.ENTRY.value
-        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6.9"
+        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6.10"
     elif (gate.get("allow_risky") or entry_action == "RISKY_ONLY" or mode_profile.get("force_risky")) and plan.valid and plan.execution_ready and not hard_block:
         action = Action.RISKY_ENTRY.value
         reason = f"[{best.ict_model}] Стадійний {best.entry_stage}: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
     elif best.final_score >= params["armed_score"]:
         action = Action.ARMED.value
-        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: сетап сформовано; gate v6.9: {gate.get('grade', 'WATCH')}"
+        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: сетап сформовано; gate v6.10: {gate.get('grade', 'WATCH')}"
 
     return Decision(
         id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=best.side, setup_type=best.setup_type,
         quality=quality, reason=reason, regime=context["regime"], candidate=best, plan=plan, current_price=current_price,
-        audit={"selected": {"side": best.side, "model": best.ict_model, "score": best.final_score}}
+        audit={
+            "selected": hypothesis_audit_row(best),
+            "hypothesis_matrix": [hypothesis_audit_row(c) for c in valid_candidates[:10]],
+            "candidate_count": len(valid_candidates),
+        }
     )
 
 # ==========================================================
