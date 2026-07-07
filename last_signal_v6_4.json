@@ -34,9 +34,9 @@
     "signal_id": "6364373fe7"
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1783465200000,
-    "last_run_processed": 2,
-    "processed_count": 522,
+    "last_scanned_3m_ts": 1783466100000,
+    "last_run_processed": 5,
+    "processed_count": 527,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -48,7 +48,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 76.28,
+        "extreme": 76.24,
         "displacement": true,
         "retest_ts": 1783403640000,
         "ready_ts": 1783403820000,
@@ -58,7 +58,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 522,
+        "processed_bars": 527,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -81,7 +81,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 76.31,
+        "extreme": 76.26,
         "displacement": true,
         "retest_ts": 1783391760000,
         "ready_ts": 1783391940000,
@@ -91,7 +91,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 522,
+        "processed_bars": 527,
         "strong_displacement": false,
         "retest": true,
         "mitigation": true,
@@ -107,21 +107,21 @@
     }
   },
   "regime_memory": {
-    "type": "RANGE_COMPRESSION",
+    "type": "VOLATILITY_SQUEEZE",
     "pending_type": "",
-    "stable_count": 4,
-    "pending_count": 0,
-    "updated_at": "2026-07-07T23:01:47.992999+00:00"
+    "stable_count": 1,
+    "pending_count": 1,
+    "updated_at": "2026-07-07T23:15:50.105829+00:00"
   },
   "latest_signal": {
-    "id": "6364373fe7",
-    "time": "2026-07-07T23:01:48.002197+00:00",
-    "action": "ARMED",
+    "id": "ae49f72aba",
+    "time": "2026-07-07T23:15:50.156497+00:00",
+    "action": "NO_SETUP",
     "side": "LONG",
     "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
-    "quality": 69,
-    "decision_quality": 69,
-    "reason": "[ACCEPTANCE_RETEST_CONTINUATION] PROBE/ACCEPTANCE_RETEST: сетап сформовано; gate v6.10: WATCH",
+    "quality": 46,
+    "decision_quality": 46,
+    "reason": "Regime Engine 2.0 блокує вхід: Аномальне стискання волатильності (Squeeze). Наближається викид. Торги заборонено.",
     "regime": "RANGE",
     "news_bias": "NEUTRAL",
     "macro_risk": "NORMAL",
@@ -130,12 +130,12 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
     "learning_status": {
-      "updated_at": "2026-07-07T23:01:46.347414+00:00",
+      "updated_at": "2026-07-07T23:15:48.298631+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
       "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-      "training_signals": 33,
+      "training_signals": 34,
       "signal_events": 166,
       "closed_trades": 13,
       "training_rows": 12,
@@ -234,7 +234,7 @@
         "plan_q": 49,
         "execution_source": "ACCEPTANCE_RETEST",
         "entry_stage": "PROBE",
-        "trigger_age_min": 1024.8,
+        "trigger_age_min": 1038.8,
         "target_magnet": 0.0
       },
       "hypothesis_matrix": [
@@ -250,7 +250,7 @@
           "plan_q": 49,
           "execution_source": "ACCEPTANCE_RETEST",
           "entry_stage": "PROBE",
-          "trigger_age_min": 1024.8,
+          "trigger_age_min": 1038.8,
           "target_magnet": 0.0
         }
       ],
@@ -286,8 +286,8 @@
         "noise": {
           "tr_p70": 0.309,
           "tr_p85": 0.4675,
-          "current_tr": 0.180536,
-          "fallback": 0.240714,
+          "current_tr": 0.170893,
+          "fallback": 0.227857,
           "sample_size": 48
         },
         "mode": "TRADE_BREATHING_GEOMETRY"
@@ -297,7 +297,7 @@
     "live_3m_trigger_ready": false,
     "limit_armed_ready": false,
     "time_warp_ready": true,
-    "trigger_age_minutes": 1024.8,
+    "trigger_age_minutes": 1038.84,
     "score_components": {
       "legacy_raw_score": 135.32,
       "loc_score": 45,
@@ -366,15 +366,15 @@
         "entry_basis": "ACCEPTANCE_RETEST zone midpoint (15m OB)",
         "invalidation_level": 75.955,
         "invalidation_basis": "ACCEPTANCE_RETEST structural probe invalidation",
-        "target_level": 76.7977,
+        "target_level": 76.7069,
         "target_basis": "ATR expansion preview",
         "target_magnet_score": 0.0
       },
       "acceptance_retest": {
         "active": true,
         "score_bonus": 20,
-        "impulse_atr": 2.74,
-        "pullback_atr": 1.41,
+        "impulse_atr": 2.68,
+        "pullback_atr": 1.54,
         "zone_ok": true,
         "zone_mid": 76.355,
         "zone_label": "15m OB",
@@ -397,7 +397,7 @@
           "plan_q": 49,
           "execution_source": "ACCEPTANCE_RETEST",
           "entry_stage": "PROBE",
-          "trigger_age_min": 1024.8,
+          "trigger_age_min": 1038.8,
           "target_magnet": 0.0
         }
       ]
@@ -459,8 +459,8 @@
       "noise": {
         "tr_p70": 0.309,
         "tr_p85": 0.4675,
-        "current_tr": 0.180536,
-        "fallback": 0.240714,
+        "current_tr": 0.170893,
+        "fallback": 0.227857,
         "sample_size": 48
       },
       "mode": "TRADE_BREATHING_GEOMETRY"
@@ -468,14 +468,6 @@
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "RISKY_ENTRY",
-      "side": "LONG",
-      "setup_type": "SWEEP_RECLAIM",
-      "quality": 63,
-      "price": 72.12,
-      "time": "2026-07-06T02:45:50.625661+00:00"
-    },
     {
       "type": "CLOSE",
       "side": "LONG",
@@ -2170,7 +2162,15 @@
       "quality": 69,
       "price": 76.22,
       "time": "2026-07-07T23:01:48.002246+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "LONG",
+      "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
+      "quality": 46,
+      "price": 76.16,
+      "time": "2026-07-07T23:15:50.156551+00:00"
     }
   ],
-  "updated_at": "2026-07-07T23:01:48.505936+00:00"
+  "updated_at": "2026-07-07T23:15:50.473101+00:00"
 }
