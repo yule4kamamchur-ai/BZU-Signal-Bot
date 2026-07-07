@@ -16484,6 +16484,15 @@
       "price": 75.11,
       "trade_id": "066d6b34a5",
       "signal_id": "cec91651b6"
+    },
+    {
+      "time": "2026-07-07T19:15:54.107540+00:00",
+      "type": "CLOSE",
+      "action": "TP3",
+      "side": "LONG",
+      "price": 75.84,
+      "trade_id": "066d6b34a5",
+      "signal_id": "cec91651b6"
     }
   ],
   "trades": [
@@ -16687,17 +16696,70 @@
       "position_risk_pct": 0.3,
       "runtime_config_snapshot": {},
       "close_action": "STOP"
+    },
+    {
+      "id": "066d6b34a5",
+      "signal_id": "cec91651b6",
+      "side": "LONG",
+      "setup_type": "BREAKOUT_RETEST",
+      "setup_family": "EXPANSION",
+      "opened_regime": "TRANSITION",
+      "entry_level": "RISKY_ENTRY",
+      "quality": 79,
+      "result_pct": 2.5708680062242144,
+      "mfe_pct": 2.6182261010757086,
+      "tp0_hit": true,
+      "tp1_hit": true,
+      "tp2_hit": true,
+      "tp3_hit": true,
+      "tp0": 74.205,
+      "tp1": 74.525,
+      "tp2": 74.965,
+      "tp3": 75.805,
+      "entry_stage": "RETEST_ADD",
+      "execution_source": "LIMIT_ARMED",
+      "position_risk_pct": 0.225,
+      "runtime_config_snapshot": {
+        "bot_version": "pro-hybrid-confluence-v6.10-hypothesis-matrix",
+        "architecture_version": "HYBRID_CONFLUENCE_V6_4",
+        "leverage": 5.0,
+        "normal_risk_pct": 0.5,
+        "risky_risk_pct": 0.3,
+        "probe_risk_pct": 0.12,
+        "acceptance_risk_pct": 0.22,
+        "retest_add_risk_pct": 0.3,
+        "core_risk_pct": 0.5,
+        "tp0_rr": 0.75,
+        "tp0_size_pct": 0.2,
+        "tp1_size_pct": 0.35,
+        "tp2_size_pct": 0.25,
+        "tp3_runner_pct": 0.20000000000000007,
+        "abs_min_stop_dollars": 0.4,
+        "abs_min_tp1_dollars": 0.65,
+        "commission_buffer_dollars": 0.02,
+        "min_rr1": 1.5,
+        "preferred_rr1": 1.6,
+        "min_rr2": 2.5,
+        "min_rr3": 4.0,
+        "trigger_max_age_minutes": 35,
+        "time_warp_score_multiplier": 0.7,
+        "stale_trigger_score_multiplier": 0.62,
+        "limit_armed_score_multiplier": 0.88,
+        "bootstrap_risk_multiplier": 0.75,
+        "weak_direction_risk_multiplier": 0.55
+      },
+      "close_action": "TP3"
     }
   ],
   "version": "pro-hybrid-confluence-v6.13-trade-breathing-geometry",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
   "analytics": {
-    "closed_trades": 12,
-    "wins": 4,
+    "closed_trades": 13,
+    "wins": 5,
     "losses": 8,
-    "win_rate": 33.3,
-    "net_r": -0.02,
-    "expectancy_r": -0.002,
+    "win_rate": 38.5,
+    "net_r": 0.01,
+    "expectancy_r": 0.001,
     "by_family": {
       "LIQUIDITY_RECOVERY": {
         "closed_trades": 11,
@@ -16714,23 +16776,36 @@
         "net_r": 0.0,
         "win_rate": 100.0,
         "expectancy_r": 0.0
+      },
+      "EXPANSION": {
+        "closed_trades": 1,
+        "wins": 1,
+        "losses": 0,
+        "net_r": 0.03,
+        "win_rate": 100.0,
+        "expectancy_r": 0.03
       }
     }
   },
   "learning_status": {
-    "updated_at": "2026-07-07T19:01:40.293032+00:00",
+    "updated_at": "2026-07-07T19:15:54.112657+00:00",
     "journal_file": "signal_journal_v6_4.json",
     "state_file": "last_signal_v6_4.json",
     "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
     "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
     "training_signals": 19,
-    "signal_events": 165,
-    "closed_trades": 12,
-    "training_rows": 11,
+    "signal_events": 166,
+    "closed_trades": 13,
+    "training_rows": 12,
     "global_ready": false,
     "global_learned_weight": 0.0,
     "by_family": {
       "CONTINUATION": {
+        "rows": 1,
+        "ready": false,
+        "learned_weight": 0.0
+      },
+      "EXPANSION": {
         "rows": 1,
         "ready": false,
         "learned_weight": 0.0
@@ -16750,5 +16825,5 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY"
   },
-  "updated_at": "2026-07-07T19:01:40.292547+00:00"
+  "updated_at": "2026-07-07T19:15:54.112148+00:00"
 }
