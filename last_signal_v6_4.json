@@ -33,9 +33,9 @@
     "signal_id": "8a8eb4fcbb"
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1783471500000,
+    "last_scanned_3m_ts": 1783472400000,
     "last_run_processed": 5,
-    "processed_count": 557,
+    "processed_count": 562,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -47,7 +47,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 75.86,
+        "extreme": 75.48,
         "displacement": true,
         "retest_ts": 1783403640000,
         "ready_ts": 1783403820000,
@@ -57,7 +57,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 557,
+        "processed_bars": 562,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -80,7 +80,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 75.93,
+        "extreme": 75.76,
         "displacement": true,
         "retest_ts": 1783391760000,
         "ready_ts": 1783391940000,
@@ -90,15 +90,15 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 557,
-        "strong_displacement": false,
+        "processed_bars": 562,
+        "strong_displacement": true,
         "retest": true,
         "mitigation": true,
         "impulse_strength": {
           "score": 3,
           "level": "EXTREME",
-          "body_strength": 0.98,
-          "consecutive": 0
+          "body_strength": 0.96,
+          "consecutive": 2
         },
         "chase_risk": false,
         "time_warp_opportunity": true
@@ -106,15 +106,15 @@
     }
   },
   "regime_memory": {
-    "type": "RANGE_COMPRESSION",
-    "pending_type": "NORMAL",
-    "stable_count": 0,
-    "pending_count": 1,
-    "updated_at": "2026-07-08T00:45:49.430161+00:00"
+    "type": "NORMAL",
+    "pending_type": "",
+    "stable_count": 1,
+    "pending_count": 2,
+    "updated_at": "2026-07-08T01:01:41.325622+00:00"
   },
   "latest_signal": {
-    "id": "7f4dced3a7",
-    "time": "2026-07-08T00:45:49.436985+00:00",
+    "id": "416b8fc4d2",
+    "time": "2026-07-08T01:01:41.336663+00:00",
     "action": "NO_SETUP",
     "side": "NEUTRAL",
     "setup_type": "NONE",
@@ -129,7 +129,7 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
     "learning_status": {
-      "updated_at": "2026-07-08T00:45:47.538140+00:00",
+      "updated_at": "2026-07-08T01:01:39.578434+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
@@ -225,18 +225,44 @@
         {
           "rank": 1,
           "side": "SHORT",
+          "model": "FAILED_ORB",
+          "setup_type": "FAILED_OPENING_RANGE_BREAKOUT",
+          "final_score": 50,
+          "hypothesis_score": 51.8,
+          "setup_q": 83,
+          "execution_q": 74,
+          "plan_q": 44,
+          "execution_source": "OPENING_RANGE",
+          "entry_stage": "PROBE",
+          "trigger_age_min": 1342.7,
+          "target_magnet": 3.4,
+          "failed_gate": "score 50 < risky_min 66; gate_product 0.43 < 0.46; HTF не підтримує risky-entry",
+          "evidence_layers": [
+            "ICT_LOCATION",
+            "PRICE_STRUCTURE",
+            "ICT_MODEL_FAILED_ORB",
+            "ORDER_FLOW_CVD",
+            "EXECUTION_TIME_WARP_WAIT_RETEST",
+            "EXECUTION_OPENING_RANGE"
+          ],
+          "entry_anchor": 76.33,
+          "invalidation": 76.47
+        },
+        {
+          "rank": 2,
+          "side": "SHORT",
           "model": "LIQUIDITY_LADDER_MODEL",
           "setup_type": "LIQUIDITY_LADDER",
-          "final_score": 49,
-          "hypothesis_score": 50.47,
-          "setup_q": 86,
-          "execution_q": 61,
-          "plan_q": 45,
+          "final_score": 50,
+          "hypothesis_score": 51.47,
+          "setup_q": 76,
+          "execution_q": 64,
+          "plan_q": 44,
           "execution_source": "LIQUIDITY_LADDER",
           "entry_stage": "PROBE",
-          "trigger_age_min": 1326.8,
-          "target_magnet": 1.22,
-          "failed_gate": "score 49 < risky_min 66; gate_product 0.45 < 0.46; HTF не підтримує risky-entry",
+          "trigger_age_min": 1342.7,
+          "target_magnet": 1.34,
+          "failed_gate": "score 50 < risky_min 66; HTF не підтримує risky-entry",
           "evidence_layers": [
             "ICT_LOCATION",
             "PRICE_STRUCTURE",
@@ -245,24 +271,16 @@
             "EXECUTION_TIME_WARP_WAIT_RETEST",
             "EXECUTION_LIQUIDITY_LADDER"
           ],
-          "entry_anchor": 75.8,
-          "invalidation": 76.2
+          "entry_anchor": 75.49,
+          "invalidation": 75.89
         }
       ],
-      "candidate_count": 1,
+      "candidate_count": 2,
       "audit_note": "NO_SETUP now stores why hypotheses failed"
     }
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "NO_SETUP",
-      "side": "NEUTRAL",
-      "setup_type": "NONE",
-      "quality": 12,
-      "price": 71.94,
-      "time": "2026-07-06T04:45:51.633105+00:00"
-    },
     {
       "type": "RISKY_ENTRY",
       "side": "SHORT",
@@ -1956,7 +1974,15 @@
       "quality": 12,
       "price": 75.8,
       "time": "2026-07-08T00:45:49.437033+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "quality": 12,
+      "price": 75.49,
+      "time": "2026-07-08T01:01:41.336704+00:00"
     }
   ],
-  "updated_at": "2026-07-08T00:45:50.070076+00:00"
+  "updated_at": "2026-07-08T01:01:41.853588+00:00"
 }
