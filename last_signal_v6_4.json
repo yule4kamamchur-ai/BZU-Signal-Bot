@@ -34,9 +34,9 @@
     "signal_id": "fa1b7e5cbb"
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1783521000000,
-    "last_run_processed": 5,
-    "processed_count": 832,
+    "last_scanned_3m_ts": 1783521540000,
+    "last_run_processed": 3,
+    "processed_count": 835,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -48,7 +48,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 79.61,
+        "extreme": 79.66,
         "displacement": true,
         "retest_ts": 1783403640000,
         "ready_ts": 1783403820000,
@@ -58,7 +58,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 832,
+        "processed_bars": 835,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -81,7 +81,7 @@
         "event_price": 72.93,
         "invalidation_level": 72.93,
         "sweep_level": 72.93,
-        "extreme": 79.84,
+        "extreme": 79.73,
         "displacement": true,
         "retest_ts": 1783391760000,
         "ready_ts": 1783391940000,
@@ -91,7 +91,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 832,
+        "processed_bars": 835,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -109,19 +109,19 @@
   "regime_memory": {
     "type": "NORMAL",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-07-08T14:31:41.248924+00:00"
+    "updated_at": "2026-07-08T14:39:18.515249+00:00"
   },
   "latest_signal": {
-    "id": "fa1b7e5cbb",
-    "time": "2026-07-08T14:31:41.266269+00:00",
-    "action": "ARMED",
-    "side": "LONG",
-    "setup_type": "TIME_OF_DAY_ADAPTIVE",
-    "quality": 61,
-    "decision_quality": 61,
-    "reason": "[TIME_OF_DAY_ADAPTIVE] PROBE/TIME_OF_DAY: сетап сформовано; gate v6.10: WATCH",
+    "id": "096c251c14",
+    "time": "2026-07-08T14:39:18.527470+00:00",
+    "action": "NO_SETUP",
+    "side": "NEUTRAL",
+    "setup_type": "NONE",
+    "quality": 12,
+    "decision_quality": 12,
+    "reason": "Ринок не сформував професійного ICT + 3M execution-package",
     "regime": "TRANSITION",
     "news_bias": "NEUTRAL",
     "macro_risk": "NORMAL",
@@ -130,12 +130,12 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY",
     "learning_status": {
-      "updated_at": "2026-07-08T14:31:39.956835+00:00",
+      "updated_at": "2026-07-08T14:39:17.199766+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
       "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-      "training_signals": 63,
+      "training_signals": 64,
       "signal_events": 193,
       "closed_trades": 14,
       "training_rows": 13,
@@ -222,250 +222,40 @@
       "min_breathing_risk_multiplier": 0.35
     },
     "audit": {
-      "selected": {
-        "rank": 1,
-        "side": "LONG",
-        "model": "TIME_OF_DAY_ADAPTIVE",
-        "setup_type": "TIME_OF_DAY_ADAPTIVE",
-        "final_score": 61,
-        "hypothesis_score": 62.2,
-        "setup_q": 71,
-        "execution_q": 63,
-        "plan_q": 43,
-        "execution_source": "TIME_OF_DAY",
-        "entry_stage": "PROBE",
-        "trigger_age_min": 1954.7,
-        "target_magnet": 0.0
-      },
-      "hypothesis_matrix": [
+      "rejected_hypotheses": [
         {
           "rank": 1,
           "side": "LONG",
           "model": "TIME_OF_DAY_ADAPTIVE",
           "setup_type": "TIME_OF_DAY_ADAPTIVE",
-          "final_score": 61,
-          "hypothesis_score": 62.2,
+          "final_score": 54,
+          "hypothesis_score": 55.2,
           "setup_q": 71,
-          "execution_q": 63,
+          "execution_q": 59,
           "plan_q": 43,
           "execution_source": "TIME_OF_DAY",
           "entry_stage": "PROBE",
-          "trigger_age_min": 1954.7,
-          "target_magnet": 0.0
+          "trigger_age_min": 1962.3,
+          "target_magnet": 0.0,
+          "failed_gate": "score 54 < risky_min 66; HTF не підтримує risky-entry",
+          "evidence_layers": [
+            "ICT_LOCATION",
+            "PRICE_STRUCTURE",
+            "ICT_MODEL_TIME_OF_DAY_ADAPTIVE",
+            "ORDER_FLOW_CVD",
+            "EXECUTION_TIME_WARP_WAIT_RETEST",
+            "EXECUTION_TIME_OF_DAY"
+          ],
+          "entry_anchor": 79.62,
+          "invalidation": 78.9703
         }
       ],
-      "candidate_count": 1
-    },
-    "setup_family": "CONTINUATION",
-    "ict_model": "TIME_OF_DAY_ADAPTIVE",
-    "candidate_final_score": 61,
-    "candidate_raw_score": 98,
-    "execution_lane": "EARLY_TACTICAL",
-    "execution_source": "TIME_OF_DAY",
-    "entry_stage": "PROBE",
-    "stage_plan": {
-      "stage": "PROBE",
-      "base_risk_pct": 0.09,
-      "scale_plan": [
-        "Time-of-day edge: сесійний бонус не дає full-size без окремого structural trigger",
-        "v6.13 breathing: hard stop ширший за noise envelope; sizing x0.6897"
-      ],
-      "probe_pct": 0.12,
-      "acceptance_pct": 0.22,
-      "retest_add_pct": 0.3,
-      "core_pct": 0.5,
-      "breathing_geometry": {
-        "decision_stop": 78.9976,
-        "catastrophic_stop": 78.7085,
-        "decision_distance": 0.6424,
-        "catastrophic_distance": 0.93148,
-        "conventional_distance": 0.6424,
-        "risk_size_multiplier": 0.6897,
-        "tp1_floor_distance": 1.86296,
-        "tp0_floor_distance": 0.93148,
-        "noise": {
-          "tr_p70": 0.46,
-          "tr_p85": 0.599,
-          "current_tr": 0.418929,
-          "fallback": 0.558571,
-          "sample_size": 48
-        },
-        "mode": "TRADE_BREATHING_GEOMETRY"
-      }
-    },
-    "trigger_ready": true,
-    "live_3m_trigger_ready": false,
-    "limit_armed_ready": false,
-    "time_warp_ready": true,
-    "trigger_age_minutes": 1954.69,
-    "score_components": {
-      "legacy_raw_score": 98.06,
-      "loc_score": 18,
-      "str_score": 21.85,
-      "liq_score": 2.81,
-      "flw_score": 19.5,
-      "trig_score": 8.0,
-      "htf_score": 7.5,
-      "pattern_bonus": 19.0,
-      "session_bonus": 0.0,
-      "vector_bonus": 0.0,
-      "features": {
-        "loc": 0.4,
-        "structure": 0.9104,
-        "liquidity": 0.1169,
-        "flow": 0.8125,
-        "trigger": 1.0,
-        "htf": 0.3125,
-        "pattern": 0.7857,
-        "session": 0.0,
-        "smt": 0.0,
-        "regime_fit": 1.0,
-        "freshness": 0.0,
-        "exhaustion": 0.0,
-        "no_pattern": 0.0
-      },
-      "gates": {
-        "trigger_gate": 1.0,
-        "location_gate": 0.772,
-        "pattern_gate": 1.0,
-        "forward_zone_gate": 0.9,
-        "exhaustion_gate": 1.0,
-        "liquidity_gate": 1.0,
-        "trend_gate": 0.916,
-        "htf_late_gate": 1.0,
-        "product": 0.636
-      },
-      "probability": 0.6124,
-      "base_probability": 0.9629,
-      "model_source": "bootstrap",
-      "sample_size": 13,
-      "learned_weight": 0.0,
-      "setup_quality": 71,
-      "execution_quality": 63,
-      "trade_plan_quality": 43,
-      "organic_score": 61,
-      "hypothesis_score": 62.2,
-      "active_model_count": 5,
-      "execution_source": "TIME_OF_DAY",
-      "execution_freshness_multiplier": 0.84,
-      "live_3m_trigger_ready": false,
-      "limit_armed_ready": false,
-      "time_warp_ready": true,
-      "direction_performance": {
-        "closed": 11,
-        "wins": 6,
-        "win_rate": 54.5,
-        "weak": false,
-        "risk_multiplier": 1.0,
-        "score_multiplier": 1.0,
-        "mode": "NORMAL"
-      },
-      "direction_risk_multiplier": 1.0,
-      "entry_contract": {
-        "entry_anchor": 79.64,
-        "entry_basis": "Time-of-day adaptive execution (DISTRIBUTION)",
-        "invalidation_level": 78.9976,
-        "invalidation_basis": "Session timing thesis invalidation",
-        "target_level": 80.9806,
-        "target_basis": "ATR expansion preview",
-        "target_magnet_score": 0.0
-      },
-      "acceptance_retest": {},
-      "acceleration_reentry": {},
-      "hypothesis_rank": 1,
-      "hypothesis_matrix_top": [
-        {
-          "rank": 1,
-          "side": "LONG",
-          "model": "TIME_OF_DAY_ADAPTIVE",
-          "setup_type": "TIME_OF_DAY_ADAPTIVE",
-          "final_score": 61,
-          "hypothesis_score": 62.2,
-          "setup_q": 71,
-          "execution_q": 63,
-          "plan_q": 43,
-          "execution_source": "TIME_OF_DAY",
-          "entry_stage": "PROBE",
-          "trigger_age_min": 1954.7,
-          "target_magnet": 0.0
-        }
-      ]
-    },
-    "score_features": {
-      "loc": 0.4,
-      "structure": 0.9104,
-      "liquidity": 0.1169,
-      "flow": 0.8125,
-      "trigger": 1.0,
-      "htf": 0.3125,
-      "pattern": 0.7857,
-      "session": 0.0,
-      "smt": 0.0,
-      "regime_fit": 1.0,
-      "freshness": 0.0,
-      "exhaustion": 0.0,
-      "no_pattern": 0.0
-    },
-    "score_gates": {
-      "trigger_gate": 1.0,
-      "location_gate": 0.772,
-      "pattern_gate": 1.0,
-      "forward_zone_gate": 0.9,
-      "exhaustion_gate": 1.0,
-      "liquidity_gate": 1.0,
-      "trend_gate": 0.916,
-      "htf_late_gate": 1.0,
-      "product": 0.636
-    },
-    "score_model_source": "bootstrap",
-    "score_model_sample_size": 13,
-    "score_model_learned_weight": 0.0,
-    "plan_tp0": 80.5715,
-    "plan_tp1": 81.503,
-    "plan_tp2": 82.8537,
-    "plan_tp3": 84.0646,
-    "plan_rr0": 1.0,
-    "plan_rr1": 2.0,
-    "plan_position_risk_pct": 0.0466,
-    "partial_plan": {
-      "tp0": 0.2,
-      "tp1": 0.35,
-      "tp2": 0.25,
-      "tp3_runner": 0.20000000000000007
-    },
-    "target_basis": "TP0: 1.0R/noise service fix | TP1: RR-профіль | TP2: RR-профіль | TP3: RR-профіль",
-    "decision_stop": 78.9976,
-    "catastrophic_stop": 78.7085,
-    "breathing_profile": {
-      "decision_stop": 78.9976,
-      "catastrophic_stop": 78.7085,
-      "decision_distance": 0.6424,
-      "catastrophic_distance": 0.93148,
-      "conventional_distance": 0.6424,
-      "risk_size_multiplier": 0.6897,
-      "tp1_floor_distance": 1.86296,
-      "tp0_floor_distance": 0.93148,
-      "noise": {
-        "tr_p70": 0.46,
-        "tr_p85": 0.599,
-        "current_tr": 0.418929,
-        "fallback": 0.558571,
-        "sample_size": 48
-      },
-      "mode": "TRADE_BREATHING_GEOMETRY"
+      "candidate_count": 1,
+      "audit_note": "NO_SETUP now stores why hypotheses failed"
     }
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "FOLLOW",
-      "side": "SHORT",
-      "action": "HOLD",
-      "price": 71.96,
-      "trade_id": "ff51c16916",
-      "signal_id": "a1dbf41a30",
-      "time": "2026-07-06T18:31:35.854262+00:00"
-    },
     {
       "type": "FOLLOW",
       "side": "SHORT",
@@ -2142,7 +1932,15 @@
       "quality": 61,
       "price": 79.64,
       "time": "2026-07-08T14:31:41.266325+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "quality": 12,
+      "price": 79.62,
+      "time": "2026-07-08T14:39:18.527515+00:00"
     }
   ],
-  "updated_at": "2026-07-08T14:31:41.840316+00:00"
+  "updated_at": "2026-07-08T14:39:19.072117+00:00"
 }
