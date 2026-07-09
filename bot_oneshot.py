@@ -970,9 +970,17 @@ def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk
     # v6.17.1 Institutional Adaptive Engine integration
     # HTF disagreement reduces exposure instead of blindly rejecting a valid execution.
     if INSTITUTIONAL_ADAPTIVE_ENGINE:
-        htf_aligned = bool(getattr(candidate, "score_components", {}).get("htf", 0) > 0)
+        htf_value = getattr(candidate, "score_components", {}).get("htf", 0)
+
+        if htf_value > 0:
+            htf_state = "aligned"
+        elif htf_value == 0:
+            htf_state = "neutral"
+        else:
+            htf_state = "against"
+
         exec_score = institutional_execution_score(candidate)
-        htf_multiplier = adaptive_htf_risk_multiplier(htf_aligned, exec_score)
+        htf_multiplier = adaptive_htf_risk_multiplier(htf_state, exec_score)
 
         if htf_multiplier > 0:
             risk *= htf_multiplier
@@ -5755,7 +5763,12 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     reval_wait = bool(reval_profile.get("needs_revalidation") and not reval_profile.get("entry_supported"))
     reval_live = bool(reval_profile.get("needs_revalidation") and reval_profile.get("entry_supported"))
 
-    if getattr(best, "kernel_action_modifier", "") == "WAIT_RETEST":
+    kernel_modifier = getattr(best, "kernel_action_modifier", "")
+
+    if kernel_modifier == "ARMED":
+        action = Action.ARMED.value
+        reason = "v6.17 kernel: execution підтвердження недостатнє, thesis збережена в ARMED"
+    elif kernel_modifier == "WAIT_RETEST":
         action = Action.ARMED.value
         reason = "v6.17.4 kernel: anti-chase protection, очікування ретесту"
     elif reval_wait:
