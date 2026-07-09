@@ -75,7 +75,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.13-trade-breathing-geometry"
+BOT_VERSION = "pro-hybrid-confluence-v6.14-nonblocking-setup-innovation"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -130,6 +130,19 @@ BE_LOCK_R_MULT = float(os.getenv("BE_LOCK_R_MULT", "0.10") or 0.10)
 CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.45") or 1.45)
 DECISION_STOP_CLOSE_CONFIRM = os.getenv("DECISION_STOP_CLOSE_CONFIRM", "true").lower() in {"1", "true", "yes"}
 MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
+
+# === v6.14 Non-Blocking Setup Innovation Engine ===
+# Не підвищує entry-threshold і не блокує входи. Він змінює спосіб побудови
+# позиції: морфологія сетапу, partial-plan, risk construction, target routing.
+SETUP_INNOVATION_ENGINE = os.getenv("SETUP_INNOVATION_ENGINE", "true").lower() in {"1", "true", "yes"}
+INNOVATION_STALE_TRIGGER_MIN = float(os.getenv("INNOVATION_STALE_TRIGGER_MIN", "240") or 240)
+INNOVATION_EXTREME_STALE_TRIGGER_MIN = float(os.getenv("INNOVATION_EXTREME_STALE_TRIGGER_MIN", "1440") or 1440)
+INNOVATION_MIN_RISK_MULT = float(os.getenv("INNOVATION_MIN_RISK_MULT", "0.35") or 0.35)
+INNOVATION_MAX_RISK_MULT = float(os.getenv("INNOVATION_MAX_RISK_MULT", "1.05") or 1.05)
+INNOVATION_WEAK_MAGNET_LEVEL = float(os.getenv("INNOVATION_WEAK_MAGNET_LEVEL", "2.05") or 2.05)
+INNOVATION_STRONG_MAGNET_LEVEL = float(os.getenv("INNOVATION_STRONG_MAGNET_LEVEL", "3.0") or 3.0)
+INNOVATION_GIVEBACK_WARN_RATIO = float(os.getenv("INNOVATION_GIVEBACK_WARN_RATIO", "0.62") or 0.62)
+INNOVATION_TP0_DEFENSE_SIZE = float(os.getenv("INNOVATION_TP0_DEFENSE_SIZE", "0.30") or 0.30)
 
 PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
 ACCEPTANCE_RISK_PCT = float(os.getenv("ACCEPTANCE_RISK_PCT", "0.22") or 0.22)
@@ -483,6 +496,7 @@ class Candidate:
     hypothesis_rank: int = 0
     active_model_count: int = 0
     competing_hypotheses: list[dict[str, Any]] = field(default_factory=list)
+    innovation_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -736,6 +750,14 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "catastrophic_stop_mult": CATASTROPHIC_STOP_MULT,
         "decision_stop_close_confirm": DECISION_STOP_CLOSE_CONFIRM,
         "min_breathing_risk_multiplier": MIN_BREATHING_RISK_MULTIPLIER,
+        "setup_innovation_engine": SETUP_INNOVATION_ENGINE,
+        "innovation_stale_trigger_min": INNOVATION_STALE_TRIGGER_MIN,
+        "innovation_extreme_stale_trigger_min": INNOVATION_EXTREME_STALE_TRIGGER_MIN,
+        "innovation_min_risk_mult": INNOVATION_MIN_RISK_MULT,
+        "innovation_max_risk_mult": INNOVATION_MAX_RISK_MULT,
+        "innovation_weak_magnet_level": INNOVATION_WEAK_MAGNET_LEVEL,
+        "innovation_strong_magnet_level": INNOVATION_STRONG_MAGNET_LEVEL,
+        "innovation_giveback_warn_ratio": INNOVATION_GIVEBACK_WARN_RATIO,
     }
 
 
@@ -884,7 +906,13 @@ def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk
     if candidate.execution_source == ExecutionSource.TIME_WARP.value:
         risk *= 0.50
 
-    return round(clamp(risk, 0.03, CORE_RISK_PCT), 4)
+    # v6.14: setup innovation не блокує вхід і не піднімає score-threshold.
+    # Він тільки переналаштовує construction-risk, якщо сетап морфологічно
+    # старий/тонкий/після сильного імпульсу.
+    innovation = stage_plan.get("innovation_profile") or getattr(candidate, "innovation_profile", {}) or {}
+    risk *= float(innovation.get("risk_multiplier", 1.0) or 1.0)
+
+    return round(clamp(risk, 0.02, CORE_RISK_PCT), 4)
 
 
 def atomic_json_write(path: Path, data: dict[str, Any]) -> None:
@@ -2388,6 +2416,289 @@ def event_driven_reentry_guard(state: dict, context: dict, candidate: Candidate)
     return {"blocked": False, "reason": ""}
 
 
+
+# ==========================================================
+# v6.14 NON-BLOCKING SETUP INNOVATION ENGINE
+# ==========================================================
+
+def _nonblocking_stage_rank(stage: str) -> int:
+    order = {
+        EntryStage.WAIT_RETEST.value: 0,
+        EntryStage.PROBE.value: 1,
+        EntryStage.ACCEPTANCE.value: 2,
+        EntryStage.RETEST_ADD.value: 3,
+        EntryStage.CORE.value: 4,
+    }
+    return order.get(str(stage or EntryStage.PROBE.value), 1)
+
+
+def _safer_stage(current: str, proposed: str) -> str:
+    """Не блокує угоду: лише переводить construction у більш обережну стадію."""
+    return proposed if _nonblocking_stage_rank(proposed) < _nonblocking_stage_rank(current) else current
+
+
+def _recent_impulse_map(candles: list[Candle], side: str, atr15: float) -> dict[str, Any]:
+    """Морфологія останнього руху: імпульс, squeeze/chop, giveback. Без ML-містики,
+    лише свічкова геометрія, бо іноді людству достатньо рахувати те, що вже видно."""
+    confirmed = [c for c in (candles or []) if getattr(c, "confirmed", True)]
+    if len(confirmed) < 10 or atr15 <= 0:
+        return {"valid": False, "reason": "not_enough_candles"}
+    recent = confirmed[-10:]
+    last = confirmed[-1]
+    ranges = [max(c.high - c.low, 1e-9) for c in recent]
+    bodies = [abs(c.close - c.open) for c in recent]
+    direction_closes = 0
+    for c in recent[-5:]:
+        if side == Side.LONG.value and c.close >= c.open:
+            direction_closes += 1
+        if side == Side.SHORT.value and c.close <= c.open:
+            direction_closes += 1
+    span = max(c.high for c in recent) - min(c.low for c in recent)
+    impulse_atr = span / max(atr15, 1e-9)
+    body_efficiency = sum(bodies) / max(sum(ranges), 1e-9)
+    compression = max(ranges[-3:]) / max(sum(ranges[-10:]) / len(ranges), 1e-9)
+    if side == Side.LONG.value:
+        best = max(c.high for c in recent)
+        giveback = (best - last.close) / max(span, 1e-9)
+    else:
+        best = min(c.low for c in recent)
+        giveback = (last.close - best) / max(span, 1e-9)
+    return {
+        "valid": True,
+        "impulse_atr": round(impulse_atr, 2),
+        "body_efficiency": round(body_efficiency, 2),
+        "direction_closes_5": direction_closes,
+        "compression_ratio": round(compression, 2),
+        "giveback_ratio": round(clamp(giveback, 0.0, 1.0), 2),
+        "last_range_atr": round(max(last.high - last.low, 0.0) / max(atr15, 1e-9), 2),
+    }
+
+
+def _setup_morphology_label(candidate: Candidate, impulse: dict[str, Any]) -> str:
+    age = float(candidate.trigger_age_minutes or 0.0)
+    magnet = float(candidate.target_magnet_score or 0.0)
+    setup = str(candidate.setup_type or "")
+    source = str(candidate.execution_source or "")
+    impulse_atr = float(impulse.get("impulse_atr", 0.0) or 0.0)
+    giveback = float(impulse.get("giveback_ratio", 0.0) or 0.0)
+
+    if age >= INNOVATION_EXTREME_STALE_TRIGGER_MIN and source in {ExecutionSource.ACCEPTANCE_RETEST.value, ExecutionSource.LIQUIDITY_LADDER.value}:
+        return "STALE_THESIS_REVALIDATION_PROBE"
+    if setup == SetupType.ACCEPTANCE_RETEST_CONTINUATION.value and impulse_atr >= 3.2 and giveback >= 0.45:
+        return "IMPULSE_MEMORY_RETEST_PROBE"
+    if magnet and magnet < INNOVATION_WEAK_MAGNET_LEVEL:
+        return "THIN_MAGNET_DEFENSIVE_LADDER"
+    if magnet >= INNOVATION_STRONG_MAGNET_LEVEL and impulse_atr >= 2.0:
+        return "MAGNET_EXPANSION_RUNNER"
+    if source == ExecutionSource.LIQUIDITY_LADDER.value:
+        return "DOL_LADDER_SCOUT"
+    return "STANDARD_NONBLOCKING_CONSTRUCTION"
+
+
+def _target_ladder_density(side: str, price: float, context: dict, atr15: float) -> dict[str, Any]:
+    targets = find_technical_targets(
+        side,
+        price,
+        context.get("zones") or [],
+        context.get("liquidity", {}) or {},
+        atr15,
+        macro=context.get("macro_liquidity", {}) or {},
+    )
+    window = max(atr15 * 6.0, ABS_MIN_TP1_DOLLARS * 3.0)
+    nearby = [t for t in targets if 0 < safe_float(t.get("distance"), 0.0) <= window]
+    score_sum = sum(safe_float(t.get("magnet_score"), 0.0) for t in nearby[:5])
+    return {
+        "count": len(nearby),
+        "score_sum": round(score_sum, 2),
+        "nearest": [
+            {
+                "kind": t.get("kind"),
+                "tf": t.get("timeframe"),
+                "level": round_price(t.get("level")),
+                "magnet": round(safe_float(t.get("magnet_score"), 0.0), 2),
+                "dist_atr": round(safe_float(t.get("distance"), 0.0) / max(atr15, 1e-9), 2),
+            }
+            for t in nearby[:4]
+        ],
+    }
+
+
+def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, state: Optional[dict] = None, journal: Optional[dict] = None) -> dict[str, Any]:
+    """v6.14 overlay: не створює hard-block, не підвищує entry-quality,
+    не змінює final_score. Він перебудовує position construction навколо сетапу.
+
+    Ідея: якщо сетап старий, тонкий за target magnet або після імпульсного MFE,
+    не казати 'не входь', а казати 'входь як probe/ladder/scout, фіксуй інакше'.
+    Ринок і так достатньо абсурдний, не треба ще й ботом забороняти собі дані.
+    """
+    if not SETUP_INNOVATION_ENGINE:
+        return {"enabled": False, "primary": "DISABLED", "risk_multiplier": 1.0, "notes": []}
+
+    price = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0) or safe_float(context.get("price"), 0.0)
+    atr15 = safe_float(context.get("atr15"), 0.6) or 0.6
+    c15 = (context.get("candles", {}) or {}).get("15m", []) or []
+    impulse = _recent_impulse_map(c15, candidate.side, atr15)
+    ladder = _target_ladder_density(candidate.side, price, context, atr15)
+    primary = _setup_morphology_label(candidate, impulse)
+    age = float(candidate.trigger_age_minutes or 0.0)
+    magnet = float(candidate.target_magnet_score or 0.0)
+    plan_q = int(candidate.trade_plan_quality_score or 0)
+
+    risk_mult = 1.0
+    stage_override = str(getattr(candidate, "entry_stage", EntryStage.PROBE.value) or EntryStage.PROBE.value)
+    partial_mode = "STANDARD"
+    notes: list[str] = []
+    router: dict[str, Any] = {"mode": "STANDARD", "ladder": ladder}
+
+    if primary == "STALE_THESIS_REVALIDATION_PROBE":
+        # Не блокуємо стару тезу. Просто забороняємо їй маскуватися під свіжий core.
+        risk_mult *= 0.45 if age >= INNOVATION_EXTREME_STALE_TRIGGER_MIN else 0.62
+        stage_override = _safer_stage(stage_override, EntryStage.PROBE.value)
+        partial_mode = "DEFENSIVE_TP0"
+        router["mode"] = "REVALIDATION_SCOUT"
+        notes.append(f"old trigger {age:.0f}m → revalidation-probe, not quality gate")
+
+    if primary == "IMPULSE_MEMORY_RETEST_PROBE":
+        risk_mult *= 0.72
+        stage_override = _safer_stage(stage_override, EntryStage.PROBE.value)
+        partial_mode = "MFE_CAPTURE"
+        router["mode"] = "IMPULSE_MEMORY"
+        notes.append("post-impulse retest: позиція будується як scout + швидша часткова фіксація")
+
+    if primary == "THIN_MAGNET_DEFENSIVE_LADDER":
+        risk_mult *= 0.78
+        partial_mode = "DEFENSIVE_TP0"
+        router["mode"] = "THIN_MAGNET_LADDER"
+        notes.append(f"target magnet {magnet:.2f} слабкий → більше ваги TP0/TP1, не блок")
+
+    if primary == "MAGNET_EXPANSION_RUNNER":
+        risk_mult *= 1.03
+        partial_mode = "RUNNER_EXPANSION"
+        router["mode"] = "MAGNET_RUNNER"
+        notes.append(f"target magnet {magnet:.2f} сильний → runner отримує більше ваги")
+
+    if primary == "DOL_LADDER_SCOUT":
+        risk_mult *= 0.82
+        stage_override = _safer_stage(stage_override, EntryStage.PROBE.value)
+        partial_mode = "LADDER_SCOUT"
+        router["mode"] = "DOL_SCOUT"
+        notes.append("DOL ladder без hard block: scout-size до першої реакції ліквідності")
+
+    if plan_q and plan_q < 55:
+        # Не піднімаємо quality і не блокуємо. Просто робимо trade-plan більш оборонним.
+        risk_mult *= 0.82
+        partial_mode = "DEFENSIVE_TP0" if partial_mode == "STANDARD" else partial_mode
+        notes.append(f"plan_q {plan_q} → defensive construction, без підвищення порогу входу")
+
+    if impulse.get("valid") and safe_float(impulse.get("giveback_ratio"), 0.0) >= 0.62:
+        risk_mult *= 0.88
+        partial_mode = "MFE_CAPTURE" if partial_mode == "STANDARD" else partial_mode
+        notes.append(f"recent giveback {impulse.get('giveback_ratio')} → MFE-capture partials")
+
+    risk_mult = round(clamp(risk_mult, INNOVATION_MIN_RISK_MULT, INNOVATION_MAX_RISK_MULT), 4)
+
+    return {
+        "enabled": True,
+        "version": "v6.14_nonblocking_setup_innovation",
+        "primary": primary,
+        "risk_multiplier": risk_mult,
+        "stage_override": stage_override,
+        "partial_mode": partial_mode,
+        "target_router": router,
+        "impulse": impulse,
+        "trigger_age_min": round(age, 1),
+        "target_magnet": round(magnet, 2),
+        "plan_q": plan_q,
+        "notes": notes,
+        "no_block": True,
+        "quality_threshold_changed": False,
+    }
+
+
+def apply_setup_innovation_overlay(candidate: Candidate, context: dict, state: Optional[dict] = None, journal: Optional[dict] = None) -> Candidate:
+    overlay = nonblocking_setup_innovation_overlay(candidate, context, state, journal)
+    candidate.innovation_profile = overlay
+    candidate.stage_plan = candidate.stage_plan or {}
+    candidate.stage_plan["innovation_profile"] = overlay
+    if overlay.get("enabled"):
+        candidate.stage_plan.setdefault("scale_plan", []).extend([f"v6.14 {n}" for n in overlay.get("notes", [])])
+        candidate.entry_stage = str(overlay.get("stage_override") or candidate.entry_stage)
+        candidate.stage_plan["stage"] = candidate.entry_stage
+        # Невеликий ranking-bonus НЕ є quality-threshold і не впливає на final_score.
+        # Він просто дає перевагу сетапам із кращою морфологією construction.
+        if overlay.get("primary") in {"MAGNET_EXPANSION_RUNNER", "IMPULSE_MEMORY_RETEST_PROBE"}:
+            candidate.hypothesis_score = round(float(candidate.hypothesis_score or candidate.final_score) + 0.18, 2)
+        if candidate.score_components is not None:
+            candidate.score_components["innovation_profile"] = overlay
+            candidate.score_components["innovation_no_block"] = True
+    return candidate
+
+
+def dynamic_partial_plan_from_innovation(candidate: Candidate) -> dict[str, float]:
+    overlay = (candidate.stage_plan or {}).get("innovation_profile") or getattr(candidate, "innovation_profile", {}) or {}
+    mode = str(overlay.get("partial_mode", "STANDARD") or "STANDARD")
+
+    if mode in {"DEFENSIVE_TP0", "MFE_CAPTURE"}:
+        tp0 = max(TP0_SIZE_PCT, min(INNOVATION_TP0_DEFENSE_SIZE, 0.40))
+        tp1 = max(0.30, TP1_SIZE_PCT)
+        tp2 = max(0.15, min(TP2_SIZE_PCT, 0.22))
+        runner = max(0.0, 1.0 - tp0 - tp1 - tp2)
+    elif mode == "LADDER_SCOUT":
+        tp0, tp1, tp2 = 0.25, 0.35, 0.22
+        runner = max(0.0, 1.0 - tp0 - tp1 - tp2)
+    elif mode == "RUNNER_EXPANSION":
+        tp0 = min(TP0_SIZE_PCT, 0.18)
+        tp1 = max(0.28, TP1_SIZE_PCT - 0.05)
+        tp2 = max(0.20, TP2_SIZE_PCT - 0.03)
+        runner = max(0.20, 1.0 - tp0 - tp1 - tp2)
+        # Нормалізація, щоб сума не втекла вище 1.0, бо математика теж іноді хоче в бар.
+        total = tp0 + tp1 + tp2 + runner
+        if total > 1.0:
+            runner = max(0.0, 1.0 - tp0 - tp1 - tp2)
+    else:
+        tp0, tp1, tp2, runner = TP0_SIZE_PCT, TP1_SIZE_PCT, TP2_SIZE_PCT, TP3_RUNNER_PCT
+
+    return {
+        "tp0": round(float(tp0), 4),
+        "tp1": round(float(tp1), 4),
+        "tp2": round(float(tp2), 4),
+        "tp3_runner": round(max(0.0, 1.0 - float(tp0) - float(tp1) - float(tp2)), 4) if mode != "STANDARD" else round(float(runner), 4),
+        "mode": mode,
+    }
+
+
+def _tp0_giveback_innovation_advisor(trade: ActiveTrade, context: dict, result: dict[str, Any]) -> None:
+    """Після TP0 не рухає стоп і не закриває угоду автоматично. Лише дає
+    non-blocking management directive, щоб не перетворювати +MFE на мінус мовчки."""
+    if not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
+        return
+    risk = _trade_risk_distance(trade)
+    if risk <= 1e-9:
+        return
+    price = safe_float(context.get("price"), trade.entry)
+    if trade.side == Side.LONG.value:
+        mfe_r = max(0.0, (float(trade.best_price) - float(trade.entry)) / risk)
+        cur_r = (price - float(trade.entry)) / risk
+    else:
+        mfe_r = max(0.0, (float(trade.entry) - float(trade.best_price)) / risk)
+        cur_r = (float(trade.entry) - price) / risk
+    if mfe_r < 1.05:
+        return
+    giveback_ratio = 1.0 - (cur_r / max(mfe_r, 1e-9))
+    if giveback_ratio >= INNOVATION_GIVEBACK_WARN_RATIO:
+        result.setdefault("notes", []).append(
+            f"v6.14 MFE-capture advisor: після TP0 віддано {giveback_ratio:.0%} MFE; "
+            "стоп не душимо, але новий добір заборонений до повторного acceptance-close"
+        )
+        result["innovation_management"] = {
+            "mode": "TP0_GIVEBACK_DEFENSE",
+            "mfe_r": round(mfe_r, 2),
+            "current_r": round(cur_r, 2),
+            "giveback_ratio": round(giveback_ratio, 2),
+            "auto_close": False,
+            "stop_move": False,
+        }
+
 # ==========================================================
 # SESSION PROFILING & AMD (Accumulation — Manipulation — Distribution)
 # ==========================================================
@@ -3299,6 +3610,8 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
         "entry_stage": c.entry_stage,
         "trigger_age_min": round(float(c.trigger_age_minutes or 0.0), 1),
         "target_magnet": round(float(c.target_magnet_score or 0.0), 2),
+        "innovation_model": (getattr(c, "innovation_profile", {}) or {}).get("primary", ""),
+        "innovation_risk_mult": round(float((getattr(c, "innovation_profile", {}) or {}).get("risk_multiplier", 1.0)), 3),
     }
 
 
@@ -3394,6 +3707,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.professional_gate = evaluate_professional_gate(context, candidate)
     candidate.stage_plan = staged_entry_plan(candidate, context, direction_perf)
     candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
+    candidate = apply_setup_innovation_overlay(candidate, context, {}, journal)
     return candidate
 
 def _same_side_zone_support(zones: list, side: str, price: float, atr15: float, kinds: set[str] = {"FVG", "OB"}) -> tuple[bool, float, str]:
@@ -4364,6 +4678,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             cand.professional_gate = evaluate_professional_gate(context, cand)
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
             cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
+            cand = apply_setup_innovation_overlay(cand, context, state, journal)
 
             min_score_required = params["armed_score"] - 10 if not is_fallback else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
             # TIME_WARP не блокується, але мусить бути достатньо сильним, щоб хоча б ARMED/WATCH.
@@ -5065,12 +5380,16 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     if not candidate.stage_plan:
         candidate.stage_plan = staged_entry_plan(candidate, context)
         candidate.entry_stage = str(candidate.stage_plan.get("stage", EntryStage.PROBE.value))
+    if not (candidate.stage_plan or {}).get("innovation_profile"):
+        candidate = apply_setup_innovation_overlay(candidate, context)
     position_risk_pct = adaptive_position_risk_pct(candidate, context, default_risk)
     position_risk_pct = round(clamp(position_risk_pct * float(breathing.get("risk_size_multiplier", 1.0)), 0.02, CORE_RISK_PCT), 4)
     candidate.stage_plan.setdefault("breathing_geometry", breathing)
     candidate.stage_plan.setdefault("scale_plan", []).append(
         f"v6.13 breathing: hard stop ширший за noise envelope; sizing x{breathing.get('risk_size_multiplier')}"
     )
+
+    partial_plan = dynamic_partial_plan_from_innovation(candidate)
 
     plan = TradePlan(
         entry=round_price(price),
@@ -5091,7 +5410,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         entry_stage=candidate.entry_stage,
         execution_source=candidate.execution_source,
         stage_plan=candidate.stage_plan,
-        partial_plan={"tp0": TP0_SIZE_PCT, "tp1": TP1_SIZE_PCT, "tp2": TP2_SIZE_PCT, "tp3_runner": TP3_RUNNER_PCT},
+        partial_plan=partial_plan,
         runtime_config_snapshot=runtime_config_snapshot(),
         decision_stop=round_price(structural_stop),
         catastrophic_stop=round_price(stop),
@@ -5547,6 +5866,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP0.value
         result["notes"].append(f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції; стоп НЕ рухаємо, TP1/TP2 лишаються живими")
 
+    _tp0_giveback_innovation_advisor(trade, context, result)
+
     # --- 1. Фіксація TP1 (v6.13 delayed protection, НЕ миттєвий BE) ---
     if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
         trade.tp1_hit = True
@@ -5780,6 +6101,8 @@ def run_bot() -> None:
                 "execution_source": getattr(active, "execution_source", ""),
                 "position_risk_pct": active.position_risk_pct,
                 "runtime_config_snapshot": getattr(active, "runtime_config_snapshot", {}),
+                "innovation_profile": (getattr(active, "stage_plan", {}) or {}).get("innovation_profile", {}),
+                "partial_plan": {"tp0": getattr(active, "tp0_size_pct", TP0_SIZE_PCT), "tp1": getattr(active, "tp1_size_pct", TP1_SIZE_PCT), "tp2": getattr(active, "tp2_size_pct", TP2_SIZE_PCT), "tp3_runner": getattr(active, "tp3_runner_pct", TP3_RUNNER_PCT)},
                 "close_action": res.get("action"),
             })
             store_active_trade(state, None)
@@ -5817,6 +6140,7 @@ def run_bot() -> None:
             "score_model_source": components.get("model_source", ""),
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
+            "innovation_profile": getattr(decision.candidate, "innovation_profile", {}) or components.get("innovation_profile", {}),
         })
         if decision.plan:
             payload.update({
@@ -5854,8 +6178,10 @@ def run_bot() -> None:
             best_price=decision.plan.entry, worst_price=decision.plan.entry,
             trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key,
             thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action,
-            tp0=decision.plan.tp0, tp0_size_pct=TP0_SIZE_PCT, tp1_size_pct=TP1_SIZE_PCT,
-            tp2_size_pct=TP2_SIZE_PCT, tp3_runner_pct=TP3_RUNNER_PCT,
+            tp0=decision.plan.tp0, tp0_size_pct=decision.plan.partial_plan.get("tp0", TP0_SIZE_PCT),
+            tp1_size_pct=decision.plan.partial_plan.get("tp1", TP1_SIZE_PCT),
+            tp2_size_pct=decision.plan.partial_plan.get("tp2", TP2_SIZE_PCT),
+            tp3_runner_pct=decision.plan.partial_plan.get("tp3_runner", TP3_RUNNER_PCT),
             execution_source=decision.candidate.execution_source, entry_stage=decision.candidate.entry_stage,
             stage_plan=decision.candidate.stage_plan, runtime_config_snapshot=decision.plan.runtime_config_snapshot,
             decision_stop=decision.plan.decision_stop, catastrophic_stop=decision.plan.catastrophic_stop,
