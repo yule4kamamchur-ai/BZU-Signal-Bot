@@ -75,7 +75,7 @@ import requests
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.14-nonblocking-setup-innovation"
+BOT_VERSION = "pro-hybrid-confluence-v6.15-setup-argumented-trigger-revalidation"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_4"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -143,6 +143,19 @@ INNOVATION_WEAK_MAGNET_LEVEL = float(os.getenv("INNOVATION_WEAK_MAGNET_LEVEL", "
 INNOVATION_STRONG_MAGNET_LEVEL = float(os.getenv("INNOVATION_STRONG_MAGNET_LEVEL", "3.0") or 3.0)
 INNOVATION_GIVEBACK_WARN_RATIO = float(os.getenv("INNOVATION_GIVEBACK_WARN_RATIO", "0.62") or 0.62)
 INNOVATION_TP0_DEFENSE_SIZE = float(os.getenv("INNOVATION_TP0_DEFENSE_SIZE", "0.30") or 0.30)
+
+# === v6.15 Setup-Argumented Trigger Revalidation ===
+# Не блокує сетапи через вік. Старий trigger втрачає право бути execution,
+# але thesis може швидко ожити, якщо ринок дає новий сетапний доказ тут і зараз.
+SETUP_REVALIDATION_ENGINE = os.getenv("SETUP_REVALIDATION_ENGINE", "true").lower() in {"1", "true", "yes"}
+SETUP_REVALIDATION_STALE_MIN = float(os.getenv("SETUP_REVALIDATION_STALE_MIN", "240") or 240)
+SETUP_REVALIDATION_EXTREME_MIN = float(os.getenv("SETUP_REVALIDATION_EXTREME_MIN", "1440") or 1440)
+SETUP_REVALIDATION_MAX_LATE_DIST_ATR = float(os.getenv("SETUP_REVALIDATION_MAX_LATE_DIST_ATR", "1.35") or 1.35)
+SETUP_REVALIDATION_BODY_ATR_MIN = float(os.getenv("SETUP_REVALIDATION_BODY_ATR_MIN", "0.16") or 0.16)
+SETUP_REVALIDATION_BODY_RATIO_MIN = float(os.getenv("SETUP_REVALIDATION_BODY_RATIO_MIN", "0.52") or 0.52)
+SETUP_REVALIDATION_ACCEPTANCE_ATR = float(os.getenv("SETUP_REVALIDATION_ACCEPTANCE_ATR", "0.42") or 0.42)
+SETUP_REVALIDATION_RISK_MULT_STALE = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_STALE", "0.55") or 0.55)
+SETUP_REVALIDATION_RISK_MULT_EXTREME = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_EXTREME", "0.35") or 0.35)
 
 PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
 ACCEPTANCE_RISK_PCT = float(os.getenv("ACCEPTANCE_RISK_PCT", "0.22") or 0.22)
@@ -497,6 +510,7 @@ class Candidate:
     active_model_count: int = 0
     competing_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     innovation_profile: dict[str, Any] = field(default_factory=dict)
+    revalidation_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -758,6 +772,13 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "innovation_weak_magnet_level": INNOVATION_WEAK_MAGNET_LEVEL,
         "innovation_strong_magnet_level": INNOVATION_STRONG_MAGNET_LEVEL,
         "innovation_giveback_warn_ratio": INNOVATION_GIVEBACK_WARN_RATIO,
+        "setup_revalidation_engine": SETUP_REVALIDATION_ENGINE,
+        "setup_revalidation_stale_min": SETUP_REVALIDATION_STALE_MIN,
+        "setup_revalidation_extreme_min": SETUP_REVALIDATION_EXTREME_MIN,
+        "setup_revalidation_max_late_dist_atr": SETUP_REVALIDATION_MAX_LATE_DIST_ATR,
+        "setup_revalidation_body_atr_min": SETUP_REVALIDATION_BODY_ATR_MIN,
+        "setup_revalidation_body_ratio_min": SETUP_REVALIDATION_BODY_RATIO_MIN,
+        "setup_revalidation_acceptance_atr": SETUP_REVALIDATION_ACCEPTANCE_ATR,
     }
 
 
@@ -2523,6 +2544,146 @@ def _target_ladder_density(side: str, price: float, context: dict, atr15: float)
     }
 
 
+
+def _candle_body_ratio(c: Optional[Candle]) -> float:
+    if not c:
+        return 0.0
+    rng = max(abs(float(c.high) - float(c.low)), 1e-9)
+    return abs(float(c.close) - float(c.open)) / rng
+
+
+def _last_confirmed(candles: list[Candle]) -> Optional[Candle]:
+    confirmed = [c for c in (candles or []) if getattr(c, "confirmed", True)]
+    return sorted(confirmed, key=lambda c: c.ts)[-1] if confirmed else None
+
+
+def _recent_confirmed(candles: list[Candle], n: int = 3) -> list[Candle]:
+    confirmed = [c for c in (candles or []) if getattr(c, "confirmed", True)]
+    return sorted(confirmed, key=lambda c: c.ts)[-n:]
+
+
+def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle], atr15: float) -> dict[str, Any]:
+    """Свіжий сетапний доказ, а не стара памʼять trigger.
+    Не піднімає якість і не є hard gate: повертає, чи є нова мікро-аргументація входу."""
+    recent3 = _recent_confirmed(c3, 4)
+    last3 = recent3[-1] if recent3 else None
+    prev3 = recent3[-2] if len(recent3) >= 2 else None
+    last15 = _last_confirmed(c15)
+    if not last3 or not prev3:
+        return {"supported": False, "kind": "NO_3M_DATA", "score": 0, "checks": []}
+
+    body = abs(float(last3.close) - float(last3.open))
+    body_atr = body / max(float(atr15), 1e-9)
+    body_ratio = _candle_body_ratio(last3)
+    checks = []
+
+    if side == Side.LONG.value:
+        directional_close = float(last3.close) > float(last3.open) and float(last3.close) > float(prev3.high)
+        local_acceptance = bool(last15 and float(last15.close) >= float(last15.open) - float(atr15) * SETUP_REVALIDATION_ACCEPTANCE_ATR)
+        micro_sweep_reclaim = bool(float(last3.low) < float(prev3.low) and float(last3.close) > float(prev3.close))
+    else:
+        directional_close = float(last3.close) < float(last3.open) and float(last3.close) < float(prev3.low)
+        local_acceptance = bool(last15 and float(last15.close) <= float(last15.open) + float(atr15) * SETUP_REVALIDATION_ACCEPTANCE_ATR)
+        micro_sweep_reclaim = bool(float(last3.high) > float(prev3.high) and float(last3.close) < float(prev3.close))
+
+    strong_body = body_atr >= SETUP_REVALIDATION_BODY_ATR_MIN and body_ratio >= SETUP_REVALIDATION_BODY_RATIO_MIN
+    checks.append({"name": "directional_3m_close", "ok": bool(directional_close)})
+    checks.append({"name": "strong_3m_body", "ok": bool(strong_body), "body_atr": round(body_atr, 3), "body_ratio": round(body_ratio, 3)})
+    checks.append({"name": "15m_acceptance", "ok": bool(local_acceptance)})
+    checks.append({"name": "micro_sweep_reclaim", "ok": bool(micro_sweep_reclaim)})
+
+    score = 0
+    score += 35 if directional_close else 0
+    score += 30 if strong_body else 0
+    score += 20 if local_acceptance else 0
+    score += 15 if micro_sweep_reclaim else 0
+
+    supported = bool((directional_close and strong_body and local_acceptance) or (micro_sweep_reclaim and strong_body and local_acceptance))
+    kind = "LIVE_DIRECTIONAL_ACCEPTANCE" if directional_close else "MICRO_SWEEP_RECLAIM" if micro_sweep_reclaim else "WEAK_OR_MISSING"
+    return {"supported": supported, "kind": kind, "score": int(score), "checks": checks}
+
+
+def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impulse: Optional[dict] = None) -> dict[str, Any]:
+    """v6.15: trigger lease без примусового блокування.
+    Старий trigger не відкриває late-entry сам по собі. Він має бути
+    переаргументований свіжою 3M/15M поведінкою або лишається ARMED thesis.
+    Quality thresholds не змінюються."""
+    if not SETUP_REVALIDATION_ENGINE:
+        return {"enabled": False, "state": "DISABLED", "entry_supported": True, "needs_revalidation": False}
+
+    source = str(candidate.execution_source or ExecutionSource.NONE.value)
+    age = max(float(candidate.trigger_age_minutes or 0.0), 0.0)
+    price = safe_float(context.get("price"), 0.0) or safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
+    anchor = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0) or safe_float(getattr(candidate, "trigger_level", 0.0), 0.0) or price
+    atr15 = safe_float(context.get("atr15"), 0.6) or 0.6
+    c3 = (context.get("candles", {}) or {}).get("3m", []) or []
+    c15 = (context.get("candles", {}) or {}).get("15m", []) or []
+
+    live_ready = bool(getattr(candidate, "live_3m_trigger_ready", False))
+    limit_ready = bool(getattr(candidate, "limit_armed_ready", False))
+    time_warp_ready = bool(getattr(candidate, "time_warp_ready", False))
+
+    if age < SETUP_REVALIDATION_STALE_MIN or live_ready:
+        state = "FRESH"
+    elif age < SETUP_REVALIDATION_EXTREME_MIN:
+        state = "STALE"
+    else:
+        state = "ARCHIVED_THESIS"
+
+    dist_atr = abs(price - anchor) / max(atr15, 1e-9) if price and anchor else 0.0
+    not_late_location = bool(dist_atr <= SETUP_REVALIDATION_MAX_LATE_DIST_ATR or limit_ready)
+    micro = _side_directional_revalidation(candidate.side, c3, c15, atr15)
+
+    # Сетапна аргументація: не просто "age ok/not ok", а чому саме зараз можна або не можна.
+    setup_arguments = []
+    if live_ready:
+        setup_arguments.append("fresh LIVE_3M execution")
+    if limit_ready:
+        setup_arguments.append("limit/zone still armed")
+    if micro.get("supported"):
+        setup_arguments.append(f"fresh {micro.get('kind')} on 3M/15M")
+    if not_late_location:
+        setup_arguments.append(f"price not late vs anchor: {dist_atr:.2f} ATR")
+    else:
+        setup_arguments.append(f"late distance from anchor: {dist_atr:.2f} ATR")
+    if time_warp_ready and not live_ready:
+        setup_arguments.append("time-warp is thesis memory, not live execution")
+
+    needs_revalidation = bool(state != "FRESH" or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value))
+    revalidated = bool(needs_revalidation and micro.get("supported") and not_late_location)
+    entry_supported = bool(not needs_revalidation or revalidated)
+
+    if not needs_revalidation:
+        entry_timing = "LIVE_OR_STILL_FRESH"
+        risk_mult = 1.0
+    elif revalidated:
+        entry_timing = "SETUP_REVALIDATED_NOW"
+        risk_mult = SETUP_REVALIDATION_RISK_MULT_EXTREME if state == "ARCHIVED_THESIS" else SETUP_REVALIDATION_RISK_MULT_STALE
+    else:
+        entry_timing = "ARMED_WAIT_FRESH_ARGUMENT"
+        risk_mult = SETUP_REVALIDATION_RISK_MULT_EXTREME if state == "ARCHIVED_THESIS" else SETUP_REVALIDATION_RISK_MULT_STALE
+
+    return {
+        "enabled": True,
+        "version": "v6.15_setup_argumented_trigger_revalidation",
+        "state": state,
+        "source": source,
+        "age_min": round(age, 1),
+        "needs_revalidation": needs_revalidation,
+        "revalidated": revalidated,
+        "entry_supported": entry_supported,
+        "entry_timing": entry_timing,
+        "not_late_location": not_late_location,
+        "distance_from_anchor_atr": round(dist_atr, 2),
+        "micro_confirmation": micro,
+        "risk_multiplier": round(clamp(risk_mult, INNOVATION_MIN_RISK_MULT, 1.0), 4),
+        "stage_override": EntryStage.PROBE.value if revalidated else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
+        "action_bias": "PROBE_ENTRY" if revalidated else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
+        "setup_arguments": setup_arguments,
+        "no_hard_block": True,
+        "quality_threshold_changed": False,
+    }
+
 def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, state: Optional[dict] = None, journal: Optional[dict] = None) -> dict[str, Any]:
     """v6.14 overlay: не створює hard-block, не підвищує entry-quality,
     не змінює final_score. Він перебудовує position construction навколо сетапу.
@@ -2538,8 +2699,11 @@ def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, st
     atr15 = safe_float(context.get("atr15"), 0.6) or 0.6
     c15 = (context.get("candles", {}) or {}).get("15m", []) or []
     impulse = _recent_impulse_map(c15, candidate.side, atr15)
+    revalidation = setup_trigger_revalidation_profile(candidate, context, impulse)
     ladder = _target_ladder_density(candidate.side, price, context, atr15)
     primary = _setup_morphology_label(candidate, impulse)
+    if revalidation.get("needs_revalidation"):
+        primary = "SETUP_ARGUMENTED_TRIGGER_REVALIDATION" if revalidation.get("entry_supported") else "STALE_THESIS_WAIT_SETUP_ARGUMENT"
     age = float(candidate.trigger_age_minutes or 0.0)
     magnet = float(candidate.target_magnet_score or 0.0)
     plan_q = int(candidate.trade_plan_quality_score or 0)
@@ -2549,6 +2713,18 @@ def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, st
     partial_mode = "STANDARD"
     notes: list[str] = []
     router: dict[str, Any] = {"mode": "STANDARD", "ladder": ladder}
+
+    if revalidation.get("needs_revalidation"):
+        risk_mult *= float(revalidation.get("risk_multiplier", 1.0) or 1.0)
+        partial_mode = "DEFENSIVE_TP0"
+        if revalidation.get("entry_supported"):
+            stage_override = _safer_stage(stage_override, EntryStage.PROBE.value)
+            router["mode"] = "SETUP_REVALIDATED_SCOUT"
+            notes.append("old trigger переаргументовано свіжим 3M/15M setup → probe зараз, без підвищення quality")
+        else:
+            stage_override = EntryStage.WAIT_RETEST.value
+            router["mode"] = "WAIT_FRESH_SETUP_ARGUMENT"
+            notes.append("old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block")
 
     if primary == "STALE_THESIS_REVALIDATION_PROBE":
         # Не блокуємо стару тезу. Просто забороняємо їй маскуватися під свіжий core.
@@ -2605,6 +2781,8 @@ def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, st
         "stage_override": stage_override,
         "partial_mode": partial_mode,
         "target_router": router,
+        "trigger_revalidation": revalidation,
+        "entry_supported_now": bool(revalidation.get("entry_supported", True)),
         "impulse": impulse,
         "trigger_age_min": round(age, 1),
         "target_magnet": round(magnet, 2),
@@ -2618,6 +2796,7 @@ def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, st
 def apply_setup_innovation_overlay(candidate: Candidate, context: dict, state: Optional[dict] = None, journal: Optional[dict] = None) -> Candidate:
     overlay = nonblocking_setup_innovation_overlay(candidate, context, state, journal)
     candidate.innovation_profile = overlay
+    candidate.revalidation_profile = overlay.get("trigger_revalidation", {}) or {}
     candidate.stage_plan = candidate.stage_plan or {}
     candidate.stage_plan["innovation_profile"] = overlay
     if overlay.get("enabled"):
@@ -2630,6 +2809,7 @@ def apply_setup_innovation_overlay(candidate: Candidate, context: dict, state: O
             candidate.hypothesis_score = round(float(candidate.hypothesis_score or candidate.final_score) + 0.18, 2)
         if candidate.score_components is not None:
             candidate.score_components["innovation_profile"] = overlay
+            candidate.score_components["trigger_revalidation"] = candidate.revalidation_profile
             candidate.score_components["innovation_no_block"] = True
     return candidate
 
@@ -3612,6 +3792,9 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
         "target_magnet": round(float(c.target_magnet_score or 0.0), 2),
         "innovation_model": (getattr(c, "innovation_profile", {}) or {}).get("primary", ""),
         "innovation_risk_mult": round(float((getattr(c, "innovation_profile", {}) or {}).get("risk_multiplier", 1.0)), 3),
+        "revalidation_state": (getattr(c, "revalidation_profile", {}) or {}).get("state", ""),
+        "revalidation_supported": bool((getattr(c, "revalidation_profile", {}) or {}).get("entry_supported", False)),
+        "entry_timing": (getattr(c, "revalidation_profile", {}) or {}).get("entry_timing", ""),
     }
 
 
@@ -5339,6 +5522,14 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     rr1 = abs(tp1 - price) / abs(stop - price) if abs(stop - price) > 1e-9 else 2.1
     regime_action = str(profile.get("entry_action", "ALLOW")).upper()
     execution_ready = candidate.trigger_ready and candidate.final_score >= ENTRY_SCORE_BASE and not profile.get("hard_block") and regime_action in {"ALLOW", "RISKY_ONLY"}
+    # v6.15: старий trigger не відкриває late-entry сам. Це не hard block:
+    # thesis лишається ARMED, але entry_ready зʼявляється тільки після нового
+    # сетапного доказу на 3M/15M або якщо execution справді fresh.
+    reval_profile = getattr(candidate, "revalidation_profile", {}) or ((candidate.stage_plan or {}).get("innovation_profile", {}) or {}).get("trigger_revalidation", {}) or {}
+    if reval_profile.get("needs_revalidation") and not reval_profile.get("entry_supported"):
+        execution_ready = False
+    elif reval_profile.get("needs_revalidation") and reval_profile.get("entry_supported"):
+        execution_ready = bool(candidate.final_score >= RISKY_ENTRY_SCORE_BASE and not profile.get("hard_block") and regime_action in {"ALLOW", "RISKY_ONLY"})
 
     # Будь-який нестандартний (ризикований) лейн виконання — раннє тактичне входження
     # АБО re-entry з пропущеного імпульсу — повинен отримувати зменшений розмір позиції.
@@ -5479,16 +5670,24 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     gate = best.professional_gate or {}
     entry_action = str(mode_profile.get("entry_action", "ALLOW")).upper()
     hard_block = bool(mode_profile.get("hard_block"))
+    reval_profile = getattr(best, "revalidation_profile", {}) or ((best.stage_plan or {}).get("innovation_profile", {}) or {}).get("trigger_revalidation", {}) or {}
+    reval_wait = bool(reval_profile.get("needs_revalidation") and not reval_profile.get("entry_supported"))
+    reval_live = bool(reval_profile.get("needs_revalidation") and reval_profile.get("entry_supported"))
 
-    if hard_block:
+    if reval_wait:
+        action = Action.ARMED.value
+        reason = f"[{best.ict_model}] thesis не заблокована, але trigger старий: чекаємо свіжу 3M/15M сетапну аргументацію"
+    elif hard_block:
         action = Action.NO_SETUP.value
         reason = f"Regime Engine 2.0 блокує вхід: {mode_profile.get('reason', 'режим не підтримує вхід')}"
     elif gate.get("allow_entry") and plan.valid and plan.execution_ready and entry_action == "ALLOW" and not mode_profile.get("force_risky"):
         action = Action.ENTRY.value
-        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6.10"
+        prefix = "SETUP-REVALIDATED " if reval_live else ""
+        reason = f"[{best.ict_model}] {prefix}{best.entry_stage}/{best.execution_source}: {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6.10"
     elif (gate.get("allow_risky") or entry_action == "RISKY_ONLY" or mode_profile.get("force_risky")) and plan.valid and plan.execution_ready and not hard_block:
         action = Action.RISKY_ENTRY.value
-        reason = f"[{best.ict_model}] Стадійний {best.entry_stage}: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
+        prefix = "SETUP-REVALIDATED " if reval_live else ""
+        reason = f"[{best.ict_model}] {prefix}Стадійний {best.entry_stage}: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
     elif best.final_score >= params["armed_score"]:
         action = Action.ARMED.value
         reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: сетап сформовано; gate v6.10: {gate.get('grade', 'WATCH')}"
@@ -5498,6 +5697,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
         quality=quality, reason=reason, regime=context["regime"], candidate=best, plan=plan, current_price=current_price,
         audit={
             "selected": hypothesis_audit_row(best),
+            "trigger_revalidation": reval_profile,
             "hypothesis_matrix": [hypothesis_audit_row(c) for c in valid_candidates[:10]],
             "candidate_count": len(valid_candidates),
         }
@@ -6141,6 +6341,7 @@ def run_bot() -> None:
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
             "innovation_profile": getattr(decision.candidate, "innovation_profile", {}) or components.get("innovation_profile", {}),
+            "trigger_revalidation": getattr(decision.candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}),
         })
         if decision.plan:
             payload.update({
