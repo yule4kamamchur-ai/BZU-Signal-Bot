@@ -95323,6 +95323,15 @@
       "price": 78.26,
       "trade_id": "a114a302a4",
       "signal_id": "1cb81f473d"
+    },
+    {
+      "time": "2026-07-09T11:02:14.609568+00:00",
+      "type": "CLOSE",
+      "action": "STOP",
+      "side": "SHORT",
+      "price": 78.53,
+      "trade_id": "a114a302a4",
+      "signal_id": "1cb81f473d"
     }
   ],
   "trades": [
@@ -95798,17 +95807,97 @@
         "min_breathing_risk_multiplier": 0.35
       },
       "close_action": "EXIT"
+    },
+    {
+      "id": "a114a302a4",
+      "signal_id": "1cb81f473d",
+      "side": "SHORT",
+      "setup_type": "ACCEPTANCE_RETEST_CONTINUATION",
+      "setup_family": "CONTINUATION",
+      "opened_regime": "TRANSITION",
+      "entry_level": "RISKY_ENTRY",
+      "quality": 75,
+      "result_pct": -0.7430657869451005,
+      "mfe_pct": 1.6590865415412228,
+      "tp0_hit": true,
+      "tp1_hit": false,
+      "tp2_hit": false,
+      "tp3_hit": false,
+      "tp0": 77.475,
+      "tp1": 75.48,
+      "tp2": 72.58,
+      "tp3": 72.3068,
+      "entry_stage": "PROBE",
+      "execution_source": "ACCEPTANCE_RETEST",
+      "position_risk_pct": 0.0341,
+      "runtime_config_snapshot": {
+        "bot_version": "pro-hybrid-confluence-v6.13-trade-breathing-geometry",
+        "architecture_version": "HYBRID_CONFLUENCE_V6_4",
+        "leverage": 5.0,
+        "normal_risk_pct": 0.5,
+        "risky_risk_pct": 0.3,
+        "probe_risk_pct": 0.12,
+        "acceptance_risk_pct": 0.22,
+        "retest_add_risk_pct": 0.3,
+        "core_risk_pct": 0.5,
+        "tp0_rr": 0.75,
+        "tp0_size_pct": 0.2,
+        "tp1_size_pct": 0.35,
+        "tp2_size_pct": 0.25,
+        "tp3_runner_pct": 0.20000000000000007,
+        "abs_min_stop_dollars": 0.4,
+        "abs_min_tp1_dollars": 0.65,
+        "commission_buffer_dollars": 0.02,
+        "min_rr1": 1.5,
+        "preferred_rr1": 1.6,
+        "min_rr2": 2.5,
+        "min_rr3": 4.0,
+        "trigger_max_age_minutes": 35,
+        "time_warp_score_multiplier": 0.7,
+        "stale_trigger_score_multiplier": 0.62,
+        "limit_armed_score_multiplier": 0.88,
+        "session_mean_max_dist_atr": 1.15,
+        "open_reclaim_max_dist_atr": 1.25,
+        "orb_break_buffer_atr": 0.16,
+        "failed_auction_min_tail_ratio": 0.54,
+        "liquidity_ladder_min_targets": 3,
+        "liquidity_ladder_min_score": 3.2,
+        "bootstrap_risk_multiplier": 0.75,
+        "weak_direction_risk_multiplier": 0.55,
+        "stop_noise_percentile": 0.7,
+        "tp_noise_percentile": 0.85,
+        "min_stop_true_range_mult": 1.1,
+        "min_tp1_true_range_mult": 1.25,
+        "current_candle_stop_mult": 0.85,
+        "tp0_min_rr": 1.0,
+        "tp1_min_rr_pro": 2.0,
+        "tp1_min_atr_pro": 3.0,
+        "be_delay_bars_after_tp1": 2,
+        "be_delay_min_mfe_r": 1.8,
+        "be_lock_r_mult": 0.1,
+        "catastrophic_stop_mult": 1.45,
+        "decision_stop_close_confirm": true,
+        "min_breathing_risk_multiplier": 0.35
+      },
+      "innovation_profile": {},
+      "partial_plan": {
+        "tp0": 0.2,
+        "tp1": 0.35,
+        "tp2": 0.25,
+        "tp3_runner": 0.20000000000000007
+      },
+      "close_action": "STOP"
     }
   ],
-  "version": "pro-hybrid-confluence-v6.13-trade-breathing-geometry",
+  "version": "pro-hybrid-confluence-v6.14-nonblocking-setup-innovation",
   "architecture_version": "HYBRID_CONFLUENCE_V6_4",
   "analytics": {
-    "closed_trades": 16,
+    "closed_trades": 17,
     "wins": 6,
-    "losses": 10,
-    "win_rate": 37.5,
-    "net_r": 0.03,
-    "expectancy_r": 0.002,
+    "losses": 11,
+    "win_rate": 35.3,
+    "net_r": 0.02,
+    "expectancy_r": 0.001,
     "by_family": {
       "LIQUIDITY_RECOVERY": {
         "closed_trades": 11,
@@ -95819,12 +95908,12 @@
         "expectancy_r": -0.002
       },
       "CONTINUATION": {
-        "closed_trades": 3,
+        "closed_trades": 4,
         "wins": 2,
-        "losses": 1,
-        "net_r": 0.03,
-        "win_rate": 66.7,
-        "expectancy_r": 0.01
+        "losses": 2,
+        "net_r": 0.02,
+        "win_rate": 50.0,
+        "expectancy_r": 0.005
       },
       "EXPANSION": {
         "closed_trades": 2,
@@ -95837,20 +95926,20 @@
     }
   },
   "learning_status": {
-    "updated_at": "2026-07-09T10:45:57.450476+00:00",
+    "updated_at": "2026-07-09T11:02:14.615234+00:00",
     "journal_file": "signal_journal_v6_4.json",
     "state_file": "last_signal_v6_4.json",
     "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
     "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
     "training_signals": 114,
-    "signal_events": 225,
-    "closed_trades": 16,
-    "training_rows": 15,
+    "signal_events": 226,
+    "closed_trades": 17,
+    "training_rows": 16,
     "global_ready": false,
     "global_learned_weight": 0.0,
     "by_family": {
       "CONTINUATION": {
-        "rows": 3,
+        "rows": 4,
         "ready": false,
         "learned_weight": 0.0
       },
@@ -95874,5 +95963,5 @@
     "flow_quality": "DISABLED_NO_TRADES_OR_BOOK",
     "cvd_quality": "SYNTHETIC_CANDLE_PRESSURE_PROXY"
   },
-  "updated_at": "2026-07-09T10:45:57.449630+00:00"
+  "updated_at": "2026-07-09T11:02:14.614272+00:00"
 }
