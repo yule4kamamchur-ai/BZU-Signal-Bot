@@ -1387,12 +1387,44 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     
     if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
-        unique_confirmations = _short_list(c.confirmations, 3)
-        if unique_confirmations:
+        # Показуємо тільки одне найсильніше підтвердження.
+        # Не виводимо список з декількох тез, щоб Telegram-повідомлення
+        # не виглядало як внутрішній debug-log.
+        priority_confirmation = None
+
+        confirmations = [
+            str(x).strip()
+            for x in (c.confirmations or [])
+            if str(x).strip()
+        ]
+
+        # Пріоритет: активний execution trigger > модель > інші пояснення.
+        priority_keywords = (
+            "LIMIT_ARMED",
+            "LIVE",
+            "CHoCH",
+            "FVG",
+            "OB",
+            "RECLAIM",
+            "RETEST",
+            "TRIGGER",
+        )
+
+        for keyword in priority_keywords:
+            for item in confirmations:
+                if keyword.lower() in item.lower():
+                    priority_confirmation = item
+                    break
+            if priority_confirmation:
+                break
+
+        if priority_confirmation is None and confirmations:
+            priority_confirmation = confirmations[0]
+
+        if priority_confirmation:
             lines.append("")
             lines.append("<b>Підтвердження:</b>")
-            for x in unique_confirmations:
-                lines.append(f"✅ {html.escape(x)}")
+            lines.append(f"✅ {html.escape(priority_confirmation)}")
     for warning in context.get("learning_warnings", [])[:2]:
         lines.append(f"⚠️ {html.escape(warning)}")
     
@@ -7095,7 +7127,7 @@ SETUP_LABELS = {
     SetupType.DIRECTION_FLIP.value: "Підтверджена зміна напрямку на 15M",
     SetupType.TREND_IGNITION.value: "Запуск нового тренду",
     SetupType.PULLBACK_CONTINUATION.value: "Продовження тренду після ICT-відкату",
-    SetupType.FRESH_BASE_CONTINUATION.value: "Повторний вхід з нової 15M бази",
+    SetupType.FRESH_BASE_CONTINUATION.value: "",
     SetupType.BREAKOUT_RETEST.value: "Пробій структури + підтверджений ретест",
     SetupType.RANGE_COMPRESSION_BREAKOUT.value: "Пробій після стиснення діапазону",
     SetupType.RANGE_EDGE_REVERSAL.value: "Розворот від межі діапазону",
