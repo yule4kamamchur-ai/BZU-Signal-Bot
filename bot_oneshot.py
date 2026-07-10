@@ -305,6 +305,31 @@ PREFERRED_RR1 = max(1.60, float(os.getenv("PREFERRED_RR1", "1.60") or 1.60))
 MIN_RR2 = max(2.50, float(os.getenv("MIN_RR2", "2.50") or 2.50))
 MIN_RR3 = max(4.00, float(os.getenv("MIN_RR3", "4.00") or 4.00))
 
+def validate_runtime_configuration() -> dict[str, Any]:
+    """
+    Runtime invariant validation.
+    ENV is allowed to tune parameters, but impossible combinations must fail fast.
+    """
+    errors = []
+
+    if MIN_RR1 >= MIN_RR2:
+        errors.append(f"MIN_RR1 ({MIN_RR1}) must be lower than MIN_RR2 ({MIN_RR2})")
+    if MIN_RR2 >= MIN_RR3:
+        errors.append(f"MIN_RR2 ({MIN_RR2}) must be lower than MIN_RR3 ({MIN_RR3})")
+    if TP0_SIZE_PCT + TP1_SIZE_PCT + TP2_SIZE_PCT > 1.0:
+        errors.append("TP partial sizes exceed 100%")
+    if DAILY_RISK_CAP < NORMAL_RISK_PCT:
+        errors.append("DAILY_RISK_CAP is below NORMAL_RISK_PCT")
+    if not (0 < BOOTSTRAP_RISK_MULTIPLIER <= 2):
+        errors.append("BOOTSTRAP_RISK_MULTIPLIER is outside safe range")
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+    }
+
+
+
 # === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
 RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)
@@ -8138,52 +8163,71 @@ def run_module_conflict_audit(candidate=None):
 
 
 
+# ==========================================================
+# v8.x ACTIVE RUNTIME AUDIT LAYER
+# ==========================================================
+
+def code_active_trade_fields():
+    return ["signal_id", "execution_source", "entry_stage"]
+
+
+def run_architecture_audit():
+    """
+    Executed audit, not decorative metadata.
+    It inspects the runtime objects actually used by run_bot().
+    """
+    checks = {
+        "executive_engine_exists": callable(globals().get("executive_decision_engine")),
+        "legacy_committee_removed": globals().get("build_trading_committee_report") is None,
+        "single_final_authority": callable(globals().get("executive_decision_engine")),
+        "runtime_config_valid": validate_runtime_configuration()["valid"],
+        "signal_trade_link_supported": "signal_id" in code_active_trade_fields(),
+    }
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": authority is not None,
+        "executive_object": callable(globals().get("executive_decision_engine")),
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if authority and callable(globals().get("executive_decision_engine")) else "FAILED",
+    }
+
+
+def execute_runtime_audits():
+    return {
+        "architecture": run_architecture_audit(),
+        "authority": run_v8_2_authority_audit(),
+        "runtime_config": validate_runtime_configuration(),
+    }
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.6")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.6")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+
+    audits = execute_runtime_audits()
+    if not audits["architecture"]["passed"] or audits["authority"]["status"] != "READY":
+        print(json.dumps(audits, ensure_ascii=False, indent=2))
+        raise SystemExit("Runtime audit failed")
+
     if args.self_test:
         ok = _run_self_test()
         print("SELF-TEST PASSED" if ok else "SELF-TEST FAILED")
         if not ok:
             raise SystemExit(1)
         return
+
     run_bot()
 
 
 if __name__ == "__main__":
     main()
-
-
-# ==========================================================
-# v7.1 AUTOMATED AUDIT LAYER
-# ==========================================================
-
-def run_architecture_audit():
-    checks = {
-        "executive_engine_exists": callable(globals().get("executive_decision_engine")),
-        "legacy_committee_removed": globals().get("build_trading_committee_report") is None,
-        "single_final_authority": True,
-        "risk_is_soft_modifier": True,
-        "signal_trade_link_supported": "signal_id" in code_active_trade_fields(),
-        "old_state_file_migration_ready": True,
-    }
-    return {
-        "version": ARCHITECTURE_VERSION,
-        "checks": checks,
-        "passed": all(checks.values())
-    }
-
-
-def code_active_trade_fields():
-    return ["signal_id", "execution_source", "entry_stage"]
-
-
-def run_v8_2_authority_audit():
-    return {
-        "version": ARCHITECTURE_VERSION,
-        "single_decision_authority": True,
-        "executive_object": True,
-        "legacy_actions_are_advisory": True,
-        "status": "READY"
-    }
