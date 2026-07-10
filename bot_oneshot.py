@@ -110,7 +110,7 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.17.8-htf-confidence-modifier"
+BOT_VERSION = "pro-hybrid-confluence-v6.17.9-professional-audit"
 ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_5"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -1006,19 +1006,7 @@ def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk
     # HTF disagreement reduces exposure instead of blindly rejecting valid execution.
     # v6.17.9: unified HTF source + kernel risk multiplier.
     if INSTITUTIONAL_ADAPTIVE_ENGINE:
-        components = getattr(candidate, "score_components", {}) or {}
-        features = components.get("features", {}) or {}
-
-        htf_value = components.get("htf_score", features.get("htf", 0))
-        htf_state = getattr(candidate, "htf_state", None)
-
-        if not htf_state:
-            if htf_value > 0:
-                htf_state = "aligned"
-            elif htf_value == 0:
-                htf_state = "neutral"
-            else:
-                htf_state = "against"
+        htf_state = get_htf_state(candidate)
 
         exec_score = institutional_execution_score(candidate)
         htf_multiplier = adaptive_htf_risk_multiplier(htf_state, exec_score)
@@ -5886,6 +5874,31 @@ def institutional_execution_score(candidate: Any) -> float:
         score *= PRO_SCORE_LATE_ENTRY_PENALTY
 
     return round(score, 3)
+
+
+
+def regression_guard_revalidated_probe(candidate: Any) -> dict[str, Any]:
+    """
+    Safety regression guard:
+    strong setup with valid execution evidence must not silently degrade to zero-score.
+    This is a diagnostic guard, not an entry override.
+    """
+    score = institutional_execution_score(candidate)
+    result = {
+        "execution_score": score,
+        "passed": True,
+        "reason": "ok"
+    }
+
+    if candidate:
+        trigger_ready = bool(getattr(candidate, "trigger_ready", False))
+        final_score = int(getattr(candidate, "final_score", 0) or 0)
+
+        if trigger_ready and final_score >= 85 and score <= 0:
+            result["passed"] = False
+            result["reason"] = "high_quality_candidate_zero_execution_score"
+
+    return result
 
 
 def detect_execution_chase(price_move_atr: float, body_ratio: float) -> bool:
