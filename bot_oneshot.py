@@ -584,6 +584,24 @@ class ConfirmationTier(int, Enum):
     PREMIUM = 4
 
 
+
+# OPPORTUNITY_MAX_LIFETIME_GUARD:
+# Old ideas must not survive forever. A scenario can be remembered,
+# but execution requires a fresh market argument.
+OPPORTUNITY_MAX_LIFETIME_MINUTES = int(
+    os.getenv("OPPORTUNITY_MAX_LIFETIME_MINUTES", "1440") or 1440
+)
+
+def opportunity_is_expired(created_at: str) -> bool:
+    try:
+        age = (
+            now_utc() - datetime.fromisoformat(created_at)
+        ).total_seconds() / 60
+        return age > OPPORTUNITY_MAX_LIFETIME_MINUTES
+    except Exception:
+        return True
+
+
 # ==========================================================
 # DATACLASSES
 # ==========================================================
@@ -890,6 +908,24 @@ class ActiveTrade:
     tp1_hit_at: str = ""
     tp1_hit_ts: int = 0
     tp1_close_confirmed: bool = False
+
+
+
+def executive_conflict_allows_reduced_entry(
+    execution_quality: float,
+    risk_blocked: bool,
+    rr1: float,
+) -> bool:
+    """
+    Adaptive conflict resolution:
+    HTF/ICT disagreement should reduce aggressiveness, not automatically
+    cancel a valid execution setup.
+    """
+    return (
+        float(execution_quality or 0) >= 75
+        and not bool(risk_blocked)
+        and float(rr1 or 0) >= MIN_RR1
+    )
 
 
 # ==========================================================
@@ -1687,9 +1723,22 @@ def build_decision_message(context: dict, decision: Decision) -> str:
 
     if decision.action == Action.NO_SETUP.value:
         lines = [
-            "<b>Входу немає</b>",
-            f"<b>Ціна зараз:</b> {_fmt_price(current_price)}",
+            "<b>Входу зараз немає.</b>",
         ]
+
+        if decision.side and decision.side != Side.NEUTRAL.value:
+            lines.append(
+                f"{decision.side}-сценарій залишається, але свіжого підтвердження "
+                "для відкриття позиції немає."
+            )
+        else:
+            lines.append(
+                "Немає достатнього підтвердження для відкриття позиції."
+            )
+
+        lines.append(
+            f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
+        )
         rejected = ((decision.audit or {}).get("rejected_hypotheses") or [])
         if rejected:
             top = rejected[0]
@@ -7839,7 +7888,11 @@ def test_probe_reduced_on_hard_conflict() -> bool:
             "ICT_ANALYST", "CAUTION", 10, -15, ["forced conflict"]
         )
         result = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
-        return result["action"] == "PROBE_REDUCED" and result["conflict_resolution"]["hard_conflict"]
+        return (
+            result["action"] == Action.RISKY_ENTRY.value
+            and result["conflict_resolution"]["hard_conflict"]
+            and result.get("audit", {}).get("final_action_policy") == "conflict lowers risk, not automatically blocks execution"
+        )
     finally:
         globals()["_ict_advisor"] = original
 
@@ -8236,18 +8289,35 @@ def build_executive_decision_object(
     has_hard_conflict = bool(conflict.get("hard_conflict", False))
     risk_blocked = bool(conflict.get("risk", {}).get("blocked", False))
 
+    # v8.7 Adaptive Conflict Resolver:
+    # HTF/ICT disagreement is a risk modifier, not an absolute execution veto.
+    # A valid execution setup with acceptable RR and no risk violation may still
+    # receive a reduced-risk entry instead of being silently discarded.
+    execution_score = safe_float(conflict.get("execution_score", 0.0), 0.0)
+    rr1 = safe_float((philosophy or {}).get("rr1", 0.0), 0.0)
+    conflict_override = (
+        has_hard_conflict
+        and philosophy.get("recommendation") == "ACCEPT"
+        and execution_score >= 4.5
+        and rr1 >= MIN_RR1
+        and not risk_blocked
+    )
+
     if risk_blocked:
         action = ExecutiveDecisionState.WAIT.value
         reason = "Risk budget exhausted; entry blocked"
+    elif conflict_override:
+        # Adaptive conflict handling belongs here, before generic WAIT logic.
+        # HTF/ICT disagreement lowers confidence and sizing, but does not erase
+        # an execution edge when RR and risk conditions remain valid.
+        action = Action.RISKY_ENTRY.value
+        reason = "Execution edge confirmed despite HTF/ICT conflict; reduced-risk entry allowed"
     elif philosophy["recommendation"] == "ACCEPT" and confidence >= 75 and not has_hard_conflict:
         action = ExecutiveDecisionState.ENTRY.value
         reason = "Independent advisors and edge criteria support full entry"
     elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and not has_hard_conflict:
         action = ExecutiveDecisionState.PROBE.value
         reason = "Edge is valid but conviction supports reduced exposure"
-    elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and has_hard_conflict:
-        action = ExecutiveDecisionState.PROBE_REDUCED.value
-        reason = "Valid edge with committee conflict; exposure forcibly reduced"
     else:
         action = ExecutiveDecisionState.WAIT.value
         reason = "Edge, confidence or conflict conditions do not permit execution"
@@ -8265,6 +8335,13 @@ def build_executive_decision_object(
             "single_authority": "EXECUTIVE_DECISION_LAYER",
             "has_hard_conflict": has_hard_conflict,
             "risk_blocked": risk_blocked,
+            "final_action_policy": "conflict lowers risk, not automatically blocks execution",
+            "adaptive_conflict_resolver": {
+                "enabled": True,
+                "execution_score": round(execution_score, 2),
+                "rr1": round(rr1, 2),
+                "override_allowed": conflict_override,
+            },
         },
     }
 
