@@ -7770,7 +7770,7 @@ def test_probe_reduced_on_hard_conflict() -> bool:
     original = _ict_advisor
     try:
         globals()["_ict_advisor"] = lambda _: advisory_report(
-            "ICT_ANALYST", "CAUTION", 10, -10, ["forced conflict"]
+            "ICT_ANALYST", "CAUTION", 10, -15, ["forced conflict"]
         )
         result = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
         return result["action"] == "PROBE_REDUCED" and result["conflict_resolution"]["hard_conflict"]
