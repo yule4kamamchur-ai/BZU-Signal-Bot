@@ -71,6 +71,41 @@ from typing import Any, Optional
 
 import requests
 
+
+def get_htf_state(candidate: Any) -> str:
+    """
+    Unified HTF state resolver.
+    Single source of truth for execution, sizing and audit.
+    """
+    if candidate is None:
+        return "neutral"
+
+    direct = getattr(candidate, "htf_state", None)
+    if direct:
+        return str(direct)
+
+    components = getattr(candidate, "score_components", {}) or {}
+    if components.get("htf_state"):
+        return str(components["htf_state"])
+
+    features = components.get("features", {}) or {}
+    if features.get("htf_state"):
+        return str(features["htf_state"])
+
+    htf_score = components.get("htf_score", features.get("htf", 0))
+
+    try:
+        score = float(htf_score)
+        if score >= 0.65:
+            return "bullish"
+        if score <= 0.35:
+            return "bearish"
+    except Exception:
+        pass
+
+    return "neutral"
+
+
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
@@ -967,23 +1002,35 @@ def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk
     innovation = stage_plan.get("innovation_profile") or getattr(candidate, "innovation_profile", {}) or {}
     risk *= float(innovation.get("risk_multiplier", 1.0) or 1.0)
 
-    # v6.17.1 Institutional Adaptive Engine integration
-    # HTF disagreement reduces exposure instead of blindly rejecting a valid execution.
+    # v6.17.1/v6.17.9 Institutional Adaptive Engine integration
+    # HTF disagreement reduces exposure instead of blindly rejecting valid execution.
+    # v6.17.9: unified HTF source + kernel risk multiplier.
     if INSTITUTIONAL_ADAPTIVE_ENGINE:
-        htf_value = getattr(candidate, "score_components", {}).get("htf", 0)
+        components = getattr(candidate, "score_components", {}) or {}
+        features = components.get("features", {}) or {}
 
-        if htf_value > 0:
-            htf_state = "aligned"
-        elif htf_value == 0:
-            htf_state = "neutral"
-        else:
-            htf_state = "against"
+        htf_value = components.get("htf_score", features.get("htf", 0))
+        htf_state = getattr(candidate, "htf_state", None)
+
+        if not htf_state:
+            if htf_value > 0:
+                htf_state = "aligned"
+            elif htf_value == 0:
+                htf_state = "neutral"
+            else:
+                htf_state = "against"
 
         exec_score = institutional_execution_score(candidate)
         htf_multiplier = adaptive_htf_risk_multiplier(htf_state, exec_score)
 
         if htf_multiplier > 0:
             risk *= htf_multiplier
+
+        kernel_multiplier = safe_float(
+            getattr(candidate, "kernel_risk_multiplier", 1.0),
+            1.0
+        )
+        risk *= kernel_multiplier
 
     return round(clamp(risk, 0.02, CORE_RISK_PCT), 4)
 
@@ -5799,7 +5846,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             "candidate_count": len(valid_candidates),
             "institutional_engine": {
                 "enabled": INSTITUTIONAL_ADAPTIVE_ENGINE,
-                "version": "v6.17.8-htf-confidence-modifier",
+                "version": BOT_VERSION,
             },
         }
     )
@@ -5815,10 +5862,24 @@ def institutional_execution_score(candidate: Any) -> float:
         return 0.0
 
     components = getattr(candidate, "score_components", {}) or {}
+    features = components.get("features", {}) or {}
+
+    # v6.17.9 schema compatibility:
+    # Candidate stores raw scores as *_score and normalized values in features.
+    liquidity = safe_float(
+        components.get("liq_score", features.get("liquidity", 0)), 0.0
+    )
+    trigger = safe_float(
+        components.get("trig_score", features.get("trigger", 0)), 0.0
+    )
+    structure = safe_float(
+        components.get("str_score", features.get("structure", 0)), 0.0
+    )
+
     score = 0.0
-    score += float(components.get("liquidity", 0)) * PRO_SCORE_LIQUIDITY_WEIGHT
-    score += float(components.get("trigger", 0)) * PRO_SCORE_TRIGGER_WEIGHT
-    score += float(components.get("structure", 0)) * PRO_SCORE_STRUCTURE_WEIGHT
+    score += liquidity * PRO_SCORE_LIQUIDITY_WEIGHT
+    score += trigger * PRO_SCORE_TRIGGER_WEIGHT
+    score += structure * PRO_SCORE_STRUCTURE_WEIGHT
 
     risks = getattr(candidate, "risks", []) or []
     if any("late" in str(x).lower() for x in risks):
