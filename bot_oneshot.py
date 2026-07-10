@@ -453,9 +453,9 @@ class Side(str, Enum):
 
 
 class Action(str, Enum):
+    # Execution / active trade lifecycle actions only.
     ENTRY = "ENTRY"
     RISKY_ENTRY = "RISKY_ENTRY"
-    ARMED = "ARMED"
     NO_SETUP = "NO_SETUP"
     HOLD = "HOLD"
     PROTECT = "PROTECT"
@@ -466,6 +466,22 @@ class Action(str, Enum):
     STOP = "STOP"
     EXIT = "EXIT"
 
+
+
+
+class ExecutiveDecisionState(str, Enum):
+    """Internal decision states produced only by Executive Decision Layer.
+
+    These are NOT active trade management states.
+    HOLD/TP/STOP belong to Action and position management.
+    """
+    ENTRY = "ENTRY"
+    PROBE = "PROBE"
+    PROBE_REDUCED = "PROBE_REDUCED"
+    WAIT = "WAIT"
+    WAIT_RETEST = "WAIT_RETEST"
+    NO_SETUP = "NO_SETUP"
+    REJECT = "REJECT"
 
 class Regime(str, Enum):
     TREND = "TREND"
@@ -528,6 +544,29 @@ class ExecutionSource(str, Enum):
     FAILED_AUCTION = "FAILED_AUCTION"
     TIME_OF_DAY = "TIME_OF_DAY"
     NONE = "NONE"
+
+
+class OpportunityStatus(str, Enum):
+    """Lifecycle state of a detected opportunity.
+
+    ARMED belongs here, not in Action. It describes a candidate waiting
+    for validation, not an executable trade decision.
+    """
+    DISCOVERED = "DISCOVERED"
+    ARMED = "ARMED"
+    WAIT_PULLBACK = "WAIT_PULLBACK"
+    EXPIRED = "EXPIRED"
+
+
+class OpportunityStage(str, Enum):
+    """Lifecycle stage of an opportunity object.
+
+    This is not an execution action and not an Executive decision.
+    """
+    EXECUTABLE = "EXECUTABLE"
+    ARMED = "ARMED"
+    DISCOVERED = "DISCOVERED"
+    EXPIRED = "EXPIRED"
 
 
 class EntryStage(str, Enum):
@@ -700,7 +739,6 @@ class AdvisoryRecommendation:
 TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE = {
     Action.ENTRY.value,
     Action.RISKY_ENTRY.value,
-    Action.ARMED.value,
 }
 
 
@@ -779,7 +817,7 @@ class Opportunity:
     confirmations: list[str] = field(default_factory=list)
     evidence_families: list[str] = field(default_factory=list)
     execution_lane: str = "STANDARD_CONFIRMED"
-    status: str = "ARMED"
+    status: str = OpportunityStatus.ARMED.value
     thesis_key: str = ""
     thesis: str = ""
     missed_at: str = ""
@@ -1643,7 +1681,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_names = {
         "ENTRY": "ВХІД У УГОДУ",
         "RISKY_ENTRY": "РАННІЙ / СТАДІЙНИЙ ВХІД",
-        "ARMED": "СФОРМОВАНО СИГНАЛ — ЧЕКАЄМО ВХОДУ",
         "NO_SETUP": "СИГНАЛУ НЕМАЄ",
     }
     action_label = action_names.get(decision.action, decision.action)
@@ -1711,7 +1748,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     for warning in context.get("learning_warnings", [])[:2]:
         lines.append(f"⚠️ {html.escape(warning)}")
     
-    show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value, Action.ARMED.value)
+    show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value)
     
     if show_plan:
         p = decision.plan
@@ -2916,7 +2953,7 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         target_levels=[],
         execution_lane=ExecutionLane.MISSED_IMPULSE_REENTRY.value,
         confirmation_tier=ConfirmationTier.STANDARD.value,
-        stage="EXECUTABLE" if trigger_ready else "ARMED",
+        stage=(OpportunityStage.EXECUTABLE.value if trigger_ready else OpportunityStage.ARMED.value),
         variant="MISSED_IMPULSE_REENTRY",
         execution_anchor=price,
         trigger_age_minutes=trigger_age,
@@ -5360,7 +5397,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 invalidation_level=round_price(contract["invalidation_level"]),
                 target_levels=[round_price(contract["target_level"])],
                 execution_lane=lane,
-                stage="ARMED" if final >= params["armed_score"] else "DISCOVERED",
+                stage=(OpportunityStage.ARMED.value if final >= params["armed_score"] else OpportunityStage.DISCOVERED.value),
                 variant="MODEL_HYPOTHESIS" if not is_fallback else "GENERIC_FALLBACK",
                 ict_model=best_pattern or "NONE",
                 execution_anchor=round_price(contract["entry_anchor"]),
@@ -6196,12 +6233,39 @@ def executive_finalize_decision(
 
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     """
-    v8.2 SINGLE BRAIN PIPELINE.
-    Legacy logic may analyse, but cannot publish actions.
-    Only Executive Decision Layer returns the trading decision.
+    v8.5 EXECUTIVE AUTHORITY PIPELINE.
+
+    Architecture rule:
+    90% analytical departments:
+        - detect setups
+        - calculate evidence
+        - build risk/trade plans
+        - report conflicts
+
+    10% Executive Decision Layer:
+        - the only component allowed to publish:
+          ENTRY / RISKY_ENTRY / NO_SETUP (opportunity states are separate)
+
+    Legacy evaluator is preserved as an analytical generator only.
+    Its proposed action is stored for audit, but it has no authority.
     """
     draft = _legacy_evaluate_new_setup(context, state, journal)
-    draft.audit.setdefault("architecture", {})["legacy_mode"] = "ADVISORY_ONLY"
+
+    legacy_action = str(draft.action or Action.NO_SETUP.value)
+
+    draft.audit.setdefault("architecture", {})
+    draft.audit["architecture"].update({
+        "pipeline": "ANALYTICAL_DEPARTMENTS -> CONFLICT_ANALYSIS -> TRADING_PHILOSOPHY -> EXECUTIVE_DECISION_LAYER",
+        "legacy_mode": "ADVISORY_ONLY",
+        "legacy_proposed_action": legacy_action,
+        "legacy_action_overridden": True,
+        "final_authority": "EXECUTIVE_DECISION_LAYER",
+    })
+
+    # Remove decision authority from legacy layer.
+    # Executive receives the evidence package, not a pre-approved trade action.
+    draft.action = Action.NO_SETUP.value
+
     return executive_authority_decision(draft, state=state, journal=journal)
 
 
@@ -6211,7 +6275,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
     
     # 1. Перевірка ре-ентрі (залишається незмінною)
     saved_opp = opportunity_from_state(state)
-    if saved_opp and saved_opp.status in ["ARMED", "WAIT_PULLBACK"]:
+    if saved_opp and saved_opp.status in [OpportunityStatus.ARMED.value, OpportunityStatus.WAIT_PULLBACK.value]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
             missed_cand = rescore_reentry_candidate(missed_cand, context, journal)
@@ -6223,10 +6287,10 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
                     if plan.valid and plan.execution_ready and missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD
                     else Action.RISKY_ENTRY.value
                     if plan.valid and plan.execution_ready
-                    else Action.ARMED.value
+                    else OpportunityStatus.ARMED.value
                 )
                 return Decision(
-                    id=uuid.uuid4().hex[:10], time=iso_now(), action=proposed_action,
+                    id=uuid.uuid4().hex[:10], time=iso_now(), action=Action.NO_SETUP.value,
                     side=missed_cand.side, setup_type=missed_cand.setup_type,
                     quality=missed_cand.final_score,
                     reason="Re-entry analyst submitted a draft for executive review",
@@ -6235,7 +6299,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
                     audit={
                         "selected": hypothesis_audit_row(missed_cand),
                         "reentry_rescored": True,
-                        "legacy_recommendation": proposed_action,
+                        "legacy_opportunity_status": proposed_action,
                     },
                 )
 
@@ -6289,7 +6353,8 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
     elif plan.valid and plan.execution_ready and quality >= RISKY_ENTRY_SCORE_BASE:
         proposed_action = Action.RISKY_ENTRY.value
     else:
-        proposed_action = Action.ARMED.value
+        proposed_action = Action.NO_SETUP.value
+        proposed_opportunity_status = OpportunityStatus.ARMED.value
 
     return Decision(
         id=uuid.uuid4().hex[:10], time=iso_now(), action=proposed_action,
@@ -6303,6 +6368,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             "hypothesis_matrix": [hypothesis_audit_row(c) for c in valid_candidates[:10]],
             "candidate_count": len(valid_candidates),
             "legacy_recommendation": proposed_action,
+            "opportunity_status": getattr(best, "opportunity_status", proposed_opportunity_status if "proposed_opportunity_status" in locals() else None),
             "institutional_engine": {
                 "enabled": INSTITUTIONAL_ADAPTIVE_ENGINE,
                 "version": BOT_VERSION,
@@ -7669,8 +7735,8 @@ def run_bot() -> None:
         store_active_trade(state, active)
         state["opportunity"] = None
         print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type} | signal_id={active.signal_id} trade_id={active.id}")
-    elif decision.action == Action.ARMED.value and decision.candidate:
-        opp_status = "WAIT_PULLBACK" if decision.candidate.execution_lane in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.LIMIT_ONLY.value} else "ARMED"
+    elif decision.audit.get("opportunity_status") == OpportunityStatus.ARMED.value and decision.candidate:
+        opp_status = "WAIT_PULLBACK" if decision.candidate.execution_lane in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.LIMIT_ONLY.value} else OpportunityStatus.ARMED.value
         opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status=opp_status, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, signal_id=decision.id)
         store_opportunity(state, opp)
         store_active_trade(state, None)
@@ -7735,7 +7801,7 @@ def test_risk_manager_can_block() -> bool:
         journal=journal,
         state={}
     )
-    return report["action"] == "WAIT"
+    return report["action"] == ExecutiveDecisionState.WAIT.value
 
 
 
@@ -7906,7 +7972,7 @@ def _run_self_test() -> bool:
     )
     checks.append((
         "executive layer: exhausted daily budget blocks entry",
-        risk_block["action"] == "WAIT",
+        risk_block["action"] == ExecutiveDecisionState.WAIT.value,
     ))
 
     ok = all(passed for _, passed in checks)
@@ -8131,6 +8197,9 @@ def conflict_resolution_engine(advisors):
     return result
 
 
+# ExecutiveDecisionState is the only allowed source of new setup decisions.
+# Raw action strings must not be used for decision routing.
+
 def build_executive_decision_object(
     candidate,
     plan: Optional[TradePlan] = None,
@@ -8140,7 +8209,7 @@ def build_executive_decision_object(
     """Build one decision from independent, non-overlapping advisory inputs."""
     if candidate is None:
         return {
-            "action": "NO_SETUP",
+            "action": ExecutiveDecisionState.NO_SETUP.value,
             "confidence": 0,
             "advisors": [],
             "reason": "missing candidate",
@@ -8168,19 +8237,19 @@ def build_executive_decision_object(
     risk_blocked = bool(conflict.get("risk", {}).get("blocked", False))
 
     if risk_blocked:
-        action = "WAIT"
+        action = ExecutiveDecisionState.WAIT.value
         reason = "Risk budget exhausted; entry blocked"
     elif philosophy["recommendation"] == "ACCEPT" and confidence >= 75 and not has_hard_conflict:
-        action = "ENTRY"
+        action = ExecutiveDecisionState.ENTRY.value
         reason = "Independent advisors and edge criteria support full entry"
     elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and not has_hard_conflict:
-        action = "PROBE"
+        action = ExecutiveDecisionState.PROBE.value
         reason = "Edge is valid but conviction supports reduced exposure"
     elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and has_hard_conflict:
-        action = "PROBE_REDUCED"
+        action = ExecutiveDecisionState.PROBE_REDUCED.value
         reason = "Valid edge with committee conflict; exposure forcibly reduced"
     else:
-        action = "WAIT"
+        action = ExecutiveDecisionState.WAIT.value
         reason = "Edge, confidence or conflict conditions do not permit execution"
 
     return {
@@ -8200,6 +8269,57 @@ def build_executive_decision_object(
     }
 
 
+
+# ==========================================================
+# Executive Action Whitelist Resolver
+# ==========================================================
+# Executive Layer is the only source of trade intent.
+# Unknown internal states are blocked, never promoted to ARMED/ENTRY.
+# ARMED is an OpportunityStatus only. It is never a final execution Action.
+# Executive state is NOT the same thing as active trade management action.
+# HOLD is reserved for an already opened position (manage_active_trade).
+# A new setup decision with WAIT means: no position exists, do not create a signal.
+# Therefore WAIT must resolve to NO_SETUP for external signal output.
+EXECUTIVE_ACTION_MAP = {
+    ExecutiveDecisionState.ENTRY: Action.ENTRY.value,
+    ExecutiveDecisionState.PROBE: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.PROBE_REDUCED: Action.RISKY_ENTRY.value,
+
+    # New setup decision: no open position exists.
+    # WAIT is not HOLD. HOLD belongs only to active trade management.
+    ExecutiveDecisionState.WAIT: Action.NO_SETUP.value,
+    ExecutiveDecisionState.WAIT_RETEST: Action.NO_SETUP.value,
+
+    ExecutiveDecisionState.NO_SETUP: Action.NO_SETUP.value,
+    ExecutiveDecisionState.REJECT: Action.NO_SETUP.value,
+}
+
+
+def resolve_executive_action(internal_action: str) -> str:
+    try:
+        internal_action = ExecutiveDecisionState(internal_action)
+    except ValueError:
+        raise DecisionAuthorityViolation(
+            json.dumps({
+                "type": "UNKNOWN_EXECUTIVE_ACTION",
+                "action": internal_action,
+                "reason": "Unknown executive state cannot become a trade action",
+                "timestamp": iso_now(),
+            }, ensure_ascii=False)
+        )
+
+    if internal_action not in EXECUTIVE_ACTION_MAP:
+        raise DecisionAuthorityViolation(
+            json.dumps({
+                "type": "UNKNOWN_EXECUTIVE_ACTION",
+                "action": internal_action,
+                "reason": "Unknown executive state cannot become a trade action",
+                "timestamp": iso_now(),
+            }, ensure_ascii=False)
+        )
+
+    return EXECUTIVE_ACTION_MAP[internal_action]
+
 def executive_decision_engine(
     candidate,
     existing_action="NO_SETUP",
@@ -8213,14 +8333,9 @@ def executive_decision_engine(
     )
 
     internal_action = decision["action"]
-    if internal_action == "NO_SETUP":
-        final_action = Action.NO_SETUP.value
-    elif internal_action == "ENTRY":
-        final_action = Action.ENTRY.value
-    elif internal_action == "PROBE":
-        final_action = Action.RISKY_ENTRY.value
-    elif internal_action == "PROBE_REDUCED":
-        final_action = Action.RISKY_ENTRY.value
+    final_action = resolve_executive_action(internal_action)
+
+    if internal_action == "PROBE_REDUCED":
         if candidate is not None:
             candidate.entry_stage = EntryStage.PROBE.value
         if plan is not None:
@@ -8230,8 +8345,6 @@ def executive_decision_engine(
             )
             plan.position_risk_pct = round(reduced_risk, 4)
             plan.risk_pct = plan.position_risk_pct
-    else:
-        final_action = Action.ARMED.value if candidate is not None else Action.NO_SETUP.value
 
     return {
         "action": final_action,
@@ -8323,3 +8436,35 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# === FINAL DOMAIN PAYLOAD VALIDATION ===
+# Domain separation:
+# - OpportunityStatus / OpportunityStage: lifecycle of a candidate
+# - ExecutiveDecisionState: decision of the executive layer
+# - Action: execution / active trade management only
+
+FORBIDDEN_ACTION_VALUES = {
+    "ARMED",
+    "WAIT",
+    "DISCOVERED",
+    "EXPIRED",
+}
+
+def validate_serialized_decision_payload(payload: dict):
+    """
+    Prevent legacy mixed-domain values from leaking into JSON,
+    audit records or Telegram payloads.
+    """
+    action = payload.get("action")
+    if action in FORBIDDEN_ACTION_VALUES:
+        raise DecisionAuthorityViolation(
+            f"Invalid execution action domain: {action}"
+        )
+
+    if payload.get("execution_action") in FORBIDDEN_ACTION_VALUES:
+        raise DecisionAuthorityViolation(
+            f"Invalid execution_action domain: {payload.get('execution_action')}"
+        )
+
+    return True
