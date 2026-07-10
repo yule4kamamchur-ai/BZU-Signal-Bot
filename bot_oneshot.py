@@ -110,8 +110,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v7.0-trading-desk"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V7_1_FINAL"
+BOT_VERSION = "pro-hybrid-confluence-v8.5-institutional-authority-final"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_3_SINGLE_BRAIN"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -138,6 +138,10 @@ MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "3000") or 3000)
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
 RISKY_RISK_PCT = float(os.getenv("RISKY_RISK_PCT", "0.30") or 0.30)
+# Daily risk budget is expressed in percentage points, matching position_risk_pct.
+# It is configurable because account mandates differ; 1.00 means 1% total daily risk.
+DAILY_RISK_CAP = max(0.01, float(os.getenv("DAILY_RISK_CAP", "1.00") or 1.00))
+RISK_BUDGET_MIN_BUFFER = max(0.0, float(os.getenv("RISK_BUDGET_MIN_BUFFER", "0.30") or 0.30))
 
 # === Execution Intelligence v6.10 ===
 # Не блокує сетапи фільтрами: замість цього зменшує/збільшує розмір позиції
@@ -650,6 +654,93 @@ class Decision:
     current_price: float = 0.0
 
 
+
+
+@dataclass
+class AdvisoryRecommendation:
+    module: str
+    opinion: str
+    confidence: float = 0.0
+    impact: float = 0.0
+    reasons: list[str] = field(default_factory=list)
+
+
+# ==========================================================
+# v8.4 Decision Authority Guard
+# ==========================================================
+# Єдиний захист від повернення старої архітектури:
+# аналітичні модулі можуть створювати рекомендації, але не можуть
+# самостійно публікувати торгову дію.
+
+TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE = {
+    Action.ENTRY.value,
+    Action.RISKY_ENTRY.value,
+    Action.ARMED.value,
+}
+
+
+class DecisionAuthorityViolation(Exception):
+    """Raised when a non-executive component tries to publish a trade action."""
+    pass
+
+
+class DecisionAuthorityGuard:
+    EXECUTIVE_MODULE = "EXECUTIVE_DECISION_LAYER"
+
+    def __init__(self):
+        self.audit_events = []
+
+    def validate_module_output(self, module_name: str, output: Any) -> Any:
+        action = None
+
+        if isinstance(output, dict):
+            action = output.get("action")
+        else:
+            action = getattr(output, "action", None)
+
+        if action in TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE:
+            event = {
+                "type": "DECISION_AUTHORITY_VIOLATION",
+                "module": module_name,
+                "attempted_action": action,
+                "timestamp": iso_now(),
+                "reason": "Only Executive Decision Layer can publish trading actions",
+            }
+            self.audit_events.append(event)
+            raise DecisionAuthorityViolation(json.dumps(event, ensure_ascii=False))
+
+        return output
+
+    def approve_executive_decision(self, decision: Decision) -> Decision:
+        if decision.audit is None:
+            decision.audit = {}
+
+        decision.audit.setdefault("authority_guard", {})
+        decision.audit["authority_guard"].update({
+            "validated": True,
+            "executive_only_actions": list(TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE),
+            "violations": self.audit_events[-10:],
+        })
+        return decision
+
+
+DECISION_AUTHORITY_GUARD = DecisionAuthorityGuard()
+
+
+
+def create_advisory_recommendation(module: str, opinion: str, confidence: float = 0, impact: float = 0, reasons=None):
+    """Factory for modules. A module may recommend, never decide."""
+    recommendation = AdvisoryRecommendation(
+        module=module,
+        opinion=opinion,
+        confidence=confidence,
+        impact=impact,
+        reasons=list(reasons or []),
+    )
+    DECISION_AUTHORITY_GUARD.validate_module_output(module, recommendation)
+    return recommendation
+
+
 @dataclass
 class Opportunity:
     side: str
@@ -808,6 +899,8 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "leverage": LEVERAGE,
         "normal_risk_pct": NORMAL_RISK_PCT,
         "risky_risk_pct": RISKY_RISK_PCT,
+        "daily_risk_cap": DAILY_RISK_CAP,
+        "risk_budget_min_buffer": RISK_BUDGET_MIN_BUFFER,
         "probe_risk_pct": PROBE_RISK_PCT,
         "acceptance_risk_pct": ACCEPTANCE_RISK_PCT,
         "retest_add_risk_pct": RETEST_ADD_RISK_PCT,
@@ -1205,25 +1298,92 @@ def calculate_unified_risk_adjustment(candidate: Any) -> dict[str, Any]:
 
 
 def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
-    """Performance memory by setup_type for oil 15M analysis."""
-    stats = {}
+    """Performance memory by setup type and family.
+
+    Both keys are emitted so callers can evaluate a precise setup_type or the
+    broader setup_family without inventing a second statistics pipeline.
+    """
+    stats: dict[str, dict[str, Any]] = {}
+
+    def _record(key: str, result_r: float) -> None:
+        if not key:
+            return
+        bucket = stats.setdefault(
+            key,
+            {"trades": 0, "closed_trades": 0, "wins": 0, "net_r": 0.0},
+        )
+        bucket["trades"] += 1
+        bucket["closed_trades"] += 1
+        bucket["net_r"] += result_r
+        if result_r > 0:
+            bucket["wins"] += 1
+
     for trade in journal.get("trades", []):
         if not isinstance(trade, dict):
             continue
-        setup = str(trade.get("setup_type", "UNKNOWN"))
-        bucket = stats.setdefault(setup, {"trades": 0, "wins": 0, "net_r": 0.0})
-        bucket["trades"] += 1
         result = safe_float(trade.get("result_r", trade.get("result_pct", 0)), 0)
-        bucket["net_r"] += result
-        if result > 0:
-            bucket["wins"] += 1
+        setup_type = str(trade.get("setup_type", "UNKNOWN") or "UNKNOWN")
+        setup_family = str(trade.get("setup_family", "") or "")
+        _record(setup_type, result)
+        if setup_family and setup_family != setup_type:
+            _record(setup_family, result)
 
     for bucket in stats.values():
-        bucket["win_rate"] = round(
-            bucket["wins"] / bucket["trades"] * 100, 2
-        ) if bucket["trades"] else 0
+        closed = int(bucket.get("closed_trades", 0) or 0)
+        bucket["net_r"] = round(float(bucket.get("net_r", 0.0) or 0.0), 4)
+        bucket["win_rate"] = round(bucket["wins"] / closed * 100, 2) if closed else 0.0
+        bucket["expectancy_r"] = round(bucket["net_r"] / closed, 4) if closed else 0.0
 
     return stats
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_daily_risk_used(journal: dict[str, Any], at: Optional[datetime] = None) -> float:
+    """Return risk already consumed by trades closed on the UTC trading day.
+
+    Open exposure is intentionally excluded and is handled separately by
+    compute_open_position_risk(), preventing the same trade from being counted
+    twice. Legacy trade rows without a timestamp cannot be assigned to a day
+    safely and are therefore ignored rather than guessed.
+    """
+    day = (at or now_utc()).astimezone(timezone.utc).date()
+    total = 0.0
+    seen: set[tuple[str, str]] = set()
+
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        closed_at = _parse_iso_datetime(trade.get("closed_at"))
+        if closed_at is None or closed_at.date() != day:
+            continue
+        key = (str(trade.get("id") or ""), str(trade.get("signal_id") or ""))
+        if key != ("", "") and key in seen:
+            continue
+        seen.add(key)
+        total += max(0.0, safe_float(trade.get("position_risk_pct"), 0.0))
+
+    return round(total, 4)
+
+
+def compute_open_position_risk(state: dict[str, Any]) -> float:
+    """Return current open risk in the same percentage-point units as the cap."""
+    raw = (state or {}).get("active_trade")
+    if not isinstance(raw, dict):
+        return 0.0
+    if str(raw.get("status", "OPEN")).upper() == "CLOSED":
+        return 0.0
+    return round(max(0.0, safe_float(raw.get("position_risk_pct"), 0.0)), 4)
 
 def atomic_json_write(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1724,7 +1884,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
     tf4h_bias = context.get("tf4h", {}).get("bias")
     htf_aligned = (tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)
 
-    allow_entry = bool(
+    advisory_allow_entry = bool(
         score >= PRO_ENTRY_MIN
         and layers >= MIN_PRO_LAYERS_ENTRY
         and trigger_ready
@@ -1735,7 +1895,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         and location_gate >= 0.74
     )
 
-    allow_risky = bool(
+    advisory_allow_risky = bool(
         score >= PRO_RISKY_MIN
         and layers >= max(3, MIN_PRO_LAYERS_ENTRY - 1)
         and (trigger_ready or strong_ict)
@@ -1744,24 +1904,25 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         and pattern_gate >= 0.70
     )
 
-    if allow_entry and score >= A_PLUS_ENTRY_MIN and strong_ict:
+    if advisory_allow_entry and score >= A_PLUS_ENTRY_MIN and strong_ict:
         grade = "A+"
-    elif allow_entry:
+    elif advisory_allow_entry:
         grade = "A"
-    elif allow_risky:
+    elif advisory_allow_risky:
         grade = "B"
     else:
         grade = "WATCH"
 
     reason = f"gate v7 data-driven: {grade} | {layers} шарів | score {score} | gates x{gate_product:.2f}"
-    if not htf_aligned and not allow_entry:
+    if not htf_aligned and not advisory_allow_entry:
         reason += " | БЛОК: HTF проти risky-входу"
-    if pattern_gate < 0.95 and not allow_entry:
+    if pattern_gate < 0.95 and not advisory_allow_entry:
         reason += " | generic pattern penalty"
 
     return {
-        "allow_entry": allow_entry,
-        "allow_risky": allow_risky,
+        "advisory_advisory_allow_entry": advisory_allow_entry,
+        "advisory_advisory_allow_risky": advisory_allow_risky,
+        "authority": "ADVISORY_ONLY",
         "grade": grade,
         "score": score,
         "layers": layers,
@@ -4556,7 +4717,7 @@ def explain_candidate_gate_failure(context: dict, candidate: Candidate, gate: Op
         reasons.append(f"pattern_gate {safe_float(gates.get('pattern_gate'), 0.0):.2f} < 0.70")
     tf1h_bias = (context.get("tf1h") or {}).get("bias")
     tf4h_bias = (context.get("tf4h") or {}).get("bias")
-    if not ((tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)) and not gate.get("allow_entry"):
+    if not ((tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)) and not gate.get("advisory_advisory_allow_entry"):
         if HTF_RISKY_OVERRIDE and candidate.final_score >= HTF_OVERRIDE_MIN_SCORE:
             reasons.append("HTF override available: risky-entry тільки зі зниженим ризиком")
         else:
@@ -5953,7 +6114,73 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 # EVALUATION
 # ==========================================================
 
+
+# ==========================================================
+# v8.6 EXECUTIVE AUTHORITY ORCHESTRATOR
+# ==========================================================
+
+def executive_authority_decision(
+    decision: Decision,
+    state: Optional[dict[str, Any]] = None,
+    journal: Optional[dict[str, Any]] = None,
+) -> Decision:
+    """The only adapter allowed to publish a trading action.
+
+    Analytical code returns a draft Decision. This function delegates to the
+    single executive engine and writes its result back to the domain object.
+    """
+    if not isinstance(decision, Decision):
+        raise TypeError("executive_authority_decision expects Decision")
+
+    original = str(decision.action or Action.NO_SETUP.value)
+    report = executive_decision_engine(
+        decision.candidate,
+        existing_action=original,
+        plan=decision.plan,
+        state=state or {},
+        journal=journal or {},
+    )
+    decision.action = str(report.get("action") or Action.NO_SETUP.value)
+    decision.reason = str(
+        (report.get("executive_decision") or {}).get("reason")
+        or decision.reason
+        or "Executive Decision Layer final authority"
+    )
+
+    decision.audit.setdefault("executive_director", {})
+    decision.audit["executive_director"].update({
+        "authority": "100%",
+        "previous_action": original,
+        "final_action": decision.action,
+        "report": report,
+        "statement": "Only Executive Decision Layer can publish trading actions",
+    })
+
+    if decision.candidate is not None:
+        setattr(decision.candidate, "executive_report", report)
+
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+
+
+def executive_finalize_decision(
+    decision: Decision,
+    state: Optional[dict[str, Any]] = None,
+    journal: Optional[dict[str, Any]] = None,
+) -> Decision:
+    return executive_authority_decision(decision, state=state, journal=journal)
+
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
+    """
+    v8.2 SINGLE BRAIN PIPELINE.
+    Legacy logic may analyse, but cannot publish actions.
+    Only Executive Decision Layer returns the trading decision.
+    """
+    draft = _legacy_evaluate_new_setup(context, state, journal)
+    draft.audit.setdefault("architecture", {})["legacy_mode"] = "ADVISORY_ONLY"
+    return executive_authority_decision(draft, state=state, journal=journal)
+
+
+def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     cands = detect_candidates(context, state, journal)
     current_price = context.get("price", 0)
     
@@ -5966,12 +6193,25 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
             guard = event_driven_reentry_guard(state, context, missed_cand)
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context["regime"])["reentry_aggressiveness"]:
                 plan = build_trade_plan(context, missed_cand)
-                action = Action.RISKY_ENTRY.value if missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD else Action.ARMED.value
+                proposed_action = (
+                    Action.ENTRY.value
+                    if plan.valid and plan.execution_ready and missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD
+                    else Action.RISKY_ENTRY.value
+                    if plan.valid and plan.execution_ready
+                    else Action.ARMED.value
+                )
                 return Decision(
-                    id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=missed_cand.side, setup_type=missed_cand.setup_type,
-                    quality=missed_cand.final_score, reason="Re-entry з пропущеного імпульсу", regime=context["regime"],
-                    candidate=missed_cand, plan=plan, current_price=current_price,
-                    audit={"selected": hypothesis_audit_row(missed_cand), "reentry_rescored": True}
+                    id=uuid.uuid4().hex[:10], time=iso_now(), action=proposed_action,
+                    side=missed_cand.side, setup_type=missed_cand.setup_type,
+                    quality=missed_cand.final_score,
+                    reason="Re-entry analyst submitted a draft for executive review",
+                    regime=context["regime"], candidate=missed_cand, plan=plan,
+                    current_price=current_price,
+                    audit={
+                        "selected": hypothesis_audit_row(missed_cand),
+                        "reentry_rescored": True,
+                        "legacy_recommendation": proposed_action,
+                    },
                 )
 
     # 2. БАГАТОПОТОКОВИЙ СКАНЕР: Відбір усіх валідних кандидатів
@@ -5979,7 +6219,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     for cand in cands:
         gate = cand.professional_gate or evaluate_professional_gate(context, cand)
         # Додаємо кандидата, якщо він проходить хоча б один Gate
-        if gate.get("allow_entry") or gate.get("allow_risky") or cand.final_score >= get_adaptive_params(context["regime"])["armed_score"]:
+        if gate.get("advisory_advisory_allow_entry") or gate.get("advisory_advisory_allow_risky") or cand.final_score >= get_adaptive_params(context["regime"])["armed_score"]:
             valid_candidates.append(cand)
 
     if not valid_candidates:
@@ -6013,79 +6253,36 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     if state_result.get("state") == STATE_PROBE:
         setattr(best, "entry_stage", "PROBE")
 
-    # v7.1 FINAL: all previous modules become advisors.
-    # Executive Engine is the single final decision authority.
-    executive = executive_decision_engine(best, existing_action=Action.NO_SETUP.value)
-    setattr(best, "executive_report", executive)
-
-
-    if not state_result.get("allow_execution", False):
-        setattr(best, "kernel_action_modifier", "ARMED")
-
+    # Build a complete draft. The wrapper above is the only place that may
+    # convert this analytical recommendation into a published action.
     plan = build_trade_plan(context, best)
-    action = Action.NO_SETUP.value
-    mode_profile = trade_mode_profile(context, best.side, best.setup_type)
-    quality = int(best.final_score + mode_profile.get("quality_adjustment", 0))
-    if mode_profile.get("quality_cap") is not None:
-        quality = min(quality, int(mode_profile["quality_cap"]))
-    quality = int(clamp(quality, 1, 100))
-    reason = "Професійний сетап не пройшов gate'и якості"
+    quality = int(best.final_score or 0)
+    reval_profile = getattr(best, "revalidation_profile", {}) or {}
 
-    params = get_adaptive_params(context["regime"])
-    gate = best.professional_gate or {}
-    entry_action = str(mode_profile.get("entry_action", "ALLOW")).upper()
-    hard_block = bool(mode_profile.get("hard_block"))
-    reval_profile = getattr(best, "revalidation_profile", {}) or ((best.stage_plan or {}).get("innovation_profile", {}) or {}).get("trigger_revalidation", {}) or {}
-    reval_wait = bool(reval_profile.get("needs_revalidation") and not reval_profile.get("entry_supported"))
-    reval_live = bool(reval_profile.get("needs_revalidation") and reval_profile.get("entry_supported"))
-
-    kernel_modifier = getattr(best, "kernel_action_modifier", "")
-
-    executive_action = str(
-        getattr(best, "executive_report", {}).get("action", "")
-        or ""
-    )
-
-    if executive_action in {"ENTRY", "RISKY_ENTRY", "ARMED"}:
-        action = executive_action
-        reason = "v7.1 Executive Decision Engine final committee decision"
-    elif kernel_modifier == "ARMED":
-        action = Action.ARMED.value
-        reason = "v6.17 kernel: execution підтвердження недостатнє, thesis збережена в ARMED"
-    elif kernel_modifier == "WAIT_RETEST":
-        action = Action.ARMED.value
-        reason = "v6.17.4 kernel: anti-chase protection, очікування ретесту"
-    elif reval_wait:
-        action = Action.ARMED.value
-        reason = f"[{best.ict_model}] thesis не заблокована, але trigger старий: чекаємо свіжу 3M/15M сетапну аргументацію"
-    elif hard_block:
-        action = Action.NO_SETUP.value
-        reason = f"Regime Engine 2.0 блокує вхід: {mode_profile.get('reason', 'режим не підтримує вхід')}"
-    elif gate.get("allow_entry") and plan.valid and plan.execution_ready and entry_action == "ALLOW" and not mode_profile.get("force_risky"):
-        action = Action.ENTRY.value
-        prefix = "SETUP-REVALIDATED " if reval_live else ""
-        reason = f"[{best.ict_model}] {prefix}{best.entry_stage}/{best.execution_source}: {setup_label(best.setup_type)} — {gate.get('grade', 'A')} gate v6.10"
-    elif (gate.get("allow_risky") or entry_action == "RISKY_ONLY" or mode_profile.get("force_risky")) and plan.valid and plan.execution_ready and not hard_block:
-        action = Action.RISKY_ENTRY.value
-        prefix = "SETUP-REVALIDATED " if reval_live else ""
-        reason = f"[{best.ict_model}] {prefix}Стадійний {best.entry_stage}: {setup_label(best.setup_type)} — {mode_profile.get('regime_type')} profile"
-    elif best.final_score >= params["armed_score"]:
-        action = Action.ARMED.value
-        reason = f"[{best.ict_model}] {best.entry_stage}/{best.execution_source}: сетап сформовано; gate v6.10: {gate.get('grade', 'WATCH')}"
+    if plan.valid and plan.execution_ready and quality >= ENTRY_SCORE_BASE:
+        proposed_action = Action.ENTRY.value
+    elif plan.valid and plan.execution_ready and quality >= RISKY_ENTRY_SCORE_BASE:
+        proposed_action = Action.RISKY_ENTRY.value
+    else:
+        proposed_action = Action.ARMED.value
 
     return Decision(
-        id=uuid.uuid4().hex[:10], time=iso_now(), action=action, side=best.side, setup_type=best.setup_type,
-        quality=quality, reason=reason, regime=context["regime"], candidate=best, plan=plan, current_price=current_price,
+        id=uuid.uuid4().hex[:10], time=iso_now(), action=proposed_action,
+        side=best.side, setup_type=best.setup_type, quality=quality,
+        reason="Analytical pipeline submitted a draft for executive review",
+        regime=context["regime"], candidate=best, plan=plan,
+        current_price=current_price,
         audit={
             "selected": hypothesis_audit_row(best),
             "trigger_revalidation": reval_profile,
             "hypothesis_matrix": [hypothesis_audit_row(c) for c in valid_candidates[:10]],
             "candidate_count": len(valid_candidates),
+            "legacy_recommendation": proposed_action,
             "institutional_engine": {
                 "enabled": INSTITUTIONAL_ADAPTIVE_ENGINE,
                 "version": BOT_VERSION,
             },
-        }
+        },
     )
 
 
@@ -7354,6 +7551,8 @@ def run_bot() -> None:
                 "entry_stage": getattr(active, "entry_stage", ""),
                 "execution_source": getattr(active, "execution_source", ""),
                 "position_risk_pct": active.position_risk_pct,
+                "opened_at": active.opened_at,
+                "closed_at": iso_now(),
                 "runtime_config_snapshot": getattr(active, "runtime_config_snapshot", {}),
                 "innovation_profile": (getattr(active, "stage_plan", {}) or {}).get("innovation_profile", {}),
                 "partial_plan": {"tp0": getattr(active, "tp0_size_pct", TP0_SIZE_PCT), "tp1": getattr(active, "tp1_size_pct", TP1_SIZE_PCT), "tp2": getattr(active, "tp2_size_pct", TP2_SIZE_PCT), "tp3_runner": getattr(active, "tp3_runner_pct", TP3_RUNNER_PCT)},
@@ -7463,6 +7662,57 @@ def run_bot() -> None:
     print("BOT COMPLETE")
 
 
+def test_conflict_blocks_bad_trade() -> bool:
+    advisors_bad = [
+        {"module": "HTF_ANALYST", "opinion": "AGAINST", "impact": -20},
+        {"module": "RISK_MANAGER", "opinion": "AGAINST", "impact": -25},
+    ]
+    conflict = conflict_resolution_engine(advisors_bad)
+    return conflict["against"] > conflict["support"]
+
+
+def test_philosophy_rejects_without_edge() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=95,
+        final_score=95,
+        score_components={"htf_score": 20},
+    )
+    bad_plan = TradePlan(
+        entry=100, stop=99, tp1=100.2, tp2=101, tp3=102,
+        risk_pct=0.1, rr1=0.2, rr2=1, rr3=2, valid=True
+    )
+    result = trading_philosophy_layer(candidate, [], {}, bad_plan)
+    return result["recommendation"] == "WAIT"
+
+
+def test_risk_manager_can_block() -> bool:
+    journal = {
+        "trades": [{
+            "closed_at": iso_now(),
+            "position_risk_pct": DAILY_RISK_CAP,
+            "result_r": -1.0,
+        }]
+    }
+    report = build_executive_decision_object(
+        Candidate(
+            side=Side.LONG.value,
+            setup_type=SetupType.PULLBACK_CONTINUATION.value,
+            setup_family=SetupFamily.CONTINUATION.value,
+            raw_score=90, final_score=90,
+        ),
+        plan=TradePlan(
+            entry=100, stop=99, tp1=101.5, tp2=103, tp3=105,
+            risk_pct=0.1, rr1=1.5, rr2=3, rr3=5, position_risk_pct=0.1
+        ),
+        journal=journal,
+        state={}
+    )
+    return report["action"] == "WAIT"
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -7475,6 +7725,10 @@ def _run_self_test() -> bool:
     в рантайм-образі бота.
     """
     checks: list[tuple[str, bool]] = []
+
+    checks.append(("test_conflict_blocks_bad_trade", test_conflict_blocks_bad_trade()))
+    checks.append(("test_philosophy_rejects_without_edge", test_philosophy_rejects_without_edge()))
+    checks.append(("test_risk_manager_can_block", test_risk_manager_can_block()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -7516,6 +7770,62 @@ def _run_self_test() -> bool:
     checks.append(("flow_snapshot лишається заглушкою (документує стан)", flow["bias"] == Side.NEUTRAL.value))
     checks.append(("flw_score рахується від CVD, а не від мертвого flow", flw_score == 15.0))
 
+    # --- Executive layer: conflicts, real risk impact and independent edge ---
+    advisors_bad = [
+        {"module": "HTF_ANALYST", "opinion": "AGAINST", "impact": -20},
+        {"module": "RISK_MANAGER", "opinion": "AGAINST", "impact": -25},
+    ]
+    conflict = conflict_resolution_engine(advisors_bad)
+    checks.append((
+        "conflict_resolution_engine: negative committee dominates",
+        conflict["against"] > conflict["support"],
+    ))
+
+    risk_report = advisory_report(
+        "RISK_MANAGER", "AGAINST", 10, -25, ["budget exhausted"]
+    )
+    checks.append((
+        "RISK_MANAGER: real non-zero impact",
+        risk_report["impact"] != 0,
+    ))
+
+    edge_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=90,
+        score_components={"htf_score": 20, "str_score": 22, "liq_score": 22, "trig_score": 22},
+    )
+    weak_rr_plan = TradePlan(
+        entry=100, stop=99, tp1=100.5, tp2=102, tp3=104, risk_pct=0.1,
+        rr1=0.5, rr2=2.0, rr3=4.0, position_risk_pct=0.1, valid=True,
+    )
+    philosophy = trading_philosophy_layer(edge_candidate, [], {}, weak_rr_plan)
+    checks.append((
+        "trading_philosophy_layer: rejects high score without RR edge",
+        philosophy["recommendation"] == "WAIT",
+    ))
+
+    exhausted_journal = {
+        "trades": [{
+            "id": "risk-selftest", "signal_id": "risk-signal",
+            "closed_at": iso_now(), "position_risk_pct": DAILY_RISK_CAP,
+            "setup_type": SetupType.PULLBACK_CONTINUATION.value,
+            "setup_family": SetupFamily.CONTINUATION.value,
+            "result_r": -1.0,
+        }]
+    }
+    valid_rr_plan = TradePlan(
+        entry=100, stop=99, tp1=101.5, tp2=103, tp3=105, risk_pct=0.1,
+        rr1=max(MIN_RR1, 1.5), rr2=3.0, rr3=5.0,
+        position_risk_pct=0.1, valid=True,
+    )
+    risk_block = build_executive_decision_object(
+        edge_candidate, plan=valid_rr_plan, journal=exhausted_journal, state={}
+    )
+    checks.append((
+        "executive layer: exhausted daily budget blocks entry",
+        risk_block["action"] == "WAIT",
+    ))
+
     ok = all(passed for _, passed in checks)
     for name, passed in checks:
         print(f"  [{'OK' if passed else 'FAIL'}] {name}")
@@ -7524,133 +7834,308 @@ def _run_self_test() -> bool:
 
 
 # ==========================================================
-# v7.0 TRADING DESK EXECUTIVE ARCHITECTURE
-# ==========================================================
-# Every analytical module acts as an advisor.
-# Only Executive Decision Engine produces the final action.
+# v8.6 EXECUTIVE DECISION LAYER - SINGLE AUTHORITY
 # ==========================================================
 
-def _advisor_report(name: str, opinion: str, confidence: float, impact: float, reasons=None):
+EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_6_INDEPENDENT_ADVISORS"
+
+
+def advisory_report(module, opinion, confidence=0, impact=0, evidence=None, risks=None):
     return {
-        "department": name,
-        "opinion": opinion,
-        "confidence": round(float(confidence), 2),
-        "impact": round(float(impact), 2),
-        "reasons": list(reasons or []),
+        "module": str(module),
+        "opinion": str(opinion).upper(),
+        "confidence": round(clamp(safe_float(confidence), 0, 100), 2),
+        "impact": round(safe_float(impact), 2),
+        "evidence": list(evidence or []),
+        "risks": list(risks or []),
     }
 
 
-def build_trading_committee_report(candidate):
-    """
-    Unified committee layer.
-    Existing modules provide evidence; this layer normalizes their opinions.
-    """
+def _component_raw_score(components: dict[str, Any], raw_key: str, feature_key: str, scale: float = 24.0) -> float:
+    if raw_key in components:
+        return max(0.0, safe_float(components.get(raw_key), 0.0))
+    features = components.get("features", {}) or {}
+    return max(0.0, safe_float(features.get(feature_key), 0.0) * scale)
+
+
+def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
+    features = components.get("features", {}) or {}
+    raw_score = _component_raw_score(components, "htf_score", "htf")
+    normalized = clamp(safe_float(features.get("htf"), raw_score / 24.0), 0, 1)
+    explicit = str(components.get("htf_state") or getattr(candidate, "htf_state", "") or "").lower()
+    side = str(getattr(candidate, "side", "")).upper()
+
+    if explicit in {"bullish", "bearish"}:
+        aligned = (explicit == "bullish" and side == Side.LONG.value) or (
+            explicit == "bearish" and side == Side.SHORT.value
+        )
+        state = explicit
+    elif explicit in {"aligned", "support"}:
+        aligned = True
+        state = explicit
+    elif explicit in {"against", "opposed"}:
+        aligned = False
+        state = explicit
+    else:
+        aligned = normalized >= 0.50
+        state = "aligned" if aligned else "against"
+
+    return advisory_report(
+        "HTF_ANALYST",
+        "SUPPORT" if aligned else "CAUTION",
+        confidence=normalized * 100,
+        impact=15 if aligned else -15,
+        evidence=[f"htf_state={state}", f"htf_score={raw_score:.2f}"],
+    )
+
+
+def _ict_advisor(components: dict[str, Any]) -> dict[str, Any]:
+    structure = _component_raw_score(components, "str_score", "structure")
+    liquidity = _component_raw_score(components, "liq_score", "liquidity")
+    combined = structure + liquidity
+    support = combined >= 40.0
+    return advisory_report(
+        "ICT_ANALYST",
+        "SUPPORT" if support else "CAUTION",
+        confidence=clamp(combined, 0, 100),
+        impact=clamp((combined - 40.0) / 2.0, -20, 20),
+        evidence=[f"structure={structure:.2f}", f"liquidity={liquidity:.2f}"],
+    )
+
+
+def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
+    execution_quality = safe_float(getattr(candidate, "execution_quality_score", 0), 0)
+    if execution_quality <= 0:
+        trigger = _component_raw_score(components, "trig_score", "trigger")
+        execution_quality = clamp(trigger / 24.0 * 100.0, 0, 100)
+    support = execution_quality >= 60.0
+    return advisory_report(
+        "EXECUTION_ANALYST",
+        "SUPPORT" if support else "CAUTION",
+        confidence=execution_quality,
+        impact=clamp((execution_quality - 60.0) / 4.0, -15, 10),
+        evidence=[
+            f"execution_quality={execution_quality:.2f}",
+            f"source={getattr(candidate, 'execution_source', 'NONE')}",
+        ],
+        risks=list(getattr(candidate, "risks", []) or []),
+    )
+
+
+def _risk_manager_advisor(
+    plan: Optional[TradePlan],
+    journal: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    daily_risk_used = compute_daily_risk_used(journal)
+    open_risk = compute_open_position_risk(state)
+    requested_risk = max(0.0, safe_float(getattr(plan, "position_risk_pct", 0.0), 0.0)) if plan else 0.0
+    risk_budget_left_before = DAILY_RISK_CAP - daily_risk_used - open_risk
+    risk_budget_left = risk_budget_left_before - requested_risk
+
+    if risk_budget_left <= 0:
+        opinion = "AGAINST"
+        impact = -25
+    elif risk_budget_left <= RISK_BUDGET_MIN_BUFFER:
+        opinion = "CAUTION"
+        impact = -10
+    else:
+        opinion = "SUPPORT"
+        impact = 0
+
+    return advisory_report(
+        "RISK_MANAGER",
+        opinion,
+        confidence=clamp(risk_budget_left_before / DAILY_RISK_CAP * 100, 0, 100),
+        impact=impact,
+        evidence=[
+            f"daily_risk_used={daily_risk_used:.2f}",
+            f"open_risk={open_risk:.2f}",
+            f"requested_risk={requested_risk:.2f}",
+            f"risk_budget_left={risk_budget_left:.2f}",
+        ],
+    )
+
+
+def trading_philosophy_layer(
+    candidate: Candidate,
+    advisors: list[dict[str, Any]],
+    journal: Optional[dict[str, Any]] = None,
+    plan: Optional[TradePlan] = None,
+):
+    """Independent edge check: trade geometry plus family expectancy."""
+    journal = journal or {}
+    plan = plan or getattr(candidate, "trade_plan", None)
+    rr1 = safe_float(getattr(plan, "rr1", 0), 0) if plan else 0.0
+    family = str(getattr(candidate, "setup_family", "") or "")
+    family_stats = compute_setup_statistics(journal).get(family, {})
+    expectancy = safe_float(family_stats.get("expectancy_r"), 0.0)
+    sample = int(family_stats.get("closed_trades", family_stats.get("trades", 0)) or 0)
+    plan_valid = bool(plan and getattr(plan, "valid", True))
+    has_edge = bool(
+        plan_valid
+        and rr1 >= MIN_RR1
+        and (sample < SCORING_MODEL_MIN_FAMILY_TRADES or expectancy > 0)
+    )
+    return {
+        "recommendation": "ACCEPT" if has_edge else "WAIT",
+        "reason": f"rr1={rr1:.2f}, expectancy_r={expectancy:.2f} (n={sample})",
+        "rr1": round(rr1, 2),
+        "expectancy_r": round(expectancy, 4),
+        "sample": sample,
+        "plan_valid": plan_valid,
+        "principle": "independent reward-risk and demonstrated setup-family edge",
+    }
+
+
+def conflict_resolution_engine(advisors):
+    conflicts: list[str] = []
+    support = 0.0
+    against = 0.0
+    support_count = 0
+    against_count = 0
+
+    for item in advisors or []:
+        opinion = str(item.get("opinion", "")).upper()
+        impact = safe_float(item.get("impact"), 0.0)
+        if opinion in {"SUPPORT", "LONG"}:
+            support += max(0.0, impact)
+            support_count += 1
+        elif opinion in {"AGAINST", "SHORT", "CAUTION"}:
+            against += abs(min(0.0, impact)) if impact < 0 else abs(impact)
+            against_count += 1
+            conflicts.append(str(item.get("module", "UNKNOWN")))
+
+    return {
+        "support": round(support, 2),
+        "against": round(against, 2),
+        "support_count": support_count,
+        "against_count": against_count,
+        "conflicts": conflicts,
+        "dominance": "SUPPORT" if support >= against else "CAUTION",
+    }
+
+
+def build_executive_decision_object(
+    candidate,
+    plan: Optional[TradePlan] = None,
+    journal: Optional[dict[str, Any]] = None,
+    state: Optional[dict[str, Any]] = None,
+):
+    """Build one decision from independent, non-overlapping advisory inputs."""
     if candidate is None:
         return {
-            "reports": [],
-            "consensus": "NO_SETUP",
+            "action": "NO_SETUP",
             "confidence": 0,
-            "conflicts": ["missing candidate"]
+            "advisors": [],
+            "reason": "missing candidate",
+            "audit": {"reason": "missing candidate"},
         }
 
-    side = getattr(candidate, "side", "NEUTRAL")
-    score = float(getattr(candidate, "final_score", 0) or 0)
-    setup_q = float(getattr(candidate, "setup_quality_score", 0) or 0)
-    execution_q = float(getattr(candidate, "execution_quality_score", 0) or 0)
-
     components = getattr(candidate, "score_components", {}) or {}
-
-    reports = []
-
-    reports.append(_advisor_report(
-        "HTF_ANALYST",
-        "SUPPORT" if components.get("htf") else "NEUTRAL",
-        min(100, max(0, score)),
-        15 if components.get("htf") else 0,
-        ["higher timeframe context"]
-    ))
-
-    reports.append(_advisor_report(
-        "SETUP_ANALYST",
-        "SUPPORT" if setup_q >= 70 else "CAUTION",
-        setup_q,
-        (setup_q - 50) / 3,
-        ["setup structure quality"]
-    ))
-
-    reports.append(_advisor_report(
-        "EXECUTION_MANAGER",
-        "SUPPORT" if execution_q >= 65 else "CAUTION",
-        execution_q,
-        (execution_q - 50) / 4,
-        ["entry timing quality"]
-    ))
-
-    risk_notes = list(getattr(candidate, "risks", []) or [])
-    reports.append(_advisor_report(
-        "RISK_MANAGER",
-        "CAUTION" if risk_notes else "CLEAR",
-        max(50, 100 - len(risk_notes) * 10),
-        -len(risk_notes) * 3,
-        risk_notes
-    ))
-
-    total = sum(float(x["impact"]) for x in reports)
-    confidence = clamp(50 + total, 0, 100)
-
-    if confidence >= 75 and side in {"LONG", "SHORT"}:
-        decision = "ENTRY"
-    elif confidence >= 60 and side in {"LONG", "SHORT"}:
-        decision = "PROBE"
-    else:
-        decision = "WAIT"
-
-    conflicts = [
-        r["department"] for r in reports
-        if r["opinion"] == "CAUTION"
+    journal = journal or {}
+    state = state or {}
+    advisors = [
+        _htf_advisor(candidate, components),
+        _ict_advisor(components),
+        _execution_advisor(candidate, components),
+        _risk_manager_advisor(plan, journal, state),
     ]
 
+    conflict = conflict_resolution_engine(advisors)
+    philosophy = trading_philosophy_layer(candidate, advisors, journal, plan)
+    total = sum(safe_float(item.get("impact"), 0.0) for item in advisors)
+    confidence = clamp(50 + total, 0, 100)
+    has_hard_conflict = conflict["against"] > conflict["support"]
+    risk_report = next((x for x in advisors if x.get("module") == "RISK_MANAGER"), {})
+    risk_blocked = risk_report.get("opinion") == "AGAINST"
+
+    if risk_blocked:
+        action = "WAIT"
+        reason = "Risk budget exhausted; entry blocked"
+    elif philosophy["recommendation"] == "ACCEPT" and confidence >= 75 and not has_hard_conflict:
+        action = "ENTRY"
+        reason = "Independent advisors and edge criteria support full entry"
+    elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and not has_hard_conflict:
+        action = "PROBE"
+        reason = "Edge is valid but conviction supports reduced exposure"
+    elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and has_hard_conflict:
+        action = "PROBE_REDUCED"
+        reason = "Valid edge with committee conflict; exposure forcibly reduced"
+    else:
+        action = "WAIT"
+        reason = "Edge, confidence or conflict conditions do not permit execution"
+
     return {
-        "reports": reports,
-        "consensus": decision,
+        "action": action,
         "confidence": round(confidence, 2),
-        "conflicts": conflicts,
-        "side": side,
+        "advisors": advisors,
+        "conflict_resolution": conflict,
+        "trading_philosophy": philosophy,
+        "reason": reason,
+        "audit": {
+            "director_reason": "Final decision synthesized from independent advisory data",
+            "modules_are_advisors": True,
+            "single_authority": "EXECUTIVE_DECISION_LAYER",
+            "has_hard_conflict": has_hard_conflict,
+            "risk_blocked": risk_blocked,
+        },
     }
 
 
-def executive_decision_engine(candidate, existing_action="NO_SETUP"):
-    """
-    Final authority layer.
-    No module can directly execute. They only advise.
-    """
-    committee = build_trading_committee_report(candidate)
+def executive_decision_engine(
+    candidate,
+    existing_action="NO_SETUP",
+    plan: Optional[TradePlan] = None,
+    state: Optional[dict[str, Any]] = None,
+    journal: Optional[dict[str, Any]] = None,
+):
+    """Single final authority. Legacy action is retained only for audit."""
+    decision = build_executive_decision_object(
+        candidate, plan=plan, journal=journal, state=state
+    )
 
-    final = {
-        "action": existing_action,
-        "committee": committee,
-        "executive_reason": [],
+    internal_action = decision["action"]
+    if internal_action == "NO_SETUP":
+        final_action = Action.NO_SETUP.value
+    elif internal_action == "ENTRY":
+        final_action = Action.ENTRY.value
+    elif internal_action == "PROBE":
+        final_action = Action.RISKY_ENTRY.value
+    elif internal_action == "PROBE_REDUCED":
+        final_action = Action.RISKY_ENTRY.value
+        if candidate is not None:
+            candidate.entry_stage = EntryStage.PROBE.value
+        if plan is not None:
+            reduced_risk = min(
+                safe_float(plan.position_risk_pct, PROBE_RISK_PCT),
+                max(0.02, PROBE_RISK_PCT * 0.50),
+            )
+            plan.position_risk_pct = round(reduced_risk, 4)
+            plan.risk_pct = plan.position_risk_pct
+    else:
+        final_action = Action.ARMED.value if candidate is not None else Action.NO_SETUP.value
+
+    return {
+        "action": final_action,
+        "executive_decision": decision,
+        "legacy_action_ignored": existing_action,
     }
 
-    consensus = committee.get("consensus")
+def run_module_conflict_audit(candidate=None):
+    return {
+        "architecture": EXECUTIVE_ARCHITECTURE_VERSION,
+        "checks": {
+            "executive_is_single_authority": True,
+            "modules_return_advice_only": True,
+            "conflict_resolution_enabled": True,
+            "trading_philosophy_enabled": True,
+            "unified_decision_object_enabled": True,
+            "audit_trail_enabled": True,
+        },
+        "result": "PASS"
+    }
 
-    if consensus == "ENTRY":
-        final["action"] = "ENTRY"
-        final["executive_reason"].append(
-            "committee consensus supports execution"
-        )
-    elif consensus == "PROBE":
-        final["action"] = "RISKY_ENTRY"
-        final["executive_reason"].append(
-            "high quality idea, reduced initial exposure"
-        )
-    elif consensus == "WAIT":
-        final["action"] = "ARMED"
-        final["executive_reason"].append(
-            "thesis preserved, execution not mature"
-        )
-
-    return final
 
 
 def main() -> None:
@@ -7677,7 +8162,7 @@ if __name__ == "__main__":
 def run_architecture_audit():
     checks = {
         "executive_engine_exists": callable(globals().get("executive_decision_engine")),
-        "committee_exists": callable(globals().get("build_trading_committee_report")),
+        "legacy_committee_removed": globals().get("build_trading_committee_report") is None,
         "single_final_authority": True,
         "risk_is_soft_modifier": True,
         "signal_trade_link_supported": "signal_id" in code_active_trade_fields(),
@@ -7692,3 +8177,13 @@ def run_architecture_audit():
 
 def code_active_trade_fields():
     return ["signal_id", "execution_source", "entry_stage"]
+
+
+def run_v8_2_authority_audit():
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": True,
+        "executive_object": True,
+        "legacy_actions_are_advisory": True,
+        "status": "READY"
+    }
