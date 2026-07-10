@@ -230,6 +230,21 @@ CHASE_DETECTION_ENABLED = os.getenv("CHASE_DETECTION_ENABLED", "true").lower() i
 CHASE_ATR_LIMIT = float(os.getenv("CHASE_ATR_LIMIT", "1.8") or 1.8)
 CHASE_BODY_RATIO_LIMIT = float(os.getenv("CHASE_BODY_RATIO_LIMIT", "0.85") or 0.85)
 
+# === v6.18 Entry Freshness Layer ===
+# Не створює нові сетапи. Оцінює тільки якість моменту виконання.
+ENTRY_FRESHNESS_ENABLED = os.getenv("ENTRY_FRESHNESS_ENABLED", "true").lower() in {"1", "true", "yes"}
+FRESHNESS_IMPULSE_SOFT_ATR = float(os.getenv("FRESHNESS_IMPULSE_SOFT_ATR", "1.8") or 1.8)
+FRESHNESS_IMPULSE_WARNING_ATR = float(os.getenv("FRESHNESS_IMPULSE_WARNING_ATR", "2.5") or 2.5)
+FRESHNESS_IMPULSE_HARD_ATR = float(os.getenv("FRESHNESS_IMPULSE_HARD_ATR", "3.5") or 3.5)
+FRESHNESS_MAX_DISTANCE_ZONE_ATR = float(os.getenv("FRESHNESS_MAX_DISTANCE_ZONE_ATR", "1.25") or 1.25)
+FRESHNESS_CORE_MAX_DISTANCE_ATR = float(os.getenv("FRESHNESS_CORE_MAX_DISTANCE_ATR", "0.75") or 0.75)
+FRESHNESS_EXTENDED_RISK_MULT = float(os.getenv("FRESHNESS_EXTENDED_RISK_MULT", "0.45") or 0.45)
+FRESHNESS_WARNING_RISK_MULT = float(os.getenv("FRESHNESS_WARNING_RISK_MULT", "0.70") or 0.70)
+
+# v6.18 setup-aware freshness weighting
+FRESHNESS_REVERSAL_WEIGHT = float(os.getenv("FRESHNESS_REVERSAL_WEIGHT", "0.50") or 0.50)
+FRESHNESS_CONTINUATION_WEIGHT = float(os.getenv("FRESHNESS_CONTINUATION_WEIGHT", "1.00") or 1.00)
+
 HTF_OVERRIDE_ACTIVE_RISK_MULT = float(os.getenv("HTF_OVERRIDE_ACTIVE_RISK_MULT", "0.45") or 0.45)
 HTF_NEUTRAL_RISK_MULT = float(os.getenv("HTF_NEUTRAL_RISK_MULT", "0.75") or 0.75)
 HTF_STRONG_AGAINST_RISK_MULT = float(os.getenv("HTF_STRONG_AGAINST_RISK_MULT", "0.35") or 0.35)
@@ -580,6 +595,8 @@ class Candidate:
     competing_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     innovation_profile: dict[str, Any] = field(default_factory=dict)
     revalidation_profile: dict[str, Any] = field(default_factory=dict)
+    entry_freshness_score: float = 100.0
+    entry_freshness_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -904,6 +921,55 @@ def direction_recent_performance(journal: dict, side: str, lookback: int = 12) -
     }
 
 
+def calculate_entry_freshness(candidate: Any, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """v6.18 Entry Freshness Layer.
+    Оцінює момент виконання, а не якість самого сетапу.
+    """
+    if not ENTRY_FRESHNESS_ENABLED:
+        return {"score": 100.0, "extended": False, "warning": False, "reasons": []}
+
+    context = context or {}
+    comps = getattr(candidate, "score_components", {}) or {}
+
+    impulse_atr = safe_float(context.get("impulse_atr", comps.get("move_atr", 0)), 0)
+    distance_atr = safe_float(context.get("distance_from_entry_zone_atr", comps.get("distance_from_zone_atr", 0)), 0)
+    bars = safe_float(context.get("bars_since_confirmation", comps.get("bars_since_confirmation", 0)), 0)
+
+    score = 100.0
+    reasons = []
+
+    if impulse_atr >= FRESHNESS_IMPULSE_HARD_ATR:
+        score -= 45
+        reasons.append("extended impulse")
+    elif impulse_atr >= FRESHNESS_IMPULSE_WARNING_ATR:
+        score -= 25
+        reasons.append("impulse exhaustion risk")
+    elif impulse_atr >= FRESHNESS_IMPULSE_SOFT_ATR:
+        score -= 10
+
+    if distance_atr > FRESHNESS_MAX_DISTANCE_ZONE_ATR:
+        score -= 25
+        reasons.append("far from origin zone")
+
+    if bars > 20:
+        score -= 15
+        reasons.append("confirmation aging")
+
+    score = clamp(score, 0, 100)
+
+    return {
+        "score": round(score, 2),
+        "extended": score < 55,
+        "warning": score < 75,
+        "reasons": reasons,
+        "impulse_atr": impulse_atr,
+        "distance_from_zone_atr": distance_atr,
+        "bars_since_confirmation": bars,
+        "setup_family": getattr(candidate, "setup_family", ""),
+        "setup_type": getattr(candidate, "setup_type", ""),
+    }
+
+
 def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optional[dict] = None) -> dict[str, Any]:
     """Ladder execution: один сигнал описує, яку частину і на якій стадії брати.
     Це не block-filter, а position construction."""
@@ -964,6 +1030,23 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         base_risk = min(base_risk, PROBE_RISK_PCT)
         add_plan.append(f"{candidate.side} тимчасово PROBE_ONLY через слабку недавню статистику")
 
+    freshness = calculate_entry_freshness(candidate, context)
+    candidate.entry_freshness_score = freshness.get("score", 100)
+    candidate.entry_freshness_profile = freshness
+
+    # v6.18: Entry Freshness changes execution aggressiveness, not setup validity.
+    # CORE is reduced only on explicit extension conditions, not on generic lower score.
+    if freshness.get("extended"):
+        if stage == EntryStage.CORE.value:
+            stage = EntryStage.ACCEPTANCE.value
+        elif stage == EntryStage.ACCEPTANCE.value:
+            stage = EntryStage.PROBE.value
+        add_plan.append("Entry Freshness: extended move, stage reduced")
+    elif freshness.get("warning"):
+        if stage == EntryStage.CORE.value and freshness.get("impulse_atr", 0) >= FRESHNESS_IMPULSE_WARNING_ATR:
+            stage = EntryStage.ACCEPTANCE.value
+        add_plan.append("Entry Freshness warning: reduced aggressiveness")
+
     return {
         "stage": stage,
         "base_risk_pct": round(float(base_risk), 4),
@@ -1001,6 +1084,28 @@ def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk
     # старий/тонкий/після сильного імпульсу.
     innovation = stage_plan.get("innovation_profile") or getattr(candidate, "innovation_profile", {}) or {}
     risk *= float(innovation.get("risk_multiplier", 1.0) or 1.0)
+
+    freshness = getattr(candidate, "entry_freshness_profile", {}) or {}
+    freshness_score = safe_float(freshness.get("score", 100), 100)
+    if ENTRY_FRESHNESS_ENABLED:
+        freshness_weight = 1.0
+        setup_name = str(
+            getattr(candidate, "setup_type", "")
+            or getattr(candidate, "setup_family", "")
+            or ""
+        ).upper()
+
+        # Reversal entries are allowed to look "late" because the edge is the turn itself.
+        # Continuation entries keep the full freshness penalty.
+        if any(x in setup_name for x in ["REVERSAL", "LIQUIDITY_RECOVERY", "RANGE_EDGE"]):
+            freshness_weight = FRESHNESS_REVERSAL_WEIGHT
+        else:
+            freshness_weight = FRESHNESS_CONTINUATION_WEIGHT
+
+        if freshness_score < 55:
+            risk *= (1 - ((1 - FRESHNESS_EXTENDED_RISK_MULT) * freshness_weight))
+        elif freshness_score < 75:
+            risk *= (1 - ((1 - FRESHNESS_WARNING_RISK_MULT) * freshness_weight))
 
     # v6.17.1/v6.17.9 Institutional Adaptive Engine integration
     # HTF disagreement reduces exposure instead of blindly rejecting valid execution.
@@ -6026,6 +6131,14 @@ def professional_decision_kernel(candidate: Any) -> dict[str, Any]:
 
     score = institutional_execution_score(candidate)
     result["execution_score"] = score
+
+    freshness = calculate_entry_freshness(candidate, {})
+    result["entry_freshness"] = freshness
+    if freshness.get("extended"):
+        result["risk_multiplier"] *= FRESHNESS_EXTENDED_RISK_MULT
+        result["warnings"].append("entry freshness extended move")
+    elif freshness.get("warning"):
+        result["risk_multiplier"] *= FRESHNESS_WARNING_RISK_MULT
 
     components = getattr(candidate, "score_components", {}) or {}
 
