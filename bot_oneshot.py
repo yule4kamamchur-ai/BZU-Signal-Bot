@@ -7693,7 +7693,7 @@ def test_conflict_blocks_bad_trade() -> bool:
         {"module": "RISK_MANAGER", "opinion": "AGAINST", "impact": -25},
     ]
     conflict = conflict_resolution_engine(advisors_bad)
-    return conflict["against"] > conflict["support"]
+    return conflict["hard_conflict"]
 
 
 def test_philosophy_rejects_without_edge() -> bool:
@@ -7709,7 +7709,7 @@ def test_philosophy_rejects_without_edge() -> bool:
         entry=100, stop=99, tp1=100.2, tp2=101, tp3=102,
         risk_pct=0.1, rr1=0.2, rr2=1, rr3=2, valid=True
     )
-    result = trading_philosophy_layer(candidate, [], {}, bad_plan)
+    result = trading_philosophy_layer(candidate, {}, bad_plan)
     return result["recommendation"] == "WAIT"
 
 
@@ -7738,6 +7738,45 @@ def test_risk_manager_can_block() -> bool:
     return report["action"] == "WAIT"
 
 
+
+
+def test_probe_reduced_on_hard_conflict() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=90,
+        score_components={
+            "htf_score": 80,
+            "str_score": 25,
+            "liq_score": 25,
+            "trig_score": 25,
+        },
+    )
+    plan = TradePlan(
+        entry=100,
+        stop=99,
+        tp1=101.5,
+        tp2=103,
+        tp3=105,
+        risk_pct=0.1,
+        rr1=2.0,
+        rr2=3.0,
+        rr3=5.0,
+        position_risk_pct=0.3,
+    )
+    # Force a market hard conflict while keeping philosophy edge valid.
+    original = _ict_advisor
+    try:
+        globals()["_ict_advisor"] = lambda _: advisory_report(
+            "ICT_ANALYST", "CAUTION", 10, -10, ["forced conflict"]
+        )
+        result = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
+        return result["action"] == "PROBE_REDUCED" and result["conflict_resolution"]["hard_conflict"]
+    finally:
+        globals()["_ict_advisor"] = original
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -7754,6 +7793,7 @@ def _run_self_test() -> bool:
     checks.append(("test_conflict_blocks_bad_trade", test_conflict_blocks_bad_trade()))
     checks.append(("test_philosophy_rejects_without_edge", test_philosophy_rejects_without_edge()))
     checks.append(("test_risk_manager_can_block", test_risk_manager_can_block()))
+    checks.append(("test_probe_reduced_on_hard_conflict", test_probe_reduced_on_hard_conflict()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -7803,7 +7843,7 @@ def _run_self_test() -> bool:
     conflict = conflict_resolution_engine(advisors_bad)
     checks.append((
         "conflict_resolution_engine: negative committee dominates",
-        conflict["against"] > conflict["support"],
+        conflict["hard_conflict"],
     ))
 
     risk_report = advisory_report(
@@ -7823,10 +7863,28 @@ def _run_self_test() -> bool:
         entry=100, stop=99, tp1=100.5, tp2=102, tp3=104, risk_pct=0.1,
         rr1=0.5, rr2=2.0, rr3=4.0, position_risk_pct=0.1, valid=True,
     )
-    philosophy = trading_philosophy_layer(edge_candidate, [], {}, weak_rr_plan)
+    philosophy = trading_philosophy_layer(edge_candidate, {}, weak_rr_plan)
     checks.append((
         "trading_philosophy_layer: rejects high score without RR edge",
         philosophy["recommendation"] == "WAIT",
+    ))
+
+    reduced_conflict = conflict_resolution_engine([
+        {"module": "ICT_ANALYST", "opinion": "SUPPORT", "impact": 15},
+        {"module": "HTF_ANALYST", "opinion": "AGAINST", "impact": -20},
+    ])
+    checks.append((
+        "conflict_resolution_engine separates market conflict",
+        reduced_conflict["hard_conflict"] is True and not reduced_conflict["risk"]["blocked"],
+    ))
+
+    allowed_entry_conflict = conflict_resolution_engine([
+        {"module": "ICT_ANALYST", "opinion": "SUPPORT", "impact": 15},
+        {"module": "EXECUTION_ANALYST", "opinion": "SUPPORT", "impact": 10},
+    ])
+    checks.append((
+        "conflict_resolution_engine allows clean consensus",
+        allowed_entry_conflict["hard_conflict"] is False,
     ))
 
     exhausted_journal = {
@@ -7883,6 +7941,22 @@ def _component_raw_score(components: dict[str, Any], raw_key: str, feature_key: 
     return max(0.0, safe_float(features.get(feature_key), 0.0) * scale)
 
 
+
+# === Executive advisor normalized weights ===
+# All advisory votes are mapped to the same confidence budget.
+# Risk remains a separate veto channel and is not part of consensus confidence.
+ADVISOR_MAX_IMPACT = {
+    "HTF_ANALYST": 10.0,
+    "ICT_ANALYST": 15.0,
+    "EXECUTION_ANALYST": 10.0,
+}
+
+def normalize_advisor_impact(module: str, raw_impact: float) -> float:
+    limit = ADVISOR_MAX_IMPACT.get(module)
+    if not limit:
+        return 0.0
+    return clamp((safe_float(raw_impact, 0.0) / max(abs(limit), 1e-9)) * 10.0, -10.0, 10.0)
+
 def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
     features = components.get("features", {}) or {}
     raw_score = _component_raw_score(components, "htf_score", "htf")
@@ -7909,7 +7983,7 @@ def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, 
         "HTF_ANALYST",
         "SUPPORT" if aligned else "CAUTION",
         confidence=normalized * 100,
-        impact=15 if aligned else -15,
+        impact=normalize_advisor_impact("HTF_ANALYST", 15 if aligned else -15),
         evidence=[f"htf_state={state}", f"htf_score={raw_score:.2f}"],
     )
 
@@ -7923,7 +7997,7 @@ def _ict_advisor(components: dict[str, Any]) -> dict[str, Any]:
         "ICT_ANALYST",
         "SUPPORT" if support else "CAUTION",
         confidence=clamp(combined, 0, 100),
-        impact=clamp((combined - 40.0) / 2.0, -20, 20),
+        impact=normalize_advisor_impact("ICT_ANALYST", clamp((combined - 40.0) / 2.0, -20, 20)),
         evidence=[f"structure={structure:.2f}", f"liquidity={liquidity:.2f}"],
     )
 
@@ -7938,7 +8012,7 @@ def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict
         "EXECUTION_ANALYST",
         "SUPPORT" if support else "CAUTION",
         confidence=execution_quality,
-        impact=clamp((execution_quality - 60.0) / 4.0, -15, 10),
+        impact=normalize_advisor_impact("EXECUTION_ANALYST", clamp((execution_quality - 60.0) / 4.0, -15, 10)),
         evidence=[
             f"execution_quality={execution_quality:.2f}",
             f"source={getattr(candidate, 'execution_source', 'NONE')}",
@@ -7984,7 +8058,6 @@ def _risk_manager_advisor(
 
 def trading_philosophy_layer(
     candidate: Candidate,
-    advisors: list[dict[str, Any]],
     journal: Optional[dict[str, Any]] = None,
     plan: Optional[TradePlan] = None,
 ):
@@ -8014,31 +8087,48 @@ def trading_philosophy_layer(
 
 
 def conflict_resolution_engine(advisors):
-    conflicts: list[str] = []
-    support = 0.0
-    against = 0.0
-    support_count = 0
-    against_count = 0
+    """Separates market disagreement from capital-risk vetoes.
+
+    Market analysts can disagree with the thesis. Risk manager does not vote on
+    direction; it controls whether exposure is allowed.
+    """
+    result = {
+        "market": {"support": 0.0, "against": 0.0},
+        "execution": {"support": 0.0, "against": 0.0},
+        "risk": {"blocked": False, "severity": 0.0},
+        "conflicts": [],
+    }
 
     for item in advisors or []:
+        module = str(item.get("module", "UNKNOWN"))
         opinion = str(item.get("opinion", "")).upper()
         impact = safe_float(item.get("impact"), 0.0)
-        if opinion in {"SUPPORT", "LONG"}:
-            support += max(0.0, impact)
-            support_count += 1
-        elif opinion in {"AGAINST", "SHORT", "CAUTION"}:
-            against += abs(min(0.0, impact)) if impact < 0 else abs(impact)
-            against_count += 1
-            conflicts.append(str(item.get("module", "UNKNOWN")))
+        bucket = "execution" if "EXECUTION" in module else "market"
 
-    return {
-        "support": round(support, 2),
-        "against": round(against, 2),
-        "support_count": support_count,
-        "against_count": against_count,
-        "conflicts": conflicts,
-        "dominance": "SUPPORT" if support >= against else "CAUTION",
-    }
+        if module == "RISK_MANAGER":
+            if opinion == "AGAINST":
+                result["risk"]["blocked"] = True
+                result["risk"]["severity"] = max(result["risk"]["severity"], abs(impact))
+            continue
+
+        if opinion in {"SUPPORT", "LONG"}:
+            result[bucket]["support"] += max(impact, 0)
+        elif opinion in {"AGAINST", "SHORT", "CAUTION"}:
+            result[bucket]["against"] += abs(impact)
+            result["conflicts"].append(module)
+
+    hard_conflict = (
+        result["market"]["against"] > result["market"]["support"]
+        or result["execution"]["against"] > result["execution"]["support"]
+    )
+    result["hard_conflict"] = hard_conflict
+    result["market_score"] = round(
+        result["market"]["support"] - result["market"]["against"], 2
+    )
+    result["execution_score"] = round(
+        result["execution"]["support"] - result["execution"]["against"], 2
+    )
+    return result
 
 
 def build_executive_decision_object(
@@ -8068,12 +8158,14 @@ def build_executive_decision_object(
     ]
 
     conflict = conflict_resolution_engine(advisors)
-    philosophy = trading_philosophy_layer(candidate, advisors, journal, plan)
-    total = sum(safe_float(item.get("impact"), 0.0) for item in advisors)
-    confidence = clamp(50 + total, 0, 100)
-    has_hard_conflict = conflict["against"] > conflict["support"]
-    risk_report = next((x for x in advisors if x.get("module") == "RISK_MANAGER"), {})
-    risk_blocked = risk_report.get("opinion") == "AGAINST"
+    philosophy = trading_philosophy_layer(candidate, journal, plan)
+    confidence = clamp(
+        50 + conflict.get("market_score", 0) + conflict.get("execution_score", 0),
+        0,
+        100,
+    )
+    has_hard_conflict = bool(conflict.get("hard_conflict", False))
+    risk_blocked = bool(conflict.get("risk", {}).get("blocked", False))
 
     if risk_blocked:
         action = "WAIT"
