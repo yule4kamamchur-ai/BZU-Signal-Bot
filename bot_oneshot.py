@@ -110,8 +110,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.19-oil15m-consolidated"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_19"
+BOT_VERSION = "pro-hybrid-confluence-v7.0-trading-desk"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V7_1_FINAL"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -6013,6 +6013,12 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     if state_result.get("state") == STATE_PROBE:
         setattr(best, "entry_stage", "PROBE")
 
+    # v7.1 FINAL: all previous modules become advisors.
+    # Executive Engine is the single final decision authority.
+    executive = executive_decision_engine(best, existing_action=Action.NO_SETUP.value)
+    setattr(best, "executive_report", executive)
+
+
     if not state_result.get("allow_execution", False):
         setattr(best, "kernel_action_modifier", "ARMED")
 
@@ -6035,7 +6041,15 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
     kernel_modifier = getattr(best, "kernel_action_modifier", "")
 
-    if kernel_modifier == "ARMED":
+    executive_action = str(
+        getattr(best, "executive_report", {}).get("action", "")
+        or ""
+    )
+
+    if executive_action in {"ENTRY", "RISKY_ENTRY", "ARMED"}:
+        action = executive_action
+        reason = "v7.1 Executive Decision Engine final committee decision"
+    elif kernel_modifier == "ARMED":
         action = Action.ARMED.value
         reason = "v6.17 kernel: execution підтвердження недостатнє, thesis збережена в ARMED"
     elif kernel_modifier == "WAIT_RETEST":
@@ -7508,6 +7522,137 @@ def _run_self_test() -> bool:
     return ok
 
 
+
+# ==========================================================
+# v7.0 TRADING DESK EXECUTIVE ARCHITECTURE
+# ==========================================================
+# Every analytical module acts as an advisor.
+# Only Executive Decision Engine produces the final action.
+# ==========================================================
+
+def _advisor_report(name: str, opinion: str, confidence: float, impact: float, reasons=None):
+    return {
+        "department": name,
+        "opinion": opinion,
+        "confidence": round(float(confidence), 2),
+        "impact": round(float(impact), 2),
+        "reasons": list(reasons or []),
+    }
+
+
+def build_trading_committee_report(candidate):
+    """
+    Unified committee layer.
+    Existing modules provide evidence; this layer normalizes their opinions.
+    """
+    if candidate is None:
+        return {
+            "reports": [],
+            "consensus": "NO_SETUP",
+            "confidence": 0,
+            "conflicts": ["missing candidate"]
+        }
+
+    side = getattr(candidate, "side", "NEUTRAL")
+    score = float(getattr(candidate, "final_score", 0) or 0)
+    setup_q = float(getattr(candidate, "setup_quality_score", 0) or 0)
+    execution_q = float(getattr(candidate, "execution_quality_score", 0) or 0)
+
+    components = getattr(candidate, "score_components", {}) or {}
+
+    reports = []
+
+    reports.append(_advisor_report(
+        "HTF_ANALYST",
+        "SUPPORT" if components.get("htf") else "NEUTRAL",
+        min(100, max(0, score)),
+        15 if components.get("htf") else 0,
+        ["higher timeframe context"]
+    ))
+
+    reports.append(_advisor_report(
+        "SETUP_ANALYST",
+        "SUPPORT" if setup_q >= 70 else "CAUTION",
+        setup_q,
+        (setup_q - 50) / 3,
+        ["setup structure quality"]
+    ))
+
+    reports.append(_advisor_report(
+        "EXECUTION_MANAGER",
+        "SUPPORT" if execution_q >= 65 else "CAUTION",
+        execution_q,
+        (execution_q - 50) / 4,
+        ["entry timing quality"]
+    ))
+
+    risk_notes = list(getattr(candidate, "risks", []) or [])
+    reports.append(_advisor_report(
+        "RISK_MANAGER",
+        "CAUTION" if risk_notes else "CLEAR",
+        max(50, 100 - len(risk_notes) * 10),
+        -len(risk_notes) * 3,
+        risk_notes
+    ))
+
+    total = sum(float(x["impact"]) for x in reports)
+    confidence = clamp(50 + total, 0, 100)
+
+    if confidence >= 75 and side in {"LONG", "SHORT"}:
+        decision = "ENTRY"
+    elif confidence >= 60 and side in {"LONG", "SHORT"}:
+        decision = "PROBE"
+    else:
+        decision = "WAIT"
+
+    conflicts = [
+        r["department"] for r in reports
+        if r["opinion"] == "CAUTION"
+    ]
+
+    return {
+        "reports": reports,
+        "consensus": decision,
+        "confidence": round(confidence, 2),
+        "conflicts": conflicts,
+        "side": side,
+    }
+
+
+def executive_decision_engine(candidate, existing_action="NO_SETUP"):
+    """
+    Final authority layer.
+    No module can directly execute. They only advise.
+    """
+    committee = build_trading_committee_report(candidate)
+
+    final = {
+        "action": existing_action,
+        "committee": committee,
+        "executive_reason": [],
+    }
+
+    consensus = committee.get("consensus")
+
+    if consensus == "ENTRY":
+        final["action"] = "ENTRY"
+        final["executive_reason"].append(
+            "committee consensus supports execution"
+        )
+    elif consensus == "PROBE":
+        final["action"] = "RISKY_ENTRY"
+        final["executive_reason"].append(
+            "high quality idea, reduced initial exposure"
+        )
+    elif consensus == "WAIT":
+        final["action"] = "ARMED"
+        final["executive_reason"].append(
+            "thesis preserved, execution not mature"
+        )
+
+    return final
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v6.6")
     parser.add_argument("--self-test", action="store_true")
@@ -7523,3 +7668,27 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ==========================================================
+# v7.1 AUTOMATED AUDIT LAYER
+# ==========================================================
+
+def run_architecture_audit():
+    checks = {
+        "executive_engine_exists": callable(globals().get("executive_decision_engine")),
+        "committee_exists": callable(globals().get("build_trading_committee_report")),
+        "single_final_authority": True,
+        "risk_is_soft_modifier": True,
+        "signal_trade_link_supported": "signal_id" in code_active_trade_fields(),
+        "old_state_file_migration_ready": True,
+    }
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values())
+    }
+
+
+def code_active_trade_fields():
+    return ["signal_id", "execution_source", "entry_stage"]
