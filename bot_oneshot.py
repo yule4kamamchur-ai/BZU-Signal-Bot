@@ -110,8 +110,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v6.17.9-professional-audit"
-ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_5"
+BOT_VERSION = "pro-hybrid-confluence-v6.19-oil15m-consolidated"
+ARCHITECTURE_VERSION = "HYBRID_CONFLUENCE_V6_19"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -1125,8 +1125,105 @@ def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk
         )
         risk *= kernel_multiplier
 
+    unified = calculate_unified_risk_adjustment(candidate)
+    candidate.score_components["unified_risk_adjustment"] = unified
+    risk *= unified["combined"]
+
     return round(clamp(risk, 0.02, CORE_RISK_PCT), 4)
 
+
+
+# ==========================================================
+# v6.19 Professional Consolidation Layer (Oil 15M)
+# ==========================================================
+
+PRIMARY_EXECUTION_SETUPS = {
+    "OB_RECLAIM",
+    "ACCEPTANCE_RETEST_CONTINUATION",
+    "LIQUIDITY_RECOVERY",
+}
+
+CONTEXT_ONLY_SETUPS = {
+    "SILVER_BULLET",
+    "JUDAS_SWING",
+    "OPENING_RANGE_BREAKOUT",
+    "SESSION_MEAN_RECLAIM",
+    "FAILED_AUCTION_REJECTION",
+    "DAILY_WEEKLY_OPEN_RECLAIM",
+}
+
+
+def setup_role(setup_type: str) -> str:
+    """Single hierarchy for setup influence."""
+    name = str(setup_type or "").upper()
+    if name in PRIMARY_EXECUTION_SETUPS:
+        return "PRIMARY_EXECUTION"
+    if name in CONTEXT_ONLY_SETUPS:
+        return "CONTEXT"
+    return "SUPPORT"
+
+
+def calculate_unified_risk_adjustment(candidate: Any) -> dict[str, Any]:
+    """Collect risk modifiers once instead of stacking hidden multipliers."""
+    profile = {
+        "htf": 1.0,
+        "freshness": 1.0,
+        "kernel": 1.0,
+        "innovation": 1.0,
+    }
+
+    freshness = getattr(candidate, "entry_freshness_profile", {}) or {}
+    score = safe_float(freshness.get("score", 100), 100)
+    if score < 55:
+        profile["freshness"] = FRESHNESS_EXTENDED_RISK_MULT
+    elif score < 75:
+        profile["freshness"] = FRESHNESS_WARNING_RISK_MULT
+
+    innovation = getattr(candidate, "innovation_profile", {}) or {}
+    profile["innovation"] = safe_float(innovation.get("risk_multiplier", 1.0), 1.0)
+
+    profile["kernel"] = safe_float(
+        getattr(candidate, "kernel_risk_multiplier", 1.0),
+        1.0,
+    )
+
+    htf = get_htf_state(candidate)
+    if htf == "neutral":
+        profile["htf"] = HTF_NEUTRAL_RISK_MULT
+    elif htf in {"bullish", "bearish"}:
+        profile["htf"] = 1.0
+
+    combined = 1.0
+    for value in profile.values():
+        combined *= value
+
+    # Never allow a valid setup to be silently reduced into meaningless noise.
+    return {
+        "multipliers": profile,
+        "combined": clamp(combined, 0.25, 1.0),
+    }
+
+
+def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
+    """Performance memory by setup_type for oil 15M analysis."""
+    stats = {}
+    for trade in journal.get("trades", []):
+        if not isinstance(trade, dict):
+            continue
+        setup = str(trade.get("setup_type", "UNKNOWN"))
+        bucket = stats.setdefault(setup, {"trades": 0, "wins": 0, "net_r": 0.0})
+        bucket["trades"] += 1
+        result = safe_float(trade.get("result_r", trade.get("result_pct", 0)), 0)
+        bucket["net_r"] += result
+        if result > 0:
+            bucket["wins"] += 1
+
+    for bucket in stats.values():
+        bucket["win_rate"] = round(
+            bucket["wins"] / bucket["trades"] * 100, 2
+        ) if bucket["trades"] else 0
+
+    return stats
 
 def atomic_json_write(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1227,6 +1324,7 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["signal_events"] = list(journal.get("signal_events") or [])[-MAX_JOURNAL:]
     journal["trades"] = deduplicate_closed_trades(list(journal.get("trades") or []))[-MAX_JOURNAL:]
     journal["analytics"] = compute_analytics(journal)
+    journal["setup_statistics"] = compute_setup_statistics(journal)
     journal["learning_status"] = compute_learning_status(journal)
     atomic_json_write(JOURNAL_FILE, journal)
 
