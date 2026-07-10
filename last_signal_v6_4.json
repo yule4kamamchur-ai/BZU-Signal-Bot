@@ -1,286 +1,12 @@
 {
   "version": "pro-hybrid-confluence-v8.5-institutional-authority-final",
   "architecture_version": "TRADING_DESK_EXECUTIVE_V8_3_SINGLE_BRAIN",
-  "active_trade": {
-    "id": "861495d4a1",
-    "side": "LONG",
-    "setup_type": "OPENING_RANGE_BREAKOUT",
-    "setup_family": "EXPANSION",
-    "opened_at": "2026-07-10T11:06:43.333090+00:00",
-    "entry": 76.25,
-    "stop_initial": 75.2784,
-    "stop_current": 75.2784,
-    "structural_invalidation": 75.5799,
-    "tp1": 79.44,
-    "tp2": 80.54,
-    "tp3": 81.2052,
-    "quality": 72,
-    "position_risk_pct": 0.02,
-    "best_price": 76.83,
-    "worst_price": 75.79,
-    "thesis_key": "LONG|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT|762",
-    "thesis": "LONG OPENING_RANGE_BREAKOUT → OPENING_RANGE_BREAKOUT | src=OPENING_RANGE | stage=READY",
-    "last_checked_3m_ts": 1783697495842,
-    "tp1_hit": false,
-    "tp2_hit": false,
-    "tp3_hit": false,
-    "tp1_stop_locked": false,
-    "tp2_stop_locked": false,
-    "tp1_locked_stop": 0.0,
-    "tp2_locked_stop": 0.0,
-    "status": "OPEN",
-    "last_action": "HOLD",
-    "notes": [],
-    "entry_integrity_score": 100,
-    "entry_fail_streak": 0,
-    "mfe_giveback_streak": 0,
-    "mfe_giveback_last_state": "OK",
-    "trigger_level": 76.25,
-    "opened_regime": "TRANSITION",
-    "entry_level": "RISKY_ENTRY",
-    "signal_id": "be80e3d890",
-    "tp0": 77.2216,
-    "tp0_hit": false,
-    "tp0_size_pct": 0.3,
-    "tp1_size_pct": 0.35,
-    "tp2_size_pct": 0.22,
-    "tp3_runner_pct": 0.13,
-    "execution_source": "OPENING_RANGE",
-    "entry_stage": "WAIT_RETEST",
-    "stage_plan": {
-      "stage": "WAIT_RETEST",
-      "base_risk_pct": 0.12,
-      "scale_plan": [
-        "ORB/Failed-ORB: дозволений тільки staged entry, без full-size на першій свічці пробою",
-        "v6.14 old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block",
-        "v6.13 breathing: hard stop ширший за noise envelope; sizing x0.8131"
-      ],
-      "probe_pct": 0.12,
-      "acceptance_pct": 0.22,
-      "retest_add_pct": 0.3,
-      "core_pct": 0.5,
-      "innovation_profile": {
-        "enabled": true,
-        "version": "v6.14_nonblocking_setup_innovation",
-        "primary": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
-        "risk_multiplier": 0.55,
-        "stage_override": "WAIT_RETEST",
-        "partial_mode": "DEFENSIVE_TP0",
-        "target_router": {
-          "mode": "WAIT_FRESH_SETUP_ARGUMENT",
-          "ladder": {
-            "count": 6,
-            "score_sum": 9.91,
-            "nearest": [
-              {
-                "kind": "OB",
-                "tf": "15m",
-                "level": 76.26,
-                "magnet": 1.76,
-                "dist_atr": 0.04
-              },
-              {
-                "kind": "OB",
-                "tf": "15m",
-                "level": 76.45,
-                "magnet": 2.11,
-                "dist_atr": 0.71
-              },
-              {
-                "kind": "FVG",
-                "tf": "15m",
-                "level": 76.56,
-                "magnet": 0.77,
-                "dist_atr": 1.1
-              },
-              {
-                "kind": "OB",
-                "tf": "15m",
-                "level": 76.67,
-                "magnet": 1.8,
-                "dist_atr": 1.49
-              }
-            ]
-          }
-        },
-        "trigger_revalidation": {
-          "enabled": true,
-          "version": "v6.16_adaptive_execution",
-          "state": "STALE",
-          "source": "OPENING_RANGE",
-          "age_min": 516.7,
-          "needs_revalidation": true,
-          "revalidated": false,
-          "entry_supported": false,
-          "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
-          "not_late_location": true,
-          "distance_from_anchor_atr": 0.74,
-          "micro_confirmation": {
-            "supported": false,
-            "kind": "WEAK_OR_MISSING",
-            "score": 20,
-            "checks": [
-              {
-                "name": "directional_3m_close",
-                "ok": false
-              },
-              {
-                "name": "strong_3m_body",
-                "ok": false,
-                "body_atr": 0.035,
-                "body_ratio": 1.0
-              },
-              {
-                "name": "15m_acceptance",
-                "ok": true
-              },
-              {
-                "name": "micro_sweep_reclaim",
-                "ok": false
-              }
-            ]
-          },
-          "risk_multiplier": 0.55,
-          "stage_override": "WAIT_RETEST",
-          "action_bias": "ARMED_REVALIDATION",
-          "setup_arguments": [
-            "price not late vs anchor: 0.74 ATR",
-            "time-warp is thesis memory, not live execution"
-          ],
-          "no_hard_block": true,
-          "quality_threshold_changed": false
-        },
-        "entry_supported_now": false,
-        "impulse": {
-          "valid": true,
-          "impulse_atr": 3.01,
-          "body_efficiency": 0.43,
-          "direction_closes_5": 3,
-          "compression_ratio": 1.48,
-          "giveback_ratio": 0.13,
-          "last_range_atr": 0.5
-        },
-        "trigger_age_min": 516.7,
-        "target_magnet": 1.61,
-        "plan_q": 75,
-        "notes": [
-          "old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block"
-        ],
-        "no_block": true,
-        "quality_threshold_changed": false
-      },
-      "breathing_geometry": {
-        "decision_stop": 75.5799,
-        "catastrophic_stop": 75.2784,
-        "decision_distance": 0.670089,
-        "catastrophic_distance": 0.971629,
-        "conventional_distance": 0.79,
-        "risk_size_multiplier": 0.8131,
-        "tp1_floor_distance": 1.943259,
-        "tp0_floor_distance": 0.971629,
-        "noise": {
-          "tr_p70": 0.286,
-          "tr_p85": 0.36,
-          "current_tr": 0.211607,
-          "fallback": 0.282143,
-          "sample_size": 48
-        },
-        "mode": "TRADE_BREATHING_GEOMETRY"
-      }
-    },
-    "runtime_config_snapshot": {
-      "bot_version": "pro-hybrid-confluence-v7.0-trading-desk",
-      "architecture_version": "TRADING_DESK_EXECUTIVE_V7_1_FINAL",
-      "leverage": 5.0,
-      "normal_risk_pct": 0.5,
-      "risky_risk_pct": 0.3,
-      "probe_risk_pct": 0.12,
-      "acceptance_risk_pct": 0.22,
-      "retest_add_risk_pct": 0.3,
-      "core_risk_pct": 0.5,
-      "tp0_rr": 0.75,
-      "tp0_size_pct": 0.2,
-      "tp1_size_pct": 0.35,
-      "tp2_size_pct": 0.25,
-      "tp3_runner_pct": 0.20000000000000007,
-      "abs_min_stop_dollars": 0.4,
-      "abs_min_tp1_dollars": 0.65,
-      "commission_buffer_dollars": 0.02,
-      "min_rr1": 1.5,
-      "preferred_rr1": 1.6,
-      "min_rr2": 2.5,
-      "min_rr3": 4.0,
-      "trigger_max_age_minutes": 35,
-      "time_warp_score_multiplier": 0.7,
-      "stale_trigger_score_multiplier": 0.62,
-      "limit_armed_score_multiplier": 0.88,
-      "session_mean_max_dist_atr": 1.15,
-      "open_reclaim_max_dist_atr": 1.25,
-      "orb_break_buffer_atr": 0.16,
-      "failed_auction_min_tail_ratio": 0.54,
-      "liquidity_ladder_min_targets": 3,
-      "liquidity_ladder_min_score": 3.2,
-      "bootstrap_risk_multiplier": 0.75,
-      "weak_direction_risk_multiplier": 0.55,
-      "stop_noise_percentile": 0.7,
-      "tp_noise_percentile": 0.85,
-      "min_stop_true_range_mult": 1.1,
-      "min_tp1_true_range_mult": 1.25,
-      "current_candle_stop_mult": 0.85,
-      "tp0_min_rr": 1.0,
-      "tp1_min_rr_pro": 2.0,
-      "tp1_min_atr_pro": 3.0,
-      "be_delay_bars_after_tp1": 2,
-      "be_delay_min_mfe_r": 1.8,
-      "be_lock_r_mult": 0.1,
-      "catastrophic_stop_mult": 1.45,
-      "decision_stop_close_confirm": true,
-      "min_breathing_risk_multiplier": 0.35,
-      "setup_innovation_engine": true,
-      "innovation_stale_trigger_min": 240.0,
-      "innovation_extreme_stale_trigger_min": 1440.0,
-      "innovation_min_risk_mult": 0.35,
-      "innovation_max_risk_mult": 1.05,
-      "innovation_weak_magnet_level": 2.05,
-      "innovation_strong_magnet_level": 3.0,
-      "innovation_giveback_warn_ratio": 0.62,
-      "setup_revalidation_engine": true,
-      "setup_revalidation_stale_min": 240.0,
-      "setup_revalidation_extreme_min": 1440.0,
-      "setup_revalidation_max_late_dist_atr": 1.35,
-      "setup_revalidation_body_atr_min": 0.16,
-      "setup_revalidation_body_ratio_min": 0.52,
-      "setup_revalidation_acceptance_atr": 0.42
-    },
-    "decision_stop": 75.5799,
-    "catastrophic_stop": 75.2784,
-    "breathing_profile": {
-      "decision_stop": 75.5799,
-      "catastrophic_stop": 75.2784,
-      "decision_distance": 0.670089,
-      "catastrophic_distance": 0.971629,
-      "conventional_distance": 0.79,
-      "risk_size_multiplier": 0.8131,
-      "tp1_floor_distance": 1.943259,
-      "tp0_floor_distance": 0.971629,
-      "noise": {
-        "tr_p70": 0.286,
-        "tr_p85": 0.36,
-        "current_tr": 0.211607,
-        "fallback": 0.282143,
-        "sample_size": 48
-      },
-      "mode": "TRADE_BREATHING_GEOMETRY"
-    },
-    "tp1_hit_at": "",
-    "tp1_hit_ts": 0,
-    "tp1_close_confirmed": false
-  },
+  "active_trade": null,
   "opportunity": null,
   "scan_3m": {
-    "last_scanned_3m_ts": 1783697400000,
-    "last_run_processed": 5,
-    "processed_count": 294,
+    "last_scanned_3m_ts": 1783698120000,
+    "last_run_processed": 4,
+    "processed_count": 298,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -292,7 +18,7 @@
         "event_price": 76.49,
         "invalidation_level": 76.49,
         "sweep_level": 76.49,
-        "extreme": 75.82,
+        "extreme": 75.59,
         "displacement": true,
         "retest_ts": 1783650420000,
         "ready_ts": 1783650600000,
@@ -302,7 +28,7 @@
         "confirmation_quality": 80,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 294,
+        "processed_bars": 298,
         "strong_displacement": false,
         "retest": true,
         "mitigation": true,
@@ -325,7 +51,7 @@
         "event_price": 76.49,
         "invalidation_level": 76.49,
         "sweep_level": 76.49,
-        "extreme": 75.88,
+        "extreme": 75.66,
         "displacement": true,
         "retest_ts": 1783646820000,
         "ready_ts": 1783647000000,
@@ -335,7 +61,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 294,
+        "processed_bars": 298,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -352,10 +78,10 @@
   },
   "regime_memory": {
     "type": "RANGE_EDGE",
-    "pending_type": "",
-    "stable_count": 1,
-    "pending_count": 2,
-    "updated_at": "2026-07-10T15:31:35.833649+00:00"
+    "pending_type": "NORMAL",
+    "stable_count": 0,
+    "pending_count": 1,
+    "updated_at": "2026-07-10T15:44:19.305107+00:00"
   },
   "latest_signal": {
     "id": "be80e3d890",
@@ -1465,7 +1191,16 @@
       "trade_id": "861495d4a1",
       "signal_id": "be80e3d890",
       "time": "2026-07-10T15:31:36.555998+00:00"
+    },
+    {
+      "type": "CLOSE",
+      "side": "LONG",
+      "action": "STOP",
+      "price": 75.57,
+      "trade_id": "861495d4a1",
+      "signal_id": "be80e3d890",
+      "time": "2026-07-10T15:44:19.793724+00:00"
     }
   ],
-  "updated_at": "2026-07-10T15:31:36.556030+00:00"
+  "updated_at": "2026-07-10T15:44:19.793734+00:00"
 }
