@@ -8923,7 +8923,18 @@ def build_executive_decision_object(
     # HTF/ICT disagreement is a risk modifier, not an absolute execution veto.
     # A valid execution setup with acceptable RR and no risk violation may still
     # receive a reduced-risk RISKY_ENTRY, but never a fresh PROBE_ENTRY.
-    execution_score = safe_float(conflict.get("execution_score", 0.0), 0.0)
+    # IMPORTANT: conflict["execution_score"] is NOT execution quality.
+    # It is a normalized advisor impact score (~-10..+10).
+    # executive_conflict_allows_reduced_entry() expects raw execution quality (0..100).
+    execution_impact = safe_float(conflict.get("execution_score", 0.0), 0.0)
+    execution_quality_raw = next(
+        (
+            safe_float(advisor.get("confidence", 0.0), 0.0)
+            for advisor in advisors
+            if advisor.get("module") == "EXECUTION_ANALYST"
+        ),
+        0.0,
+    )
     rr1 = safe_float((philosophy or {}).get("rr1", 0.0), 0.0)
     quality = int(getattr(candidate, "final_score", 0) or 0)
     plan_executable = bool(
@@ -8938,7 +8949,7 @@ def build_executive_decision_object(
         and plan_executable
         and quality >= RISKY_ENTRY_SCORE_BASE
         and executive_conflict_allows_reduced_entry(
-            execution_quality=execution_score,
+            execution_quality=execution_quality_raw,
             risk_blocked=risk_blocked,
             rr1=rr1,
         )
@@ -8999,11 +9010,45 @@ def build_executive_decision_object(
             "final_action_policy": "conflict lowers risk, not automatically blocks execution",
             "adaptive_conflict_resolver": {
                 "enabled": True,
-                "execution_score": round(execution_score, 2),
+                "execution_quality_raw": round(execution_quality_raw, 2),
+                "execution_impact": round(execution_impact, 2),
                 "rr1": round(rr1, 2),
                 "override_allowed": conflict_override,
                 "decision_variant": "PROBE_REDUCED" if conflict_override else action,
                 "conflict_override": bool(conflict_override),
+
+                # Regression audit:
+                # before_fix reproduces the old broken behavior where
+                # normalized advisor impact (-10..+10) was compared to a
+                # raw execution threshold (0..100).
+                "before_fix_conflict_override": bool(
+                    has_hard_conflict
+                    and philosophy_accepts
+                    and plan_executable
+                    and quality >= RISKY_ENTRY_SCORE_BASE
+                    and executive_conflict_allows_reduced_entry(
+                        execution_quality=execution_impact,
+                        risk_blocked=risk_blocked,
+                        rr1=rr1,
+                    )
+                ),
+                "after_fix_conflict_override": bool(conflict_override),
+                "before_fix_action": (
+                    "PROBE_REDUCED"
+                    if (
+                        has_hard_conflict
+                        and philosophy_accepts
+                        and plan_executable
+                        and quality >= RISKY_ENTRY_SCORE_BASE
+                        and executive_conflict_allows_reduced_entry(
+                            execution_quality=execution_impact,
+                            risk_blocked=risk_blocked,
+                            rr1=rr1,
+                        )
+                    )
+                    else action
+                ),
+                "after_fix_action": action,
             },
             "probe_entry_eligibility": probe_profile,
         },
@@ -9169,15 +9214,168 @@ def execute_runtime_audits():
     }
 
 
+
+def _audit_journal_to_candidate(signal: dict[str, Any]) -> Optional[Candidate]:
+    """Rebuild minimal Candidate object from journal audit payload."""
+    setup_type = signal.get("setup_type")
+    if not setup_type or setup_type == "NONE":
+        return None
+
+    score_components = signal.get("score_components", {}) or {}
+    return Candidate(
+        side=signal.get("side", "NEUTRAL"),
+        setup_type=setup_type,
+        setup_family=signal.get("setup_family", "UNKNOWN"),
+        raw_score=int(signal.get("raw_score", signal.get("candidate_raw_score", 0)) or 0),
+        final_score=int(
+            signal.get(
+                "quality",
+                signal.get("candidate_final_score", 0),
+            )
+            or 0
+        ),
+        score_components=score_components,
+        evidence_families=signal.get("evidence_families", []) or [],
+        confirmations=signal.get("confirmations", []) or [],
+        trigger_ready=bool(signal.get("trigger_ready", False)),
+        trigger_level=float(signal.get("trigger_level", 0.0) or 0.0),
+        invalidation_level=float(signal.get("invalidation_level", 0.0) or 0.0),
+    )
+
+
+def run_audit_journal(path: str) -> dict[str, Any]:
+    """
+    v5 scale regression audit.
+
+    Purpose:
+    Detect only the execution_quality/execution_impact scale mismatch.
+
+    This intentionally does NOT call build_executive_decision_object().
+    Full decision replay requires reconstructed TradePlan and is a different test.
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    signals = payload.get("signals", []) if isinstance(payload, dict) else []
+
+    result = {
+        "journal": path,
+        "total_signals": len(signals),
+        "candidates_processed": 0,
+        "before_fix_override_count": 0,
+        "after_fix_override_count": 0,
+        "scale_mismatch_blocked": 0,
+        "affected_signal_ids": [],
+        "details": [],
+    }
+
+    for signal in signals:
+        if not signal.get("setup_type") or signal.get("setup_type") == "NONE":
+            continue
+
+        result["candidates_processed"] += 1
+
+        adaptive = signal.get("audit", {}).get("adaptive_conflict_resolver", {})
+        advisors = signal.get("advisors", []) or []
+
+        execution_quality_raw = safe_float(
+            adaptive.get("execution_quality_raw"),
+            0.0,
+        )
+
+        if execution_quality_raw <= 0:
+            for advisor in advisors:
+                if advisor.get("module") == "EXECUTION_ANALYST":
+                    execution_quality_raw = safe_float(
+                        advisor.get("confidence"),
+                        0.0,
+                    )
+                    break
+
+        execution_impact = safe_float(
+            adaptive.get("execution_impact"),
+            0.0,
+        )
+
+        hard_conflict = bool(
+            adaptive.get(
+                "hard_conflict",
+                signal.get("hard_conflict", False),
+            )
+        )
+
+        risk_blocked = bool(
+            adaptive.get(
+                "risk_blocked",
+                signal.get("risk_blocked", False),
+            )
+        )
+
+        rr1 = safe_float(
+            adaptive.get(
+                "rr1",
+                signal.get("rr1", 0.0),
+            ),
+            0.0,
+        )
+
+        eligible = hard_conflict and not risk_blocked
+
+        before_override = False
+        after_override = False
+
+        if eligible:
+            before_override = executive_conflict_allows_reduced_entry(
+                execution_quality=execution_impact,
+                risk_blocked=risk_blocked,
+                rr1=rr1,
+            )
+
+            after_override = executive_conflict_allows_reduced_entry(
+                execution_quality=execution_quality_raw,
+                risk_blocked=risk_blocked,
+                rr1=rr1,
+            )
+
+        if before_override:
+            result["before_fix_override_count"] += 1
+
+        if after_override:
+            result["after_fix_override_count"] += 1
+
+        blocked = (not before_override) and after_override
+        if blocked:
+            result["scale_mismatch_blocked"] += 1
+            result["affected_signal_ids"].append(signal.get("id"))
+
+        result["details"].append(
+            {
+                "id": signal.get("id"),
+                "time": signal.get("time"),
+                "setup_type": signal.get("setup_type"),
+                "execution_quality_raw": execution_quality_raw,
+                "execution_impact": execution_impact,
+                "before_fix_override": before_override,
+                "after_fix_override": after_override,
+                "blocked_by_scale_mismatch": blocked,
+            }
+        )
+
+    return result
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.6")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
 
     audits = execute_runtime_audits()
     if not audits["architecture"]["passed"] or audits["authority"]["status"] != "READY":
         print(json.dumps(audits, ensure_ascii=False, indent=2))
         raise SystemExit("Runtime audit failed")
+
+    if args.audit_journal:
+        report = run_audit_journal(args.audit_journal)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return
 
     if args.self_test:
         ok = _run_self_test()
