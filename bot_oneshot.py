@@ -472,6 +472,7 @@ class Action(str, Enum):
     # Execution / active trade lifecycle actions only.
     ENTRY = "ENTRY"
     RISKY_ENTRY = "RISKY_ENTRY"
+    PROBE_ENTRY = "PROBE_ENTRY"
     NO_SETUP = "NO_SETUP"
     HOLD = "HOLD"
     PROTECT = "PROTECT"
@@ -492,6 +493,7 @@ class ExecutiveDecisionState(str, Enum):
     HOLD/TP/STOP belong to Action and position management.
     """
     ENTRY = "ENTRY"
+    RISKY = "RISKY"
     PROBE = "PROBE"
     PROBE_REDUCED = "PROBE_REDUCED"
     WAIT = "WAIT"
@@ -770,10 +772,13 @@ class AdvisoryRecommendation:
 # аналітичні модулі можуть створювати рекомендації, але не можуть
 # самостійно публікувати торгову дію.
 
-TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE = {
+EXECUTABLE_ENTRY_ACTIONS = frozenset({
     Action.ENTRY.value,
     Action.RISKY_ENTRY.value,
-}
+    Action.PROBE_ENTRY.value,
+})
+
+TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE = set(EXECUTABLE_ENTRY_ACTIONS)
 
 
 class DecisionAuthorityViolation(Exception):
@@ -1020,6 +1025,9 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "acceptance_risk_pct": ACCEPTANCE_RISK_PCT,
         "retest_add_risk_pct": RETEST_ADD_RISK_PCT,
         "core_risk_pct": CORE_RISK_PCT,
+        "entry_score_base": ENTRY_SCORE_BASE,
+        "risky_entry_score_base": RISKY_ENTRY_SCORE_BASE,
+        "probe_entry_score_base": ARMED_SCORE_BASE,
         "tp0_rr": TP0_RR,
         "tp0_size_pct": TP0_SIZE_PCT,
         "tp1_size_pct": TP1_SIZE_PCT,
@@ -1866,6 +1874,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_names = {
         "ENTRY": "ВХІД У УГОДУ",
         "RISKY_ENTRY": "РАННІЙ / СТАДІЙНИЙ ВХІД",
+        "PROBE_ENTRY": "ПРОБНИЙ ВХІД",
         "NO_SETUP": "СИГНАЛУ НЕМАЄ",
     }
     action_label = action_names.get(decision.action, decision.action)
@@ -1946,7 +1955,7 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     for warning in context.get("learning_warnings", [])[:2]:
         lines.append(f"⚠️ {html.escape(warning)}")
     
-    show_plan = decision.plan and decision.plan.valid and decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value)
+    show_plan = decision.plan and decision.plan.valid and decision.action in EXECUTABLE_ENTRY_ACTIONS
     
     if show_plan:
         p = decision.plan
@@ -2086,6 +2095,7 @@ def get_adaptive_params(regime: str) -> dict:
     base = {
         "entry_score": ENTRY_SCORE_BASE,
         "risky_entry_score": RISKY_ENTRY_SCORE_BASE,
+        "probe_entry_score": ARMED_SCORE_BASE,
         "armed_score": ARMED_SCORE_BASE,
         "min_evidence": MIN_ENTRY_EVIDENCE_BASE,
         "mfe_giveback_threshold": 0.42,
@@ -6303,6 +6313,93 @@ def _atr_guard_buffer(context: dict, atr15: float, price: float) -> float:
     return effective_atr * _session_stop_buffer_mult(context)
 
 
+def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, Any]:
+    """Score-independent execution facts for the smallest staged entry.
+
+    The score is only a low evidence floor (ARMED_SCORE_BASE), not a proxy for
+    full-size conviction. Freshness, trigger source and thesis validity carry
+    the actual admission decision.
+    """
+    if candidate is None:
+        return {
+            "eligible": False,
+            "score": 0,
+            "score_floor": ARMED_SCORE_BASE,
+            "live_3m_trigger_ready": False,
+            "fresh_age": False,
+            "revalidation_state": "MISSING",
+            "entry_supported": False,
+            "reasons": ["missing candidate"],
+        }
+
+    score = int(getattr(candidate, "final_score", 0) or 0)
+    live_ready = bool(getattr(candidate, "live_3m_trigger_ready", False))
+    trigger_age = max(safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0), 0.0)
+    fresh_age = bool(trigger_age <= float(TRIGGER_MAX_AGE_MINUTES))
+    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
+    revalidation_state = str(revalidation.get("state") or "UNKNOWN").upper()
+    hard_expired = bool(revalidation.get("hard_expired") or revalidation_state == "DEAD")
+    entry_supported = bool(revalidation.get("entry_supported", True))
+    archived_unrevalidated = bool(
+        revalidation_state == "ARCHIVED_THESIS"
+        and not revalidation.get("revalidated")
+    )
+
+    checks = {
+        "score_floor": score >= ARMED_SCORE_BASE,
+        "live_3m_trigger": live_ready,
+        "fresh_age": fresh_age,
+        "not_hard_expired": not hard_expired,
+        "entry_supported": entry_supported,
+        "not_archived_unrevalidated": not archived_unrevalidated,
+    }
+    reasons = [name for name, passed in checks.items() if not passed]
+    return {
+        "eligible": all(checks.values()),
+        "score": score,
+        "score_floor": ARMED_SCORE_BASE,
+        "live_3m_trigger_ready": live_ready,
+        "trigger_age_minutes": round(trigger_age, 2),
+        "fresh_age": fresh_age,
+        "revalidation_state": revalidation_state,
+        "entry_supported": entry_supported,
+        "checks": checks,
+        "reasons": reasons,
+    }
+
+
+def probe_entry_eligibility(
+    candidate: Optional[Candidate],
+    plan: Optional[TradePlan],
+    *,
+    hard_conflict: bool,
+    risk_blocked: bool,
+    philosophy_accepts: bool,
+) -> dict[str, Any]:
+    """Final Executive gate for Action.PROBE_ENTRY.
+
+    Unlike ENTRY/RISKY_ENTRY, this gate does not use the 75/68 conviction
+    thresholds. It requires a fresh live trigger, a valid executable plan,
+    no analytical hard conflict and available risk budget. Capital-at-risk is
+    capped separately at PROBE_RISK_PCT.
+    """
+    profile = fresh_probe_candidate_profile(candidate)
+    checks = dict(profile.get("checks") or {})
+    checks.update({
+        "plan_valid": bool(plan and getattr(plan, "valid", False)),
+        "plan_execution_ready": bool(plan and getattr(plan, "execution_ready", False)),
+        "no_hard_conflict": not bool(hard_conflict),
+        "risk_not_blocked": not bool(risk_blocked),
+        "philosophy_accepts": bool(philosophy_accepts),
+    })
+    return {
+        **profile,
+        "eligible": all(checks.values()),
+        "checks": checks,
+        "reasons": [name for name, passed in checks.items() if not passed],
+    }
+
+
 def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     price = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0) or safe_float(context.get("price"), 0.0)
     atr15 = context["atr15"] or 0.6
@@ -6465,15 +6562,37 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     
     rr1 = abs(tp1 - price) / abs(stop - price) if abs(stop - price) > 1e-9 else 2.1
     regime_action = str(profile.get("entry_action", "ALLOW")).upper()
-    execution_ready = candidate.trigger_ready and candidate.final_score >= ENTRY_SCORE_BASE and not profile.get("hard_block") and regime_action in {"ALLOW", "RISKY_ONLY"}
-    # v6.15: старий trigger не відкриває late-entry сам. Це не hard block:
-    # thesis лишається ARMED, але entry_ready зʼявляється тільки після нового
-    # сетапного доказу на 3M/15M або якщо execution справді fresh.
+    common_execution_ok = bool(
+        not profile.get("hard_block")
+        and regime_action in {"ALLOW", "RISKY_ONLY"}
+    )
     reval_profile = getattr(candidate, "revalidation_profile", {}) or ((candidate.stage_plan or {}).get("innovation_profile", {}) or {}).get("trigger_revalidation", {}) or {}
-    if reval_profile.get("needs_revalidation") and not reval_profile.get("entry_supported"):
-        execution_ready = False
-    elif reval_profile.get("needs_revalidation") and reval_profile.get("entry_supported"):
-        execution_ready = bool(candidate.final_score >= RISKY_ENTRY_SCORE_BASE and not profile.get("hard_block") and regime_action in {"ALLOW", "RISKY_ONLY"})
+    revalidation_ok = bool(
+        not reval_profile.get("hard_expired")
+        and str(reval_profile.get("state") or "").upper() != "DEAD"
+        and (
+            not reval_profile.get("needs_revalidation")
+            or reval_profile.get("entry_supported")
+        )
+    )
+
+    # Full/risky entries preserve the existing 75/68 score gates.
+    standard_execution_ready = bool(
+        candidate.trigger_ready
+        and candidate.final_score >= RISKY_ENTRY_SCORE_BASE
+        and common_execution_ok
+        and revalidation_ok
+    )
+
+    # PROBE is a separate trust dimension: fresh live execution evidence plus
+    # a low ARMED floor. It is not a disguised lowering of the 68 threshold.
+    fresh_probe_profile = fresh_probe_candidate_profile(candidate)
+    probe_execution_ready = bool(
+        fresh_probe_profile.get("eligible")
+        and common_execution_ok
+        and revalidation_ok
+    )
+    execution_ready = bool(standard_execution_ready or probe_execution_ready)
 
     # Будь-який нестандартний (ризикований) лейн виконання — раннє тактичне входження
     # АБО re-entry з пропущеного імпульсу — повинен отримувати зменшений розмір позиції.
@@ -6519,6 +6638,19 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         candidate = apply_setup_innovation_overlay(candidate, context)
     position_risk_pct = adaptive_position_risk_pct(candidate, context, default_risk)
     position_risk_pct = round(clamp(position_risk_pct * float(breathing.get("risk_size_multiplier", 1.0)), 0.02, CORE_RISK_PCT), 4)
+
+    # A fresh sub-68 probe must reach the Risk Manager already capped. Capping
+    # only after the executive vote can create a false daily-budget veto based
+    # on exposure that would never actually be opened.
+    if fresh_probe_profile.get("eligible") and candidate.final_score < RISKY_ENTRY_SCORE_BASE:
+        candidate.entry_stage = EntryStage.PROBE.value
+        candidate.stage_plan["stage"] = EntryStage.PROBE.value
+        candidate.stage_plan["base_risk_pct"] = min(
+            safe_float(candidate.stage_plan.get("base_risk_pct"), PROBE_RISK_PCT),
+            PROBE_RISK_PCT,
+        )
+        position_risk_pct = round(min(position_risk_pct, PROBE_RISK_PCT), 4)
+
     candidate.stage_plan.setdefault("breathing_geometry", breathing)
     candidate.stage_plan.setdefault("scale_plan", []).append(
         f"v6.13 breathing: hard stop ширший за noise envelope; sizing x{breathing.get('risk_size_multiplier')}"
@@ -6639,7 +6771,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
     10% Executive Decision Layer:
         - the only component allowed to publish:
-          ENTRY / RISKY_ENTRY / NO_SETUP (opportunity states are separate)
+          ENTRY / RISKY_ENTRY / PROBE_ENTRY / NO_SETUP (opportunity states are separate)
 
     Legacy evaluator is preserved as an analytical generator only.
     Its proposed action is stored for audit, but it has no authority.
@@ -6763,6 +6895,8 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
         proposed_action = Action.ENTRY.value
     elif plan.valid and plan.execution_ready and quality >= RISKY_ENTRY_SCORE_BASE:
         proposed_action = Action.RISKY_ENTRY.value
+    elif plan.valid and plan.execution_ready and fresh_probe_candidate_profile(best).get("eligible"):
+        proposed_action = Action.PROBE_ENTRY.value
     else:
         proposed_action = Action.NO_SETUP.value
         proposed_opportunity_status = OpportunityStatus.ARMED.value
@@ -8129,7 +8263,7 @@ def run_bot() -> None:
     if payload.get("score_features"):
         journal.setdefault("training_signals", []).append(payload)
 
-    if decision.action in (Action.ENTRY.value, Action.RISKY_ENTRY.value) and decision.candidate and decision.plan:
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS and decision.candidate and decision.plan:
         # signal_id = decision.id: угода тепер завжди трасується до сигналу,
         # який її відкрив. trade.id лишається окремим (власним) ідентифікатором
         # угоди — це важливо для re-entry-сценаріїв, де одна Opportunity/сигнал
@@ -8256,6 +8390,7 @@ def test_probe_reduced_on_hard_conflict() -> bool:
         rr2=3.0,
         rr3=5.0,
         position_risk_pct=0.3,
+        execution_ready=True,
     )
     # Force a market hard conflict while keeping philosophy edge valid.
     original = _ict_advisor
@@ -8265,12 +8400,84 @@ def test_probe_reduced_on_hard_conflict() -> bool:
         )
         result = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
         return (
-            result["action"] == Action.RISKY_ENTRY.value
+            result["action"] == ExecutiveDecisionState.PROBE_REDUCED.value
             and result["conflict_resolution"]["hard_conflict"]
             and result.get("audit", {}).get("final_action_policy") == "conflict lowers risk, not automatically blocks execution"
         )
     finally:
         globals()["_ict_advisor"] = original
+
+def _probe_test_candidate(*, live: bool = True, score: int = 60) -> Candidate:
+    return Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.SWEEP_RECLAIM.value,
+        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value,
+        raw_score=score,
+        final_score=score,
+        score_components={
+            "htf_score": 24,
+            "str_score": 25,
+            "liq_score": 25,
+            "trig_score": 20,
+            "features": {"htf": 1.0},
+        },
+        trigger_ready=live,
+        live_3m_trigger_ready=live,
+        trigger_age_minutes=5.0 if live else 120.0,
+        execution_source=ExecutionSource.LIVE_3M.value if live else ExecutionSource.TIME_WARP.value,
+        entry_stage=EntryStage.PROBE.value,
+        execution_quality_score=72,
+        revalidation_profile={
+            "state": "FRESH" if live else "STALE",
+            "entry_supported": live,
+            "needs_revalidation": not live,
+            "hard_expired": False,
+        },
+    )
+
+
+def _probe_test_plan(*, execution_ready: bool = True) -> TradePlan:
+    return TradePlan(
+        entry=100,
+        stop=99,
+        tp1=102,
+        tp2=103,
+        tp3=105,
+        risk_pct=PROBE_RISK_PCT,
+        rr1=2.0,
+        rr2=3.0,
+        rr3=5.0,
+        position_risk_pct=PROBE_RISK_PCT,
+        execution_ready=execution_ready,
+        entry_stage=EntryStage.PROBE.value,
+        valid=True,
+    )
+
+
+def test_fresh_probe_entry_below_68() -> bool:
+    candidate = _probe_test_candidate(live=True, score=max(ARMED_SCORE_BASE, 60))
+    plan = _probe_test_plan(execution_ready=True)
+    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
+    return (
+        report["action"] == Action.PROBE_ENTRY.value
+        and candidate.entry_stage == EntryStage.PROBE.value
+        and plan.position_risk_pct <= PROBE_RISK_PCT
+    )
+
+
+def test_probe_requires_live_trigger() -> bool:
+    candidate = _probe_test_candidate(live=False, score=max(ARMED_SCORE_BASE, 60))
+    plan = _probe_test_plan(execution_ready=True)
+    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
+    return report["action"] == Action.NO_SETUP.value
+
+
+def test_probe_requires_execution_ready() -> bool:
+    candidate = _probe_test_candidate(live=True, score=max(ARMED_SCORE_BASE, 60))
+    plan = _probe_test_plan(execution_ready=False)
+    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
+    return report["action"] == Action.NO_SETUP.value
+
 
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
@@ -8289,6 +8496,9 @@ def _run_self_test() -> bool:
     checks.append(("test_philosophy_rejects_without_edge", test_philosophy_rejects_without_edge()))
     checks.append(("test_risk_manager_can_block", test_risk_manager_can_block()))
     checks.append(("test_probe_reduced_on_hard_conflict", test_probe_reduced_on_hard_conflict()))
+    checks.append(("test_fresh_probe_entry_below_68", test_fresh_probe_entry_below_68()))
+    checks.append(("test_probe_requires_live_trigger", test_probe_requires_live_trigger()))
+    checks.append(("test_probe_requires_execution_ready", test_probe_requires_execution_ready()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -8671,35 +8881,64 @@ def build_executive_decision_object(
     # v8.7 Adaptive Conflict Resolver:
     # HTF/ICT disagreement is a risk modifier, not an absolute execution veto.
     # A valid execution setup with acceptable RR and no risk violation may still
-    # receive a reduced-risk entry instead of being silently discarded.
+    # receive a reduced-risk RISKY_ENTRY, but never a fresh PROBE_ENTRY.
     execution_score = safe_float(conflict.get("execution_score", 0.0), 0.0)
     rr1 = safe_float((philosophy or {}).get("rr1", 0.0), 0.0)
+    quality = int(getattr(candidate, "final_score", 0) or 0)
+    plan_executable = bool(
+        plan
+        and getattr(plan, "valid", False)
+        and getattr(plan, "execution_ready", False)
+    )
+    philosophy_accepts = philosophy.get("recommendation") == "ACCEPT"
     conflict_override = (
         has_hard_conflict
-        and philosophy.get("recommendation") == "ACCEPT"
+        and philosophy_accepts
+        and plan_executable
+        and quality >= RISKY_ENTRY_SCORE_BASE
         and execution_score >= 4.5
         and rr1 >= MIN_RR1
         and not risk_blocked
+    )
+    probe_profile = probe_entry_eligibility(
+        candidate,
+        plan,
+        hard_conflict=has_hard_conflict,
+        risk_blocked=risk_blocked,
+        philosophy_accepts=philosophy_accepts,
     )
 
     if risk_blocked:
         action = ExecutiveDecisionState.WAIT.value
         reason = "Risk budget exhausted; entry blocked"
     elif conflict_override:
-        # Adaptive conflict handling belongs here, before generic WAIT logic.
-        # HTF/ICT disagreement lowers confidence and sizing, but does not erase
-        # an execution edge when RR and risk conditions remain valid.
-        action = Action.RISKY_ENTRY.value
+        # Existing 68+ risky class remains separate from the new probe class.
+        action = ExecutiveDecisionState.PROBE_REDUCED.value
         reason = "Execution edge confirmed despite HTF/ICT conflict; reduced-risk entry allowed"
-    elif philosophy["recommendation"] == "ACCEPT" and confidence >= 75 and not has_hard_conflict:
+    elif (
+        philosophy_accepts
+        and plan_executable
+        and quality >= ENTRY_SCORE_BASE
+        and confidence >= 75
+        and not has_hard_conflict
+    ):
         action = ExecutiveDecisionState.ENTRY.value
-        reason = "Independent advisors and edge criteria support full entry"
-    elif philosophy["recommendation"] == "ACCEPT" and confidence >= 55 and not has_hard_conflict:
+        reason = "Independent advisors and 75+ conviction support full entry"
+    elif (
+        philosophy_accepts
+        and plan_executable
+        and quality >= RISKY_ENTRY_SCORE_BASE
+        and confidence >= 55
+        and not has_hard_conflict
+    ):
+        action = ExecutiveDecisionState.RISKY.value
+        reason = "Valid 68+ setup supports reduced-risk entry"
+    elif probe_profile.get("eligible"):
         action = ExecutiveDecisionState.PROBE.value
-        reason = "Edge is valid but conviction supports reduced exposure"
+        reason = "Fresh non-conflicting live trigger supports minimum-risk probe"
     else:
         action = ExecutiveDecisionState.WAIT.value
-        reason = "Edge, confidence or conflict conditions do not permit execution"
+        reason = "Edge, freshness, execution readiness or conflict conditions do not permit execution"
 
     return {
         "action": action,
@@ -8721,6 +8960,7 @@ def build_executive_decision_object(
                 "rr1": round(rr1, 2),
                 "override_allowed": conflict_override,
             },
+            "probe_entry_eligibility": probe_profile,
         },
     }
 
@@ -8738,7 +8978,8 @@ def build_executive_decision_object(
 # Therefore WAIT must resolve to NO_SETUP for external signal output.
 EXECUTIVE_ACTION_MAP = {
     ExecutiveDecisionState.ENTRY: Action.ENTRY.value,
-    ExecutiveDecisionState.PROBE: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.RISKY: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.PROBE: Action.PROBE_ENTRY.value,
     ExecutiveDecisionState.PROBE_REDUCED: Action.RISKY_ENTRY.value,
 
     # New setup decision: no open position exists.
@@ -8791,16 +9032,22 @@ def executive_decision_engine(
     internal_action = decision["action"]
     final_action = resolve_executive_action(internal_action)
 
-    if internal_action == "PROBE_REDUCED":
+    if internal_action in {ExecutiveDecisionState.PROBE.value, ExecutiveDecisionState.PROBE_REDUCED.value}:
         if candidate is not None:
             candidate.entry_stage = EntryStage.PROBE.value
         if plan is not None:
+            risk_cap = (
+                max(0.02, PROBE_RISK_PCT * 0.50)
+                if internal_action == ExecutiveDecisionState.PROBE_REDUCED.value
+                else PROBE_RISK_PCT
+            )
             reduced_risk = min(
-                safe_float(plan.position_risk_pct, PROBE_RISK_PCT),
-                max(0.02, PROBE_RISK_PCT * 0.50),
+                safe_float(plan.position_risk_pct, risk_cap),
+                risk_cap,
             )
             plan.position_risk_pct = round(reduced_risk, 4)
             plan.risk_pct = plan.position_risk_pct
+            plan.entry_stage = EntryStage.PROBE.value
 
     return {
         "action": final_action,
