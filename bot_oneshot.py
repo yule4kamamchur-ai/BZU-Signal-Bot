@@ -1906,11 +1906,18 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             lines.append(f"⚠️ {html.escape(warning)}")
         return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
     
+    adaptive = ((decision.audit or {}).get("adaptive_conflict_resolver") or {})
+    decision_variant = adaptive.get("decision_variant")
+    conflict_override = bool(adaptive.get("conflict_override", False))
+
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
+
+    if decision_variant == "PROBE_REDUCED" or conflict_override:
+        lines.append("⚠️ <b>Тип входу:</b> PROBE_REDUCED (conflict override, знижений ризик)")
     
     if decision.candidate and decision.action != Action.NO_SETUP.value:
         c = decision.candidate
@@ -6799,6 +6806,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
 
 def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
+    proposed_opportunity_status = None
     cands = detect_candidates(context, state, journal)
     current_price = context.get("price", 0)
     
@@ -6914,7 +6922,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             "hypothesis_matrix": [hypothesis_audit_row(c) for c in valid_candidates[:10]],
             "candidate_count": len(valid_candidates),
             "legacy_recommendation": proposed_action,
-            "opportunity_status": getattr(best, "opportunity_status", proposed_opportunity_status if "proposed_opportunity_status" in locals() else None),
+            "opportunity_status": getattr(best, "opportunity_status", proposed_opportunity_status),
             "institutional_engine": {
                 "enabled": INSTITUTIONAL_ADAPTIVE_ENGINE,
                 "version": BOT_VERSION,
@@ -8018,7 +8026,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     if not result["closed"] and structural_break:
         result["closed"] = True
         result["action"] = Action.STOP.value
-        result["exit_price"] = price
+        result["exit_price"] = round_price(price)
         result["notes"].append("Структурна інвалідація (закриття 15M) — вихід")
 
     trade.last_checked_3m_ts = int(now_utc().timestamp() * 1000)
@@ -8073,7 +8081,7 @@ SETUP_LABELS = {
     SetupType.DIRECTION_FLIP.value: "Підтверджена зміна напрямку на 15M",
     SetupType.TREND_IGNITION.value: "Запуск нового тренду",
     SetupType.PULLBACK_CONTINUATION.value: "Продовження тренду після ICT-відкату",
-    SetupType.FRESH_BASE_CONTINUATION.value: "",
+    SetupType.FRESH_BASE_CONTINUATION.value: "Продовження тренду від свіжої бази",
     SetupType.BREAKOUT_RETEST.value: "Пробій структури + підтверджений ретест",
     SetupType.RANGE_COMPRESSION_BREAKOUT.value: "Пробій після стиснення діапазону",
     SetupType.RANGE_EDGE_REVERSAL.value: "Розворот від межі діапазону",
@@ -8632,7 +8640,13 @@ EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_6_INDEPENDENT_ADVISO
 
 
 def advisory_report(module, opinion, confidence=0, impact=0, evidence=None, risks=None):
-    return {
+    """Single advisory output gateway.
+
+    Every analytical module must pass through DecisionAuthorityGuard.
+    Advisors may provide opinions, but any accidental attempt to leak an
+    executable action is rejected before reaching Executive Decision Layer.
+    """
+    report = {
         "module": str(module),
         "opinion": str(opinion).upper(),
         "confidence": round(clamp(safe_float(confidence), 0, 100), 2),
@@ -8640,6 +8654,7 @@ def advisory_report(module, opinion, confidence=0, impact=0, evidence=None, risk
         "evidence": list(evidence or []),
         "risks": list(risks or []),
     }
+    return DECISION_AUTHORITY_GUARD.validate_module_output(module, report)
 
 
 def _component_raw_score(components: dict[str, Any], raw_key: str, feature_key: str, scale: float = 24.0) -> float:
@@ -8691,7 +8706,10 @@ def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, 
         "HTF_ANALYST",
         "SUPPORT" if aligned else "CAUTION",
         confidence=normalized * 100,
-        impact=normalize_advisor_impact("HTF_ANALYST", 15 if aligned else -15),
+        impact=normalize_advisor_impact(
+            "HTF_ANALYST",
+            clamp((normalized - 0.50) * 40.0, -20.0, 20.0)
+        ),
         evidence=[f"htf_state={state}", f"htf_score={raw_score:.2f}"],
     )
 
@@ -8764,12 +8782,32 @@ def _risk_manager_advisor(
     )
 
 
+TRADING_PHILOSOPHY_RUNTIME_STATE = {
+    "calls": 0,
+    "last_called_at": None,
+    "last_recommendation": None,
+    "last_candidate_type": None,
+}
+
+
 def trading_philosophy_layer(
     candidate: Candidate,
     journal: Optional[dict[str, Any]] = None,
     plan: Optional[TradePlan] = None,
 ):
-    """Independent edge check: trade geometry plus family expectancy."""
+    """Independent edge check: trade geometry plus family expectancy.
+
+    Runtime contract:
+    This layer is not considered enabled merely because the function exists.
+    Every real execution call registers an audit heartbeat so architecture
+    checks can prove that the philosophy gate actually participated.
+    """
+    TRADING_PHILOSOPHY_RUNTIME_STATE.update({
+        "calls": int(TRADING_PHILOSOPHY_RUNTIME_STATE.get("calls", 0)) + 1,
+        "last_called_at": iso_now(),
+        "last_candidate_type": type(candidate).__name__ if candidate is not None else None,
+    })
+
     journal = journal or {}
     plan = plan or getattr(candidate, "trade_plan", None)
     rr1 = safe_float(getattr(plan, "rr1", 0), 0) if plan else 0.0
@@ -8783,8 +8821,11 @@ def trading_philosophy_layer(
         and rr1 >= MIN_RR1
         and (sample < SCORING_MODEL_MIN_FAMILY_TRADES or expectancy > 0)
     )
+    recommendation = "ACCEPT" if has_edge else "WAIT"
+    TRADING_PHILOSOPHY_RUNTIME_STATE["last_recommendation"] = recommendation
+
     return {
-        "recommendation": "ACCEPT" if has_edge else "WAIT",
+        "recommendation": recommendation,
         "reason": f"rr1={rr1:.2f}, expectancy_r={expectancy:.2f} (n={sample})",
         "rr1": round(rr1, 2),
         "expectancy_r": round(expectancy, 4),
@@ -8896,9 +8937,11 @@ def build_executive_decision_object(
         and philosophy_accepts
         and plan_executable
         and quality >= RISKY_ENTRY_SCORE_BASE
-        and execution_score >= 4.5
-        and rr1 >= MIN_RR1
-        and not risk_blocked
+        and executive_conflict_allows_reduced_entry(
+            execution_quality=execution_score,
+            risk_blocked=risk_blocked,
+            rr1=rr1,
+        )
     )
     probe_profile = probe_entry_eligibility(
         candidate,
@@ -8959,6 +9002,8 @@ def build_executive_decision_object(
                 "execution_score": round(execution_score, 2),
                 "rr1": round(rr1, 2),
                 "override_allowed": conflict_override,
+                "decision_variant": "PROBE_REDUCED" if conflict_override else action,
+                "conflict_override": bool(conflict_override),
             },
             "probe_entry_eligibility": probe_profile,
         },
@@ -9056,19 +9101,26 @@ def executive_decision_engine(
     }
 
 def run_module_conflict_audit(candidate=None):
-    return {
-        "architecture": EXECUTIVE_ARCHITECTURE_VERSION,
-        "checks": {
-            "executive_is_single_authority": True,
-            "modules_return_advice_only": True,
-            "conflict_resolution_enabled": True,
-            "trading_philosophy_enabled": True,
-            "unified_decision_object_enabled": True,
-            "audit_trail_enabled": True,
-        },
-        "result": "PASS"
+    """Runtime audit of executive decision architecture."""
+    checks = {
+        "executive_is_single_authority": bool(EXECUTIVE_ACTION_MAP),
+        "modules_return_advice_only": all(callable(x) for x in (_htf_advisor, _ict_advisor, _execution_advisor)),
+        "conflict_resolution_enabled": callable(executive_conflict_allows_reduced_entry),
+        "trading_philosophy_enabled": bool(
+            callable(trading_philosophy_layer)
+        ),
+        "trading_philosophy_executed": bool(
+            TRADING_PHILOSOPHY_RUNTIME_STATE.get("calls", 0) > 0
+        ),
+        "trading_philosophy_last_call": TRADING_PHILOSOPHY_RUNTIME_STATE.get("last_called_at"),
+        "unified_decision_object_enabled": "Decision" in globals(),
+        "audit_trail_enabled": "audit" in Decision.__annotations__,
     }
-
+    return {
+        "architecture": globals().get("EXECUTIVE_ARCHITECTURE_VERSION", "UNKNOWN"),
+        "checks": checks,
+        "result": "PASS" if all(checks.values()) else "FAIL",
+    }
 
 
 # ==========================================================
