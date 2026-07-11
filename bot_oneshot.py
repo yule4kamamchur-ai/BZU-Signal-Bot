@@ -9273,8 +9273,22 @@ def run_audit_journal(path: str) -> dict[str, Any]:
 
         result["candidates_processed"] += 1
 
-        adaptive = signal.get("audit", {}).get("adaptive_conflict_resolver", {})
-        advisors = signal.get("advisors", []) or []
+        # Реальна структура journal:
+        # signal.audit.executive_director.report.executive_decision
+        executive_decision = (
+            signal.get("audit", {})
+            .get("executive_director", {})
+            .get("report", {})
+            .get("executive_decision", {})
+        ) or {}
+
+        adaptive = (
+            executive_decision
+            .get("audit", {})
+            .get("adaptive_conflict_resolver", {})
+        ) or {}
+
+        advisors = executive_decision.get("advisors", []) or []
 
         execution_quality_raw = safe_float(
             adaptive.get("execution_quality_raw"),
@@ -9291,29 +9305,33 @@ def run_audit_journal(path: str) -> dict[str, Any]:
                     break
 
         execution_impact = safe_float(
-            adaptive.get("execution_impact"),
+            adaptive.get(
+                "execution_impact",
+                adaptive.get("execution_score"),
+            ),
             0.0,
         )
 
+        conflict_resolution = executive_decision.get("conflict_resolution", {}) or {}
+
         hard_conflict = bool(
-            adaptive.get(
+            conflict_resolution.get(
                 "hard_conflict",
-                signal.get("hard_conflict", False),
+                adaptive.get("hard_conflict", False),
             )
         )
 
         risk_blocked = bool(
-            adaptive.get(
-                "risk_blocked",
-                signal.get("risk_blocked", False),
+            conflict_resolution.get("risk", {}).get(
+                "blocked",
+                adaptive.get("risk_blocked", False),
             )
         )
 
         rr1 = safe_float(
-            adaptive.get(
-                "rr1",
-                signal.get("rr1", 0.0),
-            ),
+            executive_decision
+            .get("trading_philosophy", {})
+            .get("rr1", adaptive.get("rr1", 0.0)),
             0.0,
         )
 
