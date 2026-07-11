@@ -4792,8 +4792,6 @@ def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: f
     біля 72.60: не треба послаблювати gate, треба окремо оцінити acceptance-рetest."""
     if len(c15) < 8 or atr15 <= 0:
         return {"active": False, "score_bonus": 0, "reason": "not_enough_candles"}
-    sign = side_sign(side)
-    recent = c15[-8:]
     prev = c15[-8:-1]
     last = c15[-1]
     zone_ok, zone_mid, zone_label = _same_side_zone_support(zones, side, price, atr15)
@@ -5195,7 +5193,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     tf15 = context["tf15"]
     tf1h = context["tf1h"]
     tf4h = context["tf4h"]
-    flow = context["flow"]
     cvd = context.get("cvd", {})
     regime = context["regime"]
     scan_events = context.get("scan_3m_events", {})
@@ -5203,12 +5200,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     smt_c15 = (context.get("smt_candles", {}) or {}).get("15m", [])
 
     # === ICT PD Array / SMT Data ===
-    # ПРИМІТКА: identify_liquidity_and_range() тут викликається лише заради
-    # SMT/range-контексту нижче; поле "eq" (рівень рівноваги PD Array) раніше
-    # рахувалось у eq_level, але ніде не читалось — приберено як orphaned-код
-    # незавершеного PD Array рефактору (Premium/Discount вирівнювання зараз
-    # не входить у vector scoring нижче).
-    range_data = identify_liquidity_and_range(c15)
+    # Liquidity/range-контекст уже підготовлений у build_context().
+    # Тут використовується лише готовий SMT-контекст; повторне сканування
+    # liquidity/range у detect_candidates було б зайвим CPU-витратним дублем.
     smt_bias = detect_smt_divergence(c15, smt_c15)
 
     kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
@@ -5363,7 +5357,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if has_choch and has_fvg:
             fvg_zones = [z for z in zones if z.side == side and z.kind == "FVG"]
             if fvg_zones:
-                best_fvg = fvg_zones[0]
+                # Вибираємо найбільш релевантний FVG для LIMIT_ARMED:
+                # не перший елемент у списку (хронологічний артефакт), а
+                # найближчу до поточної ціни зону з урахуванням strength.
+                best_fvg = min(
+                    fvg_zones,
+                    key=lambda z: (
+                        abs(price - ((z.low + z.high) / 2)) / max(atr15, 1e-9),
+                        -safe_float(getattr(z, "strength", 0.0), 0.0),
+                    ),
+                )
                 ce_level = best_fvg.low + (best_fvg.high - best_fvg.low) / 2
                 is_limit_armed = True
         
@@ -5411,7 +5414,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         mmbm_htf_ok = mmbm_tf1h_ok or mmbm_tf15_ok
         if mmbm_htf_ok and has_choch and is_sweep:
             active_patterns.append("MMBM")
-        if os.getenv("MMBM_DEBUG_LOG"):
+        if False and os.getenv("MMBM_DEBUG_LOG"):
             print(
                 f"[MMBM_DEBUG] side={side} tf1h_ok={mmbm_tf1h_ok} tf15_ok={mmbm_tf15_ok} "
                 f"has_choch={has_choch} is_sweep={is_sweep} -> "
@@ -5588,41 +5591,46 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
-                raw += safe_float(acceptance_retest.get("score_bonus"), 0.0) * 0.35
                 pattern_conf.append("🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком")
             elif model_id == "VWAP_SESSION_MEAN_RECLAIM":
                 execution_source = ExecutionSource.SESSION_MEAN.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
                 local_trigger_level = safe_float(session_mean_reclaim.get("level"), trigger_level) or trigger_level
-                raw += safe_float(session_mean_reclaim.get("score_bonus"), 0.0) * 0.30
             elif model_id in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
                 execution_source = ExecutionSource.OPENING_RANGE.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if model_id == "FAILED_ORB" else ExecutionLane.STANDARD_CONFIRMED.value
                 local_trigger_level = safe_float(opening_range.get("entry_level"), trigger_level) or trigger_level
-                raw += safe_float(opening_range.get("score_bonus"), 0.0) * 0.25
             elif model_id == "DAILY_WEEKLY_OPEN_RECLAIM":
                 execution_source = ExecutionSource.OPEN_RECLAIM.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
                 local_trigger_level = safe_float(open_reclaim.get("level"), trigger_level) or trigger_level
-                raw += safe_float(open_reclaim.get("score_bonus"), 0.0) * 0.30
             elif model_id == "LIQUIDITY_LADDER_MODEL":
                 execution_source = ExecutionSource.LIQUIDITY_LADDER.value
                 actionable_trigger_ready = bool(liquidity_ladder.get("entry_ok"))
                 execution_lane_source = ExecutionLane.LIMIT_ONLY.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
-                raw += safe_float(liquidity_ladder.get("score_bonus"), 0.0) * 0.20
             elif model_id == "FAILED_AUCTION_REJECTION":
                 execution_source = ExecutionSource.FAILED_AUCTION.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
-                raw += safe_float(failed_auction.get("score_bonus"), 0.0) * 0.35
             elif model_id == "TIME_OF_DAY_ADAPTIVE":
                 execution_source = ExecutionSource.TIME_OF_DAY.value
                 actionable_trigger_ready = bool(time_of_day_adaptive.get("entry_ok"))
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
-                raw += safe_float(time_of_day_adaptive.get("score_bonus"), 0.0) * 0.20
+            elif model_id == "FVG_ENTRY":
+                # FVG alone is a location, not an execution trigger.
+                # Require directional structure + live confirmation to avoid
+                # generating endless passive hypotheses near any old imbalance.
+                fvg_execution_ok = bool(has_choch and live_3m_trigger_ready and tf15.get("bias") == side)
+                execution_source = ExecutionSource.LIVE_3M.value if fvg_execution_ok else ExecutionSource.NONE.value
+                actionable_trigger_ready = fvg_execution_ok
+                execution_lane_source = ExecutionLane.STANDARD_CONFIRMED.value
+                if fvg_execution_ok:
+                    pattern_conf.append("📐 FVG_ENTRY: CHoCH + live 3M confirmation")
+                else:
+                    pattern_conf.append("📐 FVG_ENTRY: FVG location only, waiting CHoCH/trigger")
             elif live_3m_trigger_ready:
                 execution_source = ExecutionSource.LIVE_3M.value
                 actionable_trigger_ready = True
@@ -5633,7 +5641,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_lane_source = ExecutionLane.LIMIT_ONLY.value
                 local_trigger_level = ce_level or trigger_level
                 pattern_conf.append(f"🔥 LIMIT_ARMED: CHoCH + FVG, ліміт на CE ({local_trigger_level:.2f})")
-                raw += 18
+                # LIMIT_ARMED quality is already represented by execution_source
+                # in score_hypothesis_layers. Do not modify legacy raw score here.
             elif time_warp_ready:
                 execution_source = ExecutionSource.TIME_WARP.value
                 actionable_trigger_ready = False
