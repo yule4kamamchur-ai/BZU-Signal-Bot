@@ -2,6 +2,15 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Edition)
 ================================================================================
+Виправлення v8.8 (Continuation Resilience / Confidence-Aware Executive Edition):
+- Старі continuation-тези більше не використовують 45-годинний trigger як execution: за збереженої структури trigger автоматично переанкорюється на свіжу локальну OB/FVG або 3M micro-base біля поточної ціни.
+- Додано MOMENTUM_NO_PULLBACK_CONTINUATION: окрема staged/probe-модель для рівного трендового руху без глибокого відкату, без market-chase і без full-size.
+- Conflict resolver став confidence-sensitive: слабкий CAUTION не дорівнює hard conflict; додано незалежний PRICE_STRUCTURE_ADVISOR як ринковий голос SUPPORT.
+- Conflict override використовує плаваючий execution-quality threshold біля 70, а не жорсткі 75.
+- RISKY_ENTRY отримав контрольовану сіру зону 66–67 з посиленими вимогами та жорстким risk-cap, замість абсурдного обриву 67/68.
+- Додано executive divergence / near-miss audit, окремі лічильники та примусове сповіщення для SELECTED + eligible, але NO_SETUP.
+- Close-miss отримав audit-only shadow outcome tracking (MFE/MAE, TP/stop sequence, OHLC ambiguity); це контрфактичний аналіз, а не вигаданий realized PnL.
+
 Виправлення v6.13 (Trade-Breathing Geometry Edition):
 - Додано noise-adjusted structural stop: стоп ставиться за межі нормального 15M шуму, а не просто біля входу.
 - Додано catastrophic_stop + decision_stop: wick не вбиває угоду без close-confirm, але emergency stop лишається жорстким.
@@ -110,8 +119,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.5-institutional-authority-final"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_3_SINGLE_BRAIN"
+BOT_VERSION = "pro-hybrid-confluence-v8.8-continuation-resilience"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -198,6 +207,19 @@ SETUP_REVALIDATION_ACCEPTANCE_ATR = float(os.getenv("SETUP_REVALIDATION_ACCEPTAN
 # exists on the current run.
 THESIS_HARD_TTL_MIN = float(os.getenv("THESIS_HARD_TTL_MIN", str(SETUP_REVALIDATION_EXTREME_MIN)) or SETUP_REVALIDATION_EXTREME_MIN)
 
+# === v8.8 Continuation Re-anchor / No-Pullback model ===
+CONTINUATION_REANCHOR_ENABLED = os.getenv("CONTINUATION_REANCHOR_ENABLED", "true").lower() in {"1", "true", "yes"}
+CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN = float(os.getenv("CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN", "180") or 180)
+CONTINUATION_REANCHOR_MAX_DISTANCE_ATR = float(os.getenv("CONTINUATION_REANCHOR_MAX_DISTANCE_ATR", "0.95") or 0.95)
+CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR = float(os.getenv("CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR", "0.45") or 0.45)
+CONTINUATION_REANCHOR_MAX_PULLBACK_ATR = float(os.getenv("CONTINUATION_REANCHOR_MAX_PULLBACK_ATR", "0.60") or 0.60)
+CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES = int(os.getenv("CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES", "4") or 4)
+NO_PULLBACK_MIN_MOVE_ATR = float(os.getenv("NO_PULLBACK_MIN_MOVE_ATR", "1.10") or 1.10)
+NO_PULLBACK_MAX_GIVEBACK_RATIO = float(os.getenv("NO_PULLBACK_MAX_GIVEBACK_RATIO", "0.32") or 0.32)
+NO_PULLBACK_MIN_BODY_EFFICIENCY = float(os.getenv("NO_PULLBACK_MIN_BODY_EFFICIENCY", "0.46") or 0.46)
+NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR = float(os.getenv("NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR", "1.05") or 1.05)
+NO_PULLBACK_RISK_PCT = float(os.getenv("NO_PULLBACK_RISK_PCT", "0.10") or 0.10)
+
 # Synthetic candle-pressure CVD is not real order-flow. Keep it as a weak proxy,
 # never as an equal substitute for trades/order-book data.
 SYNTHETIC_CVD_SCORE_MULTIPLIER = float(os.getenv("SYNTHETIC_CVD_SCORE_MULTIPLIER", "0.35") or 0.35)
@@ -227,6 +249,7 @@ SETUP_REVALIDATION_RISK_MULT_STALE = float(os.getenv("SETUP_REVALIDATION_RISK_MU
 SETUP_REVALIDATION_RISK_MULT_EXTREME = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_EXTREME", "0.35") or 0.35)
 
 PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
+RISKY_GRAY_RISK_PCT = float(os.getenv("RISKY_GRAY_RISK_PCT", str(min(PROBE_RISK_PCT, 0.10))) or min(PROBE_RISK_PCT, 0.10))
 ACCEPTANCE_RISK_PCT = float(os.getenv("ACCEPTANCE_RISK_PCT", "0.22") or 0.22)
 RETEST_ADD_RISK_PCT = float(os.getenv("RETEST_ADD_RISK_PCT", "0.30") or 0.30)
 CORE_RISK_PCT = float(os.getenv("CORE_RISK_PCT", str(NORMAL_RISK_PCT)) or NORMAL_RISK_PCT)
@@ -339,6 +362,23 @@ def validate_runtime_configuration() -> dict[str, Any]:
     if not (0 < BOOTSTRAP_RISK_MULTIPLIER <= 2):
         errors.append("BOOTSTRAP_RISK_MULTIPLIER is outside safe range")
 
+    if not (0 <= RISKY_SCORE_GRAY_ZONE <= 5):
+        errors.append("RISKY_SCORE_GRAY_ZONE must be between 0 and 5")
+    if not (0 < RISKY_GRAY_RISK_PCT <= RISKY_RISK_PCT):
+        errors.append("RISKY_GRAY_RISK_PCT must be positive and no larger than RISKY_RISK_PCT")
+    if CONFLICT_OVERRIDE_EXECUTION_MIN > CONFLICT_OVERRIDE_EXECUTION_BASE or CONFLICT_OVERRIDE_EXECUTION_BASE > CONFLICT_OVERRIDE_EXECUTION_MAX:
+        errors.append("Conflict override execution thresholds are not monotonic")
+    if not (0 < CONTINUATION_REANCHOR_MAX_DISTANCE_ATR <= 3):
+        errors.append("CONTINUATION_REANCHOR_MAX_DISTANCE_ATR is outside safe range")
+    if not (0 < NO_PULLBACK_RISK_PCT <= PROBE_RISK_PCT):
+        errors.append("NO_PULLBACK_RISK_PCT must be positive and no larger than PROBE_RISK_PCT")
+    if not (0 <= CONFLICT_CAUTION_WEIGHT <= 1):
+        errors.append("CONFLICT_CAUTION_WEIGHT must be between 0 and 1")
+    if not (0 <= CONFLICT_MIN_EFFECTIVE_CONFIDENCE <= 100):
+        errors.append("CONFLICT_MIN_EFFECTIVE_CONFIDENCE must be between 0 and 100")
+    if EXECUTIVE_SHADOW_HORIZON_HOURS <= 0:
+        errors.append("EXECUTIVE_SHADOW_HORIZON_HOURS must be positive")
+
     return {
         "valid": not errors,
         "errors": errors,
@@ -351,6 +391,22 @@ ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
 RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)
 ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "58") or 58)
 MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "5") or 5)
+
+# v8.8: thresholds are still explicit, but close calls are handled by a
+# conservative buffer rather than a one-point cliff.
+RISKY_SCORE_GRAY_ZONE = max(0, int(os.getenv("RISKY_SCORE_GRAY_ZONE", "2") or 2))
+RISKY_GRAY_MIN_EXECUTION_QUALITY = float(os.getenv("RISKY_GRAY_MIN_EXECUTION_QUALITY", "72") or 72)
+RISKY_GRAY_MIN_SETUP_QUALITY = float(os.getenv("RISKY_GRAY_MIN_SETUP_QUALITY", "78") or 78)
+CONFLICT_OVERRIDE_EXECUTION_BASE = float(os.getenv("CONFLICT_OVERRIDE_EXECUTION_BASE", "70") or 70)
+CONFLICT_OVERRIDE_EXECUTION_MIN = float(os.getenv("CONFLICT_OVERRIDE_EXECUTION_MIN", "68") or 68)
+CONFLICT_OVERRIDE_EXECUTION_MAX = float(os.getenv("CONFLICT_OVERRIDE_EXECUTION_MAX", "74") or 74)
+CONFLICT_MIN_EFFECTIVE_CONFIDENCE = float(os.getenv("CONFLICT_MIN_EFFECTIVE_CONFIDENCE", "45") or 45)
+CONFLICT_CAUTION_WEIGHT = float(os.getenv("CONFLICT_CAUTION_WEIGHT", "0.45") or 0.45)
+CONFLICT_HARD_MARGIN = float(os.getenv("CONFLICT_HARD_MARGIN", "1.75") or 1.75)
+NEAR_MISS_SCORE_GAP = max(0, int(os.getenv("NEAR_MISS_SCORE_GAP", "2") or 2))
+NEAR_MISS_EXECUTION_GAP = float(os.getenv("NEAR_MISS_EXECUTION_GAP", "5") or 5)
+EXECUTIVE_DIVERGENCE_HISTORY_LIMIT = max(20, int(os.getenv("EXECUTIVE_DIVERGENCE_HISTORY_LIMIT", "300") or 300))
+EXECUTIVE_SHADOW_HORIZON_HOURS = max(1.0, float(os.getenv("EXECUTIVE_SHADOW_HORIZON_HOURS", "24") or 24))
 
 # === Re-Entry ===
 MISSED_REENTRY_SCORE = 62
@@ -496,6 +552,7 @@ class ExecutiveDecisionState(str, Enum):
     RISKY = "RISKY"
     PROBE = "PROBE"
     PROBE_REDUCED = "PROBE_REDUCED"
+    GRAY_RISKY = "GRAY_RISKY"
     WAIT = "WAIT"
     WAIT_RETEST = "WAIT_RETEST"
     NO_SETUP = "NO_SETUP"
@@ -529,6 +586,7 @@ class SetupType(str, Enum):
     RANGE_COMPRESSION_BREAKOUT = "RANGE_COMPRESSION_BREAKOUT"
     RANGE_EDGE_REVERSAL = "RANGE_EDGE_REVERSAL"
     ACCEPTANCE_RETEST_CONTINUATION = "ACCEPTANCE_RETEST_CONTINUATION"
+    MOMENTUM_NO_PULLBACK_CONTINUATION = "MOMENTUM_NO_PULLBACK_CONTINUATION"
     ACCELERATION_PULLBACK_REENTRY = "ACCELERATION_PULLBACK_REENTRY"
     SESSION_MEAN_RECLAIM = "SESSION_MEAN_RECLAIM"
     OPENING_RANGE_BREAKOUT = "OPENING_RANGE_BREAKOUT"
@@ -554,6 +612,8 @@ class ExecutionSource(str, Enum):
     TIME_WARP = "TIME_WARP"
     REENTRY = "REENTRY"
     ACCEPTANCE_RETEST = "ACCEPTANCE_RETEST"
+    CONTINUATION_REANCHOR = "CONTINUATION_REANCHOR"
+    MOMENTUM_CONTINUATION = "MOMENTUM_CONTINUATION"
     ACCELERATION_PULLBACK = "ACCELERATION_PULLBACK"
     SESSION_MEAN = "SESSION_MEAN"
     OPENING_RANGE = "OPENING_RANGE"
@@ -932,18 +992,45 @@ class ActiveTrade:
 
 
 
+def adaptive_conflict_execution_threshold(
+    candidate_quality: float,
+    conflict: Optional[dict[str, Any]] = None,
+) -> float:
+    """Floating execution threshold for a reduced entry under real conflict.
+
+    Stronger conflict demands stronger execution; a stronger candidate can earn
+    a small discount. The result is bounded, auditable and intentionally lives
+    near 70 rather than using the old 75-point cliff.
+    """
+    conflict = conflict or {}
+    severity = max(
+        0.0,
+        -safe_float(conflict.get("market_score"), 0.0),
+        -safe_float(conflict.get("execution_score"), 0.0),
+    )
+    quality_credit = clamp((safe_float(candidate_quality, 0.0) - RISKY_ENTRY_SCORE_BASE) / 3.0, 0.0, 2.0)
+    threshold = CONFLICT_OVERRIDE_EXECUTION_BASE + min(4.0, severity * 0.35) - quality_credit
+    return round(clamp(threshold, CONFLICT_OVERRIDE_EXECUTION_MIN, CONFLICT_OVERRIDE_EXECUTION_MAX), 2)
+
+
 def executive_conflict_allows_reduced_entry(
     execution_quality: float,
     risk_blocked: bool,
     rr1: float,
+    minimum_execution_quality: Optional[float] = None,
 ) -> bool:
+    """HTF/ICT disagreement reduces aggressiveness rather than blindly vetoing.
+
+    The threshold is supplied by adaptive_conflict_execution_threshold(); the
+    default remains the configured base for backwards-compatible callers.
     """
-    Adaptive conflict resolution:
-    HTF/ICT disagreement should reduce aggressiveness, not automatically
-    cancel a valid execution setup.
-    """
+    required = (
+        CONFLICT_OVERRIDE_EXECUTION_BASE
+        if minimum_execution_quality is None
+        else float(minimum_execution_quality)
+    )
     return (
-        float(execution_quality or 0) >= 75
+        float(execution_quality or 0) >= required
         and not bool(risk_blocked)
         and float(rr1 or 0) >= MIN_RR1
     )
@@ -1027,6 +1114,16 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "core_risk_pct": CORE_RISK_PCT,
         "entry_score_base": ENTRY_SCORE_BASE,
         "risky_entry_score_base": RISKY_ENTRY_SCORE_BASE,
+        "risky_score_gray_zone": RISKY_SCORE_GRAY_ZONE,
+        "risky_gray_min_execution_quality": RISKY_GRAY_MIN_EXECUTION_QUALITY,
+        "risky_gray_min_setup_quality": RISKY_GRAY_MIN_SETUP_QUALITY,
+        "risky_gray_risk_pct": RISKY_GRAY_RISK_PCT,
+        "conflict_override_execution_base": CONFLICT_OVERRIDE_EXECUTION_BASE,
+        "conflict_override_execution_min": CONFLICT_OVERRIDE_EXECUTION_MIN,
+        "conflict_override_execution_max": CONFLICT_OVERRIDE_EXECUTION_MAX,
+        "conflict_min_effective_confidence": CONFLICT_MIN_EFFECTIVE_CONFIDENCE,
+        "conflict_caution_weight": CONFLICT_CAUTION_WEIGHT,
+        "conflict_hard_margin": CONFLICT_HARD_MARGIN,
         "probe_entry_score_base": ARMED_SCORE_BASE,
         "tp0_rr": TP0_RR,
         "tp0_size_pct": TP0_SIZE_PCT,
@@ -1082,6 +1179,19 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "setup_revalidation_body_ratio_min": SETUP_REVALIDATION_BODY_RATIO_MIN,
         "setup_revalidation_acceptance_atr": SETUP_REVALIDATION_ACCEPTANCE_ATR,
         "thesis_hard_ttl_min": THESIS_HARD_TTL_MIN,
+        "continuation_reanchor_enabled": CONTINUATION_REANCHOR_ENABLED,
+        "continuation_reanchor_max_zone_age_min": CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN,
+        "continuation_reanchor_max_distance_atr": CONTINUATION_REANCHOR_MAX_DISTANCE_ATR,
+        "continuation_reanchor_min_net_move_atr": CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR,
+        "continuation_reanchor_max_pullback_atr": CONTINUATION_REANCHOR_MAX_PULLBACK_ATR,
+        "no_pullback_min_move_atr": NO_PULLBACK_MIN_MOVE_ATR,
+        "no_pullback_max_giveback_ratio": NO_PULLBACK_MAX_GIVEBACK_RATIO,
+        "no_pullback_min_body_efficiency": NO_PULLBACK_MIN_BODY_EFFICIENCY,
+        "no_pullback_max_anchor_distance_atr": NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR,
+        "no_pullback_risk_pct": NO_PULLBACK_RISK_PCT,
+        "near_miss_score_gap": NEAR_MISS_SCORE_GAP,
+        "near_miss_execution_gap": NEAR_MISS_EXECUTION_GAP,
+        "executive_shadow_horizon_hours": EXECUTIVE_SHADOW_HORIZON_HOURS,
         "synthetic_cvd_score_multiplier": SYNTHETIC_CVD_SCORE_MULTIPLIER,
         "synthetic_cvd_absorption_pos_mult": SYNTHETIC_CVD_ABSORPTION_POS_MULT,
         "synthetic_cvd_absorption_neg_mult": SYNTHETIC_CVD_ABSORPTION_NEG_MULT,
@@ -1102,6 +1212,10 @@ def execution_freshness_multiplier(execution_source: str, trigger_age_minutes: f
         return clamp(LIMIT_ARMED_SCORE_MULTIPLIER, 0.50, 1.0)
     if src == ExecutionSource.ACCEPTANCE_RETEST.value:
         return 0.92
+    if src == ExecutionSource.CONTINUATION_REANCHOR.value:
+        return 0.97
+    if src == ExecutionSource.MOMENTUM_CONTINUATION.value:
+        return 0.95
     if src == ExecutionSource.ACCELERATION_PULLBACK.value:
         return 0.78
     if src == ExecutionSource.SESSION_MEAN.value:
@@ -1209,10 +1323,17 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         stage = EntryStage.RETEST_ADD.value
         base_risk = RETEST_ADD_RISK_PCT
         add_plan.append("Ліміт на CE/FVG; додавання тільки після acceptance close")
-    elif src == ExecutionSource.ACCEPTANCE_RETEST.value:
+    elif src in {ExecutionSource.ACCEPTANCE_RETEST.value, ExecutionSource.CONTINUATION_REANCHOR.value}:
         stage = EntryStage.PROBE.value if score < ENTRY_SCORE_BASE else EntryStage.ACCEPTANCE.value
         base_risk = PROBE_RISK_PCT if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
-        add_plan.append("Continuation-probe після ретесту: ранній вхід малим ризиком, добір тільки після підтвердження")
+        if src == ExecutionSource.CONTINUATION_REANCHOR.value:
+            add_plan.append("Continuation thesis переанкорена на свіжу micro-zone; починати staged, не використовувати старий OB як execution")
+        else:
+            add_plan.append("Continuation-probe після ретесту: ранній вхід малим ризиком, добір тільки після підтвердження")
+    elif src == ExecutionSource.MOMENTUM_CONTINUATION.value:
+        stage = EntryStage.PROBE.value
+        base_risk = min(PROBE_RISK_PCT, NO_PULLBACK_RISK_PCT)
+        add_plan.append("No-pullback trend: тільки probe від свіжої micro-base; full-size/chase заборонені")
     elif src == ExecutionSource.ACCELERATION_PULLBACK.value:
         stage = EntryStage.WAIT_RETEST.value
         base_risk = PROBE_RISK_PCT * 0.50
@@ -1897,6 +2018,14 @@ def build_decision_message(context: dict, decision: Decision) -> str:
         lines.append(
             f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
         )
+        divergence = ((decision.audit or {}).get("executive_divergence") or {})
+        if divergence.get("selected_eligible_but_no_setup"):
+            lines.append("🟠 <b>Executive near-miss:</b> кандидат SELECTED і execution-eligible, але фінальна дія NO_SETUP.")
+            codes = ", ".join(str(x) for x in (divergence.get("reason_codes") or []))
+            if codes:
+                lines.append(f"<b>Граничні умови:</b> {html.escape(codes[:220])}")
+        elif divergence.get("close_miss"):
+            lines.append("🟡 <b>Close miss:</b> кандидат був близько до входу; випадок записано в окремий аудит.")
         rejected = ((decision.audit or {}).get("rejected_hypotheses") or [])
         if rejected:
             top = rejected[0]
@@ -4466,14 +4595,32 @@ def ict_model_execution_contract(
         invalidation = (safe_float(z.low) - buffer) if side == Side.LONG.value else (safe_float(z.high) + buffer)
         invalidation_basis = f"{model} {z.kind} invalidation"
     elif model == "ACCEPTANCE_RETEST_CONTINUATION":
-        if safe_float(model_context.get("zone_mid"), 0.0):
+        reanchor = model_context.get("reanchor") or {}
+        if reanchor.get("ready") and safe_float(reanchor.get("anchor"), 0.0):
+            entry_anchor = safe_float(reanchor.get("anchor"), price)
+            entry_basis = f"ACCEPTANCE_RETEST reanchored {reanchor.get('zone_label', 'micro-base')}"
+            zone_low = safe_float(reanchor.get("anchor_low"), entry_anchor)
+            zone_high = safe_float(reanchor.get("anchor_high"), entry_anchor)
+            invalidation = (zone_low - buffer) if side == Side.LONG.value else (zone_high + buffer)
+            invalidation_basis = "fresh continuation reanchor invalidation"
+        elif safe_float(model_context.get("zone_mid"), 0.0):
             entry_anchor = safe_float(model_context.get("zone_mid"), price)
             entry_basis = f"ACCEPTANCE_RETEST zone midpoint ({model_context.get('zone_label', 'OB/FVG')})"
+            invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.05)
+            invalidation_basis = "ACCEPTANCE_RETEST structural probe invalidation"
         else:
             entry_anchor = price
             entry_basis = "ACCEPTANCE_RETEST current acceptance price"
-        invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.05)
-        invalidation_basis = "ACCEPTANCE_RETEST structural probe invalidation"
+            invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.05)
+            invalidation_basis = "ACCEPTANCE_RETEST structural probe invalidation"
+    elif model == "MOMENTUM_NO_PULLBACK_CONTINUATION":
+        reanchor = model_context.get("reanchor") or {}
+        entry_anchor = safe_float(reanchor.get("anchor"), price) or price
+        entry_basis = f"MOMENTUM_NO_PULLBACK fresh {reanchor.get('zone_label', 'micro-base')}"
+        zone_low = safe_float(reanchor.get("anchor_low"), entry_anchor)
+        zone_high = safe_float(reanchor.get("anchor_high"), entry_anchor)
+        invalidation = (zone_low - buffer) if side == Side.LONG.value else (zone_high + buffer)
+        invalidation_basis = "MOMENTUM_NO_PULLBACK micro-structure failure"
     elif model == "ACCELERATION_PULLBACK_REENTRY":
         pull50 = safe_float(model_context.get("pullback_50"), 0.0)
         pull382 = safe_float(model_context.get("pullback_382"), 0.0)
@@ -4611,6 +4758,8 @@ def score_hypothesis_layers(
         ExecutionSource.LIMIT_ARMED.value: 70,
         ExecutionSource.REENTRY.value: 62,
         ExecutionSource.ACCEPTANCE_RETEST.value: 76,
+        ExecutionSource.CONTINUATION_REANCHOR.value: 80,
+        ExecutionSource.MOMENTUM_CONTINUATION.value: 79,
         ExecutionSource.ACCELERATION_PULLBACK.value: 58,
         ExecutionSource.SESSION_MEAN.value: 74,
         ExecutionSource.OPENING_RANGE.value: 72,
@@ -4656,6 +4805,9 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
         "execution_source": c.execution_source,
         "entry_stage": c.entry_stage,
         "trigger_age_min": round(float(c.trigger_age_minutes or 0.0), 1),
+        "trigger_reanchored": bool(comps.get("trigger_reanchored", False)),
+        "original_trigger_age_min": round(float(comps.get("original_trigger_age_minutes", c.trigger_age_minutes) or 0.0), 1),
+        "effective_trigger_age_min": round(float(comps.get("effective_trigger_age_minutes", c.trigger_age_minutes) or 0.0), 1),
         "target_magnet": round(float(c.target_magnet_score or 0.0), 2),
         "innovation_model": (getattr(c, "innovation_profile", {}) or {}).get("primary", ""),
         "innovation_risk_mult": round(float((getattr(c, "innovation_profile", {}) or {}).get("risk_multiplier", 1.0)), 3),
@@ -4829,6 +4981,198 @@ def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: f
         "acceptance": acceptance,
         "tf_ok": tf_ok,
         "no_break": no_break,
+    }
+
+
+def continuation_reanchor_profile(
+    c3: list[Candle],
+    c15: list[Candle],
+    zones: list,
+    side: str,
+    price: float,
+    atr15: float,
+    tf15: dict,
+    tf1h: dict,
+) -> dict[str, Any]:
+    """Build a fresh execution anchor for an intact continuation thesis.
+
+    The old trigger remains thesis memory only. A new trigger is published only
+    when recent 3M/15M geometry independently supports continuation and the
+    proposed anchor sits close enough to current price to avoid disguised chase.
+    """
+    if not CONTINUATION_REANCHOR_ENABLED or atr15 <= 0:
+        return {"enabled": False, "ready": False, "reason": "disabled_or_no_atr"}
+
+    recent3 = _recent_confirmed(c3, 6)
+    recent15 = _recent_confirmed(c15, 8)
+    if len(recent3) < 4 or len(recent15) < 5:
+        return {"enabled": True, "ready": False, "reason": "not_enough_recent_bars"}
+
+    direction = 1.0 if side == Side.LONG.value else -1.0
+    signed_net_move_atr = direction * (recent3[-1].close - recent3[0].open) / max(atr15, 1e-9)
+    directional_closes = sum(
+        1 for c in recent3
+        if (c.close >= c.open if side == Side.LONG.value else c.close <= c.open)
+    )
+    if side == Side.LONG.value:
+        peak = max(c.high for c in recent3)
+        pullback_atr = max(0.0, peak - recent3[-1].close) / max(atr15, 1e-9)
+        structure_floor = min(c.low for c in recent15[-5:])
+        structure_intact = recent15[-1].close > structure_floor + atr15 * 0.25
+    else:
+        trough = min(c.low for c in recent3)
+        pullback_atr = max(0.0, recent3[-1].close - trough) / max(atr15, 1e-9)
+        structure_ceiling = max(c.high for c in recent15[-5:])
+        structure_intact = recent15[-1].close < structure_ceiling - atr15 * 0.25
+
+    tf_aligned = bool(tf15.get("bias") == side or tf1h.get("bias") == side)
+    micro = _side_directional_revalidation(side, c3, c15, atr15)
+    trend_acceptance = bool(
+        signed_net_move_atr >= CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR
+        and directional_closes >= CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES
+        and pullback_atr <= CONTINUATION_REANCHOR_MAX_PULLBACK_ATR
+        and structure_intact
+        and tf_aligned
+    )
+
+    reference_ts = max(c.ts for c in recent3)
+    fresh_zones = []
+    for z in zones or []:
+        if getattr(z, "side", "") != side or getattr(z, "kind", "") not in {"OB", "FVG"}:
+            continue
+        created_ts = int(getattr(z, "created_ts", 0) or 0)
+        if created_ts <= 0:
+            continue
+        age_min = max(0.0, (reference_ts - created_ts) / 60000.0)
+        mid = _zone_midpoint(z)
+        dist_atr = abs(price - mid) / max(atr15, 1e-9)
+        if age_min <= CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN and dist_atr <= CONTINUATION_REANCHOR_MAX_DISTANCE_ATR:
+            fresh_zones.append((dist_atr, -safe_float(getattr(z, "strength", 0.0), 0.0), z, age_min))
+
+    anchor_source = "3M_MICRO_BASE"
+    anchor_low = anchor_high = anchor = 0.0
+    anchor_ts = 0
+    zone_label = ""
+    if fresh_zones:
+        _, _, z, zone_age = sorted(fresh_zones, key=lambda item: (item[0], item[1]))[0]
+        anchor_low = min(safe_float(z.low), safe_float(z.high))
+        anchor_high = max(safe_float(z.low), safe_float(z.high))
+        anchor = _zone_midpoint(z)
+        anchor_ts = int(getattr(z, "created_ts", 0) or reference_ts)
+        anchor_source = "FRESH_ICT_ZONE"
+        zone_label = f"{getattr(z, 'timeframe', '')} {getattr(z, 'kind', '')}".strip()
+    else:
+        candidates = [
+            c for c in recent3[:-1]
+            if (c.close <= c.open if side == Side.LONG.value else c.close >= c.open)
+        ]
+        base = candidates[-1] if candidates else min(recent3[:-1], key=lambda c: max(c.high - c.low, 1e-9))
+        body_low = min(base.open, base.close)
+        body_high = max(base.open, base.close)
+        wick_pad = max((base.high - base.low) * 0.15, atr15 * 0.03)
+        anchor_low = body_low - wick_pad
+        anchor_high = body_high + wick_pad
+        anchor = (anchor_low + anchor_high) / 2.0
+        anchor_ts = int(base.ts)
+        zone_label = "3M dynamic micro-base"
+
+    anchor_age_min = max(0.0, (reference_ts - anchor_ts) / 60000.0) if anchor_ts else 999.0
+    distance_atr = abs(price - anchor) / max(atr15, 1e-9) if anchor else 999.0
+    fresh = anchor_age_min <= TRIGGER_MAX_AGE_MINUTES
+    acceptance_supported = bool(micro.get("supported") or (trend_acceptance and micro.get("score", 0) >= 50))
+    ready = bool(
+        trend_acceptance
+        and acceptance_supported
+        and fresh
+        and distance_atr <= CONTINUATION_REANCHOR_MAX_DISTANCE_ATR
+    )
+
+    return {
+        "enabled": True,
+        "ready": ready,
+        "anchor": round_price(anchor),
+        "anchor_low": round_price(anchor_low),
+        "anchor_high": round_price(anchor_high),
+        "anchor_ts": anchor_ts,
+        "anchor_age_min": round(anchor_age_min, 2),
+        "anchor_source": anchor_source,
+        "zone_label": zone_label,
+        "distance_atr": round(distance_atr, 3),
+        "signed_net_move_atr": round(signed_net_move_atr, 3),
+        "directional_closes": directional_closes,
+        "pullback_atr": round(pullback_atr, 3),
+        "structure_intact": structure_intact,
+        "tf_aligned": tf_aligned,
+        "micro_confirmation": micro,
+        "reason": "fresh continuation anchor" if ready else "continuation conditions incomplete",
+    }
+
+
+def detect_momentum_no_pullback_continuation(
+    c3: list[Candle],
+    c15: list[Candle],
+    zones: list,
+    side: str,
+    price: float,
+    atr15: float,
+    tf15: dict,
+    tf1h: dict,
+) -> dict[str, Any]:
+    """Trend continuation without a deep retest.
+
+    This is intentionally a probe-only model. It requires orderly directional
+    acceptance and a fresh micro-anchor; it does not convert a vertical candle
+    into permission to chase at full size.
+    """
+    if len(c15) < 8 or atr15 <= 0:
+        return {"active": False, "entry_ready": False, "reason": "not_enough_candles"}
+
+    recent = _recent_confirmed(c15, 8)
+    direction = 1.0 if side == Side.LONG.value else -1.0
+    move_atr = direction * (recent[-1].close - recent[0].open) / max(atr15, 1e-9)
+    directional_closes = sum(
+        1 for c in recent[-6:]
+        if (c.close >= c.open if side == Side.LONG.value else c.close <= c.open)
+    )
+    ranges = [max(c.high - c.low, 1e-9) for c in recent]
+    body_efficiency = sum(abs(c.close - c.open) for c in recent) / max(sum(ranges), 1e-9)
+    if side == Side.LONG.value:
+        extreme = max(c.high for c in recent)
+        giveback_ratio = (extreme - recent[-1].close) / max(extreme - min(c.low for c in recent), 1e-9)
+        structure_intact = recent[-1].close > min(c.low for c in recent[-5:]) + atr15 * 0.25
+    else:
+        extreme = min(c.low for c in recent)
+        giveback_ratio = (recent[-1].close - extreme) / max(max(c.high for c in recent) - extreme, 1e-9)
+        structure_intact = recent[-1].close < max(c.high for c in recent[-5:]) - atr15 * 0.25
+
+    tf_ok = bool(tf15.get("bias") == side or tf1h.get("bias") == side)
+    reanchor = continuation_reanchor_profile(c3, c15, zones, side, price, atr15, tf15, tf1h)
+    overextended = bool(
+        move_atr > max(NO_PULLBACK_MIN_MOVE_ATR * 3.2, 3.5)
+        or safe_float(reanchor.get("distance_atr"), 999.0) > NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR
+    )
+    active = bool(
+        tf_ok
+        and structure_intact
+        and move_atr >= NO_PULLBACK_MIN_MOVE_ATR
+        and directional_closes >= 5
+        and body_efficiency >= NO_PULLBACK_MIN_BODY_EFFICIENCY
+        and giveback_ratio <= NO_PULLBACK_MAX_GIVEBACK_RATIO
+    )
+    entry_ready = bool(active and reanchor.get("ready") and not overextended)
+    score_bonus = (14 if active else 0) + (4 if entry_ready else 0) - (8 if overextended else 0)
+    return {
+        "active": active,
+        "entry_ready": entry_ready,
+        "score_bonus": score_bonus,
+        "move_atr": round(move_atr, 2),
+        "directional_closes_6": directional_closes,
+        "body_efficiency": round(body_efficiency, 3),
+        "giveback_ratio": round(clamp(giveback_ratio, 0.0, 1.0), 3),
+        "structure_intact": structure_intact,
+        "tf_ok": tf_ok,
+        "overextended": overextended,
+        "reanchor": reanchor,
     }
 
 
@@ -5196,6 +5540,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     cvd = context.get("cvd", {})
     regime = context["regime"]
     scan_events = context.get("scan_3m_events", {})
+    c3 = (context.get("candles", {}) or {}).get("3m", [])
     c15 = (context.get("candles", {}) or {}).get("15m", [])
     smt_c15 = (context.get("smt_candles", {}) or {}).get("15m", [])
 
@@ -5245,6 +5590,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # саме пробій, а не сам сквіз.
         "RANGE_COMPRESSION_MODEL": {"name": "Range Compression Breakout", "priority": 65, "allow_early": False, "preferred_setup": SetupType.RANGE_COMPRESSION_BREAKOUT.value, "score_bonus": 12, "stop_min_atr": 0.8, "stop_max_atr": 1.6, "favored": [Regime.RANGE.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
         "ACCEPTANCE_RETEST_CONTINUATION": {"name": "Acceptance Retest Continuation", "priority": 84, "allow_early": True, "preferred_setup": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "score_bonus": 14, "stop_min_atr": 0.85, "stop_max_atr": 2.0, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
+        "MOMENTUM_NO_PULLBACK_CONTINUATION": {"name": "Momentum No-Pullback Continuation", "priority": 85, "allow_early": True, "preferred_setup": SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value, "score_bonus": 14, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
         "ACCELERATION_PULLBACK_REENTRY": {"name": "Acceleration Pullback Re-entry", "priority": 76, "allow_early": False, "preferred_setup": SetupType.ACCELERATION_PULLBACK_REENTRY.value, "score_bonus": 10, "stop_min_atr": 0.95, "stop_max_atr": 2.4, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": [Regime.RANGE.value]},
         "VWAP_SESSION_MEAN_RECLAIM": {"name": "VWAP / Session Mean Reclaim", "priority": 87, "allow_early": True, "preferred_setup": SetupType.SESSION_MEAN_RECLAIM.value, "score_bonus": 13, "stop_min_atr": 0.85, "stop_max_atr": 1.8, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.SHOCK.value]},
         "OPENING_RANGE_BREAKOUT": {"name": "Opening Range Breakout", "priority": 83, "allow_early": True, "preferred_setup": SetupType.OPENING_RANGE_BREAKOUT.value, "score_bonus": 14, "stop_min_atr": 0.75, "stop_max_atr": 1.9, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": [Regime.RANGE.value]},
@@ -5384,6 +5730,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             compression_atr = 0.0
         is_range_compressed = 0 < compression_atr <= 1.6
         acceptance_retest = detect_acceptance_retest_continuation(c15, side, price, atr15, zones, tf15, tf1h)
+        continuation_reanchor = continuation_reanchor_profile(c3, c15, zones, side, price, atr15, tf15, tf1h)
+        momentum_no_pullback = detect_momentum_no_pullback_continuation(c3, c15, zones, side, price, atr15, tf15, tf1h)
         acceleration_reentry = detect_acceleration_pullback_reentry(c15, side, price, atr15, tf15, tf1h)
         session_mean_reclaim = detect_vwap_session_mean_reclaim(c15, side, price, atr15, now_kyiv, tf15, tf1h)
         opening_range = detect_opening_range_model(c15, side, price, atr15, now_kyiv, tf15, tf1h)
@@ -5430,6 +5778,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             active_patterns.append("RANGE_COMPRESSION_MODEL")
         if acceptance_retest.get("active"):
             active_patterns.append("ACCEPTANCE_RETEST_CONTINUATION")
+        if momentum_no_pullback.get("active"):
+            active_patterns.append("MOMENTUM_NO_PULLBACK_CONTINUATION")
         if acceleration_reentry.get("active"):
             active_patterns.append("ACCELERATION_PULLBACK_REENTRY")
         if session_mean_reclaim.get("active"):
@@ -5500,6 +5850,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     f"🔁 Acceptance-retest: pullback={acceptance_retest.get('pullback_atr')} ATR | "
                     f"zone={acceptance_retest.get('zone_label') or 'none'} | acceptance={acceptance_retest.get('acceptance')}"
                 )
+            if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
+                raw_bonus += safe_float(momentum_no_pullback.get("score_bonus"), 0.0)
+                pattern_conf.append(
+                    f"📈 No-pullback momentum: move={momentum_no_pullback.get('move_atr')} ATR | "
+                    f"dir_closes={momentum_no_pullback.get('directional_closes_6')}/6 | "
+                    f"giveback={momentum_no_pullback.get('giveback_ratio')} | ready={momentum_no_pullback.get('entry_ready')}"
+                )
             if model_id == "ACCELERATION_PULLBACK_REENTRY":
                 raw_bonus += safe_float(acceleration_reentry.get("score_bonus"), 0.0)
                 pattern_conf.append(
@@ -5552,19 +5909,33 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     impulse_run_atr = abs(c15[-1].close - c15[-8].close) / atr15
                     extreme8 = max(c.high for c in c15[-8:]) if side == Side.LONG.value else min(c.low for c in c15[-8:])
                     retracement_atr = abs(price - extreme8) / atr15
-                    if impulse_run_atr > EXHAUSTION_ATR_THRESHOLD and retracement_atr < 0.35:
+                    if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
+                        if momentum_no_pullback.get("overextended"):
+                            vector_bonus -= 8
+                            pattern_conf.append("🔻 No-pullback overextension: тільки WAIT/новий micro-base, без chase")
+                    elif impulse_run_atr > EXHAUSTION_ATR_THRESHOLD and retracement_atr < 0.35:
                         exhaustion_multiplier = EXHAUSTION_SCORE_MULTIPLIER
                         pattern_conf.append(f"🔻 Exhaustion Penalty: рух {impulse_run_atr:.2f} ATR без відкату — скор x{EXHAUSTION_SCORE_MULTIPLIER}")
 
+            model_reanchor_ready = bool(
+                continuation_reanchor.get("ready")
+                and model_id in {"ACCEPTANCE_RETEST_CONTINUATION", "MOMENTUM_NO_PULLBACK_CONTINUATION"}
+            )
+            model_live_3m_trigger_ready = bool(live_3m_trigger_ready or model_reanchor_ready)
+            model_trigger_age = (
+                safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
+                if model_reanchor_ready else trigger_age
+            )
+
             loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
             str_score = (19 if tf15.get("bias") == side else 10) * str_weight
-            liq_base = 16 if is_sweep and live_3m_trigger_ready else 6
+            liq_base = 16 if is_sweep and model_live_3m_trigger_ready else 6
             liq_score = liq_base * liq_weight * sweep_quality_multiplier
             flw_score = (
                 float(cvd.get("score", 0)) * flw_weight * SYNTHETIC_CVD_SCORE_MULTIPLIER
                 if cvd.get("bias") == side else 0.0
             )
-            trig_score = (22 if live_3m_trigger_ready else 8) * trig_weight
+            trig_score = (22 if model_live_3m_trigger_ready else 8) * trig_weight
             htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
 
             raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus + vector_bonus
@@ -5582,16 +5953,41 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             limit_armed_ready = bool(is_limit_armed)
             time_warp_ready = bool(time_warp_opportunity and stale_3m_trigger_ready and not live_3m_trigger_ready)
             local_trigger_level = trigger_level
-            if model_id == "ACCELERATION_PULLBACK_REENTRY":
+            local_trigger_age = model_trigger_age
+            local_live_3m_trigger_ready = model_live_3m_trigger_ready
+            if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
+                execution_source = ExecutionSource.MOMENTUM_CONTINUATION.value
+                actionable_trigger_ready = bool(momentum_no_pullback.get("entry_ready"))
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
+                local_trigger_level = safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor"), trigger_level) or trigger_level
+                local_trigger_age = safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor_age_min"), trigger_age)
+                local_live_3m_trigger_ready = actionable_trigger_ready
+                if actionable_trigger_ready:
+                    pattern_conf.append(f"🟢 MOMENTUM_CONTINUATION: fresh micro-base {local_trigger_level:.2f}; probe-only, без chase")
+                else:
+                    pattern_conf.append("⏳ MOMENTUM_CONTINUATION: тренд є, але свіжого безпечного micro-anchor ще немає")
+            elif model_id == "ACCELERATION_PULLBACK_REENTRY":
                 execution_source = ExecutionSource.ACCELERATION_PULLBACK.value
                 actionable_trigger_ready = False
                 execution_lane_source = ExecutionLane.WAIT_RETEST.value
                 pattern_conf.append("⏳ ACCELERATION_PULLBACK: імпульс уже відірвався — чекати 38–50% ретест, не market")
             elif model_id == "ACCEPTANCE_RETEST_CONTINUATION" and acceptance_retest.get("active"):
-                execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
-                actionable_trigger_ready = True
-                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
-                pattern_conf.append("🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком")
+                if continuation_reanchor.get("ready") and trigger_age > TRIGGER_MAX_AGE_MINUTES:
+                    execution_source = ExecutionSource.CONTINUATION_REANCHOR.value
+                    actionable_trigger_ready = True
+                    execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                    local_trigger_level = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level
+                    local_trigger_age = safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
+                    local_live_3m_trigger_ready = True
+                    pattern_conf.append(
+                        f"🧭 REANCHORED_TRIGGER: old={trigger_age:.0f}m → fresh={local_trigger_age:.1f}m | "
+                        f"{continuation_reanchor.get('zone_label')} @ {local_trigger_level:.2f}"
+                    )
+                else:
+                    execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
+                    actionable_trigger_ready = True
+                    execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                    pattern_conf.append("🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком")
             elif model_id == "VWAP_SESSION_MEAN_RECLAIM":
                 execution_source = ExecutionSource.SESSION_MEAN.value
                 actionable_trigger_ready = True
@@ -5631,7 +6027,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     pattern_conf.append("📐 FVG_ENTRY: CHoCH + live 3M confirmation")
                 else:
                     pattern_conf.append("📐 FVG_ENTRY: FVG location only, waiting CHoCH/trigger")
-            elif live_3m_trigger_ready:
+            elif local_live_3m_trigger_ready:
                 execution_source = ExecutionSource.LIVE_3M.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
@@ -5670,7 +6066,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 ce_level=ce_level,
                 is_limit_armed=limit_armed_ready,
                 model_context={
-                    "ACCEPTANCE_RETEST_CONTINUATION": acceptance_retest,
+                    "ACCEPTANCE_RETEST_CONTINUATION": {**acceptance_retest, "reanchor": continuation_reanchor},
+                    "MOMENTUM_NO_PULLBACK_CONTINUATION": momentum_no_pullback,
                     "ACCELERATION_PULLBACK_REENTRY": acceleration_reentry,
                     "VWAP_SESSION_MEAN_RECLAIM": session_mean_reclaim,
                     "OPENING_RANGE_BREAKOUT": opening_range,
@@ -5685,8 +6082,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             evidence = ["ICT_LOCATION", "PRICE_STRUCTURE", f"ICT_MODEL_{model_id}"]
             if flw_score > 0:
                 evidence.append("SYNTHETIC_CVD_PROXY_LOW_WEIGHT")
-            if live_3m_trigger_ready:
+            if local_live_3m_trigger_ready:
                 evidence.append("EXECUTION_TRIGGER_LIVE_3M")
+            if execution_source == ExecutionSource.CONTINUATION_REANCHOR.value:
+                evidence.append("EXECUTION_CONTINUATION_REANCHORED")
+            if execution_source == ExecutionSource.MOMENTUM_CONTINUATION.value:
+                evidence.append("EXECUTION_MOMENTUM_NO_PULLBACK")
             if limit_armed_ready:
                 evidence.append("EXECUTION_LIMIT_ARMED")
             if time_warp_ready:
@@ -5704,7 +6105,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 raw_bonus=raw_bonus,
                 session_bonus=session_bonus,
                 vector_bonus=vector_bonus,
-                trigger_age=trigger_age,
+                trigger_age=local_trigger_age,
                 trigger_ready=actionable_trigger_ready,
                 best_pattern=best_pattern,
                 regime_matched=regime_matched,
@@ -5727,7 +6128,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 session_bonus=session_bonus,
                 vector_bonus=vector_bonus,
                 execution_source=execution_source,
-                trigger_age=trigger_age,
+                trigger_age=local_trigger_age,
                 has_forward_zone=has_forward_zone,
                 target_magnet_score=float(contract.get("target_magnet_score", 0.0) or 0.0),
                 regime_matched=regime_matched,
@@ -5785,19 +6186,26 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "hypothesis_score": round(hypothesis_score, 2),
                     "active_model_count": len(active_patterns),
                     "execution_source": execution_source,
+                    "trigger_reanchored": execution_source == ExecutionSource.CONTINUATION_REANCHOR.value,
+                    "original_trigger_level": round_price(trigger_level),
+                    "original_trigger_age_minutes": round(float(trigger_age or 0.0), 2),
+                    "effective_trigger_level": round_price(local_trigger_level),
+                    "effective_trigger_age_minutes": round(float(local_trigger_age or 0.0), 2),
                     "execution_freshness_multiplier": freshness_mult,
                     "flow_feature_source": (
                         "REAL_FLOW" if (context.get("flow") or {}).get("reliable")
                         else "SYNTHETIC_CVD_PROXY"
                     ),
                     "synthetic_cvd_score_multiplier": SYNTHETIC_CVD_SCORE_MULTIPLIER,
-                    "live_3m_trigger_ready": live_3m_trigger_ready,
+                    "live_3m_trigger_ready": local_live_3m_trigger_ready,
                     "limit_armed_ready": limit_armed_ready,
                     "time_warp_ready": time_warp_ready,
                     "direction_performance": direction_perf,
                     "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
                     "entry_contract": contract,
                     "acceptance_retest": acceptance_retest if model_id == "ACCEPTANCE_RETEST_CONTINUATION" else {},
+                    "continuation_reanchor": continuation_reanchor if model_id in {"ACCEPTANCE_RETEST_CONTINUATION", "MOMENTUM_NO_PULLBACK_CONTINUATION"} else {},
+                    "momentum_no_pullback": momentum_no_pullback if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION" else {},
                     "acceleration_reentry": acceleration_reentry if model_id == "ACCELERATION_PULLBACK_REENTRY" else {},
                 },
                 evidence_families=evidence,
@@ -5811,12 +6219,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 variant="MODEL_HYPOTHESIS" if not is_fallback else "GENERIC_FALLBACK",
                 ict_model=best_pattern or "NONE",
                 execution_anchor=round_price(contract["entry_anchor"]),
-                trigger_age_minutes=trigger_age,
+                trigger_age_minutes=local_trigger_age,
                 thesis_key=f"{side}|{model_id}|{setup_type}|{int(round(contract['entry_anchor']*10))}",
                 thesis=f"{side} {model_id} → {setup_type} | src={execution_source} | stage={scan_stage}",
                 professional_gate={},
                 has_forward_zone=has_forward_zone,
-                live_3m_trigger_ready=live_3m_trigger_ready,
+                live_3m_trigger_ready=local_live_3m_trigger_ready,
                 limit_armed_ready=limit_armed_ready,
                 time_warp_ready=time_warp_ready,
                 execution_source=execution_source,
@@ -5986,6 +6394,7 @@ def setup_trade_profile(setup_type: str) -> dict:
         SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True},
         SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.50, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True},
         SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.10, "tp3_rr": 5.00, "tp1_atr": 1.35, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
+        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: {"tp1_rr": 1.60, "tp2_rr": 3.00, "tp3_rr": 4.80, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
         SetupType.ACCELERATION_PULLBACK_REENTRY.value: {"tp1_rr": 1.70, "tp2_rr": 3.20, "tp3_rr": 5.20, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.40, "force_risky": True},
         SetupType.SESSION_MEAN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.80, "force_risky": True},
         SetupType.OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.60, "tp2_rr": 3.20, "tp3_rr": 5.10, "tp1_atr": 1.35, "stop_min_atr": 0.75, "stop_max_atr": 1.90, "force_risky": True},
@@ -6713,6 +7122,256 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 # v8.6 EXECUTIVE AUTHORITY ORCHESTRATOR
 # ==========================================================
 
+def build_executive_divergence_audit(
+    decision: Decision,
+    report: dict[str, Any],
+    legacy_action: str,
+) -> dict[str, Any]:
+    executive = (report or {}).get("executive_decision") or {}
+    executive_audit = executive.get("audit") or {}
+    adaptive = executive_audit.get("adaptive_conflict_resolver") or {}
+    score_profile = executive_audit.get("risky_entry_score_profile") or adaptive.get("score_profile") or {}
+    probe_profile = executive_audit.get("probe_entry_eligibility") or {}
+    final_action = str((report or {}).get("action") or Action.NO_SETUP.value)
+    selected = decision.candidate is not None
+    plan_executable = bool(decision.plan and decision.plan.valid and decision.plan.execution_ready)
+    execution_eligible_pre_conflict = bool(executive_audit.get("execution_eligible_pre_conflict"))
+    probe_eligible = bool(probe_profile.get("eligible"))
+    eligible = bool(execution_eligible_pre_conflict or probe_eligible)
+    final_no_setup = final_action == Action.NO_SETUP.value
+
+    score_gap = max(0, RISKY_ENTRY_SCORE_BASE - int(getattr(decision.candidate, "final_score", 0) or 0)) if selected else None
+    execution_q = safe_float(getattr(decision.candidate, "execution_quality_score", 0), 0.0) if selected else 0.0
+    required_execution = safe_float(adaptive.get("adaptive_execution_threshold"), CONFLICT_OVERRIDE_EXECUTION_BASE)
+    execution_gap = max(0.0, required_execution - execution_q)
+    conflict = executive.get("conflict_resolution") or {}
+    weak_only_conflict = bool(conflict.get("soft_conflicts") and not conflict.get("hard_conflict"))
+    close_miss = bool(
+        selected
+        and final_no_setup
+        and (
+            (score_gap is not None and score_gap <= NEAR_MISS_SCORE_GAP)
+            or execution_gap <= NEAR_MISS_EXECUTION_GAP
+            or eligible
+        )
+    )
+    alert = bool(selected and eligible and final_no_setup)
+    reasons = []
+    if score_gap:
+        reasons.append(f"score_gap={score_gap}")
+    if execution_gap > 0:
+        reasons.append(f"execution_gap={execution_gap:.1f}")
+    if conflict.get("hard_conflict"):
+        reasons.append(f"hard_conflict_margin={conflict.get('hard_conflict_margin')}")
+    if weak_only_conflict:
+        reasons.append("weak_caution_only")
+    if not plan_executable:
+        reasons.append("plan_not_executable")
+
+    shadow_plan: dict[str, Any] = {}
+    if close_miss and decision.plan and selected:
+        opened_at = _parse_iso_datetime(decision.time) or now_utc()
+        shadow_plan = {
+            "status": "OPEN",
+            "opened_at": opened_at.isoformat(),
+            "expires_at": (opened_at + timedelta(hours=EXECUTIVE_SHADOW_HORIZON_HOURS)).isoformat(),
+            "side": decision.side,
+            "entry": round_price(decision.plan.entry),
+            "stop": round_price(decision.plan.stop),
+            "tp0": round_price(decision.plan.tp0),
+            "tp1": round_price(decision.plan.tp1),
+            "tp2": round_price(decision.plan.tp2),
+            "tp3": round_price(decision.plan.tp3),
+            "partial_plan": dict(decision.plan.partial_plan or {}),
+            "last_processed_ts": 0,
+            "max_target_hit": "NONE",
+            "mfe_r": 0.0,
+            "mae_r": 0.0,
+            "note": "audit-only counterfactual; not executable PnL",
+        }
+
+    return {
+        "legacy_recommendation": legacy_action,
+        "final_action": final_action,
+        "legacy_vs_final": legacy_action != final_action,
+        "selected": selected,
+        "eligible_pre_conflict": eligible,
+        "execution_eligible_pre_conflict": execution_eligible_pre_conflict,
+        "probe_eligible": probe_eligible,
+        "selected_eligible_but_no_setup": alert,
+        "close_miss": close_miss,
+        "score_gap": score_gap,
+        "execution_gap": round(execution_gap, 2),
+        "reason_codes": reasons,
+        "alert": alert,
+        "score_profile": score_profile,
+        "shadow_plan": shadow_plan,
+    }
+
+
+
+def update_executive_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
+    """Update audit-only counterfactuals for close misses.
+
+    The tracker records observable path facts only: MFE/MAE, target milestones,
+    stop ordering and OHLC ambiguity. It deliberately does not call this
+    "lost profit" because an unfilled/blocked trade has no executable PnL.
+    """
+    history = journal.get("executive_divergences") or []
+    candles = sorted(
+        [c for c in ((context.get("candles") or {}).get("3m") or []) if getattr(c, "confirmed", True)],
+        key=lambda c: c.ts,
+    )
+    current_price = safe_float(context.get("price"), 0.0)
+    now = now_utc()
+
+    for event in history:
+        if not isinstance(event, dict):
+            continue
+        shadow = event.get("shadow_plan") or {}
+        if not shadow or shadow.get("status") not in {"OPEN", "TP0_REACHED", "TP1_REACHED", "TP2_REACHED", "TP3_REACHED"}:
+            continue
+        opened = _parse_iso_datetime(shadow.get("opened_at"))
+        expires = _parse_iso_datetime(shadow.get("expires_at"))
+        if not opened:
+            shadow["status"] = "INVALID_NO_OPEN_TIME"
+            continue
+        opened_ms = int(opened.timestamp() * 1000)
+        last_processed = int(shadow.get("last_processed_ts", 0) or 0)
+        sequence = [c for c in candles if c.ts >= opened_ms and c.ts > last_processed]
+
+        side = str(shadow.get("side") or event.get("side") or "")
+        entry = safe_float(shadow.get("entry"), 0.0)
+        stop = safe_float(shadow.get("stop"), 0.0)
+        risk = abs(entry - stop)
+        if entry <= 0 or stop <= 0 or risk <= 1e-9 or side not in {Side.LONG.value, Side.SHORT.value}:
+            shadow["status"] = "INVALID_GEOMETRY"
+            continue
+
+        levels = [
+            ("TP0", safe_float(shadow.get("tp0"), 0.0)),
+            ("TP1", safe_float(shadow.get("tp1"), 0.0)),
+            ("TP2", safe_float(shadow.get("tp2"), 0.0)),
+            ("TP3", safe_float(shadow.get("tp3"), 0.0)),
+        ]
+        levels = [(name, level) for name, level in levels if level > 0]
+        order = {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}
+        max_target = str(shadow.get("max_target_hit") or "NONE")
+        best = safe_float(shadow.get("best_price"), entry) or entry
+        worst = safe_float(shadow.get("worst_price"), entry) or entry
+        terminal = False
+
+        for candle in sequence:
+            high = safe_float(candle.high, entry)
+            low = safe_float(candle.low, entry)
+            if side == Side.LONG.value:
+                best = max(best, high)
+                worst = min(worst, low)
+                stop_hit = low <= stop
+                hits = [name for name, level in levels if high >= level and order[name] > order.get(max_target, 0)]
+            else:
+                best = min(best, low)
+                worst = max(worst, high)
+                stop_hit = high >= stop
+                hits = [name for name, level in levels if low <= level and order[name] > order.get(max_target, 0)]
+
+            if stop_hit and hits:
+                shadow["status"] = "AMBIGUOUS_INTRABAR"
+                shadow["ambiguity"] = f"stop and {max(hits, key=lambda name: order[name])} touched in same 3M candle"
+                shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+                terminal = True
+                break
+            if hits:
+                max_target = max(hits, key=lambda name: order[name])
+                shadow["max_target_hit"] = max_target
+                shadow["status"] = f"{max_target}_REACHED"
+                shadow[f"{max_target.lower()}_hit_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+            if stop_hit:
+                shadow["status"] = "STOP_AFTER_TARGET" if order.get(max_target, 0) > 0 else "STOP_FIRST"
+                shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+                terminal = True
+                break
+            shadow["last_processed_ts"] = max(int(shadow.get("last_processed_ts", 0) or 0), int(candle.ts))
+
+        if side == Side.LONG.value:
+            if current_price > 0:
+                best = max(best, current_price)
+                worst = min(worst, current_price)
+            mfe_r = max(0.0, (best - entry) / risk)
+            mae_r = max(0.0, (entry - worst) / risk)
+        else:
+            if current_price > 0:
+                best = min(best, current_price)
+                worst = max(worst, current_price)
+            mfe_r = max(0.0, (entry - best) / risk)
+            mae_r = max(0.0, (worst - entry) / risk)
+        shadow["best_price"] = round_price(best)
+        shadow["worst_price"] = round_price(worst)
+        shadow["mfe_r"] = round(mfe_r, 3)
+        shadow["mae_r"] = round(mae_r, 3)
+        shadow["updated_at"] = now.isoformat()
+
+        if not terminal and expires and now >= expires:
+            shadow["status"] = f"EXPIRED_{max_target}" if max_target != "NONE" else "EXPIRED_NO_TARGET"
+            shadow["closed_at"] = now.isoformat()
+
+    shadows = [e.get("shadow_plan") for e in history if isinstance(e, dict) and e.get("shadow_plan")]
+    terminal_statuses = {"STOP_FIRST", "STOP_AFTER_TARGET", "AMBIGUOUS_INTRABAR", "INVALID_NO_OPEN_TIME", "INVALID_GEOMETRY"}
+    closed = [x for x in shadows if str(x.get("status", "")).startswith("EXPIRED_") or x.get("status") in terminal_statuses]
+    reached_tp1 = [x for x in shadows if str(x.get("max_target_hit", "NONE")) in {"TP1", "TP2", "TP3"}]
+    analytics = journal.setdefault("analytics", {}).setdefault("executive_shadow_outcomes", {})
+    analytics.update({
+        "tracked": len(shadows),
+        "open": len(shadows) - len(closed),
+        "closed": len(closed),
+        "tp1_or_better_reached": len(reached_tp1),
+        "stop_first": sum(1 for x in shadows if x.get("status") == "STOP_FIRST"),
+        "ambiguous_intrabar": sum(1 for x in shadows if x.get("status") == "AMBIGUOUS_INTRABAR"),
+        "average_mfe_r": round(sum(safe_float(x.get("mfe_r"), 0.0) for x in shadows) / max(len(shadows), 1), 3),
+        "average_mae_r": round(sum(safe_float(x.get("mae_r"), 0.0) for x in shadows) / max(len(shadows), 1), 3),
+        "interpretation": "counterfactual path audit, not realized or guaranteed profit",
+        "updated_at": now.isoformat(),
+    })
+
+
+def record_executive_divergence(journal: dict[str, Any], payload: dict[str, Any]) -> None:
+    audit = ((payload.get("audit") or {}).get("executive_divergence") or {})
+    if not audit:
+        return
+    analytics = journal.setdefault("analytics", {})
+    stats = analytics.setdefault("executive_divergence", {
+        "total_decisions": 0,
+        "legacy_vs_final": 0,
+        "selected_eligible_but_no_setup": 0,
+        "close_misses": 0,
+        "by_reason": {},
+    })
+    stats["total_decisions"] = int(stats.get("total_decisions", 0)) + 1
+    if audit.get("legacy_vs_final"):
+        stats["legacy_vs_final"] = int(stats.get("legacy_vs_final", 0)) + 1
+    if audit.get("selected_eligible_but_no_setup"):
+        stats["selected_eligible_but_no_setup"] = int(stats.get("selected_eligible_but_no_setup", 0)) + 1
+    if audit.get("close_miss"):
+        stats["close_misses"] = int(stats.get("close_misses", 0)) + 1
+    by_reason = stats.setdefault("by_reason", {})
+    for reason in audit.get("reason_codes") or ["none"]:
+        by_reason[reason] = int(by_reason.get(reason, 0)) + 1
+    stats["updated_at"] = payload.get("time") or iso_now()
+
+    event = {
+        "id": payload.get("id"),
+        "time": payload.get("time"),
+        "side": payload.get("side"),
+        "setup_type": payload.get("setup_type"),
+        "quality": payload.get("quality"),
+        **audit,
+    }
+    history = journal.setdefault("executive_divergences", [])
+    history.append(event)
+    if len(history) > EXECUTIVE_DIVERGENCE_HISTORY_LIMIT:
+        del history[:-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT]
+
+
 def executive_authority_decision(
     decision: Decision,
     state: Optional[dict[str, Any]] = None,
@@ -6749,6 +7408,21 @@ def executive_authority_decision(
         "report": report,
         "statement": "Only Executive Decision Layer can publish trading actions",
     })
+
+    legacy_action = str(
+        decision.audit.get("legacy_recommendation")
+        or (decision.audit.get("architecture") or {}).get("legacy_proposed_action")
+        or original
+    )
+    executive_payload = report.get("executive_decision") or {}
+    executive_audit = executive_payload.get("audit") or {}
+    decision.audit["adaptive_conflict_resolver"] = executive_audit.get("adaptive_conflict_resolver", {})
+    decision.audit["risky_entry_score_profile"] = executive_audit.get("risky_entry_score_profile", {})
+    decision.audit["executive_divergence"] = build_executive_divergence_audit(
+        decision,
+        report,
+        legacy_action=legacy_action,
+    )
 
     if decision.candidate is not None:
         setattr(decision.candidate, "executive_report", report)
@@ -8058,6 +8732,7 @@ SETUP_FAMILY_MAP = {
     SetupType.RANGE_COMPRESSION_BREAKOUT.value: SetupFamily.EXPANSION.value,
     SetupType.RANGE_EDGE_REVERSAL.value: SetupFamily.RANGE_EXECUTION.value,
     SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: SetupFamily.CONTINUATION.value,
+    SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: SetupFamily.CONTINUATION.value,
     SetupType.ACCELERATION_PULLBACK_REENTRY.value: SetupFamily.CONTINUATION.value,
     SetupType.SESSION_MEAN_RECLAIM.value: SetupFamily.CONTINUATION.value,
     SetupType.OPENING_RANGE_BREAKOUT.value: SetupFamily.EXPANSION.value,
@@ -8095,6 +8770,7 @@ SETUP_LABELS = {
     SetupType.RANGE_COMPRESSION_BREAKOUT.value: "Пробій після стиснення діапазону",
     SetupType.RANGE_EDGE_REVERSAL.value: "Розворот від межі діапазону",
     SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: "Ранній continuation-probe після acceptance-ретесту",
+    SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: "Продовження тренду без глибокого відкату від свіжої micro-base",
     SetupType.ACCELERATION_PULLBACK_REENTRY.value: "Re-entry після пропущеного імпульсу через 38–50% pullback",
     SetupType.SESSION_MEAN_RECLAIM.value: "VWAP / Session Mean Reclaim",
     SetupType.OPENING_RANGE_BREAKOUT.value: "Opening Range Breakout з ретестом",
@@ -8167,6 +8843,7 @@ def run_bot() -> None:
     if not context.get("price"):
         print("NO PRICE — abort")
         return
+    update_executive_shadow_outcomes(journal, context)
     print(f"PRICE {context['price']:.4f} | {context.get('instrument_label', INSTRUMENT_LABEL)} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'TradingView')}")
 
     active = active_trade_from_state(state)
@@ -8277,6 +8954,7 @@ def run_bot() -> None:
     state["latest_signal"] = payload
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
     journal["signals"].append(payload)
+    record_executive_divergence(journal, payload)
     if payload.get("score_features"):
         journal.setdefault("training_signals", []).append(payload)
 
@@ -8319,7 +8997,8 @@ def run_bot() -> None:
     else:
         store_active_trade(state, None)
 
-    if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN:
+    executive_alert = bool(((decision.audit or {}).get("executive_divergence") or {}).get("alert"))
+    if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN or executive_alert:
         msg = build_decision_message(context, decision)
         print("TELEGRAM (DECISION):", msg[:320])
         send_telegram(msg)
@@ -8409,11 +9088,17 @@ def test_probe_reduced_on_hard_conflict() -> bool:
         position_risk_pct=0.3,
         execution_ready=True,
     )
-    # Force a market hard conflict while keeping philosophy edge valid.
-    original = _ict_advisor
+    # Force a material market conflict while keeping execution and RR valid.
+    # Both directional market advisors oppose the trade at high confidence;
+    # this is deliberately stronger than the weak 25–31% CAUTION case.
+    original_ict = _ict_advisor
+    original_htf = _htf_advisor
     try:
         globals()["_ict_advisor"] = lambda _: advisory_report(
-            "ICT_ANALYST", "CAUTION", 10, -15, ["forced conflict"]
+            "ICT_ANALYST", "CAUTION", 90, -15, ["forced material conflict"]
+        )
+        globals()["_htf_advisor"] = lambda _candidate, _components: advisory_report(
+            "HTF_ANALYST", "CAUTION", 90, -10, ["forced material conflict"]
         )
         result = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
         return (
@@ -8422,7 +9107,8 @@ def test_probe_reduced_on_hard_conflict() -> bool:
             and result.get("audit", {}).get("final_action_policy") == "conflict lowers risk, not automatically blocks execution"
         )
     finally:
-        globals()["_ict_advisor"] = original
+        globals()["_ict_advisor"] = original_ict
+        globals()["_htf_advisor"] = original_htf
 
 def _probe_test_candidate(*, live: bool = True, score: int = 60) -> Candidate:
     return Candidate(
@@ -8496,6 +9182,242 @@ def test_probe_requires_execution_ready() -> bool:
     return report["action"] == Action.NO_SETUP.value
 
 
+
+def _continuation_near_miss_fixture(score: int, execution_quality: int) -> tuple[Candidate, TradePlan]:
+    """Fixture matching the 23:45/01:45 audit shape without network data."""
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=100,
+        final_score=score,
+        score_components={
+            "htf_score": 7.5,
+            "str_score": 21.85,
+            "liq_score": 3.46,
+            "trig_score": 18.0,
+            "features": {"htf": 0.3125, "structure": 0.91, "liquidity": 0.14, "trigger": 1.0},
+            "continuation_reanchor": {"ready": True, "anchor_age_min": 6.0, "distance_atr": 0.42},
+            "momentum_no_pullback": {"entry_ready": False},
+        },
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        trigger_age_minutes=6.0,
+        execution_source=ExecutionSource.CONTINUATION_REANCHOR.value,
+        entry_stage=EntryStage.ACCEPTANCE.value,
+        setup_quality_score=100,
+        execution_quality_score=execution_quality,
+        trade_plan_quality_score=75,
+        revalidation_profile={"state": "REVALIDATED", "entry_supported": True, "hard_expired": False},
+    )
+    plan = TradePlan(
+        entry=77.56,
+        stop=76.86,
+        tp1=78.96,
+        tp2=79.66,
+        tp3=80.36,
+        risk_pct=ACCEPTANCE_RISK_PCT,
+        rr1=2.0,
+        rr2=3.0,
+        rr3=4.0,
+        position_risk_pct=ACCEPTANCE_RISK_PCT,
+        execution_ready=True,
+        entry_stage=EntryStage.ACCEPTANCE.value,
+        execution_source=ExecutionSource.CONTINUATION_REANCHOR.value,
+        valid=True,
+    )
+    return candidate, plan
+
+
+def test_weak_cautions_do_not_create_hard_conflict() -> bool:
+    conflict = conflict_resolution_engine([
+        {"module": "HTF_ANALYST", "opinion": "CAUTION", "confidence": 31.25, "impact": -7.5},
+        {"module": "ICT_ANALYST", "opinion": "CAUTION", "confidence": 25.31, "impact": -4.9},
+        {"module": "PRICE_STRUCTURE_ADVISOR", "opinion": "SUPPORT", "confidence": 78.0, "impact": 8.0},
+        {"module": "EXECUTION_ANALYST", "opinion": "SUPPORT", "confidence": 73.0, "impact": 3.25},
+    ])
+    return bool(
+        not conflict.get("hard_conflict")
+        and set(conflict.get("soft_conflicts") or []) == {"HTF_ANALYST", "ICT_ANALYST"}
+        and conflict.get("market_score", 0) > 0
+    )
+
+
+def test_score_68_continuation_is_not_cliff_blocked() -> bool:
+    candidate, plan = _continuation_near_miss_fixture(68, 73)
+    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
+    return bool(
+        report.get("action") == Action.RISKY_ENTRY.value
+        and plan.position_risk_pct <= RISKY_RISK_PCT
+    )
+
+
+def test_score_67_gray_zone_is_strictly_capped() -> bool:
+    candidate, plan = _continuation_near_miss_fixture(67, 75)
+    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
+    profile = (((report.get("executive_decision") or {}).get("audit") or {}).get("risky_entry_score_profile") or {})
+    return bool(
+        report.get("action") == Action.RISKY_ENTRY.value
+        and profile.get("tier") == "GRAY"
+        and profile.get("gray_eligible")
+        and plan.position_risk_pct <= RISKY_GRAY_RISK_PCT + 1e-9
+        and plan.entry_stage == EntryStage.PROBE.value
+    )
+
+
+def _synthetic_orderly_long_continuation() -> tuple[list[Candle], list[Candle], list[Zone], float, float]:
+    base = 1_783_838_000_000
+    c3_values = [
+        (76.90, 77.00, 76.87, 77.03),
+        (77.00, 77.08, 76.98, 77.10),
+        (77.08, 77.16, 77.05, 77.18),
+        (77.16, 77.25, 77.13, 77.27),
+        (77.25, 77.31, 77.22, 77.33),
+        (77.30, 77.60, 77.28, 77.62),
+    ]
+    c3 = [
+        Candle(ts=base + i * 180_000, open=o, high=h, low=l, close=c, volume=1000, confirmed=True)
+        for i, (o, c, l, h) in enumerate(c3_values)
+    ]
+    c15_values = [
+        (76.40, 76.55, 76.35, 76.58),
+        (76.55, 76.70, 76.50, 76.73),
+        (76.70, 76.84, 76.65, 76.87),
+        (76.84, 77.00, 76.80, 77.03),
+        (77.00, 77.15, 76.96, 77.18),
+        (77.15, 77.30, 77.10, 77.33),
+        (77.30, 77.45, 77.25, 77.48),
+        (77.45, 77.60, 77.40, 77.65),
+    ]
+    c15 = [
+        Candle(ts=base - (7 - i) * 900_000, open=o, high=h, low=l, close=c, volume=5000, confirmed=True)
+        for i, (o, c, l, h) in enumerate(c15_values)
+    ]
+    zones = [
+        Zone(
+            kind="OB",
+            side=Side.LONG.value,
+            low=77.22,
+            high=77.34,
+            created_ts=c3[-1].ts - 6 * 60_000,
+            timeframe="3m",
+            strength=82,
+        )
+    ]
+    return c3, c15, zones, 77.60, 0.50
+
+
+def test_continuation_reanchors_to_fresh_zone() -> bool:
+    c3, c15, zones, price, atr15 = _synthetic_orderly_long_continuation()
+    profile = continuation_reanchor_profile(
+        c3, c15, zones, Side.LONG.value, price, atr15,
+        {"bias": Side.LONG.value}, {"bias": Side.LONG.value},
+    )
+    return bool(
+        profile.get("ready")
+        and profile.get("anchor_source") == "FRESH_ICT_ZONE"
+        and profile.get("anchor_age_min", 999) <= TRIGGER_MAX_AGE_MINUTES
+        and profile.get("distance_atr", 999) <= CONTINUATION_REANCHOR_MAX_DISTANCE_ATR
+    )
+
+
+def test_no_pullback_model_is_probe_ready() -> bool:
+    c3, c15, zones, price, atr15 = _synthetic_orderly_long_continuation()
+    profile = detect_momentum_no_pullback_continuation(
+        c3, c15, zones, Side.LONG.value, price, atr15,
+        {"bias": Side.LONG.value}, {"bias": Side.LONG.value},
+    )
+    return bool(
+        profile.get("active")
+        and profile.get("entry_ready")
+        and not profile.get("overextended")
+        and (profile.get("reanchor") or {}).get("ready")
+    )
+
+
+def test_selected_eligible_no_setup_alert() -> bool:
+    candidate, plan = _continuation_near_miss_fixture(67, 75)
+    decision = Decision(
+        id="near-miss-test",
+        time=iso_now(),
+        action=Action.NO_SETUP.value,
+        side=candidate.side,
+        setup_type=candidate.setup_type,
+        quality=candidate.final_score,
+        reason="forced test",
+        regime=Regime.TREND.value,
+        candidate=candidate,
+        plan=plan,
+    )
+    report = {
+        "action": Action.NO_SETUP.value,
+        "executive_decision": {
+            "audit": {
+                "execution_eligible_pre_conflict": True,
+                "risky_entry_score_profile": {"eligible": True, "tier": "GRAY"},
+                "probe_entry_eligibility": {"eligible": False},
+                "adaptive_conflict_resolver": {"adaptive_execution_threshold": 70.0},
+            },
+            "conflict_resolution": {"hard_conflict": True, "hard_conflict_margin": 2.0},
+        },
+    }
+    audit = build_executive_divergence_audit(decision, report, Action.RISKY_ENTRY.value)
+    journal: dict[str, Any] = {"analytics": {}}
+    payload = {"id": decision.id, "time": decision.time, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "audit": {"executive_divergence": audit}}
+    record_executive_divergence(journal, payload)
+    stats = ((journal.get("analytics") or {}).get("executive_divergence") or {})
+    return bool(
+        audit.get("alert")
+        and audit.get("selected_eligible_but_no_setup")
+        and stats.get("selected_eligible_but_no_setup") == 1
+        and len(journal.get("executive_divergences") or []) == 1
+    )
+
+
+
+def test_shadow_outcome_tracks_path_without_claiming_profit() -> bool:
+    opened = now_utc() - timedelta(hours=2)
+    journal = {
+        "analytics": {},
+        "executive_divergences": [{
+            "id": "shadow-test",
+            "side": Side.LONG.value,
+            "shadow_plan": {
+                "status": "OPEN",
+                "opened_at": opened.isoformat(),
+                "expires_at": (opened + timedelta(hours=1)).isoformat(),
+                "side": Side.LONG.value,
+                "entry": 100.0,
+                "stop": 99.0,
+                "tp0": 100.75,
+                "tp1": 101.5,
+                "tp2": 102.5,
+                "tp3": 104.0,
+                "last_processed_ts": 0,
+                "max_target_hit": "NONE",
+            },
+        }],
+    }
+    base = int((opened + timedelta(minutes=3)).timestamp() * 1000)
+    context = {
+        "price": 101.4,
+        "candles": {"3m": [
+            Candle(ts=base, open=100.0, high=100.9, low=99.8, close=100.8, confirmed=True),
+            Candle(ts=base + 180_000, open=100.8, high=101.7, low=100.7, close=101.4, confirmed=True),
+        ]},
+    }
+    update_executive_shadow_outcomes(journal, context)
+    shadow = journal["executive_divergences"][0]["shadow_plan"]
+    stats = journal["analytics"]["executive_shadow_outcomes"]
+    return bool(
+        shadow.get("max_target_hit") == "TP1"
+        and str(shadow.get("status", "")).startswith("EXPIRED_TP1")
+        and shadow.get("mfe_r", 0) >= 1.7
+        and stats.get("tp1_or_better_reached") == 1
+        and "not realized" in stats.get("interpretation", "")
+    )
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -8516,6 +9438,13 @@ def _run_self_test() -> bool:
     checks.append(("test_fresh_probe_entry_below_68", test_fresh_probe_entry_below_68()))
     checks.append(("test_probe_requires_live_trigger", test_probe_requires_live_trigger()))
     checks.append(("test_probe_requires_execution_ready", test_probe_requires_execution_ready()))
+    checks.append(("weak 25–31% CAUTION does not create hard conflict", test_weak_cautions_do_not_create_hard_conflict()))
+    checks.append(("score 68 continuation is not cliff-blocked", test_score_68_continuation_is_not_cliff_blocked()))
+    checks.append(("score 67 gray zone is strictly capped", test_score_67_gray_zone_is_strictly_capped()))
+    checks.append(("stale continuation reanchors to fresh zone", test_continuation_reanchors_to_fresh_zone()))
+    checks.append(("no-pullback continuation is probe-ready", test_no_pullback_model_is_probe_ready()))
+    checks.append(("selected+eligible NO_SETUP raises audit alert", test_selected_eligible_no_setup_alert()))
+    checks.append(("shadow audit tracks path without claiming profit", test_shadow_outcome_tracks_path_without_claiming_profit()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -8642,10 +9571,10 @@ def _run_self_test() -> bool:
 
 
 # ==========================================================
-# v8.6 EXECUTIVE DECISION LAYER - SINGLE AUTHORITY
+# v8.8 EXECUTIVE DECISION LAYER - CONFIDENCE-AWARE SINGLE AUTHORITY
 # ==========================================================
 
-EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_6_INDEPENDENT_ADVISORS"
+EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE"
 
 
 def advisory_report(module, opinion, confidence=0, impact=0, evidence=None, risks=None):
@@ -8680,6 +9609,7 @@ def _component_raw_score(components: dict[str, Any], raw_key: str, feature_key: 
 ADVISOR_MAX_IMPACT = {
     "HTF_ANALYST": 10.0,
     "ICT_ANALYST": 15.0,
+    "PRICE_STRUCTURE_ADVISOR": 12.0,
     "EXECUTION_ANALYST": 10.0,
 }
 
@@ -8734,6 +9664,64 @@ def _ict_advisor(components: dict[str, Any]) -> dict[str, Any]:
         confidence=clamp(combined, 0, 100),
         impact=normalize_advisor_impact("ICT_ANALYST", clamp((combined - 40.0) / 2.0, -20, 20)),
         evidence=[f"structure={structure:.2f}", f"liquidity={liquidity:.2f}"],
+    )
+
+
+def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
+    """Independent market vote for structure/momentum continuation.
+
+    This closes the old asymmetry where HTF and ICT could both caution while no
+    market module was allowed to express that price itself was accepting higher
+    or lower levels in an orderly continuation.
+    """
+    structure = _component_raw_score(components, "str_score", "structure")
+    reanchor = components.get("continuation_reanchor", {}) or {}
+    momentum = components.get("momentum_no_pullback", {}) or {}
+    family = str(getattr(candidate, "setup_family", "") or "")
+    source = str(getattr(candidate, "execution_source", "") or "")
+
+    structural_support = bool(structure >= 17.0)
+    fresh_continuation = bool(
+        reanchor.get("ready")
+        or momentum.get("entry_ready")
+        or source in {
+            ExecutionSource.CONTINUATION_REANCHOR.value,
+            ExecutionSource.MOMENTUM_CONTINUATION.value,
+            ExecutionSource.LIVE_3M.value,
+        }
+    )
+    continuation_family = family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+    support = bool(
+        structural_support
+        and (fresh_continuation or (continuation_family and bool(getattr(candidate, "trigger_ready", False))))
+    )
+
+    momentum_confidence = 0.0
+    if momentum:
+        momentum_confidence = clamp(
+            45.0
+            + safe_float(momentum.get("move_atr"), 0.0) * 10.0
+            + safe_float(momentum.get("directional_closes_6"), 0.0) * 4.0
+            - safe_float(momentum.get("giveback_ratio"), 0.0) * 30.0,
+            0.0,
+            100.0,
+        )
+    reanchor_confidence = 78.0 if reanchor.get("ready") else 0.0
+    confidence = max(clamp(structure / 24.0 * 100.0, 0.0, 100.0), momentum_confidence, reanchor_confidence)
+    raw_impact = clamp((confidence - 50.0) / 3.0, -12.0, 12.0)
+    signed_impact = abs(raw_impact) if support else -abs(raw_impact)
+    return advisory_report(
+        "PRICE_STRUCTURE_ADVISOR",
+        "SUPPORT" if support else "CAUTION",
+        confidence=confidence,
+        impact=normalize_advisor_impact("PRICE_STRUCTURE_ADVISOR", signed_impact),
+        evidence=[
+            f"structure={structure:.2f}",
+            f"family={family}",
+            f"source={source}",
+            f"reanchor_ready={bool(reanchor.get('ready'))}",
+            f"momentum_ready={bool(momentum.get('entry_ready'))}",
+        ],
     )
 
 
@@ -8845,22 +9833,31 @@ def trading_philosophy_layer(
 
 
 def conflict_resolution_engine(advisors):
-    """Separates market disagreement from capital-risk vetoes.
+    """Confidence-sensitive conflict aggregation.
 
-    Market analysts can disagree with the thesis. Risk manager does not vote on
-    direction; it controls whether exposure is allowed.
+    CAUTION is not equivalent to a directional veto. Votes are weighted by
+    confidence; weak cautions remain visible in audit but cannot create a hard
+    conflict by themselves. Risk manager remains a separate capital veto.
     """
     result = {
         "market": {"support": 0.0, "against": 0.0},
         "execution": {"support": 0.0, "against": 0.0},
         "risk": {"blocked": False, "severity": 0.0},
         "conflicts": [],
+        "soft_conflicts": [],
+        "effective_votes": [],
+        "policy": {
+            "min_effective_confidence": CONFLICT_MIN_EFFECTIVE_CONFIDENCE,
+            "caution_weight": CONFLICT_CAUTION_WEIGHT,
+            "hard_margin": CONFLICT_HARD_MARGIN,
+        },
     }
 
     for item in advisors or []:
         module = str(item.get("module", "UNKNOWN"))
         opinion = str(item.get("opinion", "")).upper()
         impact = safe_float(item.get("impact"), 0.0)
+        confidence = clamp(safe_float(item.get("confidence"), 100.0), 0.0, 100.0)
         bucket = "execution" if "EXECUTION" in module else "market"
 
         if module == "RISK_MANAGER":
@@ -8869,15 +9866,41 @@ def conflict_resolution_engine(advisors):
                 result["risk"]["severity"] = max(result["risk"]["severity"], abs(impact))
             continue
 
-        if opinion in {"SUPPORT", "LONG"}:
-            result[bucket]["support"] += max(impact, 0)
-        elif opinion in {"AGAINST", "SHORT", "CAUTION"}:
-            result[bucket]["against"] += abs(impact)
-            result["conflicts"].append(module)
+        confidence_weight = confidence / 100.0
+        effective = abs(impact) * confidence_weight
+        is_caution = opinion == "CAUTION"
+        if is_caution:
+            effective *= CONFLICT_CAUTION_WEIGHT
 
-    hard_conflict = (
-        result["market"]["against"] > result["market"]["support"]
-        or result["execution"]["against"] > result["execution"]["support"]
+        vote = {
+            "module": module,
+            "bucket": bucket,
+            "opinion": opinion,
+            "confidence": round(confidence, 2),
+            "raw_impact": round(impact, 2),
+            "effective_impact": round(effective, 3),
+        }
+
+        if opinion in {"SUPPORT", "LONG"}:
+            result[bucket]["support"] += effective
+            vote["counted_as"] = "support"
+        elif opinion in {"AGAINST", "SHORT", "CAUTION"}:
+            if is_caution and confidence < CONFLICT_MIN_EFFECTIVE_CONFIDENCE:
+                result["soft_conflicts"].append(module)
+                vote["counted_as"] = "soft_caution_only"
+            else:
+                result[bucket]["against"] += effective
+                result["conflicts"].append(module)
+                vote["counted_as"] = "against"
+        else:
+            vote["counted_as"] = "neutral"
+        result["effective_votes"].append(vote)
+
+    market_delta = result["market"]["against"] - result["market"]["support"]
+    execution_delta = result["execution"]["against"] - result["execution"]["support"]
+    hard_conflict = bool(
+        market_delta >= CONFLICT_HARD_MARGIN
+        or execution_delta >= CONFLICT_HARD_MARGIN
     )
     result["hard_conflict"] = hard_conflict
     result["market_score"] = round(
@@ -8886,11 +9909,70 @@ def conflict_resolution_engine(advisors):
     result["execution_score"] = round(
         result["execution"]["support"] - result["execution"]["against"], 2
     )
+    result["hard_conflict_margin"] = round(max(market_delta, execution_delta), 2)
     return result
 
 
 # ExecutiveDecisionState is the only allowed source of new setup decisions.
 # Raw action strings must not be used for decision routing.
+
+def risky_entry_score_profile(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    philosophy_accepts: bool,
+    risk_blocked: bool,
+) -> dict[str, Any]:
+    """Auditable risky-entry buffer around the base threshold.
+
+    Scores in 66–67 are not promoted automatically. They are eligible only when
+    setup/execution quality, fresh execution evidence, RR and risk controls all
+    pass. The resulting position is capped below ordinary risky-entry size.
+    """
+    quality = int(getattr(candidate, "final_score", 0) or 0)
+    execution_q = safe_float(getattr(candidate, "execution_quality_score", 0), 0.0)
+    setup_q = safe_float(getattr(candidate, "setup_quality_score", 0), 0.0)
+    lower_bound = max(0, RISKY_ENTRY_SCORE_BASE - RISKY_SCORE_GRAY_ZONE)
+    in_gray_zone = lower_bound <= quality < RISKY_ENTRY_SCORE_BASE
+    plan_executable = bool(plan and getattr(plan, "valid", False) and getattr(plan, "execution_ready", False))
+    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
+    fresh_execution = bool(
+        getattr(candidate, "live_3m_trigger_ready", False)
+        or getattr(candidate, "limit_armed_ready", False)
+        or revalidation.get("entry_supported")
+        or getattr(candidate, "execution_source", "") in {
+            ExecutionSource.CONTINUATION_REANCHOR.value,
+            ExecutionSource.MOMENTUM_CONTINUATION.value,
+        }
+    )
+    hard_expired = bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD")
+    checks = {
+        "within_gray_zone": in_gray_zone,
+        "execution_quality": execution_q >= RISKY_GRAY_MIN_EXECUTION_QUALITY,
+        "setup_quality": setup_q >= RISKY_GRAY_MIN_SETUP_QUALITY,
+        "fresh_execution": fresh_execution,
+        "plan_executable": plan_executable,
+        "philosophy_accepts": bool(philosophy_accepts),
+        "risk_available": not bool(risk_blocked),
+        "thesis_alive": not hard_expired,
+    }
+    full_threshold = quality >= RISKY_ENTRY_SCORE_BASE
+    gray_eligible = bool(in_gray_zone and all(checks.values()))
+    return {
+        "quality": quality,
+        "base_threshold": RISKY_ENTRY_SCORE_BASE,
+        "lower_bound": lower_bound,
+        "distance_to_base": RISKY_ENTRY_SCORE_BASE - quality,
+        "full_threshold": full_threshold,
+        "in_gray_zone": in_gray_zone,
+        "gray_eligible": gray_eligible,
+        "eligible": bool(full_threshold or gray_eligible),
+        "tier": "FULL" if full_threshold else "GRAY" if gray_eligible else "BELOW",
+        "risk_cap": RISKY_RISK_PCT if full_threshold else RISKY_GRAY_RISK_PCT,
+        "execution_quality": round(execution_q, 2),
+        "setup_quality": round(setup_q, 2),
+        "checks": checks,
+    }
+
 
 def build_executive_decision_object(
     candidate,
@@ -8914,6 +9996,7 @@ def build_executive_decision_object(
     advisors = [
         _htf_advisor(candidate, components),
         _ict_advisor(components),
+        _price_structure_advisor(candidate, components),
         _execution_advisor(candidate, components),
         _risk_manager_advisor(plan, journal, state),
     ]
@@ -8952,15 +10035,23 @@ def build_executive_decision_object(
         and getattr(plan, "execution_ready", False)
     )
     philosophy_accepts = philosophy.get("recommendation") == "ACCEPT"
+    score_profile = risky_entry_score_profile(
+        candidate,
+        plan,
+        philosophy_accepts=philosophy_accepts,
+        risk_blocked=risk_blocked,
+    )
+    adaptive_execution_threshold = adaptive_conflict_execution_threshold(quality, conflict)
     conflict_override = (
         has_hard_conflict
         and philosophy_accepts
         and plan_executable
-        and quality >= RISKY_ENTRY_SCORE_BASE
+        and score_profile.get("eligible")
         and executive_conflict_allows_reduced_entry(
             execution_quality=execution_quality_raw,
             risk_blocked=risk_blocked,
             rr1=rr1,
+            minimum_execution_quality=adaptive_execution_threshold,
         )
     )
     probe_profile = probe_entry_eligibility(
@@ -8975,9 +10066,11 @@ def build_executive_decision_object(
         action = ExecutiveDecisionState.WAIT.value
         reason = "Risk budget exhausted; entry blocked"
     elif conflict_override:
-        # Existing 68+ risky class remains separate from the new probe class.
         action = ExecutiveDecisionState.PROBE_REDUCED.value
-        reason = "Execution edge confirmed despite HTF/ICT conflict; reduced-risk entry allowed"
+        reason = (
+            f"Execution edge confirmed despite material conflict; reduced-risk entry allowed "
+            f"(execution {execution_quality_raw:.1f} >= adaptive {adaptive_execution_threshold:.1f})"
+        )
     elif (
         philosophy_accepts
         and plan_executable
@@ -8990,12 +10083,16 @@ def build_executive_decision_object(
     elif (
         philosophy_accepts
         and plan_executable
-        and quality >= RISKY_ENTRY_SCORE_BASE
+        and score_profile.get("eligible")
         and confidence >= 55
         and not has_hard_conflict
     ):
-        action = ExecutiveDecisionState.RISKY.value
-        reason = "Valid 68+ setup supports reduced-risk entry"
+        if score_profile.get("tier") == "GRAY":
+            action = ExecutiveDecisionState.GRAY_RISKY.value
+            reason = "Gray-zone setup passed stricter execution/structure/freshness checks; tightly capped risky entry"
+        else:
+            action = ExecutiveDecisionState.RISKY.value
+            reason = "Valid setup supports reduced-risk entry"
     elif probe_profile.get("eligible"):
         action = ExecutiveDecisionState.PROBE.value
         reason = "Fresh non-conflicting live trigger supports minimum-risk probe"
@@ -9021,7 +10118,9 @@ def build_executive_decision_object(
                 "enabled": True,
                 "execution_quality_raw": round(execution_quality_raw, 2),
                 "execution_impact": round(execution_impact, 2),
+                "adaptive_execution_threshold": adaptive_execution_threshold,
                 "rr1": round(rr1, 2),
+                "score_profile": score_profile,
                 "override_allowed": conflict_override,
                 "decision_variant": "PROBE_REDUCED" if conflict_override else action,
                 "conflict_override": bool(conflict_override),
@@ -9039,6 +10138,7 @@ def build_executive_decision_object(
                         execution_quality=execution_impact,
                         risk_blocked=risk_blocked,
                         rr1=rr1,
+                        minimum_execution_quality=adaptive_execution_threshold,
                     )
                 ),
                 "after_fix_conflict_override": bool(conflict_override),
@@ -9053,6 +10153,7 @@ def build_executive_decision_object(
                             execution_quality=execution_impact,
                             risk_blocked=risk_blocked,
                             rr1=rr1,
+                            minimum_execution_quality=adaptive_execution_threshold,
                         )
                     )
                     else action
@@ -9060,6 +10161,10 @@ def build_executive_decision_object(
                 "after_fix_action": action,
             },
             "probe_entry_eligibility": probe_profile,
+            "risky_entry_score_profile": score_profile,
+            "execution_eligible_pre_conflict": bool(
+                philosophy_accepts and plan_executable and score_profile.get("eligible") and not risk_blocked
+            ),
         },
     }
 
@@ -9080,6 +10185,7 @@ EXECUTIVE_ACTION_MAP = {
     ExecutiveDecisionState.RISKY: Action.RISKY_ENTRY.value,
     ExecutiveDecisionState.PROBE: Action.PROBE_ENTRY.value,
     ExecutiveDecisionState.PROBE_REDUCED: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.GRAY_RISKY: Action.RISKY_ENTRY.value,
 
     # New setup decision: no open position exists.
     # WAIT is not HOLD. HOLD belongs only to active trade management.
@@ -9131,15 +10237,16 @@ def executive_decision_engine(
     internal_action = decision["action"]
     final_action = resolve_executive_action(internal_action)
 
-    if internal_action in {ExecutiveDecisionState.PROBE.value, ExecutiveDecisionState.PROBE_REDUCED.value}:
+    if internal_action in {ExecutiveDecisionState.PROBE.value, ExecutiveDecisionState.PROBE_REDUCED.value, ExecutiveDecisionState.GRAY_RISKY.value}:
         if candidate is not None:
             candidate.entry_stage = EntryStage.PROBE.value
         if plan is not None:
-            risk_cap = (
-                max(0.02, PROBE_RISK_PCT * 0.50)
-                if internal_action == ExecutiveDecisionState.PROBE_REDUCED.value
-                else PROBE_RISK_PCT
-            )
+            if internal_action == ExecutiveDecisionState.PROBE_REDUCED.value:
+                risk_cap = max(0.02, PROBE_RISK_PCT * 0.50)
+            elif internal_action == ExecutiveDecisionState.GRAY_RISKY.value:
+                risk_cap = RISKY_GRAY_RISK_PCT
+            else:
+                risk_cap = PROBE_RISK_PCT
             reduced_risk = min(
                 safe_float(plan.position_risk_pct, risk_cap),
                 risk_cap,
@@ -9158,7 +10265,7 @@ def run_module_conflict_audit(candidate=None):
     """Runtime audit of executive decision architecture."""
     checks = {
         "executive_is_single_authority": bool(EXECUTIVE_ACTION_MAP),
-        "modules_return_advice_only": all(callable(x) for x in (_htf_advisor, _ict_advisor, _execution_advisor)),
+        "modules_return_advice_only": all(callable(x) for x in (_htf_advisor, _ict_advisor, _price_structure_advisor, _execution_advisor)),
         "conflict_resolution_enabled": callable(executive_conflict_allows_reduced_entry),
         "trading_philosophy_enabled": bool(
             callable(trading_philosophy_layer)
@@ -9389,7 +10496,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.6")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.8")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
