@@ -9,6 +9,12 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Додано confirmation-delay analytics: перший сигнал того самого thesis порівнюється з execution entry, включно з directional wait cost.
 - Shadow-плани дедуплікуються за side/entry/stop і формують policy review: TP1+ без входу проти STOP_FIRST.
 
+Виправлення v8.10 (Revalidation Execution Path Edition):
+- setup_trigger_revalidation_profile та build_trade_plan визнають strict 6-bar continuation re-anchor / momentum entry-ready як альтернативний execution support.
+- CONFIRMATION_PENDING тепер переходить у entry_supported після появи підтверджувального 3M бара; перехід аудитується окремо.
+- Напрямна micro/re-anchor логіка зведена до єдиного _directional_confirmation_profile, щоб правила не розходились.
+- Додано daily entry_supported scan-rate для активних thesis та ретроспективний --audit-journal replay зі shadow outcomes.
+
 Виправлення v8.8 (Continuation Resilience / Confidence-Aware Executive Edition):
 - Старі continuation-тези більше не використовують 45-годинний trigger як execution: за збереженої структури trigger автоматично переанкорюється на свіжу локальну OB/FVG або 3M micro-base біля поточної ціни.
 - Додано MOMENTUM_NO_PULLBACK_CONTINUATION: окрема staged/probe-модель для рівного трендового руху без глибокого відкату, без market-chase і без full-size.
@@ -126,8 +132,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.9-directional-timing-audit"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_9_DIRECTION_AWARE"
+BOT_VERSION = "pro-hybrid-confluence-v8.10-revalidation-execution"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_10_REVALIDATION_PATHS"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -1772,7 +1778,15 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 def load_state() -> dict[str, Any]:
     raw = load_json(STATE_FILE, {})
-    same_arch = raw.get("architecture_version") == ARCHITECTURE_VERSION
+    # v8.10 changes execution support semantics, not the serialized state shape.
+    # Preserve v8.8/v8.9 Opportunity (especially CONFIRMATION_PENDING), scan_3m
+    # and regime memory instead of silently discarding the bar we are waiting for.
+    compatible_architectures = {
+        ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V8_9_DIRECTION_AWARE",
+        "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE",
+    }
+    same_arch = raw.get("architecture_version") in compatible_architectures
     return {
         "version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
@@ -3634,20 +3648,52 @@ def _recent_confirmed(candles: list[Candle], n: int = 3) -> list[Candle]:
     return sorted(confirmed, key=lambda c: c.ts)[-n:]
 
 
-def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle], atr15: float) -> dict[str, Any]:
-    """Свіжий сетапний доказ, а не стара памʼять trigger.
-    Не піднімає якість і не є hard gate: повертає, чи є нова мікро-аргументація входу."""
-    recent3 = _recent_confirmed(c3, 4)
+def _directional_confirmation_profile(
+    side: str,
+    c3: list[Candle],
+    c15: list[Candle],
+    atr15: float,
+    tf15: Optional[dict[str, Any]] = None,
+    tf1h: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Single source of truth for side-aware micro and continuation confirmation.
+
+    The profile is JSON-safe and is shared by stale-trigger revalidation and
+    continuation re-anchoring. This prevents one path from accepting a candle
+    sequence that the other rejects merely because two copies of the same logic
+    drifted apart. Six confirmed 3M bars are explicitly reported; re-anchor and
+    momentum execution paths may not claim readiness without them.
+    """
+    side = str(side or "").upper()
+    recent3 = _recent_confirmed(c3, 6)
+    recent15 = _recent_confirmed(c15, 8)
     last3 = recent3[-1] if recent3 else None
     prev3 = recent3[-2] if len(recent3) >= 2 else None
-    last15 = _last_confirmed(c15)
-    if not last3 or not prev3:
-        return {"supported": False, "kind": "NO_3M_DATA", "score": 0, "checks": []}
+    last15 = recent15[-1] if recent15 else _last_confirmed(c15)
+
+    base: dict[str, Any] = {
+        "side": side,
+        "confirmed_3m_bars": len(recent3),
+        "confirmed_15m_bars": len(recent15),
+        "six_bar_structure_confirmed": len(recent3) >= 6,
+        "supported": False,
+        "kind": "NO_3M_DATA",
+        "score": 0,
+        "checks": [],
+        "directional_closes": 0,
+        "signed_net_move_atr": 0.0,
+        "pullback_atr": 999.0,
+        "structure_intact": False,
+        "tf_aligned": False,
+        "directional_structure": directional_structure_profile(c15, side) if c15 else {},
+        "last_confirmed_3m_ts": int(last3.ts) if last3 else 0,
+    }
+    if not last3 or not prev3 or atr15 <= 0:
+        return base
 
     body = abs(float(last3.close) - float(last3.open))
     body_atr = body / max(float(atr15), 1e-9)
     body_ratio = _candle_body_ratio(last3)
-    checks = []
 
     if side == Side.LONG.value:
         directional_close = float(last3.close) > float(last3.open) and float(last3.close) > float(prev3.high)
@@ -3659,23 +3705,182 @@ def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle
         micro_sweep_reclaim = bool(float(last3.high) > float(prev3.high) and float(last3.close) < float(prev3.close))
 
     strong_body = body_atr >= SETUP_REVALIDATION_BODY_ATR_MIN and body_ratio >= SETUP_REVALIDATION_BODY_RATIO_MIN
-    checks.append({"name": "directional_3m_close", "ok": bool(directional_close)})
-    checks.append({"name": "strong_3m_body", "ok": bool(strong_body), "body_atr": round(body_atr, 3), "body_ratio": round(body_ratio, 3)})
-    checks.append({"name": "15m_acceptance", "ok": bool(local_acceptance)})
-    checks.append({"name": "micro_sweep_reclaim", "ok": bool(micro_sweep_reclaim)})
-
-    score = 0
-    score += 35 if directional_close else 0
-    score += 30 if strong_body else 0
-    score += 20 if local_acceptance else 0
-    score += 15 if micro_sweep_reclaim else 0
-
-    supported = bool((directional_close and strong_body and local_acceptance) or (micro_sweep_reclaim and strong_body and local_acceptance))
+    checks = [
+        {"name": "directional_3m_close", "ok": bool(directional_close)},
+        {"name": "strong_3m_body", "ok": bool(strong_body), "body_atr": round(body_atr, 3), "body_ratio": round(body_ratio, 3)},
+        {"name": "15m_acceptance", "ok": bool(local_acceptance)},
+        {"name": "micro_sweep_reclaim", "ok": bool(micro_sweep_reclaim)},
+    ]
+    score = (35 if directional_close else 0) + (30 if strong_body else 0) + (20 if local_acceptance else 0) + (15 if micro_sweep_reclaim else 0)
+    supported = bool(
+        (directional_close and strong_body and local_acceptance)
+        or (micro_sweep_reclaim and strong_body and local_acceptance)
+    )
     kind = "LIVE_DIRECTIONAL_ACCEPTANCE" if directional_close else "MICRO_SWEEP_RECLAIM" if micro_sweep_reclaim else "WEAK_OR_MISSING"
-    return {"supported": supported, "kind": kind, "score": int(score), "checks": checks}
+
+    directional_closes = sum(
+        1 for candle in recent3
+        if (candle.close >= candle.open if side == Side.LONG.value else candle.close <= candle.open)
+    )
+    direction = 1.0 if side == Side.LONG.value else -1.0
+    signed_net_move_atr = (
+        direction * (recent3[-1].close - recent3[0].open) / max(atr15, 1e-9)
+        if recent3 else 0.0
+    )
+    structure_intact = False
+    pullback_atr = 999.0
+    if len(recent15) >= 5:
+        if side == Side.LONG.value:
+            peak = max(candle.high for candle in recent3)
+            pullback_atr = max(0.0, peak - recent3[-1].close) / max(atr15, 1e-9)
+            structure_floor = min(candle.low for candle in recent15[-5:])
+            structure_intact = recent15[-1].close > structure_floor + atr15 * 0.25
+        else:
+            trough = min(candle.low for candle in recent3)
+            pullback_atr = max(0.0, recent3[-1].close - trough) / max(atr15, 1e-9)
+            structure_ceiling = max(candle.high for candle in recent15[-5:])
+            structure_intact = recent15[-1].close < structure_ceiling - atr15 * 0.25
+
+    tf15 = tf15 or {}
+    tf1h = tf1h or {}
+    tf_aligned = bool(tf15.get("bias") == side or tf1h.get("bias") == side) if (tf15 or tf1h) else False
+
+    base.update({
+        "supported": supported,
+        "kind": kind,
+        "score": int(score),
+        "checks": checks,
+        "directional_closes": directional_closes,
+        "signed_net_move_atr": round(signed_net_move_atr, 6),
+        "pullback_atr": round(pullback_atr, 6),
+        "structure_intact": bool(structure_intact),
+        "tf_aligned": tf_aligned,
+    })
+    return base
 
 
-def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impulse: Optional[dict] = None) -> dict[str, Any]:
+def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle], atr15: float) -> dict[str, Any]:
+    """Compatibility wrapper over the unified directional confirmation profile."""
+    profile = _directional_confirmation_profile(side, c3, c15, atr15)
+    return {
+        "supported": bool(profile.get("supported")),
+        "kind": profile.get("kind", "WEAK_OR_MISSING"),
+        "score": int(profile.get("score", 0) or 0),
+        "checks": list(profile.get("checks") or []),
+        "confirmed_3m_bars": int(profile.get("confirmed_3m_bars", 0) or 0),
+        "six_bar_structure_confirmed": bool(profile.get("six_bar_structure_confirmed")),
+        "last_confirmed_3m_ts": int(profile.get("last_confirmed_3m_ts", 0) or 0),
+    }
+
+
+def _profile_side_matches(profile: dict[str, Any], side: str) -> bool:
+    profile_side = str((profile or {}).get("side") or side or "").upper()
+    return bool(profile_side == str(side or "").upper())
+
+
+def _candidate_execution_support_paths(candidate: Candidate, state: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Resolve strict alternative execution support without changing quality gates.
+
+    Re-anchor and momentum paths only count when their own side matches and the
+    re-anchor explicitly confirms six closed 3M bars. A prior persisted
+    CONFIRMATION_PENDING opportunity is marked as promoted once the current
+    re-anchor reports the confirming bar.
+    """
+    components = getattr(candidate, "score_components", {}) or {}
+    reanchor = components.get("continuation_reanchor", {}) or {}
+    momentum = components.get("momentum_no_pullback", {}) or {}
+    momentum_reanchor = momentum.get("reanchor", {}) or reanchor
+    side = str(getattr(candidate, "side", "") or "").upper()
+
+    reanchor_six = bool(
+        reanchor.get("six_bar_structure_confirmed")
+        or int(reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
+    )
+    momentum_six = bool(
+        momentum_reanchor.get("six_bar_structure_confirmed")
+        or int(momentum_reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
+    )
+    reanchor_ready = bool(
+        reanchor.get("ready")
+        and reanchor_six
+        and _profile_side_matches(reanchor, side)
+    )
+    momentum_ready = bool(
+        momentum.get("entry_ready")
+        and momentum_six
+        and _profile_side_matches(momentum_reanchor, side)
+    )
+
+    raw_opp = (state or {}).get("opportunity") if isinstance(state, dict) else None
+    prior_pending = False
+    prior_match = False
+    if isinstance(raw_opp, dict):
+        prior_pending = str(raw_opp.get("status") or "") == OpportunityStatus.CONFIRMATION_PENDING.value
+        same_thesis = bool(
+            getattr(candidate, "thesis_key", "")
+            and raw_opp.get("thesis_key")
+            and str(raw_opp.get("thesis_key")) == str(getattr(candidate, "thesis_key", ""))
+        )
+        same_setup = bool(
+            str(raw_opp.get("side") or "").upper() == side
+            and str(raw_opp.get("setup_type") or "") == str(getattr(candidate, "setup_type", ""))
+        )
+        prior_match = bool(same_thesis or same_setup)
+
+    confirmation_bar_supported = bool(
+        reanchor_ready
+        and (
+            reanchor.get("confirmation_bar_supported", True)
+            or (reanchor.get("micro_confirmation") or {}).get("supported")
+        )
+    )
+    pre_confirmation_promoted = bool(prior_pending and prior_match and confirmation_bar_supported)
+    alternative_ready = bool(reanchor_ready or momentum_ready or pre_confirmation_promoted)
+    return {
+        "alternative_ready": alternative_ready,
+        "continuation_reanchor_ready": reanchor_ready,
+        "momentum_no_pullback_ready": momentum_ready,
+        "prior_confirmation_pending": prior_pending,
+        "prior_confirmation_matches": prior_match,
+        "confirmation_bar_supported": confirmation_bar_supported,
+        "pre_confirmation_promoted": pre_confirmation_promoted,
+        "six_bar_requirement_enforced": True,
+        "quality_threshold_changed": False,
+    }
+
+
+
+def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
+    """Canonical build_trade_plan revalidation gate with strict alternatives."""
+    reval_profile = (
+        getattr(candidate, "revalidation_profile", {})
+        or ((candidate.stage_plan or {}).get("innovation_profile", {}) or {}).get("trigger_revalidation", {})
+        or {}
+    )
+    support_paths = _candidate_execution_support_paths(candidate)
+    strict_alternative_support = bool(support_paths.get("alternative_ready"))
+    base_ok = bool(
+        not reval_profile.get("hard_expired")
+        and str(reval_profile.get("state") or "").upper() != "DEAD"
+        and (
+            not reval_profile.get("needs_revalidation")
+            or reval_profile.get("entry_supported")
+        )
+    )
+    return {
+        "ok": bool(base_ok or strict_alternative_support),
+        "base_ok": base_ok,
+        "strict_alternative_support": strict_alternative_support,
+        "execution_support_paths": support_paths,
+        "quality_threshold_changed": False,
+    }
+
+def setup_trigger_revalidation_profile(
+    candidate: Candidate,
+    context: dict,
+    impulse: Optional[dict] = None,
+    state: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Trigger lease with a terminal hard TTL.
 
     A stale trigger may be re-argued by fresh 3M/15M behavior. After the hard
@@ -3700,18 +3905,20 @@ def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impu
     dist_atr = abs(price - anchor) / max(atr15, 1e-9) if price and anchor else 0.0
     not_late_location = bool(dist_atr <= SETUP_REVALIDATION_MAX_LATE_DIST_ATR or limit_ready)
     micro = _side_directional_revalidation(candidate.side, c3, c15, atr15)
+    support_paths = _candidate_execution_support_paths(candidate, state)
+    alternative_ready = bool(support_paths.get("alternative_ready"))
 
     hard_ttl_elapsed = bool(age >= THESIS_HARD_TTL_MIN)
-    if hard_ttl_elapsed and not micro.get("supported"):
-        state = "DEAD"
-    elif hard_ttl_elapsed and micro.get("supported"):
-        state = "REVALIDATED_AFTER_TTL"
+    if hard_ttl_elapsed and not (micro.get("supported") or alternative_ready):
+        state_name = "DEAD"
+    elif hard_ttl_elapsed and (micro.get("supported") or alternative_ready):
+        state_name = "REVALIDATED_AFTER_TTL"
     elif age < SETUP_REVALIDATION_STALE_MIN or live_ready:
-        state = "FRESH"
+        state_name = "FRESH"
     elif age < SETUP_REVALIDATION_EXTREME_MIN:
-        state = "STALE"
+        state_name = "STALE"
     else:
-        state = "ARCHIVED_THESIS"
+        state_name = "ARCHIVED_THESIS"
 
     # Сетапна аргументація: не просто "age ok/not ok", а чому саме зараз можна або не можна.
     setup_arguments = []
@@ -3721,6 +3928,12 @@ def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impu
         setup_arguments.append("limit/zone still armed")
     if micro.get("supported"):
         setup_arguments.append(f"fresh {micro.get('kind')} on 3M/15M")
+    if support_paths.get("continuation_reanchor_ready"):
+        setup_arguments.append("strict six-bar continuation re-anchor ready")
+    if support_paths.get("momentum_no_pullback_ready"):
+        setup_arguments.append("strict six-bar momentum continuation ready")
+    if support_paths.get("pre_confirmation_promoted"):
+        setup_arguments.append("prior pre-confirmation promoted by the next confirmed 3M bar")
     if not_late_location:
         setup_arguments.append(f"price not late vs anchor: {dist_atr:.2f} ATR")
     else:
@@ -3728,15 +3941,20 @@ def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impu
     if time_warp_ready and not live_ready:
         setup_arguments.append("time-warp is thesis memory, not live execution")
 
-    needs_revalidation = bool(state != "FRESH" or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value))
+    needs_revalidation = bool(state_name != "FRESH" or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value))
     revalidated = bool(
-        state != "DEAD" and needs_revalidation and micro.get("supported") and not_late_location
+        state_name != "DEAD"
+        and needs_revalidation
+        and (
+            (micro.get("supported") and not_late_location)
+            or alternative_ready
+        )
     )
 
     # v6.16: якщо стара thesis вже підтверджена фактичним рухом і acceptance,
     # дозволяємо малий probe замість нескінченного ARMED.
     stale_direction_confirm = bool(
-        state == "ARCHIVED_THESIS"
+        state_name == "ARCHIVED_THESIS"
         and dist_atr >= STALE_THESIS_PROBE_ATR
         and (not STALE_THESIS_ACCEPTANCE_REQUIRED or micro.get("supported"))
     )
@@ -3744,9 +3962,12 @@ def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impu
         revalidated = True
         micro["stale_thesis_recovery"] = True
 
-    entry_supported = bool(state != "DEAD" and (not needs_revalidation or revalidated))
+    entry_supported = bool(
+        state_name != "DEAD"
+        and ((not needs_revalidation or revalidated) or alternative_ready)
+    )
 
-    if state == "DEAD":
+    if state_name == "DEAD":
         return {
             "enabled": True,
             "version": "v6.20_hard_thesis_ttl",
@@ -3774,24 +3995,30 @@ def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impu
         entry_timing = "LIVE_OR_STILL_FRESH"
         risk_mult = 1.0
     elif revalidated:
-        entry_timing = "SETUP_REVALIDATED_NOW"
+        entry_timing = (
+            "PRE_CONFIRMATION_CONFIRMED"
+            if support_paths.get("pre_confirmation_promoted")
+            else "STRUCTURE_REANCHOR_SUPPORTED"
+            if alternative_ready
+            else "SETUP_REVALIDATED_NOW"
+        )
         risk_mult = (
             SETUP_REVALIDATION_RISK_MULT_EXTREME
-            if state in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL"}
+            if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL"}
             else SETUP_REVALIDATION_RISK_MULT_STALE
         )
     else:
         entry_timing = "ARMED_WAIT_FRESH_ARGUMENT"
         risk_mult = (
             SETUP_REVALIDATION_RISK_MULT_EXTREME
-            if state in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL"}
+            if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL"}
             else SETUP_REVALIDATION_RISK_MULT_STALE
         )
 
     return {
         "enabled": True,
         "version": "v6.20_hard_thesis_ttl",
-        "state": state,
+        "state": state_name,
         "source": source,
         "age_min": round(age, 1),
         "hard_ttl_min": THESIS_HARD_TTL_MIN,
@@ -3803,6 +4030,9 @@ def setup_trigger_revalidation_profile(candidate: Candidate, context: dict, impu
         "not_late_location": not_late_location,
         "distance_from_anchor_atr": round(dist_atr, 2),
         "micro_confirmation": micro,
+        "execution_support_paths": support_paths,
+        "alternative_entry_support": alternative_ready,
+        "pre_confirmation_promoted": bool(support_paths.get("pre_confirmation_promoted")),
         "risk_multiplier": round(clamp(risk_mult, INNOVATION_MIN_RISK_MULT, 1.0), 4),
         "stage_override": EntryStage.PROBE.value if revalidated else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
         "action_bias": "PROBE_ENTRY" if revalidated else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
@@ -3826,7 +4056,7 @@ def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, st
     atr15 = safe_float(context.get("atr15"), 0.6) or 0.6
     c15 = (context.get("candles", {}) or {}).get("15m", []) or []
     impulse = _recent_impulse_map(c15, candidate.side, atr15)
-    revalidation = setup_trigger_revalidation_profile(candidate, context, impulse)
+    revalidation = setup_trigger_revalidation_profile(candidate, context, impulse, state)
     ladder = _target_ladder_density(candidate.side, price, context, atr15)
     primary = _setup_morphology_label(candidate, impulse)
     if revalidation.get("needs_revalidation"):
@@ -5153,29 +5383,30 @@ def continuation_reanchor_profile(
 
     recent3 = _recent_confirmed(c3, 6)
     recent15 = _recent_confirmed(c15, 8)
-    if len(recent3) < 4 or len(recent15) < 5:
-        return {"enabled": True, "ready": False, "pre_confirmation_ready": False, "side": side, "reason": "not_enough_recent_bars"}
+    if len(recent3) < 6 or len(recent15) < 5:
+        return {
+            "enabled": True, "ready": False, "pre_confirmation_ready": False,
+            "side": side, "confirmed_3m_bars": len(recent3),
+            "six_bar_structure_confirmed": False,
+            "reason": "not_enough_confirmed_bars_for_six_bar_structure",
+        }
 
-    direction = 1.0 if side == Side.LONG.value else -1.0
-    signed_net_move_atr = direction * (recent3[-1].close - recent3[0].open) / max(atr15, 1e-9)
-    directional_closes = sum(
-        1 for c in recent3
-        if (c.close >= c.open if side == Side.LONG.value else c.close <= c.open)
-    )
-    if side == Side.LONG.value:
-        peak = max(c.high for c in recent3)
-        pullback_atr = max(0.0, peak - recent3[-1].close) / max(atr15, 1e-9)
-        structure_floor = min(c.low for c in recent15[-5:])
-        structure_intact = recent15[-1].close > structure_floor + atr15 * 0.25
-    else:
-        trough = min(c.low for c in recent3)
-        pullback_atr = max(0.0, recent3[-1].close - trough) / max(atr15, 1e-9)
-        structure_ceiling = max(c.high for c in recent15[-5:])
-        structure_intact = recent15[-1].close < structure_ceiling - atr15 * 0.25
-
-    tf_aligned = bool(tf15.get("bias") == side or tf1h.get("bias") == side)
-    micro = _side_directional_revalidation(side, c3, c15, atr15)
-    directional_structure = directional_structure_profile(c15, side)
+    directional = _directional_confirmation_profile(side, c3, c15, atr15, tf15, tf1h)
+    signed_net_move_atr = safe_float(directional.get("signed_net_move_atr"), 0.0)
+    directional_closes = int(directional.get("directional_closes", 0) or 0)
+    pullback_atr = safe_float(directional.get("pullback_atr"), 999.0)
+    structure_intact = bool(directional.get("structure_intact"))
+    tf_aligned = bool(directional.get("tf_aligned"))
+    micro = {
+        "supported": bool(directional.get("supported")),
+        "kind": directional.get("kind", "WEAK_OR_MISSING"),
+        "score": int(directional.get("score", 0) or 0),
+        "checks": list(directional.get("checks") or []),
+        "confirmed_3m_bars": int(directional.get("confirmed_3m_bars", 0) or 0),
+        "six_bar_structure_confirmed": bool(directional.get("six_bar_structure_confirmed")),
+        "last_confirmed_3m_ts": int(directional.get("last_confirmed_3m_ts", 0) or 0),
+    }
+    directional_structure = directional.get("directional_structure", {}) or {}
     strong_trend_context = bool(
         structure_intact
         and tf_aligned
@@ -5254,6 +5485,11 @@ def continuation_reanchor_profile(
         "enabled": True,
         "side": side,
         "ready": ready,
+        "entry_ready": ready,
+        "confirmation_bar_supported": bool(ready and micro.get("supported")),
+        "confirmation_bar_ts": int(micro.get("last_confirmed_3m_ts", 0) or 0) if ready else 0,
+        "confirmed_3m_bars": len(recent3),
+        "six_bar_structure_confirmed": len(recent3) >= 6,
         "pre_confirmation_ready": pre_confirmation_ready,
         "confirmation_pending": pre_confirmation_ready,
         "needs_one_bar_confirmation": pre_confirmation_ready,
@@ -7309,15 +7545,13 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         not profile.get("hard_block")
         and regime_action in {"ALLOW", "RISKY_ONLY"}
     )
-    reval_profile = getattr(candidate, "revalidation_profile", {}) or ((candidate.stage_plan or {}).get("innovation_profile", {}) or {}).get("trigger_revalidation", {}) or {}
-    revalidation_ok = bool(
-        not reval_profile.get("hard_expired")
-        and str(reval_profile.get("state") or "").upper() != "DEAD"
-        and (
-            not reval_profile.get("needs_revalidation")
-            or reval_profile.get("entry_supported")
-        )
-    )
+    revalidation_gate = _candidate_revalidation_gate(candidate)
+    execution_support_paths = revalidation_gate["execution_support_paths"]
+    revalidation_ok = bool(revalidation_gate["ok"])
+    if candidate.score_components is not None:
+        candidate.score_components["execution_support_paths"] = execution_support_paths
+        candidate.score_components["revalidation_gate"] = revalidation_gate
+        candidate.score_components["revalidation_ok"] = revalidation_ok
 
     # Full/risky entries preserve the existing 75/68 score gates.
     standard_execution_ready = bool(
@@ -9377,33 +9611,114 @@ def setup_label(code: str) -> str:
     return SETUP_LABELS.get(str(code).upper().split(".")[-1] or code, str(code))
 
 
+def _signal_revalidation_profile(signal: dict[str, Any]) -> dict[str, Any]:
+    return (
+        signal.get("trigger_revalidation")
+        or (signal.get("score_components") or {}).get("trigger_revalidation")
+        or {}
+    )
+
+
+def _signal_kyiv_date(signal: dict[str, Any]) -> str:
+    dt = _parse_iso_datetime(signal.get("time"))
+    if not dt:
+        return "UNKNOWN"
+    return dt.astimezone(zoneinfo.ZoneInfo("Europe/Kyiv")).date().isoformat()
+
+
+def _signal_utc_date(signal: dict[str, Any]) -> str:
+    dt = _parse_iso_datetime(signal.get("time"))
+    if not dt:
+        return "UNKNOWN"
+    return dt.astimezone(timezone.utc).date().isoformat()
+
+
+def compute_entry_supported_scan_analytics(journal: dict[str, Any]) -> dict[str, Any]:
+    """Percent of active-thesis scans where revalidation allows execution."""
+    daily: dict[str, dict[str, Any]] = {}
+    for signal in journal.get("signals", []) or []:
+        if not isinstance(signal, dict):
+            continue
+        if str(signal.get("side") or "") not in {Side.LONG.value, Side.SHORT.value}:
+            continue
+        if str(signal.get("setup_type") or "") in {"", SetupType.NONE.value}:
+            continue
+        # An active thesis is a selected candidate record, not a generic NO_SETUP scan.
+        if not (signal.get("thesis_key") or signal.get("candidate_final_score") is not None):
+            continue
+        # Canonical metric follows the journal's UTC signal date. This reproduces
+        # the incident baseline (2/15 = 13.33%) and avoids moving late-evening
+        # UTC scans into another bucket merely because the viewer is in Kyiv.
+        day = _signal_utc_date(signal)
+        row = daily.setdefault(day, {
+            "active_thesis_scans": 0,
+            "entry_supported_scans": 0,
+            "entry_supported_pct": 0.0,
+        })
+        row["active_thesis_scans"] += 1
+        profile = _signal_revalidation_profile(signal)
+        if bool(profile.get("entry_supported", True)):
+            row["entry_supported_scans"] += 1
+
+    for row in daily.values():
+        total = max(int(row["active_thesis_scans"]), 1)
+        row["entry_supported_pct"] = round(100.0 * int(row["entry_supported_scans"]) / total, 2)
+
+    latest_day = max((day for day in daily if day != "UNKNOWN"), default="UNKNOWN")
+    return {
+        "timezone": "UTC (journal signal date)",
+        "viewer_timezone": "Europe/Kyiv",
+        "definition": "selected active-thesis scans with trigger_revalidation.entry_supported=true",
+        "by_day": daily,
+        "latest_day": latest_day,
+        "latest": daily.get(latest_day, {}),
+        "quality_threshold_changed": False,
+        "updated_at": iso_now(),
+    }
+
+
 def compute_analytics(journal: dict) -> dict:
+    # Preserve non-trade analytics populated by shadow/delay/revalidation modules.
+    existing = dict(journal.get("analytics") or {})
+    for key in {"closed_trades", "wins", "losses", "win_rate", "net_r", "expectancy_r", "by_family"}:
+        existing.pop(key, None)
+
     trades = journal.get("trades", [])
     if not trades:
-        return {"closed_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "net_r": 0.0, "expectancy_r": 0.0, "by_family": {}}
-    wins = sum(1 for t in trades if (t.get("result_pct") or 0) > 0)
-    closed = len(trades)
-    win_rate = round(wins / closed * 100, 1) if closed else 0.0
-    net_r = round(sum((t.get("result_pct") or 0) / 100 for t in trades), 2)
-    by_family: dict[str, dict[str, Any]] = {}
-    for trade in trades:
-        if not isinstance(trade, dict):
-            continue
-        family = str(trade.get("setup_family") or SetupFamily.NONE.value)
-        row = by_family.setdefault(family, {"closed_trades": 0, "wins": 0, "losses": 0, "net_r": 0.0})
-        result_pct = safe_float(trade.get("result_pct"), 0.0)
-        row["closed_trades"] += 1
-        if result_pct > 0:
-            row["wins"] += 1
-        else:
-            row["losses"] += 1
-        row["net_r"] += result_pct / 100.0
-    for row in by_family.values():
-        family_closed = max(int(row["closed_trades"]), 1)
-        row["net_r"] = round(row["net_r"], 2)
-        row["win_rate"] = round(row["wins"] / family_closed * 100, 1)
-        row["expectancy_r"] = round(row["net_r"] / family_closed, 3)
-    return {"closed_trades": closed, "wins": wins, "losses": closed - wins, "win_rate": win_rate, "net_r": net_r, "expectancy_r": round(net_r / max(closed, 1), 3), "by_family": by_family}
+        trade_stats = {"closed_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "net_r": 0.0, "expectancy_r": 0.0, "by_family": {}}
+    else:
+        wins = sum(1 for t in trades if (t.get("result_pct") or 0) > 0)
+        closed = len(trades)
+        win_rate = round(wins / closed * 100, 1) if closed else 0.0
+        net_r = round(sum((t.get("result_pct") or 0) / 100 for t in trades), 2)
+        by_family: dict[str, dict[str, Any]] = {}
+        for trade in trades:
+            if not isinstance(trade, dict):
+                continue
+            family = str(trade.get("setup_family") or SetupFamily.NONE.value)
+            row = by_family.setdefault(family, {"closed_trades": 0, "wins": 0, "losses": 0, "net_r": 0.0})
+            result_pct = safe_float(trade.get("result_pct"), 0.0)
+            row["closed_trades"] += 1
+            if result_pct > 0:
+                row["wins"] += 1
+            else:
+                row["losses"] += 1
+            row["net_r"] += result_pct / 100.0
+        for row in by_family.values():
+            family_closed = max(int(row["closed_trades"]), 1)
+            row["net_r"] = round(row["net_r"], 2)
+            row["win_rate"] = round(row["wins"] / family_closed * 100, 1)
+            row["expectancy_r"] = round(row["net_r"] / family_closed, 3)
+        trade_stats = {
+            "closed_trades": closed, "wins": wins, "losses": closed - wins,
+            "win_rate": win_rate, "net_r": net_r,
+            "expectancy_r": round(net_r / max(closed, 1), 3),
+            "by_family": by_family,
+        }
+
+    existing.update(trade_stats)
+    existing["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(journal)
+    return existing
 
 
 # ==========================================================
@@ -10320,6 +10635,117 @@ def test_shadow_policy_review_deduplicates_geometry() -> bool:
         and tests[0].get("bot_entered") is False
     )
 
+
+def _strict_revalidation_candidate(path: str = "REANCHOR") -> Candidate:
+    reanchor = {
+        "side": Side.LONG.value,
+        "ready": path == "REANCHOR",
+        "confirmed_3m_bars": 6,
+        "six_bar_structure_confirmed": True,
+        "confirmation_bar_supported": True,
+        "micro_confirmation": {"supported": True},
+    }
+    momentum = {
+        "entry_ready": path == "MOMENTUM",
+        "reanchor": {
+            "side": Side.LONG.value,
+            "ready": True,
+            "confirmed_3m_bars": 6,
+            "six_bar_structure_confirmed": True,
+        },
+    }
+    return Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=71,
+        score_components={
+            "continuation_reanchor": reanchor,
+            "momentum_no_pullback": momentum,
+        },
+        execution_source=ExecutionSource.TIME_WARP.value,
+        trigger_age_minutes=500.0,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        thesis_key="LONG|ACCEPTANCE_RETEST_CONTINUATION|TEST|1000",
+    )
+
+
+def test_revalidation_accepts_strict_reanchor_or_momentum() -> bool:
+    context = {"price": 100.0, "atr15": 0.5, "candles": {"3m": [], "15m": []}}
+    reanchor_candidate = _strict_revalidation_candidate("REANCHOR")
+    momentum_candidate = _strict_revalidation_candidate("MOMENTUM")
+    reanchor_profile = setup_trigger_revalidation_profile(reanchor_candidate, context)
+    momentum_profile = setup_trigger_revalidation_profile(momentum_candidate, context)
+    return bool(
+        reanchor_profile.get("entry_supported")
+        and reanchor_profile.get("alternative_entry_support")
+        and (reanchor_profile.get("execution_support_paths") or {}).get("continuation_reanchor_ready")
+        and momentum_profile.get("entry_supported")
+        and momentum_profile.get("alternative_entry_support")
+        and (momentum_profile.get("execution_support_paths") or {}).get("momentum_no_pullback_ready")
+    )
+
+
+def test_build_plan_revalidation_gate_uses_strict_alternative() -> bool:
+    candidate = _strict_revalidation_candidate("REANCHOR")
+    candidate.revalidation_profile = {
+        "state": "STALE",
+        "needs_revalidation": True,
+        "entry_supported": False,
+        "hard_expired": False,
+    }
+    gate = _candidate_revalidation_gate(candidate)
+    return bool(
+        gate.get("ok")
+        and not gate.get("base_ok")
+        and gate.get("strict_alternative_support")
+        and not gate.get("quality_threshold_changed")
+    )
+
+
+def test_preconfirmation_promotes_after_confirming_bar() -> bool:
+    candidate = _strict_revalidation_candidate("REANCHOR")
+    state = {
+        "opportunity": {
+            "status": OpportunityStatus.CONFIRMATION_PENDING.value,
+            "side": candidate.side,
+            "setup_type": candidate.setup_type,
+            "thesis_key": candidate.thesis_key,
+        }
+    }
+    context = {"price": 100.0, "atr15": 0.5, "candles": {"3m": [], "15m": []}}
+    profile = setup_trigger_revalidation_profile(candidate, context, state=state)
+    paths = profile.get("execution_support_paths") or {}
+    return bool(
+        profile.get("entry_supported")
+        and profile.get("pre_confirmation_promoted")
+        and paths.get("prior_confirmation_pending")
+        and paths.get("confirmation_bar_supported")
+        and profile.get("entry_timing") == "PRE_CONFIRMATION_CONFIRMED"
+    )
+
+
+def test_entry_supported_daily_metric_and_custom_analytics_survive() -> bool:
+    day = "2026-07-12T10:00:00+00:00"
+    journal = {
+        "signals": [
+            {"id": "a", "time": day, "side": "LONG", "setup_type": "X", "candidate_final_score": 70, "trigger_revalidation": {"entry_supported": True}},
+            {"id": "b", "time": day, "side": "SHORT", "setup_type": "Y", "candidate_final_score": 69, "trigger_revalidation": {"entry_supported": False}},
+        ],
+        "trades": [],
+        "analytics": {"custom_shadow_metric": {"tracked": 2}},
+    }
+    analytics = compute_analytics(journal)
+    latest = (analytics.get("entry_supported_scan_rate") or {}).get("latest") or {}
+    return bool(
+        latest.get("active_thesis_scans") == 2
+        and latest.get("entry_supported_scans") == 1
+        and latest.get("entry_supported_pct") == 50.0
+        and (analytics.get("custom_shadow_metric") or {}).get("tracked") == 2
+    )
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -10353,6 +10779,10 @@ def _run_self_test() -> bool:
     checks.append(("entry timing compares actual entry with primary thesis signal", test_entry_confirmation_delay_uses_primary_signal()))
     checks.append(("confirmation-pending state sends an early alert", test_confirmation_pending_message_is_early_alert()))
     checks.append(("shadow policy deduplicates 78.685/78.105 geometry", test_shadow_policy_review_deduplicates_geometry()))
+    checks.append(("strict reanchor/momentum can satisfy stale revalidation", test_revalidation_accepts_strict_reanchor_or_momentum()))
+    checks.append(("build-plan revalidation gate ORs strict alternative support", test_build_plan_revalidation_gate_uses_strict_alternative()))
+    checks.append(("pre-confirmation promotes after confirming bar", test_preconfirmation_promotes_after_confirming_bar()))
+    checks.append(("daily entry-supported metric survives analytics recompute", test_entry_supported_daily_metric_and_custom_analytics_survive()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -11305,16 +11735,126 @@ def _audit_journal_to_candidate(signal: dict[str, Any]) -> Optional[Candidate]:
     )
 
 
+def _strict_support_paths_from_signal(signal: dict[str, Any]) -> dict[str, Any]:
+    components = signal.get("score_components", {}) or {}
+    reanchor = components.get("continuation_reanchor", {}) or {}
+    momentum = components.get("momentum_no_pullback", {}) or {}
+    momentum_reanchor = momentum.get("reanchor", {}) or reanchor
+    side = str(signal.get("side") or "").upper()
+
+    reanchor_six = bool(
+        reanchor.get("six_bar_structure_confirmed")
+        or int(reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
+    )
+    momentum_six = bool(
+        momentum_reanchor.get("six_bar_structure_confirmed")
+        or int(momentum_reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
+    )
+    reanchor_ready = bool(reanchor.get("ready") and reanchor_six and _profile_side_matches(reanchor, side))
+    momentum_ready = bool(momentum.get("entry_ready") and momentum_six and _profile_side_matches(momentum_reanchor, side))
+    return {
+        "continuation_reanchor_ready": reanchor_ready,
+        "momentum_no_pullback_ready": momentum_ready,
+        "alternative_ready": bool(reanchor_ready or momentum_ready),
+        "six_bar_requirement_enforced": True,
+    }
+
+
+def _shadow_outcome_for_signal(payload: dict[str, Any], signal_id: str) -> dict[str, Any]:
+    event = next(
+        (item for item in payload.get("executive_divergences", []) or [] if str(item.get("id") or item.get("source_signal_id") or "") == str(signal_id)),
+        None,
+    )
+    shadow = (event or {}).get("shadow_plan", {}) or {}
+    max_target = str(shadow.get("max_target_hit") or "NONE")
+    status = str(shadow.get("status") or "NOT_TRACKED")
+    if max_target in {"TP1", "TP2", "TP3"}:
+        classification = "TP1+"
+    elif status == "STOP_FIRST":
+        classification = "STOP_FIRST"
+    elif max_target == "TP0":
+        classification = "TP0_ONLY"
+    elif status == "OPEN":
+        classification = "OPEN"
+    else:
+        classification = status
+    return {
+        "classification": classification,
+        "status": status,
+        "max_target_hit": max_target,
+        "entry": shadow.get("entry"),
+        "stop": shadow.get("stop"),
+        "mfe_r": shadow.get("mfe_r"),
+        "mae_r": shadow.get("mae_r"),
+    }
+
+
+def _revalidation_fix_replay(payload: dict[str, Any]) -> dict[str, Any]:
+    signals = [s for s in payload.get("signals", []) or [] if isinstance(s, dict)]
+    valid_days = [_signal_utc_date(s) for s in signals if _signal_utc_date(s) != "UNKNOWN"]
+    latest_day = max(valid_days, default="UNKNOWN")
+    day_signals = [s for s in signals if _signal_utc_date(s) == latest_day]
+
+    active = [
+        s for s in day_signals
+        if str(s.get("side") or "") in {Side.LONG.value, Side.SHORT.value}
+        and str(s.get("setup_type") or "") not in {"", SetupType.NONE.value}
+        and (s.get("thesis_key") or s.get("candidate_final_score") is not None)
+    ]
+    blocked = [s for s in active if not bool(_signal_revalidation_profile(s).get("entry_supported", True))]
+    # Replayable records are the post-profile-schema snapshots. This excludes the
+    # one older July-12 record that has no continuation/momentum payload, yielding
+    # the exact twelve candidates referenced in the incident review.
+    replayable = [
+        s for s in blocked
+        if "continuation_reanchor" in (s.get("score_components") or {})
+        or "momentum_no_pullback" in (s.get("score_components") or {})
+    ]
+
+    details = []
+    for signal in replayable:
+        current = bool(_signal_revalidation_profile(signal).get("entry_supported", True))
+        paths = _strict_support_paths_from_signal(signal)
+        after_fix = bool(current or paths.get("alternative_ready"))
+        details.append({
+            "id": signal.get("id"),
+            "time": signal.get("time"),
+            "side": signal.get("side"),
+            "setup_type": signal.get("setup_type"),
+            "quality": signal.get("quality", signal.get("candidate_final_score")),
+            "before_entry_supported": current,
+            "after_fix_entry_supported": after_fix,
+            "would_become_execution_ready_from_this_fix": bool(not current and after_fix),
+            "support_paths": paths,
+            "shadow_outcome": _shadow_outcome_for_signal(payload, str(signal.get("id") or "")),
+        })
+
+    changed = [row for row in details if row["would_become_execution_ready_from_this_fix"]]
+    shadow_counts: dict[str, int] = {}
+    for row in details:
+        key = str((row.get("shadow_outcome") or {}).get("classification") or "UNKNOWN")
+        shadow_counts[key] = shadow_counts.get(key, 0) + 1
+
+    return {
+        "day": latest_day,
+        "timezone": "UTC (journal signal date)",
+        "viewer_timezone": "Europe/Kyiv",
+        "active_thesis_scans": len(active),
+        "blocked_by_revalidation": len(blocked),
+        "replayable_blocked_candidates": len(replayable),
+        "would_become_execution_ready": len(changed),
+        "changed_signal_ids": [row["id"] for row in changed],
+        "shadow_outcomes_all_replayable": shadow_counts,
+        "details": details,
+        "limitation": (
+            "Historical journal snapshots are replayed from stored readiness flags only; "
+            "raw 3M/15M candles are not embedded, so v8.10 does not invent a re-anchor that the recorded profile did not mark ready."
+        ),
+    }
+
+
 def run_audit_journal(path: str) -> dict[str, Any]:
-    """
-    v5 scale regression audit.
-
-    Purpose:
-    Detect only the execution_quality/execution_impact scale mismatch.
-
-    This intentionally does NOT call build_executive_decision_object().
-    Full decision replay requires reconstructed TradePlan and is a different test.
-    """
+    """Offline journal audit: legacy conflict-scale check plus v8.10 revalidation replay."""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     signals = payload.get("signals", []) if isinstance(payload, dict) else []
 
@@ -11332,117 +11872,47 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     for signal in signals:
         if not signal.get("setup_type") or signal.get("setup_type") == "NONE":
             continue
-
         result["candidates_processed"] += 1
-
-        # Реальна структура journal:
-        # signal.audit.executive_director.report.executive_decision
         executive_decision = (
-            signal.get("audit", {})
-            .get("executive_director", {})
-            .get("report", {})
-            .get("executive_decision", {})
+            signal.get("audit", {}).get("executive_director", {}).get("report", {}).get("executive_decision", {})
         ) or {}
-
-        adaptive = (
-            executive_decision
-            .get("audit", {})
-            .get("adaptive_conflict_resolver", {})
-        ) or {}
-
+        adaptive = executive_decision.get("audit", {}).get("adaptive_conflict_resolver", {}) or {}
         advisors = executive_decision.get("advisors", []) or []
-
-        execution_quality_raw = safe_float(
-            adaptive.get("execution_quality_raw"),
-            0.0,
-        )
-
+        execution_quality_raw = safe_float(adaptive.get("execution_quality_raw"), 0.0)
         if execution_quality_raw <= 0:
             for advisor in advisors:
                 if advisor.get("module") == "EXECUTION_ANALYST":
-                    execution_quality_raw = safe_float(
-                        advisor.get("confidence"),
-                        0.0,
-                    )
+                    execution_quality_raw = safe_float(advisor.get("confidence"), 0.0)
                     break
-
-        execution_impact = safe_float(
-            adaptive.get(
-                "execution_impact",
-                adaptive.get("execution_score"),
-            ),
-            0.0,
-        )
-
+        execution_impact = safe_float(adaptive.get("execution_impact", adaptive.get("execution_score")), 0.0)
         conflict_resolution = executive_decision.get("conflict_resolution", {}) or {}
-
-        hard_conflict = bool(
-            conflict_resolution.get(
-                "hard_conflict",
-                adaptive.get("hard_conflict", False),
-            )
-        )
-
-        risk_blocked = bool(
-            conflict_resolution.get("risk", {}).get(
-                "blocked",
-                adaptive.get("risk_blocked", False),
-            )
-        )
-
-        rr1 = safe_float(
-            executive_decision
-            .get("trading_philosophy", {})
-            .get("rr1", adaptive.get("rr1", 0.0)),
-            0.0,
-        )
-
+        hard_conflict = bool(conflict_resolution.get("hard_conflict", adaptive.get("hard_conflict", False)))
+        risk_blocked = bool(conflict_resolution.get("risk", {}).get("blocked", adaptive.get("risk_blocked", False)))
+        rr1 = safe_float(executive_decision.get("trading_philosophy", {}).get("rr1", adaptive.get("rr1", 0.0)), 0.0)
         eligible = hard_conflict and not risk_blocked
-
-        before_override = False
-        after_override = False
-
-        if eligible:
-            before_override = executive_conflict_allows_reduced_entry(
-                execution_quality=execution_impact,
-                risk_blocked=risk_blocked,
-                rr1=rr1,
-            )
-
-            after_override = executive_conflict_allows_reduced_entry(
-                execution_quality=execution_quality_raw,
-                risk_blocked=risk_blocked,
-                rr1=rr1,
-            )
-
+        before_override = executive_conflict_allows_reduced_entry(execution_quality=execution_impact, risk_blocked=risk_blocked, rr1=rr1) if eligible else False
+        after_override = executive_conflict_allows_reduced_entry(execution_quality=execution_quality_raw, risk_blocked=risk_blocked, rr1=rr1) if eligible else False
         if before_override:
             result["before_fix_override_count"] += 1
-
         if after_override:
             result["after_fix_override_count"] += 1
-
         blocked = (not before_override) and after_override
         if blocked:
             result["scale_mismatch_blocked"] += 1
             result["affected_signal_ids"].append(signal.get("id"))
+        result["details"].append({
+            "id": signal.get("id"), "time": signal.get("time"), "setup_type": signal.get("setup_type"),
+            "execution_quality_raw": execution_quality_raw, "execution_impact": execution_impact,
+            "before_fix_override": before_override, "after_fix_override": after_override,
+            "blocked_by_scale_mismatch": blocked,
+        })
 
-        result["details"].append(
-            {
-                "id": signal.get("id"),
-                "time": signal.get("time"),
-                "setup_type": signal.get("setup_type"),
-                "execution_quality_raw": execution_quality_raw,
-                "execution_impact": execution_impact,
-                "before_fix_override": before_override,
-                "after_fix_override": after_override,
-                "blocked_by_scale_mismatch": blocked,
-            }
-        )
-
+    result["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(payload)
+    result["revalidation_execution_replay"] = _revalidation_fix_replay(payload)
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.8")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.10")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
