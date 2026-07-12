@@ -2,6 +2,13 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Edition)
 ================================================================================
+Виправлення v8.9 (Direction-Aware Timing Audit Edition):
+- PRICE_STRUCTURE_ADVISOR став direction-aware: SUPPORT вимагає HH/HL для LONG або LH/LL для SHORT і не може одночасно підтримати обидві сторони на одній геометрії.
+- SESSION_MEAN_RECLAIM у TRANSITION отримав CONFIRMATION_PENDING та один hold-bar перед execution, без підвищення score thresholds.
+- Continuation re-anchor отримав ранній alert-state і guarded 2/6 directional closes лише за structure_intact + tf_aligned + side-specific structure.
+- Додано confirmation-delay analytics: перший сигнал того самого thesis порівнюється з execution entry, включно з directional wait cost.
+- Shadow-плани дедуплікуються за side/entry/stop і формують policy review: TP1+ без входу проти STOP_FIRST.
+
 Виправлення v8.8 (Continuation Resilience / Confidence-Aware Executive Edition):
 - Старі continuation-тези більше не використовують 45-годинний trigger як execution: за збереженої структури trigger автоматично переанкорюється на свіжу локальну OB/FVG або 3M micro-base біля поточної ціни.
 - Додано MOMENTUM_NO_PULLBACK_CONTINUATION: окрема staged/probe-модель для рівного трендового руху без глибокого відкату, без market-chase і без full-size.
@@ -119,8 +126,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.8-continuation-resilience"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE"
+BOT_VERSION = "pro-hybrid-confluence-v8.9-directional-timing-audit"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_9_DIRECTION_AWARE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -214,6 +221,17 @@ CONTINUATION_REANCHOR_MAX_DISTANCE_ATR = float(os.getenv("CONTINUATION_REANCHOR_
 CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR = float(os.getenv("CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR", "0.45") or 0.45)
 CONTINUATION_REANCHOR_MAX_PULLBACK_ATR = float(os.getenv("CONTINUATION_REANCHOR_MAX_PULLBACK_ATR", "0.60") or 0.60)
 CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES = int(os.getenv("CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES", "4") or 4)
+# Strong-trend pauses are allowed to use a lower close count only when direction-specific
+# structure and TF alignment are already positive. This changes readiness timing, not
+# the 68/75 score thresholds.
+CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES = int(
+    os.getenv("CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES", "2") or 2
+)
+CONTINUATION_REANCHOR_STRONG_TREND_MIN_NET_MOVE_ATR = float(
+    os.getenv("CONTINUATION_REANCHOR_STRONG_TREND_MIN_NET_MOVE_ATR", "0.70") or 0.70
+)
+PRECONFIRM_MIN_MICRO_SCORE = float(os.getenv("PRECONFIRM_MIN_MICRO_SCORE", "35") or 35)
+SESSION_MEAN_TRANSITION_CONFIRM_BARS = int(os.getenv("SESSION_MEAN_TRANSITION_CONFIRM_BARS", "1") or 1)
 NO_PULLBACK_MIN_MOVE_ATR = float(os.getenv("NO_PULLBACK_MIN_MOVE_ATR", "1.10") or 1.10)
 NO_PULLBACK_MAX_GIVEBACK_RATIO = float(os.getenv("NO_PULLBACK_MAX_GIVEBACK_RATIO", "0.32") or 0.32)
 NO_PULLBACK_MIN_BODY_EFFICIENCY = float(os.getenv("NO_PULLBACK_MIN_BODY_EFFICIENCY", "0.46") or 0.46)
@@ -555,6 +573,7 @@ class ExecutiveDecisionState(str, Enum):
     GRAY_RISKY = "GRAY_RISKY"
     WAIT = "WAIT"
     WAIT_RETEST = "WAIT_RETEST"
+    WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
     NO_SETUP = "NO_SETUP"
     REJECT = "REJECT"
 
@@ -603,6 +622,7 @@ class ExecutionLane(str, Enum):
     STANDARD_CONFIRMED = "STANDARD_CONFIRMED"
     MISSED_IMPULSE_REENTRY = "MISSED_IMPULSE_REENTRY"
     WAIT_RETEST = "WAIT_RETEST"
+    WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
     LIMIT_ONLY = "LIMIT_ONLY"
 
 
@@ -633,6 +653,7 @@ class OpportunityStatus(str, Enum):
     DISCOVERED = "DISCOVERED"
     ARMED = "ARMED"
     WAIT_PULLBACK = "WAIT_PULLBACK"
+    CONFIRMATION_PENDING = "CONFIRMATION_PENDING"
     EXPIRED = "EXPIRED"
 
 
@@ -653,6 +674,7 @@ class EntryStage(str, Enum):
     RETEST_ADD = "RETEST_ADD"
     CORE = "CORE"
     WAIT_RETEST = "WAIT_RETEST"
+    WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
 
 
 class ConfirmationTier(int, Enum):
@@ -761,6 +783,9 @@ class Candidate:
     revalidation_profile: dict[str, Any] = field(default_factory=dict)
     entry_freshness_score: float = 100.0
     entry_freshness_profile: dict[str, Any] = field(default_factory=dict)
+    confirmation_pending: bool = False
+    confirmation_state: dict[str, Any] = field(default_factory=dict)
+    opportunity_status: str = ""
 
 
 @dataclass
@@ -946,6 +971,11 @@ class ActiveTrade:
     worst_price: float
     thesis_key: str = ""
     thesis: str = ""
+    thesis_family_key: str = ""
+    primary_signal_id: str = ""
+    primary_signal_price: float = 0.0
+    entry_delay_directional_delta: float = 0.0
+    entry_delay_minutes: float = 0.0
     last_checked_3m_ts: int = 0
     tp1_hit: bool = False
     tp2_hit: bool = False
@@ -1184,6 +1214,11 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "continuation_reanchor_max_distance_atr": CONTINUATION_REANCHOR_MAX_DISTANCE_ATR,
         "continuation_reanchor_min_net_move_atr": CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR,
         "continuation_reanchor_max_pullback_atr": CONTINUATION_REANCHOR_MAX_PULLBACK_ATR,
+        "continuation_reanchor_min_directional_closes": CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES,
+        "continuation_reanchor_strong_trend_min_directional_closes": CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES,
+        "continuation_reanchor_strong_trend_min_net_move_atr": CONTINUATION_REANCHOR_STRONG_TREND_MIN_NET_MOVE_ATR,
+        "preconfirm_min_micro_score": PRECONFIRM_MIN_MICRO_SCORE,
+        "session_mean_transition_confirm_bars": SESSION_MEAN_TRANSITION_CONFIRM_BARS,
         "no_pullback_min_move_atr": NO_PULLBACK_MIN_MOVE_ATR,
         "no_pullback_max_giveback_ratio": NO_PULLBACK_MAX_GIVEBACK_RATIO,
         "no_pullback_min_body_efficiency": NO_PULLBACK_MIN_BODY_EFFICIENCY,
@@ -1315,7 +1350,11 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
     base_risk = PROBE_RISK_PCT
     add_plan = []
 
-    if src == ExecutionSource.TIME_WARP.value:
+    if bool(getattr(candidate, "confirmation_pending", False)):
+        stage = EntryStage.WAIT_CONFIRMATION.value
+        base_risk = 0.0
+        add_plan.append("Готовність висока: чекати рівно один підтверджувальний бар; це alert-state, не entry")
+    elif src == ExecutionSource.TIME_WARP.value:
         stage = EntryStage.WAIT_RETEST.value
         base_risk = PROBE_RISK_PCT * 0.50
         add_plan.append("Не market-entry: чекати живий retest/limit у зоні")
@@ -2001,19 +2040,33 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     action_label = action_names.get(decision.action, decision.action)
 
     if decision.action == Action.NO_SETUP.value:
-        lines = [
-            "<b>Входу зараз немає.</b>",
-        ]
-
-        if decision.side and decision.side != Side.NEUTRAL.value:
-            lines.append(
-                f"{decision.side}-сценарій залишається, але свіжого підтвердження "
-                "для відкриття позиції немає."
-            )
+        confirmation_pending = bool(
+            decision.candidate and getattr(decision.candidate, "confirmation_pending", False)
+        )
+        if confirmation_pending:
+            lines = [
+                "🟡 <b>Вхід наближається: готовність висока.</b>",
+                f"{decision.side}-сценарій сформований, але execution чекає один підтверджувальний бар.",
+            ]
+            confirmation = getattr(decision.candidate, "confirmation_state", {}) or {}
+            level = safe_float(confirmation.get("anchor"), safe_float(confirmation.get("level"), 0.0))
+            source = str(confirmation.get("anchor_source") or confirmation.get("level_name") or decision.candidate.execution_source)
+            if level > 0:
+                lines.append(f"<b>Контрольний рівень:</b> {_fmt_price(level)} | {html.escape(source)}")
         else:
-            lines.append(
-                "Немає достатнього підтвердження для відкриття позиції."
-            )
+            lines = [
+                "<b>Входу зараз немає.</b>",
+            ]
+
+            if decision.side and decision.side != Side.NEUTRAL.value:
+                lines.append(
+                    f"{decision.side}-сценарій залишається, але свіжого підтвердження "
+                    "для відкриття позиції немає."
+                )
+            else:
+                lines.append(
+                    "Немає достатнього підтвердження для відкриття позиції."
+                )
 
         lines.append(
             f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
@@ -2671,6 +2724,99 @@ def detect_recent_structure_shift(candles: list[Candle], lookback: int = 7) -> d
         "bullish_shift": bullish_shift,
         "bearish_shift": bearish_shift,
         "strength": min(strength, 3),
+    }
+
+
+def directional_structure_profile(candles: list[Candle], side: str, lookback: int = 12) -> dict[str, Any]:
+    """Direction-aware structure contract for PRICE_STRUCTURE_ADVISOR.
+
+    A single geometry cannot support LONG and SHORT simultaneously: LONG requires
+    higher highs/higher lows, while SHORT requires lower highs/lower lows. Partial
+    alignment is recorded for audit, but SUPPORT needs the candidate's own side.
+    """
+    confirmed = sorted(
+        [c for c in (candles or []) if getattr(c, "confirmed", True)],
+        key=lambda c: c.ts,
+    )
+    side = str(side or "").upper()
+    if side not in {Side.LONG.value, Side.SHORT.value} or len(confirmed) < 8:
+        return {
+            "side": side,
+            "valid": False,
+            "supports_side": False,
+            "reason": "not_enough_directional_structure",
+        }
+
+    effective_lookback = min(max(8, int(lookback or 12)), len(confirmed))
+    window = confirmed[-effective_lookback:]
+    split = max(3, len(window) // 2)
+    previous = window[:-split]
+    recent = window[-split:]
+    if not previous or not recent:
+        return {"side": side, "valid": False, "supports_side": False, "reason": "invalid_split"}
+
+    previous_high = max(c.high for c in previous)
+    previous_low = min(c.low for c in previous)
+    recent_high = max(c.high for c in recent)
+    recent_low = min(c.low for c in recent)
+    avg_range = mean(max(c.high - c.low, 0.0) for c in window) or 0.0
+    buffer = avg_range * 0.06
+    shift = detect_recent_structure_shift(confirmed, lookback=min(7, max(3, len(confirmed) // 2)))
+
+    higher_high = recent_high > previous_high + buffer
+    higher_low = recent_low > previous_low + buffer
+    lower_high = recent_high < previous_high - buffer
+    lower_low = recent_low < previous_low - buffer
+    close_progression = (
+        recent[-1].close > previous[-1].close + buffer
+        if side == Side.LONG.value
+        else recent[-1].close < previous[-1].close - buffer
+    )
+    shift_aligned = bool(
+        shift.get("bullish_shift") if side == Side.LONG.value else shift.get("bearish_shift")
+    )
+
+    if side == Side.LONG.value:
+        primary_a, primary_b = higher_high, higher_low
+        opposite_a, opposite_b = lower_high, lower_low
+    else:
+        primary_a, primary_b = lower_high, lower_low
+        opposite_a, opposite_b = higher_high, higher_low
+
+    aligned = bool(primary_a and primary_b)
+    partial = bool((primary_a or primary_b) and close_progression)
+    opposite_aligned = bool(opposite_a and opposite_b)
+    score = 20.0
+    score += 30.0 if primary_a else 0.0
+    score += 30.0 if primary_b else 0.0
+    score += 12.0 if close_progression else 0.0
+    score += 8.0 if shift_aligned else 0.0
+    score -= 35.0 if opposite_aligned else 0.0
+    score = clamp(score, 0.0, 100.0)
+    supports_side = bool(
+        not opposite_aligned
+        and (aligned or (partial and shift_aligned and score >= 68.0))
+    )
+
+    return {
+        "side": side,
+        "valid": True,
+        "supports_side": supports_side,
+        "aligned": aligned,
+        "partial": partial,
+        "opposite_aligned": opposite_aligned,
+        "higher_high": higher_high,
+        "higher_low": higher_low,
+        "lower_high": lower_high,
+        "lower_low": lower_low,
+        "close_progression": close_progression,
+        "shift_aligned": shift_aligned,
+        "score": round(score, 2),
+        "previous_high": round_price(previous_high),
+        "previous_low": round_price(previous_low),
+        "recent_high": round_price(recent_high),
+        "recent_low": round_price(recent_low),
+        "buffer": round(float(buffer), 6),
     }
 
 
@@ -4996,17 +5142,19 @@ def continuation_reanchor_profile(
 ) -> dict[str, Any]:
     """Build a fresh execution anchor for an intact continuation thesis.
 
-    The old trigger remains thesis memory only. A new trigger is published only
-    when recent 3M/15M geometry independently supports continuation and the
-    proposed anchor sits close enough to current price to avoid disguised chase.
+    The old trigger remains thesis memory only. Strong-trend pauses may use two
+    directional closes instead of four, but only when side-specific structure,
+    TF alignment and net displacement are positive. A separate PRE_CONFIRMATION
+    state exposes high readiness without pretending that execution already fired.
     """
+    side = str(side or "").upper()
     if not CONTINUATION_REANCHOR_ENABLED or atr15 <= 0:
-        return {"enabled": False, "ready": False, "reason": "disabled_or_no_atr"}
+        return {"enabled": False, "ready": False, "pre_confirmation_ready": False, "side": side, "reason": "disabled_or_no_atr"}
 
     recent3 = _recent_confirmed(c3, 6)
     recent15 = _recent_confirmed(c15, 8)
     if len(recent3) < 4 or len(recent15) < 5:
-        return {"enabled": True, "ready": False, "reason": "not_enough_recent_bars"}
+        return {"enabled": True, "ready": False, "pre_confirmation_ready": False, "side": side, "reason": "not_enough_recent_bars"}
 
     direction = 1.0 if side == Side.LONG.value else -1.0
     signed_net_move_atr = direction * (recent3[-1].close - recent3[0].open) / max(atr15, 1e-9)
@@ -5027,12 +5175,25 @@ def continuation_reanchor_profile(
 
     tf_aligned = bool(tf15.get("bias") == side or tf1h.get("bias") == side)
     micro = _side_directional_revalidation(side, c3, c15, atr15)
-    trend_acceptance = bool(
+    directional_structure = directional_structure_profile(c15, side)
+    strong_trend_context = bool(
+        structure_intact
+        and tf_aligned
+        and directional_structure.get("supports_side")
+        and signed_net_move_atr >= CONTINUATION_REANCHOR_STRONG_TREND_MIN_NET_MOVE_ATR
+    )
+    required_directional_closes = (
+        CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES
+        if strong_trend_context
+        else CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES
+    )
+    trend_geometry = bool(
         signed_net_move_atr >= CONTINUATION_REANCHOR_MIN_NET_MOVE_ATR
-        and directional_closes >= CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES
+        and directional_closes >= required_directional_closes
         and pullback_atr <= CONTINUATION_REANCHOR_MAX_PULLBACK_ATR
         and structure_intact
         and tf_aligned
+        and directional_structure.get("supports_side")
     )
 
     reference_ts = max(c.ts for c in recent3)
@@ -5054,7 +5215,7 @@ def continuation_reanchor_profile(
     anchor_ts = 0
     zone_label = ""
     if fresh_zones:
-        _, _, z, zone_age = sorted(fresh_zones, key=lambda item: (item[0], item[1]))[0]
+        _, _, z, _zone_age = sorted(fresh_zones, key=lambda item: (item[0], item[1]))[0]
         anchor_low = min(safe_float(z.low), safe_float(z.high))
         anchor_high = max(safe_float(z.low), safe_float(z.high))
         anchor = _zone_midpoint(z)
@@ -5079,17 +5240,24 @@ def continuation_reanchor_profile(
     anchor_age_min = max(0.0, (reference_ts - anchor_ts) / 60000.0) if anchor_ts else 999.0
     distance_atr = abs(price - anchor) / max(atr15, 1e-9) if anchor else 999.0
     fresh = anchor_age_min <= TRIGGER_MAX_AGE_MINUTES
-    acceptance_supported = bool(micro.get("supported") or (trend_acceptance and micro.get("score", 0) >= 50))
-    ready = bool(
-        trend_acceptance
-        and acceptance_supported
-        and fresh
-        and distance_atr <= CONTINUATION_REANCHOR_MAX_DISTANCE_ATR
+    location_ready = bool(fresh and distance_atr <= CONTINUATION_REANCHOR_MAX_DISTANCE_ATR)
+    acceptance_supported = bool(micro.get("supported"))
+    ready = bool(trend_geometry and acceptance_supported and location_ready)
+    pre_confirmation_ready = bool(
+        trend_geometry
+        and location_ready
+        and not ready
+        and safe_float(micro.get("score"), 0.0) >= PRECONFIRM_MIN_MICRO_SCORE
     )
 
     return {
         "enabled": True,
+        "side": side,
         "ready": ready,
+        "pre_confirmation_ready": pre_confirmation_ready,
+        "confirmation_pending": pre_confirmation_ready,
+        "needs_one_bar_confirmation": pre_confirmation_ready,
+        "confirmation_after_ts": reference_ts + 180_000 if pre_confirmation_ready else 0,
         "anchor": round_price(anchor),
         "anchor_low": round_price(anchor_low),
         "anchor_high": round_price(anchor_high),
@@ -5100,11 +5268,19 @@ def continuation_reanchor_profile(
         "distance_atr": round(distance_atr, 3),
         "signed_net_move_atr": round(signed_net_move_atr, 3),
         "directional_closes": directional_closes,
+        "required_directional_closes": required_directional_closes,
+        "strong_trend_relaxation": strong_trend_context,
+        "quality_threshold_changed": False,
         "pullback_atr": round(pullback_atr, 3),
         "structure_intact": structure_intact,
         "tf_aligned": tf_aligned,
+        "directional_structure": directional_structure,
         "micro_confirmation": micro,
-        "reason": "fresh continuation anchor" if ready else "continuation conditions incomplete",
+        "reason": (
+            "fresh continuation anchor" if ready
+            else "high readiness; waiting one confirmation bar" if pre_confirmation_ready
+            else "continuation conditions incomplete"
+        ),
     }
 
 
@@ -5259,41 +5435,141 @@ def _nearest_key_level(price: float, levels: list[tuple[str, float]], atr15: flo
     return name, level, dist_atr
 
 
-def detect_vwap_session_mean_reclaim(c15: list[Candle], side: str, price: float, atr15: float, now_kyiv: datetime, tf15: dict, tf1h: dict) -> dict[str, Any]:
-    """VWAP / Session Mean Reclaim.
-    Вхід не в середині нічого: ціна має або повернути session mean/VWAP, або
-    ретестнути його як підтримку/опір після імпульсу."""
+def detect_vwap_session_mean_reclaim(
+    c15: list[Candle],
+    side: str,
+    price: float,
+    atr15: float,
+    now_kyiv: datetime,
+    tf15: dict,
+    tf1h: dict,
+    regime: str = Regime.NORMAL.value,
+) -> dict[str, Any]:
+    """VWAP / Session Mean Reclaim with a transition-regime confirmation lease.
+
+    In TRANSITION a first reclaim is exposed as CONFIRMATION_PENDING and needs one
+    additional 15M bar to hold the reclaimed mean. This is a timing/state change,
+    not a higher score threshold. Clear TREND/RANGE/NORMAL regimes retain the
+    existing one-bar activation behavior.
+    """
+    side = str(side or "").upper()
+    regime = str(regime or Regime.NORMAL.value).upper()
     if len(c15) < 6 or atr15 <= 0:
-        return {"active": False, "reason": "not_enough_candles"}
+        return {"active": False, "pre_confirmation_ready": False, "side": side, "reason": "not_enough_candles"}
     anchor = _anchored_session_vwap_and_mean(c15, now_kyiv)
     if not anchor.get("valid"):
-        return {"active": False, "reason": "no_session_anchor"}
-    level_name, level, dist_atr = _nearest_key_level(price, [("VWAP", anchor.get("vwap")), ("SESSION_MEAN", anchor.get("mean"))], atr15, SESSION_MEAN_MAX_DIST_ATR)
+        return {"active": False, "pre_confirmation_ready": False, "side": side, "reason": "no_session_anchor"}
+    level_name, level, dist_atr = _nearest_key_level(
+        price,
+        [("VWAP", anchor.get("vwap")), ("SESSION_MEAN", anchor.get("mean"))],
+        atr15,
+        SESSION_MEAN_MAX_DIST_ATR,
+    )
     if not level:
-        return {"active": False, "reason": "far_from_mean", "dist_atr": round(dist_atr, 2)}
+        return {"active": False, "pre_confirmation_ready": False, "side": side, "reason": "far_from_mean", "dist_atr": round(dist_atr, 2)}
+
     last, prev = c15[-1], c15[-2]
+    pre_prev = c15[-3] if len(c15) >= 3 else prev
     tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    directional_structure = directional_structure_profile(c15, side)
+
     if side == Side.LONG.value:
-        reclaimed = (prev.close <= level and last.close > level) or (last.low <= level <= last.close)
+        reclaimed_now = (prev.close <= level and last.close > level) or (last.low <= level <= last.close)
+        prior_reclaim = (pre_prev.close <= level and prev.close > level) or (prev.low <= level <= prev.close)
         acceptance = last.close >= last.open and ((last.close - last.low) / max(last.high - last.low, 1e-9) >= 0.55)
+        hold_after_reclaim = last.close > level and last.low >= level - atr15 * 0.18
+        mean_reversion_back_to_old_zone = last.close < level or (last.close - level) < atr15 * 0.05
     else:
-        reclaimed = (prev.close >= level and last.close < level) or (last.high >= level >= last.close)
+        reclaimed_now = (prev.close >= level and last.close < level) or (last.high >= level >= last.close)
+        prior_reclaim = (pre_prev.close >= level and prev.close < level) or (prev.high >= level >= prev.close)
         acceptance = last.close <= last.open and ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.55)
-    active = bool(tf_ok and reclaimed and acceptance)
+        hold_after_reclaim = last.close < level and last.high <= level + atr15 * 0.18
+        mean_reversion_back_to_old_zone = last.close > level or (level - last.close) < atr15 * 0.05
+
+    transition_guard = regime == Regime.TRANSITION.value
+    required_confirmation_bars = max(1, SESSION_MEAN_TRANSITION_CONFIRM_BARS)
+
+    # Find the latest reclaim event and count only bars that subsequently held the
+    # level. With the default value of one, the reclaim bar alerts first and the
+    # next 15M close can activate execution. Higher configured values remain
+    # internally consistent instead of merely changing the displayed timestamp.
+    latest_reclaim_index = -1
+    search_start = max(1, len(c15) - required_confirmation_bars - 4)
+    for idx in range(search_start, len(c15)):
+        before, current = c15[idx - 1], c15[idx]
+        if side == Side.LONG.value:
+            event = (before.close <= level and current.close > level) or (current.low <= level <= current.close)
+        else:
+            event = (before.close >= level and current.close < level) or (current.high >= level >= current.close)
+        if event:
+            latest_reclaim_index = idx
+
+    bars_after_reclaim = max(0, len(c15) - 1 - latest_reclaim_index) if latest_reclaim_index >= 0 else 0
+    post_reclaim = c15[latest_reclaim_index + 1:] if latest_reclaim_index >= 0 else []
+    if side == Side.LONG.value:
+        held_bars = all(c.close > level and c.low >= level - atr15 * 0.18 for c in post_reclaim)
+    else:
+        held_bars = all(c.close < level and c.high <= level + atr15 * 0.18 for c in post_reclaim)
+    confirmed_after_reclaim = bool(
+        latest_reclaim_index >= 0
+        and bars_after_reclaim >= required_confirmation_bars
+        and held_bars
+        and acceptance
+    )
+    base_active = bool(tf_ok and reclaimed_now and acceptance)
+    active = bool(
+        tf_ok
+        and (confirmed_after_reclaim if transition_guard else base_active)
+        and not mean_reversion_back_to_old_zone
+    )
+    pre_confirmation_ready = bool(
+        tf_ok
+        and not active
+        and (reclaimed_now or prior_reclaim)
+        and acceptance
+        and directional_structure.get("supports_side")
+    )
     score_bonus = 0
     if active:
         score_bonus = 10 + (4 if level_name == "VWAP" else 2) + (3 if anchor.get("phase") in {"MANIPULATION", "DISTRIBUTION"} else 0)
+    elif pre_confirmation_ready:
+        # Alert/watch scoring only. Entry thresholds remain untouched and trigger_ready=False.
+        score_bonus = 6 + (2 if level_name == "VWAP" else 1)
+
     return {
         "active": active,
+        "side": side,
         "score_bonus": score_bonus,
+        "pre_confirmation_ready": pre_confirmation_ready,
+        "confirmation_pending": pre_confirmation_ready,
+        "needs_one_bar_confirmation": bool(pre_confirmation_ready and transition_guard),
+        "required_confirmation_bars": required_confirmation_bars if transition_guard else 0,
+        "bars_after_reclaim": bars_after_reclaim,
+        "confirmation_after_ts": int(
+            last.ts + 900_000 * max(1, SESSION_MEAN_TRANSITION_CONFIRM_BARS)
+        ) if pre_confirmation_ready else 0,
         "level_name": level_name,
         "level": round_price(level),
         "dist_atr": round(dist_atr, 2),
         "session": anchor.get("session"),
         "phase": anchor.get("phase"),
-        "reclaimed": reclaimed,
+        "regime": regime,
+        "transition_guard": transition_guard,
+        "quality_threshold_changed": False,
+        "reclaimed": reclaimed_now,
+        "prior_reclaim": prior_reclaim,
+        "confirmed_after_reclaim": confirmed_after_reclaim,
         "acceptance": acceptance,
+        "hold_after_reclaim": hold_after_reclaim,
+        "mean_reversion_back_to_old_zone": mean_reversion_back_to_old_zone,
+        "directional_structure": directional_structure,
         "tf_ok": tf_ok,
+        "reason": (
+            "confirmed session mean reclaim" if active
+            else "transition reclaim; waiting one confirmation bar" if pre_confirmation_ready and transition_guard
+            else "session mean setup approaching confirmation" if pre_confirmation_ready
+            else "session mean conditions incomplete"
+        ),
     }
 
 
@@ -5616,6 +5892,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         has_forward_zone = has_forward_ict_zone(price, zones, side, atr15)
         recent_struct = detect_recent_structure_shift(c15, lookback=7)
+        direction_structure = directional_structure_profile(c15, side)
 
         # Довший лукбек тренду (20 свічок 15m ≈ 5 годин) — на додачу до короткого
         # 8-свічкового руху, який regime_detection() використовує для класифікації RANGE
@@ -5733,7 +6010,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         continuation_reanchor = continuation_reanchor_profile(c3, c15, zones, side, price, atr15, tf15, tf1h)
         momentum_no_pullback = detect_momentum_no_pullback_continuation(c3, c15, zones, side, price, atr15, tf15, tf1h)
         acceleration_reentry = detect_acceleration_pullback_reentry(c15, side, price, atr15, tf15, tf1h)
-        session_mean_reclaim = detect_vwap_session_mean_reclaim(c15, side, price, atr15, now_kyiv, tf15, tf1h)
+        session_mean_reclaim = detect_vwap_session_mean_reclaim(c15, side, price, atr15, now_kyiv, tf15, tf1h, regime)
         opening_range = detect_opening_range_model(c15, side, price, atr15, now_kyiv, tf15, tf1h)
         open_reclaim = detect_daily_weekly_open_reclaim(c15, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
         liquidity_ladder = detect_liquidity_ladder_model(side, price, context, atr15, tf15, tf1h)
@@ -5776,13 +6053,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             active_patterns.append("TREND_IGNITION_MODEL")
         if is_range_compressed and strong_displacement and trigger_ready:
             active_patterns.append("RANGE_COMPRESSION_MODEL")
-        if acceptance_retest.get("active"):
+        if acceptance_retest.get("active") or continuation_reanchor.get("pre_confirmation_ready"):
             active_patterns.append("ACCEPTANCE_RETEST_CONTINUATION")
         if momentum_no_pullback.get("active"):
             active_patterns.append("MOMENTUM_NO_PULLBACK_CONTINUATION")
         if acceleration_reentry.get("active"):
             active_patterns.append("ACCELERATION_PULLBACK_REENTRY")
-        if session_mean_reclaim.get("active"):
+        if session_mean_reclaim.get("active") or session_mean_reclaim.get("pre_confirmation_ready"):
             active_patterns.append("VWAP_SESSION_MEAN_RECLAIM")
         if opening_range.get("breakout_active"):
             active_patterns.append("OPENING_RANGE_BREAKOUT")
@@ -5971,7 +6248,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 actionable_trigger_ready = False
                 execution_lane_source = ExecutionLane.WAIT_RETEST.value
                 pattern_conf.append("⏳ ACCELERATION_PULLBACK: імпульс уже відірвався — чекати 38–50% ретест, не market")
-            elif model_id == "ACCEPTANCE_RETEST_CONTINUATION" and acceptance_retest.get("active"):
+            elif model_id == "ACCEPTANCE_RETEST_CONTINUATION":
                 if continuation_reanchor.get("ready") and trigger_age > TRIGGER_MAX_AGE_MINUTES:
                     execution_source = ExecutionSource.CONTINUATION_REANCHOR.value
                     actionable_trigger_ready = True
@@ -5983,16 +6260,39 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         f"🧭 REANCHORED_TRIGGER: old={trigger_age:.0f}m → fresh={local_trigger_age:.1f}m | "
                         f"{continuation_reanchor.get('zone_label')} @ {local_trigger_level:.2f}"
                     )
-                else:
+                elif continuation_reanchor.get("pre_confirmation_ready"):
+                    execution_source = ExecutionSource.CONTINUATION_REANCHOR.value
+                    actionable_trigger_ready = False
+                    execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
+                    local_trigger_level = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level
+                    local_trigger_age = safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
+                    local_live_3m_trigger_ready = False
+                    pattern_conf.append(
+                        f"🟡 REANCHOR PRE-CONFIRMATION: readiness high, wait one 3M bar | "
+                        f"dir_closes={continuation_reanchor.get('directional_closes')}/6 "
+                        f"(required={continuation_reanchor.get('required_directional_closes')})"
+                    )
+                elif acceptance_retest.get("active"):
                     execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
                     actionable_trigger_ready = True
                     execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
                     pattern_conf.append("🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком")
+                else:
+                    execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
+                    actionable_trigger_ready = False
+                    execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
             elif model_id == "VWAP_SESSION_MEAN_RECLAIM":
                 execution_source = ExecutionSource.SESSION_MEAN.value
-                actionable_trigger_ready = True
-                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                actionable_trigger_ready = bool(session_mean_reclaim.get("active"))
+                execution_lane_source = (
+                    ExecutionLane.EARLY_TACTICAL.value
+                    if actionable_trigger_ready
+                    else ExecutionLane.WAIT_CONFIRMATION.value
+                )
                 local_trigger_level = safe_float(session_mean_reclaim.get("level"), trigger_level) or trigger_level
+                local_live_3m_trigger_ready = actionable_trigger_ready
+                if session_mean_reclaim.get("pre_confirmation_ready") and not actionable_trigger_ready:
+                    pattern_conf.append("🟡 SESSION_MEAN PRE-CONFIRMATION: reclaim є, у TRANSITION чекаємо один 15M hold-bar")
             elif model_id in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
                 execution_source = ExecutionSource.OPENING_RANGE.value
                 actionable_trigger_ready = True
@@ -6155,6 +6455,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             if lane == ExecutionLane.EARLY_TACTICAL.value and not bool(p_data.get("allow_early", False)):
                 lane = ExecutionLane.STANDARD_CONFIRMED.value
 
+            confirmation_state = (
+                continuation_reanchor
+                if model_id == "ACCEPTANCE_RETEST_CONTINUATION" and continuation_reanchor.get("pre_confirmation_ready")
+                else session_mean_reclaim
+                if model_id == "VWAP_SESSION_MEAN_RECLAIM" and session_mean_reclaim.get("pre_confirmation_ready")
+                else {}
+            )
+            confirmation_pending = bool(confirmation_state and not actionable_trigger_ready)
+
             cand = Candidate(
                 side=side,
                 setup_type=setup_type,
@@ -6207,6 +6516,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "continuation_reanchor": continuation_reanchor if model_id in {"ACCEPTANCE_RETEST_CONTINUATION", "MOMENTUM_NO_PULLBACK_CONTINUATION"} else {},
                     "momentum_no_pullback": momentum_no_pullback if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION" else {},
                     "acceleration_reentry": acceleration_reentry if model_id == "ACCELERATION_PULLBACK_REENTRY" else {},
+                    "session_mean_reclaim": session_mean_reclaim if model_id == "VWAP_SESSION_MEAN_RECLAIM" else {},
+                    "directional_structure": direction_structure,
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -6235,6 +6546,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 trade_plan_quality_score=int(layers["trade_plan_quality"]),
                 hypothesis_score=round(hypothesis_score, 2),
                 active_model_count=len(active_patterns),
+                confirmation_pending=confirmation_pending,
+                confirmation_state=dict(confirmation_state or {}),
+                opportunity_status=(
+                    OpportunityStatus.CONFIRMATION_PENDING.value
+                    if confirmation_pending
+                    else ""
+                ),
             )
             cand.professional_gate = evaluate_professional_gate(context, cand)
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
@@ -7119,6 +7437,168 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
 
 # ==========================================================
+# v8.9 ENTRY TIMING / CONFIRMATION DELAY ANALYTICS
+# ==========================================================
+
+def thesis_family_key(candidate: Optional[Candidate]) -> str:
+    if candidate is None:
+        return ""
+    return "|".join([
+        str(getattr(candidate, "side", "") or ""),
+        str(getattr(candidate, "setup_type", "") or ""),
+        str(getattr(candidate, "ict_model", "") or ""),
+    ])
+
+
+def _signal_reference_price(signal: dict[str, Any]) -> float:
+    components = signal.get("score_components") or {}
+    return safe_float(
+        signal.get("signal_reference_price"),
+        safe_float(
+            components.get("effective_trigger_level"),
+            safe_float(components.get("original_trigger_level"), safe_float(signal.get("observed_market_price"), 0.0)),
+        ),
+    )
+
+
+def build_entry_confirmation_delay_audit(
+    journal: dict[str, Any],
+    decision: Decision,
+    actual_entry_price: float,
+    atr15: float = 0.0,
+) -> dict[str, Any]:
+    """Compare executable entry with the earliest signal for the same thesis family.
+
+    Positive directional_delta means waiting made the entry worse: higher for LONG,
+    lower for SHORT. This is execution-timing slippage, not realized PnL.
+    """
+    candidate = decision.candidate
+    if candidate is None or actual_entry_price <= 0:
+        return {}
+    family_key = thesis_family_key(candidate)
+    current_time = _parse_iso_datetime(decision.time) or now_utc()
+    horizon_start = current_time - timedelta(hours=36)
+    exact_matches = []
+    family_matches = []
+    current_thesis_key = str(getattr(candidate, "thesis_key", "") or "")
+    for signal in journal.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        signal_time = _parse_iso_datetime(signal.get("time"))
+        if not signal_time or signal_time < horizon_start or signal_time > current_time:
+            continue
+        signal_family = str(signal.get("thesis_family_key") or "")
+        signal_thesis_key = str(signal.get("thesis_key") or "")
+        fallback_match = bool(
+            signal.get("side") == candidate.side
+            and signal.get("setup_type") == candidate.setup_type
+            and (not signal.get("ict_model") or signal.get("ict_model") == candidate.ict_model)
+        )
+        reference_price = _signal_reference_price(signal)
+        if reference_price <= 0:
+            continue
+        row = (signal_time, signal, reference_price)
+        if current_thesis_key and signal_thesis_key == current_thesis_key:
+            exact_matches.append(row)
+        elif (not current_thesis_key or not signal_thesis_key) and (
+            signal_family == family_key or (not signal_family and fallback_match)
+        ):
+            # Legacy rows did not persist thesis_key. They remain usable as a
+            # fallback, but two different modern thesis keys are never merged.
+            family_matches.append(row)
+
+    if exact_matches:
+        primary_time, primary_signal, primary_price = min(exact_matches, key=lambda item: item[0])
+        matching_mode = "EXACT_THESIS_KEY"
+    elif family_matches:
+        primary_time, primary_signal, primary_price = min(family_matches, key=lambda item: item[0])
+        matching_mode = "FAMILY_FALLBACK"
+    else:
+        primary_time = current_time
+        primary_signal = {"id": decision.id, "time": decision.time}
+        primary_price = safe_float(candidate.trigger_level, actual_entry_price) or actual_entry_price
+        matching_mode = "CURRENT_SIGNAL_FALLBACK"
+
+    directional_delta = (
+        actual_entry_price - primary_price
+        if candidate.side == Side.LONG.value
+        else primary_price - actual_entry_price
+    )
+    delay_minutes = max(0.0, (current_time - primary_time).total_seconds() / 60.0)
+    return {
+        "thesis_key": current_thesis_key,
+        "thesis_family_key": family_key,
+        "matching_mode": matching_mode,
+        "side": candidate.side,
+        "setup_type": candidate.setup_type,
+        "ict_model": candidate.ict_model,
+        "primary_signal_id": primary_signal.get("id"),
+        "primary_signal_time": primary_signal.get("time"),
+        "primary_signal_price": round_price(primary_price),
+        "actual_entry_signal_id": decision.id,
+        "actual_entry_time": decision.time,
+        "actual_entry_price": round_price(actual_entry_price),
+        "entry_price_source": "trade_plan.entry_at_execution_signal",
+        "directional_delta": round(float(directional_delta), 6),
+        "absolute_delta": round(abs(float(actual_entry_price - primary_price)), 6),
+        "directional_delta_atr": round(float(directional_delta) / max(float(atr15), 1e-9), 4) if atr15 > 0 else None,
+        "delay_minutes": round(delay_minutes, 2),
+        "adverse_wait_cost": directional_delta > 0,
+        "interpretation": "entry timing difference versus first same-thesis signal; plan entry, not broker fill or realized PnL",
+    }
+
+
+def record_entry_confirmation_delay(journal: dict[str, Any], audit: dict[str, Any]) -> None:
+    if not audit:
+        return
+    analytics = journal.setdefault("analytics", {}).setdefault("entry_confirmation_delay", {
+        "count": 0,
+        "sum_directional_delta": 0.0,
+        "sum_absolute_delta": 0.0,
+        "sum_delay_minutes": 0.0,
+        "adverse_count": 0,
+        "by_setup_type": {},
+        "events": [],
+    })
+    event_id = str(audit.get("actual_entry_signal_id") or "")
+    events = analytics.setdefault("events", [])
+    if event_id and any(str(e.get("actual_entry_signal_id") or "") == event_id for e in events if isinstance(e, dict)):
+        return
+    events.append(dict(audit))
+    if len(events) > 200:
+        del events[:-200]
+    analytics["count"] = int(analytics.get("count", 0)) + 1
+    analytics["sum_directional_delta"] = safe_float(analytics.get("sum_directional_delta"), 0.0) + safe_float(audit.get("directional_delta"), 0.0)
+    analytics["sum_absolute_delta"] = safe_float(analytics.get("sum_absolute_delta"), 0.0) + safe_float(audit.get("absolute_delta"), 0.0)
+    analytics["sum_delay_minutes"] = safe_float(analytics.get("sum_delay_minutes"), 0.0) + safe_float(audit.get("delay_minutes"), 0.0)
+    if audit.get("adverse_wait_cost"):
+        analytics["adverse_count"] = int(analytics.get("adverse_count", 0)) + 1
+    count = max(int(analytics.get("count", 0)), 1)
+    analytics["average_directional_delta"] = round(safe_float(analytics.get("sum_directional_delta"), 0.0) / count, 6)
+    analytics["average_absolute_delta"] = round(safe_float(analytics.get("sum_absolute_delta"), 0.0) / count, 6)
+    analytics["average_delay_minutes"] = round(safe_float(analytics.get("sum_delay_minutes"), 0.0) / count, 2)
+    analytics["adverse_wait_rate_pct"] = round(100.0 * int(analytics.get("adverse_count", 0)) / count, 2)
+
+    setup_key = str(audit.get("setup_type") or audit.get("thesis_family_key") or "UNKNOWN")
+    by_setup = analytics.setdefault("by_setup_type", {})
+    bucket = by_setup.setdefault(setup_key, {
+        "count": 0, "sum_directional_delta": 0.0, "sum_delay_minutes": 0.0, "adverse_count": 0
+    })
+    bucket["count"] = int(bucket.get("count", 0)) + 1
+    bucket["sum_directional_delta"] = safe_float(bucket.get("sum_directional_delta"), 0.0) + safe_float(audit.get("directional_delta"), 0.0)
+    bucket["sum_delay_minutes"] = safe_float(bucket.get("sum_delay_minutes"), 0.0) + safe_float(audit.get("delay_minutes"), 0.0)
+    if audit.get("adverse_wait_cost"):
+        bucket["adverse_count"] = int(bucket.get("adverse_count", 0)) + 1
+    bucket_count = max(int(bucket.get("count", 0)), 1)
+    bucket["average_directional_delta"] = round(safe_float(bucket.get("sum_directional_delta"), 0.0) / bucket_count, 6)
+    bucket["average_delay_minutes"] = round(safe_float(bucket.get("sum_delay_minutes"), 0.0) / bucket_count, 2)
+    bucket["adverse_wait_rate_pct"] = round(100.0 * int(bucket.get("adverse_count", 0)) / bucket_count, 2)
+
+    analytics["interpretation"] = "confirmation-delay execution metric; positive directional delta is worse, not realized PnL"
+    analytics["updated_at"] = iso_now()
+
+
+# ==========================================================
 # v8.6 EXECUTIVE AUTHORITY ORCHESTRATOR
 # ==========================================================
 
@@ -7176,6 +7656,11 @@ def build_executive_divergence_audit(
             "opened_at": opened_at.isoformat(),
             "expires_at": (opened_at + timedelta(hours=EXECUTIVE_SHADOW_HORIZON_HOURS)).isoformat(),
             "side": decision.side,
+            "source_signal_id": decision.id,
+            "thesis_key": getattr(decision.candidate, "thesis_key", ""),
+            "thesis_family_key": thesis_family_key(decision.candidate),
+            "test_key": f"{decision.side}|{round_price(decision.plan.entry)}|{round_price(decision.plan.stop)}",
+            "policy_test": "DIRECTIONAL_CLOSES_THRESHOLD",
             "entry": round_price(decision.plan.entry),
             "stop": round_price(decision.plan.stop),
             "tp0": round_price(decision.plan.tp0),
@@ -7333,6 +7818,78 @@ def update_executive_shadow_outcomes(journal: dict[str, Any], context: dict[str,
         "updated_at": now.isoformat(),
     })
 
+    # Deduplicate repeated scans of the same shadow geometry. Humans do love
+    # counting the same missed idea six times and calling it a sample size.
+    canonical_tests: dict[str, dict[str, Any]] = {}
+    for event in history:
+        if not isinstance(event, dict):
+            continue
+        shadow = event.get("shadow_plan") or {}
+        if not shadow:
+            continue
+        key = str(shadow.get("test_key") or f"{shadow.get('side')}|{shadow.get('entry')}|{shadow.get('stop')}")
+        current = canonical_tests.get(key)
+        if current is None:
+            canonical_tests[key] = {"event": event, "shadow": shadow}
+            continue
+        current_shadow = current["shadow"]
+        order = {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}
+        new_rank = order.get(str(shadow.get("max_target_hit") or "NONE"), 0)
+        old_rank = order.get(str(current_shadow.get("max_target_hit") or "NONE"), 0)
+        if new_rank > old_rank or (shadow.get("status") == "STOP_FIRST" and current_shadow.get("status") == "OPEN"):
+            canonical_tests[key] = {"event": event, "shadow": shadow}
+
+    trades = journal.get("trades") or []
+    review_events = []
+    for key, item in canonical_tests.items():
+        event = item["event"]
+        shadow = item["shadow"]
+        thesis_key_value = str(shadow.get("thesis_key") or event.get("thesis_key") or "")
+        family_key_value = str(shadow.get("thesis_family_key") or event.get("thesis_family_key") or "")
+        bot_entered = any(
+            isinstance(trade, dict)
+            and (
+                (shadow.get("source_signal_id") and trade.get("signal_id") == shadow.get("source_signal_id"))
+                or (thesis_key_value and trade.get("thesis_key") == thesis_key_value)
+                or (family_key_value and trade.get("thesis_family_key") == family_key_value)
+            )
+            for trade in trades
+        )
+        max_target = str(shadow.get("max_target_hit") or "NONE")
+        status = str(shadow.get("status") or "OPEN")
+        if bot_entered:
+            recommendation = "BOT_ENTERED_NO_THRESHOLD_MISS"
+        elif max_target in {"TP1", "TP2", "TP3"} and status != "AMBIGUOUS_INTRABAR":
+            recommendation = "CONSIDER_RELAXING_DIRECTIONAL_CLOSES_IN_STRONG_TREND"
+        elif status == "STOP_FIRST":
+            recommendation = "KEEP_CURRENT_DIRECTIONAL_CLOSES_CAUTION"
+        else:
+            recommendation = "INCONCLUSIVE_WAIT_FOR_TERMINAL_PATH"
+        review_events.append({
+            "test_key": key,
+            "source_signal_id": shadow.get("source_signal_id") or event.get("id"),
+            "side": shadow.get("side") or event.get("side"),
+            "entry": shadow.get("entry"),
+            "stop": shadow.get("stop"),
+            "status": status,
+            "max_target_hit": max_target,
+            "bot_entered": bot_entered,
+            "recommendation": recommendation,
+        })
+
+    policy = journal.setdefault("analytics", {}).setdefault("directional_closes_shadow_review", {})
+    policy.update({
+        "unique_tests": len(review_events),
+        "consider_relaxation": sum(1 for e in review_events if e["recommendation"].startswith("CONSIDER_RELAXING")),
+        "keep_caution": sum(1 for e in review_events if e["recommendation"] == "KEEP_CURRENT_DIRECTIONAL_CLOSES_CAUTION"),
+        "inconclusive": sum(1 for e in review_events if e["recommendation"] == "INCONCLUSIVE_WAIT_FOR_TERMINAL_PATH"),
+        "bot_entered": sum(1 for e in review_events if e["bot_entered"]),
+        "tests": review_events[-100:],
+        "decision_rule": "TP1+ without bot entry => consider 2/6 strong-trend relaxation; STOP_FIRST => keep current caution",
+        "interpretation": "policy review from counterfactual path facts; not realized PnL",
+        "updated_at": now.isoformat(),
+    })
+
 
 def record_executive_divergence(journal: dict[str, Any], payload: dict[str, Any]) -> None:
     audit = ((payload.get("audit") or {}).get("executive_divergence") or {})
@@ -7364,6 +7921,8 @@ def record_executive_divergence(journal: dict[str, Any], payload: dict[str, Any]
         "side": payload.get("side"),
         "setup_type": payload.get("setup_type"),
         "quality": payload.get("quality"),
+        "thesis_key": payload.get("thesis_key"),
+        "thesis_family_key": payload.get("thesis_family_key"),
         **audit,
     }
     history = journal.setdefault("executive_divergences", [])
@@ -7495,6 +8054,11 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
     
     # 1. Перевірка ре-ентрі (залишається незмінною)
     saved_opp = opportunity_from_state(state)
+    if saved_opp and saved_opp.status == OpportunityStatus.CONFIRMATION_PENDING.value:
+        expires_at = _parse_iso_datetime(saved_opp.expires_at)
+        if expires_at and now_utc() >= expires_at:
+            state["opportunity"] = None
+            saved_opp = None
     if saved_opp and saved_opp.status in [OpportunityStatus.ARMED.value, OpportunityStatus.WAIT_PULLBACK.value]:
         missed_cand = candidate_from_missed_opportunity(saved_opp, context)
         if missed_cand:
@@ -7537,6 +8101,10 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             gate.get("advisory_advisory_allow_entry")
             or gate.get("advisory_advisory_allow_risky")
             or cand.final_score >= get_adaptive_params(context.get("adaptive_regime", context["regime"]))["armed_score"]
+            or (
+                bool(getattr(cand, "confirmation_pending", False))
+                and cand.final_score >= get_adaptive_params(context.get("adaptive_regime", context["regime"]))["armed_score"] - 6
+            )
         ):
             valid_candidates.append(cand)
 
@@ -7582,6 +8150,12 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
     quality = int(best.final_score or 0)
     reval_profile = getattr(best, "revalidation_profile", {}) or {}
 
+    proposed_opportunity_status = (
+        OpportunityStatus.CONFIRMATION_PENDING.value
+        if bool(getattr(best, "confirmation_pending", False))
+        else OpportunityStatus.ARMED.value
+    )
+
     if plan.valid and plan.execution_ready and quality >= ENTRY_SCORE_BASE:
         proposed_action = Action.ENTRY.value
     elif plan.valid and plan.execution_ready and quality >= RISKY_ENTRY_SCORE_BASE:
@@ -7590,7 +8164,6 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
         proposed_action = Action.PROBE_ENTRY.value
     else:
         proposed_action = Action.NO_SETUP.value
-        proposed_opportunity_status = OpportunityStatus.ARMED.value
 
     return Decision(
         id=uuid.uuid4().hex[:10], time=iso_now(), action=proposed_action,
@@ -7605,7 +8178,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             "hypothesis_matrix": [hypothesis_audit_row(c) for c in valid_candidates[:10]],
             "candidate_count": len(valid_candidates),
             "legacy_recommendation": proposed_action,
-            "opportunity_status": getattr(best, "opportunity_status", proposed_opportunity_status),
+            "opportunity_status": getattr(best, "opportunity_status", "") or proposed_opportunity_status,
             "institutional_engine": {
                 "enabled": INSTITUTIONAL_ADAPTIVE_ENGINE,
                 "version": BOT_VERSION,
@@ -8133,6 +8706,7 @@ STATE_PROBE = "PROBE"
 STATE_ACCEPTANCE = "ACCEPTANCE"
 STATE_CORE = "CORE"
 STATE_WAIT_RETEST = "WAIT_RETEST"
+STATE_WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
 
 
 def adaptive_state_transition(
@@ -8167,6 +8741,14 @@ def adaptive_state_transition(
 
     htf_profile = htf_confidence_modifier(candidate)
     risk *= float(htf_profile.get("multiplier", 1.0))
+
+    if bool(getattr(candidate, "confirmation_pending", False)):
+        return {
+            "state": STATE_WAIT_CONFIRMATION,
+            "risk_multiplier": 0.0,
+            "allow_execution": False,
+            "reason": "high readiness; waiting one confirmation bar",
+        }
 
     if kernel_result.get("action_modifier") == STATE_WAIT_RETEST:
         return {
@@ -8884,6 +9466,12 @@ def run_bot() -> None:
                 "position_risk_pct": active.position_risk_pct,
                 "opened_at": active.opened_at,
                 "closed_at": iso_now(),
+                "thesis_key": active.thesis_key,
+                "thesis_family_key": getattr(active, "thesis_family_key", ""),
+                "primary_signal_id": getattr(active, "primary_signal_id", ""),
+                "primary_signal_price": getattr(active, "primary_signal_price", 0.0),
+                "entry_delay_directional_delta": getattr(active, "entry_delay_directional_delta", 0.0),
+                "entry_delay_minutes": getattr(active, "entry_delay_minutes", 0.0),
                 "runtime_config_snapshot": getattr(active, "runtime_config_snapshot", {}),
                 "innovation_profile": (getattr(active, "stage_plan", {}) or {}).get("innovation_profile", {}),
                 "partial_plan": {"tp0": getattr(active, "tp0_size_pct", TP0_SIZE_PCT), "tp1": getattr(active, "tp1_size_pct", TP1_SIZE_PCT), "tp2": getattr(active, "tp2_size_pct", TP2_SIZE_PCT), "tp3_runner": getattr(active, "tp3_runner_pct", TP3_RUNNER_PCT)},
@@ -8908,7 +9496,7 @@ def run_bot() -> None:
     canonical_quality = canonical_decision_quality(decision)
     decision.quality = canonical_quality
     quality_source = "candidate.final_score" if decision.candidate else "decision.quality"
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "audit": decision.audit or {}}
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "audit": decision.audit or {}}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
@@ -8933,6 +9521,13 @@ def run_bot() -> None:
             "score_model_learned_weight": components.get("learned_weight", 0.0),
             "innovation_profile": getattr(decision.candidate, "innovation_profile", {}) or components.get("innovation_profile", {}),
             "trigger_revalidation": getattr(decision.candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}),
+            "thesis_key": decision.candidate.thesis_key,
+            "thesis": decision.candidate.thesis,
+            "thesis_family_key": thesis_family_key(decision.candidate),
+            "signal_reference_price": round_price(decision.candidate.trigger_level),
+            "confirmation_pending": bool(getattr(decision.candidate, "confirmation_pending", False)),
+            "confirmation_state": getattr(decision.candidate, "confirmation_state", {}) or {},
+            "opportunity_status": getattr(decision.candidate, "opportunity_status", "") or (decision.audit or {}).get("opportunity_status", ""),
         })
         if not (payload["quality"] == payload["decision_quality"] == payload["candidate_final_score"]):
             raise ValueError("Signal quality invariant violated")
@@ -8951,8 +9546,17 @@ def run_bot() -> None:
                 "catastrophic_stop": decision.plan.catastrophic_stop,
                 "breathing_profile": decision.plan.breathing_profile,
             })
+    entry_delay_audit: dict[str, Any] = {}
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS and decision.candidate and decision.plan:
+        entry_delay_audit = build_entry_confirmation_delay_audit(
+            journal, decision, decision.plan.entry, safe_float(context.get("atr15"), 0.0)
+        )
+        if entry_delay_audit:
+            payload["entry_confirmation_delay"] = entry_delay_audit
+            record_entry_confirmation_delay(journal, entry_delay_audit)
+
     state["latest_signal"] = payload
-    append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"]})
+    append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"], "thesis_family_key": payload.get("thesis_family_key", "")})
     journal["signals"].append(payload)
     record_executive_divergence(journal, payload)
     if payload.get("score_features"):
@@ -8976,7 +9580,12 @@ def run_bot() -> None:
             quality=decision.quality, position_risk_pct=decision.plan.position_risk_pct,
             best_price=decision.plan.entry, worst_price=decision.plan.entry,
             trigger_level=decision.candidate.trigger_level, thesis_key=decision.candidate.thesis_key,
-            thesis=decision.candidate.thesis, opened_regime=decision.regime, entry_level=decision.action,
+            thesis=decision.candidate.thesis, thesis_family_key=thesis_family_key(decision.candidate),
+            primary_signal_id=str(entry_delay_audit.get("primary_signal_id") or decision.id),
+            primary_signal_price=safe_float(entry_delay_audit.get("primary_signal_price"), decision.candidate.trigger_level),
+            entry_delay_directional_delta=safe_float(entry_delay_audit.get("directional_delta"), 0.0),
+            entry_delay_minutes=safe_float(entry_delay_audit.get("delay_minutes"), 0.0),
+            opened_regime=decision.regime, entry_level=decision.action,
             tp0=decision.plan.tp0, tp0_size_pct=decision.plan.partial_plan.get("tp0", TP0_SIZE_PCT),
             tp1_size_pct=decision.plan.partial_plan.get("tp1", TP1_SIZE_PCT),
             tp2_size_pct=decision.plan.partial_plan.get("tp2", TP2_SIZE_PCT),
@@ -8989,8 +9598,15 @@ def run_bot() -> None:
         store_active_trade(state, active)
         state["opportunity"] = None
         print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type} | signal_id={active.signal_id} trade_id={active.id}")
-    elif decision.audit.get("opportunity_status") == OpportunityStatus.ARMED.value and decision.candidate:
-        opp_status = "WAIT_PULLBACK" if decision.candidate.execution_lane in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.LIMIT_ONLY.value} else OpportunityStatus.ARMED.value
+    elif decision.audit.get("opportunity_status") in {
+        OpportunityStatus.ARMED.value, OpportunityStatus.CONFIRMATION_PENDING.value
+    } and decision.candidate:
+        if bool(getattr(decision.candidate, "confirmation_pending", False)) or decision.audit.get("opportunity_status") == OpportunityStatus.CONFIRMATION_PENDING.value:
+            opp_status = OpportunityStatus.CONFIRMATION_PENDING.value
+        elif decision.candidate.execution_lane in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.LIMIT_ONLY.value, ExecutionLane.WAIT_CONFIRMATION.value}:
+            opp_status = OpportunityStatus.WAIT_PULLBACK.value
+        else:
+            opp_status = OpportunityStatus.ARMED.value
         opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status=opp_status, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, signal_id=decision.id)
         store_opportunity(state, opp)
         store_active_trade(state, None)
@@ -8998,7 +9614,14 @@ def run_bot() -> None:
         store_active_trade(state, None)
 
     executive_alert = bool(((decision.audit or {}).get("executive_divergence") or {}).get("alert"))
-    if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN or executive_alert:
+    confirmation_pending_alert = bool(
+        decision.candidate
+        and (
+            getattr(decision.candidate, "confirmation_pending", False)
+            or (decision.audit or {}).get("opportunity_status") == OpportunityStatus.CONFIRMATION_PENDING.value
+        )
+    )
+    if decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN or executive_alert or confirmation_pending_alert:
         msg = build_decision_message(context, decision)
         print("TELEGRAM (DECISION):", msg[:320])
         send_telegram(msg)
@@ -9197,8 +9820,13 @@ def _continuation_near_miss_fixture(score: int, execution_quality: int) -> tuple
             "liq_score": 3.46,
             "trig_score": 18.0,
             "features": {"htf": 0.3125, "structure": 0.91, "liquidity": 0.14, "trigger": 1.0},
-            "continuation_reanchor": {"ready": True, "anchor_age_min": 6.0, "distance_atr": 0.42},
-            "momentum_no_pullback": {"entry_ready": False},
+            "continuation_reanchor": {"side": Side.LONG.value, "ready": True, "anchor_age_min": 6.0, "distance_atr": 0.42},
+            "momentum_no_pullback": {"side": Side.LONG.value, "entry_ready": False},
+            "directional_structure": {
+                "side": Side.LONG.value, "supports_side": True, "score": 86.0,
+                "higher_high": True, "higher_low": True,
+                "lower_high": False, "lower_low": False,
+            },
         },
         trigger_ready=True,
         live_3m_trigger_ready=True,
@@ -9418,6 +10046,280 @@ def test_shadow_outcome_tracks_path_without_claiming_profit() -> bool:
     )
 
 
+
+def test_price_structure_advisor_is_directional() -> bool:
+    """The same timestamp geometry may support one side, never both."""
+    base = 1_783_900_000_000
+    values = [
+        (99.00, 99.18, 98.92, 99.24),
+        (99.18, 99.34, 99.08, 99.39),
+        (99.34, 99.50, 99.24, 99.55),
+        (99.50, 99.68, 99.40, 99.74),
+        (99.68, 99.88, 99.58, 99.94),
+        (99.88, 100.08, 99.78, 100.15),
+        (100.08, 100.30, 99.98, 100.36),
+        (100.30, 100.54, 100.18, 100.61),
+        (100.54, 100.78, 100.42, 100.85),
+        (100.78, 101.02, 100.66, 101.10),
+        (101.02, 101.28, 100.90, 101.36),
+        (101.28, 101.56, 101.16, 101.64),
+    ]
+    candles = [
+        Candle(ts=base + i * 900_000, open=o, high=h, low=l, close=c, volume=1000, confirmed=True)
+        for i, (o, c, l, h) in enumerate(values)
+    ]
+    long_structure = directional_structure_profile(candles, Side.LONG.value)
+    short_structure = directional_structure_profile(candles, Side.SHORT.value)
+
+    common = dict(
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=72,
+        trigger_ready=True,
+        execution_source=ExecutionSource.LIVE_3M.value,
+    )
+    long_candidate = Candidate(side=Side.LONG.value, **common)
+    short_candidate = Candidate(side=Side.SHORT.value, **common)
+    long_components = {
+        "str_score": 21.0,
+        "directional_structure": long_structure,
+        "continuation_reanchor": {"side": Side.LONG.value, "ready": True},
+    }
+    short_components = {
+        "str_score": 21.0,
+        "directional_structure": short_structure,
+        "continuation_reanchor": {"side": Side.SHORT.value, "ready": True},
+    }
+    long_vote = _price_structure_advisor(long_candidate, long_components)
+    short_vote = _price_structure_advisor(short_candidate, short_components)
+    return bool(
+        long_structure.get("supports_side")
+        and not short_structure.get("supports_side")
+        and long_vote.get("opinion") == "SUPPORT"
+        and short_vote.get("opinion") != "SUPPORT"
+        and not (
+            long_vote.get("opinion") == "SUPPORT"
+            and short_vote.get("opinion") == "SUPPORT"
+        )
+    )
+
+
+def test_transition_session_mean_waits_one_bar() -> bool:
+    """TRANSITION exposes readiness on the reclaim bar and activates one bar later."""
+    base = 1_783_910_000_000
+    values = [
+        (98.80, 99.00, 98.70, 99.10),
+        (99.00, 99.12, 98.92, 99.20),
+        (99.12, 99.25, 99.04, 99.32),
+        (99.25, 99.38, 99.17, 99.45),
+        (99.38, 99.50, 99.30, 99.57),
+        (99.50, 99.64, 99.42, 99.71),
+        (99.64, 99.80, 99.56, 99.86),
+        (99.78, 100.20, 99.75, 100.30),
+    ]
+    candles = [
+        Candle(ts=base + i * 900_000, open=o, high=h, low=l, close=c, volume=1000, confirmed=True)
+        for i, (o, c, l, h) in enumerate(values)
+    ]
+    original = globals()["_anchored_session_vwap_and_mean"]
+    globals()["_anchored_session_vwap_and_mean"] = lambda _c, _n: {
+        "valid": True, "session": "TEST", "phase": "MANIPULATION", "vwap": 100.0, "mean": 100.0, "n": len(_c)
+    }
+    try:
+        pending = detect_vwap_session_mean_reclaim(
+            candles, Side.LONG.value, candles[-1].close, 0.50, now_utc(),
+            {"bias": Side.LONG.value}, {"bias": Side.LONG.value}, Regime.TRANSITION.value,
+        )
+        next_bar = Candle(
+            ts=candles[-1].ts + 900_000,
+            open=100.20, high=100.36, low=100.03, close=100.30,
+            volume=1000, confirmed=True,
+        )
+        confirmed = detect_vwap_session_mean_reclaim(
+            candles + [next_bar], Side.LONG.value, next_bar.close, 0.50, now_utc(),
+            {"bias": Side.LONG.value}, {"bias": Side.LONG.value}, Regime.TRANSITION.value,
+        )
+    finally:
+        globals()["_anchored_session_vwap_and_mean"] = original
+    return bool(
+        pending.get("pre_confirmation_ready")
+        and pending.get("confirmation_pending")
+        and not pending.get("active")
+        and pending.get("required_confirmation_bars") == max(1, SESSION_MEAN_TRANSITION_CONFIRM_BARS)
+        and confirmed.get("active")
+        and confirmed.get("confirmed_after_reclaim")
+        and confirmed.get("bars_after_reclaim", 0) >= max(1, SESSION_MEAN_TRANSITION_CONFIRM_BARS)
+    )
+
+
+def test_strong_trend_reanchor_uses_two_of_six() -> bool:
+    """2/6 is allowed only under intact, TF-aligned, side-specific structure."""
+    base = 1_783_920_000_000
+    c3_values = [
+        (100.00, 99.98, 99.94, 100.04),
+        (100.00, 99.99, 99.95, 100.04),
+        (99.99, 100.08, 99.97, 100.11),
+        (100.08, 100.06, 100.02, 100.10),
+        (100.06, 100.04, 100.00, 100.09),
+        (100.04, 100.55, 100.02, 100.60),
+    ]
+    c3 = [
+        Candle(ts=base + i * 180_000, open=o, high=h, low=l, close=c, volume=1000, confirmed=True)
+        for i, (o, c, l, h) in enumerate(c3_values)
+    ]
+    c15_values = [
+        (98.80, 99.00, 98.70, 99.10),
+        (99.00, 99.18, 98.90, 99.25),
+        (99.18, 99.36, 99.08, 99.43),
+        (99.36, 99.56, 99.26, 99.63),
+        (99.56, 99.78, 99.46, 99.85),
+        (99.78, 100.02, 99.68, 100.09),
+        (100.02, 100.28, 99.92, 100.35),
+        (100.28, 100.52, 100.18, 100.60),
+    ]
+    c15 = [
+        Candle(ts=base - (7 - i) * 900_000, open=o, high=h, low=l, close=c, volume=5000, confirmed=True)
+        for i, (o, c, l, h) in enumerate(c15_values)
+    ]
+    zones = [Zone(
+        kind="OB", side=Side.LONG.value, low=100.24, high=100.44,
+        created_ts=c3[-1].ts - 6 * 60_000, timeframe="3m", strength=82,
+    )]
+    profile = continuation_reanchor_profile(
+        c3, c15, zones, Side.LONG.value, 100.55, 0.50,
+        {"bias": Side.LONG.value}, {"bias": Side.LONG.value},
+    )
+    return bool(
+        profile.get("directional_closes") == 2
+        and profile.get("required_directional_closes") == CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES
+        and profile.get("strong_trend_relaxation")
+        and profile.get("structure_intact")
+        and profile.get("tf_aligned")
+        and (profile.get("directional_structure") or {}).get("supports_side")
+        and (profile.get("ready") or profile.get("pre_confirmation_ready"))
+    )
+
+
+def test_entry_confirmation_delay_uses_primary_signal() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=72,
+        ict_model="ACCEPTANCE_RETEST_CONTINUATION",
+        trigger_level=78.40,
+    )
+    decision_time = datetime(2026, 7, 12, 12, 30, tzinfo=timezone.utc)
+    decision = Decision(
+        id="actual-entry-test",
+        time=decision_time.isoformat(),
+        action=Action.RISKY_ENTRY.value,
+        side=candidate.side,
+        setup_type=candidate.setup_type,
+        quality=72,
+        reason="test",
+        regime=Regime.TREND.value,
+        candidate=candidate,
+    )
+    journal = {"signals": [{
+        "id": "c960d06f7d",
+        "time": (decision_time - timedelta(minutes=30)).isoformat(),
+        "side": Side.LONG.value,
+        "setup_type": candidate.setup_type,
+        "ict_model": candidate.ict_model,
+        "signal_reference_price": 77.86,
+        "thesis_family_key": thesis_family_key(candidate),
+    }]}
+    audit = build_entry_confirmation_delay_audit(journal, decision, 78.40, 0.50)
+    record_entry_confirmation_delay(journal, audit)
+    stats = journal.get("analytics", {}).get("entry_confirmation_delay", {})
+    return bool(
+        audit.get("primary_signal_id") == "c960d06f7d"
+        and abs(safe_float(audit.get("directional_delta"), 0.0) - 0.54) < 1e-9
+        and audit.get("adverse_wait_cost") is True
+        and abs(safe_float(audit.get("delay_minutes"), 0.0) - 30.0) < 1e-9
+        and stats.get("count") == 1
+        and abs(safe_float(stats.get("average_directional_delta"), 0.0) - 0.54) < 1e-9
+    )
+
+
+
+def test_confirmation_pending_message_is_early_alert() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.SESSION_MEAN_RECLAIM.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value,
+        raw_score=80,
+        final_score=66,
+        confirmation_pending=True,
+        confirmation_state={"level": 78.20, "level_name": "SESSION_MEAN"},
+        execution_source=ExecutionSource.SESSION_MEAN.value,
+    )
+    decision = Decision(
+        id="pending-message-test",
+        time=iso_now(),
+        action=Action.NO_SETUP.value,
+        side=Side.LONG.value,
+        setup_type=candidate.setup_type,
+        quality=66,
+        reason="waiting confirmation",
+        regime=Regime.TRANSITION.value,
+        candidate=candidate,
+        current_price=78.25,
+    )
+    message = build_decision_message({}, decision)
+    return "готовність висока" in message and "один підтверджувальний бар" in message and "78.2" in message
+
+def test_shadow_policy_review_deduplicates_geometry() -> bool:
+    opened = now_utc() - timedelta(minutes=20)
+    expires = now_utc() - timedelta(minutes=1)
+    shadow = {
+        "source_signal_id": "shadow-78-test",
+        "test_key": "LONG|78.685|78.105",
+        "side": Side.LONG.value,
+        "entry": 78.685,
+        "stop": 78.105,
+        "tp0": 78.975,
+        "tp1": 79.845,
+        "tp2": 80.425,
+        "tp3": 81.585,
+        "opened_at": opened.isoformat(),
+        "expires_at": expires.isoformat(),
+        "status": "OPEN",
+        "last_processed_ts": 0,
+        "max_target_hit": "NONE",
+        "thesis_key": "LONG|TEST|787",
+        "thesis_family_key": "LONG|TEST|MODEL",
+    }
+    journal = {
+        "trades": [],
+        "executive_divergences": [
+            {"id": "shadow-78-test", "shadow_plan": dict(shadow)},
+            {"id": "shadow-78-test-duplicate", "shadow_plan": dict(shadow)},
+        ],
+    }
+    base = int((opened + timedelta(minutes=3)).timestamp() * 1000)
+    context = {
+        "price": 79.90,
+        "candles": {"3m": [
+            Candle(ts=base, open=78.70, high=79.00, low=78.60, close=78.95, confirmed=True),
+            Candle(ts=base + 180_000, open=78.95, high=79.90, low=78.90, close=79.82, confirmed=True),
+        ]},
+    }
+    update_executive_shadow_outcomes(journal, context)
+    review = journal.get("analytics", {}).get("directional_closes_shadow_review", {})
+    tests = review.get("tests") or []
+    return bool(
+        review.get("unique_tests") == 1
+        and review.get("consider_relaxation") == 1
+        and review.get("keep_caution") == 0
+        and tests
+        and tests[0].get("recommendation") == "CONSIDER_RELAXING_DIRECTIONAL_CLOSES_IN_STRONG_TREND"
+        and tests[0].get("bot_entered") is False
+    )
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -9445,6 +10347,12 @@ def _run_self_test() -> bool:
     checks.append(("no-pullback continuation is probe-ready", test_no_pullback_model_is_probe_ready()))
     checks.append(("selected+eligible NO_SETUP raises audit alert", test_selected_eligible_no_setup_alert()))
     checks.append(("shadow audit tracks path without claiming profit", test_shadow_outcome_tracks_path_without_claiming_profit()))
+    checks.append(("price structure advisor is candidate-side aware", test_price_structure_advisor_is_directional()))
+    checks.append(("TRANSITION session mean waits one confirmation bar", test_transition_session_mean_waits_one_bar()))
+    checks.append(("strong-trend reanchor permits guarded 2/6", test_strong_trend_reanchor_uses_two_of_six()))
+    checks.append(("entry timing compares actual entry with primary thesis signal", test_entry_confirmation_delay_uses_primary_signal()))
+    checks.append(("confirmation-pending state sends an early alert", test_confirmation_pending_message_is_early_alert()))
+    checks.append(("shadow policy deduplicates 78.685/78.105 geometry", test_shadow_policy_review_deduplicates_geometry()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -9668,22 +10576,34 @@ def _ict_advisor(components: dict[str, Any]) -> dict[str, Any]:
 
 
 def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
-    """Independent market vote for structure/momentum continuation.
+    """Independent, direction-aware market-structure vote.
 
-    This closes the old asymmetry where HTF and ICT could both caution while no
-    market module was allowed to express that price itself was accepting higher
-    or lower levels in an orderly continuation.
+    Structure SUPPORT is valid only when the observed highs/lows confirm the
+    candidate.side. A generic high str_score can no longer support LONG and SHORT
+    at the same timestamp. Re-anchor and momentum profiles must also carry the
+    same side before their readiness contributes to the vote.
     """
     structure = _component_raw_score(components, "str_score", "structure")
     reanchor = components.get("continuation_reanchor", {}) or {}
     momentum = components.get("momentum_no_pullback", {}) or {}
+    directional = components.get("directional_structure", {}) or {}
     family = str(getattr(candidate, "setup_family", "") or "")
     source = str(getattr(candidate, "execution_source", "") or "")
+    candidate_side = str(getattr(candidate, "side", "") or "").upper()
 
-    structural_support = bool(structure >= 17.0)
+    directional_side_matches = str(directional.get("side") or "").upper() == candidate_side
+    directional_support = bool(directional_side_matches and directional.get("supports_side"))
+    reanchor_side_ok = bool(
+        str(reanchor.get("side") or candidate_side).upper() == candidate_side
+        and (reanchor.get("ready") or reanchor.get("pre_confirmation_ready"))
+    )
+    momentum_side_ok = bool(
+        str(momentum.get("side") or candidate_side).upper() == candidate_side
+        and momentum.get("entry_ready")
+    )
     fresh_continuation = bool(
-        reanchor.get("ready")
-        or momentum.get("entry_ready")
+        reanchor_side_ok
+        or momentum_side_ok
         or source in {
             ExecutionSource.CONTINUATION_REANCHOR.value,
             ExecutionSource.MOMENTUM_CONTINUATION.value,
@@ -9692,12 +10612,14 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
     )
     continuation_family = family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
     support = bool(
-        structural_support
+        directional_support
+        and structure >= 17.0
         and (fresh_continuation or (continuation_family and bool(getattr(candidate, "trigger_ready", False))))
     )
 
+    directional_confidence = safe_float(directional.get("score"), 0.0) if directional_side_matches else 0.0
     momentum_confidence = 0.0
-    if momentum:
+    if momentum_side_ok:
         momentum_confidence = clamp(
             45.0
             + safe_float(momentum.get("move_atr"), 0.0) * 10.0
@@ -9706,8 +10628,20 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
             0.0,
             100.0,
         )
-    reanchor_confidence = 78.0 if reanchor.get("ready") else 0.0
-    confidence = max(clamp(structure / 24.0 * 100.0, 0.0, 100.0), momentum_confidence, reanchor_confidence)
+    reanchor_confidence = (
+        78.0 if reanchor.get("ready") and reanchor_side_ok
+        else 66.0 if reanchor.get("pre_confirmation_ready") and reanchor_side_ok
+        else 0.0
+    )
+    confidence = max(
+        clamp(structure / 24.0 * 100.0, 0.0, 100.0) if directional_support else 0.0,
+        directional_confidence,
+        momentum_confidence,
+        reanchor_confidence,
+    )
+    if not directional_support:
+        # Preserve diagnostic confidence without allowing direction-blind SUPPORT.
+        confidence = max(confidence, min(clamp(structure / 24.0 * 100.0, 0.0, 100.0), 49.0))
     raw_impact = clamp((confidence - 50.0) / 3.0, -12.0, 12.0)
     signed_impact = abs(raw_impact) if support else -abs(raw_impact)
     return advisory_report(
@@ -9716,11 +10650,16 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
         confidence=confidence,
         impact=normalize_advisor_impact("PRICE_STRUCTURE_ADVISOR", signed_impact),
         evidence=[
+            f"candidate_side={candidate_side}",
             f"structure={structure:.2f}",
+            f"directional_side_matches={directional_side_matches}",
+            f"directional_support={directional_support}",
+            f"HH={bool(directional.get('higher_high'))} HL={bool(directional.get('higher_low'))}",
+            f"LH={bool(directional.get('lower_high'))} LL={bool(directional.get('lower_low'))}",
             f"family={family}",
             f"source={source}",
-            f"reanchor_ready={bool(reanchor.get('ready'))}",
-            f"momentum_ready={bool(momentum.get('entry_ready'))}",
+            f"reanchor_side_ok={reanchor_side_ok}",
+            f"momentum_side_ok={momentum_side_ok}",
         ],
     )
 
@@ -10062,7 +11001,11 @@ def build_executive_decision_object(
         philosophy_accepts=philosophy_accepts,
     )
 
-    if risk_blocked:
+    confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
+    if confirmation_pending:
+        action = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        reason = "Readiness is high; waiting one confirmation bar before execution"
+    elif risk_blocked:
         action = ExecutiveDecisionState.WAIT.value
         reason = "Risk budget exhausted; entry blocked"
     elif conflict_override:
@@ -10113,6 +11056,8 @@ def build_executive_decision_object(
             "single_authority": "EXECUTIVE_DECISION_LAYER",
             "has_hard_conflict": has_hard_conflict,
             "risk_blocked": risk_blocked,
+            "confirmation_pending": confirmation_pending,
+            "confirmation_state": dict(getattr(candidate, "confirmation_state", {}) or {}),
             "final_action_policy": "conflict lowers risk, not automatically blocks execution",
             "adaptive_conflict_resolver": {
                 "enabled": True,
@@ -10191,6 +11136,7 @@ EXECUTIVE_ACTION_MAP = {
     # WAIT is not HOLD. HOLD belongs only to active trade management.
     ExecutiveDecisionState.WAIT: Action.NO_SETUP.value,
     ExecutiveDecisionState.WAIT_RETEST: Action.NO_SETUP.value,
+    ExecutiveDecisionState.WAIT_CONFIRMATION: Action.NO_SETUP.value,
 
     ExecutiveDecisionState.NO_SETUP: Action.NO_SETUP.value,
     ExecutiveDecisionState.REJECT: Action.NO_SETUP.value,
