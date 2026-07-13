@@ -9,6 +9,12 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Додано confirmation-delay analytics: перший сигнал того самого thesis порівнюється з execution entry, включно з directional wait cost.
 - Shadow-плани дедуплікуються за side/entry/stop і формують policy review: TP1+ без входу проти STOP_FIRST.
 
+Виправлення v8.12 (Relaxed Continuation Policy Lab Edition):
+- Додано деталізований execution funnel після entry_supported з окремими REVALIDATION та EXECUTIVE_DIRECTOR blocking layers.
+- ACCEPTANCE_RETEST_CONTINUATION отримав relaxed partial-structure policy лише як дедуплікований shadow experiment.
+- Strict/relaxed політики порівнюються за STOP_FIRST, TP0-first, TP1-first та counterfactual expectancy_r.
+- Relaxed live дозволяється лише як мікро PROBE_ONLY після достатньої позитивної контрфактичної вибірки; strict thresholds не змінені.
+
 Виправлення v8.10 (Revalidation Execution Path Edition):
 - setup_trigger_revalidation_profile та build_trade_plan визнають strict 6-bar continuation re-anchor / momentum entry-ready як альтернативний execution support.
 - CONFIRMATION_PENDING тепер переходить у entry_supported після появи підтверджувального 3M бара; перехід аудитується окремо.
@@ -138,8 +144,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.11-profit-protection-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_11_PROFIT_PROTECTION"
+BOT_VERSION = "pro-hybrid-confluence-v8.12-relaxed-continuation-policy"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_12_RELAXED_CONTINUATION_POLICY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -254,6 +260,25 @@ NO_PULLBACK_MAX_GIVEBACK_RATIO = float(os.getenv("NO_PULLBACK_MAX_GIVEBACK_RATIO
 NO_PULLBACK_MIN_BODY_EFFICIENCY = float(os.getenv("NO_PULLBACK_MIN_BODY_EFFICIENCY", "0.46") or 0.46)
 NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR = float(os.getenv("NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR", "1.05") or 1.05)
 NO_PULLBACK_RISK_PCT = float(os.getenv("NO_PULLBACK_RISK_PCT", "0.10") or 0.10)
+
+# === v8.12 Relaxed Continuation Policy Lab ===
+# Strict execution remains authoritative. The relaxed path first exists only as
+# a deduplicated counterfactual experiment and may graduate to a tiny PROBE_ONLY
+# entry after enough terminal observations demonstrate a positive edge.
+RELAXED_CONTINUATION_SHADOW_ENABLED = os.getenv("RELAXED_CONTINUATION_SHADOW_ENABLED", "true").lower() in {"1", "true", "yes"}
+RELAXED_CONTINUATION_LIVE_ENABLED = os.getenv("RELAXED_CONTINUATION_LIVE_ENABLED", "true").lower() in {"1", "true", "yes"}
+RELAXED_CONTINUATION_MIN_MICRO_SCORE = float(os.getenv("RELAXED_CONTINUATION_MIN_MICRO_SCORE", "85") or 85)
+RELAXED_CONTINUATION_MIN_NET_MOVE_ATR = float(os.getenv("RELAXED_CONTINUATION_MIN_NET_MOVE_ATR", "0.70") or 0.70)
+RELAXED_CONTINUATION_MAX_PULLBACK_ATR = float(os.getenv("RELAXED_CONTINUATION_MAX_PULLBACK_ATR", "0.40") or 0.40)
+RELAXED_CONTINUATION_MAX_DISTANCE_ATR = float(os.getenv("RELAXED_CONTINUATION_MAX_DISTANCE_ATR", "0.80") or 0.80)
+RELAXED_CONTINUATION_MIN_SCORE = int(os.getenv("RELAXED_CONTINUATION_MIN_SCORE", "68") or 68)
+RELAXED_CONTINUATION_PROBE_RISK_PCT = min(0.10, max(0.01, float(os.getenv("RELAXED_CONTINUATION_PROBE_RISK_PCT", "0.05") or 0.05)))
+RELAXED_CONTINUATION_MIN_CLOSED_TESTS = max(10, int(os.getenv("RELAXED_CONTINUATION_MIN_CLOSED_TESTS", "30") or 30))
+RELAXED_CONTINUATION_MIN_STRICT_CLOSED_TESTS = max(5, int(os.getenv("RELAXED_CONTINUATION_MIN_STRICT_CLOSED_TESTS", "10") or 10))
+RELAXED_CONTINUATION_MIN_TP0_FIRST_RATE = min(1.0, max(0.0, float(os.getenv("RELAXED_CONTINUATION_MIN_TP0_FIRST_RATE", "0.60") or 0.60)))
+RELAXED_CONTINUATION_MIN_TP1_FIRST_RATE = min(1.0, max(0.0, float(os.getenv("RELAXED_CONTINUATION_MIN_TP1_FIRST_RATE", "0.40") or 0.40)))
+RELAXED_CONTINUATION_MIN_EXPECTANCY_R = float(os.getenv("RELAXED_CONTINUATION_MIN_EXPECTANCY_R", "0.0") or 0.0)
+RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT", "500") or 500))
 
 # Synthetic candle-pressure CVD is not real order-flow. Keep it as a weak proxy,
 # never as an equal substitute for trades/order-book data.
@@ -413,6 +438,12 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("CONFLICT_MIN_EFFECTIVE_CONFIDENCE must be between 0 and 100")
     if EXECUTIVE_SHADOW_HORIZON_HOURS <= 0:
         errors.append("EXECUTIVE_SHADOW_HORIZON_HOURS must be positive")
+    if not (0 < RELAXED_CONTINUATION_PROBE_RISK_PCT <= min(PROBE_RISK_PCT, 0.10)):
+        errors.append("RELAXED_CONTINUATION_PROBE_RISK_PCT must be tiny and no larger than PROBE_RISK_PCT/0.10")
+    if RELAXED_CONTINUATION_MAX_DISTANCE_ATR > CONTINUATION_REANCHOR_MAX_DISTANCE_ATR:
+        errors.append("Relaxed continuation distance cannot be looser than the strict location envelope")
+    if RELAXED_CONTINUATION_MAX_PULLBACK_ATR > CONTINUATION_REANCHOR_MAX_PULLBACK_ATR:
+        errors.append("Relaxed continuation pullback cannot be looser than the strict pullback envelope")
 
     return {
         "valid": not errors,
@@ -800,6 +831,7 @@ class Candidate:
     competing_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     innovation_profile: dict[str, Any] = field(default_factory=dict)
     revalidation_profile: dict[str, Any] = field(default_factory=dict)
+    relaxed_continuation_profile: dict[str, Any] = field(default_factory=dict)
     entry_freshness_score: float = 100.0
     entry_freshness_profile: dict[str, Any] = field(default_factory=dict)
     confirmation_pending: bool = False
@@ -1253,6 +1285,18 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "no_pullback_min_body_efficiency": NO_PULLBACK_MIN_BODY_EFFICIENCY,
         "no_pullback_max_anchor_distance_atr": NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR,
         "no_pullback_risk_pct": NO_PULLBACK_RISK_PCT,
+        "relaxed_continuation_shadow_enabled": RELAXED_CONTINUATION_SHADOW_ENABLED,
+        "relaxed_continuation_live_enabled": RELAXED_CONTINUATION_LIVE_ENABLED,
+        "relaxed_continuation_min_micro_score": RELAXED_CONTINUATION_MIN_MICRO_SCORE,
+        "relaxed_continuation_min_net_move_atr": RELAXED_CONTINUATION_MIN_NET_MOVE_ATR,
+        "relaxed_continuation_max_pullback_atr": RELAXED_CONTINUATION_MAX_PULLBACK_ATR,
+        "relaxed_continuation_max_distance_atr": RELAXED_CONTINUATION_MAX_DISTANCE_ATR,
+        "relaxed_continuation_probe_risk_pct": RELAXED_CONTINUATION_PROBE_RISK_PCT,
+        "relaxed_continuation_min_closed_tests": RELAXED_CONTINUATION_MIN_CLOSED_TESTS,
+        "relaxed_continuation_min_strict_closed_tests": RELAXED_CONTINUATION_MIN_STRICT_CLOSED_TESTS,
+        "relaxed_continuation_min_tp0_first_rate": RELAXED_CONTINUATION_MIN_TP0_FIRST_RATE,
+        "relaxed_continuation_min_tp1_first_rate": RELAXED_CONTINUATION_MIN_TP1_FIRST_RATE,
+        "relaxed_continuation_min_expectancy_r": RELAXED_CONTINUATION_MIN_EXPECTANCY_R,
         "near_miss_score_gap": NEAR_MISS_SCORE_GAP,
         "near_miss_execution_gap": NEAR_MISS_EXECUTION_GAP,
         "executive_shadow_horizon_hours": EXECUTIVE_SHADOW_HORIZON_HOURS,
@@ -1765,6 +1809,76 @@ def _clean_setup_reason(signal: dict[str, Any]) -> str:
     return str(signal.get("reason") or signal.get("action") or "UNKNOWN")[:120]
 
 
+
+def compute_execution_conversion_funnel(journal: dict[str, Any]) -> dict[str, Any]:
+    target_types = {
+        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+    }
+    stage_names = [
+        "detected", "score_eligible", "trigger_ready", "entry_supported",
+        "plan_execution_ready", "philosophy_accepts", "executive_pre_conflict_eligible",
+        "entry_published",
+    ]
+    by_setup: dict[str, Any] = {}
+    blocker_totals: dict[str, int] = {}
+    for setup_type in sorted(target_types):
+        records = [s for s in journal.get("signals", []) or [] if isinstance(s, dict) and str(s.get("setup_type") or "") == setup_type]
+        counts = {name: 0 for name in stage_names}
+        thesis_sets = {name: set() for name in stage_names}
+        blockers: dict[str, int] = {}
+        for signal in records:
+            funnel = ((signal.get("audit") or {}).get("execution_funnel") or signal.get("execution_funnel") or {})
+            thesis = str(signal.get("thesis_key") or signal.get("id") or "")
+            revalidation = _signal_revalidation_profile(signal)
+            inferred = {
+                "detected": True,
+                "score_eligible": int(signal.get("candidate_final_score", signal.get("quality", 0)) or 0) >= RISKY_ENTRY_SCORE_BASE,
+                "trigger_ready": bool(signal.get("trigger_ready")),
+                "entry_supported": bool(revalidation.get("entry_supported", True)),
+                "plan_execution_ready": bool(funnel.get("plan_execution_ready", str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS)),
+                "philosophy_accepts": bool(funnel.get("philosophy_accepts", False)),
+                "executive_pre_conflict_eligible": bool(funnel.get("executive_pre_conflict_eligible", False)),
+                "entry_published": str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS,
+            }
+            chain_open = True
+            for name in stage_names:
+                raw_passed = bool(funnel.get(name, inferred[name]))
+                chain_open = bool(chain_open and raw_passed)
+                if chain_open:
+                    counts[name] += 1
+                    if thesis:
+                        thesis_sets[name].add(thesis)
+            blocker = str(
+                funnel.get("blocking_layer")
+                or ("REVALIDATION" if not inferred["entry_supported"] else "LEGACY_UNATTRIBUTED_AFTER_ENTRY_SUPPORTED")
+            )
+            if blocker != "NONE":
+                blockers[blocker] = blockers.get(blocker, 0) + 1
+                blocker_totals[blocker] = blocker_totals.get(blocker, 0) + 1
+        transitions = []
+        for previous, current in zip(stage_names, stage_names[1:]):
+            base = counts[previous]
+            transitions.append({
+                "from": previous, "to": current,
+                "from_count": base, "to_count": counts[current],
+                "conversion_pct": round(100.0 * counts[current] / base, 2) if base else 0.0,
+            })
+        by_setup[setup_type] = {
+            "scan_counts": counts,
+            "unique_thesis_counts": {name: len(values) for name, values in thesis_sets.items()},
+            "transitions": transitions,
+            "blocking_layers": blockers,
+            "revalidation_blocked": blockers.get("REVALIDATION", 0),
+            "executive_director_blocked": blockers.get("EXECUTIVE_DIRECTOR_CONFLICT", 0) + blockers.get("EXECUTIVE_DIRECTOR_POLICY", 0),
+        }
+    return {
+        "by_setup": by_setup,
+        "blocking_layers_total": blocker_totals,
+        "definition": "signal and unique-thesis funnel; REVALIDATION is measured before Executive Director",
+        "updated_at": iso_now(),
+    }
+
 def compute_clean_setup_conversion(journal: dict[str, Any]) -> dict[str, Any]:
     target_types = {
         SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
@@ -2126,6 +2240,7 @@ def load_journal() -> dict[str, Any]:
     journal.setdefault("training_signals", [])
     journal.setdefault("signal_events", [])
     journal.setdefault("trades", [])
+    journal.setdefault("relaxed_continuation_experiments", [])
     if not journal["training_signals"]:
         journal["training_signals"] = [
             s for s in journal.get("signals", [])
@@ -2220,6 +2335,10 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["signal_events"] = _retain_signal_events(
         list(journal.get("signal_events") or []), protected_signal_ids, MAX_JOURNAL
     )
+    journal["relaxed_continuation_experiments"] = [
+        item for item in list(journal.get("relaxed_continuation_experiments") or [])
+        if isinstance(item, dict)
+    ][-RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT:]
     journal["retention_audit"] = {
         "mode": "SIGNAL_ID_REFERENTIAL_RETENTION",
         "max_journal": MAX_JOURNAL,
@@ -4182,6 +4301,241 @@ def _candidate_execution_support_paths(candidate: Candidate, state: Optional[dic
 
 
 
+
+def relaxed_continuation_shadow_profile(candidate: Optional[Candidate]) -> dict[str, Any]:
+    """Counterfactual partial-structure variant for ACCEPTANCE_RETEST_CONTINUATION.
+
+    This function never changes strict readiness. It only states whether the
+    current candidate is eligible for a separate relaxed shadow experiment.
+    """
+    if candidate is None or str(getattr(candidate, "setup_type", "")) != SetupType.ACCEPTANCE_RETEST_CONTINUATION.value:
+        return {"enabled": RELAXED_CONTINUATION_SHADOW_ENABLED, "shadow_eligible": False, "reason": "not_target_setup"}
+
+    components = getattr(candidate, "score_components", {}) or {}
+    reanchor = components.get("continuation_reanchor", {}) or {}
+    structure = reanchor.get("directional_structure", {}) or {}
+    micro = reanchor.get("micro_confirmation", {}) or {}
+    required_closes = max(
+        int(reanchor.get("required_directional_closes", CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES) or CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES),
+        CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES,
+    )
+    checks = {
+        "shadow_enabled": bool(RELAXED_CONTINUATION_SHADOW_ENABLED),
+        "strict_not_ready": not bool(reanchor.get("ready")),
+        "score_floor": int(getattr(candidate, "final_score", 0) or 0) >= max(RELAXED_CONTINUATION_MIN_SCORE, RISKY_ENTRY_SCORE_BASE),
+        "micro_score": safe_float(micro.get("score"), 0.0) >= RELAXED_CONTINUATION_MIN_MICRO_SCORE,
+        "six_bar_structure": bool(reanchor.get("six_bar_structure_confirmed") or micro.get("six_bar_structure_confirmed")),
+        "structure_intact": bool(reanchor.get("structure_intact")),
+        "tf_aligned": bool(reanchor.get("tf_aligned")),
+        "directional_closes": int(reanchor.get("directional_closes", 0) or 0) >= required_closes,
+        "net_move": safe_float(reanchor.get("signed_net_move_atr"), 0.0) >= RELAXED_CONTINUATION_MIN_NET_MOVE_ATR,
+        "controlled_pullback": safe_float(reanchor.get("pullback_atr"), 999.0) <= RELAXED_CONTINUATION_MAX_PULLBACK_ATR,
+        "not_late": safe_float(reanchor.get("distance_atr"), 999.0) <= RELAXED_CONTINUATION_MAX_DISTANCE_ATR,
+        "partial_structure": bool(structure.get("partial")),
+        "strict_structure_missing": not bool(structure.get("supports_side")),
+        "no_opposite_structure": not bool(structure.get("opposite_aligned")),
+        "close_progression": bool(structure.get("close_progression")),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    profile = {
+        "enabled": bool(RELAXED_CONTINUATION_SHADOW_ENABLED),
+        "version": "v8.12_relaxed_partial_structure_shadow",
+        "policy": "RELAXED_PARTIAL_STRUCTURE",
+        "shadow_eligible": all(checks.values()),
+        "strict_ready": bool(reanchor.get("ready")),
+        "checks": checks,
+        "failed_checks": failed,
+        "micro_score": safe_float(micro.get("score"), 0.0),
+        "directional_closes": int(reanchor.get("directional_closes", 0) or 0),
+        "required_directional_closes": required_closes,
+        "signed_net_move_atr": safe_float(reanchor.get("signed_net_move_atr"), 0.0),
+        "pullback_atr": safe_float(reanchor.get("pullback_atr"), 999.0),
+        "distance_atr": safe_float(reanchor.get("distance_atr"), 999.0),
+        "directional_structure": structure,
+        "strict_thresholds_changed": False,
+        "live_eligible": False,
+        "live_policy": {},
+    }
+    candidate.relaxed_continuation_profile = profile
+    components["relaxed_continuation"] = profile
+    candidate.score_components = components
+    return profile
+
+
+def _shadow_is_terminal(shadow: dict[str, Any]) -> bool:
+    status = str((shadow or {}).get("status") or "")
+    return bool(
+        status.startswith("EXPIRED_")
+        or status in {"STOP_FIRST", "STOP_AFTER_TARGET", "AMBIGUOUS_INTRABAR", "INVALID_NO_OPEN_TIME", "INVALID_GEOMETRY"}
+    )
+
+
+def _shadow_target_rank(shadow: dict[str, Any]) -> int:
+    return {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}.get(str((shadow or {}).get("max_target_hit") or "NONE"), 0)
+
+
+def _shadow_counterfactual_r(shadow: dict[str, Any]) -> Optional[float]:
+    """Conservative partial-plan R proxy; never labeled as realized PnL."""
+    if not _shadow_is_terminal(shadow):
+        return None
+    status = str(shadow.get("status") or "")
+    if status in {"AMBIGUOUS_INTRABAR", "INVALID_NO_OPEN_TIME", "INVALID_GEOMETRY"}:
+        return None
+    if status == "STOP_FIRST":
+        return -1.0
+
+    entry = safe_float(shadow.get("entry"), 0.0)
+    stop = safe_float(shadow.get("stop"), 0.0)
+    risk = abs(entry - stop)
+    if risk <= 1e-9:
+        return None
+    partial = dict(shadow.get("partial_plan") or {})
+    fractions = {
+        "TP0": safe_float(partial.get("tp0"), TP0_SIZE_PCT),
+        "TP1": safe_float(partial.get("tp1"), TP1_SIZE_PCT),
+        "TP2": safe_float(partial.get("tp2"), TP2_SIZE_PCT),
+        "TP3": safe_float(partial.get("tp3_runner"), TP3_RUNNER_PCT),
+    }
+    rank = _shadow_target_rank(shadow)
+    result = 0.0
+    used = 0.0
+    for idx, name in enumerate(("TP0", "TP1", "TP2", "TP3"), start=1):
+        if rank < idx:
+            continue
+        level = safe_float(shadow.get(name.lower()), 0.0)
+        if level <= 0:
+            continue
+        rr = abs(level - entry) / risk
+        fraction = max(0.0, fractions[name])
+        result += fraction * rr
+        used += fraction
+    remaining = max(0.0, 1.0 - used)
+    if status == "STOP_AFTER_TARGET":
+        result -= remaining
+    return round(result, 4)
+
+
+def _deduplicated_shadow_plans(events: list[Any], policy_name: str = "") -> list[dict[str, Any]]:
+    canonical: dict[str, dict[str, Any]] = {}
+    rank_order = {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        shadow = event.get("shadow_plan") or event
+        if not isinstance(shadow, dict) or not shadow:
+            continue
+        if policy_name and str(shadow.get("policy_test") or "") != policy_name:
+            continue
+        key = str(shadow.get("test_key") or f"{shadow.get('side')}|{shadow.get('entry')}|{shadow.get('stop')}|{shadow.get('tp1')}")
+        old = canonical.get(key)
+        if old is None:
+            canonical[key] = shadow
+            continue
+        new_terminal = _shadow_is_terminal(shadow)
+        old_terminal = _shadow_is_terminal(old)
+        new_rank = rank_order.get(str(shadow.get("max_target_hit") or "NONE"), 0)
+        old_rank = rank_order.get(str(old.get("max_target_hit") or "NONE"), 0)
+        if (new_terminal and not old_terminal) or new_rank > old_rank:
+            canonical[key] = shadow
+    return list(canonical.values())
+
+
+def _counterfactual_policy_stats(shadows: list[dict[str, Any]]) -> dict[str, Any]:
+    terminal = [s for s in shadows if _shadow_is_terminal(s)]
+    valid = [s for s in terminal if str(s.get("status") or "") not in {"AMBIGUOUS_INTRABAR", "INVALID_NO_OPEN_TIME", "INVALID_GEOMETRY"}]
+    stop_first = sum(1 for s in valid if str(s.get("status") or "") == "STOP_FIRST")
+    tp0_first = sum(1 for s in valid if _shadow_target_rank(s) >= 1 and str(s.get("status") or "") != "AMBIGUOUS_INTRABAR")
+    tp1_first = sum(1 for s in valid if _shadow_target_rank(s) >= 2 and str(s.get("status") or "") != "AMBIGUOUS_INTRABAR")
+    r_values = [value for value in (_shadow_counterfactual_r(s) for s in valid) if value is not None]
+    denominator = len(valid)
+    return {
+        "unique_tests": len(shadows),
+        "terminal_tests": len(terminal),
+        "valid_terminal_tests": denominator,
+        "open_tests": len(shadows) - len(terminal),
+        "stop_first": stop_first,
+        "tp0_first": tp0_first,
+        "tp1_first": tp1_first,
+        "stop_first_rate": round(stop_first / denominator, 4) if denominator else 0.0,
+        "tp0_first_rate": round(tp0_first / denominator, 4) if denominator else 0.0,
+        "tp1_first_rate": round(tp1_first / denominator, 4) if denominator else 0.0,
+        "expectancy_r": round(sum(r_values) / len(r_values), 4) if r_values else 0.0,
+        "expectancy_sample": len(r_values),
+        "interpretation": "deduplicated counterfactual path expectancy; not realized PnL",
+    }
+
+
+def compute_relaxed_continuation_policy_comparison(journal: dict[str, Any]) -> dict[str, Any]:
+    strict_events = []
+    for event in journal.get("executive_divergences", []) or []:
+        if not isinstance(event, dict) or str(event.get("setup_type") or "") != SetupType.ACCEPTANCE_RETEST_CONTINUATION.value:
+            continue
+        shadow = event.get("shadow_plan") or {}
+        if not shadow:
+            continue
+        if str(shadow.get("policy_test") or "") in {"STRICT_ENTRY_SUPPORTED", "DIRECTIONAL_CLOSES_THRESHOLD"}:
+            strict_events.append(event)
+    relaxed_events = list(journal.get("relaxed_continuation_experiments") or [])
+    strict = _counterfactual_policy_stats(_deduplicated_shadow_plans(strict_events))
+    relaxed = _counterfactual_policy_stats(_deduplicated_shadow_plans(relaxed_events, "RELAXED_PARTIAL_STRUCTURE"))
+
+    checks = {
+        "live_switch_enabled": bool(RELAXED_CONTINUATION_LIVE_ENABLED),
+        "enough_relaxed_terminal_tests": relaxed["valid_terminal_tests"] >= RELAXED_CONTINUATION_MIN_CLOSED_TESTS,
+        "enough_strict_terminal_tests": strict["valid_terminal_tests"] >= RELAXED_CONTINUATION_MIN_STRICT_CLOSED_TESTS,
+        "positive_expectancy": relaxed["expectancy_r"] > RELAXED_CONTINUATION_MIN_EXPECTANCY_R,
+        "tp0_first_rate": relaxed["tp0_first_rate"] >= RELAXED_CONTINUATION_MIN_TP0_FIRST_RATE,
+        "tp1_first_rate": relaxed["tp1_first_rate"] >= RELAXED_CONTINUATION_MIN_TP1_FIRST_RATE,
+        "stop_first_better_than_strict": bool(
+            strict["valid_terminal_tests"] >= RELAXED_CONTINUATION_MIN_STRICT_CLOSED_TESTS
+            and relaxed["stop_first_rate"] < strict["stop_first_rate"]
+        ),
+    }
+    return {
+        "strict": strict,
+        "relaxed": relaxed,
+        "graduation_checks": checks,
+        "live_probe_enabled": all(checks.values()),
+        "live_mode": "PROBE_ONLY" if all(checks.values()) else "SHADOW_ONLY",
+        "risk_cap_pct": RELAXED_CONTINUATION_PROBE_RISK_PCT,
+        "strict_thresholds_changed": False,
+        "updated_at": iso_now(),
+    }
+
+
+def apply_relaxed_continuation_live_override(candidate: Candidate, plan: TradePlan, journal: dict[str, Any]) -> dict[str, Any]:
+    profile = relaxed_continuation_shadow_profile(candidate)
+    policy = compute_relaxed_continuation_policy_comparison(journal)
+    common_execution_ok = bool((candidate.score_components or {}).get("common_execution_ok", False))
+    live_eligible = bool(
+        profile.get("shadow_eligible")
+        and policy.get("live_probe_enabled")
+        and plan.valid
+        and common_execution_ok
+        and int(candidate.final_score or 0) >= max(RELAXED_CONTINUATION_MIN_SCORE, RISKY_ENTRY_SCORE_BASE)
+    )
+    profile["live_policy"] = policy
+    profile["live_eligible"] = live_eligible
+    profile["live_mode"] = "PROBE_ONLY" if live_eligible else "SHADOW_ONLY"
+    candidate.relaxed_continuation_profile = profile
+    candidate.score_components["relaxed_continuation"] = profile
+    if live_eligible:
+        plan.execution_ready = True
+        candidate.entry_stage = EntryStage.PROBE.value
+        candidate.stage_plan["stage"] = EntryStage.PROBE.value
+        candidate.stage_plan["base_risk_pct"] = RELAXED_CONTINUATION_PROBE_RISK_PCT
+        candidate.stage_plan["relaxed_live_override"] = {
+            "enabled": True,
+            "mode": "PROBE_ONLY",
+            "risk_cap_pct": RELAXED_CONTINUATION_PROBE_RISK_PCT,
+            "policy": policy,
+        }
+        plan.entry_stage = EntryStage.PROBE.value
+        plan.position_risk_pct = round(min(plan.position_risk_pct, RELAXED_CONTINUATION_PROBE_RISK_PCT), 4)
+        plan.risk_pct = plan.position_risk_pct
+        plan.stage_plan = candidate.stage_plan
+    return profile
+
 def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
     """Canonical build_trade_plan revalidation gate with strict alternatives."""
     reval_profile = (
@@ -4190,6 +4544,7 @@ def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
         or {}
     )
     support_paths = _candidate_execution_support_paths(candidate)
+    relaxed_profile = relaxed_continuation_shadow_profile(candidate)
     strict_alternative_support = bool(support_paths.get("alternative_ready"))
     base_ok = bool(
         not reval_profile.get("hard_expired")
@@ -4204,6 +4559,8 @@ def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
         "base_ok": base_ok,
         "strict_alternative_support": strict_alternative_support,
         "execution_support_paths": support_paths,
+        "relaxed_shadow_profile": relaxed_profile,
+        "relaxed_shadow_eligible": bool(relaxed_profile.get("shadow_eligible")),
         "quality_threshold_changed": False,
     }
 
@@ -7936,6 +8293,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
     execution_support_paths = revalidation_gate["execution_support_paths"]
     revalidation_ok = bool(revalidation_gate["ok"])
     if candidate.score_components is not None:
+        candidate.score_components["common_execution_ok"] = common_execution_ok
         candidate.score_components["execution_support_paths"] = execution_support_paths
         candidate.score_components["revalidation_gate"] = revalidation_gate
         candidate.score_components["revalidation_ok"] = revalidation_ok
@@ -8281,8 +8639,8 @@ def build_executive_divergence_audit(
             "source_signal_id": decision.id,
             "thesis_key": getattr(decision.candidate, "thesis_key", ""),
             "thesis_family_key": thesis_family_key(decision.candidate),
-            "test_key": f"{decision.side}|{round_price(decision.plan.entry)}|{round_price(decision.plan.stop)}",
-            "policy_test": "DIRECTIONAL_CLOSES_THRESHOLD",
+            "test_key": f"STRICT|{getattr(decision.candidate, 'thesis_key', '') or thesis_family_key(decision.candidate)}|{decision.side}|{round_price(decision.plan.entry)}|{round_price(decision.plan.stop)}|{round_price(decision.plan.tp1)}",
+            "policy_test": "STRICT_ENTRY_SUPPORTED" if bool((getattr(decision.candidate, "revalidation_profile", {}) or {}).get("entry_supported", True)) else "DIRECTIONAL_CLOSES_THRESHOLD",
             "entry": round_price(decision.plan.entry),
             "stop": round_price(decision.plan.stop),
             "tp0": round_price(decision.plan.tp0),
@@ -8513,6 +8871,139 @@ def update_executive_shadow_outcomes(journal: dict[str, Any], context: dict[str,
     })
 
 
+
+def _update_shadow_plan_path(shadow: dict[str, Any], candles: list[Candle], current_price: float, now: datetime) -> None:
+    if not shadow or shadow.get("status") not in {"OPEN", "TP0_REACHED", "TP1_REACHED", "TP2_REACHED", "TP3_REACHED"}:
+        return
+    opened = _parse_iso_datetime(shadow.get("opened_at"))
+    expires = _parse_iso_datetime(shadow.get("expires_at"))
+    if not opened:
+        shadow["status"] = "INVALID_NO_OPEN_TIME"
+        return
+    opened_ms = int(opened.timestamp() * 1000)
+    last_processed = int(shadow.get("last_processed_ts", 0) or 0)
+    sequence = [c for c in candles if c.ts >= opened_ms and c.ts > last_processed]
+    side = str(shadow.get("side") or "")
+    entry = safe_float(shadow.get("entry"), 0.0)
+    stop = safe_float(shadow.get("stop"), 0.0)
+    risk = abs(entry - stop)
+    if entry <= 0 or stop <= 0 or risk <= 1e-9 or side not in {Side.LONG.value, Side.SHORT.value}:
+        shadow["status"] = "INVALID_GEOMETRY"
+        return
+    levels = [(name, safe_float(shadow.get(name.lower()), 0.0)) for name in ("TP0", "TP1", "TP2", "TP3")]
+    levels = [(name, level) for name, level in levels if level > 0]
+    order = {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}
+    max_target = str(shadow.get("max_target_hit") or "NONE")
+    best = safe_float(shadow.get("best_price"), entry) or entry
+    worst = safe_float(shadow.get("worst_price"), entry) or entry
+    terminal = False
+    for candle in sequence:
+        high, low = safe_float(candle.high, entry), safe_float(candle.low, entry)
+        if side == Side.LONG.value:
+            best, worst = max(best, high), min(worst, low)
+            stop_hit = low <= stop
+            hits = [name for name, level in levels if high >= level and order[name] > order.get(max_target, 0)]
+        else:
+            best, worst = min(best, low), max(worst, high)
+            stop_hit = high >= stop
+            hits = [name for name, level in levels if low <= level and order[name] > order.get(max_target, 0)]
+        if stop_hit and hits:
+            shadow["status"] = "AMBIGUOUS_INTRABAR"
+            shadow["ambiguity"] = f"stop and {max(hits, key=lambda name: order[name])} touched in same 3M candle"
+            shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+            terminal = True
+            break
+        if hits:
+            max_target = max(hits, key=lambda name: order[name])
+            shadow["max_target_hit"] = max_target
+            shadow["status"] = f"{max_target}_REACHED"
+            shadow[f"{max_target.lower()}_hit_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+        if stop_hit:
+            shadow["status"] = "STOP_AFTER_TARGET" if order.get(max_target, 0) > 0 else "STOP_FIRST"
+            shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+            terminal = True
+            break
+        shadow["last_processed_ts"] = max(int(shadow.get("last_processed_ts", 0) or 0), int(candle.ts))
+    if side == Side.LONG.value:
+        if current_price > 0:
+            best, worst = max(best, current_price), min(worst, current_price)
+        mfe_r, mae_r = max(0.0, (best - entry) / risk), max(0.0, (entry - worst) / risk)
+    else:
+        if current_price > 0:
+            best, worst = min(best, current_price), max(worst, current_price)
+        mfe_r, mae_r = max(0.0, (entry - best) / risk), max(0.0, (worst - entry) / risk)
+    shadow.update({
+        "best_price": round_price(best), "worst_price": round_price(worst),
+        "mfe_r": round(mfe_r, 3), "mae_r": round(mae_r, 3), "updated_at": now.isoformat(),
+    })
+    if not terminal and expires and now >= expires:
+        shadow["status"] = f"EXPIRED_{max_target}" if max_target != "NONE" else "EXPIRED_NO_TARGET"
+        shadow["closed_at"] = now.isoformat()
+
+
+def update_relaxed_continuation_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
+    experiments = journal.get("relaxed_continuation_experiments") or []
+    candles = sorted(
+        [c for c in ((context.get("candles") or {}).get("3m") or []) if getattr(c, "confirmed", True)],
+        key=lambda c: c.ts,
+    )
+    current_price = safe_float(context.get("price"), 0.0)
+    now = now_utc()
+    for event in experiments:
+        if isinstance(event, dict):
+            _update_shadow_plan_path(event.get("shadow_plan") or {}, candles, current_price, now)
+    journal.setdefault("analytics", {})["relaxed_continuation_policy"] = compute_relaxed_continuation_policy_comparison(journal)
+
+
+def record_relaxed_continuation_shadow_experiment(journal: dict[str, Any], decision: Decision) -> bool:
+    candidate, plan = decision.candidate, decision.plan
+    if not RELAXED_CONTINUATION_SHADOW_ENABLED or candidate is None or plan is None:
+        return False
+    profile = (getattr(candidate, "score_components", {}) or {}).get("relaxed_continuation", {}) or getattr(candidate, "relaxed_continuation_profile", {}) or {}
+    if not profile.get("shadow_eligible") or decision.action in EXECUTABLE_ENTRY_ACTIONS:
+        return False
+    opened_at = _parse_iso_datetime(decision.time) or now_utc()
+    thesis_identity = str(getattr(candidate, "thesis_key", "") or thesis_family_key(candidate))
+    test_key = "|".join([
+        "RELAXED_PARTIAL_STRUCTURE", thesis_identity, decision.side,
+        str(round_price(plan.entry)), str(round_price(plan.stop)), str(round_price(plan.tp1)),
+    ])
+    experiments = journal.setdefault("relaxed_continuation_experiments", [])
+    if any(str(((item or {}).get("shadow_plan") or {}).get("test_key") or "") == test_key for item in experiments if isinstance(item, dict)):
+        return False
+    event = {
+        "id": decision.id,
+        "time": decision.time,
+        "side": decision.side,
+        "setup_type": decision.setup_type,
+        "quality": decision.quality,
+        "thesis_key": getattr(candidate, "thesis_key", ""),
+        "thesis_family_key": thesis_family_key(candidate),
+        "relaxed_profile": profile,
+        "strict_final_action": decision.action,
+        "shadow_plan": {
+            "status": "OPEN",
+            "opened_at": opened_at.isoformat(),
+            "expires_at": (opened_at + timedelta(hours=EXECUTIVE_SHADOW_HORIZON_HOURS)).isoformat(),
+            "side": decision.side,
+            "source_signal_id": decision.id,
+            "thesis_key": getattr(candidate, "thesis_key", ""),
+            "thesis_family_key": thesis_family_key(candidate),
+            "test_key": test_key,
+            "policy_test": "RELAXED_PARTIAL_STRUCTURE",
+            "entry": round_price(plan.entry), "stop": round_price(plan.stop),
+            "tp0": round_price(plan.tp0), "tp1": round_price(plan.tp1),
+            "tp2": round_price(plan.tp2), "tp3": round_price(plan.tp3),
+            "partial_plan": dict(plan.partial_plan or {}),
+            "last_processed_ts": 0, "max_target_hit": "NONE", "mfe_r": 0.0, "mae_r": 0.0,
+            "note": "deduplicated relaxed-policy counterfactual; not executable or realized PnL",
+        },
+    }
+    experiments.append(event)
+    if len(experiments) > RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT:
+        del experiments[:-RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT]
+    return True
+
 def record_executive_divergence(journal: dict[str, Any], payload: dict[str, Any]) -> None:
     audit = ((payload.get("audit") or {}).get("executive_divergence") or {})
     if not audit:
@@ -8599,6 +9090,57 @@ def executive_authority_decision(
     executive_audit = executive_payload.get("audit") or {}
     decision.audit["adaptive_conflict_resolver"] = executive_audit.get("adaptive_conflict_resolver", {})
     decision.audit["risky_entry_score_profile"] = executive_audit.get("risky_entry_score_profile", {})
+    revalidation = getattr(decision.candidate, "revalidation_profile", {}) if decision.candidate else {}
+    entry_supported = bool((revalidation or {}).get("entry_supported", True))
+    relaxed_live_override = bool(
+        decision.candidate
+        and (((decision.candidate.score_components or {}).get("relaxed_continuation") or {}).get("live_eligible"))
+    )
+    effective_entry_supported = bool(entry_supported or relaxed_live_override)
+    plan_exists = decision.plan is not None
+    plan_valid = bool(decision.plan and decision.plan.valid)
+    plan_execution_ready = bool(decision.plan and decision.plan.execution_ready)
+    philosophy_accepts = bool((executive_payload.get("trading_philosophy") or {}).get("recommendation") == "ACCEPT")
+    risk_blocked = bool(executive_audit.get("risk_blocked"))
+    hard_conflict = bool(executive_audit.get("has_hard_conflict"))
+    conflict_override = bool((executive_audit.get("adaptive_conflict_resolver") or {}).get("conflict_override"))
+    entry_published = decision.action in EXECUTABLE_ENTRY_ACTIONS
+    if entry_published:
+        blocking_layer = "NONE"
+    elif not effective_entry_supported:
+        blocking_layer = "REVALIDATION"
+    elif not plan_exists or not plan_valid or not plan_execution_ready:
+        blocking_layer = "PLAN_EXECUTION"
+    elif risk_blocked:
+        blocking_layer = "RISK_MANAGER"
+    elif not philosophy_accepts:
+        blocking_layer = "TRADING_PHILOSOPHY"
+    elif hard_conflict and not conflict_override:
+        blocking_layer = "EXECUTIVE_DIRECTOR_CONFLICT"
+    elif not entry_published:
+        blocking_layer = "EXECUTIVE_DIRECTOR_POLICY"
+    else:
+        blocking_layer = "NONE"
+    decision.audit["execution_funnel"] = {
+        "detected": decision.candidate is not None,
+        "score_eligible": bool(decision.candidate and decision.candidate.final_score >= RISKY_ENTRY_SCORE_BASE),
+        "trigger_ready": bool(decision.candidate and decision.candidate.trigger_ready),
+        "entry_supported": entry_supported,
+        "relaxed_policy_supported": relaxed_live_override,
+        "effective_entry_supported": effective_entry_supported,
+        "revalidation_blocked": not effective_entry_supported,
+        "plan_exists": plan_exists,
+        "plan_valid": plan_valid,
+        "plan_execution_ready": plan_execution_ready,
+        "philosophy_accepts": philosophy_accepts,
+        "risk_blocked": risk_blocked,
+        "hard_conflict": hard_conflict,
+        "conflict_override": conflict_override,
+        "executive_pre_conflict_eligible": bool(executive_audit.get("execution_eligible_pre_conflict")),
+        "entry_published": entry_published,
+        "blocking_layer": blocking_layer,
+        "strict_revalidation_separate_from_executive": True,
+    }
     decision.audit["executive_divergence"] = build_executive_divergence_audit(
         decision,
         report,
@@ -8769,6 +9311,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
     # Build a complete draft. The wrapper above is the only place that may
     # convert this analytical recommendation into a published action.
     plan = build_trade_plan(context, best)
+    apply_relaxed_continuation_live_override(best, plan, journal)
     quality = int(best.final_score or 0)
     reval_profile = getattr(best, "revalidation_profile", {}) or {}
 
@@ -10222,6 +10765,8 @@ def compute_analytics(journal: dict) -> dict:
     existing["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(journal)
     existing["execution_path_health"] = compute_execution_path_health(journal)
     existing["clean_setup_conversion"] = compute_clean_setup_conversion(journal)
+    existing["execution_conversion_funnel"] = compute_execution_conversion_funnel(journal)
+    existing["relaxed_continuation_policy"] = compute_relaxed_continuation_policy_comparison(journal)
     return existing
 
 
@@ -10245,6 +10790,7 @@ def run_bot() -> None:
         print("NO PRICE — abort")
         return
     update_executive_shadow_outcomes(journal, context)
+    update_relaxed_continuation_shadow_outcomes(journal, context)
     print(f"PRICE {context['price']:.4f} | {context.get('instrument_label', INSTRUMENT_LABEL)} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'TradingView')}")
 
     active = active_trade_from_state(state)
@@ -10357,6 +10903,8 @@ def run_bot() -> None:
             },
             "innovation_profile": getattr(decision.candidate, "innovation_profile", {}) or components.get("innovation_profile", {}),
             "trigger_revalidation": getattr(decision.candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}),
+            "relaxed_continuation": getattr(decision.candidate, "relaxed_continuation_profile", {}) or components.get("relaxed_continuation", {}),
+            "execution_funnel": (decision.audit or {}).get("execution_funnel", {}),
             "thesis_key": decision.candidate.thesis_key,
             "thesis": decision.candidate.thesis,
             "thesis_family_key": thesis_family_key(decision.candidate),
@@ -10395,6 +10943,7 @@ def run_bot() -> None:
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"], "thesis_family_key": payload.get("thesis_family_key", "")})
     journal["signals"].append(payload)
     record_executive_divergence(journal, payload)
+    record_relaxed_continuation_shadow_experiment(journal, decision)
     if payload.get("score_features"):
         journal.setdefault("training_signals", []).append(payload)
 
@@ -11346,6 +11895,148 @@ def test_execution_path_health_counts_standard_and_fallback() -> bool:
     )
 
 
+
+def _synthetic_policy_shadow(key: str, status: str, max_target: str) -> dict[str, Any]:
+    return {
+        "shadow_plan": {
+            "test_key": key, "policy_test": "RELAXED_PARTIAL_STRUCTURE",
+            "status": status, "max_target_hit": max_target,
+            "entry": 100.0, "stop": 99.0, "tp0": 101.0, "tp1": 102.0, "tp2": 103.0, "tp3": 104.0,
+            "partial_plan": {"tp0": 0.2, "tp1": 0.35, "tp2": 0.25, "tp3_runner": 0.2},
+        }
+    }
+
+
+def test_relaxed_profile_is_shadow_only_and_strict_unchanged() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90, final_score=74,
+        score_components={
+            "continuation_reanchor": {
+                "ready": False, "six_bar_structure_confirmed": True,
+                "structure_intact": True, "tf_aligned": True,
+                "directional_closes": 6, "required_directional_closes": 4,
+                "signed_net_move_atr": 1.1, "pullback_atr": 0.1, "distance_atr": 0.5,
+                "micro_confirmation": {"score": 95, "six_bar_structure_confirmed": True},
+                "directional_structure": {
+                    "partial": True, "supports_side": False, "opposite_aligned": False, "close_progression": True,
+                },
+            }
+        },
+        revalidation_profile={"state": "STALE", "needs_revalidation": True, "entry_supported": False},
+    )
+    profile = relaxed_continuation_shadow_profile(candidate)
+    gate = _candidate_revalidation_gate(candidate)
+    return bool(profile.get("shadow_eligible") and not gate.get("ok") and not profile.get("live_eligible"))
+
+
+def test_relaxed_shadow_deduplicates_thesis_geometry() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=74,
+        thesis_key="same-thesis", score_components={"continuation_reanchor": {
+            "ready": False, "six_bar_structure_confirmed": True, "structure_intact": True, "tf_aligned": True,
+            "directional_closes": 6, "required_directional_closes": 4, "signed_net_move_atr": 1.0,
+            "pullback_atr": 0.1, "distance_atr": 0.4, "micro_confirmation": {"score": 95},
+            "directional_structure": {"partial": True, "supports_side": False, "opposite_aligned": False, "close_progression": True},
+        }}
+    )
+    relaxed_continuation_shadow_profile(candidate)
+    plan = TradePlan(entry=100, stop=99, tp0=101, tp1=102, tp2=103, tp3=104, risk_pct=0.05, rr0=1, rr1=2, rr2=3, rr3=4, valid=True)
+    decision = Decision(id="r1", time=iso_now(), action=Action.NO_SETUP.value, side=Side.LONG.value,
+                        setup_type=candidate.setup_type, quality=74, reason="test", regime="TREND", candidate=candidate, plan=plan)
+    journal = {"relaxed_continuation_experiments": []}
+    first = record_relaxed_continuation_shadow_experiment(journal, decision)
+    decision.id = "r2"
+    second = record_relaxed_continuation_shadow_experiment(journal, decision)
+    return bool(first and not second and len(journal["relaxed_continuation_experiments"]) == 1)
+
+
+def test_relaxed_policy_graduates_only_on_positive_counterfactuals() -> bool:
+    relaxed = []
+    for i in range(30):
+        if i < 5:
+            relaxed.append(_synthetic_policy_shadow(f"r{i}", "STOP_FIRST", "NONE"))
+        elif i < 12:
+            relaxed.append(_synthetic_policy_shadow(f"r{i}", "EXPIRED_TP0", "TP0"))
+        else:
+            relaxed.append(_synthetic_policy_shadow(f"r{i}", "EXPIRED_TP1", "TP1"))
+    strict = []
+    for i in range(10):
+        shadow = _synthetic_policy_shadow(f"s{i}", "STOP_FIRST" if i < 7 else "EXPIRED_TP1", "NONE" if i < 7 else "TP1")
+        shadow["setup_type"] = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+        shadow["shadow_plan"]["policy_test"] = "STRICT_ENTRY_SUPPORTED"
+        strict.append(shadow)
+    journal = {"relaxed_continuation_experiments": relaxed, "executive_divergences": strict}
+    policy = compute_relaxed_continuation_policy_comparison(journal)
+    return bool(
+        policy.get("live_probe_enabled")
+        and policy.get("live_mode") == "PROBE_ONLY"
+        and policy.get("risk_cap_pct") <= 0.10
+        and policy["relaxed"]["stop_first_rate"] < policy["strict"]["stop_first_rate"]
+        and policy["relaxed"]["expectancy_r"] > 0
+    )
+
+
+
+def test_relaxed_live_override_is_tiny_probe_only() -> bool:
+    relaxed = []
+    for i in range(30):
+        if i < 5:
+            relaxed.append(_synthetic_policy_shadow(f"lr{i}", "STOP_FIRST", "NONE"))
+        elif i < 12:
+            relaxed.append(_synthetic_policy_shadow(f"lr{i}", "EXPIRED_TP0", "TP0"))
+        else:
+            relaxed.append(_synthetic_policy_shadow(f"lr{i}", "EXPIRED_TP1", "TP1"))
+    strict = []
+    for i in range(10):
+        item = _synthetic_policy_shadow(f"ls{i}", "STOP_FIRST" if i < 7 else "EXPIRED_TP1", "NONE" if i < 7 else "TP1")
+        item["setup_type"] = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+        item["shadow_plan"]["policy_test"] = "STRICT_ENTRY_SUPPORTED"
+        strict.append(item)
+    journal = {"relaxed_continuation_experiments": relaxed, "executive_divergences": strict}
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=74,
+        score_components={"common_execution_ok": True, "continuation_reanchor": {
+            "ready": False, "six_bar_structure_confirmed": True, "structure_intact": True, "tf_aligned": True,
+            "directional_closes": 6, "required_directional_closes": 4, "signed_net_move_atr": 1.0,
+            "pullback_atr": 0.1, "distance_atr": 0.4, "micro_confirmation": {"score": 95},
+            "directional_structure": {"partial": True, "supports_side": False, "opposite_aligned": False, "close_progression": True},
+        }}, stage_plan={"stage": EntryStage.WAIT_RETEST.value, "base_risk_pct": 0.2}
+    )
+    plan = TradePlan(entry=100, stop=99, tp0=101, tp1=102, tp2=103, tp3=104,
+                     risk_pct=0.3, rr0=1, rr1=2, rr2=3, rr3=4,
+                     position_risk_pct=0.3, valid=True, execution_ready=False)
+    profile = apply_relaxed_continuation_live_override(candidate, plan, journal)
+    return bool(
+        profile.get("live_eligible")
+        and profile.get("live_mode") == "PROBE_ONLY"
+        and plan.execution_ready
+        and plan.position_risk_pct <= RELAXED_CONTINUATION_PROBE_RISK_PCT
+        and candidate.entry_stage == EntryStage.PROBE.value
+    )
+
+
+def test_execution_funnel_separates_revalidation_and_executive() -> bool:
+    setup = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+    journal = {"signals": [
+        {"id": "a", "thesis_key": "a", "setup_type": setup, "quality": 74, "candidate_final_score": 74,
+         "trigger_ready": True, "trigger_revalidation": {"entry_supported": False},
+         "audit": {"execution_funnel": {"detected": True, "score_eligible": True, "trigger_ready": True,
+             "entry_supported": False, "plan_execution_ready": False, "philosophy_accepts": False,
+             "executive_pre_conflict_eligible": False, "entry_published": False, "blocking_layer": "REVALIDATION"}}},
+        {"id": "b", "thesis_key": "b", "setup_type": setup, "quality": 74, "candidate_final_score": 74,
+         "trigger_ready": True, "trigger_revalidation": {"entry_supported": True},
+         "audit": {"execution_funnel": {"detected": True, "score_eligible": True, "trigger_ready": True,
+             "entry_supported": True, "plan_execution_ready": True, "philosophy_accepts": True,
+             "executive_pre_conflict_eligible": True, "entry_published": False, "blocking_layer": "EXECUTIVE_DIRECTOR_CONFLICT"}}},
+    ]}
+    funnel = compute_execution_conversion_funnel(journal)["by_setup"][setup]
+    return bool(funnel["revalidation_blocked"] == 1 and funnel["executive_director_blocked"] == 1)
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -11386,6 +12077,11 @@ def _run_self_test() -> bool:
     checks.append(("TP0 >=50% MFE giveback activates breakeven protection", test_tp0_giveback_activates_breakeven_protection()))
     checks.append(("NOT_LEARNED scoring is explicit", test_not_learned_scoring_is_explicit()))
     checks.append(("execution path health separates standard/fallback", test_execution_path_health_counts_standard_and_fallback()))
+    checks.append(("relaxed continuation remains shadow-only before graduation", test_relaxed_profile_is_shadow_only_and_strict_unchanged()))
+    checks.append(("relaxed shadow deduplicates thesis geometry", test_relaxed_shadow_deduplicates_thesis_geometry()))
+    checks.append(("relaxed policy graduates only on positive counterfactuals", test_relaxed_policy_graduates_only_on_positive_counterfactuals()))
+    checks.append(("relaxed live override is tiny PROBE_ONLY", test_relaxed_live_override_is_tiny_probe_only()))
+    checks.append(("execution funnel separates revalidation from executive", test_execution_funnel_separates_revalidation_and_executive()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -12033,6 +12729,14 @@ def build_executive_decision_object(
         risk_blocked=risk_blocked,
         philosophy_accepts=philosophy_accepts,
     )
+    relaxed_live_profile = (components.get("relaxed_continuation") or getattr(candidate, "relaxed_continuation_profile", {}) or {})
+    relaxed_live_eligible = bool(
+        relaxed_live_profile.get("live_eligible")
+        and plan_executable
+        and philosophy_accepts
+        and not has_hard_conflict
+        and not risk_blocked
+    )
 
     confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
     if confirmation_pending:
@@ -12041,6 +12745,9 @@ def build_executive_decision_object(
     elif risk_blocked:
         action = ExecutiveDecisionState.WAIT.value
         reason = "Risk budget exhausted; entry blocked"
+    elif relaxed_live_eligible:
+        action = ExecutiveDecisionState.PROBE.value
+        reason = "Relaxed continuation policy graduated from shadow evidence; tiny PROBE_ONLY entry allowed"
     elif conflict_override:
         action = ExecutiveDecisionState.PROBE_REDUCED.value
         reason = (
@@ -12139,6 +12846,11 @@ def build_executive_decision_object(
                 "after_fix_action": action,
             },
             "probe_entry_eligibility": probe_profile,
+            "relaxed_continuation_live": {
+                "eligible": relaxed_live_eligible,
+                "profile": relaxed_live_profile,
+                "mode": "PROBE_ONLY" if relaxed_live_eligible else "SHADOW_ONLY",
+            },
             "risky_entry_score_profile": score_profile,
             "execution_eligible_pre_conflict": bool(
                 philosophy_accepts and plan_executable and score_profile.get("eligible") and not risk_blocked
@@ -12220,7 +12932,10 @@ def executive_decision_engine(
         if candidate is not None:
             candidate.entry_stage = EntryStage.PROBE.value
         if plan is not None:
-            if internal_action == ExecutiveDecisionState.PROBE_REDUCED.value:
+            relaxed_live = bool(((getattr(candidate, "score_components", {}) or {}).get("relaxed_continuation", {}) or {}).get("live_eligible"))
+            if internal_action == ExecutiveDecisionState.PROBE.value and relaxed_live:
+                risk_cap = RELAXED_CONTINUATION_PROBE_RISK_PCT
+            elif internal_action == ExecutiveDecisionState.PROBE_REDUCED.value:
                 risk_cap = max(0.02, PROBE_RISK_PCT * 0.50)
             elif internal_action == ExecutiveDecisionState.GRAY_RISKY.value:
                 risk_cap = RISKY_GRAY_RISK_PCT
@@ -12515,7 +13230,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.11")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.12")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
