@@ -4,9 +4,9 @@
   "active_trade": null,
   "opportunity": null,
   "scan_3m": {
-    "last_scanned_3m_ts": 1783930500000,
-    "last_run_processed": 2,
-    "processed_count": 508,
+    "last_scanned_3m_ts": 1783931400000,
+    "last_run_processed": 5,
+    "processed_count": 513,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -18,7 +18,7 @@
         "event_price": 78.77,
         "invalidation_level": 78.77,
         "sweep_level": 78.77,
-        "extreme": 78.1,
+        "extreme": 77.89,
         "displacement": true,
         "retest_ts": 1783853640000,
         "ready_ts": 1783853820000,
@@ -28,7 +28,7 @@
         "confirmation_quality": 86,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 508,
+        "processed_bars": 513,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -51,7 +51,7 @@
         "event_price": 78.77,
         "invalidation_level": 78.77,
         "sweep_level": 78.77,
-        "extreme": 78.18,
+        "extreme": 77.98,
         "displacement": true,
         "retest_ts": 1783847880000,
         "ready_ts": 1783848060000,
@@ -61,7 +61,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 508,
+        "processed_bars": 513,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -79,13 +79,13 @@
   "regime_memory": {
     "type": "NORMAL",
     "pending_type": "",
-    "stable_count": 3,
+    "stable_count": 4,
     "pending_count": 0,
-    "updated_at": "2026-07-13T08:15:55.987511+00:00"
+    "updated_at": "2026-07-13T08:31:43.479333+00:00"
   },
   "latest_signal": {
-    "id": "8b28446a27",
-    "time": "2026-07-13T08:15:55.998728+00:00",
+    "id": "60564c84b4",
+    "time": "2026-07-13T08:31:43.492560+00:00",
     "action": "NO_SETUP",
     "side": "NEUTRAL",
     "setup_type": "NONE",
@@ -146,7 +146,7 @@
       "reason": "insufficient evidence for a separate weekend regime"
     },
     "learning_status": {
-      "updated_at": "2026-07-13T08:15:54.205941+00:00",
+      "updated_at": "2026-07-13T08:31:42.227073+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
@@ -318,44 +318,9 @@
       "weekend_range_min_trades_per_bucket": 20,
       "weekend_range_wilson_z": 1.96
     },
-    "observed_market_price": 78.06,
+    "observed_market_price": 77.87,
     "audit": {
-      "rejected_hypotheses": [
-        {
-          "rank": 1,
-          "side": "SHORT",
-          "model": "OPENING_RANGE_BREAKOUT",
-          "setup_type": "OPENING_RANGE_BREAKOUT",
-          "final_score": 50,
-          "hypothesis_score": 51.71,
-          "setup_q": 86,
-          "execution_q": 69,
-          "plan_q": 44,
-          "execution_source": "OPENING_RANGE",
-          "entry_stage": "PROBE",
-          "trigger_age_min": 1374.9,
-          "trigger_reanchored": false,
-          "original_trigger_age_min": 1374.9,
-          "effective_trigger_age_min": 1374.9,
-          "target_magnet": 2.07,
-          "innovation_model": "SETUP_ARGUMENTED_TRIGGER_REVALIDATION",
-          "innovation_risk_mult": 0.451,
-          "revalidation_state": "STALE",
-          "revalidation_supported": true,
-          "entry_timing": "SETUP_REVALIDATED_NOW",
-          "failed_gate": "score 50 < risky_min 66; gate_product 0.37 < 0.46; HTF не підтримує risky-entry",
-          "evidence_layers": [
-            "ICT_LOCATION",
-            "PRICE_STRUCTURE",
-            "ICT_MODEL_OPENING_RANGE_BREAKOUT",
-            "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
-            "EXECUTION_TIME_WARP_WAIT_RETEST",
-            "EXECUTION_OPENING_RANGE"
-          ],
-          "entry_anchor": 78.34,
-          "invalidation": 78.9
-        }
-      ],
+      "rejected_hypotheses": [],
       "best_candidate_per_side": {
         "LONG": {
           "side": "LONG",
@@ -366,35 +331,15 @@
           "top_rejection_reason": "NO_CANDIDATE_CREATED"
         },
         "SHORT": {
-          "rank": 1,
           "side": "SHORT",
-          "model": "OPENING_RANGE_BREAKOUT",
-          "setup_type": "OPENING_RANGE_BREAKOUT",
-          "final_score": 50,
-          "hypothesis_score": 51.71,
-          "setup_q": 86,
-          "execution_q": 69,
-          "plan_q": 44,
-          "execution_source": "OPENING_RANGE",
-          "entry_stage": "PROBE",
-          "trigger_age_min": 1374.9,
-          "trigger_reanchored": false,
-          "original_trigger_age_min": 1374.9,
-          "effective_trigger_age_min": 1374.9,
-          "target_magnet": 2.07,
-          "innovation_model": "SETUP_ARGUMENTED_TRIGGER_REVALIDATION",
-          "innovation_risk_mult": 0.451,
-          "revalidation_state": "STALE",
-          "revalidation_supported": true,
-          "entry_timing": "SETUP_REVALIDATED_NOW",
-          "candidate_created": true,
+          "candidate_created": false,
           "selected": false,
-          "eligible": false,
-          "status": "REJECTED",
-          "top_rejection_reason": "score 50 < risky_min 66; gate_product 0.37 < 0.46; HTF не підтримує risky-entry"
+          "final_score": null,
+          "hypothesis_score": null,
+          "top_rejection_reason": "NO_CANDIDATE_CREATED"
         }
       },
-      "candidate_count": 1,
+      "candidate_count": 0,
       "audit_note": "Both LONG and SHORT are always audited",
       "architecture": {
         "pipeline": "ANALYTICAL_DEPARTMENTS -> CONFLICT_ANALYSIS -> TRADING_PHILOSOPHY -> EXECUTIVE_DECISION_LAYER",
@@ -448,8 +393,8 @@
         "validated": true,
         "executive_only_actions": [
           "RISKY_ENTRY",
-          "ENTRY",
-          "PROBE_ENTRY"
+          "PROBE_ENTRY",
+          "ENTRY"
         ],
         "violations": []
       }
@@ -457,14 +402,6 @@
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "NO_SETUP",
-      "side": "NEUTRAL",
-      "setup_type": "NONE",
-      "quality": 12,
-      "price": 75.98,
-      "time": "2026-07-11T15:15:53.672219+00:00"
-    },
     {
       "type": "NO_SETUP",
       "side": "NEUTRAL",
@@ -2161,7 +2098,16 @@
       "price": 78.06,
       "thesis_family_key": "",
       "time": "2026-07-13T08:15:55.998887+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "quality": 12,
+      "price": 77.87,
+      "thesis_family_key": "",
+      "time": "2026-07-13T08:31:43.492660+00:00"
     }
   ],
-  "updated_at": "2026-07-13T08:15:56.355320+00:00"
+  "updated_at": "2026-07-13T08:31:44.005437+00:00"
 }
