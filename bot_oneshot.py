@@ -15,6 +15,12 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Напрямна micro/re-anchor логіка зведена до єдиного _directional_confirmation_profile, щоб правила не розходились.
 - Додано daily entry_supported scan-rate для активних thesis та ретроспективний --audit-journal replay зі shadow outcomes.
 
+Виправлення v8.11 (Profit Protection / Score Calibration Audit Edition):
+- Після TP0, якщо ціна віддала щонайменше 50% MFE, активується стан WEAKENING/PROTECT і стоп підтягується до комісійно-скоригованого беззбитку, не чекаючи TP1.
+- MFE/MAE тепер оновлюються за всіма новими 3M свічками між polling-запусками, а не лише за live price.
+- Overall quality розкладено на entry_quality та durability_quality без зміни існуючих entry thresholds; у повідомленнях явно показується NOT_LEARNED, доки learned_weight=0.
+- Додано score↔result correlation після global_ready, execution-path health (STANDARD проти REVALIDATION/INNOVATION) та direct-conversion audit для clean continuation setups.
+
 Виправлення v8.8 (Continuation Resilience / Confidence-Aware Executive Edition):
 - Старі continuation-тези більше не використовують 45-годинний trigger як execution: за збереженої структури trigger автоматично переанкорюється на свіжу локальну OB/FVG або 3M micro-base біля поточної ціни.
 - Додано MOMENTUM_NO_PULLBACK_CONTINUATION: окрема staged/probe-модель для рівного трендового руху без глибокого відкату, без market-chase і без full-size.
@@ -132,8 +138,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.10-revalidation-execution"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_10_REVALIDATION_PATHS"
+BOT_VERSION = "pro-hybrid-confluence-v8.11-profit-protection-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_11_PROFIT_PROTECTION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -188,6 +194,11 @@ TP1_MIN_ATR_PRO = float(os.getenv("TP1_MIN_ATR_PRO", "3.00") or 3.00)
 BE_DELAY_BARS_AFTER_TP1 = int(os.getenv("BE_DELAY_BARS_AFTER_TP1", "2") or 2)
 BE_DELAY_MIN_MFE_R = float(os.getenv("BE_DELAY_MIN_MFE_R", "1.80") or 1.80)
 BE_LOCK_R_MULT = float(os.getenv("BE_LOCK_R_MULT", "0.10") or 0.10)
+# v8.11: після TP0 не дозволяємо віддати більшу частину вже створеного MFE.
+# Це management trigger, а не entry filter, тому thresholds входу не змінюються.
+TP0_PROTECT_ENABLED = os.getenv("TP0_PROTECT_ENABLED", "true").lower() in {"1", "true", "yes"}
+TP0_PROTECT_GIVEBACK_RATIO = min(0.95, max(0.10, float(os.getenv("TP0_PROTECT_GIVEBACK_RATIO", "0.50") or 0.50)))
+TP0_PROTECT_MIN_MFE_PCT = max(0.0, float(os.getenv("TP0_PROTECT_MIN_MFE_PCT", "0.0") or 0.0))
 CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.45") or 1.45)
 DECISION_STOP_CLOSE_CONFIRM = os.getenv("DECISION_STOP_CLOSE_CONFIRM", "true").lower() in {"1", "true", "yes"}
 MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
@@ -781,6 +792,8 @@ class Candidate:
     setup_quality_score: int = 0
     execution_quality_score: int = 0
     trade_plan_quality_score: int = 0
+    entry_quality_score: int = 0
+    durability_quality_score: int = 0
     hypothesis_score: float = 0.0
     hypothesis_rank: int = 0
     active_model_count: int = 0
@@ -1025,6 +1038,13 @@ class ActiveTrade:
     tp1_hit_at: str = ""
     tp1_hit_ts: int = 0
     tp1_close_confirmed: bool = False
+    management_state: str = "SUPPORTED"
+    pre_tp1_protection_locked: bool = False
+    pre_tp1_protection_at: str = ""
+    pre_tp1_protection_ratio: float = 0.0
+    entry_quality: int = 0
+    durability_quality: int = 0
+    scoring_mode: str = "NOT_LEARNED"
 
 
 
@@ -1196,6 +1216,9 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "be_delay_bars_after_tp1": BE_DELAY_BARS_AFTER_TP1,
         "be_delay_min_mfe_r": BE_DELAY_MIN_MFE_R,
         "be_lock_r_mult": BE_LOCK_R_MULT,
+        "tp0_protect_enabled": TP0_PROTECT_ENABLED,
+        "tp0_protect_giveback_ratio": TP0_PROTECT_GIVEBACK_RATIO,
+        "tp0_protect_min_mfe_pct": TP0_PROTECT_MIN_MFE_PCT,
         "catastrophic_stop_mult": CATASTROPHIC_STOP_MULT,
         "decision_stop_close_confirm": DECISION_STOP_CLOSE_CONFIRM,
         "min_breathing_risk_multiplier": MIN_BREATHING_RISK_MULTIPLIER,
@@ -1592,6 +1615,278 @@ def calculate_unified_risk_adjustment(candidate: Any) -> dict[str, Any]:
     }
 
 
+
+def scoring_mode_profile(status: Optional[dict[str, Any]]) -> dict[str, Any]:
+    status = status or {}
+    ready = bool(status.get("global_ready"))
+    weight = safe_float(status.get("global_learned_weight"), 0.0)
+    rows = int(status.get("training_rows", 0) or 0)
+    if not ready or weight <= 0.0:
+        code = "NOT_LEARNED"
+        label = "NOT LEARNED — евристичні ваги"
+    elif weight < 0.50:
+        code = "LEARNING_BLEND"
+        label = "PARTIALLY LEARNED — bootstrap + learned blend"
+    else:
+        code = "LEARNED_BLEND"
+        label = "LEARNED BLEND"
+    return {
+        "code": code,
+        "label": label,
+        "global_ready": ready,
+        "learned_weight": round(weight, 4),
+        "training_rows": rows,
+        "minimum_rows": SCORING_MODEL_MIN_TRADES,
+        "quality_is_empirically_calibrated": bool(ready and weight > 0.0),
+    }
+
+
+def _signal_quality_dimensions(signal: dict[str, Any]) -> dict[str, int]:
+    components = signal.get("score_components") or {}
+    dimensions = signal.get("quality_dimensions") or {}
+    return {
+        "entry_quality": int(safe_float(
+            dimensions.get("entry_quality", components.get("entry_quality", signal.get("quality", 0))), 0
+        )),
+        "durability_quality": int(safe_float(
+            dimensions.get("durability_quality", components.get("durability_quality", components.get("exit_quality", 0))), 0
+        )),
+    }
+
+
+def _signal_execution_path(signal: Optional[dict[str, Any]]) -> dict[str, Any]:
+    signal = signal or {}
+    revalidation = signal.get("trigger_revalidation") or (signal.get("score_components") or {}).get("trigger_revalidation") or {}
+    innovation = signal.get("innovation_profile") or (signal.get("score_components") or {}).get("innovation_profile") or {}
+    primary = str(innovation.get("primary") or "")
+    revalidated = bool(revalidation.get("revalidated"))
+    entry_supported = bool(revalidation.get("entry_supported", True))
+    action = str(signal.get("action") or "")
+    executable = action in EXECUTABLE_ENTRY_ACTIONS
+
+    if revalidated or primary == "SETUP_ARGUMENTED_TRIGGER_REVALIDATION":
+        category = "REVALIDATION"
+    elif primary and primary != "STANDARD_NONBLOCKING_CONSTRUCTION":
+        category = "INNOVATION_FALLBACK"
+    else:
+        category = "STANDARD"
+
+    unsupported_execution = bool(executable and not entry_supported)
+    return {
+        "category": category,
+        "fallback": category in {"REVALIDATION", "INNOVATION_FALLBACK"},
+        "standard": category == "STANDARD",
+        "primary": primary or "UNRECORDED",
+        "revalidation_state": str(revalidation.get("state") or ""),
+        "entry_supported": entry_supported,
+        "unsupported_execution": unsupported_execution,
+    }
+
+
+def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
+    signals = {
+        str(s.get("id")): s
+        for s in journal.get("signals", []) or []
+        if isinstance(s, dict) and s.get("id")
+    }
+    counts = {"STANDARD": 0, "REVALIDATION": 0, "INNOVATION_FALLBACK": 0, "UNKNOWN": 0}
+    unsupported: list[dict[str, Any]] = []
+    by_setup: dict[str, dict[str, int]] = {}
+
+    trades = [t for t in journal.get("trades", []) or [] if isinstance(t, dict)]
+    for trade in trades:
+        signal = signals.get(str(trade.get("signal_id") or ""))
+        if signal:
+            profile = _signal_execution_path(signal)
+            category = profile["category"]
+        else:
+            category = "UNKNOWN"
+            profile = {"unsupported_execution": False, "primary": "MISSING_SIGNAL", "entry_supported": False}
+        counts[category] = counts.get(category, 0) + 1
+        setup = str(trade.get("setup_type") or "UNKNOWN")
+        row = by_setup.setdefault(setup, {"total": 0, "standard": 0, "fallback": 0})
+        row["total"] += 1
+        if category == "STANDARD":
+            row["standard"] += 1
+        elif category in {"REVALIDATION", "INNOVATION_FALLBACK"}:
+            row["fallback"] += 1
+        if profile.get("unsupported_execution"):
+            unsupported.append({
+                "trade_id": trade.get("id"),
+                "signal_id": trade.get("signal_id"),
+                "setup_type": setup,
+                "innovation_primary": profile.get("primary"),
+            })
+
+    total = len(trades)
+    fallback_count = counts.get("REVALIDATION", 0) + counts.get("INNOVATION_FALLBACK", 0)
+    fallback_pct = round(100.0 * fallback_count / total, 2) if total else 0.0
+    standard_pct = round(100.0 * counts.get("STANDARD", 0) / total, 2) if total else 0.0
+    if unsupported:
+        health = "CRITICAL"
+        reason = "executable trade detected while entry_supported=false"
+    elif total and fallback_pct >= 100.0:
+        health = "CRITICAL"
+        reason = "all closed trades depend on revalidation/innovation"
+    elif total and fallback_pct >= 75.0:
+        health = "CAUTION"
+        reason = "revalidation/innovation dominates closed trades"
+    else:
+        health = "OK" if total else "NO_DATA"
+        reason = "execution paths are diversified" if total else "no closed trades"
+
+    return {
+        "closed_trades": total,
+        "counts": counts,
+        "standard_pct": standard_pct,
+        "revalidation_or_innovation_pct": fallback_pct,
+        "unsupported_execution_count": len(unsupported),
+        "unsupported_executions": unsupported[-20:],
+        "by_setup_type": by_setup,
+        "health": health,
+        "reason": reason,
+        "definition": "closed trades joined to originating signal_id; fallback = REVALIDATION or non-standard INNOVATION primary",
+        "updated_at": iso_now(),
+    }
+
+
+def _clean_setup_reason(signal: dict[str, Any]) -> str:
+    if bool(signal.get("confirmation_pending")):
+        return "CONFIRMATION_PENDING"
+    revalidation = signal.get("trigger_revalidation") or {}
+    if not bool(revalidation.get("entry_supported", True)):
+        return "REVALIDATION_NOT_SUPPORTED"
+    lane = str(signal.get("execution_lane") or "")
+    if lane in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.WAIT_CONFIRMATION.value, ExecutionLane.LIMIT_ONLY.value}:
+        return lane
+    rejected = ((signal.get("audit") or {}).get("rejected_hypotheses") or [])
+    if rejected:
+        return str((rejected[0] or {}).get("failed_gate") or "REJECTED_HYPOTHESIS")[:120]
+    return str(signal.get("reason") or signal.get("action") or "UNKNOWN")[:120]
+
+
+def compute_clean_setup_conversion(journal: dict[str, Any]) -> dict[str, Any]:
+    target_types = {
+        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+    }
+    result: dict[str, Any] = {}
+    for setup_type in sorted(target_types):
+        records = [
+            s for s in journal.get("signals", []) or []
+            if isinstance(s, dict) and str(s.get("setup_type") or "") == setup_type
+        ]
+        unique_theses = {str(s.get("thesis_key") or s.get("id") or "") for s in records}
+        entries = [s for s in records if str(s.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS]
+        direct = [s for s in entries if _signal_execution_path(s).get("standard")]
+        fallback = [s for s in entries if _signal_execution_path(s).get("fallback")]
+        reasons: dict[str, int] = {}
+        for signal in records:
+            if str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS:
+                continue
+            reason = _clean_setup_reason(signal)
+            reasons[reason] = reasons.get(reason, 0) + 1
+        result[setup_type] = {
+            "scan_records": len(records),
+            "unique_theses": len({x for x in unique_theses if x}),
+            "entry_signals": len(entries),
+            "direct_standard_entries": len(direct),
+            "revalidation_or_innovation_entries": len(fallback),
+            "direct_conversion_pct_of_entries": round(100.0 * len(direct) / len(entries), 2) if entries else 0.0,
+            "fallback_dependency_pct_of_entries": round(100.0 * len(fallback) / len(entries), 2) if entries else 0.0,
+            "top_non_conversion_reasons": [
+                {"reason": reason, "count": count}
+                for reason, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[:8]
+            ],
+        }
+    return {
+        "setups": result,
+        "definition": "signal-level conversion audit; direct = STANDARD path, fallback = REVALIDATION/INNOVATION",
+        "updated_at": iso_now(),
+    }
+
+
+def _pearson_correlation(xs: list[float], ys: list[float]) -> Optional[float]:
+    if len(xs) != len(ys) or len(xs) < 3:
+        return None
+    mx, my = mean(xs), mean(ys)
+    numerator = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    dx = math.sqrt(sum((x - mx) ** 2 for x in xs))
+    dy = math.sqrt(sum((y - my) ** 2 for y in ys))
+    if dx <= 1e-12 or dy <= 1e-12:
+        return None
+    return numerator / (dx * dy)
+
+
+def _average_ranks(values: list[float]) -> list[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(indexed):
+        j = i
+        while j + 1 < len(indexed) and indexed[j + 1][1] == indexed[i][1]:
+            j += 1
+        rank = (i + j + 2) / 2.0
+        for k in range(i, j + 1):
+            ranks[indexed[k][0]] = rank
+        i = j + 1
+    return ranks
+
+
+def compute_score_outcome_correlation(journal: dict[str, Any], enabled: bool) -> dict[str, Any]:
+    signals = {
+        str(s.get("id")): s
+        for s in journal.get("signals", []) or []
+        if isinstance(s, dict) and s.get("id")
+    }
+    rows: list[dict[str, float]] = []
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        signal = signals.get(str(trade.get("signal_id") or ""))
+        if not signal:
+            continue
+        dims = _signal_quality_dimensions(signal)
+        rows.append({
+            "score": safe_float(signal.get("candidate_final_score", signal.get("quality")), 0.0),
+            "entry_quality": safe_float(dims.get("entry_quality"), 0.0),
+            "durability_quality": safe_float(dims.get("durability_quality"), 0.0),
+            "result_pct": safe_float(trade.get("result_pct"), 0.0),
+            "mfe_pct": safe_float(trade.get("mfe_pct"), 0.0),
+        })
+
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "global_not_ready",
+            "samples": len(rows),
+            "minimum_samples": SCORING_MODEL_MIN_TRADES,
+        }
+    if len(rows) < 3:
+        return {"enabled": False, "reason": "too_few_joined_rows", "samples": len(rows)}
+
+    result_values = [row["result_pct"] for row in rows]
+    mfe_values = [row["mfe_pct"] for row in rows]
+
+    def corr(field: str, target: list[float]) -> dict[str, Any]:
+        source = [row[field] for row in rows]
+        pearson = _pearson_correlation(source, target)
+        spearman = _pearson_correlation(_average_ranks(source), _average_ranks(target))
+        return {
+            "pearson": round(pearson, 4) if pearson is not None else None,
+            "spearman": round(spearman, 4) if spearman is not None else None,
+        }
+
+    return {
+        "enabled": True,
+        "samples": len(rows),
+        "final_score_vs_result_pct": corr("score", result_values),
+        "entry_quality_vs_mfe_pct": corr("entry_quality", mfe_values),
+        "durability_quality_vs_result_pct": corr("durability_quality", result_values),
+        "note": "correlation is descriptive, not causal; review confidence intervals before changing thresholds",
+    }
+
+
 def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
     """Performance memory by setup type and family.
 
@@ -1599,19 +1894,33 @@ def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
     broader setup_family without inventing a second statistics pipeline.
     """
     stats: dict[str, dict[str, Any]] = {}
+    signals = {
+        str(s.get("id")): s
+        for s in journal.get("signals", []) or []
+        if isinstance(s, dict) and s.get("id")
+    }
 
-    def _record(key: str, result_r: float) -> None:
+    def _record(key: str, result_r: float, path_category: str = "UNKNOWN") -> None:
         if not key:
             return
         bucket = stats.setdefault(
             key,
-            {"trades": 0, "closed_trades": 0, "wins": 0, "net_r": 0.0},
+            {
+                "trades": 0, "closed_trades": 0, "wins": 0, "net_r": 0.0,
+                "standard_path": 0, "revalidation_or_innovation_path": 0, "unknown_path": 0,
+            },
         )
         bucket["trades"] += 1
         bucket["closed_trades"] += 1
         bucket["net_r"] += result_r
         if result_r > 0:
             bucket["wins"] += 1
+        if path_category == "STANDARD":
+            bucket["standard_path"] += 1
+        elif path_category in {"REVALIDATION", "INNOVATION_FALLBACK"}:
+            bucket["revalidation_or_innovation_path"] += 1
+        else:
+            bucket["unknown_path"] += 1
 
     for trade in journal.get("trades", []):
         if not isinstance(trade, dict):
@@ -1619,15 +1928,19 @@ def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
         result = safe_float(trade.get("result_r", trade.get("result_pct", 0)), 0)
         setup_type = str(trade.get("setup_type", "UNKNOWN") or "UNKNOWN")
         setup_family = str(trade.get("setup_family", "") or "")
-        _record(setup_type, result)
+        signal = signals.get(str(trade.get("signal_id") or ""))
+        path_category = _signal_execution_path(signal).get("category", "UNKNOWN") if signal else "UNKNOWN"
+        _record(setup_type, result, path_category)
         if setup_family and setup_family != setup_type:
-            _record(setup_family, result)
+            _record(setup_family, result, path_category)
 
     for bucket in stats.values():
         closed = int(bucket.get("closed_trades", 0) or 0)
         bucket["net_r"] = round(float(bucket.get("net_r", 0.0) or 0.0), 4)
         bucket["win_rate"] = round(bucket["wins"] / closed * 100, 2) if closed else 0.0
         bucket["expectancy_r"] = round(bucket["net_r"] / closed, 4) if closed else 0.0
+        bucket["standard_path_pct"] = round(bucket["standard_path"] / closed * 100, 2) if closed else 0.0
+        bucket["fallback_path_pct"] = round(bucket["revalidation_or_innovation_path"] / closed * 100, 2) if closed else 0.0
 
     return stats
 
@@ -1783,6 +2096,7 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V8_10_REVALIDATION_PATHS",
         "TRADING_DESK_EXECUTIVE_V8_9_DIRECTION_AWARE",
         "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE",
     }
@@ -2106,9 +2420,23 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     decision_variant = adaptive.get("decision_variant")
     conflict_override = bool(adaptive.get("conflict_override", False))
 
+    learning_status = context.get("learning_status") or {}
+    mode = scoring_mode_profile(learning_status)
+    components = (decision.candidate.score_components or {}) if decision.candidate else {}
+    entry_q = int(safe_float(
+        getattr(decision.candidate, "entry_quality_score", 0) if decision.candidate else 0,
+        safe_float(components.get("entry_quality"), decision.quality),
+    ))
+    durability_q = int(safe_float(
+        getattr(decision.candidate, "durability_quality_score", 0) if decision.candidate else 0,
+        safe_float(components.get("durability_quality"), 0),
+    ))
+
     lines = [
         f"<b>{action_label}</b> | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
-        f"<b>Якість:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
+        f"<b>Overall quality:</b> {decision.quality}/100 | Режим: {regime_label(decision.regime)}",
+        f"<b>Entry quality:</b> {entry_q}/100 | <b>Durability:</b> {durability_q}/100",
+        f"<b>Scoring:</b> {html.escape(mode['label'])} | rows {mode['training_rows']}/{mode['minimum_rows']}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
 
@@ -2241,8 +2569,11 @@ def _follow_title(trade: ActiveTrade, result: dict, context: dict) -> str:
         return f"🟢 СУПРОВІД {side} — TP2 ВЗЯТО"
     if action == Action.TP1.value:
         return f"🟢 СУПРОВІД {side} — TP1 ВЗЯТО"
-    if action == Action.PROTECT.value:
-        return f"🟠 СУПРОВІД {side} — ЗАХИСТ ПОЗИЦІЇ"
+    management_state = str(result.get("management_state") or getattr(trade, "management_state", "SUPPORTED"))
+    if action == Action.PROTECT.value or management_state == "PROTECT":
+        return f"🟠 СУПРОВІД {side} — PROTECT / ПРИБУТОК ЗАХИЩЕНО"
+    if management_state == "WEAKENING":
+        return f"🟠 СУПРОВІД {side} — WEAKENING / СЕТАП СЛАБШАЄ"
     if current_pct < 0 or tf3_opposite or tf15_opposite:
         return f"🟠 СУПРОВІД {side} — СЕТАП СЛАБШАЄ"
     return f"🟢 СУПРОВІД {side} — СЕТАП ТРИМАЄТЬСЯ"
@@ -2268,6 +2599,7 @@ def build_follow_message(context: dict, trade: ActiveTrade, result: dict) -> str
         f"Вхід {_fmt_price(trade.entry)} | Стоп {_fmt_price(stop_to_show)}",
         f"TP0 {_fmt_price(getattr(trade, 'tp0', 0.0)) if getattr(trade, 'tp0', 0.0) else '—'} | TP1 {_fmt_price(trade.tp1)} | TP2 {_fmt_price(trade.tp2)} | TP3 {_fmt_price(trade.tp3)}",
         f"Стадія: {html.escape(getattr(trade, 'entry_stage', ''))} | Джерело: {html.escape(getattr(trade, 'execution_source', ''))}",
+        f"Стан супроводу: <b>{html.escape(str(result.get('management_state') or getattr(trade, 'management_state', 'SUPPORTED')))}</b>",
         tp_status,
     ]
 
@@ -4205,8 +4537,8 @@ def dynamic_partial_plan_from_innovation(candidate: Candidate) -> dict[str, floa
 
 
 def _tp0_giveback_innovation_advisor(trade: ActiveTrade, context: dict, result: dict[str, Any]) -> None:
-    """Після TP0 не рухає стоп і не закриває угоду автоматично. Лише дає
-    non-blocking management directive, щоб не перетворювати +MFE на мінус мовчки."""
+    """Secondary audit note after v8.11 protection. The actual stop movement is
+    owned by _tp0_profit_protection; this advisor only records the construction context."""
     if not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
         return
     risk = _trade_risk_distance(trade)
@@ -4224,8 +4556,8 @@ def _tp0_giveback_innovation_advisor(trade: ActiveTrade, context: dict, result: 
     giveback_ratio = 1.0 - (cur_r / max(mfe_r, 1e-9))
     if giveback_ratio >= INNOVATION_GIVEBACK_WARN_RATIO:
         result.setdefault("notes", []).append(
-            f"v6.14 MFE-capture advisor: після TP0 віддано {giveback_ratio:.0%} MFE; "
-            "стоп не душимо, але новий добір заборонений до повторного acceptance-close"
+            f"v8.11 MFE-capture audit: після TP0 віддано {giveback_ratio:.0%} MFE; "
+            "новий добір заборонений до повторного acceptance-close"
         )
         result["innovation_management"] = {
             "mode": "TP0_GIVEBACK_DEFENSE",
@@ -4233,7 +4565,7 @@ def _tp0_giveback_innovation_advisor(trade: ActiveTrade, context: dict, result: 
             "current_r": round(cur_r, 2),
             "giveback_ratio": round(giveback_ratio, 2),
             "auto_close": False,
-            "stop_move": False,
+            "stop_move": bool(getattr(trade, "pre_tp1_protection_locked", False)),
         }
 
 # ==========================================================
@@ -4657,6 +4989,12 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
             "learned_weight": round(_learned_model_weight(len(rows), SCORING_MODEL_MIN_FAMILY_TRADES, SCORING_MODEL_FULL_FAMILY_TRADES), 4),
         }
     global_ready = len(global_rows) >= SCORING_MODEL_MIN_TRADES
+    learned_weight = round(_learned_model_weight(len(global_rows), SCORING_MODEL_MIN_TRADES, SCORING_MODEL_FULL_TRADES), 4)
+    mode = scoring_mode_profile({
+        "global_ready": global_ready,
+        "global_learned_weight": learned_weight,
+        "training_rows": len(global_rows),
+    })
     latest_signal = next(
         (s for s in reversed(journal.get("signals", []) or []) if isinstance(s, dict)),
         {},
@@ -4672,9 +5010,16 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
         "closed_trades": len(journal.get("trades", []) or []),
         "training_rows": len(global_rows),
         "global_ready": global_ready,
-        "global_learned_weight": round(_learned_model_weight(len(global_rows), SCORING_MODEL_MIN_TRADES, SCORING_MODEL_FULL_TRADES), 4),
+        "global_learned_weight": learned_weight,
+        "scoring_mode": mode,
+        "score_interpretation": (
+            "heuristic ranking only; do not interpret 74 as empirically proven better than 68"
+            if mode["code"] == "NOT_LEARNED"
+            else "empirical blend active; inspect validation and correlation before threshold changes"
+        ),
         "by_family": by_family,
         "validation": _validation_metrics(global_rows, DEFAULT_QUALITY_COEFFICIENTS["_global"]),
+        "score_outcome_correlation": compute_score_outcome_correlation(journal, global_ready),
         "github_actions": bool(os.getenv("GITHUB_ACTIONS")),
         "journal_persistence_confirmed": JOURNAL_PERSISTENCE_CONFIRMED,
         "flow_quality": str(latest_signal.get("flow_quality") or "UNKNOWN_NOT_RECORDED"),
@@ -4693,7 +5038,10 @@ def learning_health_warnings(journal: dict) -> list[str]:
     elif status.get("training_rows", 0) == 0:
         warnings.append("Closed trades є, але signal_id не з'єднався з training_signals.")
     elif not status.get("global_ready"):
-        warnings.append(f"ML ще в bootstrap: {status.get('training_rows', 0)}/{SCORING_MODEL_MIN_TRADES} training rows.")
+        warnings.append(
+            f"SCORING NOT LEARNED: quality — евристика; "
+            f"{status.get('training_rows', 0)}/{SCORING_MODEL_MIN_TRADES} training rows, learned_weight=0."
+        )
     if os.getenv("GITHUB_ACTIONS") and not JOURNAL_PERSISTENCE_CONFIRMED:
         warnings.append("GitHub Actions: не підтверджено commit/cache persistence для journal/state.")
     return warnings
@@ -5156,13 +5504,38 @@ def score_hypothesis_layers(
     trade_plan_quality += min(max(loc_score, 0.0) * 0.20, 12)
     trade_plan_quality = int(clamp(trade_plan_quality, 0, 100))
 
+    # v8.11: два різні питання більше не маскуються одним числом.
+    # entry_quality оцінює напрямок + момент входу.
+    entry_quality = int(clamp(round(0.58 * setup_quality + 0.42 * execution_quality), 0, 100))
+
+    # durability_quality оцінює здатність руху дожити до цілей. Поки ML не
+    # навчений, це прозора евристика на основі plan/flow/HTF/structure/magnet.
+    flow_norm = clamp(flw_score / 24.0 * 100.0, 0.0, 100.0)
+    htf_norm = clamp(htf_score / 24.0 * 100.0, 0.0, 100.0)
+    structure_norm = clamp(str_score / 24.0 * 100.0, 0.0, 100.0)
+    magnet_norm = clamp(float(target_magnet_score or 0.0) / 4.0 * 100.0, 0.0, 100.0)
+    durability_quality = (
+        0.35 * trade_plan_quality
+        + 0.20 * flow_norm
+        + 0.15 * htf_norm
+        + 0.12 * structure_norm
+        + 0.10 * magnet_norm
+        + 0.08 * (freshness * 100.0)
+        - (10.0 if regime_conflict else 0.0)
+    )
+    durability_quality = int(clamp(round(durability_quality), 0, 100))
+
     organic_score = int(round(0.40 * setup_quality + 0.35 * execution_quality + 0.25 * trade_plan_quality))
     return {
         "setup_quality": setup_quality,
         "execution_quality": execution_quality,
         "trade_plan_quality": trade_plan_quality,
+        "entry_quality": entry_quality,
+        "durability_quality": durability_quality,
+        "exit_quality": durability_quality,
         "organic_score": organic_score,
         "freshness_multiplier": round(freshness, 4),
+        "quality_dimensions_mode": "HEURISTIC_UNTIL_LEARNED",
     }
 
 
@@ -5178,6 +5551,8 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
         "setup_q": c.setup_quality_score,
         "execution_q": c.execution_quality_score,
         "plan_q": c.trade_plan_quality_score,
+        "entry_quality": c.entry_quality_score,
+        "durability_quality": c.durability_quality_score,
         "execution_source": c.execution_source,
         "entry_stage": c.entry_stage,
         "trigger_age_min": round(float(c.trigger_age_minutes or 0.0), 1),
@@ -5278,6 +5653,10 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
         "setup_quality": layers["setup_quality"],
         "execution_quality": layers["execution_quality"],
         "trade_plan_quality": layers["trade_plan_quality"],
+        "entry_quality": layers["entry_quality"],
+        "durability_quality": layers["durability_quality"],
+        "exit_quality": layers["durability_quality"],
+        "quality_dimensions_mode": layers["quality_dimensions_mode"],
         "organic_score": layers["organic_score"],
         "hypothesis_score": candidate.final_score,
         "direction_performance": direction_perf,
@@ -5286,6 +5665,8 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.setup_quality_score = layers["setup_quality"]
     candidate.execution_quality_score = layers["execution_quality"]
     candidate.trade_plan_quality_score = layers["trade_plan_quality"]
+    candidate.entry_quality_score = layers["entry_quality"]
+    candidate.durability_quality_score = layers["durability_quality"]
     candidate.hypothesis_score = float(candidate.final_score)
     candidate.risk_multiplier = float(direction_perf.get("risk_multiplier", 1.0) or 1.0) * 0.75
     candidate.professional_gate = evaluate_professional_gate(context, candidate)
@@ -6727,6 +7108,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "setup_quality": layers["setup_quality"],
                     "execution_quality": layers["execution_quality"],
                     "trade_plan_quality": layers["trade_plan_quality"],
+                    "entry_quality": layers["entry_quality"],
+                    "durability_quality": layers["durability_quality"],
+                    "exit_quality": layers["durability_quality"],
+                    "quality_dimensions_mode": layers["quality_dimensions_mode"],
                     "organic_score": layers["organic_score"],
                     "hypothesis_score": round(hypothesis_score, 2),
                     "active_model_count": len(active_patterns),
@@ -6780,6 +7165,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 setup_quality_score=int(layers["setup_quality"]),
                 execution_quality_score=int(layers["execution_quality"]),
                 trade_plan_quality_score=int(layers["trade_plan_quality"]),
+                entry_quality_score=int(layers["entry_quality"]),
+                durability_quality_score=int(layers["durability_quality"]),
                 hypothesis_score=round(hypothesis_score, 2),
                 active_model_count=len(active_patterns),
                 confirmation_pending=confirmation_pending,
@@ -7595,8 +7982,9 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
 
     risk_distance = abs(stop - price) if abs(stop - price) > 1e-9 else stop_dist
     tp1_distance = abs(tp1 - price)
-    # TP0 — мікрофіксація win-rate без переводу стопа в БУ. Вона не душить TP1/TP2,
-    # бо TP1 лишається професійним target-magnet/RR рівнем.
+    # TP0 — мікрофіксація win-rate без автоматичного миттєвого переводу стопа в БУ.
+    # Захист активується окремо лише після підтвердженого giveback MFE, тому TP1/TP2
+    # не душаться звичайним першим відкатом.
     tp0_floor = max(risk_distance * TP0_MIN_RR, float(breathing["tp0_floor_distance"]))
     tp0_cap = max(tp1_distance - max(step * 0.35, price * 0.00025), risk_distance * 0.65)
     tp0_dist = min(tp0_floor, tp0_cap)
@@ -9366,6 +9754,119 @@ def _delayed_tp1_lock_stop(trade: ActiveTrade, context: dict) -> Optional[float]
     return round_price(min(base_lock, structural))
 
 
+
+def _update_trade_extremes_from_context(trade: ActiveTrade, context: dict[str, Any]) -> None:
+    """Update MFE/MAE from every new 3M candle between polling runs."""
+    price = safe_float(context.get("price"), trade.entry)
+    lower_bound = max(int(trade.last_checked_3m_ts or 0), _opened_at_ms(trade.opened_at))
+    c3 = (context.get("candles", {}) or {}).get("3m", []) or []
+    new_candles = [c for c in c3 if int(getattr(c, "ts", 0) or 0) > lower_bound]
+
+    if trade.side == Side.LONG.value:
+        highs = [price, float(trade.best_price)] + [safe_float(c.high, price) for c in new_candles]
+        lows = [price, float(trade.worst_price)] + [safe_float(c.low, price) for c in new_candles]
+        trade.best_price = max(highs)
+        trade.worst_price = min(lows)
+    else:
+        lows = [price, float(trade.best_price)] + [safe_float(c.low, price) for c in new_candles]
+        highs = [price, float(trade.worst_price)] + [safe_float(c.high, price) for c in new_candles]
+        trade.best_price = min(lows)
+        trade.worst_price = max(highs)
+
+
+def _strict_breakeven_stop(trade: ActiveTrade) -> float:
+    if trade.side == Side.LONG.value:
+        return round_price(float(trade.entry) + COMMISSION_BUFFER_DOLLARS)
+    return round_price(float(trade.entry) - COMMISSION_BUFFER_DOLLARS)
+
+
+def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Protect an already proven trade before TP1 after >= configured MFE giveback.
+
+    The stop is activated only from the current observation forward. Historical
+    unchecked candles are evaluated against the old stop before this function runs,
+    avoiding retroactive stop-outs.
+    """
+    profile = {
+        "eligible": False,
+        "activated": False,
+        "state": "SUPPORTED",
+        "giveback_ratio": 0.0,
+        "mfe_pct": safe_float(result.get("best_pct"), 0.0),
+        "current_pct": safe_float(result.get("current_pct"), 0.0),
+        "threshold": TP0_PROTECT_GIVEBACK_RATIO,
+    }
+    if not TP0_PROTECT_ENABLED or not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
+        trade.management_state = "SUPPORTED" if not getattr(trade, "pre_tp1_protection_locked", False) else "PROTECT"
+        result["management_state"] = trade.management_state
+        return profile
+
+    best_pct = max(0.0, safe_float(result.get("best_pct"), 0.0))
+    current_pct = safe_float(result.get("current_pct"), 0.0)
+    if best_pct <= max(TP0_PROTECT_MIN_MFE_PCT, 1e-9):
+        result["management_state"] = "SUPPORTED"
+        trade.management_state = "SUPPORTED"
+        return profile
+
+    giveback_ratio = max(0.0, (best_pct - current_pct) / max(best_pct, 1e-9))
+    profile.update({
+        "eligible": True,
+        "giveback_ratio": round(giveback_ratio, 4),
+        "mfe_pct": round(best_pct, 6),
+        "current_pct": round(current_pct, 6),
+    })
+    result["mfe_giveback_ratio"] = round(giveback_ratio, 4)
+
+    if getattr(trade, "pre_tp1_protection_locked", False):
+        trade.management_state = "PROTECT"
+        result["management_state"] = "PROTECT"
+        profile.update({"activated": True, "state": "PROTECT", "stop": round_price(trade.stop_current)})
+        return profile
+
+    if giveback_ratio < TP0_PROTECT_GIVEBACK_RATIO:
+        trade.management_state = "SUPPORTED"
+        result["management_state"] = "SUPPORTED"
+        return profile
+
+    trade.management_state = "WEAKENING"
+    result["management_state"] = "WEAKENING"
+    be_stop = _strict_breakeven_stop(trade)
+    applied = _apply_protective_stop(trade, context, be_stop)
+    already_protected = (
+        trade.side == Side.LONG.value and float(trade.stop_current) >= be_stop
+    ) or (
+        trade.side == Side.SHORT.value and float(trade.stop_current) <= be_stop
+    )
+
+    if applied or already_protected:
+        trade.pre_tp1_protection_locked = True
+        trade.pre_tp1_protection_at = iso_now()
+        trade.pre_tp1_protection_ratio = round(giveback_ratio, 4)
+        trade.management_state = "PROTECT"
+        result["management_state"] = "PROTECT"
+        result["action"] = Action.PROTECT.value
+        result["recommended_stop"] = round_price(trade.stop_current)
+        result["recommended_stop_reason"] = "v8.11 TP0 MFE giveback protection → commission-adjusted breakeven"
+        result.setdefault("notes", []).append(
+            f"PROTECT: після TP0 віддано {giveback_ratio:.0%} MFE; "
+            f"стоп підтягнуто у беззбиток {round_price(trade.stop_current)}"
+        )
+        profile.update({
+            "activated": True,
+            "state": "PROTECT",
+            "stop": round_price(trade.stop_current),
+        })
+    else:
+        result.setdefault("notes", []).append(
+            f"WEAKENING: віддано {giveback_ratio:.0%} MFE, але поточна ціна вже не дозволяє "
+            f"коректно поставити BE-stop {be_stop}; потрібен market-risk review"
+        )
+        profile.update({"state": "WEAKENING", "requested_stop": be_stop})
+
+    result["profit_protection"] = profile
+    return profile
+
+
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     price = context.get("price")
     # Якщо ціна None через збій API, тримаємо позицію, щоб не наробити помилок
@@ -9378,11 +9879,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     # Orphaned-змінна від старішої версії видалена.
     side = trade.side
 
-    # 1. Спочатку оновлюємо екстремуми ціни ДО формування словника результату
-    if (side == Side.LONG.value and price > trade.best_price) or (side == Side.SHORT.value and price < trade.best_price):
-        trade.best_price = price
-    if (side == Side.LONG.value and price < trade.worst_price) or (side == Side.SHORT.value and price > trade.worst_price):
-        trade.worst_price = price
+    # 1. Оновлюємо екстремуми за ВСІМА новими 3M свічками між polling-запусками.
+    _update_trade_extremes_from_context(trade, context)
 
     # 2. Виконуємо розрахунки відсотків один раз
     current_pct = _trade_pct(side, trade.entry, price)
@@ -9403,30 +9901,12 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         "notes": [],
         "recommended_stop": None,
         "recommended_stop_reason": "",
+        "management_state": getattr(trade, "management_state", "SUPPORTED") or "SUPPORTED",
     }
 
-    # --- "Дати дихати" ДО TP1: жодного підтягування стопу ---
-    # До TP1 позиція має рівно два виходи: початковий стоп-лос (за технічним
-    # рівнем/структурою) або TP1. Жодних проміжних рухів стопу в цій зоні —
-    # ринок завжди робить відкати, і угода має пережити їх без "задушливого"
-    # трейлінгу (колишній MFE Guard тут прибрано повністю).
-
-    # --- Структурний трейлінг ПІСЛЯ TP1 (по 15M swing points) ---
-    # Єдиний механізм підтягування стопу з моменту TP1 і до закриття угоди:
-    # стоп рухається під/над останній сформований 15M мінімум/максимум, а не
-    # на довільну $/ATR-відстань — це і дозволяє забирати розширені рухи
-    # (1.50$-2.00$+), не вилітаючи з ринку на першому випадковому відкаті.
-    if trade.tp1_hit:
-        delayed_stop = _delayed_tp1_lock_stop(trade, context)
-        ready, ready_reason = _tp1_protection_ready(trade, context)
-        if delayed_stop is not None and _apply_protective_stop(trade, context, delayed_stop):
-            trade.tp1_stop_locked = True
-            trade.tp1_locked_stop = round_price(trade.stop_current)
-            result["notes"].append(f"Delayed BE/structural lock активовано: стоп перенесено до {trade.stop_current} | {ready_reason}")
-            result["recommended_stop"] = round_price(trade.stop_current)
-            result["recommended_stop_reason"] = "v6.13 BE_DELAY + structural swing lock після TP1"
-        elif not ready:
-            result["notes"].append(ready_reason)
+    # v8.11: історичні unchecked candles спочатку перевіряються проти вже
+    # чинного стопа. Новий TP0/TP1 protection застосовується лише після цього,
+    # щоб не створювати ретроактивні stop-outs.
 
     # --- Дворівневий Wick Defense ---
     is_stop, stop_reason = _stop_hit(trade, context)
@@ -9453,14 +9933,34 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         trade.last_action = Action.EXIT.value
         return result
 
-    # --- 0. TP0: службова фіксація без задушення угоди ---
-    # На TP0 бот НЕ рухає стоп у БУ. Інакше ми знову отримаємо стару хворобу:
-    # мікро-прибуток є, але нормальний TP1/TP2 задушений першим відкатом.
+    # --- Структурний трейлінг ПІСЛЯ TP1 ---
+    if trade.tp1_hit:
+        delayed_stop = _delayed_tp1_lock_stop(trade, context)
+        ready, ready_reason = _tp1_protection_ready(trade, context)
+        if delayed_stop is not None and _apply_protective_stop(trade, context, delayed_stop):
+            trade.tp1_stop_locked = True
+            trade.tp1_locked_stop = round_price(trade.stop_current)
+            trade.management_state = "PROTECT"
+            result["management_state"] = "PROTECT"
+            result["notes"].append(f"Delayed BE/structural lock активовано: стоп перенесено до {trade.stop_current} | {ready_reason}")
+            result["recommended_stop"] = round_price(trade.stop_current)
+            result["recommended_stop_reason"] = "v6.13 BE_DELAY + structural swing lock після TP1"
+        elif not ready:
+            result["notes"].append(ready_reason)
+
+    # --- 0. TP0: службова фіксація + v8.11 MFE protection ---
+    # На самому факті TP0 стоп не рухається миттєво: спочатку лишається структурним.
+    # Якщо після TP0 ринок віддає задану частку MFE, v8.11 переводить стан у
+    # WEAKENING/PROTECT і підтягує стоп до комісійно-скоригованого беззбитку.
     if not result["closed"] and getattr(trade, "tp0", 0.0) and not getattr(trade, "tp0_hit", False) and _target_hit(side, context, trade.tp0):
         trade.tp0_hit = True
         result["action"] = Action.TP0.value
-        result["notes"].append(f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції; стоп НЕ рухаємо, TP1/TP2 лишаються живими")
+        result["notes"].append(
+            f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції; "
+            f"до {TP0_PROTECT_GIVEBACK_RATIO:.0%} giveback стоп лишається структурним"
+        )
 
+    _tp0_profit_protection(trade, context, result)
     _tp0_giveback_innovation_advisor(trade, context, result)
 
     # --- 1. Фіксація TP1 (v6.13 delayed protection, НЕ миттєвий BE) ---
@@ -9510,6 +10010,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
             result["recommended_stop_reason"] = "TP2-стоп зафіксовано"
         elif trade.tp1_stop_locked:
             result["recommended_stop_reason"] = "Delayed BE/structural lock активний після TP1"
+        elif getattr(trade, "pre_tp1_protection_locked", False):
+            result["recommended_stop_reason"] = "v8.11 TP0 MFE-giveback беззбиток активний"
         elif trade.tp1_hit:
             result["recommended_stop_reason"] = "TP1 взято, але BE_DELAY_ENGINE ще не підтвердив перенос стопа"
 
@@ -9718,6 +10220,8 @@ def compute_analytics(journal: dict) -> dict:
 
     existing.update(trade_stats)
     existing["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(journal)
+    existing["execution_path_health"] = compute_execution_path_health(journal)
+    existing["clean_setup_conversion"] = compute_clean_setup_conversion(journal)
     return existing
 
 
@@ -9768,6 +10272,9 @@ def run_bot() -> None:
                 "quality": active.quality,
                 "result_pct": res.get("current_pct"),
                 "mfe_pct": res.get("best_pct"),
+                "mae_pct": res.get("worst_pct"),
+                "mfe_giveback_pct": res.get("giveback_pct"),
+                "mfe_giveback_ratio": res.get("mfe_giveback_ratio"),
                 "tp0_hit": getattr(active, "tp0_hit", False),
                 "tp1_hit": active.tp1_hit,
                 "tp2_hit": active.tp2_hit,
@@ -9790,6 +10297,13 @@ def run_bot() -> None:
                 "runtime_config_snapshot": getattr(active, "runtime_config_snapshot", {}),
                 "innovation_profile": (getattr(active, "stage_plan", {}) or {}).get("innovation_profile", {}),
                 "partial_plan": {"tp0": getattr(active, "tp0_size_pct", TP0_SIZE_PCT), "tp1": getattr(active, "tp1_size_pct", TP1_SIZE_PCT), "tp2": getattr(active, "tp2_size_pct", TP2_SIZE_PCT), "tp3_runner": getattr(active, "tp3_runner_pct", TP3_RUNNER_PCT)},
+                "management_state": getattr(active, "management_state", "SUPPORTED"),
+                "pre_tp1_protection_locked": getattr(active, "pre_tp1_protection_locked", False),
+                "pre_tp1_protection_at": getattr(active, "pre_tp1_protection_at", ""),
+                "pre_tp1_protection_ratio": getattr(active, "pre_tp1_protection_ratio", 0.0),
+                "entry_quality": getattr(active, "entry_quality", 0),
+                "durability_quality": getattr(active, "durability_quality", 0),
+                "scoring_mode": getattr(active, "scoring_mode", "NOT_LEARNED"),
                 "close_action": res.get("action"),
             })
             journal["protected_signal_ids"] = [
@@ -9811,7 +10325,8 @@ def run_bot() -> None:
     canonical_quality = canonical_decision_quality(decision)
     decision.quality = canonical_quality
     quality_source = "candidate.final_score" if decision.candidate else "decision.quality"
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "audit": decision.audit or {}}
+    scoring_profile = scoring_mode_profile(journal.get("learning_status", {}))
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "scoring_mode": scoring_profile, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "audit": decision.audit or {}}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
@@ -9834,6 +10349,12 @@ def run_bot() -> None:
             "score_model_source": components.get("model_source", ""),
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
+            "quality_dimensions": {
+                "entry_quality": int(getattr(decision.candidate, "entry_quality_score", 0) or components.get("entry_quality", canonical_quality)),
+                "durability_quality": int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
+                "exit_quality": int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
+                "mode": components.get("quality_dimensions_mode", "HEURISTIC_UNTIL_LEARNED"),
+            },
             "innovation_profile": getattr(decision.candidate, "innovation_profile", {}) or components.get("innovation_profile", {}),
             "trigger_revalidation": getattr(decision.candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}),
             "thesis_key": decision.candidate.thesis_key,
@@ -9909,6 +10430,9 @@ def run_bot() -> None:
             stage_plan=decision.candidate.stage_plan, runtime_config_snapshot=decision.plan.runtime_config_snapshot,
             decision_stop=decision.plan.decision_stop, catastrophic_stop=decision.plan.catastrophic_stop,
             breathing_profile=decision.plan.breathing_profile,
+            entry_quality=int(getattr(decision.candidate, "entry_quality_score", 0) or components.get("entry_quality", canonical_quality)),
+            durability_quality=int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
+            scoring_mode=str(scoring_profile.get("code") or "NOT_LEARNED"),
         )
         store_active_trade(state, active)
         state["opportunity"] = None
@@ -10746,6 +11270,82 @@ def test_entry_supported_daily_metric_and_custom_analytics_survive() -> bool:
         and (analytics.get("custom_shadow_metric") or {}).get("tracked") == 2
     )
 
+
+def test_tp0_giveback_activates_breakeven_protection() -> bool:
+    trade = ActiveTrade(
+        id="tp0-protect-test",
+        side=Side.LONG.value,
+        setup_type=SetupType.SESSION_MEAN_RECLAIM.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=iso_now(),
+        entry=100.0,
+        stop_initial=99.0,
+        stop_current=99.0,
+        structural_invalidation=98.5,
+        tp0=100.5,
+        tp1=102.0,
+        tp2=103.0,
+        tp3=104.0,
+        quality=74,
+        position_risk_pct=0.2,
+        best_price=101.0,
+        worst_price=100.0,
+        tp0_hit=True,
+    )
+    result = {
+        "action": Action.HOLD.value,
+        "best_pct": 1.0,
+        "current_pct": 0.40,
+        "notes": [],
+        "management_state": "SUPPORTED",
+    }
+    profile = _tp0_profit_protection(trade, {"price": 100.40, "candles": {"3m": []}}, result)
+    return bool(
+        profile.get("activated")
+        and result.get("action") == Action.PROTECT.value
+        and result.get("management_state") == "PROTECT"
+        and trade.pre_tp1_protection_locked
+        and abs(trade.stop_current - round_price(100.0 + COMMISSION_BUFFER_DOLLARS)) < 1e-9
+    )
+
+
+def test_not_learned_scoring_is_explicit() -> bool:
+    profile = scoring_mode_profile({
+        "global_ready": False,
+        "global_learned_weight": 0.0,
+        "training_rows": 4,
+    })
+    return bool(
+        profile.get("code") == "NOT_LEARNED"
+        and profile.get("quality_is_empirically_calibrated") is False
+        and profile.get("minimum_rows") == SCORING_MODEL_MIN_TRADES
+    )
+
+
+def test_execution_path_health_counts_standard_and_fallback() -> bool:
+    journal = {
+        "signals": [
+            {"id": "s1", "action": Action.RISKY_ENTRY.value, "setup_type": "A", "innovation_profile": {"primary": "SETUP_ARGUMENTED_TRIGGER_REVALIDATION"}, "trigger_revalidation": {"entry_supported": True, "revalidated": True}},
+            {"id": "s2", "action": Action.RISKY_ENTRY.value, "setup_type": "A", "innovation_profile": {"primary": "STALE_THESIS_WAIT_SETUP_ARGUMENT"}, "trigger_revalidation": {"entry_supported": False, "revalidated": False}},
+            {"id": "s3", "action": Action.RISKY_ENTRY.value, "setup_type": "B", "innovation_profile": {"primary": "STANDARD_NONBLOCKING_CONSTRUCTION"}, "trigger_revalidation": {"entry_supported": True, "revalidated": False}},
+        ],
+        "trades": [
+            {"id": "t1", "signal_id": "s1", "setup_type": "A", "result_pct": -0.2},
+            {"id": "t2", "signal_id": "s2", "setup_type": "A", "result_pct": -0.3},
+            {"id": "t3", "signal_id": "s3", "setup_type": "B", "result_pct": 0.4},
+        ],
+    }
+    health = compute_execution_path_health(journal)
+    counts = health.get("counts") or {}
+    return bool(
+        counts.get("STANDARD") == 1
+        and counts.get("REVALIDATION") == 1
+        and counts.get("INNOVATION_FALLBACK") == 1
+        and health.get("unsupported_execution_count") == 1
+        and health.get("health") == "CRITICAL"
+    )
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -10783,6 +11383,9 @@ def _run_self_test() -> bool:
     checks.append(("build-plan revalidation gate ORs strict alternative support", test_build_plan_revalidation_gate_uses_strict_alternative()))
     checks.append(("pre-confirmation promotes after confirming bar", test_preconfirmation_promotes_after_confirming_bar()))
     checks.append(("daily entry-supported metric survives analytics recompute", test_entry_supported_daily_metric_and_custom_analytics_survive()))
+    checks.append(("TP0 >=50% MFE giveback activates breakeven protection", test_tp0_giveback_activates_breakeven_protection()))
+    checks.append(("NOT_LEARNED scoring is explicit", test_not_learned_scoring_is_explicit()))
+    checks.append(("execution path health separates standard/fallback", test_execution_path_health_counts_standard_and_fallback()))
 
     # --- RR floors ---
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
@@ -11912,7 +12515,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.10")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.11")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
