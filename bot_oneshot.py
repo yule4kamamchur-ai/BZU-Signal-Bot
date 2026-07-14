@@ -9,6 +9,14 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Додано confirmation-delay analytics: перший сигнал того самого thesis порівнюється з execution entry, включно з directional wait cost.
 - Shadow-плани дедуплікуються за side/entry/stop і формують policy review: TP1+ без входу проти STOP_FIRST.
 
+Виправлення v8.14 (Integrated SHORT Reversal Intelligence Edition):
+- SHORT reversal-моделі інтегровані у спільний Candidate/Hypothesis Matrix, а не запускають окремий паралельний мозок.
+- Додано м’які Liquidity Sweep Reversal, Failed Breakout, bearish MSS, Buyer Exhaustion та OR Failure 2.0.
+- SHORT score не замінює загальний score: він дає обмежений quality lift, stage/risk overlay і прозорий audit.
+- Додано SHORT_REVERSAL_ANALYST та short-specific conflict overlay: bullish HTF вимагає більше доказів, але не є жорсткою забороною.
+- Executive Layer може дозволити тільки staged PROBE/ACCEPTANCE для якісного reversal; моделі не мають права самостійно публікувати ENTRY.
+- ML/analytics розділяють LONG, SHORT та SHORT_REVERSAL; short-specific coefficients активуються тільки після достатньої вибірки.
+
 Виправлення v8.12 (Relaxed Continuation Policy Lab Edition):
 - Додано деталізований execution funnel після entry_supported з окремими REVALIDATION та EXECUTIVE_DIRECTOR blocking layers.
 - ACCEPTANCE_RETEST_CONTINUATION отримав relaxed partial-structure policy лише як дедуплікований shadow experiment.
@@ -144,8 +152,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.12-relaxed-continuation-policy"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_12_RELAXED_CONTINUATION_POLICY"
+BOT_VERSION = "pro-hybrid-confluence-v8.14-short-reversal-intelligence"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_14_SHORT_REVERSAL_INTELLIGENCE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -445,12 +453,65 @@ def validate_runtime_configuration() -> dict[str, Any]:
     if RELAXED_CONTINUATION_MAX_PULLBACK_ATR > CONTINUATION_REANCHOR_MAX_PULLBACK_ATR:
         errors.append("Relaxed continuation pullback cannot be looser than the strict pullback envelope")
 
+    short_weight_sum = sum([
+        SHORT_REVERSAL_WEIGHT_LIQUIDITY,
+        SHORT_REVERSAL_WEIGHT_FAILURE,
+        SHORT_REVERSAL_WEIGHT_MSS,
+        SHORT_REVERSAL_WEIGHT_EXHAUSTION,
+        SHORT_REVERSAL_WEIGHT_OR_FAILURE,
+        SHORT_REVERSAL_WEIGHT_CONTEXT,
+        SHORT_REVERSAL_WEIGHT_EXECUTION,
+    ])
+    if abs(short_weight_sum - 1.0) > 1e-6:
+        errors.append(f"SHORT reversal weights must sum to 1.0, got {short_weight_sum:.6f}")
+    if not (SHORT_REVERSAL_WATCH_SCORE < SHORT_REVERSAL_PROBE_SCORE < SHORT_REVERSAL_ACCEPTANCE_SCORE < SHORT_REVERSAL_CORE_SCORE):
+        errors.append("SHORT reversal stage thresholds must be strictly increasing")
+    if not (0 < SHORT_REVERSAL_PROBE_RISK_PCT <= SHORT_REVERSAL_ACCEPTANCE_RISK_PCT <= ACCEPTANCE_RISK_PCT):
+        errors.append("SHORT reversal risk ladder is invalid")
+
     return {
         "valid": not errors,
         "errors": errors,
     }
 
 
+
+
+# ==========================================================
+# v8.14 SHORT REVERSAL INTELLIGENCE
+# ==========================================================
+# Це м'який доказовий шар. Він:
+# - створює окремі SHORT reversal hypotheses;
+# - додає обмежений score lift;
+# - модулює stage/risk;
+# - не обходить Trading Philosophy, Risk Manager або Executive Layer.
+SHORT_REVERSAL_ENGINE_ENABLED = os.getenv(
+    "SHORT_REVERSAL_ENGINE_ENABLED", "true"
+).lower() in {"1", "true", "yes"}
+
+SHORT_REVERSAL_WEIGHT_LIQUIDITY = float(os.getenv("SHORT_REVERSAL_WEIGHT_LIQUIDITY", "0.18") or 0.18)
+SHORT_REVERSAL_WEIGHT_FAILURE = float(os.getenv("SHORT_REVERSAL_WEIGHT_FAILURE", "0.15") or 0.15)
+SHORT_REVERSAL_WEIGHT_MSS = float(os.getenv("SHORT_REVERSAL_WEIGHT_MSS", "0.22") or 0.22)
+SHORT_REVERSAL_WEIGHT_EXHAUSTION = float(os.getenv("SHORT_REVERSAL_WEIGHT_EXHAUSTION", "0.15") or 0.15)
+SHORT_REVERSAL_WEIGHT_OR_FAILURE = float(os.getenv("SHORT_REVERSAL_WEIGHT_OR_FAILURE", "0.15") or 0.15)
+SHORT_REVERSAL_WEIGHT_CONTEXT = float(os.getenv("SHORT_REVERSAL_WEIGHT_CONTEXT", "0.08") or 0.08)
+SHORT_REVERSAL_WEIGHT_EXECUTION = float(os.getenv("SHORT_REVERSAL_WEIGHT_EXECUTION", "0.07") or 0.07)
+SHORT_REVERSAL_MAX_SCORE_LIFT = float(os.getenv("SHORT_REVERSAL_MAX_SCORE_LIFT", "8.0") or 8.0)
+SHORT_REVERSAL_MAX_CONFLICT_RELIEF = float(os.getenv("SHORT_REVERSAL_MAX_CONFLICT_RELIEF", "2.25") or 2.25)
+
+SHORT_REVERSAL_WATCH_SCORE = int(os.getenv("SHORT_REVERSAL_WATCH_SCORE", "48") or 48)
+SHORT_REVERSAL_PROBE_SCORE = int(os.getenv("SHORT_REVERSAL_PROBE_SCORE", "62") or 62)
+SHORT_REVERSAL_ACCEPTANCE_SCORE = int(os.getenv("SHORT_REVERSAL_ACCEPTANCE_SCORE", "70") or 70)
+SHORT_REVERSAL_CORE_SCORE = int(os.getenv("SHORT_REVERSAL_CORE_SCORE", "78") or 78)
+SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE = int(os.getenv("SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE", "60") or 60)
+SHORT_REVERSAL_COUNTER_HTF_SCORE = int(os.getenv("SHORT_REVERSAL_COUNTER_HTF_SCORE", "72") or 72)
+SHORT_REVERSAL_COUNTER_HTF_MSS = int(os.getenv("SHORT_REVERSAL_COUNTER_HTF_MSS", "55") or 55)
+SHORT_REVERSAL_PROBE_RISK_PCT = min(PROBE_RISK_PCT, max(0.01, float(os.getenv("SHORT_REVERSAL_PROBE_RISK_PCT", "0.08") or 0.08)))
+SHORT_REVERSAL_ACCEPTANCE_RISK_PCT = min(ACCEPTANCE_RISK_PCT, max(SHORT_REVERSAL_PROBE_RISK_PCT, float(os.getenv("SHORT_REVERSAL_ACCEPTANCE_RISK_PCT", "0.16") or 0.16)))
+
+SHORT_REVERSAL_ML_MIN_TRADES = max(20, int(os.getenv("SHORT_REVERSAL_ML_MIN_TRADES", "30") or 30))
+SHORT_REVERSAL_ML_FULL_TRADES = max(SHORT_REVERSAL_ML_MIN_TRADES + 1, int(os.getenv("SHORT_REVERSAL_ML_FULL_TRADES", "100") or 100))
+SHORT_REVERSAL_ML_MIN_MODEL_TRADES = max(10, int(os.getenv("SHORT_REVERSAL_ML_MIN_MODEL_TRADES", "20") or 20))
 
 # === Scoring Thresholds ===
 ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
@@ -662,6 +723,16 @@ class SetupType(str, Enum):
     LIQUIDITY_LADDER = "LIQUIDITY_LADDER"
     FAILED_AUCTION_REJECTION = "FAILED_AUCTION_REJECTION"
     TIME_OF_DAY_ADAPTIVE = "TIME_OF_DAY_ADAPTIVE"
+
+    # v8.13 SHORT REVERSAL ENGINE
+    # Моделі не є жорсткими entry gates. Вони створюють незалежні
+    # reversal hypotheses, які оцінює існуючий Executive Decision Layer.
+    LIQUIDITY_SWEEP_REVERSAL_SHORT = "LIQUIDITY_SWEEP_REVERSAL_SHORT"
+    FAILED_BREAKOUT_SHORT = "FAILED_BREAKOUT_SHORT"
+    MSS_REVERSAL_SHORT = "MSS_REVERSAL_SHORT"
+    BUYER_EXHAUSTION_SHORT = "BUYER_EXHAUSTION_SHORT"
+    OR_FAILURE_2_SHORT = "OR_FAILURE_2_SHORT"
+
     NONE = "NONE"
 
 
@@ -689,6 +760,14 @@ class ExecutionSource(str, Enum):
     LIQUIDITY_LADDER = "LIQUIDITY_LADDER"
     FAILED_AUCTION = "FAILED_AUCTION"
     TIME_OF_DAY = "TIME_OF_DAY"
+
+    # v8.13 SHORT reversal execution sources
+    SHORT_LIQUIDITY_SWEEP = "SHORT_LIQUIDITY_SWEEP"
+    SHORT_FAILED_BREAKOUT = "SHORT_FAILED_BREAKOUT"
+    SHORT_MSS_CONFIRMATION = "SHORT_MSS_CONFIRMATION"
+    SHORT_BUYER_EXHAUSTION = "SHORT_BUYER_EXHAUSTION"
+    SHORT_OR_FAILURE_2 = "SHORT_OR_FAILURE_2"
+
     NONE = "NONE"
 
 
@@ -832,6 +911,7 @@ class Candidate:
     innovation_profile: dict[str, Any] = field(default_factory=dict)
     revalidation_profile: dict[str, Any] = field(default_factory=dict)
     relaxed_continuation_profile: dict[str, Any] = field(default_factory=dict)
+    short_reversal_profile: dict[str, Any] = field(default_factory=dict)
     entry_freshness_score: float = 100.0
     entry_freshness_profile: dict[str, Any] = field(default_factory=dict)
     confirmation_pending: bool = False
@@ -1077,6 +1157,7 @@ class ActiveTrade:
     entry_quality: int = 0
     durability_quality: int = 0
     scoring_mode: str = "NOT_LEARNED"
+    short_reversal_profile: dict[str, Any] = field(default_factory=dict)
 
 
 
@@ -1212,6 +1293,15 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "conflict_min_effective_confidence": CONFLICT_MIN_EFFECTIVE_CONFIDENCE,
         "conflict_caution_weight": CONFLICT_CAUTION_WEIGHT,
         "conflict_hard_margin": CONFLICT_HARD_MARGIN,
+        "short_reversal_engine_enabled": SHORT_REVERSAL_ENGINE_ENABLED,
+        "short_reversal_watch_score": SHORT_REVERSAL_WATCH_SCORE,
+        "short_reversal_probe_score": SHORT_REVERSAL_PROBE_SCORE,
+        "short_reversal_acceptance_score": SHORT_REVERSAL_ACCEPTANCE_SCORE,
+        "short_reversal_core_score": SHORT_REVERSAL_CORE_SCORE,
+        "short_reversal_max_score_lift": SHORT_REVERSAL_MAX_SCORE_LIFT,
+        "short_reversal_probe_risk_pct": SHORT_REVERSAL_PROBE_RISK_PCT,
+        "short_reversal_acceptance_risk_pct": SHORT_REVERSAL_ACCEPTANCE_RISK_PCT,
+        "short_reversal_ml_min_trades": SHORT_REVERSAL_ML_MIN_TRADES,
         "probe_entry_score_base": ARMED_SCORE_BASE,
         "tp0_rr": TP0_RR,
         "tp0_size_pct": TP0_SIZE_PCT,
@@ -1466,6 +1556,16 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         stage = EntryStage.PROBE.value
         base_risk = PROBE_RISK_PCT * 0.75
         add_plan.append("Time-of-day edge: сесійний бонус не дає full-size без окремого structural trigger")
+    elif src in {
+        ExecutionSource.SHORT_LIQUIDITY_SWEEP.value,
+        ExecutionSource.SHORT_FAILED_BREAKOUT.value,
+        ExecutionSource.SHORT_MSS_CONFIRMATION.value,
+        ExecutionSource.SHORT_BUYER_EXHAUSTION.value,
+        ExecutionSource.SHORT_OR_FAILURE_2.value,
+    }:
+        stage = EntryStage.PROBE.value if score < ENTRY_SCORE_BASE else EntryStage.ACCEPTANCE.value
+        base_risk = SHORT_REVERSAL_PROBE_RISK_PCT if stage == EntryStage.PROBE.value else SHORT_REVERSAL_ACCEPTANCE_RISK_PCT
+        add_plan.append("SHORT reversal: staged execution only; model evidence cannot create immediate full-size")
     elif score >= max(A_PLUS_ENTRY_MIN, ENTRY_SCORE_BASE + 7) and candidate.confirmation_tier >= ConfirmationTier.HIGH_QUALITY.value:
         stage = EntryStage.CORE.value
         base_risk = CORE_RISK_PCT
@@ -5292,6 +5392,81 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
     return rows
 
 
+def _quality_training_rows_filtered(
+    journal: dict,
+    *,
+    side: str = "",
+    short_reversal_only: bool = False,
+    setup_type: str = "",
+) -> list[tuple[dict[str, float], int, float]]:
+    signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
+    signals = {
+        str(s.get("id")): s for s in signal_records
+        if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
+    }
+    rows: list[tuple[dict[str, float], int, float]] = []
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        signal = signals.get(str(trade.get("signal_id") or trade.get("id") or ""))
+        if not signal:
+            continue
+        if side and str(signal.get("side") or trade.get("side") or "") != side:
+            continue
+        if setup_type and str(signal.get("setup_type") or trade.get("setup_type") or "") != setup_type:
+            continue
+        if short_reversal_only:
+            profile = signal.get("short_reversal_profile") or (signal.get("score_components") or {}).get("short_reversal") or trade.get("short_reversal_profile") or {}
+            if str(signal.get("side") or trade.get("side") or "") != Side.SHORT.value or not profile.get("active"):
+                continue
+        ground_truth = _trade_ground_truth(trade)
+        if ground_truth is None:
+            continue
+        label, sample_weight, _ = ground_truth
+        features = {
+            key: clamp(safe_float(signal["score_features"].get(key), 0.0), -1.0, 1.0)
+            for key in QUALITY_FEATURE_KEYS
+        }
+        rows.append((features, label, sample_weight))
+    return rows
+
+
+def compute_short_specific_ml_statistics(journal: dict[str, Any]) -> dict[str, Any]:
+    short_rows = _quality_training_rows_filtered(journal, side=Side.SHORT.value)
+    long_rows = _quality_training_rows_filtered(journal, side=Side.LONG.value)
+    reversal_rows = _quality_training_rows_filtered(journal, side=Side.SHORT.value, short_reversal_only=True)
+    short_setup_types = {
+        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
+        SetupType.FAILED_BREAKOUT_SHORT.value,
+        SetupType.MSS_REVERSAL_SHORT.value,
+        SetupType.BUYER_EXHAUSTION_SHORT.value,
+        SetupType.OR_FAILURE_2_SHORT.value,
+    }
+    by_model = {}
+    for setup_type in sorted(short_setup_types):
+        rows = _quality_training_rows_filtered(journal, side=Side.SHORT.value, setup_type=setup_type)
+        if rows:
+            by_model[setup_type] = {
+                "rows": len(rows),
+                "ready": len(rows) >= SHORT_REVERSAL_ML_MIN_MODEL_TRADES,
+                "learned_weight": round(_learned_model_weight(len(rows), SHORT_REVERSAL_ML_MIN_MODEL_TRADES, SHORT_REVERSAL_ML_FULL_TRADES), 4),
+            }
+
+    ready = len(reversal_rows) >= SHORT_REVERSAL_ML_MIN_TRADES
+    default = DEFAULT_QUALITY_COEFFICIENTS[SetupFamily.STRUCTURAL_TRANSITION.value]
+    return {
+        "short_rows": len(short_rows),
+        "long_rows": len(long_rows),
+        "short_reversal_rows": len(reversal_rows),
+        "ready": ready,
+        "minimum_rows": SHORT_REVERSAL_ML_MIN_TRADES,
+        "learned_weight": round(_learned_model_weight(len(reversal_rows), SHORT_REVERSAL_ML_MIN_TRADES, SHORT_REVERSAL_ML_FULL_TRADES), 4),
+        "validation": _validation_metrics(reversal_rows, default),
+        "by_model": by_model,
+        "policy": "direction/model-specific learning activates only after sufficient closed-trade ground truth",
+    }
+
+
 def _validation_metrics(rows: list[tuple[dict[str, float], int, float]], default: dict[str, float]) -> dict[str, Any]:
     if len(rows) < SCORING_MODEL_MIN_TRADES:
         return {"enabled": False, "reason": "not_enough_rows"}
@@ -5377,6 +5552,7 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
         "by_family": by_family,
         "validation": _validation_metrics(global_rows, DEFAULT_QUALITY_COEFFICIENTS["_global"]),
         "score_outcome_correlation": compute_score_outcome_correlation(journal, global_ready),
+        "short_specific_ml": compute_short_specific_ml_statistics(journal),
         "github_actions": bool(os.getenv("GITHUB_ACTIONS")),
         "journal_persistence_confirmed": JOURNAL_PERSISTENCE_CONFIRMED,
         "flow_quality": str(latest_signal.get("flow_quality") or "UNKNOWN_NOT_RECORDED"),
@@ -5449,15 +5625,39 @@ def _blend_coefficients(default: dict[str, float], learned: dict[str, float], le
     }
 
 
-def _quality_coefficients(journal: dict, setup_family: str) -> tuple[dict[str, float], str, int, float]:
+def _quality_coefficients(
+    journal: dict,
+    setup_family: str,
+    *,
+    side: str = "",
+    short_reversal: bool = False,
+) -> tuple[dict[str, float], str, int, float]:
     family_default = DEFAULT_QUALITY_COEFFICIENTS.get(setup_family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
+    if short_reversal and side == Side.SHORT.value:
+        short_rows = _quality_training_rows_filtered(journal, side=Side.SHORT.value, short_reversal_only=True)
+        if len(short_rows) >= SHORT_REVERSAL_ML_MIN_TRADES:
+            rows = short_rows
+            source = "journal:SHORT_REVERSAL"
+            min_rows = SHORT_REVERSAL_ML_MIN_TRADES
+            full_rows = SHORT_REVERSAL_ML_FULL_TRADES
+        else:
+            rows = []
+            source = "bootstrap"
+            min_rows = SHORT_REVERSAL_ML_MIN_TRADES
+            full_rows = SHORT_REVERSAL_ML_FULL_TRADES
+    else:
+        rows = []
+        source = ""
+        min_rows = 0
+        full_rows = 0
+
     family_rows = _quality_training_rows(journal, setup_family)
-    if len(family_rows) >= SCORING_MODEL_MIN_FAMILY_TRADES:
+    if not rows and len(family_rows) >= SCORING_MODEL_MIN_FAMILY_TRADES:
         rows = family_rows
         source = f"journal:{setup_family}"
         min_rows = SCORING_MODEL_MIN_FAMILY_TRADES
         full_rows = SCORING_MODEL_FULL_FAMILY_TRADES
-    else:
+    elif not rows:
         rows = _quality_training_rows(journal)
         source = "journal:global" if len(rows) >= SCORING_MODEL_MIN_TRADES else "bootstrap"
         min_rows = SCORING_MODEL_MIN_TRADES
@@ -5579,8 +5779,11 @@ def _multiplicative_quality_gates(features: dict[str, float], setup_family: str,
 
 def calibrate_candidate_quality(journal: dict, features: dict[str, float], setup_family: str,
                                 trigger_ready: bool, is_limit_armed: bool,
-                                has_forward_zone: bool, flow_reliable: bool = False) -> dict[str, Any]:
-    coef, model_source, sample_size, learned_weight = _quality_coefficients(journal, setup_family)
+                                has_forward_zone: bool, flow_reliable: bool = False,
+                                side: str = "", short_reversal: bool = False) -> dict[str, Any]:
+    coef, model_source, sample_size, learned_weight = _quality_coefficients(
+        journal, setup_family, side=side, short_reversal=short_reversal
+    )
     logit = coef.get("bias", 0.0) + sum(coef.get(key, 0.0) * features.get(key, 0.0) for key in QUALITY_FEATURE_KEYS)
     base_probability = _sigmoid(logit)
     gates = _multiplicative_quality_gates(
@@ -5743,6 +5946,13 @@ def ict_model_execution_contract(
         entry_basis = f"Time-of-day adaptive execution ({model_context.get('phase', 'session')})"
         invalidation = price - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.15)
         invalidation_basis = "Session timing thesis invalidation"
+    elif model in SHORT_REVERSAL_MODEL_IDS:
+        entry_anchor = safe_float(model_context.get("entry_anchor"), price) or price
+        entry_basis = f"{model} soft reversal anchor"
+        invalidation = safe_float(model_context.get("invalidation"), 0.0)
+        if not invalidation:
+            invalidation = entry_anchor + max(ABS_MIN_STOP_DOLLARS, atr15 * 1.20)
+        invalidation_basis = f"{model} structural/rejection invalidation"
     elif model in {"2022_MODEL", "TURTLE_SOUP", "PO3", "JUDAS_SWING", "MMBM"}:
         sweep_level = safe_float(event.get("sweep_level"), safe_float(trigger_level, price))
         if sweep_level:
@@ -5848,6 +6058,11 @@ def score_hypothesis_layers(
         ExecutionSource.LIQUIDITY_LADDER.value: 66,
         ExecutionSource.FAILED_AUCTION.value: 78,
         ExecutionSource.TIME_OF_DAY.value: 62,
+        ExecutionSource.SHORT_LIQUIDITY_SWEEP.value: 76,
+        ExecutionSource.SHORT_FAILED_BREAKOUT.value: 74,
+        ExecutionSource.SHORT_MSS_CONFIRMATION.value: 78,
+        ExecutionSource.SHORT_BUYER_EXHAUSTION.value: 68,
+        ExecutionSource.SHORT_OR_FAILURE_2.value: 77,
         ExecutionSource.TIME_WARP.value: 44,
         ExecutionSource.NONE.value: 34,
     }.get(str(execution_source), 34)
@@ -5922,6 +6137,8 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
         "revalidation_state": (getattr(c, "revalidation_profile", {}) or {}).get("state", ""),
         "revalidation_supported": bool((getattr(c, "revalidation_profile", {}) or {}).get("entry_supported", False)),
         "entry_timing": (getattr(c, "revalidation_profile", {}) or {}).get("entry_timing", ""),
+        "short_reversal_score": round(safe_float((getattr(c, "short_reversal_profile", {}) or comps.get("short_reversal", {})).get("score"), 0.0), 2),
+        "short_reversal_stage": (getattr(c, "short_reversal_profile", {}) or comps.get("short_reversal", {})).get("stage", ""),
     }
 
 
@@ -5975,6 +6192,8 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     calibration = calibrate_candidate_quality(
         journal, quality_features, setup_family, candidate.trigger_ready, False, True,
         bool((context.get("flow") or {}).get("reliable")),
+        side=side,
+        short_reversal=bool((candidate.score_components or {}).get("short_reversal")),
     )
     direction_perf = direction_recent_performance(journal, side)
     layers = score_hypothesis_layers(
@@ -6780,6 +6999,527 @@ def best_candidate_per_side_audit(
         rows[side] = row
     return rows
 
+
+SHORT_REVERSAL_MODEL_IDS = {
+    "SHORT_LIQUIDITY_SWEEP_REVERSAL",
+    "SHORT_FAILED_BREAKOUT_REVERSAL",
+    "SHORT_MSS_REVERSAL",
+    "SHORT_BUYER_EXHAUSTION",
+    "SHORT_OR_FAILURE_2",
+}
+
+
+def _confirmed_candles(candles: list[Candle], limit: int = 0) -> list[Candle]:
+    result = sorted(
+        [c for c in (candles or []) if getattr(c, "confirmed", True)],
+        key=lambda c: c.ts,
+    )
+    return result[-limit:] if limit and len(result) > limit else result
+
+
+def _candle_shape(candle: Candle) -> dict[str, float]:
+    rng = max(float(candle.high) - float(candle.low), 1e-9)
+    body = abs(float(candle.close) - float(candle.open))
+    upper_wick = max(float(candle.high) - max(float(candle.open), float(candle.close)), 0.0)
+    lower_wick = max(min(float(candle.open), float(candle.close)) - float(candle.low), 0.0)
+    return {
+        "range": rng,
+        "body": body,
+        "body_ratio": body / rng,
+        "upper_wick_ratio": upper_wick / rng,
+        "lower_wick_ratio": lower_wick / rng,
+    }
+
+
+def detect_short_liquidity_sweep_reversal(
+    candles: list[Candle],
+    price: float,
+    atr15: float,
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Soft buy-side liquidity sweep -> rejection detector.
+
+    A wick alone is not treated as an entry. Quality rises progressively with
+    reclaim, follow-through, location and freshness. The result is evidence for
+    the common Executive brain, never a standalone action.
+    """
+    confirmed = _confirmed_candles(candles, 28)
+    if len(confirmed) < 14 or atr15 <= 0:
+        return {"active": False, "execution_ready": False, "quality": 0, "reason": "not_enough_data"}
+
+    reference_window = confirmed[-20:-4]
+    signal_window = confirmed[-4:]
+    reference_high = max(c.high for c in reference_window)
+    sweep_idx, sweep_candle = max(enumerate(signal_window), key=lambda item: item[1].high)
+    shape = _candle_shape(sweep_candle)
+    sweep_depth_atr = max(0.0, (sweep_candle.high - reference_high) / max(atr15, 1e-9))
+    swept = sweep_depth_atr >= 0.04
+    closes_after = signal_window[sweep_idx:]
+    reclaim = any(c.close < reference_high + atr15 * 0.03 for c in closes_after)
+    bearish_followthrough = bool(
+        signal_window[-1].close < signal_window[-1].open
+        or signal_window[-1].close < signal_window[-2].close
+        or sum(1 for c in signal_window[-3:] if c.close < c.open) >= 2
+    )
+    rejection = shape["upper_wick_ratio"] >= 0.32 or sweep_candle.close < sweep_candle.high - shape["range"] * 0.55
+    not_chasing = (reference_high - price) / max(atr15, 1e-9) <= 1.35
+
+    volumes = [safe_float(c.volume, 0.0) for c in reference_window if safe_float(c.volume, 0.0) > 0]
+    volume_ratio = safe_float(sweep_candle.volume, 0.0) / max(mean(volumes), 1e-9) if volumes else 0.0
+
+    quality = 0.0
+    quality += min(22.0, sweep_depth_atr / 0.35 * 22.0) if swept else 0.0
+    quality += 25.0 if reclaim else 0.0
+    quality += 18.0 if rejection else 0.0
+    quality += 17.0 if bearish_followthrough else 0.0
+    quality += 8.0 if not_chasing else 0.0
+    quality += min(10.0, max(0.0, (volume_ratio - 1.0) * 10.0)) if volumes else 4.0
+    quality = clamp(quality, 0.0, 100.0)
+
+    invalidation = sweep_candle.high + max(atr15 * 0.12, ABS_MIN_STOP_DOLLARS * 0.20)
+    return {
+        "active": bool(swept and quality >= 45),
+        "execution_ready": bool(swept and reclaim and bearish_followthrough and quality >= 66),
+        "quality": round(quality, 2),
+        "reference_high": round_price(reference_high),
+        "sweep_high": round_price(sweep_candle.high),
+        "entry_anchor": round_price(reference_high),
+        "invalidation": round_price(invalidation),
+        "sweep_depth_atr": round(sweep_depth_atr, 3),
+        "swept": swept,
+        "reclaim": reclaim,
+        "rejection": rejection,
+        "bearish_followthrough": bearish_followthrough,
+        "not_chasing": not_chasing,
+        "volume_ratio": round(volume_ratio, 2) if volumes else None,
+        "reason": "buy-side sweep with progressive rejection evidence",
+    }
+
+
+def detect_short_failed_breakout(candles: list[Candle], price: float, atr15: float) -> dict[str, Any]:
+    """Soft failed breakout above recent resistance.
+
+    Breakout, close-back-inside, follow-through and retest are scored separately;
+    no single missing component hard-rejects the hypothesis.
+    """
+    confirmed = _confirmed_candles(candles, 26)
+    if len(confirmed) < 13 or atr15 <= 0:
+        return {"active": False, "execution_ready": False, "quality": 0, "reason": "not_enough_data"}
+
+    base = confirmed[-18:-4]
+    recent = confirmed[-4:]
+    resistance = max(c.high for c in base)
+    buffer = max(atr15 * 0.05, 1e-6)
+    breakout_candidates = [(idx, c) for idx, c in enumerate(recent) if c.high > resistance + buffer]
+    if not breakout_candidates:
+        return {
+            "active": False, "execution_ready": False, "quality": 0,
+            "resistance": round_price(resistance), "reason": "no_breakout_attempt",
+        }
+
+    breakout_idx, breakout_candle = max(breakout_candidates, key=lambda item: item[1].high)
+    after = recent[breakout_idx:]
+    close_back = any(c.close < resistance for c in after)
+    last = recent[-1]
+    bearish_followthrough = bool(last.close < last.open or last.close < recent[-2].close)
+    retest = bool(last.high >= resistance - atr15 * 0.12 and last.close < resistance)
+    shape = _candle_shape(breakout_candle)
+    breakout_depth_atr = (breakout_candle.high - resistance) / max(atr15, 1e-9)
+    not_chasing = (resistance - price) / max(atr15, 1e-9) <= 1.35
+
+    quality = 0.0
+    quality += min(22.0, breakout_depth_atr / 0.40 * 22.0)
+    quality += 28.0 if close_back else 0.0
+    quality += 18.0 if bearish_followthrough else 0.0
+    quality += 14.0 if retest else 0.0
+    quality += 10.0 if shape["upper_wick_ratio"] >= 0.28 else 0.0
+    quality += 8.0 if not_chasing else 0.0
+    quality = clamp(quality, 0.0, 100.0)
+
+    return {
+        "active": bool(close_back and quality >= 45),
+        "execution_ready": bool(close_back and bearish_followthrough and quality >= 64),
+        "quality": round(quality, 2),
+        "resistance": round_price(resistance),
+        "breakout_high": round_price(breakout_candle.high),
+        "entry_anchor": round_price(resistance),
+        "invalidation": round_price(breakout_candle.high + max(atr15 * 0.12, ABS_MIN_STOP_DOLLARS * 0.20)),
+        "close_back": close_back,
+        "bearish_followthrough": bearish_followthrough,
+        "retest": retest,
+        "not_chasing": not_chasing,
+        "breakout_depth_atr": round(breakout_depth_atr, 3),
+        "reason": "breakout acceptance failed above resistance",
+    }
+
+
+def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, Any]:
+    """Bearish Market Structure Shift with graded evidence.
+
+    It combines the existing structural shift contract with protected-low break,
+    lower-high/lower-low geometry and bearish displacement. This avoids inventing
+    a second incompatible structure engine.
+    """
+    confirmed = _confirmed_candles(candles, 30)
+    if len(confirmed) < 14 or atr15 <= 0:
+        return {"active": False, "execution_ready": False, "quality": 0, "reason": "not_enough_data"}
+
+    shift = detect_recent_structure_shift(confirmed, lookback=7)
+    directional = directional_structure_profile(confirmed, Side.SHORT.value, lookback=14)
+    pre = confirmed[-14:-7]
+    recent = confirmed[-7:]
+    protected_low = min(c.low for c in pre)
+    close_break = recent[-1].close < protected_low - atr15 * 0.04
+    any_close_break = any(c.close < protected_low - atr15 * 0.04 for c in recent)
+    last_shape = _candle_shape(recent[-1])
+    displacement_atr = abs(recent[-1].close - recent[-1].open) / max(atr15, 1e-9)
+    bearish_displacement = recent[-1].close < recent[-1].open and displacement_atr >= 0.16 and last_shape["body_ratio"] >= 0.48
+    bearish_closes = sum(1 for c in recent[-5:] if c.close < c.open)
+
+    quality = 0.0
+    quality += 32.0 if shift.get("bearish_shift") else 0.0
+    quality += 22.0 if directional.get("supports_side") else 0.0
+    quality += 18.0 if any_close_break else 0.0
+    quality += 12.0 if close_break else 0.0
+    quality += 10.0 if bearish_displacement else 0.0
+    quality += 6.0 if bearish_closes >= 3 else 0.0
+    quality = clamp(quality, 0.0, 100.0)
+
+    break_level = protected_low
+    recent_high = max(c.high for c in recent[-4:])
+    return {
+        "active": bool(quality >= 48 and (shift.get("bearish_shift") or any_close_break or directional.get("supports_side"))),
+        "execution_ready": bool(quality >= 64 and (any_close_break or shift.get("bearish_shift")) and bearish_closes >= 2),
+        "quality": round(quality, 2),
+        "break_level": round_price(break_level),
+        "entry_anchor": round_price(break_level),
+        "invalidation": round_price(recent_high + max(atr15 * 0.10, ABS_MIN_STOP_DOLLARS * 0.18)),
+        "bearish_shift": bool(shift.get("bearish_shift")),
+        "directional_support": bool(directional.get("supports_side")),
+        "lower_high": bool(directional.get("lower_high")),
+        "lower_low": bool(directional.get("lower_low")),
+        "protected_low_break": any_close_break,
+        "close_break": close_break,
+        "bearish_displacement": bearish_displacement,
+        "displacement_atr": round(displacement_atr, 3),
+        "bearish_closes_5": bearish_closes,
+        "directional_structure": directional,
+        "reason": "bullish structure is progressively losing control",
+    }
+
+
+def detect_buyer_exhaustion_short(candles: list[Candle], price: float, atr15: float) -> dict[str, Any]:
+    """Buyer Exhaustion: extension without efficient upward progress.
+
+    Volume is optional because the current feed may expose synthetic or missing
+    volume. Missing volume contributes no positive proof and no hard penalty.
+    """
+    confirmed = _confirmed_candles(candles, 24)
+    if len(confirmed) < 12 or atr15 <= 0:
+        return {"active": False, "execution_ready": False, "quality": 0, "reason": "not_enough_data"}
+
+    window = confirmed[-10:]
+    first = window[:5]
+    last = window[5:]
+    extension_atr = (max(c.high for c in window) - min(c.low for c in window)) / max(atr15, 1e-9)
+    early_progress = max(c.high for c in first) - min(c.low for c in first)
+    late_progress = max(c.high for c in last) - max(c.high for c in first)
+    progress_decay = late_progress <= max(early_progress * 0.25, atr15 * 0.08)
+
+    early_bodies = [abs(c.close - c.open) for c in first]
+    late_bodies = [abs(c.close - c.open) for c in last]
+    body_decay_ratio = mean(late_bodies) / max(mean(early_bodies), 1e-9)
+    body_decay = body_decay_ratio <= 0.78
+    upper_wick_ratio = mean(_candle_shape(c)["upper_wick_ratio"] for c in last[-3:])
+    failed_progress = last[-1].high <= max(c.high for c in window[:-1]) + atr15 * 0.03
+    bearish_response = bool(last[-1].close < last[-1].open or last[-1].close < last[-2].close)
+
+    early_vol = [safe_float(c.volume, 0.0) for c in first if safe_float(c.volume, 0.0) > 0]
+    late_vol = [safe_float(c.volume, 0.0) for c in last if safe_float(c.volume, 0.0) > 0]
+    volume_decay_ratio = mean(late_vol) / max(mean(early_vol), 1e-9) if early_vol and late_vol else None
+    volume_decay = bool(volume_decay_ratio is not None and volume_decay_ratio <= 0.82)
+
+    quality = 0.0
+    quality += min(22.0, max(0.0, extension_atr - 0.8) / 1.8 * 22.0)
+    quality += 18.0 if progress_decay else 0.0
+    quality += 18.0 if body_decay else 0.0
+    quality += min(16.0, upper_wick_ratio / 0.45 * 16.0)
+    quality += 12.0 if failed_progress else 0.0
+    quality += 10.0 if bearish_response else 0.0
+    quality += 4.0 if volume_decay else 0.0
+    quality = clamp(quality, 0.0, 100.0)
+
+    recent_high = max(c.high for c in window)
+    return {
+        "active": bool(extension_atr >= 1.0 and quality >= 46),
+        "execution_ready": bool(quality >= 68 and bearish_response and (progress_decay or body_decay)),
+        "quality": round(quality, 2),
+        "entry_anchor": round_price(price),
+        "invalidation": round_price(recent_high + max(atr15 * 0.10, ABS_MIN_STOP_DOLLARS * 0.18)),
+        "extension_atr": round(extension_atr, 2),
+        "progress_decay": progress_decay,
+        "body_decay": body_decay,
+        "body_decay_ratio": round(body_decay_ratio, 3),
+        "upper_wick_ratio": round(upper_wick_ratio, 3),
+        "failed_progress": failed_progress,
+        "bearish_response": bearish_response,
+        "volume_decay": volume_decay,
+        "volume_decay_ratio": round(volume_decay_ratio, 3) if volume_decay_ratio is not None else None,
+        "reason": "buyers extended price but marginal progress deteriorated",
+    }
+
+
+def detect_or_failure_2_short(
+    opening_range: dict[str, Any],
+    candles: list[Candle],
+    price: float,
+    atr15: float,
+    mss: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Opening Range Failure 2.0 for SHORT.
+
+    Existing OR geometry is reused. The model scores sweep, close back inside,
+    bearish acceptance, MSS and retest separately instead of requiring a brittle
+    all-or-nothing chain.
+    """
+    mss = mss or {}
+    confirmed = _confirmed_candles(candles, 12)
+    or_high = safe_float(opening_range.get("or_high"), 0.0)
+    or_low = safe_float(opening_range.get("or_low"), 0.0)
+    if len(confirmed) < 5 or atr15 <= 0 or not or_high or not or_low:
+        return {"active": False, "execution_ready": False, "quality": 0, "reason": "opening_range_unavailable"}
+
+    recent = confirmed[-6:]
+    swept_or_high = any(c.high > or_high + atr15 * ORB_BREAK_BUFFER_ATR for c in recent)
+    close_inside = recent[-1].close < or_high
+    bearish_acceptance = bool(
+        recent[-1].close < recent[-1].open
+        or recent[-1].close < recent[-2].close
+        or (recent[-1].high - recent[-1].close) / max(recent[-1].high - recent[-1].low, 1e-9) >= 0.58
+    )
+    retest = bool(recent[-1].high >= or_high - atr15 * 0.18 and recent[-1].close < or_high)
+    mss_support = safe_float(mss.get("quality"), 0.0) >= 45
+    width_atr = safe_float(opening_range.get("or_width_atr"), 0.0)
+    valid_width = 0.35 <= width_atr <= 4.5
+    not_chasing = (or_high - price) / max(atr15, 1e-9) <= 1.45
+
+    quality = 0.0
+    quality += 24.0 if swept_or_high else 0.0
+    quality += 24.0 if close_inside else 0.0
+    quality += 18.0 if bearish_acceptance else 0.0
+    quality += 14.0 if retest else 0.0
+    quality += min(12.0, safe_float(mss.get("quality"), 0.0) * 0.12)
+    quality += 5.0 if valid_width else 0.0
+    quality += 3.0 if not_chasing else 0.0
+    quality = clamp(quality, 0.0, 100.0)
+
+    extreme = max(c.high for c in recent)
+    return {
+        "active": bool(swept_or_high and close_inside and quality >= 48),
+        "execution_ready": bool(swept_or_high and close_inside and bearish_acceptance and quality >= 66 and (mss_support or retest)),
+        "quality": round(quality, 2),
+        "or_high": round_price(or_high),
+        "or_low": round_price(or_low),
+        "entry_anchor": round_price(or_high),
+        "invalidation": round_price(extreme + max(atr15 * 0.10, ABS_MIN_STOP_DOLLARS * 0.18)),
+        "swept_or_high": swept_or_high,
+        "close_inside": close_inside,
+        "bearish_acceptance": bearish_acceptance,
+        "retest": retest,
+        "mss_support": mss_support,
+        "valid_width": valid_width,
+        "not_chasing": not_chasing,
+        "reason": "opening-range upside auction failed and returned inside",
+    }
+
+
+def calculate_short_reversal_score(
+    liquidity: dict[str, Any],
+    failure: dict[str, Any],
+    mss: dict[str, Any],
+    exhaustion: dict[str, Any],
+    or_failure: dict[str, Any],
+    *,
+    tf15: Optional[dict[str, Any]] = None,
+    tf1h: Optional[dict[str, Any]] = None,
+    tf4h: Optional[dict[str, Any]] = None,
+    execution_quality: float = 0.0,
+    live_3m_ready: bool = False,
+    price: float = 0.0,
+    atr15: float = 0.0,
+) -> dict[str, Any]:
+    """Blend independent reversal evidence into one soft profile.
+
+    The score is not substituted for candidate.final_score. It produces a capped
+    lift and a staged risk recommendation consumed by the existing brain.
+    """
+    tf15 = tf15 or {}
+    tf1h = tf1h or {}
+    tf4h = tf4h or {}
+    model_map = {
+        "LIQUIDITY_SWEEP_REVERSAL_SHORT": liquidity,
+        "FAILED_BREAKOUT_SHORT": failure,
+        "MSS_REVERSAL_SHORT": mss,
+        "BUYER_EXHAUSTION_SHORT": exhaustion,
+        "OR_FAILURE_2_SHORT": or_failure,
+    }
+
+    context_quality = 45.0
+    if tf15.get("bias") == Side.SHORT.value:
+        context_quality += 22.0
+    if tf1h.get("bias") == Side.SHORT.value:
+        context_quality += 18.0
+    if tf4h.get("bias") == Side.SHORT.value:
+        context_quality += 15.0
+    if tf4h.get("bias") == Side.LONG.value:
+        context_quality -= 8.0
+    context_quality = clamp(context_quality, 0.0, 100.0)
+
+    execution_component = clamp(safe_float(execution_quality, 0.0) + (12.0 if live_3m_ready else 0.0), 0.0, 100.0)
+    weighted = (
+        safe_float(liquidity.get("quality"), 0.0) * SHORT_REVERSAL_WEIGHT_LIQUIDITY
+        + safe_float(failure.get("quality"), 0.0) * SHORT_REVERSAL_WEIGHT_FAILURE
+        + safe_float(mss.get("quality"), 0.0) * SHORT_REVERSAL_WEIGHT_MSS
+        + safe_float(exhaustion.get("quality"), 0.0) * SHORT_REVERSAL_WEIGHT_EXHAUSTION
+        + safe_float(or_failure.get("quality"), 0.0) * SHORT_REVERSAL_WEIGHT_OR_FAILURE
+        + context_quality * SHORT_REVERSAL_WEIGHT_CONTEXT
+        + execution_component * SHORT_REVERSAL_WEIGHT_EXECUTION
+    )
+
+    active_models = [name for name, profile in model_map.items() if profile.get("active")]
+    execution_models = [name for name, profile in model_map.items() if profile.get("execution_ready")]
+    synergy = min(10.0, max(0, len(active_models) - 1) * 2.0)
+    if safe_float(mss.get("quality"), 0.0) >= 55 and (
+        safe_float(liquidity.get("quality"), 0.0) >= 55
+        or safe_float(failure.get("quality"), 0.0) >= 55
+        or safe_float(or_failure.get("quality"), 0.0) >= 55
+    ):
+        synergy += 3.0
+
+    anchors = [
+        safe_float(profile.get("entry_anchor"), 0.0)
+        for profile in model_map.values()
+        if profile.get("active") and safe_float(profile.get("entry_anchor"), 0.0)
+    ]
+    nearest_anchor = min(anchors, key=lambda level: abs(price - level)) if anchors else price
+    distance_from_anchor_atr = abs(price - nearest_anchor) / max(atr15, 1e-9) if atr15 > 0 else 0.0
+    chase_penalty = clamp(max(0.0, distance_from_anchor_atr - 1.0) * 8.0, 0.0, 12.0)
+
+    score = clamp(weighted + synergy - chase_penalty, 0.0, 100.0)
+    if score >= SHORT_REVERSAL_CORE_SCORE:
+        stage = EntryStage.CORE.value
+        risk_cap = SHORT_REVERSAL_ACCEPTANCE_RISK_PCT
+    elif score >= SHORT_REVERSAL_ACCEPTANCE_SCORE:
+        stage = EntryStage.ACCEPTANCE.value
+        risk_cap = SHORT_REVERSAL_ACCEPTANCE_RISK_PCT
+    elif score >= SHORT_REVERSAL_PROBE_SCORE:
+        stage = EntryStage.PROBE.value
+        risk_cap = SHORT_REVERSAL_PROBE_RISK_PCT
+    else:
+        stage = EntryStage.WAIT_CONFIRMATION.value
+        risk_cap = 0.0
+
+    best_model = max(model_map.items(), key=lambda item: safe_float(item[1].get("quality"), 0.0))[0]
+    mss_quality = safe_float(mss.get("quality"), 0.0)
+    failure_quality = max(
+        safe_float(liquidity.get("quality"), 0.0),
+        safe_float(failure.get("quality"), 0.0),
+        safe_float(or_failure.get("quality"), 0.0),
+    )
+    counter_htf_evidence = bool(
+        score >= SHORT_REVERSAL_COUNTER_HTF_SCORE
+        and mss_quality >= SHORT_REVERSAL_COUNTER_HTF_MSS
+        and failure_quality >= 55
+    )
+    execution_ready = bool(
+        execution_models
+        or (
+            live_3m_ready
+            and mss_quality >= 50
+            and failure_quality >= 52
+        )
+    )
+    score_lift = clamp((score - 50.0) * 0.22, 0.0, SHORT_REVERSAL_MAX_SCORE_LIFT)
+
+    return {
+        "enabled": True,
+        "active": bool(active_models and score >= SHORT_REVERSAL_WATCH_SCORE),
+        "score": round(score, 2),
+        "score_lift": round(score_lift, 2),
+        "stage": stage,
+        "risk_cap": round(risk_cap, 4),
+        "best_model": best_model,
+        "active_models": active_models,
+        "execution_models": execution_models,
+        "execution_ready": execution_ready,
+        "counter_htf_evidence": counter_htf_evidence,
+        "mss_quality": round(mss_quality, 2),
+        "failure_quality": round(failure_quality, 2),
+        "context_quality": round(context_quality, 2),
+        "execution_component": round(execution_component, 2),
+        "synergy_bonus": round(synergy, 2),
+        "chase_penalty": round(chase_penalty, 2),
+        "distance_from_anchor_atr": round(distance_from_anchor_atr, 3),
+        "models": model_map,
+        "policy": "soft evidence -> capped score lift -> staged risk -> executive authority",
+    }
+
+
+def short_reversal_model_snapshot(profile: dict[str, Any], model_id: str) -> dict[str, Any]:
+    key_map = {
+        "SHORT_LIQUIDITY_SWEEP_REVERSAL": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+        "SHORT_FAILED_BREAKOUT_REVERSAL": "FAILED_BREAKOUT_SHORT",
+        "SHORT_MSS_REVERSAL": "MSS_REVERSAL_SHORT",
+        "SHORT_BUYER_EXHAUSTION": "BUYER_EXHAUSTION_SHORT",
+        "SHORT_OR_FAILURE_2": "OR_FAILURE_2_SHORT",
+    }
+    key = key_map.get(model_id, "")
+    model = dict((profile.get("models") or {}).get(key) or {})
+    model.update({
+        "model_id": model_id,
+        "profile_key": key,
+        "aggregate_score": safe_float(profile.get("score"), 0.0),
+        "aggregate_stage": profile.get("stage", EntryStage.WAIT_CONFIRMATION.value),
+        "aggregate_execution_ready": bool(profile.get("execution_ready")),
+        "score_lift": safe_float(profile.get("score_lift"), 0.0),
+    })
+    return model
+
+
+def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
+    """Cap risk/stage for SHORT reversal without increasing existing risk."""
+    profile = getattr(candidate, "short_reversal_profile", {}) or (candidate.score_components or {}).get("short_reversal", {}) or {}
+    if candidate.side != Side.SHORT.value or not profile.get("active"):
+        return candidate
+
+    stage_plan = dict(candidate.stage_plan or {})
+    notes = list(stage_plan.get("scale_plan") or [])
+    proposed_stage = str(profile.get("stage") or EntryStage.WAIT_CONFIRMATION.value)
+    risk_cap = safe_float(profile.get("risk_cap"), 0.0)
+    existing_risk = safe_float(stage_plan.get("base_risk_pct"), PROBE_RISK_PCT)
+
+    if not profile.get("execution_ready"):
+        candidate.confirmation_pending = True
+        candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
+        candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value
+        stage_plan["stage"] = candidate.entry_stage
+        stage_plan["base_risk_pct"] = 0.0
+        notes.append("SHORT reversal WATCH: доказ є, але execution confirmation ще не готове")
+    else:
+        if proposed_stage == EntryStage.CORE.value:
+            proposed_stage = EntryStage.ACCEPTANCE.value
+            notes.append("SHORT reversal CORE evidence: перший вхід все одно capped на ACCEPTANCE; CORE тільки через подальший add")
+        candidate.entry_stage = proposed_stage
+        stage_plan["stage"] = proposed_stage
+        stage_plan["base_risk_pct"] = round(min(existing_risk, risk_cap or existing_risk), 4)
+        notes.append(f"SHORT reversal stage={proposed_stage}, aggregate={safe_float(profile.get('score')):.1f}; risk не збільшується")
+
+    stage_plan["short_reversal_profile"] = profile
+    stage_plan["scale_plan"] = notes
+    candidate.stage_plan = stage_plan
+    return candidate
+
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
     atr15 = context["atr15"] or 0.6
@@ -6848,7 +7588,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         "DAILY_WEEKLY_OPEN_RECLAIM": {"name": "Daily/Weekly Open Reclaim", "priority": 81, "allow_early": True, "preferred_setup": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, "score_bonus": 12, "stop_min_atr": 0.85, "stop_max_atr": 2.0, "favored": [Regime.NORMAL.value, Regime.TRANSITION.value, Regime.TREND.value], "penalty": []},
         "LIQUIDITY_LADDER_MODEL": {"name": "Liquidity Ladder Model", "priority": 72, "allow_early": False, "preferred_setup": SetupType.LIQUIDITY_LADDER.value, "score_bonus": 10, "stop_min_atr": 0.95, "stop_max_atr": 2.3, "favored": [Regime.TREND.value, Regime.TRANSITION.value, Regime.NORMAL.value], "penalty": []},
         "FAILED_AUCTION_REJECTION": {"name": "Failed Auction / Rejection Tail", "priority": 89, "allow_early": True, "preferred_setup": SetupType.FAILED_AUCTION_REJECTION.value, "score_bonus": 17, "stop_min_atr": 0.75, "stop_max_atr": 1.8, "favored": [Regime.RANGE.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": []},
-        "TIME_OF_DAY_ADAPTIVE": {"name": "Time-of-Day Adaptive Execution", "priority": 60, "allow_early": True, "preferred_setup": SetupType.TIME_OF_DAY_ADAPTIVE.value, "score_bonus": 7, "stop_min_atr": 0.90, "stop_max_atr": 2.1, "favored": [Regime.NORMAL.value, Regime.TRANSITION.value, Regime.TREND.value], "penalty": [Regime.RANGE.value]}
+        "TIME_OF_DAY_ADAPTIVE": {"name": "Time-of-Day Adaptive Execution", "priority": 60, "allow_early": True, "preferred_setup": SetupType.TIME_OF_DAY_ADAPTIVE.value, "score_bonus": 7, "stop_min_atr": 0.90, "stop_max_atr": 2.1, "favored": [Regime.NORMAL.value, Regime.TRANSITION.value, Regime.TREND.value], "penalty": [Regime.RANGE.value]},
+        "SHORT_LIQUIDITY_SWEEP_REVERSAL": {"name": "SHORT Liquidity Sweep Reversal", "priority": 91, "allow_early": True, "preferred_setup": SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value, "score_bonus": 6, "stop_min_atr": 0.90, "stop_max_atr": 2.40, "favored": [Regime.RANGE.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": []},
+        "SHORT_FAILED_BREAKOUT_REVERSAL": {"name": "SHORT Failed Breakout", "priority": 88, "allow_early": True, "preferred_setup": SetupType.FAILED_BREAKOUT_SHORT.value, "score_bonus": 5, "stop_min_atr": 0.90, "stop_max_atr": 2.30, "favored": [Regime.RANGE.value, Regime.TRANSITION.value], "penalty": []},
+        "SHORT_MSS_REVERSAL": {"name": "SHORT Bearish MSS", "priority": 94, "allow_early": True, "preferred_setup": SetupType.MSS_REVERSAL_SHORT.value, "score_bonus": 7, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "favored": [Regime.TRANSITION.value, Regime.NORMAL.value, Regime.TREND.value], "penalty": []},
+        "SHORT_BUYER_EXHAUSTION": {"name": "SHORT Buyer Exhaustion", "priority": 82, "allow_early": True, "preferred_setup": SetupType.BUYER_EXHAUSTION_SHORT.value, "score_bonus": 4, "stop_min_atr": 1.00, "stop_max_atr": 2.60, "favored": [Regime.TRANSITION.value, Regime.SHOCK.value, Regime.NORMAL.value], "penalty": [Regime.RANGE.value]},
+        "SHORT_OR_FAILURE_2": {"name": "SHORT Opening Range Failure 2.0", "priority": 93, "allow_early": True, "preferred_setup": SetupType.OR_FAILURE_2_SHORT.value, "score_bonus": 7, "stop_min_atr": 0.90, "stop_max_atr": 2.40, "favored": [Regime.RANGE.value, Regime.TRANSITION.value, Regime.SHOCK.value], "penalty": []}
     }
 
     for side in [Side.LONG.value, Side.SHORT.value]:
@@ -6986,6 +7731,34 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         acceleration_reentry = detect_acceleration_pullback_reentry(c15, side, price, atr15, tf15, tf1h)
         session_mean_reclaim = detect_vwap_session_mean_reclaim(c15, side, price, atr15, now_kyiv, tf15, tf1h, regime)
         opening_range = detect_opening_range_model(c15, side, price, atr15, now_kyiv, tf15, tf1h)
+
+        short_reversal_profile: dict[str, Any] = {}
+        if side == Side.SHORT.value and SHORT_REVERSAL_ENGINE_ENABLED:
+            short_liquidity = detect_short_liquidity_sweep_reversal(c15, price, atr15, context)
+            short_failure = detect_short_failed_breakout(c15, price, atr15)
+            short_mss = detect_short_mss_reversal(c15, atr15)
+            short_exhaustion = detect_buyer_exhaustion_short(c15, price, atr15)
+            short_or_failure = detect_or_failure_2_short(opening_range, c15, price, atr15, short_mss)
+            scan_execution_quality = max(
+                safe_float(event.get("confirmation_quality"), 0.0),
+                safe_float(event.get("acceptance_quality"), 0.0),
+                52.0 if trigger_ready else 30.0,
+            )
+            short_reversal_profile = calculate_short_reversal_score(
+                short_liquidity,
+                short_failure,
+                short_mss,
+                short_exhaustion,
+                short_or_failure,
+                tf15=tf15,
+                tf1h=tf1h,
+                tf4h=tf4h,
+                execution_quality=scan_execution_quality,
+                live_3m_ready=live_3m_trigger_ready,
+                price=price,
+                atr15=atr15,
+            )
+
         open_reclaim = detect_daily_weekly_open_reclaim(c15, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
         liquidity_ladder = detect_liquidity_ladder_model(side, price, context, atr15, tf15, tf1h)
         failed_auction = detect_failed_auction_rejection_tail(c15, side, price, atr15, context)
@@ -7048,6 +7821,19 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if time_of_day_adaptive.get("active"):
             active_patterns.append("TIME_OF_DAY_ADAPTIVE")
 
+        if side == Side.SHORT.value and short_reversal_profile.get("active"):
+            short_models = short_reversal_profile.get("models") or {}
+            if (short_models.get("LIQUIDITY_SWEEP_REVERSAL_SHORT") or {}).get("active"):
+                active_patterns.append("SHORT_LIQUIDITY_SWEEP_REVERSAL")
+            if (short_models.get("FAILED_BREAKOUT_SHORT") or {}).get("active"):
+                active_patterns.append("SHORT_FAILED_BREAKOUT_REVERSAL")
+            if (short_models.get("MSS_REVERSAL_SHORT") or {}).get("active"):
+                active_patterns.append("SHORT_MSS_REVERSAL")
+            if (short_models.get("BUYER_EXHAUSTION_SHORT") or {}).get("active"):
+                active_patterns.append("SHORT_BUYER_EXHAUSTION")
+            if (short_models.get("OR_FAILURE_2_SHORT") or {}).get("active"):
+                active_patterns.append("SHORT_OR_FAILURE_2")
+
         # ==========================================================
         # v6.10 HYPOTHESIS MATRIX: кожна активна ICT-модель створює
         # окрему trade hypothesis з власним entry anchor / invalidation / score.
@@ -7075,7 +7861,20 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             })
             best_pattern = None if is_fallback else model_id
             pattern_conf = []
+            short_model_profile = (
+                short_reversal_model_snapshot(short_reversal_profile, model_id)
+                if side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS
+                else {}
+            )
             raw_bonus = float(p_data.get("score_bonus", 0.0))
+            if short_model_profile:
+                model_quality = safe_float(short_model_profile.get("quality"), 0.0)
+                aggregate_lift = safe_float(short_model_profile.get("score_lift"), 0.0)
+                raw_bonus += min(aggregate_lift, SHORT_REVERSAL_MAX_SCORE_LIFT) * (0.55 + 0.45 * model_quality / 100.0)
+                pattern_conf.append(
+                    f"🐻 SHORT reversal: model_q={model_quality:.1f}, aggregate={safe_float(short_model_profile.get('aggregate_score')):.1f}, "
+                    f"stage={short_model_profile.get('aggregate_stage')}, lift≤{SHORT_REVERSAL_MAX_SCORE_LIFT:.1f}"
+                )
             regime_matched = 0
             regime_conflict = 0
             setup_type = str(p_data.get("preferred_setup", SetupType.PULLBACK_CONTINUATION.value))
@@ -7189,6 +7988,18 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             trig_score = (22 if model_live_3m_trigger_ready else 8) * trig_weight
             htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
 
+            if short_model_profile:
+                short_models = short_reversal_profile.get("models") or {}
+                mss_q = safe_float((short_models.get("MSS_REVERSAL_SHORT") or {}).get("quality"), 0.0)
+                failure_q = max(
+                    safe_float((short_models.get("LIQUIDITY_SWEEP_REVERSAL_SHORT") or {}).get("quality"), 0.0),
+                    safe_float((short_models.get("FAILED_BREAKOUT_SHORT") or {}).get("quality"), 0.0),
+                    safe_float((short_models.get("OR_FAILURE_2_SHORT") or {}).get("quality"), 0.0),
+                )
+                str_score += min(6.0, mss_q * 0.06)
+                liq_score += min(7.0, failure_q * 0.07)
+                trig_score += min(5.0, safe_float(short_model_profile.get("quality"), 0.0) * 0.05)
+
             raw = loc_score + str_score + liq_score + flw_score + trig_score + htf_score + raw_bonus + vector_bonus
             session_bonus = 0.0
             if judas["bias"] == side and judas["bonus"] > 0:
@@ -7206,7 +8017,26 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             local_trigger_level = trigger_level
             local_trigger_age = model_trigger_age
             local_live_3m_trigger_ready = model_live_3m_trigger_ready
-            if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
+            if model_id in SHORT_REVERSAL_MODEL_IDS:
+                model_ready = bool(short_model_profile.get("execution_ready"))
+                aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
+                actionable_trigger_ready = bool(model_ready or (aggregate_ready and live_3m_trigger_ready))
+                local_live_3m_trigger_ready = bool(actionable_trigger_ready and live_3m_trigger_ready)
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
+                local_trigger_level = safe_float(short_model_profile.get("entry_anchor"), price) or price
+                local_trigger_age = 0.0 if actionable_trigger_ready else trigger_age
+                execution_source = {
+                    "SHORT_LIQUIDITY_SWEEP_REVERSAL": ExecutionSource.SHORT_LIQUIDITY_SWEEP.value,
+                    "SHORT_FAILED_BREAKOUT_REVERSAL": ExecutionSource.SHORT_FAILED_BREAKOUT.value,
+                    "SHORT_MSS_REVERSAL": ExecutionSource.SHORT_MSS_CONFIRMATION.value,
+                    "SHORT_BUYER_EXHAUSTION": ExecutionSource.SHORT_BUYER_EXHAUSTION.value,
+                    "SHORT_OR_FAILURE_2": ExecutionSource.SHORT_OR_FAILURE_2.value,
+                }[model_id]
+                if actionable_trigger_ready:
+                    pattern_conf.append(f"🟢 {model_id}: soft reversal evidence reached execution-ready state")
+                else:
+                    pattern_conf.append(f"🟡 {model_id}: WATCH/CONFIRMATION, no standalone entry")
+            elif model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
                 execution_source = ExecutionSource.MOMENTUM_CONTINUATION.value
                 actionable_trigger_ready = bool(momentum_no_pullback.get("entry_ready"))
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
@@ -7350,6 +8180,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "LIQUIDITY_LADDER_MODEL": liquidity_ladder,
                     "FAILED_AUCTION_REJECTION": failed_auction,
                     "TIME_OF_DAY_ADAPTIVE": time_of_day_adaptive,
+                    "SHORT_LIQUIDITY_SWEEP_REVERSAL": short_model_profile,
+                    "SHORT_FAILED_BREAKOUT_REVERSAL": short_model_profile,
+                    "SHORT_MSS_REVERSAL": short_model_profile,
+                    "SHORT_BUYER_EXHAUSTION": short_model_profile,
+                    "SHORT_OR_FAILURE_2": short_model_profile,
                 }.get(model_id, {}),
             )
 
@@ -7389,7 +8224,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             )
             calibration = calibrate_candidate_quality(
                 journal, quality_features, setup_family, actionable_trigger_ready, limit_armed_ready,
-                has_forward_zone, bool((context.get("flow") or {}).get("reliable"))
+                has_forward_zone, bool((context.get("flow") or {}).get("reliable")),
+                side=side,
+                short_reversal=bool(short_model_profile),
             )
             layers = score_hypothesis_layers(
                 loc_score=loc_score,
@@ -7496,6 +8333,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "acceleration_reentry": acceleration_reentry if model_id == "ACCELERATION_PULLBACK_REENTRY" else {},
                     "session_mean_reclaim": session_mean_reclaim if model_id == "VWAP_SESSION_MEAN_RECLAIM" else {},
                     "directional_structure": direction_structure,
+                    "short_reversal": short_reversal_profile if side == Side.SHORT.value else {},
+                    "short_reversal_model": short_model_profile,
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -7533,10 +8372,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     if confirmation_pending
                     else ""
                 ),
+                short_reversal_profile=dict(short_reversal_profile or {}) if side == Side.SHORT.value else {},
             )
             cand.professional_gate = evaluate_professional_gate(context, cand)
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
             cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
+            cand = apply_short_reversal_stage_overlay(cand)
             cand = apply_setup_innovation_overlay(cand, context, state, journal)
 
             min_score_required = params["armed_score"] - 10 if not is_fallback else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
@@ -10602,6 +11443,11 @@ SETUP_FAMILY_MAP = {
     SetupType.LIQUIDITY_LADDER.value: SetupFamily.EXPANSION.value,
     SetupType.FAILED_AUCTION_REJECTION.value: SetupFamily.LIQUIDITY_RECOVERY.value,
     SetupType.TIME_OF_DAY_ADAPTIVE.value: SetupFamily.CONTINUATION.value,
+    SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value: SetupFamily.LIQUIDITY_RECOVERY.value,
+    SetupType.FAILED_BREAKOUT_SHORT.value: SetupFamily.STRUCTURAL_TRANSITION.value,
+    SetupType.MSS_REVERSAL_SHORT.value: SetupFamily.STRUCTURAL_TRANSITION.value,
+    SetupType.BUYER_EXHAUSTION_SHORT.value: SetupFamily.STRUCTURAL_TRANSITION.value,
+    SetupType.OR_FAILURE_2_SHORT.value: SetupFamily.RANGE_EXECUTION.value,
     SetupType.NONE.value: SetupFamily.NONE.value,
 }
 
@@ -10640,6 +11486,11 @@ SETUP_LABELS = {
     SetupType.LIQUIDITY_LADDER.value: "Liquidity Ladder: каскад цілей ліквідності",
     SetupType.FAILED_AUCTION_REJECTION.value: "Failed Auction / Rejection Tail",
     SetupType.TIME_OF_DAY_ADAPTIVE.value: "Time-of-Day Adaptive Execution",
+    SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value: "SHORT: buy-side liquidity sweep + rejection",
+    SetupType.FAILED_BREAKOUT_SHORT.value: "SHORT: failed breakout above resistance",
+    SetupType.MSS_REVERSAL_SHORT.value: "SHORT: bearish Market Structure Shift",
+    SetupType.BUYER_EXHAUSTION_SHORT.value: "SHORT: buyer exhaustion + bearish response",
+    SetupType.OR_FAILURE_2_SHORT.value: "SHORT: Opening Range Failure 2.0",
     SetupType.NONE.value: "Професійного сетапу немає",
 }
 
@@ -10767,6 +11618,7 @@ def compute_analytics(journal: dict) -> dict:
     existing["clean_setup_conversion"] = compute_clean_setup_conversion(journal)
     existing["execution_conversion_funnel"] = compute_execution_conversion_funnel(journal)
     existing["relaxed_continuation_policy"] = compute_relaxed_continuation_policy_comparison(journal)
+    existing["short_specific_ml"] = compute_short_specific_ml_statistics(journal)
     return existing
 
 
@@ -10850,6 +11702,7 @@ def run_bot() -> None:
                 "entry_quality": getattr(active, "entry_quality", 0),
                 "durability_quality": getattr(active, "durability_quality", 0),
                 "scoring_mode": getattr(active, "scoring_mode", "NOT_LEARNED"),
+                "short_reversal_profile": getattr(active, "short_reversal_profile", {}) or {},
                 "close_action": res.get("action"),
             })
             journal["protected_signal_ids"] = [
@@ -10904,6 +11757,7 @@ def run_bot() -> None:
             "innovation_profile": getattr(decision.candidate, "innovation_profile", {}) or components.get("innovation_profile", {}),
             "trigger_revalidation": getattr(decision.candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}),
             "relaxed_continuation": getattr(decision.candidate, "relaxed_continuation_profile", {}) or components.get("relaxed_continuation", {}),
+            "short_reversal_profile": getattr(decision.candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}),
             "execution_funnel": (decision.audit or {}).get("execution_funnel", {}),
             "thesis_key": decision.candidate.thesis_key,
             "thesis": decision.candidate.thesis,
@@ -10981,7 +11835,8 @@ def run_bot() -> None:
             breathing_profile=decision.plan.breathing_profile,
             entry_quality=int(getattr(decision.candidate, "entry_quality_score", 0) or components.get("entry_quality", canonical_quality)),
             durability_quality=int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
-            scoring_mode=str(scoring_profile.get("code") or "NOT_LEARNED"),
+            scoring_mode=str(scoring_profile.get("code", "NOT_LEARNED")),
+            short_reversal_profile=getattr(decision.candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}),
         )
         store_active_trade(state, active)
         state["opportunity"] = None
@@ -12037,6 +12892,71 @@ def test_execution_funnel_separates_revalidation_and_executive() -> bool:
     funnel = compute_execution_conversion_funnel(journal)["by_setup"][setup]
     return bool(funnel["revalidation_blocked"] == 1 and funnel["executive_director_blocked"] == 1)
 
+def test_short_reversal_engine_soft_integration() -> bool:
+    base_ts = 1_780_000_000_000
+    candles = []
+    price = 100.0
+    for i in range(18):
+        o = price
+        c = price + 0.18
+        candles.append(Candle(base_ts + i * 900_000, o, c + 0.10, o - 0.08, c, 100 + i, True))
+        price = c
+    resistance = max(c.high for c in candles[-12:])
+    candles.append(Candle(base_ts + 18 * 900_000, price, resistance + 0.55, price - 0.05, resistance - 0.12, 170, True))
+    candles.append(Candle(base_ts + 19 * 900_000, resistance - 0.10, resistance + 0.02, resistance - 0.65, resistance - 0.55, 160, True))
+    atr = 0.45
+    liq = detect_short_liquidity_sweep_reversal(candles, candles[-1].close, atr, {})
+    failure = detect_short_failed_breakout(candles, candles[-1].close, atr)
+    mss = detect_short_mss_reversal(candles, atr)
+    exhaustion = detect_buyer_exhaustion_short(candles, candles[-1].close, atr)
+    profile = calculate_short_reversal_score(
+        liq, failure, mss, exhaustion, {"active": False, "quality": 0},
+        tf15={"bias": Side.SHORT.value}, tf1h={"bias": Side.LONG.value}, tf4h={"bias": Side.LONG.value},
+        execution_quality=70, live_3m_ready=True, price=candles[-1].close, atr15=atr,
+    )
+    return bool(
+        profile.get("active")
+        and profile.get("score_lift", 0) <= SHORT_REVERSAL_MAX_SCORE_LIFT
+        and profile.get("stage") in {EntryStage.PROBE.value, EntryStage.ACCEPTANCE.value, EntryStage.CORE.value, EntryStage.WAIT_CONFIRMATION.value}
+    )
+
+
+def test_short_reversal_does_not_bypass_authority() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.MSS_REVERSAL_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        raw_score=70,
+        final_score=70,
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        execution_source=ExecutionSource.SHORT_MSS_CONFIRMATION.value,
+        setup_quality_score=80,
+        execution_quality_score=78,
+        short_reversal_profile={
+            "active": True, "execution_ready": True, "score": 74,
+            "stage": EntryStage.ACCEPTANCE.value, "risk_cap": SHORT_REVERSAL_ACCEPTANCE_RISK_PCT,
+            "counter_htf_evidence": True, "models": {},
+        },
+        score_components={
+            "features": {"htf": 0.30, "structure": 0.80, "liquidity": 0.80, "trigger": 1.0},
+            "str_score": 19, "liq_score": 18, "trig_score": 20, "htf_score": 6,
+            "short_reversal": {"active": True, "execution_ready": True, "score": 74, "stage": EntryStage.ACCEPTANCE.value, "counter_htf_evidence": True, "models": {}},
+            "directional_structure": {"side": Side.SHORT.value, "supports_side": True, "lower_high": True, "lower_low": True, "score": 75},
+        },
+    )
+    plan = TradePlan(
+        entry=100, stop=101, tp1=98.5, tp2=97, tp3=95,
+        risk_pct=0.1, rr1=1.5, rr2=3.0, rr3=5.0,
+        position_risk_pct=0.1, execution_ready=True, valid=True,
+    )
+    report = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
+    return bool(
+        report.get("audit", {}).get("single_authority") == "EXECUTIVE_DECISION_LAYER"
+        and report.get("action") in {state.value for state in ExecutiveDecisionState}
+    )
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -12050,6 +12970,8 @@ def _run_self_test() -> bool:
     """
     checks: list[tuple[str, bool]] = []
 
+    checks.append(("short reversal soft integration", test_short_reversal_engine_soft_integration()))
+    checks.append(("short reversal remains under executive authority", test_short_reversal_does_not_bypass_authority()))
     checks.append(("test_conflict_blocks_bad_trade", test_conflict_blocks_bad_trade()))
     checks.append(("test_philosophy_rejects_without_edge", test_philosophy_rejects_without_edge()))
     checks.append(("test_risk_manager_can_block", test_risk_manager_can_block()))
@@ -12247,6 +13169,7 @@ ADVISOR_MAX_IMPACT = {
     "HTF_ANALYST": 10.0,
     "ICT_ANALYST": 15.0,
     "PRICE_STRUCTURE_ADVISOR": 12.0,
+    "SHORT_REVERSAL_ANALYST": 12.0,
     "EXECUTION_ANALYST": 10.0,
 }
 
@@ -12391,6 +13314,93 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
             f"momentum_side_ok={momentum_side_ok}",
         ],
     )
+
+
+def _short_reversal_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
+    profile = getattr(candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}) or {}
+    if candidate.side != Side.SHORT.value or not profile:
+        return advisory_report(
+            "SHORT_REVERSAL_ANALYST", "NEUTRAL", confidence=0, impact=0,
+            evidence=["not_a_short_reversal_candidate"],
+        )
+
+    score = safe_float(profile.get("score"), 0.0)
+    execution_ready = bool(profile.get("execution_ready"))
+    opinion = "SUPPORT" if score >= SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE else "CAUTION"
+    raw_impact = clamp((score - SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE) / 4.0, -12.0, 12.0)
+    if not execution_ready:
+        raw_impact = min(raw_impact, 2.0)
+    return advisory_report(
+        "SHORT_REVERSAL_ANALYST",
+        opinion,
+        confidence=score,
+        impact=normalize_advisor_impact("SHORT_REVERSAL_ANALYST", raw_impact),
+        evidence=[
+            f"score={score:.2f}",
+            f"stage={profile.get('stage')}",
+            f"execution_ready={execution_ready}",
+            f"best_model={profile.get('best_model')}",
+            f"counter_htf_evidence={bool(profile.get('counter_htf_evidence'))}",
+        ],
+        risks=["reversal evidence is probabilistic and staged; no standalone full-size"],
+    )
+
+
+def apply_short_reversal_conflict_overlay(
+    candidate: Candidate,
+    conflict: dict[str, Any],
+    advisors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """SHORT-specific conflict policy layered on top of generic aggregation.
+
+    Bullish HTF is not a hard ban. Strong sweep/failure + MSS evidence may soften
+    its effective conflict, while weak counter-trend ideas receive a small
+    additional caution. Both changes are bounded and audited.
+    """
+    result = dict(conflict or {})
+    result["market"] = dict((conflict or {}).get("market") or {})
+    profile = getattr(candidate, "short_reversal_profile", {}) or (candidate.score_components or {}).get("short_reversal", {}) or {}
+    if candidate.side != Side.SHORT.value or not profile:
+        result["short_reversal_overlay"] = {"applied": False, "reason": "not_short_reversal"}
+        return result
+
+    htf_vote = next((a for a in advisors if a.get("module") == "HTF_ANALYST"), {})
+    htf_against = str(htf_vote.get("opinion", "")).upper() in {"CAUTION", "AGAINST"}
+    score = safe_float(profile.get("score"), 0.0)
+    counter_htf = bool(profile.get("counter_htf_evidence"))
+    relief = 0.0
+    penalty = 0.0
+
+    if htf_against and counter_htf:
+        relief = min(
+            SHORT_REVERSAL_MAX_CONFLICT_RELIEF,
+            max(0.0, (score - SHORT_REVERSAL_COUNTER_HTF_SCORE) / 8.0),
+        )
+        result["market"]["against"] = max(0.0, safe_float(result["market"].get("against"), 0.0) - relief)
+    elif htf_against and score < SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE:
+        penalty = min(1.25, (SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE - score) / 12.0)
+        result["market"]["against"] = safe_float(result["market"].get("against"), 0.0) + penalty
+
+    market_support = safe_float(result["market"].get("support"), 0.0)
+    market_against = safe_float(result["market"].get("against"), 0.0)
+    execution_support = safe_float((result.get("execution") or {}).get("support"), 0.0)
+    execution_against = safe_float((result.get("execution") or {}).get("against"), 0.0)
+    market_delta = market_against - market_support
+    execution_delta = execution_against - execution_support
+    result["market_score"] = round(market_support - market_against, 2)
+    result["execution_score"] = round(execution_support - execution_against, 2)
+    result["hard_conflict"] = bool(market_delta >= CONFLICT_HARD_MARGIN or execution_delta >= CONFLICT_HARD_MARGIN)
+    result["hard_conflict_margin"] = round(max(market_delta, execution_delta), 2)
+    result["short_reversal_overlay"] = {
+        "applied": True,
+        "htf_against": htf_against,
+        "counter_htf_evidence": counter_htf,
+        "reversal_score": round(score, 2),
+        "conflict_relief": round(relief, 3),
+        "weak_countertrend_penalty": round(penalty, 3),
+        "policy": "bounded confidence adjustment; never bypasses risk or executive authority",
+    }
+    return result
 
 
 def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
@@ -12665,11 +13675,13 @@ def build_executive_decision_object(
         _htf_advisor(candidate, components),
         _ict_advisor(components),
         _price_structure_advisor(candidate, components),
+        _short_reversal_advisor(candidate, components),
         _execution_advisor(candidate, components),
         _risk_manager_advisor(plan, journal, state),
     ]
 
     conflict = conflict_resolution_engine(advisors)
+    conflict = apply_short_reversal_conflict_overlay(candidate, conflict, advisors)
     philosophy = trading_philosophy_layer(candidate, journal, plan)
     confidence = clamp(
         50 + conflict.get("market_score", 0) + conflict.get("execution_score", 0),
@@ -12737,6 +13749,24 @@ def build_executive_decision_object(
         and not has_hard_conflict
         and not risk_blocked
     )
+    short_profile = getattr(candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}) or {}
+    short_reversal_probe_eligible = bool(
+        candidate.side == Side.SHORT.value
+        and short_profile.get("active")
+        and short_profile.get("execution_ready")
+        and safe_float(short_profile.get("score"), 0.0) >= SHORT_REVERSAL_PROBE_SCORE
+        and quality >= max(ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE - RISKY_SCORE_GRAY_ZONE)
+        and plan_executable
+        and philosophy_accepts
+        and not has_hard_conflict
+        and not risk_blocked
+    )
+    short_reversal_acceptance_eligible = bool(
+        short_reversal_probe_eligible
+        and safe_float(short_profile.get("score"), 0.0) >= SHORT_REVERSAL_ACCEPTANCE_SCORE
+        and quality >= RISKY_ENTRY_SCORE_BASE
+        and confidence >= 55
+    )
 
     confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
     if confirmation_pending:
@@ -12754,6 +13784,12 @@ def build_executive_decision_object(
             f"Execution edge confirmed despite material conflict; reduced-risk entry allowed "
             f"(execution {execution_quality_raw:.1f} >= adaptive {adaptive_execution_threshold:.1f})"
         )
+    elif short_reversal_acceptance_eligible:
+        action = ExecutiveDecisionState.RISKY.value
+        reason = "Integrated SHORT reversal evidence supports staged ACCEPTANCE entry; no full-size bypass"
+    elif short_reversal_probe_eligible:
+        action = ExecutiveDecisionState.PROBE.value
+        reason = "Integrated SHORT reversal evidence supports minimum-risk PROBE entry"
     elif (
         philosophy_accepts
         and plan_executable
@@ -12852,6 +13888,12 @@ def build_executive_decision_object(
                 "mode": "PROBE_ONLY" if relaxed_live_eligible else "SHADOW_ONLY",
             },
             "risky_entry_score_profile": score_profile,
+            "short_reversal_execution": {
+                "profile": short_profile,
+                "probe_eligible": short_reversal_probe_eligible,
+                "acceptance_eligible": short_reversal_acceptance_eligible,
+                "conflict_overlay": conflict.get("short_reversal_overlay", {}),
+            },
             "execution_eligible_pre_conflict": bool(
                 philosophy_accepts and plan_executable and score_profile.get("eligible") and not risk_blocked
             ),
@@ -13230,7 +14272,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.12")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.14")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
