@@ -112,6 +112,23 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Явно задокументовано: context_quality — слабкий score-компонент, тоді як
   counter_htf_evidence — окрема policy-умова для bounded conflict relief.
 - Додано self-tests на ізоляцію continuation SHORT від reversal advisor/overlay.
+
+Виправлення v8.15 (HTF / Reversal Integrity & Code Hygiene):
+- HTF більше не використовує арифметичну середню під назвою EMA: додано справжні
+  fast/slow EMA з реакцією на останній directional impulse для V-подібних змін.
+- get_htf_state не вгадує напрям із raw htf_score іншої шкали; Candidate зберігає
+  явні htf_state та htf_market_bias.
+- Єдиний soft reversal drift guard застосовується до всіх reversal-family моделей,
+  включно з SHORT MSS, Buyer Exhaustion, Liquidity Sweep та OR Failure 2.0.
+- ATR15 обчислюється один раз у build_context і далі використовується без локальних
+  fallback-копій у detect_candidates/build_trade_plan.
+- Прибрано мертвий adaptive_execution_guard і find_protective_stop_level;
+  replay_kernel_scenario та deterministic Monte Carlo підключені до self-test.
+- Detector-backed pattern bonus більше не рахується registry+detector повною сумою:
+  використовується capped evidence fusion з аудитом компонентів.
+- Pattern ML feature переведено з жорсткого clamp у smooth non-saturating transform.
+- Додано regression tests для EMA, HTF scale contract, drift guard, bonus fusion,
+  pattern differentiation та kernel replay/risk stability.
 """
 
 from __future__ import annotations
@@ -136,34 +153,30 @@ import requests
 
 def get_htf_state(candidate: Any) -> str:
     """
-    Unified HTF state resolver.
-    Single source of truth for execution, sizing and audit.
+    Candidate-relative HTF state resolver.
+
+    Contract:
+    - explicit htf_state is authoritative;
+    - htf_market_bias may be converted to aligned/against using candidate.side;
+    - raw htf_score and normalized ML feature htf describe strength, not direction,
+      therefore they must never be used to guess bullish/bearish state.
     """
     if candidate is None:
         return "neutral"
 
     direct = getattr(candidate, "htf_state", None)
     if direct:
-        return str(direct)
+        return str(direct).lower()
 
     components = getattr(candidate, "score_components", {}) or {}
-    if components.get("htf_state"):
-        return str(components["htf_state"])
+    explicit = components.get("htf_state")
+    if explicit:
+        return str(explicit).lower()
 
-    features = components.get("features", {}) or {}
-    if features.get("htf_state"):
-        return str(features["htf_state"])
-
-    htf_score = components.get("htf_score", features.get("htf", 0))
-
-    try:
-        score = float(htf_score)
-        if score >= 0.65:
-            return "bullish"
-        if score <= 0.35:
-            return "bearish"
-    except Exception:
-        pass
+    market_bias = str(components.get("htf_market_bias") or "").upper()
+    side = str(getattr(candidate, "side", "") or "").upper()
+    if market_bias in {"LONG", "SHORT"} and side in {"LONG", "SHORT"}:
+        return "aligned" if market_bias == side else "against"
 
     return "neutral"
 
@@ -172,8 +185,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.14.2-short-reversal-scope-contract"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_14_2_SHORT_REVERSAL_SCOPE_CONTRACT"
+BOT_VERSION = "pro-hybrid-confluence-v8.15-htf-reversal-integrity"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_15_HTF_REVERSAL_INTEGRITY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -3626,14 +3639,163 @@ def stabilize_regime_engine(state: dict, detected: dict) -> dict:
     return detected
 
 
+
+def _ema_last(values: list[float], period: int) -> float:
+    """True exponential moving average, deterministic and dependency-free."""
+    clean = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if not clean:
+        return 0.0
+    period = max(1, min(int(period), len(clean)))
+    alpha = 2.0 / (period + 1.0)
+    value = clean[0]
+    for item in clean[1:]:
+        value = alpha * item + (1.0 - alpha) * value
+    return float(value)
+
+
+def _canonical_atr15(c15: list[Candle], c3: list[Candle]) -> dict[str, Any]:
+    """
+    Single ATR15 computation contract used by the whole runtime context.
+    Downstream functions consume context["atr15"] without inventing local fallbacks.
+    """
+    raw = safe_float(atr(c15, 14), 0.0)
+    atr3 = safe_float(atr(c3, 14), 0.0)
+    if raw > 0:
+        value = raw
+        source = "ATR15_14"
+    elif atr3 > 0:
+        value = atr3 * 3.8
+        source = "ATR3_X3_8_FALLBACK"
+    else:
+        value = 0.6
+        source = "ABSOLUTE_FALLBACK"
+    return {
+        "value": max(float(value), 1e-9),
+        "raw": raw,
+        "atr3": atr3,
+        "source": source,
+    }
+
+
+def _timeframe_ema_profile(
+    candles: list[Candle],
+    atr_value: float,
+    *,
+    fast_period: int,
+    slow_period: int,
+    base_score: float,
+) -> dict[str, Any]:
+    """
+    Recency-sensitive TF direction.
+
+    The slow trend is represented by fast/slow EMA spread, while the last
+    three-bar impulse adds bounded responsiveness to V-shaped turns. The impulse
+    cannot overrule the EMA structure alone; it only accelerates transition to MIXED
+    and then to the new side.
+    """
+    if not candles:
+        return {
+            "bias": "NEUTRAL",
+            "score": int(base_score),
+            "ema_fast": 0.0,
+            "ema_slow": 0.0,
+            "composite": 0.0,
+            "method": "TRUE_EMA_FAST_SLOW_PLUS_RECENT_IMPULSE",
+        }
+
+    closes = [float(c.close) for c in candles]
+    fast = _ema_last(closes, fast_period)
+    slow = _ema_last(closes, slow_period)
+    last = closes[-1]
+    atr_value = max(safe_float(atr_value, 0.0), max(abs(last) * 0.0006, 1e-9))
+
+    impulse_anchor = closes[-min(3, len(closes))]
+    impulse_atr = (last - impulse_anchor) / atr_value
+    spread_atr = (fast - slow) / atr_value
+    close_fast_atr = (last - fast) / atr_value
+
+    spread_signal = clamp(spread_atr / 1.25, -1.0, 1.0)
+    close_signal = clamp(close_fast_atr / 0.90, -1.0, 1.0)
+    impulse_signal = clamp(impulse_atr / 1.50, -1.0, 1.0)
+    composite = 0.45 * spread_signal + 0.30 * close_signal + 0.25 * impulse_signal
+
+    if composite >= 0.12:
+        bias = "LONG"
+    elif composite <= -0.12:
+        bias = "SHORT"
+    else:
+        bias = "NEUTRAL"
+
+    score = int(round(clamp(base_score + 28.0 * abs(composite), 12.0, 48.0)))
+    reversal_response = bool(
+        (spread_signal < -0.15 and impulse_signal > 0.45)
+        or (spread_signal > 0.15 and impulse_signal < -0.45)
+    )
+    return {
+        "bias": bias,
+        "score": score,
+        "ema_fast": round_price(fast),
+        "ema_slow": round_price(slow),
+        "ema_spread_atr": round(spread_atr, 4),
+        "recent_impulse_atr": round(impulse_atr, 4),
+        "composite": round(composite, 4),
+        "reversal_response": reversal_response,
+        "method": "TRUE_EMA_FAST_SLOW_PLUS_RECENT_IMPULSE",
+    }
+
+
+def _candidate_htf_alignment(
+    side: str,
+    tf15: dict[str, Any],
+    tf1h: dict[str, Any],
+    tf4h: dict[str, Any],
+) -> dict[str, Any]:
+    """Convert market TF biases into an explicit candidate-relative state."""
+    side = str(side or "").upper()
+    votes = []
+    for profile, weight in ((tf15, 0.15), (tf1h, 0.35), (tf4h, 0.50)):
+        bias = str((profile or {}).get("bias") or "NEUTRAL").upper()
+        if bias == side:
+            votes.append(weight)
+        elif bias in {"LONG", "SHORT"}:
+            votes.append(-weight)
+        else:
+            votes.append(0.0)
+
+    alignment = sum(votes)
+    if alignment >= 0.45:
+        state = "aligned"
+    elif alignment <= -0.45:
+        state = "against"
+    else:
+        state = "mixed"
+
+    senior_biases = [
+        str((tf1h or {}).get("bias") or "NEUTRAL").upper(),
+        str((tf4h or {}).get("bias") or "NEUTRAL").upper(),
+    ]
+    market_bias = (
+        senior_biases[0]
+        if senior_biases[0] == senior_biases[1] and senior_biases[0] in {"LONG", "SHORT"}
+        else str((tf4h or {}).get("bias") or "NEUTRAL").upper()
+    )
+    return {
+        "state": state,
+        "market_bias": market_bias,
+        "alignment_score": round(alignment, 4),
+        "weights": {"15m": 0.15, "1h": 0.35, "4h": 0.50},
+    }
+
+
 def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = None) -> dict:
     c3 = data["candles"]["3m"]
     c15 = data["candles"]["15m"]
     c1h = data["candles"]["1h"]
     c4h = data["candles"]["4h"]
     price = data["price"] if data.get("price") is not None else (c15[-1].close if c15 else None)
-    atr3 = atr(c3, 14)
-    atr15 = atr(c15, 14) or (atr3 * 3.8 if atr3 else 0.6)
+    atr15_contract = _canonical_atr15(c15, c3)
+    atr3 = atr15_contract["atr3"]
+    atr15 = atr15_contract["value"]
     atr1h = atr(c1h, 14) or (atr15 * 3.2)
 
     tf3 = {"bias": Side.NEUTRAL.value, "score": 0, "atr": atr3, "structure": structure_snapshot(c3, "3m")}
@@ -3642,17 +3804,17 @@ def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = N
     tf4h = {"bias": Side.NEUTRAL.value, "score": 15, "atr": atr(c4h, 14) or (atr1h * 3.5), "structure": structure_snapshot(c4h, "4h")}
 
     if c15:
-        ema = mean([c.close for c in c15[-8:]])
-        tf15["bias"] = Side.LONG.value if c15[-1].close > ema else Side.SHORT.value
-        tf15["score"] = 40 if abs(c15[-1].close - ema) / ema > 0.003 else 24
+        tf15.update(_timeframe_ema_profile(
+            c15, atr15, fast_period=5, slow_period=13, base_score=20
+        ))
     if c1h:
-        ema = mean([c.close for c in c1h[-6:]])
-        tf1h["bias"] = Side.LONG.value if c1h[-1].close > ema else Side.SHORT.value
-        tf1h["score"] = 44 if abs(c1h[-1].close - ema) / ema > 0.004 else 28
+        tf1h.update(_timeframe_ema_profile(
+            c1h, atr1h, fast_period=4, slow_period=9, base_score=24
+        ))
     if c4h:
-        ema = mean([c.close for c in c4h[-5:]])
-        tf4h["bias"] = Side.LONG.value if c4h[-1].close > ema else Side.SHORT.value
-        tf4h["score"] = 30 if abs(c4h[-1].close - ema) / ema > 0.005 else 18
+        tf4h.update(_timeframe_ema_profile(
+            c4h, tf4h["atr"], fast_period=3, slow_period=7, base_score=18
+        ))
 
     zones = detect_zones(c15, "15m") + detect_zones(c1h, "1h", 42) + detect_zones(c4h, "4h", 28)
     flow = flow_snapshot(data.get("trades", []), data.get("book", {}))
@@ -3707,6 +3869,8 @@ def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = N
             "permanent_limitation_until_trade_feed": True,
         },
         "atr15": atr15,
+        "atr15_raw": atr15_contract["raw"],
+        "atr15_source": atr15_contract["source"],
         "atr1h": atr1h,
         "candles": data["candles"],
         "btc_candles": data.get("btc_candles", {}), # ДОДАНО
@@ -5744,7 +5908,7 @@ def _build_quality_features(
         "flow": clamp(flw_score / 24.0, 0.0, 1.0),
         "trigger": 1.0 if trigger_ready else 0.0,
         "htf": clamp(htf_score / (24.0 if not family_is_reversal else 12.0), 0.0, 1.0),
-        "pattern": clamp((raw_bonus + NO_PATTERN_PENALTY) / 42.0, 0.0, 1.0),
+        "pattern": _smooth_pattern_feature(raw_bonus, best_pattern),
         "session": clamp(session_bonus / max(JUDAS_MAX_BONUS, 1.0), -1.0, 1.0),
         "smt": clamp(vector_bonus / 12.0, -1.0, 1.0),
         "regime_fit": clamp((regime_matched - regime_conflict), -1.0, 1.0),
@@ -7073,6 +7237,120 @@ def short_reversal_profile_for_candidate(
     )
 
 
+REVERSAL_DRIFT_THRESHOLD_ATR = float(os.getenv("REVERSAL_DRIFT_THRESHOLD_ATR", "1.60") or 1.60)
+REVERSAL_DRIFT_MAX_PENALTY = float(os.getenv("REVERSAL_DRIFT_MAX_PENALTY", "8.0") or 8.0)
+REVERSAL_DRIFT_RISK_MULT = float(os.getenv("REVERSAL_DRIFT_RISK_MULT", "0.55") or 0.55)
+
+
+def reversal_drift_guard_profile(
+    *,
+    side: str,
+    drift_atr: float,
+    setup_family: str,
+    model_id: str,
+    structural_counter_evidence: bool,
+    short_reversal_profile: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Soft cross-model drift protection.
+
+    It applies to every reversal family, not merely PO3. Against a mature
+    20-bar drift the hypothesis remains visible, but without independent
+    reversal evidence it waits for confirmation instead of opening immediately.
+    """
+    reversal_families = {
+        SetupFamily.LIQUIDITY_RECOVERY.value,
+        SetupFamily.STRUCTURAL_TRANSITION.value,
+        SetupFamily.RANGE_EXECUTION.value,
+    }
+    applies = bool(setup_family in reversal_families or model_id in SHORT_REVERSAL_MODEL_IDS)
+    against = bool(
+        applies and (
+            (side == Side.LONG.value and drift_atr < -REVERSAL_DRIFT_THRESHOLD_ATR)
+            or (side == Side.SHORT.value and drift_atr > REVERSAL_DRIFT_THRESHOLD_ATR)
+        )
+    )
+
+    short_profile = short_reversal_profile or {}
+    counter_evidence = bool(
+        structural_counter_evidence
+        or short_profile.get("counter_htf_evidence")
+        or (
+            safe_float(short_profile.get("mss_quality"), 0.0) >= 65
+            and safe_float(short_profile.get("failure_quality"), 0.0) >= 60
+        )
+    )
+
+    severity = (
+        clamp(
+            (abs(float(drift_atr)) - REVERSAL_DRIFT_THRESHOLD_ATR) / 1.8,
+            0.0,
+            1.0,
+        )
+        if against else 0.0
+    )
+    penalty = (
+        min(
+            REVERSAL_DRIFT_MAX_PENALTY,
+            (3.0 + 5.0 * severity) * (0.55 if counter_evidence else 1.0),
+        )
+        if against else 0.0
+    )
+    return {
+        "applies": applies,
+        "against": against,
+        "drift_atr": round(float(drift_atr), 3),
+        "threshold_atr": REVERSAL_DRIFT_THRESHOLD_ATR,
+        "severity": round(severity, 3),
+        "counter_evidence": counter_evidence,
+        "score_penalty": round(penalty, 3),
+        "risk_multiplier": (
+            min(0.80, REVERSAL_DRIFT_RISK_MULT + (0.20 if counter_evidence else 0.0))
+            if against else 1.0
+        ),
+        "force_wait_confirmation": bool(against and not counter_evidence),
+        "policy": "soft penalty + staged risk; no candidate deletion",
+    }
+
+
+def apply_reversal_drift_stage_overlay(candidate: Candidate) -> Candidate:
+    profile = (candidate.score_components or {}).get("reversal_drift_guard", {}) or {}
+    if not profile.get("applies") or not profile.get("against"):
+        return candidate
+
+    candidate.risk_multiplier *= safe_float(profile.get("risk_multiplier"), 1.0)
+    stage_plan = dict(candidate.stage_plan or {})
+    stage_plan["reversal_drift_guard"] = dict(profile)
+    notes = list(stage_plan.get("scale_plan") or [])
+
+    if profile.get("force_wait_confirmation"):
+        candidate.confirmation_pending = True
+        candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
+        candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value
+        candidate.trigger_ready = False
+        candidate.live_3m_trigger_ready = False
+        stage_plan["stage"] = EntryStage.WAIT_CONFIRMATION.value
+        stage_plan["base_risk_pct"] = 0.0
+        notes.append(
+            f"Reversal drift guard: {profile.get('drift_atr')} ATR against thesis; "
+            "wait for independent counter-trend confirmation"
+        )
+    else:
+        existing = safe_float(stage_plan.get("base_risk_pct"), PROBE_RISK_PCT)
+        stage_plan["base_risk_pct"] = round(min(existing, PROBE_RISK_PCT), 4)
+        if candidate.entry_stage == EntryStage.CORE.value:
+            candidate.entry_stage = EntryStage.ACCEPTANCE.value
+            stage_plan["stage"] = candidate.entry_stage
+        notes.append(
+            f"Reversal against drift allowed only staged: evidence present, "
+            f"risk x{safe_float(profile.get('risk_multiplier'), 1.0):.2f}"
+        )
+
+    stage_plan["scale_plan"] = notes
+    candidate.stage_plan = stage_plan
+    return candidate
+
+
 def _confirmed_candles(candles: list[Candle], limit: int = 0) -> list[Candle]:
     result = sorted(
         [c for c in (candles or []) if getattr(c, "confirmed", True)],
@@ -7596,9 +7874,80 @@ def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
     return candidate
 
 
+
+DETECTOR_BACKED_PATTERN_BONUS_CAPS = {
+    "ACCEPTANCE_RETEST_CONTINUATION": 1.25,
+    "MOMENTUM_NO_PULLBACK_CONTINUATION": 1.25,
+    "ACCELERATION_PULLBACK_REENTRY": 1.20,
+    "VWAP_SESSION_MEAN_RECLAIM": 1.25,
+    "OPENING_RANGE_BREAKOUT": 1.25,
+    "FAILED_ORB": 1.35,
+    "DAILY_WEEKLY_OPEN_RECLAIM": 1.20,
+    "LIQUIDITY_LADDER_MODEL": 1.20,
+    "FAILED_AUCTION_REJECTION": 1.35,
+    "TIME_OF_DAY_ADAPTIVE": 1.20,
+}
+
+
+def combine_detector_backed_pattern_bonus(
+    model_id: str,
+    registry_bonus: float,
+    detector_bonus: float,
+) -> tuple[float, dict[str, Any]]:
+    """
+    Fuse model prior and live detector evidence without counting the same pattern twice.
+
+    Registry bonus = prior importance of the named model.
+    Detector bonus = current evidence quality.
+    The weaker component contributes only 25%, and total is capped at 1.20-1.35x
+    of the stronger component according to model specificity.
+    """
+    registry_bonus = float(registry_bonus)
+    detector_bonus = max(0.0, float(detector_bonus))
+    cap_multiplier = DETECTOR_BACKED_PATTERN_BONUS_CAPS.get(model_id)
+
+    if cap_multiplier is None or detector_bonus <= 0:
+        combined = registry_bonus
+        policy = "registry_only"
+    else:
+        strongest = max(max(registry_bonus, 0.0), detector_bonus)
+        secondary = min(max(registry_bonus, 0.0), detector_bonus)
+        combined = min(
+            strongest + 0.25 * secondary,
+            strongest * cap_multiplier,
+        )
+        policy = "capped_registry_detector_fusion"
+
+    audit = {
+        "model_id": model_id,
+        "registry_bonus": round(registry_bonus, 3),
+        "detector_bonus": round(detector_bonus, 3),
+        "combined_model_bonus": round(combined, 3),
+        "full_sum_avoided": bool(
+            cap_multiplier is not None
+            and detector_bonus > 0
+            and combined < registry_bonus + detector_bonus
+        ),
+        "cap_multiplier": cap_multiplier,
+        "policy": policy,
+    }
+    return float(combined), audit
+
+
+def _smooth_pattern_feature(raw_bonus: float, best_pattern: Optional[str]) -> float:
+    """
+    Smooth [0,1) pattern strength. Unlike a hard clamp it preserves ordering
+    among strong candidates instead of mapping many of them to exactly 1.0.
+    """
+    if not best_pattern:
+        return 0.0
+    positive = max(0.0, float(raw_bonus))
+    return clamp(1.0 - math.exp(-positive / 30.0), 0.0, 0.985)
+
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
-    atr15 = context["atr15"] or 0.6
+    atr15 = context["atr15"]
     zones = context["zones"]
     tf15 = context["tf15"]
     tf1h = context["tf1h"]
@@ -7843,7 +8192,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         active_patterns = []
         if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
         if is_killzone and has_fvg and strong_displacement: active_patterns.append("SILVER_BULLET")
-        if regime == Regime.RANGE.value and is_sweep and has_good_reclaim and not trend_against_reversal: active_patterns.append("PO3")
+        if regime == Regime.RANGE.value and is_sweep and has_good_reclaim: active_patterns.append("PO3")
         if is_sweep and not strong_displacement: active_patterns.append("TURTLE_SOUP")
         if has_choch and has_good_reclaim: active_patterns.append("BREAKER_BLOCK")
         if has_fvg and tf1h.get("bias") == side: active_patterns.append("FVG_ENTRY")
@@ -7942,11 +8291,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 if side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS
                 else {}
             )
-            raw_bonus = float(p_data.get("score_bonus", 0.0))
+            registry_bonus = float(p_data.get("score_bonus", 0.0))
+            detector_bonus = 0.0
+            regime_bonus_adjustment = 0.0
+            short_overlay_bonus = 0.0
+            raw_bonus = registry_bonus
+            pattern_bonus_audit: dict[str, Any] = {}
             if short_model_profile:
                 model_quality = safe_float(short_model_profile.get("quality"), 0.0)
                 aggregate_lift = safe_float(short_model_profile.get("score_lift"), 0.0)
-                raw_bonus += min(aggregate_lift, SHORT_REVERSAL_MAX_SCORE_LIFT) * (0.55 + 0.45 * model_quality / 100.0)
+                short_overlay_bonus = min(aggregate_lift, SHORT_REVERSAL_MAX_SCORE_LIFT) * (0.55 + 0.45 * model_quality / 100.0)
+                raw_bonus += short_overlay_bonus
                 pattern_conf.append(
                     f"🐻 SHORT reversal: model_q={model_quality:.1f}, aggregate={safe_float(short_model_profile.get('aggregate_score')):.1f}, "
                     f"stage={short_model_profile.get('aggregate_stage')}, lift≤{SHORT_REVERSAL_MAX_SCORE_LIFT:.1f}"
@@ -7960,10 +8315,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             if not is_fallback:
                 pattern_conf.append(f"Модель: {p_data['name']} ({model_id})")
                 if regime in p_data.get("favored", []):
+                    regime_bonus_adjustment += 5
                     raw_bonus += 5
                     regime_matched = 1
                     pattern_conf.append("✅ Модель узгоджена з режимом ринку (+5)")
                 elif regime in p_data.get("penalty", []):
+                    regime_bonus_adjustment -= 10
                     raw_bonus -= 10
                     regime_conflict = 1
                     pattern_conf.append("⚠️ Конфлікт моделі з режимом ринку (-10)")
@@ -7971,42 +8328,75 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 pattern_conf.append(f"⚠️ Жодна ICT-модель не підтверджена — generic fallback (-{NO_PATTERN_PENALTY})")
 
             if model_id == "ACCEPTANCE_RETEST_CONTINUATION":
-                raw_bonus += safe_float(acceptance_retest.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(acceptance_retest.get("score_bonus"), 0.0)
                 pattern_conf.append(
                     f"🔁 Acceptance-retest: pullback={acceptance_retest.get('pullback_atr')} ATR | "
                     f"zone={acceptance_retest.get('zone_label') or 'none'} | acceptance={acceptance_retest.get('acceptance')}"
                 )
             if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
-                raw_bonus += safe_float(momentum_no_pullback.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(momentum_no_pullback.get("score_bonus"), 0.0)
                 pattern_conf.append(
                     f"📈 No-pullback momentum: move={momentum_no_pullback.get('move_atr')} ATR | "
                     f"dir_closes={momentum_no_pullback.get('directional_closes_6')}/6 | "
                     f"giveback={momentum_no_pullback.get('giveback_ratio')} | ready={momentum_no_pullback.get('entry_ready')}"
                 )
             if model_id == "ACCELERATION_PULLBACK_REENTRY":
-                raw_bonus += safe_float(acceleration_reentry.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(acceleration_reentry.get("score_bonus"), 0.0)
                 pattern_conf.append(
                     f"🚀 Acceleration re-entry: impulse={acceleration_reentry.get('impulse_atr')} ATR | "
                     f"WAIT_PULLBACK {acceleration_reentry.get('pullback_382')}–{acceleration_reentry.get('pullback_50')}"
                 )
             if model_id == "VWAP_SESSION_MEAN_RECLAIM":
-                raw_bonus += safe_float(session_mean_reclaim.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(session_mean_reclaim.get("score_bonus"), 0.0)
                 pattern_conf.append(f"📈 VWAP/Mean reclaim: {session_mean_reclaim.get('level_name')}={session_mean_reclaim.get('level')} | session={session_mean_reclaim.get('session')} | dist={session_mean_reclaim.get('dist_atr')} ATR")
             if model_id in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
-                raw_bonus += safe_float(opening_range.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(opening_range.get("score_bonus"), 0.0)
                 pattern_conf.append(f"⏱️ OR model: {opening_range.get('session')} OR {opening_range.get('or_low')}–{opening_range.get('or_high')} | width={opening_range.get('or_width_atr')} ATR")
             if model_id == "DAILY_WEEKLY_OPEN_RECLAIM":
-                raw_bonus += safe_float(open_reclaim.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(open_reclaim.get("score_bonus"), 0.0)
                 pattern_conf.append(f"🧲 Open reclaim: {open_reclaim.get('level_name')}={open_reclaim.get('level')} | dist={open_reclaim.get('dist_atr')} ATR")
             if model_id == "LIQUIDITY_LADDER_MODEL":
-                raw_bonus += safe_float(liquidity_ladder.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(liquidity_ladder.get("score_bonus"), 0.0)
                 pattern_conf.append(f"🪜 Liquidity ladder: targets={liquidity_ladder.get('target_count')} | ladder_score={liquidity_ladder.get('ladder_score')} | {liquidity_ladder.get('targets')}")
             if model_id == "FAILED_AUCTION_REJECTION":
-                raw_bonus += safe_float(failed_auction.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(failed_auction.get("score_bonus"), 0.0)
                 pattern_conf.append(f"🧨 Failed auction: reject={failed_auction.get('level_name')} {failed_auction.get('level')} | tail={failed_auction.get('tail_ratio')}")
             if model_id == "TIME_OF_DAY_ADAPTIVE":
-                raw_bonus += safe_float(time_of_day_adaptive.get("score_bonus"), 0.0)
+                detector_bonus = safe_float(time_of_day_adaptive.get("score_bonus"), 0.0)
                 pattern_conf.append(f"🕒 Time-of-day adaptive: session={time_of_day_adaptive.get('session')} | phase={time_of_day_adaptive.get('phase')} | judas={time_of_day_adaptive.get('judas_bias')}")
+
+            combined_model_bonus, pattern_bonus_audit = combine_detector_backed_pattern_bonus(
+                model_id,
+                registry_bonus,
+                detector_bonus,
+            )
+            raw_bonus = (
+                combined_model_bonus
+                + regime_bonus_adjustment
+                + short_overlay_bonus
+            )
+            if detector_bonus > 0:
+                pattern_conf.append(
+                    f"🧮 Pattern evidence fusion: registry={registry_bonus:.1f}, "
+                    f"detector={detector_bonus:.1f}, combined={combined_model_bonus:.1f} "
+                    f"(cap x{pattern_bonus_audit.get('cap_multiplier')})"
+                )
+
+            drift_guard = reversal_drift_guard_profile(
+                side=side,
+                drift_atr=drift_atr,
+                setup_family=setup_family,
+                model_id=model_id,
+                structural_counter_evidence=bool(has_choch and is_sweep and has_good_reclaim),
+                short_reversal_profile=short_reversal_profile if short_model_profile else {},
+            )
+            if drift_guard.get("against"):
+                raw_bonus -= safe_float(drift_guard.get("score_penalty"), 0.0)
+                pattern_conf.append(
+                    f"🌊 Reversal drift guard: drift={drift_guard.get('drift_atr')} ATR, "
+                    f"penalty=-{safe_float(drift_guard.get('score_penalty'), 0.0):.1f}, "
+                    f"counter_evidence={drift_guard.get('counter_evidence')}"
+                )
 
             reversal_families = {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.RANGE_EXECUTION.value}
             trend_families = {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
@@ -8063,6 +8453,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             )
             trig_score = (22 if model_live_3m_trigger_ready else 8) * trig_weight
             htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
+            htf_alignment = _candidate_htf_alignment(side, tf15, tf1h, tf4h)
 
             if short_model_profile:
                 short_models = short_reversal_profile.get("models") or {}
@@ -8365,7 +8756,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "flw_score": round(flw_score, 2),
                     "trig_score": round(trig_score, 2),
                     "htf_score": round(htf_score, 2),
+                    "htf_state": htf_alignment["state"],
+                    "htf_market_bias": htf_alignment["market_bias"],
+                    "htf_alignment_score": htf_alignment["alignment_score"],
+                    "tf_biases": {
+                        "15m": tf15.get("bias"),
+                        "1h": tf1h.get("bias"),
+                        "4h": tf4h.get("bias"),
+                    },
                     "pattern_bonus": round(raw_bonus, 2),
+                    "pattern_bonus_components": pattern_bonus_audit,
+                    "reversal_drift_guard": drift_guard,
                     "session_bonus": round(session_bonus, 2),
                     "vector_bonus": round(vector_bonus, 2),
                     "features": calibration["features"],
@@ -8467,6 +8868,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
             cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
             cand = apply_short_reversal_stage_overlay(cand)
+            cand = apply_reversal_drift_stage_overlay(cand)
             cand = apply_setup_innovation_overlay(cand, context, state, journal)
 
             min_score_required = params["armed_score"] - 10 if not is_fallback else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
@@ -8857,76 +9259,6 @@ def find_technical_targets(side: str, price: float, zones: list, liquidity: dict
     return clustered
 
 
-def find_protective_stop_level(side: str, price: float, zones: list, liquidity: dict,
-                                min_dist: float, max_dist: float) -> Optional[dict]:
-    """
-    ICT-якір для трейлінгу стопа: шукає найближчий структурний рівень ПОЗАДУ ціни
-    (той бік, куди був би виставлений стоп) — той самий Order Block / FVG / SSL-SSL
-    liquidity sweep, що вже використовується для розміщення TP у find_technical_targets(),
-    але тепер застосований до захисту стопа замість довільної частки ATR/RR.
-
-    Для LONG шукаємо demand-зони (z.side == LONG) та SSL-свіпи нижче ціни, повертаємо
-    рівень ТРОХИ НИЖЧЕ нижньої межі зони (щоб стоп не лежав усередині зони, яку ринок
-    ще може легітимно протестувати вудом). Для SHORT — дзеркально, supply-зони/BSL вище ціни.
-
-    min_dist / max_dist — коридор допустимих відстаней від ціни (щоб не тягнути стоп
-    до занадто близького чи занадто далекого рівня). Якщо кваліфікованого рівня немає —
-    повертає None, і виклик має впасти на попередній ATR/RR-fallback (вхід/трейлінг
-    ніколи не блокується через "немає зручного рівня").
-    """
-    if min_dist <= 0 or max_dist <= 0 or max_dist < min_dist:
-        return None
-
-    candidates: list[dict] = []
-    buffer = max(min_dist * 0.12, price * 0.0003)
-
-    for z in zones:
-        if z.side != side:
-            continue
-        if side == Side.LONG.value:
-            level = z.low - buffer
-            if level >= price:
-                continue
-        else:
-            level = z.high + buffer
-            if level <= price:
-                continue
-        dist = abs(price - level)
-        if dist < min_dist or dist > max_dist:
-            continue
-        tf_weight = {"4h": 1.35, "1h": 1.15, "15m": 1.0}.get(z.timeframe, 1.0)
-        candidates.append({"level": level, "kind": z.kind, "timeframe": z.timeframe,
-                            "strength": float(z.strength) * tf_weight, "distance": dist})
-
-    for tf_label, tf_weight in (("15m", 1.0), ("1h", 1.30)):
-        liq = liquidity.get(tf_label, {}) if isinstance(liquidity, dict) else {}
-        if side == Side.LONG.value:
-            for lvl in liq.get("ssl", []) or []:
-                level = lvl - buffer
-                if not (0 < level < price):
-                    continue
-                dist = price - level
-                if min_dist <= dist <= max_dist:
-                    candidates.append({"level": level, "kind": "SSL_SWEEP", "timeframe": tf_label,
-                                        "strength": 1.3 * tf_weight, "distance": dist})
-        else:
-            for lvl in liq.get("bsl", []) or []:
-                level = lvl + buffer
-                if level <= price:
-                    continue
-                dist = level - price
-                if min_dist <= dist <= max_dist:
-                    candidates.append({"level": level, "kind": "BSL_SWEEP", "timeframe": tf_label,
-                                        "strength": 1.3 * tf_weight, "distance": dist})
-
-    if not candidates:
-        return None
-
-    # Серед рівнів у коридорі — не обов'язково найближчий, а найсильніший
-    # (старший таймфрейм / якісніший OB), як зробив би дискреційний трейдер.
-    candidates.sort(key=lambda c: (-c["strength"], c["distance"]))
-    return candidates[0]
-
 
 def _effective_atr15(atr15: float, price: float) -> float:
     """
@@ -9181,7 +9513,7 @@ def build_trade_plan(
     price, entry_price_contract = resolve_execution_entry_price(
         context, candidate, entry_price_override=entry_price_override
     )
-    atr15 = context["atr15"] or 0.6
+    atr15 = context["atr15"]
     side = candidate.side
     profile = trade_mode_profile(context, side, candidate.setup_type)
     zones = context["zones"]
@@ -10478,57 +10810,23 @@ def detect_execution_chase(price_move_atr: float, body_ratio: float) -> bool:
 
 
 def adaptive_htf_risk_multiplier(htf_state: str, execution_score: float) -> float:
-    """HTF використовується як adaptive risk modifier, а не як простий veto."""
-    state = str(htf_state).lower()
+    """Candidate-relative HTF risk modifier; direction labels are not alignment."""
+    state = str(htf_state or "neutral").lower()
 
-    if state in {"aligned", "bullish", "bearish", "support"}:
+    if state in {"aligned", "support"}:
         return 1.0
 
     if state in {"neutral", "mixed"}:
         return HTF_NEUTRAL_RISK_MULT
 
-    if execution_score >= HTF_OVERRIDE_MIN_SCORE and HTF_RISKY_OVERRIDE:
-        return HTF_OVERRIDE_ACTIVE_RISK_MULT
+    if state == "against":
+        if execution_score >= HTF_OVERRIDE_MIN_SCORE and HTF_RISKY_OVERRIDE:
+            return HTF_OVERRIDE_ACTIVE_RISK_MULT
+        return HTF_STRONG_AGAINST_RISK_MULT
 
-    return HTF_STRONG_AGAINST_RISK_MULT
-
-
-
-# ==========================================================
-# v6.17.2 PROFESSIONAL ADAPTIVE DECISION LAYER
-# ==========================================================
-
-def adaptive_execution_guard(candidate: Any) -> dict[str, Any]:
-    """Єдина точка контролю якості execution."""
-    result = {
-        "allow": True,
-        "force_wait_retest": False,
-        "risk_multiplier": 1.0,
-        "reasons": []
-    }
-
-    if not candidate or not INSTITUTIONAL_ADAPTIVE_ENGINE:
-        return result
-
-    score = institutional_execution_score(candidate)
-
-    components = getattr(candidate, "score_components", {}) or {}
-    htf = components.get("htf_state", "neutral")
-
-    result["risk_multiplier"] *= adaptive_htf_risk_multiplier(htf, score)
-
-    body_ratio = float(components.get("body_ratio", 0))
-    move_atr = float(components.get("move_atr", 0))
-
-    if detect_execution_chase(move_atr, body_ratio):
-        result["force_wait_retest"] = True
-        result["reasons"].append("anti-chase: impulse already expanded")
-
-    if score < 50:
-        result["risk_multiplier"] *= 0.5
-        result["reasons"].append("low institutional execution quality")
-
-    return result
+    # Legacy bullish/bearish labels lack candidate direction and are therefore
+    # treated conservatively as neutral rather than silently as aligned.
+    return HTF_NEUTRAL_RISK_MULT
 
 
 
@@ -10606,10 +10904,7 @@ def professional_decision_kernel(candidate: Any) -> dict[str, Any]:
 
     components = getattr(candidate, "score_components", {}) or {}
 
-    htf_state = str(
-        components.get("htf_state")
-        or ("aligned" if components.get("htf") else "neutral")
-    )
+    htf_state = get_htf_state(candidate)
 
     result["risk_multiplier"] *= adaptive_htf_risk_multiplier(
         htf_state,
@@ -10790,12 +11085,13 @@ def replay_kernel_scenario(kernel_func) -> list[ReplayResult]:
     return results
 
 
-def monte_carlo_risk_stability(kernel_func, iterations: int = 1000) -> dict[str, Any]:
+def monte_carlo_risk_stability(kernel_func, iterations: int = 1000, seed: int = 81415) -> dict[str, Any]:
     """
     Перевірка стабільності ризику при випадкових ринкових умовах.
     Не прогнозує прибуток. Перевіряє поведінку ризику.
     """
 
+    rng = random.Random(seed)
     multipliers = []
     wait_count = 0
 
@@ -10804,12 +11100,12 @@ def monte_carlo_risk_stability(kernel_func, iterations: int = 1000) -> dict[str,
         class SyntheticCandidate:
             def __init__(self):
                 self.score_components = {
-                    "trigger": random.uniform(0, 35),
-                    "liquidity": random.uniform(0, 35),
-                    "structure": random.uniform(0, 35),
-                    "move_atr": random.uniform(0, 3),
-                    "body_ratio": random.uniform(0, 1),
-                    "htf_state": random.choice(
+                    "trigger": rng.uniform(0, 35),
+                    "liquidity": rng.uniform(0, 35),
+                    "structure": rng.uniform(0, 35),
+                    "move_atr": rng.uniform(0, 3),
+                    "body_ratio": rng.uniform(0, 1),
+                    "htf_state": rng.choice(
                         ["aligned", "neutral", "against"]
                     )
                 }
@@ -10826,6 +11122,7 @@ def monte_carlo_risk_stability(kernel_func, iterations: int = 1000) -> dict[str,
 
     return {
         "iterations": iterations,
+        "seed": seed,
         "avg_risk_multiplier": round(
             sum(multipliers) / len(multipliers),
             4
@@ -13294,6 +13591,121 @@ def test_reversal_short_keeps_reversal_advisor_scope() -> bool:
     )
 
 
+
+def test_true_ema_responds_to_v_reversal() -> bool:
+    values = [100, 99, 98, 97, 96, 95, 100, 105]
+    ema_value = _ema_last(values, 8)
+    sma_value = sum(values) / len(values)
+    return bool(ema_value > sma_value and ema_value < values[-1])
+
+
+def test_get_htf_state_does_not_infer_direction_from_raw_score() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=68,
+        final_score=68,
+        score_components={"htf_score": 20, "features": {"htf": 1.0}},
+    )
+    return get_htf_state(candidate) == "neutral"
+
+
+def test_reversal_drift_guard_covers_short_models() -> bool:
+    profile = reversal_drift_guard_profile(
+        side=Side.SHORT.value,
+        drift_atr=2.4,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        model_id="SHORT_BUYER_EXHAUSTION",
+        structural_counter_evidence=False,
+        short_reversal_profile={},
+    )
+    return bool(
+        profile.get("applies")
+        and profile.get("against")
+        and profile.get("force_wait_confirmation")
+        and safe_float(profile.get("score_penalty"), 0.0) > 0
+    )
+
+
+def test_reversal_drift_guard_is_soft_with_counterevidence() -> bool:
+    profile = reversal_drift_guard_profile(
+        side=Side.SHORT.value,
+        drift_atr=2.4,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        model_id="SHORT_MSS_REVERSAL",
+        structural_counter_evidence=False,
+        short_reversal_profile={
+            "counter_htf_evidence": True,
+            "mss_quality": 80,
+            "failure_quality": 72,
+        },
+    )
+    return bool(
+        profile.get("against")
+        and profile.get("counter_evidence")
+        and not profile.get("force_wait_confirmation")
+        and 0 < safe_float(profile.get("risk_multiplier"), 0.0) < 1
+    )
+
+
+def test_detector_backed_pattern_bonus_not_double_counted() -> bool:
+    samples = {
+        "ACCEPTANCE_RETEST_CONTINUATION": (14, 20),
+        "MOMENTUM_NO_PULLBACK_CONTINUATION": (14, 18),
+        "ACCELERATION_PULLBACK_REENTRY": (10, 10),
+        "VWAP_SESSION_MEAN_RECLAIM": (13, 17),
+        "OPENING_RANGE_BREAKOUT": (14, 12),
+        "FAILED_ORB": (16, 14),
+        "DAILY_WEEKLY_OPEN_RECLAIM": (12, 12),
+        "LIQUIDITY_LADDER_MODEL": (10, 16),
+        "FAILED_AUCTION_REJECTION": (17, 14),
+        "TIME_OF_DAY_ADAPTIVE": (7, 7),
+    }
+    for model_id, (registry, detector) in samples.items():
+        combined, audit = combine_detector_backed_pattern_bonus(
+            model_id, registry, detector
+        )
+        strongest = max(registry, detector)
+        cap = strongest * DETECTOR_BACKED_PATTERN_BONUS_CAPS[model_id]
+        if not (
+            combined < registry + detector
+            and combined <= cap + 1e-9
+            and audit.get("full_sum_avoided")
+        ):
+            return False
+    return True
+
+
+def test_pattern_feature_preserves_strong_candidate_ordering() -> bool:
+    values = [_smooth_pattern_feature(v, "MODEL") for v in (10, 20, 35, 50, 80)]
+    return bool(
+        all(a < b for a, b in zip(values, values[1:]))
+        and values[-1] < 1.0
+        and _smooth_pattern_feature(80, None) == 0.0
+    )
+
+
+def test_kernel_replay_and_risk_stability_are_wired() -> bool:
+    replay = replay_kernel_scenario(professional_decision_kernel)
+    monte = monte_carlo_risk_stability(
+        professional_decision_kernel,
+        iterations=256,
+        seed=81415,
+    )
+    return bool(
+        replay
+        and all(item.passed for item in replay)
+        and monte.get("iterations") == 256
+        and monte.get("seed") == 81415
+        and 0 < safe_float(monte.get("min_risk_multiplier"), 0.0)
+        <= safe_float(monte.get("avg_risk_multiplier"), 0.0)
+        <= safe_float(monte.get("max_risk_multiplier"), 0.0)
+        <= 1.0
+        and 0.0 <= safe_float(monte.get("wait_retest_ratio"), -1.0) <= 1.0
+    )
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -13306,6 +13718,14 @@ def _run_self_test() -> bool:
     в рантайм-образі бота.
     """
     checks: list[tuple[str, bool]] = []
+
+    checks.append(("true EMA responds faster than arithmetic mean", test_true_ema_responds_to_v_reversal()))
+    checks.append(("raw HTF score cannot invent direction", test_get_htf_state_does_not_infer_direction_from_raw_score()))
+    checks.append(("reversal drift guard covers SHORT reversal models", test_reversal_drift_guard_covers_short_models()))
+    checks.append(("counter-evidence keeps reversal drift guard soft", test_reversal_drift_guard_is_soft_with_counterevidence()))
+    checks.append(("detector-backed pattern bonus avoids double-counting", test_detector_backed_pattern_bonus_not_double_counted()))
+    checks.append(("pattern ML feature preserves strong ordering", test_pattern_feature_preserves_strong_candidate_ordering()))
+    checks.append(("kernel replay and deterministic risk stability are wired", test_kernel_replay_and_risk_stability_are_wired()))
 
     checks.append((
         "non-reversal SHORT receives neutral reversal advisor",
@@ -14632,7 +15052,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.14.2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.15")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
