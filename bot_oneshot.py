@@ -100,6 +100,18 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
   не можуть підмінити фактичну ціну відкриття позиції.
 - Стопи, TP0-TP3, RR та sizing перебудовуються від live entry price.
 - Додано runtime invariant і self-test проти повторного повернення цього багу.
+
+Виправлення v8.14.2 (SHORT Reversal Scope Contract):
+- SHORT_REVERSAL_ANALYST, stage overlay, conflict overlay та Executive reversal-path
+  застосовуються лише до кандидатів, чия власна ict_model входить до
+  SHORT_REVERSAL_MODEL_IDS.
+- Звичайні SHORT continuation/expansion/range-кандидати більше не отримують
+  CAUTION або штраф від нерелевантного reversal-профілю поточного ринку.
+- Aggregate reversal scan і надалі виконується один раз для пошуку окремих
+  reversal hypotheses, але не прикріплюється до чужих SHORT-кандидатів.
+- Явно задокументовано: context_quality — слабкий score-компонент, тоді як
+  counter_htf_evidence — окрема policy-умова для bounded conflict relief.
+- Додано self-tests на ізоляцію continuation SHORT від reversal advisor/overlay.
 """
 
 from __future__ import annotations
@@ -160,8 +172,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.14.1-live-entry-price-contract"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_14_1_LIVE_ENTRY_PRICE_CONTRACT"
+BOT_VERSION = "pro-hybrid-confluence-v8.14.2-short-reversal-scope-contract"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_14_2_SHORT_REVERSAL_SCOPE_CONTRACT"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -7017,6 +7029,50 @@ SHORT_REVERSAL_MODEL_IDS = {
 }
 
 
+def is_short_reversal_candidate(candidate: Optional[Candidate]) -> bool:
+    """
+    Authoritative scope contract for the SHORT reversal subsystem.
+
+    Market-wide reversal detectors may run once per SHORT scan so they can
+    create dedicated reversal hypotheses. Their aggregate profile must not
+    become an advisor, stage modifier or conflict modifier for unrelated
+    SHORT continuation/expansion/range candidates.
+
+    A candidate belongs to the subsystem only when its own selected ICT model
+    is one of SHORT_REVERSAL_MODEL_IDS. The non-empty profile is deliberately
+    not sufficient, because older code attached the same aggregate profile to
+    every SHORT candidate generated in the scan.
+    """
+    if candidate is None or getattr(candidate, "side", "") != Side.SHORT.value:
+        return False
+
+    model_id = str(getattr(candidate, "ict_model", "") or "")
+    if model_id in SHORT_REVERSAL_MODEL_IDS:
+        return True
+
+    components = getattr(candidate, "score_components", {}) or {}
+    explicit_model = str(
+        (components.get("short_reversal_model") or {}).get("model_id", "") or ""
+    )
+    return explicit_model in SHORT_REVERSAL_MODEL_IDS
+
+
+def short_reversal_profile_for_candidate(
+    candidate: Optional[Candidate],
+    components: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return profile only inside the authoritative reversal scope."""
+    if not is_short_reversal_candidate(candidate):
+        return {}
+
+    components = components or getattr(candidate, "score_components", {}) or {}
+    return (
+        getattr(candidate, "short_reversal_profile", {})
+        or components.get("short_reversal", {})
+        or {}
+    )
+
+
 def _confirmed_candles(candles: list[Candle], limit: int = 0) -> list[Candle]:
     result = sorted(
         [c for c in (candles or []) if getattr(c, "confirmed", True)],
@@ -7372,6 +7428,11 @@ def calculate_short_reversal_score(
         "OR_FAILURE_2_SHORT": or_failure,
     }
 
+    # context_quality is intentionally a LOW-WEIGHT descriptive score component.
+    # It measures how naturally the SHORT reversal fits the directional context;
+    # it is not the "permission against bullish HTF" gate. Counter-HTF permission
+    # is handled separately below by counter_htf_evidence, which requires a high
+    # aggregate score plus MSS and failure/liquidity evidence.
     context_quality = 45.0
     if tf15.get("bias") == Side.SHORT.value:
         context_quality += 22.0
@@ -7434,6 +7495,9 @@ def calculate_short_reversal_score(
         safe_float(failure.get("quality"), 0.0),
         safe_float(or_failure.get("quality"), 0.0),
     )
+    # Separate policy contract, not part of context_quality:
+    # bullish/against HTF may receive bounded conflict relief only when the
+    # reversal thesis independently proves score + bearish MSS + failure.
     counter_htf_evidence = bool(
         score >= SHORT_REVERSAL_COUNTER_HTF_SCORE
         and mss_quality >= SHORT_REVERSAL_COUNTER_HTF_MSS
@@ -7469,7 +7533,11 @@ def calculate_short_reversal_score(
         "chase_penalty": round(chase_penalty, 2),
         "distance_from_anchor_atr": round(distance_from_anchor_atr, 3),
         "models": model_map,
-        "policy": "soft evidence -> capped score lift -> staged risk -> executive authority",
+        "policy": (
+            "context_quality is a low-weight descriptive component; "
+            "counter_htf_evidence separately controls bounded HTF conflict relief; "
+            "soft evidence -> capped score lift -> staged risk -> executive authority"
+        ),
     }
 
 
@@ -7495,9 +7563,9 @@ def short_reversal_model_snapshot(profile: dict[str, Any], model_id: str) -> dic
 
 
 def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
-    """Cap risk/stage for SHORT reversal without increasing existing risk."""
-    profile = getattr(candidate, "short_reversal_profile", {}) or (candidate.score_components or {}).get("short_reversal", {}) or {}
-    if candidate.side != Side.SHORT.value or not profile.get("active"):
+    """Cap risk/stage only for a dedicated SHORT reversal hypothesis."""
+    profile = short_reversal_profile_for_candidate(candidate)
+    if not profile.get("active"):
         return candidate
 
     stage_plan = dict(candidate.stage_plan or {})
@@ -8341,8 +8409,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "acceleration_reentry": acceleration_reentry if model_id == "ACCELERATION_PULLBACK_REENTRY" else {},
                     "session_mean_reclaim": session_mean_reclaim if model_id == "VWAP_SESSION_MEAN_RECLAIM" else {},
                     "directional_structure": direction_structure,
-                    "short_reversal": short_reversal_profile if side == Side.SHORT.value else {},
+                    "short_reversal": (
+                        short_reversal_profile
+                        if side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS
+                        else {}
+                    ),
                     "short_reversal_model": short_model_profile,
+                    "short_reversal_scope": {
+                        "eligible": bool(side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS),
+                        "candidate_model": model_id,
+                        "contract": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
+                    },
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -8380,7 +8457,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     if confirmation_pending
                     else ""
                 ),
-                short_reversal_profile=dict(short_reversal_profile or {}) if side == Side.SHORT.value else {},
+                short_reversal_profile=(
+                    dict(short_reversal_profile or {})
+                    if side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS
+                    else {}
+                ),
             )
             cand.professional_gate = evaluate_professional_gate(context, cand)
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
@@ -13119,6 +13200,100 @@ def test_live_entry_price_contract_prefers_market_price() -> bool:
     )
 
 
+
+def test_non_reversal_short_isolated_from_reversal_advisor() -> bool:
+    leaked_profile = {
+        "active": True,
+        "score": 52.0,
+        "stage": EntryStage.WAIT_CONFIRMATION.value,
+        "execution_ready": False,
+        "counter_htf_evidence": False,
+        "best_model": "LIQUIDITY_SWEEP_REVERSAL_SHORT",
+    }
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=68,
+        final_score=68,
+        ict_model="ACCEPTANCE_RETEST_CONTINUATION",
+        score_components={"short_reversal": leaked_profile},
+        short_reversal_profile=leaked_profile,
+    )
+    advisor = _short_reversal_advisor(candidate, candidate.score_components)
+    return bool(
+        not is_short_reversal_candidate(candidate)
+        and advisor.get("opinion") == "NEUTRAL"
+        and abs(safe_float(advisor.get("impact"), 0.0)) < 1e-9
+    )
+
+
+def test_non_reversal_short_isolated_from_reversal_conflict_overlay() -> bool:
+    leaked_profile = {
+        "active": True,
+        "score": 52.0,
+        "execution_ready": False,
+        "counter_htf_evidence": False,
+    }
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=67,
+        final_score=67,
+        ict_model="MMBM",
+        score_components={"short_reversal": leaked_profile},
+        short_reversal_profile=leaked_profile,
+    )
+    conflict = {
+        "market": {"support": 4.0, "against": 1.0},
+        "execution": {"support": 2.0, "against": 0.0},
+        "risk": {"blocked": False, "severity": 0.0},
+        "hard_conflict": False,
+        "market_score": 3.0,
+        "execution_score": 2.0,
+    }
+    advisors = [{"module": "HTF_ANALYST", "opinion": "CAUTION"}]
+    result = apply_short_reversal_conflict_overlay(candidate, conflict, advisors)
+    overlay = result.get("short_reversal_overlay") or {}
+    return bool(
+        overlay.get("applied") is False
+        and overlay.get("reason") == "outside_short_reversal_scope"
+        and safe_float((result.get("market") or {}).get("against"), 0.0) == 1.0
+        and safe_float(result.get("market_score"), 0.0) == 3.0
+    )
+
+
+def test_reversal_short_keeps_reversal_advisor_scope() -> bool:
+    profile = {
+        "active": True,
+        "score": 74.0,
+        "stage": EntryStage.ACCEPTANCE.value,
+        "execution_ready": True,
+        "counter_htf_evidence": True,
+        "best_model": "MSS_REVERSAL_SHORT",
+    }
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.MSS_REVERSAL_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        raw_score=74,
+        final_score=74,
+        ict_model="SHORT_MSS_REVERSAL",
+        score_components={
+            "short_reversal": profile,
+            "short_reversal_model": {"model_id": "SHORT_MSS_REVERSAL"},
+        },
+        short_reversal_profile=profile,
+    )
+    advisor = _short_reversal_advisor(candidate, candidate.score_components)
+    return bool(
+        is_short_reversal_candidate(candidate)
+        and advisor.get("opinion") == "SUPPORT"
+        and safe_float(advisor.get("confidence"), 0.0) == 74.0
+    )
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -13131,6 +13306,19 @@ def _run_self_test() -> bool:
     в рантайм-образі бота.
     """
     checks: list[tuple[str, bool]] = []
+
+    checks.append((
+        "non-reversal SHORT receives neutral reversal advisor",
+        test_non_reversal_short_isolated_from_reversal_advisor(),
+    ))
+    checks.append((
+        "non-reversal SHORT bypasses reversal conflict overlay",
+        test_non_reversal_short_isolated_from_reversal_conflict_overlay(),
+    ))
+    checks.append((
+        "dedicated reversal SHORT retains reversal advisor",
+        test_reversal_short_keeps_reversal_advisor_scope(),
+    ))
 
     checks.append(("live executable entry uses current market price", test_live_entry_price_contract_prefers_market_price()))
     checks.append(("short reversal soft integration", test_short_reversal_engine_soft_integration()))
@@ -13480,11 +13668,15 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
 
 
 def _short_reversal_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
-    profile = getattr(candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}) or {}
-    if candidate.side != Side.SHORT.value or not profile:
+    profile = short_reversal_profile_for_candidate(candidate, components)
+    if not profile:
         return advisory_report(
             "SHORT_REVERSAL_ANALYST", "NEUTRAL", confidence=0, impact=0,
-            evidence=["not_a_short_reversal_candidate"],
+            evidence=[
+                "outside_short_reversal_scope",
+                f"candidate_model={getattr(candidate, 'ict_model', 'NONE')}",
+                "required=candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
+            ],
         )
 
     score = safe_float(profile.get("score"), 0.0)
@@ -13522,9 +13714,14 @@ def apply_short_reversal_conflict_overlay(
     """
     result = dict(conflict or {})
     result["market"] = dict((conflict or {}).get("market") or {})
-    profile = getattr(candidate, "short_reversal_profile", {}) or (candidate.score_components or {}).get("short_reversal", {}) or {}
-    if candidate.side != Side.SHORT.value or not profile:
-        result["short_reversal_overlay"] = {"applied": False, "reason": "not_short_reversal"}
+    profile = short_reversal_profile_for_candidate(candidate)
+    if not profile:
+        result["short_reversal_overlay"] = {
+            "applied": False,
+            "reason": "outside_short_reversal_scope",
+            "candidate_model": getattr(candidate, "ict_model", "NONE"),
+            "required": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
+        }
         return result
 
     htf_vote = next((a for a in advisors if a.get("module") == "HTF_ANALYST"), {})
@@ -13912,9 +14109,9 @@ def build_executive_decision_object(
         and not has_hard_conflict
         and not risk_blocked
     )
-    short_profile = getattr(candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}) or {}
+    short_profile = short_reversal_profile_for_candidate(candidate, components)
     short_reversal_probe_eligible = bool(
-        candidate.side == Side.SHORT.value
+        is_short_reversal_candidate(candidate)
         and short_profile.get("active")
         and short_profile.get("execution_ready")
         and safe_float(short_profile.get("score"), 0.0) >= SHORT_REVERSAL_PROBE_SCORE
@@ -14435,7 +14632,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.14.1")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.14.2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
