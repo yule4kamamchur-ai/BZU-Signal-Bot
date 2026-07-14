@@ -92,6 +92,14 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Killzones (Торгові сесії)
 - Валідація FVG (Consequent Encroachment)
 (Усі попередні алгоритми супроводу угод та логування повністю збережено)
+
+Виправлення v8.14.1 (Live Entry Price Contract):
+- Для будь-якої фактично відкритої ENTRY / RISKY_ENTRY / PROBE_ENTRY ціна входу
+  тепер завжди дорівнює актуальній market price поточного запуску.
+- execution_anchor / trigger_level лишаються аналітичними рівнями тези й більше
+  не можуть підмінити фактичну ціну відкриття позиції.
+- Стопи, TP0-TP3, RR та sizing перебудовуються від live entry price.
+- Додано runtime invariant і self-test проти повторного повернення цього багу.
 """
 
 from __future__ import annotations
@@ -152,8 +160,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.14-short-reversal-intelligence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_14_SHORT_REVERSAL_INTELLIGENCE"
+BOT_VERSION = "pro-hybrid-confluence-v8.14.1-live-entry-price-contract"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_14_1_LIVE_ENTRY_PRICE_CONTRACT"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -8964,8 +8972,134 @@ def probe_entry_eligibility(
     }
 
 
-def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
-    price = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0) or safe_float(context.get("price"), 0.0)
+
+def resolve_execution_entry_price(
+    context: dict,
+    candidate: Optional[Candidate],
+    entry_price_override: Optional[float] = None,
+) -> tuple[float, dict[str, Any]]:
+    """
+    Single source of truth for plan entry price.
+
+    Contract:
+    - a live executable signal is a market signal;
+    - therefore its plan must be built from the market price observed in the
+      current run;
+    - execution_anchor and trigger_level remain analytical/thesis geometry only;
+    - anchor is used solely as a last-resort fallback when no market price exists.
+
+    This prevents a fresh PROBE_ENTRY from being recorded at an old retest,
+    OB/FVG or revalidation anchor while Telegram correctly shows another
+    current price.
+    """
+    market_price = safe_float((context or {}).get("price"), 0.0)
+    override_price = safe_float(entry_price_override, 0.0)
+    analysis_anchor = safe_float(
+        getattr(candidate, "execution_anchor", 0.0) if candidate is not None else 0.0,
+        0.0,
+    )
+    trigger_level = safe_float(
+        getattr(candidate, "trigger_level", 0.0) if candidate is not None else 0.0,
+        0.0,
+    )
+
+    if override_price > 0:
+        selected = override_price
+        source = "LIVE_MARKET_OVERRIDE"
+    elif market_price > 0:
+        selected = market_price
+        source = "LIVE_MARKET_PRICE"
+    elif analysis_anchor > 0:
+        selected = analysis_anchor
+        source = "ANALYSIS_ANCHOR_FALLBACK_NO_MARKET_PRICE"
+    elif trigger_level > 0:
+        selected = trigger_level
+        source = "TRIGGER_FALLBACK_NO_MARKET_PRICE"
+    else:
+        selected = 0.0
+        source = "MISSING_PRICE"
+
+    selected = round_price(selected) if selected > 0 else 0.0
+    contract = {
+        "version": "v8.14.1",
+        "source": source,
+        "market_price": round_price(market_price) if market_price > 0 else 0.0,
+        "entry_price_override": round_price(override_price) if override_price > 0 else 0.0,
+        "analysis_anchor": round_price(analysis_anchor) if analysis_anchor > 0 else 0.0,
+        "trigger_level": round_price(trigger_level) if trigger_level > 0 else 0.0,
+        "selected_entry": selected,
+        "market_entry_required": True,
+        "anchor_is_analytical_only": True,
+    }
+
+    if candidate is not None:
+        components = getattr(candidate, "score_components", None)
+        if components is None:
+            candidate.score_components = {}
+            components = candidate.score_components
+        components["entry_price_contract"] = dict(contract)
+
+    return selected, contract
+
+
+def validate_live_entry_price_contract(
+    context: dict,
+    decision: Decision,
+) -> dict[str, Any]:
+    """
+    Runtime invariant for published market entries.
+
+    It does not make a trading decision. It verifies that the plan approved by
+    the Executive Layer uses the exact current market price. Any mismatch is a
+    programming error and must stop the run rather than create a fictional fill.
+    """
+    if decision.action not in EXECUTABLE_ENTRY_ACTIONS:
+        return {
+            "checked": False,
+            "reason": "non_executable_action",
+        }
+
+    if decision.plan is None or decision.candidate is None:
+        raise ValueError("Executable decision is missing candidate or trade plan")
+
+    market_price = round_price(safe_float((context or {}).get("price"), 0.0))
+    plan_entry = round_price(safe_float(decision.plan.entry, 0.0))
+    equal = bool(market_price > 0 and plan_entry == market_price)
+
+    audit = {
+        "checked": True,
+        "version": "v8.14.1",
+        "action": decision.action,
+        "market_price": market_price,
+        "plan_entry": plan_entry,
+        "equal": equal,
+        "rule": "ENTRY == CURRENT_MARKET_PRICE",
+        "analysis_anchor": round_price(
+            safe_float(getattr(decision.candidate, "execution_anchor", 0.0), 0.0)
+        ),
+        "trigger_level": round_price(
+            safe_float(getattr(decision.candidate, "trigger_level", 0.0), 0.0)
+        ),
+    }
+    decision.audit.setdefault("live_entry_price_contract", {}).update(audit)
+
+    if not equal:
+        raise ValueError(
+            "LIVE ENTRY PRICE CONTRACT VIOLATION: "
+            f"action={decision.action} market={market_price} plan_entry={plan_entry}"
+        )
+
+    return audit
+
+
+def build_trade_plan(
+    context: dict,
+    candidate: Candidate,
+    entry_price_override: Optional[float] = None,
+) -> TradePlan:
+    price, entry_price_contract = resolve_execution_entry_price(
+        context, candidate, entry_price_override=entry_price_override
+    )
     atr15 = context["atr15"] or 0.6
     side = candidate.side
     profile = trade_mode_profile(context, side, candidate.setup_type)
@@ -9215,6 +9349,7 @@ def build_trade_plan(context: dict, candidate: Candidate) -> TradePlan:
         )
         position_risk_pct = round(min(position_risk_pct, PROBE_RISK_PCT), 4)
 
+    candidate.stage_plan.setdefault("entry_price_contract", entry_price_contract)
     candidate.stage_plan.setdefault("breathing_geometry", breathing)
     candidate.stage_plan.setdefault("scale_plan", []).append(
         f"v6.13 breathing: hard stop ширший за noise envelope; sizing x{breathing.get('risk_size_multiplier')}"
@@ -11721,11 +11856,12 @@ def run_bot() -> None:
         return
 
     decision = evaluate_new_setup(context, state, journal)
+    live_entry_price_audit = validate_live_entry_price_contract(context, decision)
     canonical_quality = canonical_decision_quality(decision)
     decision.quality = canonical_quality
     quality_source = "candidate.final_score" if decision.candidate else "decision.quality"
     scoring_profile = scoring_mode_profile(journal.get("learning_status", {}))
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "scoring_mode": scoring_profile, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "audit": decision.audit or {}}
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "scoring_mode": scoring_profile, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "live_entry_price_contract": live_entry_price_audit, "audit": decision.audit or {}}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         payload.update({
@@ -11771,6 +11907,8 @@ def run_bot() -> None:
             raise ValueError("Signal quality invariant violated")
         if decision.plan:
             payload.update({
+                "plan_entry": decision.plan.entry,
+                "plan_entry_price_source": (decision.candidate.score_components or {}).get("entry_price_contract", {}).get("source", ""),
                 "plan_tp0": decision.plan.tp0,
                 "plan_tp1": decision.plan.tp1,
                 "plan_tp2": decision.plan.tp2,
@@ -12957,6 +13095,30 @@ def test_short_reversal_does_not_bypass_authority() -> bool:
     )
 
 
+
+def test_live_entry_price_contract_prefers_market_price() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=69,
+        final_score=69,
+        execution_anchor=83.125,
+        trigger_level=83.125,
+        score_components={},
+    )
+    selected, contract = resolve_execution_entry_price(
+        {"price": 82.72},
+        candidate,
+    )
+    return bool(
+        selected == round_price(82.72)
+        and contract.get("source") == "LIVE_MARKET_PRICE"
+        and contract.get("analysis_anchor") == round_price(83.125)
+        and contract.get("anchor_is_analytical_only") is True
+    )
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -12970,6 +13132,7 @@ def _run_self_test() -> bool:
     """
     checks: list[tuple[str, bool]] = []
 
+    checks.append(("live executable entry uses current market price", test_live_entry_price_contract_prefers_market_price()))
     checks.append(("short reversal soft integration", test_short_reversal_engine_soft_integration()))
     checks.append(("short reversal remains under executive authority", test_short_reversal_does_not_bypass_authority()))
     checks.append(("test_conflict_blocks_bad_trade", test_conflict_blocks_bad_trade()))
@@ -14272,7 +14435,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.14")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.14.1")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
