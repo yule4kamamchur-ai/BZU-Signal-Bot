@@ -129,6 +129,20 @@ BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Editi
 - Pattern ML feature переведено з жорсткого clamp у smooth non-saturating transform.
 - Додано regression tests для EMA, HTF scale contract, drift guard, bonus fusion,
   pattern differentiation та kernel replay/risk stability.
+
+Виправлення v8.16 (HTF Single Source of Truth):
+- 15M/1H/4H формують один канонічний signed htf_fact у діапазоні [-1; +1].
+- setup/organic score, ML feature та HTF_ANALYST тепер є трьома похідними одного
+  alignment_score, а не незалежними оцінками з різних правил.
+- Старий бінарний htf_score лише за 4H повністю прибрано, включно з REENTRY.
+- HTF score зберігає історичний діапазон 6..20 через безперервне відображення
+  alignment_score; family weight застосовується лише після побудови факту.
+- ML отримує htf_feature=(alignment+1)/2 без повторної нормалізації family score.
+- HTF advisor використовує signed alignment для opinion, confidence та impact;
+  raw htf_score більше не впливає на голос аналітика.
+- Вага HTF у setup_quality винесена в SETUP_QUALITY_HTF_WEIGHT і runtime audit.
+- Додано regression tests на узгодженість score/ML/advisor та сценарій
+  4H aligned проти 1H+15M.
 """
 
 from __future__ import annotations
@@ -153,30 +167,22 @@ import requests
 
 def get_htf_state(candidate: Any) -> str:
     """
-    Candidate-relative HTF state resolver.
+    Read the candidate-relative state from the canonical HTF fact.
 
-    Contract:
-    - explicit htf_state is authoritative;
-    - htf_market_bias may be converted to aligned/against using candidate.side;
-    - raw htf_score and normalized ML feature htf describe strength, not direction,
-      therefore they must never be used to guess bullish/bearish state.
+    Raw score, 4H bias and ML feature are never alternative direction sources.
     """
     if candidate is None:
         return "neutral"
 
-    direct = getattr(candidate, "htf_state", None)
-    if direct:
-        return str(direct).lower()
-
     components = getattr(candidate, "score_components", {}) or {}
-    explicit = components.get("htf_state")
-    if explicit:
-        return str(explicit).lower()
+    fact = components.get("htf_fact") or {}
+    state = str(fact.get("state") or components.get("htf_state") or "").lower()
+    if state in {"aligned", "against", "mixed", "neutral"}:
+        return state
 
-    market_bias = str(components.get("htf_market_bias") or "").upper()
-    side = str(getattr(candidate, "side", "") or "").upper()
-    if market_bias in {"LONG", "SHORT"} and side in {"LONG", "SHORT"}:
-        return "aligned" if market_bias == side else "against"
+    direct = str(getattr(candidate, "htf_state", "") or "").lower()
+    if direct in {"aligned", "against", "mixed", "neutral"}:
+        return direct
 
     return "neutral"
 
@@ -185,8 +191,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.15-htf-reversal-integrity"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_15_HTF_REVERSAL_INTEGRITY"
+BOT_VERSION = "pro-hybrid-confluence-v8.16-htf-single-source-truth"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_16_HTF_SINGLE_SOURCE_TRUTH"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -502,6 +508,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
     if not (0 < SHORT_REVERSAL_PROBE_RISK_PCT <= SHORT_REVERSAL_ACCEPTANCE_RISK_PCT <= ACCEPTANCE_RISK_PCT):
         errors.append("SHORT reversal risk ladder is invalid")
 
+    htf_weight_sum = HTF_TF15_WEIGHT + HTF_TF1H_WEIGHT + HTF_TF4H_WEIGHT
+    if abs(htf_weight_sum - 1.0) > 1e-9:
+        errors.append(f"HTF timeframe weights must sum to 1.0, got {htf_weight_sum:.6f}")
+    if not (0 < HTF_ALIGNMENT_STATE_THRESHOLD <= 1.0):
+        errors.append("HTF_ALIGNMENT_STATE_THRESHOLD must be in (0, 1]")
+    if not (0 <= HTF_SCORE_MIN < HTF_SCORE_MID < HTF_SCORE_MAX <= 100):
+        errors.append("HTF score mapping must satisfy min < mid < max")
+    if not (0 <= SETUP_QUALITY_HTF_WEIGHT <= 2.0):
+        errors.append("SETUP_QUALITY_HTF_WEIGHT is outside safe range")
+
     return {
         "valid": not errors,
         "errors": errors,
@@ -596,6 +612,22 @@ TREND_HTF_WEIGHT = float(os.getenv("TREND_HTF_WEIGHT", "1.25") or 1.25)
 TREND_SMT_BONUS = int(os.getenv("TREND_SMT_BONUS", "4") or 4)
 EXHAUSTION_ATR_THRESHOLD = float(os.getenv("EXHAUSTION_ATR_THRESHOLD", "1.5") or 1.5)
 EXHAUSTION_SCORE_MULTIPLIER = float(os.getenv("EXHAUSTION_SCORE_MULTIPLIER", "0.5") or 0.5)
+
+# === v8.16 HTF Single Source of Truth ===
+# One signed fact drives score, ML and advisor. Positive means aligned with the
+# candidate side; negative means against it.
+HTF_TF15_WEIGHT = float(os.getenv("HTF_TF15_WEIGHT", "0.15") or 0.15)
+HTF_TF1H_WEIGHT = float(os.getenv("HTF_TF1H_WEIGHT", "0.35") or 0.35)
+HTF_TF4H_WEIGHT = float(os.getenv("HTF_TF4H_WEIGHT", "0.50") or 0.50)
+HTF_ALIGNMENT_STATE_THRESHOLD = float(
+    os.getenv("HTF_ALIGNMENT_STATE_THRESHOLD", "0.45") or 0.45
+)
+HTF_SCORE_MIN = float(os.getenv("HTF_SCORE_MIN", "6.0") or 6.0)
+HTF_SCORE_MID = float(os.getenv("HTF_SCORE_MID", "13.0") or 13.0)
+HTF_SCORE_MAX = float(os.getenv("HTF_SCORE_MAX", "20.0") or 20.0)
+SETUP_QUALITY_HTF_WEIGHT = float(
+    os.getenv("SETUP_QUALITY_HTF_WEIGHT", "0.70") or 0.70
+)
 
 # No-Pattern Fallback Penalty: коли ЖОДНА з 10 іменних ICT-моделей не
 # підтверджена, сетап деградує до generic PULLBACK_CONTINUATION — раніше це
@@ -1335,6 +1367,15 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "short_reversal_probe_risk_pct": SHORT_REVERSAL_PROBE_RISK_PCT,
         "short_reversal_acceptance_risk_pct": SHORT_REVERSAL_ACCEPTANCE_RISK_PCT,
         "short_reversal_ml_min_trades": SHORT_REVERSAL_ML_MIN_TRADES,
+        "htf_fact_version": "v8.16",
+        "htf_tf15_weight": HTF_TF15_WEIGHT,
+        "htf_tf1h_weight": HTF_TF1H_WEIGHT,
+        "htf_tf4h_weight": HTF_TF4H_WEIGHT,
+        "htf_alignment_state_threshold": HTF_ALIGNMENT_STATE_THRESHOLD,
+        "htf_score_min": HTF_SCORE_MIN,
+        "htf_score_mid": HTF_SCORE_MID,
+        "htf_score_max": HTF_SCORE_MAX,
+        "setup_quality_htf_weight": SETUP_QUALITY_HTF_WEIGHT,
         "probe_entry_score_base": ARMED_SCORE_BASE,
         "tp0_rr": TP0_RR,
         "tp0_size_pct": TP0_SIZE_PCT,
@@ -3744,47 +3785,123 @@ def _timeframe_ema_profile(
     }
 
 
+def _tf_direction_value(profile: dict[str, Any]) -> float:
+    """
+    Absolute market direction for one timeframe: LONG positive, SHORT negative.
+
+    Prefer the continuous EMA composite. Legacy profiles without composite fall
+    back to bias sign so old fixtures remain readable.
+    """
+    composite = profile.get("composite") if isinstance(profile, dict) else None
+    if composite is not None:
+        return clamp(safe_float(composite, 0.0), -1.0, 1.0)
+
+    bias = str((profile or {}).get("bias") or "NEUTRAL").upper()
+    if bias == Side.LONG.value:
+        return 1.0
+    if bias == Side.SHORT.value:
+        return -1.0
+    return 0.0
+
+
+def _candidate_htf_fact(
+    side: str,
+    tf15: dict[str, Any],
+    tf1h: dict[str, Any],
+    tf4h: dict[str, Any],
+    *,
+    family_weight: float = 1.0,
+) -> dict[str, Any]:
+    """
+    Canonical HTF fact.
+
+    Pipeline:
+        TF EMA composites -> absolute market composite
+        -> candidate-relative signed alignment [-1, +1]
+        -> score base, ML feature and advisor inputs.
+
+    There is no second directional truth.
+    """
+    side = str(side or "").upper()
+    candidate_sign = 1.0 if side == Side.LONG.value else -1.0
+
+    inputs = {
+        "15m": {
+            "weight": HTF_TF15_WEIGHT,
+            "direction": _tf_direction_value(tf15),
+            "bias": str((tf15 or {}).get("bias") or "NEUTRAL"),
+        },
+        "1h": {
+            "weight": HTF_TF1H_WEIGHT,
+            "direction": _tf_direction_value(tf1h),
+            "bias": str((tf1h or {}).get("bias") or "NEUTRAL"),
+        },
+        "4h": {
+            "weight": HTF_TF4H_WEIGHT,
+            "direction": _tf_direction_value(tf4h),
+            "bias": str((tf4h or {}).get("bias") or "NEUTRAL"),
+        },
+    }
+
+    market_composite = sum(
+        safe_float(item["direction"], 0.0) * safe_float(item["weight"], 0.0)
+        for item in inputs.values()
+    )
+    market_composite = clamp(market_composite, -1.0, 1.0)
+    alignment = clamp(market_composite * candidate_sign, -1.0, 1.0)
+
+    if alignment >= HTF_ALIGNMENT_STATE_THRESHOLD:
+        state = "aligned"
+    elif alignment <= -HTF_ALIGNMENT_STATE_THRESHOLD:
+        state = "against"
+    else:
+        state = "mixed"
+
+    if market_composite >= HTF_ALIGNMENT_STATE_THRESHOLD:
+        market_bias = Side.LONG.value
+    elif market_composite <= -HTF_ALIGNMENT_STATE_THRESHOLD:
+        market_bias = Side.SHORT.value
+    else:
+        market_bias = Side.NEUTRAL.value
+
+    # Preserve the historic 6..20 contribution range, but make it continuous.
+    if alignment >= 0:
+        score_base = HTF_SCORE_MID + alignment * (HTF_SCORE_MAX - HTF_SCORE_MID)
+    else:
+        score_base = HTF_SCORE_MID + alignment * (HTF_SCORE_MID - HTF_SCORE_MIN)
+    score_base = clamp(score_base, HTF_SCORE_MIN, HTF_SCORE_MAX)
+
+    ml_feature = clamp((alignment + 1.0) / 2.0, 0.0, 1.0)
+    conviction = clamp(abs(alignment), 0.0, 1.0)
+    family_weight = max(0.0, safe_float(family_weight, 1.0))
+
+    return {
+        "version": "v8.16",
+        "source": "EMA_COMPOSITE_15M_1H_4H",
+        "candidate_side": side,
+        "market_composite": round(market_composite, 6),
+        "market_bias": market_bias,
+        "alignment_score": round(alignment, 6),
+        "state": state,
+        "conviction": round(conviction, 6),
+        "score_base": round(score_base, 6),
+        "family_weight": round(family_weight, 6),
+        "score_weighted": round(score_base * family_weight, 6),
+        "ml_feature": round(ml_feature, 6),
+        "state_threshold": HTF_ALIGNMENT_STATE_THRESHOLD,
+        "timeframes": inputs,
+        "contract": "one fact -> score + ML + advisor",
+    }
+
+
+# Compatibility alias for external audit code. It returns the same canonical fact.
 def _candidate_htf_alignment(
     side: str,
     tf15: dict[str, Any],
     tf1h: dict[str, Any],
     tf4h: dict[str, Any],
 ) -> dict[str, Any]:
-    """Convert market TF biases into an explicit candidate-relative state."""
-    side = str(side or "").upper()
-    votes = []
-    for profile, weight in ((tf15, 0.15), (tf1h, 0.35), (tf4h, 0.50)):
-        bias = str((profile or {}).get("bias") or "NEUTRAL").upper()
-        if bias == side:
-            votes.append(weight)
-        elif bias in {"LONG", "SHORT"}:
-            votes.append(-weight)
-        else:
-            votes.append(0.0)
-
-    alignment = sum(votes)
-    if alignment >= 0.45:
-        state = "aligned"
-    elif alignment <= -0.45:
-        state = "against"
-    else:
-        state = "mixed"
-
-    senior_biases = [
-        str((tf1h or {}).get("bias") or "NEUTRAL").upper(),
-        str((tf4h or {}).get("bias") or "NEUTRAL").upper(),
-    ]
-    market_bias = (
-        senior_biases[0]
-        if senior_biases[0] == senior_biases[1] and senior_biases[0] in {"LONG", "SHORT"}
-        else str((tf4h or {}).get("bias") or "NEUTRAL").upper()
-    )
-    return {
-        "state": state,
-        "market_bias": market_bias,
-        "alignment_score": round(alignment, 4),
-        "weights": {"15m": 0.15, "1h": 0.35, "4h": 0.50},
-    }
+    return _candidate_htf_fact(side, tf15, tf1h, tf4h)
 
 
 def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = None) -> dict:
@@ -5882,7 +5999,7 @@ def _build_quality_features(
     liq_score: float,
     flw_score: float,
     trig_score: float,
-    htf_score: float,
+    htf_feature: float,
     raw_bonus: float,
     session_bonus: float,
     vector_bonus: float,
@@ -5894,11 +6011,6 @@ def _build_quality_features(
     exhaustion_multiplier: float,
     pattern_family: str,
 ) -> dict[str, float]:
-    family_is_reversal = pattern_family in {
-        SetupFamily.LIQUIDITY_RECOVERY.value,
-        SetupFamily.STRUCTURAL_TRANSITION.value,
-        SetupFamily.RANGE_EXECUTION.value,
-    }
     trigger_window = max(float(TRIGGER_MAX_AGE_MINUTES), 1.0)
     freshness = 1.0 - clamp(trigger_age / trigger_window, 0.0, 1.0) if trigger_ready else 0.0
     return {
@@ -5907,7 +6019,7 @@ def _build_quality_features(
         "liquidity": clamp(liq_score / 24.0, 0.0, 1.0),
         "flow": clamp(flw_score / 24.0, 0.0, 1.0),
         "trigger": 1.0 if trigger_ready else 0.0,
-        "htf": clamp(htf_score / (24.0 if not family_is_reversal else 12.0), 0.0, 1.0),
+        "htf": clamp(htf_feature, 0.0, 1.0),
         "pattern": _smooth_pattern_feature(raw_bonus, best_pattern),
         "session": clamp(session_bonus / max(JUDAS_MAX_BONUS, 1.0), -1.0, 1.0),
         "smt": clamp(vector_bonus / 12.0, -1.0, 1.0),
@@ -6206,6 +6318,7 @@ def score_hypothesis_layers(
     flw_score: float,
     trig_score: float,
     htf_score: float,
+    htf_feature: float,
     raw_bonus: float,
     session_bonus: float,
     vector_bonus: float,
@@ -6221,7 +6334,8 @@ def score_hypothesis_layers(
     execution_quality — чи правильний момент;
     trade_plan_quality — чи математично/структурно є нормальна угода."""
     setup_quality = (
-        loc_score * 0.95 + str_score * 0.90 + liq_score * 0.70 + htf_score * 0.70
+        loc_score * 0.95 + str_score * 0.90 + liq_score * 0.70
+        + htf_score * SETUP_QUALITY_HTF_WEIGHT
         + max(raw_bonus, -12) * 1.15 + session_bonus * 0.85 + vector_bonus * 0.75
         + (6 if regime_matched else 0) - (10 if regime_conflict else 0)
     )
@@ -6267,7 +6381,7 @@ def score_hypothesis_layers(
     # durability_quality оцінює здатність руху дожити до цілей. Поки ML не
     # навчений, це прозора евристика на основі plan/flow/HTF/structure/magnet.
     flow_norm = clamp(flw_score / 24.0 * 100.0, 0.0, 100.0)
-    htf_norm = clamp(htf_score / 24.0 * 100.0, 0.0, 100.0)
+    htf_norm = clamp(htf_feature * 100.0, 0.0, 100.0)
     structure_norm = clamp(str_score / 24.0 * 100.0, 0.0, 100.0)
     magnet_norm = clamp(float(target_magnet_score or 0.0) / 4.0 * 100.0, 0.0, 100.0)
     durability_quality = (
@@ -6346,7 +6460,15 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     side = candidate.side
     loc_score = calculate_location_score(price, context.get("zones") or [], side, atr15, context.get("tf15", {}), context.get("tf1h", {}))
     str_score = 19 if context.get("tf15", {}).get("bias") == side else 10
-    htf_score = 20 if context.get("tf4h", {}).get("bias") == side else 6
+    htf_fact = _candidate_htf_fact(
+        side,
+        context.get("tf15", {}) or {},
+        context.get("tf1h", {}) or {},
+        context.get("tf4h", {}) or {},
+        family_weight=1.0,
+    )
+    htf_score = safe_float(htf_fact.get("score_weighted"), HTF_SCORE_MID)
+    htf_feature = safe_float(htf_fact.get("ml_feature"), 0.5)
     cvd = context.get("cvd", {}) or {}
     flw_score = (
         float(cvd.get("score", 0)) * SYNTHETIC_CVD_SCORE_MULTIPLIER
@@ -6361,7 +6483,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
         liq_score=liq_score,
         flw_score=flw_score,
         trig_score=trig_score,
-        htf_score=htf_score,
+        htf_feature=htf_feature,
         raw_bonus=8,
         session_bonus=0,
         vector_bonus=0,
@@ -6387,6 +6509,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
         flw_score=flw_score,
         trig_score=trig_score,
         htf_score=htf_score,
+        htf_feature=htf_feature,
         raw_bonus=8,
         session_bonus=0,
         vector_bonus=0,
@@ -6403,6 +6526,13 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.raw_score = max(candidate.raw_score, candidate.final_score)
     candidate.score_components = {
         "reentry_rescored": True,
+        "htf_fact": dict(htf_fact),
+        "htf_score": round(htf_score, 2),
+        "htf_score_base": round(safe_float(htf_fact.get("score_base"), 0.0), 2),
+        "htf_state": htf_fact.get("state"),
+        "htf_market_bias": htf_fact.get("market_bias"),
+        "htf_alignment_score": htf_fact.get("alignment_score"),
+        "htf_ml_feature": htf_fact.get("ml_feature"),
         "features": calibration["features"],
         "gates": calibration["gates"],
         "probability": calibration["probability"],
@@ -8053,8 +8183,6 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             drift_atr = (c15[-1].close - c15[-drift_lookback_n].close) / atr15 if atr15 else 0.0
         else:
             drift_atr = 0.0
-        trend_against_reversal = (side == Side.LONG.value and drift_atr < -1.6) or \
-                                  (side == Side.SHORT.value and drift_atr > 1.6)
 
         # Евристики для розпізнавання моделей
         has_fvg = any(z.side == side and z.kind == "FVG" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
@@ -8400,7 +8528,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
             reversal_families = {SetupFamily.LIQUIDITY_RECOVERY.value, SetupFamily.STRUCTURAL_TRANSITION.value, SetupFamily.RANGE_EXECUTION.value}
             trend_families = {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
-            htf_aligned_strong = (tf4h.get("bias") == side) and (tf1h.get("bias") == side)
+            htf_fact = _candidate_htf_fact(side, tf15, tf1h, tf4h)
+            htf_aligned_strong = (
+                safe_float(htf_fact.get("alignment_score"), 0.0) >= 0.70
+            )
             liq_weight = trig_weight = htf_weight = str_weight = flw_weight = 1.0
             vector_bonus = 0.0
             exhaustion_multiplier = 1.0
@@ -8452,8 +8583,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 if cvd.get("bias") == side else 0.0
             )
             trig_score = (22 if model_live_3m_trigger_ready else 8) * trig_weight
-            htf_score = (20 if tf4h.get("bias") == side else 6) * htf_weight
-            htf_alignment = _candidate_htf_alignment(side, tf15, tf1h, tf4h)
+            htf_fact = _candidate_htf_fact(
+                side, tf15, tf1h, tf4h, family_weight=htf_weight
+            )
+            htf_score = safe_float(htf_fact.get("score_weighted"), 0.0)
+            htf_feature = safe_float(htf_fact.get("ml_feature"), 0.5)
 
             if short_model_profile:
                 short_models = short_reversal_profile.get("models") or {}
@@ -8677,7 +8811,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 liq_score=liq_score,
                 flw_score=flw_score,
                 trig_score=trig_score,
-                htf_score=htf_score,
+                htf_feature=htf_feature,
                 raw_bonus=raw_bonus,
                 session_bonus=session_bonus,
                 vector_bonus=vector_bonus,
@@ -8702,6 +8836,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 flw_score=flw_score,
                 trig_score=trig_score,
                 htf_score=htf_score,
+                htf_feature=htf_feature,
                 raw_bonus=raw_bonus,
                 session_bonus=session_bonus,
                 vector_bonus=vector_bonus,
@@ -8755,10 +8890,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "liq_score": round(liq_score, 2),
                     "flw_score": round(flw_score, 2),
                     "trig_score": round(trig_score, 2),
+                    "htf_fact": dict(htf_fact),
                     "htf_score": round(htf_score, 2),
-                    "htf_state": htf_alignment["state"],
-                    "htf_market_bias": htf_alignment["market_bias"],
-                    "htf_alignment_score": htf_alignment["alignment_score"],
+                    "htf_score_base": round(safe_float(htf_fact.get("score_base"), 0.0), 2),
+                    "htf_state": htf_fact["state"],
+                    "htf_market_bias": htf_fact["market_bias"],
+                    "htf_alignment_score": htf_fact["alignment_score"],
+                    "htf_ml_feature": htf_fact["ml_feature"],
                     "tf_biases": {
                         "15m": tf15.get("bias"),
                         "1h": tf1h.get("bias"),
@@ -13706,6 +13844,120 @@ def test_kernel_replay_and_risk_stability_are_wired() -> bool:
     )
 
 
+
+def test_htf_single_fact_mixed_lower_tfs_vs_4h() -> bool:
+    # Exact old contradiction: 4H aligned, 1H+15M against.
+    # With 0.15/0.35/0.50 weights the canonical alignment is 0.0.
+    fact = _candidate_htf_fact(
+        Side.LONG.value,
+        {"bias": Side.SHORT.value, "composite": -1.0},
+        {"bias": Side.SHORT.value, "composite": -1.0},
+        {"bias": Side.LONG.value, "composite": 1.0},
+        family_weight=1.0,
+    )
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=50,
+        final_score=50,
+        score_components={
+            "htf_fact": fact,
+            "htf_alignment_score": fact["alignment_score"],
+            "features": {"htf": fact["ml_feature"]},
+        },
+    )
+    advisor = _htf_advisor(candidate, candidate.score_components)
+    return bool(
+        abs(safe_float(fact.get("alignment_score"), 99.0)) < 1e-9
+        and abs(safe_float(fact.get("score_base"), 0.0) - HTF_SCORE_MID) < 1e-9
+        and abs(safe_float(fact.get("ml_feature"), 0.0) - 0.5) < 1e-9
+        and fact.get("state") == "mixed"
+        and advisor.get("opinion") == "NEUTRAL"
+        and abs(safe_float(advisor.get("impact"), 99.0)) < 1e-9
+    )
+
+
+def test_htf_single_fact_full_alignment_consistency() -> bool:
+    fact = _candidate_htf_fact(
+        Side.SHORT.value,
+        {"bias": Side.SHORT.value, "composite": -1.0},
+        {"bias": Side.SHORT.value, "composite": -1.0},
+        {"bias": Side.SHORT.value, "composite": -1.0},
+        family_weight=TREND_HTF_WEIGHT,
+    )
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=70,
+        final_score=70,
+        score_components={"htf_fact": fact, "features": {"htf": fact["ml_feature"]}},
+    )
+    advisor = _htf_advisor(candidate, candidate.score_components)
+    return bool(
+        fact.get("state") == "aligned"
+        and safe_float(fact.get("alignment_score"), 0.0) == 1.0
+        and safe_float(fact.get("score_base"), 0.0) == HTF_SCORE_MAX
+        and safe_float(fact.get("score_weighted"), 0.0) == HTF_SCORE_MAX * TREND_HTF_WEIGHT
+        and safe_float(fact.get("ml_feature"), 0.0) == 1.0
+        and advisor.get("opinion") == "SUPPORT"
+        and safe_float(advisor.get("confidence"), 0.0) == 100.0
+        and get_htf_state(candidate) == "aligned"
+    )
+
+
+def test_htf_single_fact_full_opposition_consistency() -> bool:
+    fact = _candidate_htf_fact(
+        Side.SHORT.value,
+        {"bias": Side.LONG.value, "composite": 1.0},
+        {"bias": Side.LONG.value, "composite": 1.0},
+        {"bias": Side.LONG.value, "composite": 1.0},
+        family_weight=1.0,
+    )
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=30,
+        final_score=30,
+        score_components={"htf_fact": fact, "features": {"htf": fact["ml_feature"]}},
+    )
+    advisor = _htf_advisor(candidate, candidate.score_components)
+    return bool(
+        fact.get("state") == "against"
+        and safe_float(fact.get("alignment_score"), 0.0) == -1.0
+        and safe_float(fact.get("score_base"), 0.0) == HTF_SCORE_MIN
+        and safe_float(fact.get("ml_feature"), 1.0) == 0.0
+        and advisor.get("opinion") == "CAUTION"
+        and safe_float(advisor.get("confidence"), 0.0) == 100.0
+        and safe_float(advisor.get("impact"), 0.0) < 0
+        and get_htf_state(candidate) == "against"
+    )
+
+
+def test_htf_quality_feature_is_direct_fact_projection() -> bool:
+    features = _build_quality_features(
+        loc_score=20,
+        str_score=15,
+        liq_score=12,
+        flw_score=5,
+        trig_score=18,
+        htf_feature=0.37,
+        raw_bonus=10,
+        session_bonus=0,
+        vector_bonus=0,
+        trigger_age=0,
+        trigger_ready=True,
+        best_pattern="TEST",
+        regime_matched=0,
+        regime_conflict=0,
+        exhaustion_multiplier=1.0,
+        pattern_family=SetupFamily.CONTINUATION.value,
+    )
+    return abs(safe_float(features.get("htf"), 0.0) - 0.37) < 1e-9
+
+
 def _run_self_test() -> bool:
     """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
     критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
@@ -13718,6 +13970,23 @@ def _run_self_test() -> bool:
     в рантайм-образі бота.
     """
     checks: list[tuple[str, bool]] = []
+
+    checks.append((
+        "HTF one fact resolves 4H vs lower-TF contradiction",
+        test_htf_single_fact_mixed_lower_tfs_vs_4h(),
+    ))
+    checks.append((
+        "HTF one fact aligns score ML and advisor",
+        test_htf_single_fact_full_alignment_consistency(),
+    ))
+    checks.append((
+        "HTF one fact aligns opposition score ML and advisor",
+        test_htf_single_fact_full_opposition_consistency(),
+    ))
+    checks.append((
+        "HTF ML feature is direct fact projection",
+        test_htf_quality_feature_is_direct_fact_projection(),
+    ))
 
     checks.append(("true EMA responds faster than arithmetic mean", test_true_ema_responds_to_v_reversal()))
     checks.append(("raw HTF score cannot invent direction", test_get_htf_state_does_not_infer_direction_from_raw_score()))
@@ -13951,36 +14220,48 @@ def normalize_advisor_impact(module: str, raw_impact: float) -> float:
     return clamp((safe_float(raw_impact, 0.0) / max(abs(limit), 1e-9)) * 10.0, -10.0, 10.0)
 
 def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
-    features = components.get("features", {}) or {}
-    raw_score = _component_raw_score(components, "htf_score", "htf")
-    normalized = clamp(safe_float(features.get("htf"), raw_score / 24.0), 0, 1)
-    explicit = str(components.get("htf_state") or getattr(candidate, "htf_state", "") or "").lower()
-    side = str(getattr(candidate, "side", "")).upper()
+    """
+    Advisor consumer of the canonical HTF fact.
 
-    if explicit in {"bullish", "bearish"}:
-        aligned = (explicit == "bullish" and side == Side.LONG.value) or (
-            explicit == "bearish" and side == Side.SHORT.value
-        )
-        state = explicit
-    elif explicit in {"aligned", "support"}:
-        aligned = True
-        state = explicit
-    elif explicit in {"against", "opposed"}:
-        aligned = False
-        state = explicit
+    Opinion, confidence and impact all come from the same signed alignment.
+    htf_score is audit-only here and cannot change the vote.
+    """
+    fact = components.get("htf_fact") or {}
+    alignment = fact.get("alignment_score", components.get("htf_alignment_score"))
+    if alignment is None:
+        feature = (components.get("features") or {}).get("htf")
+        alignment = (2.0 * safe_float(feature, 0.5) - 1.0) if feature is not None else 0.0
+
+    alignment = clamp(safe_float(alignment, 0.0), -1.0, 1.0)
+    threshold = safe_float(
+        fact.get("state_threshold"),
+        HTF_ALIGNMENT_STATE_THRESHOLD,
+    )
+
+    if alignment >= threshold:
+        opinion = "SUPPORT"
+        state = "aligned"
+    elif alignment <= -threshold:
+        opinion = "CAUTION"
+        state = "against"
     else:
-        aligned = normalized >= 0.50
-        state = "aligned" if aligned else "against"
+        opinion = "NEUTRAL"
+        state = "mixed"
+
+    conviction = abs(alignment)
+    raw_impact = alignment * ADVISOR_MAX_IMPACT["HTF_ANALYST"]
 
     return advisory_report(
         "HTF_ANALYST",
-        "SUPPORT" if aligned else "CAUTION",
-        confidence=normalized * 100,
-        impact=normalize_advisor_impact(
-            "HTF_ANALYST",
-            clamp((normalized - 0.50) * 40.0, -20.0, 20.0)
-        ),
-        evidence=[f"htf_state={state}", f"htf_score={raw_score:.2f}"],
+        opinion,
+        confidence=conviction * 100.0,
+        impact=normalize_advisor_impact("HTF_ANALYST", raw_impact),
+        evidence=[
+            f"htf_state={state}",
+            f"alignment={alignment:.3f}",
+            f"ml_feature={(alignment + 1.0) / 2.0:.3f}",
+            "source=htf_fact_v8.16",
+        ],
     )
 
 
@@ -15052,7 +15333,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.15")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.16")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
