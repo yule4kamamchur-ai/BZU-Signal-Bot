@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v6.12 (Market-Structure Plus Edition)
+BZU Professional Hybrid Confluence Signal Bot v9.1 (Confidence / Quality Pipeline Edition)
 ================================================================================
+Оновлення v9.1:
+- PROBE_ENTRY розділено на HIGH / MEDIUM / EXPERIMENTAL conviction із ризиком 0.12% / 0.07% / 0.03%.
+- Додано thesis confidence decay з відновленням за свіжий OB/FVG/retest, без забування чи блокування тези.
+- SETUP QUALITY, TIMING QUALITY та ENTRY QUALITY стали окремими вимірами до побудови trade plan.
+- Staged engine розширено: WATCH → THESIS_FORMED → EARLY_SIGNAL → PROBE → ACCEPTANCE → CORE → ADD_POSITION.
+- Advisor consensus тепер має quality voting: support / doubt / silent та signed net conviction.
+- Risk Ledger використовує additive Risk Confidence Budget для HTF/timing/liquidity/structure/regime, щоб не множити один штраф кілька разів.
+- Додано Market Regime Memory, Anti-FOMO Score і контрфактичний blueprint для відхилених гіпотез.
+
 Виправлення v8.9 (Direction-Aware Timing Audit Edition):
 - PRICE_STRUCTURE_ADVISOR став direction-aware: SUPPORT вимагає HH/HL для LONG або LH/LL для SHORT і не може одночасно підтримати обидві сторони на одній геометрії.
 - SESSION_MEAN_RECLAIM у TRANSITION отримав CONFIRMATION_PENDING та один hold-bar перед execution, без підвищення score thresholds.
@@ -152,6 +161,7 @@ import html
 import json
 import math
 import os
+import tempfile
 import time
 import uuid
 import zoneinfo
@@ -165,34 +175,101 @@ from typing import Any, Optional
 import requests
 
 
-def get_htf_state(candidate: Any) -> str:
-    """
-    Read the candidate-relative state from the canonical HTF fact.
 
-    Raw score, 4H bias and ML feature are never alternative direction sources.
+def get_htf_fact(candidate: Any) -> dict[str, Any]:
+    """Return the canonical candidate-relative HTF fact.
+
+    The only accepted direction source is ``score_components["htf_fact"]`` (or
+    an explicitly attached ``candidate.htf_fact`` produced from the same DTO).
+    Missing or malformed data stays UNKNOWN. It is never silently converted to
+    NEUTRAL and legacy bullish/bearish labels are never treated as alignment.
     """
     if candidate is None:
-        return "neutral"
+        return {
+            "market_bias": "UNKNOWN",
+            "candidate_side": "UNKNOWN",
+            "alignment_score": 0.0,
+            "state": "UNKNOWN",
+            "timeframe_components": {},
+            "confidence": 0.0,
+            "schema_version": "missing",
+            "valid": False,
+            "errors": ["missing_candidate"],
+        }
 
     components = getattr(candidate, "score_components", {}) or {}
-    fact = components.get("htf_fact") or {}
-    state = str(fact.get("state") or components.get("htf_state") or "").lower()
-    if state in {"aligned", "against", "mixed", "neutral"}:
-        return state
+    raw = components.get("htf_fact") or getattr(candidate, "htf_fact", None)
+    if not isinstance(raw, dict):
+        return {
+            "market_bias": "UNKNOWN",
+            "candidate_side": str(getattr(candidate, "side", "UNKNOWN") or "UNKNOWN").upper(),
+            "alignment_score": 0.0,
+            "state": "UNKNOWN",
+            "timeframe_components": {},
+            "confidence": 0.0,
+            "schema_version": "missing",
+            "valid": False,
+            "errors": ["missing_htf_fact"],
+        }
 
-    direct = str(getattr(candidate, "htf_state", "") or "").lower()
-    if direct in {"aligned", "against", "mixed", "neutral"}:
-        return direct
+    state = str(raw.get("state") or "UNKNOWN").upper()
+    market_bias = str(raw.get("market_bias") or "UNKNOWN").upper()
+    candidate_side = str(raw.get("candidate_side") or getattr(candidate, "side", "UNKNOWN") or "UNKNOWN").upper()
+    errors: list[str] = []
+    if state not in {"ALIGNED", "AGAINST", "MIXED", "NEUTRAL", "UNKNOWN"}:
+        errors.append("invalid_candidate_relative_state")
+        state = "UNKNOWN"
+    if market_bias not in {"BULLISH", "BEARISH", "MIXED", "NEUTRAL", "UNKNOWN"}:
+        errors.append("invalid_market_bias")
+        market_bias = "UNKNOWN"
+    if candidate_side not in {"LONG", "SHORT", "NEUTRAL", "UNKNOWN"}:
+        errors.append("invalid_candidate_side")
+        candidate_side = "UNKNOWN"
 
-    return "neutral"
+    alignment = clamp(safe_float(raw.get("alignment_score"), 0.0), -1.0, 1.0)
+    confidence = clamp(safe_float(raw.get("confidence"), abs(alignment) * 100.0), 0.0, 100.0)
+    schema_version = str(raw.get("schema_version") or "htf_fact_v8.16")
 
+    # Validate side-relative semantics when an absolute bias is available.
+    expected = "UNKNOWN"
+    if market_bias == "BULLISH" and candidate_side == "LONG":
+        expected = "ALIGNED"
+    elif market_bias == "BULLISH" and candidate_side == "SHORT":
+        expected = "AGAINST"
+    elif market_bias == "BEARISH" and candidate_side == "LONG":
+        expected = "AGAINST"
+    elif market_bias == "BEARISH" and candidate_side == "SHORT":
+        expected = "ALIGNED"
+    elif market_bias in {"MIXED", "NEUTRAL"}:
+        expected = market_bias
+
+    if expected in {"ALIGNED", "AGAINST"} and state not in {expected, "MIXED", "UNKNOWN"}:
+        errors.append("market_bias_candidate_state_mismatch")
+
+    return {
+        "market_bias": market_bias,
+        "candidate_side": candidate_side,
+        "alignment_score": alignment,
+        "state": state,
+        "timeframe_components": dict(raw.get("timeframe_components") or {}),
+        "confidence": confidence,
+        "schema_version": schema_version,
+        "state_threshold": safe_float(raw.get("state_threshold"), HTF_ALIGNMENT_STATE_THRESHOLD if "HTF_ALIGNMENT_STATE_THRESHOLD" in globals() else 0.45),
+        "valid": not errors and state != "UNKNOWN",
+        "errors": errors,
+    }
+
+
+def get_htf_state(candidate: Any) -> str:
+    """Read only the canonical candidate-relative HTF state."""
+    return str(get_htf_fact(candidate).get("state") or "UNKNOWN").lower()
 
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v8.16-htf-single-source-truth"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_16_HTF_SINGLE_SOURCE_TRUTH"
+BOT_VERSION = "pro-hybrid-confluence-v9.1-confidence-quality-pipeline"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_1_CONFIDENCE_QUALITY_PIPELINE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -356,6 +433,20 @@ SETUP_REVALIDATION_RISK_MULT_STALE = float(os.getenv("SETUP_REVALIDATION_RISK_MU
 SETUP_REVALIDATION_RISK_MULT_EXTREME = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_EXTREME", "0.35") or 0.35)
 
 PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
+# v9.1: PROBE is not one homogeneous permission. Every probe receives an
+# explicit conviction tier and therefore a different cost of being wrong.
+HIGH_CONVICTION_PROBE_RISK_PCT = min(PROBE_RISK_PCT, max(0.01, float(os.getenv("HIGH_CONVICTION_PROBE_RISK_PCT", "0.12") or 0.12)))
+MEDIUM_CONVICTION_PROBE_RISK_PCT = min(HIGH_CONVICTION_PROBE_RISK_PCT, max(0.01, float(os.getenv("MEDIUM_CONVICTION_PROBE_RISK_PCT", "0.07") or 0.07)))
+EXPERIMENTAL_PROBE_RISK_PCT = min(MEDIUM_CONVICTION_PROBE_RISK_PCT, max(0.005, float(os.getenv("EXPERIMENTAL_PROBE_RISK_PCT", "0.03") or 0.03)))
+
+THESIS_CONFIDENCE_DECAY_PER_HOUR = max(0.0, float(os.getenv("THESIS_CONFIDENCE_DECAY_PER_HOUR", "2.25") or 2.25))
+THESIS_CONFIDENCE_FLOOR = min(100.0, max(0.0, float(os.getenv("THESIS_CONFIDENCE_FLOOR", "35") or 35)))
+THESIS_FRESH_EVIDENCE_BONUS = min(30.0, max(0.0, float(os.getenv("THESIS_FRESH_EVIDENCE_BONUS", "15") or 15)))
+THESIS_FRESH_EVIDENCE_MAX_AGE_MIN = max(1.0, float(os.getenv("THESIS_FRESH_EVIDENCE_MAX_AGE_MIN", "120") or 120))
+REGIME_MEMORY_LOOKBACK = max(20, int(os.getenv("REGIME_MEMORY_LOOKBACK", "100") or 100))
+REGIME_MEMORY_MIN_TRADES = max(5, int(os.getenv("REGIME_MEMORY_MIN_TRADES", "12") or 12))
+ENTRY_QUALITY_LOW_RISK_MULT = min(1.0, max(0.05, float(os.getenv("ENTRY_QUALITY_LOW_RISK_MULT", "0.40") or 0.40)))
+ENTRY_QUALITY_VERY_LOW_RISK_MULT = min(ENTRY_QUALITY_LOW_RISK_MULT, max(0.01, float(os.getenv("ENTRY_QUALITY_VERY_LOW_RISK_MULT", "0.25") or 0.25)))
 RISKY_GRAY_RISK_PCT = float(os.getenv("RISKY_GRAY_RISK_PCT", str(min(PROBE_RISK_PCT, 0.10))) or min(PROBE_RISK_PCT, 0.10))
 ACCEPTANCE_RISK_PCT = float(os.getenv("ACCEPTANCE_RISK_PCT", "0.22") or 0.22)
 RETEST_ADD_RISK_PCT = float(os.getenv("RETEST_ADD_RISK_PCT", "0.30") or 0.30)
@@ -735,21 +826,27 @@ class Action(str, Enum):
 
 
 class ExecutiveDecisionState(str, Enum):
-    """Internal decision states produced only by Executive Decision Layer.
+    """Canonical staged states produced only by Executive Decision Layer."""
+    WATCH = "WATCH"
+    THESIS_FORMED = "THESIS_FORMED"
+    EARLY_SIGNAL = "EARLY_SIGNAL"
+    WAIT = "WAIT"  # legacy alias retained for serialized compatibility
+    WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
+    WAIT_RETEST = "WAIT_RETEST"
+    PROBE = "PROBE"
+    ACCEPTANCE = "ACCEPTANCE"
+    RETEST_ADD = "RETEST_ADD"  # legacy serialized stage
+    ADD_POSITION = "ADD_POSITION"
+    CORE = "CORE"
+    REJECT = "REJECT"
+    EXPIRED = "EXPIRED"
 
-    These are NOT active trade management states.
-    HOLD/TP/STOP belong to Action and position management.
-    """
+    # Legacy internal names accepted during journal replay only.
     ENTRY = "ENTRY"
     RISKY = "RISKY"
-    PROBE = "PROBE"
     PROBE_REDUCED = "PROBE_REDUCED"
     GRAY_RISKY = "GRAY_RISKY"
-    WAIT = "WAIT"
-    WAIT_RETEST = "WAIT_RETEST"
-    WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
     NO_SETUP = "NO_SETUP"
-    REJECT = "REJECT"
 
 class Regime(str, Enum):
     TREND = "TREND"
@@ -863,10 +960,17 @@ class OpportunityStage(str, Enum):
 class EntryStage(str, Enum):
     PROBE = "PROBE"
     ACCEPTANCE = "ACCEPTANCE"
-    RETEST_ADD = "RETEST_ADD"
+    RETEST_ADD = "RETEST_ADD"  # legacy replay alias
+    ADD_POSITION = "ADD_POSITION"
     CORE = "CORE"
     WAIT_RETEST = "WAIT_RETEST"
     WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
+
+
+class ProbeConvictionTier(str, Enum):
+    HIGH = "HIGH_CONVICTION_PROBE"
+    MEDIUM = "MEDIUM_CONVICTION_PROBE"
+    EXPERIMENTAL = "EXPERIMENTAL_PROBE"
 
 
 class ConfirmationTier(int, Enum):
@@ -874,6 +978,130 @@ class ConfirmationTier(int, Enum):
     STANDARD = 2
     HIGH_QUALITY = 3
     PREMIUM = 4
+
+
+
+class AdvisoryOpinion(str, Enum):
+    SUPPORT = "SUPPORT"
+    AGAINST = "AGAINST"
+    CAUTION = "CAUTION"
+    UNCERTAIN = "UNCERTAIN"
+    NEUTRAL = "NEUTRAL"
+
+
+class ConflictAxis(str, Enum):
+    MARKET_THESIS = "market_thesis"
+    DIRECTION = "direction"
+    HTF_DIRECTION = "htf_direction"
+    STRUCTURE = "structure"
+    EXECUTION_TIMING = "execution_timing"
+    CAPITAL = "capital"
+
+
+@dataclass(frozen=True)
+class HTFFact:
+    market_bias: str
+    candidate_side: str
+    alignment_score: float
+    state: str
+    timeframe_components: dict[str, Any] = field(default_factory=dict)
+    confidence: float = 0.0
+    schema_version: str = "htf_fact_v9.0"
+
+
+@dataclass(frozen=True)
+class RiskAdjustment:
+    source: str
+    factor: float
+    category: str
+    reason: str
+    applied: bool = True
+
+
+@dataclass(frozen=True)
+class RiskAdjustmentLedger:
+    base_stage_risk_pct: float
+    adjustments: list[RiskAdjustment]
+    combined_confidence_multiplier: float
+    geometry_multiplier: float
+    capital_cap_pct: float
+    final_position_risk_pct: float
+    stage: str = "WATCH"
+    probe_conviction_tier: str = ""
+    risk_confidence_budget_pct: float = 0.0
+    risk_budget_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_sources: list[str] = field(default_factory=list)
+    calculation_path: list[str] = field(default_factory=list)
+    schema_version: str = "risk_ledger_v9.1"
+
+
+@dataclass(frozen=True)
+class ConflictReport:
+    net_market_preference: float
+    net_execution_preference: float
+    actual_conflict: bool
+    conflict_axes: list[str]
+    conflict_pairs: list[dict[str, Any]]
+    conflict_severity: float
+    uncertainty_level: float
+    capital_blocked: bool
+    consensus: dict[str, Any] = field(default_factory=dict)
+    effective_votes: list[dict[str, Any]] = field(default_factory=list)
+    quality_voting: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "conflict_report_v9.1"
+
+
+@dataclass(frozen=True)
+class PhilosophyDecision:
+    recommendation: str
+    edge_quality: float
+    asymmetry_quality: float
+    regime_fit: float
+    evidence_independence: float
+    statistical_status: str
+    failed_principles: list[str]
+    reason_codes: list[str]
+    audit: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "philosophy_v9.0"
+
+
+@dataclass(frozen=True)
+class EvaluationBundle:
+    thesis_quality: float
+    execution_readiness: float
+    trade_quality: float
+    conflict_report: ConflictReport
+    philosophy: PhilosophyDecision
+    data_quality: float
+    raw_components: dict[str, Any] = field(default_factory=dict)
+    feature_ownership: dict[str, list[str]] = field(default_factory=dict)
+    setup_quality: float = 0.0
+    timing_quality: float = 0.0
+    entry_quality: float = 0.0
+    thesis_confidence: float = 0.0
+    schema_version: str = "evaluation_bundle_v9.1"
+
+
+@dataclass(frozen=True)
+class ExecutiveInput:
+    evaluation: EvaluationBundle
+    stage_history: list[dict[str, Any]]
+    philosophy: PhilosophyDecision
+    conflict: ConflictReport
+    risk_ledger: RiskAdjustmentLedger
+
+
+@dataclass(frozen=True)
+class ExecutiveDecisionContract:
+    state: str
+    allow_execution: bool
+    allowed_stage: str
+    final_risk_pct: float
+    required_next_event: Optional[str]
+    blocking_reasons: list[str]
+    warning_reasons: list[str]
+    audit: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "executive_decision_v9.0"
 
 
 
@@ -966,8 +1194,14 @@ class Candidate:
     target_magnet_score: float = 0.0
     setup_quality_score: int = 0
     execution_quality_score: int = 0
+    timing_quality_score: int = 0
     trade_plan_quality_score: int = 0
     entry_quality_score: int = 0
+    thesis_confidence_score: float = 0.0
+    probe_conviction_tier: str = ""
+    quality_voting: dict[str, Any] = field(default_factory=dict)
+    anti_fomo_score: float = 100.0
+    regime_memory_profile: dict[str, Any] = field(default_factory=dict)
     durability_quality_score: int = 0
     hypothesis_score: float = 0.0
     hypothesis_rank: int = 0
@@ -982,6 +1216,10 @@ class Candidate:
     confirmation_pending: bool = False
     confirmation_state: dict[str, Any] = field(default_factory=dict)
     opportunity_status: str = ""
+    htf_fact: dict[str, Any] = field(default_factory=dict)
+    evaluation_bundle: dict[str, Any] = field(default_factory=dict)
+    risk_ledger: dict[str, Any] = field(default_factory=dict)
+    stage_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1015,6 +1253,9 @@ class TradePlan:
     breathing_profile: dict[str, Any] = field(default_factory=dict)
     valid: bool = True
     reason: str = ""
+    risk_ledger: dict[str, Any] = field(default_factory=dict)
+    final_stage: str = "WATCH"
+    immutable: bool = False
 
 
 @dataclass
@@ -1343,6 +1584,12 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "daily_risk_cap": DAILY_RISK_CAP,
         "risk_budget_min_buffer": RISK_BUDGET_MIN_BUFFER,
         "probe_risk_pct": PROBE_RISK_PCT,
+        "high_conviction_probe_risk_pct": HIGH_CONVICTION_PROBE_RISK_PCT,
+        "medium_conviction_probe_risk_pct": MEDIUM_CONVICTION_PROBE_RISK_PCT,
+        "experimental_probe_risk_pct": EXPERIMENTAL_PROBE_RISK_PCT,
+        "thesis_confidence_decay_per_hour": THESIS_CONFIDENCE_DECAY_PER_HOUR,
+        "thesis_fresh_evidence_bonus": THESIS_FRESH_EVIDENCE_BONUS,
+        "regime_memory_lookback": REGIME_MEMORY_LOOKBACK,
         "acceptance_risk_pct": ACCEPTANCE_RISK_PCT,
         "retest_add_risk_pct": RETEST_ADD_RISK_PCT,
         "core_risk_pct": CORE_RISK_PCT,
@@ -1512,8 +1759,10 @@ def direction_recent_performance(journal: dict, side: str, lookback: int = 12) -
     у менший sizing / PROBE_ONLY, але не забороняється."""
     trades = [t for t in list(journal.get("trades") or []) if isinstance(t, dict) and t.get("side") == side]
     recent = trades[-lookback:]
-    closed = len(recent)
-    wins = sum(1 for t in recent if safe_float(t.get("result_pct"), 0.0) > 0)
+    realized = [(t, _journal_realized_return_pct(t)) for t in recent]
+    realized = [(t, value) for t, value in realized if value is not None]
+    closed = len(realized)
+    wins = sum(1 for _, value in realized if value > 0)
     win_rate = wins / closed if closed else None
     weak = bool(closed >= 3 and wins == 0) or bool(closed >= 5 and (win_rate or 0.0) < 0.25)
     risk_multiplier = WEAK_DIRECTION_RISK_MULTIPLIER if weak else 1.0
@@ -1578,14 +1827,305 @@ def calculate_entry_freshness(candidate: Any, context: dict[str, Any] | None = N
     }
 
 
+def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Soft extension penalty. It changes price of error, never setup validity."""
+    context = context or {}
+    freshness = getattr(candidate, "entry_freshness_profile", {}) or calculate_entry_freshness(candidate, context)
+    extension = max(0.0, safe_float(freshness.get("impulse_atr"), 0.0))
+    if extension < 1.0:
+        penalty = -5.0 * extension
+    elif extension < 2.0:
+        penalty = -5.0 - 10.0 * (extension - 1.0)
+    elif extension < 3.0:
+        penalty = -15.0 - 15.0 * (extension - 2.0)
+    else:
+        penalty = -30.0 - min(15.0, (extension - 3.0) * 5.0)
+
+    source = str(getattr(candidate, "execution_source", "") or "")
+    setup = str(getattr(candidate, "setup_type", "") or "").upper()
+    strong_continuation = bool(
+        source in {ExecutionSource.MOMENTUM_CONTINUATION.value, ExecutionSource.CONTINUATION_REANCHOR.value}
+        or "MOMENTUM" in setup
+        or (getattr(candidate, "confirmation_tier", 0) >= ConfirmationTier.HIGH_QUALITY.value and getattr(candidate, "trigger_ready", False))
+    )
+    if strong_continuation and penalty < 0:
+        penalty *= 0.50
+    score = clamp(100.0 + penalty, 0.0, 100.0)
+    return {
+        "score": round(score, 2),
+        "penalty": round(penalty, 2),
+        "price_extension_atr": round(extension, 3),
+        "strong_momentum_continuation": strong_continuation,
+        "policy": "soft risk penalty; never an entry prohibition",
+        "schema_version": "anti_fomo_v9.1",
+    }
+
+
+def entry_quality_risk_multiplier(entry_quality: float) -> float:
+    q = clamp(safe_float(entry_quality, 0.0), 0.0, 100.0)
+    if q >= 75.0:
+        return 1.0
+    if q >= 60.0:
+        return 0.75
+    if q >= 45.0:
+        return ENTRY_QUALITY_LOW_RISK_MULT
+    return ENTRY_QUALITY_VERY_LOW_RISK_MULT
+
+
+def classify_probe_conviction(candidate: Any, setup_quality: float, timing_quality: float, entry_quality: float) -> dict[str, Any]:
+    """Every PROBE receives a tier; there is no unpriced generic PROBE."""
+    htf = get_htf_fact(candidate)
+    state = str(htf.get("state") or "UNKNOWN").upper()
+    trigger_strong = bool(
+        getattr(candidate, "live_3m_trigger_ready", False)
+        or getattr(candidate, "acceptance_quality", 0) >= 65
+        or getattr(candidate, "confirmation_tier", 0) >= ConfirmationTier.HIGH_QUALITY.value
+    )
+    reversal = canonical_reversal_evidence(candidate)
+    reversal_evidence = any(
+        reversal.get(k) not in {False, None, "UNKNOWN", 0, 0.0}
+        for k in ("counter_htf_evidence", "structural_counter_evidence", "mss_quality", "failure_quality")
+    )
+
+    if state == "ALIGNED" and timing_quality >= 68 and entry_quality >= 60 and trigger_strong:
+        tier = ProbeConvictionTier.HIGH.value
+        risk = HIGH_CONVICTION_PROBE_RISK_PCT
+        reason = "HTF aligned + execution ready"
+    elif state in {"MIXED", "NEUTRAL", "UNKNOWN"} and timing_quality >= 58 and entry_quality >= 50 and trigger_strong:
+        tier = ProbeConvictionTier.MEDIUM.value
+        risk = MEDIUM_CONVICTION_PROBE_RISK_PCT
+        reason = "HTF mixed/uncertain + strong trigger"
+    elif state == "AGAINST" and reversal_evidence:
+        tier = ProbeConvictionTier.EXPERIMENTAL.value
+        risk = EXPERIMENTAL_PROBE_RISK_PCT
+        reason = "HTF against + explicit reversal evidence"
+    elif setup_quality >= 65 and timing_quality >= 55:
+        tier = ProbeConvictionTier.MEDIUM.value
+        risk = MEDIUM_CONVICTION_PROBE_RISK_PCT
+        reason = "good thesis with incomplete timing confirmation"
+    else:
+        tier = ProbeConvictionTier.EXPERIMENTAL.value
+        risk = EXPERIMENTAL_PROBE_RISK_PCT
+        reason = "early/weak thesis priced as experiment"
+    return {
+        "tier": tier,
+        "base_risk_pct": round(float(risk), 4),
+        "setup_quality": round(safe_float(setup_quality), 2),
+        "timing_quality": round(safe_float(timing_quality), 2),
+        "entry_quality": round(safe_float(entry_quality), 2),
+        "htf_state": state,
+        "strong_trigger": trigger_strong,
+        "reversal_evidence": reversal_evidence,
+        "reason": reason,
+        "schema_version": "probe_conviction_v9.1",
+    }
+
+
+def thesis_confidence_decay_profile(
+    candidate: Any,
+    base_confidence: float,
+    state: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Decay confidence, not memory. Fresh setup evidence restores confidence."""
+    state = state or {}
+    thesis_key_value = str(getattr(candidate, "thesis_key", "") or "")
+    rows = list(getattr(candidate, "stage_history", []) or []) + list(state.get("stage_history") or [])
+    seen_times: list[datetime] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if thesis_key_value and str(row.get("thesis_key") or "") != thesis_key_value:
+            continue
+        dt = _parse_iso_datetime(row.get("time"))
+        if dt:
+            seen_times.append(dt)
+    first_seen = min(seen_times) if seen_times else None
+    age_hours = max(0.0, (now_utc() - first_seen).total_seconds() / 3600.0) if first_seen else 0.0
+    decay = age_hours * THESIS_CONFIDENCE_DECAY_PER_HOUR
+
+    confirmations = " ".join(str(x).upper() for x in (getattr(candidate, "confirmations", []) or []))
+    source = str(getattr(candidate, "execution_source", "") or "").upper()
+    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
+    fresh_age = safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0)
+    fresh_named_evidence = any(token in confirmations for token in ("OB", "FVG", "RETEST", "RECLAIM"))
+    fresh_source = source in {
+        ExecutionSource.LIVE_3M.value,
+        ExecutionSource.ACCEPTANCE_RETEST.value,
+        ExecutionSource.CONTINUATION_REANCHOR.value,
+    }
+    reinforcement = bool(
+        (fresh_named_evidence or fresh_source or revalidation.get("entry_supported"))
+        and fresh_age <= THESIS_FRESH_EVIDENCE_MAX_AGE_MIN
+    )
+    bonus = THESIS_FRESH_EVIDENCE_BONUS if reinforcement else 0.0
+    decayed = clamp(safe_float(base_confidence, 0.0) - decay + bonus, THESIS_CONFIDENCE_FLOOR, 100.0)
+    return {
+        "base_confidence": round(safe_float(base_confidence), 2),
+        "first_seen_at": first_seen.isoformat() if first_seen else None,
+        "age_hours": round(age_hours, 2),
+        "decay_points": round(decay, 2),
+        "fresh_evidence_bonus": round(bonus, 2),
+        "fresh_evidence_detected": reinforcement,
+        "confidence": round(decayed, 2),
+        "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
+        "schema_version": "thesis_confidence_decay_v9.1",
+    }
+
+
+def market_regime_memory_profile(candidate: Any, journal: Optional[dict[str, Any]], context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Remember recent regime performance and price risk softly; never filter."""
+    journal = journal or {}
+    context = context or {}
+    components = getattr(candidate, "score_components", {}) or {}
+    current = str(context.get("regime") or components.get("current_regime") or components.get("regime") or Regime.NORMAL.value).upper()
+    trades = [t for t in (journal.get("trades") or []) if isinstance(t, dict)][-REGIME_MEMORY_LOOKBACK:]
+    bucket = [t for t in trades if str(t.get("opened_regime") or "").upper() == current]
+    r_rows = [(t, _journal_result_r(t)) for t in bucket]
+    r_rows = [(t, result_r) for t, result_r in r_rows if result_r is not None]
+    sample = len(r_rows)
+    wins = sum(1 for _, result_r in r_rows if result_r > 0)
+    win_rate = (100.0 * wins / sample) if sample else 0.0
+    expectancy = sum(result_r for _, result_r in r_rows) / sample if sample else 0.0
+    if sample < REGIME_MEMORY_MIN_TRADES:
+        factor = 1.0
+        status = "INSUFFICIENT_SAMPLE"
+    elif win_rate < 40.0:
+        factor = 0.60
+        status = "WEAK"
+    elif win_rate < 50.0:
+        factor = 0.80
+        status = "BELOW_AVERAGE"
+    elif win_rate < 60.0:
+        factor = 0.95
+        status = "NORMAL"
+    else:
+        factor = 1.05
+        status = "STRONG"
+    return {
+        "regime": current,
+        "lookback": REGIME_MEMORY_LOOKBACK,
+        "sample": sample,
+        "legacy_or_ambiguous_excluded": len(bucket) - sample,
+        "wins": wins,
+        "win_rate": round(win_rate, 2),
+        "expectancy_r": round(expectancy, 4),
+        "risk_multiplier": round(factor, 3),
+        "status": status,
+        "filtering": False,
+        "schema_version": "regime_memory_v9.1",
+    }
+
+
+def prepare_preplan_quality_pipeline(candidate: Candidate, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Candidate -> setup -> timing -> entry quality, before TradePlan geometry."""
+    context = context or {}
+    components = getattr(candidate, "score_components", {}) or {}
+    setup_quality = safe_float(getattr(candidate, "setup_quality_score", 0.0), 0.0) or safe_float(components.get("setup_quality"), candidate.final_score)
+    timing_quality = safe_float(getattr(candidate, "execution_quality_score", 0.0), 0.0) or safe_float(components.get("execution_quality"), 0.0)
+    raw_entry = safe_float(getattr(candidate, "entry_quality_score", 0.0), 0.0) or safe_float(components.get("entry_quality"), timing_quality)
+    anti_fomo = anti_fomo_profile(candidate, context)
+    # Entry quality is moment-specific. A great setup can still have a mediocre entry.
+    entry_quality = clamp(0.70 * raw_entry + 0.30 * safe_float(anti_fomo.get("score"), 100.0), 0.0, 100.0)
+    probe = classify_probe_conviction(candidate, setup_quality, timing_quality, entry_quality)
+    candidate.setup_quality_score = int(round(setup_quality))
+    candidate.timing_quality_score = int(round(timing_quality))
+    candidate.execution_quality_score = int(round(timing_quality))
+    candidate.entry_quality_score = int(round(entry_quality))
+    candidate.anti_fomo_score = safe_float(anti_fomo.get("score"), 100.0)
+    candidate.probe_conviction_tier = str(probe.get("tier") or ProbeConvictionTier.EXPERIMENTAL.value)
+    components["setup_quality"] = round(setup_quality, 2)
+    components["timing_quality"] = round(timing_quality, 2)
+    components["entry_quality"] = round(entry_quality, 2)
+    components["anti_fomo"] = anti_fomo
+    components["probe_conviction"] = probe
+    components["current_regime"] = str(context.get("regime") or components.get("regime") or Regime.NORMAL.value)
+    candidate.score_components = components
+    # The confidence budget is calculated before stage selection. It is advisory
+    # here; final position size is still calculated once after the final stage.
+    pre_stage_budget = build_risk_confidence_budget(candidate, {}, context)
+    components["pre_stage_risk_confidence_budget"] = pre_stage_budget
+    return {
+        "setup_quality": round(setup_quality, 2),
+        "timing_quality": round(timing_quality, 2),
+        "entry_quality": round(entry_quality, 2),
+        "anti_fomo": anti_fomo,
+        "probe_conviction": probe,
+        "pre_stage_risk_confidence_budget": pre_stage_budget,
+        "pipeline": ["CANDIDATE", "THREE_QUALITY_SCORES", "CONFIDENCE_ENGINE", "RISK_CONFIDENCE_BUDGET", "STAGE_DECISION", "TRADE_PLAN", "FINAL_POSITION_SIZE"],
+        "schema_version": "preplan_quality_v9.1",
+    }
+
+
+def build_risk_confidence_budget(candidate: Any, journal: Optional[dict[str, Any]], context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """One additive confidence budget for overlapping qualitative risk reasons."""
+    context = context or {}
+    components = getattr(candidate, "score_components", {}) or {}
+    breakdown: list[dict[str, Any]] = []
+    def add(source: str, delta_pct: float, reason: str) -> None:
+        breakdown.append({"source": source, "delta_pct": round(delta_pct, 2), "reason": reason})
+
+    htf_state = get_htf_state(candidate)
+    if htf_state == "against":
+        add("htf_conflict", -30.0, "canonical HTF is against candidate")
+    elif htf_state in {"mixed", "neutral", "unknown"}:
+        add("htf_mixed", -10.0, "HTF does not provide clean alignment")
+    elif htf_state == "aligned":
+        add("htf_aligned", 8.0, "canonical HTF supports candidate")
+
+    anti = components.get("anti_fomo", {}) or anti_fomo_profile(candidate, context)
+
+    entry_q = safe_float(getattr(candidate, "entry_quality_score", components.get("entry_quality", 0.0)), 0.0)
+    entry_factor = entry_quality_risk_multiplier(entry_q)
+    add("entry_quality", (entry_factor - 1.0) * 100.0, f"entry_quality={entry_q:.1f}; anti_fomo_penalty={anti.get('penalty', 0)} embedded once")
+
+    liquidity = _score100(components.get("liq_score", (components.get("features") or {}).get("liquidity", 0.0) * 24.0))
+    if liquidity < 45.0:
+        add("low_liquidity_quality", -15.0, f"liquidity_quality={liquidity:.1f}")
+    elif liquidity >= 75.0:
+        add("clean_liquidity_event", 8.0, f"liquidity_quality={liquidity:.1f}")
+
+    structure = _score100(components.get("str_score", (components.get("features") or {}).get("structure", 0.0) * 24.0))
+    if structure >= 75.0:
+        add("clean_structure", 15.0, f"structure_quality={structure:.1f}")
+    elif structure < 45.0:
+        add("weak_structure", -12.0, f"structure_quality={structure:.1f}")
+
+    fresh_trigger = bool(getattr(candidate, "live_3m_trigger_ready", False) or (getattr(candidate, "revalidation_profile", {}) or {}).get("entry_supported"))
+    if fresh_trigger:
+        add("fresh_trigger", 10.0, "fresh live/revalidated trigger")
+
+    thesis_conf = safe_float(getattr(candidate, "thesis_confidence_score", 0.0), 0.0)
+    if thesis_conf and thesis_conf < 60.0:
+        add("thesis_confidence_decay", -15.0, f"decayed thesis confidence={thesis_conf:.1f}")
+
+    regime = market_regime_memory_profile(candidate, journal, context)
+    candidate.regime_memory_profile = regime
+    components["regime_memory"] = regime
+    regime_factor = safe_float(regime.get("risk_multiplier"), 1.0)
+    if regime.get("sample", 0) >= REGIME_MEMORY_MIN_TRADES:
+        add("regime_memory", (regime_factor - 1.0) * 100.0, f"{regime.get('regime')} win_rate={regime.get('win_rate')}%")
+
+    net = clamp(sum(safe_float(x.get("delta_pct"), 0.0) for x in breakdown), -85.0, 10.0)
+    return {
+        "net_delta_pct": round(net, 2),
+        "multiplier": round(clamp(1.0 + net / 100.0, 0.15, 1.10), 4),
+        "breakdown": breakdown,
+        "regime_memory": regime,
+        "entry_quality_multiplier": round(entry_factor, 3),
+        "schema_version": "risk_confidence_budget_v9.1",
+    }
+
+
 def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optional[dict] = None) -> dict[str, Any]:
     """Ladder execution: один сигнал описує, яку частину і на якій стадії брати.
     Це не block-filter, а position construction."""
+    quality_profile = prepare_preplan_quality_pipeline(candidate, context)
     src = str(getattr(candidate, "execution_source", "") or ExecutionSource.NONE.value)
     score = int(candidate.final_score or 0)
+    probe_profile = quality_profile["probe_conviction"]
     stage = EntryStage.PROBE.value
-    base_risk = PROBE_RISK_PCT
-    add_plan = []
+    base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT)
+    add_plan = [f"{probe_profile.get('tier')}: {probe_profile.get('reason')} | base risk {base_risk:.2f}%"]
 
     if bool(getattr(candidate, "confirmation_pending", False)):
         stage = EntryStage.WAIT_CONFIRMATION.value
@@ -1593,7 +2133,7 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         add_plan.append("Готовність висока: чекати рівно один підтверджувальний бар; це alert-state, не entry")
     elif src == ExecutionSource.TIME_WARP.value:
         stage = EntryStage.WAIT_RETEST.value
-        base_risk = PROBE_RISK_PCT * 0.50
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT) * 0.50
         add_plan.append("Не market-entry: чекати живий retest/limit у зоні")
     elif src == ExecutionSource.LIMIT_ARMED.value:
         stage = EntryStage.RETEST_ADD.value
@@ -1601,7 +2141,7 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         add_plan.append("Ліміт на CE/FVG; додавання тільки після acceptance close")
     elif src in {ExecutionSource.ACCEPTANCE_RETEST.value, ExecutionSource.CONTINUATION_REANCHOR.value}:
         stage = EntryStage.PROBE.value if score < ENTRY_SCORE_BASE else EntryStage.ACCEPTANCE.value
-        base_risk = PROBE_RISK_PCT if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT) if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
         if src == ExecutionSource.CONTINUATION_REANCHOR.value:
             add_plan.append("Continuation thesis переанкорена на свіжу micro-zone; починати staged, не використовувати старий OB як execution")
         else:
@@ -1612,15 +2152,15 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         add_plan.append("No-pullback trend: тільки probe від свіжої micro-base; full-size/chase заборонені")
     elif src == ExecutionSource.ACCELERATION_PULLBACK.value:
         stage = EntryStage.WAIT_RETEST.value
-        base_risk = PROBE_RISK_PCT * 0.50
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT) * 0.50
         add_plan.append("Імпульс уже пішов: не market на піку, чекати 38–50% pullback")
     elif src in {ExecutionSource.SESSION_MEAN.value, ExecutionSource.OPEN_RECLAIM.value, ExecutionSource.FAILED_AUCTION.value}:
         stage = EntryStage.PROBE.value if score < ENTRY_SCORE_BASE else EntryStage.ACCEPTANCE.value
-        base_risk = PROBE_RISK_PCT if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT) if stage == EntryStage.PROBE.value else ACCEPTANCE_RISK_PCT
         add_plan.append("Market-structure probe: вхід малим ризиком, добір тільки після acceptance/continuation")
     elif src == ExecutionSource.OPENING_RANGE.value:
         stage = EntryStage.ACCEPTANCE.value if score >= ENTRY_SCORE_BASE else EntryStage.PROBE.value
-        base_risk = ACCEPTANCE_RISK_PCT if stage == EntryStage.ACCEPTANCE.value else PROBE_RISK_PCT
+        base_risk = ACCEPTANCE_RISK_PCT if stage == EntryStage.ACCEPTANCE.value else safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT)
         add_plan.append("ORB/Failed-ORB: дозволений тільки staged entry, без full-size на першій свічці пробою")
     elif src == ExecutionSource.LIQUIDITY_LADDER.value:
         stage = EntryStage.WAIT_RETEST.value if score < ENTRY_SCORE_BASE else EntryStage.RETEST_ADD.value
@@ -1628,7 +2168,7 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         add_plan.append("Liquidity ladder: позиція будується тільки якщо є DOL-маршрут і нормальний ретест")
     elif src == ExecutionSource.TIME_OF_DAY.value:
         stage = EntryStage.PROBE.value
-        base_risk = PROBE_RISK_PCT * 0.75
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT) * 0.75
         add_plan.append("Time-of-day edge: сесійний бонус не дає full-size без окремого structural trigger")
     elif src in {
         ExecutionSource.SHORT_LIQUIDITY_SWEEP.value,
@@ -1650,13 +2190,13 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
         add_plan.append("Acceptance-size: вхід є, але добір тільки після retest")
     else:
         stage = EntryStage.PROBE.value
-        base_risk = PROBE_RISK_PCT
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT)
         add_plan.append("Probe-size: рання гіпотеза, не full-size")
 
     direction_perf = direction_perf or {}
     if direction_perf.get("weak"):
         stage = EntryStage.PROBE.value
-        base_risk = min(base_risk, PROBE_RISK_PCT)
+        base_risk = min(base_risk, safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT))
         add_plan.append(f"{candidate.side} тимчасово PROBE_ONLY через слабку недавню статистику")
 
     freshness = calculate_entry_freshness(candidate, context)
@@ -1679,6 +2219,8 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
     return {
         "stage": stage,
         "base_risk_pct": round(float(base_risk), 4),
+        "probe_conviction": probe_profile,
+        "quality_profile": quality_profile,
         "scale_plan": add_plan,
         "probe_pct": PROBE_RISK_PCT,
         "acceptance_pct": ACCEPTANCE_RISK_PCT,
@@ -1687,80 +2229,231 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
     }
 
 
-def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk_pct: float) -> float:
-    """ML-aware soft sizing. У bootstrap-режимі модель не удає оракула: ризик зменшується.
-    Коли learned_weight виросте, sizing плавно більше довірятиме моделі."""
-    comps = candidate.score_components or {}
-    stage_plan = candidate.stage_plan or {}
-    risk = float(stage_plan.get("base_risk_pct", default_risk_pct) or default_risk_pct)
 
-    learned_weight = float(comps.get("learned_weight", 0.0) or 0.0)
-    probability = float(comps.get("probability", 0.0) or 0.0)
-    risk *= float(comps.get("direction_risk_multiplier", 1.0) or 1.0)
+def stage_risk_policy(stage: str) -> dict[str, float]:
+    """Stage defines the base/cap. It never acts as another multiplier."""
+    normalized = str(stage or "WATCH").upper()
+    aliases = {
+        ExecutiveDecisionState.ENTRY.value: EntryStage.CORE.value,
+        ExecutiveDecisionState.RISKY.value: EntryStage.ACCEPTANCE.value,
+        ExecutiveDecisionState.PROBE_REDUCED.value: EntryStage.PROBE.value,
+        ExecutiveDecisionState.GRAY_RISKY.value: EntryStage.PROBE.value,
+        ExecutiveDecisionState.NO_SETUP.value: ExecutiveDecisionState.WATCH.value,
+        ExecutiveDecisionState.WAIT.value: ExecutiveDecisionState.WATCH.value,
+    }
+    normalized = aliases.get(normalized, normalized)
+    mapping = {
+        ExecutiveDecisionState.WATCH.value: (0.0, 0.0),
+        ExecutiveDecisionState.THESIS_FORMED.value: (0.0, 0.0),
+        ExecutiveDecisionState.EARLY_SIGNAL.value: (0.0, 0.0),
+        ExecutiveDecisionState.WAIT_CONFIRMATION.value: (0.0, 0.0),
+        ExecutiveDecisionState.WAIT_RETEST.value: (0.0, 0.0),
+        ExecutiveDecisionState.REJECT.value: (0.0, 0.0),
+        ExecutiveDecisionState.EXPIRED.value: (0.0, 0.0),
+        EntryStage.PROBE.value: (PROBE_RISK_PCT, PROBE_RISK_PCT),
+        EntryStage.ACCEPTANCE.value: (ACCEPTANCE_RISK_PCT, ACCEPTANCE_RISK_PCT),
+        EntryStage.RETEST_ADD.value: (RETEST_ADD_RISK_PCT, RETEST_ADD_RISK_PCT),
+        EntryStage.ADD_POSITION.value: (RETEST_ADD_RISK_PCT, RETEST_ADD_RISK_PCT),
+        ExecutiveDecisionState.ADD_POSITION.value: (RETEST_ADD_RISK_PCT, RETEST_ADD_RISK_PCT),
+        EntryStage.CORE.value: (CORE_RISK_PCT, CORE_RISK_PCT),
+    }
+    base, cap = mapping.get(normalized, (0.0, 0.0))
+    return {"stage": normalized, "base_risk_pct": float(base), "stage_cap_pct": float(cap)}
 
+
+def build_risk_adjustment_ledger(
+    candidate: Any,
+    context: Optional[dict[str, Any]] = None,
+    *,
+    stage: Optional[str] = None,
+    journal: Optional[dict[str, Any]] = None,
+    state: Optional[dict[str, Any]] = None,
+    geometry_multiplier: float = 1.0,
+) -> RiskAdjustmentLedger:
+    """Collect and apply every risk factor exactly once.
+
+    The calculation is pure and idempotent: it does not read a previously
+    calculated plan risk and does not mutate source fields while calculating.
+    """
+    context = context or {}
+    journal = journal or {}
+    state = state or {}
+    components = getattr(candidate, "score_components", {}) or {}
+    stage_name = str(stage or getattr(candidate, "entry_stage", "WATCH") or "WATCH").upper()
+    policy = stage_risk_policy(stage_name)
+    base = policy["base_risk_pct"]
+    stage_cap = policy["stage_cap_pct"]
+    probe_payload = components.get("probe_conviction", {}) or getattr(candidate, "stage_plan", {}).get("probe_conviction", {}) if candidate is not None else {}
+    probe_tier = str((probe_payload or {}).get("tier") or getattr(candidate, "probe_conviction_tier", "") or "")
+    if policy["stage"] == EntryStage.PROBE.value:
+        probe_base = safe_float((probe_payload or {}).get("base_risk_pct"), 0.0)
+        if probe_base <= 0:
+            probe_base = {
+                ProbeConvictionTier.HIGH.value: HIGH_CONVICTION_PROBE_RISK_PCT,
+                ProbeConvictionTier.MEDIUM.value: MEDIUM_CONVICTION_PROBE_RISK_PCT,
+                ProbeConvictionTier.EXPERIMENTAL.value: EXPERIMENTAL_PROBE_RISK_PCT,
+            }.get(probe_tier, EXPERIMENTAL_PROBE_RISK_PCT)
+        base = min(PROBE_RISK_PCT, probe_base)
+        stage_cap = base
+
+    adjustments: list[RiskAdjustment] = []
+    seen: set[str] = set()
+    duplicates: list[str] = []
+
+    def register(source: str, factor: float, category: str, reason: str, applied: bool = True) -> None:
+        nonlocal adjustments
+        source = str(source)
+        factor = clamp(safe_float(factor, 1.0), 0.0, 2.0)
+        if source in seen:
+            duplicates.append(source)
+            adjustments.append(RiskAdjustment(source, factor, category, reason + " [duplicate ignored]", False))
+            return
+        seen.add(source)
+        adjustments.append(RiskAdjustment(source, factor, category, reason, bool(applied)))
+
+    confidence_budget = build_risk_confidence_budget(candidate, journal, context)
+    register(
+        "risk_confidence_budget",
+        safe_float(confidence_budget.get("multiplier"), 1.0),
+        "confidence",
+        f"additive budget net={confidence_budget.get('net_delta_pct', 0)}%",
+    )
+
+    direction = components.get("direction_performance", {}) or {}
+    register(
+        "direction_performance",
+        safe_float(direction.get("risk_multiplier"), 1.0),
+        "confidence",
+        "recent side-specific performance",
+    )
+
+    learned_weight = safe_float(components.get("learned_weight"), 0.0)
+    probability = safe_float(components.get("probability"), 0.0)
     if learned_weight <= 0.05:
-        risk *= BOOTSTRAP_RISK_MULTIPLIER
+        ml_factor, ml_reason = BOOTSTRAP_RISK_MULTIPLIER, "bootstrap sample"
     elif probability >= 0.80 and learned_weight >= 0.30:
-        risk *= 1.10
+        ml_factor, ml_reason = 1.10, "learned confidence above 0.80"
     elif probability < 0.62:
-        risk *= 0.70
+        ml_factor, ml_reason = 0.70, "learned confidence below 0.62"
+    else:
+        ml_factor, ml_reason = 1.0, "neutral learned confidence"
+    register("ml_confidence", ml_factor, "confidence", ml_reason)
 
-    if candidate.execution_source == ExecutionSource.TIME_WARP.value:
-        risk *= 0.50
+    htf_state = get_htf_state(candidate)
+    htf_factor = adaptive_htf_risk_multiplier(htf_state, institutional_execution_score(candidate))
+    register("htf_alignment", htf_factor, "audit_only", f"included once in risk_confidence_budget; canonical HTF state={htf_state}", applied=False)
 
-    # v6.14: setup innovation не блокує вхід і не піднімає score-threshold.
-    # Він тільки переналаштовує construction-risk, якщо сетап морфологічно
-    # старий/тонкий/після сильного імпульсу.
-    innovation = stage_plan.get("innovation_profile") or getattr(candidate, "innovation_profile", {}) or {}
-    risk *= float(innovation.get("risk_multiplier", 1.0) or 1.0)
+    freshness = getattr(candidate, "entry_freshness_profile", {}) or calculate_entry_freshness(candidate, context)
+    freshness_score = safe_float(freshness.get("score"), 100.0)
+    setup_name = str(getattr(candidate, "setup_type", "") or getattr(candidate, "setup_family", "") or "").upper()
+    freshness_weight = FRESHNESS_REVERSAL_WEIGHT if any(x in setup_name for x in ["REVERSAL", "LIQUIDITY_RECOVERY", "RANGE_EDGE"]) else FRESHNESS_CONTINUATION_WEIGHT
+    if freshness_score < 55:
+        freshness_factor = 1 - ((1 - FRESHNESS_EXTENDED_RISK_MULT) * freshness_weight)
+    elif freshness_score < 75:
+        freshness_factor = 1 - ((1 - FRESHNESS_WARNING_RISK_MULT) * freshness_weight)
+    else:
+        freshness_factor = 1.0
+    register("entry_freshness", freshness_factor, "audit_only", f"included once through anti-FOMO/entry quality budget; freshness={freshness_score:.2f}", applied=False)
 
-    freshness = getattr(candidate, "entry_freshness_profile", {}) or {}
-    freshness_score = safe_float(freshness.get("score", 100), 100)
-    if ENTRY_FRESHNESS_ENABLED:
-        freshness_weight = 1.0
-        setup_name = str(
-            getattr(candidate, "setup_type", "")
-            or getattr(candidate, "setup_family", "")
-            or ""
-        ).upper()
+    innovation = getattr(candidate, "innovation_profile", {}) or components.get("innovation_profile", {}) or {}
+    register("innovation", safe_float(innovation.get("risk_multiplier"), 1.0), "confidence", "setup morphology recommendation")
 
-        # Reversal entries are allowed to look "late" because the edge is the turn itself.
-        # Continuation entries keep the full freshness penalty.
-        if any(x in setup_name for x in ["REVERSAL", "LIQUIDITY_RECOVERY", "RANGE_EDGE"]):
-            freshness_weight = FRESHNESS_REVERSAL_WEIGHT
-        else:
-            freshness_weight = FRESHNESS_CONTINUATION_WEIGHT
+    revalidation = getattr(candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}) or {}
+    reval_state = str(revalidation.get("state") or "").upper()
+    if reval_state in {"EXTREME_STALE", "ARCHIVED", "ARCHIVED_THESIS", "DECAYED_THESIS"}:
+        reval_factor = SETUP_REVALIDATION_RISK_MULT_EXTREME
+    elif reval_state in {"STALE", "REVALIDATED_STALE"}:
+        reval_factor = SETUP_REVALIDATION_RISK_MULT_STALE
+    else:
+        reval_factor = 1.0
+    register("trigger_revalidation", reval_factor, "confidence", f"revalidation_state={reval_state or 'CURRENT'}")
 
-        if freshness_score < 55:
-            risk *= (1 - ((1 - FRESHNESS_EXTENDED_RISK_MULT) * freshness_weight))
-        elif freshness_score < 75:
-            risk *= (1 - ((1 - FRESHNESS_WARNING_RISK_MULT) * freshness_weight))
+    drift = components.get("reversal_drift_guard", {}) or {}
+    register("reversal_drift", safe_float(drift.get("risk_multiplier"), 1.0), "confidence", "reversal drift recommendation")
 
-    # v6.17.1/v6.17.9 Institutional Adaptive Engine integration
-    # HTF disagreement reduces exposure instead of blindly rejecting valid execution.
-    # v6.17.9: unified HTF source + kernel risk multiplier.
-    if INSTITUTIONAL_ADAPTIVE_ENGINE:
-        htf_state = get_htf_state(candidate)
+    if str(getattr(candidate, "execution_source", "") or "") == ExecutionSource.TIME_WARP.value:
+        register("execution_source_time_warp", 0.50, "confidence", "retrospective trigger cannot receive live sizing")
+    else:
+        register("execution_source_time_warp", 1.0, "confidence", "not a TIME_WARP execution")
 
-        exec_score = institutional_execution_score(candidate)
-        htf_multiplier = adaptive_htf_risk_multiplier(htf_state, exec_score)
+    # Kernel and legacy candidate.risk_multiplier remain visible for migration
+    # audit, but they are not applied. Their underlying sources are already in
+    # this ledger, so applying them would duplicate HTF/freshness/etc.
+    register(
+        "professional_kernel_aggregate",
+        safe_float(getattr(candidate, "kernel_risk_multiplier", 1.0), 1.0),
+        "audit_only",
+        "aggregate kernel multiplier intentionally not applied",
+        applied=False,
+    )
+    register(
+        "legacy_candidate_risk_multiplier",
+        safe_float(getattr(candidate, "risk_multiplier", 1.0), 1.0),
+        "audit_only",
+        "deprecated aggregate multiplier intentionally not applied",
+        applied=False,
+    )
 
-        if htf_multiplier > 0:
-            risk *= htf_multiplier
+    combined = 1.0
+    for item in adjustments:
+        if item.applied and item.category == "confidence":
+            combined *= item.factor
+    combined = clamp(combined, 0.0, 1.10)
+    geometry = clamp(safe_float(geometry_multiplier, 1.0), 0.0, 1.25)
 
-        kernel_multiplier = safe_float(
-            getattr(candidate, "kernel_risk_multiplier", 1.0),
-            1.0
-        )
-        risk *= kernel_multiplier
+    daily_used = compute_daily_risk_used(journal) if journal else 0.0
+    open_risk = compute_open_position_risk(state) if state else 0.0
+    available_capital = max(0.0, DAILY_RISK_CAP - daily_used - open_risk)
+    capital_cap = min(stage_cap, available_capital) if (journal or state) else stage_cap
 
-    unified = calculate_unified_risk_adjustment(candidate)
-    candidate.score_components["unified_risk_adjustment"] = unified
-    risk *= unified["combined"]
+    relaxed = components.get("relaxed_continuation", {}) or getattr(candidate, "relaxed_continuation_profile", {}) or {}
+    if relaxed.get("live_eligible"):
+        capital_cap = min(capital_cap, RELAXED_CONTINUATION_PROBE_RISK_PCT)
+    short_profile = short_reversal_profile_for_candidate(candidate, components) if candidate is not None else {}
+    if short_profile and short_profile.get("active"):
+        cap = safe_float(short_profile.get("risk_cap"), 0.0)
+        if cap > 0:
+            capital_cap = min(capital_cap, cap)
 
-    return round(clamp(risk, 0.02, CORE_RISK_PCT), 4)
+    after_confidence = base * combined
+    after_geometry = after_confidence * geometry
+    final = min(after_geometry, stage_cap, capital_cap)
+    final = round(max(0.0, final), 4)
+    path = [
+        f"base_stage_risk={base:.4f}",
+        f"probe_conviction_tier={probe_tier or 'N/A'}",
+        f"risk_confidence_budget={confidence_budget.get('net_delta_pct', 0):.2f}%",
+        f"confidence_multiplier={combined:.6f}",
+        f"after_confidence={after_confidence:.6f}",
+        f"geometry_multiplier={geometry:.6f}",
+        f"after_geometry={after_geometry:.6f}",
+        f"stage_cap={stage_cap:.4f}",
+        f"capital_cap={capital_cap:.4f}",
+        f"final_position_risk={final:.4f}",
+    ]
+    return RiskAdjustmentLedger(
+        base_stage_risk_pct=round(base, 4),
+        adjustments=adjustments,
+        combined_confidence_multiplier=round(combined, 6),
+        geometry_multiplier=round(geometry, 6),
+        capital_cap_pct=round(capital_cap, 4),
+        final_position_risk_pct=final,
+        stage=policy["stage"],
+        probe_conviction_tier=probe_tier,
+        risk_confidence_budget_pct=round(safe_float(confidence_budget.get("net_delta_pct"), 0.0), 2),
+        risk_budget_breakdown=list(confidence_budget.get("breakdown") or []),
+        duplicate_sources=sorted(set(duplicates)),
+        calculation_path=path,
+    )
 
 
+def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk_pct: float) -> float:
+    """Compatibility adapter to the single RiskAdjustmentLedger."""
+    ledger = build_risk_adjustment_ledger(candidate, context, stage=getattr(candidate, "entry_stage", "WATCH"))
+    payload = asdict(ledger)
+    candidate.risk_ledger = payload
+    candidate.score_components["risk_adjustment_ledger"] = payload
+    return ledger.final_position_risk_pct
 
 # ==========================================================
 # v6.19 Professional Consolidation Layer (Oil 15M)
@@ -1792,47 +2485,16 @@ def setup_role(setup_type: str) -> str:
     return "SUPPORT"
 
 
+
 def calculate_unified_risk_adjustment(candidate: Any) -> dict[str, Any]:
-    """Collect risk modifiers once instead of stacking hidden multipliers."""
-    profile = {
-        "htf": 1.0,
-        "freshness": 1.0,
-        "kernel": 1.0,
-        "innovation": 1.0,
-    }
-
-    freshness = getattr(candidate, "entry_freshness_profile", {}) or {}
-    score = safe_float(freshness.get("score", 100), 100)
-    if score < 55:
-        profile["freshness"] = FRESHNESS_EXTENDED_RISK_MULT
-    elif score < 75:
-        profile["freshness"] = FRESHNESS_WARNING_RISK_MULT
-
-    innovation = getattr(candidate, "innovation_profile", {}) or {}
-    profile["innovation"] = safe_float(innovation.get("risk_multiplier", 1.0), 1.0)
-
-    profile["kernel"] = safe_float(
-        getattr(candidate, "kernel_risk_multiplier", 1.0),
-        1.0,
-    )
-
-    htf = get_htf_state(candidate)
-    if htf == "neutral":
-        profile["htf"] = HTF_NEUTRAL_RISK_MULT
-    elif htf in {"bullish", "bearish"}:
-        profile["htf"] = 1.0
-
-    combined = 1.0
-    for value in profile.values():
-        combined *= value
-
-    # Never allow a valid setup to be silently reduced into meaningless noise.
+    """Deprecated compatibility view of the canonical risk ledger."""
+    ledger = build_risk_adjustment_ledger(candidate, {}, stage=getattr(candidate, "entry_stage", "WATCH"))
     return {
-        "multipliers": profile,
-        "combined": clamp(combined, 0.25, 1.0),
+        "multipliers": {a.source: a.factor for a in ledger.adjustments if a.applied},
+        "combined": ledger.combined_confidence_multiplier,
+        "ledger": asdict(ledger),
+        "deprecated": True,
     }
-
-
 
 def scoring_mode_profile(status: Optional[dict[str, Any]]) -> dict[str, Any]:
     status = status or {}
@@ -2135,11 +2797,14 @@ def compute_score_outcome_correlation(journal: dict[str, Any], enabled: bool) ->
         if not signal:
             continue
         dims = _signal_quality_dimensions(signal)
+        realized_return_pct = _journal_realized_return_pct(trade)
+        if realized_return_pct is None:
+            continue
         rows.append({
             "score": safe_float(signal.get("candidate_final_score", signal.get("quality")), 0.0),
             "entry_quality": safe_float(dims.get("entry_quality"), 0.0),
             "durability_quality": safe_float(dims.get("durability_quality"), 0.0),
-            "result_pct": safe_float(trade.get("result_pct"), 0.0),
+            "result_pct": realized_return_pct,
             "mfe_pct": safe_float(trade.get("mfe_pct"), 0.0),
         })
 
@@ -2213,7 +2878,9 @@ def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
     for trade in journal.get("trades", []):
         if not isinstance(trade, dict):
             continue
-        result = safe_float(trade.get("result_r", trade.get("result_pct", 0)), 0)
+        result = _journal_result_r(trade)
+        if result is None:
+            continue
         setup_type = str(trade.get("setup_type", "UNKNOWN") or "UNKNOWN")
         setup_family = str(trade.get("setup_family", "") or "")
         signal = signals.get(str(trade.get("signal_id") or ""))
@@ -2263,7 +2930,9 @@ def compute_calendar_statistics(journal: dict[str, Any]) -> dict[str, Any]:
         if opened is None:
             continue
         key = "weekend" if opened.weekday() >= 5 else "weekday"
-        result = safe_float(trade.get("result_r", trade.get("result_pct", 0.0)), 0.0)
+        result = _journal_result_r(trade)
+        if result is None:
+            continue
         bucket = buckets[key]
         bucket["closed_trades"] += 1
         bucket["wins"] += 1 if result > 0 else 0
@@ -2396,6 +3065,11 @@ def load_state() -> dict[str, Any]:
         "opportunity": raw.get("opportunity") if same_arch else None,
         "scan_3m": _normalize_scan3m_state(raw.get("scan_3m")) if same_arch else _empty_scan3m_state(),
         "regime_memory": raw.get("regime_memory", {}) if same_arch and isinstance(raw.get("regime_memory"), dict) else {},
+        "stage_history": (
+            list(raw.get("stage_history") or [])[-300:]
+            if same_arch
+            else []
+        ),
         "latest_signal": raw.get("latest_signal"),
         "last_message_key": raw.get("last_message_key", "") if same_arch else "",
         "history": list(raw.get("history") or [])[-MAX_HISTORY:],
@@ -3146,7 +3820,7 @@ def get_okx_candles(inst_id: str = "BZ-USDT", bar: str = "15m", limit: int = 200
                     low=float(row[3]),
                     close=float(row[4]),
                     volume=float(row[5] or 0),
-                    confirmed=True
+                    confirmed=(len(row) > 8 and str(row[8]) == "1")
                 ))
             except Exception:
                 continue
@@ -3179,7 +3853,7 @@ def get_okx_ticker(inst_id: str = "BZ-USDT") -> dict:
 
 
 def get_tradingview_price_fallback() -> dict:
-    """TradingView як ОСНОВНЕ джерело ціни"""
+    """Display-only cross-venue fallback. Never trusted for execution."""
     payload = {
         "symbols": {
             "tickers": ["BINANCE:BZUSDT.P", "BINANCE:BZUSDT"],
@@ -3208,26 +3882,37 @@ def get_tradingview_price_fallback() -> dict:
 
 
 def collect_market_data() -> dict:
-    """
-    TradingView як ОСНОВНЕ джерело ціни
-    OKX swap-свічки — основа для 3m/15m/1h/4h сканера
-    """
+    """Collect OHLC and execution price from OKX; block cross-venue fallback."""
     c3 = get_okx_candles(OKX_INST_ID, "3m", 240)
     c15 = get_okx_candles(OKX_INST_ID, "15m", 200)
     c1h = get_okx_candles(OKX_INST_ID, "1h", 160)
     c4h = get_okx_candles(OKX_INST_ID, "4h", 140)
     smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200)
     
-    # TradingView — ПРІОРИТЕТ
-    tv_ticker = get_tradingview_price_fallback()
+    # Execution price and OHLC must come from the same venue/instrument.
+    # OKX ticker is authoritative; an OKX candle close is the same-venue fallback.
+    # TradingView/Binance is display-only emergency data and is marked untrusted
+    # for execution so basis differences cannot silently trigger entries/exits.
     okx_ticker = get_okx_ticker(OKX_INST_ID)
-    
-    ticker = tv_ticker or okx_ticker
-    
-    if not ticker and c15:
-        price = c15[-1].close
+    tv_ticker = get_tradingview_price_fallback() if not okx_ticker else {}
+
+    if okx_ticker:
+        ticker = okx_ticker
+        price = okx_ticker.get("price")
+        execution_price_trusted = True
+    elif c3:
+        price = c3[-1].close
+        ticker = {
+            "price": price,
+            "change24h": 0.0,
+            "volume24h": 0.0,
+            "source": "OKX_CANDLE_FALLBACK",
+        }
+        execution_price_trusted = False
     else:
+        ticker = tv_ticker
         price = ticker.get("price") if ticker else None
+        execution_price_trusted = False
     
     return {
         "time": iso_now(),
@@ -3241,7 +3926,10 @@ def collect_market_data() -> dict:
         "trades": [],
         "book": {"bids": [], "asks": []},
         "price": price,
-        "price_source": ticker.get("source", "TradingView") if ticker else "fallback",
+        "price_source": ticker.get("source", "NONE") if ticker else "NONE",
+        "execution_price_trusted": execution_price_trusted,
+        "execution_venue": "OKX" if ticker and str(ticker.get("source", "")).startswith("OKX") else "CROSS_VENUE_FALLBACK",
+        "execution_price_quality": "LIVE_TICKER" if execution_price_trusted else "BLOCKED_FALLBACK",
     }
 
 
@@ -3804,6 +4492,7 @@ def _tf_direction_value(profile: dict[str, Any]) -> float:
     return 0.0
 
 
+
 def _candidate_htf_fact(
     side: str,
     tf15: dict[str, Any],
@@ -3812,89 +4501,63 @@ def _candidate_htf_fact(
     *,
     family_weight: float = 1.0,
 ) -> dict[str, Any]:
-    """
-    Canonical HTF fact.
-
-    Pipeline:
-        TF EMA composites -> absolute market composite
-        -> candidate-relative signed alignment [-1, +1]
-        -> score base, ML feature and advisor inputs.
-
-    There is no second directional truth.
-    """
+    """Canonical absolute-bias plus candidate-relative HTF fact."""
     side = str(side or "").upper()
-    candidate_sign = 1.0 if side == Side.LONG.value else -1.0
-
+    candidate_sign = 1.0 if side == Side.LONG.value else -1.0 if side == Side.SHORT.value else 0.0
     inputs = {
-        "15m": {
-            "weight": HTF_TF15_WEIGHT,
-            "direction": _tf_direction_value(tf15),
-            "bias": str((tf15 or {}).get("bias") or "NEUTRAL"),
-        },
-        "1h": {
-            "weight": HTF_TF1H_WEIGHT,
-            "direction": _tf_direction_value(tf1h),
-            "bias": str((tf1h or {}).get("bias") or "NEUTRAL"),
-        },
-        "4h": {
-            "weight": HTF_TF4H_WEIGHT,
-            "direction": _tf_direction_value(tf4h),
-            "bias": str((tf4h or {}).get("bias") or "NEUTRAL"),
-        },
+        "15m": {"weight": HTF_TF15_WEIGHT, "direction": _tf_direction_value(tf15), "bias": str((tf15 or {}).get("bias") or "NEUTRAL")},
+        "1h": {"weight": HTF_TF1H_WEIGHT, "direction": _tf_direction_value(tf1h), "bias": str((tf1h or {}).get("bias") or "NEUTRAL")},
+        "4h": {"weight": HTF_TF4H_WEIGHT, "direction": _tf_direction_value(tf4h), "bias": str((tf4h or {}).get("bias") or "NEUTRAL")},
     }
-
-    market_composite = sum(
-        safe_float(item["direction"], 0.0) * safe_float(item["weight"], 0.0)
-        for item in inputs.values()
-    )
-    market_composite = clamp(market_composite, -1.0, 1.0)
+    market_composite = clamp(sum(safe_float(v["direction"], 0.0) * safe_float(v["weight"], 0.0) for v in inputs.values()), -1.0, 1.0)
     alignment = clamp(market_composite * candidate_sign, -1.0, 1.0)
-
     if alignment >= HTF_ALIGNMENT_STATE_THRESHOLD:
-        state = "aligned"
+        state = "ALIGNED"
     elif alignment <= -HTF_ALIGNMENT_STATE_THRESHOLD:
-        state = "against"
+        state = "AGAINST"
+    elif abs(alignment) < 0.10:
+        state = "NEUTRAL"
     else:
-        state = "mixed"
+        state = "MIXED"
 
     if market_composite >= HTF_ALIGNMENT_STATE_THRESHOLD:
-        market_bias = Side.LONG.value
+        market_bias = "BULLISH"
     elif market_composite <= -HTF_ALIGNMENT_STATE_THRESHOLD:
-        market_bias = Side.SHORT.value
+        market_bias = "BEARISH"
+    elif abs(market_composite) < 0.10:
+        market_bias = "NEUTRAL"
     else:
-        market_bias = Side.NEUTRAL.value
+        market_bias = "MIXED"
 
-    # Preserve the historic 6..20 contribution range, but make it continuous.
     if alignment >= 0:
         score_base = HTF_SCORE_MID + alignment * (HTF_SCORE_MAX - HTF_SCORE_MID)
     else:
         score_base = HTF_SCORE_MID + alignment * (HTF_SCORE_MID - HTF_SCORE_MIN)
     score_base = clamp(score_base, HTF_SCORE_MIN, HTF_SCORE_MAX)
-
     ml_feature = clamp((alignment + 1.0) / 2.0, 0.0, 1.0)
     conviction = clamp(abs(alignment), 0.0, 1.0)
     family_weight = max(0.0, safe_float(family_weight, 1.0))
-
     return {
-        "version": "v8.16",
+        "version": "v9.0",
+        "schema_version": "htf_fact_v9.0",
         "source": "EMA_COMPOSITE_15M_1H_4H",
         "candidate_side": side,
         "market_composite": round(market_composite, 6),
         "market_bias": market_bias,
         "alignment_score": round(alignment, 6),
         "state": state,
+        "confidence": round(conviction * 100.0, 4),
         "conviction": round(conviction, 6),
         "score_base": round(score_base, 6),
         "family_weight": round(family_weight, 6),
         "score_weighted": round(score_base * family_weight, 6),
         "ml_feature": round(ml_feature, 6),
         "state_threshold": HTF_ALIGNMENT_STATE_THRESHOLD,
+        "timeframe_components": inputs,
         "timeframes": inputs,
-        "contract": "one fact -> score + ML + advisor",
+        "contract": "absolute market bias + candidate-relative alignment",
     }
 
-
-# Compatibility alias for external audit code. It returns the same canonical fact.
 def _candidate_htf_alignment(
     side: str,
     tf15: dict[str, Any],
@@ -3956,7 +4619,10 @@ def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = N
     ctx = {
         "time": data["time"],
         "price": price,
-        "price_source": data.get("price_source", "TradingView"),
+        "price_source": data.get("price_source", "NONE"),
+        "execution_price_trusted": bool(data.get("execution_price_trusted", False)),
+        "execution_venue": data.get("execution_venue", "UNKNOWN"),
+        "execution_price_quality": data.get("execution_price_quality", "BLOCKED_FALLBACK"),
         "instrument": data.get("instrument", OKX_INST_ID),
         "instrument_label": data.get("instrument_label", INSTRUMENT_LABEL),
         "instrument_kind": data.get("instrument_kind", INSTRUMENT_KIND),
@@ -4383,10 +5049,13 @@ def event_driven_reentry_guard(state: dict, context: dict, candidate: Candidate)
 def _nonblocking_stage_rank(stage: str) -> int:
     order = {
         EntryStage.WAIT_RETEST.value: 0,
+        EntryStage.WAIT_CONFIRMATION.value: 0,
         EntryStage.PROBE.value: 1,
         EntryStage.ACCEPTANCE.value: 2,
-        EntryStage.RETEST_ADD.value: 3,
-        EntryStage.CORE.value: 4,
+        EntryStage.CORE.value: 3,
+        EntryStage.RETEST_ADD.value: 4,
+        EntryStage.ADD_POSITION.value: 4,
+        ExecutiveDecisionState.ADD_POSITION.value: 4,
     }
     return order.get(str(stage or EntryStage.PROBE.value), 1)
 
@@ -4904,7 +5573,9 @@ def compute_relaxed_continuation_policy_comparison(journal: dict[str, Any]) -> d
     }
 
 
+
 def apply_relaxed_continuation_live_override(candidate: Candidate, plan: TradePlan, journal: dict[str, Any]) -> dict[str, Any]:
+    """Execution eligibility override only. Risk is delegated to the ledger."""
     profile = relaxed_continuation_shadow_profile(candidate)
     policy = compute_relaxed_continuation_policy_comparison(journal)
     common_execution_ok = bool((candidate.score_components or {}).get("common_execution_ok", False))
@@ -4915,25 +5586,26 @@ def apply_relaxed_continuation_live_override(candidate: Candidate, plan: TradePl
         and common_execution_ok
         and int(candidate.final_score or 0) >= max(RELAXED_CONTINUATION_MIN_SCORE, RISKY_ENTRY_SCORE_BASE)
     )
-    profile["live_policy"] = policy
-    profile["live_eligible"] = live_eligible
-    profile["live_mode"] = "PROBE_ONLY" if live_eligible else "SHADOW_ONLY"
+    profile.update({
+        "live_policy": policy,
+        "live_eligible": live_eligible,
+        "live_mode": "PROBE_ONLY" if live_eligible else "SHADOW_ONLY",
+        "risk_recommendation": {"source": "relaxed_continuation_policy", "capital_cap_pct": RELAXED_CONTINUATION_PROBE_RISK_PCT},
+    })
     candidate.relaxed_continuation_profile = profile
     candidate.score_components["relaxed_continuation"] = profile
     if live_eligible:
         plan.execution_ready = True
         candidate.entry_stage = EntryStage.PROBE.value
         candidate.stage_plan["stage"] = EntryStage.PROBE.value
-        candidate.stage_plan["base_risk_pct"] = RELAXED_CONTINUATION_PROBE_RISK_PCT
         candidate.stage_plan["relaxed_live_override"] = {
             "enabled": True,
             "mode": "PROBE_ONLY",
             "risk_cap_pct": RELAXED_CONTINUATION_PROBE_RISK_PCT,
+            "risk_applied_here": False,
             "policy": policy,
         }
         plan.entry_stage = EntryStage.PROBE.value
-        plan.position_risk_pct = round(min(plan.position_risk_pct, RELAXED_CONTINUATION_PROBE_RISK_PCT), 4)
-        plan.risk_pct = plan.position_risk_pct
         plan.stage_plan = candidate.stage_plan
     return profile
 
@@ -4948,8 +5620,7 @@ def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
     relaxed_profile = relaxed_continuation_shadow_profile(candidate)
     strict_alternative_support = bool(support_paths.get("alternative_ready"))
     base_ok = bool(
-        not reval_profile.get("hard_expired")
-        and str(reval_profile.get("state") or "").upper() != "DEAD"
+        str(reval_profile.get("state") or "").upper() != "INVALIDATED"
         and (
             not reval_profile.get("needs_revalidation")
             or reval_profile.get("entry_supported")
@@ -4971,11 +5642,11 @@ def setup_trigger_revalidation_profile(
     impulse: Optional[dict] = None,
     state: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Trigger lease with a terminal hard TTL.
+    """Trigger lease with confidence decay instead of age-based invalidation.
 
-    A stale trigger may be re-argued by fresh 3M/15M behavior. After the hard
-    TTL it becomes DEAD unless the current run contains fresh micro-confirmation.
-    Quality thresholds themselves are unchanged.
+    Age alone never kills the thesis. Old evidence becomes DECAYED_THESIS and is
+    priced as experimental risk until fresh 3M/15M behavior restores confidence.
+    Explicit structural invalidation remains authoritative.
     """
     if not SETUP_REVALIDATION_ENGINE:
         return {"enabled": False, "state": "DISABLED", "entry_supported": True, "needs_revalidation": False}
@@ -5000,7 +5671,7 @@ def setup_trigger_revalidation_profile(
 
     hard_ttl_elapsed = bool(age >= THESIS_HARD_TTL_MIN)
     if hard_ttl_elapsed and not (micro.get("supported") or alternative_ready):
-        state_name = "DEAD"
+        state_name = "DECAYED_THESIS"
     elif hard_ttl_elapsed and (micro.get("supported") or alternative_ready):
         state_name = "REVALIDATED_AFTER_TTL"
     elif age < SETUP_REVALIDATION_STALE_MIN or live_ready:
@@ -5033,8 +5704,7 @@ def setup_trigger_revalidation_profile(
 
     needs_revalidation = bool(state_name != "FRESH" or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value))
     revalidated = bool(
-        state_name != "DEAD"
-        and needs_revalidation
+        needs_revalidation
         and (
             (micro.get("supported") and not_late_location)
             or alternative_ready
@@ -5053,33 +5723,8 @@ def setup_trigger_revalidation_profile(
         micro["stale_thesis_recovery"] = True
 
     entry_supported = bool(
-        state_name != "DEAD"
-        and ((not needs_revalidation or revalidated) or alternative_ready)
+        ((not needs_revalidation or revalidated) or alternative_ready or state_name == "DECAYED_THESIS")
     )
-
-    if state_name == "DEAD":
-        return {
-            "enabled": True,
-            "version": "v6.20_hard_thesis_ttl",
-            "state": "DEAD",
-            "source": source,
-            "age_min": round(age, 1),
-            "hard_ttl_min": THESIS_HARD_TTL_MIN,
-            "hard_expired": True,
-            "needs_revalidation": True,
-            "revalidated": False,
-            "entry_supported": False,
-            "entry_timing": "DEAD_HARD_TTL",
-            "not_late_location": not_late_location,
-            "distance_from_anchor_atr": round(dist_atr, 2),
-            "micro_confirmation": micro,
-            "risk_multiplier": 0.0,
-            "stage_override": "DEAD",
-            "action_bias": "DEAD",
-            "setup_arguments": setup_arguments + [f"hard TTL elapsed: {age:.1f} >= {THESIS_HARD_TTL_MIN:.1f} min"],
-            "no_hard_block": False,
-            "quality_threshold_changed": False,
-        }
 
     if not needs_revalidation:
         entry_timing = "LIVE_OR_STILL_FRESH"
@@ -5094,20 +5739,20 @@ def setup_trigger_revalidation_profile(
         )
         risk_mult = (
             SETUP_REVALIDATION_RISK_MULT_EXTREME
-            if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL"}
+            if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL", "DECAYED_THESIS"}
             else SETUP_REVALIDATION_RISK_MULT_STALE
         )
     else:
         entry_timing = "ARMED_WAIT_FRESH_ARGUMENT"
         risk_mult = (
             SETUP_REVALIDATION_RISK_MULT_EXTREME
-            if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL"}
+            if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL", "DECAYED_THESIS"}
             else SETUP_REVALIDATION_RISK_MULT_STALE
         )
 
     return {
         "enabled": True,
-        "version": "v6.20_hard_thesis_ttl",
+        "version": "v9.1_confidence_decay_lease",
         "state": state_name,
         "source": source,
         "age_min": round(age, 1),
@@ -5124,8 +5769,8 @@ def setup_trigger_revalidation_profile(
         "alternative_entry_support": alternative_ready,
         "pre_confirmation_promoted": bool(support_paths.get("pre_confirmation_promoted")),
         "risk_multiplier": round(clamp(risk_mult, INNOVATION_MIN_RISK_MULT, 1.0), 4),
-        "stage_override": EntryStage.PROBE.value if revalidated else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
-        "action_bias": "PROBE_ENTRY" if revalidated else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
+        "stage_override": EntryStage.PROBE.value if (revalidated or state_name == "DECAYED_THESIS") else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
+        "action_bias": "PROBE_ENTRY" if (revalidated or state_name == "DECAYED_THESIS") else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
         "setup_arguments": setup_arguments,
         "no_hard_block": True,
         "quality_threshold_changed": False,
@@ -5627,7 +6272,11 @@ def _trade_ground_truth(trade: dict) -> Optional[tuple[int, float, str]]:
     саму помилку напрямку мітки. Тепер такі угоди виключаються з
     тренувальної вибірки повністю (None), а не вчать модель у "неправильний" бік.
     """
-    result_pct = safe_float(trade.get("result_pct"), 0.0)
+    if trade.get("ml_eligible") is False or str(trade.get("outcome_status") or "") == "AMBIGUOUS_INTRABAR":
+        return None
+    result_pct = _journal_realized_return_pct(trade)
+    if result_pct is None:
+        return None
     mfe_pct = safe_float(trade.get("mfe_pct"), 0.0)
     has_tp_fields = any(key in trade for key in ("tp1_hit", "tp2_hit", "tp3_hit"))
     tp1_hit = bool(trade.get("tp1_hit"))
@@ -6529,7 +7178,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
         "htf_fact": dict(htf_fact),
         "htf_score": round(htf_score, 2),
         "htf_score_base": round(safe_float(htf_fact.get("score_base"), 0.0), 2),
-        "htf_state": htf_fact.get("state"),
+        "htf_state_deprecated_audit": htf_fact.get("state"),
         "htf_market_bias": htf_fact.get("market_bias"),
         "htf_alignment_score": htf_fact.get("alignment_score"),
         "htf_ml_feature": htf_fact.get("ml_feature"),
@@ -6558,7 +7207,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.entry_quality_score = layers["entry_quality"]
     candidate.durability_quality_score = layers["durability_quality"]
     candidate.hypothesis_score = float(candidate.final_score)
-    candidate.risk_multiplier = float(direction_perf.get("risk_multiplier", 1.0) or 1.0) * 0.75
+    candidate.score_components["reentry_risk_recommendation"] = {"source": "direction_performance", "factor": float(direction_perf.get("risk_multiplier", 1.0) or 1.0), "applied_here": False}
     candidate.professional_gate = evaluate_professional_gate(context, candidate)
     candidate.stage_plan = staged_entry_plan(candidate, context, direction_perf)
     candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
@@ -7233,6 +7882,43 @@ def explain_candidate_gate_failure(context: dict, candidate: Candidate, gate: Op
     return "; ".join(reasons) if reasons else str(gate.get("reason") or "did_not_pass_entry_gate")
 
 
+def rejected_hypothesis_counterfactual_blueprint(context: dict[str, Any], candidate: Candidate) -> dict[str, Any]:
+    """Build observable MFE/MAE/TP blueprint without claiming a realized trade."""
+    try:
+        plan = build_trade_plan(context, candidate)
+    except Exception as exc:
+        return {
+            "status": "PLAN_BUILD_FAILED",
+            "error": f"{type(exc).__name__}: {exc}",
+            "audit_only": True,
+            "schema_version": "rejected_counterfactual_v9.1",
+        }
+    return {
+        "status": "OPEN",
+        "opened_at": iso_now(),
+        "expires_at": (now_utc() + timedelta(hours=EXECUTIVE_SHADOW_HORIZON_HOURS)).isoformat(),
+        "side": candidate.side,
+        "entry": round_price(plan.entry),
+        "stop": round_price(plan.stop),
+        "tp0": round_price(plan.tp0),
+        "tp1": round_price(plan.tp1),
+        "tp2": round_price(plan.tp2),
+        "tp3": round_price(plan.tp3),
+        "mfe_r": None,
+        "mae_r": None,
+        "tp_sequence": [],
+        "last_processed_ts": 0,
+        "max_target_hit": "NONE",
+        "best_price": round_price(plan.entry),
+        "worst_price": round_price(plan.entry),
+        "test_key": f"REJECTED|{candidate.thesis_key or thesis_family_key(candidate)}|{candidate.side}|{round_price(plan.entry)}|{round_price(plan.stop)}|{round_price(plan.tp1)}",
+        "policy_question": "Was this rejection correct after observing MFE/MAE and target/stop order?",
+        "audit_only": True,
+        "not_realized_pnl": True,
+        "schema_version": "rejected_counterfactual_v9.1",
+    }
+
+
 def rejected_hypotheses_audit(context: dict, candidates: list[Candidate], limit: int = 10) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     ranked = finalize_hypothesis_ranking(list(candidates or [])) if candidates else []
@@ -7243,6 +7929,8 @@ def rejected_hypotheses_audit(context: dict, candidates: list[Candidate], limit:
         row["evidence_layers"] = list(c.evidence_families or [])
         row["entry_anchor"] = round_price(getattr(c, "execution_anchor", 0.0))
         row["invalidation"] = round_price(getattr(c, "invalidation_level", 0.0))
+        if len(rows) < 3:
+            row["counterfactual"] = rejected_hypothesis_counterfactual_blueprint(context, c)
         rows.append(row)
     return rows
 
@@ -7443,16 +8131,20 @@ def reversal_drift_guard_profile(
     }
 
 
+
 def apply_reversal_drift_stage_overlay(candidate: Candidate) -> Candidate:
+    """Stage recommendation only; the multiplier is applied later by Risk Engine."""
     profile = (candidate.score_components or {}).get("reversal_drift_guard", {}) or {}
     if not profile.get("applies") or not profile.get("against"):
         return candidate
-
-    candidate.risk_multiplier *= safe_float(profile.get("risk_multiplier"), 1.0)
     stage_plan = dict(candidate.stage_plan or {})
     stage_plan["reversal_drift_guard"] = dict(profile)
+    stage_plan["risk_recommendation"] = {
+        "source": "reversal_drift",
+        "factor": safe_float(profile.get("risk_multiplier"), 1.0),
+        "applied_here": False,
+    }
     notes = list(stage_plan.get("scale_plan") or [])
-
     if profile.get("force_wait_confirmation"):
         candidate.confirmation_pending = True
         candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
@@ -7460,26 +8152,13 @@ def apply_reversal_drift_stage_overlay(candidate: Candidate) -> Candidate:
         candidate.trigger_ready = False
         candidate.live_3m_trigger_ready = False
         stage_plan["stage"] = EntryStage.WAIT_CONFIRMATION.value
-        stage_plan["base_risk_pct"] = 0.0
-        notes.append(
-            f"Reversal drift guard: {profile.get('drift_atr')} ATR against thesis; "
-            "wait for independent counter-trend confirmation"
-        )
+        notes.append(f"Reversal drift {profile.get('drift_atr')} ATR: wait for independent confirmation")
     else:
-        existing = safe_float(stage_plan.get("base_risk_pct"), PROBE_RISK_PCT)
-        stage_plan["base_risk_pct"] = round(min(existing, PROBE_RISK_PCT), 4)
-        if candidate.entry_stage == EntryStage.CORE.value:
-            candidate.entry_stage = EntryStage.ACCEPTANCE.value
-            stage_plan["stage"] = candidate.entry_stage
-        notes.append(
-            f"Reversal against drift allowed only staged: evidence present, "
-            f"risk x{safe_float(profile.get('risk_multiplier'), 1.0):.2f}"
-        )
-
+        stage_plan["stage_recommendation"] = EntryStage.PROBE.value
+        notes.append("Reversal drift permits staged execution; risk delegated to ledger")
     stage_plan["scale_plan"] = notes
     candidate.stage_plan = stage_plan
     return candidate
-
 
 def _confirmed_candles(candles: list[Candle], limit: int = 0) -> list[Candle]:
     result = sorted(
@@ -7970,39 +8649,36 @@ def short_reversal_model_snapshot(profile: dict[str, Any], model_id: str) -> dic
     return model
 
 
+
 def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
-    """Cap risk/stage only for a dedicated SHORT reversal hypothesis."""
+    """SHORT reversal stage recommendation; never mutates risk directly."""
     profile = short_reversal_profile_for_candidate(candidate)
     if not profile.get("active"):
         return candidate
-
     stage_plan = dict(candidate.stage_plan or {})
     notes = list(stage_plan.get("scale_plan") or [])
     proposed_stage = str(profile.get("stage") or EntryStage.WAIT_CONFIRMATION.value)
-    risk_cap = safe_float(profile.get("risk_cap"), 0.0)
-    existing_risk = safe_float(stage_plan.get("base_risk_pct"), PROBE_RISK_PCT)
-
     if not profile.get("execution_ready"):
         candidate.confirmation_pending = True
         candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
         candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value
         stage_plan["stage"] = candidate.entry_stage
-        stage_plan["base_risk_pct"] = 0.0
-        notes.append("SHORT reversal WATCH: доказ є, але execution confirmation ще не готове")
+        notes.append("SHORT reversal WATCH: execution confirmation not ready")
     else:
         if proposed_stage == EntryStage.CORE.value:
             proposed_stage = EntryStage.ACCEPTANCE.value
-            notes.append("SHORT reversal CORE evidence: перший вхід все одно capped на ACCEPTANCE; CORE тільки через подальший add")
         candidate.entry_stage = proposed_stage
         stage_plan["stage"] = proposed_stage
-        stage_plan["base_risk_pct"] = round(min(existing_risk, risk_cap or existing_risk), 4)
-        notes.append(f"SHORT reversal stage={proposed_stage}, aggregate={safe_float(profile.get('score')):.1f}; risk не збільшується")
-
+        notes.append(f"SHORT reversal stage={proposed_stage}; risk delegated to ledger")
     stage_plan["short_reversal_profile"] = profile
+    stage_plan["risk_recommendation"] = {
+        "source": "short_reversal_policy",
+        "capital_cap_pct": safe_float(profile.get("risk_cap"), 0.0),
+        "applied_here": False,
+    }
     stage_plan["scale_plan"] = notes
     candidate.stage_plan = stage_plan
     return candidate
-
 
 
 DETECTOR_BACKED_PATTERN_BONUS_CAPS = {
@@ -8017,7 +8693,6 @@ DETECTOR_BACKED_PATTERN_BONUS_CAPS = {
     "FAILED_AUCTION_REJECTION": 1.35,
     "TIME_OF_DAY_ADAPTIVE": 1.20,
 }
-
 
 def combine_detector_backed_pattern_bonus(
     model_id: str,
@@ -8893,7 +9568,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "htf_fact": dict(htf_fact),
                     "htf_score": round(htf_score, 2),
                     "htf_score_base": round(safe_float(htf_fact.get("score_base"), 0.0), 2),
-                    "htf_state": htf_fact["state"],
+                    "htf_state_deprecated_audit": htf_fact["state"],
                     "htf_market_bias": htf_fact["market_bias"],
                     "htf_alignment_score": htf_fact["alignment_score"],
                     "htf_ml_feature": htf_fact["ml_feature"],
@@ -9651,6 +10326,8 @@ def build_trade_plan(
     price, entry_price_contract = resolve_execution_entry_price(
         context, candidate, entry_price_override=entry_price_override
     )
+    quality_pipeline = prepare_preplan_quality_pipeline(candidate, context)
+    candidate.score_components["preplan_quality_pipeline"] = quality_pipeline
     atr15 = context["atr15"]
     side = candidate.side
     profile = trade_mode_profile(context, side, candidate.setup_type)
@@ -9885,20 +10562,21 @@ def build_trade_plan(
         candidate.entry_stage = str(candidate.stage_plan.get("stage", EntryStage.PROBE.value))
     if not (candidate.stage_plan or {}).get("innovation_profile"):
         candidate = apply_setup_innovation_overlay(candidate, context)
-    position_risk_pct = adaptive_position_risk_pct(candidate, context, default_risk)
-    position_risk_pct = round(clamp(position_risk_pct * float(breathing.get("risk_size_multiplier", 1.0)), 0.02, CORE_RISK_PCT), 4)
-
-    # A fresh sub-68 probe must reach the Risk Manager already capped. Capping
-    # only after the executive vote can create a false daily-budget veto based
-    # on exposure that would never actually be opened.
+    # One provisional ledger is built for the candidate stage. Executive Layer
+    # recalculates the same pure ledger after the final staged decision.
     if fresh_probe_profile.get("eligible") and candidate.final_score < RISKY_ENTRY_SCORE_BASE:
         candidate.entry_stage = EntryStage.PROBE.value
         candidate.stage_plan["stage"] = EntryStage.PROBE.value
-        candidate.stage_plan["base_risk_pct"] = min(
-            safe_float(candidate.stage_plan.get("base_risk_pct"), PROBE_RISK_PCT),
-            PROBE_RISK_PCT,
-        )
-        position_risk_pct = round(min(position_risk_pct, PROBE_RISK_PCT), 4)
+        candidate.stage_plan["probe_cap_recommendation"] = PROBE_RISK_PCT
+    risk_ledger = build_risk_adjustment_ledger(
+        candidate,
+        context,
+        stage=candidate.entry_stage,
+        geometry_multiplier=float(breathing.get("risk_size_multiplier", 1.0)),
+    )
+    candidate.risk_ledger = asdict(risk_ledger)
+    candidate.score_components["risk_adjustment_ledger"] = asdict(risk_ledger)
+    position_risk_pct = risk_ledger.final_position_risk_pct
 
     candidate.stage_plan.setdefault("entry_price_contract", entry_price_contract)
     candidate.stage_plan.setdefault("breathing_geometry", breathing)
@@ -9934,6 +10612,9 @@ def build_trade_plan(
         breathing_profile=breathing,
         valid=rr1_valid,
         reason="" if rr1_valid else "RR1 нижче мінімуму",
+        risk_ledger=asdict(risk_ledger),
+        final_stage=candidate.entry_stage,
+        immutable=False,
     )
     return plan
 
@@ -10200,6 +10881,157 @@ def build_executive_divergence_audit(
         "shadow_plan": shadow_plan,
     }
 
+
+
+def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: dict[str, Any]) -> None:
+    """Persist deduplicated rejected-hypothesis counterfactuals for later path observation."""
+    rejected = ((signal_payload.get("audit") or {}).get("rejected_hypotheses") or [])
+    if not isinstance(rejected, list):
+        return
+    store = journal.setdefault("rejected_hypothesis_shadows", [])
+    known = {str((x or {}).get("test_key") or "") for x in store if isinstance(x, dict)}
+    for row in rejected:
+        if not isinstance(row, dict):
+            continue
+        shadow = dict(row.get("counterfactual") or {})
+        key = str(shadow.get("test_key") or "")
+        if not shadow or not key or key in known:
+            continue
+        shadow.update({
+            "source_signal_id": str(signal_payload.get("id") or ""),
+            "thesis_key": str(row.get("thesis_key") or signal_payload.get("thesis_key") or ""),
+            "setup_type": str(row.get("setup_type") or ""),
+            "setup_family": str(row.get("setup_family") or ""),
+            "failed_gate": str(row.get("failed_gate") or ""),
+            "candidate_score": safe_float(row.get("final_score"), 0.0),
+            "rejection_correctness": "PENDING",
+            "audit_only": True,
+            "not_realized_pnl": True,
+        })
+        store.append(shadow)
+        known.add(key)
+    if len(store) > EXECUTIVE_DIVERGENCE_HISTORY_LIMIT:
+        del store[:-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT]
+
+
+def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
+    """Track MFE/MAE and TP/STOP order for rejected hypotheses, without fake PnL."""
+    shadows = journal.get("rejected_hypothesis_shadows") or []
+    candles = sorted(
+        [c for c in ((context.get("candles") or {}).get("3m") or []) if getattr(c, "confirmed", True)],
+        key=lambda c: c.ts,
+    )
+    current_price = safe_float(context.get("price"), 0.0)
+    now = now_utc()
+    terminal_statuses = {"STOP_FIRST", "STOP_AFTER_TARGET", "AMBIGUOUS_INTRABAR", "INVALID_GEOMETRY", "INVALID_NO_OPEN_TIME"}
+    order = {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}
+
+    for shadow in shadows:
+        if not isinstance(shadow, dict):
+            continue
+        if shadow.get("status") in terminal_statuses or str(shadow.get("status", "")).startswith("EXPIRED_"):
+            continue
+        opened = _parse_iso_datetime(shadow.get("opened_at"))
+        expires = _parse_iso_datetime(shadow.get("expires_at"))
+        if not opened:
+            shadow["status"] = "INVALID_NO_OPEN_TIME"
+            shadow["rejection_correctness"] = "UNKNOWN"
+            continue
+        side = str(shadow.get("side") or "")
+        entry = safe_float(shadow.get("entry"), 0.0)
+        stop = safe_float(shadow.get("stop"), 0.0)
+        risk = abs(entry - stop)
+        if side not in {Side.LONG.value, Side.SHORT.value} or entry <= 0 or stop <= 0 or risk <= 1e-9:
+            shadow["status"] = "INVALID_GEOMETRY"
+            shadow["rejection_correctness"] = "UNKNOWN"
+            continue
+
+        opened_ms = int(opened.timestamp() * 1000)
+        last_processed = int(shadow.get("last_processed_ts", 0) or 0)
+        sequence = [c for c in candles if c.ts >= opened_ms and c.ts > last_processed]
+        levels = [(name, safe_float(shadow.get(name.lower()), 0.0)) for name in ["TP0", "TP1", "TP2", "TP3"]]
+        levels = [(name, level) for name, level in levels if level > 0]
+        max_target = str(shadow.get("max_target_hit") or "NONE")
+        best = safe_float(shadow.get("best_price"), entry) or entry
+        worst = safe_float(shadow.get("worst_price"), entry) or entry
+        terminal = False
+
+        for candle in sequence:
+            high = safe_float(candle.high, entry)
+            low = safe_float(candle.low, entry)
+            if side == Side.LONG.value:
+                best = max(best, high)
+                worst = min(worst, low)
+                stop_hit = low <= stop
+                hits = [name for name, level in levels if high >= level and order[name] > order.get(max_target, 0)]
+            else:
+                best = min(best, low)
+                worst = max(worst, high)
+                stop_hit = high >= stop
+                hits = [name for name, level in levels if low <= level and order[name] > order.get(max_target, 0)]
+
+            if stop_hit and hits:
+                max_hit = max(hits, key=lambda name: order[name])
+                shadow["status"] = "AMBIGUOUS_INTRABAR"
+                shadow["tp_sequence"] = list(shadow.get("tp_sequence") or []) + [f"AMBIGUOUS_STOP_AND_{max_hit}"]
+                shadow["rejection_correctness"] = "UNKNOWN"
+                shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+                terminal = True
+                break
+            if hits:
+                max_hit = max(hits, key=lambda name: order[name])
+                max_target = max_hit
+                shadow["max_target_hit"] = max_target
+                sequence_log = list(shadow.get("tp_sequence") or [])
+                if max_target not in sequence_log:
+                    sequence_log.append(max_target)
+                shadow["tp_sequence"] = sequence_log
+                shadow["status"] = f"{max_target}_REACHED"
+            if stop_hit:
+                shadow["status"] = "STOP_AFTER_TARGET" if order.get(max_target, 0) > 0 else "STOP_FIRST"
+                shadow["tp_sequence"] = list(shadow.get("tp_sequence") or []) + ["STOP"]
+                shadow["rejection_correctness"] = "LIKELY_CORRECT" if max_target in {"NONE", "TP0"} else "LIKELY_TOO_STRICT"
+                shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
+                terminal = True
+                break
+            shadow["last_processed_ts"] = max(int(shadow.get("last_processed_ts", 0) or 0), int(candle.ts))
+
+        if side == Side.LONG.value:
+            if current_price > 0:
+                best = max(best, current_price); worst = min(worst, current_price)
+            mfe_r = max(0.0, (best - entry) / risk); mae_r = max(0.0, (entry - worst) / risk)
+        else:
+            if current_price > 0:
+                best = min(best, current_price); worst = max(worst, current_price)
+            mfe_r = max(0.0, (entry - best) / risk); mae_r = max(0.0, (worst - entry) / risk)
+        shadow["best_price"] = round_price(best)
+        shadow["worst_price"] = round_price(worst)
+        shadow["mfe_r"] = round(mfe_r, 3)
+        shadow["mae_r"] = round(mae_r, 3)
+        shadow["updated_at"] = now.isoformat()
+
+        if not terminal and order.get(max_target, 0) >= order["TP1"]:
+            shadow["rejection_correctness"] = "LIKELY_TOO_STRICT"
+        if not terminal and expires and now >= expires:
+            shadow["status"] = f"EXPIRED_{max_target}" if max_target != "NONE" else "EXPIRED_NO_TARGET"
+            shadow["closed_at"] = now.isoformat()
+            shadow["rejection_correctness"] = "LIKELY_TOO_STRICT" if order.get(max_target, 0) >= order["TP1"] else "LIKELY_CORRECT" if mae_r >= 1.0 else "INCONCLUSIVE"
+
+    valid = [x for x in shadows if isinstance(x, dict)]
+    closed = [x for x in valid if x.get("status") in terminal_statuses or str(x.get("status", "")).startswith("EXPIRED_")]
+    analytics = journal.setdefault("analytics", {}).setdefault("rejected_hypothesis_outcomes", {})
+    analytics.update({
+        "tracked": len(valid),
+        "closed": len(closed),
+        "open": len(valid) - len(closed),
+        "likely_correct_rejections": sum(1 for x in valid if x.get("rejection_correctness") == "LIKELY_CORRECT"),
+        "likely_too_strict_rejections": sum(1 for x in valid if x.get("rejection_correctness") == "LIKELY_TOO_STRICT"),
+        "inconclusive": sum(1 for x in valid if x.get("rejection_correctness") in {"INCONCLUSIVE", "UNKNOWN"}),
+        "average_mfe_r": round(sum(safe_float(x.get("mfe_r"), 0.0) for x in valid) / max(len(valid), 1), 3),
+        "average_mae_r": round(sum(safe_float(x.get("mae_r"), 0.0) for x in valid) / max(len(valid), 1), 3),
+        "interpretation": "counterfactual rejection audit; not realized PnL",
+        "updated_at": now.isoformat(),
+    })
 
 
 def update_executive_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
@@ -10627,7 +11459,7 @@ def executive_authority_decision(
     plan_exists = decision.plan is not None
     plan_valid = bool(decision.plan and decision.plan.valid)
     plan_execution_ready = bool(decision.plan and decision.plan.execution_ready)
-    philosophy_accepts = bool((executive_payload.get("trading_philosophy") or {}).get("recommendation") == "ACCEPT")
+    philosophy_accepts = bool((executive_payload.get("trading_philosophy") or {}).get("recommendation") in {"ACCEPT", "ACCEPT_STAGED"})
     risk_blocked = bool(executive_audit.get("risk_blocked"))
     hard_conflict = bool(executive_audit.get("has_hard_conflict"))
     conflict_override = bool((executive_audit.get("adaptive_conflict_resolver") or {}).get("conflict_override"))
@@ -10972,35 +11804,15 @@ def adaptive_htf_risk_multiplier(htf_state: str, execution_score: float) -> floa
 # v6.17.4 PRODUCTION INTEGRATION LAYER
 # ==========================================================
 
+
 def apply_kernel_context(candidate: Any, kernel_result: dict[str, Any]) -> Any:
-    """
-    Передає результат kernel далі по pipeline без повторного множення ризику.
-    Один центр ризику: candidate -> build_trade_plan.
-    """
+    """Attach kernel recommendations for audit without applying aggregate risk."""
     if candidate is None:
         return candidate
-
-    try:
-        setattr(
-            candidate,
-            "kernel_risk_multiplier",
-            float(kernel_result.get("risk_multiplier", 1.0))
-        )
-        setattr(
-            candidate,
-            "kernel_action_modifier",
-            str(kernel_result.get("action_modifier", "ALLOW"))
-        )
-        setattr(
-            candidate,
-            "kernel_audit",
-            kernel_result
-        )
-    except Exception:
-        pass
-
+    setattr(candidate, "kernel_risk_multiplier", float(kernel_result.get("risk_multiplier", 1.0)))
+    setattr(candidate, "kernel_action_modifier", str(kernel_result.get("action_modifier", "ALLOW")))
+    setattr(candidate, "kernel_audit", {**kernel_result, "risk_applied_here": False})
     return candidate
-
 
 # ==========================================================
 # v6.17.3 PROFESSIONAL DECISION KERNEL
@@ -11366,86 +12178,28 @@ STATE_WAIT_RETEST = "WAIT_RETEST"
 STATE_WAIT_CONFIRMATION = "WAIT_CONFIRMATION"
 
 
+
 def adaptive_state_transition(
     candidate: Any,
     kernel_result: dict[str, Any] | None = None,
     opportunity_profile: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """
-    Єдина машина станів execution.
-
-    WATCH:
-        недостатньо підтверджень, але можливість не втрачена.
-
-    PROBE:
-        ранній вхід зі зниженим ризиком.
-
-    ACCEPTANCE:
-        підтвердження отримано.
-
-    CORE:
-        максимальна довіра.
-
-    WAIT_RETEST:
-        захист від chase/FOMO.
-    """
-
+    """Legacy stage advisor. It no longer applies HTF or any risk multiplier."""
     kernel_result = kernel_result or {}
     opportunity_profile = opportunity_profile or {}
-
     state = opportunity_profile.get("stage", STATE_WATCH)
-    risk = float(opportunity_profile.get("risk_multiplier", 0.0))
-
     htf_profile = htf_confidence_modifier(candidate)
-    risk *= float(htf_profile.get("multiplier", 1.0))
-
     if bool(getattr(candidate, "confirmation_pending", False)):
-        return {
-            "state": STATE_WAIT_CONFIRMATION,
-            "risk_multiplier": 0.0,
-            "allow_execution": False,
-            "reason": "high readiness; waiting one confirmation bar",
-        }
-
+        return {"state": STATE_WAIT_CONFIRMATION, "risk_multiplier": 0.0, "allow_execution": False, "reason": "waiting confirmation", "htf_advisory": htf_profile, "risk_applied_here": False}
     if kernel_result.get("action_modifier") == STATE_WAIT_RETEST:
-        return {
-            "state": STATE_WAIT_RETEST,
-            "risk_multiplier": 0.0,
-            "allow_execution": False,
-            "reason": "anti-chase protection"
-        }
-
+        return {"state": STATE_WAIT_RETEST, "risk_multiplier": 0.0, "allow_execution": False, "reason": "anti-chase protection", "htf_advisory": htf_profile, "risk_applied_here": False}
     if state == STATE_CORE:
-        return {
-            "state": STATE_CORE,
-            "risk_multiplier": 1.0,
-            "allow_execution": True,
-            "reason": "full confirmation"
-        }
-
+        return {"state": STATE_CORE, "risk_multiplier": 1.0, "allow_execution": True, "reason": "full confirmation", "htf_advisory": htf_profile, "risk_applied_here": False}
     if state == STATE_ACCEPTANCE:
-        return {
-            "state": STATE_ACCEPTANCE,
-            "risk_multiplier": min(risk, 0.7),
-            "allow_execution": True,
-            "reason": "confirmed setup"
-        }
-
+        return {"state": STATE_ACCEPTANCE, "risk_multiplier": ACCEPTANCE_RISK_MULTIPLIER, "allow_execution": True, "reason": "confirmed setup", "htf_advisory": htf_profile, "risk_applied_here": False}
     if state == STATE_PROBE:
-        return {
-            "state": STATE_PROBE,
-            "risk_multiplier": min(risk, 0.35),
-            "allow_execution": True,
-            "reason": "preserve opportunity"
-        }
-
-    return {
-        "state": STATE_WATCH,
-        "risk_multiplier": 0.0,
-        "allow_execution": False,
-        "reason": "waiting confirmation"
-    }
-
+        return {"state": STATE_PROBE, "risk_multiplier": PROBE_RISK_MULTIPLIER, "allow_execution": True, "reason": "preserve opportunity", "htf_advisory": htf_profile, "risk_applied_here": False}
+    return {"state": STATE_WATCH, "risk_multiplier": 0.0, "allow_execution": False, "reason": "waiting confirmation", "htf_advisory": htf_profile, "risk_applied_here": False}
 
 def state_machine_audit(candidate: Any) -> dict[str, Any]:
     """Debug snapshot для replay та live monitoring."""
@@ -11472,54 +12226,21 @@ HTF_REVERSAL_WEAK_MULTIPLIER = float(
 )
 
 
+
 def htf_confidence_modifier(candidate: Any) -> dict[str, Any]:
-    """
-    HTF не блокує угоди.
-    Він регулює рівень довіри та розмір експозиції.
-
-    Мета:
-    - зберегти reversal можливості;
-    - не давати повний CORE ризик без HTF підтримки.
-    """
-
+    """Canonical HTF advisory. Bullish/bearish absolute labels are never alignment."""
     components = getattr(candidate, "score_components", {}) or {}
-
-    htf_state = str(
-        components.get("htf_state", "neutral")
-    ).lower()
-
+    state = get_htf_state(candidate)
     smt = bool(components.get("smt_confirmation", False))
-    liquidity = float(components.get("liquidity", 0) or 0)
-    trigger = float(components.get("trigger", 0) or 0)
-
-    if htf_state in {"aligned", "bullish", "bearish"}:
-        return {
-            "multiplier": HTF_ALIGNED_MULTIPLIER,
-            "confidence": "HIGH",
-            "reason": "HTF aligned"
-        }
-
-    if htf_state in {"neutral", "mixed"}:
-        return {
-            "multiplier": HTF_NEUTRAL_MULTIPLIER,
-            "confidence": "MEDIUM",
-            "reason": "HTF neutral"
-        }
-
-    # Reversal against HTF
-    if smt and liquidity >= 20 and trigger >= 20:
-        return {
-            "multiplier": HTF_REVERSAL_CONFIRMED_MULTIPLIER,
-            "confidence": "REVERSAL_CONFIRMED",
-            "reason": "HTF conflict with SMT/liquidity confirmation"
-        }
-
-    return {
-        "multiplier": HTF_REVERSAL_WEAK_MULTIPLIER,
-        "confidence": "REVERSAL_WEAK",
-        "reason": "HTF conflict without enough confirmation"
-    }
-
+    liquidity = safe_float(components.get("liquidity", components.get("liq_score", 0.0)), 0.0)
+    trigger = safe_float(components.get("trigger", components.get("trig_score", 0.0)), 0.0)
+    if state == "aligned":
+        return {"multiplier": HTF_ALIGNED_MULTIPLIER, "confidence": "HIGH", "reason": "HTF aligned", "source": "htf_fact"}
+    if state in {"neutral", "mixed", "unknown"}:
+        return {"multiplier": HTF_NEUTRAL_MULTIPLIER, "confidence": "MEDIUM" if state != "unknown" else "UNKNOWN", "reason": f"HTF {state}", "source": "htf_fact"}
+    if state == "against" and smt and liquidity >= 20 and trigger >= 20:
+        return {"multiplier": HTF_REVERSAL_CONFIRMED_MULTIPLIER, "confidence": "REVERSAL_CONFIRMED", "reason": "HTF against with independent counter-evidence", "source": "htf_fact"}
+    return {"multiplier": HTF_REVERSAL_WEAK_MULTIPLIER, "confidence": "REVERSAL_WEAK", "reason": "HTF against without enough counter-evidence", "source": "htf_fact"}
 
 # ==========================================================
 # MANAGE ACTIVE TRADE
@@ -11622,6 +12343,120 @@ def _trade_pct(side: str, entry: float, price: float) -> float:
     return (entry - price) / entry * 100
 
 
+def _journal_result_r(record: dict[str, Any]) -> Optional[float]:
+    """Read only an explicitly stored R-multiple; never reinterpret percentages as R."""
+    if not isinstance(record, dict) or "result_r" not in record:
+        return None
+    raw = record.get("result_r")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _journal_realized_return_pct(record: dict[str, Any]) -> Optional[float]:
+    """Read the weighted realized price return, with legacy result_pct fallback."""
+    if not isinstance(record, dict):
+        return None
+    raw = record.get("realized_return_pct")
+    if raw is None:
+        raw = record.get("result_pct")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _directional_price_move(side: str, entry: float, exit_price: float) -> float:
+    return (exit_price - entry) if side == Side.LONG.value else (entry - exit_price)
+
+
+def _realized_trade_metrics(
+    trade: ActiveTrade,
+    final_exit_price: Optional[float],
+    *,
+    outcome_status: str = "RESOLVED",
+) -> dict[str, Any]:
+    """Calculate weighted realized return and R from partial exits plus the final leg."""
+    if outcome_status != "RESOLVED" or final_exit_price is None:
+        return {
+            "result_r": None,
+            "realized_return_pct": None,
+            "result_unit": "R",
+            "outcome_status": outcome_status,
+            "ml_eligible": False,
+            "realized_legs": [],
+        }
+
+    entry = float(trade.entry)
+    risk = abs(entry - float(trade.stop_initial or 0.0))
+    if entry <= 0 or risk <= 1e-12:
+        return {
+            "result_r": None,
+            "realized_return_pct": None,
+            "result_unit": "R",
+            "outcome_status": "INVALID_GEOMETRY",
+            "ml_eligible": False,
+            "realized_legs": [],
+        }
+
+    legs: list[dict[str, Any]] = []
+    closed_size = 0.0
+
+    def add_leg(label: str, size: float, price: float) -> None:
+        nonlocal closed_size
+        size = clamp(safe_float(size, 0.0), 0.0, max(0.0, 1.0 - closed_size))
+        if size <= 0:
+            return
+        move = _directional_price_move(trade.side, entry, float(price))
+        leg_r = size * move / risk
+        leg_return_pct = size * move / entry * 100.0
+        legs.append({
+            "label": label,
+            "size_pct": round(size, 6),
+            "exit_price": round_price(float(price)),
+            "result_r": round(leg_r, 6),
+            "realized_return_pct": round(leg_return_pct, 6),
+        })
+        closed_size += size
+
+    if getattr(trade, "tp0_hit", False) and safe_float(getattr(trade, "tp0", 0.0), 0.0):
+        add_leg("TP0", getattr(trade, "tp0_size_pct", TP0_SIZE_PCT), trade.tp0)
+    if getattr(trade, "tp1_hit", False):
+        add_leg("TP1", getattr(trade, "tp1_size_pct", TP1_SIZE_PCT), trade.tp1)
+    if getattr(trade, "tp2_hit", False):
+        add_leg("TP2", getattr(trade, "tp2_size_pct", TP2_SIZE_PCT), trade.tp2)
+
+    remaining = max(0.0, 1.0 - closed_size)
+    if remaining > 1e-9:
+        add_leg("RUNNER" if closed_size > 0 else "FULL", remaining, float(final_exit_price))
+
+    result_r = sum(safe_float(leg.get("result_r"), 0.0) for leg in legs)
+    realized_return_pct = sum(safe_float(leg.get("realized_return_pct"), 0.0) for leg in legs)
+    return {
+        "result_r": round(result_r, 6),
+        "realized_return_pct": round(realized_return_pct, 6),
+        "result_unit": "R",
+        "outcome_status": "RESOLVED",
+        "ml_eligible": True,
+        "realized_legs": legs,
+    }
+
+
+def _finalize_closed_trade_result(trade: ActiveTrade, result: dict[str, Any]) -> dict[str, Any]:
+    status = str(result.get("outcome_status") or "RESOLVED")
+    result.update(_realized_trade_metrics(trade, result.get("exit_price"), outcome_status=status))
+    # Legacy compatibility only. R analytics must never read this field.
+    result["result_pct"] = result.get("realized_return_pct")
+    return result
+
+
 def _opened_at_ms(opened_at: str) -> int:
     """Парсить ActiveTrade.opened_at (iso_now()) у мілісекунди epoch.
     При будь-якій помилці парсингу повертає 0 (тобто "без нижньої межі"),
@@ -11630,6 +12465,141 @@ def _opened_at_ms(opened_at: str) -> int:
         return int(datetime.fromisoformat(str(opened_at)).timestamp() * 1000)
     except Exception:
         return 0
+
+
+def _candle_touches_level(side: str, candle: Candle, level: float, *, is_stop: bool) -> bool:
+    if side == Side.LONG.value:
+        return float(candle.low) <= level if is_stop else float(candle.high) >= level
+    return float(candle.high) >= level if is_stop else float(candle.low) <= level
+
+
+def _scan_unchecked_trade_events(trade: ActiveTrade, context: dict[str, Any]) -> dict[str, Any]:
+    """Resolve post-open 3M events chronologically and flag OHLC ambiguity.
+
+    A candle that touches both the active stop and one or more still-open targets
+    has no knowable intrabar ordering from OHLC alone. Such a record is excluded
+    from ML instead of being silently labelled STOP_FIRST.
+    """
+    lower_bound = max(
+        int(getattr(trade, "last_checked_3m_ts", 0) or 0),
+        _opened_at_ms(getattr(trade, "opened_at", "")),
+    )
+    candles = sorted(
+        [
+            c for c in ((context.get("candles", {}) or {}).get("3m", []) or [])
+            if int(getattr(c, "ts", 0) or 0) > lower_bound
+        ],
+        key=lambda c: int(c.ts),
+    )
+
+    tp0_hit = bool(getattr(trade, "tp0_hit", False))
+    tp1_hit = bool(getattr(trade, "tp1_hit", False))
+    tp2_hit = bool(getattr(trade, "tp2_hit", False))
+    tp3_hit = bool(getattr(trade, "tp3_hit", False))
+    simulated_stop = float(getattr(trade, "stop_current", 0.0) or 0.0)
+    events: list[dict[str, Any]] = []
+
+    for candle in candles:
+        touched: list[dict[str, Any]] = []
+
+        if not tp0_hit and safe_float(getattr(trade, "tp0", 0.0), 0.0):
+            if _candle_touches_level(trade.side, candle, float(trade.tp0), is_stop=False):
+                touched.append({"target": "TP0", "price": float(trade.tp0), "ts": int(candle.ts)})
+                tp0_hit = True
+        if not tp1_hit and _candle_touches_level(trade.side, candle, float(trade.tp1), is_stop=False):
+            touched.append({"target": "TP1", "price": float(trade.tp1), "ts": int(candle.ts)})
+            tp1_hit = True
+        if tp1_hit and not tp2_hit and _candle_touches_level(trade.side, candle, float(trade.tp2), is_stop=False):
+            touched.append({"target": "TP2", "price": float(trade.tp2), "ts": int(candle.ts)})
+            tp2_hit = True
+        if tp2_hit and not tp3_hit and _candle_touches_level(trade.side, candle, float(trade.tp3), is_stop=False):
+            touched.append({"target": "TP3", "price": float(trade.tp3), "ts": int(candle.ts)})
+            tp3_hit = True
+
+        stop_touched = bool(simulated_stop) and _candle_touches_level(
+            trade.side, candle, simulated_stop, is_stop=True
+        )
+
+        # TP2 immediately ratchets the stop to TP1. If that prospective stop and
+        # TP2 are both inside the same OHLC bar, ordering is unknowable too.
+        prospective_tp2_stop = simulated_stop
+        if any(event["target"] == "TP2" for event in touched):
+            prospective_tp2_stop = (
+                max(float(trade.tp1), simulated_stop)
+                if trade.side == Side.LONG.value
+                else min(float(trade.tp1), simulated_stop)
+            )
+            if _candle_touches_level(trade.side, candle, prospective_tp2_stop, is_stop=True):
+                stop_touched = True
+
+        if stop_touched and touched:
+            return {
+                "status": "AMBIGUOUS_INTRABAR",
+                "events": events,
+                "ambiguous_targets": [event["target"] for event in touched],
+                "candle_ts": int(candle.ts),
+                "stop_level": round_price(prospective_tp2_stop),
+            }
+
+        if stop_touched:
+            return {
+                "status": "STOP",
+                "events": events,
+                "candle_ts": int(candle.ts),
+                "stop_level": round_price(simulated_stop),
+            }
+
+        events.extend(touched)
+        if any(event["target"] == "TP2" for event in touched):
+            simulated_stop = prospective_tp2_stop
+        if any(event["target"] == "TP3" for event in touched):
+            return {
+                "status": "TP3",
+                "events": events,
+                "candle_ts": int(candle.ts),
+                "exit_price": round_price(float(trade.tp3)),
+            }
+
+    return {"status": "OPEN", "events": events}
+
+
+def _apply_scanned_target_events(
+    trade: ActiveTrade,
+    events: list[dict[str, Any]],
+    result: dict[str, Any],
+) -> None:
+    for event in events or []:
+        target = str(event.get("target") or "")
+        ts = int(event.get("ts") or 0)
+        if target == "TP0" and not getattr(trade, "tp0_hit", False):
+            trade.tp0_hit = True
+            result["action"] = Action.TP0.value
+            result["notes"].append(
+                f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції"
+            )
+        elif target == "TP1" and not trade.tp1_hit:
+            trade.tp1_hit = True
+            trade.tp1_hit_at = iso_now()
+            trade.tp1_hit_ts = ts or int(time.time() * 1000)
+            trade.tp1_stop_locked = False
+            result["action"] = Action.TP1.value
+            result["notes"].append(
+                f"TP1 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp1_size_pct', TP1_SIZE_PCT) * 100)}% позиції"
+            )
+        elif target == "TP2" and not trade.tp2_hit:
+            trade.tp2_hit = True
+            trade.tp2_stop_locked = True
+            if trade.side == Side.LONG.value:
+                trade.tp2_locked_stop = max(float(trade.tp1), float(trade.stop_current))
+            else:
+                trade.tp2_locked_stop = min(float(trade.tp1), float(trade.stop_current))
+            trade.stop_current = round_price(trade.tp2_locked_stop)
+            result["action"] = Action.TP2.value
+            result["notes"].append("TP2 досягнуто — стоп перенесено на TP1")
+        elif target == "TP3" and not trade.tp3_hit:
+            trade.tp3_hit = True
+            result["action"] = Action.TP3.value
+            result["notes"].append(f"TP3 досягнуто ({round_price(trade.tp3)})")
 
 
 def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
@@ -11661,10 +12631,10 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
 
     lower_bound = max(int(trade.last_checked_3m_ts or 0), _opened_at_ms(trade.opened_at))
     unchecked = sorted((c for c in c3 if c.ts > lower_bound), key=lambda c: c.ts)
-    # Якщо нових свічок від останньої перевірки не з'явилось (бот запускається
-    # частіше за 3m-бар), лишаємось на попередній поведінці — перевіряємо
-    # останню доступну свічку.
-    candles_to_check = unchecked or c3[-1:]
+    # Якщо нових post-open свічок немає, старі OHLC не можна повторно
+    # використовувати проти щойно відкритої або вже перевіреної угоди.
+    # Поточний стан у такому випадку контролює лише жива ціна нижче.
+    candles_to_check = unchecked
 
     # Перевіряємо всі свічки між запусками бота: будь-який дотик тінню = вихід
     for candle in candles_to_check:
@@ -11685,30 +12655,24 @@ def _stop_hit(trade: ActiveTrade, context: dict) -> tuple[bool, str]:
     return False, ""
 
 
-def _target_hit(side: str, context: dict, level: float, lookback: int = 4) -> bool:
-    """
-    Покращена перевірка тейк-профіту (з lookback по свічках).
-    Вирішує проблему пропуску TP через polling + гібридні дані (TradingView + OKX).
-    """
+def _target_hit(trade: ActiveTrade, context: dict, level: float, lookback: int = 4) -> bool:
+    """Return True only for a live price touch or a post-open unchecked 3M touch."""
     price = float(context.get("price") or 0)
-    c3 = (context.get("candles", {}) or {}).get("3m", [])
+    c3 = (context.get("candles", {}) or {}).get("3m", []) or []
+    lower_bound = max(
+        int(getattr(trade, "last_checked_3m_ts", 0) or 0),
+        _opened_at_ms(getattr(trade, "opened_at", "")),
+    )
+    recent = [c for c in c3 if int(getattr(c, "ts", 0) or 0) > lower_bound][-lookback:]
 
-    if side == Side.LONG.value:
+    if trade.side == Side.LONG.value:
         if price >= level:
             return True
-        if c3:
-            recent = c3[-lookback:] if len(c3) >= lookback else c3
-            recent_high = max((c.high for c in recent), default=price)
-            return recent_high >= level
-        return False
-    else:
-        if price <= level:
-            return True
-        if c3:
-            recent = c3[-lookback:] if len(c3) >= lookback else c3
-            recent_low = min((c.low for c in recent), default=price)
-            return recent_low <= level
-        return False
+        return max((c.high for c in recent), default=float("-inf")) >= level
+
+    if price <= level:
+        return True
+    return min((c.low for c in recent), default=float("inf")) <= level
 
 
 
@@ -11939,9 +12903,53 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         "management_state": getattr(trade, "management_state", "SUPPORTED") or "SUPPORTED",
     }
 
-    # v8.11: історичні unchecked candles спочатку перевіряються проти вже
-    # чинного стопа. Новий TP0/TP1 protection застосовується лише після цього,
-    # щоб не створювати ретроактивні stop-outs.
+    # Resolve all unchecked post-open candles chronologically before using
+    # aggregate stop/target helpers. This preserves partial exits that happened
+    # on earlier bars and detects same-bar stop/target ambiguity.
+    event_scan = _scan_unchecked_trade_events(trade, context)
+    _apply_scanned_target_events(trade, event_scan.get("events") or [], result)
+
+    if event_scan.get("status") == "AMBIGUOUS_INTRABAR":
+        result["closed"] = True
+        result["action"] = Action.STOP.value
+        result["exit_price"] = None
+        result["outcome_status"] = "AMBIGUOUS_INTRABAR"
+        result["ml_eligible"] = False
+        result["notes"].append(
+            "AMBIGUOUS_INTRABAR: одна 3M-свічка торкнулася стопа і "
+            + ", ".join(event_scan.get("ambiguous_targets") or [])
+            + "; порядок подій з OHLC не визначається"
+        )
+        trade.status = "CLOSED"
+        trade.last_action = Action.STOP.value
+        return _finalize_closed_trade_result(trade, result)
+
+    if event_scan.get("status") == "STOP":
+        exit_price = round_price(safe_float(event_scan.get("stop_level"), trade.stop_current))
+        result["closed"] = True
+        result["action"] = Action.STOP.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["notes"].append(
+            f"Stop hit після хронологічного 3M replay, ts={event_scan.get('candle_ts')}"
+        )
+        trade.status = "CLOSED"
+        trade.last_action = Action.STOP.value
+        return _finalize_closed_trade_result(trade, result)
+
+    if event_scan.get("status") == "TP3":
+        exit_price = round_price(safe_float(event_scan.get("exit_price"), trade.tp3))
+        result["closed"] = True
+        result["action"] = Action.TP3.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["notes"].append(f"TP3 досягнуто ({exit_price}) — угоду повністю закрито")
+        trade.status = "CLOSED"
+        trade.last_action = Action.TP3.value
+        return _finalize_closed_trade_result(trade, result)
+
+    # v8.11: unchecked historical candles were evaluated against the stop that
+    # was active at that time. New protection is applied only from now onward.
 
     # --- Дворівневий Wick Defense ---
     is_stop, stop_reason = _stop_hit(trade, context)
@@ -11954,7 +12962,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["notes"].append(f"Вихід по catastrophic stop: {stop_reason}")
         trade.status = "CLOSED"
         trade.last_action = Action.STOP.value
-        return result
+        return _finalize_closed_trade_result(trade, result)
 
     decision_break, decision_reason = _decision_stop_breached_by_close(trade, context)
     if decision_break:
@@ -11966,7 +12974,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["notes"].append(decision_reason)
         trade.status = "CLOSED"
         trade.last_action = Action.EXIT.value
-        return result
+        return _finalize_closed_trade_result(trade, result)
 
     # --- Структурний трейлінг ПІСЛЯ TP1 ---
     if trade.tp1_hit:
@@ -11987,7 +12995,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     # На самому факті TP0 стоп не рухається миттєво: спочатку лишається структурним.
     # Якщо після TP0 ринок віддає задану частку MFE, v8.11 переводить стан у
     # WEAKENING/PROTECT і підтягує стоп до комісійно-скоригованого беззбитку.
-    if not result["closed"] and getattr(trade, "tp0", 0.0) and not getattr(trade, "tp0_hit", False) and _target_hit(side, context, trade.tp0):
+    if not result["closed"] and getattr(trade, "tp0", 0.0) and not getattr(trade, "tp0_hit", False) and _target_hit(trade, context, trade.tp0):
         trade.tp0_hit = True
         result["action"] = Action.TP0.value
         result["notes"].append(
@@ -11999,7 +13007,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     _tp0_giveback_innovation_advisor(trade, context, result)
 
     # --- 1. Фіксація TP1 (v6.13 delayed protection, НЕ миттєвий BE) ---
-    if not result["closed"] and not trade.tp1_hit and _target_hit(side, context, trade.tp1):
+    if not result["closed"] and not trade.tp1_hit and _target_hit(trade, context, trade.tp1):
         trade.tp1_hit = True
         trade.tp1_hit_at = iso_now()
         c3 = (context.get("candles", {}) or {}).get("3m", []) or []
@@ -12012,7 +13020,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         )
 
     # --- 2. Фіксація TP2 ---
-    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(side, context, trade.tp2):
+    if not result["closed"] and trade.tp1_hit and not trade.tp2_hit and _target_hit(trade, context, trade.tp2):
         trade.tp2_hit = True
         trade.tp2_stop_locked = True
         # Так само, як і на TP1: не послаблюємо стоп, якщо структурний трейлінг
@@ -12026,7 +13034,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["notes"].append("TP2 досягнуто — стоп перенесено на TP1")
 
     # --- 3. Фіксація TP3 (Повне закриття) ---
-    if not result["closed"] and trade.tp2_hit and not trade.tp3_hit and _target_hit(side, context, trade.tp3):
+    if not result["closed"] and trade.tp2_hit and not trade.tp3_hit and _target_hit(trade, context, trade.tp3):
         trade.tp3_hit = True
         exit_price = round_price(trade.tp3)
         result["closed"] = True
@@ -12036,7 +13044,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["notes"].append(f"TP3 досягнуто ({exit_price}) — угоду повністю закрито")
         trade.status = "CLOSED"
         trade.last_action = Action.TP3.value
-        return result
+        return _finalize_closed_trade_result(trade, result)
 
     # --- Відображення рекомендованого стопу ---
     if not result["closed"]:
@@ -12050,20 +13058,8 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         elif trade.tp1_hit:
             result["recommended_stop_reason"] = "TP1 взято, але BE_DELAY_ENGINE ще не підтвердив перенос стопа"
 
-    # --- Структурна інвалідація ---
-    structural_break = False
-    if side == Side.LONG.value:
-        if price < trade.structural_invalidation:
-            structural_break = True
-    else:
-        if price > trade.structural_invalidation:
-            structural_break = True
-
-    if not result["closed"] and structural_break:
-        result["closed"] = True
-        result["action"] = Action.STOP.value
-        result["exit_price"] = round_price(price)
-        result["notes"].append("Структурна інвалідація (закриття 15M) — вихід")
+    # Structural invalidation is handled only by
+    # _decision_stop_breached_by_close(), which uses a post-open confirmed 15M close.
 
     trade.last_checked_3m_ts = int(now_utc().timestamp() * 1000)
     trade.last_action = result["action"]
@@ -12230,36 +13226,53 @@ def compute_analytics(journal: dict) -> dict:
     for key in {"closed_trades", "wins", "losses", "win_rate", "net_r", "expectancy_r", "by_family"}:
         existing.pop(key, None)
 
-    trades = journal.get("trades", [])
-    if not trades:
-        trade_stats = {"closed_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "net_r": 0.0, "expectancy_r": 0.0, "by_family": {}}
+    trades = [t for t in (journal.get("trades", []) or []) if isinstance(t, dict)]
+    r_rows = [(trade, _journal_result_r(trade)) for trade in trades]
+    r_rows = [(trade, result_r) for trade, result_r in r_rows if result_r is not None]
+    if not r_rows:
+        trade_stats = {
+            "closed_trades": 0,
+            "total_closed_records": len(trades),
+            "legacy_or_ambiguous_excluded": len(trades),
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "net_r": 0.0,
+            "expectancy_r": 0.0,
+            "by_family": {},
+        }
     else:
-        wins = sum(1 for t in trades if (t.get("result_pct") or 0) > 0)
-        closed = len(trades)
-        win_rate = round(wins / closed * 100, 1) if closed else 0.0
-        net_r = round(sum((t.get("result_pct") or 0) / 100 for t in trades), 2)
+        wins = sum(1 for _, result_r in r_rows if result_r > 0)
+        closed = len(r_rows)
+        win_rate = round(wins / closed * 100, 1)
+        net_r = round(sum(result_r for _, result_r in r_rows), 4)
         by_family: dict[str, dict[str, Any]] = {}
-        for trade in trades:
-            if not isinstance(trade, dict):
-                continue
+        for trade, result_r in r_rows:
             family = str(trade.get("setup_family") or SetupFamily.NONE.value)
-            row = by_family.setdefault(family, {"closed_trades": 0, "wins": 0, "losses": 0, "net_r": 0.0})
-            result_pct = safe_float(trade.get("result_pct"), 0.0)
+            row = by_family.setdefault(
+                family,
+                {"closed_trades": 0, "wins": 0, "losses": 0, "net_r": 0.0},
+            )
             row["closed_trades"] += 1
-            if result_pct > 0:
+            if result_r > 0:
                 row["wins"] += 1
             else:
                 row["losses"] += 1
-            row["net_r"] += result_pct / 100.0
+            row["net_r"] += result_r
         for row in by_family.values():
             family_closed = max(int(row["closed_trades"]), 1)
-            row["net_r"] = round(row["net_r"], 2)
+            row["net_r"] = round(row["net_r"], 4)
             row["win_rate"] = round(row["wins"] / family_closed * 100, 1)
-            row["expectancy_r"] = round(row["net_r"] / family_closed, 3)
+            row["expectancy_r"] = round(row["net_r"] / family_closed, 4)
         trade_stats = {
-            "closed_trades": closed, "wins": wins, "losses": closed - wins,
-            "win_rate": win_rate, "net_r": net_r,
-            "expectancy_r": round(net_r / max(closed, 1), 3),
+            "closed_trades": closed,
+            "total_closed_records": len(trades),
+            "legacy_or_ambiguous_excluded": len(trades) - closed,
+            "wins": wins,
+            "losses": closed - wins,
+            "win_rate": win_rate,
+            "net_r": net_r,
+            "expectancy_r": round(net_r / closed, 4),
             "by_family": by_family,
         }
 
@@ -12292,9 +13305,20 @@ def run_bot() -> None:
     if not context.get("price"):
         print("NO PRICE — abort")
         return
+    if not context.get("execution_price_trusted", False):
+        reason = (
+            f"EXECUTION BLOCKED: price_source={context.get('price_source')} "
+            f"quality={context.get('execution_price_quality')} venue={context.get('execution_venue')}"
+        )
+        print(reason)
+        append_history(state, {"type": "EXECUTION_BLOCKED", "reason": reason, "time": iso_now()})
+        save_state(state)
+        save_journal(journal)
+        return
     update_executive_shadow_outcomes(journal, context)
+    update_rejected_hypothesis_shadow_outcomes(journal, context)
     update_relaxed_continuation_shadow_outcomes(journal, context)
-    print(f"PRICE {context['price']:.4f} | {context.get('instrument_label', INSTRUMENT_LABEL)} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'TradingView')}")
+    print(f"PRICE {context['price']:.4f} | {context.get('instrument_label', INSTRUMENT_LABEL)} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'NONE')}")
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -12319,7 +13343,14 @@ def run_bot() -> None:
                 "opened_regime": active.opened_regime,
                 "entry_level": active.entry_level,
                 "quality": active.quality,
-                "result_pct": res.get("current_pct"),
+                "result_r": res.get("result_r"),
+                "realized_return_pct": res.get("realized_return_pct"),
+                "result_unit": res.get("result_unit", "R"),
+                "result_pct": res.get("realized_return_pct"),  # deprecated compatibility alias
+                "result_pct_semantics": "deprecated_alias_of_realized_return_pct",
+                "outcome_status": res.get("outcome_status", "RESOLVED"),
+                "ml_eligible": bool(res.get("ml_eligible", res.get("result_r") is not None)),
+                "realized_legs": list(res.get("realized_legs") or []),
                 "mfe_pct": res.get("best_pct"),
                 "mae_pct": res.get("worst_pct"),
                 "mfe_giveback_pct": res.get("giveback_pct"),
@@ -12380,6 +13411,12 @@ def run_bot() -> None:
     payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "scoring_mode": scoring_profile, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "live_entry_price_contract": live_entry_price_audit, "audit": decision.audit or {}}
     if decision.candidate:
         components = decision.candidate.score_components or {}
+        executive_report = (((decision.audit or {}).get("executive_director") or {}).get("report") or {}).get("executive_decision") or {}
+        evaluation_audit = executive_report.get("evaluation_bundle") or getattr(decision.candidate, "evaluation_bundle", {}) or components.get("evaluation_bundle", {})
+        conflict_audit = executive_report.get("conflict_resolution") or (evaluation_audit.get("conflict_report") if isinstance(evaluation_audit, dict) else {}) or {}
+        philosophy_audit = executive_report.get("trading_philosophy") or (evaluation_audit.get("philosophy") if isinstance(evaluation_audit, dict) else {}) or {}
+        risk_ledger_audit = executive_report.get("risk_ledger") or getattr(decision.candidate, "risk_ledger", {}) or {}
+        executive_audit = executive_report.get("audit") or {}
         payload.update({
             "setup_family": decision.candidate.setup_family,
             "ict_model": decision.candidate.ict_model,
@@ -12401,7 +13438,10 @@ def run_bot() -> None:
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
             "quality_dimensions": {
+                "setup_quality": int(getattr(decision.candidate, "setup_quality_score", 0) or components.get("setup_quality", canonical_quality)),
+                "timing_quality": int(getattr(decision.candidate, "timing_quality_score", 0) or components.get("timing_quality", 0)),
                 "entry_quality": int(getattr(decision.candidate, "entry_quality_score", 0) or components.get("entry_quality", canonical_quality)),
+                "thesis_confidence": round(safe_float(getattr(decision.candidate, "thesis_confidence_score", 0.0), 0.0), 2),
                 "durability_quality": int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
                 "exit_quality": int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
                 "mode": components.get("quality_dimensions_mode", "HEURISTIC_UNTIL_LEARNED"),
@@ -12410,6 +13450,11 @@ def run_bot() -> None:
             "trigger_revalidation": getattr(decision.candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}),
             "relaxed_continuation": getattr(decision.candidate, "relaxed_continuation_profile", {}) or components.get("relaxed_continuation", {}),
             "short_reversal_profile": getattr(decision.candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}),
+            "probe_conviction": components.get("probe_conviction", {}),
+            "quality_voting": getattr(decision.candidate, "quality_voting", {}) or components.get("quality_voting", {}),
+            "anti_fomo": components.get("anti_fomo", {}),
+            "thesis_confidence_decay": components.get("thesis_confidence_decay", {}),
+            "regime_memory": getattr(decision.candidate, "regime_memory_profile", {}) or components.get("regime_memory", {}),
             "execution_funnel": (decision.audit or {}).get("execution_funnel", {}),
             "thesis_key": decision.candidate.thesis_key,
             "thesis": decision.candidate.thesis,
@@ -12418,6 +13463,34 @@ def run_bot() -> None:
             "confirmation_pending": bool(getattr(decision.candidate, "confirmation_pending", False)),
             "confirmation_state": getattr(decision.candidate, "confirmation_state", {}) or {},
             "opportunity_status": getattr(decision.candidate, "opportunity_status", "") or (decision.audit or {}).get("opportunity_status", ""),
+            # v9 audit contract: enough data to replay candidate -> stage -> final risk.
+            "htf_fact": get_htf_fact(decision.candidate),
+            "evaluation_bundle": evaluation_audit,
+            "setup_quality": safe_float((evaluation_audit or {}).get("setup_quality"), 0.0),
+            "thesis_quality": safe_float((evaluation_audit or {}).get("thesis_quality"), 0.0),
+            "thesis_confidence": safe_float((evaluation_audit or {}).get("thesis_confidence"), 0.0),
+            "timing_quality": safe_float((evaluation_audit or {}).get("timing_quality"), 0.0),
+            "entry_quality": safe_float((evaluation_audit or {}).get("entry_quality"), 0.0),
+            "execution_readiness": safe_float((evaluation_audit or {}).get("execution_readiness"), 0.0),
+            "trade_quality": safe_float((evaluation_audit or {}).get("trade_quality"), 0.0),
+            "conflict_report": conflict_audit,
+            "philosophy_decision": philosophy_audit,
+            "risk_adjustment_ledger": risk_ledger_audit,
+            "stage_before_decision": executive_audit.get("previous_stage"),
+            "stage_after_decision": executive_report.get("allowed_stage") or executive_report.get("state"),
+            "required_next_event": executive_report.get("required_next_event"),
+            "blocking_reasons": executive_report.get("blocking_reasons", []),
+            "warning_reasons": executive_report.get("warning_reasons", []),
+            "final_position_risk_pct": safe_float(executive_report.get("final_risk_pct"), 0.0),
+            "decision_contract_versions": {
+                "htf": (get_htf_fact(decision.candidate) or {}).get("schema_version"),
+                "evaluation": (evaluation_audit or {}).get("schema_version"),
+                "conflict": (conflict_audit or {}).get("schema_version"),
+                "philosophy": (philosophy_audit or {}).get("schema_version"),
+                "risk": (risk_ledger_audit or {}).get("schema_version"),
+                "executive": executive_report.get("schema_version", "executive_decision_v9.0"),
+                "policy": ARCHITECTURE_VERSION,
+            },
         })
         if not (payload["quality"] == payload["decision_quality"] == payload["candidate_final_score"]):
             raise ValueError("Signal quality invariant violated")
@@ -12437,6 +13510,9 @@ def run_bot() -> None:
                 "decision_stop": decision.plan.decision_stop,
                 "catastrophic_stop": decision.plan.catastrophic_stop,
                 "breathing_profile": decision.plan.breathing_profile,
+                "plan_final_stage": decision.plan.final_stage,
+                "plan_immutable": decision.plan.immutable,
+                "plan_risk_ledger": decision.plan.risk_ledger,
             })
     entry_delay_audit: dict[str, Any] = {}
     if decision.action in EXECUTABLE_ENTRY_ACTIONS and decision.candidate and decision.plan:
@@ -12450,6 +13526,7 @@ def run_bot() -> None:
     state["latest_signal"] = payload
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"], "thesis_family_key": payload.get("thesis_family_key", "")})
     journal["signals"].append(payload)
+    record_rejected_hypothesis_shadows(journal, payload)
     record_executive_divergence(journal, payload)
     record_relaxed_continuation_shadow_experiment(journal, decision)
     if payload.get("score_features"):
@@ -13958,213 +15035,729 @@ def test_htf_quality_feature_is_direct_fact_projection() -> bool:
     return abs(safe_float(features.get("htf"), 0.0) - 0.37) < 1e-9
 
 
-def _run_self_test() -> bool:
-    """Швидкі, детерміновані, БЕЗ мережевих запитів перевірки фінансово-
-    критичної логіки — призначені для запуску в CI/деплой-пайплайні перед
-    тим, як бот піде в прод (напр. крок GitHub Actions перед run_bot()).
 
-    Це НЕ заміна pytest-покриття в tests/test_bot_oneshot.py (там повний
-    набір з детальними сценаріями для RR, stop-менеджменту, TP-прогресії
-    та CVD/flow-фіксу) — це компактний smoke-test без зовнішньої залежності
-    від pytest, який можна запустити навіть якщо pytest не встановлено
-    в рантайм-образі бота.
-    """
+def _v9_test_htf_fact(side: str = "LONG", market_bias: str = "BULLISH", *, alignment: Optional[float] = None) -> dict[str, Any]:
+    side = str(side).upper()
+    market_bias = str(market_bias).upper()
+    if alignment is None:
+        absolute = 1.0 if market_bias == "BULLISH" else -1.0 if market_bias == "BEARISH" else 0.25 if market_bias == "MIXED" else 0.0
+        alignment = absolute if side == Side.LONG.value else -absolute if side == Side.SHORT.value else 0.0
+    alignment = clamp(safe_float(alignment), -1.0, 1.0)
+    if alignment >= HTF_ALIGNMENT_STATE_THRESHOLD:
+        state = "ALIGNED"
+    elif alignment <= -HTF_ALIGNMENT_STATE_THRESHOLD:
+        state = "AGAINST"
+    elif abs(alignment) < 0.10:
+        state = "NEUTRAL"
+    else:
+        state = "MIXED"
+    return {
+        "market_bias": market_bias,
+        "candidate_side": side,
+        "alignment_score": alignment,
+        "state": state,
+        "timeframe_components": {
+            "15m": {"direction": alignment, "weight": HTF_TF15_WEIGHT},
+            "1h": {"direction": alignment, "weight": HTF_TF1H_WEIGHT},
+            "4h": {"direction": alignment, "weight": HTF_TF4H_WEIGHT},
+        },
+        "confidence": abs(alignment) * 100.0,
+        "schema_version": "htf_fact_v9.0",
+        "score_base": HTF_SCORE_MID + alignment * (HTF_SCORE_MAX - HTF_SCORE_MID if alignment >= 0 else HTF_SCORE_MID - HTF_SCORE_MIN),
+        "ml_feature": (alignment + 1.0) / 2.0,
+    }
+
+
+def _v9_test_candidate(
+    *,
+    side: str = Side.LONG.value,
+    market_bias: str = "BULLISH",
+    setup_type: str = SetupType.PULLBACK_CONTINUATION.value,
+    setup_family: str = SetupFamily.CONTINUATION.value,
+    score: int = 84,
+) -> Candidate:
+    fact = _v9_test_htf_fact(side, market_bias)
+    directional = {
+        "higher_high": side == Side.LONG.value,
+        "higher_low": side == Side.LONG.value,
+        "lower_high": side == Side.SHORT.value,
+        "lower_low": side == Side.SHORT.value,
+        "score": 88,
+    }
+    candidate = Candidate(
+        side=side,
+        setup_type=setup_type,
+        setup_family=setup_family,
+        raw_score=score,
+        final_score=score,
+        score_components={
+            "htf_fact": fact,
+            "str_score": 22,
+            "liq_score": 22,
+            "trig_score": 22,
+            "directional_structure": directional,
+            "features": {
+                "structure": 0.92,
+                "liquidity": 0.92,
+                "trigger": 0.92,
+                "regime_fit": 0.90,
+            },
+            "transaction_costs": {"spread_r": 0.04, "fee_r": 0.03, "slippage_r": 0.03},
+            "regime": Regime.NORMAL.value,
+            "direction_performance": {"risk_multiplier": 1.0},
+            "learned_weight": 0.40,
+            "probability": 0.72,
+        },
+        evidence_families=["STRUCTURE:MSS", "LIQUIDITY:SWEEP", "PATTERN:OB", "FLOW:DISPLACEMENT"],
+        confirmations=["fresh directional close", "reclaim accepted"],
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        trigger_level=100.0,
+        invalidation_level=99.0,
+        target_levels=[102.0, 103.5],
+        execution_lane=ExecutionLane.STANDARD_CONFIRMED.value,
+        confirmation_tier=ConfirmationTier.HIGH_QUALITY.value,
+        ict_model="OB_RECLAIM",
+        trigger_ts=1_700_000_000_000,
+        thesis_key="v9-test-thesis",
+        thesis="liquidity sweep followed by directional reclaim",
+        acceptance_quality=86,
+        execution_source=ExecutionSource.LIVE_3M.value,
+        entry_stage=EntryStage.PROBE.value,
+        target_magnet_score=3.5,
+        setup_quality_score=86,
+        execution_quality_score=86,
+        trade_plan_quality_score=82,
+        active_model_count=3,
+        revalidation_profile={"state": "CURRENT", "entry_supported": True},
+        entry_freshness_score=92.0,
+        entry_freshness_profile={"score": 92.0, "extended": False, "warning": False, "distance_from_zone_atr": 0.35},
+    )
+    return candidate
+
+
+def _v9_test_plan(*, rr1: float = 2.0, target_basis: str = "PDH liquidity magnet", risk: float = 0.12) -> TradePlan:
+    return TradePlan(
+        entry=100.0,
+        stop=99.0,
+        tp1=100.0 + rr1,
+        tp2=103.5,
+        tp3=105.0,
+        risk_pct=risk,
+        rr1=rr1,
+        rr2=3.5,
+        rr3=5.0,
+        position_risk_pct=risk,
+        invalidation="15M close below structural low",
+        stop_basis="15M structural invalidation beyond noise",
+        target_basis=target_basis,
+        structural_invalidation=98.9,
+        trigger_level=100.0,
+        execution_ready=True,
+        entry_stage=EntryStage.PROBE.value,
+        execution_source=ExecutionSource.LIVE_3M.value,
+        breathing_profile={"risk_size_multiplier": 0.80},
+        valid=True,
+    )
+
+
+def _v9_stats_journal(result_r: float, count: int = 60, family: str = SetupFamily.CONTINUATION.value) -> dict[str, Any]:
+    return {
+        "trades": [
+            {
+                "id": f"v9-stat-{i}",
+                "signal_id": f"v9-signal-{i}",
+                "setup_type": SetupType.PULLBACK_CONTINUATION.value,
+                "setup_family": family,
+                "result_r": result_r,
+                "closed_at": (now_utc() - timedelta(days=1)).isoformat(),
+                "position_risk_pct": 0.0,
+            }
+            for i in range(count)
+        ]
+    }
+
+
+def _v9_conflict_report(
+    *,
+    actual: bool = False,
+    severity: float = 0.0,
+    uncertainty: float = 0.0,
+    capital_blocked: bool = False,
+    axes: Optional[list[str]] = None,
+) -> ConflictReport:
+    return ConflictReport(
+        net_market_preference=5.0,
+        net_execution_preference=5.0,
+        actual_conflict=actual,
+        conflict_axes=list(axes or ([] if not actual else [ConflictAxis.DIRECTION.value])),
+        conflict_pairs=[] if not actual else [{"axis": (axes or [ConflictAxis.DIRECTION.value])[0], "severity": severity}],
+        conflict_severity=severity,
+        uncertainty_level=uncertainty,
+        capital_blocked=capital_blocked,
+        consensus={"market": "POSITIVE_CONSENSUS", "execution": "POSITIVE_CONSENSUS"},
+        effective_votes=[],
+    )
+
+
+def _v9_philosophy(
+    recommendation: str = "ACCEPT",
+    statistical_status: str = "PROVEN_POSITIVE",
+) -> PhilosophyDecision:
+    return PhilosophyDecision(
+        recommendation=recommendation,
+        edge_quality=90.0,
+        asymmetry_quality=90.0,
+        regime_fit=90.0,
+        evidence_independence=90.0,
+        statistical_status=statistical_status,
+        failed_principles=[],
+        reason_codes=[],
+        audit={},
+    )
+
+
+def _v9_bundle(
+    thesis: float,
+    execution: float,
+    trade: float,
+    *,
+    recommendation: str = "ACCEPT",
+    statistical_status: str = "PROVEN_POSITIVE",
+    conflict: Optional[ConflictReport] = None,
+    data_quality: float = 100.0,
+    chase_safety: float = 100.0,
+) -> EvaluationBundle:
+    return EvaluationBundle(
+        thesis_quality=thesis,
+        execution_readiness=execution,
+        trade_quality=trade,
+        conflict_report=conflict or _v9_conflict_report(),
+        philosophy=_v9_philosophy(recommendation, statistical_status),
+        data_quality=data_quality,
+        raw_components={"execution": {"chase_safety": chase_safety}},
+        feature_ownership={
+            "thesis_quality": ["structure", "liquidity_event", "regime_fit", "htf_alignment", "directional_thesis", "independent_pattern_evidence"],
+            "execution_readiness": ["live_trigger", "revalidation", "freshness", "chase_safety", "entry_distance", "acceptance", "confirmation_tier", "execution_source"],
+            "trade_quality": ["stop_quality", "realistic_rr", "target_magnet", "cost_realism", "capital_availability", "exposure_correlation", "stage_cap_compliance"],
+        },
+    )
+
+
+def _v9_stage_history(candidate: Candidate, state: str, *, same_evidence: bool = False) -> list[dict[str, Any]]:
+    return [{
+        "state": state,
+        "evidence_fingerprint": _evidence_fingerprint(candidate) if same_evidence else "older-evidence",
+        "thesis_key": candidate.thesis_key,
+    }]
+
+
+def v9_regression_checks() -> list[tuple[str, bool]]:
     checks: list[tuple[str, bool]] = []
 
-    checks.append((
-        "HTF one fact resolves 4H vs lower-TF contradiction",
-        test_htf_single_fact_mixed_lower_tfs_vs_4h(),
-    ))
-    checks.append((
-        "HTF one fact aligns score ML and advisor",
-        test_htf_single_fact_full_alignment_consistency(),
-    ))
-    checks.append((
-        "HTF one fact aligns opposition score ML and advisor",
-        test_htf_single_fact_full_opposition_consistency(),
-    ))
-    checks.append((
-        "HTF ML feature is direct fact projection",
-        test_htf_quality_feature_is_direct_fact_projection(),
-    ))
+    # Conflict Engine: consensus, uncertainty, true opposition and capital veto.
+    negative = conflict_resolution_engine([
+        advisory_report("HTF_ANALYST", "AGAINST", 80, -8, axes=[ConflictAxis.DIRECTION], horizon="shared"),
+        advisory_report("ICT_ANALYST", "AGAINST", 80, -8, axes=[ConflictAxis.MARKET_THESIS], horizon="shared"),
+        advisory_report("PRICE_STRUCTURE_ADVISOR", "AGAINST", 80, -8, axes=[ConflictAxis.STRUCTURE], horizon="shared"),
+    ])
+    checks.append(("Conflict: negative consensus is not conflict", not negative["actual_conflict"] and negative["consensus"]["market"] == "NEGATIVE_CONSENSUS"))
 
-    checks.append(("true EMA responds faster than arithmetic mean", test_true_ema_responds_to_v_reversal()))
-    checks.append(("raw HTF score cannot invent direction", test_get_htf_state_does_not_infer_direction_from_raw_score()))
-    checks.append(("reversal drift guard covers SHORT reversal models", test_reversal_drift_guard_covers_short_models()))
-    checks.append(("counter-evidence keeps reversal drift guard soft", test_reversal_drift_guard_is_soft_with_counterevidence()))
-    checks.append(("detector-backed pattern bonus avoids double-counting", test_detector_backed_pattern_bonus_not_double_counted()))
-    checks.append(("pattern ML feature preserves strong ordering", test_pattern_feature_preserves_strong_candidate_ordering()))
-    checks.append(("kernel replay and deterministic risk stability are wired", test_kernel_replay_and_risk_stability_are_wired()))
+    positive = conflict_resolution_engine([
+        advisory_report("HTF_ANALYST", "SUPPORT", 80, 8, axes=[ConflictAxis.DIRECTION], horizon="shared"),
+        advisory_report("ICT_ANALYST", "SUPPORT", 80, 8, axes=[ConflictAxis.MARKET_THESIS], horizon="shared"),
+        advisory_report("PRICE_STRUCTURE_ADVISOR", "SUPPORT", 80, 8, axes=[ConflictAxis.STRUCTURE], horizon="shared"),
+    ])
+    checks.append(("Conflict: positive consensus is not conflict", not positive["actual_conflict"] and positive["consensus"]["market"] == "POSITIVE_CONSENSUS"))
 
-    checks.append((
-        "non-reversal SHORT receives neutral reversal advisor",
-        test_non_reversal_short_isolated_from_reversal_advisor(),
-    ))
-    checks.append((
-        "non-reversal SHORT bypasses reversal conflict overlay",
-        test_non_reversal_short_isolated_from_reversal_conflict_overlay(),
-    ))
-    checks.append((
-        "dedicated reversal SHORT retains reversal advisor",
-        test_reversal_short_keeps_reversal_advisor_scope(),
-    ))
+    directional = conflict_resolution_engine([
+        advisory_report("HTF_ANALYST", "SUPPORT", 85, 9, axes=[ConflictAxis.DIRECTION], horizon="shared"),
+        advisory_report("PRICE_STRUCTURE_ADVISOR", "AGAINST", 82, -9, axes=[ConflictAxis.DIRECTION], horizon="shared"),
+    ])
+    checks.append(("Conflict: HTF vs structure creates directional conflict", directional["actual_conflict"] and ConflictAxis.DIRECTION.value in directional["conflict_axes"]))
 
-    checks.append(("live executable entry uses current market price", test_live_entry_price_contract_prefers_market_price()))
-    checks.append(("short reversal soft integration", test_short_reversal_engine_soft_integration()))
-    checks.append(("short reversal remains under executive authority", test_short_reversal_does_not_bypass_authority()))
-    checks.append(("test_conflict_blocks_bad_trade", test_conflict_blocks_bad_trade()))
-    checks.append(("test_philosophy_rejects_without_edge", test_philosophy_rejects_without_edge()))
-    checks.append(("test_risk_manager_can_block", test_risk_manager_can_block()))
-    checks.append(("test_probe_reduced_on_hard_conflict", test_probe_reduced_on_hard_conflict()))
-    checks.append(("test_fresh_probe_entry_below_68", test_fresh_probe_entry_below_68()))
-    checks.append(("test_probe_requires_live_trigger", test_probe_requires_live_trigger()))
-    checks.append(("test_probe_requires_execution_ready", test_probe_requires_execution_ready()))
-    checks.append(("weak 25–31% CAUTION does not create hard conflict", test_weak_cautions_do_not_create_hard_conflict()))
-    checks.append(("score 68 continuation is not cliff-blocked", test_score_68_continuation_is_not_cliff_blocked()))
-    checks.append(("score 67 gray zone is strictly capped", test_score_67_gray_zone_is_strictly_capped()))
-    checks.append(("stale continuation reanchors to fresh zone", test_continuation_reanchors_to_fresh_zone()))
-    checks.append(("no-pullback continuation is probe-ready", test_no_pullback_model_is_probe_ready()))
-    checks.append(("selected+eligible NO_SETUP raises audit alert", test_selected_eligible_no_setup_alert()))
-    checks.append(("shadow audit tracks path without claiming profit", test_shadow_outcome_tracks_path_without_claiming_profit()))
-    checks.append(("price structure advisor is candidate-side aware", test_price_structure_advisor_is_directional()))
-    checks.append(("TRANSITION session mean waits one confirmation bar", test_transition_session_mean_waits_one_bar()))
-    checks.append(("strong-trend reanchor permits guarded 2/6", test_strong_trend_reanchor_uses_two_of_six()))
-    checks.append(("entry timing compares actual entry with primary thesis signal", test_entry_confirmation_delay_uses_primary_signal()))
-    checks.append(("confirmation-pending state sends an early alert", test_confirmation_pending_message_is_early_alert()))
-    checks.append(("shadow policy deduplicates 78.685/78.105 geometry", test_shadow_policy_review_deduplicates_geometry()))
-    checks.append(("strict reanchor/momentum can satisfy stale revalidation", test_revalidation_accepts_strict_reanchor_or_momentum()))
-    checks.append(("build-plan revalidation gate ORs strict alternative support", test_build_plan_revalidation_gate_uses_strict_alternative()))
-    checks.append(("pre-confirmation promotes after confirming bar", test_preconfirmation_promotes_after_confirming_bar()))
-    checks.append(("daily entry-supported metric survives analytics recompute", test_entry_supported_daily_metric_and_custom_analytics_survive()))
-    checks.append(("TP0 >=50% MFE giveback activates breakeven protection", test_tp0_giveback_activates_breakeven_protection()))
-    checks.append(("NOT_LEARNED scoring is explicit", test_not_learned_scoring_is_explicit()))
-    checks.append(("execution path health separates standard/fallback", test_execution_path_health_counts_standard_and_fallback()))
-    checks.append(("relaxed continuation remains shadow-only before graduation", test_relaxed_profile_is_shadow_only_and_strict_unchanged()))
-    checks.append(("relaxed shadow deduplicates thesis geometry", test_relaxed_shadow_deduplicates_thesis_geometry()))
-    checks.append(("relaxed policy graduates only on positive counterfactuals", test_relaxed_policy_graduates_only_on_positive_counterfactuals()))
-    checks.append(("relaxed live override is tiny PROBE_ONLY", test_relaxed_live_override_is_tiny_probe_only()))
-    checks.append(("execution funnel separates revalidation from executive", test_execution_funnel_separates_revalidation_and_executive()))
+    timing = conflict_resolution_engine([
+        advisory_report("ICT_ANALYST", "SUPPORT", 85, 9, axes=[ConflictAxis.MARKET_THESIS], horizon="setup"),
+        advisory_report("EXECUTION_ANALYST", "AGAINST", 80, -8, axes=[ConflictAxis.EXECUTION_TIMING], horizon="live"),
+    ])
+    checks.append(("Conflict: valid thesis vs blocked execution is timing conflict", timing["actual_conflict"] and timing["conflict_axes"] == [ConflictAxis.EXECUTION_TIMING.value]))
 
-    # --- RR floors ---
+    caution = conflict_resolution_engine([
+        advisory_report("HTF_ANALYST", "CAUTION", 80, -8, axes=[ConflictAxis.DIRECTION]),
+        advisory_report("ICT_ANALYST", "CAUTION", 75, -7, axes=[ConflictAxis.MARKET_THESIS]),
+        advisory_report("EXECUTION_ANALYST", "CAUTION", 70, -6, axes=[ConflictAxis.EXECUTION_TIMING]),
+    ])
+    checks.append(("Conflict: weak caution never creates hard conflict", not caution["actual_conflict"] and caution["uncertainty_level"] > 0))
+
+    risk_veto = conflict_resolution_engine([
+        advisory_report("ICT_ANALYST", "SUPPORT", 85, 9, axes=[ConflictAxis.MARKET_THESIS]),
+        advisory_report("RISK_MANAGER", "AGAINST", 90, -25, axes=[ConflictAxis.CAPITAL]),
+    ])
+    checks.append(("Conflict: risk veto remains separate from market score", risk_veto["capital_blocked"] and not risk_veto["actual_conflict"] and risk_veto["net_market_preference"] > 0))
+
+    # HTF schema: side-relative semantics and UNKNOWN preservation.
+    for side, bias, expected in [
+        (Side.LONG.value, "BULLISH", "aligned"),
+        (Side.SHORT.value, "BULLISH", "against"),
+        (Side.LONG.value, "BEARISH", "against"),
+        (Side.SHORT.value, "BEARISH", "aligned"),
+    ]:
+        c = _v9_test_candidate(side=side, market_bias=bias)
+        checks.append((f"HTF: {side}/{bias} -> {expected.upper()}", get_htf_state(c) == expected and get_htf_fact(c)["valid"]))
+
+    mixed = _v9_test_candidate()
+    mixed.score_components["htf_fact"] = _v9_test_htf_fact(Side.LONG.value, "MIXED", alignment=0.25)
+    checks.append(("HTF: mixed timeframes remain MIXED", get_htf_state(mixed) == "mixed"))
+    unknown = Candidate(side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value, setup_family=SetupFamily.CONTINUATION.value, raw_score=70, final_score=70)
+    checks.append(("HTF: missing schema returns UNKNOWN", get_htf_state(unknown) == "unknown" and not get_htf_fact(unknown)["valid"]))
+
+    reversal = _v9_test_candidate(side=Side.SHORT.value, market_bias="BULLISH", setup_type=SetupType.MSS_REVERSAL_SHORT.value, setup_family=SetupFamily.STRUCTURAL_TRANSITION.value)
+    reversal.ict_model = SetupType.MSS_REVERSAL_SHORT.value
+    reversal.short_reversal_profile = {"counter_htf_evidence": True, "structural_counter_evidence": True, "mss_quality": 80, "failure_quality": 70}
+    reversal.score_components["reversal_drift_guard"] = {"drift_atr": 0.8}
+    rev_known = canonical_reversal_evidence(reversal)
+    checks.append(("HTF reversal: counter-HTF evidence uses canonical schema", rev_known["counter_htf_evidence"] is True and rev_known["drift_atr"] == 0.8))
+    reversal.short_reversal_profile = {}
+    reversal.score_components.pop("reversal_drift_guard", None)
+    rev_unknown = canonical_reversal_evidence(reversal)
+    checks.append(("HTF reversal: missing counter evidence stays UNKNOWN", rev_unknown["counter_htf_evidence"] == "UNKNOWN" and rev_unknown["drift_atr"] == "UNKNOWN"))
+
+    # Trading Philosophy: edge, asymmetry, regime and statistics.
+    plan = _v9_test_plan()
+    no_edge = _v9_test_candidate()
+    no_edge.evidence_families = []
+    no_edge.confirmations = []
+    no_edge.thesis = ""
+    no_edge.invalidation_level = 0.0
+    no_edge_plan = _v9_test_plan()
+    no_edge_plan.structural_invalidation = 0.0
+    no_edge_plan.invalidation = ""
+    p = trading_philosophy_layer(no_edge, {}, no_edge_plan)
+    checks.append(("Philosophy: high score without edge is rejected", p["recommendation"] == "REJECT_NO_EDGE" and "NO_CONCRETE_EDGE" in p["reason_codes"]))
+
+    no_target = _v9_test_candidate()
+    no_target.target_magnet_score = 0.0
+    no_target.target_levels = []
+    p = trading_philosophy_layer(no_target, {}, _v9_test_plan(target_basis=""))
+    checks.append(("Philosophy: good RR without logical target is rejected", p["recommendation"] == "REJECT_BAD_ASYMMETRY" and "NO_LOGICAL_TARGET" in p["reason_codes"]))
+
+    small_sample = trading_philosophy_layer(_v9_test_candidate(), _v9_stats_journal(0.5, 10), plan)
+    checks.append(("Philosophy: positive small sample is ACCEPT_STAGED", small_sample["recommendation"] == "ACCEPT_STAGED" and small_sample["statistical_status"] == "UNPROVEN"))
+
+    negative_stats = trading_philosophy_layer(_v9_test_candidate(), _v9_stats_journal(-0.4, SCORING_MODEL_MIN_FAMILY_TRADES), plan)
+    checks.append(("Philosophy: sufficient negative expectancy blocks CORE", negative_stats["recommendation"] == "REJECT_NO_EDGE" and "NEGATIVE_EXPECTANCY" in negative_stats["reason_codes"]))
+
+    reversal_no_inv = _v9_test_candidate(side=Side.SHORT.value, market_bias="BULLISH", setup_type=SetupType.MSS_REVERSAL_SHORT.value, setup_family=SetupFamily.STRUCTURAL_TRANSITION.value)
+    reversal_no_inv.invalidation_level = 0.0
+    reversal_plan = _v9_test_plan()
+    reversal_plan.structural_invalidation = 0.0
+    reversal_plan.invalidation = ""
+    p = trading_philosophy_layer(reversal_no_inv, {}, reversal_plan)
+    checks.append(("Philosophy: reversal without invalidation is rejected", p["recommendation"] == "REJECT_NO_EDGE" and "NO_INVALIDATION" in p["reason_codes"]))
+
+    regime_bad = _v9_test_candidate()
+    regime_bad.score_components["regime_conflict"] = True
+    regime_bad.score_components["features"]["regime_fit"] = 0.50
+    p = trading_philosophy_layer(regime_bad, _v9_stats_journal(0.4, 10), plan)
+    checks.append(("Philosophy: continuation in incompatible regime waits", p["recommendation"] == "WAIT_FOR_EVIDENCE" and "REGIME_MISMATCH" in p["reason_codes"]))
+
+    # Three independent scores and feature ownership.
+    score_candidate = _v9_test_candidate()
+    score_bundle = build_evaluation_bundle(score_candidate, plan, _v9_stats_journal(0.5, 10), {})
+    owners = {k: set(v) for k, v in score_bundle.feature_ownership.items()}
+    pairwise_disjoint = not (owners["thesis_quality"] & owners["execution_readiness"] or owners["thesis_quality"] & owners["trade_quality"] or owners["execution_readiness"] & owners["trade_quality"])
+    checks.append(("Evaluation: three score feature sets are disjoint", pairwise_disjoint))
+    checks.append(("Evaluation: HTF belongs only to Thesis Quality", "htf_alignment" in owners["thesis_quality"] and all("htf" not in x for x in owners["execution_readiness"] | owners["trade_quality"])))
+    checks.append(("Evaluation: live trigger belongs to Execution Readiness", "live_trigger" in owners["execution_readiness"] and "live_trigger" not in owners["thesis_quality"] | owners["trade_quality"]))
+    checks.append(("Evaluation: RR and capital belong to Trade Quality", {"realistic_rr", "capital_availability"}.issubset(owners["trade_quality"])))
+    checks.append(("Evaluation: raw score components are journalable", all(k in score_bundle.raw_components for k in ["thesis", "execution", "trade", "htf_fact", "schema_validation"])))
+
+    # Risk ledger: exactly once, idempotent, order independent, capped.
+    risk_candidate = _v9_test_candidate()
+    risk_candidate.score_components["learned_weight"] = 0.0
+    risk_candidate.innovation_profile = {"risk_multiplier": 0.85}
+    risk_candidate.revalidation_profile = {"state": "STALE", "entry_supported": True}
+    risk_candidate.entry_freshness_profile = {"score": 60.0, "warning": True, "extended": False}
+    risk_candidate.score_components["reversal_drift_guard"] = {"risk_multiplier": 0.80, "drift_atr": 0.8}
+    ledger1 = build_risk_adjustment_ledger(risk_candidate, {}, stage=EntryStage.CORE.value, geometry_multiplier=0.80)
+    ledger2 = build_risk_adjustment_ledger(risk_candidate, {}, stage=EntryStage.CORE.value, geometry_multiplier=0.80)
+    sources = [x.source for x in ledger1.adjustments]
+    for source in ["htf_alignment", "entry_freshness", "reversal_drift", "innovation"]:
+        checks.append((f"Risk: {source} applied once", sources.count(source) == 1 and not ledger1.duplicate_sources))
+    checks.append(("Risk: calculation is idempotent", asdict(ledger1) == asdict(ledger2)))
+
+    reordered = _v9_test_candidate()
+    reordered.score_components = dict(reversed(list(risk_candidate.score_components.items())))
+    reordered.innovation_profile = dict(risk_candidate.innovation_profile)
+    reordered.revalidation_profile = dict(risk_candidate.revalidation_profile)
+    reordered.entry_freshness_profile = dict(risk_candidate.entry_freshness_profile)
+    reordered.execution_source = risk_candidate.execution_source
+    ledger_order = build_risk_adjustment_ledger(reordered, {}, stage=EntryStage.CORE.value, geometry_multiplier=0.80)
+    checks.append(("Risk: result is independent of module/component call order", ledger_order.final_position_risk_pct == ledger1.final_position_risk_pct))
+    checks.append(("Risk: stage cap cannot be exceeded", ledger1.final_position_risk_pct <= CORE_RISK_PCT + 1e-9))
+    exhausted = {"trades": [{"id": "used", "signal_id": "used", "closed_at": iso_now(), "position_risk_pct": DAILY_RISK_CAP - 0.03}]}
+    ledger_cap = build_risk_adjustment_ledger(_v9_test_candidate(), {}, stage=EntryStage.CORE.value, journal=exhausted, geometry_multiplier=1.0)
+    checks.append(("Risk: daily cap cannot be exceeded", ledger_cap.final_position_risk_pct <= 0.03 + 1e-9 and ledger_cap.capital_cap_pct <= 0.03 + 1e-9))
+    path = " | ".join(ledger1.calculation_path)
+    checks.append(("Risk: geometry is applied after confidence", path.index("after_confidence") < path.index("geometry_multiplier") < path.index("after_geometry")))
+    checks.append(("Risk: legacy aggregate multipliers are audit-only", all(not x.applied for x in ledger1.adjustments if x.source in {"professional_kernel_aggregate", "legacy_candidate_risk_multiplier"})))
+
+    # Staged decisions and transitions.
+    stage_candidate = _v9_test_candidate()
+    watch_probe = build_staged_executive_decision(stage_candidate, _v9_bundle(60, 60, 60, recommendation="ACCEPT_STAGED", statistical_status="UNPROVEN"), _v9_stage_history(stage_candidate, ExecutiveDecisionState.WATCH.value))
+    checks.append(("Stage: WATCH -> PROBE", watch_probe.state == EntryStage.PROBE.value))
+
+    stage_candidate.trigger_ts += 1
+    probe_acceptance = build_staged_executive_decision(stage_candidate, _v9_bundle(75, 75, 70), _v9_stage_history(stage_candidate, EntryStage.PROBE.value))
+    checks.append(("Stage: PROBE -> ACCEPTANCE", probe_acceptance.state == EntryStage.ACCEPTANCE.value))
+
+    stage_candidate.trigger_ts += 1
+    stage_candidate.confirmation_state = {"retest_confirmed": True}
+    acceptance_add = build_staged_executive_decision(stage_candidate, _v9_bundle(75, 75, 70), _v9_stage_history(stage_candidate, EntryStage.ACCEPTANCE.value))
+    checks.append((
+        "Stage: ACCEPTANCE -> ADD_POSITION executes",
+        acceptance_add.state == EntryStage.ADD_POSITION.value and acceptance_add.allow_execution is True,
+    ))
+    add_ledger = build_risk_adjustment_ledger(
+        stage_candidate,
+        {},
+        stage=EntryStage.ADD_POSITION.value,
+        journal={},
+        state={},
+        geometry_multiplier=1.0,
+    )
+    checks.append(("Stage: ADD_POSITION receives positive risk", add_ledger.final_position_risk_pct > 0.0))
+
+    stage_candidate.trigger_ts += 1
+    stage_candidate.confirmation_state = {}
+    acceptance_core = build_staged_executive_decision(stage_candidate, _v9_bundle(85, 85, 80), _v9_stage_history(stage_candidate, EntryStage.ACCEPTANCE.value))
+    checks.append(("Stage: ACCEPTANCE -> CORE", acceptance_core.state == EntryStage.CORE.value))
+
+    stage_candidate.confirmation_pending = True
+    probe_wait = build_staged_executive_decision(stage_candidate, _v9_bundle(75, 75, 70), _v9_stage_history(stage_candidate, EntryStage.PROBE.value))
+    checks.append(("Stage: PROBE -> WAIT_CONFIRMATION", probe_wait.state == ExecutiveDecisionState.WAIT_CONFIRMATION.value and probe_wait.required_next_event is not None))
+    stage_candidate.confirmation_pending = False
+
+    weak_conflict = _v9_conflict_report(actual=False, uncertainty=80.0)
+    core_hold = build_staged_executive_decision(stage_candidate, _v9_bundle(50, 45, 55, recommendation="ACCEPT_STAGED", statistical_status="UNPROVEN", conflict=weak_conflict), _v9_stage_history(stage_candidate, EntryStage.CORE.value))
+    checks.append(("Stage: CORE is not downgraded by weak caution", core_hold.state == EntryStage.CORE.value and "CORE_HELD_THROUGH_WEAK_CAUTION" in core_hold.warning_reasons))
+
+    invalidated = _v9_test_candidate()
+    invalidated.confirmation_state = {"thesis_invalidated": True}
+    rejected = build_staged_executive_decision(invalidated, _v9_bundle(90, 90, 90), _v9_stage_history(invalidated, EntryStage.ACCEPTANCE.value))
+    checks.append(("Stage: any stage -> REJECT after thesis invalidation", rejected.state == ExecutiveDecisionState.REJECT.value and "THESIS_INVALIDATED" in rejected.blocking_reasons))
+
+    no_new = _v9_test_candidate()
+    no_upgrade = build_staged_executive_decision(no_new, _v9_bundle(90, 90, 90), _v9_stage_history(no_new, EntryStage.PROBE.value, same_evidence=True))
+    checks.append(("Stage: no upgrade without new evidence", no_upgrade.state == EntryStage.PROBE.value and "NO_STAGE_UPGRADE_WITHOUT_NEW_EVIDENCE" in no_upgrade.warning_reasons))
+
+    # End-to-end Executive contract: stage first, ledger second, immutable plan.
+    exec_candidate = _v9_test_candidate()
+    exec_plan = _v9_test_plan()
+    result = executive_decision_engine(exec_candidate, existing_action=Action.ENTRY.value, plan=exec_plan, journal=_v9_stats_journal(0.5, 10), state={})
+    contract = result["executive_decision"]
+    checks.append(("Executive: legacy action cannot override staged decision", result["legacy_action_ignored"] == Action.ENTRY.value and result["action"] == Action.PROBE_ENTRY.value))
+    checks.append(("Executive: final risk exists once and plan becomes immutable", exec_plan.immutable and exec_plan.position_risk_pct == contract["final_risk_pct"] and bool(exec_plan.risk_ledger)))
+    checks.append(("Executive: machine-readable reason codes are preserved", isinstance(contract["blocking_reasons"], list) and isinstance(contract["warning_reasons"], list)))
+
+    # v9.1: differentiated probes, decay, entry-quality pricing and quality voting.
+    probe_c = _v9_test_candidate()
+    probe_c.live_3m_trigger_ready = True
+    high_probe = classify_probe_conviction(probe_c, 85, 80, 75)
+    checks.append(("v9.1 Probe: aligned execution-ready probe gets high conviction", high_probe["tier"] == ProbeConvictionTier.HIGH.value and abs(high_probe["base_risk_pct"] - HIGH_CONVICTION_PROBE_RISK_PCT) < 1e-9))
+    probe_c.score_components["htf_fact"] = _v9_test_htf_fact(Side.LONG.value, "BULLISH", alignment=-0.8)
+    probe_c.score_components["htf_fact"]["state"] = "AGAINST"
+    probe_c.short_reversal_profile = {"counter_htf_evidence": True, "structural_counter_evidence": True}
+    experimental = classify_probe_conviction(probe_c, 70, 60, 50)
+    checks.append(("v9.1 Probe: counter-HTF reversal is experimental", experimental["tier"] == ProbeConvictionTier.EXPERIMENTAL.value and abs(experimental["base_risk_pct"] - EXPERIMENTAL_PROBE_RISK_PCT) < 1e-9))
+
+    decay_c = _v9_test_candidate()
+    decay_c.stage_history = [{"time": (now_utc() - timedelta(hours=12)).isoformat(), "thesis_key": decay_c.thesis_key}]
+    decay_c.trigger_age_minutes = 999
+    decay = thesis_confidence_decay_profile(decay_c, 82, {})
+    checks.append(("v9.1 Confidence: 12h unconfirmed thesis decays near 55", 54.0 <= decay["confidence"] <= 56.0))
+    checks.append(("v9.1 Entry quality: score 45 prices risk near x0.4", abs(entry_quality_risk_multiplier(45) - ENTRY_QUALITY_LOW_RISK_MULT) < 1e-9))
+    checks.append(("v9.1 Voting: support/doubt/silent are explicit", all(k in positive["quality_voting"] for k in ["supporting", "doubting", "silent", "net_conviction"])))
+
+    rejected_journal = {"rejected_hypothesis_shadows": [{
+        "status": "OPEN", "opened_at": (now_utc() - timedelta(minutes=10)).isoformat(),
+        "expires_at": (now_utc() + timedelta(hours=1)).isoformat(), "side": Side.LONG.value,
+        "entry": 100.0, "stop": 99.0, "tp0": 100.7, "tp1": 101.5, "tp2": 102.5, "tp3": 104.0,
+        "last_processed_ts": 0, "max_target_hit": "NONE", "tp_sequence": [],
+    }]}
+    shadow_context = {"price": 101.6, "candles": {"3m": [Candle(ts=int((now_utc() - timedelta(minutes=5)).timestamp()*1000), open=100.0, high=101.6, low=99.8, close=101.4, confirmed=True)]}}
+    update_rejected_hypothesis_shadow_outcomes(rejected_journal, shadow_context)
+    rejected_shadow = rejected_journal["rejected_hypothesis_shadows"][0]
+    checks.append(("v9.1 Rejections: shadow audit records MFE/MAE and TP sequence", rejected_shadow["mfe_r"] >= 1.5 and "TP1" in rejected_shadow["tp_sequence"] and rejected_shadow["rejection_correctness"] == "LIKELY_TOO_STRICT"))
+
+    return checks
+
+
+def _run_self_test() -> bool:
+    """Deterministic offline regression suite for v9 architecture and retained mechanics."""
+    checks: list[tuple[str, bool]] = []
+
+    # Retained mechanics that are orthogonal to the architecture refactor.
+    retained = [
+        ("true EMA responds faster than arithmetic mean", test_true_ema_responds_to_v_reversal),
+        ("reversal drift guard covers SHORT reversal models", test_reversal_drift_guard_covers_short_models),
+        ("counter-evidence keeps reversal drift guard soft", test_reversal_drift_guard_is_soft_with_counterevidence),
+        ("detector-backed pattern bonus avoids double-counting", test_detector_backed_pattern_bonus_not_double_counted),
+        ("pattern ML feature preserves strong ordering", test_pattern_feature_preserves_strong_candidate_ordering),
+        ("kernel replay and deterministic risk stability are wired", test_kernel_replay_and_risk_stability_are_wired),
+        ("non-reversal SHORT receives neutral reversal advisor", test_non_reversal_short_isolated_from_reversal_advisor),
+        ("non-reversal SHORT bypasses reversal conflict overlay", test_non_reversal_short_isolated_from_reversal_conflict_overlay),
+        ("dedicated reversal SHORT retains reversal advisor", test_reversal_short_keeps_reversal_advisor_scope),
+        ("live executable entry uses current market price", test_live_entry_price_contract_prefers_market_price),
+        ("short reversal soft integration", test_short_reversal_engine_soft_integration),
+        ("short reversal remains under executive authority", test_short_reversal_does_not_bypass_authority),
+        ("probe requires live trigger", test_probe_requires_live_trigger),
+        ("probe requires execution-ready plan", test_probe_requires_execution_ready),
+        ("stale continuation reanchors to fresh zone", test_continuation_reanchors_to_fresh_zone),
+        ("no-pullback continuation is probe-ready", test_no_pullback_model_is_probe_ready),
+        ("selected+eligible NO_SETUP raises audit alert", test_selected_eligible_no_setup_alert),
+        ("shadow audit tracks path without claiming profit", test_shadow_outcome_tracks_path_without_claiming_profit),
+        ("price structure advisor is candidate-side aware", test_price_structure_advisor_is_directional),
+        ("TRANSITION session mean waits one confirmation bar", test_transition_session_mean_waits_one_bar),
+        ("strong-trend reanchor permits guarded 2/6", test_strong_trend_reanchor_uses_two_of_six),
+        ("entry timing compares actual entry with primary thesis signal", test_entry_confirmation_delay_uses_primary_signal),
+        ("confirmation-pending state sends an early alert", test_confirmation_pending_message_is_early_alert),
+        ("shadow policy deduplicates geometry", test_shadow_policy_review_deduplicates_geometry),
+        ("strict reanchor/momentum can satisfy stale revalidation", test_revalidation_accepts_strict_reanchor_or_momentum),
+        ("build-plan revalidation ORs strict alternative support", test_build_plan_revalidation_gate_uses_strict_alternative),
+        ("pre-confirmation promotes after confirming bar", test_preconfirmation_promotes_after_confirming_bar),
+        ("daily entry-supported metric survives analytics recompute", test_entry_supported_daily_metric_and_custom_analytics_survive),
+        ("TP0 giveback activates breakeven protection", test_tp0_giveback_activates_breakeven_protection),
+        ("NOT_LEARNED scoring is explicit", test_not_learned_scoring_is_explicit),
+        ("execution path health separates standard/fallback", test_execution_path_health_counts_standard_and_fallback),
+        ("relaxed continuation remains shadow-only before graduation", test_relaxed_profile_is_shadow_only_and_strict_unchanged),
+        ("relaxed shadow deduplicates thesis geometry", test_relaxed_shadow_deduplicates_thesis_geometry),
+        ("relaxed policy graduates only on positive counterfactuals", test_relaxed_policy_graduates_only_on_positive_counterfactuals),
+        ("execution funnel separates revalidation from executive", test_execution_funnel_separates_revalidation_and_executive),
+    ]
+    for name, fn in retained:
+        try:
+            checks.append((name, bool(fn())))
+        except Exception as exc:
+            print(f"  [ERROR] {name}: {type(exc).__name__}: {exc}")
+            checks.append((name, False))
+
+    try:
+        checks.extend(v9_regression_checks())
+    except Exception as exc:
+        print(f"  [ERROR] v9 regression suite: {type(exc).__name__}: {exc}")
+        checks.append(("v9 regression suite completed", False))
+
+    # RR geometry retained smoke tests.
     _, tp1, tp2, tp3 = enforce_smart_money_rr(Side.LONG.value, 100.0, 99.0, 100.3, 100.6, 100.9, 0.6)
-    rr1 = (tp1 - 100.0) / (100.0 - 99.0)
-    checks.append(("enforce_smart_money_rr: LONG RR1 >= MIN_RR1", rr1 >= MIN_RR1 - 1e-6))
-    checks.append(("enforce_smart_money_rr: LONG TP-монотонність", tp1 < tp2 < tp3))
-
+    checks.append(("RR: LONG floor and monotonic targets", (tp1 - 100.0) / (100.0 - 99.0) >= MIN_RR1 - 1e-6 and tp1 < tp2 < tp3))
     _, stp1, stp2, stp3 = enforce_smart_money_rr(Side.SHORT.value, 100.0, 101.0, 99.7, 99.4, 99.1, 0.6)
-    srr1 = (100.0 - stp1) / (101.0 - 100.0)
-    checks.append(("enforce_smart_money_rr: SHORT RR1 >= MIN_RR1", srr1 >= MIN_RR1 - 1e-6))
-    checks.append(("enforce_smart_money_rr: SHORT TP-монотонність", stp1 > stp2 > stp3))
+    checks.append(("RR: SHORT floor and monotonic targets", (100.0 - stp1) / (101.0 - 100.0) >= MIN_RR1 - 1e-6 and stp1 > stp2 > stp3))
 
-    # --- _stop_hit: перевіряє ВСІ пропущені свічки, не лише останню ---
+    # Missed-candle stop detection retained smoke test.
     now_ms = int(now_utc().timestamp() * 1000)
-    opened_at = (now_utc() - timedelta(hours=1)).isoformat()
     trade = ActiveTrade(
         id="selftest", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
-        setup_family=SetupFamily.CONTINUATION.value, opened_at=opened_at,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=(now_utc() - timedelta(hours=1)).isoformat(),
         entry=100.0, stop_initial=99.0, stop_current=99.0, structural_invalidation=94.0,
         tp1=101.5, tp2=103.0, tp3=105.0, quality=80, position_risk_pct=0.5,
         best_price=100.0, worst_price=100.0, last_checked_3m_ts=now_ms - 20 * 60_000,
     )
-
-    def _mk_candle(ts: int, close: float) -> Candle:
-        return Candle(ts=ts, open=close, high=close + 0.05, low=close - 0.05, close=close, volume=1000.0)
-
-    missed_candles = [
-        _mk_candle(now_ms - 12 * 60_000, 99.4),
-        _mk_candle(now_ms - 9 * 60_000, 98.7),   # пробила стоп тілом і забута старою логікою
-        _mk_candle(now_ms - 6 * 60_000, 99.3),   # ціна вже відновилась до наступного polling
+    candles = [
+        Candle(ts=now_ms - 12 * 60_000, open=99.4, high=99.45, low=99.35, close=99.4, volume=1000.0),
+        Candle(ts=now_ms - 9 * 60_000, open=98.7, high=98.75, low=98.65, close=98.7, volume=1000.0),
+        Candle(ts=now_ms - 6 * 60_000, open=99.3, high=99.35, low=99.25, close=99.3, volume=1000.0),
     ]
-    hit, _ = _stop_hit(trade, {"price": 99.3, "atr15": 0.6, "candles": {"3m": missed_candles}})
-    checks.append(("_stop_hit: виявляє пропущений whipsaw між запусками", hit is True))
+    hit, _ = _stop_hit(trade, {"price": 99.3, "atr15": 0.6, "candles": {"3m": candles}})
+    checks.append(("Stop manager detects missed intrapoll whipsaw", hit is True))
 
-    # --- CVD/flow фікс: flw_score більше не гаситься мертвою flow-заглушкою ---
-    flow = flow_snapshot([], {})
-    cvd_long = {"bias": Side.LONG.value, "score": 15}
-    flw_score = (
-        float(cvd_long.get("score", 0)) * SYNTHETIC_CVD_SCORE_MULTIPLIER
-        if cvd_long.get("bias") == Side.LONG.value else 0.0
+    # Regression: pre-open candles cannot close a newly opened trade.
+    opened_now = now_utc()
+    old_candle = Candle(
+        ts=int((opened_now - timedelta(minutes=5)).timestamp() * 1000),
+        open=100.0, high=102.0, low=98.0, close=100.0, volume=1.0, confirmed=True,
     )
-    checks.append(("flow_snapshot явно документує відсутність реального flow", flow["quality"] == "DISABLED_NO_TRADES_OR_BOOK"))
-    checks.append(("synthetic CVD має знижену вагу", abs(flw_score - 15.0 * SYNTHETIC_CVD_SCORE_MULTIPLIER) < 1e-9))
-
-    # --- Executive layer: conflicts, real risk impact and independent edge ---
-    advisors_bad = [
-        {"module": "HTF_ANALYST", "opinion": "AGAINST", "impact": -20},
-        {"module": "RISK_MANAGER", "opinion": "AGAINST", "impact": -25},
-    ]
-    conflict = conflict_resolution_engine(advisors_bad)
-    checks.append((
-        "conflict_resolution_engine: negative committee dominates",
-        conflict["hard_conflict"],
-    ))
-
-    risk_report = advisory_report(
-        "RISK_MANAGER", "AGAINST", 10, -25, ["budget exhausted"]
+    fresh_trade = ActiveTrade(
+        id="fresh", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=opened_now.isoformat(),
+        entry=100.0, stop_initial=99.0, stop_current=99.0, structural_invalidation=98.0,
+        tp1=101.0, tp2=102.0, tp3=103.0, quality=80, position_risk_pct=0.5,
+        best_price=100.0, worst_price=100.0,
     )
-    checks.append((
-        "RISK_MANAGER: real non-zero impact",
-        risk_report["impact"] != 0,
-    ))
+    old_context = {"price": 100.0, "candles": {"3m": [old_candle], "15m": []}}
+    old_stop, _ = _stop_hit(fresh_trade, old_context)
+    checks.append(("Stop manager ignores pre-open candle", old_stop is False))
+    checks.append(("Target manager ignores pre-open candle", _target_hit(fresh_trade, old_context, 101.0) is False))
 
-    edge_candidate = Candidate(
-        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
-        setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=90,
-        score_components={"htf_score": 20, "str_score": 22, "liq_score": 22, "trig_score": 22},
+    # Regression: same-bar stop and target remains explicitly ambiguous and ML-ineligible.
+    ambiguous_trade = ActiveTrade(
+        id="ambiguous", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=(opened_now - timedelta(minutes=10)).isoformat(),
+        entry=100.0, stop_initial=99.0, stop_current=99.0, structural_invalidation=98.0,
+        tp1=101.0, tp2=102.0, tp3=103.0, quality=80, position_risk_pct=0.5,
+        best_price=100.0, worst_price=100.0,
     )
-    weak_rr_plan = TradePlan(
-        entry=100, stop=99, tp1=100.5, tp2=102, tp3=104, risk_pct=0.1,
-        rr1=0.5, rr2=2.0, rr3=4.0, position_risk_pct=0.1, valid=True,
+    ambiguous_candle = Candle(
+        ts=int((opened_now - timedelta(minutes=3)).timestamp() * 1000),
+        open=100.0, high=101.2, low=98.8, close=100.0, volume=1.0, confirmed=True,
     )
-    philosophy = trading_philosophy_layer(edge_candidate, {}, weak_rr_plan)
-    checks.append((
-        "trading_philosophy_layer: rejects high score without RR edge",
-        philosophy["recommendation"] == "WAIT",
-    ))
-
-    reduced_conflict = conflict_resolution_engine([
-        {"module": "ICT_ANALYST", "opinion": "SUPPORT", "impact": 15},
-        {"module": "HTF_ANALYST", "opinion": "AGAINST", "impact": -20},
-    ])
-    checks.append((
-        "conflict_resolution_engine separates market conflict",
-        reduced_conflict["hard_conflict"] is True and not reduced_conflict["risk"]["blocked"],
-    ))
-
-    allowed_entry_conflict = conflict_resolution_engine([
-        {"module": "ICT_ANALYST", "opinion": "SUPPORT", "impact": 15},
-        {"module": "EXECUTION_ANALYST", "opinion": "SUPPORT", "impact": 10},
-    ])
-    checks.append((
-        "conflict_resolution_engine allows clean consensus",
-        allowed_entry_conflict["hard_conflict"] is False,
-    ))
-
-    exhausted_journal = {
-        "trades": [{
-            "id": "risk-selftest", "signal_id": "risk-signal",
-            "closed_at": iso_now(), "position_risk_pct": DAILY_RISK_CAP,
-            "setup_type": SetupType.PULLBACK_CONTINUATION.value,
-            "setup_family": SetupFamily.CONTINUATION.value,
-            "result_r": -1.0,
-        }]
-    }
-    valid_rr_plan = TradePlan(
-        entry=100, stop=99, tp1=101.5, tp2=103, tp3=105, risk_pct=0.1,
-        rr1=max(MIN_RR1, 1.5), rr2=3.0, rr3=5.0,
-        position_risk_pct=0.1, valid=True,
-    )
-    risk_block = build_executive_decision_object(
-        edge_candidate, plan=valid_rr_plan, journal=exhausted_journal, state={}
+    ambiguous_result = manage_active_trade(
+        ambiguous_trade,
+        {"price": 100.0, "atr15": 1.0, "candles": {"3m": [ambiguous_candle], "15m": []}},
     )
     checks.append((
-        "executive layer: exhausted daily budget blocks entry",
-        risk_block["action"] == ExecutiveDecisionState.WAIT.value,
+        "Active trade marks same-bar stop/TP ambiguous",
+        ambiguous_result.get("outcome_status") == "AMBIGUOUS_INTRABAR"
+        and ambiguous_result.get("result_r") is None
+        and ambiguous_result.get("ml_eligible") is False,
     ))
+
+    # Regression: result_pct is never reinterpreted as R.
+    mixed_analytics = compute_analytics({
+        "trades": [
+            {"setup_family": "LEGACY", "result_pct": 1.0},
+            {"setup_family": "VALID", "result_r": 1.0, "result_unit": "R"},
+        ]
+    })
+    checks.append((
+        "Analytics excludes legacy percentages from R metrics",
+        mixed_analytics.get("closed_trades") == 1
+        and mixed_analytics.get("net_r") == 1.0
+        and mixed_analytics.get("legacy_or_ambiguous_excluded") == 1,
+    ))
+
+    partial_trade = ActiveTrade(
+        id="partial", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=(opened_now - timedelta(hours=1)).isoformat(),
+        entry=100.0, stop_initial=99.0, stop_current=99.0, structural_invalidation=98.0,
+        tp0=100.75, tp1=101.5, tp2=103.0, tp3=105.0,
+        tp0_hit=True, tp1_hit=True,
+        quality=80, position_risk_pct=0.5, best_price=101.5, worst_price=99.5,
+    )
+    partial_metrics = _realized_trade_metrics(partial_trade, 100.0)
+    checks.append((
+        "Partial exits produce weighted realized R",
+        abs(safe_float(partial_metrics.get("result_r"), 0.0) - 0.675) < 1e-9,
+    ))
+
+    # Regression: state round-trip retains stage history.
+    original_state_file = STATE_FILE
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            globals()["STATE_FILE"] = Path(temp_dir) / "state.json"
+            state_payload = {
+                "architecture_version": ARCHITECTURE_VERSION,
+                "stage_history": [{"state": EntryStage.PROBE.value, "time": iso_now()}],
+                "history": [],
+            }
+            save_state(state_payload)
+            loaded_state = load_state()
+            checks.append((
+                "State round-trip preserves stage_history",
+                loaded_state.get("stage_history") == state_payload.get("stage_history"),
+            ))
+    finally:
+        globals()["STATE_FILE"] = original_state_file
+
+    # Regression: OKX confirm field is parsed from row[8].
+    original_http_get = http_get
+    class _MockOKXResponse:
+        def json(self):
+            return {"code": "0", "data": [
+                ["2", "1", "2", "0", "1.5", "10", "0", "0", "1"],
+                ["1", "1", "2", "0", "1.5", "10", "0", "0", "0"],
+            ]}
+    try:
+        globals()["http_get"] = lambda *_args, **_kwargs: _MockOKXResponse()
+        parsed = get_okx_candles("TEST", "3m", 2)
+        checks.append((
+            "OKX candle confirm flag is parsed",
+            len(parsed) == 2 and parsed[0].confirmed is False and parsed[1].confirmed is True,
+        ))
+    finally:
+        globals()["http_get"] = original_http_get
+
+    # Regression: structural invalidation is a confirmed 15M-close policy, not a live tick.
+    structural_trade = ActiveTrade(
+        id="structural", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=(opened_now - timedelta(hours=1)).isoformat(),
+        entry=100.0, stop_initial=95.0, stop_current=95.0, structural_invalidation=98.0,
+        tp1=105.0, tp2=110.0, tp3=115.0, quality=80, position_risk_pct=0.5,
+        best_price=100.0, worst_price=100.0,
+        last_checked_3m_ts=int((opened_now - timedelta(minutes=1)).timestamp() * 1000),
+    )
+    above_close = Candle(
+        ts=int((opened_now - timedelta(minutes=15)).timestamp() * 1000),
+        open=99.0, high=100.0, low=97.0, close=98.5, confirmed=True,
+    )
+    structural_hold = manage_active_trade(
+        structural_trade,
+        {"price": 97.5, "atr15": 1.0, "candles": {"3m": [], "15m": [above_close]}},
+    )
+    checks.append((
+        "Structural invalidation ignores live tick without confirmed close",
+        structural_hold.get("closed") is False and structural_trade.status == "OPEN",
+    ))
+
+    structural_trade_2 = ActiveTrade(
+        id="structural2", side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=(opened_now - timedelta(hours=1)).isoformat(),
+        entry=100.0, stop_initial=95.0, stop_current=95.0, structural_invalidation=98.0,
+        tp1=105.0, tp2=110.0, tp3=115.0, quality=80, position_risk_pct=0.5,
+        best_price=100.0, worst_price=100.0,
+        last_checked_3m_ts=int((opened_now - timedelta(minutes=1)).timestamp() * 1000),
+    )
+    below_close = Candle(
+        ts=int((opened_now - timedelta(minutes=15)).timestamp() * 1000),
+        open=99.0, high=100.0, low=97.0, close=97.5, confirmed=True,
+    )
+    structural_exit = manage_active_trade(
+        structural_trade_2,
+        {"price": 97.5, "atr15": 1.0, "candles": {"3m": [], "15m": [below_close]}},
+    )
+    checks.append((
+        "Structural invalidation closes on confirmed 15M close",
+        structural_exit.get("closed") is True
+        and structural_trade_2.status == "CLOSED"
+        and structural_exit.get("action") == Action.EXIT.value,
+    ))
+
+    # Regression: OKX ticker is authoritative and TradingView is not consulted when it exists.
+    original_get_okx_candles = get_okx_candles
+    original_get_okx_ticker = get_okx_ticker
+    original_get_tv = get_tradingview_price_fallback
+    try:
+        sample_candle = Candle(
+            ts=int((opened_now - timedelta(minutes=3)).timestamp() * 1000),
+            open=100.0, high=101.0, low=99.0, close=100.5, confirmed=True,
+        )
+        globals()["get_okx_candles"] = lambda *_args, **_kwargs: [sample_candle]
+        globals()["get_okx_ticker"] = lambda *_args, **_kwargs: {
+            "price": 100.25, "change24h": 0.0, "volume24h": 1.0, "source": "OKX"
+        }
+        globals()["get_tradingview_price_fallback"] = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("TradingView must not be called when OKX ticker is available")
+        )
+        source_data = collect_market_data()
+        checks.append((
+            "Execution price uses OKX venue",
+            source_data.get("price") == 100.25
+            and source_data.get("price_source") == "OKX"
+            and source_data.get("execution_price_trusted") is True,
+        ))
+    finally:
+        globals()["get_okx_candles"] = original_get_okx_candles
+        globals()["get_okx_ticker"] = original_get_okx_ticker
+        globals()["get_tradingview_price_fallback"] = original_get_tv
 
     ok = all(passed for _, passed in checks)
     for name, passed in checks:
         print(f"  [{'OK' if passed else 'FAIL'}] {name}")
+    print(f"SELF-TEST SUMMARY: {sum(1 for _, passed in checks if passed)}/{len(checks)} passed")
     return ok
 
 
@@ -14173,26 +15766,41 @@ def _run_self_test() -> bool:
 # v8.8 EXECUTIVE DECISION LAYER - CONFIDENCE-AWARE SINGLE AUTHORITY
 # ==========================================================
 
-EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE"
+EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_0_STAGED_CONTRACT"
 
 
-def advisory_report(module, opinion, confidence=0, impact=0, evidence=None, risks=None):
-    """Single advisory output gateway.
 
-    Every analytical module must pass through DecisionAuthorityGuard.
-    Advisors may provide opinions, but any accidental attempt to leak an
-    executable action is rejected before reaching Executive Decision Layer.
+def advisory_report(
+    module,
+    opinion,
+    confidence=0,
+    impact=0,
+    evidence=None,
+    risks=None,
+    axes=None,
+    horizon="",
+    explicit_conclusion=True,
+):
+    """Single advisory output gateway with explicit analytical axes.
+
+    CAUTION and UNCERTAIN are diagnostic states. They are not converted into an
+    AGAINST vote by the conflict engine. A module may recommend, never decide.
     """
+    normalized = str(opinion).upper()
+    if normalized not in {item.value for item in AdvisoryOpinion}:
+        normalized = AdvisoryOpinion.UNCERTAIN.value
     report = {
         "module": str(module),
-        "opinion": str(opinion).upper(),
+        "opinion": normalized,
         "confidence": round(clamp(safe_float(confidence), 0, 100), 2),
         "impact": round(safe_float(impact), 2),
         "evidence": list(evidence or []),
         "risks": list(risks or []),
+        "axes": [str(a.value if isinstance(a, ConflictAxis) else a) for a in (axes or [])],
+        "horizon": str(horizon or ""),
+        "explicit_conclusion": bool(explicit_conclusion),
     }
     return DECISION_AUTHORITY_GUARD.validate_module_output(module, report)
-
 
 def _component_raw_score(components: dict[str, Any], raw_key: str, feature_key: str, scale: float = 24.0) -> float:
     if raw_key in components:
@@ -14219,49 +15827,42 @@ def normalize_advisor_impact(module: str, raw_impact: float) -> float:
         return 0.0
     return clamp((safe_float(raw_impact, 0.0) / max(abs(limit), 1e-9)) * 10.0, -10.0, 10.0)
 
+
 def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
-    """
-    Advisor consumer of the canonical HTF fact.
+    """HTF vote sourced exclusively from the canonical candidate-relative fact."""
+    fact = get_htf_fact(candidate)
+    state = str(fact.get("state") or "UNKNOWN").upper()
+    alignment = clamp(safe_float(fact.get("alignment_score"), 0.0), -1.0, 1.0)
+    confidence = safe_float(fact.get("confidence"), abs(alignment) * 100.0)
 
-    Opinion, confidence and impact all come from the same signed alignment.
-    htf_score is audit-only here and cannot change the vote.
-    """
-    fact = components.get("htf_fact") or {}
-    alignment = fact.get("alignment_score", components.get("htf_alignment_score"))
-    if alignment is None:
-        feature = (components.get("features") or {}).get("htf")
-        alignment = (2.0 * safe_float(feature, 0.5) - 1.0) if feature is not None else 0.0
-
-    alignment = clamp(safe_float(alignment, 0.0), -1.0, 1.0)
-    threshold = safe_float(
-        fact.get("state_threshold"),
-        HTF_ALIGNMENT_STATE_THRESHOLD,
-    )
-
-    if alignment >= threshold:
-        opinion = "SUPPORT"
-        state = "aligned"
-    elif alignment <= -threshold:
-        opinion = "CAUTION"
-        state = "against"
+    if state == "ALIGNED":
+        opinion = AdvisoryOpinion.SUPPORT.value
+    elif state == "AGAINST":
+        opinion = AdvisoryOpinion.AGAINST.value
+    elif state in {"MIXED", "NEUTRAL"}:
+        opinion = AdvisoryOpinion.UNCERTAIN.value
     else:
-        opinion = "NEUTRAL"
-        state = "mixed"
+        opinion = AdvisoryOpinion.UNCERTAIN.value
+        confidence = 0.0
 
-    conviction = abs(alignment)
     raw_impact = alignment * ADVISOR_MAX_IMPACT["HTF_ANALYST"]
-
     return advisory_report(
         "HTF_ANALYST",
         opinion,
-        confidence=conviction * 100.0,
+        confidence=confidence,
         impact=normalize_advisor_impact("HTF_ANALYST", raw_impact),
         evidence=[
             f"htf_state={state}",
+            f"market_bias={fact.get('market_bias')}",
+            f"candidate_side={fact.get('candidate_side')}",
             f"alignment={alignment:.3f}",
-            f"ml_feature={(alignment + 1.0) / 2.0:.3f}",
-            "source=htf_fact_v8.16",
+            f"schema={fact.get('schema_version')}",
+            f"valid={fact.get('valid')}",
         ],
+        risks=list(fact.get("errors") or []),
+        axes=[ConflictAxis.DIRECTION, ConflictAxis.HTF_DIRECTION],
+        horizon="HTF",
+        explicit_conclusion=state in {"ALIGNED", "AGAINST"},
     )
 
 
@@ -14269,43 +15870,52 @@ def _ict_advisor(components: dict[str, Any]) -> dict[str, Any]:
     structure = _component_raw_score(components, "str_score", "structure")
     liquidity = _component_raw_score(components, "liq_score", "liquidity")
     combined = structure + liquidity
-    support = combined >= 40.0
+    if combined >= 40.0:
+        opinion = AdvisoryOpinion.SUPPORT.value
+        explicit = True
+    else:
+        # Missing/weak evidence is uncertainty, not proof against the thesis.
+        opinion = AdvisoryOpinion.UNCERTAIN.value
+        explicit = False
     return advisory_report(
         "ICT_ANALYST",
-        "SUPPORT" if support else "CAUTION",
+        opinion,
         confidence=clamp(combined, 0, 100),
         impact=normalize_advisor_impact("ICT_ANALYST", clamp((combined - 40.0) / 2.0, -20, 20)),
         evidence=[f"structure={structure:.2f}", f"liquidity={liquidity:.2f}"],
+        axes=[ConflictAxis.MARKET_THESIS, ConflictAxis.STRUCTURE],
+        horizon="setup",
+        explicit_conclusion=explicit,
     )
 
 
 def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
-    """Independent, direction-aware market-structure vote.
-
-    Structure SUPPORT is valid only when the observed highs/lows confirm the
-    candidate.side. A generic high str_score can no longer support LONG and SHORT
-    at the same timestamp. Re-anchor and momentum profiles must also carry the
-    same side before their readiness contributes to the vote.
-    """
+    """Direction-aware structure vote with explicit SUPPORT/AGAINST semantics."""
     structure = _component_raw_score(components, "str_score", "structure")
     reanchor = components.get("continuation_reanchor", {}) or {}
     momentum = components.get("momentum_no_pullback", {}) or {}
     directional = components.get("directional_structure", {}) or {}
     family = str(getattr(candidate, "setup_family", "") or "")
     source = str(getattr(candidate, "execution_source", "") or "")
-    candidate_side = str(getattr(candidate, "side", "") or "").upper()
+    side = str(getattr(candidate, "side", "") or "").upper()
 
-    directional_side_matches = str(directional.get("side") or "").upper() == candidate_side
-    directional_support = bool(directional_side_matches and directional.get("supports_side"))
+    hh = bool(directional.get("higher_high"))
+    hl = bool(directional.get("higher_low"))
+    lh = bool(directional.get("lower_high"))
+    ll = bool(directional.get("lower_low"))
+    supports_side = bool((side == "LONG" and hh and hl) or (side == "SHORT" and lh and ll))
+    opposes_side = bool((side == "LONG" and lh and ll) or (side == "SHORT" and hh and hl))
+
     reanchor_side_ok = bool(
-        str(reanchor.get("side") or candidate_side).upper() == candidate_side
+        str(reanchor.get("side") or side).upper() == side
         and (reanchor.get("ready") or reanchor.get("pre_confirmation_ready"))
     )
     momentum_side_ok = bool(
-        str(momentum.get("side") or candidate_side).upper() == candidate_side
+        str(momentum.get("side") or side).upper() == side
         and momentum.get("entry_ready")
     )
-    fresh_continuation = bool(
+    continuation_family = family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+    fresh_context = bool(
         reanchor_side_ok
         or momentum_side_ok
         or source in {
@@ -14314,57 +15924,43 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
             ExecutionSource.LIVE_3M.value,
         }
     )
-    continuation_family = family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
-    support = bool(
-        directional_support
-        and structure >= 17.0
-        and (fresh_continuation or (continuation_family and bool(getattr(candidate, "trigger_ready", False))))
-    )
 
-    directional_confidence = safe_float(directional.get("score"), 0.0) if directional_side_matches else 0.0
-    momentum_confidence = 0.0
-    if momentum_side_ok:
-        momentum_confidence = clamp(
-            45.0
-            + safe_float(momentum.get("move_atr"), 0.0) * 10.0
-            + safe_float(momentum.get("directional_closes_6"), 0.0) * 4.0
-            - safe_float(momentum.get("giveback_ratio"), 0.0) * 30.0,
-            0.0,
-            100.0,
-        )
-    reanchor_confidence = (
-        78.0 if reanchor.get("ready") and reanchor_side_ok
-        else 66.0 if reanchor.get("pre_confirmation_ready") and reanchor_side_ok
-        else 0.0
-    )
+    explicit_support = bool(supports_side and structure >= 17.0 and (fresh_context or not continuation_family))
+    explicit_against = bool(opposes_side and structure >= 17.0)
+    if explicit_support:
+        opinion = AdvisoryOpinion.SUPPORT.value
+    elif explicit_against:
+        opinion = AdvisoryOpinion.AGAINST.value
+    else:
+        opinion = AdvisoryOpinion.UNCERTAIN.value
+
+    directional_confidence = safe_float(directional.get("score"), 0.0)
     confidence = max(
-        clamp(structure / 24.0 * 100.0, 0.0, 100.0) if directional_support else 0.0,
+        clamp(structure / 24.0 * 100.0, 0.0, 100.0),
         directional_confidence,
-        momentum_confidence,
-        reanchor_confidence,
+        78.0 if reanchor.get("ready") and reanchor_side_ok else 0.0,
+        70.0 if momentum_side_ok else 0.0,
     )
-    if not directional_support:
-        # Preserve diagnostic confidence without allowing direction-blind SUPPORT.
-        confidence = max(confidence, min(clamp(structure / 24.0 * 100.0, 0.0, 100.0), 49.0))
-    raw_impact = clamp((confidence - 50.0) / 3.0, -12.0, 12.0)
-    signed_impact = abs(raw_impact) if support else -abs(raw_impact)
+    signed = 0.0
+    if opinion == AdvisoryOpinion.SUPPORT.value:
+        signed = abs(clamp((confidence - 45.0) / 3.0, 0.0, 12.0))
+    elif opinion == AdvisoryOpinion.AGAINST.value:
+        signed = -abs(clamp((confidence - 45.0) / 3.0, 0.0, 12.0))
+
     return advisory_report(
         "PRICE_STRUCTURE_ADVISOR",
-        "SUPPORT" if support else "CAUTION",
+        opinion,
         confidence=confidence,
-        impact=normalize_advisor_impact("PRICE_STRUCTURE_ADVISOR", signed_impact),
+        impact=normalize_advisor_impact("PRICE_STRUCTURE_ADVISOR", signed),
         evidence=[
-            f"candidate_side={candidate_side}",
-            f"structure={structure:.2f}",
-            f"directional_side_matches={directional_side_matches}",
-            f"directional_support={directional_support}",
-            f"HH={bool(directional.get('higher_high'))} HL={bool(directional.get('higher_low'))}",
-            f"LH={bool(directional.get('lower_high'))} LL={bool(directional.get('lower_low'))}",
-            f"family={family}",
-            f"source={source}",
-            f"reanchor_side_ok={reanchor_side_ok}",
-            f"momentum_side_ok={momentum_side_ok}",
+            f"candidate_side={side}", f"structure={structure:.2f}",
+            f"HH={hh}", f"HL={hl}", f"LH={lh}", f"LL={ll}",
+            f"supports_side={supports_side}", f"opposes_side={opposes_side}",
+            f"reanchor_side_ok={reanchor_side_ok}", f"momentum_side_ok={momentum_side_ok}",
         ],
+        axes=[ConflictAxis.DIRECTION, ConflictAxis.STRUCTURE],
+        horizon="15M-1H structure",
+        explicit_conclusion=opinion in {AdvisoryOpinion.SUPPORT.value, AdvisoryOpinion.AGAINST.value},
     )
 
 
@@ -14372,17 +15968,22 @@ def _short_reversal_advisor(candidate: Candidate, components: dict[str, Any]) ->
     profile = short_reversal_profile_for_candidate(candidate, components)
     if not profile:
         return advisory_report(
-            "SHORT_REVERSAL_ANALYST", "NEUTRAL", confidence=0, impact=0,
-            evidence=[
-                "outside_short_reversal_scope",
-                f"candidate_model={getattr(candidate, 'ict_model', 'NONE')}",
-                "required=candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
-            ],
+            "SHORT_REVERSAL_ANALYST", AdvisoryOpinion.NEUTRAL.value,
+            confidence=0, impact=0,
+            evidence=["outside_short_reversal_scope"],
+            axes=[ConflictAxis.MARKET_THESIS],
+            horizon="reversal",
+            explicit_conclusion=False,
         )
 
     score = safe_float(profile.get("score"), 0.0)
     execution_ready = bool(profile.get("execution_ready"))
-    opinion = "SUPPORT" if score >= SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE else "CAUTION"
+    if score >= SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE:
+        opinion = AdvisoryOpinion.SUPPORT.value
+        explicit = True
+    else:
+        opinion = AdvisoryOpinion.UNCERTAIN.value
+        explicit = False
     raw_impact = clamp((score - SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE) / 4.0, -12.0, 12.0)
     if not execution_ready:
         raw_impact = min(raw_impact, 2.0)
@@ -14392,13 +15993,14 @@ def _short_reversal_advisor(candidate: Candidate, components: dict[str, Any]) ->
         confidence=score,
         impact=normalize_advisor_impact("SHORT_REVERSAL_ANALYST", raw_impact),
         evidence=[
-            f"score={score:.2f}",
-            f"stage={profile.get('stage')}",
-            f"execution_ready={execution_ready}",
-            f"best_model={profile.get('best_model')}",
+            f"score={score:.2f}", f"stage={profile.get('stage')}",
+            f"execution_ready={execution_ready}", f"best_model={profile.get('best_model')}",
             f"counter_htf_evidence={bool(profile.get('counter_htf_evidence'))}",
         ],
-        risks=["reversal evidence is probabilistic and staged; no standalone full-size"],
+        risks=["reversal evidence is probabilistic and staged"],
+        axes=[ConflictAxis.MARKET_THESIS, ConflictAxis.DIRECTION],
+        horizon="reversal",
+        explicit_conclusion=explicit,
     )
 
 
@@ -14407,79 +16009,75 @@ def apply_short_reversal_conflict_overlay(
     conflict: dict[str, Any],
     advisors: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """SHORT-specific conflict policy layered on top of generic aggregation.
+    """Audit-only SHORT reversal context.
 
-    Bullish HTF is not a hard ban. Strong sweep/failure + MSS evidence may soften
-    its effective conflict, while weak counter-trend ideas receive a small
-    additional caution. Both changes are bounded and audited.
+    It may raise uncertainty or add warnings, but it cannot rewrite conflict
+    votes after aggregation and cannot manufacture conflict relief by arithmetic.
     """
     result = dict(conflict or {})
-    result["market"] = dict((conflict or {}).get("market") or {})
     profile = short_reversal_profile_for_candidate(candidate)
     if not profile:
         result["short_reversal_overlay"] = {
             "applied": False,
             "reason": "outside_short_reversal_scope",
-            "candidate_model": getattr(candidate, "ict_model", "NONE"),
-            "required": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
         }
         return result
-
     htf_vote = next((a for a in advisors if a.get("module") == "HTF_ANALYST"), {})
-    htf_against = str(htf_vote.get("opinion", "")).upper() in {"CAUTION", "AGAINST"}
-    score = safe_float(profile.get("score"), 0.0)
+    htf_against = str(htf_vote.get("opinion", "")).upper() == AdvisoryOpinion.AGAINST.value
     counter_htf = bool(profile.get("counter_htf_evidence"))
-    relief = 0.0
-    penalty = 0.0
-
-    if htf_against and counter_htf:
-        relief = min(
-            SHORT_REVERSAL_MAX_CONFLICT_RELIEF,
-            max(0.0, (score - SHORT_REVERSAL_COUNTER_HTF_SCORE) / 8.0),
-        )
-        result["market"]["against"] = max(0.0, safe_float(result["market"].get("against"), 0.0) - relief)
-    elif htf_against and score < SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE:
-        penalty = min(1.25, (SHORT_REVERSAL_ADVISOR_SUPPORT_SCORE - score) / 12.0)
-        result["market"]["against"] = safe_float(result["market"].get("against"), 0.0) + penalty
-
-    market_support = safe_float(result["market"].get("support"), 0.0)
-    market_against = safe_float(result["market"].get("against"), 0.0)
-    execution_support = safe_float((result.get("execution") or {}).get("support"), 0.0)
-    execution_against = safe_float((result.get("execution") or {}).get("against"), 0.0)
-    market_delta = market_against - market_support
-    execution_delta = execution_against - execution_support
-    result["market_score"] = round(market_support - market_against, 2)
-    result["execution_score"] = round(execution_support - execution_against, 2)
-    result["hard_conflict"] = bool(market_delta >= CONFLICT_HARD_MARGIN or execution_delta >= CONFLICT_HARD_MARGIN)
-    result["hard_conflict_margin"] = round(max(market_delta, execution_delta), 2)
     result["short_reversal_overlay"] = {
         "applied": True,
         "htf_against": htf_against,
         "counter_htf_evidence": counter_htf,
-        "reversal_score": round(score, 2),
-        "conflict_relief": round(relief, 3),
-        "weak_countertrend_penalty": round(penalty, 3),
-        "policy": "bounded confidence adjustment; never bypasses risk or executive authority",
+        "reversal_score": round(safe_float(profile.get("score"), 0.0), 2),
+        "policy": "audit-only; no post-aggregation vote mutation",
+        "warning": "counter-trend reversal requires staged evidence" if htf_against else "",
     }
+    if htf_against and counter_htf:
+        result["uncertainty_level"] = round(min(100.0, safe_float(result.get("uncertainty_level"), 0.0) + 5.0), 2)
     return result
-
 
 def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
     execution_quality = safe_float(getattr(candidate, "execution_quality_score", 0), 0)
     if execution_quality <= 0:
         trigger = _component_raw_score(components, "trig_score", "trigger")
         execution_quality = clamp(trigger / 24.0 * 100.0, 0, 100)
-    support = execution_quality >= 60.0
+
+    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
+    hard_expired = bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD")
+    confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
+    chase = any("chase" in str(r).lower() or "late" in str(r).lower() for r in (getattr(candidate, "risks", []) or []))
+    explicit_against = bool(hard_expired or chase)
+    if execution_quality >= 60.0 and not explicit_against and not confirmation_pending:
+        opinion = AdvisoryOpinion.SUPPORT.value
+        explicit = True
+    elif explicit_against:
+        opinion = AdvisoryOpinion.AGAINST.value
+        explicit = True
+    else:
+        opinion = AdvisoryOpinion.UNCERTAIN.value
+        explicit = False
+
+    signed = clamp((execution_quality - 60.0) / 4.0, -15, 10)
+    if opinion == AdvisoryOpinion.AGAINST.value:
+        signed = -max(abs(signed), 5.0)
+    elif opinion == AdvisoryOpinion.UNCERTAIN.value:
+        signed = 0.0
     return advisory_report(
         "EXECUTION_ANALYST",
-        "SUPPORT" if support else "CAUTION",
+        opinion,
         confidence=execution_quality,
-        impact=normalize_advisor_impact("EXECUTION_ANALYST", clamp((execution_quality - 60.0) / 4.0, -15, 10)),
+        impact=normalize_advisor_impact("EXECUTION_ANALYST", signed),
         evidence=[
             f"execution_quality={execution_quality:.2f}",
             f"source={getattr(candidate, 'execution_source', 'NONE')}",
+            f"confirmation_pending={confirmation_pending}",
+            f"hard_expired={hard_expired}", f"chase={chase}",
         ],
         risks=list(getattr(candidate, "risks", []) or []),
+        axes=[ConflictAxis.EXECUTION_TIMING],
+        horizon="live execution",
+        explicit_conclusion=explicit,
     )
 
 
@@ -14491,31 +16089,33 @@ def _risk_manager_advisor(
     daily_risk_used = compute_daily_risk_used(journal)
     open_risk = compute_open_position_risk(state)
     requested_risk = max(0.0, safe_float(getattr(plan, "position_risk_pct", 0.0), 0.0)) if plan else 0.0
-    risk_budget_left_before = DAILY_RISK_CAP - daily_risk_used - open_risk
+    risk_budget_left_before = max(0.0, DAILY_RISK_CAP - daily_risk_used - open_risk)
     risk_budget_left = risk_budget_left_before - requested_risk
 
-    if risk_budget_left <= 0:
-        opinion = "AGAINST"
+    if requested_risk > 0 and risk_budget_left < -1e-9:
+        opinion = AdvisoryOpinion.AGAINST.value
         impact = -25
-    elif risk_budget_left <= RISK_BUDGET_MIN_BUFFER:
-        opinion = "CAUTION"
+    elif risk_budget_left_before <= RISK_BUDGET_MIN_BUFFER:
+        opinion = AdvisoryOpinion.CAUTION.value
         impact = -10
     else:
-        opinion = "SUPPORT"
+        opinion = AdvisoryOpinion.SUPPORT.value
         impact = 0
 
     return advisory_report(
         "RISK_MANAGER",
         opinion,
-        confidence=clamp(risk_budget_left_before / DAILY_RISK_CAP * 100, 0, 100),
+        confidence=clamp((risk_budget_left_before / max(DAILY_RISK_CAP, 1e-9)) * 100, 0, 100),
         impact=impact,
         evidence=[
-            f"daily_risk_used={daily_risk_used:.2f}",
-            f"open_risk={open_risk:.2f}",
-            f"requested_risk={requested_risk:.2f}",
-            f"risk_budget_left={risk_budget_left:.2f}",
+            f"daily_risk_used={daily_risk_used:.4f}", f"open_risk={open_risk:.4f}",
+            f"requested_risk={requested_risk:.4f}", f"risk_budget_left={risk_budget_left:.4f}",
         ],
+        axes=[ConflictAxis.CAPITAL],
+        horizon="capital",
+        explicit_conclusion=opinion == AdvisoryOpinion.AGAINST.value,
     )
+
 
 
 TRADING_PHILOSOPHY_RUNTIME_STATE = {
@@ -14525,135 +16125,784 @@ TRADING_PHILOSOPHY_RUNTIME_STATE = {
     "last_candidate_type": None,
 }
 
-
 def trading_philosophy_layer(
     candidate: Candidate,
     journal: Optional[dict[str, Any]] = None,
     plan: Optional[TradePlan] = None,
 ):
-    """Independent edge check: trade geometry plus family expectancy.
-
-    Runtime contract:
-    This layer is not considered enabled merely because the function exists.
-    Every real execution call registers an audit heartbeat so architecture
-    checks can prove that the philosophy gate actually participated.
-    """
+    """Independent trade-worthiness review: edge, asymmetry, regime and evidence."""
     TRADING_PHILOSOPHY_RUNTIME_STATE.update({
         "calls": int(TRADING_PHILOSOPHY_RUNTIME_STATE.get("calls", 0)) + 1,
         "last_called_at": iso_now(),
         "last_candidate_type": type(candidate).__name__ if candidate is not None else None,
     })
-
     journal = journal or {}
+    components = getattr(candidate, "score_components", {}) or {}
     plan = plan or getattr(candidate, "trade_plan", None)
-    rr1 = safe_float(getattr(plan, "rr1", 0), 0) if plan else 0.0
+    rr1 = safe_float(getattr(plan, "rr1", 0.0), 0.0) if plan else 0.0
     family = str(getattr(candidate, "setup_family", "") or "")
-    family_stats = compute_setup_statistics(journal).get(family, {})
-    expectancy = safe_float(family_stats.get("expectancy_r"), 0.0)
-    sample = int(family_stats.get("closed_trades", family_stats.get("trades", 0)) or 0)
+    stats = compute_setup_statistics(journal).get(family, {})
+    expectancy = safe_float(stats.get("expectancy_r"), 0.0)
+    sample = int(stats.get("closed_trades", stats.get("trades", 0)) or 0)
     plan_valid = bool(plan and getattr(plan, "valid", True))
-    has_edge = bool(
-        plan_valid
-        and rr1 >= MIN_RR1
-        and (sample < SCORING_MODEL_MIN_FAMILY_TRADES or expectancy > 0)
-    )
-    recommendation = "ACCEPT" if has_edge else "WAIT"
-    TRADING_PHILOSOPHY_RUNTIME_STATE["last_recommendation"] = recommendation
 
-    return {
-        "recommendation": recommendation,
-        "reason": f"rr1={rr1:.2f}, expectancy_r={expectancy:.2f} (n={sample})",
+    invalidation_present = bool(
+        safe_float(getattr(candidate, "invalidation_level", 0.0), 0.0)
+        or safe_float(getattr(plan, "structural_invalidation", 0.0), 0.0)
+        or str(getattr(plan, "invalidation", "") or "").strip()
+    )
+    setup_named = str(getattr(candidate, "setup_type", "") or "") not in {"", SetupType.NONE.value}
+    evidence_families = [str(x) for x in (getattr(candidate, "evidence_families", []) or []) if str(x)]
+    confirmations = [str(x) for x in (getattr(candidate, "confirmations", []) or []) if str(x)]
+    concrete_entry_reason = bool(setup_named and (evidence_families or confirmations or str(getattr(candidate, "thesis", "") or "")))
+    who_is_wrong = invalidation_present and concrete_entry_reason
+
+    edge_checks = {
+        "concrete_entry_reason": concrete_entry_reason,
+        "invalidation_present": invalidation_present,
+        "wrong_side_identifiable": who_is_wrong,
+        "not_generic_score_only": bool(evidence_families or confirmations),
+    }
+    edge_quality = 100.0 * sum(bool(v) for v in edge_checks.values()) / len(edge_checks)
+
+    cost_profile = components.get("transaction_costs", {}) or {}
+    spread_r = max(0.0, safe_float(cost_profile.get("spread_r"), 0.0))
+    fee_r = max(0.0, safe_float(cost_profile.get("fee_r"), 0.0))
+    slippage_r = max(0.0, safe_float(cost_profile.get("slippage_r"), 0.0))
+    realistic_rr = max(0.0, rr1 - spread_r - fee_r - slippage_r)
+    target_basis = str(getattr(plan, "target_basis", "") or "") if plan else ""
+    logical_target = bool(
+        safe_float(getattr(candidate, "target_magnet_score", 0.0), 0.0) > 0
+        or list(getattr(candidate, "target_levels", []) or [])
+        or any(token in target_basis.upper() for token in ["FVG", "OB", "LIQUID", "PDH", "PDL", "VWAP", "SESSION", "OR_", "MACRO"])
+    )
+    stop_quality = bool(plan and abs(safe_float(getattr(plan, "entry", 0.0)) - safe_float(getattr(plan, "stop", 0.0))) > 1e-9)
+    tp_outside_noise = bool(plan and realistic_rr >= MIN_RR1)
+    asymmetry_checks = {
+        "plan_valid": plan_valid,
+        "realistic_rr": realistic_rr >= MIN_RR1,
+        "logical_target": logical_target,
+        "stop_has_distance": stop_quality,
+        "tp_outside_noise": tp_outside_noise,
+    }
+    asymmetry_quality = 100.0 * sum(bool(v) for v in asymmetry_checks.values()) / len(asymmetry_checks)
+
+    features = components.get("features", {}) or {}
+    regime_feature = clamp(safe_float(features.get("regime_fit"), 0.5), 0.0, 1.0)
+    incompatible_regime = bool(components.get("regime_conflict"))
+    shock_without_policy = bool(str(components.get("regime") or "").upper() == Regime.SHOCK.value and not components.get("shock_policy_allowed"))
+    regime_fit = clamp(regime_feature * 100.0 - (35.0 if incompatible_regime else 0.0) - (40.0 if shock_without_policy else 0.0), 0.0, 100.0)
+
+    normalized_evidence = {x.split(":", 1)[0].strip().upper() for x in evidence_families + confirmations if x.strip()}
+    duplicate_flags = [
+        bool(components.get("htf_double_counted")),
+        bool(components.get("registry_detector_double_counted")),
+        bool(components.get("synthetic_cvd_treated_as_orderflow")),
+        bool(components.get("stale_trigger_used_as_live")),
+    ]
+    evidence_independence = clamp(
+        (min(len(normalized_evidence), 4) / 4.0) * 100.0 - 20.0 * sum(duplicate_flags),
+        0.0,
+        100.0,
+    )
+
+    if sample >= SCORING_MODEL_MIN_FAMILY_TRADES:
+        statistical_status = "PROVEN_POSITIVE" if expectancy > 0 else "PROVEN_NEGATIVE"
+    elif sample > 0:
+        statistical_status = "UNPROVEN"
+    else:
+        statistical_status = "NO_SAMPLE"
+
+    failed: list[str] = []
+    reason_codes: list[str] = []
+    if not concrete_entry_reason:
+        failed.append("No concrete entry reason")
+        reason_codes.append("NO_CONCRETE_EDGE")
+    if not invalidation_present:
+        failed.append("No explicit invalidation")
+        reason_codes.append("NO_INVALIDATION")
+    if not logical_target:
+        failed.append("No logical target magnet")
+        reason_codes.append("NO_LOGICAL_TARGET")
+    if realistic_rr < MIN_RR1:
+        failed.append("Realistic RR below policy")
+        reason_codes.append("BAD_REALISTIC_RR")
+    if incompatible_regime or shock_without_policy:
+        failed.append("Setup incompatible with regime")
+        reason_codes.append("REGIME_MISMATCH")
+    if statistical_status == "PROVEN_NEGATIVE":
+        failed.append("Negative expectancy with sufficient sample")
+        reason_codes.append("NEGATIVE_EXPECTANCY")
+    if evidence_independence < 50:
+        reason_codes.append("EVIDENCE_DEPENDENCE")
+
+    if not plan_valid or not concrete_entry_reason or not invalidation_present or edge_quality < 50 or statistical_status == "PROVEN_NEGATIVE":
+        recommendation = "REJECT_NO_EDGE"
+    elif not logical_target or realistic_rr < MIN_RR1 or asymmetry_quality < 60:
+        recommendation = "REJECT_BAD_ASYMMETRY"
+    elif regime_fit < 45 or evidence_independence < 40:
+        recommendation = "WAIT_FOR_EVIDENCE"
+    elif statistical_status in {"UNPROVEN", "NO_SAMPLE"}:
+        recommendation = "ACCEPT_STAGED"
+        reason_codes.append("EDGE_UNPROVEN_STAGE_ONLY")
+    else:
+        recommendation = "ACCEPT"
+
+    result = PhilosophyDecision(
+        recommendation=recommendation,
+        edge_quality=round(edge_quality, 2),
+        asymmetry_quality=round(asymmetry_quality, 2),
+        regime_fit=round(regime_fit, 2),
+        evidence_independence=round(evidence_independence, 2),
+        statistical_status=statistical_status,
+        failed_principles=failed,
+        reason_codes=sorted(set(reason_codes)),
+        audit={
+            "edge_checks": edge_checks,
+            "asymmetry_checks": asymmetry_checks,
+            "rr1_raw": round(rr1, 4),
+            "realistic_rr1": round(realistic_rr, 4),
+            "transaction_costs_r": round(spread_r + fee_r + slippage_r, 4),
+            "family_expectancy_r": round(expectancy, 4),
+            "sample": sample,
+            "logical_target": logical_target,
+            "evidence_groups": sorted(normalized_evidence),
+        },
+    )
+    TRADING_PHILOSOPHY_RUNTIME_STATE["last_recommendation"] = recommendation
+    payload = asdict(result)
+    payload.update({
         "rr1": round(rr1, 2),
         "expectancy_r": round(expectancy, 4),
         "sample": sample,
         "plan_valid": plan_valid,
-        "principle": "independent reward-risk and demonstrated setup-family edge",
-    }
-
+        "reason": ", ".join(payload["reason_codes"]) or "principles satisfied",
+        "principle": "edge + asymmetry + regime + independent evidence + statistics",
+    })
+    return payload
 
 def conflict_resolution_engine(advisors):
-    """Confidence-sensitive conflict aggregation.
+    """Axis-aware conflict engine.
 
-    CAUTION is not equivalent to a directional veto. Votes are weighted by
-    confidence; weak cautions remain visible in audit but cannot create a hard
-    conflict by themselves. Risk manager remains a separate capital veto.
+    Net preference and actual contradiction are separate products. Negative
+    consensus remains negative consensus. It is not a conflict. CAUTION and
+    UNCERTAIN contribute only to uncertainty. Risk Manager is a capital veto and
+    never participates in market conflict scoring.
     """
-    result = {
-        "market": {"support": 0.0, "against": 0.0},
-        "execution": {"support": 0.0, "against": 0.0},
-        "risk": {"blocked": False, "severity": 0.0},
-        "conflicts": [],
-        "soft_conflicts": [],
-        "effective_votes": [],
-        "policy": {
-            "min_effective_confidence": CONFLICT_MIN_EFFECTIVE_CONFIDENCE,
-            "caution_weight": CONFLICT_CAUTION_WEIGHT,
-            "hard_margin": CONFLICT_HARD_MARGIN,
-        },
+    normalized_votes: list[dict[str, Any]] = []
+    capital_blocked = False
+    capital_severity = 0.0
+    uncertainty_mass = 0.0
+    total_mass = 0.0
+
+    default_axes = {
+        "HTF_ANALYST": [ConflictAxis.DIRECTION.value, ConflictAxis.HTF_DIRECTION.value],
+        "ICT_ANALYST": [ConflictAxis.MARKET_THESIS.value, ConflictAxis.STRUCTURE.value],
+        "PRICE_STRUCTURE_ADVISOR": [ConflictAxis.DIRECTION.value, ConflictAxis.STRUCTURE.value],
+        "SHORT_REVERSAL_ANALYST": [ConflictAxis.MARKET_THESIS.value, ConflictAxis.DIRECTION.value],
+        "EXECUTION_ANALYST": [ConflictAxis.EXECUTION_TIMING.value],
+        "RISK_MANAGER": [ConflictAxis.CAPITAL.value],
     }
+    axis_votes: dict[str, list[dict[str, Any]]] = {}
 
     for item in advisors or []:
         module = str(item.get("module", "UNKNOWN"))
-        opinion = str(item.get("opinion", "")).upper()
-        impact = safe_float(item.get("impact"), 0.0)
+        opinion = str(item.get("opinion", AdvisoryOpinion.UNCERTAIN.value)).upper()
+        if opinion not in {x.value for x in AdvisoryOpinion}:
+            opinion = AdvisoryOpinion.UNCERTAIN.value
         confidence = clamp(safe_float(item.get("confidence"), 100.0), 0.0, 100.0)
-        bucket = "execution" if "EXECUTION" in module else "market"
-
-        if module == "RISK_MANAGER":
-            if opinion == "AGAINST":
-                result["risk"]["blocked"] = True
-                result["risk"]["severity"] = max(result["risk"]["severity"], abs(impact))
-            continue
-
-        confidence_weight = confidence / 100.0
-        effective = abs(impact) * confidence_weight
-        is_caution = opinion == "CAUTION"
-        if is_caution:
-            effective *= CONFLICT_CAUTION_WEIGHT
+        impact = safe_float(item.get("impact"), 0.0)
+        axes = list(item.get("axes") or default_axes.get(module, [ConflictAxis.MARKET_THESIS.value]))
+        effective = abs(impact) * (confidence / 100.0)
+        total_mass += max(effective, confidence / 100.0)
 
         vote = {
             "module": module,
-            "bucket": bucket,
             "opinion": opinion,
             "confidence": round(confidence, 2),
-            "raw_impact": round(impact, 2),
+            "raw_impact": round(impact, 3),
             "effective_impact": round(effective, 3),
+            "axes": axes,
+            "horizon": str(item.get("horizon") or ""),
+            "explicit_conclusion": bool(item.get("explicit_conclusion", True)),
         }
 
-        if opinion in {"SUPPORT", "LONG"}:
-            result[bucket]["support"] += effective
-            vote["counted_as"] = "support"
-        elif opinion in {"AGAINST", "SHORT", "CAUTION"}:
-            if is_caution and confidence < CONFLICT_MIN_EFFECTIVE_CONFIDENCE:
-                result["soft_conflicts"].append(module)
-                vote["counted_as"] = "soft_caution_only"
-            else:
-                result[bucket]["against"] += effective
-                result["conflicts"].append(module)
-                vote["counted_as"] = "against"
-        else:
-            vote["counted_as"] = "neutral"
-        result["effective_votes"].append(vote)
+        if module == "RISK_MANAGER":
+            if opinion == AdvisoryOpinion.AGAINST.value:
+                capital_blocked = True
+                capital_severity = max(capital_severity, effective or abs(impact))
+            if opinion in {AdvisoryOpinion.CAUTION.value, AdvisoryOpinion.UNCERTAIN.value}:
+                uncertainty_mass += max(effective, confidence / 100.0)
+            normalized_votes.append(vote)
+            continue
 
-    market_delta = result["market"]["against"] - result["market"]["support"]
-    execution_delta = result["execution"]["against"] - result["execution"]["support"]
-    hard_conflict = bool(
-        market_delta >= CONFLICT_HARD_MARGIN
-        or execution_delta >= CONFLICT_HARD_MARGIN
+        if opinion in {AdvisoryOpinion.CAUTION.value, AdvisoryOpinion.UNCERTAIN.value, AdvisoryOpinion.NEUTRAL.value}:
+            uncertainty_mass += max(effective, confidence / 100.0)
+        for axis in axes:
+            axis_votes.setdefault(str(axis), []).append(vote)
+        normalized_votes.append(vote)
+
+    conflict_pairs: list[dict[str, Any]] = []
+    for axis, votes in axis_votes.items():
+        supports = [v for v in votes if v["opinion"] == AdvisoryOpinion.SUPPORT.value and v["confidence"] >= CONFLICT_MIN_EFFECTIVE_CONFIDENCE]
+        againsts = [v for v in votes if v["opinion"] == AdvisoryOpinion.AGAINST.value and v["confidence"] >= CONFLICT_MIN_EFFECTIVE_CONFIDENCE]
+        for support in supports:
+            for against in againsts:
+                if support["module"] == against["module"]:
+                    continue
+                # Different horizons explain a conflict only when both are explicit and
+                # materially distinct. HTF vs live execution is classified separately.
+                if support.get("horizon") and against.get("horizon") and support["horizon"] != against["horizon"] and axis != ConflictAxis.DIRECTION.value:
+                    continue
+                severity = min(support["confidence"], against["confidence"]) / 100.0
+                severity *= clamp((support["effective_impact"] + against["effective_impact"]) / 10.0, 0.25, 1.0)
+                conflict_pairs.append({
+                    "axis": axis,
+                    "support_module": support["module"],
+                    "against_module": against["module"],
+                    "support_confidence": support["confidence"],
+                    "against_confidence": against["confidence"],
+                    "severity": round(severity, 3),
+                    "type": "same_axis_opposition",
+                })
+
+    market_axes = {
+        ConflictAxis.MARKET_THESIS.value,
+        ConflictAxis.DIRECTION.value,
+        ConflictAxis.HTF_DIRECTION.value,
+        ConflictAxis.STRUCTURE.value,
+    }
+    market_support = sum(v["effective_impact"] for v in normalized_votes if v["module"] != "RISK_MANAGER" and v["opinion"] == AdvisoryOpinion.SUPPORT.value and any(a in market_axes for a in v["axes"]))
+    market_against = sum(v["effective_impact"] for v in normalized_votes if v["module"] != "RISK_MANAGER" and v["opinion"] == AdvisoryOpinion.AGAINST.value and any(a in market_axes for a in v["axes"]))
+    execution_support = sum(v["effective_impact"] for v in normalized_votes if v["opinion"] == AdvisoryOpinion.SUPPORT.value and ConflictAxis.EXECUTION_TIMING.value in v["axes"])
+    execution_against = sum(v["effective_impact"] for v in normalized_votes if v["opinion"] == AdvisoryOpinion.AGAINST.value and ConflictAxis.EXECUTION_TIMING.value in v["axes"])
+
+    # A valid market thesis with explicit execution opposition is a timing
+    # conflict, not a market-thesis conflict.
+    market_support_modules = [v for v in normalized_votes if v["opinion"] == AdvisoryOpinion.SUPPORT.value and any(a in market_axes for a in v["axes"])]
+    execution_against_modules = [v for v in normalized_votes if v["opinion"] == AdvisoryOpinion.AGAINST.value and ConflictAxis.EXECUTION_TIMING.value in v["axes"]]
+    if market_support_modules and execution_against_modules:
+        strongest_market = max(market_support_modules, key=lambda v: v["confidence"])
+        strongest_exec = max(execution_against_modules, key=lambda v: v["confidence"])
+        if strongest_market["module"] != strongest_exec["module"]:
+            severity = min(strongest_market["confidence"], strongest_exec["confidence"]) / 100.0
+            conflict_pairs.append({
+                "axis": ConflictAxis.EXECUTION_TIMING.value,
+                "support_module": strongest_market["module"],
+                "against_module": strongest_exec["module"],
+                "support_confidence": strongest_market["confidence"],
+                "against_confidence": strongest_exec["confidence"],
+                "severity": round(severity, 3),
+                "type": "thesis_vs_timing",
+            })
+
+    axes = sorted({p["axis"] for p in conflict_pairs})
+    severity = max([safe_float(p.get("severity"), 0.0) for p in conflict_pairs] or [0.0])
+    actual_conflict = bool(conflict_pairs)
+    uncertainty_level = clamp((uncertainty_mass / max(total_mass, 1e-9)) * 100.0, 0.0, 100.0)
+    net_market = round(market_support - market_against, 3)
+    net_execution = round(execution_support - execution_against, 3)
+
+    def _consensus(support: float, against: float) -> str:
+        if support > 0 and against == 0:
+            return "POSITIVE_CONSENSUS"
+        if against > 0 and support == 0:
+            return "NEGATIVE_CONSENSUS"
+        if support == 0 and against == 0:
+            return "UNCERTAIN"
+        return "MIXED"
+
+    active_votes = [v for v in normalized_votes if v["module"] != "RISK_MANAGER"]
+    quality_voting = {
+        "supporting": [v["module"] for v in active_votes if v["opinion"] == AdvisoryOpinion.SUPPORT.value],
+        "doubting": [v["module"] for v in active_votes if v["opinion"] in {AdvisoryOpinion.AGAINST.value, AdvisoryOpinion.CAUTION.value}],
+        "silent": [v["module"] for v in active_votes if v["opinion"] in {AdvisoryOpinion.UNCERTAIN.value, AdvisoryOpinion.NEUTRAL.value}],
+        "net_conviction": round(net_market + net_execution, 3),
+        "support_count": sum(1 for v in active_votes if v["opinion"] == AdvisoryOpinion.SUPPORT.value),
+        "doubt_count": sum(1 for v in active_votes if v["opinion"] in {AdvisoryOpinion.AGAINST.value, AdvisoryOpinion.CAUTION.value}),
+        "silent_count": sum(1 for v in active_votes if v["opinion"] in {AdvisoryOpinion.UNCERTAIN.value, AdvisoryOpinion.NEUTRAL.value}),
+        "schema_version": "quality_voting_v9.1",
+    }
+
+    report = ConflictReport(
+        net_market_preference=net_market,
+        net_execution_preference=net_execution,
+        actual_conflict=actual_conflict,
+        conflict_axes=axes,
+        conflict_pairs=conflict_pairs,
+        conflict_severity=round(severity, 3),
+        uncertainty_level=round(uncertainty_level, 2),
+        capital_blocked=capital_blocked,
+        consensus={
+            "market": _consensus(market_support, market_against),
+            "execution": _consensus(execution_support, execution_against),
+            "market_support": round(market_support, 3),
+            "market_against": round(market_against, 3),
+            "execution_support": round(execution_support, 3),
+            "execution_against": round(execution_against, 3),
+        },
+        effective_votes=normalized_votes,
+        quality_voting=quality_voting,
     )
-    result["hard_conflict"] = hard_conflict
-    result["market_score"] = round(
-        result["market"]["support"] - result["market"]["against"], 2
-    )
-    result["execution_score"] = round(
-        result["execution"]["support"] - result["execution"]["against"], 2
-    )
-    result["hard_conflict_margin"] = round(max(market_delta, execution_delta), 2)
+    result = asdict(report)
+    # Compatibility aliases for old journal readers. These no longer define
+    # conflict by a negative margin.
+    result.update({
+        "hard_conflict": bool(actual_conflict and severity >= 0.45),
+        "market_score": net_market,
+        "execution_score": net_execution,
+        "risk": {"blocked": capital_blocked, "severity": round(capital_severity, 3)},
+        "market": {"support": round(market_support, 3), "against": round(market_against, 3)},
+        "execution": {"support": round(execution_support, 3), "against": round(execution_against, 3)},
+        "conflicts": [p["against_module"] for p in conflict_pairs],
+        "soft_conflicts": [v["module"] for v in normalized_votes if v["opinion"] in {AdvisoryOpinion.CAUTION.value, AdvisoryOpinion.UNCERTAIN.value}],
+        "quality_voting": quality_voting,
+        "policy": {
+            "same_axis_required": True,
+            "risk_manager_excluded": True,
+            "caution_is_not_against": True,
+            "single_module_cannot_create_conflict": True,
+        },
+    })
     return result
 
 
-# ExecutiveDecisionState is the only allowed source of new setup decisions.
-# Raw action strings must not be used for decision routing.
+def _score100(value: Any, maximum: float = 24.0) -> float:
+    return clamp((safe_float(value, 0.0) / max(maximum, 1e-9)) * 100.0, 0.0, 100.0)
+
+
+def _weighted_quality(parts: dict[str, tuple[float, float]]) -> float:
+    total_weight = sum(max(0.0, weight) for _, weight in parts.values())
+    if total_weight <= 0:
+        return 0.0
+    return clamp(sum(clamp(score, 0.0, 100.0) * weight for score, weight in parts.values()) / total_weight, 0.0, 100.0)
+
+
+
+def canonical_reversal_evidence(candidate: Any) -> dict[str, Any]:
+    """Normalize reversal evidence without converting missing data to False."""
+    components = getattr(candidate, "score_components", {}) or {}
+    short_profile = getattr(candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}) or {}
+    drift = components.get("reversal_drift_guard", {}) or {}
+
+    def known(value: Any) -> Any:
+        return "UNKNOWN" if value is None else value
+
+    return {
+        "counter_htf_evidence": known(short_profile.get("counter_htf_evidence")),
+        "structural_counter_evidence": known(short_profile.get("structural_counter_evidence")),
+        "mss_quality": known(short_profile.get("mss_quality")),
+        "failure_quality": known(short_profile.get("failure_quality")),
+        "drift_atr": known(drift.get("drift_atr")),
+        "schema_version": "reversal_evidence_v9.0",
+    }
+
+
+def validate_candidate_schema(candidate: Any) -> dict[str, Any]:
+    """Validate canonical DTO contracts immediately before Executive Layer."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    htf = get_htf_fact(candidate)
+    side = str(getattr(candidate, "side", "UNKNOWN") or "UNKNOWN").upper()
+    if not htf.get("valid"):
+        errors.extend(list(htf.get("errors") or ["invalid_htf_fact"]))
+    if side not in {Side.LONG.value, Side.SHORT.value}:
+        errors.append("invalid_candidate_side")
+    if str(htf.get("candidate_side") or "UNKNOWN").upper() not in {side, "UNKNOWN"}:
+        errors.append("htf_candidate_side_mismatch")
+
+    components = getattr(candidate, "score_components", {}) or {}
+    if "htf_state" in components:
+        warnings.append("legacy_htf_state_present_but_ignored")
+    if "htf_market_bias" in components:
+        warnings.append("legacy_htf_market_bias_present_but_ignored")
+
+    reversal = canonical_reversal_evidence(candidate)
+    if is_short_reversal_candidate(candidate):
+        for key in ["counter_htf_evidence", "structural_counter_evidence", "mss_quality", "failure_quality", "drift_atr"]:
+            if reversal.get(key) == "UNKNOWN":
+                warnings.append(f"reversal_field_unknown:{key}")
+
+    return {
+        "valid": not errors,
+        "errors": sorted(set(errors)),
+        "warnings": sorted(set(warnings)),
+        "htf_fact": htf,
+        "reversal_evidence": reversal,
+        "schema_version": "candidate_schema_v9.0",
+    }
+
+def build_evaluation_bundle(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    journal: Optional[dict[str, Any]] = None,
+    state: Optional[dict[str, Any]] = None,
+    *,
+    advisors: Optional[list[dict[str, Any]]] = None,
+    conflict: Optional[dict[str, Any]] = None,
+    philosophy: Optional[dict[str, Any]] = None,
+) -> EvaluationBundle:
+    """Build three independent scores with an explicit feature ownership map."""
+    journal = journal or {}
+    state = state or {}
+    components = getattr(candidate, "score_components", {}) or {}
+    features = components.get("features", {}) or {}
+    advisors = advisors or [
+        _htf_advisor(candidate, components),
+        _ict_advisor(components),
+        _price_structure_advisor(candidate, components),
+        _short_reversal_advisor(candidate, components),
+        _execution_advisor(candidate, components),
+        _risk_manager_advisor(plan, journal, state),
+    ]
+    conflict = conflict or conflict_resolution_engine(advisors)
+    philosophy = philosophy or trading_philosophy_layer(candidate, journal, plan)
+
+    schema_validation = validate_candidate_schema(candidate)
+    htf = schema_validation["htf_fact"]
+    alignment = safe_float(htf.get("alignment_score"), 0.0)
+    htf_quality = clamp((alignment + 1.0) * 50.0, 0.0, 100.0)
+    regime_fit = clamp(safe_float(features.get("regime_fit"), 0.5) * 100.0, 0.0, 100.0)
+    pattern_count = max(0, int(getattr(candidate, "active_model_count", 0) or 0))
+    evidence_groups = {str(x).split(":", 1)[0].upper() for x in (getattr(candidate, "evidence_families", []) or []) if str(x)}
+    pattern_independence = clamp(max(pattern_count, len(evidence_groups)) / 4.0 * 100.0, 0.0, 100.0)
+    directional_thesis = 100.0 if (str(getattr(candidate, "side", "")) in {Side.LONG.value, Side.SHORT.value} and str(getattr(candidate, "thesis", "") or getattr(candidate, "setup_type", ""))) else 0.0
+    thesis_parts = {
+        "structure": (_score100(components.get("str_score", features.get("structure", 0.0) * 24.0)), 0.22),
+        "liquidity_event": (_score100(components.get("liq_score", features.get("liquidity", 0.0) * 24.0)), 0.18),
+        "regime_fit": (regime_fit, 0.15),
+        "htf_alignment": (htf_quality, 0.15),
+        "directional_thesis": (directional_thesis, 0.15),
+        "independent_pattern_evidence": (pattern_independence, 0.15),
+    }
+    setup_quality = _weighted_quality(thesis_parts)
+    confidence_profile = thesis_confidence_decay_profile(candidate, setup_quality, state)
+    thesis_quality = safe_float(confidence_profile.get("confidence"), setup_quality)
+    candidate.setup_quality_score = int(round(setup_quality))
+    candidate.thesis_confidence_score = thesis_quality
+    components["thesis_confidence_decay"] = confidence_profile
+
+    revalidation = getattr(candidate, "revalidation_profile", {}) or components.get("trigger_revalidation", {}) or {}
+    live_trigger = 100.0 if getattr(candidate, "live_3m_trigger_ready", False) else 75.0 if getattr(candidate, "limit_armed_ready", False) else 45.0 if getattr(candidate, "trigger_ready", False) else 0.0
+    revalidation_score = 100.0 if revalidation.get("entry_supported") else 0.0 if (revalidation.get("hard_expired") or revalidation.get("state") == "DEAD") else 50.0
+    freshness = getattr(candidate, "entry_freshness_profile", {}) or calculate_entry_freshness(candidate, {})
+    freshness_score = safe_float(freshness.get("score"), 100.0)
+    chase_flag = bool(freshness.get("extended") or any("chase" in str(x).lower() or "late" in str(x).lower() for x in (getattr(candidate, "risks", []) or [])))
+    chase_safety = 20.0 if chase_flag else 100.0
+    distance_atr = safe_float(freshness.get("distance_from_zone_atr", components.get("distance_from_zone_atr", 0.0)), 0.0)
+    entry_distance = clamp(100.0 - max(0.0, distance_atr - 0.25) * 55.0, 0.0, 100.0)
+    acceptance = clamp(safe_float(getattr(candidate, "acceptance_quality", 0.0), 0.0), 0.0, 100.0)
+    tier = clamp((safe_float(getattr(candidate, "confirmation_tier", 0.0), 0.0) / max(float(ConfirmationTier.PREMIUM.value), 1.0)) * 100.0, 0.0, 100.0)
+    source_quality_map = {
+        ExecutionSource.LIVE_3M.value: 100.0,
+        ExecutionSource.CONTINUATION_REANCHOR.value: 95.0,
+        ExecutionSource.ACCEPTANCE_RETEST.value: 90.0,
+        ExecutionSource.MOMENTUM_CONTINUATION.value: 85.0,
+        ExecutionSource.LIMIT_ARMED.value: 70.0,
+        ExecutionSource.TIME_WARP.value: 25.0,
+        ExecutionSource.NONE.value: 0.0,
+    }
+    source_quality = source_quality_map.get(str(getattr(candidate, "execution_source", "NONE")), 75.0)
+    execution_parts = {
+        "live_trigger": (live_trigger, 0.20),
+        "revalidation": (revalidation_score, 0.15),
+        "freshness": (freshness_score, 0.15),
+        "chase_safety": (chase_safety, 0.15),
+        "entry_distance": (entry_distance, 0.10),
+        "acceptance": (acceptance, 0.10),
+        "confirmation_tier": (tier, 0.10),
+        "execution_source": (source_quality, 0.05),
+    }
+    timing_quality = _weighted_quality(execution_parts)
+    execution_readiness = timing_quality
+    anti_fomo = components.get("anti_fomo", {}) or anti_fomo_profile(candidate, {})
+    entry_parts = {
+        "freshness": (freshness_score, 0.20),
+        "chase_safety": (chase_safety, 0.20),
+        "entry_distance": (entry_distance, 0.20),
+        "acceptance": (acceptance, 0.15),
+        "confirmation_tier": (tier, 0.10),
+        "execution_source": (source_quality, 0.05),
+        "anti_fomo": (safe_float(anti_fomo.get("score"), 100.0), 0.10),
+    }
+    entry_quality = _weighted_quality(entry_parts)
+    candidate.timing_quality_score = int(round(timing_quality))
+    candidate.execution_quality_score = int(round(timing_quality))
+    candidate.entry_quality_score = int(round(entry_quality))
+    candidate.anti_fomo_score = safe_float(anti_fomo.get("score"), 100.0)
+    probe_profile = classify_probe_conviction(candidate, setup_quality, timing_quality, entry_quality)
+    candidate.probe_conviction_tier = str(probe_profile.get("tier"))
+    components["probe_conviction"] = probe_profile
+
+    plan_valid = bool(plan and getattr(plan, "valid", False))
+    stop_distance = abs(safe_float(getattr(plan, "entry", 0.0), 0.0) - safe_float(getattr(plan, "stop", 0.0), 0.0)) if plan else 0.0
+    stop_quality = 100.0 if plan_valid and stop_distance > 1e-9 else 0.0
+    rr1 = safe_float(getattr(plan, "rr1", 0.0), 0.0) if plan else 0.0
+    rr_quality = clamp((rr1 / max(PREFERRED_RR1, 1e-9)) * 75.0, 0.0, 100.0)
+    target_basis = str(getattr(plan, "target_basis", "") or "") if plan else ""
+    target_quality = clamp(safe_float(getattr(candidate, "target_magnet_score", 0.0), 0.0) * 25.0, 0.0, 100.0)
+    if target_quality <= 0 and any(token in target_basis.upper() for token in ["FVG", "OB", "LIQUID", "PDH", "PDL", "VWAP", "SESSION", "MACRO"]):
+        target_quality = 80.0
+    costs = components.get("transaction_costs", {}) or {}
+    cost_total = sum(max(0.0, safe_float(costs.get(k), 0.0)) for k in ["spread_r", "fee_r", "slippage_r"])
+    cost_realism = 100.0 if costs and rr1 - cost_total >= MIN_RR1 else 60.0 if not costs and rr1 >= MIN_RR1 else 20.0
+    daily_used = compute_daily_risk_used(journal) if journal else 0.0
+    open_risk = compute_open_position_risk(state) if state else 0.0
+    available = max(0.0, DAILY_RISK_CAP - daily_used - open_risk)
+    capital_quality = clamp((available / max(DAILY_RISK_CAP, 1e-9)) * 100.0, 0.0, 100.0)
+    correlation_risk = clamp(safe_float(components.get("correlation_risk"), 0.0), 0.0, 1.0)
+    exposure_quality = (1.0 - correlation_risk) * 100.0
+    stage_cap = stage_risk_policy(getattr(candidate, "entry_stage", "WATCH"))["stage_cap_pct"]
+    requested = safe_float(getattr(plan, "position_risk_pct", 0.0), 0.0) if plan else 0.0
+    cap_quality = 100.0 if requested <= stage_cap + 1e-9 else 0.0
+    trade_parts = {
+        "stop_quality": (stop_quality, 0.20),
+        "realistic_rr": (rr_quality, 0.20),
+        "target_magnet": (target_quality, 0.15),
+        "cost_realism": (cost_realism, 0.10),
+        "capital_availability": (capital_quality, 0.15),
+        "exposure_correlation": (exposure_quality, 0.10),
+        "stage_cap_compliance": (cap_quality, 0.10),
+    }
+    trade_quality = _weighted_quality(trade_parts)
+
+    quality_checks = {
+        "candidate_present": candidate is not None,
+        "side_valid": str(getattr(candidate, "side", "")) in {Side.LONG.value, Side.SHORT.value},
+        "htf_schema_valid": bool(schema_validation.get("valid")),
+        "score_components_present": bool(components),
+        "plan_present": plan is not None,
+        "plan_geometry_valid": plan_valid,
+        "invalidation_present": bool(safe_float(getattr(candidate, "invalidation_level", 0.0), 0.0) or safe_float(getattr(plan, "structural_invalidation", 0.0), 0.0) if plan else False),
+        "execution_source_known": str(getattr(candidate, "execution_source", "NONE")) != ExecutionSource.NONE.value,
+    }
+    data_quality = 100.0 * sum(bool(v) for v in quality_checks.values()) / len(quality_checks)
+
+    conflict_obj = ConflictReport(**{k: conflict[k] for k in ConflictReport.__dataclass_fields__ if k in conflict})
+    philosophy_obj = PhilosophyDecision(**{k: philosophy[k] for k in PhilosophyDecision.__dataclass_fields__ if k in philosophy})
+    raw = {
+        "thesis": {k: round(v[0], 2) for k, v in thesis_parts.items()},
+        "thesis_confidence_decay": confidence_profile,
+        "execution": {k: round(v[0], 2) for k, v in execution_parts.items()},
+        "entry": {k: round(v[0], 2) for k, v in entry_parts.items()},
+        "anti_fomo": anti_fomo,
+        "probe_conviction": probe_profile,
+        "trade": {k: round(v[0], 2) for k, v in trade_parts.items()},
+        "data_quality_checks": quality_checks,
+        "htf_fact": htf,
+        "schema_validation": schema_validation,
+        "reversal_evidence": schema_validation.get("reversal_evidence", {}),
+    }
+    ownership = {
+        "thesis_quality": list(thesis_parts.keys()),
+        "execution_readiness": list(execution_parts.keys()),
+        "entry_quality": list(entry_parts.keys()),
+        "trade_quality": list(trade_parts.keys()),
+    }
+    bundle = EvaluationBundle(
+        thesis_quality=round(thesis_quality, 2),
+        execution_readiness=round(execution_readiness, 2),
+        trade_quality=round(trade_quality, 2),
+        conflict_report=conflict_obj,
+        philosophy=philosophy_obj,
+        data_quality=round(data_quality, 2),
+        raw_components=raw,
+        feature_ownership=ownership,
+        setup_quality=round(setup_quality, 2),
+        timing_quality=round(timing_quality, 2),
+        entry_quality=round(entry_quality, 2),
+        thesis_confidence=round(thesis_quality, 2),
+    )
+    candidate.htf_fact = htf
+    candidate.quality_voting = dict(conflict_obj.quality_voting or {})
+    candidate.score_components["quality_voting"] = candidate.quality_voting
+    candidate.evaluation_bundle = asdict(bundle)
+    candidate.score_components["evaluation_bundle"] = asdict(bundle)
+    return bundle
+
+
+def _stage_rank(stage: str) -> int:
+    return {
+        ExecutiveDecisionState.WATCH.value: 0,
+        ExecutiveDecisionState.THESIS_FORMED.value: 1,
+        ExecutiveDecisionState.EARLY_SIGNAL.value: 2,
+        ExecutiveDecisionState.WAIT_CONFIRMATION.value: 2,
+        ExecutiveDecisionState.WAIT_RETEST.value: 2,
+        EntryStage.PROBE.value: 3,
+        EntryStage.ACCEPTANCE.value: 4,
+        EntryStage.CORE.value: 5,
+        EntryStage.RETEST_ADD.value: 6,
+        EntryStage.ADD_POSITION.value: 6,
+        ExecutiveDecisionState.ADD_POSITION.value: 6,
+        ExecutiveDecisionState.REJECT.value: -1,
+        ExecutiveDecisionState.EXPIRED.value: -1,
+    }.get(str(stage or "WATCH").upper(), 0)
+
+
+def _evidence_fingerprint(candidate: Candidate) -> str:
+    payload = {
+        "execution_source": str(getattr(candidate, "execution_source", "")),
+        "trigger_ts": int(getattr(candidate, "trigger_ts", 0) or 0),
+        "acceptance_quality": int(getattr(candidate, "acceptance_quality", 0) or 0),
+        "confirmation_tier": int(getattr(candidate, "confirmation_tier", 0) or 0),
+        "confirmation_state": getattr(candidate, "confirmation_state", {}) or {},
+        "revalidation_state": (getattr(candidate, "revalidation_profile", {}) or {}).get("state"),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
+
+
+def build_staged_executive_decision(
+    candidate: Candidate,
+    evaluation: EvaluationBundle,
+    stage_history: Optional[list[dict[str, Any]]] = None,
+) -> ExecutiveDecisionContract:
+    """Deterministic staged state machine driven by three independent scores."""
+    stage_history = list(stage_history or [])
+    philosophy = evaluation.philosophy
+    conflict = evaluation.conflict_report
+    thesis = evaluation.thesis_quality
+    setup_quality = safe_float(evaluation.setup_quality, thesis) or thesis
+    execution = evaluation.execution_readiness
+    timing_quality = safe_float(evaluation.timing_quality, execution) or execution
+    entry_quality = safe_float(evaluation.entry_quality, execution) or execution
+    trade = evaluation.trade_quality
+    blocking: list[str] = []
+    warnings: list[str] = []
+    required: Optional[str] = None
+    evidence_fp = _evidence_fingerprint(candidate)
+
+    htf = get_htf_fact(candidate)
+    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
+    expired = bool(str(revalidation.get("state") or "").upper() == "DEAD")
+    confirmation_state = getattr(candidate, "confirmation_state", {}) or {}
+    thesis_invalidated = bool(
+        str(getattr(candidate, "hard_reject_reason", "") or "").strip()
+        or confirmation_state.get("thesis_invalidated")
+        or str(revalidation.get("state") or "").upper() == "INVALIDATED"
+    )
+    chase = bool((evaluation.raw_components.get("execution") or {}).get("chase_safety", 100.0) < 50.0)
+    confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
+    philosophy_rec = philosophy.recommendation
+
+    if expired:
+        state = ExecutiveDecisionState.EXPIRED.value
+        blocking.append("THESIS_EXPIRED")
+    elif thesis_invalidated:
+        state = ExecutiveDecisionState.REJECT.value
+        blocking.append("THESIS_INVALIDATED")
+    elif evaluation.data_quality < 62.5 or not htf.get("valid"):
+        state = ExecutiveDecisionState.REJECT.value
+        blocking.append("DATA_SCHEMA_INVALID")
+    elif conflict.capital_blocked:
+        state = ExecutiveDecisionState.REJECT.value
+        blocking.append("DAILY_RISK_BLOCK")
+    elif philosophy_rec in {"REJECT_NO_EDGE", "REJECT_BAD_ASYMMETRY"}:
+        state = ExecutiveDecisionState.REJECT.value
+        blocking.extend(philosophy.reason_codes or [philosophy_rec])
+    elif thesis < 45:
+        state = ExecutiveDecisionState.WATCH.value
+        required = "new independent market-thesis evidence"
+        warnings.append("THESIS_WEAK")
+    elif timing_quality < 35:
+        state = ExecutiveDecisionState.THESIS_FORMED.value
+        required = "first live timing evidence"
+        warnings.append("THESIS_EXISTS_BUT_TIMING_NOT_READY")
+    elif timing_quality < 50 or entry_quality < 42:
+        state = ExecutiveDecisionState.EARLY_SIGNAL.value
+        required = "fresh trigger/retest improving entry quality"
+        warnings.append("EARLY_SIGNAL_NOT_YET_PROBE")
+    elif confirmation_pending:
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        required = "fresh confirmation close/reclaim matching the candidate side"
+    elif chase or (trade < 50 and thesis >= 60):
+        state = ExecutiveDecisionState.WAIT_RETEST.value
+        required = "retest of the execution anchor without thesis invalidation"
+        warnings.append("CHASE_OR_GEOMETRY_RISK")
+    elif conflict.actual_conflict and conflict.conflict_severity >= 0.45:
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        required = "new evidence resolving: " + ", ".join(conflict.conflict_axes)
+        warnings.append("ACTUAL_CONFLICT")
+    elif execution < 42:
+        state = ExecutiveDecisionState.WATCH.value
+        required = "live trigger or revalidation event"
+    elif philosophy_rec == "WAIT_FOR_EVIDENCE":
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        required = "independent evidence required by Trading Philosophy"
+    else:
+        previous = stage_history[-1] if stage_history else {}
+        previous_state = str(previous.get("state") or previous.get("stage") or "")
+        retest_confirmed = bool((getattr(candidate, "confirmation_state", {}) or {}).get("retest_confirmed"))
+        if previous_state in {EntryStage.ACCEPTANCE.value, EntryStage.CORE.value} and retest_confirmed and execution >= 70 and entry_quality >= 60 and trade >= 60:
+            state = EntryStage.ADD_POSITION.value
+        elif (
+            thesis >= 80 and execution >= 80 and trade >= 75
+            and philosophy_rec == "ACCEPT"
+            and philosophy.statistical_status == "PROVEN_POSITIVE"
+            and not conflict.actual_conflict
+        ):
+            state = EntryStage.CORE.value
+        elif thesis >= 70 and execution >= 68 and entry_quality >= 55 and trade >= 60 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
+            state = EntryStage.ACCEPTANCE.value if philosophy_rec == "ACCEPT" else EntryStage.PROBE.value
+            if philosophy_rec == "ACCEPT_STAGED":
+                warnings.append("UNPROVEN_EDGE_CAPS_STAGE_AT_PROBE")
+        elif thesis >= 55 and execution >= 50 and entry_quality >= 45 and trade >= 55 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
+            state = EntryStage.PROBE.value
+        else:
+            state = ExecutiveDecisionState.WATCH.value
+            required = "improved execution readiness or trade geometry"
+
+    previous = stage_history[-1] if stage_history else {}
+    previous_state = str(previous.get("state") or previous.get("stage") or "")
+    previous_fp = str(previous.get("evidence_fingerprint") or "")
+    if previous_state == EntryStage.CORE.value and state != ExecutiveDecisionState.REJECT.value and not conflict.actual_conflict and not expired:
+        # Weak caution/uncertainty alone cannot downgrade an established CORE.
+        if conflict.uncertainty_level > 0 and _stage_rank(state) < _stage_rank(EntryStage.CORE.value):
+            state = EntryStage.CORE.value
+            warnings.append("CORE_HELD_THROUGH_WEAK_CAUTION")
+    if previous_state and _stage_rank(state) > _stage_rank(previous_state) and previous_fp == evidence_fp:
+        state = previous_state
+        warnings.append("NO_STAGE_UPGRADE_WITHOUT_NEW_EVIDENCE")
+
+    allow = state in {
+        EntryStage.PROBE.value,
+        EntryStage.ACCEPTANCE.value,
+        EntryStage.RETEST_ADD.value,
+        EntryStage.CORE.value,
+        EntryStage.ADD_POSITION.value,
+    }
+    if not allow and required is None and state not in {ExecutiveDecisionState.REJECT.value, ExecutiveDecisionState.EXPIRED.value}:
+        required = "new qualifying market event"
+    audit = {
+        "scores": {
+            "setup_quality": setup_quality,
+            "thesis_confidence": thesis,
+            "timing_quality": timing_quality,
+            "entry_quality": entry_quality,
+            "trade_quality": trade,
+        },
+        "quality_voting": dict(evaluation.conflict_report.quality_voting or {}),
+        "probe_conviction": (getattr(candidate, "score_components", {}) or {}).get("probe_conviction", {}),
+        "pre_stage_risk_confidence_budget": (getattr(candidate, "score_components", {}) or {}).get("pre_stage_risk_confidence_budget", {}),
+        "data_quality": evaluation.data_quality,
+        "philosophy": philosophy_rec,
+        "statistical_status": philosophy.statistical_status,
+        "actual_conflict": conflict.actual_conflict,
+        "conflict_axes": conflict.conflict_axes,
+        "conflict_severity": conflict.conflict_severity,
+        "evidence_fingerprint": evidence_fp,
+        "previous_stage": previous_state or None,
+        "upgrade_requires_new_evidence": True,
+    }
+    return ExecutiveDecisionContract(
+        state=state,
+        allow_execution=allow,
+        allowed_stage=state,
+        final_risk_pct=0.0,
+        required_next_event=required,
+        blocking_reasons=sorted(set(blocking)),
+        warning_reasons=sorted(set(warnings)),
+        audit=audit,
+    )
 
 def risky_entry_score_profile(
     candidate: Candidate,
@@ -14713,25 +16962,32 @@ def risky_entry_score_profile(
     }
 
 
+
 def build_executive_decision_object(
     candidate,
     plan: Optional[TradePlan] = None,
     journal: Optional[dict[str, Any]] = None,
     state: Optional[dict[str, Any]] = None,
 ):
-    """Build one decision from independent, non-overlapping advisory inputs."""
+    """Build the v9 staged decision from the three-score evaluation bundle."""
     if candidate is None:
         return {
             "action": ExecutiveDecisionState.NO_SETUP.value,
-            "confidence": 0,
+            "state": ExecutiveDecisionState.WATCH.value,
+            "allowed_stage": ExecutiveDecisionState.WATCH.value,
+            "allow_execution": False,
+            "confidence": 0.0,
             "advisors": [],
             "reason": "missing candidate",
+            "required_next_event": "new candidate",
+            "blocking_reasons": ["MISSING_CANDIDATE"],
+            "warning_reasons": [],
             "audit": {"reason": "missing candidate"},
         }
 
-    components = getattr(candidate, "score_components", {}) or {}
     journal = journal or {}
     state = state or {}
+    components = getattr(candidate, "score_components", {}) or {}
     advisors = [
         _htf_advisor(candidate, components),
         _ict_advisor(components),
@@ -14740,228 +16996,124 @@ def build_executive_decision_object(
         _execution_advisor(candidate, components),
         _risk_manager_advisor(plan, journal, state),
     ]
-
-    conflict = conflict_resolution_engine(advisors)
-    conflict = apply_short_reversal_conflict_overlay(candidate, conflict, advisors)
+    conflict = apply_short_reversal_conflict_overlay(
+        candidate, conflict_resolution_engine(advisors), advisors
+    )
     philosophy = trading_philosophy_layer(candidate, journal, plan)
-    confidence = clamp(
-        50 + conflict.get("market_score", 0) + conflict.get("execution_score", 0),
-        0,
-        100,
+    bundle = build_evaluation_bundle(
+        candidate, plan, journal, state,
+        advisors=advisors, conflict=conflict, philosophy=philosophy,
     )
-    has_hard_conflict = bool(conflict.get("hard_conflict", False))
-    risk_blocked = bool(conflict.get("risk", {}).get("blocked", False))
 
-    # v8.7 Adaptive Conflict Resolver:
-    # HTF/ICT disagreement is a risk modifier, not an absolute execution veto.
-    # A valid execution setup with acceptable RR and no risk violation may still
-    # receive a reduced-risk RISKY_ENTRY, but never a fresh PROBE_ENTRY.
-    # IMPORTANT: conflict["execution_score"] is NOT execution quality.
-    # It is a normalized advisor impact score (~-10..+10).
-    # executive_conflict_allows_reduced_entry() expects raw execution quality (0..100).
-    execution_impact = safe_float(conflict.get("execution_score", 0.0), 0.0)
-    execution_quality_raw = next(
-        (
-            safe_float(advisor.get("confidence", 0.0), 0.0)
-            for advisor in advisors
-            if advisor.get("module") == "EXECUTION_ANALYST"
-        ),
-        0.0,
-    )
-    rr1 = safe_float((philosophy or {}).get("rr1", 0.0), 0.0)
-    quality = int(getattr(candidate, "final_score", 0) or 0)
-    plan_executable = bool(
-        plan
-        and getattr(plan, "valid", False)
-        and getattr(plan, "execution_ready", False)
-    )
-    philosophy_accepts = philosophy.get("recommendation") == "ACCEPT"
-    score_profile = risky_entry_score_profile(
-        candidate,
-        plan,
-        philosophy_accepts=philosophy_accepts,
-        risk_blocked=risk_blocked,
-    )
-    adaptive_execution_threshold = adaptive_conflict_execution_threshold(quality, conflict)
-    conflict_override = (
-        has_hard_conflict
-        and philosophy_accepts
-        and plan_executable
-        and score_profile.get("eligible")
-        and executive_conflict_allows_reduced_entry(
-            execution_quality=execution_quality_raw,
-            risk_blocked=risk_blocked,
-            rr1=rr1,
-            minimum_execution_quality=adaptive_execution_threshold,
+    stage_history = list(getattr(candidate, "stage_history", []) or [])
+    state_history = state.get("stage_history") or []
+    thesis_key_value = str(getattr(candidate, "thesis_key", "") or "")
+    if isinstance(state_history, list):
+        stage_history.extend(
+            row for row in state_history
+            if isinstance(row, dict) and (not thesis_key_value or row.get("thesis_key") == thesis_key_value)
         )
-    )
-    probe_profile = probe_entry_eligibility(
+    staged = build_staged_executive_decision(candidate, bundle, stage_history)
+    geometry_multiplier = safe_float(
+        ((getattr(plan, "breathing_profile", {}) or {}).get("risk_size_multiplier")),
+        1.0,
+    ) if plan else 1.0
+    ledger = build_risk_adjustment_ledger(
         candidate,
-        plan,
-        hard_conflict=has_hard_conflict,
-        risk_blocked=risk_blocked,
-        philosophy_accepts=philosophy_accepts,
+        {},
+        stage=staged.allowed_stage,
+        journal=journal,
+        state=state,
+        geometry_multiplier=geometry_multiplier,
     )
-    relaxed_live_profile = (components.get("relaxed_continuation") or getattr(candidate, "relaxed_continuation_profile", {}) or {})
-    relaxed_live_eligible = bool(
-        relaxed_live_profile.get("live_eligible")
-        and plan_executable
-        and philosophy_accepts
-        and not has_hard_conflict
-        and not risk_blocked
+    final_risk = ledger.final_position_risk_pct if staged.allow_execution else 0.0
+    contract = ExecutiveDecisionContract(
+        state=staged.state,
+        allow_execution=staged.allow_execution and final_risk > 0.0,
+        allowed_stage=staged.allowed_stage,
+        final_risk_pct=round(final_risk, 4),
+        required_next_event=staged.required_next_event,
+        blocking_reasons=list(staged.blocking_reasons),
+        warning_reasons=list(staged.warning_reasons),
+        audit={**staged.audit, "risk_ledger": asdict(ledger)},
     )
-    short_profile = short_reversal_profile_for_candidate(candidate, components)
-    short_reversal_probe_eligible = bool(
-        is_short_reversal_candidate(candidate)
-        and short_profile.get("active")
-        and short_profile.get("execution_ready")
-        and safe_float(short_profile.get("score"), 0.0) >= SHORT_REVERSAL_PROBE_SCORE
-        and quality >= max(ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE - RISKY_SCORE_GRAY_ZONE)
-        and plan_executable
-        and philosophy_accepts
-        and not has_hard_conflict
-        and not risk_blocked
-    )
-    short_reversal_acceptance_eligible = bool(
-        short_reversal_probe_eligible
-        and safe_float(short_profile.get("score"), 0.0) >= SHORT_REVERSAL_ACCEPTANCE_SCORE
-        and quality >= RISKY_ENTRY_SCORE_BASE
-        and confidence >= 55
-    )
-
-    confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
-    if confirmation_pending:
-        action = ExecutiveDecisionState.WAIT_CONFIRMATION.value
-        reason = "Readiness is high; waiting one confirmation bar before execution"
-    elif risk_blocked:
-        action = ExecutiveDecisionState.WAIT.value
-        reason = "Risk budget exhausted; entry blocked"
-    elif relaxed_live_eligible:
-        action = ExecutiveDecisionState.PROBE.value
-        reason = "Relaxed continuation policy graduated from shadow evidence; tiny PROBE_ONLY entry allowed"
-    elif conflict_override:
-        action = ExecutiveDecisionState.PROBE_REDUCED.value
-        reason = (
-            f"Execution edge confirmed despite material conflict; reduced-risk entry allowed "
-            f"(execution {execution_quality_raw:.1f} >= adaptive {adaptive_execution_threshold:.1f})"
+    if staged.allow_execution and final_risk <= 0.0:
+        contract = ExecutiveDecisionContract(
+            state=ExecutiveDecisionState.REJECT.value,
+            allow_execution=False,
+            allowed_stage=ExecutiveDecisionState.REJECT.value,
+            final_risk_pct=0.0,
+            required_next_event=None,
+            blocking_reasons=sorted(set(list(staged.blocking_reasons) + ["NO_CAPITAL_AVAILABLE"])),
+            warning_reasons=list(staged.warning_reasons),
+            audit={**staged.audit, "risk_ledger": asdict(ledger)},
         )
-    elif short_reversal_acceptance_eligible:
-        action = ExecutiveDecisionState.RISKY.value
-        reason = "Integrated SHORT reversal evidence supports staged ACCEPTANCE entry; no full-size bypass"
-    elif short_reversal_probe_eligible:
-        action = ExecutiveDecisionState.PROBE.value
-        reason = "Integrated SHORT reversal evidence supports minimum-risk PROBE entry"
-    elif (
-        philosophy_accepts
-        and plan_executable
-        and quality >= ENTRY_SCORE_BASE
-        and confidence >= 75
-        and not has_hard_conflict
-    ):
-        action = ExecutiveDecisionState.ENTRY.value
-        reason = "Independent advisors and 75+ conviction support full entry"
-    elif (
-        philosophy_accepts
-        and plan_executable
-        and score_profile.get("eligible")
-        and confidence >= 55
-        and not has_hard_conflict
-    ):
-        if score_profile.get("tier") == "GRAY":
-            action = ExecutiveDecisionState.GRAY_RISKY.value
-            reason = "Gray-zone setup passed stricter execution/structure/freshness checks; tightly capped risky entry"
-        else:
-            action = ExecutiveDecisionState.RISKY.value
-            reason = "Valid setup supports reduced-risk entry"
-    elif probe_profile.get("eligible"):
-        action = ExecutiveDecisionState.PROBE.value
-        reason = "Fresh non-conflicting live trigger supports minimum-risk probe"
-    else:
-        action = ExecutiveDecisionState.WAIT.value
-        reason = "Edge, freshness, execution readiness or conflict conditions do not permit execution"
 
-    return {
-        "action": action,
-        "confidence": round(confidence, 2),
+    confidence = round((bundle.thesis_quality + bundle.execution_readiness + bundle.trade_quality) / 3.0, 2)
+    reason = (
+        f"{contract.state}: setup={bundle.setup_quality:.1f}, thesis_conf={bundle.thesis_confidence:.1f}, "
+        f"timing={bundle.timing_quality:.1f}, entry={bundle.entry_quality:.1f}, trade={bundle.trade_quality:.1f}"
+    )
+    if contract.blocking_reasons:
+        reason += " | blocked=" + ",".join(contract.blocking_reasons)
+    elif contract.required_next_event:
+        reason += " | next=" + contract.required_next_event
+
+    payload = {
+        "action": contract.state,
+        "state": contract.state,
+        "allow_execution": contract.allow_execution,
+        "allowed_stage": contract.allowed_stage,
+        "final_risk_pct": contract.final_risk_pct,
+        "required_next_event": contract.required_next_event,
+        "blocking_reasons": contract.blocking_reasons,
+        "warning_reasons": contract.warning_reasons,
+        "confidence": confidence,
         "advisors": advisors,
-        "conflict_resolution": conflict,
-        "trading_philosophy": philosophy,
+        "conflict_resolution": asdict(bundle.conflict_report),
+        "trading_philosophy": asdict(bundle.philosophy),
+        "evaluation_bundle": asdict(bundle),
+        "risk_ledger": asdict(ledger),
         "reason": reason,
         "audit": {
-            "director_reason": "Final decision synthesized from independent advisory data",
-            "modules_are_advisors": True,
+            "director_reason": "setup -> thesis confidence -> timing -> entry quality -> trade geometry -> final risk",
             "single_authority": "EXECUTIVE_DECISION_LAYER",
-            "has_hard_conflict": has_hard_conflict,
-            "risk_blocked": risk_blocked,
-            "confirmation_pending": confirmation_pending,
-            "confirmation_state": dict(getattr(candidate, "confirmation_state", {}) or {}),
-            "final_action_policy": "conflict lowers risk, not automatically blocks execution",
-            "adaptive_conflict_resolver": {
-                "enabled": True,
-                "execution_quality_raw": round(execution_quality_raw, 2),
-                "execution_impact": round(execution_impact, 2),
-                "adaptive_execution_threshold": adaptive_execution_threshold,
-                "rr1": round(rr1, 2),
-                "score_profile": score_profile,
-                "override_allowed": conflict_override,
-                "decision_variant": "PROBE_REDUCED" if conflict_override else action,
-                "conflict_override": bool(conflict_override),
-
-                # Regression audit:
-                # before_fix reproduces the old broken behavior where
-                # normalized advisor impact (-10..+10) was compared to a
-                # raw execution threshold (0..100).
-                "before_fix_conflict_override": bool(
-                    has_hard_conflict
-                    and philosophy_accepts
-                    and plan_executable
-                    and quality >= RISKY_ENTRY_SCORE_BASE
-                    and executive_conflict_allows_reduced_entry(
-                        execution_quality=execution_impact,
-                        risk_blocked=risk_blocked,
-                        rr1=rr1,
-                        minimum_execution_quality=adaptive_execution_threshold,
-                    )
-                ),
-                "after_fix_conflict_override": bool(conflict_override),
-                "before_fix_action": (
-                    "PROBE_REDUCED"
-                    if (
-                        has_hard_conflict
-                        and philosophy_accepts
-                        and plan_executable
-                        and quality >= RISKY_ENTRY_SCORE_BASE
-                        and executive_conflict_allows_reduced_entry(
-                            execution_quality=execution_impact,
-                            risk_blocked=risk_blocked,
-                            rr1=rr1,
-                            minimum_execution_quality=adaptive_execution_threshold,
-                        )
-                    )
-                    else action
-                ),
-                "after_fix_action": action,
-            },
-            "probe_entry_eligibility": probe_profile,
-            "relaxed_continuation_live": {
-                "eligible": relaxed_live_eligible,
-                "profile": relaxed_live_profile,
-                "mode": "PROBE_ONLY" if relaxed_live_eligible else "SHADOW_ONLY",
-            },
-            "risky_entry_score_profile": score_profile,
-            "short_reversal_execution": {
-                "profile": short_profile,
-                "probe_eligible": short_reversal_probe_eligible,
-                "acceptance_eligible": short_reversal_acceptance_eligible,
-                "conflict_overlay": conflict.get("short_reversal_overlay", {}),
-            },
+            "modules_are_advisors": True,
+            "has_hard_conflict": bool(bundle.conflict_report.actual_conflict and bundle.conflict_report.conflict_severity >= 0.45),
+            "risk_blocked": bundle.conflict_report.capital_blocked,
+            "actual_conflict": bundle.conflict_report.actual_conflict,
+            "conflict_axes": bundle.conflict_report.conflict_axes,
+            "consensus": bundle.conflict_report.consensus,
+            "net_market_preference": bundle.conflict_report.net_market_preference,
+            "net_execution_preference": bundle.conflict_report.net_execution_preference,
+            "uncertainty_level": bundle.conflict_report.uncertainty_level,
+            "evaluation_bundle": asdict(bundle),
+            "risk_ledger": asdict(ledger),
+            "required_next_event": contract.required_next_event,
+            "blocking_reasons": contract.blocking_reasons,
+            "warning_reasons": contract.warning_reasons,
             "execution_eligible_pre_conflict": bool(
-                philosophy_accepts and plan_executable and score_profile.get("eligible") and not risk_blocked
+                bundle.philosophy.recommendation in {"ACCEPT", "ACCEPT_STAGED"}
+                and plan and getattr(plan, "valid", False) and getattr(plan, "execution_ready", False)
+                and not bundle.conflict_report.capital_blocked
             ),
+            "adaptive_conflict_resolver": {
+                "enabled": False,
+                "reason": "v9 actual conflicts are resolved by staged evidence, not score override",
+                "conflict_override": False,
+            },
+            "risky_entry_score_profile": {
+                "deprecated": True,
+                "reason": "v9 uses three independent scores and staged policy",
+            },
+            "quality_voting": dict(bundle.conflict_report.quality_voting or {}),
+            "probe_conviction": (components.get("probe_conviction") or {}),
+            "final_action_policy": "quality/confidence first, stage second, trade plan geometry third, final position size last",
         },
     }
-
-
+    candidate.evaluation_bundle = asdict(bundle)
+    candidate.risk_ledger = asdict(ledger)
+    return payload
 
 # ==========================================================
 # Executive Action Whitelist Resolver
@@ -14974,20 +17126,27 @@ def build_executive_decision_object(
 # A new setup decision with WAIT means: no position exists, do not create a signal.
 # Therefore WAIT must resolve to NO_SETUP for external signal output.
 EXECUTIVE_ACTION_MAP = {
-    ExecutiveDecisionState.ENTRY: Action.ENTRY.value,
-    ExecutiveDecisionState.RISKY: Action.RISKY_ENTRY.value,
-    ExecutiveDecisionState.PROBE: Action.PROBE_ENTRY.value,
-    ExecutiveDecisionState.PROBE_REDUCED: Action.RISKY_ENTRY.value,
-    ExecutiveDecisionState.GRAY_RISKY: Action.RISKY_ENTRY.value,
-
-    # New setup decision: no open position exists.
-    # WAIT is not HOLD. HOLD belongs only to active trade management.
+    ExecutiveDecisionState.WATCH: Action.NO_SETUP.value,
+    ExecutiveDecisionState.THESIS_FORMED: Action.NO_SETUP.value,
+    ExecutiveDecisionState.EARLY_SIGNAL: Action.NO_SETUP.value,
     ExecutiveDecisionState.WAIT: Action.NO_SETUP.value,
     ExecutiveDecisionState.WAIT_RETEST: Action.NO_SETUP.value,
     ExecutiveDecisionState.WAIT_CONFIRMATION: Action.NO_SETUP.value,
-
-    ExecutiveDecisionState.NO_SETUP: Action.NO_SETUP.value,
     ExecutiveDecisionState.REJECT: Action.NO_SETUP.value,
+    ExecutiveDecisionState.EXPIRED: Action.NO_SETUP.value,
+    ExecutiveDecisionState.NO_SETUP: Action.NO_SETUP.value,
+
+    ExecutiveDecisionState.PROBE: Action.PROBE_ENTRY.value,
+    ExecutiveDecisionState.ACCEPTANCE: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.RETEST_ADD: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.ADD_POSITION: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.CORE: Action.ENTRY.value,
+
+    # Legacy replay compatibility.
+    ExecutiveDecisionState.ENTRY: Action.ENTRY.value,
+    ExecutiveDecisionState.RISKY: Action.RISKY_ENTRY.value,
+    ExecutiveDecisionState.PROBE_REDUCED: Action.PROBE_ENTRY.value,
+    ExecutiveDecisionState.GRAY_RISKY: Action.PROBE_ENTRY.value,
 }
 
 
@@ -15016,6 +17175,7 @@ def resolve_executive_action(internal_action: str) -> str:
 
     return EXECUTIVE_ACTION_MAP[internal_action]
 
+
 def executive_decision_engine(
     candidate,
     existing_action="NO_SETUP",
@@ -15023,34 +17183,67 @@ def executive_decision_engine(
     state: Optional[dict[str, Any]] = None,
     journal: Optional[dict[str, Any]] = None,
 ):
-    """Single final authority. Legacy action is retained only for audit."""
-    decision = build_executive_decision_object(
-        candidate, plan=plan, journal=journal, state=state
-    )
-
-    internal_action = decision["action"]
+    """Single final authority: staged state, then one final risk calculation."""
+    state = state or {}
+    journal = journal or {}
+    decision = build_executive_decision_object(candidate, plan=plan, journal=journal, state=state)
+    internal_action = str(decision.get("action") or ExecutiveDecisionState.WATCH.value)
     final_action = resolve_executive_action(internal_action)
 
-    if internal_action in {ExecutiveDecisionState.PROBE.value, ExecutiveDecisionState.PROBE_REDUCED.value, ExecutiveDecisionState.GRAY_RISKY.value}:
+    if candidate is not None:
+        candidate.entry_stage = str(decision.get("allowed_stage") or internal_action)
+    if plan is not None:
+        geometry_multiplier = safe_float((plan.breathing_profile or {}).get("risk_size_multiplier"), 1.0)
+        ledger = build_risk_adjustment_ledger(
+            candidate,
+            {},
+            stage=decision.get("allowed_stage"),
+            journal=journal,
+            state=state,
+            geometry_multiplier=geometry_multiplier,
+        )
+        final_risk = ledger.final_position_risk_pct if decision.get("allow_execution") else 0.0
+        if decision.get("allow_execution") and final_risk <= 0:
+            internal_action = ExecutiveDecisionState.REJECT.value
+            final_action = Action.NO_SETUP.value
+            decision["action"] = internal_action
+            decision["state"] = internal_action
+            decision["allow_execution"] = False
+            decision["blocking_reasons"] = sorted(set(list(decision.get("blocking_reasons") or []) + ["NO_CAPITAL_AVAILABLE"]))
+        plan.position_risk_pct = round(final_risk, 4)
+        plan.risk_pct = plan.position_risk_pct
+        plan.entry_stage = str(decision.get("allowed_stage") or internal_action)
+        plan.final_stage = plan.entry_stage
+        plan.risk_ledger = asdict(ledger)
+        plan.immutable = True
+        decision["risk_ledger"] = asdict(ledger)
+        decision["final_risk_pct"] = round(final_risk, 4)
+        decision.setdefault("audit", {})["risk_ledger"] = asdict(ledger)
         if candidate is not None:
-            candidate.entry_stage = EntryStage.PROBE.value
-        if plan is not None:
-            relaxed_live = bool(((getattr(candidate, "score_components", {}) or {}).get("relaxed_continuation", {}) or {}).get("live_eligible"))
-            if internal_action == ExecutiveDecisionState.PROBE.value and relaxed_live:
-                risk_cap = RELAXED_CONTINUATION_PROBE_RISK_PCT
-            elif internal_action == ExecutiveDecisionState.PROBE_REDUCED.value:
-                risk_cap = max(0.02, PROBE_RISK_PCT * 0.50)
-            elif internal_action == ExecutiveDecisionState.GRAY_RISKY.value:
-                risk_cap = RISKY_GRAY_RISK_PCT
-            else:
-                risk_cap = PROBE_RISK_PCT
-            reduced_risk = min(
-                safe_float(plan.position_risk_pct, risk_cap),
-                risk_cap,
-            )
-            plan.position_risk_pct = round(reduced_risk, 4)
-            plan.risk_pct = plan.position_risk_pct
-            plan.entry_stage = EntryStage.PROBE.value
+            candidate.risk_ledger = asdict(ledger)
+            candidate.stage_plan["final_stage"] = plan.final_stage
+            candidate.stage_plan["final_risk_pct"] = plan.position_risk_pct
+            candidate.stage_plan["immutable_after_executive"] = True
+
+    if candidate is not None:
+        event = {
+            "time": iso_now(),
+            "thesis_key": str(getattr(candidate, "thesis_key", "") or ""),
+            "state": str(decision.get("allowed_stage") or internal_action),
+            "evidence_fingerprint": _evidence_fingerprint(candidate),
+            "required_next_event": decision.get("required_next_event"),
+            "final_risk_pct": safe_float(decision.get("final_risk_pct"), 0.0),
+            "setup_quality": safe_float(getattr(candidate, "setup_quality_score", 0.0), 0.0),
+            "timing_quality": safe_float(getattr(candidate, "timing_quality_score", 0.0), 0.0),
+            "entry_quality": safe_float(getattr(candidate, "entry_quality_score", 0.0), 0.0),
+            "thesis_confidence": safe_float(getattr(candidate, "thesis_confidence_score", 0.0), 0.0),
+            "probe_conviction_tier": str(getattr(candidate, "probe_conviction_tier", "") or ""),
+        }
+        candidate.stage_history.append(event)
+        history = state.setdefault("stage_history", [])
+        history.append(event)
+        if len(history) > 300:
+            del history[:-300]
 
     return {
         "action": final_action,
@@ -15074,10 +17267,23 @@ def run_module_conflict_audit(candidate=None):
         "unified_decision_object_enabled": "Decision" in globals(),
         "audit_trail_enabled": "audit" in Decision.__annotations__,
     }
+    required_keys = {
+        "executive_is_single_authority",
+        "modules_return_advice_only",
+        "conflict_resolution_enabled",
+        "trading_philosophy_enabled",
+        "unified_decision_object_enabled",
+        "audit_trail_enabled",
+    }
+    required = {key: bool(checks.get(key)) for key in required_keys}
     return {
         "architecture": globals().get("EXECUTIVE_ARCHITECTURE_VERSION", "UNKNOWN"),
         "checks": checks,
-        "result": "PASS" if all(checks.values()) else "FAIL",
+        "runtime_observation": {
+            "trading_philosophy_executed_in_this_process": checks["trading_philosophy_executed"],
+            "note": "execution is observed after a candidate evaluation; availability is the startup invariant",
+        },
+        "result": "PASS" if all(required.values()) else "FAIL",
     }
 
 
