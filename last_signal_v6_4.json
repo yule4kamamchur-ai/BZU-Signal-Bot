@@ -33,9 +33,9 @@
     "signal_id": "0365fc261c"
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1784159100000,
-    "last_run_processed": 5,
-    "processed_count": 496,
+    "last_scanned_3m_ts": 1784159640000,
+    "last_run_processed": 3,
+    "processed_count": 499,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -47,7 +47,7 @@
         "event_price": 83.96,
         "invalidation_level": 83.96,
         "sweep_level": 83.96,
-        "extreme": 83.93,
+        "extreme": 84.04,
         "displacement": true,
         "retest_ts": 1784070900000,
         "ready_ts": 1784071080000,
@@ -57,7 +57,7 @@
         "confirmation_quality": 86,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 496,
+        "processed_bars": 499,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -80,7 +80,7 @@
         "event_price": 83.96,
         "invalidation_level": 83.96,
         "sweep_level": 83.96,
-        "extreme": 83.98,
+        "extreme": 84.05,
         "displacement": true,
         "retest_ts": 1784071620000,
         "ready_ts": 1784071800000,
@@ -90,7 +90,7 @@
         "confirmation_quality": 98,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 496,
+        "processed_bars": 499,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -108,9 +108,9 @@
   "regime_memory": {
     "type": "RANGE_COMPRESSION",
     "pending_type": "",
-    "stable_count": 6,
+    "stable_count": 7,
     "pending_count": 0,
-    "updated_at": "2026-07-15T23:46:08.697676+00:00"
+    "updated_at": "2026-07-15T23:54:28.091548+00:00"
   },
   "stage_history": [
     {
@@ -336,8 +336,8 @@
     }
   ],
   "latest_signal": {
-    "id": "f573c7bda1",
-    "time": "2026-07-15T23:46:08.714016+00:00",
+    "id": "7b586a8818",
+    "time": "2026-07-15T23:54:28.109844+00:00",
     "action": "NO_SETUP",
     "side": "NEUTRAL",
     "setup_type": "NONE",
@@ -407,7 +407,7 @@
       "reason": "insufficient evidence for a separate weekend regime"
     },
     "learning_status": {
-      "updated_at": "2026-07-15T23:46:07.101108+00:00",
+      "updated_at": "2026-07-15T23:54:26.356938+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
@@ -677,108 +677,21 @@
       "weekend_range_min_trades_per_bucket": 20,
       "weekend_range_wilson_z": 1.96
     },
-    "observed_market_price": 83.97,
+    "observed_market_price": 84.04,
     "live_entry_price_contract": {
       "checked": false,
       "reason": "non_executable_action"
     },
     "audit": {
-      "rejected_hypotheses": [
-        {
-          "rank": 1,
-          "side": "LONG",
-          "model": "FAILED_AUCTION_REJECTION",
-          "setup_type": "FAILED_AUCTION_REJECTION",
-          "final_score": 69,
-          "hypothesis_score": 70.85,
-          "setup_q": 91,
-          "execution_q": 79,
-          "plan_q": 75,
-          "entry_quality": 90,
-          "durability_quality": 55,
-          "execution_source": "FAILED_AUCTION",
-          "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 1468.1,
-          "trigger_reanchored": false,
-          "original_trigger_age_min": 1468.2,
-          "effective_trigger_age_min": 1468.2,
-          "target_magnet": 2.78,
-          "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
-          "innovation_risk_mult": 0.35,
-          "revalidation_state": "DECAYED_THESIS",
-          "revalidation_supported": false,
-          "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
-          "short_reversal_score": 0.0,
-          "short_reversal_stage": "",
-          "failed_gate": "THESIS_HARD_TTL_EXPIRED age=1468.1min ttl=1440.0min; HTF не підтримує risky-entry",
-          "evidence_layers": [
-            "ICT_LOCATION",
-            "PRICE_STRUCTURE",
-            "ICT_MODEL_FAILED_AUCTION_REJECTION",
-            "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
-            "EXECUTION_TIME_WARP_WAIT_RETEST",
-            "EXECUTION_FAILED_AUCTION"
-          ],
-          "entry_anchor": 83.97,
-          "invalidation": 83.8961,
-          "counterfactual": {
-            "status": "OPEN",
-            "opened_at": "2026-07-15T23:46:08.713968+00:00",
-            "expires_at": "2026-07-16T23:46:08.713974+00:00",
-            "side": "LONG",
-            "entry": 83.97,
-            "stop": 83.5051,
-            "tp0": 84.4349,
-            "tp1": 84.92,
-            "tp2": 85.62,
-            "tp3": 86.1085,
-            "mfe_r": null,
-            "mae_r": null,
-            "tp_sequence": [],
-            "last_processed_ts": 0,
-            "max_target_hit": "NONE",
-            "best_price": 83.97,
-            "worst_price": 83.97,
-            "test_key": "REJECTED|LONG|FAILED_AUCTION_REJECTION|FAILED_AUCTION_REJECTION|840|LONG|83.97|83.5051|84.92",
-            "policy_question": "Was this rejection correct after observing MFE/MAE and target/stop order?",
-            "audit_only": true,
-            "not_realized_pnl": true,
-            "schema_version": "rejected_counterfactual_v9.1"
-          }
-        }
-      ],
+      "rejected_hypotheses": [],
       "best_candidate_per_side": {
         "LONG": {
-          "rank": 1,
           "side": "LONG",
-          "model": "FAILED_AUCTION_REJECTION",
-          "setup_type": "FAILED_AUCTION_REJECTION",
-          "final_score": 69,
-          "hypothesis_score": 70.85,
-          "setup_q": 91,
-          "execution_q": 79,
-          "plan_q": 75,
-          "entry_quality": 93,
-          "durability_quality": 55,
-          "execution_source": "FAILED_AUCTION",
-          "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 1468.1,
-          "trigger_reanchored": false,
-          "original_trigger_age_min": 1468.2,
-          "effective_trigger_age_min": 1468.2,
-          "target_magnet": 2.78,
-          "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
-          "innovation_risk_mult": 0.35,
-          "revalidation_state": "DECAYED_THESIS",
-          "revalidation_supported": false,
-          "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
-          "short_reversal_score": 0.0,
-          "short_reversal_stage": "",
-          "candidate_created": true,
+          "candidate_created": false,
           "selected": false,
-          "eligible": false,
-          "status": "REJECTED",
-          "top_rejection_reason": "THESIS_HARD_TTL_EXPIRED age=1468.1min ttl=1440.0min; HTF не підтримує risky-entry"
+          "final_score": null,
+          "hypothesis_score": null,
+          "top_rejection_reason": "NO_CANDIDATE_CREATED"
         },
         "SHORT": {
           "side": "SHORT",
@@ -789,7 +702,7 @@
           "top_rejection_reason": "NO_CANDIDATE_CREATED"
         }
       },
-      "candidate_count": 1,
+      "candidate_count": 0,
       "audit_note": "Both LONG and SHORT are always audited",
       "architecture": {
         "pipeline": "ANALYTICAL_DEPARTMENTS -> CONFLICT_ANALYSIS -> TRADING_PHILOSOPHY -> EXECUTIVE_DECISION_LAYER",
@@ -870,9 +783,9 @@
       "authority_guard": {
         "validated": true,
         "executive_only_actions": [
-          "PROBE_ENTRY",
+          "ENTRY",
           "RISKY_ENTRY",
-          "ENTRY"
+          "PROBE_ENTRY"
         ],
         "violations": []
       }
@@ -880,15 +793,6 @@
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "NO_SETUP",
-      "side": "LONG",
-      "setup_type": "SESSION_MEAN_RECLAIM",
-      "quality": 64,
-      "price": 84.19,
-      "thesis_family_key": "LONG|SESSION_MEAN_RECLAIM|VWAP_SESSION_MEAN_RECLAIM",
-      "time": "2026-07-14T06:46:02.794401+00:00"
-    },
     {
       "type": "NO_SETUP",
       "side": "LONG",
@@ -2679,7 +2583,16 @@
       "price": 83.97,
       "thesis_family_key": "",
       "time": "2026-07-15T23:46:08.714284+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "NEUTRAL",
+      "setup_type": "NONE",
+      "quality": 12,
+      "price": 84.04,
+      "thesis_family_key": "",
+      "time": "2026-07-15T23:54:28.109974+00:00"
     }
   ],
-  "updated_at": "2026-07-15T23:46:09.160333+00:00"
+  "updated_at": "2026-07-15T23:54:28.577784+00:00"
 }
