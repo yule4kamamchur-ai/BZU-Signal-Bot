@@ -2,6 +2,13 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v9.2 (Risk Integrity Hard-Gate Edition)
 ===============================================================================
+Оновлення v9.3.1:
+- Revalidation стала model-local: continuation більше не зобов’язана одночасно робити breakout і sweep-reclaim на одній 3M свічці.
+- Для 2–4h continuation використовується directional acceptance path із прозорим floor 85; reclaim/reversal використовують власний reclaim path.
+- Виправлено недосяжний relaxed-continuation shadow: strict structure і missing strict structure більше не вимагаються одночасно.
+- Relaxed policy лишається SHADOW_ONLY до достатньої позитивної counterfactual вибірки; live thresholds не послаблені навмання.
+- Execution funnel тепер окремо показує scan-level та unique-thesis revalidation blocks, щоб повторні скани не виглядали як 98 незалежних сетапів.
+
 Оновлення v9.2:
 - SHORT liquidity-sweep reversal отримав model-local hard gate: volume_ratio < 1.0 не може бути протягнутий aggregate reversal readiness.
 - Наявність шести 3M барів відділена від підтвердженої six-bar structure; count більше не перекриває провалені критичні checks.
@@ -275,8 +282,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.2-risk-integrity-hard-gates"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_2_RISK_INTEGRITY_HARD_GATES"
+BOT_VERSION = "pro-hybrid-confluence-v9.3.1-revalidation-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_3_1_REVALIDATION_CALIBRATION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -376,6 +383,17 @@ SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE = min(
     100.0,
     max(0.0, float(os.getenv("SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE", "95") or 95)),
 )
+# v9.3.1: model-local floors. The legacy 95 remains available for generic/custom
+# models, but continuation and reclaim paths are scored against the evidence they
+# actually require instead of secretly forcing all four checks.
+SETUP_REVALIDATION_CONTINUATION_ELEVATED_MIN_MICRO_SCORE = min(
+    100.0,
+    max(0.0, float(os.getenv("SETUP_REVALIDATION_CONTINUATION_ELEVATED_MIN_MICRO_SCORE", "85") or 85)),
+)
+SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE = min(
+    100.0,
+    max(0.0, float(os.getenv("SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE", "65") or 65)),
+)
 SHORT_SWEEP_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("SHORT_SWEEP_MIN_VOLUME_RATIO", "1.0") or 1.0))
 # Hard lease for thesis memory. Default equals the previous extreme-stale boundary
 # (24h), but unlike ARCHIVED_THESIS it is terminal unless a fresh micro-confirmation
@@ -413,6 +431,7 @@ NO_PULLBACK_RISK_PCT = float(os.getenv("NO_PULLBACK_RISK_PCT", "0.10") or 0.10)
 RELAXED_CONTINUATION_SHADOW_ENABLED = os.getenv("RELAXED_CONTINUATION_SHADOW_ENABLED", "true").lower() in {"1", "true", "yes"}
 RELAXED_CONTINUATION_LIVE_ENABLED = os.getenv("RELAXED_CONTINUATION_LIVE_ENABLED", "true").lower() in {"1", "true", "yes"}
 RELAXED_CONTINUATION_MIN_MICRO_SCORE = float(os.getenv("RELAXED_CONTINUATION_MIN_MICRO_SCORE", "85") or 85)
+RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES = max(2, min(6, int(os.getenv("RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES", "3") or 3)))
 RELAXED_CONTINUATION_MIN_NET_MOVE_ATR = float(os.getenv("RELAXED_CONTINUATION_MIN_NET_MOVE_ATR", "0.70") or 0.70)
 RELAXED_CONTINUATION_MAX_PULLBACK_ATR = float(os.getenv("RELAXED_CONTINUATION_MAX_PULLBACK_ATR", "0.40") or 0.40)
 RELAXED_CONTINUATION_MAX_DISTANCE_ATR = float(os.getenv("RELAXED_CONTINUATION_MAX_DISTANCE_ATR", "0.80") or 0.80)
@@ -603,6 +622,12 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Relaxed continuation distance cannot be looser than the strict location envelope")
     if RELAXED_CONTINUATION_MAX_PULLBACK_ATR > CONTINUATION_REANCHOR_MAX_PULLBACK_ATR:
         errors.append("Relaxed continuation pullback cannot be looser than the strict pullback envelope")
+    if not (0 <= SETUP_REVALIDATION_CONTINUATION_ELEVATED_MIN_MICRO_SCORE <= 100):
+        errors.append("Continuation revalidation score floor must be between 0 and 100")
+    if not (0 <= SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE <= 100):
+        errors.append("Reclaim revalidation score floor must be between 0 and 100")
+    if not (2 <= RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES <= 6):
+        errors.append("RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES must be between 2 and 6")
 
     short_weight_sum = sum([
         SHORT_REVERSAL_WEIGHT_LIQUIDITY,
@@ -1705,6 +1730,9 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "setup_revalidation_elevated_age_min": SETUP_REVALIDATION_ELEVATED_AGE_MIN,
         "setup_revalidation_generic_max_age_min": SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
         "setup_revalidation_elevated_min_micro_score": SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE,
+        "setup_revalidation_continuation_elevated_min_micro_score": SETUP_REVALIDATION_CONTINUATION_ELEVATED_MIN_MICRO_SCORE,
+        "setup_revalidation_reclaim_elevated_min_micro_score": SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE,
+        "relaxed_continuation_min_directional_closes": RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES,
         "short_sweep_min_volume_ratio": SHORT_SWEEP_MIN_VOLUME_RATIO,
         "thesis_hard_ttl_min": THESIS_HARD_TTL_MIN,
         "continuation_reanchor_enabled": CONTINUATION_REANCHOR_ENABLED,
@@ -1854,10 +1882,36 @@ def calculate_entry_freshness(candidate: Any, context: dict[str, Any] | None = N
 
 
 def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Soft extension penalty. It changes price of error, never setup validity."""
+    """Price-extension penalty based on both impulse and live distance from the analytical anchor.
+
+    A setup can be fresh in time and still be late in price. The old implementation
+    only read generic context.impulse_atr, which was often absent and therefore
+    returned a misleading 100/100 even when live entry was several ATR away.
+    """
     context = context or {}
     freshness = getattr(candidate, "entry_freshness_profile", {}) or calculate_entry_freshness(candidate, context)
-    extension = max(0.0, safe_float(freshness.get("impulse_atr"), 0.0))
+    impulse_extension = max(0.0, safe_float(freshness.get("impulse_atr"), 0.0))
+
+    price = safe_float(context.get("price"), 0.0)
+    anchor = (
+        safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
+        or safe_float(getattr(candidate, "trigger_level", 0.0), 0.0)
+    )
+    atr15 = safe_float(context.get("atr15"), 0.0)
+    side = str(getattr(candidate, "side", "") or "").upper()
+    anchor_extension = 0.0
+    if price and anchor and atr15 > 0:
+        if side == Side.LONG.value:
+            anchor_extension = max(0.0, (price - anchor) / atr15)
+        elif side == Side.SHORT.value:
+            anchor_extension = max(0.0, (anchor - price) / atr15)
+        else:
+            anchor_extension = abs(price - anchor) / atr15
+
+    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
+    revalidation_distance = max(0.0, safe_float(revalidation.get("distance_from_anchor_atr"), 0.0))
+    extension = max(impulse_extension, anchor_extension, revalidation_distance)
+
     if extension < 1.0:
         penalty = -5.0 * extension
     elif extension < 2.0:
@@ -1865,7 +1919,7 @@ def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) 
     elif extension < 3.0:
         penalty = -15.0 - 15.0 * (extension - 2.0)
     else:
-        penalty = -30.0 - min(15.0, (extension - 3.0) * 5.0)
+        penalty = -30.0 - min(25.0, (extension - 3.0) * 8.0)
 
     source = str(getattr(candidate, "execution_source", "") or "")
     setup = str(getattr(candidate, "setup_type", "") or "").upper()
@@ -1881,9 +1935,14 @@ def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) 
         "score": round(score, 2),
         "penalty": round(penalty, 2),
         "price_extension_atr": round(extension, 3),
+        "impulse_extension_atr": round(impulse_extension, 3),
+        "anchor_extension_atr": round(anchor_extension, 3),
+        "revalidation_distance_atr": round(revalidation_distance, 3),
+        "analysis_anchor": round_price(anchor) if anchor else 0.0,
+        "market_price": round_price(price) if price else 0.0,
         "strong_momentum_continuation": strong_continuation,
-        "policy": "soft risk penalty; never an entry prohibition",
-        "schema_version": "anti_fomo_v9.1",
+        "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
+        "schema_version": "anti_fomo_v9.3",
     }
 
 
@@ -2689,6 +2748,7 @@ def compute_execution_conversion_funnel(journal: dict[str, Any]) -> dict[str, An
         counts = {name: 0 for name in stage_names}
         thesis_sets = {name: set() for name in stage_names}
         blockers: dict[str, int] = {}
+        blocker_theses: dict[str, set[str]] = {}
         for signal in records:
             funnel = ((signal.get("audit") or {}).get("execution_funnel") or signal.get("execution_funnel") or {})
             thesis = str(signal.get("thesis_key") or signal.get("id") or "")
@@ -2718,6 +2778,8 @@ def compute_execution_conversion_funnel(journal: dict[str, Any]) -> dict[str, An
             if blocker != "NONE":
                 blockers[blocker] = blockers.get(blocker, 0) + 1
                 blocker_totals[blocker] = blocker_totals.get(blocker, 0) + 1
+                if thesis:
+                    blocker_theses.setdefault(blocker, set()).add(thesis)
         transitions = []
         for previous, current in zip(stage_names, stage_names[1:]):
             base = counts[previous]
@@ -2731,13 +2793,15 @@ def compute_execution_conversion_funnel(journal: dict[str, Any]) -> dict[str, An
             "unique_thesis_counts": {name: len(values) for name, values in thesis_sets.items()},
             "transitions": transitions,
             "blocking_layers": blockers,
+            "blocking_layers_unique_theses": {name: len(values) for name, values in blocker_theses.items()},
             "revalidation_blocked": blockers.get("REVALIDATION", 0),
+            "revalidation_blocked_unique_theses": len(blocker_theses.get("REVALIDATION", set())),
             "executive_director_blocked": blockers.get("EXECUTIVE_DIRECTOR_CONFLICT", 0) + blockers.get("EXECUTIVE_DIRECTOR_POLICY", 0),
         }
     return {
         "by_setup": by_setup,
         "blocking_layers_total": blocker_totals,
-        "definition": "signal and unique-thesis funnel; REVALIDATION is measured before Executive Director",
+        "definition": "scan-level and unique-thesis funnel; REVALIDATION is measured before Executive Director",
         "updated_at": iso_now(),
     }
 
@@ -2757,11 +2821,15 @@ def compute_clean_setup_conversion(journal: dict[str, Any]) -> dict[str, Any]:
         direct = [s for s in entries if _signal_execution_path(s).get("standard")]
         fallback = [s for s in entries if _signal_execution_path(s).get("fallback")]
         reasons: dict[str, int] = {}
+        reason_theses: dict[str, set[str]] = {}
         for signal in records:
             if str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS:
                 continue
             reason = _clean_setup_reason(signal)
             reasons[reason] = reasons.get(reason, 0) + 1
+            thesis = str(signal.get("thesis_key") or signal.get("id") or "")
+            if thesis:
+                reason_theses.setdefault(reason, set()).add(thesis)
         result[setup_type] = {
             "scan_records": len(records),
             "unique_theses": len({x for x in unique_theses if x}),
@@ -2774,10 +2842,14 @@ def compute_clean_setup_conversion(journal: dict[str, Any]) -> dict[str, Any]:
                 {"reason": reason, "count": count}
                 for reason, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[:8]
             ],
+            "top_non_conversion_reasons_unique_theses": [
+                {"reason": reason, "unique_theses": len(values)}
+                for reason, values in sorted(reason_theses.items(), key=lambda item: (-len(item[1]), item[0]))[:8]
+            ],
         }
     return {
         "setups": result,
-        "definition": "signal-level conversion audit; direct = STANDARD path, fallback = REVALIDATION/INNOVATION",
+        "definition": "scan-level plus unique-thesis conversion audit; direct = STANDARD path, fallback = REVALIDATION/INNOVATION",
         "updated_at": iso_now(),
     }
 
@@ -5341,6 +5413,10 @@ def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle
         "all_checks_passed": bool(profile.get("all_checks_passed")),
         "directional_acceptance_path": bool(profile.get("directional_acceptance_path")),
         "sweep_reclaim_path": bool(profile.get("sweep_reclaim_path")),
+        "directional_closes": int(profile.get("directional_closes", 0) or 0),
+        "structure_intact": bool(profile.get("structure_intact")),
+        "tf_aligned": bool(profile.get("tf_aligned")),
+        "directional_structure": dict(profile.get("directional_structure") or {}),
         "last_confirmed_3m_ts": int(profile.get("last_confirmed_3m_ts", 0) or 0),
     }
 
@@ -5432,16 +5508,20 @@ def relaxed_continuation_shadow_profile(candidate: Optional[Candidate]) -> dict[
     reanchor = components.get("continuation_reanchor", {}) or {}
     structure = reanchor.get("directional_structure", {}) or {}
     micro = reanchor.get("micro_confirmation", {}) or {}
-    required_closes = max(
-        int(reanchor.get("required_directional_closes", CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES) or CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES),
-        CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES,
+    required_closes = RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES
+    confirmed_3m_bars = max(
+        int(reanchor.get("confirmed_3m_bars", 0) or 0),
+        int(micro.get("confirmed_3m_bars", 0) or 0),
     )
     checks = {
         "shadow_enabled": bool(RELAXED_CONTINUATION_SHADOW_ENABLED),
         "strict_not_ready": not bool(reanchor.get("ready")),
         "score_floor": int(getattr(candidate, "final_score", 0) or 0) >= max(RELAXED_CONTINUATION_MIN_SCORE, RISKY_ENTRY_SCORE_BASE),
         "micro_score": safe_float(micro.get("score"), 0.0) >= RELAXED_CONTINUATION_MIN_MICRO_SCORE,
-        "six_bar_structure": bool(reanchor.get("six_bar_structure_confirmed") or micro.get("six_bar_structure_confirmed")),
+        # The experiment needs six observed bars, not strict six-bar structure.
+        # Requiring strict structure here made partial-structure eligibility
+        # logically impossible because strict_structure_missing is also required.
+        "six_confirmed_bars": confirmed_3m_bars >= 6,
         "structure_intact": bool(reanchor.get("structure_intact")),
         "tf_aligned": bool(reanchor.get("tf_aligned")),
         "directional_closes": int(reanchor.get("directional_closes", 0) or 0) >= required_closes,
@@ -5465,6 +5545,8 @@ def relaxed_continuation_shadow_profile(candidate: Optional[Candidate]) -> dict[
         "micro_score": safe_float(micro.get("score"), 0.0),
         "directional_closes": int(reanchor.get("directional_closes", 0) or 0),
         "required_directional_closes": required_closes,
+        "confirmed_3m_bars": confirmed_3m_bars,
+        "experiment_reachable": True,
         "signed_net_move_atr": safe_float(reanchor.get("signed_net_move_atr"), 0.0),
         "pullback_atr": safe_float(reanchor.get("pullback_atr"), 999.0),
         "distance_atr": safe_float(reanchor.get("distance_atr"), 999.0),
@@ -5685,13 +5767,12 @@ def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
 
 
 def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_min: float) -> dict[str, Any]:
-    """Model-local AND policy for stale-trigger resurrection.
+    """Model-local evidence policy for stale-trigger resurrection.
 
-    The four micro checks are not universally equivalent. Continuation needs
-    directional close + body + 15M acceptance; range-failure/sweep ideas also
-    require the reclaim check. After two hours every stale trigger must pass all
-    four checks with an elevated score. After four hours generic micro evidence
-    is no longer enough and only a strict fresh re-anchor/momentum path may revive it.
+    A continuation candle and a liquidity-reclaim candle are different market
+    arguments. Requiring both on the same 3M bar creates an accidental outside-bar
+    gate and makes the policy nearly unreachable. This router validates the path
+    appropriate to the candidate while preserving the four-hour generic lease.
     """
     checks = dict(micro.get("checks_by_name") or {})
     if not checks:
@@ -5702,12 +5783,29 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
         }
 
     setup_type = str(getattr(candidate, "setup_type", "") or "")
+    setup_family = str(getattr(candidate, "setup_family", "") or "")
     model_id = str(getattr(candidate, "ict_model", "") or "")
-    required_checks = ["directional_3m_close", "strong_3m_body", "15m_acceptance"]
+    elevated = bool(age_min >= SETUP_REVALIDATION_ELEVATED_AGE_MIN)
+    within_generic_age = bool(age_min <= SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN)
+
+    continuation_like = bool(
+        setup_family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
+        or setup_type in {
+            SetupType.PULLBACK_CONTINUATION.value,
+            SetupType.FRESH_BASE_CONTINUATION.value,
+            SetupType.BREAKOUT_RETEST.value,
+            SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+            SetupType.ACCELERATION_PULLBACK_REENTRY.value,
+            SetupType.OPENING_RANGE_BREAKOUT.value,
+        }
+    )
     reclaim_critical = bool(
         setup_type in {
             SetupType.SWEEP_RECLAIM.value,
+            SetupType.RANGE_EDGE_REVERSAL.value,
             SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+            SetupType.FAILED_AUCTION_REJECTION.value,
             SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
             SetupType.FAILED_BREAKOUT_SHORT.value,
             SetupType.OR_FAILURE_2_SHORT.value,
@@ -5719,27 +5817,53 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
             "SHORT_OR_FAILURE_2",
         }
     )
-    if reclaim_critical:
-        required_checks.append("micro_sweep_reclaim")
 
-    elevated = bool(age_min >= SETUP_REVALIDATION_ELEVATED_AGE_MIN)
-    if elevated:
-        required_checks = [
-            "directional_3m_close",
-            "strong_3m_body",
-            "15m_acceptance",
-            "micro_sweep_reclaim",
-        ]
+    directional_required = ["directional_3m_close", "strong_3m_body", "15m_acceptance"]
+    reclaim_required = ["micro_sweep_reclaim", "strong_3m_body", "15m_acceptance"]
+    directional_ok = all(bool(checks.get(name, False)) for name in directional_required)
+    reclaim_ok = all(bool(checks.get(name, False)) for name in reclaim_required)
+    six_bar_structure = bool(micro.get("six_bar_structure_confirmed"))
+
+    if reclaim_critical:
+        policy_path = "RECLAIM_REVERSAL"
+        required_checks = reclaim_required
+        path_ok = reclaim_ok
+        # After two hours a reclaim also needs follow-through. It may arrive as
+        # the current directional break or as an already confirmed six-bar
+        # directional structure; it does not have to be the same outside bar.
+        elevated_confirmation_ok = bool(
+            not elevated
+            or checks.get("directional_3m_close", False)
+            or six_bar_structure
+        )
+        score_floor = SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE if elevated else 0.0
+    elif continuation_like:
+        policy_path = "CONTINUATION_DIRECTIONAL"
+        required_checks = directional_required
+        path_ok = directional_ok
+        elevated_confirmation_ok = True
+        score_floor = SETUP_REVALIDATION_CONTINUATION_ELEVATED_MIN_MICRO_SCORE if elevated else 0.0
+    else:
+        policy_path = "GENERIC_EITHER_PATH"
+        path_ok = bool(directional_ok or reclaim_ok)
+        required_checks = directional_required if directional_ok or not reclaim_ok else reclaim_required
+        elevated_confirmation_ok = bool(
+            not elevated
+            or directional_ok
+            or (reclaim_ok and six_bar_structure)
+        )
+        score_floor = SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE if elevated else 0.0
 
     failed_required = [name for name in required_checks if not bool(checks.get(name, False))]
     score = safe_float(micro.get("score"), 0.0)
-    score_floor = SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE if elevated else 0.0
-    within_generic_age = bool(age_min <= SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN)
+    score_passed = bool(score >= score_floor)
+    supported_path = bool(micro.get("supported") and path_ok)
     eligible = bool(
         within_generic_age
-        and micro.get("supported")
+        and supported_path
         and not failed_required
-        and score >= score_floor
+        and elevated_confirmation_ok
+        and score_passed
     )
     return {
         "eligible": eligible,
@@ -5748,12 +5872,19 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
         "generic_micro_max_age_min": SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
         "score": round(score, 2),
         "required_score": round(score_floor, 2),
+        "score_passed": score_passed,
+        "policy_path": policy_path,
         "required_checks": required_checks,
         "failed_required_checks": failed_required,
         "required_checks_passed": not failed_required,
+        "directional_path_ok": directional_ok,
+        "reclaim_path_ok": reclaim_ok,
+        "elevated_confirmation_ok": elevated_confirmation_ok,
+        "six_bar_structure_confirmed": six_bar_structure,
         "within_generic_age": within_generic_age,
+        "continuation_like": continuation_like,
         "reclaim_critical_for_setup": reclaim_critical,
-        "policy": "AND over model-critical checks; six-bar count cannot override a failed check",
+        "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar",
     }
 
 def setup_trigger_revalidation_profile(
@@ -5831,7 +5962,14 @@ def setup_trigger_revalidation_profile(
     if time_warp_ready and not live_ready:
         setup_arguments.append("time-warp is thesis memory, not live execution")
 
-    needs_revalidation = bool(state_name != "FRESH" or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value))
+    # Time freshness is not price freshness. A live signal several ATR away from
+    # its anchor must not become a market entry merely because age_min == 0.
+    late_location_blocked = bool(not not_late_location and not limit_ready and not alternative_ready)
+    needs_revalidation = bool(
+        state_name != "FRESH"
+        or late_location_blocked
+        or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value)
+    )
     revalidated = bool(
         needs_revalidation
         and (
@@ -5852,10 +5990,14 @@ def setup_trigger_revalidation_profile(
         micro["stale_thesis_recovery"] = True
 
     entry_supported = bool(
-        (not needs_revalidation) or revalidated or alternative_ready
+        ((not needs_revalidation) or revalidated or alternative_ready)
+        and not late_location_blocked
     )
 
-    if not needs_revalidation:
+    if late_location_blocked:
+        entry_timing = "WAIT_RETEST_LATE_LOCATION"
+        risk_mult = SETUP_REVALIDATION_RISK_MULT_STALE
+    elif not needs_revalidation:
         entry_timing = "LIVE_OR_STILL_FRESH"
         risk_mult = 1.0
     elif revalidated:
@@ -5892,6 +6034,7 @@ def setup_trigger_revalidation_profile(
         "entry_supported": entry_supported,
         "entry_timing": entry_timing,
         "not_late_location": not_late_location,
+        "late_location_blocked": late_location_blocked,
         "distance_from_anchor_atr": round(dist_atr, 2),
         "micro_confirmation": micro,
         "micro_confirmation_policy": micro_policy,
@@ -8362,7 +8505,7 @@ def detect_short_liquidity_sweep_reversal(
     invalidation = sweep_candle.high + max(atr15 * 0.12, ABS_MIN_STOP_DOLLARS * 0.20)
     return {
         "active": bool(swept and quality >= 45),
-        "execution_ready": bool(swept and reclaim and bearish_followthrough and quality >= 66 and volume_gate_passed),
+        "execution_ready": bool(swept and reclaim and bearish_followthrough and quality >= 66 and volume_gate_passed and not_chasing),
         "quality": round(quality, 2),
         "reference_high": round_price(reference_high),
         "sweep_high": round_price(sweep_candle.high),
@@ -8427,7 +8570,7 @@ def detect_short_failed_breakout(candles: list[Candle], price: float, atr15: flo
 
     return {
         "active": bool(close_back and quality >= 45),
-        "execution_ready": bool(close_back and bearish_followthrough and quality >= 64),
+        "execution_ready": bool(close_back and bearish_followthrough and quality >= 64 and not_chasing),
         "quality": round(quality, 2),
         "resistance": round_price(resistance),
         "breakout_high": round_price(breakout_candle.high),
@@ -8605,7 +8748,7 @@ def detect_or_failure_2_short(
     extreme = max(c.high for c in recent)
     return {
         "active": bool(swept_or_high and close_inside and quality >= 48),
-        "execution_ready": bool(swept_or_high and close_inside and bearish_acceptance and quality >= 66 and (mss_support or retest)),
+        "execution_ready": bool(swept_or_high and close_inside and bearish_acceptance and quality >= 66 and (mss_support or retest) and not_chasing),
         "quality": round(quality, 2),
         "or_high": round_price(or_high),
         "or_low": round_price(or_low),
@@ -11592,6 +11735,36 @@ def executive_authority_decision(
         state=state or {},
         journal=journal or {},
     )
+
+    # Last-line fail-closed invariant. Scores and advisor consensus may never
+    # override strict execution support or a non-executable plan.
+    proposed_action = str(report.get("action") or Action.NO_SETUP.value)
+    invariant_violations: list[str] = []
+    if proposed_action in EXECUTABLE_ENTRY_ACTIONS:
+        candidate_revalidation = getattr(decision.candidate, "revalidation_profile", {}) if decision.candidate else {}
+        relaxed_live_override = bool(
+            decision.candidate
+            and (((decision.candidate.score_components or {}).get("relaxed_continuation") or {}).get("live_eligible"))
+        )
+        if not bool((candidate_revalidation or {}).get("entry_supported", True) or relaxed_live_override):
+            invariant_violations.append("ENTRY_WITHOUT_REVALIDATION_SUPPORT")
+        if not bool(decision.plan and decision.plan.valid and decision.plan.execution_ready):
+            invariant_violations.append("ENTRY_WITHOUT_EXECUTION_READY_PLAN")
+    if invariant_violations:
+        executive_payload = report.setdefault("executive_decision", {})
+        executive_payload["action"] = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        executive_payload["state"] = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        executive_payload["allow_execution"] = False
+        executive_payload["allowed_stage"] = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        executive_payload["final_risk_pct"] = 0.0
+        executive_payload["blocking_reasons"] = sorted(set(
+            list(executive_payload.get("blocking_reasons") or []) + invariant_violations
+        ))
+        executive_payload["required_next_event"] = "fresh supported execution and a valid execution-ready plan"
+        executive_payload.setdefault("audit", {})["integrity_fail_closed"] = invariant_violations
+        report["action"] = Action.NO_SETUP.value
+        report["integrity_fail_closed"] = invariant_violations
+
     decision.action = str(report.get("action") or Action.NO_SETUP.value)
     decision.reason = str(
         (report.get("executive_decision") or {}).get("reason")
@@ -11632,9 +11805,7 @@ def executive_authority_decision(
     hard_conflict = bool(executive_audit.get("has_hard_conflict"))
     conflict_override = bool((executive_audit.get("adaptive_conflict_resolver") or {}).get("conflict_override"))
     entry_published = decision.action in EXECUTABLE_ENTRY_ACTIONS
-    if entry_published:
-        blocking_layer = "NONE"
-    elif not effective_entry_supported:
+    if not effective_entry_supported:
         blocking_layer = "REVALIDATION"
     elif not plan_exists or not plan_valid or not plan_execution_ready:
         blocking_layer = "PLAN_EXECUTION"
@@ -11644,10 +11815,10 @@ def executive_authority_decision(
         blocking_layer = "TRADING_PHILOSOPHY"
     elif hard_conflict and not conflict_override:
         blocking_layer = "EXECUTIVE_DIRECTOR_CONFLICT"
-    elif not entry_published:
-        blocking_layer = "EXECUTIVE_DIRECTOR_POLICY"
-    else:
+    elif entry_published:
         blocking_layer = "NONE"
+    else:
+        blocking_layer = "EXECUTIVE_DIRECTOR_POLICY"
     decision.audit["execution_funnel"] = {
         "detected": decision.candidate is not None,
         "score_eligible": bool(decision.candidate and decision.candidate.final_score >= RISKY_ENTRY_SCORE_BASE),
@@ -14669,7 +14840,7 @@ def test_relaxed_profile_is_shadow_only_and_strict_unchanged() -> bool:
         raw_score=90, final_score=74,
         score_components={
             "continuation_reanchor": {
-                "ready": False, "six_bar_structure_confirmed": True,
+                "ready": False, "six_bar_structure_confirmed": False, "confirmed_3m_bars": 6,
                 "structure_intact": True, "tf_aligned": True,
                 "directional_closes": 6, "required_directional_closes": 4,
                 "signed_net_move_atr": 1.1, "pullback_atr": 0.1, "distance_atr": 0.5,
@@ -14691,7 +14862,7 @@ def test_relaxed_shadow_deduplicates_thesis_geometry() -> bool:
         side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
         setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=74,
         thesis_key="same-thesis", score_components={"continuation_reanchor": {
-            "ready": False, "six_bar_structure_confirmed": True, "structure_intact": True, "tf_aligned": True,
+            "ready": False, "six_bar_structure_confirmed": False, "confirmed_3m_bars": 6, "structure_intact": True, "tf_aligned": True,
             "directional_closes": 6, "required_directional_closes": 4, "signed_net_move_atr": 1.0,
             "pullback_atr": 0.1, "distance_atr": 0.4, "micro_confirmation": {"score": 95},
             "directional_structure": {"partial": True, "supports_side": False, "opposite_aligned": False, "close_progression": True},
@@ -15733,6 +15904,128 @@ def test_aggregate_short_readiness_cannot_override_model_gate() -> bool:
     )
 
 
+def test_continuation_elevated_micro_does_not_require_reclaim() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=72,
+        execution_source=ExecutionSource.TIME_WARP.value,
+        trigger_age_minutes=180.0,
+    )
+    micro = {
+        "supported": True,
+        "score": 85,
+        "six_bar_structure_confirmed": False,
+        "checks_by_name": {
+            "directional_3m_close": True,
+            "strong_3m_body": True,
+            "15m_acceptance": True,
+            "micro_sweep_reclaim": False,
+        },
+    }
+    policy = _revalidation_micro_policy(candidate, micro, 180.0)
+    return bool(
+        policy.get("eligible")
+        and policy.get("policy_path") == "CONTINUATION_DIRECTIONAL"
+        and "micro_sweep_reclaim" not in (policy.get("required_checks") or [])
+        and policy.get("required_score") == SETUP_REVALIDATION_CONTINUATION_ELEVATED_MIN_MICRO_SCORE
+    )
+
+
+def test_fresh_reclaim_policy_does_not_require_same_bar_breakout() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value,
+        raw_score=90,
+        final_score=72,
+        ict_model="FAILED_ORB",
+        execution_source=ExecutionSource.TIME_WARP.value,
+        trigger_age_minutes=60.0,
+    )
+    micro = {
+        "supported": True,
+        "score": 65,
+        "six_bar_structure_confirmed": False,
+        "checks_by_name": {
+            "directional_3m_close": False,
+            "strong_3m_body": True,
+            "15m_acceptance": True,
+            "micro_sweep_reclaim": True,
+        },
+    }
+    policy = _revalidation_micro_policy(candidate, micro, 60.0)
+    return bool(
+        policy.get("eligible")
+        and policy.get("policy_path") == "RECLAIM_REVERSAL"
+        and "directional_3m_close" not in (policy.get("required_checks") or [])
+    )
+
+
+def test_relaxed_continuation_shadow_is_reachable() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=70,
+        score_components={
+            "continuation_reanchor": {
+                "ready": False,
+                "confirmed_3m_bars": 6,
+                "structure_intact": True,
+                "tf_aligned": True,
+                "directional_closes": RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES,
+                "signed_net_move_atr": max(RELAXED_CONTINUATION_MIN_NET_MOVE_ATR, 0.8),
+                "pullback_atr": min(RELAXED_CONTINUATION_MAX_PULLBACK_ATR, 0.3),
+                "distance_atr": min(RELAXED_CONTINUATION_MAX_DISTANCE_ATR, 0.5),
+                "directional_structure": {
+                    "partial": True,
+                    "supports_side": False,
+                    "opposite_aligned": False,
+                    "close_progression": True,
+                },
+                "micro_confirmation": {
+                    "score": max(RELAXED_CONTINUATION_MIN_MICRO_SCORE, 85),
+                    "confirmed_3m_bars": 6,
+                },
+            }
+        },
+    )
+    profile = relaxed_continuation_shadow_profile(candidate)
+    return bool(
+        profile.get("shadow_eligible")
+        and profile.get("experiment_reachable")
+        and (profile.get("checks") or {}).get("six_confirmed_bars")
+        and (profile.get("checks") or {}).get("strict_structure_missing")
+    )
+
+
+def test_execution_funnel_reports_unique_revalidation_blocks() -> bool:
+    journal = {
+        "signals": [
+            {
+                "id": "a1", "thesis_key": "same",
+                "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+                "candidate_final_score": 70, "trigger_ready": True,
+                "trigger_revalidation": {"entry_supported": False},
+                "audit": {"execution_funnel": {"blocking_layer": "REVALIDATION"}},
+            },
+            {
+                "id": "a2", "thesis_key": "same",
+                "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+                "candidate_final_score": 70, "trigger_ready": True,
+                "trigger_revalidation": {"entry_supported": False},
+                "audit": {"execution_funnel": {"blocking_layer": "REVALIDATION"}},
+            },
+        ]
+    }
+    profile = compute_execution_conversion_funnel(journal)["by_setup"][SetupType.ACCEPTANCE_RETEST_CONTINUATION.value]
+    return bool(profile.get("revalidation_blocked") == 2 and profile.get("revalidation_blocked_unique_theses") == 1)
+
+
 def test_old_trigger_generic_micro_cannot_revalidate_after_four_hours() -> bool:
     candidate = Candidate(
         side=Side.LONG.value,
@@ -15854,6 +16147,10 @@ def _run_self_test() -> bool:
         ("execution funnel separates revalidation from executive", test_execution_funnel_separates_revalidation_and_executive),
         ("SHORT sweep low volume is a hard gate", test_short_sweep_volume_ratio_is_hard_gate),
         ("aggregate SHORT readiness cannot override model gate", test_aggregate_short_readiness_cannot_override_model_gate),
+        ("elevated continuation revalidation is model-local", test_continuation_elevated_micro_does_not_require_reclaim),
+        ("fresh reclaim revalidation does not require same-bar breakout", test_fresh_reclaim_policy_does_not_require_same_bar_breakout),
+        ("relaxed continuation shadow eligibility is reachable", test_relaxed_continuation_shadow_is_reachable),
+        ("funnel separates scan blocks from unique theses", test_execution_funnel_reports_unique_revalidation_blocks),
         ("old trigger generic micro expires after four hours", test_old_trigger_generic_micro_cannot_revalidate_after_four_hours),
         ("decayed thesis is not automatic entry permission", test_decayed_thesis_is_not_automatic_entry_permission),
         ("catastrophic buffer is narrowed but noise-safe", test_catastrophic_stop_buffer_is_narrowed_but_noise_safe),
@@ -17106,6 +17403,19 @@ def build_staged_executive_decision(
     chase = bool((evaluation.raw_components.get("execution") or {}).get("chase_safety", 100.0) < 50.0)
     confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
     philosophy_rec = philosophy.recommendation
+    relaxed_live_override = bool(
+        (((getattr(candidate, "score_components", {}) or {}).get("relaxed_continuation") or {}).get("live_eligible"))
+    )
+    effective_entry_supported = bool(revalidation.get("entry_supported", True) or relaxed_live_override)
+    consensus = conflict.consensus or {}
+    negative_market_consensus = bool(
+        str(consensus.get("market") or "") == "NEGATIVE_CONSENSUS"
+        and safe_float(consensus.get("market_against"), 0.0) >= CONFLICT_HARD_MARGIN
+    )
+    negative_execution_consensus = bool(
+        str(consensus.get("execution") or "") == "NEGATIVE_CONSENSUS"
+        and safe_float(consensus.get("execution_against"), 0.0) >= CONFLICT_HARD_MARGIN
+    )
 
     if expired:
         state = ExecutiveDecisionState.EXPIRED.value
@@ -17122,6 +17432,18 @@ def build_staged_executive_decision(
     elif philosophy_rec in {"REJECT_NO_EDGE", "REJECT_BAD_ASYMMETRY"}:
         state = ExecutiveDecisionState.REJECT.value
         blocking.extend(philosophy.reason_codes or [philosophy_rec])
+    elif not effective_entry_supported:
+        state = ExecutiveDecisionState.WAIT_RETEST.value
+        blocking.append("REVALIDATION_NOT_SUPPORTED")
+        required = "fresh model-valid execution evidence at an acceptable price location"
+    elif negative_market_consensus:
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        blocking.append("NEGATIVE_MARKET_CONSENSUS")
+        required = "new market-side evidence that neutralizes explicit directional opposition"
+    elif negative_execution_consensus:
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        blocking.append("NEGATIVE_EXECUTION_CONSENSUS")
+        required = "new live execution evidence"
     elif thesis < 45:
         state = ExecutiveDecisionState.WATCH.value
         required = "new independent market-thesis evidence"
@@ -17210,6 +17532,9 @@ def build_staged_executive_decision(
         "philosophy": philosophy_rec,
         "statistical_status": philosophy.statistical_status,
         "actual_conflict": conflict.actual_conflict,
+        "negative_market_consensus": negative_market_consensus,
+        "negative_execution_consensus": negative_execution_consensus,
+        "effective_entry_supported": effective_entry_supported,
         "conflict_axes": conflict.conflict_axes,
         "conflict_severity": conflict.conflict_severity,
         "evidence_fingerprint": evidence_fp,
@@ -17337,6 +17662,22 @@ def build_executive_decision_object(
             if isinstance(row, dict) and (not thesis_key_value or row.get("thesis_key") == thesis_key_value)
         )
     staged = build_staged_executive_decision(candidate, bundle, stage_history)
+    plan_execution_ready = bool(
+        plan
+        and getattr(plan, "valid", False)
+        and getattr(plan, "execution_ready", False)
+    )
+    if staged.allow_execution and not plan_execution_ready:
+        staged = ExecutiveDecisionContract(
+            state=ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+            allow_execution=False,
+            allowed_stage=ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+            final_risk_pct=0.0,
+            required_next_event="an execution-ready and valid trade plan",
+            blocking_reasons=sorted(set(list(staged.blocking_reasons) + ["PLAN_NOT_EXECUTION_READY"])),
+            warning_reasons=list(staged.warning_reasons),
+            audit={**staged.audit, "plan_execution_ready": False},
+        )
     geometry_multiplier = safe_float(
         ((getattr(plan, "breathing_profile", {}) or {}).get("risk_size_multiplier")),
         1.0,
