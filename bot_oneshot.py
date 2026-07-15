@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.1 (Confidence / Quality Pipeline Edition)
-================================================================================
+BZU Professional Hybrid Confluence Signal Bot v9.2 (Risk Integrity Hard-Gate Edition)
+===============================================================================
+Оновлення v9.2:
+- SHORT liquidity-sweep reversal отримав model-local hard gate: volume_ratio < 1.0 не може бути протягнутий aggregate reversal readiness.
+- Наявність шести 3M барів відділена від підтвердженої six-bar structure; count більше не перекриває провалені критичні checks.
+- Generic micro-revalidation дозволена максимум до 4 годин; після 2 годин потрібні підвищений score та AND усіх критичних checks.
+- DECAYED_THESIS більше не є автоматичним дозволом на entry; старі thesis можуть ожити лише через strict fresh re-anchor/momentum path.
+- Catastrophic stop buffer звужено: noise-floor збережений, але default multiplier зменшений з 1.45 до 1.25.
+
 Оновлення v9.1:
 - PROBE_ENTRY розділено на HIGH / MEDIUM / EXPERIMENTAL conviction із ризиком 0.12% / 0.07% / 0.03%.
 - Додано thesis confidence decay з відновленням за свіжий OB/FVG/retest, без забування чи блокування тези.
@@ -268,8 +275,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.1-confidence-quality-pipeline"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_1_CONFIDENCE_QUALITY_PIPELINE"
+BOT_VERSION = "pro-hybrid-confluence-v9.2-risk-integrity-hard-gates"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_2_RISK_INTEGRITY_HARD_GATES"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -329,7 +336,8 @@ BE_LOCK_R_MULT = float(os.getenv("BE_LOCK_R_MULT", "0.10") or 0.10)
 TP0_PROTECT_ENABLED = os.getenv("TP0_PROTECT_ENABLED", "true").lower() in {"1", "true", "yes"}
 TP0_PROTECT_GIVEBACK_RATIO = min(0.95, max(0.10, float(os.getenv("TP0_PROTECT_GIVEBACK_RATIO", "0.50") or 0.50)))
 TP0_PROTECT_MIN_MFE_PCT = max(0.0, float(os.getenv("TP0_PROTECT_MIN_MFE_PCT", "0.0") or 0.0))
-CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.45") or 1.45)
+CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.25") or 1.25)
+CATASTROPHIC_STOP_MAX_EXTRA_ATR = max(0.10, float(os.getenv("CATASTROPHIC_STOP_MAX_EXTRA_ATR", "0.45") or 0.45))
 DECISION_STOP_CLOSE_CONFIRM = os.getenv("DECISION_STOP_CLOSE_CONFIRM", "true").lower() in {"1", "true", "yes"}
 MIN_BREATHING_RISK_MULTIPLIER = float(os.getenv("MIN_BREATHING_RISK_MULTIPLIER", "0.35") or 0.35)
 
@@ -356,6 +364,19 @@ SETUP_REVALIDATION_MAX_LATE_DIST_ATR = float(os.getenv("SETUP_REVALIDATION_MAX_L
 SETUP_REVALIDATION_BODY_ATR_MIN = float(os.getenv("SETUP_REVALIDATION_BODY_ATR_MIN", "0.16") or 0.16)
 SETUP_REVALIDATION_BODY_RATIO_MIN = float(os.getenv("SETUP_REVALIDATION_BODY_RATIO_MIN", "0.52") or 0.52)
 SETUP_REVALIDATION_ACCEPTANCE_ATR = float(os.getenv("SETUP_REVALIDATION_ACCEPTANCE_ATR", "0.42") or 0.42)
+# v9.2: generic micro-confirmation is not an unlimited resurrection mechanism.
+# 2-4h triggers require elevated quality and AND over critical checks; older
+# triggers require a strict fresh re-anchor/momentum execution path.
+SETUP_REVALIDATION_ELEVATED_AGE_MIN = max(0.0, float(os.getenv("SETUP_REVALIDATION_ELEVATED_AGE_MIN", "120") or 120))
+SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN = max(
+    SETUP_REVALIDATION_ELEVATED_AGE_MIN,
+    float(os.getenv("SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN", "240") or 240),
+)
+SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE = min(
+    100.0,
+    max(0.0, float(os.getenv("SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE", "95") or 95)),
+)
+SHORT_SWEEP_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("SHORT_SWEEP_MIN_VOLUME_RATIO", "1.0") or 1.0))
 # Hard lease for thesis memory. Default equals the previous extreme-stale boundary
 # (24h), but unlike ARCHIVED_THESIS it is terminal unless a fresh micro-confirmation
 # exists on the current run.
@@ -1663,6 +1684,7 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "tp0_protect_giveback_ratio": TP0_PROTECT_GIVEBACK_RATIO,
         "tp0_protect_min_mfe_pct": TP0_PROTECT_MIN_MFE_PCT,
         "catastrophic_stop_mult": CATASTROPHIC_STOP_MULT,
+        "catastrophic_stop_max_extra_atr": CATASTROPHIC_STOP_MAX_EXTRA_ATR,
         "decision_stop_close_confirm": DECISION_STOP_CLOSE_CONFIRM,
         "min_breathing_risk_multiplier": MIN_BREATHING_RISK_MULTIPLIER,
         "setup_innovation_engine": SETUP_INNOVATION_ENGINE,
@@ -1680,6 +1702,10 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "setup_revalidation_body_atr_min": SETUP_REVALIDATION_BODY_ATR_MIN,
         "setup_revalidation_body_ratio_min": SETUP_REVALIDATION_BODY_RATIO_MIN,
         "setup_revalidation_acceptance_atr": SETUP_REVALIDATION_ACCEPTANCE_ATR,
+        "setup_revalidation_elevated_age_min": SETUP_REVALIDATION_ELEVATED_AGE_MIN,
+        "setup_revalidation_generic_max_age_min": SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
+        "setup_revalidation_elevated_min_micro_score": SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE,
+        "short_sweep_min_volume_ratio": SHORT_SWEEP_MIN_VOLUME_RATIO,
         "thesis_hard_ttl_min": THESIS_HARD_TTL_MIN,
         "continuation_reanchor_enabled": CONTINUATION_REANCHOR_ENABLED,
         "continuation_reanchor_max_zone_age_min": CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN,
@@ -5196,7 +5222,8 @@ def _directional_confirmation_profile(
         "side": side,
         "confirmed_3m_bars": len(recent3),
         "confirmed_15m_bars": len(recent15),
-        "six_bar_structure_confirmed": len(recent3) >= 6,
+        "six_confirmed_bars_available": len(recent3) >= 6,
+        "six_bar_structure_confirmed": False,
         "supported": False,
         "kind": "NO_3M_DATA",
         "score": 0,
@@ -5233,10 +5260,12 @@ def _directional_confirmation_profile(
         {"name": "micro_sweep_reclaim", "ok": bool(micro_sweep_reclaim)},
     ]
     score = (35 if directional_close else 0) + (30 if strong_body else 0) + (20 if local_acceptance else 0) + (15 if micro_sweep_reclaim else 0)
-    supported = bool(
-        (directional_close and strong_body and local_acceptance)
-        or (micro_sweep_reclaim and strong_body and local_acceptance)
-    )
+    directional_acceptance_path = bool(directional_close and strong_body and local_acceptance)
+    sweep_reclaim_path = bool(micro_sweep_reclaim and strong_body and local_acceptance)
+    supported = bool(directional_acceptance_path or sweep_reclaim_path)
+    check_map = {str(item["name"]): bool(item["ok"]) for item in checks}
+    passed_checks = [name for name, ok in check_map.items() if ok]
+    failed_checks = [name for name, ok in check_map.items() if not ok]
     kind = "LIVE_DIRECTIONAL_ACCEPTANCE" if directional_close else "MICRO_SWEEP_RECLAIM" if micro_sweep_reclaim else "WEAK_OR_MISSING"
 
     directional_closes = sum(
@@ -5265,12 +5294,27 @@ def _directional_confirmation_profile(
     tf15 = tf15 or {}
     tf1h = tf1h or {}
     tf_aligned = bool(tf15.get("bias") == side or tf1h.get("bias") == side) if (tf15 or tf1h) else False
+    directional_structure = base.get("directional_structure", {}) or {}
+    six_bar_structure_confirmed = bool(
+        len(recent3) >= 6
+        and structure_intact
+        and directional_structure.get("supports_side")
+        and directional_closes >= min(CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES, len(recent3))
+        and signed_net_move_atr >= 0.0
+    )
 
     base.update({
         "supported": supported,
         "kind": kind,
         "score": int(score),
         "checks": checks,
+        "checks_by_name": check_map,
+        "passed_checks": passed_checks,
+        "failed_checks": failed_checks,
+        "all_checks_passed": not failed_checks,
+        "directional_acceptance_path": directional_acceptance_path,
+        "sweep_reclaim_path": sweep_reclaim_path,
+        "six_bar_structure_confirmed": six_bar_structure_confirmed,
         "directional_closes": directional_closes,
         "signed_net_move_atr": round(signed_net_move_atr, 6),
         "pullback_atr": round(pullback_atr, 6),
@@ -5289,7 +5333,14 @@ def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle
         "score": int(profile.get("score", 0) or 0),
         "checks": list(profile.get("checks") or []),
         "confirmed_3m_bars": int(profile.get("confirmed_3m_bars", 0) or 0),
+        "six_confirmed_bars_available": bool(profile.get("six_confirmed_bars_available")),
         "six_bar_structure_confirmed": bool(profile.get("six_bar_structure_confirmed")),
+        "checks_by_name": dict(profile.get("checks_by_name") or {}),
+        "passed_checks": list(profile.get("passed_checks") or []),
+        "failed_checks": list(profile.get("failed_checks") or []),
+        "all_checks_passed": bool(profile.get("all_checks_passed")),
+        "directional_acceptance_path": bool(profile.get("directional_acceptance_path")),
+        "sweep_reclaim_path": bool(profile.get("sweep_reclaim_path")),
         "last_confirmed_3m_ts": int(profile.get("last_confirmed_3m_ts", 0) or 0),
     }
 
@@ -5313,14 +5364,8 @@ def _candidate_execution_support_paths(candidate: Candidate, state: Optional[dic
     momentum_reanchor = momentum.get("reanchor", {}) or reanchor
     side = str(getattr(candidate, "side", "") or "").upper()
 
-    reanchor_six = bool(
-        reanchor.get("six_bar_structure_confirmed")
-        or int(reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
-    )
-    momentum_six = bool(
-        momentum_reanchor.get("six_bar_structure_confirmed")
-        or int(momentum_reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
-    )
+    reanchor_six = bool(reanchor.get("six_bar_structure_confirmed"))
+    momentum_six = bool(momentum_reanchor.get("six_bar_structure_confirmed"))
     reanchor_ready = bool(
         reanchor.get("ready")
         and reanchor_six
@@ -5366,6 +5411,8 @@ def _candidate_execution_support_paths(candidate: Candidate, state: Optional[dic
         "confirmation_bar_supported": confirmation_bar_supported,
         "pre_confirmation_promoted": pre_confirmation_promoted,
         "six_bar_requirement_enforced": True,
+        "six_bar_count_is_not_structure": True,
+        "failed_individual_check_cannot_be_overridden_by_bar_count": True,
         "quality_threshold_changed": False,
     }
 
@@ -5636,6 +5683,79 @@ def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
         "quality_threshold_changed": False,
     }
 
+
+def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_min: float) -> dict[str, Any]:
+    """Model-local AND policy for stale-trigger resurrection.
+
+    The four micro checks are not universally equivalent. Continuation needs
+    directional close + body + 15M acceptance; range-failure/sweep ideas also
+    require the reclaim check. After two hours every stale trigger must pass all
+    four checks with an elevated score. After four hours generic micro evidence
+    is no longer enough and only a strict fresh re-anchor/momentum path may revive it.
+    """
+    checks = dict(micro.get("checks_by_name") or {})
+    if not checks:
+        checks = {
+            str(item.get("name")): bool(item.get("ok"))
+            for item in (micro.get("checks") or [])
+            if item.get("name")
+        }
+
+    setup_type = str(getattr(candidate, "setup_type", "") or "")
+    model_id = str(getattr(candidate, "ict_model", "") or "")
+    required_checks = ["directional_3m_close", "strong_3m_body", "15m_acceptance"]
+    reclaim_critical = bool(
+        setup_type in {
+            SetupType.SWEEP_RECLAIM.value,
+            SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+            SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
+            SetupType.FAILED_BREAKOUT_SHORT.value,
+            SetupType.OR_FAILURE_2_SHORT.value,
+        }
+        or model_id in {
+            "FAILED_ORB",
+            "SHORT_LIQUIDITY_SWEEP_REVERSAL",
+            "SHORT_FAILED_BREAKOUT_REVERSAL",
+            "SHORT_OR_FAILURE_2",
+        }
+    )
+    if reclaim_critical:
+        required_checks.append("micro_sweep_reclaim")
+
+    elevated = bool(age_min >= SETUP_REVALIDATION_ELEVATED_AGE_MIN)
+    if elevated:
+        required_checks = [
+            "directional_3m_close",
+            "strong_3m_body",
+            "15m_acceptance",
+            "micro_sweep_reclaim",
+        ]
+
+    failed_required = [name for name in required_checks if not bool(checks.get(name, False))]
+    score = safe_float(micro.get("score"), 0.0)
+    score_floor = SETUP_REVALIDATION_ELEVATED_MIN_MICRO_SCORE if elevated else 0.0
+    within_generic_age = bool(age_min <= SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN)
+    eligible = bool(
+        within_generic_age
+        and micro.get("supported")
+        and not failed_required
+        and score >= score_floor
+    )
+    return {
+        "eligible": eligible,
+        "age_min": round(float(age_min), 2),
+        "elevated_policy": elevated,
+        "generic_micro_max_age_min": SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
+        "score": round(score, 2),
+        "required_score": round(score_floor, 2),
+        "required_checks": required_checks,
+        "failed_required_checks": failed_required,
+        "required_checks_passed": not failed_required,
+        "within_generic_age": within_generic_age,
+        "reclaim_critical_for_setup": reclaim_critical,
+        "policy": "AND over model-critical checks; six-bar count cannot override a failed check",
+    }
+
 def setup_trigger_revalidation_profile(
     candidate: Candidate,
     context: dict,
@@ -5666,13 +5786,14 @@ def setup_trigger_revalidation_profile(
     dist_atr = abs(price - anchor) / max(atr15, 1e-9) if price and anchor else 0.0
     not_late_location = bool(dist_atr <= SETUP_REVALIDATION_MAX_LATE_DIST_ATR or limit_ready)
     micro = _side_directional_revalidation(candidate.side, c3, c15, atr15)
+    micro_policy = _revalidation_micro_policy(candidate, micro, age)
     support_paths = _candidate_execution_support_paths(candidate, state)
     alternative_ready = bool(support_paths.get("alternative_ready"))
 
     hard_ttl_elapsed = bool(age >= THESIS_HARD_TTL_MIN)
-    if hard_ttl_elapsed and not (micro.get("supported") or alternative_ready):
+    if hard_ttl_elapsed and not (micro_policy.get("eligible") or alternative_ready):
         state_name = "DECAYED_THESIS"
-    elif hard_ttl_elapsed and (micro.get("supported") or alternative_ready):
+    elif hard_ttl_elapsed and (micro_policy.get("eligible") or alternative_ready):
         state_name = "REVALIDATED_AFTER_TTL"
     elif age < SETUP_REVALIDATION_STALE_MIN or live_ready:
         state_name = "FRESH"
@@ -5688,7 +5809,15 @@ def setup_trigger_revalidation_profile(
     if limit_ready:
         setup_arguments.append("limit/zone still armed")
     if micro.get("supported"):
-        setup_arguments.append(f"fresh {micro.get('kind')} on 3M/15M")
+        if micro_policy.get("eligible"):
+            setup_arguments.append(f"fresh {micro.get('kind')} on 3M/15M passed model-local AND policy")
+        else:
+            setup_arguments.append(
+                "micro evidence present but blocked: "
+                f"failed={micro_policy.get('failed_required_checks')} "
+                f"score={micro_policy.get('score')}/{micro_policy.get('required_score')} "
+                f"age={age:.1f}m"
+            )
     if support_paths.get("continuation_reanchor_ready"):
         setup_arguments.append("strict six-bar continuation re-anchor ready")
     if support_paths.get("momentum_no_pullback_ready"):
@@ -5706,7 +5835,7 @@ def setup_trigger_revalidation_profile(
     revalidated = bool(
         needs_revalidation
         and (
-            (micro.get("supported") and not_late_location)
+            (micro_policy.get("eligible") and not_late_location)
             or alternative_ready
         )
     )
@@ -5716,14 +5845,14 @@ def setup_trigger_revalidation_profile(
     stale_direction_confirm = bool(
         state_name == "ARCHIVED_THESIS"
         and dist_atr >= STALE_THESIS_PROBE_ATR
-        and (not STALE_THESIS_ACCEPTANCE_REQUIRED or micro.get("supported"))
+        and (not STALE_THESIS_ACCEPTANCE_REQUIRED or micro_policy.get("eligible"))
     )
     if stale_direction_confirm:
         revalidated = True
         micro["stale_thesis_recovery"] = True
 
     entry_supported = bool(
-        ((not needs_revalidation or revalidated) or alternative_ready or state_name == "DECAYED_THESIS")
+        (not needs_revalidation) or revalidated or alternative_ready
     )
 
     if not needs_revalidation:
@@ -5752,12 +5881,12 @@ def setup_trigger_revalidation_profile(
 
     return {
         "enabled": True,
-        "version": "v9.1_confidence_decay_lease",
+        "version": "v9.2_risk_integrity_lease",
         "state": state_name,
         "source": source,
         "age_min": round(age, 1),
         "hard_ttl_min": THESIS_HARD_TTL_MIN,
-        "hard_expired": False,
+        "hard_expired": bool(hard_ttl_elapsed and not entry_supported),
         "needs_revalidation": needs_revalidation,
         "revalidated": revalidated,
         "entry_supported": entry_supported,
@@ -5765,15 +5894,16 @@ def setup_trigger_revalidation_profile(
         "not_late_location": not_late_location,
         "distance_from_anchor_atr": round(dist_atr, 2),
         "micro_confirmation": micro,
+        "micro_confirmation_policy": micro_policy,
         "execution_support_paths": support_paths,
         "alternative_entry_support": alternative_ready,
         "pre_confirmation_promoted": bool(support_paths.get("pre_confirmation_promoted")),
         "risk_multiplier": round(clamp(risk_mult, INNOVATION_MIN_RISK_MULT, 1.0), 4),
-        "stage_override": EntryStage.PROBE.value if (revalidated or state_name == "DECAYED_THESIS") else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
-        "action_bias": "PROBE_ENTRY" if (revalidated or state_name == "DECAYED_THESIS") else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
+        "stage_override": EntryStage.PROBE.value if revalidated else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
+        "action_bias": "PROBE_ENTRY" if revalidated else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
         "setup_arguments": setup_arguments,
-        "no_hard_block": True,
-        "quality_threshold_changed": False,
+        "no_hard_block": bool(entry_supported),
+        "quality_threshold_changed": bool(micro_policy.get("elevated_policy")),
     }
 
 def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, state: Optional[dict] = None, journal: Optional[dict] = None) -> dict[str, Any]:
@@ -7409,7 +7539,8 @@ def continuation_reanchor_profile(
         "confirmation_bar_supported": bool(ready and micro.get("supported")),
         "confirmation_bar_ts": int(micro.get("last_confirmed_3m_ts", 0) or 0) if ready else 0,
         "confirmed_3m_bars": len(recent3),
-        "six_bar_structure_confirmed": len(recent3) >= 6,
+        "six_confirmed_bars_available": len(recent3) >= 6,
+        "six_bar_structure_confirmed": bool(trend_geometry and len(recent3) >= 6),
         "pre_confirmation_ready": pre_confirmation_ready,
         "confirmation_pending": pre_confirmation_ready,
         "needs_one_bar_confirmation": pre_confirmation_ready,
@@ -8217,6 +8348,7 @@ def detect_short_liquidity_sweep_reversal(
 
     volumes = [safe_float(c.volume, 0.0) for c in reference_window if safe_float(c.volume, 0.0) > 0]
     volume_ratio = safe_float(sweep_candle.volume, 0.0) / max(mean(volumes), 1e-9) if volumes else 0.0
+    volume_gate_passed = bool((not volumes) or volume_ratio >= SHORT_SWEEP_MIN_VOLUME_RATIO)
 
     quality = 0.0
     quality += min(22.0, sweep_depth_atr / 0.35 * 22.0) if swept else 0.0
@@ -8230,7 +8362,7 @@ def detect_short_liquidity_sweep_reversal(
     invalidation = sweep_candle.high + max(atr15 * 0.12, ABS_MIN_STOP_DOLLARS * 0.20)
     return {
         "active": bool(swept and quality >= 45),
-        "execution_ready": bool(swept and reclaim and bearish_followthrough and quality >= 66),
+        "execution_ready": bool(swept and reclaim and bearish_followthrough and quality >= 66 and volume_gate_passed),
         "quality": round(quality, 2),
         "reference_high": round_price(reference_high),
         "sweep_high": round_price(sweep_candle.high),
@@ -8243,6 +8375,12 @@ def detect_short_liquidity_sweep_reversal(
         "bearish_followthrough": bearish_followthrough,
         "not_chasing": not_chasing,
         "volume_ratio": round(volume_ratio, 2) if volumes else None,
+        "min_volume_ratio": SHORT_SWEEP_MIN_VOLUME_RATIO,
+        "volume_gate_passed": volume_gate_passed,
+        "hard_block_reason": (
+            f"SHORT_SWEEP_VOLUME_RATIO_BELOW_{SHORT_SWEEP_MIN_VOLUME_RATIO:.2f}"
+            if volumes and not volume_gate_passed else ""
+        ),
         "reason": "buy-side sweep with progressive rejection evidence",
     }
 
@@ -8658,12 +8796,18 @@ def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
     stage_plan = dict(candidate.stage_plan or {})
     notes = list(stage_plan.get("scale_plan") or [])
     proposed_stage = str(profile.get("stage") or EntryStage.WAIT_CONFIRMATION.value)
-    if not profile.get("execution_ready"):
+    model_profile = (getattr(candidate, "score_components", {}) or {}).get("short_reversal_model", {}) or {}
+    model_execution_ready = bool(model_profile.get("execution_ready"))
+    if not model_execution_ready:
         candidate.confirmation_pending = True
         candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
         candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value
         stage_plan["stage"] = candidate.entry_stage
-        notes.append("SHORT reversal WATCH: execution confirmation not ready")
+        hard_reason = str(model_profile.get("hard_block_reason") or "")
+        notes.append(
+            "SHORT reversal WATCH: model-local execution confirmation not ready"
+            + (f" ({hard_reason})" if hard_reason else "")
+        )
     else:
         if proposed_stage == EntryStage.CORE.value:
             proposed_stage = EntryStage.ACCEPTANCE.value
@@ -8671,6 +8815,14 @@ def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
         stage_plan["stage"] = proposed_stage
         notes.append(f"SHORT reversal stage={proposed_stage}; risk delegated to ledger")
     stage_plan["short_reversal_profile"] = profile
+    stage_plan["short_reversal_model_gate"] = {
+        "model_id": model_profile.get("model_id"),
+        "execution_ready": model_execution_ready,
+        "volume_ratio": model_profile.get("volume_ratio"),
+        "volume_gate_passed": model_profile.get("volume_gate_passed"),
+        "hard_block_reason": model_profile.get("hard_block_reason", ""),
+        "aggregate_execution_ready_is_advisory_only": True,
+    }
     stage_plan["risk_recommendation"] = {
         "source": "short_reversal_policy",
         "capital_cap_pct": safe_float(profile.get("risk_cap"), 0.0),
@@ -9296,7 +9448,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             if model_id in SHORT_REVERSAL_MODEL_IDS:
                 model_ready = bool(short_model_profile.get("execution_ready"))
                 aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
-                actionable_trigger_ready = bool(model_ready or (aggregate_ready and live_3m_trigger_ready))
+                # v9.2 model-local execution contract: aggregate readiness is context only.
+                # It may rank hypotheses, but it cannot override this model's failed hard gate.
+                actionable_trigger_ready = bool(model_ready)
                 local_live_3m_trigger_ready = bool(actionable_trigger_ready and live_3m_trigger_ready)
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
                 local_trigger_level = safe_float(short_model_profile.get("entry_anchor"), price) or price
@@ -9309,9 +9463,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "SHORT_OR_FAILURE_2": ExecutionSource.SHORT_OR_FAILURE_2.value,
                 }[model_id]
                 if actionable_trigger_ready:
-                    pattern_conf.append(f"🟢 {model_id}: soft reversal evidence reached execution-ready state")
+                    pattern_conf.append(f"🟢 {model_id}: model-local reversal evidence reached execution-ready state")
                 else:
-                    pattern_conf.append(f"🟡 {model_id}: WATCH/CONFIRMATION, no standalone entry")
+                    hard_reason = str(short_model_profile.get("hard_block_reason") or "")
+                    suffix = f" | hard_gate={hard_reason}" if hard_reason else ""
+                    pattern_conf.append(
+                        f"🟡 {model_id}: WATCH/CONFIRMATION, model-local execution not ready; "
+                        f"aggregate_ready={aggregate_ready} cannot override{suffix}"
+                    )
             elif model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
                 execution_source = ExecutionSource.MOMENTUM_CONTINUATION.value
                 actionable_trigger_ready = bool(momentum_no_pullback.get("entry_ready"))
@@ -9779,14 +9938,19 @@ def build_trade_breathing_geometry(side: str, price: float, structural_stop: flo
     if not structural_from_zone:
         decision_distance = min(decision_distance, max(model_max, ABS_MIN_STOP_DOLLARS))
 
-    catastrophic_distance = max(
-        decision_distance * CATASTROPHIC_STOP_MULT,
+    noise_floor_distance = max(
         ABS_MIN_STOP_DOLLARS,
         float(noise["tr_p70"]) * MIN_STOP_TRUE_RANGE_MULT,
         float(noise["current_tr"]) * CURRENT_CANDLE_STOP_MULT,
         effective_atr15 * float(profile.get("stop_min_atr", MIN_STOP_ATR15)) * 1.15,
     )
-    catastrophic_distance = max(catastrophic_distance, decision_distance + max(price * 0.0005, effective_atr15 * 0.15))
+    min_extra = max(price * 0.0005, effective_atr15 * 0.15)
+    requested_extra = max(decision_distance * max(CATASTROPHIC_STOP_MULT - 1.0, 0.0), min_extra)
+    capped_extra = min(requested_extra, effective_atr15 * CATASTROPHIC_STOP_MAX_EXTRA_ATR)
+    catastrophic_distance = max(
+        noise_floor_distance,
+        decision_distance + capped_extra,
+    )
 
     if side == Side.LONG.value:
         decision_stop = price - decision_distance
@@ -9818,6 +9982,10 @@ def build_trade_breathing_geometry(side: str, price: float, structural_stop: flo
         "catastrophic_stop": round_price(catastrophic_stop),
         "decision_distance": round(float(decision_distance), 6),
         "catastrophic_distance": round(float(catastrophic_distance), 6),
+        "catastrophic_buffer_distance": round(float(max(catastrophic_distance - decision_distance, 0.0)), 6),
+        "catastrophic_buffer_atr": round(float(max(catastrophic_distance - decision_distance, 0.0) / max(effective_atr15, 1e-9)), 4),
+        "noise_floor_distance": round(float(noise_floor_distance), 6),
+        "catastrophic_stop_policy": "decision close-confirm + capped noise buffer",
         "conventional_distance": round(float(conventional), 6),
         "risk_size_multiplier": round(float(risk_size_multiplier), 4),
         "tp1_floor_distance": round(float(tp1_floor_distance), 6),
@@ -15493,6 +15661,156 @@ def v9_regression_checks() -> list[tuple[str, bool]]:
     return checks
 
 
+
+def test_short_sweep_volume_ratio_is_hard_gate() -> bool:
+    base = 1_780_000_000_000
+    candles = []
+    for i in range(24):
+        candles.append(Candle(
+            ts=base + i * 180_000,
+            open=100.0,
+            high=100.25,
+            low=99.75,
+            close=100.0,
+            volume=100.0,
+            confirmed=True,
+        ))
+    # Last four bars: sweep above reference high, reclaim and bearish follow-through,
+    # but sweep volume is deliberately only 0.70x reference mean.
+    candles[-4] = Candle(ts=base + 20 * 180_000, open=100.0, high=100.9, low=99.9, close=100.1, volume=70.0, confirmed=True)
+    candles[-3] = Candle(ts=base + 21 * 180_000, open=100.1, high=100.3, low=99.8, close=99.95, volume=100.0, confirmed=True)
+    candles[-2] = Candle(ts=base + 22 * 180_000, open=99.95, high=100.1, low=99.6, close=99.75, volume=100.0, confirmed=True)
+    candles[-1] = Candle(ts=base + 23 * 180_000, open=99.75, high=99.9, low=99.4, close=99.55, volume=100.0, confirmed=True)
+    profile = detect_short_liquidity_sweep_reversal(candles, price=99.55, atr15=0.5)
+    return bool(
+        profile.get("active")
+        and not profile.get("execution_ready")
+        and profile.get("volume_gate_passed") is False
+        and safe_float(profile.get("volume_ratio"), 0.0) < SHORT_SWEEP_MIN_VOLUME_RATIO
+        and str(profile.get("hard_block_reason") or "").startswith("SHORT_SWEEP_VOLUME_RATIO_BELOW")
+    )
+
+
+def test_aggregate_short_readiness_cannot_override_model_gate() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
+        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value,
+        raw_score=90,
+        final_score=75,
+        score_components={
+            "short_reversal_model": {
+                "model_id": "SHORT_LIQUIDITY_SWEEP_REVERSAL",
+                "execution_ready": False,
+                "volume_ratio": 0.69,
+                "volume_gate_passed": False,
+                "hard_block_reason": "SHORT_SWEEP_VOLUME_RATIO_BELOW_1.00",
+            },
+            "short_reversal": {
+                "active": True,
+                "execution_ready": True,
+                "stage": EntryStage.PROBE.value,
+                "risk_cap": 0.03,
+            },
+        },
+        short_reversal_profile={
+            "active": True,
+            "execution_ready": True,
+            "stage": EntryStage.PROBE.value,
+            "risk_cap": 0.03,
+        },
+        ict_model="SHORT_LIQUIDITY_SWEEP_REVERSAL",
+        trigger_ready=False,
+        stage_plan={"stage": EntryStage.PROBE.value, "scale_plan": []},
+    )
+    candidate = apply_short_reversal_stage_overlay(candidate)
+    gate = candidate.stage_plan.get("short_reversal_model_gate") or {}
+    return bool(
+        candidate.entry_stage == EntryStage.WAIT_CONFIRMATION.value
+        and candidate.confirmation_pending
+        and gate.get("execution_ready") is False
+        and gate.get("aggregate_execution_ready_is_advisory_only") is True
+    )
+
+
+def test_old_trigger_generic_micro_cannot_revalidate_after_four_hours() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value,
+        raw_score=95,
+        final_score=75,
+        ict_model="FAILED_ORB",
+        execution_source=ExecutionSource.OPENING_RANGE.value,
+        trigger_age_minutes=741.9,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+    )
+    micro = {
+        "supported": True,
+        "score": 85,
+        "checks_by_name": {
+            "directional_3m_close": True,
+            "strong_3m_body": True,
+            "15m_acceptance": True,
+            "micro_sweep_reclaim": False,
+        },
+    }
+    policy = _revalidation_micro_policy(candidate, micro, candidate.trigger_age_minutes)
+    return bool(
+        not policy.get("eligible")
+        and not policy.get("within_generic_age")
+        and "micro_sweep_reclaim" in (policy.get("failed_required_checks") or [])
+    )
+
+
+def test_decayed_thesis_is_not_automatic_entry_permission() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value,
+        raw_score=90,
+        final_score=72,
+        ict_model="FAILED_ORB",
+        execution_source=ExecutionSource.OPENING_RANGE.value,
+        trigger_age_minutes=THESIS_HARD_TTL_MIN + 60.0,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+    )
+    context = {"price": 100.0, "atr15": 0.5, "candles": {"3m": [], "15m": []}}
+    profile = setup_trigger_revalidation_profile(candidate, context)
+    return bool(
+        profile.get("state") == "DECAYED_THESIS"
+        and profile.get("entry_supported") is False
+        and profile.get("hard_expired") is True
+        and profile.get("action_bias") == "ARMED_REVALIDATION"
+    )
+
+
+def test_catastrophic_stop_buffer_is_narrowed_but_noise_safe() -> bool:
+    candles = [
+        Candle(ts=1_780_000_000_000 + i * 900_000, open=100.0, high=100.25, low=99.75, close=100.0, volume=100.0, confirmed=True)
+        for i in range(50)
+    ]
+    context = {"candles": {"15m": candles}}
+    profile = {"stop_min_atr": 0.85, "stop_max_atr": 2.0}
+    geometry = build_trade_breathing_geometry(
+        side=Side.LONG.value,
+        price=100.0,
+        structural_stop=99.6,
+        effective_atr15=0.25,
+        profile=profile,
+        context=context,
+    )
+    return bool(
+        geometry.get("catastrophic_distance") >= geometry.get("decision_distance")
+        and geometry.get("catastrophic_distance") >= geometry.get("noise_floor_distance")
+        and (
+            geometry.get("catastrophic_buffer_atr") <= CATASTROPHIC_STOP_MAX_EXTRA_ATR + 1e-6
+            or abs(geometry.get("catastrophic_distance") - geometry.get("noise_floor_distance")) <= 1e-6
+        )
+    )
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -15534,6 +15852,11 @@ def _run_self_test() -> bool:
         ("relaxed shadow deduplicates thesis geometry", test_relaxed_shadow_deduplicates_thesis_geometry),
         ("relaxed policy graduates only on positive counterfactuals", test_relaxed_policy_graduates_only_on_positive_counterfactuals),
         ("execution funnel separates revalidation from executive", test_execution_funnel_separates_revalidation_and_executive),
+        ("SHORT sweep low volume is a hard gate", test_short_sweep_volume_ratio_is_hard_gate),
+        ("aggregate SHORT readiness cannot override model gate", test_aggregate_short_readiness_cannot_override_model_gate),
+        ("old trigger generic micro expires after four hours", test_old_trigger_generic_micro_cannot_revalidate_after_four_hours),
+        ("decayed thesis is not automatic entry permission", test_decayed_thesis_is_not_automatic_entry_permission),
+        ("catastrophic buffer is narrowed but noise-safe", test_catastrophic_stop_buffer_is_narrowed_but_noise_safe),
     ]
     for name, fn in retained:
         try:
@@ -17369,14 +17692,8 @@ def _strict_support_paths_from_signal(signal: dict[str, Any]) -> dict[str, Any]:
     momentum_reanchor = momentum.get("reanchor", {}) or reanchor
     side = str(signal.get("side") or "").upper()
 
-    reanchor_six = bool(
-        reanchor.get("six_bar_structure_confirmed")
-        or int(reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
-    )
-    momentum_six = bool(
-        momentum_reanchor.get("six_bar_structure_confirmed")
-        or int(momentum_reanchor.get("confirmed_3m_bars", 0) or 0) >= 6
-    )
+    reanchor_six = bool(reanchor.get("six_bar_structure_confirmed"))
+    momentum_six = bool(momentum_reanchor.get("six_bar_structure_confirmed"))
     reanchor_ready = bool(reanchor.get("ready") and reanchor_six and _profile_side_matches(reanchor, side))
     momentum_ready = bool(momentum.get("entry_ready") and momentum_six and _profile_side_matches(momentum_reanchor, side))
     return {
@@ -17384,6 +17701,7 @@ def _strict_support_paths_from_signal(signal: dict[str, Any]) -> dict[str, Any]:
         "momentum_no_pullback_ready": momentum_ready,
         "alternative_ready": bool(reanchor_ready or momentum_ready),
         "six_bar_requirement_enforced": True,
+        "six_bar_count_is_not_structure": True,
     }
 
 
@@ -17539,7 +17857,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v8.16")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
