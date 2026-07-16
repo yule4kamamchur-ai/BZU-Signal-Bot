@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.2 (Risk Integrity Hard-Gate Edition)
+BZU Professional Hybrid Confluence Signal Bot v9.4 (Confirmation Probability Edition)
 ===============================================================================
+Оновлення v9.4.0:
+- Додано окремий Confirmation Probability Layer, який оцінює P(confirmation | precursor_state) до фактичного підтвердження.
+- Шар не має права створювати ENTRY/RISKY_ENTRY/PROBE_ENTRY; він лише калібровано модулює існуючий fresh-probe шлях у Executive Layer.
+- Додано окремий precursor journal, event-based outcomes, chronological validation, AUC/Brier gate, Platt calibration та Wilson interval.
+- Anti-leakage: precursor-фічі обчислюються з timestamp freeze і не використовують бар підтвердження або майбутні бари.
+- Cold start працює як явно некалібрована евристика; PRECONFIRM_MODEL_TRUSTED активується лише після мінімальної вибірки та AUC gate.
+
 Оновлення v9.3.2:
 - Єдина canonical score policy: 75 для full ENTRY, 68 для live risky; professional gate більше не має окремих 74/66.
 - build_trade_plan() визначає execution readiness тільки за свіжістю/геометрією, а не повторно блокує score.
@@ -290,8 +297,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.3.2-unified-score-ttl-lease"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_3_2_UNIFIED_SCORE_TTL_LEASE"
+BOT_VERSION = "pro-hybrid-confluence-v9.4.0-confirmation-probability"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_4_CONFIRMATION_PROBABILITY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -310,6 +317,23 @@ WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
 # === ЯВНІ НАЗВИ ФАЙЛІВ v6.4 ===
 STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_4.json")))
 JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_4.json")))
+
+# === v9.4 Confirmation Probability Layer ===
+# Separate persistence is deliberate: precursor rows must not rotate with the trade journal.
+PRECONFIRMATION_LAYER_ENABLED = os.getenv("PRECONFIRMATION_LAYER_ENABLED", "true").lower() in {"1", "true", "yes"}
+PRECONFIRM_JOURNAL_FILE = Path(os.getenv("PRECONFIRM_JOURNAL_FILE", str(WORKSPACE / "preconfirmation_journal_v9_4.json")))
+PRECONFIRM_MAX_EVENTS = max(1000, int(os.getenv("PRECONFIRM_MAX_EVENTS", "20000") or 20000))
+PRECONFIRM_WINDOW_MINUTES = max(6, int(os.getenv("PRECONFIRM_WINDOW_MINUTES", "45") or 45))
+PRECONFIRM_CONFIRM_BUFFER_ATR = max(0.02, float(os.getenv("PRECONFIRM_CONFIRM_BUFFER_ATR", "0.15") or 0.15))
+PRECONFIRM_INVALIDATION_BUFFER_ATR = max(0.20, float(os.getenv("PRECONFIRM_INVALIDATION_BUFFER_ATR", "0.80") or 0.80))
+PRECONFIRM_MIN_TRAIN_ROWS = max(30, int(os.getenv("PRECONFIRM_MIN_TRAIN_ROWS", "60") or 60))
+PRECONFIRM_FULL_TRUST_ROWS = max(PRECONFIRM_MIN_TRAIN_ROWS + 1, int(os.getenv("PRECONFIRM_FULL_TRUST_ROWS", "160") or 160))
+PRECONFIRM_AUC_GATE = min(0.95, max(0.50, float(os.getenv("PRECONFIRM_AUC_GATE", "0.55") or 0.55)))
+PRECONFIRM_BRIER_WARN = min(0.50, max(0.05, float(os.getenv("PRECONFIRM_BRIER_WARN", "0.25") or 0.25)))
+PRECONFIRM_EXPIRED_LABEL_MODE = str(os.getenv("PRECONFIRM_EXPIRED_LABEL_MODE", "SEPARATE") or "SEPARATE").strip().upper()
+PRECONFIRM_LOCAL_NEIGHBORS = max(10, int(os.getenv("PRECONFIRM_LOCAL_NEIGHBORS", "30") or 30))
+PRECONFIRM_PROBE_MIN_PROBABILITY = min(0.95, max(0.50, float(os.getenv("PRECONFIRM_PROBE_MIN_PROBABILITY", "0.62") or 0.62)))
+PRECONFIRM_PROBE_WAIT_PROBABILITY = min(PRECONFIRM_PROBE_MIN_PROBABILITY - 0.01, max(0.05, float(os.getenv("PRECONFIRM_PROBE_WAIT_PROBABILITY", "0.42") or 0.42)))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
@@ -656,6 +680,12 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Reclaim revalidation score floor must be between 0 and 100")
     if not (2 <= RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES <= 6):
         errors.append("RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES must be between 2 and 6")
+    if PRECONFIRM_EXPIRED_LABEL_MODE not in {"SEPARATE", "NEGATIVE"}:
+        errors.append("PRECONFIRM_EXPIRED_LABEL_MODE must be SEPARATE or NEGATIVE")
+    if not (0.50 <= PRECONFIRM_AUC_GATE <= 0.95):
+        errors.append("PRECONFIRM_AUC_GATE must be between 0.50 and 0.95")
+    if not (0.0 < PRECONFIRM_PROBE_WAIT_PROBABILITY < PRECONFIRM_PROBE_MIN_PROBABILITY < 1.0):
+        errors.append("Preconfirmation probe probabilities must satisfy wait < promote")
 
     short_weight_sum = sum([
         SHORT_REVERSAL_WEIGHT_LIQUIDITY,
@@ -1144,8 +1174,10 @@ class PhilosophyDecision:
     statistical_status: str
     failed_principles: list[str]
     reason_codes: list[str]
+    confirmation_probability: float = 0.0
+    preconfirmation_status: str = "UNAVAILABLE"
     audit: dict[str, Any] = field(default_factory=dict)
-    schema_version: str = "philosophy_v9.0"
+    schema_version: str = "philosophy_v9.4"
 
 
 @dataclass(frozen=True)
@@ -1156,6 +1188,8 @@ class EvaluationBundle:
     conflict_report: ConflictReport
     philosophy: PhilosophyDecision
     data_quality: float
+    confirmation_probability: float = 0.0
+    preconfirmation: dict[str, Any] = field(default_factory=dict)
     raw_components: dict[str, Any] = field(default_factory=dict)
     feature_ownership: dict[str, list[str]] = field(default_factory=dict)
     setup_quality: float = 0.0
@@ -1302,6 +1336,8 @@ class Candidate:
     entry_freshness_profile: dict[str, Any] = field(default_factory=dict)
     confirmation_pending: bool = False
     confirmation_state: dict[str, Any] = field(default_factory=dict)
+    confirmation_probability: float = 0.0
+    preconfirmation_profile: dict[str, Any] = field(default_factory=dict)
     opportunity_status: str = ""
     htf_fact: dict[str, Any] = field(default_factory=dict)
     evaluation_bundle: dict[str, Any] = field(default_factory=dict)
@@ -1659,6 +1695,861 @@ def json_safe(value: Any) -> Any:
     return str(value)
 
 
+
+# ==========================================================
+# v9.4 CONFIRMATION PROBABILITY LAYER
+# ==========================================================
+# Contract:
+# - observes only precursor state frozen at as_of_ts;
+# - never publishes an execution Action;
+# - calibrated output may only gate/promote an already existing fresh-probe path;
+# - untrusted bootstrap heuristics remain audit-only.
+
+PRECONFIRM_FEATURE_NAMES = (
+    "approach_velocity_atr",
+    "approach_efficiency",
+    "wick_rejection_ratio",
+    "flow_alignment",
+    "failed_attempts_norm",
+    "dealing_range_favorability",
+    "htf_alignment",
+    "liquidity_swept",
+    "distance_to_anchor_atr",
+    "session_quality",
+    "trigger_freshness",
+    "prior_touch_rejection",
+    "volume_impulse",
+)
+
+
+def _preconfirm_sigmoid(value: float) -> float:
+    value = clamp(safe_float(value, 0.0), -35.0, 35.0)
+    return 1.0 / (1.0 + math.exp(-value))
+
+
+def _preconfirm_logit(probability: float) -> float:
+    p = clamp(safe_float(probability, 0.5), 1e-6, 1.0 - 1e-6)
+    return math.log(p / (1.0 - p))
+
+
+def _preconfirm_as_of_ts(context: dict[str, Any]) -> int:
+    candles = (context.get("candles") or {}).get("3m", []) or []
+    confirmed = [int(getattr(c, "ts", 0) or 0) for c in candles if getattr(c, "confirmed", True)]
+    return max(confirmed, default=int(now_utc().timestamp() * 1000))
+
+
+def _preconfirm_candles(context: dict[str, Any], timeframe: str, as_of_ts: int) -> list[Candle]:
+    candles = (context.get("candles") or {}).get(timeframe, []) or []
+    return sorted(
+        [c for c in candles if getattr(c, "confirmed", True) and int(getattr(c, "ts", 0) or 0) <= int(as_of_ts)],
+        key=lambda c: int(getattr(c, "ts", 0) or 0),
+    )
+
+
+def _preconfirm_event_kind(candidate: Candidate) -> str:
+    model = str(getattr(candidate, "ict_model", "") or "").upper()
+    setup = str(getattr(candidate, "setup_type", "") or "").upper()
+    if getattr(candidate, "confirmation_pending", False):
+        return "EXPLICIT_PENDING_CONFIRMATION"
+    if any(token in model or token in setup for token in ("SWEEP", "LIQUIDITY")):
+        return "LIQUIDITY_SWEEP_REVERSAL"
+    if "FVG" in model or "FVG" in setup:
+        return "FVG_REACTION"
+    if "OB" in model or "ORDER_BLOCK" in setup:
+        return "OB_REACTION"
+    if any(token in model or token in setup for token in ("CHOCH", "BOS", "MSS", "STRUCTURAL")):
+        return "STRUCTURE_CONFIRMATION"
+    return "DIRECTIONAL_ACCEPTANCE"
+
+
+def _preconfirm_model_family(candidate: Candidate) -> str:
+    setup_family = str(getattr(candidate, "setup_family", "UNKNOWN") or "UNKNOWN").upper()
+    return f"{setup_family}:{_preconfirm_event_kind(candidate)}"
+
+
+def _preconfirm_range_position(candles: list[Candle], price: float) -> float:
+    recent = candles[-32:]
+    if not recent:
+        return 0.5
+    low = min(safe_float(c.low, price) for c in recent)
+    high = max(safe_float(c.high, price) for c in recent)
+    if high - low <= 1e-9:
+        return 0.5
+    return clamp((price - low) / (high - low), 0.0, 1.0)
+
+
+def _preconfirm_feature_vector(
+    context: dict[str, Any],
+    candidate: Candidate,
+    precursor_journal: Optional[dict[str, Any]] = None,
+    *,
+    as_of_ts: Optional[int] = None,
+) -> dict[str, float]:
+    """Build timestamp-frozen features. No candle after as_of_ts is visible."""
+    as_of_ts = int(as_of_ts or _preconfirm_as_of_ts(context))
+    c3 = _preconfirm_candles(context, "3m", as_of_ts)
+    c15 = _preconfirm_candles(context, "15m", as_of_ts)
+    price = safe_float(context.get("price"), safe_float(c3[-1].close, 0.0) if c3 else 0.0)
+    if c3:
+        price = safe_float(c3[-1].close, price)
+    atr15 = max(safe_float(context.get("atr15"), 0.0), price * 0.001, 1e-6)
+    sign = 1.0 if str(candidate.side).upper() == Side.LONG.value else -1.0
+    anchor = safe_float(
+        (getattr(candidate, "confirmation_state", {}) or {}).get("anchor"),
+        safe_float(candidate.trigger_level, safe_float(candidate.execution_anchor, price)),
+    )
+    if anchor <= 0:
+        anchor = price
+
+    approach = c3[-8:] if len(c3) >= 2 else c15[-6:]
+    net = sign * (safe_float(approach[-1].close, price) - safe_float(approach[0].close, price)) if len(approach) >= 2 else 0.0
+    path = sum(abs(safe_float(approach[i].close) - safe_float(approach[i - 1].close)) for i in range(1, len(approach)))
+    approach_velocity = clamp(net / atr15, -3.0, 3.0)
+    approach_efficiency = clamp(net / max(path, atr15 * 0.05), -1.0, 1.0)
+
+    wick_values: list[float] = []
+    for candle in (c3[-8:] or c15[-6:]):
+        rng = max(safe_float(candle.high) - safe_float(candle.low), 1e-9)
+        body_low = min(safe_float(candle.open), safe_float(candle.close))
+        body_high = max(safe_float(candle.open), safe_float(candle.close))
+        wick = body_low - safe_float(candle.low) if sign > 0 else safe_float(candle.high) - body_high
+        wick_values.append(clamp(wick / rng, 0.0, 1.0))
+    wick_rejection = mean(wick_values) if wick_values else 0.0
+
+    latest_context_ts = _preconfirm_as_of_ts(context)
+    # Flow/CVD are point-in-time aggregates, not candle series. During historical
+    # timestamp-freeze replay they are disabled unless the replay point is the
+    # actual context edge; otherwise a current aggregate would leak future flow.
+    flow = context.get("flow") or {} if as_of_ts >= latest_context_ts else {}
+    cvd = context.get("cvd") or {} if as_of_ts >= latest_context_ts else {}
+    flow_bias = str(flow.get("bias") or "NEUTRAL").upper()
+    cvd_bias = str(cvd.get("bias") or "NEUTRAL").upper()
+    if flow.get("reliable"):
+        flow_alignment = 1.0 if flow_bias == str(candidate.side).upper() else -1.0 if flow_bias in {Side.LONG.value, Side.SHORT.value} else 0.0
+    else:
+        proxy = 1.0 if cvd_bias == str(candidate.side).upper() else -1.0 if cvd_bias in {Side.LONG.value, Side.SHORT.value} else 0.0
+        flow_alignment = proxy * SYNTHETIC_CVD_SCORE_MULTIPLIER
+
+    family = _preconfirm_model_family(candidate)
+    failed_attempts = 0
+    for event in (precursor_journal or {}).get("events", []) or []:
+        if not isinstance(event, dict) or str(event.get("model_family") or "") != family:
+            continue
+        if int(event.get("observed_ts") or 0) > as_of_ts:
+            continue
+        if str(event.get("outcome") or "") in {"INVALIDATED", "EXPIRED"}:
+            event_anchor = safe_float(event.get("anchor"), anchor)
+            if abs(event_anchor - anchor) <= atr15 * 0.50:
+                failed_attempts += 1
+    failed_attempts_norm = clamp(failed_attempts / 5.0, 0.0, 1.0)
+
+    range_position = _preconfirm_range_position(c15, price)
+    dealing_favorability = 1.0 - range_position if sign > 0 else range_position
+    htf_alignment = clamp(safe_float(get_htf_fact(candidate).get("alignment_score"), 0.0), -1.0, 1.0)
+    evidence_text = " ".join(
+        [str(x) for x in (getattr(candidate, "evidence_families", []) or [])]
+        + [str(x) for x in (getattr(candidate, "confirmations", []) or [])]
+    ).upper()
+    liquidity_swept = 1.0 if "SWEEP" in evidence_text or "LIQUIDITY" in _preconfirm_event_kind(candidate) else 0.0
+    distance_to_anchor_atr = clamp(abs(price - anchor) / atr15, 0.0, 4.0)
+
+    try:
+        session_hour = datetime.fromtimestamp(as_of_ts / 1000.0, tz=timezone.utc).astimezone(zoneinfo.ZoneInfo("Europe/Kyiv")).hour
+        if ASIA_START_H <= session_hour < ASIA_END_H:
+            session = "ASIA"
+        elif LONDON_START_H <= session_hour < LONDON_END_H:
+            session = "LONDON"
+        elif NY_START_H <= session_hour < NY_END_H:
+            session = "NY"
+        else:
+            session = "OFF_HOURS"
+    except Exception:
+        session = str(context.get("session_name") or "OFF_HOURS").upper()
+    session_quality = {"LONDON": 1.0, "NY": 1.0, "ASIA": 0.55, "OFF_HOURS": 0.25}.get(session, 0.50)
+    age = max(0.0, candidate_execution_trigger_age_minutes(candidate))
+    trigger_freshness = math.exp(-age / max(float(EXECUTION_TRIGGER_TTL_MIN), 1.0))
+
+    touches: list[float] = []
+    for candle in c15[-24:]:
+        if safe_float(candle.low) <= anchor <= safe_float(candle.high):
+            rng = max(safe_float(candle.high) - safe_float(candle.low), 1e-9)
+            reaction = sign * (safe_float(candle.close) - anchor) / rng
+            touches.append(clamp(reaction, -1.0, 1.0))
+    prior_touch_rejection = mean(touches[-4:]) if touches else 0.0
+
+    volume_window = c3[-12:] if c3 else c15[-8:]
+    if volume_window:
+        avg_volume = mean(max(0.0, safe_float(c.volume)) for c in volume_window[:-1] or volume_window)
+        volume_impulse = clamp(safe_float(volume_window[-1].volume) / max(avg_volume, 1e-9), 0.0, 3.0) / 3.0
+    else:
+        volume_impulse = 0.0
+
+    return {
+        "approach_velocity_atr": round(approach_velocity, 6),
+        "approach_efficiency": round(approach_efficiency, 6),
+        "wick_rejection_ratio": round(wick_rejection, 6),
+        "flow_alignment": round(flow_alignment, 6),
+        "failed_attempts_norm": round(failed_attempts_norm, 6),
+        "dealing_range_favorability": round(dealing_favorability, 6),
+        "htf_alignment": round(htf_alignment, 6),
+        "liquidity_swept": round(liquidity_swept, 6),
+        "distance_to_anchor_atr": round(distance_to_anchor_atr, 6),
+        "session_quality": round(session_quality, 6),
+        "trigger_freshness": round(trigger_freshness, 6),
+        "prior_touch_rejection": round(prior_touch_rejection, 6),
+        "volume_impulse": round(volume_impulse, 6),
+    }
+
+
+def _preconfirm_heuristic_probability(features: dict[str, float]) -> float:
+    z = (
+        -0.30
+        + 0.55 * safe_float(features.get("approach_velocity_atr"))
+        + 0.75 * safe_float(features.get("approach_efficiency"))
+        + 0.80 * safe_float(features.get("wick_rejection_ratio"))
+        + 0.55 * safe_float(features.get("flow_alignment"))
+        - 0.80 * safe_float(features.get("failed_attempts_norm"))
+        + 0.50 * safe_float(features.get("dealing_range_favorability"))
+        + 0.65 * safe_float(features.get("htf_alignment"))
+        + 0.45 * safe_float(features.get("liquidity_swept"))
+        - 0.45 * safe_float(features.get("distance_to_anchor_atr"))
+        + 0.30 * safe_float(features.get("session_quality"))
+        + 0.55 * safe_float(features.get("trigger_freshness"))
+        + 0.40 * safe_float(features.get("prior_touch_rejection"))
+        + 0.20 * safe_float(features.get("volume_impulse"))
+    )
+    return clamp(_preconfirm_sigmoid(z), 0.08, 0.92)
+
+
+def _preconfirm_fit_logistic(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {"valid": False, "reason": "no_rows"}
+    means = {name: mean(safe_float(row["features"].get(name)) for row in rows) for name in PRECONFIRM_FEATURE_NAMES}
+    stds: dict[str, float] = {}
+    for name in PRECONFIRM_FEATURE_NAMES:
+        variance = mean((safe_float(row["features"].get(name)) - means[name]) ** 2 for row in rows)
+        stds[name] = max(math.sqrt(variance), 1e-6)
+    positives = sum(int(row["label"]) for row in rows)
+    negatives = len(rows) - positives
+    if positives == 0 or negatives == 0:
+        return {"valid": False, "reason": "single_class"}
+    weights = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+    intercept = _preconfirm_logit(positives / len(rows))
+    pos_weight = 0.5 / positives
+    neg_weight = 0.5 / negatives
+    for epoch in range(320):
+        grad_b = 0.0
+        grad_w = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+        for row in rows:
+            label = int(row["label"])
+            sample_weight = pos_weight if label == 1 else neg_weight
+            z = intercept
+            standardized = {}
+            for name in PRECONFIRM_FEATURE_NAMES:
+                value = (safe_float(row["features"].get(name)) - means[name]) / stds[name]
+                standardized[name] = value
+                z += weights[name] * value
+            error = (_preconfirm_sigmoid(z) - label) * sample_weight
+            grad_b += error
+            for name in PRECONFIRM_FEATURE_NAMES:
+                grad_w[name] += error * standardized[name]
+        lr = 0.18 / math.sqrt(1.0 + epoch / 40.0)
+        intercept -= lr * grad_b
+        for name in PRECONFIRM_FEATURE_NAMES:
+            weights[name] -= lr * (grad_w[name] + 0.002 * weights[name])
+    return {"valid": True, "means": means, "stds": stds, "weights": weights, "intercept": intercept}
+
+
+def _preconfirm_predict_model(model: dict[str, Any], features: dict[str, float]) -> float:
+    if not model.get("valid"):
+        return 0.5
+    z = safe_float(model.get("intercept"), 0.0)
+    for name in PRECONFIRM_FEATURE_NAMES:
+        mean_value = safe_float((model.get("means") or {}).get(name), 0.0)
+        std_value = max(safe_float((model.get("stds") or {}).get(name), 1.0), 1e-6)
+        z += safe_float((model.get("weights") or {}).get(name), 0.0) * ((safe_float(features.get(name)) - mean_value) / std_value)
+    return clamp(_preconfirm_sigmoid(z), 0.01, 0.99)
+
+
+def _preconfirm_fit_platt(probabilities: list[float], labels: list[int]) -> dict[str, float]:
+    if len(probabilities) < 8 or len(set(labels)) < 2:
+        return {"a": 1.0, "b": 0.0, "fitted": False}
+    a, b = 1.0, 0.0
+    for epoch in range(240):
+        grad_a = 0.0
+        grad_b = 0.0
+        for probability, label in zip(probabilities, labels):
+            x = _preconfirm_logit(probability)
+            error = _preconfirm_sigmoid(a * x + b) - int(label)
+            grad_a += error * x / len(labels)
+            grad_b += error / len(labels)
+        lr = 0.08 / math.sqrt(1.0 + epoch / 50.0)
+        a -= lr * (grad_a + 0.001 * a)
+        b -= lr * grad_b
+    return {"a": a, "b": b, "fitted": True}
+
+
+def _preconfirm_apply_platt(probability: float, calibration: dict[str, Any]) -> float:
+    if not calibration.get("fitted"):
+        return clamp(probability, 0.01, 0.99)
+    return clamp(_preconfirm_sigmoid(safe_float(calibration.get("a"), 1.0) * _preconfirm_logit(probability) + safe_float(calibration.get("b"), 0.0)), 0.01, 0.99)
+
+
+def _preconfirm_auc(labels: list[int], probabilities: list[float]) -> Optional[float]:
+    positives = [p for p, y in zip(probabilities, labels) if int(y) == 1]
+    negatives = [p for p, y in zip(probabilities, labels) if int(y) == 0]
+    if not positives or not negatives:
+        return None
+    wins = 0.0
+    total = 0
+    for positive in positives:
+        for negative in negatives:
+            total += 1
+            wins += 1.0 if positive > negative else 0.5 if positive == negative else 0.0
+    return wins / total if total else None
+
+
+def _preconfirm_brier(labels: list[int], probabilities: list[float]) -> Optional[float]:
+    if not labels:
+        return None
+    return mean((safe_float(p) - int(y)) ** 2 for p, y in zip(probabilities, labels))
+
+
+def _preconfirm_training_rows(journal: dict[str, Any], family: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for event in journal.get("events", []) or []:
+        if not isinstance(event, dict) or str(event.get("model_family") or "") != family:
+            continue
+        outcome = str(event.get("outcome") or "").upper()
+        if outcome == "CONFIRMED":
+            label = 1
+        elif outcome == "INVALIDATED" or (outcome == "EXPIRED" and PRECONFIRM_EXPIRED_LABEL_MODE == "NEGATIVE"):
+            label = 0
+        else:
+            continue
+        features = event.get("features") or {}
+        if not all(name in features for name in PRECONFIRM_FEATURE_NAMES):
+            continue
+        rows.append({
+            "features": {name: safe_float(features.get(name)) for name in PRECONFIRM_FEATURE_NAMES},
+            "label": label,
+            "observed_ts": int(event.get("observed_ts") or 0),
+        })
+    return sorted(rows, key=lambda row: row["observed_ts"])
+
+
+def _preconfirm_build_model(journal: dict[str, Any], family: str) -> dict[str, Any]:
+    rows = _preconfirm_training_rows(journal, family)
+    n = len(rows)
+    if n < PRECONFIRM_MIN_TRAIN_ROWS:
+        return {"trusted": False, "sample_size": n, "reason": "bootstrap", "auc": None, "brier": None}
+    train_end = max(20, int(n * 0.70))
+    calibration_end = max(train_end + 8, int(n * 0.85))
+    calibration_end = min(calibration_end, n - 6)
+    if calibration_end <= train_end or n - calibration_end < 4:
+        return {"trusted": False, "sample_size": n, "reason": "insufficient_chronological_holdout", "auc": None, "brier": None}
+    train_rows = rows[:train_end]
+    calibration_rows = rows[train_end:calibration_end]
+    test_rows = rows[calibration_end:]
+    base_model = _preconfirm_fit_logistic(train_rows)
+    if not base_model.get("valid"):
+        return {"trusted": False, "sample_size": n, "reason": base_model.get("reason", "fit_failed"), "auc": None, "brier": None}
+    calibration_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows]
+    calibration = _preconfirm_fit_platt(calibration_probabilities, [int(row["label"]) for row in calibration_rows])
+    test_probabilities = [_preconfirm_apply_platt(_preconfirm_predict_model(base_model, row["features"]), calibration) for row in test_rows]
+    test_labels = [int(row["label"]) for row in test_rows]
+    auc = _preconfirm_auc(test_labels, test_probabilities)
+    brier = _preconfirm_brier(test_labels, test_probabilities)
+    trusted = bool(auc is not None and auc >= PRECONFIRM_AUC_GATE)
+    final_model = _preconfirm_fit_logistic(rows) if trusted else base_model
+    return {
+        **final_model,
+        "trusted": trusted,
+        "sample_size": n,
+        "auc": round(auc, 6) if auc is not None else None,
+        "brier": round(brier, 6) if brier is not None else None,
+        "calibration": calibration,
+        "reason": "trusted" if trusted else "auc_below_gate_or_unavailable",
+        "trust_level": "FULL" if trusted and n >= PRECONFIRM_FULL_TRUST_ROWS else "PARTIAL" if trusted else "UNTRUSTED",
+        "chronological_split": {"train": len(train_rows), "calibration": len(calibration_rows), "test": len(test_rows)},
+    }
+
+
+def _preconfirm_wilson(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
+    if total <= 0:
+        return 0.0, 1.0
+    p = successes / total
+    denominator = 1.0 + z * z / total
+    center = (p + z * z / (2.0 * total)) / denominator
+    margin = z * math.sqrt((p * (1.0 - p) / total) + (z * z / (4.0 * total * total))) / denominator
+    return clamp(center - margin, 0.0, 1.0), clamp(center + margin, 0.0, 1.0)
+
+
+def _preconfirm_local_interval(rows: list[dict[str, Any]], features: dict[str, float], model: dict[str, Any]) -> tuple[float, float, int]:
+    if not rows:
+        return 0.0, 1.0, 0
+    means = model.get("means") or {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+    stds = model.get("stds") or {name: 1.0 for name in PRECONFIRM_FEATURE_NAMES}
+    ranked = []
+    for row in rows:
+        distance = 0.0
+        for name in PRECONFIRM_FEATURE_NAMES:
+            scale = max(safe_float(stds.get(name), 1.0), 1e-6)
+            distance += ((safe_float(row["features"].get(name)) - safe_float(features.get(name))) / scale) ** 2
+        ranked.append((distance, int(row["label"])))
+    neighbors = sorted(ranked, key=lambda item: item[0])[:PRECONFIRM_LOCAL_NEIGHBORS]
+    successes = sum(label for _, label in neighbors)
+    low, high = _preconfirm_wilson(successes, len(neighbors))
+    return low, high, len(neighbors)
+
+
+def _preconfirm_estimate(
+    journal: dict[str, Any],
+    candidate: Candidate,
+    features: dict[str, float],
+    model_cache: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    family = _preconfirm_model_family(candidate)
+    model = model_cache.setdefault(family, _preconfirm_build_model(journal, family))
+    heuristic = _preconfirm_heuristic_probability(features)
+    if model.get("trusted"):
+        raw_probability = _preconfirm_predict_model(model, features)
+        probability = _preconfirm_apply_platt(raw_probability, model.get("calibration") or {})
+        source = "CALIBRATED_LOGISTIC"
+    else:
+        raw_probability = None
+        probability = heuristic
+        source = "HEURISTIC_UNCALIBRATED"
+    rows = _preconfirm_training_rows(journal, family)
+    low, high, neighbor_count = _preconfirm_local_interval(rows, features, model)
+    precursor_active = _preconfirm_should_log(candidate)
+    return {
+        "available": True,
+        "probability": round(probability, 6),
+        "probability_pct": round(probability * 100.0, 1),
+        "raw_model_probability": round(raw_probability, 6) if raw_probability is not None else None,
+        "heuristic_probability": round(heuristic, 6),
+        "wilson_low": round(low, 6),
+        "wilson_high": round(high, 6),
+        "wilson_neighbors": neighbor_count,
+        "trusted": bool(model.get("trusted")),
+        "PRECONFIRM_MODEL_TRUSTED": bool(model.get("trusted")),
+        "trust_level": str(model.get("trust_level") or "BOOTSTRAP"),
+        "source": source,
+        "model_family": family,
+        "event_kind": _preconfirm_event_kind(candidate),
+        "sample_size": int(model.get("sample_size") or 0),
+        "auc": model.get("auc"),
+        "auc_gate": PRECONFIRM_AUC_GATE,
+        "brier": model.get("brier"),
+        "brier_warning": bool(model.get("brier") is not None and safe_float(model.get("brier")) > PRECONFIRM_BRIER_WARN),
+        "precursor_active": precursor_active,
+        "decision_authority": "AUDIT_AND_FRESH_PROBE_GATE_ONLY",
+        "can_initiate_entry": False,
+        "features": dict(features),
+        "excluded_feature": "pattern",
+        "feature_dependency_audit": {
+            "shared_raw_facts": ["htf_alignment", "liquidity_swept", "flow_alignment"],
+            "aggregation_mode": "MULTIPLICATIVE_FRESH_PROBE_GATE_NOT_SCORE_SUM",
+            "added_as_advisor": False,
+            "added_to_final_score": False,
+            "single_decision_use": "_preconfirm_stage_gate",
+        },
+        "schema_version": "preconfirmation_probability_v9.4",
+    }
+
+
+def load_preconfirmation_journal() -> dict[str, Any]:
+    journal = load_json(PRECONFIRM_JOURNAL_FILE, {})
+    journal.setdefault("events", [])
+    journal.setdefault("model_status", {})
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["schema_version"] = "preconfirmation_journal_v9.4"
+    return journal
+
+
+def save_preconfirmation_journal(journal: dict[str, Any]) -> None:
+    journal["updated_at"] = iso_now()
+    events = [event for event in journal.get("events", []) or [] if isinstance(event, dict)]
+    pending = [event for event in events if str(event.get("outcome") or "PENDING") == "PENDING"]
+    resolved = [event for event in events if str(event.get("outcome") or "PENDING") != "PENDING"]
+    room = max(0, PRECONFIRM_MAX_EVENTS - len(pending))
+    journal["events"] = resolved[-room:] + pending if room else pending
+    journal["retention_audit"] = {
+        "mode": "SEPARATE_PRECURSOR_JOURNAL",
+        "max_events": PRECONFIRM_MAX_EVENTS,
+        "pending_protected": len(pending),
+        "trade_journal_limit_not_used": True,
+    }
+    atomic_json_write(PRECONFIRM_JOURNAL_FILE, journal)
+
+
+def _preconfirm_should_log(candidate: Candidate) -> bool:
+    if not PRECONFIRMATION_LAYER_ENABLED or candidate is None:
+        return False
+    if str(getattr(candidate, "side", "")).upper() not in {Side.LONG.value, Side.SHORT.value}:
+        return False
+    if str(getattr(candidate, "hard_reject_reason", "") or "").strip():
+        return False
+    if bool(getattr(candidate, "confirmation_pending", False)) or not bool(getattr(candidate, "trigger_ready", False)):
+        return True
+    probe = fresh_probe_candidate_profile(candidate)
+    return bool(probe.get("eligible") and int(getattr(candidate, "final_score", 0) or 0) < RISKY_ENTRY_SCORE_BASE)
+
+
+def _preconfirm_make_event(context: dict[str, Any], candidate: Candidate, profile: dict[str, Any]) -> dict[str, Any]:
+    observed_ts = _preconfirm_as_of_ts(context)
+    price = safe_float(context.get("price"), 0.0)
+    c3 = _preconfirm_candles(context, "3m", observed_ts)
+    if c3:
+        price = safe_float(c3[-1].close, price)
+    atr15 = max(safe_float(context.get("atr15"), 0.0), price * 0.001, 1e-6)
+    side = str(candidate.side).upper()
+    sign = 1.0 if side == Side.LONG.value else -1.0
+    state = getattr(candidate, "confirmation_state", {}) or {}
+    anchor = safe_float(state.get("anchor"), safe_float(state.get("level"), safe_float(candidate.trigger_level, safe_float(candidate.execution_anchor, price))))
+    if anchor <= 0:
+        anchor = price
+    confirmation_level = max(anchor, price + atr15 * PRECONFIRM_CONFIRM_BUFFER_ATR) if sign > 0 else min(anchor, price - atr15 * PRECONFIRM_CONFIRM_BUFFER_ATR)
+    invalidation = safe_float(candidate.invalidation_level, 0.0)
+    if sign > 0 and (invalidation <= 0 or invalidation >= price):
+        invalidation = price - atr15 * PRECONFIRM_INVALIDATION_BUFFER_ATR
+    if sign < 0 and (invalidation <= price):
+        invalidation = price + atr15 * PRECONFIRM_INVALIDATION_BUFFER_ATR
+    family = _preconfirm_model_family(candidate)
+    thesis_key = str(getattr(candidate, "thesis_key", "") or f"{side}|{candidate.setup_type}|{candidate.ict_model}")
+    dedup_key = f"{thesis_key}|{family}"
+    return {
+        "id": uuid.uuid4().hex[:16],
+        "dedup_key": dedup_key,
+        "thesis_key": thesis_key,
+        "side": side,
+        "setup_type": str(candidate.setup_type),
+        "setup_family": str(candidate.setup_family),
+        "ict_model": str(candidate.ict_model),
+        "model_family": family,
+        "event_kind": _preconfirm_event_kind(candidate),
+        "observed_at": iso_now(),
+        "observed_ts": observed_ts,
+        "expires_ts": observed_ts + PRECONFIRM_WINDOW_MINUTES * 60_000,
+        "observed_price": round_price(price),
+        "anchor": round_price(anchor),
+        "confirmation_level": round_price(confirmation_level),
+        "invalidation_level": round_price(invalidation),
+        "outcome_contract": "FIRST_DIRECTIONAL_CLOSE_VS_INVALIDATION; SAME_BAR=AMBIGUOUS",
+        "outcome": "PENDING",
+        "features": dict(profile.get("features") or {}),
+        "estimate_at_observation": {k: v for k, v in profile.items() if k != "features"},
+        "signal_link": None,
+    }
+
+
+def _preconfirm_resolve_events(journal: dict[str, Any], context: dict[str, Any], candidates: list[Candidate]) -> None:
+    as_of_ts = _preconfirm_as_of_ts(context)
+    candles = _preconfirm_candles(context, "3m", as_of_ts)
+    by_thesis = {str(getattr(candidate, "thesis_key", "") or ""): candidate for candidate in candidates if getattr(candidate, "thesis_key", "")}
+    for event in journal.get("events", []) or []:
+        if not isinstance(event, dict) or str(event.get("outcome") or "PENDING") != "PENDING":
+            continue
+        observed_ts = int(event.get("observed_ts") or 0)
+        if observed_ts <= 0:
+            event["outcome"] = "AMBIGUOUS"
+            event["resolution_reason"] = "missing_observed_ts"
+            continue
+        matching = by_thesis.get(str(event.get("thesis_key") or ""))
+        if matching is not None and bool(getattr(matching, "trigger_ready", False)) and as_of_ts > observed_ts:
+            event["outcome"] = "CONFIRMED"
+            event["resolved_ts"] = as_of_ts
+            event["resolved_at"] = iso_now()
+            event["resolution_reason"] = "same_thesis_detector_became_trigger_ready"
+            continue
+        side = str(event.get("side") or "").upper()
+        confirm_level = safe_float(event.get("confirmation_level"), 0.0)
+        invalidation = safe_float(event.get("invalidation_level"), 0.0)
+        resolved = False
+        for candle in [c for c in candles if int(getattr(c, "ts", 0) or 0) > observed_ts]:
+            close = safe_float(candle.close)
+            low = safe_float(candle.low)
+            high = safe_float(candle.high)
+            confirmed = close >= confirm_level if side == Side.LONG.value else close <= confirm_level
+            invalidated = low <= invalidation if side == Side.LONG.value else high >= invalidation
+            if confirmed and invalidated:
+                event["outcome"] = "AMBIGUOUS"
+                event["resolution_reason"] = "same_bar_confirmation_and_invalidation"
+            elif confirmed:
+                event["outcome"] = "CONFIRMED"
+                event["resolution_reason"] = "directional_close_reached_confirmation_level"
+            elif invalidated:
+                event["outcome"] = "INVALIDATED"
+                event["resolution_reason"] = "invalidation_level_reached_first"
+            else:
+                continue
+            event["resolved_ts"] = int(candle.ts)
+            event["resolved_at"] = iso_now()
+            event["resolved_price"] = round_price(close)
+            resolved = True
+            break
+        if not resolved and as_of_ts >= int(event.get("expires_ts") or 0):
+            event["outcome"] = "EXPIRED"
+            event["resolved_ts"] = as_of_ts
+            event["resolved_at"] = iso_now()
+            event["resolution_reason"] = "confirmation_window_elapsed"
+
+
+def apply_confirmation_probability_layer(context: dict[str, Any], candidates: list[Candidate]) -> list[Candidate]:
+    if not PRECONFIRMATION_LAYER_ENABLED:
+        for candidate in candidates:
+            candidate.preconfirmation_profile = {"available": False, "reason": "disabled", "can_initiate_entry": False}
+            candidate.confirmation_probability = 0.0
+        return candidates
+    journal = load_preconfirmation_journal()
+    _preconfirm_resolve_events(journal, context, candidates)
+    model_cache: dict[str, dict[str, Any]] = {}
+    as_of_ts = _preconfirm_as_of_ts(context)
+    for candidate in candidates:
+        features = _preconfirm_feature_vector(context, candidate, journal, as_of_ts=as_of_ts)
+        profile = _preconfirm_estimate(journal, candidate, features, model_cache)
+        candidate.confirmation_probability = safe_float(profile.get("probability"), 0.0)
+        candidate.preconfirmation_profile = profile
+        candidate.score_components["preconfirmation"] = profile
+        candidate.score_components["confirmation_probability"] = candidate.confirmation_probability
+    pending_keys = {
+        str(event.get("dedup_key") or "")
+        for event in journal.get("events", []) or []
+        if isinstance(event, dict) and str(event.get("outcome") or "PENDING") == "PENDING"
+    }
+    for candidate in candidates:
+        profile = getattr(candidate, "preconfirmation_profile", {}) or {}
+        if not profile.get("precursor_active"):
+            continue
+        event = _preconfirm_make_event(context, candidate, profile)
+        if event["dedup_key"] in pending_keys:
+            continue
+        journal.setdefault("events", []).append(event)
+        pending_keys.add(event["dedup_key"])
+    journal["model_status"] = {
+        family: {
+            "trusted": bool(model.get("trusted")),
+            "sample_size": int(model.get("sample_size") or 0),
+            "auc": model.get("auc"),
+            "brier": model.get("brier"),
+            "trust_level": model.get("trust_level", "BOOTSTRAP"),
+        }
+        for family, model in model_cache.items()
+    }
+    save_preconfirmation_journal(journal)
+    return candidates
+
+
+def _preconfirm_stage_gate(
+    state: str,
+    candidate: Candidate,
+    evaluation: EvaluationBundle,
+    required: Optional[str],
+    blocking: list[str],
+    warnings: list[str],
+) -> tuple[str, Optional[str], list[str], list[str], dict[str, Any]]:
+    profile = evaluation.preconfirmation or {}
+    audit = {
+        "applied": False,
+        "trusted": bool(profile.get("trusted")),
+        "precursor_active": bool(profile.get("precursor_active")),
+        "probability": safe_float(profile.get("probability"), 0.0),
+        "can_initiate_entry": False,
+        "policy": "fresh-probe multiplicative gate; no independent entry authority",
+    }
+    if not profile.get("trusted") or not profile.get("precursor_active"):
+        return state, required, blocking, warnings, audit
+    probability = safe_float(profile.get("probability"), 0.0)
+    probe_profile = fresh_probe_candidate_profile(candidate)
+    audit["applied"] = True
+    audit["fresh_probe_eligible"] = bool(probe_profile.get("eligible"))
+    executable_states = {EntryStage.PROBE.value, EntryStage.ACCEPTANCE.value, EntryStage.RETEST_ADD.value, EntryStage.CORE.value, EntryStage.ADD_POSITION.value}
+    if probability <= PRECONFIRM_PROBE_WAIT_PROBABILITY and state in executable_states and probe_profile.get("eligible"):
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        required = f"confirmation probability above {PRECONFIRM_PROBE_WAIT_PROBABILITY:.0%} or new precursor evidence"
+        blocking.append("PRECONFIRM_PROBABILITY_LOW")
+        audit["effect"] = "DOWNGRADE_FRESH_PROBE_TO_WAIT"
+    elif (
+        probability >= PRECONFIRM_PROBE_MIN_PROBABILITY
+        and probe_profile.get("eligible")
+        and not bool(getattr(candidate, "confirmation_pending", False))
+        and state in {ExecutiveDecisionState.WATCH.value, ExecutiveDecisionState.EARLY_SIGNAL.value, ExecutiveDecisionState.WAIT_CONFIRMATION.value}
+        and evaluation.philosophy.recommendation in {"ACCEPT", "ACCEPT_STAGED"}
+        and not evaluation.conflict_report.actual_conflict
+        and not evaluation.conflict_report.capital_blocked
+        and evaluation.timing_quality >= 45
+        and evaluation.entry_quality >= 42
+        and evaluation.trade_quality >= 55
+    ):
+        state = EntryStage.PROBE.value
+        required = None
+        blocking = [reason for reason in blocking if reason not in {"CANONICAL_SCORE_BELOW_RISKY"}]
+        warnings.append("PRECONFIRM_HIGH_PROBABILITY_FRESH_PROBE_ONLY")
+        audit["effect"] = "PROMOTE_EXISTING_FRESH_PROBE_PATH"
+    else:
+        audit["effect"] = "AUDIT_ONLY"
+    return state, required, blocking, warnings, audit
+
+
+def _preconfirm_telegram_line(candidate: Optional[Candidate]) -> str:
+    profile = getattr(candidate, "preconfirmation_profile", {}) if candidate else {}
+    if not profile or not profile.get("available"):
+        return ""
+    probability = safe_float(profile.get("probability"), 0.0) * 100.0
+    low = safe_float(profile.get("wilson_low"), 0.0) * 100.0
+    high = safe_float(profile.get("wilson_high"), 1.0) * 100.0
+    if profile.get("trusted"):
+        label = f"калібрована, n={int(profile.get('sample_size') or 0)}, AUC={safe_float(profile.get('auc'), 0.0):.2f}"
+    else:
+        label = f"евристика, не калібрована, n={int(profile.get('sample_size') or 0)}"
+    return f"<b>Ймовірність підтвердження:</b> {probability:.0f}% | CI {low:.0f}–{high:.0f}% ({html.escape(label)})"
+
+
+def test_preconfirmation_timestamp_freeze() -> bool:
+    base_ts = 1_700_000_000_000
+    candles = [
+        Candle(ts=base_ts + i * 180_000, open=100 + i * 0.05, high=100.2 + i * 0.05, low=99.8 + i * 0.05, close=100.05 + i * 0.05, volume=100 + i, confirmed=True)
+        for i in range(8)
+    ]
+    future = Candle(ts=base_ts + 9 * 180_000, open=110, high=115, low=90, close=114, volume=9999, confirmed=True)
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=60,
+        final_score=60,
+        trigger_level=100.4,
+        execution_anchor=100.4,
+        live_3m_trigger_ready=False,
+        htf_fact={"market_bias": "BULLISH", "candidate_side": "LONG", "alignment_score": 0.5, "state": "ALIGNED", "confidence": 70},
+        score_components={"htf_fact": {"market_bias": "BULLISH", "candidate_side": "LONG", "alignment_score": 0.5, "state": "ALIGNED", "confidence": 70}},
+    )
+    context = {"price": candles[-1].close, "atr15": 1.0, "candles": {"3m": candles, "15m": candles}, "flow": {}, "cvd": {}, "session_name": "LONDON"}
+    frozen_ts = candles[-1].ts
+    first = _preconfirm_feature_vector(context, candidate, {"events": []}, as_of_ts=frozen_ts)
+    context_with_future = {
+        **context,
+        "price": future.close,
+        "candles": {"3m": candles + [future], "15m": candles + [future]},
+        "flow": {"reliable": True, "bias": Side.SHORT.value},
+        "cvd": {"bias": Side.SHORT.value},
+        "session_name": "OFF_HOURS",
+    }
+    second = _preconfirm_feature_vector(context_with_future, candidate, {"events": []}, as_of_ts=frozen_ts)
+    return first == second
+
+
+def test_preconfirmation_cannot_create_probe_without_existing_probe_path() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=58,
+        final_score=58,
+        live_3m_trigger_ready=False,
+        trigger_ready=False,
+        score_components={},
+        preconfirmation_profile={"trusted": True, "precursor_active": True, "probability": 0.90},
+    )
+    class Eval:
+        preconfirmation = candidate.preconfirmation_profile
+        philosophy = PhilosophyDecision("ACCEPT_STAGED", 70, 70, 70, 70, "UNPROVEN", [], [])
+        conflict_report = ConflictReport(0, 0, False, [], [], 0, 0, False)
+        timing_quality = 80
+        entry_quality = 80
+        trade_quality = 80
+    state, _, _, _, audit = _preconfirm_stage_gate(ExecutiveDecisionState.WATCH.value, candidate, Eval(), None, [], [])
+    return state == ExecutiveDecisionState.WATCH.value and audit.get("can_initiate_entry") is False
+
+
+
+def test_preconfirmation_chronological_model_gate_and_calibration() -> bool:
+    family = "CONTINUATION:DIRECTIONAL_ACCEPTANCE"
+    events = []
+    base_ts = 1_700_000_000_000
+    for i in range(220):
+        x = (((i * 37) % 101) / 50.0) - 1.0
+        features = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+        features["approach_efficiency"] = x
+        features["htf_alignment"] = x * 0.70
+        features["trigger_freshness"] = clamp(0.50 + x * 0.25, 0.0, 1.0)
+        features["failed_attempts_norm"] = clamp(0.50 - x * 0.25, 0.0, 1.0)
+        noise = (((i * 19) % 17) - 8) / 25.0
+        label = 1 if x + noise > 0 else 0
+        events.append({
+            "model_family": family,
+            "outcome": "CONFIRMED" if label else "INVALIDATED",
+            "features": features,
+            "observed_ts": base_ts + i * 60_000,
+        })
+    model = _preconfirm_build_model({"events": events}, family)
+    return bool(
+        model.get("trusted")
+        and int(model.get("sample_size") or 0) == 220
+        and safe_float(model.get("auc"), 0.0) >= PRECONFIRM_AUC_GATE
+        and model.get("brier") is not None
+        and (model.get("calibration") or {}).get("fitted")
+        and (model.get("chronological_split") or {}).get("test", 0) > 0
+    )
+
+
+def test_preconfirmation_event_resolves_event_first() -> bool:
+    base_ts = 1_700_000_000_000
+    event = {
+        "id": "pretest",
+        "dedup_key": "k",
+        "thesis_key": "LONG|test",
+        "side": Side.LONG.value,
+        "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+        "observed_ts": base_ts,
+        "expires_ts": base_ts + 45 * 60_000,
+        "confirmation_level": 100.50,
+        "invalidation_level": 99.20,
+        "outcome": "PENDING",
+    }
+    candles = [
+        Candle(ts=base_ts, open=100.0, high=100.2, low=99.9, close=100.0, volume=1.0, confirmed=True),
+        Candle(ts=base_ts + 180_000, open=100.0, high=100.6, low=99.8, close=100.55, volume=1.0, confirmed=True),
+        Candle(ts=base_ts + 360_000, open=100.55, high=100.7, low=99.0, close=99.1, volume=1.0, confirmed=True),
+    ]
+    journal = {"events": [event]}
+    context = {"price": 99.1, "candles": {"3m": candles}}
+    _preconfirm_resolve_events(journal, context, [])
+    return event.get("outcome") == "CONFIRMED" and event.get("resolution_reason") == "directional_close_reached_confirmation_level"
+
+
+def test_preconfirmation_is_not_an_advisor_or_score_component() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=60,
+        final_score=60,
+        score_components={},
+        preconfirmation_profile={
+            "trusted": True,
+            "precursor_active": True,
+            "probability": 0.70,
+            "feature_dependency_audit": {
+                "aggregation_mode": "MULTIPLICATIVE_FRESH_PROBE_GATE_NOT_SCORE_SUM",
+                "added_as_advisor": False,
+                "added_to_final_score": False,
+            },
+        },
+    )
+    advisors = [
+        _htf_advisor(candidate, candidate.score_components),
+        _ict_advisor(candidate.score_components),
+        _price_structure_advisor(candidate, candidate.score_components),
+        _short_reversal_advisor(candidate, candidate.score_components),
+        _execution_advisor(candidate, candidate.score_components),
+    ]
+    modules = {str(item.get("module")) for item in advisors}
+    audit = candidate.preconfirmation_profile["feature_dependency_audit"]
+    return "PRECONFIRMATION_ADVISOR" not in modules and not audit["added_as_advisor"] and not audit["added_to_final_score"]
+
 def runtime_config_snapshot() -> dict[str, Any]:
     """Аудит ENV/runtime-параметрів, які напряму впливають на TP/SL/entry.
     Без цього неможливо довести, чому фактичні рівні відрізняються від дефолтів коду."""
@@ -1818,6 +2709,13 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "synthetic_cvd_absorption_neg_mult": SYNTHETIC_CVD_ABSORPTION_NEG_MULT,
         "weekend_range_min_trades_per_bucket": WEEKEND_RANGE_MIN_TRADES_PER_BUCKET,
         "weekend_range_wilson_z": WEEKEND_RANGE_WILSON_Z,
+        "preconfirmation_layer_enabled": PRECONFIRMATION_LAYER_ENABLED,
+        "preconfirm_window_minutes": PRECONFIRM_WINDOW_MINUTES,
+        "preconfirm_min_train_rows": PRECONFIRM_MIN_TRAIN_ROWS,
+        "preconfirm_full_trust_rows": PRECONFIRM_FULL_TRUST_ROWS,
+        "preconfirm_auc_gate": PRECONFIRM_AUC_GATE,
+        "preconfirm_probe_min_probability": PRECONFIRM_PROBE_MIN_PROBABILITY,
+        "preconfirm_probe_wait_probability": PRECONFIRM_PROBE_WAIT_PROBABILITY,
     }
 
 
@@ -3512,6 +4410,9 @@ def build_decision_message(context: dict, decision: Decision) -> str:
         lines.append(
             f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
         )
+        preconfirm_line = _preconfirm_telegram_line(decision.candidate)
+        if preconfirm_line:
+            lines.append(preconfirm_line)
         divergence = ((decision.audit or {}).get("executive_divergence") or {})
         if divergence.get("selected_eligible_but_no_setup"):
             lines.append("🟠 <b>Executive near-miss:</b> кандидат SELECTED і execution-eligible, але фінальна дія NO_SETUP.")
@@ -3552,6 +4453,9 @@ def build_decision_message(context: dict, decision: Decision) -> str:
         f"<b>Scoring:</b> {html.escape(mode['label'])} | rows {mode['training_rows']}/{mode['minimum_rows']}",
         f"<b>Ціна зараз:</b> {_fmt_price(current_price)}"
     ]
+    preconfirm_line = _preconfirm_telegram_line(decision.candidate)
+    if preconfirm_line:
+        lines.append(preconfirm_line)
 
     if decision_variant == "PROBE_REDUCED" or conflict_override:
         lines.append("⚠️ <b>Тип входу:</b> PROBE_REDUCED (conflict override, знижений ризик)")
@@ -12039,6 +12943,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     proposed_opportunity_status = None
     cands = detect_candidates(context, state, journal)
+    cands = apply_confirmation_probability_layer(context, cands)
     current_price = context.get("price", 0)
     
     # 1. Перевірка ре-ентрі (залишається незмінною)
@@ -16312,6 +17217,11 @@ def _run_self_test() -> bool:
         ("plan execution readiness is score-independent", test_plan_execution_readiness_is_score_independent),
         ("thesis and execution ages are split", test_split_thesis_and_execution_age),
         ("catastrophic buffer is narrowed but noise-safe", test_catastrophic_stop_buffer_is_narrowed_but_noise_safe),
+        ("preconfirmation timestamp freeze blocks future leakage", test_preconfirmation_timestamp_freeze),
+        ("preconfirmation cannot create a probe without an existing probe path", test_preconfirmation_cannot_create_probe_without_existing_probe_path),
+        ("preconfirmation chronological model passes calibration gate", test_preconfirmation_chronological_model_gate_and_calibration),
+        ("preconfirmation outcome resolves first event in time", test_preconfirmation_event_resolves_event_first),
+        ("preconfirmation is not added as advisor or final-score term", test_preconfirmation_is_not_an_advisor_or_score_component),
     ]
     for name, fn in retained:
         try:
@@ -17457,6 +18367,22 @@ def build_evaluation_bundle(
     data_quality = 100.0 * sum(bool(v) for v in quality_checks.values()) / len(quality_checks)
 
     conflict_obj = ConflictReport(**{k: conflict[k] for k in ConflictReport.__dataclass_fields__ if k in conflict})
+    preconfirmation_profile = dict(getattr(candidate, "preconfirmation_profile", {}) or {})
+    philosophy = dict(philosophy or {})
+    philosophy["confirmation_probability"] = safe_float(preconfirmation_profile.get("probability"), 0.0)
+    philosophy["preconfirmation_status"] = (
+        "TRUSTED" if preconfirmation_profile.get("trusted")
+        else "BOOTSTRAP_HEURISTIC" if preconfirmation_profile.get("available")
+        else "UNAVAILABLE"
+    )
+    philosophy_audit = dict(philosophy.get("audit") or {})
+    philosophy_audit["preconfirmation"] = {
+        "probability": philosophy["confirmation_probability"],
+        "status": philosophy["preconfirmation_status"],
+        "source": preconfirmation_profile.get("source"),
+        "can_initiate_entry": False,
+    }
+    philosophy["audit"] = philosophy_audit
     philosophy_obj = PhilosophyDecision(**{k: philosophy[k] for k in PhilosophyDecision.__dataclass_fields__ if k in philosophy})
     raw = {
         "thesis": {k: round(v[0], 2) for k, v in thesis_parts.items()},
@@ -17470,12 +18396,14 @@ def build_evaluation_bundle(
         "htf_fact": htf,
         "schema_validation": schema_validation,
         "reversal_evidence": schema_validation.get("reversal_evidence", {}),
+        "preconfirmation": dict(getattr(candidate, "preconfirmation_profile", {}) or {}),
     }
     ownership = {
         "thesis_quality": list(thesis_parts.keys()),
         "execution_readiness": list(execution_parts.keys()),
         "entry_quality": list(entry_parts.keys()),
         "trade_quality": list(trade_parts.keys()),
+        "confirmation_probability": list(PRECONFIRM_FEATURE_NAMES),
     }
     bundle = EvaluationBundle(
         thesis_quality=round(thesis_quality, 2),
@@ -17484,6 +18412,8 @@ def build_evaluation_bundle(
         conflict_report=conflict_obj,
         philosophy=philosophy_obj,
         data_quality=round(data_quality, 2),
+        confirmation_probability=round(safe_float(getattr(candidate, "confirmation_probability", 0.0), 0.0), 6),
+        preconfirmation=dict(getattr(candidate, "preconfirmation_profile", {}) or {}),
         raw_components=raw,
         feature_ownership=ownership,
         setup_quality=round(setup_quality, 2),
@@ -17525,6 +18455,11 @@ def _evidence_fingerprint(candidate: Candidate) -> str:
         "confirmation_tier": int(getattr(candidate, "confirmation_tier", 0) or 0),
         "confirmation_state": getattr(candidate, "confirmation_state", {}) or {},
         "revalidation_state": (getattr(candidate, "revalidation_profile", {}) or {}).get("state"),
+        "preconfirmation": {
+            "trusted": bool((getattr(candidate, "preconfirmation_profile", {}) or {}).get("trusted")),
+            "probability_bucket": int(safe_float((getattr(candidate, "preconfirmation_profile", {}) or {}).get("probability"), 0.0) * 10),
+            "model_family": str((getattr(candidate, "preconfirmation_profile", {}) or {}).get("model_family") or ""),
+        },
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
 
@@ -17690,6 +18625,10 @@ def build_staged_executive_decision(
             required = f"score >= {RISKY_ENTRY_SCORE_BASE} or a fresh probe-qualified execution event"
             blocking.append("CANONICAL_SCORE_BELOW_RISKY")
 
+    state, required, blocking, warnings, preconfirm_gate_audit = _preconfirm_stage_gate(
+        state, candidate, evaluation, required, blocking, warnings
+    )
+
     allow = state in {
         EntryStage.PROBE.value,
         EntryStage.ACCEPTANCE.value,
@@ -17723,6 +18662,7 @@ def build_staged_executive_decision(
         "previous_stage": previous_state or None,
         "upgrade_requires_new_evidence": True,
         "canonical_score_policy": score_policy,
+        "preconfirmation_gate": preconfirm_gate_audit,
     }
     return ExecutiveDecisionContract(
         state=state,
@@ -17876,7 +18816,8 @@ def build_executive_decision_object(
     confidence = round((bundle.thesis_quality + bundle.execution_readiness + bundle.trade_quality) / 3.0, 2)
     reason = (
         f"{contract.state}: setup={bundle.setup_quality:.1f}, thesis_conf={bundle.thesis_confidence:.1f}, "
-        f"timing={bundle.timing_quality:.1f}, entry={bundle.entry_quality:.1f}, trade={bundle.trade_quality:.1f}"
+        f"timing={bundle.timing_quality:.1f}, entry={bundle.entry_quality:.1f}, trade={bundle.trade_quality:.1f}, "
+        f"preconfirm={bundle.confirmation_probability * 100.0:.1f}%"
     )
     if contract.blocking_reasons:
         reason += " | blocked=" + ",".join(contract.blocking_reasons)
