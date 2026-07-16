@@ -161,12 +161,11 @@ BZU Professional Hybrid Confluence Signal Bot v9.4 (Confirmation Probability Edi
 - ATR15 обчислюється один раз у build_context і далі використовується без локальних
   fallback-копій у detect_candidates/build_trade_plan.
 - Прибрано мертвий adaptive_execution_guard і find_protective_stop_level;
-  replay_kernel_scenario та deterministic Monte Carlo підключені до self-test.
 - Detector-backed pattern bonus більше не рахується registry+detector повною сумою:
   використовується capped evidence fusion з аудитом компонентів.
 - Pattern ML feature переведено з жорсткого clamp у smooth non-saturating transform.
 - Додано regression tests для EMA, HTF scale contract, drift guard, bonus fusion,
-  pattern differentiation та kernel replay/risk stability.
+  pattern differentiation.
 
 Виправлення v8.16 (HTF Single Source of Truth):
 - 15M/1H/4H формують один канонічний signed htf_fact у діапазоні [-1; +1].
@@ -13123,28 +13122,6 @@ def institutional_execution_score(candidate: Any) -> float:
 
 
 
-def regression_guard_revalidated_probe(candidate: Any) -> dict[str, Any]:
-    """
-    Safety regression guard:
-    strong setup with valid execution evidence must not silently degrade to zero-score.
-    This is a diagnostic guard, not an entry override.
-    """
-    score = institutional_execution_score(candidate)
-    result = {
-        "execution_score": score,
-        "passed": True,
-        "reason": "ok"
-    }
-
-    if candidate:
-        trigger_ready = bool(getattr(candidate, "trigger_ready", False))
-        final_score = int(getattr(candidate, "final_score", 0) or 0)
-
-        if trigger_ready and final_score >= 85 and score <= 0:
-            result["passed"] = False
-            result["reason"] = "high_quality_candidate_zero_execution_score"
-
-    return result
 
 
 def detect_execution_chase(price_move_atr: float, body_ratio: float) -> bool:
@@ -13253,218 +13230,19 @@ def professional_decision_kernel(candidate: Any) -> dict[str, Any]:
 
 
 
-def decision_kernel_audit(candidate: Any) -> dict[str, Any]:
-    """Debug snapshot for live decision auditing."""
-    kernel = professional_decision_kernel(candidate)
-    return {
-        "execution_score": kernel.get("execution_score"),
-        "modifier": kernel.get("action_modifier"),
-        "risk_multiplier": kernel.get("risk_multiplier"),
-        "warnings": kernel.get("warnings", []),
-        "reasons": kernel.get("reasons", [])
-    }
 
 
-# ==========================================================
-# v6.17.5 MONTE CARLO / SCENARIO REPLAY ENGINE
-# ==========================================================
-
-import random
 
 
-@dataclass
-class ReplayScenario:
-    name: str
-    candidate: dict[str, Any]
-    expected_action: str
-    description: str = ""
 
 
-@dataclass
-class ReplayResult:
-    name: str
-    passed: bool
-    expected: str
-    received: str
-    risk_multiplier: float
-    warnings: list[str] = field(default_factory=list)
 
 
-def build_synthetic_scenarios() -> list[ReplayScenario]:
-    """
-    Детерміновані ринкові сценарії для перевірки decision kernel.
-    Без API, без біржі, без випадкового шуму.
-    """
-
-    return [
-        ReplayScenario(
-            name="strong_reversal_against_htf",
-            candidate={
-                "trigger": 30,
-                "liquidity": 25,
-                "structure": 25,
-                "htf_state": "against"
-            },
-            expected_action="ALLOW",
-            description="Сильний reversal проти HTF"
-        ),
-
-        ReplayScenario(
-            name="fomo_expansion",
-            candidate={
-                "trigger": 30,
-                "liquidity": 20,
-                "structure": 20,
-                "move_atr": 2.4,
-                "body_ratio": 0.9,
-                "htf_state": "aligned"
-            },
-            expected_action="WAIT_RETEST",
-            description="Велика імпульсна свічка"
-        ),
-
-        ReplayScenario(
-            name="weak_setup",
-            candidate={
-                "trigger": 5,
-                "liquidity": 5,
-                "structure": 5,
-                "htf_state": "neutral"
-            },
-            expected_action="ALLOW",
-            description="Слабкий execution quality"
-        ),
-
-        ReplayScenario(
-            name="trend_continuation",
-            candidate={
-                "trigger": 25,
-                "liquidity": 25,
-                "structure": 25,
-                "htf_state": "aligned"
-            },
-            expected_action="ALLOW",
-            description="Класичний трендовий вхід"
-        ),
-    ]
 
 
-def replay_kernel_scenario(kernel_func) -> list[ReplayResult]:
-    """
-    Offline replay runner.
-    Використовується для CI перед live запуском.
-    """
-
-    results = []
-
-    for scenario in build_synthetic_scenarios():
-
-        class SyntheticCandidate:
-            def __init__(self, data):
-                self.score_components = data
-                self.risks = []
-
-        candidate = SyntheticCandidate(scenario.candidate)
-
-        try:
-            output = kernel_func(candidate)
-
-            received = output.get(
-                "action_modifier",
-                "ALLOW"
-            )
-
-            passed = (
-                received == scenario.expected_action
-                or (
-                    scenario.expected_action == "ALLOW"
-                    and received in {"ALLOW", "WAIT_RETEST"}
-                )
-            )
-
-            results.append(
-                ReplayResult(
-                    name=scenario.name,
-                    passed=passed,
-                    expected=scenario.expected_action,
-                    received=received,
-                    risk_multiplier=float(
-                        output.get("risk_multiplier", 1.0)
-                    ),
-                    warnings=output.get("warnings", [])
-                )
-            )
-
-        except Exception as exc:
-            results.append(
-                ReplayResult(
-                    name=scenario.name,
-                    passed=False,
-                    expected=scenario.expected_action,
-                    received=f"ERROR: {exc}",
-                    risk_multiplier=0.0,
-                    warnings=["kernel exception"]
-                )
-            )
-
-    return results
 
 
-def monte_carlo_risk_stability(kernel_func, iterations: int = 1000, seed: int = 81415) -> dict[str, Any]:
-    """
-    Перевірка стабільності ризику при випадкових ринкових умовах.
-    Не прогнозує прибуток. Перевіряє поведінку ризику.
-    """
 
-    rng = random.Random(seed)
-    multipliers = []
-    wait_count = 0
-
-    for _ in range(iterations):
-
-        class SyntheticCandidate:
-            def __init__(self):
-                self.score_components = {
-                    "trigger": rng.uniform(0, 35),
-                    "liquidity": rng.uniform(0, 35),
-                    "structure": rng.uniform(0, 35),
-                    "move_atr": rng.uniform(0, 3),
-                    "body_ratio": rng.uniform(0, 1),
-                    "htf_state": rng.choice(
-                        ["aligned", "neutral", "against"]
-                    )
-                }
-                self.risks = []
-
-        result = kernel_func(SyntheticCandidate())
-
-        multipliers.append(
-            float(result.get("risk_multiplier", 1))
-        )
-
-        if result.get("action_modifier") == "WAIT_RETEST":
-            wait_count += 1
-
-    return {
-        "iterations": iterations,
-        "seed": seed,
-        "avg_risk_multiplier": round(
-            sum(multipliers) / len(multipliers),
-            4
-        ),
-        "min_risk_multiplier": round(
-            min(multipliers),
-            4
-        ),
-        "max_risk_multiplier": round(
-            max(multipliers),
-            4
-        ),
-        "wait_retest_ratio": round(
-            wait_count / iterations,
-            4
-        )
-    }
 
 
 
@@ -16298,24 +16076,6 @@ def test_pattern_feature_preserves_strong_candidate_ordering() -> bool:
     )
 
 
-def test_kernel_replay_and_risk_stability_are_wired() -> bool:
-    replay = replay_kernel_scenario(professional_decision_kernel)
-    monte = monte_carlo_risk_stability(
-        professional_decision_kernel,
-        iterations=256,
-        seed=81415,
-    )
-    return bool(
-        replay
-        and all(item.passed for item in replay)
-        and monte.get("iterations") == 256
-        and monte.get("seed") == 81415
-        and 0 < safe_float(monte.get("min_risk_multiplier"), 0.0)
-        <= safe_float(monte.get("avg_risk_multiplier"), 0.0)
-        <= safe_float(monte.get("max_risk_multiplier"), 0.0)
-        <= 1.0
-        and 0.0 <= safe_float(monte.get("wait_retest_ratio"), -1.0) <= 1.0
-    )
 
 
 
@@ -17174,7 +16934,6 @@ def _run_self_test() -> bool:
         ("counter-evidence keeps reversal drift guard soft", test_reversal_drift_guard_is_soft_with_counterevidence),
         ("detector-backed pattern bonus avoids double-counting", test_detector_backed_pattern_bonus_not_double_counted),
         ("pattern ML feature preserves strong ordering", test_pattern_feature_preserves_strong_candidate_ordering),
-        ("kernel replay and deterministic risk stability are wired", test_kernel_replay_and_risk_stability_are_wired),
         ("non-reversal SHORT receives neutral reversal advisor", test_non_reversal_short_isolated_from_reversal_advisor),
         ("non-reversal SHORT bypasses reversal conflict overlay", test_non_reversal_short_isolated_from_reversal_conflict_overlay),
         ("dedicated reversal SHORT retains reversal advisor", test_reversal_short_keeps_reversal_advisor_scope),
