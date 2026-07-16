@@ -2,6 +2,14 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v9.2 (Risk Integrity Hard-Gate Edition)
 ===============================================================================
+Оновлення v9.3.2:
+- Єдина canonical score policy: 75 для full ENTRY, 68 для live risky; professional gate більше не має окремих 74/66.
+- build_trade_plan() визначає execution readiness тільки за свіжістю/геометрією, а не повторно блокує score.
+- Executive Layer лишається єдиною владою, але його максимальна стадія обмежена canonical score band.
+- Score 66–67 дозволяється лише окремим PAPER/SHADOW прогоном через ICT_RISKY_ENTRY_SCORE=66; LIVE fail-fast лишається 68.
+- Score-експеримент і TTL-експеримент заборонено в одному запуску.
+- Розділено thesis memory age/TTL та execution trigger age/TTL; стара thesis переходить у WAIT_RETEST/SHADOW_ONLY без свіжого execution evidence.
+
 Оновлення v9.3.1:
 - Revalidation стала model-local: continuation більше не зобов’язана одночасно робити breakout і sweep-reclaim на одній 3M свічці.
 - Для 2–4h continuation використовується directional acceptance path із прозорим floor 85; reclaim/reversal використовують власний reclaim path.
@@ -282,8 +290,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.3.1-revalidation-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_3_1_REVALIDATION_CALIBRATION"
+BOT_VERSION = "pro-hybrid-confluence-v9.3.2-unified-score-ttl-lease"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_3_2_UNIFIED_SCORE_TTL_LEASE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -395,10 +403,11 @@ SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE = min(
     max(0.0, float(os.getenv("SETUP_REVALIDATION_RECLAIM_ELEVATED_MIN_MICRO_SCORE", "65") or 65)),
 )
 SHORT_SWEEP_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("SHORT_SWEEP_MIN_VOLUME_RATIO", "1.0") or 1.0))
-# Hard lease for thesis memory. Default equals the previous extreme-stale boundary
-# (24h), but unlike ARCHIVED_THESIS it is terminal unless a fresh micro-confirmation
-# exists on the current run.
-THESIS_HARD_TTL_MIN = float(os.getenv("THESIS_HARD_TTL_MIN", str(SETUP_REVALIDATION_EXTREME_MIN)) or SETUP_REVALIDATION_EXTREME_MIN)
+# Thesis-memory lease. This is NOT the execution-trigger lease. After this age the
+# thesis remains available for analytics/stage history, but it cannot be executed
+# without a fresh model-valid re-anchor/revalidation on the current run.
+THESIS_TTL_BASELINE_MIN = 1440.0
+THESIS_HARD_TTL_MIN = float(os.getenv("THESIS_HARD_TTL_MIN", str(THESIS_TTL_BASELINE_MIN)) or THESIS_TTL_BASELINE_MIN)
 
 # === v8.8 Continuation Re-anchor / No-Pullback model ===
 CONTINUATION_REANCHOR_ENABLED = os.getenv("CONTINUATION_REANCHOR_ENABLED", "true").lower() in {"1", "true", "yes"}
@@ -409,7 +418,7 @@ CONTINUATION_REANCHOR_MAX_PULLBACK_ATR = float(os.getenv("CONTINUATION_REANCHOR_
 CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES = int(os.getenv("CONTINUATION_REANCHOR_MIN_DIRECTIONAL_CLOSES", "4") or 4)
 # Strong-trend pauses are allowed to use a lower close count only when direction-specific
 # structure and TF alignment are already positive. This changes readiness timing, not
-# the 68/75 score thresholds.
+# the canonical 68/75 score thresholds.
 CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES = int(
     os.getenv("CONTINUATION_REANCHOR_STRONG_TREND_MIN_DIRECTIONAL_CLOSES", "2") or 2
 )
@@ -600,6 +609,25 @@ def validate_runtime_configuration() -> dict[str, Any]:
     if not (0 < BOOTSTRAP_RISK_MULTIPLIER <= 2):
         errors.append("BOOTSTRAP_RISK_MULTIPLIER is outside safe range")
 
+    if SCORE_POLICY_MODE not in {"LIVE", "PAPER", "SHADOW"}:
+        errors.append("SCORE_POLICY_MODE must be LIVE, PAPER or SHADOW")
+    if ENTRY_SCORE_BASE != LIVE_ENTRY_SCORE_BASE:
+        errors.append(f"ICT_ENTRY_SCORE must remain {LIVE_ENTRY_SCORE_BASE}; score and TTL calibration must be isolated")
+    score_experiment = RISKY_ENTRY_SCORE_BASE != LIVE_RISKY_ENTRY_SCORE_BASE
+    ttl_experiment = abs(THESIS_HARD_TTL_MIN - THESIS_TTL_BASELINE_MIN) > 1e-9
+    if SCORE_POLICY_MODE == "LIVE" and score_experiment:
+        errors.append(f"LIVE risky threshold must remain {LIVE_RISKY_ENTRY_SCORE_BASE}; use SCORE_POLICY_MODE=PAPER/SHADOW for 66 test")
+    if SCORE_POLICY_MODE == "LIVE" and ttl_experiment:
+        errors.append(f"LIVE thesis TTL must remain {THESIS_TTL_BASELINE_MIN:.0f}; test TTL separately in PAPER/SHADOW")
+    if score_experiment and ttl_experiment:
+        errors.append("Do not change risky score and thesis TTL in the same run")
+    if not (66 <= RISKY_ENTRY_SCORE_BASE <= LIVE_RISKY_ENTRY_SCORE_BASE):
+        errors.append("ICT_RISKY_ENTRY_SCORE must be between 66 and 68")
+    if EXECUTION_TRIGGER_TTL_MIN <= 0:
+        errors.append("EXECUTION_TRIGGER_TTL_MIN must be positive")
+    if THESIS_HARD_TTL_MIN <= EXECUTION_TRIGGER_TTL_MIN:
+        errors.append("THESIS_HARD_TTL_MIN must exceed EXECUTION_TRIGGER_TTL_MIN")
+
     if not (0 <= RISKY_SCORE_GRAY_ZONE <= 5):
         errors.append("RISKY_SCORE_GRAY_ZONE must be between 0 and 5")
     if not (0 < RISKY_GRAY_RISK_PCT <= RISKY_RISK_PCT):
@@ -699,9 +727,14 @@ SHORT_REVERSAL_ML_MIN_TRADES = max(20, int(os.getenv("SHORT_REVERSAL_ML_MIN_TRAD
 SHORT_REVERSAL_ML_FULL_TRADES = max(SHORT_REVERSAL_ML_MIN_TRADES + 1, int(os.getenv("SHORT_REVERSAL_ML_FULL_TRADES", "100") or 100))
 SHORT_REVERSAL_ML_MIN_MODEL_TRADES = max(10, int(os.getenv("SHORT_REVERSAL_ML_MIN_MODEL_TRADES", "20") or 20))
 
-# === Scoring Thresholds ===
-ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", "75") or 75)
-RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", "68") or 68)
+# === Canonical Scoring Policy ===
+# One score policy only. Other layers may evaluate evidence/geometry, but they may
+# not invent a second pair of entry thresholds.
+LIVE_ENTRY_SCORE_BASE = 75
+LIVE_RISKY_ENTRY_SCORE_BASE = 68
+SCORE_POLICY_MODE = str(os.getenv("SCORE_POLICY_MODE", "LIVE") or "LIVE").strip().upper()
+ENTRY_SCORE_BASE = int(os.getenv("ICT_ENTRY_SCORE", str(LIVE_ENTRY_SCORE_BASE)) or LIVE_ENTRY_SCORE_BASE)
+RISKY_ENTRY_SCORE_BASE = int(os.getenv("ICT_RISKY_ENTRY_SCORE", str(LIVE_RISKY_ENTRY_SCORE_BASE)) or LIVE_RISKY_ENTRY_SCORE_BASE)
 ARMED_SCORE_BASE = int(os.getenv("ICT_ARMED_SCORE", "58") or 58)
 MIN_ENTRY_EVIDENCE_BASE = int(os.getenv("MIN_ENTRY_EVIDENCE", "5") or 5)
 
@@ -725,9 +758,8 @@ EXECUTIVE_SHADOW_HORIZON_HOURS = max(1.0, float(os.getenv("EXECUTIVE_SHADOW_HORI
 MISSED_REENTRY_SCORE = 62
 REENTRY_AGGRESSIVE_THRESHOLD = 72
 
-# === Professional Gate ===
-PRO_ENTRY_MIN = 74
-PRO_RISKY_MIN = 66
+# Professional gate has no independent score thresholds. It consumes the
+# canonical ENTRY_SCORE_BASE / RISKY_ENTRY_SCORE_BASE policy below.
 MIN_PRO_LAYERS_ENTRY = 4
 A_PLUS_ENTRY_MIN = 82
 
@@ -832,7 +864,12 @@ DEFAULT_QUALITY_COEFFICIENTS = {
 }
 
 # === 3M Scanner ===
-TRIGGER_MAX_AGE_MINUTES = int(os.getenv("TRIGGER_MAX_AGE_MINUTES", "35") or 35)
+EXECUTION_TRIGGER_TTL_MIN = int(
+    os.getenv("EXECUTION_TRIGGER_TTL_MIN", os.getenv("TRIGGER_MAX_AGE_MINUTES", "35")) or 35
+)
+# Deprecated compatibility alias. All semantics are execution-trigger freshness,
+# never thesis memory lifetime.
+TRIGGER_MAX_AGE_MINUTES = EXECUTION_TRIGGER_TTL_MIN
 RECLAIM_MIN_QUALITY = int(os.getenv("RECLAIM_MIN_QUALITY", "58") or 58)
 EARLY_ENTRY_MIN_SCORE = int(os.getenv("EARLY_ENTRY_MIN_SCORE", "68") or 68)
 STRONG_IMPULSE_CHASE_PENALTY = int(os.getenv("STRONG_IMPULSE_CHASE_PENALTY", "12") or 12)
@@ -1217,7 +1254,11 @@ class Candidate:
     ict_model: str = "NONE"  # НОВЕ ПОЛЕ: Визначена ICT-модель
     execution_anchor: float = 0.0
     trigger_ts: int = 0
+    # Legacy alias for effective execution-trigger age. New code should use the
+    # explicit fields below so thesis memory cannot masquerade as live execution.
     trigger_age_minutes: float = 0.0
+    thesis_age_minutes: float = -1.0
+    execution_trigger_age_minutes: float = -1.0
     specificity: int = 0
     hard_reject_reason: str = ""
     thesis_key: str = ""
@@ -1639,8 +1680,13 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "acceptance_risk_pct": ACCEPTANCE_RISK_PCT,
         "retest_add_risk_pct": RETEST_ADD_RISK_PCT,
         "core_risk_pct": CORE_RISK_PCT,
+        "score_policy_mode": SCORE_POLICY_MODE,
         "entry_score_base": ENTRY_SCORE_BASE,
         "risky_entry_score_base": RISKY_ENTRY_SCORE_BASE,
+        "live_entry_score_base": LIVE_ENTRY_SCORE_BASE,
+        "live_risky_entry_score_base": LIVE_RISKY_ENTRY_SCORE_BASE,
+        "score_experiment_active": RISKY_ENTRY_SCORE_BASE != LIVE_RISKY_ENTRY_SCORE_BASE,
+        "ttl_experiment_active": abs(THESIS_HARD_TTL_MIN - THESIS_TTL_BASELINE_MIN) > 1e-9,
         "risky_score_gray_zone": RISKY_SCORE_GRAY_ZONE,
         "risky_gray_min_execution_quality": RISKY_GRAY_MIN_EXECUTION_QUALITY,
         "risky_gray_min_setup_quality": RISKY_GRAY_MIN_SETUP_QUALITY,
@@ -1682,7 +1728,8 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preferred_rr1": PREFERRED_RR1,
         "min_rr2": MIN_RR2,
         "min_rr3": MIN_RR3,
-        "trigger_max_age_minutes": TRIGGER_MAX_AGE_MINUTES,
+        "execution_trigger_ttl_min": EXECUTION_TRIGGER_TTL_MIN,
+        "trigger_max_age_minutes": TRIGGER_MAX_AGE_MINUTES,  # deprecated alias
         "time_warp_score_multiplier": TIME_WARP_SCORE_MULTIPLIER,
         "stale_trigger_score_multiplier": STALE_TRIGGER_SCORE_MULTIPLIER,
         "limit_armed_score_multiplier": LIMIT_ARMED_SCORE_MULTIPLIER,
@@ -1735,6 +1782,7 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "relaxed_continuation_min_directional_closes": RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES,
         "short_sweep_min_volume_ratio": SHORT_SWEEP_MIN_VOLUME_RATIO,
         "thesis_hard_ttl_min": THESIS_HARD_TTL_MIN,
+        "thesis_ttl_baseline_min": THESIS_TTL_BASELINE_MIN,
         "continuation_reanchor_enabled": CONTINUATION_REANCHOR_ENABLED,
         "continuation_reanchor_max_zone_age_min": CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN,
         "continuation_reanchor_max_distance_atr": CONTINUATION_REANCHOR_MAX_DISTANCE_ATR,
@@ -3703,43 +3751,95 @@ def get_adaptive_params(regime: str) -> dict:
         "reentry_aggressiveness": 1.30,
     }
 
+    # Regime adapts evidence, protection and re-entry behavior, not the canonical
+    # 75/68 score cutoffs. Hidden regime-specific score thresholds were another
+    # parallel policy and are intentionally removed.
     if regime == Regime.TREND.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 0.90)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 0.92)
         base["min_evidence"] = max(4, MIN_ENTRY_EVIDENCE_BASE - 1)
         base["mfe_giveback_threshold"] = 0.38
         base["min_mfe_for_protect"] = 1.8
         base["reentry_aggressiveness"] = 1.40
 
     elif regime == Regime.RANGE.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.12)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.10)
         base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE + 1
         base["mfe_giveback_threshold"] = 0.52
         base["min_mfe_for_protect"] = 2.6
         base["reentry_aggressiveness"] = 0.90
 
     elif regime == Regime.SHOCK.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.18)
-        base["risky_entry_score"] = int(RISKY_ENTRY_SCORE_BASE * 1.15)
         base["min_evidence"] = MIN_ENTRY_EVIDENCE_BASE + 2
         base["mfe_giveback_threshold"] = 0.55
         base["min_mfe_for_protect"] = 2.8
         base["reentry_aggressiveness"] = 0.75
 
     elif regime == Regime.TRANSITION.value:
-        base["entry_score"] = int(ENTRY_SCORE_BASE * 1.00)
         base["reentry_aggressiveness"] = 1.20
 
     return base
 
 
 # ==========================================================
-# PROFESSIONAL GATE
+# CANONICAL SCORE / AGE POLICY
+# ==========================================================
+
+def candidate_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
+    if candidate is None:
+        return 0.0
+    explicit = safe_float(getattr(candidate, "thesis_age_minutes", -1.0), -1.0)
+    if explicit >= 0.0:
+        return explicit
+    components = getattr(candidate, "score_components", {}) or {}
+    if "original_trigger_age_minutes" in components:
+        return max(0.0, safe_float(components.get("original_trigger_age_minutes"), 0.0))
+    return max(0.0, safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0))
+
+
+def candidate_execution_trigger_age_minutes(candidate: Optional[Candidate]) -> float:
+    if candidate is None:
+        return 0.0
+    explicit = safe_float(getattr(candidate, "execution_trigger_age_minutes", -1.0), -1.0)
+    if explicit >= 0.0:
+        return explicit
+    components = getattr(candidate, "score_components", {}) or {}
+    if "effective_trigger_age_minutes" in components:
+        return max(0.0, safe_float(components.get("effective_trigger_age_minutes"), 0.0))
+    return max(0.0, safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0))
+
+
+def canonical_score_admission_profile(candidate_or_score: Any) -> dict[str, Any]:
+    score = int(
+        getattr(candidate_or_score, "final_score", candidate_or_score) or 0
+    )
+    full_entry = score >= ENTRY_SCORE_BASE
+    risky_entry = score >= RISKY_ENTRY_SCORE_BASE
+    gray_lower = max(0, RISKY_ENTRY_SCORE_BASE - RISKY_SCORE_GRAY_ZONE)
+    gray_shadow_only = gray_lower <= score < RISKY_ENTRY_SCORE_BASE
+    band = "ENTRY" if full_entry else "RISKY" if risky_entry else "GRAY_SHADOW_ONLY" if gray_shadow_only else "BELOW"
+    return {
+        "authority": "CANONICAL_SCORE_POLICY",
+        "mode": SCORE_POLICY_MODE,
+        "score": score,
+        "entry_threshold": ENTRY_SCORE_BASE,
+        "risky_threshold": RISKY_ENTRY_SCORE_BASE,
+        "full_entry_eligible": full_entry,
+        "risky_entry_eligible": risky_entry,
+        "gray_shadow_only": gray_shadow_only,
+        "gray_lower_bound": gray_lower,
+        "band": band,
+        "live_defaults_preserved": bool(
+            ENTRY_SCORE_BASE == LIVE_ENTRY_SCORE_BASE
+            and (SCORE_POLICY_MODE != "LIVE" or RISKY_ENTRY_SCORE_BASE == LIVE_RISKY_ENTRY_SCORE_BASE)
+        ),
+    }
+
+
+# ==========================================================
+# PROFESSIONAL GATE (ADVISORY EVIDENCE, CANONICAL SCORE POLICY)
 # ==========================================================
 
 def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
     score = candidate.final_score
+    score_policy = canonical_score_admission_profile(candidate)
     layers = len(candidate.evidence_families)
     trigger_ready = candidate.trigger_ready
     strong_ict = "ICT_LOCATION" in candidate.evidence_families or "PRICE_STRUCTURE" in candidate.evidence_families
@@ -3755,7 +3855,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
     htf_aligned = (tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)
 
     advisory_allow_entry = bool(
-        score >= PRO_ENTRY_MIN
+        score_policy["full_entry_eligible"]
         and layers >= MIN_PRO_LAYERS_ENTRY
         and trigger_ready
         and strong_ict
@@ -3766,7 +3866,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
     )
 
     advisory_allow_risky = bool(
-        score >= PRO_RISKY_MIN
+        score_policy["risky_entry_eligible"]
         and layers >= max(3, MIN_PRO_LAYERS_ENTRY - 1)
         and (trigger_ready or strong_ict)
         and htf_aligned
@@ -3797,6 +3897,7 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         "score": score,
         "layers": layers,
         "gate_product": gate_product,
+        "score_policy": score_policy,
         "reason": reason,
     }
 
@@ -5903,14 +6004,17 @@ def setup_trigger_revalidation_profile(
         return {"enabled": False, "state": "DISABLED", "entry_supported": True, "needs_revalidation": False}
 
     source = str(candidate.execution_source or ExecutionSource.NONE.value)
-    age = max(float(candidate.trigger_age_minutes or 0.0), 0.0)
+    thesis_age = candidate_thesis_age_minutes(candidate)
+    execution_age = candidate_execution_trigger_age_minutes(candidate)
+    age = thesis_age  # compatibility alias inside this function
     price = safe_float(context.get("price"), 0.0) or safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
     anchor = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0) or safe_float(getattr(candidate, "trigger_level", 0.0), 0.0) or price
     atr15 = safe_float(context.get("atr15"), 0.6) or 0.6
     c3 = (context.get("candles", {}) or {}).get("3m", []) or []
     c15 = (context.get("candles", {}) or {}).get("15m", []) or []
 
-    live_ready = bool(getattr(candidate, "live_3m_trigger_ready", False))
+    execution_trigger_fresh = bool(execution_age <= float(EXECUTION_TRIGGER_TTL_MIN))
+    live_ready = bool(getattr(candidate, "live_3m_trigger_ready", False) and execution_trigger_fresh)
     limit_ready = bool(getattr(candidate, "limit_armed_ready", False))
     time_warp_ready = bool(getattr(candidate, "time_warp_ready", False))
 
@@ -5926,7 +6030,7 @@ def setup_trigger_revalidation_profile(
         state_name = "DECAYED_THESIS"
     elif hard_ttl_elapsed and (micro_policy.get("eligible") or alternative_ready):
         state_name = "REVALIDATED_AFTER_TTL"
-    elif age < SETUP_REVALIDATION_STALE_MIN or live_ready:
+    elif thesis_age < SETUP_REVALIDATION_STALE_MIN:
         state_name = "FRESH"
     elif age < SETUP_REVALIDATION_EXTREME_MIN:
         state_name = "STALE"
@@ -5965,8 +6069,19 @@ def setup_trigger_revalidation_profile(
     # Time freshness is not price freshness. A live signal several ATR away from
     # its anchor must not become a market entry merely because age_min == 0.
     late_location_blocked = bool(not not_late_location and not limit_ready and not alternative_ready)
+    execution_source_requires_fresh_trigger = source in {
+        ExecutionSource.LIVE_3M.value,
+        ExecutionSource.TIME_WARP.value,
+        ExecutionSource.LIMIT_ARMED.value,
+        ExecutionSource.OPENING_RANGE.value,
+        ExecutionSource.OPEN_RECLAIM.value,
+        ExecutionSource.ACCEPTANCE_RETEST.value,
+        ExecutionSource.LIQUIDITY_LADDER.value,
+    }
+    stale_execution_trigger = bool(execution_source_requires_fresh_trigger and not execution_trigger_fresh and not alternative_ready)
     needs_revalidation = bool(
         state_name != "FRESH"
+        or stale_execution_trigger
         or late_location_blocked
         or (time_warp_ready and not live_ready and source == ExecutionSource.TIME_WARP.value)
     )
@@ -6023,12 +6138,19 @@ def setup_trigger_revalidation_profile(
 
     return {
         "enabled": True,
-        "version": "v9.2_risk_integrity_lease",
+        "version": "v9.3.2_split_thesis_execution_lease",
         "state": state_name,
         "source": source,
-        "age_min": round(age, 1),
+        "age_min": round(thesis_age, 1),  # deprecated compatibility alias
+        "thesis_age_min": round(thesis_age, 1),
+        "execution_trigger_age_min": round(execution_age, 1),
+        "execution_trigger_ttl_min": EXECUTION_TRIGGER_TTL_MIN,
+        "execution_trigger_fresh": execution_trigger_fresh,
+        "stale_execution_trigger": stale_execution_trigger,
         "hard_ttl_min": THESIS_HARD_TTL_MIN,
         "hard_expired": bool(hard_ttl_elapsed and not entry_supported),
+        "thesis_memory_only": bool(hard_ttl_elapsed and not entry_supported),
+        "pipeline_disposition": "WAIT_RETEST_SHADOW_ONLY" if hard_ttl_elapsed and not entry_supported else "ACTIVE",
         "needs_revalidation": needs_revalidation,
         "revalidated": revalidated,
         "entry_supported": entry_supported,
@@ -8135,8 +8257,8 @@ def explain_candidate_gate_failure(context: dict, candidate: Candidate, gate: Op
         reasons.append(
             f"THESIS_HARD_TTL_EXPIRED age={revalidation.get('age_min')}min ttl={revalidation.get('hard_ttl_min')}min"
         )
-    if candidate.final_score < PRO_RISKY_MIN:
-        reasons.append(f"score {candidate.final_score} < risky_min {PRO_RISKY_MIN}")
+    if candidate.final_score < RISKY_ENTRY_SCORE_BASE:
+        reasons.append(f"score {candidate.final_score} < canonical_risky_min {RISKY_ENTRY_SCORE_BASE}")
     if len(candidate.evidence_families or []) < max(3, MIN_PRO_LAYERS_ENTRY - 1):
         reasons.append(f"layers {len(candidate.evidence_families or [])} замало")
     if not candidate.trigger_ready:
@@ -9949,6 +10071,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 ict_model=best_pattern or "NONE",
                 execution_anchor=round_price(contract["entry_anchor"]),
                 trigger_age_minutes=local_trigger_age,
+                thesis_age_minutes=trigger_age,
+                execution_trigger_age_minutes=local_trigger_age,
                 thesis_key=f"{side}|{model_id}|{setup_type}|{int(round(contract['entry_anchor']*10))}",
                 thesis=f"{side} {model_id} → {setup_type} | src={execution_source} | stage={scan_stage}",
                 professional_gate={},
@@ -10443,8 +10567,8 @@ def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, A
 
     score = int(getattr(candidate, "final_score", 0) or 0)
     live_ready = bool(getattr(candidate, "live_3m_trigger_ready", False))
-    trigger_age = max(safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0), 0.0)
-    fresh_age = bool(trigger_age <= float(TRIGGER_MAX_AGE_MINUTES))
+    trigger_age = candidate_execution_trigger_age_minutes(candidate)
+    fresh_age = bool(trigger_age <= float(EXECUTION_TRIGGER_TTL_MIN))
     revalidation = getattr(candidate, "revalidation_profile", {}) or {}
     revalidation_state = str(revalidation.get("state") or "UNKNOWN").upper()
     hard_expired = bool(revalidation.get("hard_expired") or revalidation_state == "DEAD")
@@ -10469,6 +10593,7 @@ def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, A
         "score_floor": ARMED_SCORE_BASE,
         "live_3m_trigger_ready": live_ready,
         "trigger_age_minutes": round(trigger_age, 2),
+        "execution_trigger_ttl_min": EXECUTION_TRIGGER_TTL_MIN,
         "fresh_age": fresh_age,
         "revalidation_state": revalidation_state,
         "entry_supported": entry_supported,
@@ -10487,7 +10612,7 @@ def probe_entry_eligibility(
 ) -> dict[str, Any]:
     """Final Executive gate for Action.PROBE_ENTRY.
 
-    Unlike ENTRY/RISKY_ENTRY, this gate does not use the 75/68 conviction
+    Unlike ENTRY/RISKY_ENTRY, this gate does not use the canonical full/risky conviction
     thresholds. It requires a fresh live trigger, a valid executable plan,
     no analytical hard conflict and available risk budget. Capital-at-risk is
     capped separately at PROBE_RISK_PCT.
@@ -10812,13 +10937,15 @@ def build_trade_plan(
         candidate.score_components["revalidation_gate"] = revalidation_gate
         candidate.score_components["revalidation_ok"] = revalidation_ok
 
-    # Full/risky entries preserve the existing 75/68 score gates.
+    # Execution readiness answers only: "is there a valid fresh execution path?"
+    # Score admission is applied once by the canonical policy in Executive Layer.
+    score_admission = canonical_score_admission_profile(candidate)
     standard_execution_ready = bool(
         candidate.trigger_ready
-        and candidate.final_score >= RISKY_ENTRY_SCORE_BASE
         and common_execution_ok
         and revalidation_ok
     )
+    candidate.score_components["score_admission_profile"] = score_admission
 
     # PROBE is a separate trust dimension: fresh live execution evidence plus
     # a low ARMED floor. It is not a disguised lowering of the 68 threshold.
@@ -10875,7 +11002,7 @@ def build_trade_plan(
         candidate = apply_setup_innovation_overlay(candidate, context)
     # One provisional ledger is built for the candidate stage. Executive Layer
     # recalculates the same pure ledger after the final staged decision.
-    if fresh_probe_profile.get("eligible") and candidate.final_score < RISKY_ENTRY_SCORE_BASE:
+    if fresh_probe_profile.get("eligible") and not score_admission.get("risky_entry_eligible"):
         candidate.entry_stage = EntryStage.PROBE.value
         candidate.stage_plan["stage"] = EntryStage.PROBE.value
         candidate.stage_plan["probe_cap_recommendation"] = PROBE_RISK_PCT
@@ -11821,7 +11948,7 @@ def executive_authority_decision(
         blocking_layer = "EXECUTIVE_DIRECTOR_POLICY"
     decision.audit["execution_funnel"] = {
         "detected": decision.candidate is not None,
-        "score_eligible": bool(decision.candidate and decision.candidate.final_score >= RISKY_ENTRY_SCORE_BASE),
+        "score_eligible": bool(decision.candidate and canonical_score_admission_profile(decision.candidate).get("risky_entry_eligible")),
         "trigger_ready": bool(decision.candidate and decision.candidate.trigger_ready),
         "entry_supported": entry_supported,
         "relaxed_policy_supported": relaxed_live_override,
@@ -11958,11 +12085,14 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
         gate = cand.professional_gate or evaluate_professional_gate(context, cand)
         revalidation = getattr(cand, "revalidation_profile", {}) or {}
         hard_expired = bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD")
-        # A hard-expired thesis is an audit record, not an ARMED opportunity.
-        if not hard_expired and (
+        # Hard-expired thesis remains in the analytical pipeline. Executive Layer
+        # will classify it as WAIT_RETEST/SHADOW_ONLY until fresh execution support
+        # appears; it is not silently deleted before ranking/audit.
+        if (
             gate.get("advisory_advisory_allow_entry")
             or gate.get("advisory_advisory_allow_risky")
             or cand.final_score >= get_adaptive_params(context.get("adaptive_regime", context["regime"]))["armed_score"]
+            or hard_expired
             or (
                 bool(getattr(cand, "confirmation_pending", False))
                 and cand.final_score >= get_adaptive_params(context.get("adaptive_regime", context["regime"]))["armed_score"] - 6
@@ -12019,9 +12149,10 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
         else OpportunityStatus.ARMED.value
     )
 
-    if plan.valid and plan.execution_ready and quality >= ENTRY_SCORE_BASE:
+    score_admission = canonical_score_admission_profile(best)
+    if plan.valid and plan.execution_ready and score_admission.get("full_entry_eligible"):
         proposed_action = Action.ENTRY.value
-    elif plan.valid and plan.execution_ready and quality >= RISKY_ENTRY_SCORE_BASE:
+    elif plan.valid and plan.execution_ready and score_admission.get("risky_entry_eligible"):
         proposed_action = Action.RISKY_ENTRY.value
     elif plan.valid and plan.execution_ready and fresh_probe_candidate_profile(best).get("eligible"):
         proposed_action = Action.PROBE_ENTRY.value
@@ -14186,23 +14317,45 @@ def test_weak_cautions_do_not_create_hard_conflict() -> bool:
 
 def test_score_68_continuation_is_not_cliff_blocked() -> bool:
     candidate, plan = _continuation_near_miss_fixture(68, 73)
-    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
+    profile = canonical_score_admission_profile(candidate)
     return bool(
-        report.get("action") == Action.RISKY_ENTRY.value
-        and plan.position_risk_pct <= RISKY_RISK_PCT
+        profile.get("band") == "RISKY"
+        and profile.get("risky_entry_eligible")
+        and not profile.get("full_entry_eligible")
+        and plan.execution_ready
     )
 
 
-def test_score_67_gray_zone_is_strictly_capped() -> bool:
+def test_score_67_gray_zone_is_shadow_only_in_live_policy() -> bool:
     candidate, plan = _continuation_near_miss_fixture(67, 75)
-    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
-    profile = (((report.get("executive_decision") or {}).get("audit") or {}).get("risky_entry_score_profile") or {})
+    profile = risky_entry_score_profile(candidate, plan, philosophy_accepts=True, risk_blocked=False)
     return bool(
-        report.get("action") == Action.RISKY_ENTRY.value
-        and profile.get("tier") == "GRAY"
-        and profile.get("gray_eligible")
-        and plan.position_risk_pct <= RISKY_GRAY_RISK_PCT + 1e-9
-        and plan.entry_stage == EntryStage.PROBE.value
+        profile.get("tier") == "GRAY_SHADOW_ONLY"
+        and profile.get("gray_eligible") is False
+        and profile.get("shadow_eligible")
+        and profile.get("eligible") is False
+    )
+
+
+def test_plan_execution_readiness_is_score_independent() -> bool:
+    candidate, plan = _continuation_near_miss_fixture(67, 75)
+    return bool(plan.valid and plan.execution_ready and not canonical_score_admission_profile(candidate).get("risky_entry_eligible"))
+
+
+def test_split_thesis_and_execution_age() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=75,
+        execution_source=ExecutionSource.CONTINUATION_REANCHOR.value,
+        trigger_age_minutes=5.0, thesis_age_minutes=1900.0, execution_trigger_age_minutes=5.0,
+        live_3m_trigger_ready=True, trigger_ready=True, trigger_level=100.0, execution_anchor=100.0,
+        score_components={"continuation_reanchor": {"ready": True, "six_bar_structure_confirmed": True, "side": Side.LONG.value}},
+    )
+    profile = setup_trigger_revalidation_profile(candidate, {"price": 100.0, "atr15": 0.5, "candles": {"3m": [], "15m": []}})
+    return bool(
+        profile.get("thesis_age_min") == 1900.0
+        and profile.get("execution_trigger_age_min") == 5.0
+        and profile.get("execution_trigger_fresh")
     )
 
 
@@ -16077,6 +16230,7 @@ def test_decayed_thesis_is_not_automatic_entry_permission() -> bool:
         and profile.get("entry_supported") is False
         and profile.get("hard_expired") is True
         and profile.get("action_bias") == "ARMED_REVALIDATION"
+        and profile.get("pipeline_disposition") == "WAIT_RETEST_SHADOW_ONLY"
     )
 
 
@@ -16153,6 +16307,10 @@ def _run_self_test() -> bool:
         ("funnel separates scan blocks from unique theses", test_execution_funnel_reports_unique_revalidation_blocks),
         ("old trigger generic micro expires after four hours", test_old_trigger_generic_micro_cannot_revalidate_after_four_hours),
         ("decayed thesis is not automatic entry permission", test_decayed_thesis_is_not_automatic_entry_permission),
+        ("score 68 remains canonical risky admission", test_score_68_continuation_is_not_cliff_blocked),
+        ("score 67 gray zone is shadow-only", test_score_67_gray_zone_is_shadow_only_in_live_policy),
+        ("plan execution readiness is score-independent", test_plan_execution_readiness_is_score_independent),
+        ("thesis and execution ages are split", test_split_thesis_and_execution_age),
         ("catastrophic buffer is narrowed but noise-safe", test_catastrophic_stop_buffer_is_narrowed_but_noise_safe),
     ]
     for name, fn in retained:
@@ -17508,6 +17666,30 @@ def build_staged_executive_decision(
         state = previous_state
         warnings.append("NO_STAGE_UPGRADE_WITHOUT_NEW_EVIDENCE")
 
+    # One canonical score policy caps the maximum executable stage. Independent
+    # quality scores decide readiness inside that cap; they do not create a second
+    # hidden pair of full/risky thresholds.
+    score_policy = canonical_score_admission_profile(candidate)
+    if state in {EntryStage.CORE.value, EntryStage.ADD_POSITION.value} and not score_policy.get("full_entry_eligible"):
+        if score_policy.get("risky_entry_eligible"):
+            state = EntryStage.ACCEPTANCE.value
+            warnings.append("CANONICAL_SCORE_CAP_CORE_TO_ACCEPTANCE")
+        elif fresh_probe_candidate_profile(candidate).get("eligible"):
+            state = EntryStage.PROBE.value
+            warnings.append("CANONICAL_SCORE_CAP_CORE_TO_PROBE")
+        else:
+            state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+            required = f"score >= {RISKY_ENTRY_SCORE_BASE} or a fresh probe-qualified execution event"
+            blocking.append("CANONICAL_SCORE_BELOW_RISKY")
+    elif state in {EntryStage.ACCEPTANCE.value, EntryStage.RETEST_ADD.value} and not score_policy.get("risky_entry_eligible"):
+        if fresh_probe_candidate_profile(candidate).get("eligible"):
+            state = EntryStage.PROBE.value
+            warnings.append("CANONICAL_SCORE_CAP_ACCEPTANCE_TO_PROBE")
+        else:
+            state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+            required = f"score >= {RISKY_ENTRY_SCORE_BASE} or a fresh probe-qualified execution event"
+            blocking.append("CANONICAL_SCORE_BELOW_RISKY")
+
     allow = state in {
         EntryStage.PROBE.value,
         EntryStage.ACCEPTANCE.value,
@@ -17540,6 +17722,7 @@ def build_staged_executive_decision(
         "evidence_fingerprint": evidence_fp,
         "previous_stage": previous_state or None,
         "upgrade_requires_new_evidence": True,
+        "canonical_score_policy": score_policy,
     }
     return ExecutiveDecisionContract(
         state=state,
@@ -17558,55 +17741,32 @@ def risky_entry_score_profile(
     philosophy_accepts: bool,
     risk_blocked: bool,
 ) -> dict[str, Any]:
-    """Auditable risky-entry buffer around the base threshold.
+    """Compatibility audit wrapper around the single canonical score policy.
 
-    Scores in 66–67 are not promoted automatically. They are eligible only when
-    setup/execution quality, fresh execution evidence, RR and risk controls all
-    pass. The resulting position is capped below ordinary risky-entry size.
+    The old automatic 66–67 gray live path is intentionally removed. To test
+    66–67, run a separate PAPER/SHADOW process with ICT_RISKY_ENTRY_SCORE=66.
     """
-    quality = int(getattr(candidate, "final_score", 0) or 0)
-    execution_q = safe_float(getattr(candidate, "execution_quality_score", 0), 0.0)
-    setup_q = safe_float(getattr(candidate, "setup_quality_score", 0), 0.0)
-    lower_bound = max(0, RISKY_ENTRY_SCORE_BASE - RISKY_SCORE_GRAY_ZONE)
-    in_gray_zone = lower_bound <= quality < RISKY_ENTRY_SCORE_BASE
+    profile = canonical_score_admission_profile(candidate)
     plan_executable = bool(plan and getattr(plan, "valid", False) and getattr(plan, "execution_ready", False))
-    revalidation = getattr(candidate, "revalidation_profile", {}) or {}
-    fresh_execution = bool(
-        getattr(candidate, "live_3m_trigger_ready", False)
-        or getattr(candidate, "limit_armed_ready", False)
-        or revalidation.get("entry_supported")
-        or getattr(candidate, "execution_source", "") in {
-            ExecutionSource.CONTINUATION_REANCHOR.value,
-            ExecutionSource.MOMENTUM_CONTINUATION.value,
-        }
-    )
-    hard_expired = bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD")
-    checks = {
-        "within_gray_zone": in_gray_zone,
-        "execution_quality": execution_q >= RISKY_GRAY_MIN_EXECUTION_QUALITY,
-        "setup_quality": setup_q >= RISKY_GRAY_MIN_SETUP_QUALITY,
-        "fresh_execution": fresh_execution,
-        "plan_executable": plan_executable,
-        "philosophy_accepts": bool(philosophy_accepts),
-        "risk_available": not bool(risk_blocked),
-        "thesis_alive": not hard_expired,
-    }
-    full_threshold = quality >= RISKY_ENTRY_SCORE_BASE
-    gray_eligible = bool(in_gray_zone and all(checks.values()))
     return {
-        "quality": quality,
-        "base_threshold": RISKY_ENTRY_SCORE_BASE,
-        "lower_bound": lower_bound,
-        "distance_to_base": RISKY_ENTRY_SCORE_BASE - quality,
-        "full_threshold": full_threshold,
-        "in_gray_zone": in_gray_zone,
-        "gray_eligible": gray_eligible,
-        "eligible": bool(full_threshold or gray_eligible),
-        "tier": "FULL" if full_threshold else "GRAY" if gray_eligible else "BELOW",
-        "risk_cap": RISKY_RISK_PCT if full_threshold else RISKY_GRAY_RISK_PCT,
-        "execution_quality": round(execution_q, 2),
-        "setup_quality": round(setup_q, 2),
-        "checks": checks,
+        **profile,
+        "quality": profile["score"],
+        "base_threshold": profile["risky_threshold"],
+        "lower_bound": profile["gray_lower_bound"],
+        "distance_to_base": profile["risky_threshold"] - profile["score"],
+        "full_threshold": profile["risky_entry_eligible"],
+        "in_gray_zone": profile["gray_shadow_only"],
+        "gray_eligible": False,
+        "shadow_eligible": bool(profile["gray_shadow_only"] and plan_executable and philosophy_accepts and not risk_blocked),
+        "eligible": profile["risky_entry_eligible"],
+        "tier": "FULL" if profile["risky_entry_eligible"] else "GRAY_SHADOW_ONLY" if profile["gray_shadow_only"] else "BELOW",
+        "risk_cap": RISKY_RISK_PCT if profile["risky_entry_eligible"] else 0.0,
+        "checks": {
+            "plan_executable": plan_executable,
+            "philosophy_accepts": bool(philosophy_accepts),
+            "risk_available": not bool(risk_blocked),
+            "live_gray_execution_disabled": True,
+        },
     }
 
 
@@ -17767,8 +17927,9 @@ def build_executive_decision_object(
                 "conflict_override": False,
             },
             "risky_entry_score_profile": {
-                "deprecated": True,
-                "reason": "v9 uses three independent scores and staged policy",
+                **canonical_score_admission_profile(candidate),
+                "deprecated_gray_live_path": True,
+                "reason": "canonical score band caps Executive stage; gray zone is audit/shadow only unless risky threshold is explicitly 66 in PAPER/SHADOW",
             },
             "quality_voting": dict(bundle.conflict_report.quality_voting or {}),
             "probe_conviction": (components.get("probe_conviction") or {}),
@@ -18023,6 +18184,9 @@ def _audit_journal_to_candidate(signal: dict[str, Any]) -> Optional[Candidate]:
         trigger_ready=bool(signal.get("trigger_ready", False)),
         trigger_level=float(signal.get("trigger_level", 0.0) or 0.0),
         invalidation_level=float(signal.get("invalidation_level", 0.0) or 0.0),
+        trigger_age_minutes=safe_float(signal.get("trigger_age_minutes"), 0.0),
+        thesis_age_minutes=safe_float((signal.get("score_components") or {}).get("original_trigger_age_minutes"), -1.0),
+        execution_trigger_age_minutes=safe_float((signal.get("score_components") or {}).get("effective_trigger_age_minutes"), -1.0),
     )
 
 
