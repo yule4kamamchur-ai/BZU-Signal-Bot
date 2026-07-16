@@ -15024,6 +15024,96 @@ def test_shadow_outcome_tracks_path_without_claiming_profit() -> bool:
 
 
 
+def test_execution_advisor_respects_revalidation_contract() -> bool:
+    base = dict(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=75,
+        execution_quality_score=82,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        entry_stage=EntryStage.ACCEPTANCE.value,
+    )
+    rejected = Candidate(
+        **base,
+        revalidation_profile={
+            "state": "STALE", "needs_revalidation": True,
+            "revalidated": False, "entry_supported": False,
+        },
+    )
+    incomplete = Candidate(
+        **base,
+        revalidation_profile={
+            "state": "STALE", "needs_revalidation": True,
+            "revalidated": False, "entry_supported": True,
+        },
+    )
+    waiting = Candidate(
+        **{**base, "entry_stage": ExecutiveDecisionState.WAIT_RETEST.value},
+        revalidation_profile={
+            "state": "FRESH", "needs_revalidation": False,
+            "revalidated": True, "entry_supported": True,
+        },
+    )
+    ready = Candidate(
+        **base,
+        revalidation_profile={
+            "state": "FRESH", "needs_revalidation": False,
+            "revalidated": True, "entry_supported": True,
+        },
+    )
+    return bool(
+        _execution_advisor(rejected, {}).get("opinion") == AdvisoryOpinion.AGAINST.value
+        and _execution_advisor(incomplete, {}).get("opinion") == AdvisoryOpinion.UNCERTAIN.value
+        and _execution_advisor(waiting, {}).get("opinion") == AdvisoryOpinion.UNCERTAIN.value
+        and _execution_advisor(ready, {}).get("opinion") == AdvisoryOpinion.SUPPORT.value
+    )
+
+
+def test_ict_advisor_uses_normalized_calibration() -> bool:
+    support = _ict_advisor({"str_score": 21.0, "liq_score": 8.0})
+    shadow_only = _ict_advisor({"str_score": 18.0, "liq_score": 4.0})
+    weak = _ict_advisor({"str_score": 4.0, "liq_score": 2.0})
+    shadow_metrics = shadow_only.get("metrics") or {}
+    return bool(
+        support.get("opinion") == AdvisoryOpinion.SUPPORT.value
+        and shadow_only.get("opinion") == AdvisoryOpinion.UNCERTAIN.value
+        and shadow_metrics.get("shadow_support") is True
+        and weak.get("opinion") == AdvisoryOpinion.AGAINST.value
+    )
+
+
+def test_price_structure_separates_strength_from_conclusion_confidence() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=90,
+        final_score=72,
+        execution_source=ExecutionSource.TIME_WARP.value,
+    )
+    vote = _price_structure_advisor(candidate, {
+        "str_score": 24.0,
+        "directional_structure": {
+            "higher_high": True,
+            "higher_low": True,
+            "lower_high": False,
+            "lower_low": False,
+            "score": 100.0,
+        },
+        "continuation_reanchor": {"side": Side.LONG.value, "ready": False},
+        "momentum_no_pullback": {"side": Side.LONG.value, "entry_ready": False},
+    })
+    metrics = vote.get("metrics") or {}
+    return bool(
+        vote.get("opinion") == AdvisoryOpinion.UNCERTAIN.value
+        and safe_float(metrics.get("structure_strength"), 0.0) >= 99.0
+        and safe_float(metrics.get("conclusion_confidence"), 100.0) <= 35.0
+        and safe_float(vote.get("confidence"), 100.0) <= 35.0
+    )
+
+
 def test_price_structure_advisor_is_directional() -> bool:
     """The same timestamp geometry may support one side, never both."""
     base = 1_783_900_000_000
@@ -16774,6 +16864,9 @@ def _run_self_test() -> bool:
         ("no-pullback continuation is probe-ready", test_no_pullback_model_is_probe_ready),
         ("selected+eligible NO_SETUP raises audit alert", test_selected_eligible_no_setup_alert),
         ("shadow audit tracks path without claiming profit", test_shadow_outcome_tracks_path_without_claiming_profit),
+        ("execution advisor respects revalidation contract", test_execution_advisor_respects_revalidation_contract),
+        ("ICT advisor uses normalized calibration", test_ict_advisor_uses_normalized_calibration),
+        ("price structure separates strength from conclusion confidence", test_price_structure_separates_strength_from_conclusion_confidence),
         ("price structure advisor is candidate-side aware", test_price_structure_advisor_is_directional),
         ("TRANSITION session mean waits one confirmation bar", test_transition_session_mean_waits_one_bar),
         ("strong-trend reanchor permits guarded 2/6", test_strong_trend_reanchor_uses_two_of_six),
@@ -17055,6 +17148,7 @@ def advisory_report(
     axes=None,
     horizon="",
     explicit_conclusion=True,
+    metrics=None,
 ):
     """Single advisory output gateway with explicit analytical axes.
 
@@ -17074,6 +17168,7 @@ def advisory_report(
         "axes": [str(a.value if isinstance(a, ConflictAxis) else a) for a in (axes or [])],
         "horizon": str(horizon or ""),
         "explicit_conclusion": bool(explicit_conclusion),
+        "metrics": dict(metrics or {}),
     }
     return DECISION_AUTHORITY_GUARD.validate_module_output(module, report)
 
@@ -17142,30 +17237,95 @@ def _htf_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, 
 
 
 def _ict_advisor(components: dict[str, Any]) -> dict[str, Any]:
+    """Calibrated ICT vote using normalized structure/liquidity evidence.
+
+    The historical raw sum used an unreachable 40-point cliff because structure
+    and liquidity do not share a stable scale. Live voting now normalizes both
+    inputs independently. A lower 40-point threshold is recorded as shadow-only
+    evidence and cannot create a live SUPPORT vote by itself.
+    """
     structure = _component_raw_score(components, "str_score", "structure")
     liquidity = _component_raw_score(components, "liq_score", "liquidity")
-    combined = structure + liquidity
-    if combined >= 40.0:
+
+    # Both raw components are conventionally produced on an approximately
+    # 0..24 scale. Clamp instead of allowing exceptional values to dominate.
+    structure_norm = clamp(structure / 24.0 * 100.0, 0.0, 100.0)
+    liquidity_norm = clamp(liquidity / 24.0 * 100.0, 0.0, 100.0)
+
+    # Structure carries more weight because weak candle-pressure liquidity is
+    # often the only available proxy when trades/order-book data are absent.
+    normalized_score = 0.65 * structure_norm + 0.35 * liquidity_norm
+    live_support_threshold = 55.0
+    shadow_support_threshold = 40.0
+    weak_structure_threshold = 30.0
+    weak_liquidity_threshold = 20.0
+
+    both_weak = bool(
+        structure_norm < weak_structure_threshold
+        and liquidity_norm < weak_liquidity_threshold
+    )
+    if normalized_score >= live_support_threshold:
         opinion = AdvisoryOpinion.SUPPORT.value
         explicit = True
+    elif both_weak:
+        opinion = AdvisoryOpinion.AGAINST.value
+        explicit = True
     else:
-        # Missing/weak evidence is uncertainty, not proof against the thesis.
         opinion = AdvisoryOpinion.UNCERTAIN.value
         explicit = False
+
+    if opinion == AdvisoryOpinion.SUPPORT.value:
+        raw_impact = clamp((normalized_score - live_support_threshold) / 3.0, 0.0, 15.0)
+    elif opinion == AdvisoryOpinion.AGAINST.value:
+        weakness = max(
+            weak_structure_threshold - structure_norm,
+            weak_liquidity_threshold - liquidity_norm,
+            5.0,
+        )
+        raw_impact = -clamp(weakness / 2.0, 3.0, 15.0)
+    else:
+        raw_impact = 0.0
+
     return advisory_report(
         "ICT_ANALYST",
         opinion,
-        confidence=clamp(combined, 0, 100),
-        impact=normalize_advisor_impact("ICT_ANALYST", clamp((combined - 40.0) / 2.0, -20, 20)),
-        evidence=[f"structure={structure:.2f}", f"liquidity={liquidity:.2f}"],
+        confidence=normalized_score,
+        impact=normalize_advisor_impact("ICT_ANALYST", raw_impact),
+        evidence=[
+            f"structure_raw={structure:.2f}",
+            f"liquidity_raw={liquidity:.2f}",
+            f"structure_norm={structure_norm:.2f}",
+            f"liquidity_norm={liquidity_norm:.2f}",
+            f"normalized_score={normalized_score:.2f}",
+            f"shadow_support={normalized_score >= shadow_support_threshold}",
+        ],
+        risks=["both structure and liquidity are weak"] if both_weak else [],
         axes=[ConflictAxis.MARKET_THESIS, ConflictAxis.STRUCTURE],
         horizon="setup",
         explicit_conclusion=explicit,
+        metrics={
+            "structure_raw": round(structure, 2),
+            "liquidity_raw": round(liquidity, 2),
+            "structure_normalized": round(structure_norm, 2),
+            "liquidity_normalized": round(liquidity_norm, 2),
+            "normalized_score": round(normalized_score, 2),
+            "live_support_threshold": live_support_threshold,
+            "shadow_support_threshold": shadow_support_threshold,
+            "shadow_support": normalized_score >= shadow_support_threshold,
+            "both_components_weak": both_weak,
+            "calibration_mode": "NORMALIZED_LIVE_WITH_40_SHADOW",
+        },
     )
 
 
 def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
-    """Direction-aware structure vote with explicit SUPPORT/AGAINST semantics."""
+    """Direction-aware structure vote with separated strength/confidence scales.
+
+    ``structure_strength`` measures how strong/complete the observed structure is.
+    ``conclusion_confidence`` measures confidence in the actual SUPPORT/AGAINST/
+    UNCERTAIN conclusion. Strong structure without fresh side-valid execution
+    context may therefore be reported as strength=100, confidence=35.
+    """
     structure = _component_raw_score(components, "str_score", "structure")
     reanchor = components.get("continuation_reanchor", {}) or {}
     momentum = components.get("momentum_no_pullback", {}) or {}
@@ -17209,33 +17369,61 @@ def _price_structure_advisor(candidate: Candidate, components: dict[str, Any]) -
     else:
         opinion = AdvisoryOpinion.UNCERTAIN.value
 
-    directional_confidence = safe_float(directional.get("score"), 0.0)
-    confidence = max(
+    directional_strength = safe_float(directional.get("score"), 0.0)
+    structure_strength = max(
         clamp(structure / 24.0 * 100.0, 0.0, 100.0),
-        directional_confidence,
+        directional_strength,
         78.0 if reanchor.get("ready") and reanchor_side_ok else 0.0,
         70.0 if momentum_side_ok else 0.0,
     )
+
+    if opinion in {AdvisoryOpinion.SUPPORT.value, AdvisoryOpinion.AGAINST.value}:
+        # An explicit directional conclusion may be highly confident, but it is
+        # still bounded by the actual evidence strength.
+        conclusion_confidence = clamp(55.0 + 0.45 * structure_strength, 55.0, 100.0)
+    elif supports_side or opposes_side:
+        # Direction is visible, but the advisor lacks the fresh context required
+        # to turn it into a directional recommendation.
+        conclusion_confidence = clamp(structure_strength * 0.35, 20.0, 35.0)
+    elif any((hh, hl, lh, ll)):
+        conclusion_confidence = clamp(structure_strength * 0.25, 15.0, 30.0)
+    else:
+        conclusion_confidence = clamp(structure_strength * 0.15, 5.0, 20.0)
+
     signed = 0.0
     if opinion == AdvisoryOpinion.SUPPORT.value:
-        signed = abs(clamp((confidence - 45.0) / 3.0, 0.0, 12.0))
+        signed = abs(clamp((conclusion_confidence - 45.0) / 3.0, 0.0, 12.0))
     elif opinion == AdvisoryOpinion.AGAINST.value:
-        signed = -abs(clamp((confidence - 45.0) / 3.0, 0.0, 12.0))
+        signed = -abs(clamp((conclusion_confidence - 45.0) / 3.0, 0.0, 12.0))
 
     return advisory_report(
         "PRICE_STRUCTURE_ADVISOR",
         opinion,
-        confidence=confidence,
+        confidence=conclusion_confidence,
         impact=normalize_advisor_impact("PRICE_STRUCTURE_ADVISOR", signed),
         evidence=[
             f"candidate_side={side}", f"structure={structure:.2f}",
+            f"structure_strength={structure_strength:.2f}",
+            f"conclusion_confidence={conclusion_confidence:.2f}",
             f"HH={hh}", f"HL={hl}", f"LH={lh}", f"LL={ll}",
             f"supports_side={supports_side}", f"opposes_side={opposes_side}",
             f"reanchor_side_ok={reanchor_side_ok}", f"momentum_side_ok={momentum_side_ok}",
+            f"fresh_context={fresh_context}",
         ],
+        risks=["strong structure lacks fresh execution context"]
+        if opinion == AdvisoryOpinion.UNCERTAIN.value and (supports_side or opposes_side) and not fresh_context
+        else [],
         axes=[ConflictAxis.DIRECTION, ConflictAxis.STRUCTURE],
         horizon="15M-1H structure",
         explicit_conclusion=opinion in {AdvisoryOpinion.SUPPORT.value, AdvisoryOpinion.AGAINST.value},
+        metrics={
+            "structure_strength": round(structure_strength, 2),
+            "conclusion_confidence": round(conclusion_confidence, 2),
+            "supports_side": supports_side,
+            "opposes_side": opposes_side,
+            "fresh_context": fresh_context,
+            "calibration_mode": "SEPARATED_STRENGTH_AND_CONCLUSION_CONFIDENCE",
+        },
     )
 
 
@@ -17313,21 +17501,69 @@ def apply_short_reversal_conflict_overlay(
     return result
 
 def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict[str, Any]:
+    """Execution vote aligned with the final revalidation contract.
+
+    SUPPORT is allowed only when execution is genuinely actionable now. A failed
+    revalidation is explicit AGAINST; an incomplete revalidation or a waiting
+    execution stage is at least UNCERTAIN, regardless of the raw quality score.
+    """
     execution_quality = safe_float(getattr(candidate, "execution_quality_score", 0), 0)
     if execution_quality <= 0:
         trigger = _component_raw_score(components, "trig_score", "trigger")
         execution_quality = clamp(trigger / 24.0 * 100.0, 0, 100)
 
     revalidation = getattr(candidate, "revalidation_profile", {}) or {}
-    hard_expired = bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD")
+    if not revalidation:
+        revalidation = components.get("trigger_revalidation", {}) or {}
+
+    state = str(revalidation.get("state") or "").upper()
+    hard_expired = bool(revalidation.get("hard_expired") or state in {"DEAD", "DECAYED_THESIS"})
     confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
     chase = any("chase" in str(r).lower() or "late" in str(r).lower() for r in (getattr(candidate, "risks", []) or []))
-    explicit_against = bool(hard_expired or chase)
-    if execution_quality >= 60.0 and not explicit_against and not confirmation_pending:
-        opinion = AdvisoryOpinion.SUPPORT.value
-        explicit = True
-    elif explicit_against:
+
+    entry_supported_present = "entry_supported" in revalidation
+    entry_supported = revalidation.get("entry_supported") if entry_supported_present else None
+    revalidated_present = "revalidated" in revalidation
+    revalidated = revalidation.get("revalidated") if revalidated_present else None
+    needs_revalidation = bool(revalidation.get("needs_revalidation"))
+
+    entry_stage = str(getattr(candidate, "entry_stage", "") or "").upper()
+    execution_lane = str(getattr(candidate, "execution_lane", "") or "").upper()
+    waiting_stages = {
+        ExecutiveDecisionState.WAIT.value,
+        ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+        ExecutiveDecisionState.WAIT_RETEST.value,
+        ExecutionLane.WAIT_CONFIRMATION.value,
+        ExecutionLane.WAIT_RETEST.value,
+        "ARMED",
+        "CONFIRMATION_PENDING",
+    }
+    waiting_for_confirmation = bool(
+        confirmation_pending
+        or entry_stage in waiting_stages
+        or execution_lane in waiting_stages
+        or str(revalidation.get("entry_timing") or "").upper() in {
+            "ARMED_WAIT_FRESH_ARGUMENT",
+            "WAIT_CONFIRMATION",
+            "WAIT_RETEST",
+        }
+    )
+
+    failed_revalidation = bool(entry_supported_present and entry_supported is False)
+    incomplete_revalidation = bool(
+        revalidated_present
+        and revalidated is False
+        and not failed_revalidation
+    )
+
+    if failed_revalidation or hard_expired or chase:
         opinion = AdvisoryOpinion.AGAINST.value
+        explicit = True
+    elif incomplete_revalidation or waiting_for_confirmation or (needs_revalidation and revalidated is not True):
+        opinion = AdvisoryOpinion.UNCERTAIN.value
+        explicit = False
+    elif execution_quality >= 60.0:
+        opinion = AdvisoryOpinion.SUPPORT.value
         explicit = True
     else:
         opinion = AdvisoryOpinion.UNCERTAIN.value
@@ -17338,6 +17574,15 @@ def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict
         signed = -max(abs(signed), 5.0)
     elif opinion == AdvisoryOpinion.UNCERTAIN.value:
         signed = 0.0
+
+    risks = list(getattr(candidate, "risks", []) or [])
+    if failed_revalidation:
+        risks.append("revalidation rejected execution: entry_supported=False")
+    elif incomplete_revalidation:
+        risks.append("revalidation incomplete: revalidated=False")
+    if waiting_for_confirmation:
+        risks.append("final execution stage is waiting for confirmation/retest")
+
     return advisory_report(
         "EXECUTION_ANALYST",
         opinion,
@@ -17346,13 +17591,30 @@ def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict
         evidence=[
             f"execution_quality={execution_quality:.2f}",
             f"source={getattr(candidate, 'execution_source', 'NONE')}",
+            f"entry_stage={entry_stage or 'NONE'}",
+            f"execution_lane={execution_lane or 'NONE'}",
             f"confirmation_pending={confirmation_pending}",
-            f"hard_expired={hard_expired}", f"chase={chase}",
+            f"revalidation_state={state or 'NONE'}",
+            f"needs_revalidation={needs_revalidation}",
+            f"revalidated={revalidated}",
+            f"entry_supported={entry_supported}",
+            f"waiting_for_confirmation={waiting_for_confirmation}",
+            f"hard_expired={hard_expired}",
+            f"chase={chase}",
         ],
-        risks=list(getattr(candidate, "risks", []) or []),
+        risks=risks,
         axes=[ConflictAxis.EXECUTION_TIMING],
         horizon="live execution",
         explicit_conclusion=explicit,
+        metrics={
+            "execution_quality": round(execution_quality, 2),
+            "entry_supported": entry_supported,
+            "revalidated": revalidated,
+            "needs_revalidation": needs_revalidation,
+            "waiting_for_confirmation": waiting_for_confirmation,
+            "failed_revalidation": failed_revalidation,
+            "calibration_mode": "REVALIDATION_ALIGNED",
+        },
     )
 
 
