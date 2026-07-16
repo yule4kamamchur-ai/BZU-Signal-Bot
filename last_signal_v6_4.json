@@ -4,39 +4,39 @@
   "active_trade": null,
   "opportunity": {
     "side": "SHORT",
-    "setup_type": "OPENING_RANGE_BREAKOUT",
-    "setup_family": "EXPANSION",
-    "created_at": "2026-07-16T17:51:38.242411+00:00",
-    "expires_at": "2026-07-17T11:51:38.242414+00:00",
-    "score": 67,
-    "trigger_level": 83.53,
-    "invalidation_level": 84.61,
+    "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+    "setup_family": "STRUCTURAL_TRANSITION",
+    "created_at": "2026-07-16T18:01:43.609137+00:00",
+    "expires_at": "2026-07-17T12:01:43.609139+00:00",
+    "score": 58,
+    "trigger_level": 83.36,
+    "invalidation_level": 83.76,
     "confirmations": [
-      "Модель: Opening Range Breakout (OPENING_RANGE_BREAKOUT)",
+      "Модель: Daily/Weekly Open Reclaim (DAILY_WEEKLY_OPEN_RECLAIM)",
       "✅ Модель узгоджена з режимом ринку (+5)",
-      "⏱️ OR model: NY OR 83.53–84.61 | width=3.06 ATR",
-      "🧮 Pattern evidence fusion: registry=14.0, detector=12.0, combined=17.0 (cap x1.25)",
-      "📊 Hypothesis score: final=67 | setup=100 execution=68 plan=50 | model=bootstrap n=13 p=0.68"
+      "🧲 Open reclaim: WEEKLY_OPEN=83.36 | dist=1.2 ATR",
+      "🧮 Pattern evidence fusion: registry=12.0, detector=12.0, combined=14.4 (cap x1.2)",
+      "📊 Hypothesis score: final=58 | setup=92 execution=71 plan=50 | model=bootstrap n=13 p=0.53"
     ],
     "evidence_families": [
       "ICT_LOCATION",
       "PRICE_STRUCTURE",
-      "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+      "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
       "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
       "EXECUTION_TIME_WARP_WAIT_RETEST",
-      "EXECUTION_OPENING_RANGE"
+      "EXECUTION_OPEN_RECLAIM"
     ],
-    "execution_lane": "STANDARD_CONFIRMED",
+    "execution_lane": "EARLY_TACTICAL",
     "status": "ARMED",
-    "thesis_key": "SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT|835",
-    "thesis": "SHORT OPENING_RANGE_BREAKOUT → OPENING_RANGE_BREAKOUT | src=OPENING_RANGE | stage=READY",
+    "thesis_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|834",
+    "thesis": "SHORT DAILY_WEEKLY_OPEN_RECLAIM → DAILY_WEEKLY_OPEN_RECLAIM | src=OPEN_RECLAIM | stage=READY",
     "missed_at": "",
-    "signal_id": "edd60bc5a7"
+    "signal_id": "a5ad3182fb"
   },
   "scan_3m": {
-    "last_scanned_3m_ts": 1784224260000,
-    "last_run_processed": 2,
-    "processed_count": 295,
+    "last_scanned_3m_ts": 1784224800000,
+    "last_run_processed": 3,
+    "processed_count": 298,
     "events": {
       "LONG": {
         "side": "LONG",
@@ -48,7 +48,7 @@
         "event_price": 83.83,
         "invalidation_level": 83.83,
         "sweep_level": 83.83,
-        "extreme": 83.07,
+        "extreme": 82.9,
         "displacement": true,
         "retest_ts": 1784203560000,
         "ready_ts": 1784203740000,
@@ -58,7 +58,7 @@
         "confirmation_quality": 87,
         "acceptance_quality": 80,
         "retest_quality": 80,
-        "processed_bars": 295,
+        "processed_bars": 298,
         "strong_displacement": true,
         "retest": true,
         "mitigation": true,
@@ -81,7 +81,7 @@
         "event_price": 83.83,
         "invalidation_level": 83.83,
         "sweep_level": 83.83,
-        "extreme": 83.1,
+        "extreme": 82.99,
         "displacement": true,
         "retest_ts": 1784172240000,
         "ready_ts": 1784172420000,
@@ -91,7 +91,7 @@
         "confirmation_quality": 80,
         "acceptance_quality": 68,
         "retest_quality": 68,
-        "processed_bars": 295,
+        "processed_bars": 298,
         "strong_displacement": false,
         "retest": true,
         "mitigation": true,
@@ -109,9 +109,9 @@
   "regime_memory": {
     "type": "NORMAL",
     "pending_type": "",
-    "stable_count": 2,
+    "stable_count": 3,
     "pending_count": 0,
-    "updated_at": "2026-07-16T17:51:38.181098+00:00"
+    "updated_at": "2026-07-16T18:01:43.576998+00:00"
   },
   "stage_history": [
     {
@@ -282,16 +282,29 @@
       "entry_quality": 78.0,
       "thesis_confidence": 72.15,
       "probe_conviction_tier": "MEDIUM_CONVICTION_PROBE"
+    },
+    {
+      "time": "2026-07-16T18:01:43.608773+00:00",
+      "thesis_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|834",
+      "state": "WAIT_RETEST",
+      "evidence_fingerprint": "{\"acceptance_quality\": 0, \"confirmation_state\": {}, \"confirmation_tier\": 2, \"execution_source\": \"OPEN_RECLAIM\", \"revalidation_state\": \"STALE\", \"trigger_ts\": 0}",
+      "required_next_event": "fresh model-valid execution evidence at an acceptable price location",
+      "final_risk_pct": 0.0,
+      "setup_quality": 72.0,
+      "timing_quality": 65.0,
+      "entry_quality": 78.0,
+      "thesis_confidence": 71.93,
+      "probe_conviction_tier": "MEDIUM_CONVICTION_PROBE"
     }
   ],
   "latest_signal": {
-    "id": "edd60bc5a7",
-    "time": "2026-07-16T17:51:38.236626+00:00",
+    "id": "a5ad3182fb",
+    "time": "2026-07-16T18:01:43.603106+00:00",
     "action": "NO_SETUP",
     "side": "SHORT",
-    "setup_type": "OPENING_RANGE_BREAKOUT",
-    "quality": 67,
-    "decision_quality": 67,
+    "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+    "quality": 58,
+    "decision_quality": 58,
     "quality_source": "candidate.final_score",
     "quality_contract": {
       "canonical_field": "candidate.final_score",
@@ -310,7 +323,7 @@
       "minimum_rows": 60,
       "quality_is_empirically_calibrated": false
     },
-    "reason": "WAIT_RETEST: setup=74.0, thesis_conf=72.2, timing=65.2, entry=78.0, trade=91.7 | blocked=REVALIDATION_NOT_SUPPORTED",
+    "reason": "WAIT_RETEST: setup=71.9, thesis_conf=71.9, timing=65.2, entry=78.0, trade=92.4 | blocked=REVALIDATION_NOT_SUPPORTED",
     "regime": "TRANSITION",
     "news_bias": "NEUTRAL",
     "macro_risk": "NORMAL",
@@ -356,12 +369,12 @@
       "reason": "insufficient evidence for a separate weekend regime"
     },
     "learning_status": {
-      "updated_at": "2026-07-16T17:51:36.281773+00:00",
+      "updated_at": "2026-07-16T18:01:41.644341+00:00",
       "journal_file": "signal_journal_v6_4.json",
       "state_file": "last_signal_v6_4.json",
       "instrument_label": "BZ-USDT-SWAP crypto Brent proxy",
       "instrument_kind": "OKX crypto perpetual swap proxy, not ICE/CME oil futures",
-      "training_signals": 235,
+      "training_signals": 236,
       "signal_events": 277,
       "closed_trades": 13,
       "training_rows": 13,
@@ -633,7 +646,7 @@
       "weekend_range_min_trades_per_bucket": 20,
       "weekend_range_wilson_z": 1.96
     },
-    "observed_market_price": 83.08,
+    "observed_market_price": 82.94,
     "live_entry_price_contract": {
       "checked": false,
       "reason": "non_executable_action"
@@ -642,22 +655,22 @@
       "selected": {
         "rank": 1,
         "side": "SHORT",
-        "model": "OPENING_RANGE_BREAKOUT",
-        "setup_type": "OPENING_RANGE_BREAKOUT",
-        "final_score": 67,
-        "hypothesis_score": 68.74,
-        "setup_q": 100,
-        "execution_q": 68,
+        "model": "DAILY_WEEKLY_OPEN_RECLAIM",
+        "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+        "final_score": 58,
+        "hypothesis_score": 59.7,
+        "setup_q": 92,
+        "execution_q": 71,
         "plan_q": 50,
-        "entry_quality": 90,
-        "durability_quality": 54,
-        "execution_source": "OPENING_RANGE",
+        "entry_quality": 88,
+        "durability_quality": 53,
+        "execution_source": "OPEN_RECLAIM",
         "entry_stage": "WAIT_RETEST",
-        "trigger_age_min": 864.6,
+        "trigger_age_min": 874.7,
         "trigger_reanchored": false,
-        "original_trigger_age_min": 864.6,
-        "effective_trigger_age_min": 864.6,
-        "target_magnet": 3.19,
+        "original_trigger_age_min": 874.7,
+        "effective_trigger_age_min": 874.7,
+        "target_magnet": 3.38,
         "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
         "innovation_risk_mult": 0.451,
         "revalidation_state": "STALE",
@@ -673,7 +686,7 @@
           "model": "TIME_OF_DAY_ADAPTIVE",
           "setup_type": "TIME_OF_DAY_ADAPTIVE",
           "final_score": 54,
-          "hypothesis_score": 55.27,
+          "hypothesis_score": 55.26,
           "setup_q": 100,
           "execution_q": 55,
           "plan_q": 75,
@@ -681,11 +694,11 @@
           "durability_quality": 52,
           "execution_source": "TIME_OF_DAY",
           "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 342.6,
+          "trigger_age_min": 352.7,
           "trigger_reanchored": false,
-          "original_trigger_age_min": 342.6,
-          "effective_trigger_age_min": 342.6,
-          "target_magnet": 2.67,
+          "original_trigger_age_min": 352.7,
+          "effective_trigger_age_min": 352.7,
+          "target_magnet": 2.55,
           "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
           "innovation_risk_mult": 0.484,
           "revalidation_state": "STALE",
@@ -702,22 +715,22 @@
         "SHORT": {
           "rank": 1,
           "side": "SHORT",
-          "model": "OPENING_RANGE_BREAKOUT",
-          "setup_type": "OPENING_RANGE_BREAKOUT",
-          "final_score": 67,
-          "hypothesis_score": 68.74,
-          "setup_q": 100,
-          "execution_q": 68,
+          "model": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "final_score": 58,
+          "hypothesis_score": 59.7,
+          "setup_q": 92,
+          "execution_q": 71,
           "plan_q": 50,
-          "entry_quality": 90,
-          "durability_quality": 54,
-          "execution_source": "OPENING_RANGE",
+          "entry_quality": 88,
+          "durability_quality": 53,
+          "execution_source": "OPEN_RECLAIM",
           "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 864.6,
+          "trigger_age_min": 874.7,
           "trigger_reanchored": false,
-          "original_trigger_age_min": 864.6,
-          "effective_trigger_age_min": 864.6,
-          "target_magnet": 3.19,
+          "original_trigger_age_min": 874.7,
+          "effective_trigger_age_min": 874.7,
+          "target_magnet": 3.38,
           "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
           "innovation_risk_mult": 0.451,
           "revalidation_state": "STALE",
@@ -736,10 +749,10 @@
         "enabled": true,
         "version": "v9.3.2_split_thesis_execution_lease",
         "state": "STALE",
-        "source": "OPENING_RANGE",
-        "age_min": 864.6,
-        "thesis_age_min": 864.6,
-        "execution_trigger_age_min": 864.6,
+        "source": "OPEN_RECLAIM",
+        "age_min": 874.7,
+        "thesis_age_min": 874.7,
+        "execution_trigger_age_min": 874.7,
         "execution_trigger_ttl_min": 35,
         "execution_trigger_fresh": false,
         "stale_execution_trigger": true,
@@ -753,21 +766,21 @@
         "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
         "not_late_location": true,
         "late_location_blocked": false,
-        "distance_from_anchor_atr": 1.28,
+        "distance_from_anchor_atr": 1.2,
         "micro_confirmation": {
-          "supported": true,
-          "kind": "LIVE_DIRECTIONAL_ACCEPTANCE",
-          "score": 85,
+          "supported": false,
+          "kind": "WEAK_OR_MISSING",
+          "score": 20,
           "checks": [
             {
               "name": "directional_3m_close",
-              "ok": true
+              "ok": false
             },
             {
               "name": "strong_3m_body",
-              "ok": true,
-              "body_atr": 0.255,
-              "body_ratio": 0.818
+              "ok": false,
+              "body_atr": 0.029,
+              "body_ratio": 0.167
             },
             {
               "name": "15m_acceptance",
@@ -780,23 +793,23 @@
           ],
           "confirmed_3m_bars": 6,
           "six_confirmed_bars_available": true,
-          "six_bar_structure_confirmed": false,
+          "six_bar_structure_confirmed": true,
           "checks_by_name": {
-            "directional_3m_close": true,
-            "strong_3m_body": true,
+            "directional_3m_close": false,
+            "strong_3m_body": false,
             "15m_acceptance": true,
             "micro_sweep_reclaim": false
           },
           "passed_checks": [
-            "directional_3m_close",
-            "strong_3m_body",
             "15m_acceptance"
           ],
           "failed_checks": [
+            "directional_3m_close",
+            "strong_3m_body",
             "micro_sweep_reclaim"
           ],
           "all_checks_passed": false,
-          "directional_acceptance_path": true,
+          "directional_acceptance_path": false,
           "sweep_reclaim_path": false,
           "directional_closes": 4,
           "structure_intact": true,
@@ -804,47 +817,50 @@
           "directional_structure": {
             "side": "SHORT",
             "valid": true,
-            "supports_side": false,
-            "aligned": false,
+            "supports_side": true,
+            "aligned": true,
             "partial": true,
             "opposite_aligned": false,
-            "higher_high": true,
+            "higher_high": false,
             "higher_low": false,
-            "lower_high": false,
+            "lower_high": true,
             "lower_low": true,
             "close_progression": true,
             "shift_aligned": false,
-            "score": 62.0,
-            "previous_high": 83.9,
+            "score": 92.0,
+            "previous_high": 84.35,
             "previous_low": 83.34,
-            "recent_high": 84.35,
-            "recent_low": 82.94,
-            "buffer": 0.02235
+            "recent_high": 83.75,
+            "recent_low": 82.92,
+            "buffer": 0.0222
           },
-          "last_confirmed_3m_ts": 1784224080000
+          "last_confirmed_3m_ts": 1784224620000
         },
         "micro_confirmation_policy": {
           "eligible": false,
-          "age_min": 864.64,
+          "age_min": 874.73,
           "elevated_policy": true,
           "generic_micro_max_age_min": 240.0,
-          "score": 85.0,
-          "required_score": 85.0,
-          "score_passed": true,
-          "policy_path": "CONTINUATION_DIRECTIONAL",
+          "score": 20.0,
+          "required_score": 95.0,
+          "score_passed": false,
+          "policy_path": "GENERIC_EITHER_PATH",
           "required_checks": [
             "directional_3m_close",
             "strong_3m_body",
             "15m_acceptance"
           ],
-          "failed_required_checks": [],
-          "required_checks_passed": true,
-          "directional_path_ok": true,
+          "failed_required_checks": [
+            "directional_3m_close",
+            "strong_3m_body"
+          ],
+          "required_checks_passed": false,
+          "directional_path_ok": false,
           "reclaim_path_ok": false,
-          "elevated_confirmation_ok": true,
-          "six_bar_structure_confirmed": false,
+          "elevated_confirmation_ok": false,
+          "six_bar_structure_confirmed": true,
           "within_generic_age": false,
-          "continuation_like": true,
+          "continuation_like": false,
           "reclaim_critical_for_setup": false,
           "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar"
         },
@@ -867,8 +883,7 @@
         "stage_override": "WAIT_RETEST",
         "action_bias": "ARMED_REVALIDATION",
         "setup_arguments": [
-          "micro evidence present but blocked: failed=[] score=85.0/85.0 age=864.6m",
-          "price not late vs anchor: 1.28 ATR",
+          "price not late vs anchor: 1.20 ATR",
           "time-warp is thesis memory, not live execution"
         ],
         "no_hard_block": false,
@@ -878,49 +893,22 @@
         {
           "rank": 1,
           "side": "SHORT",
-          "model": "OPENING_RANGE_BREAKOUT",
-          "setup_type": "OPENING_RANGE_BREAKOUT",
-          "final_score": 67,
-          "hypothesis_score": 68.74,
-          "setup_q": 100,
-          "execution_q": 68,
+          "model": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "final_score": 58,
+          "hypothesis_score": 59.7,
+          "setup_q": 92,
+          "execution_q": 71,
           "plan_q": 50,
-          "entry_quality": 90,
-          "durability_quality": 54,
-          "execution_source": "OPENING_RANGE",
+          "entry_quality": 88,
+          "durability_quality": 53,
+          "execution_source": "OPEN_RECLAIM",
           "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 864.6,
+          "trigger_age_min": 874.7,
           "trigger_reanchored": false,
-          "original_trigger_age_min": 864.6,
-          "effective_trigger_age_min": 864.6,
-          "target_magnet": 3.19,
-          "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
-          "innovation_risk_mult": 0.451,
-          "revalidation_state": "STALE",
-          "revalidation_supported": false,
-          "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
-          "short_reversal_score": 0.0,
-          "short_reversal_stage": ""
-        },
-        {
-          "rank": 2,
-          "side": "SHORT",
-          "model": "TIME_OF_DAY_ADAPTIVE",
-          "setup_type": "TIME_OF_DAY_ADAPTIVE",
-          "final_score": 64,
-          "hypothesis_score": 65.3,
-          "setup_q": 96,
-          "execution_q": 57,
-          "plan_q": 50,
-          "entry_quality": 86,
-          "durability_quality": 56,
-          "execution_source": "TIME_OF_DAY",
-          "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 864.6,
-          "trigger_reanchored": false,
-          "original_trigger_age_min": 864.6,
-          "effective_trigger_age_min": 864.6,
-          "target_magnet": 3.8,
+          "original_trigger_age_min": 874.7,
+          "effective_trigger_age_min": 874.7,
+          "target_magnet": 3.38,
           "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
           "innovation_risk_mult": 0.451,
           "revalidation_state": "STALE",
@@ -930,7 +918,7 @@
           "short_reversal_stage": ""
         }
       ],
-      "candidate_count": 2,
+      "candidate_count": 1,
       "legacy_recommendation": "NO_SETUP",
       "opportunity_status": "ARMED",
       "institutional_engine": {
@@ -961,18 +949,18 @@
               "REVALIDATION_NOT_SUPPORTED"
             ],
             "warning_reasons": [],
-            "confidence": 76.37,
+            "confidence": 76.53,
             "advisors": [
               {
                 "module": "HTF_ANALYST",
                 "opinion": "UNCERTAIN",
-                "confidence": 6.26,
-                "impact": 0.63,
+                "confidence": 8.51,
+                "impact": 0.85,
                 "evidence": [
                   "htf_state=NEUTRAL",
                   "market_bias=NEUTRAL",
                   "candidate_side=SHORT",
-                  "alignment=0.063",
+                  "alignment=0.085",
                   "schema=htf_fact_v9.0",
                   "valid=True"
                 ],
@@ -987,11 +975,11 @@
               {
                 "module": "ICT_ANALYST",
                 "opinion": "UNCERTAIN",
-                "confidence": 23.21,
-                "impact": -5.6,
+                "confidence": 20.84,
+                "impact": -6.39,
                 "evidence": [
-                  "structure=21.85",
-                  "liquidity=1.36"
+                  "structure=19.00",
+                  "liquidity=1.84"
                 ],
                 "risks": [],
                 "axes": [
@@ -1003,17 +991,17 @@
               },
               {
                 "module": "PRICE_STRUCTURE_ADVISOR",
-                "opinion": "UNCERTAIN",
-                "confidence": 91.04,
-                "impact": 0.0,
+                "opinion": "SUPPORT",
+                "confidence": 92.0,
+                "impact": 10.0,
                 "evidence": [
                   "candidate_side=SHORT",
-                  "structure=21.85",
-                  "HH=True",
+                  "structure=19.00",
+                  "HH=False",
                   "HL=False",
-                  "LH=False",
+                  "LH=True",
                   "LL=True",
-                  "supports_side=False",
+                  "supports_side=True",
                   "opposes_side=False",
                   "reanchor_side_ok=False",
                   "momentum_side_ok=False"
@@ -1024,7 +1012,7 @@
                   "structure"
                 ],
                 "horizon": "15M-1H structure",
-                "explicit_conclusion": false
+                "explicit_conclusion": true
               },
               {
                 "module": "SHORT_REVERSAL_ANALYST",
@@ -1044,11 +1032,11 @@
               {
                 "module": "EXECUTION_ANALYST",
                 "opinion": "SUPPORT",
-                "confidence": 68.0,
-                "impact": 2.0,
+                "confidence": 71.0,
+                "impact": 2.75,
                 "evidence": [
-                  "execution_quality=68.00",
-                  "source=OPENING_RANGE",
+                  "execution_quality=71.00",
+                  "source=OPEN_RECLAIM",
                   "confirmation_pending=False",
                   "hard_expired=False",
                   "chase=False"
@@ -1080,29 +1068,29 @@
               }
             ],
             "conflict_resolution": {
-              "net_market_preference": 0,
-              "net_execution_preference": 1.36,
+              "net_market_preference": 9.2,
+              "net_execution_preference": 1.952,
               "actual_conflict": false,
               "conflict_axes": [],
               "conflict_pairs": [],
               "conflict_severity": 0.0,
-              "uncertainty_level": 49.06,
+              "uncertainty_level": 10.44,
               "capital_blocked": false,
               "consensus": {
-                "market": "UNCERTAIN",
+                "market": "POSITIVE_CONSENSUS",
                 "execution": "POSITIVE_CONSENSUS",
-                "market_support": 0,
+                "market_support": 9.2,
                 "market_against": 0,
-                "execution_support": 1.36,
+                "execution_support": 1.952,
                 "execution_against": 0
               },
               "effective_votes": [
                 {
                   "module": "HTF_ANALYST",
                   "opinion": "UNCERTAIN",
-                  "confidence": 6.26,
-                  "raw_impact": 0.63,
-                  "effective_impact": 0.039,
+                  "confidence": 8.51,
+                  "raw_impact": 0.85,
+                  "effective_impact": 0.072,
                   "axes": [
                     "direction",
                     "htf_direction"
@@ -1113,9 +1101,9 @@
                 {
                   "module": "ICT_ANALYST",
                   "opinion": "UNCERTAIN",
-                  "confidence": 23.21,
-                  "raw_impact": -5.6,
-                  "effective_impact": 1.3,
+                  "confidence": 20.84,
+                  "raw_impact": -6.39,
+                  "effective_impact": 1.332,
                   "axes": [
                     "market_thesis",
                     "structure"
@@ -1125,16 +1113,16 @@
                 },
                 {
                   "module": "PRICE_STRUCTURE_ADVISOR",
-                  "opinion": "UNCERTAIN",
-                  "confidence": 91.04,
-                  "raw_impact": 0.0,
-                  "effective_impact": 0.0,
+                  "opinion": "SUPPORT",
+                  "confidence": 92.0,
+                  "raw_impact": 10.0,
+                  "effective_impact": 9.2,
                   "axes": [
                     "direction",
                     "structure"
                   ],
                   "horizon": "15M-1H structure",
-                  "explicit_conclusion": false
+                  "explicit_conclusion": true
                 },
                 {
                   "module": "SHORT_REVERSAL_ANALYST",
@@ -1151,9 +1139,9 @@
                 {
                   "module": "EXECUTION_ANALYST",
                   "opinion": "SUPPORT",
-                  "confidence": 68.0,
-                  "raw_impact": 2.0,
-                  "effective_impact": 1.36,
+                  "confidence": 71.0,
+                  "raw_impact": 2.75,
+                  "effective_impact": 1.952,
                   "axes": [
                     "execution_timing"
                   ],
@@ -1175,19 +1163,19 @@
               ],
               "quality_voting": {
                 "supporting": [
+                  "PRICE_STRUCTURE_ADVISOR",
                   "EXECUTION_ANALYST"
                 ],
                 "doubting": [],
                 "silent": [
                   "HTF_ANALYST",
                   "ICT_ANALYST",
-                  "PRICE_STRUCTURE_ADVISOR",
                   "SHORT_REVERSAL_ANALYST"
                 ],
-                "net_conviction": 1.36,
-                "support_count": 1,
+                "net_conviction": 11.152,
+                "support_count": 2,
                 "doubt_count": 0,
-                "silent_count": 4,
+                "silent_count": 3,
                 "schema_version": "quality_voting_v9.1"
               },
               "schema_version": "conflict_report_v9.1"
@@ -1198,7 +1186,7 @@
               "asymmetry_quality": 100.0,
               "regime_fit": 100.0,
               "evidence_independence": 100.0,
-              "statistical_status": "UNPROVEN",
+              "statistical_status": "NO_SAMPLE",
               "failed_principles": [],
               "reason_codes": [
                 "EDGE_UNPROVEN_STAGE_ONLY"
@@ -1220,55 +1208,55 @@
                 "rr1_raw": 2.0,
                 "realistic_rr1": 2.0,
                 "transaction_costs_r": 0.0,
-                "family_expectancy_r": 0.328,
-                "sample": 1,
+                "family_expectancy_r": 0.0,
+                "sample": 0,
                 "logical_target": true,
                 "evidence_groups": [
-                  "EXECUTION_OPENING_RANGE",
+                  "EXECUTION_OPEN_RECLAIM",
                   "EXECUTION_TIME_WARP_WAIT_RETEST",
                   "ICT_LOCATION",
-                  "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+                  "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
                   "PRICE_STRUCTURE",
                   "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
                   "МОДЕЛЬ",
-                  "⏱️ OR MODEL",
                   "✅ МОДЕЛЬ УЗГОДЖЕНА З РЕЖИМОМ РИНКУ (+5)",
                   "🎯 ENTRY CONTRACT",
                   "📉 SHORT RECENT PERFORMANCE СЛАБКИЙ",
                   "📊 HYPOTHESIS SCORE",
-                  "🧮 PATTERN EVIDENCE FUSION"
+                  "🧮 PATTERN EVIDENCE FUSION",
+                  "🧲 OPEN RECLAIM"
                 ]
               },
               "schema_version": "philosophy_v9.0"
             },
             "evaluation_bundle": {
-              "thesis_quality": 72.15,
+              "thesis_quality": 71.93,
               "execution_readiness": 65.25,
-              "trade_quality": 91.71,
+              "trade_quality": 92.42,
               "conflict_report": {
-                "net_market_preference": 0,
-                "net_execution_preference": 1.36,
+                "net_market_preference": 9.2,
+                "net_execution_preference": 1.952,
                 "actual_conflict": false,
                 "conflict_axes": [],
                 "conflict_pairs": [],
                 "conflict_severity": 0.0,
-                "uncertainty_level": 49.06,
+                "uncertainty_level": 10.44,
                 "capital_blocked": false,
                 "consensus": {
-                  "market": "UNCERTAIN",
+                  "market": "POSITIVE_CONSENSUS",
                   "execution": "POSITIVE_CONSENSUS",
-                  "market_support": 0,
+                  "market_support": 9.2,
                   "market_against": 0,
-                  "execution_support": 1.36,
+                  "execution_support": 1.952,
                   "execution_against": 0
                 },
                 "effective_votes": [
                   {
                     "module": "HTF_ANALYST",
                     "opinion": "UNCERTAIN",
-                    "confidence": 6.26,
-                    "raw_impact": 0.63,
-                    "effective_impact": 0.039,
+                    "confidence": 8.51,
+                    "raw_impact": 0.85,
+                    "effective_impact": 0.072,
                     "axes": [
                       "direction",
                       "htf_direction"
@@ -1279,9 +1267,9 @@
                   {
                     "module": "ICT_ANALYST",
                     "opinion": "UNCERTAIN",
-                    "confidence": 23.21,
-                    "raw_impact": -5.6,
-                    "effective_impact": 1.3,
+                    "confidence": 20.84,
+                    "raw_impact": -6.39,
+                    "effective_impact": 1.332,
                     "axes": [
                       "market_thesis",
                       "structure"
@@ -1291,16 +1279,16 @@
                   },
                   {
                     "module": "PRICE_STRUCTURE_ADVISOR",
-                    "opinion": "UNCERTAIN",
-                    "confidence": 91.04,
-                    "raw_impact": 0.0,
-                    "effective_impact": 0.0,
+                    "opinion": "SUPPORT",
+                    "confidence": 92.0,
+                    "raw_impact": 10.0,
+                    "effective_impact": 9.2,
                     "axes": [
                       "direction",
                       "structure"
                     ],
                     "horizon": "15M-1H structure",
-                    "explicit_conclusion": false
+                    "explicit_conclusion": true
                   },
                   {
                     "module": "SHORT_REVERSAL_ANALYST",
@@ -1317,9 +1305,9 @@
                   {
                     "module": "EXECUTION_ANALYST",
                     "opinion": "SUPPORT",
-                    "confidence": 68.0,
-                    "raw_impact": 2.0,
-                    "effective_impact": 1.36,
+                    "confidence": 71.0,
+                    "raw_impact": 2.75,
+                    "effective_impact": 1.952,
                     "axes": [
                       "execution_timing"
                     ],
@@ -1341,19 +1329,19 @@
                 ],
                 "quality_voting": {
                   "supporting": [
+                    "PRICE_STRUCTURE_ADVISOR",
                     "EXECUTION_ANALYST"
                   ],
                   "doubting": [],
                   "silent": [
                     "HTF_ANALYST",
                     "ICT_ANALYST",
-                    "PRICE_STRUCTURE_ADVISOR",
                     "SHORT_REVERSAL_ANALYST"
                   ],
-                  "net_conviction": 1.36,
-                  "support_count": 1,
+                  "net_conviction": 11.152,
+                  "support_count": 2,
                   "doubt_count": 0,
-                  "silent_count": 4,
+                  "silent_count": 3,
                   "schema_version": "quality_voting_v9.1"
                 },
                 "schema_version": "conflict_report_v9.1"
@@ -1364,7 +1352,7 @@
                 "asymmetry_quality": 100.0,
                 "regime_fit": 100.0,
                 "evidence_independence": 100.0,
-                "statistical_status": "UNPROVEN",
+                "statistical_status": "NO_SAMPLE",
                 "failed_principles": [],
                 "reason_codes": [
                   "EDGE_UNPROVEN_STAGE_ONLY"
@@ -1386,23 +1374,23 @@
                   "rr1_raw": 2.0,
                   "realistic_rr1": 2.0,
                   "transaction_costs_r": 0.0,
-                  "family_expectancy_r": 0.328,
-                  "sample": 1,
+                  "family_expectancy_r": 0.0,
+                  "sample": 0,
                   "logical_target": true,
                   "evidence_groups": [
-                    "EXECUTION_OPENING_RANGE",
+                    "EXECUTION_OPEN_RECLAIM",
                     "EXECUTION_TIME_WARP_WAIT_RETEST",
                     "ICT_LOCATION",
-                    "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+                    "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
                     "PRICE_STRUCTURE",
                     "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
                     "МОДЕЛЬ",
-                    "⏱️ OR MODEL",
                     "✅ МОДЕЛЬ УЗГОДЖЕНА З РЕЖИМОМ РИНКУ (+5)",
                     "🎯 ENTRY CONTRACT",
                     "📉 SHORT RECENT PERFORMANCE СЛАБКИЙ",
                     "📊 HYPOTHESIS SCORE",
-                    "🧮 PATTERN EVIDENCE FUSION"
+                    "🧮 PATTERN EVIDENCE FUSION",
+                    "🧲 OPEN RECLAIM"
                   ]
                 },
                 "schema_version": "philosophy_v9.0"
@@ -1410,21 +1398,21 @@
               "data_quality": 100.0,
               "raw_components": {
                 "thesis": {
-                  "structure": 91.04,
-                  "liquidity_event": 5.67,
+                  "structure": 79.17,
+                  "liquidity_event": 7.67,
                   "regime_fit": 100.0,
-                  "htf_alignment": 53.13,
+                  "htf_alignment": 54.25,
                   "directional_thesis": 100.0,
                   "independent_pattern_evidence": 100.0
                 },
                 "thesis_confidence_decay": {
-                  "base_confidence": 74.02,
-                  "first_seen_at": "2026-07-16T17:01:53.384918+00:00",
-                  "age_hours": 0.83,
-                  "decay_points": 1.87,
+                  "base_confidence": 71.93,
+                  "first_seen_at": null,
+                  "age_hours": 0.0,
+                  "decay_points": 0.0,
                   "fresh_evidence_bonus": 0.0,
                   "fresh_evidence_detected": false,
-                  "confidence": 72.15,
+                  "confidence": 71.93,
                   "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
                   "schema_version": "thesis_confidence_decay_v9.1"
                 },
@@ -1445,17 +1433,17 @@
                   "acceptance": 0.0,
                   "confirmation_tier": 50.0,
                   "execution_source": 75.0,
-                  "anti_fomo": 92.2
+                  "anti_fomo": 92.95
                 },
                 "anti_fomo": {
-                  "score": 92.2,
-                  "penalty": -7.8,
-                  "price_extension_atr": 1.28,
+                  "score": 92.95,
+                  "penalty": -7.05,
+                  "price_extension_atr": 1.205,
                   "impulse_extension_atr": 0.0,
-                  "anchor_extension_atr": 1.275,
-                  "revalidation_distance_atr": 1.28,
-                  "analysis_anchor": 83.53,
-                  "market_price": 83.08,
+                  "anchor_extension_atr": 1.205,
+                  "revalidation_distance_atr": 1.2,
+                  "analysis_anchor": 83.36,
+                  "market_price": 82.94,
                   "strong_momentum_continuation": false,
                   "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
                   "schema_version": "anti_fomo_v9.3"
@@ -1463,9 +1451,9 @@
                 "probe_conviction": {
                   "tier": "MEDIUM_CONVICTION_PROBE",
                   "base_risk_pct": 0.07,
-                  "setup_quality": 74.02,
+                  "setup_quality": 71.93,
                   "timing_quality": 65.25,
-                  "entry_quality": 77.97,
+                  "entry_quality": 78.04,
                   "htf_state": "NEUTRAL",
                   "strong_trigger": false,
                   "reversal_evidence": false,
@@ -1475,7 +1463,7 @@
                 "trade": {
                   "stop_quality": 100.0,
                   "realistic_rr": 93.75,
-                  "target_magnet": 79.75,
+                  "target_magnet": 84.5,
                   "cost_realism": 60.0,
                   "capital_availability": 100.0,
                   "exposure_correlation": 100.0,
@@ -1494,12 +1482,12 @@
                 "htf_fact": {
                   "market_bias": "NEUTRAL",
                   "candidate_side": "SHORT",
-                  "alignment_score": 0.062565,
+                  "alignment_score": 0.08508,
                   "state": "NEUTRAL",
                   "timeframe_components": {
                     "15m": {
                       "weight": 0.15,
-                      "direction": -0.4171,
+                      "direction": -0.5672,
                       "bias": "SHORT"
                     },
                     "1h": {
@@ -1513,7 +1501,7 @@
                       "bias": "NEUTRAL"
                     }
                   },
-                  "confidence": 6.2565,
+                  "confidence": 8.508,
                   "schema_version": "htf_fact_v9.0",
                   "state_threshold": 0.45,
                   "valid": true,
@@ -1528,12 +1516,12 @@
                   "htf_fact": {
                     "market_bias": "NEUTRAL",
                     "candidate_side": "SHORT",
-                    "alignment_score": 0.062565,
+                    "alignment_score": 0.08508,
                     "state": "NEUTRAL",
                     "timeframe_components": {
                       "15m": {
                         "weight": 0.15,
-                        "direction": -0.4171,
+                        "direction": -0.5672,
                         "bias": "SHORT"
                       },
                       "1h": {
@@ -1547,7 +1535,7 @@
                         "bias": "NEUTRAL"
                       }
                     },
-                    "confidence": 6.2565,
+                    "confidence": 8.508,
                     "schema_version": "htf_fact_v9.0",
                     "state_threshold": 0.45,
                     "valid": true,
@@ -1558,7 +1546,7 @@
                     "structural_counter_evidence": "UNKNOWN",
                     "mss_quality": "UNKNOWN",
                     "failure_quality": "UNKNOWN",
-                    "drift_atr": -3.798,
+                    "drift_atr": -3.5,
                     "schema_version": "reversal_evidence_v9.0"
                   },
                   "schema_version": "candidate_schema_v9.0"
@@ -1568,7 +1556,7 @@
                   "structural_counter_evidence": "UNKNOWN",
                   "mss_quality": "UNKNOWN",
                   "failure_quality": "UNKNOWN",
-                  "drift_atr": -3.798,
+                  "drift_atr": -3.5,
                   "schema_version": "reversal_evidence_v9.0"
                 }
               },
@@ -1610,10 +1598,10 @@
                   "stage_cap_compliance"
                 ]
               },
-              "setup_quality": 74.02,
+              "setup_quality": 71.93,
               "timing_quality": 65.25,
-              "entry_quality": 77.97,
-              "thesis_confidence": 72.15,
+              "entry_quality": 78.04,
+              "thesis_confidence": 71.93,
               "schema_version": "evaluation_bundle_v9.1"
             },
             "risk_ledger": {
@@ -1698,7 +1686,7 @@
                 }
               ],
               "combined_confidence_multiplier": 0.092089,
-              "geometry_multiplier": 1.0,
+              "geometry_multiplier": 0.8394,
               "capital_cap_pct": 0.0,
               "final_position_risk_pct": 0.0,
               "stage": "WAIT_RETEST",
@@ -1713,17 +1701,17 @@
                 {
                   "source": "entry_quality",
                   "delta_pct": 0.0,
-                  "reason": "entry_quality=78.0; anti_fomo_penalty=-7.8 embedded once"
+                  "reason": "entry_quality=78.0; anti_fomo_penalty=-7.05 embedded once"
                 },
                 {
                   "source": "low_liquidity_quality",
                   "delta_pct": -15.0,
-                  "reason": "liquidity_quality=5.7"
+                  "reason": "liquidity_quality=7.7"
                 },
                 {
                   "source": "clean_structure",
                   "delta_pct": 15.0,
-                  "reason": "structure_quality=91.0"
+                  "reason": "structure_quality=79.2"
                 }
               ],
               "duplicate_sources": [],
@@ -1733,7 +1721,7 @@
                 "risk_confidence_budget=-10.00%",
                 "confidence_multiplier=0.092089",
                 "after_confidence=0.000000",
-                "geometry_multiplier=1.000000",
+                "geometry_multiplier=0.839400",
                 "after_geometry=0.000000",
                 "stage_cap=0.0000",
                 "capital_cap=0.0000",
@@ -1741,7 +1729,7 @@
               ],
               "schema_version": "risk_ledger_v9.1"
             },
-            "reason": "WAIT_RETEST: setup=74.0, thesis_conf=72.2, timing=65.2, entry=78.0, trade=91.7 | blocked=REVALIDATION_NOT_SUPPORTED",
+            "reason": "WAIT_RETEST: setup=71.9, thesis_conf=71.9, timing=65.2, entry=78.0, trade=92.4 | blocked=REVALIDATION_NOT_SUPPORTED",
             "audit": {
               "director_reason": "setup -> thesis confidence -> timing -> entry quality -> trade geometry -> final risk",
               "single_authority": "EXECUTIVE_DECISION_LAYER",
@@ -1751,44 +1739,44 @@
               "actual_conflict": false,
               "conflict_axes": [],
               "consensus": {
-                "market": "UNCERTAIN",
+                "market": "POSITIVE_CONSENSUS",
                 "execution": "POSITIVE_CONSENSUS",
-                "market_support": 0,
+                "market_support": 9.2,
                 "market_against": 0,
-                "execution_support": 1.36,
+                "execution_support": 1.952,
                 "execution_against": 0
               },
-              "net_market_preference": 0,
-              "net_execution_preference": 1.36,
-              "uncertainty_level": 49.06,
+              "net_market_preference": 9.2,
+              "net_execution_preference": 1.952,
+              "uncertainty_level": 10.44,
               "evaluation_bundle": {
-                "thesis_quality": 72.15,
+                "thesis_quality": 71.93,
                 "execution_readiness": 65.25,
-                "trade_quality": 91.71,
+                "trade_quality": 92.42,
                 "conflict_report": {
-                  "net_market_preference": 0,
-                  "net_execution_preference": 1.36,
+                  "net_market_preference": 9.2,
+                  "net_execution_preference": 1.952,
                   "actual_conflict": false,
                   "conflict_axes": [],
                   "conflict_pairs": [],
                   "conflict_severity": 0.0,
-                  "uncertainty_level": 49.06,
+                  "uncertainty_level": 10.44,
                   "capital_blocked": false,
                   "consensus": {
-                    "market": "UNCERTAIN",
+                    "market": "POSITIVE_CONSENSUS",
                     "execution": "POSITIVE_CONSENSUS",
-                    "market_support": 0,
+                    "market_support": 9.2,
                     "market_against": 0,
-                    "execution_support": 1.36,
+                    "execution_support": 1.952,
                     "execution_against": 0
                   },
                   "effective_votes": [
                     {
                       "module": "HTF_ANALYST",
                       "opinion": "UNCERTAIN",
-                      "confidence": 6.26,
-                      "raw_impact": 0.63,
-                      "effective_impact": 0.039,
+                      "confidence": 8.51,
+                      "raw_impact": 0.85,
+                      "effective_impact": 0.072,
                       "axes": [
                         "direction",
                         "htf_direction"
@@ -1799,9 +1787,9 @@
                     {
                       "module": "ICT_ANALYST",
                       "opinion": "UNCERTAIN",
-                      "confidence": 23.21,
-                      "raw_impact": -5.6,
-                      "effective_impact": 1.3,
+                      "confidence": 20.84,
+                      "raw_impact": -6.39,
+                      "effective_impact": 1.332,
                       "axes": [
                         "market_thesis",
                         "structure"
@@ -1811,16 +1799,16 @@
                     },
                     {
                       "module": "PRICE_STRUCTURE_ADVISOR",
-                      "opinion": "UNCERTAIN",
-                      "confidence": 91.04,
-                      "raw_impact": 0.0,
-                      "effective_impact": 0.0,
+                      "opinion": "SUPPORT",
+                      "confidence": 92.0,
+                      "raw_impact": 10.0,
+                      "effective_impact": 9.2,
                       "axes": [
                         "direction",
                         "structure"
                       ],
                       "horizon": "15M-1H structure",
-                      "explicit_conclusion": false
+                      "explicit_conclusion": true
                     },
                     {
                       "module": "SHORT_REVERSAL_ANALYST",
@@ -1837,9 +1825,9 @@
                     {
                       "module": "EXECUTION_ANALYST",
                       "opinion": "SUPPORT",
-                      "confidence": 68.0,
-                      "raw_impact": 2.0,
-                      "effective_impact": 1.36,
+                      "confidence": 71.0,
+                      "raw_impact": 2.75,
+                      "effective_impact": 1.952,
                       "axes": [
                         "execution_timing"
                       ],
@@ -1861,19 +1849,19 @@
                   ],
                   "quality_voting": {
                     "supporting": [
+                      "PRICE_STRUCTURE_ADVISOR",
                       "EXECUTION_ANALYST"
                     ],
                     "doubting": [],
                     "silent": [
                       "HTF_ANALYST",
                       "ICT_ANALYST",
-                      "PRICE_STRUCTURE_ADVISOR",
                       "SHORT_REVERSAL_ANALYST"
                     ],
-                    "net_conviction": 1.36,
-                    "support_count": 1,
+                    "net_conviction": 11.152,
+                    "support_count": 2,
                     "doubt_count": 0,
-                    "silent_count": 4,
+                    "silent_count": 3,
                     "schema_version": "quality_voting_v9.1"
                   },
                   "schema_version": "conflict_report_v9.1"
@@ -1884,7 +1872,7 @@
                   "asymmetry_quality": 100.0,
                   "regime_fit": 100.0,
                   "evidence_independence": 100.0,
-                  "statistical_status": "UNPROVEN",
+                  "statistical_status": "NO_SAMPLE",
                   "failed_principles": [],
                   "reason_codes": [
                     "EDGE_UNPROVEN_STAGE_ONLY"
@@ -1906,23 +1894,23 @@
                     "rr1_raw": 2.0,
                     "realistic_rr1": 2.0,
                     "transaction_costs_r": 0.0,
-                    "family_expectancy_r": 0.328,
-                    "sample": 1,
+                    "family_expectancy_r": 0.0,
+                    "sample": 0,
                     "logical_target": true,
                     "evidence_groups": [
-                      "EXECUTION_OPENING_RANGE",
+                      "EXECUTION_OPEN_RECLAIM",
                       "EXECUTION_TIME_WARP_WAIT_RETEST",
                       "ICT_LOCATION",
-                      "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+                      "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
                       "PRICE_STRUCTURE",
                       "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
                       "МОДЕЛЬ",
-                      "⏱️ OR MODEL",
                       "✅ МОДЕЛЬ УЗГОДЖЕНА З РЕЖИМОМ РИНКУ (+5)",
                       "🎯 ENTRY CONTRACT",
                       "📉 SHORT RECENT PERFORMANCE СЛАБКИЙ",
                       "📊 HYPOTHESIS SCORE",
-                      "🧮 PATTERN EVIDENCE FUSION"
+                      "🧮 PATTERN EVIDENCE FUSION",
+                      "🧲 OPEN RECLAIM"
                     ]
                   },
                   "schema_version": "philosophy_v9.0"
@@ -1930,21 +1918,21 @@
                 "data_quality": 100.0,
                 "raw_components": {
                   "thesis": {
-                    "structure": 91.04,
-                    "liquidity_event": 5.67,
+                    "structure": 79.17,
+                    "liquidity_event": 7.67,
                     "regime_fit": 100.0,
-                    "htf_alignment": 53.13,
+                    "htf_alignment": 54.25,
                     "directional_thesis": 100.0,
                     "independent_pattern_evidence": 100.0
                   },
                   "thesis_confidence_decay": {
-                    "base_confidence": 74.02,
-                    "first_seen_at": "2026-07-16T17:01:53.384918+00:00",
-                    "age_hours": 0.83,
-                    "decay_points": 1.87,
+                    "base_confidence": 71.93,
+                    "first_seen_at": null,
+                    "age_hours": 0.0,
+                    "decay_points": 0.0,
                     "fresh_evidence_bonus": 0.0,
                     "fresh_evidence_detected": false,
-                    "confidence": 72.15,
+                    "confidence": 71.93,
                     "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
                     "schema_version": "thesis_confidence_decay_v9.1"
                   },
@@ -1965,17 +1953,17 @@
                     "acceptance": 0.0,
                     "confirmation_tier": 50.0,
                     "execution_source": 75.0,
-                    "anti_fomo": 92.2
+                    "anti_fomo": 92.95
                   },
                   "anti_fomo": {
-                    "score": 92.2,
-                    "penalty": -7.8,
-                    "price_extension_atr": 1.28,
+                    "score": 92.95,
+                    "penalty": -7.05,
+                    "price_extension_atr": 1.205,
                     "impulse_extension_atr": 0.0,
-                    "anchor_extension_atr": 1.275,
-                    "revalidation_distance_atr": 1.28,
-                    "analysis_anchor": 83.53,
-                    "market_price": 83.08,
+                    "anchor_extension_atr": 1.205,
+                    "revalidation_distance_atr": 1.2,
+                    "analysis_anchor": 83.36,
+                    "market_price": 82.94,
                     "strong_momentum_continuation": false,
                     "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
                     "schema_version": "anti_fomo_v9.3"
@@ -1983,9 +1971,9 @@
                   "probe_conviction": {
                     "tier": "MEDIUM_CONVICTION_PROBE",
                     "base_risk_pct": 0.07,
-                    "setup_quality": 74.02,
+                    "setup_quality": 71.93,
                     "timing_quality": 65.25,
-                    "entry_quality": 77.97,
+                    "entry_quality": 78.04,
                     "htf_state": "NEUTRAL",
                     "strong_trigger": false,
                     "reversal_evidence": false,
@@ -1995,7 +1983,7 @@
                   "trade": {
                     "stop_quality": 100.0,
                     "realistic_rr": 93.75,
-                    "target_magnet": 79.75,
+                    "target_magnet": 84.5,
                     "cost_realism": 60.0,
                     "capital_availability": 100.0,
                     "exposure_correlation": 100.0,
@@ -2014,12 +2002,12 @@
                   "htf_fact": {
                     "market_bias": "NEUTRAL",
                     "candidate_side": "SHORT",
-                    "alignment_score": 0.062565,
+                    "alignment_score": 0.08508,
                     "state": "NEUTRAL",
                     "timeframe_components": {
                       "15m": {
                         "weight": 0.15,
-                        "direction": -0.4171,
+                        "direction": -0.5672,
                         "bias": "SHORT"
                       },
                       "1h": {
@@ -2033,7 +2021,7 @@
                         "bias": "NEUTRAL"
                       }
                     },
-                    "confidence": 6.2565,
+                    "confidence": 8.508,
                     "schema_version": "htf_fact_v9.0",
                     "state_threshold": 0.45,
                     "valid": true,
@@ -2048,12 +2036,12 @@
                     "htf_fact": {
                       "market_bias": "NEUTRAL",
                       "candidate_side": "SHORT",
-                      "alignment_score": 0.062565,
+                      "alignment_score": 0.08508,
                       "state": "NEUTRAL",
                       "timeframe_components": {
                         "15m": {
                           "weight": 0.15,
-                          "direction": -0.4171,
+                          "direction": -0.5672,
                           "bias": "SHORT"
                         },
                         "1h": {
@@ -2067,7 +2055,7 @@
                           "bias": "NEUTRAL"
                         }
                       },
-                      "confidence": 6.2565,
+                      "confidence": 8.508,
                       "schema_version": "htf_fact_v9.0",
                       "state_threshold": 0.45,
                       "valid": true,
@@ -2078,7 +2066,7 @@
                       "structural_counter_evidence": "UNKNOWN",
                       "mss_quality": "UNKNOWN",
                       "failure_quality": "UNKNOWN",
-                      "drift_atr": -3.798,
+                      "drift_atr": -3.5,
                       "schema_version": "reversal_evidence_v9.0"
                     },
                     "schema_version": "candidate_schema_v9.0"
@@ -2088,7 +2076,7 @@
                     "structural_counter_evidence": "UNKNOWN",
                     "mss_quality": "UNKNOWN",
                     "failure_quality": "UNKNOWN",
-                    "drift_atr": -3.798,
+                    "drift_atr": -3.5,
                     "schema_version": "reversal_evidence_v9.0"
                   }
                 },
@@ -2130,10 +2118,10 @@
                     "stage_cap_compliance"
                   ]
                 },
-                "setup_quality": 74.02,
+                "setup_quality": 71.93,
                 "timing_quality": 65.25,
-                "entry_quality": 77.97,
-                "thesis_confidence": 72.15,
+                "entry_quality": 78.04,
+                "thesis_confidence": 71.93,
                 "schema_version": "evaluation_bundle_v9.1"
               },
               "risk_ledger": {
@@ -2218,7 +2206,7 @@
                   }
                 ],
                 "combined_confidence_multiplier": 0.092089,
-                "geometry_multiplier": 1.0,
+                "geometry_multiplier": 0.8394,
                 "capital_cap_pct": 0.0,
                 "final_position_risk_pct": 0.0,
                 "stage": "WAIT_RETEST",
@@ -2233,17 +2221,17 @@
                   {
                     "source": "entry_quality",
                     "delta_pct": 0.0,
-                    "reason": "entry_quality=78.0; anti_fomo_penalty=-7.8 embedded once"
+                    "reason": "entry_quality=78.0; anti_fomo_penalty=-7.05 embedded once"
                   },
                   {
                     "source": "low_liquidity_quality",
                     "delta_pct": -15.0,
-                    "reason": "liquidity_quality=5.7"
+                    "reason": "liquidity_quality=7.7"
                   },
                   {
                     "source": "clean_structure",
                     "delta_pct": 15.0,
-                    "reason": "structure_quality=91.0"
+                    "reason": "structure_quality=79.2"
                   }
                 ],
                 "duplicate_sources": [],
@@ -2253,7 +2241,7 @@
                   "risk_confidence_budget=-10.00%",
                   "confidence_multiplier=0.092089",
                   "after_confidence=0.000000",
-                  "geometry_multiplier=1.000000",
+                  "geometry_multiplier=0.839400",
                   "after_geometry=0.000000",
                   "stage_cap=0.0000",
                   "capital_cap=0.0000",
@@ -2275,41 +2263,41 @@
               "risky_entry_score_profile": {
                 "authority": "CANONICAL_SCORE_POLICY",
                 "mode": "LIVE",
-                "score": 67,
+                "score": 58,
                 "entry_threshold": 75,
                 "risky_threshold": 68,
                 "full_entry_eligible": false,
                 "risky_entry_eligible": false,
-                "gray_shadow_only": true,
+                "gray_shadow_only": false,
                 "gray_lower_bound": 66,
-                "band": "GRAY_SHADOW_ONLY",
+                "band": "BELOW",
                 "live_defaults_preserved": true,
                 "deprecated_gray_live_path": true,
                 "reason": "canonical score band caps Executive stage; gray zone is audit/shadow only unless risky threshold is explicitly 66 in PAPER/SHADOW"
               },
               "quality_voting": {
                 "supporting": [
+                  "PRICE_STRUCTURE_ADVISOR",
                   "EXECUTION_ANALYST"
                 ],
                 "doubting": [],
                 "silent": [
                   "HTF_ANALYST",
                   "ICT_ANALYST",
-                  "PRICE_STRUCTURE_ADVISOR",
                   "SHORT_REVERSAL_ANALYST"
                 ],
-                "net_conviction": 1.36,
-                "support_count": 1,
+                "net_conviction": 11.152,
+                "support_count": 2,
                 "doubt_count": 0,
-                "silent_count": 4,
+                "silent_count": 3,
                 "schema_version": "quality_voting_v9.1"
               },
               "probe_conviction": {
                 "tier": "MEDIUM_CONVICTION_PROBE",
                 "base_risk_pct": 0.07,
-                "setup_quality": 74.02,
+                "setup_quality": 71.93,
                 "timing_quality": 65.25,
-                "entry_quality": 77.97,
+                "entry_quality": 78.04,
                 "htf_state": "NEUTRAL",
                 "strong_trigger": false,
                 "reversal_evidence": false,
@@ -2331,14 +2319,14 @@
       "risky_entry_score_profile": {
         "authority": "CANONICAL_SCORE_POLICY",
         "mode": "LIVE",
-        "score": 67,
+        "score": 58,
         "entry_threshold": 75,
         "risky_threshold": 68,
         "full_entry_eligible": false,
         "risky_entry_eligible": false,
-        "gray_shadow_only": true,
+        "gray_shadow_only": false,
         "gray_lower_bound": 66,
-        "band": "GRAY_SHADOW_ONLY",
+        "band": "BELOW",
         "live_defaults_preserved": true,
         "deprecated_gray_live_path": true,
         "reason": "canonical score band caps Executive stage; gray zone is audit/shadow only unless risky threshold is explicitly 66 in PAPER/SHADOW"
@@ -2373,10 +2361,10 @@
         "probe_eligible": false,
         "selected_eligible_but_no_setup": false,
         "close_miss": true,
-        "score_gap": 1,
+        "score_gap": 10,
         "execution_gap": 5.0,
         "reason_codes": [
-          "score_gap=1",
+          "score_gap=10",
           "execution_gap=5.0",
           "plan_not_executable"
         ],
@@ -2384,34 +2372,34 @@
         "score_profile": {
           "authority": "CANONICAL_SCORE_POLICY",
           "mode": "LIVE",
-          "score": 67,
+          "score": 58,
           "entry_threshold": 75,
           "risky_threshold": 68,
           "full_entry_eligible": false,
           "risky_entry_eligible": false,
-          "gray_shadow_only": true,
+          "gray_shadow_only": false,
           "gray_lower_bound": 66,
-          "band": "GRAY_SHADOW_ONLY",
+          "band": "BELOW",
           "live_defaults_preserved": true,
           "deprecated_gray_live_path": true,
           "reason": "canonical score band caps Executive stage; gray zone is audit/shadow only unless risky threshold is explicitly 66 in PAPER/SHADOW"
         },
         "shadow_plan": {
           "status": "OPEN",
-          "opened_at": "2026-07-16T17:51:38.236626+00:00",
-          "expires_at": "2026-07-17T17:51:38.236626+00:00",
+          "opened_at": "2026-07-16T18:01:43.603106+00:00",
+          "expires_at": "2026-07-17T18:01:43.603106+00:00",
           "side": "SHORT",
-          "source_signal_id": "edd60bc5a7",
-          "thesis_key": "SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT|835",
-          "thesis_family_key": "SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT",
-          "test_key": "STRICT|SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT|835|SHORT|83.08|84.0768|81.0864",
+          "source_signal_id": "a5ad3182fb",
+          "thesis_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|834",
+          "thesis_family_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM",
+          "test_key": "STRICT|SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|834|SHORT|82.94|83.9169|80.9862",
           "policy_test": "DIRECTIONAL_CLOSES_THRESHOLD",
-          "entry": 83.08,
-          "stop": 84.0768,
-          "tp0": 82.0832,
-          "tp1": 81.0864,
-          "tp2": 79.641,
-          "tp3": 77.9963,
+          "entry": 82.94,
+          "stop": 83.9169,
+          "tp0": 81.9631,
+          "tp1": 80.9862,
+          "tp2": 79.5697,
+          "tp3": 78.2509,
           "partial_plan": {
             "tp0": 0.3,
             "tp1": 0.35,
@@ -2429,19 +2417,19 @@
       "authority_guard": {
         "validated": true,
         "executive_only_actions": [
+          "ENTRY",
           "RISKY_ENTRY",
-          "PROBE_ENTRY",
-          "ENTRY"
+          "PROBE_ENTRY"
         ],
         "violations": []
       }
     },
-    "setup_family": "EXPANSION",
-    "ict_model": "OPENING_RANGE_BREAKOUT",
-    "candidate_final_score": 67,
-    "candidate_raw_score": 119,
-    "execution_lane": "STANDARD_CONFIRMED",
-    "execution_source": "OPENING_RANGE",
+    "setup_family": "STRUCTURAL_TRANSITION",
+    "ict_model": "DAILY_WEEKLY_OPEN_RECLAIM",
+    "candidate_final_score": 58,
+    "candidate_raw_score": 103,
+    "execution_lane": "EARLY_TACTICAL",
+    "execution_source": "OPEN_RECLAIM",
     "entry_stage": "WAIT_RETEST",
     "stage_plan": {
       "stage": "WAIT_RETEST",
@@ -2449,9 +2437,9 @@
       "probe_conviction": {
         "tier": "MEDIUM_CONVICTION_PROBE",
         "base_risk_pct": 0.07,
-        "setup_quality": 100.0,
-        "timing_quality": 68.0,
-        "entry_quality": 88.58,
+        "setup_quality": 92.0,
+        "timing_quality": 71.0,
+        "entry_quality": 85.98,
         "htf_state": "NEUTRAL",
         "strong_trigger": false,
         "reversal_evidence": false,
@@ -2459,18 +2447,18 @@
         "schema_version": "probe_conviction_v9.1"
       },
       "quality_profile": {
-        "setup_quality": 100.0,
-        "timing_quality": 68.0,
-        "entry_quality": 88.58,
+        "setup_quality": 92.0,
+        "timing_quality": 71.0,
+        "entry_quality": 85.98,
         "anti_fomo": {
-          "score": 92.25,
-          "penalty": -7.75,
-          "price_extension_atr": 1.275,
+          "score": 92.95,
+          "penalty": -7.05,
+          "price_extension_atr": 1.205,
           "impulse_extension_atr": 0.0,
-          "anchor_extension_atr": 1.275,
+          "anchor_extension_atr": 1.205,
           "revalidation_distance_atr": 0.0,
-          "analysis_anchor": 83.53,
-          "market_price": 83.08,
+          "analysis_anchor": 83.36,
+          "market_price": 82.94,
           "strong_momentum_continuation": false,
           "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
           "schema_version": "anti_fomo_v9.3"
@@ -2478,9 +2466,9 @@
         "probe_conviction": {
           "tier": "MEDIUM_CONVICTION_PROBE",
           "base_risk_pct": 0.07,
-          "setup_quality": 100.0,
-          "timing_quality": 68.0,
-          "entry_quality": 88.58,
+          "setup_quality": 92.0,
+          "timing_quality": 71.0,
+          "entry_quality": 85.98,
           "htf_state": "NEUTRAL",
           "strong_trigger": false,
           "reversal_evidence": false,
@@ -2499,17 +2487,17 @@
             {
               "source": "entry_quality",
               "delta_pct": 0.0,
-              "reason": "entry_quality=89.0; anti_fomo_penalty=-7.75 embedded once"
+              "reason": "entry_quality=86.0; anti_fomo_penalty=-7.05 embedded once"
             },
             {
               "source": "low_liquidity_quality",
               "delta_pct": -15.0,
-              "reason": "liquidity_quality=5.7"
+              "reason": "liquidity_quality=7.7"
             },
             {
               "source": "clean_structure",
               "delta_pct": 15.0,
-              "reason": "structure_quality=91.0"
+              "reason": "structure_quality=79.2"
             }
           ],
           "regime_memory": {
@@ -2541,11 +2529,11 @@
       },
       "scale_plan": [
         "MEDIUM_CONVICTION_PROBE: good thesis with incomplete timing confirmation | base risk 0.07%",
-        "ORB/Failed-ORB: дозволений тільки staged entry, без full-size на першій свічці пробою",
+        "Market-structure probe: вхід малим ризиком, добір тільки після acceptance/continuation",
         "SHORT тимчасово PROBE_ONLY через слабку недавню статистику",
         "v6.14 old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block",
         "v6.14 plan_q 50 → defensive construction, без підвищення порогу входу",
-        "v6.13 breathing: hard stop ширший за noise envelope; sizing x1.0"
+        "v6.13 breathing: hard stop ширший за noise envelope; sizing x0.8394"
       ],
       "probe_pct": 0.12,
       "acceptance_pct": 0.22,
@@ -2561,36 +2549,36 @@
         "target_router": {
           "mode": "WAIT_FRESH_SETUP_ARGUMENT",
           "ladder": {
-            "count": 5,
-            "score_sum": 13.07,
+            "count": 4,
+            "score_sum": 11.37,
             "nearest": [
-              {
-                "kind": "OB",
-                "tf": "15m",
-                "level": 83.41,
-                "magnet": 2.41,
-                "dist_atr": 0.34
-              },
               {
                 "kind": "ASIAN_LOW",
                 "tf": "1D",
                 "level": 83.05,
-                "magnet": 3.84,
-                "dist_atr": 1.36
+                "magnet": 4.09,
+                "dist_atr": 0.89
               },
               {
                 "kind": "SSL_LIQUIDITY",
                 "tf": "15m",
                 "level": 82.87,
-                "magnet": 1.88,
-                "dist_atr": 1.87
+                "magnet": 2.02,
+                "dist_atr": 1.41
               },
               {
                 "kind": "SSL_LIQUIDITY",
                 "tf": "15m",
                 "level": 82.71,
-                "magnet": 1.75,
-                "dist_atr": 2.32
+                "magnet": 1.88,
+                "dist_atr": 1.86
+              },
+              {
+                "kind": "PDL",
+                "tf": "1D",
+                "level": 82.32,
+                "magnet": 3.38,
+                "dist_atr": 2.98
               }
             ]
           }
@@ -2599,10 +2587,10 @@
           "enabled": true,
           "version": "v9.3.2_split_thesis_execution_lease",
           "state": "STALE",
-          "source": "OPENING_RANGE",
-          "age_min": 864.6,
-          "thesis_age_min": 864.6,
-          "execution_trigger_age_min": 864.6,
+          "source": "OPEN_RECLAIM",
+          "age_min": 874.7,
+          "thesis_age_min": 874.7,
+          "execution_trigger_age_min": 874.7,
           "execution_trigger_ttl_min": 35,
           "execution_trigger_fresh": false,
           "stale_execution_trigger": true,
@@ -2616,21 +2604,21 @@
           "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
           "not_late_location": true,
           "late_location_blocked": false,
-          "distance_from_anchor_atr": 1.28,
+          "distance_from_anchor_atr": 1.2,
           "micro_confirmation": {
-            "supported": true,
-            "kind": "LIVE_DIRECTIONAL_ACCEPTANCE",
-            "score": 85,
+            "supported": false,
+            "kind": "WEAK_OR_MISSING",
+            "score": 20,
             "checks": [
               {
                 "name": "directional_3m_close",
-                "ok": true
+                "ok": false
               },
               {
                 "name": "strong_3m_body",
-                "ok": true,
-                "body_atr": 0.255,
-                "body_ratio": 0.818
+                "ok": false,
+                "body_atr": 0.029,
+                "body_ratio": 0.167
               },
               {
                 "name": "15m_acceptance",
@@ -2643,23 +2631,23 @@
             ],
             "confirmed_3m_bars": 6,
             "six_confirmed_bars_available": true,
-            "six_bar_structure_confirmed": false,
+            "six_bar_structure_confirmed": true,
             "checks_by_name": {
-              "directional_3m_close": true,
-              "strong_3m_body": true,
+              "directional_3m_close": false,
+              "strong_3m_body": false,
               "15m_acceptance": true,
               "micro_sweep_reclaim": false
             },
             "passed_checks": [
-              "directional_3m_close",
-              "strong_3m_body",
               "15m_acceptance"
             ],
             "failed_checks": [
+              "directional_3m_close",
+              "strong_3m_body",
               "micro_sweep_reclaim"
             ],
             "all_checks_passed": false,
-            "directional_acceptance_path": true,
+            "directional_acceptance_path": false,
             "sweep_reclaim_path": false,
             "directional_closes": 4,
             "structure_intact": true,
@@ -2667,47 +2655,50 @@
             "directional_structure": {
               "side": "SHORT",
               "valid": true,
-              "supports_side": false,
-              "aligned": false,
+              "supports_side": true,
+              "aligned": true,
               "partial": true,
               "opposite_aligned": false,
-              "higher_high": true,
+              "higher_high": false,
               "higher_low": false,
-              "lower_high": false,
+              "lower_high": true,
               "lower_low": true,
               "close_progression": true,
               "shift_aligned": false,
-              "score": 62.0,
-              "previous_high": 83.9,
+              "score": 92.0,
+              "previous_high": 84.35,
               "previous_low": 83.34,
-              "recent_high": 84.35,
-              "recent_low": 82.94,
-              "buffer": 0.02235
+              "recent_high": 83.75,
+              "recent_low": 82.92,
+              "buffer": 0.0222
             },
-            "last_confirmed_3m_ts": 1784224080000
+            "last_confirmed_3m_ts": 1784224620000
           },
           "micro_confirmation_policy": {
             "eligible": false,
-            "age_min": 864.64,
+            "age_min": 874.73,
             "elevated_policy": true,
             "generic_micro_max_age_min": 240.0,
-            "score": 85.0,
-            "required_score": 85.0,
-            "score_passed": true,
-            "policy_path": "CONTINUATION_DIRECTIONAL",
+            "score": 20.0,
+            "required_score": 95.0,
+            "score_passed": false,
+            "policy_path": "GENERIC_EITHER_PATH",
             "required_checks": [
               "directional_3m_close",
               "strong_3m_body",
               "15m_acceptance"
             ],
-            "failed_required_checks": [],
-            "required_checks_passed": true,
-            "directional_path_ok": true,
+            "failed_required_checks": [
+              "directional_3m_close",
+              "strong_3m_body"
+            ],
+            "required_checks_passed": false,
+            "directional_path_ok": false,
             "reclaim_path_ok": false,
-            "elevated_confirmation_ok": true,
-            "six_bar_structure_confirmed": false,
+            "elevated_confirmation_ok": false,
+            "six_bar_structure_confirmed": true,
             "within_generic_age": false,
-            "continuation_like": true,
+            "continuation_like": false,
             "reclaim_critical_for_setup": false,
             "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar"
           },
@@ -2730,8 +2721,7 @@
           "stage_override": "WAIT_RETEST",
           "action_bias": "ARMED_REVALIDATION",
           "setup_arguments": [
-            "micro evidence present but blocked: failed=[] score=85.0/85.0 age=864.6m",
-            "price not late vs anchor: 1.28 ATR",
+            "price not late vs anchor: 1.20 ATR",
             "time-warp is thesis memory, not live execution"
           ],
           "no_hard_block": false,
@@ -2740,15 +2730,15 @@
         "entry_supported_now": false,
         "impulse": {
           "valid": true,
-          "impulse_atr": 4.0,
-          "body_efficiency": 0.4,
+          "impulse_atr": 4.1,
+          "body_efficiency": 0.41,
           "direction_closes_5": 3,
-          "compression_ratio": 0.99,
-          "giveback_ratio": 0.2,
-          "last_range_atr": 1.08
+          "compression_ratio": 1.02,
+          "giveback_ratio": 0.04,
+          "last_range_atr": 0.92
         },
-        "trigger_age_min": 864.6,
-        "target_magnet": 3.19,
+        "trigger_age_min": 874.7,
+        "target_magnet": 3.38,
         "plan_q": 50,
         "notes": [
           "old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block",
@@ -2760,32 +2750,32 @@
       "entry_price_contract": {
         "version": "v8.14.1",
         "source": "LIVE_MARKET_PRICE",
-        "market_price": 83.08,
+        "market_price": 82.94,
         "entry_price_override": 0.0,
-        "analysis_anchor": 83.53,
-        "trigger_level": 83.53,
-        "selected_entry": 83.08,
+        "analysis_anchor": 83.36,
+        "trigger_level": 83.36,
+        "selected_entry": 82.94,
         "market_entry_required": true,
         "anchor_is_analytical_only": true
       },
       "breathing_geometry": {
-        "decision_stop": 83.918,
-        "catastrophic_stop": 84.0768,
-        "decision_distance": 0.838036,
-        "catastrophic_distance": 0.996821,
-        "catastrophic_buffer_distance": 0.158786,
+        "decision_stop": 83.76,
+        "catastrophic_stop": 83.9169,
+        "decision_distance": 0.82,
+        "catastrophic_distance": 0.976857,
+        "catastrophic_buffer_distance": 0.156857,
         "catastrophic_buffer_atr": 0.45,
         "noise_floor_distance": 0.429,
         "catastrophic_stop_policy": "decision close-confirm + capped noise buffer",
-        "conventional_distance": 1.53,
-        "risk_size_multiplier": 1.0,
-        "tp1_floor_distance": 1.993643,
-        "tp0_floor_distance": 0.996821,
+        "conventional_distance": 0.82,
+        "risk_size_multiplier": 0.8394,
+        "tp1_floor_distance": 1.953714,
+        "tp0_floor_distance": 0.976857,
         "noise": {
           "tr_p70": 0.39,
           "tr_p85": 0.459,
-          "current_tr": 0.264643,
-          "fallback": 0.352857,
+          "current_tr": 0.261429,
+          "fallback": 0.348571,
           "sample_size": 48
         },
         "mode": "TRADE_BREATHING_GEOMETRY"
@@ -2798,34 +2788,34 @@
     "live_3m_trigger_ready": false,
     "limit_armed_ready": false,
     "time_warp_ready": true,
-    "trigger_age_minutes": 864.64,
+    "trigger_age_minutes": 874.73,
     "score_components": {
-      "legacy_raw_score": 118.65,
+      "legacy_raw_score": 103.2,
       "loc_score": 45,
-      "str_score": 21.85,
-      "liq_score": 1.36,
-      "flw_score": 3.64,
-      "trig_score": 8.0,
+      "str_score": 19.0,
+      "liq_score": 1.84,
+      "flw_score": 2.8,
+      "trig_score": 10.4,
       "htf_fact": {
         "version": "v9.0",
         "schema_version": "htf_fact_v9.0",
         "source": "EMA_COMPOSITE_15M_1H_4H",
         "candidate_side": "SHORT",
-        "market_composite": -0.062565,
+        "market_composite": -0.08508,
         "market_bias": "NEUTRAL",
-        "alignment_score": 0.062565,
+        "alignment_score": 0.08508,
         "state": "NEUTRAL",
-        "confidence": 6.2565,
-        "conviction": 0.062565,
-        "score_base": 13.437955,
-        "family_weight": 1.25,
-        "score_weighted": 16.797444,
-        "ml_feature": 0.531282,
+        "confidence": 8.508,
+        "conviction": 0.08508,
+        "score_base": 13.59556,
+        "family_weight": 0.35,
+        "score_weighted": 4.758446,
+        "ml_feature": 0.54254,
         "state_threshold": 0.45,
         "timeframe_components": {
           "15m": {
             "weight": 0.15,
-            "direction": -0.4171,
+            "direction": -0.5672,
             "bias": "SHORT"
           },
           "1h": {
@@ -2842,7 +2832,7 @@
         "timeframes": {
           "15m": {
             "weight": 0.15,
-            "direction": -0.4171,
+            "direction": -0.5672,
             "bias": "SHORT"
           },
           "1h": {
@@ -2858,31 +2848,31 @@
         },
         "contract": "absolute market bias + candidate-relative alignment"
       },
-      "htf_score": 16.8,
-      "htf_score_base": 13.44,
+      "htf_score": 4.76,
+      "htf_score_base": 13.6,
       "htf_state_deprecated_audit": "NEUTRAL",
       "htf_market_bias": "NEUTRAL",
-      "htf_alignment_score": 0.062565,
-      "htf_ml_feature": 0.531282,
+      "htf_alignment_score": 0.08508,
+      "htf_ml_feature": 0.54254,
       "tf_biases": {
         "15m": "SHORT",
         "1h": "NEUTRAL",
         "4h": "NEUTRAL"
       },
-      "pattern_bonus": 22.0,
+      "pattern_bonus": 19.4,
       "pattern_bonus_components": {
-        "model_id": "OPENING_RANGE_BREAKOUT",
-        "registry_bonus": 14.0,
+        "model_id": "DAILY_WEEKLY_OPEN_RECLAIM",
+        "registry_bonus": 12.0,
         "detector_bonus": 12.0,
-        "combined_model_bonus": 17.0,
+        "combined_model_bonus": 14.4,
         "full_sum_avoided": true,
-        "cap_multiplier": 1.25,
+        "cap_multiplier": 1.2,
         "policy": "capped_registry_detector_fusion"
       },
       "reversal_drift_guard": {
-        "applies": false,
+        "applies": true,
         "against": false,
-        "drift_atr": -3.798,
+        "drift_atr": -3.5,
         "threshold_atr": 1.6,
         "severity": 0.0,
         "counter_evidence": false,
@@ -2895,12 +2885,12 @@
       "vector_bonus": 0.0,
       "features": {
         "loc": 1.0,
-        "structure": 0.9104,
-        "liquidity": 0.0567,
-        "flow": 0.1517,
+        "structure": 0.7917,
+        "liquidity": 0.0765,
+        "flow": 0.1167,
         "trigger": 1.0,
-        "htf": 0.5313,
-        "pattern": 0.5197,
+        "htf": 0.5425,
+        "pattern": 0.4762,
         "session": 0.0,
         "smt": 0.0,
         "regime_fit": 1.0,
@@ -2914,34 +2904,34 @@
         "pattern_gate": 1.0,
         "forward_zone_gate": 0.9,
         "exhaustion_gate": 1.0,
-        "liquidity_gate": 1.0,
-        "trend_gate": 0.789,
-        "trend_gate_source": "HTF_ONLY_FLOW_UNAVAILABLE",
+        "liquidity_gate": 0.612,
+        "trend_gate": 1.0,
+        "trend_gate_source": "NOT_APPLICABLE",
         "htf_late_gate": 1.0,
-        "product": 0.71
+        "product": 0.551
       },
-      "probability": 0.6806,
-      "base_probability": 0.9586,
+      "probability": 0.5271,
+      "base_probability": 0.9567,
       "model_source": "bootstrap",
       "sample_size": 13,
       "learned_weight": 0.0,
-      "setup_quality": 100.0,
-      "execution_quality": 68,
+      "setup_quality": 92.0,
+      "execution_quality": 71,
       "trade_plan_quality": 50,
-      "entry_quality": 89.96,
-      "durability_quality": 54,
-      "exit_quality": 54,
+      "entry_quality": 88.08,
+      "durability_quality": 53,
+      "exit_quality": 53,
       "quality_dimensions_mode": "HEURISTIC_UNTIL_LEARNED",
-      "organic_score": 76,
-      "hypothesis_score": 68.74,
-      "active_model_count": 4,
-      "execution_source": "OPENING_RANGE",
+      "organic_score": 74,
+      "hypothesis_score": 59.7,
+      "active_model_count": 6,
+      "execution_source": "OPEN_RECLAIM",
       "trigger_reanchored": false,
       "original_trigger_level": 83.83,
-      "original_trigger_age_minutes": 864.64,
-      "effective_trigger_level": 83.53,
-      "effective_trigger_age_minutes": 864.64,
-      "execution_freshness_multiplier": 0.88,
+      "original_trigger_age_minutes": 874.73,
+      "effective_trigger_level": 83.36,
+      "effective_trigger_age_minutes": 874.73,
+      "execution_freshness_multiplier": 0.9,
       "flow_feature_source": "SYNTHETIC_CVD_PROXY",
       "synthetic_cvd_score_multiplier": 0.35,
       "live_3m_trigger_ready": false,
@@ -2958,13 +2948,13 @@
       },
       "direction_risk_multiplier": 0.55,
       "entry_contract": {
-        "entry_anchor": 83.53,
-        "entry_basis": "OPENING_RANGE_BREAKOUT opening-range boundary",
-        "invalidation_level": 84.61,
-        "invalidation_basis": "OPENING_RANGE_BREAKOUT OR invalidation",
+        "entry_anchor": 83.36,
+        "entry_basis": "WEEKLY_OPEN reclaim",
+        "invalidation_level": 83.76,
+        "invalidation_basis": "Daily/Weekly open reclaim failure",
         "target_level": 82.32,
         "target_basis": "PDL 1D magnet",
-        "target_magnet_score": 3.19
+        "target_magnet_score": 3.38
       },
       "acceptance_retest": {},
       "continuation_reanchor": {},
@@ -2974,40 +2964,40 @@
       "directional_structure": {
         "side": "SHORT",
         "valid": true,
-        "supports_side": false,
-        "aligned": false,
+        "supports_side": true,
+        "aligned": true,
         "partial": true,
         "opposite_aligned": false,
-        "higher_high": true,
+        "higher_high": false,
         "higher_low": false,
-        "lower_high": false,
+        "lower_high": true,
         "lower_low": true,
         "close_progression": true,
         "shift_aligned": false,
-        "score": 62.0,
-        "previous_high": 83.9,
+        "score": 92.0,
+        "previous_high": 84.35,
         "previous_low": 83.34,
-        "recent_high": 84.35,
-        "recent_low": 82.94,
-        "buffer": 0.02235
+        "recent_high": 83.75,
+        "recent_low": 82.92,
+        "buffer": 0.0222
       },
       "short_reversal": {},
       "short_reversal_model": {},
       "short_reversal_scope": {
         "eligible": false,
-        "candidate_model": "OPENING_RANGE_BREAKOUT",
+        "candidate_model": "DAILY_WEEKLY_OPEN_RECLAIM",
         "contract": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS"
       },
-      "timing_quality": 68.0,
+      "timing_quality": 71.0,
       "anti_fomo": {
-        "score": 92.2,
-        "penalty": -7.8,
-        "price_extension_atr": 1.28,
+        "score": 92.95,
+        "penalty": -7.05,
+        "price_extension_atr": 1.205,
         "impulse_extension_atr": 0.0,
-        "anchor_extension_atr": 1.275,
-        "revalidation_distance_atr": 1.28,
-        "analysis_anchor": 83.53,
-        "market_price": 83.08,
+        "anchor_extension_atr": 1.205,
+        "revalidation_distance_atr": 1.2,
+        "analysis_anchor": 83.36,
+        "market_price": 82.94,
         "strong_momentum_continuation": false,
         "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
         "schema_version": "anti_fomo_v9.3"
@@ -3015,9 +3005,9 @@
       "probe_conviction": {
         "tier": "MEDIUM_CONVICTION_PROBE",
         "base_risk_pct": 0.07,
-        "setup_quality": 74.02,
+        "setup_quality": 71.93,
         "timing_quality": 65.25,
-        "entry_quality": 77.97,
+        "entry_quality": 78.04,
         "htf_state": "NEUTRAL",
         "strong_trigger": false,
         "reversal_evidence": false,
@@ -3050,17 +3040,17 @@
           {
             "source": "entry_quality",
             "delta_pct": 0.0,
-            "reason": "entry_quality=90.0; anti_fomo_penalty=-7.8 embedded once"
+            "reason": "entry_quality=88.0; anti_fomo_penalty=-7.05 embedded once"
           },
           {
             "source": "low_liquidity_quality",
             "delta_pct": -15.0,
-            "reason": "liquidity_quality=5.7"
+            "reason": "liquidity_quality=7.7"
           },
           {
             "source": "clean_structure",
             "delta_pct": 15.0,
-            "reason": "structure_quality=91.0"
+            "reason": "structure_quality=79.2"
           }
         ],
         "regime_memory": {
@@ -3089,36 +3079,36 @@
         "target_router": {
           "mode": "WAIT_FRESH_SETUP_ARGUMENT",
           "ladder": {
-            "count": 5,
-            "score_sum": 13.07,
+            "count": 4,
+            "score_sum": 11.37,
             "nearest": [
-              {
-                "kind": "OB",
-                "tf": "15m",
-                "level": 83.41,
-                "magnet": 2.41,
-                "dist_atr": 0.34
-              },
               {
                 "kind": "ASIAN_LOW",
                 "tf": "1D",
                 "level": 83.05,
-                "magnet": 3.84,
-                "dist_atr": 1.36
+                "magnet": 4.09,
+                "dist_atr": 0.89
               },
               {
                 "kind": "SSL_LIQUIDITY",
                 "tf": "15m",
                 "level": 82.87,
-                "magnet": 1.88,
-                "dist_atr": 1.87
+                "magnet": 2.02,
+                "dist_atr": 1.41
               },
               {
                 "kind": "SSL_LIQUIDITY",
                 "tf": "15m",
                 "level": 82.71,
-                "magnet": 1.75,
-                "dist_atr": 2.32
+                "magnet": 1.88,
+                "dist_atr": 1.86
+              },
+              {
+                "kind": "PDL",
+                "tf": "1D",
+                "level": 82.32,
+                "magnet": 3.38,
+                "dist_atr": 2.98
               }
             ]
           }
@@ -3127,10 +3117,10 @@
           "enabled": true,
           "version": "v9.3.2_split_thesis_execution_lease",
           "state": "STALE",
-          "source": "OPENING_RANGE",
-          "age_min": 864.6,
-          "thesis_age_min": 864.6,
-          "execution_trigger_age_min": 864.6,
+          "source": "OPEN_RECLAIM",
+          "age_min": 874.7,
+          "thesis_age_min": 874.7,
+          "execution_trigger_age_min": 874.7,
           "execution_trigger_ttl_min": 35,
           "execution_trigger_fresh": false,
           "stale_execution_trigger": true,
@@ -3144,21 +3134,21 @@
           "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
           "not_late_location": true,
           "late_location_blocked": false,
-          "distance_from_anchor_atr": 1.28,
+          "distance_from_anchor_atr": 1.2,
           "micro_confirmation": {
-            "supported": true,
-            "kind": "LIVE_DIRECTIONAL_ACCEPTANCE",
-            "score": 85,
+            "supported": false,
+            "kind": "WEAK_OR_MISSING",
+            "score": 20,
             "checks": [
               {
                 "name": "directional_3m_close",
-                "ok": true
+                "ok": false
               },
               {
                 "name": "strong_3m_body",
-                "ok": true,
-                "body_atr": 0.255,
-                "body_ratio": 0.818
+                "ok": false,
+                "body_atr": 0.029,
+                "body_ratio": 0.167
               },
               {
                 "name": "15m_acceptance",
@@ -3171,23 +3161,23 @@
             ],
             "confirmed_3m_bars": 6,
             "six_confirmed_bars_available": true,
-            "six_bar_structure_confirmed": false,
+            "six_bar_structure_confirmed": true,
             "checks_by_name": {
-              "directional_3m_close": true,
-              "strong_3m_body": true,
+              "directional_3m_close": false,
+              "strong_3m_body": false,
               "15m_acceptance": true,
               "micro_sweep_reclaim": false
             },
             "passed_checks": [
-              "directional_3m_close",
-              "strong_3m_body",
               "15m_acceptance"
             ],
             "failed_checks": [
+              "directional_3m_close",
+              "strong_3m_body",
               "micro_sweep_reclaim"
             ],
             "all_checks_passed": false,
-            "directional_acceptance_path": true,
+            "directional_acceptance_path": false,
             "sweep_reclaim_path": false,
             "directional_closes": 4,
             "structure_intact": true,
@@ -3195,47 +3185,50 @@
             "directional_structure": {
               "side": "SHORT",
               "valid": true,
-              "supports_side": false,
-              "aligned": false,
+              "supports_side": true,
+              "aligned": true,
               "partial": true,
               "opposite_aligned": false,
-              "higher_high": true,
+              "higher_high": false,
               "higher_low": false,
-              "lower_high": false,
+              "lower_high": true,
               "lower_low": true,
               "close_progression": true,
               "shift_aligned": false,
-              "score": 62.0,
-              "previous_high": 83.9,
+              "score": 92.0,
+              "previous_high": 84.35,
               "previous_low": 83.34,
-              "recent_high": 84.35,
-              "recent_low": 82.94,
-              "buffer": 0.02235
+              "recent_high": 83.75,
+              "recent_low": 82.92,
+              "buffer": 0.0222
             },
-            "last_confirmed_3m_ts": 1784224080000
+            "last_confirmed_3m_ts": 1784224620000
           },
           "micro_confirmation_policy": {
             "eligible": false,
-            "age_min": 864.64,
+            "age_min": 874.73,
             "elevated_policy": true,
             "generic_micro_max_age_min": 240.0,
-            "score": 85.0,
-            "required_score": 85.0,
-            "score_passed": true,
-            "policy_path": "CONTINUATION_DIRECTIONAL",
+            "score": 20.0,
+            "required_score": 95.0,
+            "score_passed": false,
+            "policy_path": "GENERIC_EITHER_PATH",
             "required_checks": [
               "directional_3m_close",
               "strong_3m_body",
               "15m_acceptance"
             ],
-            "failed_required_checks": [],
-            "required_checks_passed": true,
-            "directional_path_ok": true,
+            "failed_required_checks": [
+              "directional_3m_close",
+              "strong_3m_body"
+            ],
+            "required_checks_passed": false,
+            "directional_path_ok": false,
             "reclaim_path_ok": false,
-            "elevated_confirmation_ok": true,
-            "six_bar_structure_confirmed": false,
+            "elevated_confirmation_ok": false,
+            "six_bar_structure_confirmed": true,
             "within_generic_age": false,
-            "continuation_like": true,
+            "continuation_like": false,
             "reclaim_critical_for_setup": false,
             "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar"
           },
@@ -3258,8 +3251,7 @@
           "stage_override": "WAIT_RETEST",
           "action_bias": "ARMED_REVALIDATION",
           "setup_arguments": [
-            "micro evidence present but blocked: failed=[] score=85.0/85.0 age=864.6m",
-            "price not late vs anchor: 1.28 ATR",
+            "price not late vs anchor: 1.20 ATR",
             "time-warp is thesis memory, not live execution"
           ],
           "no_hard_block": false,
@@ -3268,15 +3260,15 @@
         "entry_supported_now": false,
         "impulse": {
           "valid": true,
-          "impulse_atr": 4.0,
-          "body_efficiency": 0.4,
+          "impulse_atr": 4.1,
+          "body_efficiency": 0.41,
           "direction_closes_5": 3,
-          "compression_ratio": 0.99,
-          "giveback_ratio": 0.2,
-          "last_range_atr": 1.08
+          "compression_ratio": 1.02,
+          "giveback_ratio": 0.04,
+          "last_range_atr": 0.92
         },
-        "trigger_age_min": 864.6,
-        "target_magnet": 3.19,
+        "trigger_age_min": 874.7,
+        "target_magnet": 3.38,
         "plan_q": 50,
         "notes": [
           "old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block",
@@ -3289,10 +3281,10 @@
         "enabled": true,
         "version": "v9.3.2_split_thesis_execution_lease",
         "state": "STALE",
-        "source": "OPENING_RANGE",
-        "age_min": 864.6,
-        "thesis_age_min": 864.6,
-        "execution_trigger_age_min": 864.6,
+        "source": "OPEN_RECLAIM",
+        "age_min": 874.7,
+        "thesis_age_min": 874.7,
+        "execution_trigger_age_min": 874.7,
         "execution_trigger_ttl_min": 35,
         "execution_trigger_fresh": false,
         "stale_execution_trigger": true,
@@ -3306,21 +3298,21 @@
         "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
         "not_late_location": true,
         "late_location_blocked": false,
-        "distance_from_anchor_atr": 1.28,
+        "distance_from_anchor_atr": 1.2,
         "micro_confirmation": {
-          "supported": true,
-          "kind": "LIVE_DIRECTIONAL_ACCEPTANCE",
-          "score": 85,
+          "supported": false,
+          "kind": "WEAK_OR_MISSING",
+          "score": 20,
           "checks": [
             {
               "name": "directional_3m_close",
-              "ok": true
+              "ok": false
             },
             {
               "name": "strong_3m_body",
-              "ok": true,
-              "body_atr": 0.255,
-              "body_ratio": 0.818
+              "ok": false,
+              "body_atr": 0.029,
+              "body_ratio": 0.167
             },
             {
               "name": "15m_acceptance",
@@ -3333,23 +3325,23 @@
           ],
           "confirmed_3m_bars": 6,
           "six_confirmed_bars_available": true,
-          "six_bar_structure_confirmed": false,
+          "six_bar_structure_confirmed": true,
           "checks_by_name": {
-            "directional_3m_close": true,
-            "strong_3m_body": true,
+            "directional_3m_close": false,
+            "strong_3m_body": false,
             "15m_acceptance": true,
             "micro_sweep_reclaim": false
           },
           "passed_checks": [
-            "directional_3m_close",
-            "strong_3m_body",
             "15m_acceptance"
           ],
           "failed_checks": [
+            "directional_3m_close",
+            "strong_3m_body",
             "micro_sweep_reclaim"
           ],
           "all_checks_passed": false,
-          "directional_acceptance_path": true,
+          "directional_acceptance_path": false,
           "sweep_reclaim_path": false,
           "directional_closes": 4,
           "structure_intact": true,
@@ -3357,47 +3349,50 @@
           "directional_structure": {
             "side": "SHORT",
             "valid": true,
-            "supports_side": false,
-            "aligned": false,
+            "supports_side": true,
+            "aligned": true,
             "partial": true,
             "opposite_aligned": false,
-            "higher_high": true,
+            "higher_high": false,
             "higher_low": false,
-            "lower_high": false,
+            "lower_high": true,
             "lower_low": true,
             "close_progression": true,
             "shift_aligned": false,
-            "score": 62.0,
-            "previous_high": 83.9,
+            "score": 92.0,
+            "previous_high": 84.35,
             "previous_low": 83.34,
-            "recent_high": 84.35,
-            "recent_low": 82.94,
-            "buffer": 0.02235
+            "recent_high": 83.75,
+            "recent_low": 82.92,
+            "buffer": 0.0222
           },
-          "last_confirmed_3m_ts": 1784224080000
+          "last_confirmed_3m_ts": 1784224620000
         },
         "micro_confirmation_policy": {
           "eligible": false,
-          "age_min": 864.64,
+          "age_min": 874.73,
           "elevated_policy": true,
           "generic_micro_max_age_min": 240.0,
-          "score": 85.0,
-          "required_score": 85.0,
-          "score_passed": true,
-          "policy_path": "CONTINUATION_DIRECTIONAL",
+          "score": 20.0,
+          "required_score": 95.0,
+          "score_passed": false,
+          "policy_path": "GENERIC_EITHER_PATH",
           "required_checks": [
             "directional_3m_close",
             "strong_3m_body",
             "15m_acceptance"
           ],
-          "failed_required_checks": [],
-          "required_checks_passed": true,
-          "directional_path_ok": true,
+          "failed_required_checks": [
+            "directional_3m_close",
+            "strong_3m_body"
+          ],
+          "required_checks_passed": false,
+          "directional_path_ok": false,
           "reclaim_path_ok": false,
-          "elevated_confirmation_ok": true,
-          "six_bar_structure_confirmed": false,
+          "elevated_confirmation_ok": false,
+          "six_bar_structure_confirmed": true,
           "within_generic_age": false,
-          "continuation_like": true,
+          "continuation_like": false,
           "reclaim_critical_for_setup": false,
           "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar"
         },
@@ -3420,8 +3415,7 @@
         "stage_override": "WAIT_RETEST",
         "action_bias": "ARMED_REVALIDATION",
         "setup_arguments": [
-          "micro evidence present but blocked: failed=[] score=85.0/85.0 age=864.6m",
-          "price not late vs anchor: 1.28 ATR",
+          "price not late vs anchor: 1.20 ATR",
           "time-warp is thesis memory, not live execution"
         ],
         "no_hard_block": false,
@@ -3433,22 +3427,22 @@
         {
           "rank": 1,
           "side": "SHORT",
-          "model": "OPENING_RANGE_BREAKOUT",
-          "setup_type": "OPENING_RANGE_BREAKOUT",
-          "final_score": 67,
-          "hypothesis_score": 68.74,
-          "setup_q": 100,
-          "execution_q": 68,
+          "model": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+          "final_score": 58,
+          "hypothesis_score": 59.7,
+          "setup_q": 92,
+          "execution_q": 71,
           "plan_q": 50,
-          "entry_quality": 90,
-          "durability_quality": 54,
-          "execution_source": "OPENING_RANGE",
+          "entry_quality": 88,
+          "durability_quality": 53,
+          "execution_source": "OPEN_RECLAIM",
           "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 864.6,
+          "trigger_age_min": 874.7,
           "trigger_reanchored": false,
-          "original_trigger_age_min": 864.6,
-          "effective_trigger_age_min": 864.6,
-          "target_magnet": 3.19,
+          "original_trigger_age_min": 874.7,
+          "effective_trigger_age_min": 874.7,
+          "target_magnet": 3.38,
           "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
           "innovation_risk_mult": 0.451,
           "revalidation_state": "STALE",
@@ -3462,20 +3456,20 @@
           "side": "SHORT",
           "model": "TIME_OF_DAY_ADAPTIVE",
           "setup_type": "TIME_OF_DAY_ADAPTIVE",
-          "final_score": 64,
-          "hypothesis_score": 65.3,
+          "final_score": 55,
+          "hypothesis_score": 56.2,
           "setup_q": 96,
           "execution_q": 57,
-          "plan_q": 50,
+          "plan_q": 49,
           "entry_quality": 86,
-          "durability_quality": 56,
+          "durability_quality": 46,
           "execution_source": "TIME_OF_DAY",
           "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 864.6,
+          "trigger_age_min": 874.7,
           "trigger_reanchored": false,
-          "original_trigger_age_min": 864.6,
-          "effective_trigger_age_min": 864.6,
-          "target_magnet": 3.8,
+          "original_trigger_age_min": 874.7,
+          "effective_trigger_age_min": 874.7,
+          "target_magnet": 0.0,
           "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
           "innovation_risk_mult": 0.451,
           "revalidation_state": "STALE",
@@ -3490,7 +3484,7 @@
           "model": "TIME_OF_DAY_ADAPTIVE",
           "setup_type": "TIME_OF_DAY_ADAPTIVE",
           "final_score": 54,
-          "hypothesis_score": 55.27,
+          "hypothesis_score": 55.26,
           "setup_q": 100,
           "execution_q": 55,
           "plan_q": 75,
@@ -3498,11 +3492,11 @@
           "durability_quality": 52,
           "execution_source": "TIME_OF_DAY",
           "entry_stage": "WAIT_RETEST",
-          "trigger_age_min": 342.6,
+          "trigger_age_min": 352.7,
           "trigger_reanchored": false,
-          "original_trigger_age_min": 342.6,
-          "effective_trigger_age_min": 342.6,
-          "target_magnet": 2.67,
+          "original_trigger_age_min": 352.7,
+          "effective_trigger_age_min": 352.7,
+          "target_magnet": 2.55,
           "innovation_model": "STALE_THESIS_WAIT_SETUP_ARGUMENT",
           "innovation_risk_mult": 0.484,
           "revalidation_state": "STALE",
@@ -3515,27 +3509,27 @@
       "entry_price_contract": {
         "version": "v8.14.1",
         "source": "LIVE_MARKET_PRICE",
-        "market_price": 83.08,
+        "market_price": 82.94,
         "entry_price_override": 0.0,
-        "analysis_anchor": 83.53,
-        "trigger_level": 83.53,
-        "selected_entry": 83.08,
+        "analysis_anchor": 83.36,
+        "trigger_level": 83.36,
+        "selected_entry": 82.94,
         "market_entry_required": true,
         "anchor_is_analytical_only": true
       },
       "preplan_quality_pipeline": {
-        "setup_quality": 100.0,
-        "timing_quality": 68.0,
-        "entry_quality": 89.96,
+        "setup_quality": 92.0,
+        "timing_quality": 71.0,
+        "entry_quality": 88.08,
         "anti_fomo": {
-          "score": 92.2,
-          "penalty": -7.8,
-          "price_extension_atr": 1.28,
+          "score": 92.95,
+          "penalty": -7.05,
+          "price_extension_atr": 1.205,
           "impulse_extension_atr": 0.0,
-          "anchor_extension_atr": 1.275,
-          "revalidation_distance_atr": 1.28,
-          "analysis_anchor": 83.53,
-          "market_price": 83.08,
+          "anchor_extension_atr": 1.205,
+          "revalidation_distance_atr": 1.2,
+          "analysis_anchor": 83.36,
+          "market_price": 82.94,
           "strong_momentum_continuation": false,
           "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
           "schema_version": "anti_fomo_v9.3"
@@ -3543,9 +3537,9 @@
         "probe_conviction": {
           "tier": "MEDIUM_CONVICTION_PROBE",
           "base_risk_pct": 0.07,
-          "setup_quality": 100.0,
-          "timing_quality": 68.0,
-          "entry_quality": 89.96,
+          "setup_quality": 92.0,
+          "timing_quality": 71.0,
+          "entry_quality": 88.08,
           "htf_state": "NEUTRAL",
           "strong_trigger": false,
           "reversal_evidence": false,
@@ -3564,17 +3558,17 @@
             {
               "source": "entry_quality",
               "delta_pct": 0.0,
-              "reason": "entry_quality=90.0; anti_fomo_penalty=-7.8 embedded once"
+              "reason": "entry_quality=88.0; anti_fomo_penalty=-7.05 embedded once"
             },
             {
               "source": "low_liquidity_quality",
               "delta_pct": -15.0,
-              "reason": "liquidity_quality=5.7"
+              "reason": "liquidity_quality=7.7"
             },
             {
               "source": "clean_structure",
               "delta_pct": 15.0,
-              "reason": "structure_quality=91.0"
+              "reason": "structure_quality=79.2"
             }
           ],
           "regime_memory": {
@@ -3647,14 +3641,14 @@
       "score_admission_profile": {
         "authority": "CANONICAL_SCORE_POLICY",
         "mode": "LIVE",
-        "score": 67,
+        "score": 58,
         "entry_threshold": 75,
         "risky_threshold": 68,
         "full_entry_eligible": false,
         "risky_entry_eligible": false,
-        "gray_shadow_only": true,
+        "gray_shadow_only": false,
         "gray_lower_bound": 66,
-        "band": "GRAY_SHADOW_ONLY",
+        "band": "BELOW",
         "live_defaults_preserved": true
       },
       "risk_adjustment_ledger": {
@@ -3739,7 +3733,7 @@
           }
         ],
         "combined_confidence_multiplier": 0.092089,
-        "geometry_multiplier": 1.0,
+        "geometry_multiplier": 0.8394,
         "capital_cap_pct": 0.0,
         "final_position_risk_pct": 0.0,
         "stage": "WAIT_RETEST",
@@ -3754,17 +3748,17 @@
           {
             "source": "entry_quality",
             "delta_pct": 0.0,
-            "reason": "entry_quality=90.0; anti_fomo_penalty=-7.8 embedded once"
+            "reason": "entry_quality=88.0; anti_fomo_penalty=-7.05 embedded once"
           },
           {
             "source": "low_liquidity_quality",
             "delta_pct": -15.0,
-            "reason": "liquidity_quality=5.7"
+            "reason": "liquidity_quality=7.7"
           },
           {
             "source": "clean_structure",
             "delta_pct": 15.0,
-            "reason": "structure_quality=91.0"
+            "reason": "structure_quality=79.2"
           }
         ],
         "duplicate_sources": [],
@@ -3774,7 +3768,7 @@
           "risk_confidence_budget=-10.00%",
           "confidence_multiplier=0.092089",
           "after_confidence=0.000000",
-          "geometry_multiplier=1.000000",
+          "geometry_multiplier=0.839400",
           "after_geometry=0.000000",
           "stage_cap=0.0000",
           "capital_cap=0.0000",
@@ -3830,7 +3824,7 @@
           "live_mode": "SHADOW_ONLY",
           "risk_cap_pct": 0.05,
           "strict_thresholds_changed": false,
-          "updated_at": "2026-07-16T17:51:38.236574+00:00"
+          "updated_at": "2026-07-16T18:01:43.603065+00:00"
         },
         "live_eligible": false,
         "live_mode": "SHADOW_ONLY",
@@ -3840,61 +3834,61 @@
         }
       },
       "thesis_confidence_decay": {
-        "base_confidence": 74.02,
-        "first_seen_at": "2026-07-16T17:01:53.384918+00:00",
-        "age_hours": 0.83,
-        "decay_points": 1.87,
+        "base_confidence": 71.93,
+        "first_seen_at": null,
+        "age_hours": 0.0,
+        "decay_points": 0.0,
         "fresh_evidence_bonus": 0.0,
         "fresh_evidence_detected": false,
-        "confidence": 72.15,
+        "confidence": 71.93,
         "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
         "schema_version": "thesis_confidence_decay_v9.1"
       },
       "quality_voting": {
         "supporting": [
+          "PRICE_STRUCTURE_ADVISOR",
           "EXECUTION_ANALYST"
         ],
         "doubting": [],
         "silent": [
           "HTF_ANALYST",
           "ICT_ANALYST",
-          "PRICE_STRUCTURE_ADVISOR",
           "SHORT_REVERSAL_ANALYST"
         ],
-        "net_conviction": 1.36,
-        "support_count": 1,
+        "net_conviction": 11.152,
+        "support_count": 2,
         "doubt_count": 0,
-        "silent_count": 4,
+        "silent_count": 3,
         "schema_version": "quality_voting_v9.1"
       },
       "evaluation_bundle": {
-        "thesis_quality": 72.15,
+        "thesis_quality": 71.93,
         "execution_readiness": 65.25,
-        "trade_quality": 91.71,
+        "trade_quality": 92.42,
         "conflict_report": {
-          "net_market_preference": 0,
-          "net_execution_preference": 1.36,
+          "net_market_preference": 9.2,
+          "net_execution_preference": 1.952,
           "actual_conflict": false,
           "conflict_axes": [],
           "conflict_pairs": [],
           "conflict_severity": 0.0,
-          "uncertainty_level": 49.06,
+          "uncertainty_level": 10.44,
           "capital_blocked": false,
           "consensus": {
-            "market": "UNCERTAIN",
+            "market": "POSITIVE_CONSENSUS",
             "execution": "POSITIVE_CONSENSUS",
-            "market_support": 0,
+            "market_support": 9.2,
             "market_against": 0,
-            "execution_support": 1.36,
+            "execution_support": 1.952,
             "execution_against": 0
           },
           "effective_votes": [
             {
               "module": "HTF_ANALYST",
               "opinion": "UNCERTAIN",
-              "confidence": 6.26,
-              "raw_impact": 0.63,
-              "effective_impact": 0.039,
+              "confidence": 8.51,
+              "raw_impact": 0.85,
+              "effective_impact": 0.072,
               "axes": [
                 "direction",
                 "htf_direction"
@@ -3905,9 +3899,9 @@
             {
               "module": "ICT_ANALYST",
               "opinion": "UNCERTAIN",
-              "confidence": 23.21,
-              "raw_impact": -5.6,
-              "effective_impact": 1.3,
+              "confidence": 20.84,
+              "raw_impact": -6.39,
+              "effective_impact": 1.332,
               "axes": [
                 "market_thesis",
                 "structure"
@@ -3917,16 +3911,16 @@
             },
             {
               "module": "PRICE_STRUCTURE_ADVISOR",
-              "opinion": "UNCERTAIN",
-              "confidence": 91.04,
-              "raw_impact": 0.0,
-              "effective_impact": 0.0,
+              "opinion": "SUPPORT",
+              "confidence": 92.0,
+              "raw_impact": 10.0,
+              "effective_impact": 9.2,
               "axes": [
                 "direction",
                 "structure"
               ],
               "horizon": "15M-1H structure",
-              "explicit_conclusion": false
+              "explicit_conclusion": true
             },
             {
               "module": "SHORT_REVERSAL_ANALYST",
@@ -3943,9 +3937,9 @@
             {
               "module": "EXECUTION_ANALYST",
               "opinion": "SUPPORT",
-              "confidence": 68.0,
-              "raw_impact": 2.0,
-              "effective_impact": 1.36,
+              "confidence": 71.0,
+              "raw_impact": 2.75,
+              "effective_impact": 1.952,
               "axes": [
                 "execution_timing"
               ],
@@ -3967,19 +3961,19 @@
           ],
           "quality_voting": {
             "supporting": [
+              "PRICE_STRUCTURE_ADVISOR",
               "EXECUTION_ANALYST"
             ],
             "doubting": [],
             "silent": [
               "HTF_ANALYST",
               "ICT_ANALYST",
-              "PRICE_STRUCTURE_ADVISOR",
               "SHORT_REVERSAL_ANALYST"
             ],
-            "net_conviction": 1.36,
-            "support_count": 1,
+            "net_conviction": 11.152,
+            "support_count": 2,
             "doubt_count": 0,
-            "silent_count": 4,
+            "silent_count": 3,
             "schema_version": "quality_voting_v9.1"
           },
           "schema_version": "conflict_report_v9.1"
@@ -3990,7 +3984,7 @@
           "asymmetry_quality": 100.0,
           "regime_fit": 100.0,
           "evidence_independence": 100.0,
-          "statistical_status": "UNPROVEN",
+          "statistical_status": "NO_SAMPLE",
           "failed_principles": [],
           "reason_codes": [
             "EDGE_UNPROVEN_STAGE_ONLY"
@@ -4012,23 +4006,23 @@
             "rr1_raw": 2.0,
             "realistic_rr1": 2.0,
             "transaction_costs_r": 0.0,
-            "family_expectancy_r": 0.328,
-            "sample": 1,
+            "family_expectancy_r": 0.0,
+            "sample": 0,
             "logical_target": true,
             "evidence_groups": [
-              "EXECUTION_OPENING_RANGE",
+              "EXECUTION_OPEN_RECLAIM",
               "EXECUTION_TIME_WARP_WAIT_RETEST",
               "ICT_LOCATION",
-              "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+              "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
               "PRICE_STRUCTURE",
               "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
               "МОДЕЛЬ",
-              "⏱️ OR MODEL",
               "✅ МОДЕЛЬ УЗГОДЖЕНА З РЕЖИМОМ РИНКУ (+5)",
               "🎯 ENTRY CONTRACT",
               "📉 SHORT RECENT PERFORMANCE СЛАБКИЙ",
               "📊 HYPOTHESIS SCORE",
-              "🧮 PATTERN EVIDENCE FUSION"
+              "🧮 PATTERN EVIDENCE FUSION",
+              "🧲 OPEN RECLAIM"
             ]
           },
           "schema_version": "philosophy_v9.0"
@@ -4036,21 +4030,21 @@
         "data_quality": 100.0,
         "raw_components": {
           "thesis": {
-            "structure": 91.04,
-            "liquidity_event": 5.67,
+            "structure": 79.17,
+            "liquidity_event": 7.67,
             "regime_fit": 100.0,
-            "htf_alignment": 53.13,
+            "htf_alignment": 54.25,
             "directional_thesis": 100.0,
             "independent_pattern_evidence": 100.0
           },
           "thesis_confidence_decay": {
-            "base_confidence": 74.02,
-            "first_seen_at": "2026-07-16T17:01:53.384918+00:00",
-            "age_hours": 0.83,
-            "decay_points": 1.87,
+            "base_confidence": 71.93,
+            "first_seen_at": null,
+            "age_hours": 0.0,
+            "decay_points": 0.0,
             "fresh_evidence_bonus": 0.0,
             "fresh_evidence_detected": false,
-            "confidence": 72.15,
+            "confidence": 71.93,
             "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
             "schema_version": "thesis_confidence_decay_v9.1"
           },
@@ -4071,17 +4065,17 @@
             "acceptance": 0.0,
             "confirmation_tier": 50.0,
             "execution_source": 75.0,
-            "anti_fomo": 92.2
+            "anti_fomo": 92.95
           },
           "anti_fomo": {
-            "score": 92.2,
-            "penalty": -7.8,
-            "price_extension_atr": 1.28,
+            "score": 92.95,
+            "penalty": -7.05,
+            "price_extension_atr": 1.205,
             "impulse_extension_atr": 0.0,
-            "anchor_extension_atr": 1.275,
-            "revalidation_distance_atr": 1.28,
-            "analysis_anchor": 83.53,
-            "market_price": 83.08,
+            "anchor_extension_atr": 1.205,
+            "revalidation_distance_atr": 1.2,
+            "analysis_anchor": 83.36,
+            "market_price": 82.94,
             "strong_momentum_continuation": false,
             "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
             "schema_version": "anti_fomo_v9.3"
@@ -4089,9 +4083,9 @@
           "probe_conviction": {
             "tier": "MEDIUM_CONVICTION_PROBE",
             "base_risk_pct": 0.07,
-            "setup_quality": 74.02,
+            "setup_quality": 71.93,
             "timing_quality": 65.25,
-            "entry_quality": 77.97,
+            "entry_quality": 78.04,
             "htf_state": "NEUTRAL",
             "strong_trigger": false,
             "reversal_evidence": false,
@@ -4101,7 +4095,7 @@
           "trade": {
             "stop_quality": 100.0,
             "realistic_rr": 93.75,
-            "target_magnet": 79.75,
+            "target_magnet": 84.5,
             "cost_realism": 60.0,
             "capital_availability": 100.0,
             "exposure_correlation": 100.0,
@@ -4120,12 +4114,12 @@
           "htf_fact": {
             "market_bias": "NEUTRAL",
             "candidate_side": "SHORT",
-            "alignment_score": 0.062565,
+            "alignment_score": 0.08508,
             "state": "NEUTRAL",
             "timeframe_components": {
               "15m": {
                 "weight": 0.15,
-                "direction": -0.4171,
+                "direction": -0.5672,
                 "bias": "SHORT"
               },
               "1h": {
@@ -4139,7 +4133,7 @@
                 "bias": "NEUTRAL"
               }
             },
-            "confidence": 6.2565,
+            "confidence": 8.508,
             "schema_version": "htf_fact_v9.0",
             "state_threshold": 0.45,
             "valid": true,
@@ -4154,12 +4148,12 @@
             "htf_fact": {
               "market_bias": "NEUTRAL",
               "candidate_side": "SHORT",
-              "alignment_score": 0.062565,
+              "alignment_score": 0.08508,
               "state": "NEUTRAL",
               "timeframe_components": {
                 "15m": {
                   "weight": 0.15,
-                  "direction": -0.4171,
+                  "direction": -0.5672,
                   "bias": "SHORT"
                 },
                 "1h": {
@@ -4173,7 +4167,7 @@
                   "bias": "NEUTRAL"
                 }
               },
-              "confidence": 6.2565,
+              "confidence": 8.508,
               "schema_version": "htf_fact_v9.0",
               "state_threshold": 0.45,
               "valid": true,
@@ -4184,7 +4178,7 @@
               "structural_counter_evidence": "UNKNOWN",
               "mss_quality": "UNKNOWN",
               "failure_quality": "UNKNOWN",
-              "drift_atr": -3.798,
+              "drift_atr": -3.5,
               "schema_version": "reversal_evidence_v9.0"
             },
             "schema_version": "candidate_schema_v9.0"
@@ -4194,7 +4188,7 @@
             "structural_counter_evidence": "UNKNOWN",
             "mss_quality": "UNKNOWN",
             "failure_quality": "UNKNOWN",
-            "drift_atr": -3.798,
+            "drift_atr": -3.5,
             "schema_version": "reversal_evidence_v9.0"
           }
         },
@@ -4236,21 +4230,21 @@
             "stage_cap_compliance"
           ]
         },
-        "setup_quality": 74.02,
+        "setup_quality": 71.93,
         "timing_quality": 65.25,
-        "entry_quality": 77.97,
-        "thesis_confidence": 72.15,
+        "entry_quality": 78.04,
+        "thesis_confidence": 71.93,
         "schema_version": "evaluation_bundle_v9.1"
       }
     },
     "score_features": {
       "loc": 1.0,
-      "structure": 0.9104,
-      "liquidity": 0.0567,
-      "flow": 0.1517,
+      "structure": 0.7917,
+      "liquidity": 0.0765,
+      "flow": 0.1167,
       "trigger": 1.0,
-      "htf": 0.5313,
-      "pattern": 0.5197,
+      "htf": 0.5425,
+      "pattern": 0.4762,
       "session": 0.0,
       "smt": 0.0,
       "regime_fit": 1.0,
@@ -4264,22 +4258,22 @@
       "pattern_gate": 1.0,
       "forward_zone_gate": 0.9,
       "exhaustion_gate": 1.0,
-      "liquidity_gate": 1.0,
-      "trend_gate": 0.789,
-      "trend_gate_source": "HTF_ONLY_FLOW_UNAVAILABLE",
+      "liquidity_gate": 0.612,
+      "trend_gate": 1.0,
+      "trend_gate_source": "NOT_APPLICABLE",
       "htf_late_gate": 1.0,
-      "product": 0.71
+      "product": 0.551
     },
     "score_model_source": "bootstrap",
     "score_model_sample_size": 13,
     "score_model_learned_weight": 0.0,
     "quality_dimensions": {
-      "setup_quality": 74,
+      "setup_quality": 72,
       "timing_quality": 65,
       "entry_quality": 78,
-      "thesis_confidence": 72.15,
-      "durability_quality": 54,
-      "exit_quality": 54,
+      "thesis_confidence": 71.93,
+      "durability_quality": 53,
+      "exit_quality": 53,
       "mode": "HEURISTIC_UNTIL_LEARNED"
     },
     "innovation_profile": {
@@ -4292,36 +4286,36 @@
       "target_router": {
         "mode": "WAIT_FRESH_SETUP_ARGUMENT",
         "ladder": {
-          "count": 5,
-          "score_sum": 13.07,
+          "count": 4,
+          "score_sum": 11.37,
           "nearest": [
-            {
-              "kind": "OB",
-              "tf": "15m",
-              "level": 83.41,
-              "magnet": 2.41,
-              "dist_atr": 0.34
-            },
             {
               "kind": "ASIAN_LOW",
               "tf": "1D",
               "level": 83.05,
-              "magnet": 3.84,
-              "dist_atr": 1.36
+              "magnet": 4.09,
+              "dist_atr": 0.89
             },
             {
               "kind": "SSL_LIQUIDITY",
               "tf": "15m",
               "level": 82.87,
-              "magnet": 1.88,
-              "dist_atr": 1.87
+              "magnet": 2.02,
+              "dist_atr": 1.41
             },
             {
               "kind": "SSL_LIQUIDITY",
               "tf": "15m",
               "level": 82.71,
-              "magnet": 1.75,
-              "dist_atr": 2.32
+              "magnet": 1.88,
+              "dist_atr": 1.86
+            },
+            {
+              "kind": "PDL",
+              "tf": "1D",
+              "level": 82.32,
+              "magnet": 3.38,
+              "dist_atr": 2.98
             }
           ]
         }
@@ -4330,10 +4324,10 @@
         "enabled": true,
         "version": "v9.3.2_split_thesis_execution_lease",
         "state": "STALE",
-        "source": "OPENING_RANGE",
-        "age_min": 864.6,
-        "thesis_age_min": 864.6,
-        "execution_trigger_age_min": 864.6,
+        "source": "OPEN_RECLAIM",
+        "age_min": 874.7,
+        "thesis_age_min": 874.7,
+        "execution_trigger_age_min": 874.7,
         "execution_trigger_ttl_min": 35,
         "execution_trigger_fresh": false,
         "stale_execution_trigger": true,
@@ -4347,21 +4341,21 @@
         "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
         "not_late_location": true,
         "late_location_blocked": false,
-        "distance_from_anchor_atr": 1.28,
+        "distance_from_anchor_atr": 1.2,
         "micro_confirmation": {
-          "supported": true,
-          "kind": "LIVE_DIRECTIONAL_ACCEPTANCE",
-          "score": 85,
+          "supported": false,
+          "kind": "WEAK_OR_MISSING",
+          "score": 20,
           "checks": [
             {
               "name": "directional_3m_close",
-              "ok": true
+              "ok": false
             },
             {
               "name": "strong_3m_body",
-              "ok": true,
-              "body_atr": 0.255,
-              "body_ratio": 0.818
+              "ok": false,
+              "body_atr": 0.029,
+              "body_ratio": 0.167
             },
             {
               "name": "15m_acceptance",
@@ -4374,23 +4368,23 @@
           ],
           "confirmed_3m_bars": 6,
           "six_confirmed_bars_available": true,
-          "six_bar_structure_confirmed": false,
+          "six_bar_structure_confirmed": true,
           "checks_by_name": {
-            "directional_3m_close": true,
-            "strong_3m_body": true,
+            "directional_3m_close": false,
+            "strong_3m_body": false,
             "15m_acceptance": true,
             "micro_sweep_reclaim": false
           },
           "passed_checks": [
-            "directional_3m_close",
-            "strong_3m_body",
             "15m_acceptance"
           ],
           "failed_checks": [
+            "directional_3m_close",
+            "strong_3m_body",
             "micro_sweep_reclaim"
           ],
           "all_checks_passed": false,
-          "directional_acceptance_path": true,
+          "directional_acceptance_path": false,
           "sweep_reclaim_path": false,
           "directional_closes": 4,
           "structure_intact": true,
@@ -4398,47 +4392,50 @@
           "directional_structure": {
             "side": "SHORT",
             "valid": true,
-            "supports_side": false,
-            "aligned": false,
+            "supports_side": true,
+            "aligned": true,
             "partial": true,
             "opposite_aligned": false,
-            "higher_high": true,
+            "higher_high": false,
             "higher_low": false,
-            "lower_high": false,
+            "lower_high": true,
             "lower_low": true,
             "close_progression": true,
             "shift_aligned": false,
-            "score": 62.0,
-            "previous_high": 83.9,
+            "score": 92.0,
+            "previous_high": 84.35,
             "previous_low": 83.34,
-            "recent_high": 84.35,
-            "recent_low": 82.94,
-            "buffer": 0.02235
+            "recent_high": 83.75,
+            "recent_low": 82.92,
+            "buffer": 0.0222
           },
-          "last_confirmed_3m_ts": 1784224080000
+          "last_confirmed_3m_ts": 1784224620000
         },
         "micro_confirmation_policy": {
           "eligible": false,
-          "age_min": 864.64,
+          "age_min": 874.73,
           "elevated_policy": true,
           "generic_micro_max_age_min": 240.0,
-          "score": 85.0,
-          "required_score": 85.0,
-          "score_passed": true,
-          "policy_path": "CONTINUATION_DIRECTIONAL",
+          "score": 20.0,
+          "required_score": 95.0,
+          "score_passed": false,
+          "policy_path": "GENERIC_EITHER_PATH",
           "required_checks": [
             "directional_3m_close",
             "strong_3m_body",
             "15m_acceptance"
           ],
-          "failed_required_checks": [],
-          "required_checks_passed": true,
-          "directional_path_ok": true,
+          "failed_required_checks": [
+            "directional_3m_close",
+            "strong_3m_body"
+          ],
+          "required_checks_passed": false,
+          "directional_path_ok": false,
           "reclaim_path_ok": false,
-          "elevated_confirmation_ok": true,
-          "six_bar_structure_confirmed": false,
+          "elevated_confirmation_ok": false,
+          "six_bar_structure_confirmed": true,
           "within_generic_age": false,
-          "continuation_like": true,
+          "continuation_like": false,
           "reclaim_critical_for_setup": false,
           "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar"
         },
@@ -4461,8 +4458,7 @@
         "stage_override": "WAIT_RETEST",
         "action_bias": "ARMED_REVALIDATION",
         "setup_arguments": [
-          "micro evidence present but blocked: failed=[] score=85.0/85.0 age=864.6m",
-          "price not late vs anchor: 1.28 ATR",
+          "price not late vs anchor: 1.20 ATR",
           "time-warp is thesis memory, not live execution"
         ],
         "no_hard_block": false,
@@ -4471,15 +4467,15 @@
       "entry_supported_now": false,
       "impulse": {
         "valid": true,
-        "impulse_atr": 4.0,
-        "body_efficiency": 0.4,
+        "impulse_atr": 4.1,
+        "body_efficiency": 0.41,
         "direction_closes_5": 3,
-        "compression_ratio": 0.99,
-        "giveback_ratio": 0.2,
-        "last_range_atr": 1.08
+        "compression_ratio": 1.02,
+        "giveback_ratio": 0.04,
+        "last_range_atr": 0.92
       },
-      "trigger_age_min": 864.6,
-      "target_magnet": 3.19,
+      "trigger_age_min": 874.7,
+      "target_magnet": 3.38,
       "plan_q": 50,
       "notes": [
         "old trigger лишається thesis memory → чекаємо свіжий 3M/15M setup argument, без hard block",
@@ -4492,10 +4488,10 @@
       "enabled": true,
       "version": "v9.3.2_split_thesis_execution_lease",
       "state": "STALE",
-      "source": "OPENING_RANGE",
-      "age_min": 864.6,
-      "thesis_age_min": 864.6,
-      "execution_trigger_age_min": 864.6,
+      "source": "OPEN_RECLAIM",
+      "age_min": 874.7,
+      "thesis_age_min": 874.7,
+      "execution_trigger_age_min": 874.7,
       "execution_trigger_ttl_min": 35,
       "execution_trigger_fresh": false,
       "stale_execution_trigger": true,
@@ -4509,21 +4505,21 @@
       "entry_timing": "ARMED_WAIT_FRESH_ARGUMENT",
       "not_late_location": true,
       "late_location_blocked": false,
-      "distance_from_anchor_atr": 1.28,
+      "distance_from_anchor_atr": 1.2,
       "micro_confirmation": {
-        "supported": true,
-        "kind": "LIVE_DIRECTIONAL_ACCEPTANCE",
-        "score": 85,
+        "supported": false,
+        "kind": "WEAK_OR_MISSING",
+        "score": 20,
         "checks": [
           {
             "name": "directional_3m_close",
-            "ok": true
+            "ok": false
           },
           {
             "name": "strong_3m_body",
-            "ok": true,
-            "body_atr": 0.255,
-            "body_ratio": 0.818
+            "ok": false,
+            "body_atr": 0.029,
+            "body_ratio": 0.167
           },
           {
             "name": "15m_acceptance",
@@ -4536,23 +4532,23 @@
         ],
         "confirmed_3m_bars": 6,
         "six_confirmed_bars_available": true,
-        "six_bar_structure_confirmed": false,
+        "six_bar_structure_confirmed": true,
         "checks_by_name": {
-          "directional_3m_close": true,
-          "strong_3m_body": true,
+          "directional_3m_close": false,
+          "strong_3m_body": false,
           "15m_acceptance": true,
           "micro_sweep_reclaim": false
         },
         "passed_checks": [
-          "directional_3m_close",
-          "strong_3m_body",
           "15m_acceptance"
         ],
         "failed_checks": [
+          "directional_3m_close",
+          "strong_3m_body",
           "micro_sweep_reclaim"
         ],
         "all_checks_passed": false,
-        "directional_acceptance_path": true,
+        "directional_acceptance_path": false,
         "sweep_reclaim_path": false,
         "directional_closes": 4,
         "structure_intact": true,
@@ -4560,47 +4556,50 @@
         "directional_structure": {
           "side": "SHORT",
           "valid": true,
-          "supports_side": false,
-          "aligned": false,
+          "supports_side": true,
+          "aligned": true,
           "partial": true,
           "opposite_aligned": false,
-          "higher_high": true,
+          "higher_high": false,
           "higher_low": false,
-          "lower_high": false,
+          "lower_high": true,
           "lower_low": true,
           "close_progression": true,
           "shift_aligned": false,
-          "score": 62.0,
-          "previous_high": 83.9,
+          "score": 92.0,
+          "previous_high": 84.35,
           "previous_low": 83.34,
-          "recent_high": 84.35,
-          "recent_low": 82.94,
-          "buffer": 0.02235
+          "recent_high": 83.75,
+          "recent_low": 82.92,
+          "buffer": 0.0222
         },
-        "last_confirmed_3m_ts": 1784224080000
+        "last_confirmed_3m_ts": 1784224620000
       },
       "micro_confirmation_policy": {
         "eligible": false,
-        "age_min": 864.64,
+        "age_min": 874.73,
         "elevated_policy": true,
         "generic_micro_max_age_min": 240.0,
-        "score": 85.0,
-        "required_score": 85.0,
-        "score_passed": true,
-        "policy_path": "CONTINUATION_DIRECTIONAL",
+        "score": 20.0,
+        "required_score": 95.0,
+        "score_passed": false,
+        "policy_path": "GENERIC_EITHER_PATH",
         "required_checks": [
           "directional_3m_close",
           "strong_3m_body",
           "15m_acceptance"
         ],
-        "failed_required_checks": [],
-        "required_checks_passed": true,
-        "directional_path_ok": true,
+        "failed_required_checks": [
+          "directional_3m_close",
+          "strong_3m_body"
+        ],
+        "required_checks_passed": false,
+        "directional_path_ok": false,
         "reclaim_path_ok": false,
-        "elevated_confirmation_ok": true,
-        "six_bar_structure_confirmed": false,
+        "elevated_confirmation_ok": false,
+        "six_bar_structure_confirmed": true,
         "within_generic_age": false,
-        "continuation_like": true,
+        "continuation_like": false,
         "reclaim_critical_for_setup": false,
         "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar"
       },
@@ -4623,8 +4622,7 @@
       "stage_override": "WAIT_RETEST",
       "action_bias": "ARMED_REVALIDATION",
       "setup_arguments": [
-        "micro evidence present but blocked: failed=[] score=85.0/85.0 age=864.6m",
-        "price not late vs anchor: 1.28 ATR",
+        "price not late vs anchor: 1.20 ATR",
         "time-warp is thesis memory, not live execution"
       ],
       "no_hard_block": false,
@@ -4678,7 +4676,7 @@
         "live_mode": "SHADOW_ONLY",
         "risk_cap_pct": 0.05,
         "strict_thresholds_changed": false,
-        "updated_at": "2026-07-16T17:51:38.236574+00:00"
+        "updated_at": "2026-07-16T18:01:43.603065+00:00"
       },
       "live_eligible": false,
       "live_mode": "SHADOW_ONLY",
@@ -4691,9 +4689,9 @@
     "probe_conviction": {
       "tier": "MEDIUM_CONVICTION_PROBE",
       "base_risk_pct": 0.07,
-      "setup_quality": 74.02,
+      "setup_quality": 71.93,
       "timing_quality": 65.25,
-      "entry_quality": 77.97,
+      "entry_quality": 78.04,
       "htf_state": "NEUTRAL",
       "strong_trigger": false,
       "reversal_evidence": false,
@@ -4702,42 +4700,42 @@
     },
     "quality_voting": {
       "supporting": [
+        "PRICE_STRUCTURE_ADVISOR",
         "EXECUTION_ANALYST"
       ],
       "doubting": [],
       "silent": [
         "HTF_ANALYST",
         "ICT_ANALYST",
-        "PRICE_STRUCTURE_ADVISOR",
         "SHORT_REVERSAL_ANALYST"
       ],
-      "net_conviction": 1.36,
-      "support_count": 1,
+      "net_conviction": 11.152,
+      "support_count": 2,
       "doubt_count": 0,
-      "silent_count": 4,
+      "silent_count": 3,
       "schema_version": "quality_voting_v9.1"
     },
     "anti_fomo": {
-      "score": 92.2,
-      "penalty": -7.8,
-      "price_extension_atr": 1.28,
+      "score": 92.95,
+      "penalty": -7.05,
+      "price_extension_atr": 1.205,
       "impulse_extension_atr": 0.0,
-      "anchor_extension_atr": 1.275,
-      "revalidation_distance_atr": 1.28,
-      "analysis_anchor": 83.53,
-      "market_price": 83.08,
+      "anchor_extension_atr": 1.205,
+      "revalidation_distance_atr": 1.2,
+      "analysis_anchor": 83.36,
+      "market_price": 82.94,
       "strong_momentum_continuation": false,
       "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
       "schema_version": "anti_fomo_v9.3"
     },
     "thesis_confidence_decay": {
-      "base_confidence": 74.02,
-      "first_seen_at": "2026-07-16T17:01:53.384918+00:00",
-      "age_hours": 0.83,
-      "decay_points": 1.87,
+      "base_confidence": 71.93,
+      "first_seen_at": null,
+      "age_hours": 0.0,
+      "decay_points": 0.0,
       "fresh_evidence_bonus": 0.0,
       "fresh_evidence_detected": false,
-      "confidence": 72.15,
+      "confidence": 71.93,
       "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
       "schema_version": "thesis_confidence_decay_v9.1"
     },
@@ -4774,22 +4772,22 @@
       "blocking_layer": "REVALIDATION",
       "strict_revalidation_separate_from_executive": true
     },
-    "thesis_key": "SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT|835",
-    "thesis": "SHORT OPENING_RANGE_BREAKOUT → OPENING_RANGE_BREAKOUT | src=OPENING_RANGE | stage=READY",
-    "thesis_family_key": "SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT",
-    "signal_reference_price": 83.53,
+    "thesis_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|834",
+    "thesis": "SHORT DAILY_WEEKLY_OPEN_RECLAIM → DAILY_WEEKLY_OPEN_RECLAIM | src=OPEN_RECLAIM | stage=READY",
+    "thesis_family_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM",
+    "signal_reference_price": 83.36,
     "confirmation_pending": false,
     "confirmation_state": {},
     "opportunity_status": "ARMED",
     "htf_fact": {
       "market_bias": "NEUTRAL",
       "candidate_side": "SHORT",
-      "alignment_score": 0.062565,
+      "alignment_score": 0.08508,
       "state": "NEUTRAL",
       "timeframe_components": {
         "15m": {
           "weight": 0.15,
-          "direction": -0.4171,
+          "direction": -0.5672,
           "bias": "SHORT"
         },
         "1h": {
@@ -4803,40 +4801,40 @@
           "bias": "NEUTRAL"
         }
       },
-      "confidence": 6.2565,
+      "confidence": 8.508,
       "schema_version": "htf_fact_v9.0",
       "state_threshold": 0.45,
       "valid": true,
       "errors": []
     },
     "evaluation_bundle": {
-      "thesis_quality": 72.15,
+      "thesis_quality": 71.93,
       "execution_readiness": 65.25,
-      "trade_quality": 91.71,
+      "trade_quality": 92.42,
       "conflict_report": {
-        "net_market_preference": 0,
-        "net_execution_preference": 1.36,
+        "net_market_preference": 9.2,
+        "net_execution_preference": 1.952,
         "actual_conflict": false,
         "conflict_axes": [],
         "conflict_pairs": [],
         "conflict_severity": 0.0,
-        "uncertainty_level": 49.06,
+        "uncertainty_level": 10.44,
         "capital_blocked": false,
         "consensus": {
-          "market": "UNCERTAIN",
+          "market": "POSITIVE_CONSENSUS",
           "execution": "POSITIVE_CONSENSUS",
-          "market_support": 0,
+          "market_support": 9.2,
           "market_against": 0,
-          "execution_support": 1.36,
+          "execution_support": 1.952,
           "execution_against": 0
         },
         "effective_votes": [
           {
             "module": "HTF_ANALYST",
             "opinion": "UNCERTAIN",
-            "confidence": 6.26,
-            "raw_impact": 0.63,
-            "effective_impact": 0.039,
+            "confidence": 8.51,
+            "raw_impact": 0.85,
+            "effective_impact": 0.072,
             "axes": [
               "direction",
               "htf_direction"
@@ -4847,9 +4845,9 @@
           {
             "module": "ICT_ANALYST",
             "opinion": "UNCERTAIN",
-            "confidence": 23.21,
-            "raw_impact": -5.6,
-            "effective_impact": 1.3,
+            "confidence": 20.84,
+            "raw_impact": -6.39,
+            "effective_impact": 1.332,
             "axes": [
               "market_thesis",
               "structure"
@@ -4859,16 +4857,16 @@
           },
           {
             "module": "PRICE_STRUCTURE_ADVISOR",
-            "opinion": "UNCERTAIN",
-            "confidence": 91.04,
-            "raw_impact": 0.0,
-            "effective_impact": 0.0,
+            "opinion": "SUPPORT",
+            "confidence": 92.0,
+            "raw_impact": 10.0,
+            "effective_impact": 9.2,
             "axes": [
               "direction",
               "structure"
             ],
             "horizon": "15M-1H structure",
-            "explicit_conclusion": false
+            "explicit_conclusion": true
           },
           {
             "module": "SHORT_REVERSAL_ANALYST",
@@ -4885,9 +4883,9 @@
           {
             "module": "EXECUTION_ANALYST",
             "opinion": "SUPPORT",
-            "confidence": 68.0,
-            "raw_impact": 2.0,
-            "effective_impact": 1.36,
+            "confidence": 71.0,
+            "raw_impact": 2.75,
+            "effective_impact": 1.952,
             "axes": [
               "execution_timing"
             ],
@@ -4909,19 +4907,19 @@
         ],
         "quality_voting": {
           "supporting": [
+            "PRICE_STRUCTURE_ADVISOR",
             "EXECUTION_ANALYST"
           ],
           "doubting": [],
           "silent": [
             "HTF_ANALYST",
             "ICT_ANALYST",
-            "PRICE_STRUCTURE_ADVISOR",
             "SHORT_REVERSAL_ANALYST"
           ],
-          "net_conviction": 1.36,
-          "support_count": 1,
+          "net_conviction": 11.152,
+          "support_count": 2,
           "doubt_count": 0,
-          "silent_count": 4,
+          "silent_count": 3,
           "schema_version": "quality_voting_v9.1"
         },
         "schema_version": "conflict_report_v9.1"
@@ -4932,7 +4930,7 @@
         "asymmetry_quality": 100.0,
         "regime_fit": 100.0,
         "evidence_independence": 100.0,
-        "statistical_status": "UNPROVEN",
+        "statistical_status": "NO_SAMPLE",
         "failed_principles": [],
         "reason_codes": [
           "EDGE_UNPROVEN_STAGE_ONLY"
@@ -4954,23 +4952,23 @@
           "rr1_raw": 2.0,
           "realistic_rr1": 2.0,
           "transaction_costs_r": 0.0,
-          "family_expectancy_r": 0.328,
-          "sample": 1,
+          "family_expectancy_r": 0.0,
+          "sample": 0,
           "logical_target": true,
           "evidence_groups": [
-            "EXECUTION_OPENING_RANGE",
+            "EXECUTION_OPEN_RECLAIM",
             "EXECUTION_TIME_WARP_WAIT_RETEST",
             "ICT_LOCATION",
-            "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+            "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
             "PRICE_STRUCTURE",
             "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
             "МОДЕЛЬ",
-            "⏱️ OR MODEL",
             "✅ МОДЕЛЬ УЗГОДЖЕНА З РЕЖИМОМ РИНКУ (+5)",
             "🎯 ENTRY CONTRACT",
             "📉 SHORT RECENT PERFORMANCE СЛАБКИЙ",
             "📊 HYPOTHESIS SCORE",
-            "🧮 PATTERN EVIDENCE FUSION"
+            "🧮 PATTERN EVIDENCE FUSION",
+            "🧲 OPEN RECLAIM"
           ]
         },
         "schema_version": "philosophy_v9.0"
@@ -4978,21 +4976,21 @@
       "data_quality": 100.0,
       "raw_components": {
         "thesis": {
-          "structure": 91.04,
-          "liquidity_event": 5.67,
+          "structure": 79.17,
+          "liquidity_event": 7.67,
           "regime_fit": 100.0,
-          "htf_alignment": 53.13,
+          "htf_alignment": 54.25,
           "directional_thesis": 100.0,
           "independent_pattern_evidence": 100.0
         },
         "thesis_confidence_decay": {
-          "base_confidence": 74.02,
-          "first_seen_at": "2026-07-16T17:01:53.384918+00:00",
-          "age_hours": 0.83,
-          "decay_points": 1.87,
+          "base_confidence": 71.93,
+          "first_seen_at": null,
+          "age_hours": 0.0,
+          "decay_points": 0.0,
           "fresh_evidence_bonus": 0.0,
           "fresh_evidence_detected": false,
-          "confidence": 72.15,
+          "confidence": 71.93,
           "policy": "confidence decays; thesis memory is retained until explicit invalidation/TTL",
           "schema_version": "thesis_confidence_decay_v9.1"
         },
@@ -5013,17 +5011,17 @@
           "acceptance": 0.0,
           "confirmation_tier": 50.0,
           "execution_source": 75.0,
-          "anti_fomo": 92.2
+          "anti_fomo": 92.95
         },
         "anti_fomo": {
-          "score": 92.2,
-          "penalty": -7.8,
-          "price_extension_atr": 1.28,
+          "score": 92.95,
+          "penalty": -7.05,
+          "price_extension_atr": 1.205,
           "impulse_extension_atr": 0.0,
-          "anchor_extension_atr": 1.275,
-          "revalidation_distance_atr": 1.28,
-          "analysis_anchor": 83.53,
-          "market_price": 83.08,
+          "anchor_extension_atr": 1.205,
+          "revalidation_distance_atr": 1.2,
+          "analysis_anchor": 83.36,
+          "market_price": 82.94,
           "strong_momentum_continuation": false,
           "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
           "schema_version": "anti_fomo_v9.3"
@@ -5031,9 +5029,9 @@
         "probe_conviction": {
           "tier": "MEDIUM_CONVICTION_PROBE",
           "base_risk_pct": 0.07,
-          "setup_quality": 74.02,
+          "setup_quality": 71.93,
           "timing_quality": 65.25,
-          "entry_quality": 77.97,
+          "entry_quality": 78.04,
           "htf_state": "NEUTRAL",
           "strong_trigger": false,
           "reversal_evidence": false,
@@ -5043,7 +5041,7 @@
         "trade": {
           "stop_quality": 100.0,
           "realistic_rr": 93.75,
-          "target_magnet": 79.75,
+          "target_magnet": 84.5,
           "cost_realism": 60.0,
           "capital_availability": 100.0,
           "exposure_correlation": 100.0,
@@ -5062,12 +5060,12 @@
         "htf_fact": {
           "market_bias": "NEUTRAL",
           "candidate_side": "SHORT",
-          "alignment_score": 0.062565,
+          "alignment_score": 0.08508,
           "state": "NEUTRAL",
           "timeframe_components": {
             "15m": {
               "weight": 0.15,
-              "direction": -0.4171,
+              "direction": -0.5672,
               "bias": "SHORT"
             },
             "1h": {
@@ -5081,7 +5079,7 @@
               "bias": "NEUTRAL"
             }
           },
-          "confidence": 6.2565,
+          "confidence": 8.508,
           "schema_version": "htf_fact_v9.0",
           "state_threshold": 0.45,
           "valid": true,
@@ -5096,12 +5094,12 @@
           "htf_fact": {
             "market_bias": "NEUTRAL",
             "candidate_side": "SHORT",
-            "alignment_score": 0.062565,
+            "alignment_score": 0.08508,
             "state": "NEUTRAL",
             "timeframe_components": {
               "15m": {
                 "weight": 0.15,
-                "direction": -0.4171,
+                "direction": -0.5672,
                 "bias": "SHORT"
               },
               "1h": {
@@ -5115,7 +5113,7 @@
                 "bias": "NEUTRAL"
               }
             },
-            "confidence": 6.2565,
+            "confidence": 8.508,
             "schema_version": "htf_fact_v9.0",
             "state_threshold": 0.45,
             "valid": true,
@@ -5126,7 +5124,7 @@
             "structural_counter_evidence": "UNKNOWN",
             "mss_quality": "UNKNOWN",
             "failure_quality": "UNKNOWN",
-            "drift_atr": -3.798,
+            "drift_atr": -3.5,
             "schema_version": "reversal_evidence_v9.0"
           },
           "schema_version": "candidate_schema_v9.0"
@@ -5136,7 +5134,7 @@
           "structural_counter_evidence": "UNKNOWN",
           "mss_quality": "UNKNOWN",
           "failure_quality": "UNKNOWN",
-          "drift_atr": -3.798,
+          "drift_atr": -3.5,
           "schema_version": "reversal_evidence_v9.0"
         }
       },
@@ -5178,43 +5176,43 @@
           "stage_cap_compliance"
         ]
       },
-      "setup_quality": 74.02,
+      "setup_quality": 71.93,
       "timing_quality": 65.25,
-      "entry_quality": 77.97,
-      "thesis_confidence": 72.15,
+      "entry_quality": 78.04,
+      "thesis_confidence": 71.93,
       "schema_version": "evaluation_bundle_v9.1"
     },
-    "setup_quality": 74.02,
-    "thesis_quality": 72.15,
-    "thesis_confidence": 72.15,
+    "setup_quality": 71.93,
+    "thesis_quality": 71.93,
+    "thesis_confidence": 71.93,
     "timing_quality": 65.25,
-    "entry_quality": 77.97,
+    "entry_quality": 78.04,
     "execution_readiness": 65.25,
-    "trade_quality": 91.71,
+    "trade_quality": 92.42,
     "conflict_report": {
-      "net_market_preference": 0,
-      "net_execution_preference": 1.36,
+      "net_market_preference": 9.2,
+      "net_execution_preference": 1.952,
       "actual_conflict": false,
       "conflict_axes": [],
       "conflict_pairs": [],
       "conflict_severity": 0.0,
-      "uncertainty_level": 49.06,
+      "uncertainty_level": 10.44,
       "capital_blocked": false,
       "consensus": {
-        "market": "UNCERTAIN",
+        "market": "POSITIVE_CONSENSUS",
         "execution": "POSITIVE_CONSENSUS",
-        "market_support": 0,
+        "market_support": 9.2,
         "market_against": 0,
-        "execution_support": 1.36,
+        "execution_support": 1.952,
         "execution_against": 0
       },
       "effective_votes": [
         {
           "module": "HTF_ANALYST",
           "opinion": "UNCERTAIN",
-          "confidence": 6.26,
-          "raw_impact": 0.63,
-          "effective_impact": 0.039,
+          "confidence": 8.51,
+          "raw_impact": 0.85,
+          "effective_impact": 0.072,
           "axes": [
             "direction",
             "htf_direction"
@@ -5225,9 +5223,9 @@
         {
           "module": "ICT_ANALYST",
           "opinion": "UNCERTAIN",
-          "confidence": 23.21,
-          "raw_impact": -5.6,
-          "effective_impact": 1.3,
+          "confidence": 20.84,
+          "raw_impact": -6.39,
+          "effective_impact": 1.332,
           "axes": [
             "market_thesis",
             "structure"
@@ -5237,16 +5235,16 @@
         },
         {
           "module": "PRICE_STRUCTURE_ADVISOR",
-          "opinion": "UNCERTAIN",
-          "confidence": 91.04,
-          "raw_impact": 0.0,
-          "effective_impact": 0.0,
+          "opinion": "SUPPORT",
+          "confidence": 92.0,
+          "raw_impact": 10.0,
+          "effective_impact": 9.2,
           "axes": [
             "direction",
             "structure"
           ],
           "horizon": "15M-1H structure",
-          "explicit_conclusion": false
+          "explicit_conclusion": true
         },
         {
           "module": "SHORT_REVERSAL_ANALYST",
@@ -5263,9 +5261,9 @@
         {
           "module": "EXECUTION_ANALYST",
           "opinion": "SUPPORT",
-          "confidence": 68.0,
-          "raw_impact": 2.0,
-          "effective_impact": 1.36,
+          "confidence": 71.0,
+          "raw_impact": 2.75,
+          "effective_impact": 1.952,
           "axes": [
             "execution_timing"
           ],
@@ -5287,19 +5285,19 @@
       ],
       "quality_voting": {
         "supporting": [
+          "PRICE_STRUCTURE_ADVISOR",
           "EXECUTION_ANALYST"
         ],
         "doubting": [],
         "silent": [
           "HTF_ANALYST",
           "ICT_ANALYST",
-          "PRICE_STRUCTURE_ADVISOR",
           "SHORT_REVERSAL_ANALYST"
         ],
-        "net_conviction": 1.36,
-        "support_count": 1,
+        "net_conviction": 11.152,
+        "support_count": 2,
         "doubt_count": 0,
-        "silent_count": 4,
+        "silent_count": 3,
         "schema_version": "quality_voting_v9.1"
       },
       "schema_version": "conflict_report_v9.1"
@@ -5310,7 +5308,7 @@
       "asymmetry_quality": 100.0,
       "regime_fit": 100.0,
       "evidence_independence": 100.0,
-      "statistical_status": "UNPROVEN",
+      "statistical_status": "NO_SAMPLE",
       "failed_principles": [],
       "reason_codes": [
         "EDGE_UNPROVEN_STAGE_ONLY"
@@ -5332,23 +5330,23 @@
         "rr1_raw": 2.0,
         "realistic_rr1": 2.0,
         "transaction_costs_r": 0.0,
-        "family_expectancy_r": 0.328,
-        "sample": 1,
+        "family_expectancy_r": 0.0,
+        "sample": 0,
         "logical_target": true,
         "evidence_groups": [
-          "EXECUTION_OPENING_RANGE",
+          "EXECUTION_OPEN_RECLAIM",
           "EXECUTION_TIME_WARP_WAIT_RETEST",
           "ICT_LOCATION",
-          "ICT_MODEL_OPENING_RANGE_BREAKOUT",
+          "ICT_MODEL_DAILY_WEEKLY_OPEN_RECLAIM",
           "PRICE_STRUCTURE",
           "SYNTHETIC_CVD_PROXY_LOW_WEIGHT",
           "МОДЕЛЬ",
-          "⏱️ OR MODEL",
           "✅ МОДЕЛЬ УЗГОДЖЕНА З РЕЖИМОМ РИНКУ (+5)",
           "🎯 ENTRY CONTRACT",
           "📉 SHORT RECENT PERFORMANCE СЛАБКИЙ",
           "📊 HYPOTHESIS SCORE",
-          "🧮 PATTERN EVIDENCE FUSION"
+          "🧮 PATTERN EVIDENCE FUSION",
+          "🧲 OPEN RECLAIM"
         ]
       },
       "schema_version": "philosophy_v9.0"
@@ -5435,7 +5433,7 @@
         }
       ],
       "combined_confidence_multiplier": 0.092089,
-      "geometry_multiplier": 1.0,
+      "geometry_multiplier": 0.8394,
       "capital_cap_pct": 0.0,
       "final_position_risk_pct": 0.0,
       "stage": "WAIT_RETEST",
@@ -5450,17 +5448,17 @@
         {
           "source": "entry_quality",
           "delta_pct": 0.0,
-          "reason": "entry_quality=78.0; anti_fomo_penalty=-7.8 embedded once"
+          "reason": "entry_quality=78.0; anti_fomo_penalty=-7.05 embedded once"
         },
         {
           "source": "low_liquidity_quality",
           "delta_pct": -15.0,
-          "reason": "liquidity_quality=5.7"
+          "reason": "liquidity_quality=7.7"
         },
         {
           "source": "clean_structure",
           "delta_pct": 15.0,
-          "reason": "structure_quality=91.0"
+          "reason": "structure_quality=79.2"
         }
       ],
       "duplicate_sources": [],
@@ -5470,7 +5468,7 @@
         "risk_confidence_budget=-10.00%",
         "confidence_multiplier=0.092089",
         "after_confidence=0.000000",
-        "geometry_multiplier=1.000000",
+        "geometry_multiplier=0.839400",
         "after_geometry=0.000000",
         "stage_cap=0.0000",
         "capital_cap=0.0000",
@@ -5495,12 +5493,12 @@
       "executive": "executive_decision_v9.0",
       "policy": "TRADING_DESK_EXECUTIVE_V9_3_2_UNIFIED_SCORE_TTL_LEASE"
     },
-    "plan_entry": 83.08,
+    "plan_entry": 82.94,
     "plan_entry_price_source": "LIVE_MARKET_PRICE",
-    "plan_tp0": 82.0832,
-    "plan_tp1": 81.0864,
-    "plan_tp2": 79.641,
-    "plan_tp3": 77.9963,
+    "plan_tp0": 81.9631,
+    "plan_tp1": 80.9862,
+    "plan_tp2": 79.5697,
+    "plan_tp3": 78.2509,
     "plan_rr0": 1.0,
     "plan_rr1": 2.0,
     "plan_position_risk_pct": 0.0,
@@ -5512,26 +5510,26 @@
       "mode": "DEFENSIVE_TP0"
     },
     "target_basis": "TP0: 1.0R/noise service fix | TP1: RR-профіль | TP2: RR-профіль | TP3: RR-профіль",
-    "decision_stop": 83.918,
-    "catastrophic_stop": 84.0768,
+    "decision_stop": 83.76,
+    "catastrophic_stop": 83.9169,
     "breathing_profile": {
-      "decision_stop": 83.918,
-      "catastrophic_stop": 84.0768,
-      "decision_distance": 0.838036,
-      "catastrophic_distance": 0.996821,
-      "catastrophic_buffer_distance": 0.158786,
+      "decision_stop": 83.76,
+      "catastrophic_stop": 83.9169,
+      "decision_distance": 0.82,
+      "catastrophic_distance": 0.976857,
+      "catastrophic_buffer_distance": 0.156857,
       "catastrophic_buffer_atr": 0.45,
       "noise_floor_distance": 0.429,
       "catastrophic_stop_policy": "decision close-confirm + capped noise buffer",
-      "conventional_distance": 1.53,
-      "risk_size_multiplier": 1.0,
-      "tp1_floor_distance": 1.993643,
-      "tp0_floor_distance": 0.996821,
+      "conventional_distance": 0.82,
+      "risk_size_multiplier": 0.8394,
+      "tp1_floor_distance": 1.953714,
+      "tp0_floor_distance": 0.976857,
       "noise": {
         "tr_p70": 0.39,
         "tr_p85": 0.459,
-        "current_tr": 0.264643,
-        "fallback": 0.352857,
+        "current_tr": 0.261429,
+        "fallback": 0.348571,
         "sample_size": 48
       },
       "mode": "TRADE_BREATHING_GEOMETRY"
@@ -5620,7 +5618,7 @@
         }
       ],
       "combined_confidence_multiplier": 0.092089,
-      "geometry_multiplier": 1.0,
+      "geometry_multiplier": 0.8394,
       "capital_cap_pct": 0.0,
       "final_position_risk_pct": 0.0,
       "stage": "WAIT_RETEST",
@@ -5635,17 +5633,17 @@
         {
           "source": "entry_quality",
           "delta_pct": 0.0,
-          "reason": "entry_quality=78.0; anti_fomo_penalty=-7.8 embedded once"
+          "reason": "entry_quality=78.0; anti_fomo_penalty=-7.05 embedded once"
         },
         {
           "source": "low_liquidity_quality",
           "delta_pct": -15.0,
-          "reason": "liquidity_quality=5.7"
+          "reason": "liquidity_quality=7.7"
         },
         {
           "source": "clean_structure",
           "delta_pct": 15.0,
-          "reason": "structure_quality=91.0"
+          "reason": "structure_quality=79.2"
         }
       ],
       "duplicate_sources": [],
@@ -5655,7 +5653,7 @@
         "risk_confidence_budget=-10.00%",
         "confidence_multiplier=0.092089",
         "after_confidence=0.000000",
-        "geometry_multiplier=1.000000",
+        "geometry_multiplier=0.839400",
         "after_geometry=0.000000",
         "stage_cap=0.0000",
         "capital_cap=0.0000",
@@ -5666,15 +5664,6 @@
   },
   "last_message_key": "",
   "history": [
-    {
-      "type": "FOLLOW",
-      "side": "SHORT",
-      "action": "HOLD",
-      "price": 84.0,
-      "trade_id": "378c256cfd",
-      "signal_id": "277129cb40",
-      "time": "2026-07-14T23:01:52.320507+00:00"
-    },
     {
       "type": "FOLLOW",
       "side": "SHORT",
@@ -7465,7 +7454,16 @@
       "price": 83.08,
       "thesis_family_key": "SHORT|OPENING_RANGE_BREAKOUT|OPENING_RANGE_BREAKOUT",
       "time": "2026-07-16T17:51:38.242340+00:00"
+    },
+    {
+      "type": "NO_SETUP",
+      "side": "SHORT",
+      "setup_type": "DAILY_WEEKLY_OPEN_RECLAIM",
+      "quality": 58,
+      "price": 82.94,
+      "thesis_family_key": "SHORT|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM",
+      "time": "2026-07-16T18:01:43.609084+00:00"
     }
   ],
-  "updated_at": "2026-07-16T17:51:38.579089+00:00"
+  "updated_at": "2026-07-16T18:01:43.985741+00:00"
 }
