@@ -7183,8 +7183,8 @@
       "invalidation_level": 83.73,
       "probability": 0.769959,
       "confirmation_probability": 0.769959,
-      "status": "PENDING",
-      "outcome": "PENDING",
+      "status": "EXPIRED",
+      "outcome": "EXPIRED",
       "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
       "features": {
         "approach_velocity_atr": 0.622222,
@@ -7287,7 +7287,26 @@
         },
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
-      "signal_link": null
+      "signal_link": null,
+      "resolution_reason": "fixed_window_elapsed_without_complete_directional_acceptance",
+      "resolved_ts": 1784274300000,
+      "resolved_at": "2026-07-17T07:46:22.426280+00:00",
+      "outcome_ts": 1784274300000,
+      "resolved_price": 83.46,
+      "resolution_evidence": {
+        "directional_close": false,
+        "directional_close_ts": null,
+        "acceptance": false,
+        "acceptance_ts": null,
+        "acceptance_required_closes": 2,
+        "price_moved_direction": false,
+        "mfe_atr": 0.069136,
+        "final_move_atr": -1.071605,
+        "thesis_invalidated": false,
+        "invalidation_ts": null,
+        "window_candles": 15,
+        "window_end_ts": 1784274300000
+      }
     },
     {
       "event_id": "b0286a7ca89b45dc",
@@ -7316,8 +7335,8 @@
       "invalidation_level": 84.092,
       "probability": 0.332549,
       "confirmation_probability": 0.332549,
-      "status": "PENDING",
-      "outcome": "PENDING",
+      "status": "EXPIRED",
+      "outcome": "EXPIRED",
       "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
       "features": {
         "approach_velocity_atr": 0.622222,
@@ -7420,7 +7439,26 @@
         },
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
-      "signal_link": null
+      "signal_link": null,
+      "resolution_reason": "fixed_window_elapsed_without_complete_directional_acceptance",
+      "resolved_ts": 1784274300000,
+      "resolved_at": "2026-07-17T07:46:22.426334+00:00",
+      "outcome_ts": 1784274300000,
+      "resolved_price": 83.46,
+      "resolution_evidence": {
+        "directional_close": false,
+        "directional_close_ts": null,
+        "acceptance": false,
+        "acceptance_ts": null,
+        "acceptance_required_closes": 2,
+        "price_moved_direction": false,
+        "mfe_atr": 0.069136,
+        "final_move_atr": -1.071605,
+        "thesis_invalidated": false,
+        "invalidation_ts": null,
+        "window_candles": 15,
+        "window_end_ts": 1784274300000
+      }
     },
     {
       "event_id": "3a217c94f3484991",
@@ -8485,6 +8523,272 @@
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
       "signal_link": null
+    },
+    {
+      "event_id": "583e172ba9984735",
+      "id": "583e172ba9984735",
+      "dedup_key": "SHORT|SHORT_MSS_REVERSAL|MSS_REVERSAL_SHORT|828|STRUCTURAL_TRANSITION:STRUCTURE_CONFIRMATION",
+      "thesis_key": "SHORT|SHORT_MSS_REVERSAL|MSS_REVERSAL_SHORT|828",
+      "side": "SHORT",
+      "setup_type": "MSS_REVERSAL_SHORT",
+      "setup_family": "STRUCTURAL_TRANSITION",
+      "ict_model": "SHORT_MSS_REVERSAL",
+      "model_family": "STRUCTURAL_TRANSITION:STRUCTURE_CONFIRMATION",
+      "event_kind": "STRUCTURE_CONFIRMATION",
+      "created_at": "2026-07-17T07:46:28.796762+00:00",
+      "created_ts": 1784274300000,
+      "observation_candle_ts": 1784274120000,
+      "observed_at": "2026-07-17T07:46:28.796762+00:00",
+      "observed_ts": 1784274300000,
+      "resolve_after_ts": 1784277000000,
+      "expires_ts": 1784277000000,
+      "resolution_window_minutes": 45,
+      "acceptance_required_closes": 2,
+      "observed_price": 83.46,
+      "atr15_at_observation": 0.32214286,
+      "anchor": 82.82,
+      "confirmation_level": 82.82,
+      "invalidation_level": 83.732,
+      "probability": 0.383299,
+      "confirmation_probability": 0.383299,
+      "status": "PENDING",
+      "outcome": "PENDING",
+      "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
+      "features": {
+        "approach_velocity_atr": 0.279379,
+        "approach_efficiency": 0.2,
+        "wick_rejection_ratio": 0.202381,
+        "flow_alignment": 0.0,
+        "failed_attempts_norm": 0.0,
+        "dealing_range_favorability": 0.517241,
+        "htf_alignment": 0.003285,
+        "liquidity_swept": 0.0,
+        "distance_to_anchor_atr": 1.986696,
+        "session_quality": 1.0,
+        "trigger_freshness": 1.0,
+        "prior_touch_rejection": -0.195268,
+        "volume_impulse": 0.032562
+      },
+      "estimate_at_observation": {
+        "available": true,
+        "probability": 0.383299,
+        "probability_pct": 38.3,
+        "raw_model_probability": 0.383299,
+        "heuristic_probability": 0.577059,
+        "wilson_low": 0.354197,
+        "wilson_high": 0.879418,
+        "wilson_neighbors": 0,
+        "interval_scope": "SETUP_FAMILY",
+        "calibrated": true,
+        "trusted": true,
+        "downgrade_trusted": true,
+        "promotion_trusted": false,
+        "PRECONFIRM_MODEL_TRUSTED": true,
+        "trust_level": "VALIDATED_PARTIAL",
+        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "model_family": "STRUCTURAL_TRANSITION:STRUCTURE_CONFIRMATION",
+        "event_kind": "STRUCTURE_CONFIRMATION",
+        "sample_size": 46,
+        "global_sample_size": 46,
+        "setup_family_sample_size": 9,
+        "exact_family_sample_size": 0,
+        "effective_sample_size": 16.0,
+        "auc": 1.0,
+        "auc_gate": 0.55,
+        "brier": 0.000173,
+        "brier_warning": false,
+        "hierarchical_calibration": {
+          "calibrated": true,
+          "calibration_tier": "HIERARCHICAL_EMPIRICAL_BAYES",
+          "probability": 0.5953892629311628,
+          "global_sample_size": 46,
+          "setup_family_sample_size": 9,
+          "exact_family_sample_size": 0,
+          "effective_sample_size": 16.0,
+          "setup_family": "STRUCTURAL_TRANSITION",
+          "event_kind": "STRUCTURE_CONFIRMATION",
+          "global_posterior": {
+            "successes": 28,
+            "total": 46,
+            "prior_probability": 0.5,
+            "prior_strength": 4.0,
+            "posterior_probability": 0.6
+          },
+          "setup_family_posterior": {
+            "successes": 6,
+            "total": 9,
+            "prior_probability": 0.6,
+            "prior_strength": 8.0,
+            "posterior_probability": 0.6352941176470589
+          },
+          "exact_family_posterior": {
+            "successes": 0,
+            "total": 0,
+            "prior_probability": 0.6352941176470589,
+            "prior_strength": 6.0,
+            "posterior_probability": 0.6352941176470589
+          },
+          "selected_posterior_probability": 0.635294,
+          "historical_heuristic_probability": 0.608647,
+          "adjustment_weight": 0.666667,
+          "interval_low": 0.354197,
+          "interval_high": 0.879418,
+          "interval_scope": "SETUP_FAMILY",
+          "downgrade_trusted": true,
+          "promotion_trusted": false,
+          "reason": "hierarchical_empirical_bayes"
+        },
+        "precursor_active": true,
+        "decision_authority": "AUDIT_AND_FRESH_PROBE_GATE_ONLY",
+        "can_initiate_entry": false,
+        "excluded_feature": "pattern",
+        "feature_dependency_audit": {
+          "shared_raw_facts": [
+            "htf_alignment",
+            "liquidity_swept",
+            "flow_alignment"
+          ],
+          "aggregation_mode": "POOLED_MODEL_PLUS_HIERARCHICAL_SHRINKAGE_NOT_SCORE_SUM",
+          "added_as_advisor": false,
+          "added_to_final_score": false,
+          "single_decision_use": "_preconfirm_stage_gate"
+        },
+        "schema_version": "preconfirmation_probability_v9.5_hierarchical"
+      },
+      "signal_link": null
+    },
+    {
+      "event_id": "80330abfe5384a74",
+      "id": "80330abfe5384a74",
+      "dedup_key": "SHORT|SHORT_BUYER_EXHAUSTION|BUYER_EXHAUSTION_SHORT|834|STRUCTURAL_TRANSITION:DIRECTIONAL_ACCEPTANCE",
+      "thesis_key": "SHORT|SHORT_BUYER_EXHAUSTION|BUYER_EXHAUSTION_SHORT|834",
+      "side": "SHORT",
+      "setup_type": "BUYER_EXHAUSTION_SHORT",
+      "setup_family": "STRUCTURAL_TRANSITION",
+      "ict_model": "SHORT_BUYER_EXHAUSTION",
+      "model_family": "STRUCTURAL_TRANSITION:DIRECTIONAL_ACCEPTANCE",
+      "event_kind": "DIRECTIONAL_ACCEPTANCE",
+      "created_at": "2026-07-17T07:46:28.935524+00:00",
+      "created_ts": 1784274300000,
+      "observation_candle_ts": 1784274120000,
+      "observed_at": "2026-07-17T07:46:28.935524+00:00",
+      "observed_ts": 1784274300000,
+      "resolve_after_ts": 1784277000000,
+      "expires_ts": 1784277000000,
+      "resolution_window_minutes": 45,
+      "acceptance_required_closes": 2,
+      "observed_price": 83.46,
+      "atr15_at_observation": 0.32214286,
+      "anchor": 83.44,
+      "confirmation_level": 83.4117,
+      "invalidation_level": 83.912,
+      "probability": 0.199549,
+      "confirmation_probability": 0.199549,
+      "status": "PENDING",
+      "outcome": "PENDING",
+      "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
+      "features": {
+        "approach_velocity_atr": 0.279379,
+        "approach_efficiency": 0.2,
+        "wick_rejection_ratio": 0.202381,
+        "flow_alignment": 0.0,
+        "failed_attempts_norm": 0.0,
+        "dealing_range_favorability": 0.517241,
+        "htf_alignment": 0.003285,
+        "liquidity_swept": 0.0,
+        "distance_to_anchor_atr": 0.062084,
+        "session_quality": 1.0,
+        "trigger_freshness": 1.0,
+        "prior_touch_rejection": 0.048241,
+        "volume_impulse": 0.032562
+      },
+      "estimate_at_observation": {
+        "available": true,
+        "probability": 0.199549,
+        "probability_pct": 20.0,
+        "raw_model_probability": 0.199549,
+        "heuristic_probability": 0.781459,
+        "wilson_low": 0.565509,
+        "wilson_high": 1.0,
+        "wilson_neighbors": 5,
+        "interval_scope": "EXACT_NEIGHBORHOOD",
+        "calibrated": true,
+        "trusted": true,
+        "downgrade_trusted": true,
+        "promotion_trusted": true,
+        "PRECONFIRM_MODEL_TRUSTED": true,
+        "trust_level": "VALIDATED_PARTIAL",
+        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "model_family": "STRUCTURAL_TRANSITION:DIRECTIONAL_ACCEPTANCE",
+        "event_kind": "DIRECTIONAL_ACCEPTANCE",
+        "sample_size": 46,
+        "global_sample_size": 46,
+        "setup_family_sample_size": 9,
+        "exact_family_sample_size": 5,
+        "effective_sample_size": 21.0,
+        "auc": 1.0,
+        "auc_gate": 0.55,
+        "brier": 0.000173,
+        "brier_warning": false,
+        "hierarchical_calibration": {
+          "calibrated": true,
+          "calibration_tier": "HIERARCHICAL_EMPIRICAL_BAYES",
+          "probability": 0.850406635938982,
+          "global_sample_size": 46,
+          "setup_family_sample_size": 9,
+          "exact_family_sample_size": 5,
+          "effective_sample_size": 21.0,
+          "setup_family": "STRUCTURAL_TRANSITION",
+          "event_kind": "DIRECTIONAL_ACCEPTANCE",
+          "global_posterior": {
+            "successes": 28,
+            "total": 46,
+            "prior_probability": 0.5,
+            "prior_strength": 4.0,
+            "posterior_probability": 0.6
+          },
+          "setup_family_posterior": {
+            "successes": 6,
+            "total": 9,
+            "prior_probability": 0.6,
+            "prior_strength": 8.0,
+            "posterior_probability": 0.6352941176470589
+          },
+          "exact_family_posterior": {
+            "successes": 5,
+            "total": 5,
+            "prior_probability": 0.6352941176470589,
+            "prior_strength": 6.0,
+            "posterior_probability": 0.8010695187165776
+          },
+          "selected_posterior_probability": 0.80107,
+          "historical_heuristic_probability": 0.679784,
+          "adjustment_weight": 0.724138,
+          "interval_low": 0.565509,
+          "interval_high": 1.0,
+          "interval_scope": "EXACT_MODEL_FAMILY",
+          "downgrade_trusted": true,
+          "promotion_trusted": true,
+          "reason": "hierarchical_empirical_bayes"
+        },
+        "precursor_active": true,
+        "decision_authority": "AUDIT_AND_FRESH_PROBE_GATE_ONLY",
+        "can_initiate_entry": false,
+        "excluded_feature": "pattern",
+        "feature_dependency_audit": {
+          "shared_raw_facts": [
+            "htf_alignment",
+            "liquidity_swept",
+            "flow_alignment"
+          ],
+          "aggregation_mode": "POOLED_MODEL_PLUS_HIERARCHICAL_SHRINKAGE_NOT_SCORE_SUM",
+          "added_as_advisor": false,
+          "added_to_final_score": false,
+          "single_decision_use": "_preconfirm_stage_gate"
+        },
+        "schema_version": "preconfirmation_probability_v9.5_hierarchical"
+      },
+      "signal_link": null
     }
   ],
   "model_status": {
@@ -8492,8 +8796,8 @@
       "trusted": true,
       "sample_size": 46,
       "calibration_sample_size": 46,
-      "resolved_events": 50,
-      "expired_events": 4,
+      "resolved_events": 52,
+      "expired_events": 6,
       "expired_label_mode": "SEPARATE",
       "auc": 1.0,
       "brier": 0.000173,
@@ -8507,17 +8811,17 @@
     },
     "BY_MODEL_FAMILY": {
       "CONTINUATION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 14,
         "exact_family_sample_size": 8,
         "promotion_trusted": false,
-        "pending_events": 4,
-        "resolved_events": 8
+        "pending_events": 3,
+        "resolved_events": 9
       },
       "CONTINUATION:OB_REACTION": {
-        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 14,
@@ -8527,7 +8831,7 @@
         "resolved_events": 6
       },
       "EXPANSION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 13,
@@ -8537,7 +8841,7 @@
         "resolved_events": 8
       },
       "EXPANSION:LIQUIDITY_SWEEP_REVERSAL": {
-        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 13,
@@ -8597,17 +8901,17 @@
         "resolved_events": 2
       },
       "STRUCTURAL_TRANSITION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "RESOLVED_EVENT_LEDGER",
+        "source": "CALIBRATED_POOLED_LOGISTIC",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 9,
         "exact_family_sample_size": 5,
         "promotion_trusted": true,
         "pending_events": 1,
-        "resolved_events": 5
+        "resolved_events": 6
       },
       "STRUCTURAL_TRANSITION:EXPLICIT_PENDING_CONFIRMATION": {
-        "source": "CALIBRATED_POOLED_LOGISTIC",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 9,
@@ -8617,13 +8921,13 @@
         "resolved_events": 4
       },
       "STRUCTURAL_TRANSITION:STRUCTURE_CONFIRMATION": {
-        "source": "RESOLVED_EVENT_LEDGER",
+        "source": "CALIBRATED_POOLED_LOGISTIC",
         "calibrated": true,
         "global_sample_size": 46,
         "setup_family_sample_size": 9,
         "exact_family_sample_size": 0,
         "promotion_trusted": false,
-        "pending_events": 0,
+        "pending_events": 1,
         "resolved_events": 1
       }
     }
@@ -8631,7 +8935,7 @@
   "version": "pro-hybrid-confluence-v9.5.1-ttl-bridge-preconfirm-sync-weak-calibration",
   "architecture_version": "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
   "schema_version": "preconfirmation_journal_v9.5_lifecycle",
-  "updated_at": "2026-07-17T07:31:58.279293+00:00",
+  "updated_at": "2026-07-17T07:46:29.078892+00:00",
   "lifecycle_contract": {
     "created_status": "PENDING",
     "terminal_statuses": [
@@ -8648,10 +8952,10 @@
     "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
     "max_events": 20000,
     "pending_protected": 10,
-    "resolved_retained": 50,
+    "resolved_retained": 52,
     "terminal_status_counts": {
       "CONFIRMED": 28,
-      "EXPIRED": 4,
+      "EXPIRED": 6,
       "FAILED": 18
     },
     "trade_journal_limit_not_used": true,
@@ -8660,7 +8964,7 @@
   "persistence_sources": {
     "sidecar": "preconfirmation_journal_v9_4.json",
     "embedded_main_journal": true,
-    "merged_event_count": 60,
+    "merged_event_count": 62,
     "sync_order": "SIDECAR_THEN_MAIN_JOURNAL"
   }
 }
