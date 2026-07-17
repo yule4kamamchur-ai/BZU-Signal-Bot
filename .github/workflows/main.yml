@@ -46,6 +46,8 @@ jobs:
           JOURNAL_PERSISTENCE_CONFIRMED: "true"
           SIGNAL_MEMORY_FILE: last_signal_v6_4.json
           SIGNAL_JOURNAL_FILE: signal_journal_v6_4.json
+          PRECONFIRM_JOURNAL_FILE: preconfirmation_journal_v9_4.json
+          PRECONFIRMATION_LAYER_ENABLED: "true"
         run: python bot_oneshot.py
 
       - name: Save signal memory and journal
@@ -55,7 +57,7 @@ jobs:
 
           git rm --cached -q last_signal_v6_4.json.bak signal_journal_v6_4.json.bak 2>/dev/null || true
 
-          for file in last_signal_v6_4.json signal_journal_v6_4.json; do
+          for file in last_signal_v6_4.json signal_journal_v6_4.json preconfirmation_journal_v9_4.json; do
             if [ -f "$file" ]; then
               git add "$file"
             else
@@ -68,7 +70,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update signal memory and journal v6.4 [skip ci]"
+          git commit -m "Update signal memory, journal and preconfirmation ledger [skip ci]"
 
           for i in 1 2 3 4 5; do
             if git push origin HEAD:main; then
@@ -78,7 +80,7 @@ jobs:
             echo "Push rejected, resyncing with latest main (attempt $i)..."
             git fetch origin main
             git reset --soft origin/main
-            for file in last_signal_v6_4.json signal_journal_v6_4.json; do
+            for file in last_signal_v6_4.json signal_journal_v6_4.json preconfirmation_journal_v9_4.json; do
               if [ -f "$file" ]; then
                 git add "$file"
               fi
@@ -87,6 +89,6 @@ jobs:
               echo "State already up to date on remote, nothing left to commit."
               exit 0
             fi
-            git commit -m "Update signal memory and journal v6.4 [skip ci]"
+            git commit -m "Update signal memory, journal and preconfirmation ledger [skip ci]"
             sleep 3
           done
