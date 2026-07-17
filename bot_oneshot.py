@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5 (TTL Bridge + Hierarchical Preconfirmation)
+BZU Professional Hybrid Confluence Signal Bot v9.5.1 (TTL Bridge + Synced Early Calibration)
 =============================================================================================
-Оновлення v9.5.0:
+Оновлення v9.5.1:
 - Закрито TTL/revalidation dead zone між 4 годинами та hard TTL: повний model-local 3M/15M доказ може переаргументувати живу тезу через mature-thesis bridge.
 - Hard TTL не послаблено: після нього micro-confirmation сам по собі не продовжує життя тези.
 - Усунуто суперечливий stale recovery, який вимагав одночасно >=1.5 ATR і <=1.35 ATR від anchor.
 - Confirmation Probability Layer тепер використовує pooled logistic model та hierarchical empirical-Bayes shrinkage global -> setup family -> exact family.
 - Для первинної калібрації більше не потрібно 60 спостережень у кожному setup_family:event_kind; bootstrap-калібрація починається з глобальної вибірки.
-- Preconfirmation ledger дублюється в основний journal, щоб sidecar не обнуляв sample_size між GitHub Actions runs.
+- Preconfirmation ledger синхронізується та одразу записується в основний journal після кожного sidecar save.
+- Early weak Bayesian calibration починається з 6 resolved observations; hierarchical лишається з 12, pooled logistic — з 24.
 - Додано повний precursor lifecycle: кожен directional candidate створює PENDING event, а fixed-horizon resolver через 45 хвилин присвоює CONFIRMED / FAILED / EXPIRED.
 - Anti-leakage та Executive authority збережені: шар не створює незалежний entry path.
 """
@@ -127,8 +128,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.0-ttl-bridge-hierarchical-preconfirm"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_TTL_BRIDGE_HIERARCHICAL_PRECONFIRM"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.1-ttl-bridge-preconfirm-sync-weak-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -165,6 +166,12 @@ PRECONFIRM_INVALIDATION_BUFFER_ATR = max(0.20, float(os.getenv("PRECONFIRM_INVAL
 # are a fully validated ML model.
 PRECONFIRM_MIN_TRAIN_ROWS = max(16, int(os.getenv("PRECONFIRM_MIN_TRAIN_ROWS", "24") or 24))
 PRECONFIRM_FULL_TRUST_ROWS = max(PRECONFIRM_MIN_TRAIN_ROWS + 1, int(os.getenv("PRECONFIRM_FULL_TRUST_ROWS", "80") or 80))
+# v9.5.1: six resolved labels are enough for a deliberately weak global
+# Bayesian correction. It is visible in probability/audit output but has no
+# promotion or downgrade authority. The stronger family hierarchy still starts
+# at 12, and the chronologically validated pooled logistic model at 24.
+PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS = max(4, int(os.getenv("PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS", "6") or 6))
+PRECONFIRM_WEAK_PRIOR_STRENGTH = max(4.0, float(os.getenv("PRECONFIRM_WEAK_PRIOR_STRENGTH", "10") or 10))
 PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS = max(8, int(os.getenv("PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS", "12") or 12))
 PRECONFIRM_SETUP_FAMILY_MIN_ROWS = max(2, int(os.getenv("PRECONFIRM_SETUP_FAMILY_MIN_ROWS", "4") or 4))
 PRECONFIRM_EXACT_FAMILY_MIN_ROWS = max(1, int(os.getenv("PRECONFIRM_EXACT_FAMILY_MIN_ROWS", "2") or 2))
@@ -551,6 +558,8 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("PRECONFIRM_AUC_GATE must be between 0.50 and 0.95")
     if not (0.0 < PRECONFIRM_PROBE_WAIT_PROBABILITY < PRECONFIRM_PROBE_MIN_PROBABILITY < 1.0):
         errors.append("Preconfirmation probe probabilities must satisfy wait < promote")
+    if PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS >= PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS:
+        errors.append("Weak calibration floor must be below hierarchical calibration floor")
     if PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS >= PRECONFIRM_MIN_TRAIN_ROWS:
         errors.append("Hierarchical calibration floor must be below pooled logistic floor")
     if PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS < PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS:
@@ -2096,12 +2105,13 @@ def _preconfirm_hierarchical_calibration(
     model_family: str,
     heuristic_probability: float,
 ) -> dict[str, Any]:
-    """Small-sample empirical-Bayes calibration with parent borrowing.
+    """Calibrate in three stages without pretending six rows are a full model.
 
-    Global evidence forms the parent prior, setup-family evidence updates it,
-    and exact model-family evidence updates the setup prior. This is calibrated
-    enough for audit/downside gating after a small global sample, but promotion
-    authority remains stricter than mere availability of a posterior.
+    0..5 resolved labels: heuristic only.
+    6..11: weak global Bayesian correction with a strong neutral prior.
+    12..23: global -> setup family -> exact family empirical-Bayes hierarchy.
+    24+: this hierarchy remains the family guard while pooled logistic may become
+    authoritative only after its chronological validation gate passes.
     """
     setup_family, event_kind = _preconfirm_scope_parts(model_family)
     global_rows = _preconfirm_training_rows(journal)
@@ -2111,13 +2121,20 @@ def _preconfirm_hierarchical_calibration(
     setup_n = len(setup_rows)
     exact_n = len(exact_rows)
     global_labels = {int(row["label"]) for row in global_rows}
-    calibrated = bool(
-        global_n >= PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS
-        and len(global_labels) >= 2
+    has_both_labels = len(global_labels) >= 2
+    weak_available = bool(
+        global_n >= PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS
+        and has_both_labels
     )
-    if not calibrated:
+    hierarchical_available = bool(
+        global_n >= PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS
+        and has_both_labels
+    )
+
+    if not weak_available:
         return {
             "calibrated": False,
+            "calibration_tier": "HEURISTIC_ONLY",
             "probability": heuristic_probability,
             "global_sample_size": global_n,
             "setup_family_sample_size": setup_n,
@@ -2130,6 +2147,49 @@ def _preconfirm_hierarchical_calibration(
             "interval_low": 0.0,
             "interval_high": 1.0,
             "interval_scope": "NONE",
+        }
+
+    # The first layer intentionally borrows only from the global pool and keeps
+    # a strong 50/50 prior. Six observations may inform a forecast; they may not
+    # grant entry authority or family-specific confidence.
+    if not hierarchical_available:
+        global_post = _preconfirm_rate_posterior(
+            global_rows,
+            0.50,
+            PRECONFIRM_WEAK_PRIOR_STRENGTH,
+        )
+        selected_rate = safe_float(global_post.get("posterior_probability"), 0.50)
+        historical_heuristic = mean(
+            _preconfirm_heuristic_probability(row["features"])
+            for row in global_rows
+        ) if global_rows else 0.50
+        adjustment_weight = clamp(global_n / (global_n + 18.0), 0.10, 0.35)
+        logit_offset = _preconfirm_logit(selected_rate) - _preconfirm_logit(historical_heuristic)
+        calibrated_probability = _preconfirm_sigmoid(
+            _preconfirm_logit(heuristic_probability) + adjustment_weight * logit_offset
+        )
+        successes = sum(int(row["label"]) for row in global_rows)
+        low, high = _preconfirm_wilson(successes, global_n)
+        return {
+            "calibrated": True,
+            "calibration_tier": "EARLY_WEAK_BAYES",
+            "probability": clamp(calibrated_probability, 0.03, 0.97),
+            "global_sample_size": global_n,
+            "setup_family_sample_size": setup_n,
+            "exact_family_sample_size": exact_n,
+            "effective_sample_size": round(global_n * adjustment_weight, 3),
+            "setup_family": setup_family,
+            "event_kind": event_kind,
+            "global_posterior": global_post,
+            "selected_posterior_probability": round(selected_rate, 6),
+            "historical_heuristic_probability": round(historical_heuristic, 6),
+            "adjustment_weight": round(adjustment_weight, 6),
+            "interval_low": round(low, 6),
+            "interval_high": round(high, 6),
+            "interval_scope": "GLOBAL_POOLED_WEAK",
+            "downgrade_trusted": False,
+            "promotion_trusted": False,
+            "reason": "global_bayesian_weak_calibration",
         }
 
     global_post = _preconfirm_rate_posterior(global_rows, 0.50, 4.0)
@@ -2175,10 +2235,11 @@ def _preconfirm_hierarchical_calibration(
         global_n >= PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS
         and exact_n >= PRECONFIRM_PROMOTION_MIN_EXACT_ROWS
         and low >= PRECONFIRM_PROMOTION_MIN_WILSON_LOW
-        and len({int(row["label"]) for row in global_rows}) >= 2
+        and has_both_labels
     )
     return {
         "calibrated": True,
+        "calibration_tier": "HIERARCHICAL_EMPIRICAL_BAYES",
         "probability": clamp(calibrated_probability, 0.03, 0.97),
         "global_sample_size": global_n,
         "setup_family_sample_size": setup_n,
@@ -2254,11 +2315,16 @@ def _preconfirm_estimate(
     elif hierarchy.get("calibrated"):
         raw_probability = None
         probability = safe_float(hierarchy.get("probability"), heuristic)
-        source = "HIERARCHICAL_EMPIRICAL_BAYES"
+        calibration_tier = str(hierarchy.get("calibration_tier") or "HIERARCHICAL_EMPIRICAL_BAYES")
+        if calibration_tier == "EARLY_WEAK_BAYES":
+            source = "GLOBAL_BAYES_WEAK_CALIBRATION"
+            trust_level = "WEAK_BAYES_BOOTSTRAP"
+        else:
+            source = "HIERARCHICAL_EMPIRICAL_BAYES"
+            trust_level = "HIERARCHICAL_BOOTSTRAP"
         calibrated = True
         downgrade_trusted = bool(hierarchy.get("downgrade_trusted"))
         promotion_trusted = bool(hierarchy.get("promotion_trusted"))
-        trust_level = "HIERARCHICAL_BOOTSTRAP"
     else:
         raw_probability = None
         probability = heuristic
@@ -2382,6 +2448,51 @@ def load_preconfirmation_journal(main_journal: Optional[dict[str, Any]] = None) 
     }
     return journal
 
+def sync_preconfirmation_to_main_journal(
+    preconfirmation_journal: dict[str, Any],
+    main_journal: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Persist the retained lifecycle mirror into the primary signal journal.
+
+    Only canonical lifecycle rows are copied. This is a real disk sync, not an
+    in-memory assignment that merely hopes a later code path eventually saves.
+    """
+    if not PRECONFIRM_EMBEDDED_LEDGER_ENABLED:
+        return {"synced": False, "reason": "embedded_ledger_disabled"}
+
+    target = main_journal if isinstance(main_journal, dict) else load_json(JOURNAL_FILE, {})
+    current_events = []
+    for event in preconfirmation_journal.get("events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        status = _preconfirm_event_status(event)
+        if status not in PRECONFIRM_VALID_STATUSES:
+            continue
+        mirrored = dict(event)
+        mirrored["status"] = status
+        mirrored["outcome"] = _preconfirm_legacy_outcome(status)
+        current_events.append(mirrored)
+
+    pending_count = sum(1 for event in current_events if _preconfirm_event_status(event) == "PENDING")
+    resolved_count = len(current_events) - pending_count
+    target["preconfirmation_events"] = current_events
+    target["preconfirmation_model_status"] = dict(preconfirmation_journal.get("model_status") or {})
+    target["preconfirmation_persistence"] = {
+        "mode": "SIDECAR_PLUS_MAIN_JOURNAL_MIRROR",
+        "event_count": len(current_events),
+        "pending_count": pending_count,
+        "resolved_count": resolved_count,
+        "updated_at": str(preconfirmation_journal.get("updated_at") or iso_now()),
+        "disk_synced": True,
+    }
+    atomic_json_write(JOURNAL_FILE, target)
+    return {
+        "synced": True,
+        "event_count": len(current_events),
+        "pending_count": pending_count,
+        "resolved_count": resolved_count,
+    }
+
 def save_preconfirmation_journal(
     journal: dict[str, Any],
     main_journal: Optional[dict[str, Any]] = None,
@@ -2398,25 +2509,27 @@ def save_preconfirmation_journal(
     room = max(0, PRECONFIRM_MAX_EVENTS - len(pending))
     retained = resolved[-room:] + pending if room else pending
     journal["events"] = retained
+    terminal_status_counts = {
+        status: sum(1 for event in retained if _preconfirm_event_status(event) == status)
+        for status in sorted(PRECONFIRM_TERMINAL_STATUSES)
+    }
     journal["retention_audit"] = {
         "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
         "max_events": PRECONFIRM_MAX_EVENTS,
         "pending_protected": len(pending),
         "resolved_retained": len(resolved[-room:]) if room else 0,
+        "terminal_status_counts": terminal_status_counts,
         "trade_journal_limit_not_used": True,
-        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED and main_journal is not None),
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+    }
+    journal["persistence_sources"] = {
+        "sidecar": str(PRECONFIRM_JOURNAL_FILE),
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+        "merged_event_count": len(retained),
+        "sync_order": "SIDECAR_THEN_MAIN_JOURNAL",
     }
     atomic_json_write(PRECONFIRM_JOURNAL_FILE, journal)
-    if PRECONFIRM_EMBEDDED_LEDGER_ENABLED and main_journal is not None:
-        main_journal["preconfirmation_events"] = [dict(event) for event in retained]
-        main_journal["preconfirmation_model_status"] = dict(journal.get("model_status") or {})
-        main_journal["preconfirmation_persistence"] = {
-            "mode": "SIDECAR_PLUS_MAIN_JOURNAL_MIRROR",
-            "event_count": len(retained),
-            "pending_count": len(pending),
-            "resolved_count": len(retained) - len(pending),
-            "updated_at": journal["updated_at"],
-        }
+    sync_preconfirmation_to_main_journal(journal, main_journal)
 
 def _preconfirm_should_log(candidate: Candidate) -> bool:
     """Every valid directional candidate receives a forecast row.
@@ -2701,6 +2814,17 @@ def _preconfirm_build_model_status(
 ) -> dict[str, Any]:
     model_cache = model_cache or {}
     global_model = model_cache.setdefault("__GLOBAL_POOLED__", _preconfirm_build_model(journal, None))
+    global_training_rows = _preconfirm_training_rows(journal)
+    global_training_labels = {int(row["label"]) for row in global_training_rows}
+    global_has_both_labels = len(global_training_labels) >= 2
+    resolved_event_count = sum(
+        1 for event in journal.get("events", []) or []
+        if isinstance(event, dict) and _preconfirm_event_status(event) in PRECONFIRM_TERMINAL_STATUSES
+    )
+    expired_event_count = sum(
+        1 for event in journal.get("events", []) or []
+        if isinstance(event, dict) and _preconfirm_event_status(event) == "EXPIRED"
+    )
     families = {
         str(event.get("model_family") or "").upper()
         for event in journal.get("events", []) or []
@@ -2743,11 +2867,22 @@ def _preconfirm_build_model_status(
         "GLOBAL_POOLED": {
             "trusted": bool(global_model.get("trusted")),
             "sample_size": int(global_model.get("sample_size") or 0),
+            "calibration_sample_size": len(global_training_rows),
+            "resolved_events": resolved_event_count,
+            "expired_events": expired_event_count,
+            "expired_label_mode": PRECONFIRM_EXPIRED_LABEL_MODE,
             "auc": global_model.get("auc"),
             "brier": global_model.get("brier"),
             "trust_level": global_model.get("trust_level", "BOOTSTRAP"),
             "logistic_floor": PRECONFIRM_MIN_TRAIN_ROWS,
             "hierarchical_floor": PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS,
+            "weak_calibration_floor": PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS,
+            "calibration_tier": (
+                "POOLED_LOGISTIC_VALIDATED" if global_model.get("trusted")
+                else "HIERARCHICAL_EMPIRICAL_BAYES" if len(global_training_rows) >= PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS and global_has_both_labels
+                else "EARLY_WEAK_BAYES" if len(global_training_rows) >= PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS and global_has_both_labels
+                else "HEURISTIC_ONLY"
+            ),
             "training_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
             "closed_trades_used": False,
         },
@@ -2969,6 +3104,63 @@ def test_preconfirmation_chronological_model_gate_and_calibration() -> bool:
         and (model.get("calibration") or {}).get("fitted")
         and (model.get("chronological_split") or {}).get("test", 0) > 0
     )
+
+
+def test_preconfirmation_weak_calibration_starts_at_six_resolved() -> bool:
+    events = []
+    base_ts = 1_700_050_000_000
+    for i in range(PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS):
+        features = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+        features["approach_efficiency"] = -0.5 + i * 0.2
+        features["trigger_freshness"] = 0.8
+        label = 1 if i not in {1, 4} else 0
+        events.append({
+            "event_id": f"weak-{i}",
+            "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+            "status": "CONFIRMED" if label else "FAILED",
+            "features": features,
+            "observed_ts": base_ts + i * 60_000,
+        })
+    hierarchy = _preconfirm_hierarchical_calibration(
+        {"events": events},
+        "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+        0.62,
+    )
+    return bool(
+        hierarchy.get("calibrated")
+        and hierarchy.get("calibration_tier") == "EARLY_WEAK_BAYES"
+        and int(hierarchy.get("global_sample_size") or 0) == PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS
+        and not hierarchy.get("downgrade_trusted")
+        and not hierarchy.get("promotion_trusted")
+        and 0.0 < safe_float(hierarchy.get("probability"), 0.0) < 1.0
+    )
+
+
+def test_preconfirmation_main_journal_sync_is_persisted() -> bool:
+    global JOURNAL_FILE
+    original_journal_file = JOURNAL_FILE
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            JOURNAL_FILE = Path(tmpdir) / "signal_journal.json"
+            main_journal = {"signals": [], "preconfirmation_events": []}
+            precursor = {
+                "updated_at": "2026-07-17T00:00:00+00:00",
+                "model_status": {"GLOBAL_POOLED": {"sample_size": 2}},
+                "events": [
+                    {"event_id": "p", "status": "PENDING", "outcome": "PENDING"},
+                    {"event_id": "c", "status": "CONFIRMED", "outcome": "CONFIRMED"},
+                ],
+            }
+            result = sync_preconfirmation_to_main_journal(precursor, main_journal)
+            persisted = load_json(JOURNAL_FILE, {})
+            statuses = {_preconfirm_event_status(event) for event in persisted.get("preconfirmation_events", [])}
+            return bool(
+                result.get("synced")
+                and statuses == {"PENDING", "CONFIRMED"}
+                and (persisted.get("preconfirmation_persistence") or {}).get("disk_synced")
+            )
+    finally:
+        JOURNAL_FILE = original_journal_file
 
 
 def test_preconfirmation_hierarchical_bootstrap_uses_global_rows() -> bool:
@@ -3323,6 +3515,7 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preconfirm_acceptance_closes": PRECONFIRM_ACCEPTANCE_CLOSES,
         "preconfirm_min_train_rows": PRECONFIRM_MIN_TRAIN_ROWS,
         "preconfirm_full_trust_rows": PRECONFIRM_FULL_TRUST_ROWS,
+        "preconfirm_weak_min_calibration_rows": PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS,
         "preconfirm_global_min_calibration_rows": PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS,
         "preconfirm_setup_family_min_rows": PRECONFIRM_SETUP_FAMILY_MIN_ROWS,
         "preconfirm_exact_family_min_rows": PRECONFIRM_EXACT_FAMILY_MIN_ROWS,
@@ -17828,7 +18021,9 @@ def _run_self_test() -> bool:
         ("preconfirmation timestamp freeze blocks future leakage", test_preconfirmation_timestamp_freeze),
         ("preconfirmation cannot create a probe without an existing probe path", test_preconfirmation_cannot_create_probe_without_existing_probe_path),
         ("preconfirmation chronological model passes calibration gate", test_preconfirmation_chronological_model_gate_and_calibration),
+        ("preconfirmation weak calibration starts at six resolved rows", test_preconfirmation_weak_calibration_starts_at_six_resolved),
         ("preconfirmation hierarchical bootstrap borrows global rows", test_preconfirmation_hierarchical_bootstrap_uses_global_rows),
+        ("preconfirmation main-journal mirror is persisted immediately", test_preconfirmation_main_journal_sync_is_persisted),
         ("preconfirmation embedded ledger preserves resolved events", test_preconfirmation_embedded_ledger_merge_preserves_resolved_event),
         ("preconfirmation resolves only after fixed 45m horizon", test_preconfirmation_event_resolves_event_first),
         ("preconfirmation records trigger-ready directional candidates", test_preconfirmation_records_pending_for_trigger_ready_candidate),
@@ -20084,7 +20279,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.1")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
