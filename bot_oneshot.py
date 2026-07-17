@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.4 (Confirmation Probability Edition)
-===============================================================================
-Оновлення v9.4.0:
-- Додано окремий Confirmation Probability Layer, який оцінює P(confirmation | precursor_state) до фактичного підтвердження.
-- Шар не має права створювати ENTRY/RISKY_ENTRY/PROBE_ENTRY; він лише калібровано модулює існуючий fresh-probe шлях у Executive Layer.
-- Додано окремий precursor journal, event-based outcomes, chronological validation, AUC/Brier gate, Platt calibration та Wilson interval.
-- Anti-leakage: precursor-фічі обчислюються з timestamp freeze і не використовують бар підтвердження або майбутні бари.
-- Cold start працює як явно некалібрована евристика; PRECONFIRM_MODEL_TRUSTED активується лише після мінімальної вибірки та AUC gate.
+BZU Professional Hybrid Confluence Signal Bot v9.5 (TTL Bridge + Hierarchical Preconfirmation)
+=============================================================================================
+Оновлення v9.5.0:
+- Закрито TTL/revalidation dead zone між 4 годинами та hard TTL: повний model-local 3M/15M доказ може переаргументувати живу тезу через mature-thesis bridge.
+- Hard TTL не послаблено: після нього micro-confirmation сам по собі не продовжує життя тези.
+- Усунуто суперечливий stale recovery, який вимагав одночасно >=1.5 ATR і <=1.35 ATR від anchor.
+- Confirmation Probability Layer тепер використовує pooled logistic model та hierarchical empirical-Bayes shrinkage global -> setup family -> exact family.
+- Для первинної калібрації більше не потрібно 60 спостережень у кожному setup_family:event_kind; bootstrap-калібрація починається з глобальної вибірки.
+- Preconfirmation ledger дублюється в основний journal, щоб sidecar не обнуляв sample_size між GitHub Actions runs.
+- Anti-leakage та Executive authority збережені: шар не створює незалежний entry path.
 """
 
 from __future__ import annotations
@@ -124,8 +126,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.4.0-confirmation-probability"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_4_CONFIRMATION_PROBABILITY"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.0-ttl-bridge-hierarchical-preconfirm"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_TTL_BRIDGE_HIERARCHICAL_PRECONFIRM"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -145,7 +147,7 @@ WORKSPACE = Path(os.getenv("GITHUB_WORKSPACE", os.getcwd()))
 STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v6_4.json")))
 JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_4.json")))
 
-# === v9.4 Confirmation Probability Layer ===
+# === v9.5 Hierarchical Confirmation Probability Layer ===
 # Separate persistence is deliberate: precursor rows must not rotate with the trade journal.
 PRECONFIRMATION_LAYER_ENABLED = os.getenv("PRECONFIRMATION_LAYER_ENABLED", "true").lower() in {"1", "true", "yes"}
 PRECONFIRM_JOURNAL_FILE = Path(os.getenv("PRECONFIRM_JOURNAL_FILE", str(WORKSPACE / "preconfirmation_journal_v9_4.json")))
@@ -153,8 +155,22 @@ PRECONFIRM_MAX_EVENTS = max(1000, int(os.getenv("PRECONFIRM_MAX_EVENTS", "20000"
 PRECONFIRM_WINDOW_MINUTES = max(6, int(os.getenv("PRECONFIRM_WINDOW_MINUTES", "45") or 45))
 PRECONFIRM_CONFIRM_BUFFER_ATR = max(0.02, float(os.getenv("PRECONFIRM_CONFIRM_BUFFER_ATR", "0.15") or 0.15))
 PRECONFIRM_INVALIDATION_BUFFER_ATR = max(0.20, float(os.getenv("PRECONFIRM_INVALIDATION_BUFFER_ATR", "0.80") or 0.80))
-PRECONFIRM_MIN_TRAIN_ROWS = max(30, int(os.getenv("PRECONFIRM_MIN_TRAIN_ROWS", "60") or 60))
-PRECONFIRM_FULL_TRUST_ROWS = max(PRECONFIRM_MIN_TRAIN_ROWS + 1, int(os.getenv("PRECONFIRM_FULL_TRUST_ROWS", "160") or 160))
+# v9.5: pooled/hierarchical calibration. The 24-row floor applies to the
+# pooled global logistic model, not to every setup_family:event_kind bucket.
+# Before that, a small-sample empirical-Bayes calibrator shares information
+# global -> setup family -> exact model family without pretending that 3 rows
+# are a fully validated ML model.
+PRECONFIRM_MIN_TRAIN_ROWS = max(16, int(os.getenv("PRECONFIRM_MIN_TRAIN_ROWS", "24") or 24))
+PRECONFIRM_FULL_TRUST_ROWS = max(PRECONFIRM_MIN_TRAIN_ROWS + 1, int(os.getenv("PRECONFIRM_FULL_TRUST_ROWS", "80") or 80))
+PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS = max(8, int(os.getenv("PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS", "12") or 12))
+PRECONFIRM_SETUP_FAMILY_MIN_ROWS = max(2, int(os.getenv("PRECONFIRM_SETUP_FAMILY_MIN_ROWS", "4") or 4))
+PRECONFIRM_EXACT_FAMILY_MIN_ROWS = max(1, int(os.getenv("PRECONFIRM_EXACT_FAMILY_MIN_ROWS", "2") or 2))
+PRECONFIRM_SETUP_PARENT_STRENGTH = max(2.0, float(os.getenv("PRECONFIRM_SETUP_PARENT_STRENGTH", "8") or 8))
+PRECONFIRM_EXACT_PARENT_STRENGTH = max(2.0, float(os.getenv("PRECONFIRM_EXACT_PARENT_STRENGTH", "6") or 6))
+PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS = max(PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS, int(os.getenv("PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS", "24") or 24))
+PRECONFIRM_PROMOTION_MIN_EXACT_ROWS = max(2, int(os.getenv("PRECONFIRM_PROMOTION_MIN_EXACT_ROWS", "4") or 4))
+PRECONFIRM_PROMOTION_MIN_WILSON_LOW = min(0.80, max(0.50, float(os.getenv("PRECONFIRM_PROMOTION_MIN_WILSON_LOW", "0.55") or 0.55)))
+PRECONFIRM_EMBEDDED_LEDGER_ENABLED = os.getenv("PRECONFIRM_EMBEDDED_LEDGER_ENABLED", "true").lower() in {"1", "true", "yes"}
 PRECONFIRM_AUC_GATE = min(0.95, max(0.50, float(os.getenv("PRECONFIRM_AUC_GATE", "0.55") or 0.55)))
 PRECONFIRM_BRIER_WARN = min(0.50, max(0.05, float(os.getenv("PRECONFIRM_BRIER_WARN", "0.25") or 0.25)))
 PRECONFIRM_EXPIRED_LABEL_MODE = str(os.getenv("PRECONFIRM_EXPIRED_LABEL_MODE", "SEPARATE") or "SEPARATE").strip().upper()
@@ -259,6 +275,17 @@ SHORT_SWEEP_MIN_VOLUME_RATIO = max(0.0, float(os.getenv("SHORT_SWEEP_MIN_VOLUME_
 # without a fresh model-valid re-anchor/revalidation on the current run.
 THESIS_TTL_BASELINE_MIN = 1440.0
 THESIS_HARD_TTL_MIN = float(os.getenv("THESIS_HARD_TTL_MIN", str(THESIS_TTL_BASELINE_MIN)) or THESIS_TTL_BASELINE_MIN)
+# v9.5 mature-thesis bridge closes the 4h..24h dead zone. It does not extend
+# thesis life past the hard TTL; it only lets a current, complete model-local
+# 3M/15M argument replace an old execution trigger while the thesis is alive.
+SETUP_REVALIDATION_MATURE_BRIDGE_ENABLED = os.getenv("SETUP_REVALIDATION_MATURE_BRIDGE_ENABLED", "true").lower() in {"1", "true", "yes"}
+SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN = min(
+    THESIS_HARD_TTL_MIN,
+    max(
+        SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
+        float(os.getenv("SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN", str(THESIS_HARD_TTL_MIN)) or THESIS_HARD_TTL_MIN),
+    ),
+)
 
 # === v8.8 Continuation Re-anchor / No-Pullback model ===
 CONTINUATION_REANCHOR_ENABLED = os.getenv("CONTINUATION_REANCHOR_ENABLED", "true").lower() in {"1", "true", "yes"}
@@ -331,6 +358,14 @@ MISSED_MOVE_ATR = float(os.getenv("MISSED_MOVE_ATR", "1.8") or 1.8)
 
 SETUP_REVALIDATION_RISK_MULT_STALE = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_STALE", "0.55") or 0.55)
 SETUP_REVALIDATION_RISK_MULT_EXTREME = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_EXTREME", "0.35") or 0.35)
+SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START = min(
+    SETUP_REVALIDATION_RISK_MULT_STALE,
+    max(0.05, float(os.getenv("SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START", "0.45") or 0.45)),
+)
+SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_END = min(
+    SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START,
+    max(0.03, float(os.getenv("SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_END", "0.35") or 0.35)),
+)
 
 PROBE_RISK_PCT = float(os.getenv("PROBE_RISK_PCT", "0.12") or 0.12)
 # v9.1: PROBE is not one homogeneous permission. Every probe receives an
@@ -513,6 +548,14 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("PRECONFIRM_AUC_GATE must be between 0.50 and 0.95")
     if not (0.0 < PRECONFIRM_PROBE_WAIT_PROBABILITY < PRECONFIRM_PROBE_MIN_PROBABILITY < 1.0):
         errors.append("Preconfirmation probe probabilities must satisfy wait < promote")
+    if PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS >= PRECONFIRM_MIN_TRAIN_ROWS:
+        errors.append("Hierarchical calibration floor must be below pooled logistic floor")
+    if PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS < PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS:
+        errors.append("Preconfirmation promotion floor cannot be below calibration floor")
+    if not (SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN < SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN <= THESIS_HARD_TTL_MIN):
+        errors.append("Mature thesis bridge must cover only the generic-max .. hard-TTL interval")
+    if not (0 < SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_END <= SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START <= SETUP_REVALIDATION_RISK_MULT_STALE <= 1.0):
+        errors.append("Mature thesis bridge risk multipliers are not monotonic")
 
     short_weight_sum = sum([
         SHORT_REVERSAL_WEIGHT_LIQUIDITY,
@@ -1524,7 +1567,7 @@ def json_safe(value: Any) -> Any:
 
 
 # ==========================================================
-# v9.4 CONFIRMATION PROBABILITY LAYER
+# v9.5 HIERARCHICAL CONFIRMATION PROBABILITY LAYER
 # ==========================================================
 # Contract:
 # - observes only precursor state frozen at as_of_ts;
@@ -1842,10 +1885,36 @@ def _preconfirm_brier(labels: list[int], probabilities: list[float]) -> Optional
     return mean((safe_float(p) - int(y)) ** 2 for p, y in zip(probabilities, labels))
 
 
-def _preconfirm_training_rows(journal: dict[str, Any], family: str) -> list[dict[str, Any]]:
+def _preconfirm_scope_parts(model_family: str) -> tuple[str, str]:
+    raw = str(model_family or "UNKNOWN:UNKNOWN").upper()
+    if ":" not in raw:
+        return raw or "UNKNOWN", "UNKNOWN"
+    setup_family, event_kind = raw.split(":", 1)
+    return setup_family or "UNKNOWN", event_kind or "UNKNOWN"
+
+
+def _preconfirm_training_rows(
+    journal: dict[str, Any],
+    family: Optional[str] = None,
+    *,
+    setup_family: Optional[str] = None,
+    event_kind: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Return resolved precursor rows for an exact or pooled hierarchy scope."""
+    exact_family = str(family or "").upper()
+    setup_scope = str(setup_family or "").upper()
+    event_scope = str(event_kind or "").upper()
     rows: list[dict[str, Any]] = []
     for event in journal.get("events", []) or []:
-        if not isinstance(event, dict) or str(event.get("model_family") or "") != family:
+        if not isinstance(event, dict):
+            continue
+        event_family = str(event.get("model_family") or "UNKNOWN:UNKNOWN").upper()
+        event_setup, event_kind_value = _preconfirm_scope_parts(event_family)
+        if exact_family and event_family != exact_family:
+            continue
+        if setup_scope and event_setup != setup_scope:
+            continue
+        if event_scope and event_kind_value != event_scope:
             continue
         outcome = str(event.get("outcome") or "").upper()
         if outcome == "CONFIRMED":
@@ -1861,46 +1930,222 @@ def _preconfirm_training_rows(journal: dict[str, Any], family: str) -> list[dict
             "features": {name: safe_float(features.get(name)) for name in PRECONFIRM_FEATURE_NAMES},
             "label": label,
             "observed_ts": int(event.get("observed_ts") or 0),
+            "model_family": event_family,
+            "setup_family": event_setup,
+            "event_kind": event_kind_value,
         })
     return sorted(rows, key=lambda row: row["observed_ts"])
 
 
-def _preconfirm_build_model(journal: dict[str, Any], family: str) -> dict[str, Any]:
+def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = None) -> dict[str, Any]:
+    """Build a chronologically validated logistic model.
+
+    v9.5 normally calls this with family=None, producing one pooled model over
+    every resolved precursor event. Exact setup buckets are handled by
+    hierarchical shrinkage, so they no longer each need 60 observations.
+    """
     rows = _preconfirm_training_rows(journal, family)
     n = len(rows)
+    scope = str(family or "GLOBAL_POOLED")
     if n < PRECONFIRM_MIN_TRAIN_ROWS:
-        return {"trusted": False, "sample_size": n, "reason": "bootstrap", "auc": None, "brier": None}
-    train_end = max(20, int(n * 0.70))
-    calibration_end = max(train_end + 8, int(n * 0.85))
-    calibration_end = min(calibration_end, n - 6)
+        return {
+            "trusted": False,
+            "valid": False,
+            "sample_size": n,
+            "scope": scope,
+            "reason": "pooled_rows_below_logistic_floor",
+            "auc": None,
+            "brier": None,
+            "trust_level": "BOOTSTRAP",
+        }
+    train_end = max(12, int(n * 0.70))
+    calibration_end = max(train_end + 4, int(n * 0.85))
+    calibration_end = min(calibration_end, n - 4)
     if calibration_end <= train_end or n - calibration_end < 4:
-        return {"trusted": False, "sample_size": n, "reason": "insufficient_chronological_holdout", "auc": None, "brier": None}
+        return {
+            "trusted": False,
+            "valid": False,
+            "sample_size": n,
+            "scope": scope,
+            "reason": "insufficient_chronological_holdout",
+            "auc": None,
+            "brier": None,
+            "trust_level": "BOOTSTRAP",
+        }
     train_rows = rows[:train_end]
     calibration_rows = rows[train_end:calibration_end]
     test_rows = rows[calibration_end:]
     base_model = _preconfirm_fit_logistic(train_rows)
     if not base_model.get("valid"):
-        return {"trusted": False, "sample_size": n, "reason": base_model.get("reason", "fit_failed"), "auc": None, "brier": None}
+        return {
+            "trusted": False,
+            "valid": False,
+            "sample_size": n,
+            "scope": scope,
+            "reason": base_model.get("reason", "fit_failed"),
+            "auc": None,
+            "brier": None,
+            "trust_level": "BOOTSTRAP",
+        }
     calibration_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows]
     calibration = _preconfirm_fit_platt(calibration_probabilities, [int(row["label"]) for row in calibration_rows])
-    test_probabilities = [_preconfirm_apply_platt(_preconfirm_predict_model(base_model, row["features"]), calibration) for row in test_rows]
+    test_probabilities = [
+        _preconfirm_apply_platt(_preconfirm_predict_model(base_model, row["features"]), calibration)
+        for row in test_rows
+    ]
     test_labels = [int(row["label"]) for row in test_rows]
     auc = _preconfirm_auc(test_labels, test_probabilities)
     brier = _preconfirm_brier(test_labels, test_probabilities)
-    trusted = bool(auc is not None and auc >= PRECONFIRM_AUC_GATE)
+    trusted = bool(
+        auc is not None
+        and auc >= PRECONFIRM_AUC_GATE
+        and brier is not None
+        and brier <= PRECONFIRM_BRIER_WARN
+    )
     final_model = _preconfirm_fit_logistic(rows) if trusted else base_model
     return {
         **final_model,
         "trusted": trusted,
         "sample_size": n,
+        "scope": scope,
         "auc": round(auc, 6) if auc is not None else None,
         "brier": round(brier, 6) if brier is not None else None,
         "calibration": calibration,
-        "reason": "trusted" if trusted else "auc_below_gate_or_unavailable",
-        "trust_level": "FULL" if trusted and n >= PRECONFIRM_FULL_TRUST_ROWS else "PARTIAL" if trusted else "UNTRUSTED",
+        "reason": "trusted" if trusted else "validation_gate_not_passed",
+        "trust_level": "FULL" if trusted and n >= PRECONFIRM_FULL_TRUST_ROWS else "PARTIAL" if trusted else "BOOTSTRAP",
         "chronological_split": {"train": len(train_rows), "calibration": len(calibration_rows), "test": len(test_rows)},
     }
 
+
+def _preconfirm_rate_posterior(
+    rows: list[dict[str, Any]],
+    prior_probability: float,
+    prior_strength: float,
+) -> dict[str, Any]:
+    successes = sum(int(row.get("label", 0)) for row in rows)
+    total = len(rows)
+    prior_probability = clamp(prior_probability, 0.02, 0.98)
+    prior_strength = max(float(prior_strength), 0.0)
+    alpha = prior_probability * prior_strength + successes
+    beta = (1.0 - prior_probability) * prior_strength + (total - successes)
+    posterior = alpha / max(alpha + beta, 1e-9)
+    return {
+        "successes": successes,
+        "total": total,
+        "prior_probability": prior_probability,
+        "prior_strength": prior_strength,
+        "posterior_probability": clamp(posterior, 0.02, 0.98),
+    }
+
+
+def _preconfirm_hierarchical_calibration(
+    journal: dict[str, Any],
+    model_family: str,
+    heuristic_probability: float,
+) -> dict[str, Any]:
+    """Small-sample empirical-Bayes calibration with parent borrowing.
+
+    Global evidence forms the parent prior, setup-family evidence updates it,
+    and exact model-family evidence updates the setup prior. This is calibrated
+    enough for audit/downside gating after a small global sample, but promotion
+    authority remains stricter than mere availability of a posterior.
+    """
+    setup_family, event_kind = _preconfirm_scope_parts(model_family)
+    global_rows = _preconfirm_training_rows(journal)
+    setup_rows = _preconfirm_training_rows(journal, setup_family=setup_family)
+    exact_rows = _preconfirm_training_rows(journal, model_family)
+    global_n = len(global_rows)
+    setup_n = len(setup_rows)
+    exact_n = len(exact_rows)
+    global_labels = {int(row["label"]) for row in global_rows}
+    calibrated = bool(
+        global_n >= PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS
+        and len(global_labels) >= 2
+    )
+    if not calibrated:
+        return {
+            "calibrated": False,
+            "probability": heuristic_probability,
+            "global_sample_size": global_n,
+            "setup_family_sample_size": setup_n,
+            "exact_family_sample_size": exact_n,
+            "setup_family": setup_family,
+            "event_kind": event_kind,
+            "reason": "insufficient_global_resolved_precursors",
+            "downgrade_trusted": False,
+            "promotion_trusted": False,
+            "interval_low": 0.0,
+            "interval_high": 1.0,
+            "interval_scope": "NONE",
+        }
+
+    global_post = _preconfirm_rate_posterior(global_rows, 0.50, 4.0)
+    setup_post = _preconfirm_rate_posterior(
+        setup_rows,
+        safe_float(global_post.get("posterior_probability"), 0.50),
+        PRECONFIRM_SETUP_PARENT_STRENGTH,
+    )
+    exact_post = _preconfirm_rate_posterior(
+        exact_rows,
+        safe_float(setup_post.get("posterior_probability"), 0.50),
+        PRECONFIRM_EXACT_PARENT_STRENGTH,
+    )
+
+    if exact_n >= PRECONFIRM_EXACT_FAMILY_MIN_ROWS:
+        selected_rows = exact_rows
+        selected_post = exact_post
+        interval_scope = "EXACT_MODEL_FAMILY"
+    elif setup_n >= PRECONFIRM_SETUP_FAMILY_MIN_ROWS:
+        selected_rows = setup_rows
+        selected_post = setup_post
+        interval_scope = "SETUP_FAMILY"
+    else:
+        selected_rows = global_rows
+        selected_post = global_post
+        interval_scope = "GLOBAL_POOLED"
+
+    selected_rate = safe_float(selected_post.get("posterior_probability"), 0.50)
+    historical_heuristic = mean(
+        _preconfirm_heuristic_probability(row["features"])
+        for row in selected_rows
+    ) if selected_rows else 0.50
+    effective_n = exact_n + 0.50 * setup_n + 0.25 * global_n
+    adjustment_weight = clamp(effective_n / (effective_n + 8.0), 0.20, 0.90)
+    logit_offset = _preconfirm_logit(selected_rate) - _preconfirm_logit(historical_heuristic)
+    calibrated_probability = _preconfirm_sigmoid(
+        _preconfirm_logit(heuristic_probability) + adjustment_weight * logit_offset
+    )
+
+    successes = sum(int(row["label"]) for row in selected_rows)
+    low, high = _preconfirm_wilson(successes, len(selected_rows))
+    promotion_trusted = bool(
+        global_n >= PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS
+        and exact_n >= PRECONFIRM_PROMOTION_MIN_EXACT_ROWS
+        and low >= PRECONFIRM_PROMOTION_MIN_WILSON_LOW
+        and len({int(row["label"]) for row in global_rows}) >= 2
+    )
+    return {
+        "calibrated": True,
+        "probability": clamp(calibrated_probability, 0.03, 0.97),
+        "global_sample_size": global_n,
+        "setup_family_sample_size": setup_n,
+        "exact_family_sample_size": exact_n,
+        "effective_sample_size": round(effective_n, 3),
+        "setup_family": setup_family,
+        "event_kind": event_kind,
+        "global_posterior": global_post,
+        "setup_family_posterior": setup_post,
+        "exact_family_posterior": exact_post,
+        "selected_posterior_probability": round(selected_rate, 6),
+        "historical_heuristic_probability": round(historical_heuristic, 6),
+        "adjustment_weight": round(adjustment_weight, 6),
+        "interval_low": round(low, 6),
+        "interval_high": round(high, 6),
+        "interval_scope": interval_scope,
+        "downgrade_trusted": True,
+        "promotion_trusted": promotion_trusted,
+        "reason": "hierarchical_empirical_bayes",
+    }
 
 def _preconfirm_wilson(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
     if total <= 0:
@@ -1937,39 +2182,87 @@ def _preconfirm_estimate(
     model_cache: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     family = _preconfirm_model_family(candidate)
-    model = model_cache.setdefault(family, _preconfirm_build_model(journal, family))
+    global_model = model_cache.setdefault("__GLOBAL_POOLED__", _preconfirm_build_model(journal, None))
     heuristic = _preconfirm_heuristic_probability(features)
-    if model.get("trusted"):
-        raw_probability = _preconfirm_predict_model(model, features)
-        probability = _preconfirm_apply_platt(raw_probability, model.get("calibration") or {})
-        source = "CALIBRATED_LOGISTIC"
+    hierarchy = _preconfirm_hierarchical_calibration(journal, family, heuristic)
+
+    if global_model.get("trusted"):
+        raw_probability = _preconfirm_predict_model(global_model, features)
+        probability = _preconfirm_apply_platt(raw_probability, global_model.get("calibration") or {})
+        source = "CALIBRATED_POOLED_LOGISTIC"
+        calibrated = True
+        downgrade_trusted = True
+        # A pooled model may generalize across families, but promotion still
+        # requires a minimally observed exact bucket with a non-trivial lower
+        # confidence bound. Four exact events is not 60, yet it prevents a brand
+        # new setup family from borrowing full entry authority from unrelated data.
+        promotion_trusted = bool(hierarchy.get("promotion_trusted"))
+        trust_level = "FULL" if int(global_model.get("sample_size") or 0) >= PRECONFIRM_FULL_TRUST_ROWS else "VALIDATED_PARTIAL"
+    elif hierarchy.get("calibrated"):
+        raw_probability = None
+        probability = safe_float(hierarchy.get("probability"), heuristic)
+        source = "HIERARCHICAL_EMPIRICAL_BAYES"
+        calibrated = True
+        downgrade_trusted = bool(hierarchy.get("downgrade_trusted"))
+        promotion_trusted = bool(hierarchy.get("promotion_trusted"))
+        trust_level = "HIERARCHICAL_BOOTSTRAP"
     else:
         raw_probability = None
         probability = heuristic
         source = "HEURISTIC_UNCALIBRATED"
-    rows = _preconfirm_training_rows(journal, family)
-    low, high, neighbor_count = _preconfirm_local_interval(rows, features, model)
+        calibrated = False
+        downgrade_trusted = False
+        promotion_trusted = False
+        trust_level = "HEURISTIC_ONLY"
+
+    exact_rows = _preconfirm_training_rows(journal, family)
+    interval_low = safe_float(hierarchy.get("interval_low"), 0.0)
+    interval_high = safe_float(hierarchy.get("interval_high"), 1.0)
+    interval_scope = str(hierarchy.get("interval_scope") or "NONE")
+    if global_model.get("trusted"):
+        # Keep the interval local to the exact family when available; otherwise
+        # borrow the hierarchy-selected parent interval.
+        low, high, neighbor_count = _preconfirm_local_interval(exact_rows, features, global_model)
+        if neighbor_count >= PRECONFIRM_EXACT_FAMILY_MIN_ROWS:
+            interval_low, interval_high = low, high
+            interval_scope = "EXACT_NEIGHBORHOOD"
+    else:
+        neighbor_count = len(exact_rows)
+
     precursor_active = _preconfirm_should_log(candidate)
+    global_n = int(hierarchy.get("global_sample_size") or global_model.get("sample_size") or 0)
+    setup_n = int(hierarchy.get("setup_family_sample_size") or 0)
+    exact_n = int(hierarchy.get("exact_family_sample_size") or len(exact_rows))
     return {
         "available": True,
         "probability": round(probability, 6),
         "probability_pct": round(probability * 100.0, 1),
         "raw_model_probability": round(raw_probability, 6) if raw_probability is not None else None,
         "heuristic_probability": round(heuristic, 6),
-        "wilson_low": round(low, 6),
-        "wilson_high": round(high, 6),
+        "wilson_low": round(interval_low, 6),
+        "wilson_high": round(interval_high, 6),
         "wilson_neighbors": neighbor_count,
-        "trusted": bool(model.get("trusted")),
-        "PRECONFIRM_MODEL_TRUSTED": bool(model.get("trusted")),
-        "trust_level": str(model.get("trust_level") or "BOOTSTRAP"),
+        "interval_scope": interval_scope,
+        "calibrated": calibrated,
+        "trusted": bool(global_model.get("trusted")),
+        "downgrade_trusted": downgrade_trusted,
+        "promotion_trusted": promotion_trusted,
+        "PRECONFIRM_MODEL_TRUSTED": bool(global_model.get("trusted")),
+        "trust_level": trust_level,
         "source": source,
         "model_family": family,
         "event_kind": _preconfirm_event_kind(candidate),
-        "sample_size": int(model.get("sample_size") or 0),
-        "auc": model.get("auc"),
+        # sample_size is now pooled/effective for compatibility with existing UI.
+        "sample_size": global_n,
+        "global_sample_size": global_n,
+        "setup_family_sample_size": setup_n,
+        "exact_family_sample_size": exact_n,
+        "effective_sample_size": hierarchy.get("effective_sample_size", float(global_n)),
+        "auc": global_model.get("auc"),
         "auc_gate": PRECONFIRM_AUC_GATE,
-        "brier": model.get("brier"),
-        "brier_warning": bool(model.get("brier") is not None and safe_float(model.get("brier")) > PRECONFIRM_BRIER_WARN),
+        "brier": global_model.get("brier"),
+        "brier_warning": bool(global_model.get("brier") is not None and safe_float(global_model.get("brier")) > PRECONFIRM_BRIER_WARN),
+        "hierarchical_calibration": hierarchy,
         "precursor_active": precursor_active,
         "decision_authority": "AUDIT_AND_FRESH_PROBE_GATE_ONLY",
         "can_initiate_entry": False,
@@ -1977,40 +2270,81 @@ def _preconfirm_estimate(
         "excluded_feature": "pattern",
         "feature_dependency_audit": {
             "shared_raw_facts": ["htf_alignment", "liquidity_swept", "flow_alignment"],
-            "aggregation_mode": "MULTIPLICATIVE_FRESH_PROBE_GATE_NOT_SCORE_SUM",
+            "aggregation_mode": "POOLED_MODEL_PLUS_HIERARCHICAL_SHRINKAGE_NOT_SCORE_SUM",
             "added_as_advisor": False,
             "added_to_final_score": False,
             "single_decision_use": "_preconfirm_stage_gate",
         },
-        "schema_version": "preconfirmation_probability_v9.4",
+        "schema_version": "preconfirmation_probability_v9.5_hierarchical",
     }
 
+def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for events in event_lists:
+        for event in events or []:
+            if not isinstance(event, dict):
+                continue
+            key = str(event.get("id") or event.get("dedup_key") or "").strip()
+            if not key:
+                continue
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = dict(event)
+                continue
+            # Prefer the resolved/newer representation over a pending copy.
+            existing_resolved = str(existing.get("outcome") or "PENDING") != "PENDING"
+            event_resolved = str(event.get("outcome") or "PENDING") != "PENDING"
+            existing_ts = int(existing.get("resolved_ts") or existing.get("observed_ts") or 0)
+            event_ts = int(event.get("resolved_ts") or event.get("observed_ts") or 0)
+            if (event_resolved and not existing_resolved) or event_ts >= existing_ts:
+                merged[key] = dict(event)
+    return sorted(merged.values(), key=lambda event: int(event.get("observed_ts") or 0))
 
-def load_preconfirmation_journal() -> dict[str, Any]:
+
+def load_preconfirmation_journal(main_journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     journal = load_json(PRECONFIRM_JOURNAL_FILE, {})
-    journal.setdefault("events", [])
+    sidecar_events = list(journal.get("events") or [])
+    embedded_events = list((main_journal or {}).get("preconfirmation_events") or [])
+    journal["events"] = _merge_preconfirmation_events(sidecar_events, embedded_events)
     journal.setdefault("model_status", {})
     journal["version"] = BOT_VERSION
     journal["architecture_version"] = ARCHITECTURE_VERSION
-    journal["schema_version"] = "preconfirmation_journal_v9.4"
+    journal["schema_version"] = "preconfirmation_journal_v9.5_hierarchical"
+    journal["persistence_sources"] = {
+        "sidecar": str(PRECONFIRM_JOURNAL_FILE),
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+        "merged_event_count": len(journal["events"]),
+    }
     return journal
 
 
-def save_preconfirmation_journal(journal: dict[str, Any]) -> None:
+def save_preconfirmation_journal(
+    journal: dict[str, Any],
+    main_journal: Optional[dict[str, Any]] = None,
+) -> None:
     journal["updated_at"] = iso_now()
     events = [event for event in journal.get("events", []) or [] if isinstance(event, dict)]
     pending = [event for event in events if str(event.get("outcome") or "PENDING") == "PENDING"]
     resolved = [event for event in events if str(event.get("outcome") or "PENDING") != "PENDING"]
     room = max(0, PRECONFIRM_MAX_EVENTS - len(pending))
-    journal["events"] = resolved[-room:] + pending if room else pending
+    retained = resolved[-room:] + pending if room else pending
+    journal["events"] = retained
     journal["retention_audit"] = {
-        "mode": "SEPARATE_PRECURSOR_JOURNAL",
+        "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
         "max_events": PRECONFIRM_MAX_EVENTS,
         "pending_protected": len(pending),
         "trade_journal_limit_not_used": True,
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED and main_journal is not None),
     }
     atomic_json_write(PRECONFIRM_JOURNAL_FILE, journal)
-
+    if PRECONFIRM_EMBEDDED_LEDGER_ENABLED and main_journal is not None:
+        main_journal["preconfirmation_events"] = [dict(event) for event in retained]
+        main_journal["preconfirmation_model_status"] = dict(journal.get("model_status") or {})
+        main_journal["preconfirmation_persistence"] = {
+            "mode": "SIDECAR_PLUS_MAIN_JOURNAL_MIRROR",
+            "event_count": len(retained),
+            "updated_at": journal["updated_at"],
+        }
 
 def _preconfirm_should_log(candidate: Candidate) -> bool:
     if not PRECONFIRMATION_LAYER_ENABLED or candidate is None:
@@ -2124,13 +2458,17 @@ def _preconfirm_resolve_events(journal: dict[str, Any], context: dict[str, Any],
             event["resolution_reason"] = "confirmation_window_elapsed"
 
 
-def apply_confirmation_probability_layer(context: dict[str, Any], candidates: list[Candidate]) -> list[Candidate]:
+def apply_confirmation_probability_layer(
+    context: dict[str, Any],
+    candidates: list[Candidate],
+    main_journal: Optional[dict[str, Any]] = None,
+) -> list[Candidate]:
     if not PRECONFIRMATION_LAYER_ENABLED:
         for candidate in candidates:
             candidate.preconfirmation_profile = {"available": False, "reason": "disabled", "can_initiate_entry": False}
             candidate.confirmation_probability = 0.0
         return candidates
-    journal = load_preconfirmation_journal()
+    journal = load_preconfirmation_journal(main_journal)
     _preconfirm_resolve_events(journal, context, candidates)
     model_cache: dict[str, dict[str, Any]] = {}
     as_of_ts = _preconfirm_as_of_ts(context)
@@ -2155,17 +2493,30 @@ def apply_confirmation_probability_layer(context: dict[str, Any], candidates: li
             continue
         journal.setdefault("events", []).append(event)
         pending_keys.add(event["dedup_key"])
+    global_model = model_cache.get("__GLOBAL_POOLED__", {})
     journal["model_status"] = {
-        family: {
-            "trusted": bool(model.get("trusted")),
-            "sample_size": int(model.get("sample_size") or 0),
-            "auc": model.get("auc"),
-            "brier": model.get("brier"),
-            "trust_level": model.get("trust_level", "BOOTSTRAP"),
-        }
-        for family, model in model_cache.items()
+        "GLOBAL_POOLED": {
+            "trusted": bool(global_model.get("trusted")),
+            "sample_size": int(global_model.get("sample_size") or 0),
+            "auc": global_model.get("auc"),
+            "brier": global_model.get("brier"),
+            "trust_level": global_model.get("trust_level", "BOOTSTRAP"),
+            "logistic_floor": PRECONFIRM_MIN_TRAIN_ROWS,
+            "hierarchical_floor": PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS,
+        },
+        "BY_MODEL_FAMILY": {
+            str((getattr(candidate, "preconfirmation_profile", {}) or {}).get("model_family") or "UNKNOWN"): {
+                "source": (getattr(candidate, "preconfirmation_profile", {}) or {}).get("source"),
+                "calibrated": bool((getattr(candidate, "preconfirmation_profile", {}) or {}).get("calibrated")),
+                "global_sample_size": int((getattr(candidate, "preconfirmation_profile", {}) or {}).get("global_sample_size") or 0),
+                "setup_family_sample_size": int((getattr(candidate, "preconfirmation_profile", {}) or {}).get("setup_family_sample_size") or 0),
+                "exact_family_sample_size": int((getattr(candidate, "preconfirmation_profile", {}) or {}).get("exact_family_sample_size") or 0),
+                "promotion_trusted": bool((getattr(candidate, "preconfirmation_profile", {}) or {}).get("promotion_trusted")),
+            }
+            for candidate in candidates
+        },
     }
-    save_preconfirmation_journal(journal)
+    save_preconfirmation_journal(journal, main_journal)
     return candidates
 
 
@@ -2178,28 +2529,46 @@ def _preconfirm_stage_gate(
     warnings: list[str],
 ) -> tuple[str, Optional[str], list[str], list[str], dict[str, Any]]:
     profile = evaluation.preconfirmation or {}
+    calibrated = bool(profile.get("calibrated") or profile.get("trusted"))
+    downgrade_trusted = bool(profile.get("downgrade_trusted") or profile.get("trusted"))
+    promotion_trusted = bool(profile.get("promotion_trusted") or profile.get("trusted"))
     audit = {
         "applied": False,
+        "calibrated": calibrated,
         "trusted": bool(profile.get("trusted")),
+        "downgrade_trusted": downgrade_trusted,
+        "promotion_trusted": promotion_trusted,
         "precursor_active": bool(profile.get("precursor_active")),
         "probability": safe_float(profile.get("probability"), 0.0),
         "can_initiate_entry": False,
-        "policy": "fresh-probe multiplicative gate; no independent entry authority",
+        "policy": "hierarchical calibration may downgrade early; promotion requires stronger evidence and never creates an independent entry path",
     }
-    if not profile.get("trusted") or not profile.get("precursor_active"):
+    if not calibrated or not profile.get("precursor_active"):
         return state, required, blocking, warnings, audit
     probability = safe_float(profile.get("probability"), 0.0)
     probe_profile = fresh_probe_candidate_profile(candidate)
     audit["applied"] = True
     audit["fresh_probe_eligible"] = bool(probe_profile.get("eligible"))
-    executable_states = {EntryStage.PROBE.value, EntryStage.ACCEPTANCE.value, EntryStage.RETEST_ADD.value, EntryStage.CORE.value, EntryStage.ADD_POSITION.value}
-    if probability <= PRECONFIRM_PROBE_WAIT_PROBABILITY and state in executable_states and probe_profile.get("eligible"):
+    executable_states = {
+        EntryStage.PROBE.value,
+        EntryStage.ACCEPTANCE.value,
+        EntryStage.RETEST_ADD.value,
+        EntryStage.CORE.value,
+        EntryStage.ADD_POSITION.value,
+    }
+    if (
+        downgrade_trusted
+        and probability <= PRECONFIRM_PROBE_WAIT_PROBABILITY
+        and state in executable_states
+        and probe_profile.get("eligible")
+    ):
         state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
         required = f"confirmation probability above {PRECONFIRM_PROBE_WAIT_PROBABILITY:.0%} or new precursor evidence"
         blocking.append("PRECONFIRM_PROBABILITY_LOW")
         audit["effect"] = "DOWNGRADE_FRESH_PROBE_TO_WAIT"
     elif (
-        probability >= PRECONFIRM_PROBE_MIN_PROBABILITY
+        promotion_trusted
+        and probability >= PRECONFIRM_PROBE_MIN_PROBABILITY
         and probe_profile.get("eligible")
         and not bool(getattr(candidate, "confirmation_pending", False))
         and state in {ExecutiveDecisionState.WATCH.value, ExecutiveDecisionState.EARLY_SIGNAL.value, ExecutiveDecisionState.WAIT_CONFIRMATION.value}
@@ -2216,9 +2585,10 @@ def _preconfirm_stage_gate(
         warnings.append("PRECONFIRM_HIGH_PROBABILITY_FRESH_PROBE_ONLY")
         audit["effect"] = "PROMOTE_EXISTING_FRESH_PROBE_PATH"
     else:
-        audit["effect"] = "AUDIT_ONLY"
+        audit["effect"] = "CALIBRATED_AUDIT_ONLY" if calibrated else "AUDIT_ONLY"
+        if calibrated and not promotion_trusted and probability >= PRECONFIRM_PROBE_MIN_PROBABILITY:
+            warnings.append("PRECONFIRM_HIGH_BUT_BOOTSTRAP_NO_PROMOTION")
     return state, required, blocking, warnings, audit
-
 
 def _preconfirm_telegram_line(candidate: Optional[Candidate]) -> str:
     profile = getattr(candidate, "preconfirmation_profile", {}) if candidate else {}
@@ -2227,12 +2597,15 @@ def _preconfirm_telegram_line(candidate: Optional[Candidate]) -> str:
     probability = safe_float(profile.get("probability"), 0.0) * 100.0
     low = safe_float(profile.get("wilson_low"), 0.0) * 100.0
     high = safe_float(profile.get("wilson_high"), 1.0) * 100.0
+    global_n = int(profile.get("global_sample_size") or profile.get("sample_size") or 0)
+    exact_n = int(profile.get("exact_family_sample_size") or 0)
     if profile.get("trusted"):
-        label = f"калібрована, n={int(profile.get('sample_size') or 0)}, AUC={safe_float(profile.get('auc'), 0.0):.2f}"
+        label = f"pooled logistic, global n={global_n}, AUC={safe_float(profile.get('auc'), 0.0):.2f}"
+    elif profile.get("calibrated"):
+        label = f"hierarchical bootstrap, global n={global_n}, exact n={exact_n}"
     else:
-        label = f"евристика, не калібрована, n={int(profile.get('sample_size') or 0)}"
+        label = f"heuristic only, global n={global_n}"
     return f"<b>Ймовірність підтвердження:</b> {probability:.0f}% | CI {low:.0f}–{high:.0f}% ({html.escape(label)})"
-
 
 def test_preconfirmation_timestamp_freeze() -> bool:
     base_ts = 1_700_000_000_000
@@ -2320,6 +2693,59 @@ def test_preconfirmation_chronological_model_gate_and_calibration() -> bool:
         and (model.get("calibration") or {}).get("fitted")
         and (model.get("chronological_split") or {}).get("test", 0) > 0
     )
+
+
+def test_preconfirmation_hierarchical_bootstrap_uses_global_rows() -> bool:
+    families = [
+        "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+        "EXPANSION:LIQUIDITY_SWEEP_REVERSAL",
+        "RANGE_EXECUTION:STRUCTURE_CONFIRMATION",
+    ]
+    events = []
+    base_ts = 1_700_100_000_000
+    for i in range(13):
+        features = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+        features["approach_efficiency"] = -0.8 + 1.6 * (i / 12.0)
+        features["trigger_freshness"] = 0.75
+        label = 0 if i in {0, 3, 7, 11} else 1
+        events.append({
+            "id": f"hier-{i}",
+            "model_family": families[i % len(families)],
+            "outcome": "CONFIRMED" if label else "INVALIDATED",
+            "features": features,
+            "observed_ts": base_ts + i * 60_000,
+        })
+    hierarchy = _preconfirm_hierarchical_calibration(
+        {"events": events},
+        "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+        0.68,
+    )
+    return bool(
+        hierarchy.get("calibrated")
+        and int(hierarchy.get("global_sample_size") or 0) == 13
+        and int(hierarchy.get("exact_family_sample_size") or 0) < PRECONFIRM_MIN_TRAIN_ROWS
+        and hierarchy.get("downgrade_trusted")
+        and not hierarchy.get("promotion_trusted")
+        and 0.0 < safe_float(hierarchy.get("probability"), 0.0) < 1.0
+    )
+
+
+def test_preconfirmation_embedded_ledger_merge_preserves_resolved_event() -> bool:
+    pending = {
+        "id": "same",
+        "dedup_key": "k",
+        "outcome": "PENDING",
+        "observed_ts": 100,
+    }
+    resolved = {
+        "id": "same",
+        "dedup_key": "k",
+        "outcome": "CONFIRMED",
+        "observed_ts": 100,
+        "resolved_ts": 200,
+    }
+    merged = _merge_preconfirmation_events([pending], [resolved])
+    return bool(len(merged) == 1 and merged[0].get("outcome") == "CONFIRMED")
 
 
 def test_preconfirmation_event_resolves_event_first() -> bool:
@@ -2501,6 +2927,10 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "short_sweep_min_volume_ratio": SHORT_SWEEP_MIN_VOLUME_RATIO,
         "thesis_hard_ttl_min": THESIS_HARD_TTL_MIN,
         "thesis_ttl_baseline_min": THESIS_TTL_BASELINE_MIN,
+        "setup_revalidation_mature_bridge_enabled": SETUP_REVALIDATION_MATURE_BRIDGE_ENABLED,
+        "setup_revalidation_mature_bridge_max_age_min": SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN,
+        "setup_revalidation_mature_bridge_risk_mult_start": SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START,
+        "setup_revalidation_mature_bridge_risk_mult_end": SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_END,
         "continuation_reanchor_enabled": CONTINUATION_REANCHOR_ENABLED,
         "continuation_reanchor_max_zone_age_min": CONTINUATION_REANCHOR_MAX_ZONE_AGE_MIN,
         "continuation_reanchor_max_distance_atr": CONTINUATION_REANCHOR_MAX_DISTANCE_ATR,
@@ -2540,6 +2970,12 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preconfirm_window_minutes": PRECONFIRM_WINDOW_MINUTES,
         "preconfirm_min_train_rows": PRECONFIRM_MIN_TRAIN_ROWS,
         "preconfirm_full_trust_rows": PRECONFIRM_FULL_TRUST_ROWS,
+        "preconfirm_global_min_calibration_rows": PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS,
+        "preconfirm_setup_family_min_rows": PRECONFIRM_SETUP_FAMILY_MIN_ROWS,
+        "preconfirm_exact_family_min_rows": PRECONFIRM_EXACT_FAMILY_MIN_ROWS,
+        "preconfirm_promotion_min_global_rows": PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS,
+        "preconfirm_promotion_min_exact_rows": PRECONFIRM_PROMOTION_MIN_EXACT_ROWS,
+        "preconfirm_embedded_ledger_enabled": PRECONFIRM_EMBEDDED_LEDGER_ENABLED,
         "preconfirm_auc_gate": PRECONFIRM_AUC_GATE,
         "preconfirm_probe_min_probability": PRECONFIRM_PROBE_MIN_PROBABILITY,
         "preconfirm_probe_wait_probability": PRECONFIRM_PROBE_WAIT_PROBABILITY,
@@ -3924,6 +4360,8 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V9_4_CONFIRMATION_PROBABILITY",
+        "TRADING_DESK_EXECUTIVE_V9_3_RISK_INTEGRITY",
         "TRADING_DESK_EXECUTIVE_V8_10_REVALIDATION_PATHS",
         "TRADING_DESK_EXECUTIVE_V8_9_DIRECTION_AWARE",
         "TRADING_DESK_EXECUTIVE_V8_8_CONFIDENCE_AWARE",
@@ -3960,6 +4398,8 @@ def load_journal() -> dict[str, Any]:
     journal.setdefault("signal_events", [])
     journal.setdefault("trades", [])
     journal.setdefault("relaxed_continuation_experiments", [])
+    journal.setdefault("preconfirmation_events", [])
+    journal.setdefault("preconfirmation_model_status", {})
     if not journal["training_signals"]:
         journal["training_signals"] = [
             s for s in journal.get("signals", [])
@@ -4058,6 +4498,18 @@ def save_journal(journal: dict[str, Any]) -> None:
         item for item in list(journal.get("relaxed_continuation_experiments") or [])
         if isinstance(item, dict)
     ][-RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT:]
+    preconfirm_events = [
+        item for item in list(journal.get("preconfirmation_events") or [])
+        if isinstance(item, dict)
+    ]
+    preconfirm_pending = [item for item in preconfirm_events if str(item.get("outcome") or "PENDING") == "PENDING"]
+    preconfirm_resolved = [item for item in preconfirm_events if str(item.get("outcome") or "PENDING") != "PENDING"]
+    preconfirm_room = max(0, PRECONFIRM_MAX_EVENTS - len(preconfirm_pending))
+    journal["preconfirmation_events"] = (
+        preconfirm_resolved[-preconfirm_room:] + preconfirm_pending
+        if preconfirm_room
+        else preconfirm_pending
+    )
     journal["retention_audit"] = {
         "mode": "SIGNAL_ID_REFERENTIAL_RETENTION",
         "max_journal": MAX_JOURNAL,
@@ -6601,10 +7053,13 @@ def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
 def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_min: float) -> dict[str, Any]:
     """Model-local evidence policy for stale-trigger resurrection.
 
-    A continuation candle and a liquidity-reclaim candle are different market
-    arguments. Requiring both on the same 3M bar creates an accidental outside-bar
-    gate and makes the policy nearly unreachable. This router validates the path
-    appropriate to the candidate while preserving the four-hour generic lease.
+    v9.5 separates three leases instead of treating thesis age as execution age:
+    1) generic micro lease: <= 4h, ordinary model-local confirmation;
+    2) mature-thesis bridge: 4h..hard TTL, complete elevated 3M/15M evidence;
+    3) hard TTL: micro evidence alone cannot extend thesis life.
+
+    The bridge is intentionally evidence-strict and risk-reduced, but age is no
+    longer an unconditional AND-gate while the thesis itself is still alive.
     """
     checks = dict(micro.get("checks_by_name") or {})
     if not checks:
@@ -6619,6 +7074,13 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
     model_id = str(getattr(candidate, "ict_model", "") or "")
     elevated = bool(age_min >= SETUP_REVALIDATION_ELEVATED_AGE_MIN)
     within_generic_age = bool(age_min <= SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN)
+    within_thesis_lifetime = bool(age_min < THESIS_HARD_TTL_MIN)
+    within_bridge_age = bool(
+        SETUP_REVALIDATION_MATURE_BRIDGE_ENABLED
+        and age_min > SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN
+        and age_min < SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN
+        and within_thesis_lifetime
+    )
 
     continuation_like = bool(
         setup_family in {SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value}
@@ -6660,9 +7122,6 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
         policy_path = "RECLAIM_REVERSAL"
         required_checks = reclaim_required
         path_ok = reclaim_ok
-        # After two hours a reclaim also needs follow-through. It may arrive as
-        # the current directional break or as an already confirmed six-bar
-        # directional structure; it does not have to be the same outside bar.
         elevated_confirmation_ok = bool(
             not elevated
             or checks.get("directional_3m_close", False)
@@ -6690,18 +7149,66 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
     score = safe_float(micro.get("score"), 0.0)
     score_passed = bool(score >= score_floor)
     supported_path = bool(micro.get("supported") and path_ok)
-    eligible = bool(
-        within_generic_age
-        and supported_path
+    evidence_complete = bool(
+        supported_path
         and not failed_required
         and elevated_confirmation_ok
         and score_passed
     )
+    generic_eligible = bool(within_generic_age and evidence_complete)
+    mature_bridge_eligible = bool(within_bridge_age and evidence_complete)
+    eligible = bool(generic_eligible or mature_bridge_eligible)
+
+    if mature_bridge_eligible:
+        bridge_span = max(
+            SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN - SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
+            1.0,
+        )
+        bridge_progress = clamp(
+            (age_min - SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN) / bridge_span,
+            0.0,
+            1.0,
+        )
+        recommended_risk_mult = (
+            SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START
+            + bridge_progress
+            * (
+                SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_END
+                - SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START
+            )
+        )
+        age_band = "MATURE_THESIS_BRIDGE"
+    elif generic_eligible:
+        bridge_progress = 0.0
+        recommended_risk_mult = SETUP_REVALIDATION_RISK_MULT_STALE if elevated else 1.0
+        age_band = "GENERIC_MICRO_LEASE"
+    elif not within_thesis_lifetime:
+        bridge_progress = 1.0
+        recommended_risk_mult = SETUP_REVALIDATION_RISK_MULT_EXTREME
+        age_band = "HARD_TTL_ELAPSED"
+    else:
+        bridge_progress = clamp(
+            (age_min - SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN)
+            / max(THESIS_HARD_TTL_MIN - SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN, 1.0),
+            0.0,
+            1.0,
+        )
+        recommended_risk_mult = SETUP_REVALIDATION_RISK_MULT_STALE
+        age_band = "EVIDENCE_INCOMPLETE"
+
     return {
         "eligible": eligible,
+        "generic_eligible": generic_eligible,
+        "mature_bridge_eligible": mature_bridge_eligible,
+        "evidence_complete": evidence_complete,
+        "age_band": age_band,
         "age_min": round(float(age_min), 2),
         "elevated_policy": elevated,
         "generic_micro_max_age_min": SETUP_REVALIDATION_GENERIC_MAX_AGE_MIN,
+        "mature_bridge_enabled": SETUP_REVALIDATION_MATURE_BRIDGE_ENABLED,
+        "mature_bridge_max_age_min": SETUP_REVALIDATION_MATURE_BRIDGE_MAX_AGE_MIN,
+        "hard_ttl_min": THESIS_HARD_TTL_MIN,
+        "within_thesis_lifetime": within_thesis_lifetime,
         "score": round(score, 2),
         "required_score": round(score_floor, 2),
         "score_passed": score_passed,
@@ -6714,9 +7221,15 @@ def _revalidation_micro_policy(candidate: Candidate, micro: dict[str, Any], age_
         "elevated_confirmation_ok": elevated_confirmation_ok,
         "six_bar_structure_confirmed": six_bar_structure,
         "within_generic_age": within_generic_age,
+        "within_bridge_age": within_bridge_age,
+        "bridge_progress": round(bridge_progress, 6),
+        "recommended_risk_multiplier": round(
+            clamp(recommended_risk_mult, SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_END, 1.0),
+            4,
+        ),
         "continuation_like": continuation_like,
         "reclaim_critical_for_setup": reclaim_critical,
-        "policy": "model-local path; continuation and reclaim evidence are not forced onto the same 3M bar",
+        "policy": "generic lease OR mature-thesis evidence bridge; hard TTL remains authoritative",
     }
 
 def setup_trigger_revalidation_profile(
@@ -6776,10 +7289,14 @@ def setup_trigger_revalidation_profile(
         setup_arguments.append("limit/zone still armed")
     if micro.get("supported"):
         if micro_policy.get("eligible"):
-            setup_arguments.append(f"fresh {micro.get('kind')} on 3M/15M passed model-local AND policy")
+            bridge_note = " via mature-thesis bridge" if micro_policy.get("mature_bridge_eligible") else ""
+            setup_arguments.append(
+                f"fresh {micro.get('kind')} on 3M/15M passed model-local AND policy{bridge_note}"
+            )
         else:
             setup_arguments.append(
                 "micro evidence present but blocked: "
+                f"band={micro_policy.get('age_band')} "
                 f"failed={micro_policy.get('failed_required_checks')} "
                 f"score={micro_policy.get('score')}/{micro_policy.get('required_score')} "
                 f"age={age:.1f}m"
@@ -6824,16 +7341,19 @@ def setup_trigger_revalidation_profile(
         )
     )
 
-    # v6.16: якщо стара thesis вже підтверджена фактичним рухом і acceptance,
-    # дозволяємо малий probe замість нескінченного ARMED.
-    stale_direction_confirm = bool(
-        state_name == "ARCHIVED_THESIS"
-        and dist_atr >= STALE_THESIS_PROBE_ATR
-        and (not STALE_THESIS_ACCEPTANCE_REQUIRED or micro_policy.get("eligible"))
+    # v9.5: the previous recovery path was internally contradictory: it
+    # required distance >= STALE_THESIS_PROBE_ATR (default 1.5 ATR), while the
+    # final entry contract required not_late_location <= 1.35 ATR. Recovery is
+    # now evidence- and location-based, not "far enough from anchor"-based.
+    mature_thesis_recovery = bool(
+        micro_policy.get("mature_bridge_eligible")
+        and not_late_location
+        and state_name == "STALE"
     )
-    if stale_direction_confirm:
+    if mature_thesis_recovery:
         revalidated = True
         micro["stale_thesis_recovery"] = True
+        micro["stale_thesis_recovery_mode"] = "MATURE_THESIS_EVIDENCE_BRIDGE"
 
     entry_supported = bool(
         ((not needs_revalidation) or revalidated or alternative_ready)
@@ -6855,7 +7375,9 @@ def setup_trigger_revalidation_profile(
             else "SETUP_REVALIDATED_NOW"
         )
         risk_mult = (
-            SETUP_REVALIDATION_RISK_MULT_EXTREME
+            safe_float(micro_policy.get("recommended_risk_multiplier"), SETUP_REVALIDATION_RISK_MULT_STALE)
+            if micro_policy.get("mature_bridge_eligible")
+            else SETUP_REVALIDATION_RISK_MULT_EXTREME
             if state_name in {"ARCHIVED_THESIS", "REVALIDATED_AFTER_TTL", "DECAYED_THESIS"}
             else SETUP_REVALIDATION_RISK_MULT_STALE
         )
@@ -6869,7 +7391,7 @@ def setup_trigger_revalidation_profile(
 
     return {
         "enabled": True,
-        "version": "v9.3.2_split_thesis_execution_lease",
+        "version": "v9.5_mature_thesis_evidence_bridge",
         "state": state_name,
         "source": source,
         "age_min": round(thesis_age, 1),  # deprecated compatibility alias
@@ -6894,12 +7416,14 @@ def setup_trigger_revalidation_profile(
         "execution_support_paths": support_paths,
         "alternative_entry_support": alternative_ready,
         "pre_confirmation_promoted": bool(support_paths.get("pre_confirmation_promoted")),
+        "mature_thesis_recovery": mature_thesis_recovery,
         "risk_multiplier": round(clamp(risk_mult, INNOVATION_MIN_RISK_MULT, 1.0), 4),
         "stage_override": EntryStage.PROBE.value if revalidated else EntryStage.WAIT_RETEST.value if needs_revalidation else "",
         "action_bias": "PROBE_ENTRY" if revalidated else "ARMED_REVALIDATION" if needs_revalidation else "NORMAL",
         "setup_arguments": setup_arguments,
         "no_hard_block": bool(entry_supported),
-        "quality_threshold_changed": bool(micro_policy.get("elevated_policy")),
+        "quality_threshold_changed": False,
+        "canonical_score_threshold_changed": False,
     }
 
 def nonblocking_setup_innovation_overlay(candidate: Candidate, context: dict, state: Optional[dict] = None, journal: Optional[dict] = None) -> dict[str, Any]:
@@ -12770,7 +13294,7 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     proposed_opportunity_status = None
     cands = detect_candidates(context, state, journal)
-    cands = apply_confirmation_probability_layer(context, cands)
+    cands = apply_confirmation_probability_layer(context, cands, journal)
     current_price = context.get("price", 0)
     
     # 1. Перевірка ре-ентрі (залишається незмінною)
@@ -16762,16 +17286,18 @@ def test_execution_funnel_reports_unique_revalidation_blocks() -> bool:
     return bool(profile.get("revalidation_blocked") == 2 and profile.get("revalidation_blocked_unique_theses") == 1)
 
 
-def test_old_trigger_generic_micro_cannot_revalidate_after_four_hours() -> bool:
+def test_mature_thesis_bridge_accepts_complete_confirmation() -> bool:
     candidate = Candidate(
         side=Side.LONG.value,
-        setup_type=SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
-        setup_family=SetupFamily.RANGE_EXECUTION.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
         raw_score=95,
         final_score=75,
-        ict_model="FAILED_ORB",
-        execution_source=ExecutionSource.OPENING_RANGE.value,
-        trigger_age_minutes=741.9,
+        ict_model="ACCEPTANCE_RETEST_CONTINUATION",
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        trigger_age_minutes=790.6,
+        thesis_age_minutes=790.6,
+        execution_trigger_age_minutes=790.6,
         trigger_level=100.0,
         execution_anchor=100.0,
     )
@@ -16785,10 +17311,46 @@ def test_old_trigger_generic_micro_cannot_revalidate_after_four_hours() -> bool:
             "micro_sweep_reclaim": False,
         },
     }
-    policy = _revalidation_micro_policy(candidate, micro, candidate.trigger_age_minutes)
+    policy = _revalidation_micro_policy(candidate, micro, 790.6)
+    return bool(
+        policy.get("eligible")
+        and policy.get("mature_bridge_eligible")
+        and not policy.get("within_generic_age")
+        and policy.get("age_band") == "MATURE_THESIS_BRIDGE"
+        and policy.get("required_checks_passed")
+        and safe_float(policy.get("recommended_risk_multiplier"), 1.0) <= SETUP_REVALIDATION_MATURE_BRIDGE_RISK_MULT_START
+    )
+
+
+def test_mature_thesis_bridge_rejects_incomplete_confirmation() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value,
+        raw_score=95,
+        final_score=75,
+        ict_model="FAILED_ORB",
+        execution_source=ExecutionSource.OPENING_RANGE.value,
+        trigger_age_minutes=741.9,
+        thesis_age_minutes=741.9,
+        execution_trigger_age_minutes=741.9,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+    )
+    micro = {
+        "supported": True,
+        "score": 85,
+        "checks_by_name": {
+            "directional_3m_close": True,
+            "strong_3m_body": True,
+            "15m_acceptance": True,
+            "micro_sweep_reclaim": False,
+        },
+    }
+    policy = _revalidation_micro_policy(candidate, micro, 741.9)
     return bool(
         not policy.get("eligible")
-        and not policy.get("within_generic_age")
+        and policy.get("within_bridge_age")
         and "micro_sweep_reclaim" in (policy.get("failed_required_checks") or [])
     )
 
@@ -16890,7 +17452,8 @@ def _run_self_test() -> bool:
         ("fresh reclaim revalidation does not require same-bar breakout", test_fresh_reclaim_policy_does_not_require_same_bar_breakout),
         ("relaxed continuation shadow eligibility is reachable", test_relaxed_continuation_shadow_is_reachable),
         ("funnel separates scan blocks from unique theses", test_execution_funnel_reports_unique_revalidation_blocks),
-        ("old trigger generic micro expires after four hours", test_old_trigger_generic_micro_cannot_revalidate_after_four_hours),
+        ("mature thesis bridge accepts complete 4h..24h confirmation", test_mature_thesis_bridge_accepts_complete_confirmation),
+        ("mature thesis bridge rejects incomplete model-local evidence", test_mature_thesis_bridge_rejects_incomplete_confirmation),
         ("decayed thesis is not automatic entry permission", test_decayed_thesis_is_not_automatic_entry_permission),
         ("score 68 remains canonical risky admission", test_score_68_continuation_is_not_cliff_blocked),
         ("score 67 gray zone is shadow-only", test_score_67_gray_zone_is_shadow_only_in_live_policy),
@@ -16900,6 +17463,8 @@ def _run_self_test() -> bool:
         ("preconfirmation timestamp freeze blocks future leakage", test_preconfirmation_timestamp_freeze),
         ("preconfirmation cannot create a probe without an existing probe path", test_preconfirmation_cannot_create_probe_without_existing_probe_path),
         ("preconfirmation chronological model passes calibration gate", test_preconfirmation_chronological_model_gate_and_calibration),
+        ("preconfirmation hierarchical bootstrap borrows global rows", test_preconfirmation_hierarchical_bootstrap_uses_global_rows),
+        ("preconfirmation embedded ledger preserves resolved events", test_preconfirmation_embedded_ledger_merge_preserves_resolved_event),
         ("preconfirmation outcome resolves first event in time", test_preconfirmation_event_resolves_event_first),
         ("preconfirmation is not added as advisor or final-score term", test_preconfirmation_is_not_an_advisor_or_score_component),
     ]
