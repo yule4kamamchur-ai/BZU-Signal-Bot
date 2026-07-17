@@ -4293,8 +4293,8 @@
       "invalidation_level": 83.57,
       "probability": 0.721797,
       "confirmation_probability": 0.721797,
-      "status": "PENDING",
-      "outcome": "PENDING",
+      "status": "CONFIRMED",
+      "outcome": "CONFIRMED",
       "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
       "features": {
         "approach_velocity_atr": 0.851711,
@@ -4397,7 +4397,26 @@
         },
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
-      "signal_link": null
+      "signal_link": null,
+      "resolution_reason": "directional_close_and_acceptance_completed_within_fixed_window",
+      "resolved_ts": 1784262600000,
+      "resolved_at": "2026-07-17T04:31:36.387744+00:00",
+      "outcome_ts": 1784260620000,
+      "resolved_price": 84.0,
+      "resolution_evidence": {
+        "directional_close": true,
+        "directional_close_ts": 1784260440000,
+        "acceptance": true,
+        "acceptance_ts": 1784260620000,
+        "acceptance_required_closes": 2,
+        "price_moved_direction": true,
+        "mfe_atr": 1.064639,
+        "final_move_atr": 1.064639,
+        "thesis_invalidated": false,
+        "invalidation_ts": null,
+        "window_candles": 15,
+        "window_end_ts": 1784262600000
+      }
     },
     {
       "event_id": "0bbf475a4ca040f0",
@@ -4426,8 +4445,8 @@
       "invalidation_level": 83.9638,
       "probability": 0.246995,
       "confirmation_probability": 0.246995,
-      "status": "PENDING",
-      "outcome": "PENDING",
+      "status": "FAILED",
+      "outcome": "INVALIDATED",
       "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
       "features": {
         "approach_velocity_atr": -0.851711,
@@ -4530,7 +4549,26 @@
         },
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
-      "signal_link": null
+      "signal_link": null,
+      "resolution_reason": "thesis_invalidated_before_directional_acceptance",
+      "resolved_ts": 1784262600000,
+      "resolved_at": "2026-07-17T04:31:36.387788+00:00",
+      "outcome_ts": 1784262240000,
+      "resolved_price": 84.0,
+      "resolution_evidence": {
+        "directional_close": true,
+        "directional_close_ts": 1784259900000,
+        "acceptance": false,
+        "acceptance_ts": null,
+        "acceptance_required_closes": 2,
+        "price_moved_direction": true,
+        "mfe_atr": 0.26616,
+        "final_move_atr": -1.064639,
+        "thesis_invalidated": true,
+        "invalidation_ts": 1784262240000,
+        "window_candles": 15,
+        "window_end_ts": 1784262600000
+      }
     },
     {
       "event_id": "d0fe76b7a33c4937",
@@ -4559,8 +4597,8 @@
       "invalidation_level": 83.9638,
       "probability": 0.26385,
       "confirmation_probability": 0.26385,
-      "status": "PENDING",
-      "outcome": "PENDING",
+      "status": "FAILED",
+      "outcome": "INVALIDATED",
       "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
       "features": {
         "approach_velocity_atr": -0.851711,
@@ -4663,7 +4701,26 @@
         },
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
-      "signal_link": null
+      "signal_link": null,
+      "resolution_reason": "thesis_invalidated_before_directional_acceptance",
+      "resolved_ts": 1784262600000,
+      "resolved_at": "2026-07-17T04:31:36.387826+00:00",
+      "outcome_ts": 1784262240000,
+      "resolved_price": 84.0,
+      "resolution_evidence": {
+        "directional_close": true,
+        "directional_close_ts": 1784259900000,
+        "acceptance": false,
+        "acceptance_ts": null,
+        "acceptance_required_closes": 2,
+        "price_moved_direction": true,
+        "mfe_atr": 0.26616,
+        "final_move_atr": -1.064639,
+        "thesis_invalidated": true,
+        "invalidation_ts": 1784262240000,
+        "window_candles": 15,
+        "window_end_ts": 1784262600000
+      }
     },
     {
       "event_id": "cc222a7dc6e240f5",
@@ -5333,19 +5390,19 @@
   ],
   "model_status": {
     "GLOBAL_POOLED": {
-      "trusted": false,
-      "sample_size": 30,
-      "calibration_sample_size": 30,
-      "resolved_events": 31,
+      "trusted": true,
+      "sample_size": 33,
+      "calibration_sample_size": 33,
+      "resolved_events": 34,
       "expired_events": 1,
       "expired_label_mode": "SEPARATE",
-      "auc": null,
-      "brier": 0.408158,
-      "trust_level": "BOOTSTRAP",
+      "auc": 1.0,
+      "brier": 0.104275,
+      "trust_level": "PARTIAL",
       "logistic_floor": 24,
       "hierarchical_floor": 12,
       "weak_calibration_floor": 6,
-      "calibration_tier": "HIERARCHICAL_EMPIRICAL_BAYES",
+      "calibration_tier": "POOLED_LOGISTIC_VALIDATED",
       "training_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
       "closed_trades_used": false
     },
@@ -5353,38 +5410,38 @@
       "CONTINUATION:DIRECTIONAL_ACCEPTANCE": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
-        "setup_family_sample_size": 8,
+        "global_sample_size": 33,
+        "setup_family_sample_size": 9,
         "exact_family_sample_size": 5,
         "promotion_trusted": false,
         "pending_events": 0,
         "resolved_events": 5
       },
       "CONTINUATION:OB_REACTION": {
-        "source": "HIERARCHICAL_EMPIRICAL_BAYES",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
-        "setup_family_sample_size": 8,
-        "exact_family_sample_size": 3,
-        "promotion_trusted": false,
-        "pending_events": 2,
-        "resolved_events": 3
-      },
-      "EXPANSION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "HIERARCHICAL_EMPIRICAL_BAYES",
-        "calibrated": true,
-        "global_sample_size": 30,
-        "setup_family_sample_size": 8,
+        "global_sample_size": 33,
+        "setup_family_sample_size": 9,
         "exact_family_sample_size": 4,
         "promotion_trusted": false,
-        "pending_events": 2,
+        "pending_events": 1,
         "resolved_events": 4
+      },
+      "EXPANSION:DIRECTIONAL_ACCEPTANCE": {
+        "source": "RESOLVED_EVENT_LEDGER",
+        "calibrated": true,
+        "global_sample_size": 33,
+        "setup_family_sample_size": 9,
+        "exact_family_sample_size": 5,
+        "promotion_trusted": false,
+        "pending_events": 1,
+        "resolved_events": 5
       },
       "EXPANSION:LIQUIDITY_SWEEP_REVERSAL": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
-        "setup_family_sample_size": 8,
+        "global_sample_size": 33,
+        "setup_family_sample_size": 9,
         "exact_family_sample_size": 4,
         "promotion_trusted": false,
         "pending_events": 0,
@@ -5393,7 +5450,7 @@
       "LIQUIDITY_RECOVERY:DIRECTIONAL_ACCEPTANCE": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
+        "global_sample_size": 33,
         "setup_family_sample_size": 3,
         "exact_family_sample_size": 2,
         "promotion_trusted": false,
@@ -5403,7 +5460,7 @@
       "LIQUIDITY_RECOVERY:LIQUIDITY_SWEEP_REVERSAL": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
+        "global_sample_size": 33,
         "setup_family_sample_size": 3,
         "exact_family_sample_size": 1,
         "promotion_trusted": false,
@@ -5411,29 +5468,29 @@
         "resolved_events": 1
       },
       "RANGE_EXECUTION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "HIERARCHICAL_EMPIRICAL_BAYES",
+        "source": "CALIBRATED_POOLED_LOGISTIC",
         "calibrated": true,
-        "global_sample_size": 30,
-        "setup_family_sample_size": 4,
-        "exact_family_sample_size": 2,
+        "global_sample_size": 33,
+        "setup_family_sample_size": 5,
+        "exact_family_sample_size": 3,
         "promotion_trusted": false,
-        "pending_events": 2,
-        "resolved_events": 2
+        "pending_events": 1,
+        "resolved_events": 3
       },
       "RANGE_EXECUTION:EXPLICIT_PENDING_CONFIRMATION": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
-        "setup_family_sample_size": 4,
+        "global_sample_size": 33,
+        "setup_family_sample_size": 5,
         "exact_family_sample_size": 2,
         "promotion_trusted": false,
         "pending_events": 0,
         "resolved_events": 2
       },
       "STRUCTURAL_TRANSITION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "HIERARCHICAL_EMPIRICAL_BAYES",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
+        "global_sample_size": 33,
         "setup_family_sample_size": 7,
         "exact_family_sample_size": 4,
         "promotion_trusted": false,
@@ -5441,9 +5498,9 @@
         "resolved_events": 4
       },
       "STRUCTURAL_TRANSITION:EXPLICIT_PENDING_CONFIRMATION": {
-        "source": "HIERARCHICAL_EMPIRICAL_BAYES",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 30,
+        "global_sample_size": 33,
         "setup_family_sample_size": 7,
         "exact_family_sample_size": 3,
         "promotion_trusted": false,
@@ -5455,7 +5512,7 @@
   "version": "pro-hybrid-confluence-v9.5.1-ttl-bridge-preconfirm-sync-weak-calibration",
   "architecture_version": "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
   "schema_version": "preconfirmation_journal_v9.5_lifecycle",
-  "updated_at": "2026-07-17T04:16:23.129750+00:00",
+  "updated_at": "2026-07-17T04:31:41.331992+00:00",
   "lifecycle_contract": {
     "created_status": "PENDING",
     "terminal_statuses": [
@@ -5471,12 +5528,12 @@
   "retention_audit": {
     "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
     "max_events": 20000,
-    "pending_protected": 8,
-    "resolved_retained": 31,
+    "pending_protected": 5,
+    "resolved_retained": 34,
     "terminal_status_counts": {
-      "CONFIRMED": 19,
+      "CONFIRMED": 20,
       "EXPIRED": 1,
-      "FAILED": 11
+      "FAILED": 13
     },
     "trade_journal_limit_not_used": true,
     "embedded_main_journal": true
