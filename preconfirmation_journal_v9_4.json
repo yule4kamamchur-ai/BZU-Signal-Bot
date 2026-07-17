@@ -861,17 +861,23 @@
     "GLOBAL_POOLED": {
       "trusted": false,
       "sample_size": 0,
+      "calibration_sample_size": 0,
+      "resolved_events": 0,
+      "expired_events": 0,
+      "expired_label_mode": "SEPARATE",
       "auc": null,
       "brier": null,
       "trust_level": "BOOTSTRAP",
       "logistic_floor": 24,
       "hierarchical_floor": 12,
+      "weak_calibration_floor": 6,
+      "calibration_tier": "HEURISTIC_ONLY",
       "training_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
       "closed_trades_used": false
     },
     "BY_MODEL_FAMILY": {
       "CONTINUATION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "HEURISTIC_UNCALIBRATED",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": false,
         "global_sample_size": 0,
         "setup_family_sample_size": 0,
@@ -901,7 +907,7 @@
         "resolved_events": 0
       },
       "EXPANSION:LIQUIDITY_SWEEP_REVERSAL": {
-        "source": "HEURISTIC_UNCALIBRATED",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": false,
         "global_sample_size": 0,
         "setup_family_sample_size": 0,
@@ -911,7 +917,7 @@
         "resolved_events": 0
       },
       "RANGE_EXECUTION:EXPLICIT_PENDING_CONFIRMATION": {
-        "source": "RESOLVED_EVENT_LEDGER",
+        "source": "HEURISTIC_UNCALIBRATED",
         "calibrated": false,
         "global_sample_size": 0,
         "setup_family_sample_size": 0,
@@ -932,10 +938,10 @@
       }
     }
   },
-  "version": "pro-hybrid-confluence-v9.5.0-ttl-bridge-hierarchical-preconfirm",
-  "architecture_version": "TRADING_DESK_EXECUTIVE_V9_5_TTL_BRIDGE_HIERARCHICAL_PRECONFIRM",
+  "version": "pro-hybrid-confluence-v9.5.1-ttl-bridge-preconfirm-sync-weak-calibration",
+  "architecture_version": "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
   "schema_version": "preconfirmation_journal_v9.5_lifecycle",
-  "updated_at": "2026-07-17T00:31:43.187936+00:00",
+  "updated_at": "2026-07-17T00:38:00.594495+00:00",
   "lifecycle_contract": {
     "created_status": "PENDING",
     "terminal_statuses": [
@@ -953,12 +959,18 @@
     "max_events": 20000,
     "pending_protected": 8,
     "resolved_retained": 0,
+    "terminal_status_counts": {
+      "CONFIRMED": 0,
+      "EXPIRED": 0,
+      "FAILED": 0
+    },
     "trade_journal_limit_not_used": true,
     "embedded_main_journal": true
   },
   "persistence_sources": {
     "sidecar": "preconfirmation_journal_v9_4.json",
     "embedded_main_journal": true,
-    "merged_event_count": 6
+    "merged_event_count": 8,
+    "sync_order": "SIDECAR_THEN_MAIN_JOURNAL"
   }
 }
