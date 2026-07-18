@@ -18584,8 +18584,8 @@
       "invalidation_level": 88.4415,
       "probability": 0.381933,
       "confirmation_probability": 0.381933,
-      "status": "PENDING",
-      "outcome": "PENDING",
+      "status": "FAILED",
+      "outcome": "INVALIDATED",
       "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
       "features": {
         "approach_velocity_atr": 1.301115,
@@ -18688,7 +18688,26 @@
         },
         "schema_version": "preconfirmation_probability_v9.5_hierarchical"
       },
-      "signal_link": null
+      "signal_link": null,
+      "resolution_reason": "thesis_invalidated_before_directional_acceptance",
+      "resolved_ts": 1784408400000,
+      "resolved_at": "2026-07-18T21:02:09.846159+00:00",
+      "outcome_ts": 1784405880000,
+      "resolved_price": 88.38,
+      "resolution_evidence": {
+        "directional_close": false,
+        "directional_close_ts": null,
+        "acceptance": false,
+        "acceptance_ts": null,
+        "acceptance_required_closes": 2,
+        "price_moved_direction": false,
+        "mfe_atr": 0.104089,
+        "final_move_atr": -0.832714,
+        "thesis_invalidated": true,
+        "invalidation_ts": 1784405880000,
+        "window_candles": 15,
+        "window_end_ts": 1784408400000
+      }
     },
     {
       "event_id": "3898ff1c50ff4078",
@@ -18960,13 +18979,13 @@
   "model_status": {
     "GLOBAL_POOLED": {
       "trusted": false,
-      "sample_size": 105,
-      "calibration_sample_size": 105,
-      "resolved_events": 125,
+      "sample_size": 106,
+      "calibration_sample_size": 106,
+      "resolved_events": 126,
       "expired_events": 20,
       "expired_label_mode": "SEPARATE",
-      "auc": 0.391667,
-      "brier": 0.545083,
+      "auc": 0.483333,
+      "brier": 0.352237,
       "trust_level": "BOOTSTRAP",
       "logistic_floor": 24,
       "hierarchical_floor": 12,
@@ -18977,20 +18996,20 @@
     },
     "BY_MODEL_FAMILY": {
       "CONTINUATION:DIRECTIONAL_ACCEPTANCE": {
-        "source": "HIERARCHICAL_EMPIRICAL_BAYES",
+        "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
-        "setup_family_sample_size": 38,
-        "exact_family_sample_size": 26,
+        "global_sample_size": 106,
+        "setup_family_sample_size": 39,
+        "exact_family_sample_size": 27,
         "promotion_trusted": false,
-        "pending_events": 2,
-        "resolved_events": 31
+        "pending_events": 1,
+        "resolved_events": 32
       },
       "CONTINUATION:OB_REACTION": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
-        "setup_family_sample_size": 38,
+        "global_sample_size": 106,
+        "setup_family_sample_size": 39,
         "exact_family_sample_size": 12,
         "promotion_trusted": false,
         "pending_events": 0,
@@ -18999,7 +19018,7 @@
       "EXPANSION:DIRECTIONAL_ACCEPTANCE": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 29,
         "exact_family_sample_size": 23,
         "promotion_trusted": false,
@@ -19009,7 +19028,7 @@
       "EXPANSION:LIQUIDITY_SWEEP_REVERSAL": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 29,
         "exact_family_sample_size": 6,
         "promotion_trusted": false,
@@ -19019,7 +19038,7 @@
       "LIQUIDITY_RECOVERY:DIRECTIONAL_ACCEPTANCE": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 4,
         "exact_family_sample_size": 2,
         "promotion_trusted": false,
@@ -19029,7 +19048,7 @@
       "LIQUIDITY_RECOVERY:EXPLICIT_PENDING_CONFIRMATION": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 4,
         "exact_family_sample_size": 1,
         "promotion_trusted": false,
@@ -19039,7 +19058,7 @@
       "LIQUIDITY_RECOVERY:LIQUIDITY_SWEEP_REVERSAL": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 4,
         "exact_family_sample_size": 1,
         "promotion_trusted": false,
@@ -19049,7 +19068,7 @@
       "RANGE_EXECUTION:DIRECTIONAL_ACCEPTANCE": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 10,
         "exact_family_sample_size": 8,
         "promotion_trusted": false,
@@ -19059,7 +19078,7 @@
       "RANGE_EXECUTION:EXPLICIT_PENDING_CONFIRMATION": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 10,
         "exact_family_sample_size": 2,
         "promotion_trusted": false,
@@ -19069,7 +19088,7 @@
       "STRUCTURAL_TRANSITION:DIRECTIONAL_ACCEPTANCE": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 24,
         "exact_family_sample_size": 12,
         "promotion_trusted": true,
@@ -19079,7 +19098,7 @@
       "STRUCTURAL_TRANSITION:EXPLICIT_PENDING_CONFIRMATION": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 24,
         "exact_family_sample_size": 8,
         "promotion_trusted": false,
@@ -19089,7 +19108,7 @@
       "STRUCTURAL_TRANSITION:STRUCTURE_CONFIRMATION": {
         "source": "RESOLVED_EVENT_LEDGER",
         "calibrated": true,
-        "global_sample_size": 105,
+        "global_sample_size": 106,
         "setup_family_sample_size": 24,
         "exact_family_sample_size": 4,
         "promotion_trusted": false,
@@ -19101,7 +19120,7 @@
   "version": "pro-hybrid-confluence-v9.5.1-ttl-bridge-preconfirm-sync-weak-calibration",
   "architecture_version": "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
   "schema_version": "preconfirmation_journal_v9.5_lifecycle",
-  "updated_at": "2026-07-18T20:46:51.540141+00:00",
+  "updated_at": "2026-07-18T21:02:17.497445+00:00",
   "lifecycle_contract": {
     "created_status": "PENDING",
     "terminal_statuses": [
@@ -19117,12 +19136,12 @@
   "retention_audit": {
     "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
     "max_events": 20000,
-    "pending_protected": 3,
-    "resolved_retained": 125,
+    "pending_protected": 2,
+    "resolved_retained": 126,
     "terminal_status_counts": {
       "CONFIRMED": 68,
       "EXPIRED": 20,
-      "FAILED": 37
+      "FAILED": 38
     },
     "trade_journal_limit_not_used": true,
     "embedded_main_journal": true
