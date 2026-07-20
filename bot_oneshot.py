@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.1 (TTL Bridge + Synced Early Calibration)
+BZU Professional Hybrid Confluence Signal Bot v9.5.3 (Journal Compaction + Model-Local Execution)
 =============================================================================================
-Оновлення v9.5.1:
+Оновлення v9.5.3:
+- training_signals переведено на lean feature rows без дублювання повного signal payload; старі записи мігрують автоматично.
+- Додано production journal mode: JOURNAL_VERBOSE=false прибирає audit та дубльований evaluation_bundle із signals.
+- hypothesis_matrix_top керується JOURNAL_HYPOTHESIS_TOP (рекомендовано 3), FIFO — SIGNAL_JOURNAL_LIMIT (рекомендовано 500).
+- Ротація зберігає referential integrity для сигналів, на які посилаються trades.
+- Усі зміни v9.5.2 збережені:
+- Розділено market thesis age і model-local thesis age: новий самодостатній SHORT reversal/reanchor більше не успадковує hard TTL старого scan-event.
+- Liquidity Ladder переведено в target-route-only: execution дозволяється лише після fresh 3M trigger, retest/reanchor або acceptance.
+- Для Liquidity Ladder trigger_level Candidate/Opportunity синхронізується з entry_contract["entry_anchor"].
 - Закрито TTL/revalidation dead zone між 4 годинами та hard TTL: повний model-local 3M/15M доказ може переаргументувати живу тезу через mature-thesis bridge.
 - Hard TTL не послаблено: після нього micro-confirmation сам по собі не продовжує життя тези.
 - Усунуто суперечливий stale recovery, який вимагав одночасно >=1.5 ATR і <=1.35 ATR від anchor.
@@ -128,8 +136,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.1-ttl-bridge-preconfirm-sync-weak-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.3-journal-compaction"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_3_JOURNAL_COMPACTION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -190,7 +198,14 @@ PRECONFIRM_PROBE_WAIT_PROBABILITY = min(PRECONFIRM_PROBE_MIN_PROBABILITY - 0.01,
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
+# Production recommendation: SIGNAL_JOURNAL_LIMIT=500. The default remains
+# backward-compatible; deployment config controls the actual FIFO cap.
 MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "3000") or 3000)
+# Verbose journal diagnostics are useful during investigations, but audit and
+# evaluation_bundle duplicate large parts of the decision graph. Keep them out
+# of production journals unless explicitly enabled.
+JOURNAL_VERBOSE = os.getenv("JOURNAL_VERBOSE", "false").lower() in {"1", "true", "yes"}
+JOURNAL_HYPOTHESIS_TOP = min(10, max(1, int(os.getenv("JOURNAL_HYPOTHESIS_TOP", "3") or 3)))
 
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
@@ -1174,6 +1189,12 @@ class Candidate:
     # explicit fields below so thesis memory cannot masquerade as live execution.
     trigger_age_minutes: float = 0.0
     thesis_age_minutes: float = -1.0
+    # v9.5.2: keep the inherited market thesis lease separate from a genuinely
+    # new model-local thesis. ``thesis_age_minutes`` remains the effective
+    # compatibility value used by admission/revalidation.
+    market_thesis_age_minutes: float = -1.0
+    model_thesis_age_minutes: float = -1.0
+    thesis_origin: str = "MARKET_SCAN"
     execution_trigger_age_minutes: float = -1.0
     specificity: int = 0
     hard_reject_reason: str = ""
@@ -1387,6 +1408,11 @@ class Opportunity:
     thesis_key: str = ""
     thesis: str = ""
     missed_at: str = ""
+    # Snapshot ages at ``created_at``. Re-entry reconstruction adds elapsed
+    # wall-clock time so a saved opportunity cannot remain artificially fresh.
+    market_thesis_age_minutes: float = -1.0
+    model_thesis_age_minutes: float = -1.0
+    thesis_origin: str = "MARKET_SCAN"
     # ID сигналу (Decision.id), яким цю можливість було породжено. Дозволяє
     # відстежити ланцюжок ARMED-сигнал -> (можливий) re-entry Decision, навіть
     # якщо сама Opportunity так і не конвертувалась у ActiveTrade.
@@ -4906,6 +4932,8 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V9_5_2_MODEL_LOCAL_THESIS_LADDER_CONFIRMATION",
+        "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
         "TRADING_DESK_EXECUTIVE_V9_4_CONFIRMATION_PROBABILITY",
         "TRADING_DESK_EXECUTIVE_V9_3_RISK_INTEGRITY",
         "TRADING_DESK_EXECUTIVE_V8_10_REVALIDATION_PATHS",
@@ -4937,6 +4965,59 @@ def save_state(state: dict[str, Any]) -> None:
     atomic_json_write(STATE_FILE, state)
 
 
+def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the minimal immutable feature row needed by the scoring learner.
+
+    ``training_signals`` used to store the complete signal payload, duplicating
+    audit, plans and diagnostics already present in ``signals``. Existing rows
+    are migrated through this function on every load/save, so the size reduction
+    is immediate rather than applying only to future runs.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("score_features"), dict):
+        return {}
+    signal_id = str(payload.get("id") or "").strip()
+    if not signal_id:
+        return {}
+    return {
+        "id": signal_id,
+        "time": payload.get("time"),
+        "side": payload.get("side"),
+        "setup_family": payload.get("setup_family"),
+        "setup_type": payload.get("setup_type"),
+        "score_features": dict(payload.get("score_features") or {}),
+    }
+
+
+def prepare_signal_payload_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply production journal compaction without changing live decisions.
+
+    Full audit data is consumed by the runtime shadow/audit recorders before this
+    function is called. With ``JOURNAL_VERBOSE=false`` only duplicated storage
+    fields are removed; execution, risk, plan and learning fields remain intact.
+    """
+    if JOURNAL_VERBOSE or not isinstance(payload, dict):
+        return payload
+    compact = dict(payload)
+    compact.pop("audit", None)
+    compact.pop("evaluation_bundle", None)
+    components = compact.get("score_components")
+    if isinstance(components, dict):
+        lean_components = dict(components)
+        lean_components.pop("evaluation_bundle", None)
+        matrix = lean_components.get("hypothesis_matrix_top")
+        if isinstance(matrix, list):
+            lean_components["hypothesis_matrix_top"] = matrix[:JOURNAL_HYPOTHESIS_TOP]
+        compact["score_components"] = lean_components
+    compact["journal_storage"] = {
+        "verbose": False,
+        "audit_persisted": False,
+        "evaluation_bundle_persisted": False,
+        "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
+        "schema_version": "journal_storage_v9.5.3",
+    }
+    return compact
+
+
 def load_journal() -> dict[str, Any]:
     journal = load_json(JOURNAL_FILE, {})
     journal.setdefault("signals", [])
@@ -4946,11 +5027,14 @@ def load_journal() -> dict[str, Any]:
     journal.setdefault("relaxed_continuation_experiments", [])
     journal.setdefault("preconfirmation_events", [])
     journal.setdefault("preconfirmation_model_status", {})
-    if not journal["training_signals"]:
-        journal["training_signals"] = [
-            s for s in journal.get("signals", [])
-            if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
-        ]
+    training_source = journal.get("training_signals") or journal.get("signals") or []
+    journal["training_signals"] = [
+        lean
+        for item in training_source
+        if isinstance(item, dict)
+        for lean in [lean_training_signal(item)]
+        if lean
+    ]
     journal["version"] = BOT_VERSION
     journal["architecture_version"] = ARCHITECTURE_VERSION
     if "analytics" not in journal:
@@ -5027,12 +5111,21 @@ def save_journal(journal: dict[str, Any]) -> None:
     protected_signal_ids = active_protected | trade_protected
 
     journal["signals"] = _retain_signal_records(
-        list(journal.get("signals") or []), protected_signal_ids, MAX_JOURNAL
+        [
+            prepare_signal_payload_for_journal(item)
+            for item in list(journal.get("signals") or [])
+            if isinstance(item, dict)
+        ],
+        protected_signal_ids,
+        MAX_JOURNAL,
     )
     journal["training_signals"] = _retain_signal_records(
         [
-            s for s in list(journal.get("training_signals") or [])
-            if isinstance(s, dict) and isinstance(s.get("score_features"), dict)
+            lean
+            for item in list(journal.get("training_signals") or [])
+            if isinstance(item, dict)
+            for lean in [lean_training_signal(item)]
+            if lean
         ],
         protected_signal_ids,
         MAX_JOURNAL,
@@ -5059,6 +5152,9 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["retention_audit"] = {
         "mode": "SIGNAL_ID_REFERENTIAL_RETENTION",
         "max_journal": MAX_JOURNAL,
+        "journal_verbose": JOURNAL_VERBOSE,
+        "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
+        "training_signal_schema": "LEAN_FEATURE_ROW_V1",
         "protected_signal_ids": sorted(protected_signal_ids),
         "protected_count": len(protected_signal_ids),
     }
@@ -5511,16 +5607,53 @@ def get_adaptive_params(regime: str) -> dict:
 # CANONICAL SCORE / AGE POLICY
 # ==========================================================
 
-def candidate_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
+def candidate_market_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
     if candidate is None:
         return 0.0
-    explicit = safe_float(getattr(candidate, "thesis_age_minutes", -1.0), -1.0)
+    explicit = safe_float(getattr(candidate, "market_thesis_age_minutes", -1.0), -1.0)
     if explicit >= 0.0:
         return explicit
     components = getattr(candidate, "score_components", {}) or {}
+    if "market_thesis_age_minutes" in components:
+        return max(0.0, safe_float(components.get("market_thesis_age_minutes"), 0.0))
     if "original_trigger_age_minutes" in components:
         return max(0.0, safe_float(components.get("original_trigger_age_minutes"), 0.0))
+    explicit_legacy = safe_float(getattr(candidate, "thesis_age_minutes", -1.0), -1.0)
+    if explicit_legacy >= 0.0:
+        return explicit_legacy
     return max(0.0, safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0))
+
+
+def candidate_model_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
+    if candidate is None:
+        return -1.0
+    explicit = safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0)
+    if explicit >= 0.0:
+        return explicit
+    components = getattr(candidate, "score_components", {}) or {}
+    if "model_thesis_age_minutes" in components:
+        return max(0.0, safe_float(components.get("model_thesis_age_minutes"), 0.0))
+    return -1.0
+
+
+def candidate_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
+    """Return the effective thesis lease without conflating two clocks.
+
+    A model-local thesis is authoritative only when the candidate explicitly
+    declares ``MODEL_LOCAL`` origin and carries its own non-negative age. Old
+    scan/market age remains visible for audit, but cannot hard-expire a newly
+    formed model-local setup. Legacy candidates continue using the old field.
+    """
+    if candidate is None:
+        return 0.0
+    origin = str(getattr(candidate, "thesis_origin", "") or "").upper()
+    model_age = candidate_model_thesis_age_minutes(candidate)
+    if origin.startswith("MODEL_LOCAL") and model_age >= 0.0:
+        return model_age
+    explicit = safe_float(getattr(candidate, "thesis_age_minutes", -1.0), -1.0)
+    if explicit >= 0.0:
+        return explicit
+    return candidate_market_thesis_age_minutes(candidate)
 
 
 def candidate_execution_trigger_age_minutes(candidate: Optional[Candidate]) -> float:
@@ -6926,6 +7059,20 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
     event = scan_events.get(opp.side, {})
     trigger_age = (int(now_utc().timestamp() * 1000) - event.get("last_event_ts", 0)) / 60000.0 if event.get("last_event_ts") else 999.0
     trigger_ready = event.get("stage") in ["RETEST", "READY", "ACCEPTANCE"] and trigger_age <= TRIGGER_MAX_AGE_MINUTES
+    try:
+        elapsed_since_save = max(0.0, (now_utc() - datetime.fromisoformat(opp.created_at)).total_seconds() / 60.0)
+    except Exception:
+        elapsed_since_save = 0.0
+    market_age = safe_float(getattr(opp, "market_thesis_age_minutes", -1.0), -1.0)
+    model_age = safe_float(getattr(opp, "model_thesis_age_minutes", -1.0), -1.0)
+    if market_age >= 0.0:
+        market_age += elapsed_since_save
+    if model_age >= 0.0:
+        model_age += elapsed_since_save
+    thesis_origin = str(getattr(opp, "thesis_origin", "MARKET_SCAN") or "MARKET_SCAN")
+    effective_thesis_age = model_age if thesis_origin.upper().startswith("MODEL_LOCAL") and model_age >= 0.0 else market_age
+    if effective_thesis_age < 0.0:
+        effective_thesis_age = trigger_age
     return Candidate(
         side=opp.side,
         setup_type=opp.setup_type,
@@ -6942,8 +7089,13 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         confirmation_tier=ConfirmationTier.STANDARD.value,
         stage=(OpportunityStage.EXECUTABLE.value if trigger_ready else OpportunityStage.ARMED.value),
         variant="MISSED_IMPULSE_REENTRY",
-        execution_anchor=price,
+        execution_anchor=opp.trigger_level or price,
         trigger_age_minutes=trigger_age,
+        thesis_age_minutes=effective_thesis_age,
+        market_thesis_age_minutes=market_age,
+        model_thesis_age_minutes=model_age,
+        thesis_origin=thesis_origin,
+        execution_trigger_age_minutes=trigger_age,
         thesis_key=opp.thesis_key,
         thesis=opp.thesis,
         scan_event_stage=event.get("stage", ""),
@@ -7795,6 +7947,9 @@ def setup_trigger_revalidation_profile(
 
     source = str(candidate.execution_source or ExecutionSource.NONE.value)
     thesis_age = candidate_thesis_age_minutes(candidate)
+    market_thesis_age = candidate_market_thesis_age_minutes(candidate)
+    model_thesis_age = candidate_model_thesis_age_minutes(candidate)
+    thesis_origin = str(getattr(candidate, "thesis_origin", "MARKET_SCAN") or "MARKET_SCAN")
     execution_age = candidate_execution_trigger_age_minutes(candidate)
     age = thesis_age  # compatibility alias inside this function
     price = safe_float(context.get("price"), 0.0) or safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
@@ -7937,11 +8092,14 @@ def setup_trigger_revalidation_profile(
 
     return {
         "enabled": True,
-        "version": "v9.5_mature_thesis_evidence_bridge",
+        "version": "v9.5.2_split_market_model_thesis",
         "state": state_name,
         "source": source,
         "age_min": round(thesis_age, 1),  # deprecated compatibility alias
         "thesis_age_min": round(thesis_age, 1),
+        "market_thesis_age_min": round(market_thesis_age, 1),
+        "model_thesis_age_min": round(model_thesis_age, 1) if model_thesis_age >= 0.0 else -1.0,
+        "thesis_origin": thesis_origin,
         "execution_trigger_age_min": round(execution_age, 1),
         "execution_trigger_ttl_min": EXECUTION_TRIGGER_TTL_MIN,
         "execution_trigger_fresh": execution_trigger_fresh,
@@ -9069,10 +9227,12 @@ def ict_model_execution_contract(
         invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.10)
         invalidation_basis = "Daily/Weekly open reclaim failure"
     elif model == "LIQUIDITY_LADDER_MODEL":
-        entry_anchor = price
-        entry_basis = "Liquidity ladder current/retest anchor"
-        invalidation = price - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.25)
-        invalidation_basis = "Liquidity ladder structural failure"
+        confirmation_anchor = safe_float(model_context.get("confirmation_anchor"), 0.0)
+        entry_anchor = confirmation_anchor or price
+        confirmation_kind = str(model_context.get("confirmation_kind") or "WAIT_CONFIRMATION")
+        entry_basis = f"Liquidity ladder target route + {confirmation_kind} anchor"
+        invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.25)
+        invalidation_basis = "Liquidity ladder confirmation structural failure"
     elif model == "FAILED_AUCTION_REJECTION":
         entry_anchor = price
         entry_basis = f"Failed auction rejection from {model_context.get('level_name', 'liquidity')}"
@@ -9290,10 +9450,10 @@ def finalize_hypothesis_ranking(candidates: list[Candidate]) -> list[Candidate]:
     matrix = [hypothesis_audit_row(c) for c in candidates]
     for idx, cand in enumerate(candidates, start=1):
         cand.hypothesis_rank = idx
-        cand.competing_hypotheses = matrix[:10]
+        cand.competing_hypotheses = matrix[:JOURNAL_HYPOTHESIS_TOP]
         if cand.score_components is not None:
             cand.score_components["hypothesis_rank"] = idx
-            cand.score_components["hypothesis_matrix_top"] = matrix[:10]
+            cand.score_components["hypothesis_matrix_top"] = matrix[:JOURNAL_HYPOTHESIS_TOP]
     return candidates
 
 
@@ -10001,10 +10161,72 @@ def detect_liquidity_ladder_model(side: str, price: float, context: dict, atr15:
     ladder_score = sum(safe_float(t.get("magnet_score"), 0.0) for t in top)
     kinds = {str(t.get("kind")) for t in top}
     tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
-    # Це DOL-модель: сама по собі не є market trigger, але стає actionable,
-    # якщо структура/напрям підтримують маршрут до ліквідності.
+    # Це DOL/target-route модель. Вона може ранжувати напрям і цілі, але не
+    # створює execution readiness. Entry authority з'являється тільки у
+    # liquidity_ladder_execution_confirmation() після свіжого 3M trigger,
+    # model-valid retest/reanchor або acceptance.
     active = bool(tf_ok and len(top) >= LIQUIDITY_LADDER_MIN_TARGETS and ladder_score >= LIQUIDITY_LADDER_MIN_SCORE and len(kinds) >= 2)
-    return {"active": active, "score_bonus": min(16, 5 + int(ladder_score)) if active else 0, "ladder_score": round(ladder_score, 2), "target_count": len(top), "targets": [{"kind": t.get("kind"), "level": round_price(t.get("level")), "score": round(safe_float(t.get("magnet_score"), 0.0), 2)} for t in top], "tf_ok": tf_ok, "entry_ok": active}
+    return {
+        "active": active,
+        "score_bonus": min(16, 5 + int(ladder_score)) if active else 0,
+        "ladder_score": round(ladder_score, 2),
+        "target_count": len(top),
+        "targets": [{"kind": t.get("kind"), "level": round_price(t.get("level")), "score": round(safe_float(t.get("magnet_score"), 0.0), 2)} for t in top],
+        "tf_ok": tf_ok,
+        "entry_ok": False,
+        "execution_role": "TARGET_ROUTE_ONLY",
+    }
+
+
+def liquidity_ladder_execution_confirmation(
+    *,
+    live_3m_trigger_ready: bool,
+    trigger_level: float,
+    trigger_age: float,
+    acceptance_retest: Optional[dict[str, Any]] = None,
+    continuation_reanchor: Optional[dict[str, Any]] = None,
+    price: float = 0.0,
+) -> dict[str, Any]:
+    """Route Liquidity Ladder through independent execution evidence.
+
+    Priority is a fresh structural re-anchor/retest, then explicit acceptance,
+    then a fresh scan-level 3M trigger. The ladder itself is never returned as
+    the execution source when admission is ready.
+    """
+    acceptance_retest = acceptance_retest or {}
+    continuation_reanchor = continuation_reanchor or {}
+    if continuation_reanchor.get("ready"):
+        anchor = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level or price
+        age = max(0.0, safe_float(continuation_reanchor.get("anchor_age_min"), 0.0))
+        return {
+            "ready": True, "kind": "RETEST_REANCHOR",
+            "execution_source": ExecutionSource.CONTINUATION_REANCHOR.value,
+            "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
+            "anchor": anchor, "age_minutes": age, "live_3m": True,
+        }
+    if acceptance_retest.get("active"):
+        anchor = safe_float(acceptance_retest.get("zone_mid"), price) or price or trigger_level
+        return {
+            "ready": True, "kind": "ACCEPTANCE",
+            "execution_source": ExecutionSource.ACCEPTANCE_RETEST.value,
+            "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
+            "anchor": anchor, "age_minutes": 0.0, "live_3m": False,
+        }
+    if live_3m_trigger_ready:
+        return {
+            "ready": True, "kind": "LIVE_3M_TRIGGER",
+            "execution_source": ExecutionSource.LIVE_3M.value,
+            "execution_lane": ExecutionLane.STANDARD_CONFIRMED.value,
+            "anchor": trigger_level or price, "age_minutes": max(0.0, trigger_age),
+            "live_3m": True,
+        }
+    return {
+        "ready": False, "kind": "WAIT_CONFIRMATION",
+        "execution_source": ExecutionSource.LIQUIDITY_LADDER.value,
+        "execution_lane": ExecutionLane.WAIT_CONFIRMATION.value,
+        "anchor": price or trigger_level, "age_minutes": max(0.0, trigger_age),
+        "live_3m": False,
+    }
 
 
 def detect_failed_auction_rejection_tail(c15: list[Candle], side: str, price: float, atr15: float, context: dict) -> dict[str, Any]:
@@ -11511,6 +11733,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             local_trigger_level = trigger_level
             local_trigger_age = model_trigger_age
             local_live_3m_trigger_ready = model_live_3m_trigger_ready
+            market_thesis_age = max(0.0, safe_float(trigger_age, 0.0))
+            model_thesis_age = -1.0
+            thesis_origin = "MARKET_SCAN"
+            ladder_confirmation: dict[str, Any] = {}
             if model_id in SHORT_REVERSAL_MODEL_IDS:
                 model_ready = bool(short_model_profile.get("execution_ready"))
                 aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
@@ -11521,6 +11747,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
                 local_trigger_level = safe_float(short_model_profile.get("entry_anchor"), price) or price
                 local_trigger_age = 0.0 if actionable_trigger_ready else trigger_age
+                if actionable_trigger_ready:
+                    model_thesis_age = 0.0
+                    thesis_origin = "MODEL_LOCAL_SHORT_REVERSAL"
                 execution_source = {
                     "SHORT_LIQUIDITY_SWEEP_REVERSAL": ExecutionSource.SHORT_LIQUIDITY_SWEEP.value,
                     "SHORT_FAILED_BREAKOUT_REVERSAL": ExecutionSource.SHORT_FAILED_BREAKOUT.value,
@@ -11545,6 +11774,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 local_trigger_age = safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor_age_min"), trigger_age)
                 local_live_3m_trigger_ready = actionable_trigger_ready
                 if actionable_trigger_ready:
+                    model_thesis_age = max(0.0, local_trigger_age)
+                    thesis_origin = "MODEL_LOCAL_MOMENTUM_REANCHOR"
                     pattern_conf.append(f"🟢 MOMENTUM_CONTINUATION: fresh micro-base {local_trigger_level:.2f}; probe-only, без chase")
                 else:
                     pattern_conf.append("⏳ MOMENTUM_CONTINUATION: тренд є, але свіжого безпечного micro-anchor ще немає")
@@ -11561,6 +11792,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     local_trigger_level = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level
                     local_trigger_age = safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
                     local_live_3m_trigger_ready = True
+                    model_thesis_age = max(0.0, local_trigger_age)
+                    thesis_origin = "MODEL_LOCAL_CONTINUATION_REANCHOR"
                     pattern_conf.append(
                         f"🧭 REANCHORED_TRIGGER: old={trigger_age:.0f}m → fresh={local_trigger_age:.1f}m | "
                         f"{continuation_reanchor.get('zone_label')} @ {local_trigger_level:.2f}"
@@ -11609,9 +11842,28 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
                 local_trigger_level = safe_float(open_reclaim.get("level"), trigger_level) or trigger_level
             elif model_id == "LIQUIDITY_LADDER_MODEL":
-                execution_source = ExecutionSource.LIQUIDITY_LADDER.value
-                actionable_trigger_ready = bool(liquidity_ladder.get("entry_ok"))
-                execution_lane_source = ExecutionLane.LIMIT_ONLY.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
+                ladder_confirmation = liquidity_ladder_execution_confirmation(
+                    live_3m_trigger_ready=live_3m_trigger_ready,
+                    trigger_level=trigger_level,
+                    trigger_age=trigger_age,
+                    acceptance_retest=acceptance_retest,
+                    continuation_reanchor=continuation_reanchor,
+                    price=price,
+                )
+                actionable_trigger_ready = bool(ladder_confirmation.get("ready"))
+                execution_source = str(ladder_confirmation.get("execution_source") or ExecutionSource.LIQUIDITY_LADDER.value)
+                execution_lane_source = str(ladder_confirmation.get("execution_lane") or ExecutionLane.WAIT_CONFIRMATION.value)
+                local_trigger_level = safe_float(ladder_confirmation.get("anchor"), price) or price
+                local_trigger_age = max(0.0, safe_float(ladder_confirmation.get("age_minutes"), trigger_age))
+                local_live_3m_trigger_ready = bool(ladder_confirmation.get("live_3m"))
+                if actionable_trigger_ready:
+                    model_thesis_age = local_trigger_age
+                    thesis_origin = "MODEL_LOCAL_LADDER_CONFIRMATION"
+                    pattern_conf.append(
+                        f"🟢 LIQUIDITY_LADDER route confirmed by {ladder_confirmation.get('kind')} @ {local_trigger_level:.2f}"
+                    )
+                else:
+                    pattern_conf.append("🟡 LIQUIDITY_LADDER is target route only; waiting fresh 3M trigger/retest/acceptance")
             elif model_id == "FAILED_AUCTION_REJECTION":
                 execution_source = ExecutionSource.FAILED_AUCTION.value
                 actionable_trigger_ready = True
@@ -11678,7 +11930,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "OPENING_RANGE_BREAKOUT": opening_range,
                     "FAILED_ORB": opening_range,
                     "DAILY_WEEKLY_OPEN_RECLAIM": open_reclaim,
-                    "LIQUIDITY_LADDER_MODEL": liquidity_ladder,
+                    "LIQUIDITY_LADDER_MODEL": {
+                        **liquidity_ladder,
+                        "confirmation_anchor": safe_float(ladder_confirmation.get("anchor"), 0.0),
+                        "confirmation_kind": ladder_confirmation.get("kind", "WAIT_CONFIRMATION"),
+                    },
                     "FAILED_AUCTION_REJECTION": failed_auction,
                     "TIME_OF_DAY_ADAPTIVE": time_of_day_adaptive,
                     "SHORT_LIQUIDITY_SWEEP_REVERSAL": short_model_profile,
@@ -11689,7 +11945,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 }.get(model_id, {}),
             )
 
+            if model_id == "LIQUIDITY_LADDER_MODEL":
+                # Single source of truth: the candidate trigger and any persisted
+                # opportunity must use the exact execution-contract anchor.
+                local_trigger_level = safe_float(contract.get("entry_anchor"), local_trigger_level) or local_trigger_level
+
             evidence = ["ICT_LOCATION", "PRICE_STRUCTURE", f"ICT_MODEL_{model_id}"]
+            if model_id == "LIQUIDITY_LADDER_MODEL":
+                evidence.append("TARGET_ROUTE_LIQUIDITY_LADDER")
             if flw_score > 0:
                 evidence.append("SYNTHETIC_CVD_PROXY_LOW_WEIGHT")
             if local_live_3m_trigger_ready:
@@ -11828,6 +12091,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "trigger_reanchored": execution_source == ExecutionSource.CONTINUATION_REANCHOR.value,
                     "original_trigger_level": round_price(trigger_level),
                     "original_trigger_age_minutes": round(float(trigger_age or 0.0), 2),
+                    "market_thesis_age_minutes": round(float(market_thesis_age), 2),
+                    "model_thesis_age_minutes": round(float(model_thesis_age), 2) if model_thesis_age >= 0.0 else -1.0,
+                    "effective_thesis_age_minutes": round(float(model_thesis_age if thesis_origin.startswith("MODEL_LOCAL") and model_thesis_age >= 0.0 else market_thesis_age), 2),
+                    "thesis_origin": thesis_origin,
                     "effective_trigger_level": round_price(local_trigger_level),
                     "effective_trigger_age_minutes": round(float(local_trigger_age or 0.0), 2),
                     "execution_freshness_multiplier": freshness_mult,
@@ -11859,6 +12126,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         "candidate_model": model_id,
                         "contract": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
                     },
+                    "liquidity_ladder_confirmation": ladder_confirmation if model_id == "LIQUIDITY_LADDER_MODEL" else {},
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -11872,7 +12140,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 ict_model=best_pattern or "NONE",
                 execution_anchor=round_price(contract["entry_anchor"]),
                 trigger_age_minutes=local_trigger_age,
-                thesis_age_minutes=trigger_age,
+                thesis_age_minutes=(model_thesis_age if thesis_origin.startswith("MODEL_LOCAL") and model_thesis_age >= 0.0 else market_thesis_age),
+                market_thesis_age_minutes=market_thesis_age,
+                model_thesis_age_minutes=model_thesis_age,
+                thesis_origin=thesis_origin,
                 execution_trigger_age_minutes=local_trigger_age,
                 thesis_key=f"{side}|{model_id}|{setup_type}|{int(round(contract['entry_anchor']*10))}",
                 thesis=f"{side} {model_id} → {setup_type} | src={execution_source} | stage={scan_stage}",
@@ -11904,6 +12175,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     else {}
                 ),
             )
+            synchronize_candidate_trigger_with_contract(cand)
             cand.professional_gate = evaluate_professional_gate(context, cand)
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
             cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
@@ -12553,6 +12825,31 @@ def validate_live_entry_price_contract(
         )
 
     return audit
+
+
+def candidate_contract_entry_anchor(candidate: Optional[Candidate]) -> float:
+    if candidate is None:
+        return 0.0
+    components = getattr(candidate, "score_components", {}) or {}
+    contract = components.get("entry_contract", {}) or {}
+    anchor = safe_float(contract.get("entry_anchor"), 0.0)
+    if anchor > 0.0:
+        return round_price(anchor)
+    execution_anchor = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
+    if execution_anchor > 0.0:
+        return round_price(execution_anchor)
+    return round_price(safe_float(getattr(candidate, "trigger_level", 0.0), 0.0))
+
+
+def synchronize_candidate_trigger_with_contract(candidate: Optional[Candidate]) -> float:
+    """Enforce trigger/entry-anchor identity for Liquidity Ladder candidates."""
+    if candidate is None:
+        return 0.0
+    anchor = candidate_contract_entry_anchor(candidate)
+    if str(getattr(candidate, "ict_model", "")) == "LIQUIDITY_LADDER_MODEL" and anchor > 0.0:
+        candidate.trigger_level = anchor
+        candidate.execution_anchor = anchor
+    return round_price(safe_float(getattr(candidate, "trigger_level", 0.0), anchor))
 
 
 def build_trade_plan(
@@ -15586,14 +15883,19 @@ def run_bot() -> None:
             payload["entry_confirmation_delay"] = entry_delay_audit
             record_entry_confirmation_delay(journal, entry_delay_audit)
 
-    state["latest_signal"] = payload
     append_history(state, {"type": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": decision.quality, "price": context["price"], "thesis_family_key": payload.get("thesis_family_key", "")})
-    journal["signals"].append(payload)
+    # Runtime audit consumers receive the full payload first. Only persistence is
+    # compacted, so journal optimization cannot alter trading decisions.
     record_rejected_hypothesis_shadows(journal, payload)
     record_executive_divergence(journal, payload)
     record_relaxed_continuation_shadow_experiment(journal, decision)
+    persisted_payload = prepare_signal_payload_for_journal(payload)
+    state["latest_signal"] = persisted_payload
+    journal["signals"].append(persisted_payload)
     if payload.get("score_features"):
-        journal.setdefault("training_signals", []).append(payload)
+        lean = lean_training_signal(payload)
+        if lean:
+            journal.setdefault("training_signals", []).append(lean)
 
     if decision.action in EXECUTABLE_ENTRY_ACTIONS and decision.candidate and decision.plan:
         # signal_id = decision.id: угода тепер завжди трасується до сигналу,
@@ -15644,7 +15946,20 @@ def run_bot() -> None:
             opp_status = OpportunityStatus.WAIT_PULLBACK.value
         else:
             opp_status = OpportunityStatus.ARMED.value
-        opp = Opportunity(side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family, created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(), score=decision.quality, trigger_level=decision.candidate.trigger_level, invalidation_level=decision.candidate.invalidation_level, confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families, execution_lane=decision.candidate.execution_lane, status=opp_status, thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis, signal_id=decision.id)
+        opp_trigger_level = synchronize_candidate_trigger_with_contract(decision.candidate)
+        opp = Opportunity(
+            side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family,
+            created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(),
+            score=decision.quality, trigger_level=opp_trigger_level,
+            invalidation_level=decision.candidate.invalidation_level,
+            confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families,
+            execution_lane=decision.candidate.execution_lane, status=opp_status,
+            thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis,
+            market_thesis_age_minutes=candidate_market_thesis_age_minutes(decision.candidate),
+            model_thesis_age_minutes=candidate_model_thesis_age_minutes(decision.candidate),
+            thesis_origin=str(getattr(decision.candidate, "thesis_origin", "MARKET_SCAN") or "MARKET_SCAN"),
+            signal_id=decision.id,
+        )
         store_opportunity(state, opp)
         store_active_trade(state, None)
     else:
@@ -17961,6 +18276,152 @@ def test_catastrophic_stop_buffer_is_narrowed_but_noise_safe() -> bool:
         )
     )
 
+
+def test_model_local_thesis_age_overrides_stale_market_age() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.FAILED_BREAKOUT_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        raw_score=72,
+        final_score=72,
+        trigger_ready=True,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        trigger_age_minutes=0.0,
+        thesis_age_minutes=0.0,
+        market_thesis_age_minutes=1900.0,
+        model_thesis_age_minutes=0.0,
+        thesis_origin="MODEL_LOCAL_SHORT_REVERSAL",
+        execution_trigger_age_minutes=0.0,
+        live_3m_trigger_ready=True,
+        execution_source=ExecutionSource.SHORT_FAILED_BREAKOUT.value,
+    )
+    context = {"price": 100.0, "atr15": 1.0, "candles": {"3m": [], "15m": []}}
+    profile = setup_trigger_revalidation_profile(candidate, context, state={})
+    return bool(
+        candidate_market_thesis_age_minutes(candidate) == 1900.0
+        and candidate_model_thesis_age_minutes(candidate) == 0.0
+        and candidate_thesis_age_minutes(candidate) == 0.0
+        and profile.get("market_thesis_age_min") == 1900.0
+        and profile.get("model_thesis_age_min") == 0.0
+        and profile.get("thesis_age_min") == 0.0
+        and not profile.get("hard_expired")
+    )
+
+
+def test_liquidity_ladder_is_route_only_without_confirmation() -> bool:
+    original = globals().get("find_technical_targets")
+    try:
+        globals()["find_technical_targets"] = lambda *args, **kwargs: [
+            {"kind": "PDL", "level": 95.0, "distance": 5.0, "magnet_score": 2.0},
+            {"kind": "OB", "level": 94.0, "distance": 6.0, "magnet_score": 1.8},
+            {"kind": "SSL", "level": 93.0, "distance": 7.0, "magnet_score": 1.6},
+        ]
+        profile = detect_liquidity_ladder_model(
+            Side.SHORT.value,
+            100.0,
+            {"zones": [], "liquidity": {}, "macro_liquidity": {}},
+            1.0,
+            {"bias": Side.SHORT.value},
+            {"bias": "NEUTRAL"},
+        )
+        no_confirmation = liquidity_ladder_execution_confirmation(
+            live_3m_trigger_ready=False,
+            trigger_level=99.5,
+            trigger_age=500.0,
+            acceptance_retest={},
+            continuation_reanchor={},
+            price=100.0,
+        )
+        live_confirmation = liquidity_ladder_execution_confirmation(
+            live_3m_trigger_ready=True,
+            trigger_level=99.5,
+            trigger_age=5.0,
+            acceptance_retest={},
+            continuation_reanchor={},
+            price=100.0,
+        )
+        acceptance_confirmation = liquidity_ladder_execution_confirmation(
+            live_3m_trigger_ready=False,
+            trigger_level=99.5,
+            trigger_age=500.0,
+            acceptance_retest={"active": True, "zone_mid": 99.8},
+            continuation_reanchor={},
+            price=100.0,
+        )
+        return bool(
+            profile.get("active")
+            and profile.get("entry_ok") is False
+            and profile.get("execution_role") == "TARGET_ROUTE_ONLY"
+            and not no_confirmation.get("ready")
+            and no_confirmation.get("execution_source") == ExecutionSource.LIQUIDITY_LADDER.value
+            and live_confirmation.get("ready")
+            and live_confirmation.get("execution_source") == ExecutionSource.LIVE_3M.value
+            and acceptance_confirmation.get("ready")
+            and acceptance_confirmation.get("execution_source") == ExecutionSource.ACCEPTANCE_RETEST.value
+        )
+    finally:
+        if original is not None:
+            globals()["find_technical_targets"] = original
+
+
+def test_liquidity_ladder_trigger_matches_entry_contract() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.LIQUIDITY_LADDER.value,
+        setup_family=SetupFamily.EXPANSION.value,
+        raw_score=70,
+        final_score=70,
+        ict_model="LIQUIDITY_LADDER_MODEL",
+        trigger_level=83.64,
+        execution_anchor=83.64,
+        score_components={"entry_contract": {"entry_anchor": 88.40}},
+    )
+    synced = synchronize_candidate_trigger_with_contract(candidate)
+    return bool(synced == 88.40 and candidate.trigger_level == 88.40 and candidate.execution_anchor == 88.40)
+
+def test_training_signal_is_lean_and_nonduplicating() -> bool:
+    payload = {
+        "id": "signal-1", "time": "2026-07-20T00:00:00+00:00", "side": "SHORT",
+        "setup_family": "EXPANSION", "setup_type": "LIQUIDITY_LADDER",
+        "score_features": {"loc": 1.0, "trigger": 0.5},
+        "audit": {"huge": [1, 2, 3]}, "score_components": {"evaluation_bundle": {"x": 1}},
+    }
+    lean = lean_training_signal(payload)
+    return (
+        set(lean) == {"id", "time", "side", "setup_family", "setup_type", "score_features"}
+        and lean["score_features"] == payload["score_features"]
+        and "audit" not in lean
+        and "score_components" not in lean
+    )
+
+
+def test_nonverbose_journal_drops_duplicate_debug_payloads() -> bool:
+    original_verbose = JOURNAL_VERBOSE
+    try:
+        globals()["JOURNAL_VERBOSE"] = False
+        payload = {
+            "id": "signal-2",
+            "audit": {"debug": "large"},
+            "evaluation_bundle": {"debug": "duplicate"},
+            "score_components": {
+                "features": {"loc": 1.0},
+                "evaluation_bundle": {"debug": "duplicate"},
+                "hypothesis_matrix_top": list(range(8)),
+            },
+        }
+        compact = prepare_signal_payload_for_journal(payload)
+        return (
+            "audit" not in compact
+            and "evaluation_bundle" not in compact
+            and "evaluation_bundle" not in compact.get("score_components", {})
+            and len(compact.get("score_components", {}).get("hypothesis_matrix_top", [])) == JOURNAL_HYPOTHESIS_TOP
+            and compact.get("journal_storage", {}).get("verbose") is False
+        )
+    finally:
+        globals()["JOURNAL_VERBOSE"] = original_verbose
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -18017,6 +18478,9 @@ def _run_self_test() -> bool:
         ("score 67 gray zone is shadow-only", test_score_67_gray_zone_is_shadow_only_in_live_policy),
         ("plan execution readiness is score-independent", test_plan_execution_readiness_is_score_independent),
         ("thesis and execution ages are split", test_split_thesis_and_execution_age),
+        ("model-local thesis age overrides stale market thesis", test_model_local_thesis_age_overrides_stale_market_age),
+        ("liquidity ladder is route-only without confirmation", test_liquidity_ladder_is_route_only_without_confirmation),
+        ("liquidity ladder trigger matches entry contract", test_liquidity_ladder_trigger_matches_entry_contract),
         ("catastrophic buffer is narrowed but noise-safe", test_catastrophic_stop_buffer_is_narrowed_but_noise_safe),
         ("preconfirmation timestamp freeze blocks future leakage", test_preconfirmation_timestamp_freeze),
         ("preconfirmation cannot create a probe without an existing probe path", test_preconfirmation_cannot_create_probe_without_existing_probe_path),
@@ -18029,6 +18493,8 @@ def _run_self_test() -> bool:
         ("preconfirmation records trigger-ready directional candidates", test_preconfirmation_records_pending_for_trigger_ready_candidate),
         ("preconfirmation emits FAILED and EXPIRED terminal statuses", test_preconfirmation_fixed_horizon_failed_and_expired),
         ("preconfirmation is not added as advisor or final-score term", test_preconfirmation_is_not_an_advisor_or_score_component),
+        ("training_signals persist lean feature rows", test_training_signal_is_lean_and_nonduplicating),
+        ("nonverbose journal removes duplicate debug payloads", test_nonverbose_journal_drops_duplicate_debug_payloads),
     ]
     for name, fn in retained:
         try:
@@ -20102,8 +20568,11 @@ def _audit_journal_to_candidate(signal: dict[str, Any]) -> Optional[Candidate]:
         trigger_level=float(signal.get("trigger_level", 0.0) or 0.0),
         invalidation_level=float(signal.get("invalidation_level", 0.0) or 0.0),
         trigger_age_minutes=safe_float(signal.get("trigger_age_minutes"), 0.0),
-        thesis_age_minutes=safe_float((signal.get("score_components") or {}).get("original_trigger_age_minutes"), -1.0),
-        execution_trigger_age_minutes=safe_float((signal.get("score_components") or {}).get("effective_trigger_age_minutes"), -1.0),
+        thesis_age_minutes=safe_float(score_components.get("effective_thesis_age_minutes", score_components.get("original_trigger_age_minutes")), -1.0),
+        market_thesis_age_minutes=safe_float(score_components.get("market_thesis_age_minutes", score_components.get("original_trigger_age_minutes")), -1.0),
+        model_thesis_age_minutes=safe_float(score_components.get("model_thesis_age_minutes"), -1.0),
+        thesis_origin=str(score_components.get("thesis_origin") or "MARKET_SCAN"),
+        execution_trigger_age_minutes=safe_float(score_components.get("effective_trigger_age_minutes"), -1.0),
     )
 
 
@@ -20279,7 +20748,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.1")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
