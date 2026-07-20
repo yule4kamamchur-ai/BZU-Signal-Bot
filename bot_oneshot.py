@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.3 (Journal Compaction + Model-Local Execution)
+BZU Professional Hybrid Confluence Signal Bot v9.5.4 (Compact JSON + Fixed Journal Cap)
 =============================================================================================
-Оновлення v9.5.3:
+Оновлення v9.5.4:
+- SIGNAL_JOURNAL_LIMIT тепер має безпечний дефолт 500 у самому коді; env може його явно перевизначити.
+- JSON persistence переведено на компактні separators=(",", ":") без indent, що прибирає зайві пробіли.
 - training_signals переведено на lean feature rows без дублювання повного signal payload; старі записи мігрують автоматично.
 - Додано production journal mode: JOURNAL_VERBOSE=false прибирає audit та дубльований evaluation_bundle із signals.
 - hypothesis_matrix_top керується JOURNAL_HYPOTHESIS_TOP (рекомендовано 3), FIFO — SIGNAL_JOURNAL_LIMIT (рекомендовано 500).
@@ -136,8 +138,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.3-journal-compaction"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_3_JOURNAL_COMPACTION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.4-compact-json-fixed-cap"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_4_COMPACT_JSON_FIXED_CAP"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -198,9 +200,9 @@ PRECONFIRM_PROBE_WAIT_PROBABILITY = min(PRECONFIRM_PROBE_MIN_PROBABILITY - 0.01,
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
-# Production recommendation: SIGNAL_JOURNAL_LIMIT=500. The default remains
-# backward-compatible; deployment config controls the actual FIFO cap.
-MAX_JOURNAL = int(os.getenv("SIGNAL_JOURNAL_LIMIT", "3000") or 3000)
+# Safe production default. Deployments may still override the FIFO cap explicitly.
+DEFAULT_SIGNAL_JOURNAL_LIMIT = 500
+MAX_JOURNAL = max(1, int(os.getenv("SIGNAL_JOURNAL_LIMIT", str(DEFAULT_SIGNAL_JOURNAL_LIMIT)) or DEFAULT_SIGNAL_JOURNAL_LIMIT))
 # Verbose journal diagnostics are useful during investigations, but audit and
 # evaluation_bundle duplicate large parts of the decision graph. Keep them out
 # of production journals unless explicitly enabled.
@@ -4907,10 +4909,10 @@ def atomic_json_write(path: Path, data: dict[str, Any]) -> None:
     backup = path.with_suffix(path.suffix + ".bak")
     payload = json_safe(data)
     with temp.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
     os.replace(temp, path)
     with backup.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -4932,6 +4934,7 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V9_5_3_JOURNAL_COMPACTION",
         "TRADING_DESK_EXECUTIVE_V9_5_2_MODEL_LOCAL_THESIS_LADDER_CONFIRMATION",
         "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
         "TRADING_DESK_EXECUTIVE_V9_4_CONFIRMATION_PROBABILITY",
@@ -5013,7 +5016,7 @@ def prepare_signal_payload_for_journal(payload: dict[str, Any]) -> dict[str, Any
         "audit_persisted": False,
         "evaluation_bundle_persisted": False,
         "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
-        "schema_version": "journal_storage_v9.5.3",
+        "schema_version": "journal_storage_v9.5.4",
     }
     return compact
 
@@ -18422,6 +18425,24 @@ def test_nonverbose_journal_drops_duplicate_debug_payloads() -> bool:
         globals()["JOURNAL_VERBOSE"] = original_verbose
 
 
+
+def test_signal_journal_default_cap_is_500() -> bool:
+    """The built-in FIFO default must remain safe even when deploy env is absent."""
+    configured = int(os.getenv("SIGNAL_JOURNAL_LIMIT", str(DEFAULT_SIGNAL_JOURNAL_LIMIT)) or DEFAULT_SIGNAL_JOURNAL_LIMIT)
+    return DEFAULT_SIGNAL_JOURNAL_LIMIT == 500 and MAX_JOURNAL == max(1, configured)
+
+
+def test_atomic_json_write_uses_compact_serialization() -> bool:
+    """Persistence must not spend megabytes formatting JSON for imaginary human readers."""
+    sample = {"alpha": [1, 2, 3], "nested": {"ok": True, "text": "тест"}}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "journal.json"
+        atomic_json_write(path, sample)
+        expected = json.dumps(json_safe(sample), ensure_ascii=False, separators=(",", ":"))
+        primary = path.read_text(encoding="utf-8")
+        backup = path.with_suffix(path.suffix + ".bak").read_text(encoding="utf-8")
+        return primary == expected and backup == expected
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -18495,6 +18516,8 @@ def _run_self_test() -> bool:
         ("preconfirmation is not added as advisor or final-score term", test_preconfirmation_is_not_an_advisor_or_score_component),
         ("training_signals persist lean feature rows", test_training_signal_is_lean_and_nonduplicating),
         ("nonverbose journal removes duplicate debug payloads", test_nonverbose_journal_drops_duplicate_debug_payloads),
+        ("signal journal default cap is 500", test_signal_journal_default_cap_is_500),
+        ("atomic JSON persistence is compact", test_atomic_json_write_uses_compact_serialization),
     ]
     for name, fn in retained:
         try:
@@ -20748,7 +20771,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.4")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
