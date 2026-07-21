@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.4 (Compact JSON + Fixed Journal Cap)
+BZU Professional Hybrid Confluence Signal Bot v9.5.5 (Split-Thesis Consistency Fix)
 =============================================================================================
-Оновлення v9.5.4:
+Оновлення v9.5.5:
+- Sentinel model_thesis_age=-1 більше не перетворюється на фальшиві 0 хвилин.
+- Zone retest і підтверджений acceptance розділено; лише acceptance є execution-ready.
+- Fresh zone-retest отримує MODEL_LOCAL_ZONE_RETEST thesis clock, але execution_source=NONE до acceptance.
+- Unconfirmed Liquidity Ladder журналюється як execution_source=NONE / TARGET_ROUTE_ONLY.
+- EXPIRED за замовчуванням є негативною міткою для P(confirmation within 45m).
+- Усі зміни v9.5.4 збережені:
 - SIGNAL_JOURNAL_LIMIT тепер має безпечний дефолт 500 у самому коді; env може його явно перевизначити.
 - JSON persistence переведено на компактні separators=(",", ":") без indent, що прибирає зайві пробіли.
 - training_signals переведено на lean feature rows без дублювання повного signal payload; старі записи мігрують автоматично.
@@ -138,8 +144,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.4-compact-json-fixed-cap"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_4_COMPACT_JSON_FIXED_CAP"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.5-split-thesis-consistency"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_5_SPLIT_THESIS_CONSISTENCY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -193,7 +199,7 @@ PRECONFIRM_PROMOTION_MIN_WILSON_LOW = min(0.80, max(0.50, float(os.getenv("PRECO
 PRECONFIRM_EMBEDDED_LEDGER_ENABLED = os.getenv("PRECONFIRM_EMBEDDED_LEDGER_ENABLED", "true").lower() in {"1", "true", "yes"}
 PRECONFIRM_AUC_GATE = min(0.95, max(0.50, float(os.getenv("PRECONFIRM_AUC_GATE", "0.55") or 0.55)))
 PRECONFIRM_BRIER_WARN = min(0.50, max(0.05, float(os.getenv("PRECONFIRM_BRIER_WARN", "0.25") or 0.25)))
-PRECONFIRM_EXPIRED_LABEL_MODE = str(os.getenv("PRECONFIRM_EXPIRED_LABEL_MODE", "SEPARATE") or "SEPARATE").strip().upper()
+PRECONFIRM_EXPIRED_LABEL_MODE = str(os.getenv("PRECONFIRM_EXPIRED_LABEL_MODE", "NEGATIVE") or "NEGATIVE").strip().upper()
 PRECONFIRM_LOCAL_NEIGHBORS = max(10, int(os.getenv("PRECONFIRM_LOCAL_NEIGHBORS", "30") or 30))
 PRECONFIRM_PROBE_MIN_PROBABILITY = min(0.95, max(0.50, float(os.getenv("PRECONFIRM_PROBE_MIN_PROBABILITY", "0.62") or 0.62)))
 PRECONFIRM_PROBE_WAIT_PROBABILITY = min(PRECONFIRM_PROBE_MIN_PROBABILITY - 0.01, max(0.05, float(os.getenv("PRECONFIRM_PROBE_WAIT_PROBABILITY", "0.42") or 0.42)))
@@ -2413,6 +2419,8 @@ def _preconfirm_estimate(
         "precursor_active": precursor_active,
         "decision_authority": "AUDIT_AND_FRESH_PROBE_GATE_ONLY",
         "can_initiate_entry": False,
+        "probability_contract": "P(CONFIRMED_WITHIN_45M); FAILED_OR_EXPIRED=0",
+        "expired_label_mode": PRECONFIRM_EXPIRED_LABEL_MODE,
         "features": dict(features),
         "excluded_feature": "pattern",
         "feature_dependency_audit": {
@@ -2422,7 +2430,7 @@ def _preconfirm_estimate(
             "added_to_final_score": False,
             "single_decision_use": "_preconfirm_stage_gate",
         },
-        "schema_version": "preconfirmation_probability_v9.5_hierarchical",
+        "schema_version": "preconfirmation_probability_v9.5.5_expiry_aware",
     }
 
 def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any]]:
@@ -3550,6 +3558,8 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preconfirm_promotion_min_global_rows": PRECONFIRM_PROMOTION_MIN_GLOBAL_ROWS,
         "preconfirm_promotion_min_exact_rows": PRECONFIRM_PROMOTION_MIN_EXACT_ROWS,
         "preconfirm_embedded_ledger_enabled": PRECONFIRM_EMBEDDED_LEDGER_ENABLED,
+        "preconfirm_expired_label_mode": PRECONFIRM_EXPIRED_LABEL_MODE,
+        "preconfirm_probability_contract": "P(CONFIRMED_WITHIN_45M); FAILED_OR_EXPIRED=0",
         "preconfirm_auc_gate": PRECONFIRM_AUC_GATE,
         "preconfirm_probe_min_probability": PRECONFIRM_PROBE_MIN_PROBABILITY,
         "preconfirm_probe_wait_probability": PRECONFIRM_PROBE_WAIT_PROBABILITY,
@@ -5016,7 +5026,7 @@ def prepare_signal_payload_for_journal(payload: dict[str, Any]) -> dict[str, Any
         "audit_persisted": False,
         "evaluation_bundle_persisted": False,
         "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
-        "schema_version": "journal_storage_v9.5.4",
+        "schema_version": "journal_storage_v9.5.5",
     }
     return compact
 
@@ -5628,6 +5638,12 @@ def candidate_market_thesis_age_minutes(candidate: Optional[Candidate]) -> float
 
 
 def candidate_model_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
+    """Return model-local thesis age while preserving the -1 unknown sentinel.
+
+    The previous ``max(0, value)`` fallback converted a persisted ``-1`` into
+    ``0.0``. That manufactured a fresh model thesis even when the candidate
+    still declared ``MARKET_SCAN`` origin, producing an impossible audit state.
+    """
     if candidate is None:
         return -1.0
     explicit = safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0)
@@ -5635,7 +5651,8 @@ def candidate_model_thesis_age_minutes(candidate: Optional[Candidate]) -> float:
         return explicit
     components = getattr(candidate, "score_components", {}) or {}
     if "model_thesis_age_minutes" in components:
-        return max(0.0, safe_float(components.get("model_thesis_age_minutes"), 0.0))
+        component_age = safe_float(components.get("model_thesis_age_minutes"), -1.0)
+        return component_age if component_age >= 0.0 else -1.0
     return -1.0
 
 
@@ -9618,15 +9635,33 @@ def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: f
         no_break = price < impulse_high - atr15 * 0.20
         acceptance = (last.close <= last.open) or (len(c15) >= 2 and last.close < c15[-2].close) or ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.55)
     retest_depth_ok = 0.55 <= pullback_atr <= 3.75
-    active = bool(tf_ok and no_break and retest_depth_ok and (zone_ok or acceptance) and impulse_atr >= 1.15)
+    structural_retest_ok = bool(tf_ok and no_break and retest_depth_ok and impulse_atr >= 1.15)
+    zone_retest_detected = bool(structural_retest_ok and zone_ok)
+    acceptance_confirmed = bool(zone_retest_detected and acceptance)
+    execution_ready = acceptance_confirmed
+    state = (
+        "ACCEPTANCE_CONFIRMED"
+        if acceptance_confirmed
+        else "ZONE_RETEST_DETECTED"
+        if zone_retest_detected
+        else "INACTIVE"
+    )
     score_bonus = 0
-    if active:
+    if zone_retest_detected:
         score_bonus += 8
-        score_bonus += 5 if zone_ok else 0
-        score_bonus += 4 if acceptance else 0
+        score_bonus += 5
         score_bonus += 3 if tf_ok else 0
+        score_bonus += 4 if acceptance_confirmed else 0
     return {
-        "active": active,
+        # ``active`` is retained as the execution-ready compatibility alias.
+        # A zone touch alone is exposed via ``zone_retest_detected``.
+        "active": execution_ready,
+        "detected": zone_retest_detected,
+        "zone_retest_detected": zone_retest_detected,
+        "acceptance_confirmed": acceptance_confirmed,
+        "execution_ready": execution_ready,
+        "state": state,
+        "execution_role": "EXECUTION_CONFIRMATION" if execution_ready else "ZONE_RETEST_ONLY",
         "score_bonus": score_bonus,
         "impulse_atr": round(impulse_atr, 2),
         "pullback_atr": round(pullback_atr, 2),
@@ -10207,11 +10242,17 @@ def liquidity_ladder_execution_confirmation(
             "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
             "anchor": anchor, "age_minutes": age, "live_3m": True,
         }
-    if acceptance_retest.get("active"):
+    acceptance_ready = bool(
+        acceptance_retest.get("execution_ready")
+        or acceptance_retest.get("acceptance_confirmed")
+        or (acceptance_retest.get("active") and acceptance_retest.get("acceptance"))
+    )
+    if acceptance_ready:
         anchor = safe_float(acceptance_retest.get("zone_mid"), price) or price or trigger_level
         return {
-            "ready": True, "kind": "ACCEPTANCE",
+            "ready": True, "kind": "ACCEPTANCE_CONFIRMED",
             "execution_source": ExecutionSource.ACCEPTANCE_RETEST.value,
+            "execution_role": "INDEPENDENT_EXECUTION_CONFIRMATION",
             "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
             "anchor": anchor, "age_minutes": 0.0, "live_3m": False,
         }
@@ -10225,7 +10266,8 @@ def liquidity_ladder_execution_confirmation(
         }
     return {
         "ready": False, "kind": "WAIT_CONFIRMATION",
-        "execution_source": ExecutionSource.LIQUIDITY_LADDER.value,
+        "execution_source": ExecutionSource.NONE.value,
+        "execution_role": "TARGET_ROUTE_ONLY",
         "execution_lane": ExecutionLane.WAIT_CONFIRMATION.value,
         "anchor": price or trigger_level, "age_minutes": max(0.0, trigger_age),
         "live_3m": False,
@@ -11471,7 +11513,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             active_patterns.append("TREND_IGNITION_MODEL")
         if is_range_compressed and strong_displacement and trigger_ready:
             active_patterns.append("RANGE_COMPRESSION_MODEL")
-        if acceptance_retest.get("active") or continuation_reanchor.get("pre_confirmation_ready"):
+        if acceptance_retest.get("zone_retest_detected") or continuation_reanchor.get("pre_confirmation_ready"):
             active_patterns.append("ACCEPTANCE_RETEST_CONTINUATION")
         if momentum_no_pullback.get("active"):
             active_patterns.append("MOMENTUM_NO_PULLBACK_CONTINUATION")
@@ -11813,13 +11855,28 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         f"dir_closes={continuation_reanchor.get('directional_closes')}/6 "
                         f"(required={continuation_reanchor.get('required_directional_closes')})"
                     )
-                elif acceptance_retest.get("active"):
+                elif acceptance_retest.get("execution_ready"):
                     execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
                     actionable_trigger_ready = True
                     execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
-                    pattern_conf.append("🟢 ACCEPTANCE_RETEST: ранній continuation-probe дозволений малим ризиком")
+                    local_trigger_level = safe_float(acceptance_retest.get("zone_mid"), trigger_level) or trigger_level
+                    local_trigger_age = 0.0
+                    local_live_3m_trigger_ready = False
+                    model_thesis_age = 0.0
+                    thesis_origin = "MODEL_LOCAL_ACCEPTANCE_RETEST"
+                    pattern_conf.append("🟢 ACCEPTANCE_CONFIRMED: continuation-probe дозволений малим ризиком")
+                elif acceptance_retest.get("zone_retest_detected"):
+                    execution_source = ExecutionSource.NONE.value
+                    actionable_trigger_ready = False
+                    execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
+                    local_trigger_level = safe_float(acceptance_retest.get("zone_mid"), trigger_level) or trigger_level
+                    local_trigger_age = 0.0
+                    local_live_3m_trigger_ready = False
+                    model_thesis_age = 0.0
+                    thesis_origin = "MODEL_LOCAL_ZONE_RETEST"
+                    pattern_conf.append("🟡 ZONE_RETEST_DETECTED: зона протестована, чекаємо directional acceptance")
                 else:
-                    execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
+                    execution_source = ExecutionSource.NONE.value
                     actionable_trigger_ready = False
                     execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
             elif model_id == "VWAP_SESSION_MEAN_RECLAIM":
@@ -11854,7 +11911,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     price=price,
                 )
                 actionable_trigger_ready = bool(ladder_confirmation.get("ready"))
-                execution_source = str(ladder_confirmation.get("execution_source") or ExecutionSource.LIQUIDITY_LADDER.value)
+                execution_source = str(ladder_confirmation.get("execution_source") or ExecutionSource.NONE.value)
                 execution_lane_source = str(ladder_confirmation.get("execution_lane") or ExecutionLane.WAIT_CONFIRMATION.value)
                 local_trigger_level = safe_float(ladder_confirmation.get("anchor"), price) or price
                 local_trigger_age = max(0.0, safe_float(ladder_confirmation.get("age_minutes"), trigger_age))
@@ -18312,6 +18369,112 @@ def test_model_local_thesis_age_overrides_stale_market_age() -> bool:
     )
 
 
+def test_unknown_model_thesis_age_sentinel_is_preserved() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=70,
+        final_score=70,
+        thesis_age_minutes=6616.9,
+        market_thesis_age_minutes=6616.9,
+        model_thesis_age_minutes=-1.0,
+        thesis_origin="MARKET_SCAN",
+        score_components={"model_thesis_age_minutes": -1.0},
+    )
+    return bool(
+        candidate_model_thesis_age_minutes(candidate) == -1.0
+        and candidate_thesis_age_minutes(candidate) == 6616.9
+    )
+
+
+def test_zone_retest_requires_acceptance_for_execution() -> bool:
+    original = globals().get("_same_side_zone_support")
+    try:
+        globals()["_same_side_zone_support"] = lambda *args, **kwargs: (True, 101.5, "15m OB")
+        base = 1_784_600_000_000
+        values = [
+            (101.0, 101.2, 100.8, 101.4),
+            (101.2, 101.0, 100.6, 101.5),
+            (101.0, 100.4, 99.8, 101.1),
+            (100.4, 100.8, 100.2, 101.0),
+            (100.8, 101.1, 100.5, 101.3),
+            (101.1, 101.4, 100.9, 101.6),
+            (101.4, 101.4, 101.1, 103.0),
+            # Bullish last candle: zone retest exists, SHORT acceptance does not.
+            (101.0, 101.5, 100.9, 102.0),
+        ]
+        candles = [
+            Candle(ts=base + i * 900_000, open=o, high=h, low=l, close=c, volume=100.0, confirmed=True)
+            for i, (o, c, l, h) in enumerate(values)
+        ]
+        profile = detect_acceptance_retest_continuation(
+            candles, Side.SHORT.value, 101.5, 1.0, [],
+            {"bias": Side.SHORT.value}, {"bias": "NEUTRAL"},
+        )
+        return bool(
+            profile.get("zone_retest_detected")
+            and not profile.get("acceptance_confirmed")
+            and not profile.get("execution_ready")
+            and not profile.get("active")
+            and profile.get("state") == "ZONE_RETEST_DETECTED"
+            and profile.get("execution_role") == "ZONE_RETEST_ONLY"
+        )
+    finally:
+        if original is not None:
+            globals()["_same_side_zone_support"] = original
+
+
+def test_pending_zone_retest_uses_model_local_clock_without_execution_source() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=70,
+        final_score=70,
+        trigger_ready=False,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        trigger_age_minutes=0.0,
+        thesis_age_minutes=0.0,
+        market_thesis_age_minutes=6616.9,
+        model_thesis_age_minutes=0.0,
+        thesis_origin="MODEL_LOCAL_ZONE_RETEST",
+        execution_trigger_age_minutes=0.0,
+        live_3m_trigger_ready=False,
+        execution_source=ExecutionSource.NONE.value,
+    )
+    profile = setup_trigger_revalidation_profile(
+        candidate, {"price": 100.0, "atr15": 1.0, "candles": {"3m": [], "15m": []}}, state={}
+    )
+    return bool(
+        candidate_thesis_age_minutes(candidate) == 0.0
+        and profile.get("market_thesis_age_min") == 6616.9
+        and profile.get("model_thesis_age_min") == 0.0
+        and profile.get("thesis_age_min") == 0.0
+        and profile.get("thesis_origin") == "MODEL_LOCAL_ZONE_RETEST"
+        and profile.get("source") == ExecutionSource.NONE.value
+        and not profile.get("hard_expired")
+    )
+
+
+def test_preconfirmation_expired_is_negative_for_45m_probability() -> bool:
+    features = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+    journal = {
+        "events": [
+            {"event_id": "confirmed", "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE", "status": "CONFIRMED", "features": features, "observed_ts": 1},
+            {"event_id": "failed", "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE", "status": "FAILED", "features": features, "observed_ts": 2},
+            {"event_id": "expired", "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE", "status": "EXPIRED", "features": features, "observed_ts": 3},
+        ]
+    }
+    rows = _preconfirm_training_rows(journal)
+    return bool(
+        PRECONFIRM_EXPIRED_LABEL_MODE == "NEGATIVE"
+        and [row.get("label") for row in rows] == [1, 0, 0]
+        and [row.get("status") for row in rows] == ["CONFIRMED", "FAILED", "EXPIRED"]
+    )
+
+
 def test_liquidity_ladder_is_route_only_without_confirmation() -> bool:
     original = globals().get("find_technical_targets")
     try:
@@ -18348,7 +18511,7 @@ def test_liquidity_ladder_is_route_only_without_confirmation() -> bool:
             live_3m_trigger_ready=False,
             trigger_level=99.5,
             trigger_age=500.0,
-            acceptance_retest={"active": True, "zone_mid": 99.8},
+            acceptance_retest={"active": True, "acceptance": True, "acceptance_confirmed": True, "execution_ready": True, "zone_mid": 99.8},
             continuation_reanchor={},
             price=100.0,
         )
@@ -18357,7 +18520,8 @@ def test_liquidity_ladder_is_route_only_without_confirmation() -> bool:
             and profile.get("entry_ok") is False
             and profile.get("execution_role") == "TARGET_ROUTE_ONLY"
             and not no_confirmation.get("ready")
-            and no_confirmation.get("execution_source") == ExecutionSource.LIQUIDITY_LADDER.value
+            and no_confirmation.get("execution_source") == ExecutionSource.NONE.value
+            and no_confirmation.get("execution_role") == "TARGET_ROUTE_ONLY"
             and live_confirmation.get("ready")
             and live_confirmation.get("execution_source") == ExecutionSource.LIVE_3M.value
             and acceptance_confirmation.get("ready")
@@ -18500,6 +18664,10 @@ def _run_self_test() -> bool:
         ("plan execution readiness is score-independent", test_plan_execution_readiness_is_score_independent),
         ("thesis and execution ages are split", test_split_thesis_and_execution_age),
         ("model-local thesis age overrides stale market thesis", test_model_local_thesis_age_overrides_stale_market_age),
+        ("unknown model thesis sentinel stays unknown", test_unknown_model_thesis_age_sentinel_is_preserved),
+        ("zone retest needs acceptance before execution", test_zone_retest_requires_acceptance_for_execution),
+        ("pending zone retest uses model-local clock only", test_pending_zone_retest_uses_model_local_clock_without_execution_source),
+        ("expired preconfirmation is negative for 45m probability", test_preconfirmation_expired_is_negative_for_45m_probability),
         ("liquidity ladder is route-only without confirmation", test_liquidity_ladder_is_route_only_without_confirmation),
         ("liquidity ladder trigger matches entry contract", test_liquidity_ladder_trigger_matches_entry_contract),
         ("catastrophic buffer is narrowed but noise-safe", test_catastrophic_stop_buffer_is_narrowed_but_noise_safe),
@@ -20771,7 +20939,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.4")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.5")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
