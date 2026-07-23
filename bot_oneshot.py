@@ -147,8 +147,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.6-journal-v2-optimized"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_6_JOURNAL_V2_OPTIMIZED"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.6-preconfirmation-contract-guard"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_6_PRECONFIRMATION_CONTRACT_GUARD"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -169,9 +169,9 @@ STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v
 JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_4.json")))
 
 # === v9.5 Hierarchical Confirmation Probability Layer ===
-# Journal v2 keeps precursor rows inside the main signal journal; no sidecar file is written.
+# Separate persistence is deliberate: precursor rows must not rotate with the trade journal.
 PRECONFIRMATION_LAYER_ENABLED = os.getenv("PRECONFIRMATION_LAYER_ENABLED", "true").lower() in {"1", "true", "yes"}
-PRECONFIRM_JOURNAL_FILE = JOURNAL_FILE  # compatibility alias; journal v2 uses one file only
+PRECONFIRM_JOURNAL_FILE = Path(os.getenv("PRECONFIRM_JOURNAL_FILE", str(WORKSPACE / "preconfirmation_journal_v9_4.json")))
 PRECONFIRM_MAX_EVENTS = max(1000, int(os.getenv("PRECONFIRM_MAX_EVENTS", "20000") or 20000))
 PRECONFIRM_WINDOW_MINUTES = max(6, int(os.getenv("PRECONFIRM_WINDOW_MINUTES", "45") or 45))
 PRECONFIRM_ACCEPTANCE_CLOSES = max(1, int(os.getenv("PRECONFIRM_ACCEPTANCE_CLOSES", "2") or 2))
@@ -218,14 +218,6 @@ MAX_JOURNAL = max(1, int(os.getenv("SIGNAL_JOURNAL_LIMIT", str(DEFAULT_SIGNAL_JO
 # of production journals unless explicitly enabled.
 JOURNAL_VERBOSE = os.getenv("JOURNAL_VERBOSE", "false").lower() in {"1", "true", "yes"}
 JOURNAL_HYPOTHESIS_TOP = min(10, max(1, int(os.getenv("JOURNAL_HYPOTHESIS_TOP", "3") or 3)))
-JOURNAL_VERSION = 2
-JOURNAL_ML_FEATURE_KEYS = (
-    "liquidity", "structure", "trigger", "flow", "htf", "pattern",
-    "session", "smt", "freshness", "regime_fit",
-)
-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT = max(1, int(os.getenv("EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT", "100") or 100))
-REJECTED_HYPOTHESIS_SHADOW_LIMIT = max(1, int(os.getenv("REJECTED_HYPOTHESIS_SHADOW_LIMIT", "50") or 50))
-PRECONFIRM_EMBEDDED_JOURNAL_LIMIT = max(100, int(os.getenv("PRECONFIRM_EMBEDDED_JOURNAL_LIMIT", "500") or 500))
 
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
@@ -701,7 +693,7 @@ CONFLICT_CAUTION_WEIGHT = float(os.getenv("CONFLICT_CAUTION_WEIGHT", "0.45") or 
 CONFLICT_HARD_MARGIN = float(os.getenv("CONFLICT_HARD_MARGIN", "1.75") or 1.75)
 NEAR_MISS_SCORE_GAP = max(0, int(os.getenv("NEAR_MISS_SCORE_GAP", "2") or 2))
 NEAR_MISS_EXECUTION_GAP = float(os.getenv("NEAR_MISS_EXECUTION_GAP", "5") or 5)
-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT = max(20, int(os.getenv("EXECUTIVE_DIVERGENCE_HISTORY_LIMIT", "100") or 100))
+EXECUTIVE_DIVERGENCE_HISTORY_LIMIT = max(20, int(os.getenv("EXECUTIVE_DIVERGENCE_HISTORY_LIMIT", "300") or 300))
 EXECUTIVE_SHADOW_HORIZON_HOURS = max(1.0, float(os.getenv("EXECUTIVE_SHADOW_HORIZON_HOURS", "24") or 24))
 
 # === Re-Entry ===
@@ -2475,98 +2467,112 @@ def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any
                 merged[key] = normalized
     return sorted(merged.values(), key=lambda event: int(event.get("observed_ts") or event.get("created_ts") or 0))
 
-def _retain_preconfirmation_events(events: list[Any], cap: int = PRECONFIRM_EMBEDDED_JOURNAL_LIMIT) -> list[dict[str, Any]]:
-    """Keep pending lifecycle rows and fill the remaining FIFO room with resolved rows."""
-    cleaned = [dict(event) for event in events or [] if isinstance(event, dict)]
-    for event in cleaned:
-        event.setdefault("event_id", event.get("id"))
-        event.setdefault("id", event.get("event_id"))
-        event["status"] = _preconfirm_event_status(event)
-        event["outcome"] = _preconfirm_legacy_outcome(event["status"])
-    pending = [event for event in cleaned if _preconfirm_event_status(event) == "PENDING"]
-    resolved = [event for event in cleaned if _preconfirm_event_status(event) != "PENDING"]
-    if len(pending) >= cap:
-        return pending[-cap:]
-    return resolved[-(cap - len(pending)):] + pending
-
-
 def load_preconfirmation_journal(main_journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Load the confirmation ledger from the main journal only.
-
-    Journal v2 deliberately removes the sidecar file so the bot has one source
-    of truth: signal_journal_v6_4.json.
-    """
-    source = main_journal if isinstance(main_journal, dict) else load_json(JOURNAL_FILE, {})
-    journal = {
-        "events": _retain_preconfirmation_events(list(source.get("preconfirmation_events") or [])),
-        "model_status": dict(source.get("preconfirmation_model_status") or {}),
-        "version": BOT_VERSION,
-        "architecture_version": ARCHITECTURE_VERSION,
-        "schema_version": "preconfirmation_journal_v9.5_lifecycle_embedded_v2",
-        "lifecycle_contract": {
-            "created_status": "PENDING",
-            "terminal_statuses": ["CONFIRMED", "FAILED", "EXPIRED"],
-            "fixed_horizon_minutes": PRECONFIRM_WINDOW_MINUTES,
-            "acceptance_closes_required": PRECONFIRM_ACCEPTANCE_CLOSES,
-            "calibration_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
-            "closed_trades_used": False,
-        },
-        "persistence_sources": {
-            "mode": "MAIN_JOURNAL_ONLY",
-            "main_journal": str(JOURNAL_FILE),
-            "merged_event_count": len(source.get("preconfirmation_events") or []),
-        },
+    journal = load_json(PRECONFIRM_JOURNAL_FILE, {})
+    sidecar_events = list(journal.get("events") or [])
+    embedded_events = list((main_journal or {}).get("preconfirmation_events") or [])
+    journal["events"] = _merge_preconfirmation_events(sidecar_events, embedded_events)
+    journal.setdefault("model_status", {})
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["schema_version"] = "preconfirmation_journal_v9.5_lifecycle"
+    journal["lifecycle_contract"] = {
+        "created_status": "PENDING",
+        "terminal_statuses": ["CONFIRMED", "FAILED", "EXPIRED"],
+        "fixed_horizon_minutes": PRECONFIRM_WINDOW_MINUTES,
+        "acceptance_closes_required": PRECONFIRM_ACCEPTANCE_CLOSES,
+        "calibration_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
+        "closed_trades_used": False,
+    }
+    journal["persistence_sources"] = {
+        "sidecar": str(PRECONFIRM_JOURNAL_FILE),
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+        "merged_event_count": len(journal["events"]),
     }
     return journal
-
 
 def sync_preconfirmation_to_main_journal(
     preconfirmation_journal: dict[str, Any],
     main_journal: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    """Persist the retained lifecycle mirror into the primary signal journal.
+
+    Only canonical lifecycle rows are copied. This is a real disk sync, not an
+    in-memory assignment that merely hopes a later code path eventually saves.
+    """
+    if not PRECONFIRM_EMBEDDED_LEDGER_ENABLED:
+        return {"synced": False, "reason": "embedded_ledger_disabled"}
+
     target = main_journal if isinstance(main_journal, dict) else load_json(JOURNAL_FILE, {})
-    retained = _retain_preconfirmation_events(
-        list(preconfirmation_journal.get("events") or []),
-        PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
-    )
-    pending_count = sum(1 for event in retained if _preconfirm_event_status(event) == "PENDING")
-    target["preconfirmation_events"] = retained
+    current_events = []
+    for event in preconfirmation_journal.get("events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        status = _preconfirm_event_status(event)
+        if status not in PRECONFIRM_VALID_STATUSES:
+            continue
+        mirrored = dict(event)
+        mirrored["status"] = status
+        mirrored["outcome"] = _preconfirm_legacy_outcome(status)
+        current_events.append(mirrored)
+
+    pending_count = sum(1 for event in current_events if _preconfirm_event_status(event) == "PENDING")
+    resolved_count = len(current_events) - pending_count
+    target["preconfirmation_events"] = current_events
     target["preconfirmation_model_status"] = dict(preconfirmation_journal.get("model_status") or {})
     target["preconfirmation_persistence"] = {
-        "mode": "MAIN_JOURNAL_ONLY",
-        "event_count": len(retained),
+        "mode": "SIDECAR_PLUS_MAIN_JOURNAL_MIRROR",
+        "event_count": len(current_events),
         "pending_count": pending_count,
-        "resolved_count": len(retained) - pending_count,
-        "limit": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
+        "resolved_count": resolved_count,
         "updated_at": str(preconfirmation_journal.get("updated_at") or iso_now()),
         "disk_synced": True,
     }
-    target["journal_version"] = JOURNAL_VERSION
     atomic_json_write(JOURNAL_FILE, target)
     return {
         "synced": True,
-        "event_count": len(retained),
+        "event_count": len(current_events),
         "pending_count": pending_count,
-        "resolved_count": len(retained) - pending_count,
+        "resolved_count": resolved_count,
     }
-
 
 def save_preconfirmation_journal(
     journal: dict[str, Any],
     main_journal: Optional[dict[str, Any]] = None,
 ) -> None:
     journal["updated_at"] = iso_now()
-    journal["events"] = _retain_preconfirmation_events(
-        list(journal.get("events") or []),
-        PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
-    )
-    journal["retention_audit"] = {
-        "mode": "MAIN_JOURNAL_ONLY_FIFO",
-        "max_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
-        "event_count": len(journal["events"]),
+    events = [event for event in journal.get("events", []) or [] if isinstance(event, dict)]
+    for event in events:
+        event["status"] = _preconfirm_event_status(event)
+        event["outcome"] = _preconfirm_legacy_outcome(event["status"])
+        event.setdefault("event_id", event.get("id"))
+        event.setdefault("id", event.get("event_id"))
+    pending = [event for event in events if _preconfirm_event_status(event) == "PENDING"]
+    resolved = [event for event in events if _preconfirm_event_status(event) != "PENDING"]
+    room = max(0, PRECONFIRM_MAX_EVENTS - len(pending))
+    retained = resolved[-room:] + pending if room else pending
+    journal["events"] = retained
+    terminal_status_counts = {
+        status: sum(1 for event in retained if _preconfirm_event_status(event) == status)
+        for status in sorted(PRECONFIRM_TERMINAL_STATUSES)
     }
+    journal["retention_audit"] = {
+        "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
+        "max_events": PRECONFIRM_MAX_EVENTS,
+        "pending_protected": len(pending),
+        "resolved_retained": len(resolved[-room:]) if room else 0,
+        "terminal_status_counts": terminal_status_counts,
+        "trade_journal_limit_not_used": True,
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+    }
+    journal["persistence_sources"] = {
+        "sidecar": str(PRECONFIRM_JOURNAL_FILE),
+        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+        "merged_event_count": len(retained),
+        "sync_order": "SIDECAR_THEN_MAIN_JOURNAL",
+    }
+    atomic_json_write(PRECONFIRM_JOURNAL_FILE, journal)
     sync_preconfirmation_to_main_journal(journal, main_journal)
-
 
 def _preconfirm_should_log(candidate: Candidate) -> bool:
     """Every valid directional candidate receives a forecast row.
@@ -4405,29 +4411,16 @@ def _signal_quality_dimensions(signal: dict[str, Any]) -> dict[str, int]:
     dimensions = signal.get("quality_dimensions") or {}
     return {
         "entry_quality": int(safe_float(
-            signal.get("entry_score", dimensions.get("entry_quality", components.get("entry_quality", signal.get("score", signal.get("quality", 0))))), 0
+            dimensions.get("entry_quality", components.get("entry_quality", signal.get("quality", 0))), 0
         )),
         "durability_quality": int(safe_float(
-            signal.get("durability_score", dimensions.get("durability_quality", components.get("durability_quality", components.get("exit_quality", 0)))), 0
+            dimensions.get("durability_quality", components.get("durability_quality", components.get("exit_quality", 0))), 0
         )),
     }
 
 
 def _signal_execution_path(signal: Optional[dict[str, Any]]) -> dict[str, Any]:
     signal = signal or {}
-    compact_category = str(signal.get("execution_path") or "")
-    if compact_category in {"STANDARD", "REVALIDATION", "INNOVATION_FALLBACK"}:
-        entry_supported = bool(signal.get("entry_supported", True))
-        executable = str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS
-        return {
-            "category": compact_category,
-            "fallback": compact_category in {"REVALIDATION", "INNOVATION_FALLBACK"},
-            "standard": compact_category == "STANDARD",
-            "primary": compact_category,
-            "revalidation_state": "COMPACT_V2",
-            "entry_supported": entry_supported,
-            "unsupported_execution": bool(executable and not entry_supported),
-        }
     revalidation = signal.get("trigger_revalidation") or (signal.get("score_components") or {}).get("trigger_revalidation") or {}
     innovation = signal.get("innovation_profile") or (signal.get("score_components") or {}).get("innovation_profile") or {}
     primary = str(innovation.get("primary") or "")
@@ -4523,8 +4516,6 @@ def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_setup_reason(signal: dict[str, Any]) -> str:
-    if signal.get("blocking_reason"):
-        return str(signal.get("blocking_reason"))[:120]
     if bool(signal.get("confirmation_pending")):
         return "CONFIRMATION_PENDING"
     revalidation = signal.get("trigger_revalidation") or {}
@@ -4559,12 +4550,12 @@ def compute_execution_conversion_funnel(journal: dict[str, Any]) -> dict[str, An
         blockers: dict[str, int] = {}
         blocker_theses: dict[str, set[str]] = {}
         for signal in records:
-            funnel = ((signal.get("audit") or {}).get("execution_funnel") or signal.get("execution_funnel") or signal.get("funnel") or {})
+            funnel = ((signal.get("audit") or {}).get("execution_funnel") or signal.get("execution_funnel") or {})
             thesis = str(signal.get("thesis_key") or signal.get("id") or "")
             revalidation = _signal_revalidation_profile(signal)
             inferred = {
                 "detected": True,
-                "score_eligible": int(signal.get("score", signal.get("candidate_final_score", signal.get("quality", 0))) or 0) >= RISKY_ENTRY_SCORE_BASE,
+                "score_eligible": int(signal.get("candidate_final_score", signal.get("quality", 0)) or 0) >= RISKY_ENTRY_SCORE_BASE,
                 "trigger_ready": bool(signal.get("trigger_ready")),
                 "entry_supported": bool(revalidation.get("entry_supported", True)),
                 "plan_execution_ready": bool(funnel.get("plan_execution_ready", str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS)),
@@ -4708,11 +4699,11 @@ def compute_score_outcome_correlation(journal: dict[str, Any], enabled: bool) ->
         if realized_return_pct is None:
             continue
         rows.append({
-            "score": safe_float(signal.get("score", signal.get("candidate_final_score", signal.get("quality"))), 0.0),
+            "score": safe_float(signal.get("candidate_final_score", signal.get("quality")), 0.0),
             "entry_quality": safe_float(dims.get("entry_quality"), 0.0),
             "durability_quality": safe_float(dims.get("durability_quality"), 0.0),
             "result_pct": realized_return_pct,
-            "mfe_pct": safe_float(trade.get("mfe_pct", trade.get("mfe")), 0.0),
+            "mfe_pct": safe_float(trade.get("mfe_pct"), 0.0),
         })
 
     if not enabled:
@@ -4833,7 +4824,7 @@ def compute_calendar_statistics(journal: dict[str, Any]) -> dict[str, Any]:
     for trade in journal.get("trades", []) or []:
         if not isinstance(trade, dict) or str(trade.get("opened_regime") or "") != Regime.RANGE.value:
             continue
-        opened = _parse_iso_datetime(trade.get("opened_at", trade.get("time")))
+        opened = _parse_iso_datetime(trade.get("opened_at"))
         if opened is None:
             continue
         key = "weekend" if opened.weekday() >= 5 else "weekday"
@@ -4915,7 +4906,7 @@ def compute_daily_risk_used(journal: dict[str, Any], at: Optional[datetime] = No
         if key != ("", "") and key in seen:
             continue
         seen.add(key)
-        total += max(0.0, safe_float(trade.get("position_risk_pct", trade.get("risk_pct")), 0.0))
+        total += max(0.0, safe_float(trade.get("position_risk_pct"), 0.0))
 
     return round(total, 4)
 
@@ -4960,7 +4951,6 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
-        "TRADING_DESK_EXECUTIVE_V9_5_6_PRECONFIRMATION_CONTRACT_GUARD",
         "TRADING_DESK_EXECUTIVE_V9_5_3_JOURNAL_COMPACTION",
         "TRADING_DESK_EXECUTIVE_V9_5_2_MODEL_LOCAL_THESIS_LADDER_CONFIRMATION",
         "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
@@ -4995,27 +4985,18 @@ def save_state(state: dict[str, Any]) -> None:
     atomic_json_write(STATE_FILE, state)
 
 
-def _journal_feature_map(payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    sources = [
-        payload.get("features"),
-        payload.get("score_features"),
-        (payload.get("score_components") or {}).get("features") if isinstance(payload.get("score_components"), dict) else None,
-    ]
-    raw = next((source for source in sources if isinstance(source, dict) and source), {})
-    if not raw:
-        return {}
-    return {key: raw.get(key, 0.0) for key in JOURNAL_ML_FEATURE_KEYS}
-
-
 def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return one lean ML row with only the approved feature vector."""
-    if not isinstance(payload, dict):
+    """Return the minimal immutable feature row needed by the scoring learner.
+
+    ``training_signals`` used to store the complete signal payload, duplicating
+    audit, plans and diagnostics already present in ``signals``. Existing rows
+    are migrated through this function on every load/save, so the size reduction
+    is immediate rather than applying only to future runs.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("score_features"), dict):
         return {}
-    signal_id = str(payload.get("id") or payload.get("signal_id") or "").strip()
-    features = _journal_feature_map(payload)
-    if not signal_id or not features:
+    signal_id = str(payload.get("id") or "").strip()
+    if not signal_id:
         return {}
     return {
         "id": signal_id,
@@ -5023,183 +5004,57 @@ def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
         "side": payload.get("side"),
         "setup_family": payload.get("setup_family"),
         "setup_type": payload.get("setup_type"),
-        "features": features,
+        "score_features": dict(payload.get("score_features") or {}),
     }
-
-
-def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Compact a signal without touching live decision logic.
-
-    Runtime consumers receive the full payload before this function is called.
-    Persistence keeps only identifiers, execution state and tiny analytics flags;
-    the ML vector lives once in training_signals.
-    """
-    if not isinstance(payload, dict):
-        return {}
-    revalidation = payload.get("trigger_revalidation") or (payload.get("score_components") or {}).get("trigger_revalidation") or {}
-    innovation = payload.get("innovation_profile") or (payload.get("score_components") or {}).get("innovation_profile") or {}
-    funnel = ((payload.get("audit") or {}).get("execution_funnel") or payload.get("execution_funnel") or {})
-    action = str(payload.get("action") or "")
-    primary = str(innovation.get("primary") or "")
-    existing_path = str(payload.get("execution_path") or "")
-    if existing_path in {"STANDARD", "REVALIDATION", "INNOVATION_FALLBACK"}:
-        execution_path = existing_path
-    elif bool(revalidation.get("revalidated")) or primary == "SETUP_ARGUMENTED_TRIGGER_REVALIDATION":
-        execution_path = "REVALIDATION"
-    elif primary and primary != "STANDARD_NONBLOCKING_CONSTRUCTION":
-        execution_path = "INNOVATION_FALLBACK"
-    else:
-        execution_path = "STANDARD"
-    entry_supported = bool(payload.get("entry_supported", revalidation.get("entry_supported", True)))
-    blocking_reason = str(
-        payload.get("blocking_reason")
-        or funnel.get("blocking_layer")
-        or ("REVALIDATION_NOT_SUPPORTED" if not entry_supported else payload.get("reason") or action or "UNKNOWN")
-    )[:120]
-    compact = {
-        "id": payload.get("id"),
-        "time": payload.get("time"),
-        "action": action,
-        "side": payload.get("side"),
-        "setup_family": payload.get("setup_family"),
-        "setup_type": payload.get("setup_type"),
-        "score": payload.get("candidate_final_score", payload.get("quality", payload.get("score"))),
-        "entry_score": (
-            payload.get("entry_score")
-            or (payload.get("quality_dimensions") or {}).get("entry_quality")
-            or payload.get("entry_quality")
-            or payload.get("candidate_final_score", payload.get("quality"))
-        ),
-        "durability_score": payload.get("durability_score") or (payload.get("quality_dimensions") or {}).get("durability_quality"),
-        "execution_stage": payload.get("entry_stage", payload.get("execution_stage")),
-        "execution_source": payload.get("execution_source"),
-        "trigger_ready": bool(payload.get("trigger_ready")),
-        "confirmation_pending": bool(payload.get("confirmation_pending")),
-        "thesis_key": payload.get("thesis_key"),
-        "entry_supported": entry_supported,
-        "execution_path": execution_path,
-        "blocking_reason": blocking_reason,
-        "short_reversal": bool(payload.get("short_reversal") or (payload.get("short_reversal_profile") or {}).get("active")),
-        "funnel": dict(payload.get("funnel") or {}) or {
-            key: bool(funnel.get(key))
-            for key in (
-                "plan_execution_ready", "philosophy_accepts",
-                "executive_pre_conflict_eligible",
-            )
-            if key in funnel
-        },
-    }
-    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
 
 
 def prepare_signal_payload_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility alias retained for older call sites."""
-    return compact_signal_for_journal(payload)
+    """Apply production journal compaction without changing live decisions.
 
-
-def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Compact a closed trade while preserving outcome learning and joins."""
-    if not isinstance(payload, dict):
-        return {}
-    pnl = payload.get("pnl")
-    if pnl is None:
-        pnl = payload.get("realized_return_pct", payload.get("result_pct"))
-    pnl_r = payload.get("pnl_r", payload.get("result_r"))
-    result = payload.get("result") or payload.get("close_action") or payload.get("action") or payload.get("outcome_status")
-    compact = {
-        "id": payload.get("id"),
-        "signal_id": payload.get("signal_id", payload.get("primary_signal_id")),
-        "time": payload.get("time", payload.get("opened_at")),
-        "closed_at": payload.get("closed_at"),
-        "side": payload.get("side"),
-        "setup_family": payload.get("setup_family"),
-        "setup_type": payload.get("setup_type"),
-        "score": payload.get("score", payload.get("quality")),
-        "entry_score": payload.get("entry_score", payload.get("entry_quality", payload.get("quality"))),
-        "execution_stage": payload.get("execution_stage", payload.get("entry_stage")),
-        "execution_source": payload.get("execution_source"),
-        "result": result,
-        "pnl": pnl,
-        "pnl_r": pnl_r,
-        "close_reason": payload.get("close_reason", payload.get("close_action", payload.get("action"))),
-        "mfe": payload.get("mfe", payload.get("mfe_pct")),
-        "risk_pct": payload.get("risk_pct", payload.get("position_risk_pct")),
-        "regime": payload.get("regime", payload.get("opened_regime")),
-        "ml_eligible": payload.get("ml_eligible", True),
+    Full audit data is consumed by the runtime shadow/audit recorders before this
+    function is called. With ``JOURNAL_VERBOSE=false`` only duplicated storage
+    fields are removed; execution, risk, plan and learning fields remain intact.
+    """
+    if JOURNAL_VERBOSE or not isinstance(payload, dict):
+        return payload
+    compact = dict(payload)
+    compact.pop("audit", None)
+    compact.pop("evaluation_bundle", None)
+    components = compact.get("score_components")
+    if isinstance(components, dict):
+        lean_components = dict(components)
+        lean_components.pop("evaluation_bundle", None)
+        matrix = lean_components.get("hypothesis_matrix_top")
+        if isinstance(matrix, list):
+            lean_components["hypothesis_matrix_top"] = matrix[:JOURNAL_HYPOTHESIS_TOP]
+        compact["score_components"] = lean_components
+    compact["journal_storage"] = {
+        "verbose": False,
+        "audit_persisted": False,
+        "evaluation_bundle_persisted": False,
+        "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
+        "schema_version": "journal_storage_v9.5.5",
     }
-    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
-
-
-def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
-    """One-time in-memory migration of legacy journals to schema version 2."""
-    if not isinstance(journal, dict):
-        journal = {}
-    legacy_training_source = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
-    dedup_training: dict[str, dict[str, Any]] = {}
-    for item in legacy_training_source:
-        lean = lean_training_signal(item) if isinstance(item, dict) else {}
-        if lean:
-            dedup_training[str(lean["id"])] = lean
-    journal["training_signals"] = list(dedup_training.values())[-MAX_JOURNAL:]
-    journal["signals"] = [
-        compact for item in list(journal.get("signals") or [])
-        if isinstance(item, dict)
-        for compact in [compact_signal_for_journal(item)] if compact
-    ][-MAX_JOURNAL:]
-    journal["trades"] = [
-        compact for item in list(journal.get("trades") or [])
-        if isinstance(item, dict)
-        for compact in [compact_trade_for_journal(item)] if compact
-    ][-MAX_JOURNAL:]
-    journal["signal_events"] = [item for item in list(journal.get("signal_events") or []) if isinstance(item, dict)][-MAX_JOURNAL:]
-    journal["executive_divergences"] = [item for item in list(journal.get("executive_divergences") or []) if isinstance(item, dict)][-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:]
-    journal["rejected_hypothesis_shadows"] = [item for item in list(journal.get("rejected_hypothesis_shadows") or []) if isinstance(item, dict)][-REJECTED_HYPOTHESIS_SHADOW_LIMIT:]
-    journal["preconfirmation_events"] = _retain_preconfirmation_events(
-        list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
-    )
-    journal["journal_version"] = JOURNAL_VERSION
-    journal["migration"] = {
-        "from_version": int(journal.get("journal_version_before_migration", 1) or 1),
-        "to_version": JOURNAL_VERSION,
-        "mode": "AUTO_COMPACT_ON_LOAD",
-        "completed_at": iso_now(),
-    }
-    return journal
+    return compact
 
 
 def load_journal() -> dict[str, Any]:
     journal = load_json(JOURNAL_FILE, {})
-    old_version = int(journal.get("journal_version", 1) or 1)
-    if old_version < JOURNAL_VERSION:
-        journal["journal_version_before_migration"] = old_version
-        journal = migrate_journal_to_v2(journal)
-        journal.pop("journal_version_before_migration", None)
-        atomic_json_write(JOURNAL_FILE, journal)
     journal.setdefault("signals", [])
     journal.setdefault("training_signals", [])
     journal.setdefault("signal_events", [])
     journal.setdefault("trades", [])
     journal.setdefault("relaxed_continuation_experiments", [])
-    journal.setdefault("executive_divergences", [])
-    journal.setdefault("rejected_hypothesis_shadows", [])
     journal.setdefault("preconfirmation_events", [])
     journal.setdefault("preconfirmation_model_status", {})
+    training_source = journal.get("training_signals") or journal.get("signals") or []
     journal["training_signals"] = [
-        lean for item in list(journal.get("training_signals") or [])
+        lean
+        for item in training_source
         if isinstance(item, dict)
-        for lean in [lean_training_signal(item)] if lean
+        for lean in [lean_training_signal(item)]
+        if lean
     ]
-    journal["signals"] = [
-        compact for item in list(journal.get("signals") or [])
-        if isinstance(item, dict)
-        for compact in [compact_signal_for_journal(item)] if compact
-    ]
-    journal["trades"] = [
-        compact for item in list(journal.get("trades") or [])
-        if isinstance(item, dict)
-        for compact in [compact_trade_for_journal(item)] if compact
-    ]
-    journal["journal_version"] = JOURNAL_VERSION
     journal["version"] = BOT_VERSION
     journal["architecture_version"] = ARCHITECTURE_VERSION
     if "analytics" not in journal:
@@ -5260,34 +5115,37 @@ def _retain_signal_events(events: list[Any], protected_signal_ids: set[str], cap
 
 def save_journal(journal: dict[str, Any]) -> None:
     journal["updated_at"] = iso_now()
-    journal["journal_version"] = JOURNAL_VERSION
 
-    journal["trades"] = deduplicate_closed_trades([
-        compact for item in list(journal.get("trades") or [])
-        if isinstance(item, dict)
-        for compact in [compact_trade_for_journal(item)] if compact
-    ])[-MAX_JOURNAL:]
-    active_protected = {str(x) for x in (journal.get("protected_signal_ids") or []) if str(x).strip()}
+    # Closed trades are retained first; every referenced originating signal is
+    # then protected from rotation. Active signal ids are placed in
+    # protected_signal_ids when a trade opens and removed after close.
+    journal["trades"] = deduplicate_closed_trades(list(journal.get("trades") or []))[-MAX_JOURNAL:]
+    active_protected = {
+        str(x) for x in (journal.get("protected_signal_ids") or []) if str(x).strip()
+    }
     trade_protected = {
-        str(t.get("signal_id") or "") for t in journal.get("trades", [])
+        str(t.get("signal_id") or "")
+        for t in journal.get("trades", [])
         if isinstance(t, dict) and str(t.get("signal_id") or "").strip()
     }
     protected_signal_ids = active_protected | trade_protected
 
     journal["signals"] = _retain_signal_records(
         [
-            compact for item in list(journal.get("signals") or [])
+            prepare_signal_payload_for_journal(item)
+            for item in list(journal.get("signals") or [])
             if isinstance(item, dict)
-            for compact in [compact_signal_for_journal(item)] if compact
         ],
         protected_signal_ids,
         MAX_JOURNAL,
     )
     journal["training_signals"] = _retain_signal_records(
         [
-            lean for item in list(journal.get("training_signals") or [])
+            lean
+            for item in list(journal.get("training_signals") or [])
             if isinstance(item, dict)
-            for lean in [lean_training_signal(item)] if lean
+            for lean in [lean_training_signal(item)]
+            if lean
         ],
         protected_signal_ids,
         MAX_JOURNAL,
@@ -5295,31 +5153,30 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["signal_events"] = _retain_signal_events(
         list(journal.get("signal_events") or []), protected_signal_ids, MAX_JOURNAL
     )
-    journal["executive_divergences"] = [
-        item for item in list(journal.get("executive_divergences") or []) if isinstance(item, dict)
-    ][-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:]
-    journal["rejected_hypothesis_shadows"] = [
-        item for item in list(journal.get("rejected_hypothesis_shadows") or []) if isinstance(item, dict)
-    ][-REJECTED_HYPOTHESIS_SHADOW_LIMIT:]
     journal["relaxed_continuation_experiments"] = [
-        item for item in list(journal.get("relaxed_continuation_experiments") or []) if isinstance(item, dict)
+        item for item in list(journal.get("relaxed_continuation_experiments") or [])
+        if isinstance(item, dict)
     ][-RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT:]
-    journal["preconfirmation_events"] = _retain_preconfirmation_events(
-        list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
+    preconfirm_events = [
+        item for item in list(journal.get("preconfirmation_events") or [])
+        if isinstance(item, dict)
+    ]
+    preconfirm_pending = [item for item in preconfirm_events if _preconfirm_event_status(item) == "PENDING"]
+    preconfirm_resolved = [item for item in preconfirm_events if _preconfirm_event_status(item) != "PENDING"]
+    preconfirm_room = max(0, PRECONFIRM_MAX_EVENTS - len(preconfirm_pending))
+    journal["preconfirmation_events"] = (
+        preconfirm_resolved[-preconfirm_room:] + preconfirm_pending
+        if preconfirm_room
+        else preconfirm_pending
     )
     journal["retention_audit"] = {
-        "journal_version": JOURNAL_VERSION,
-        "signals": len(journal["signals"]),
-        "training_signals": len(journal["training_signals"]),
-        "trades": len(journal["trades"]),
-        "preconfirmation_events": len(journal["preconfirmation_events"]),
-        "limits": {
-            "signals": MAX_JOURNAL,
-            "training_signals": MAX_JOURNAL,
-            "executive_divergences": EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT,
-            "rejected_hypothesis_shadows": REJECTED_HYPOTHESIS_SHADOW_LIMIT,
-            "preconfirmation_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
-        },
+        "mode": "SIGNAL_ID_REFERENTIAL_RETENTION",
+        "max_journal": MAX_JOURNAL,
+        "journal_verbose": JOURNAL_VERBOSE,
+        "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
+        "training_signal_schema": "LEAN_FEATURE_ROW_V1",
+        "protected_signal_ids": sorted(protected_signal_ids),
+        "protected_count": len(protected_signal_ids),
     }
     journal["analytics"] = compute_analytics(journal)
     journal["setup_statistics"] = compute_setup_statistics(journal)
@@ -8801,7 +8658,7 @@ def _trade_ground_truth(trade: dict) -> Optional[tuple[int, float, str]]:
     result_pct = _journal_realized_return_pct(trade)
     if result_pct is None:
         return None
-    mfe_pct = safe_float(trade.get("mfe_pct", trade.get("mfe")), 0.0)
+    mfe_pct = safe_float(trade.get("mfe_pct"), 0.0)
     has_tp_fields = any(key in trade for key in ("tp1_hit", "tp2_hit", "tp3_hit"))
     tp1_hit = bool(trade.get("tp1_hit"))
     tp2_hit = bool(trade.get("tp2_hit"))
@@ -8840,7 +8697,7 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
     signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     signals = {
         str(s.get("id")): s for s in signal_records
-        if isinstance(s, dict) and s.get("id") and bool(_journal_feature_map(s))
+        if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
     }
     rows: list[tuple[dict[str, float], int, float]] = []
     for trade in journal.get("trades", []):
@@ -8859,7 +8716,7 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
             continue
         label, sample_weight, _ = ground_truth
         features = {
-            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
+            key: clamp(safe_float(signal["score_features"].get(key), 0.0), -1.0, 1.0)
             for key in QUALITY_FEATURE_KEYS
         }
         rows.append((features, label, sample_weight))
@@ -8876,7 +8733,7 @@ def _quality_training_rows_filtered(
     signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     signals = {
         str(s.get("id")): s for s in signal_records
-        if isinstance(s, dict) and s.get("id") and bool(_journal_feature_map(s))
+        if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
     }
     rows: list[tuple[dict[str, float], int, float]] = []
     for trade in journal.get("trades", []) or []:
@@ -8890,7 +8747,7 @@ def _quality_training_rows_filtered(
         if setup_type and str(signal.get("setup_type") or trade.get("setup_type") or "") != setup_type:
             continue
         if short_reversal_only:
-            profile = signal.get("short_reversal_profile") or (signal.get("score_components") or {}).get("short_reversal") or ({"active": True} if signal.get("short_reversal") else {}) or trade.get("short_reversal_profile") or {}
+            profile = signal.get("short_reversal_profile") or (signal.get("score_components") or {}).get("short_reversal") or trade.get("short_reversal_profile") or {}
             if str(signal.get("side") or trade.get("side") or "") != Side.SHORT.value or not profile.get("active"):
                 continue
         ground_truth = _trade_ground_truth(trade)
@@ -8898,7 +8755,7 @@ def _quality_training_rows_filtered(
             continue
         label, sample_weight, _ = ground_truth
         features = {
-            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
+            key: clamp(safe_float(signal["score_features"].get(key), 0.0), -1.0, 1.0)
             for key in QUALITY_FEATURE_KEYS
         }
         rows.append((features, label, sample_weight))
@@ -8976,7 +8833,7 @@ def _validation_metrics(rows: list[tuple[dict[str, float], int, float]], default
 def compute_learning_status(journal: dict) -> dict[str, Any]:
     training_signals = [
         s for s in journal.get("training_signals", [])
-        if isinstance(s, dict) and bool(_journal_feature_map(s))
+        if isinstance(s, dict) and isinstance(s.get("score_features"), dict)
     ]
     global_rows = _quality_training_rows(journal)
     families = sorted({
@@ -13702,8 +13559,8 @@ def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: 
         })
         store.append(shadow)
         known.add(key)
-    if len(store) > REJECTED_HYPOTHESIS_SHADOW_LIMIT:
-        del store[:-REJECTED_HYPOTHESIS_SHADOW_LIMIT]
+    if len(store) > EXECUTIVE_DIVERGENCE_HISTORY_LIMIT:
+        del store[:-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT]
 
 
 def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
@@ -14191,8 +14048,8 @@ def record_executive_divergence(journal: dict[str, Any], payload: dict[str, Any]
     }
     history = journal.setdefault("executive_divergences", [])
     history.append(event)
-    if len(history) > EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:
-        del history[:-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT]
+    if len(history) > EXECUTIVE_DIVERGENCE_HISTORY_LIMIT:
+        del history[:-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT]
 
 
 def executive_authority_decision(
@@ -14949,9 +14806,9 @@ def _trade_pct(side: str, entry: float, price: float) -> float:
 
 def _journal_result_r(record: dict[str, Any]) -> Optional[float]:
     """Read only an explicitly stored R-multiple; never reinterpret percentages as R."""
-    if not isinstance(record, dict):
+    if not isinstance(record, dict) or "result_r" not in record:
         return None
-    raw = record.get("result_r", record.get("pnl_r"))
+    raw = record.get("result_r")
     if raw is None:
         return None
     try:
@@ -14968,8 +14825,6 @@ def _journal_realized_return_pct(record: dict[str, Any]) -> Optional[float]:
     raw = record.get("realized_return_pct")
     if raw is None:
         raw = record.get("result_pct")
-    if raw is None:
-        raw = record.get("pnl")
     if raw is None:
         return None
     try:
@@ -15761,12 +15616,6 @@ def setup_label(code: str) -> str:
 
 
 def _signal_revalidation_profile(signal: dict[str, Any]) -> dict[str, Any]:
-    if "entry_supported" in signal:
-        return {
-            "entry_supported": bool(signal.get("entry_supported")),
-            "revalidated": str(signal.get("execution_path") or "") == "REVALIDATION",
-            "state": "COMPACT_V2",
-        }
     return (
         signal.get("trigger_revalidation")
         or (signal.get("score_components") or {}).get("trigger_revalidation")
@@ -16156,7 +16005,7 @@ def run_bot() -> None:
     persisted_payload = prepare_signal_payload_for_journal(payload)
     state["latest_signal"] = persisted_payload
     journal["signals"].append(persisted_payload)
-    if _journal_feature_map(payload):
+    if payload.get("score_features"):
         lean = lean_training_signal(payload)
         if lean:
             journal.setdefault("training_signals", []).append(lean)
@@ -18815,40 +18664,43 @@ def test_training_signal_is_lean_and_nonduplicating() -> bool:
     payload = {
         "id": "signal-1", "time": "2026-07-20T00:00:00+00:00", "side": "SHORT",
         "setup_family": "EXPANSION", "setup_type": "LIQUIDITY_LADDER",
-        "score_features": {"liquidity": 1.0, "trigger": 0.5},
+        "score_features": {"loc": 1.0, "trigger": 0.5},
         "audit": {"huge": [1, 2, 3]}, "score_components": {"evaluation_bundle": {"x": 1}},
     }
     lean = lean_training_signal(payload)
     return (
-        set(lean) == {"id", "time", "side", "setup_family", "setup_type", "features"}
-        and lean["features"]["liquidity"] == payload["score_features"]["liquidity"]
-        and set(lean["features"]) == set(JOURNAL_ML_FEATURE_KEYS)
+        set(lean) == {"id", "time", "side", "setup_family", "setup_type", "score_features"}
+        and lean["score_features"] == payload["score_features"]
         and "audit" not in lean
         and "score_components" not in lean
     )
 
 
 def test_nonverbose_journal_drops_duplicate_debug_payloads() -> bool:
-    payload = {
-        "id": "signal-2", "time": "2026-07-20T00:00:00+00:00",
-        "side": "LONG", "setup_family": "CONTINUATION", "setup_type": "TEST",
-        "quality": 75, "entry_stage": "CORE", "execution_source": "ACCEPTANCE",
-        "score_features": {"liquidity": 1.0},
-        "audit": {"debug": "large"},
-        "evaluation_bundle": {"debug": "duplicate"},
-        "score_components": {"evaluation_bundle": {"debug": "duplicate"}},
-        "runtime_config_snapshot": {"huge": True},
-    }
-    compact = compact_signal_for_journal(payload)
-    return (
-        compact.get("id") == "signal-2"
-        and compact.get("score") == 75
-        and "audit" not in compact
-        and "evaluation_bundle" not in compact
-        and "score_components" not in compact
-        and "runtime_config_snapshot" not in compact
-        and "features" not in compact
-    )
+    original_verbose = JOURNAL_VERBOSE
+    try:
+        globals()["JOURNAL_VERBOSE"] = False
+        payload = {
+            "id": "signal-2",
+            "audit": {"debug": "large"},
+            "evaluation_bundle": {"debug": "duplicate"},
+            "score_components": {
+                "features": {"loc": 1.0},
+                "evaluation_bundle": {"debug": "duplicate"},
+                "hypothesis_matrix_top": list(range(8)),
+            },
+        }
+        compact = prepare_signal_payload_for_journal(payload)
+        return (
+            "audit" not in compact
+            and "evaluation_bundle" not in compact
+            and "evaluation_bundle" not in compact.get("score_components", {})
+            and len(compact.get("score_components", {}).get("hypothesis_matrix_top", [])) == JOURNAL_HYPOTHESIS_TOP
+            and compact.get("journal_storage", {}).get("verbose") is False
+        )
+    finally:
+        globals()["JOURNAL_VERBOSE"] = original_verbose
+
 
 
 def test_signal_journal_default_cap_is_500() -> bool:
@@ -21202,7 +21054,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.6 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.6")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
