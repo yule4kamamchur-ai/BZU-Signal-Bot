@@ -1,8 +1,29 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.6 (Preconfirmation Contract Guard)
+BZU Professional Hybrid Confluence Signal Bot v9.5.9 (Calibration Authority and Quality Audit)
 =============================================================================================
-Оновлення v9.5.6:
+Оновлення v9.5.9:
+- Preconfirmation authority вимагає global trust + current feature-schema sample + rolling AUC/Brier + 3 послідовні validation epochs.
+- Frozen online probabilities поточної feature-схеми використовуються для rolling trust без повторного навчання на майбутньому outcome.
+- entry_quality розділено на preplan/evaluation/trade snapshots без зміни Executive thresholds або sizing logic.
+- setup_quality, timing_quality, trade_quality та всі entry-quality snapshots зберігаються в compact trade journal.
+- Усі зміни v9.5.8 збережені:
+- Current-session/current-candle моделі отримують власний MODEL_LOCAL thesis clock без зміни entry thresholds.
+- Neutral regime fit нормалізовано до 0.50 замість помилкового 0.00.
+- AMBIGUOUS_INTRABAR зберігає відомі partial exits та діапазон можливого підсумкового R.
+- Preconfirmation не має downgrade/promotion authority, доки global pooled model не trusted.
+- Logistic calibration має calibration-only orientation guard проти системно інвертованих probabilities.
+- Trade quality переведено на менш насичену діагностичну шкалу; executable threshold не змінено.
+- Додано funnel-лічильники detected -> ranked -> selected -> executable -> entered для всіх 24 setup types.
+- Усі зміни v9.5.7 збережені:
+- Zone retest зберігає ранній PROBE_ENTRY path: confirmation_pending є lifecycle/audit, а не автоматичною забороною.
+- Додано окремий execution_source=ZONE_RETEST_PROBE, щоб ранній probe не маскувався під підтверджений ACCEPTANCE_RETEST.
+- Низька preconfirmation probability не блокує live-вхід, доки pooled model не пройшов trust gates.
+- Preconfirmation event напряму зв’язується з signal_id, а після закриття також із trade_id.
+- Кожен новий сигнал і trade зберігає версію бота на момент створення.
+- close_action відділено від result_class; pnl_r зберігається окремо.
+- entry_score тепер береться з фінального EvaluationBundle, а не зі stale проміжного candidate score.
+- Усі зміни v9.5.6 збережені:
 - PRECONFIRM_EXPIRED_LABEL_MODE жорстко захищено: production-контракт дозволяє лише NEGATIVE; SEPARATE зупиняє runtime audit.
 - Zone retest без acceptance тепер отримує confirmation_pending=True та EXPLICIT_PENDING_CONFIRMATION lifecycle.
 - Усі зміни v9.5.5 збережені:
@@ -147,8 +168,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.6-preconfirmation-contract-guard"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_6_PRECONFIRMATION_CONTRACT_GUARD"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.9-calibration-authority-quality-audit"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_9_CALIBRATION_AUTHORITY_QUALITY_AUDIT"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -169,9 +190,9 @@ STATE_FILE = Path(os.getenv("SIGNAL_MEMORY_FILE", str(WORKSPACE / "last_signal_v
 JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_journal_v6_4.json")))
 
 # === v9.5 Hierarchical Confirmation Probability Layer ===
-# Separate persistence is deliberate: precursor rows must not rotate with the trade journal.
+# Journal v2 keeps precursor rows inside the main signal journal; no sidecar file is written.
 PRECONFIRMATION_LAYER_ENABLED = os.getenv("PRECONFIRMATION_LAYER_ENABLED", "true").lower() in {"1", "true", "yes"}
-PRECONFIRM_JOURNAL_FILE = Path(os.getenv("PRECONFIRM_JOURNAL_FILE", str(WORKSPACE / "preconfirmation_journal_v9_4.json")))
+PRECONFIRM_JOURNAL_FILE = JOURNAL_FILE  # compatibility alias; journal v2 uses one file only
 PRECONFIRM_MAX_EVENTS = max(1000, int(os.getenv("PRECONFIRM_MAX_EVENTS", "20000") or 20000))
 PRECONFIRM_WINDOW_MINUTES = max(6, int(os.getenv("PRECONFIRM_WINDOW_MINUTES", "45") or 45))
 PRECONFIRM_ACCEPTANCE_CLOSES = max(1, int(os.getenv("PRECONFIRM_ACCEPTANCE_CLOSES", "2") or 2))
@@ -207,6 +228,26 @@ PRECONFIRM_PROBABILITY_CONTRACT = "P(CONFIRMED_WITHIN_45M); FAILED_OR_EXPIRED=0"
 PRECONFIRM_LOCAL_NEIGHBORS = max(10, int(os.getenv("PRECONFIRM_LOCAL_NEIGHBORS", "30") or 30))
 PRECONFIRM_PROBE_MIN_PROBABILITY = min(0.95, max(0.50, float(os.getenv("PRECONFIRM_PROBE_MIN_PROBABILITY", "0.62") or 0.62)))
 PRECONFIRM_PROBE_WAIT_PROBABILITY = min(PRECONFIRM_PROBE_MIN_PROBABILITY - 0.01, max(0.05, float(os.getenv("PRECONFIRM_PROBE_WAIT_PROBABILITY", "0.42") or 0.42)))
+# v9.5.9: a globally validated historical model is not enough for live authority.
+# Authority requires recent frozen forecasts produced by the current feature schema.
+PRECONFIRM_FEATURE_SCHEMA_VERSION = str(
+    os.getenv("PRECONFIRM_FEATURE_SCHEMA_VERSION", "preconfirm_features_v9.5.9")
+    or "preconfirm_features_v9.5.9"
+).strip()
+PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS = max(10, int(os.getenv("PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS", "30") or 30))
+PRECONFIRM_AUTHORITY_RECENT_WINDOW = max(
+    PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS,
+    int(os.getenv("PRECONFIRM_AUTHORITY_RECENT_WINDOW", "50") or 50),
+)
+PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES = max(1, int(
+    os.getenv("PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES", "3") or 3
+))
+PRECONFIRM_AUTHORITY_RECENT_AUC_GATE = min(0.95, max(0.50, float(
+    os.getenv("PRECONFIRM_AUTHORITY_RECENT_AUC_GATE", "0.55") or 0.55
+)))
+PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE = min(0.50, max(0.05, float(
+    os.getenv("PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE", "0.25") or 0.25
+)))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
 MAX_HISTORY = int(os.getenv("SIGNAL_HISTORY_LIMIT", "200") or 200)
@@ -218,6 +259,15 @@ MAX_JOURNAL = max(1, int(os.getenv("SIGNAL_JOURNAL_LIMIT", str(DEFAULT_SIGNAL_JO
 # of production journals unless explicitly enabled.
 JOURNAL_VERBOSE = os.getenv("JOURNAL_VERBOSE", "false").lower() in {"1", "true", "yes"}
 JOURNAL_HYPOTHESIS_TOP = min(10, max(1, int(os.getenv("JOURNAL_HYPOTHESIS_TOP", "3") or 3)))
+JOURNAL_VERSION = 2
+JOURNAL_ML_FEATURE_KEYS = (
+    "liquidity", "structure", "trigger", "flow", "htf", "pattern",
+    "session", "smt", "freshness", "regime_fit",
+)
+EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT = max(1, int(os.getenv("EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT", "100") or 100))
+REJECTED_HYPOTHESIS_SHADOW_LIMIT = max(1, int(os.getenv("REJECTED_HYPOTHESIS_SHADOW_LIMIT", "50") or 50))
+PRECONFIRM_EMBEDDED_JOURNAL_LIMIT = max(100, int(os.getenv("PRECONFIRM_EMBEDDED_JOURNAL_LIMIT", "500") or 500))
+SETUP_LIFECYCLE_RECENT_RUN_LIMIT = max(50, int(os.getenv("SETUP_LIFECYCLE_RECENT_RUN_LIMIT", "300") or 300))
 
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
@@ -581,13 +631,21 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("RELAXED_CONTINUATION_MIN_DIRECTIONAL_CLOSES must be between 2 and 6")
     if PRECONFIRM_EXPIRED_LABEL_MODE != "NEGATIVE":
         errors.append(
-            "v9.5.6 probability contract requires PRECONFIRM_EXPIRED_LABEL_MODE=NEGATIVE; "
+            "v9.5.8 probability contract requires PRECONFIRM_EXPIRED_LABEL_MODE=NEGATIVE; "
             "SEPARATE/other modes are forbidden because EXPIRED must be label 0"
         )
     if not (0.50 <= PRECONFIRM_AUC_GATE <= 0.95):
         errors.append("PRECONFIRM_AUC_GATE must be between 0.50 and 0.95")
     if not (0.0 < PRECONFIRM_PROBE_WAIT_PROBABILITY < PRECONFIRM_PROBE_MIN_PROBABILITY < 1.0):
         errors.append("Preconfirmation probe probabilities must satisfy wait < promote")
+    if PRECONFIRM_AUTHORITY_RECENT_WINDOW < PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS:
+        errors.append("Preconfirmation authority recent window must cover the minimum current-schema sample")
+    if PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES < 1:
+        errors.append("Preconfirmation authority consecutive-pass count must be positive")
+    if not (0.50 <= PRECONFIRM_AUTHORITY_RECENT_AUC_GATE <= 0.95):
+        errors.append("Preconfirmation recent AUC gate must be between 0.50 and 0.95")
+    if not (0.05 <= PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE <= 0.50):
+        errors.append("Preconfirmation recent Brier gate must be between 0.05 and 0.50")
     if PRECONFIRM_WEAK_MIN_CALIBRATION_ROWS >= PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS:
         errors.append("Weak calibration floor must be below hierarchical calibration floor")
     if PRECONFIRM_GLOBAL_MIN_CALIBRATION_ROWS >= PRECONFIRM_MIN_TRAIN_ROWS:
@@ -693,7 +751,7 @@ CONFLICT_CAUTION_WEIGHT = float(os.getenv("CONFLICT_CAUTION_WEIGHT", "0.45") or 
 CONFLICT_HARD_MARGIN = float(os.getenv("CONFLICT_HARD_MARGIN", "1.75") or 1.75)
 NEAR_MISS_SCORE_GAP = max(0, int(os.getenv("NEAR_MISS_SCORE_GAP", "2") or 2))
 NEAR_MISS_EXECUTION_GAP = float(os.getenv("NEAR_MISS_EXECUTION_GAP", "5") or 5)
-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT = max(20, int(os.getenv("EXECUTIVE_DIVERGENCE_HISTORY_LIMIT", "300") or 300))
+EXECUTIVE_DIVERGENCE_HISTORY_LIMIT = max(20, int(os.getenv("EXECUTIVE_DIVERGENCE_HISTORY_LIMIT", "100") or 100))
 EXECUTIVE_SHADOW_HORIZON_HOURS = max(1.0, float(os.getenv("EXECUTIVE_SHADOW_HORIZON_HOURS", "24") or 24))
 
 # === Re-Entry ===
@@ -938,6 +996,7 @@ class ExecutionSource(str, Enum):
     TIME_WARP = "TIME_WARP"
     REENTRY = "REENTRY"
     ACCEPTANCE_RETEST = "ACCEPTANCE_RETEST"
+    ZONE_RETEST_PROBE = "ZONE_RETEST_PROBE"
     CONTINUATION_REANCHOR = "CONTINUATION_REANCHOR"
     MOMENTUM_CONTINUATION = "MOMENTUM_CONTINUATION"
     ACCELERATION_PULLBACK = "ACCELERATION_PULLBACK"
@@ -1506,10 +1565,22 @@ class ActiveTrade:
     pre_tp1_protection_locked: bool = False
     pre_tp1_protection_at: str = ""
     pre_tp1_protection_ratio: float = 0.0
+    # Canonical evaluation snapshot remains the compatibility entry_quality.
     entry_quality: int = 0
+    evaluation_entry_quality: float = 0.0
+    preplan_entry_quality: float = 0.0
+    trade_entry_quality: float = 0.0
+    setup_quality: float = 0.0
+    timing_quality: float = 0.0
+    trade_quality: float = 0.0
     durability_quality: int = 0
     scoring_mode: str = "NOT_LEARNED"
     short_reversal_profile: dict[str, Any] = field(default_factory=dict)
+    bot_version_at_entry: str = ""
+    architecture_version_at_entry: str = ""
+    journal_schema_at_entry: int = 0
+    preconfirmation_event_id: str = ""
+    entry_score_source: str = ""
 
 
 
@@ -1616,6 +1687,125 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [json_safe(v) for v in value]
     return str(value)
+
+
+def classify_trade_result(result_r: Any = None, pnl_pct: Any = None, outcome_status: str = "") -> str:
+    """Classify economic outcome independently from the mechanical close action."""
+    value = None
+    for raw in (result_r, pnl_pct):
+        try:
+            if raw is not None and raw != "":
+                candidate = float(raw)
+                if math.isfinite(candidate):
+                    value = candidate
+                    break
+        except Exception:
+            continue
+    if value is None:
+        return "UNRESOLVED" if str(outcome_status or "").upper() not in {"RESOLVED", "CLOSED"} else "BREAKEVEN"
+    if value > 1e-9:
+        return "WIN"
+    if value < -1e-9:
+        return "LOSS"
+    return "BREAKEVEN"
+
+
+def _tracked_setup_types() -> tuple[str, ...]:
+    """Canonical list of the 24 real setup types; NONE is a domain sentinel."""
+    return tuple(item.value for item in SetupType if item.value != SetupType.NONE.value)
+
+
+def _setup_lifecycle_event_key(event: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(event.get("side") or "NEUTRAL"),
+        str(event.get("setup_type") or SetupType.NONE.value),
+        str(event.get("model_id") or event.get("ict_model") or "UNKNOWN"),
+    )
+
+
+def update_setup_lifecycle_counters(
+    journal: dict[str, Any],
+    context: dict[str, Any],
+    decision: Optional[Decision],
+) -> dict[str, Any]:
+    """Persist the full setup funnel without changing any trading permission.
+
+    detected: raw detector/model fired;
+    ranked: candidate survived candidate construction and received a rank;
+    selected: Executive received it as the winning candidate;
+    executable: final Executive contract allowed execution;
+    entered: published action opened a position.
+    """
+    setup_types = _tracked_setup_types()
+    ledger = journal.setdefault("setup_lifecycle_counters", {})
+    totals = ledger.setdefault("totals", {})
+    for setup_type in setup_types:
+        row = totals.setdefault(setup_type, {})
+        for stage in ("detected", "ranked", "selected", "executable", "entered"):
+            row[stage] = int(row.get(stage) or 0)
+
+    detected_events = [
+        dict(item) for item in (context.get("_setup_lifecycle_detected") or [])
+        if isinstance(item, dict) and str(item.get("setup_type") or "") in setup_types
+    ]
+    ranked_events = [
+        dict(item) for item in (context.get("_setup_lifecycle_ranked") or [])
+        if isinstance(item, dict) and str(item.get("setup_type") or "") in setup_types
+    ]
+    # Deduplicate within one scan while retaining LONG/SHORT and model identity.
+    detected_events = list({_setup_lifecycle_event_key(item): item for item in detected_events}.values())
+    ranked_events = list({_setup_lifecycle_event_key(item): item for item in ranked_events}.values())
+
+    for event in detected_events:
+        totals[event["setup_type"]]["detected"] += 1
+    for event in ranked_events:
+        totals[event["setup_type"]]["ranked"] += 1
+
+    selected_event: Optional[dict[str, Any]] = None
+    executable = False
+    entered = False
+    candidate = getattr(decision, "candidate", None) if decision is not None else None
+    selected_type = str(getattr(candidate, "setup_type", "") or "")
+    if candidate is not None and selected_type in setup_types:
+        selected_event = {
+            "side": str(getattr(candidate, "side", "NEUTRAL")),
+            "setup_type": selected_type,
+            "model_id": str(getattr(candidate, "ict_model", "UNKNOWN") or "UNKNOWN"),
+        }
+        totals[selected_type]["selected"] += 1
+        executive_report = (
+            (((getattr(decision, "audit", {}) or {}).get("executive_director") or {}).get("report") or {})
+            .get("executive_decision") or {}
+        )
+        executable = bool(executive_report.get("allow_execution")) or str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
+        entered = str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
+        if executable:
+            totals[selected_type]["executable"] += 1
+        if entered:
+            totals[selected_type]["entered"] += 1
+
+    run_row = {
+        "time": iso_now(),
+        "bot_version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "detected": detected_events,
+        "ranked": ranked_events,
+        "selected": selected_event,
+        "executable": executable,
+        "entered": entered,
+        "decision_action": str(getattr(decision, "action", Action.NO_SETUP.value) if decision is not None else Action.NO_SETUP.value),
+    }
+    recent = ledger.setdefault("recent_runs", [])
+    recent.append(run_row)
+    if len(recent) > SETUP_LIFECYCLE_RECENT_RUN_LIMIT:
+        del recent[:-SETUP_LIFECYCLE_RECENT_RUN_LIMIT]
+    ledger.update({
+        "setup_type_count": len(setup_types),
+        "stages": ["detected", "ranked", "selected", "executable", "entered"],
+        "updated_at": run_row["time"],
+        "schema_version": "setup_lifecycle_funnel_v9.5.8",
+    })
+    return run_row
 
 
 
@@ -1907,15 +2097,24 @@ def _preconfirm_fit_platt(probabilities: list[float], labels: list[int]) -> dict
             grad_a += error * x / len(labels)
             grad_b += error / len(labels)
         lr = 0.08 / math.sqrt(1.0 + epoch / 50.0)
-        a -= lr * (grad_a + 0.001 * a)
+        # Calibration may adjust sharpness/intercept, but it must never reverse
+        # the ordering learned by the classifier. Negative slope caused AUC 0.75
+        # raw predictions to be reported as ~0.25 after calibration.
+        a = max(0.05, a - lr * (grad_a + 0.001 * a))
         b -= lr * grad_b
-    return {"a": a, "b": b, "fitted": True}
+    return {"a": a, "b": b, "fitted": True, "monotonic": True}
 
 
 def _preconfirm_apply_platt(probability: float, calibration: dict[str, Any]) -> float:
     if not calibration.get("fitted"):
         return clamp(probability, 0.01, 0.99)
     return clamp(_preconfirm_sigmoid(safe_float(calibration.get("a"), 1.0) * _preconfirm_logit(probability) + safe_float(calibration.get("b"), 0.0)), 0.01, 0.99)
+
+
+def _preconfirm_orient_probability(probability: float, model: dict[str, Any]) -> float:
+    """Apply an orientation chosen on calibration rows only, never on test rows."""
+    p = clamp(safe_float(probability, 0.5), 0.01, 0.99)
+    return 1.0 - p if int(model.get("probability_orientation") or 1) < 0 else p
 
 
 def _preconfirm_auc(labels: list[int], probabilities: list[float]) -> Optional[float]:
@@ -2090,20 +2289,34 @@ def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = Non
             "brier": None,
             "trust_level": "BOOTSTRAP",
         }
-    calibration_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows]
-    calibration = _preconfirm_fit_platt(calibration_probabilities, [int(row["label"]) for row in calibration_rows])
+    calibration_labels = [int(row["label"]) for row in calibration_rows]
+    calibration_raw_probabilities = [
+        _preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows
+    ]
+    calibration_auc_raw = _preconfirm_auc(calibration_labels, calibration_raw_probabilities)
+    probability_orientation = 1
+    base_model["probability_orientation"] = probability_orientation
+    # Platt is monotonic-only. It may recalibrate confidence, never reverse ranks.
+    calibration = _preconfirm_fit_platt(calibration_raw_probabilities, calibration_labels)
+    test_raw_probabilities = [
+        _preconfirm_predict_model(base_model, row["features"]) for row in test_rows
+    ]
     test_probabilities = [
-        _preconfirm_apply_platt(_preconfirm_predict_model(base_model, row["features"]), calibration)
-        for row in test_rows
+        _preconfirm_apply_platt(probability, calibration)
+        for probability in test_raw_probabilities
     ]
     test_labels = [int(row["label"]) for row in test_rows]
     auc = _preconfirm_auc(test_labels, test_probabilities)
     brier = _preconfirm_brier(test_labels, test_probabilities)
+    temporal_stability_passed = bool(
+        calibration_auc_raw is not None and calibration_auc_raw >= 0.50
+    )
     trusted = bool(
         auc is not None
         and auc >= PRECONFIRM_AUC_GATE
         and brier is not None
         and brier <= PRECONFIRM_BRIER_WARN
+        and temporal_stability_passed
     )
     final_model = _preconfirm_fit_logistic(rows) if trusted else base_model
     return {
@@ -2114,7 +2327,17 @@ def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = Non
         "auc": round(auc, 6) if auc is not None else None,
         "brier": round(brier, 6) if brier is not None else None,
         "calibration": calibration,
-        "reason": "trusted" if trusted else "validation_gate_not_passed",
+        "probability_orientation": probability_orientation,
+        "calibration_auc_raw": round(calibration_auc_raw, 6) if calibration_auc_raw is not None else None,
+        "orientation_policy": "MONOTONIC_PLATT_NO_RANK_REVERSAL",
+        "temporal_stability_passed": temporal_stability_passed,
+        "reason": (
+            "trusted"
+            if trusted
+            else "temporal_discrimination_instability"
+            if not temporal_stability_passed
+            else "validation_gate_not_passed"
+        ),
         "trust_level": "FULL" if trusted and n >= PRECONFIRM_FULL_TRUST_ROWS else "PARTIAL" if trusted else "BOOTSTRAP",
         "chronological_split": {"train": len(train_rows), "calibration": len(calibration_rows), "test": len(test_rows)},
     }
@@ -2330,6 +2553,119 @@ def _preconfirm_local_interval(rows: list[dict[str, Any]], features: dict[str, f
     return low, high, len(neighbors)
 
 
+def _preconfirm_terminal_label(event: dict[str, Any]) -> Optional[int]:
+    status = _preconfirm_event_status(event)
+    if status == "CONFIRMED":
+        return 1
+    if status == "FAILED" or (status == "EXPIRED" and PRECONFIRM_EXPIRED_LABEL_MODE == "NEGATIVE"):
+        return 0
+    return None
+
+
+def _preconfirm_current_schema_forecasts(journal: dict[str, Any]) -> list[dict[str, Any]]:
+    """Frozen online forecasts from the current feature schema only."""
+    rows: list[dict[str, Any]] = []
+    for event in journal.get("events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("feature_schema_version") or "") != PRECONFIRM_FEATURE_SCHEMA_VERSION:
+            continue
+        label = _preconfirm_terminal_label(event)
+        if label is None:
+            continue
+        probability = safe_float(event.get("probability", event.get("confirmation_probability")), -1.0)
+        if not (0.0 <= probability <= 1.0):
+            continue
+        rows.append({
+            "event_id": str(event.get("event_id") or event.get("id") or ""),
+            "observed_ts": int(event.get("observed_ts") or event.get("created_ts") or 0),
+            "resolved_ts": int(event.get("resolved_ts") or event.get("outcome_ts") or 0),
+            "probability": probability,
+            "label": label,
+            "status": _preconfirm_event_status(event),
+        })
+    return sorted(rows, key=lambda row: (row["observed_ts"], row["resolved_ts"], row["event_id"]))
+
+
+def _preconfirm_authority_gate(
+    journal: dict[str, Any],
+    global_model: dict[str, Any],
+) -> dict[str, Any]:
+    """Grant execution authority only after recent online validation is stable.
+
+    Repeating the same journal does not increase the pass streak. A new validation
+    epoch requires at least one newly resolved current-schema forecast.
+    """
+    rows = _preconfirm_current_schema_forecasts(journal)
+    recent = rows[-PRECONFIRM_AUTHORITY_RECENT_WINDOW:]
+    labels = [int(row["label"]) for row in recent]
+    probabilities = [safe_float(row["probability"], 0.5) for row in recent]
+    recent_auc = _preconfirm_auc(labels, probabilities) if len(set(labels)) >= 2 else None
+    recent_brier = _preconfirm_brier(labels, probabilities) if labels else None
+    current_n = len(rows)
+    recent_n = len(recent)
+    latest_resolved_ts = max((int(row.get("resolved_ts") or 0) for row in rows), default=0)
+    validation_epoch = f"{PRECONFIRM_FEATURE_SCHEMA_VERSION}:{current_n}:{latest_resolved_ts}"
+
+    global_pass = bool(global_model.get("trusted"))
+    sample_pass = current_n >= PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS
+    class_balance_pass = len(set(labels)) >= 2
+    recent_auc_pass = bool(recent_auc is not None and recent_auc >= PRECONFIRM_AUTHORITY_RECENT_AUC_GATE)
+    recent_brier_pass = bool(recent_brier is not None and recent_brier <= PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE)
+    validation_pass = bool(global_pass and sample_pass and class_balance_pass and recent_auc_pass and recent_brier_pass)
+
+    previous = ((journal.get("model_status") or {}).get("AUTHORITY_GATE") or {})
+    previous_epoch = str(previous.get("validation_epoch") or "")
+    previous_streak = max(0, int(previous.get("consecutive_passes") or 0))
+    if validation_epoch == previous_epoch:
+        consecutive = previous_streak
+    elif validation_pass:
+        consecutive = previous_streak + 1
+    else:
+        consecutive = 0
+    authority_trusted = bool(
+        validation_pass
+        and consecutive >= PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES
+    )
+
+    failed_conditions: list[str] = []
+    if not global_pass:
+        failed_conditions.append("GLOBAL_MODEL_UNTRUSTED")
+    if not sample_pass:
+        failed_conditions.append("CURRENT_SCHEMA_SAMPLE_BELOW_MINIMUM")
+    if not class_balance_pass:
+        failed_conditions.append("CURRENT_SCHEMA_SINGLE_CLASS_OR_EMPTY")
+    if not recent_auc_pass:
+        failed_conditions.append("RECENT_AUC_BELOW_GATE")
+    if not recent_brier_pass:
+        failed_conditions.append("RECENT_BRIER_ABOVE_GATE")
+    if validation_pass and consecutive < PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES:
+        failed_conditions.append("CONSECUTIVE_VALIDATION_EPOCHS_PENDING")
+
+    return {
+        "authority_trusted": authority_trusted,
+        "global_model_trusted": global_pass,
+        "validation_pass": validation_pass,
+        "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        "current_schema_resolved_events": current_n,
+        "minimum_current_schema_events": PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS,
+        "recent_window": PRECONFIRM_AUTHORITY_RECENT_WINDOW,
+        "recent_sample_size": recent_n,
+        "recent_auc": round(recent_auc, 6) if recent_auc is not None else None,
+        "recent_auc_gate": PRECONFIRM_AUTHORITY_RECENT_AUC_GATE,
+        "recent_brier": round(recent_brier, 6) if recent_brier is not None else None,
+        "recent_brier_gate": PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE,
+        "class_balance_pass": class_balance_pass,
+        "consecutive_passes": consecutive,
+        "required_consecutive_passes": PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES,
+        "validation_epoch": validation_epoch,
+        "latest_resolved_ts": latest_resolved_ts,
+        "failed_conditions": failed_conditions,
+        "authority_policy": "GLOBAL_AND_CURRENT_SCHEMA_ROLLING_AND_CONSECUTIVE",
+        "schema_version": "preconfirm_authority_gate_v9.5.9",
+    }
+
+
 def _preconfirm_estimate(
     journal: dict[str, Any],
     candidate: Candidate,
@@ -2338,21 +2674,24 @@ def _preconfirm_estimate(
 ) -> dict[str, Any]:
     family = _preconfirm_model_family(candidate)
     global_model = model_cache.setdefault("__GLOBAL_POOLED__", _preconfirm_build_model(journal, None))
+    authority_gate = ((journal.get("model_status") or {}).get("AUTHORITY_GATE") or {})
+    authority_trusted = bool(authority_gate.get("authority_trusted"))
     heuristic = _preconfirm_heuristic_probability(features)
     hierarchy = _preconfirm_hierarchical_calibration(journal, family, heuristic)
 
     if global_model.get("trusted"):
         raw_probability = _preconfirm_predict_model(global_model, features)
-        probability = _preconfirm_apply_platt(raw_probability, global_model.get("calibration") or {})
+        oriented_probability = _preconfirm_orient_probability(raw_probability, global_model)
+        probability = _preconfirm_apply_platt(oriented_probability, global_model.get("calibration") or {})
         source = "CALIBRATED_POOLED_LOGISTIC"
         calibrated = True
-        downgrade_trusted = True
-        # A pooled model may generalize across families, but promotion still
-        # requires a minimally observed exact bucket with a non-trivial lower
-        # confidence bound. Four exact events is not 60, yet it prevents a brand
-        # new setup family from borrowing full entry authority from unrelated data.
-        promotion_trusted = bool(hierarchy.get("promotion_trusted"))
-        trust_level = "FULL" if int(global_model.get("sample_size") or 0) >= PRECONFIRM_FULL_TRUST_ROWS else "VALIDATED_PARTIAL"
+        downgrade_trusted = authority_trusted
+        promotion_trusted = bool(authority_trusted and hierarchy.get("promotion_trusted"))
+        trust_level = (
+            "AUTHORITY_TRUSTED"
+            if authority_trusted
+            else "GLOBAL_VALIDATED_AUDIT_ONLY"
+        )
     elif hierarchy.get("calibrated"):
         raw_probability = None
         probability = safe_float(hierarchy.get("probability"), heuristic)
@@ -2364,8 +2703,8 @@ def _preconfirm_estimate(
             source = "HIERARCHICAL_EMPIRICAL_BAYES"
             trust_level = "HIERARCHICAL_BOOTSTRAP"
         calibrated = True
-        downgrade_trusted = bool(hierarchy.get("downgrade_trusted"))
-        promotion_trusted = bool(hierarchy.get("promotion_trusted"))
+        downgrade_trusted = False
+        promotion_trusted = False
     else:
         raw_probability = None
         probability = heuristic
@@ -2380,8 +2719,6 @@ def _preconfirm_estimate(
     interval_high = safe_float(hierarchy.get("interval_high"), 1.0)
     interval_scope = str(hierarchy.get("interval_scope") or "NONE")
     if global_model.get("trusted"):
-        # Keep the interval local to the exact family when available; otherwise
-        # borrow the hierarchy-selected parent interval.
         low, high, neighbor_count = _preconfirm_local_interval(exact_rows, features, global_model)
         if neighbor_count >= PRECONFIRM_EXACT_FAMILY_MIN_ROWS:
             interval_low, interval_high = low, high
@@ -2404,15 +2741,17 @@ def _preconfirm_estimate(
         "wilson_neighbors": neighbor_count,
         "interval_scope": interval_scope,
         "calibrated": calibrated,
-        "trusted": bool(global_model.get("trusted")),
+        # trusted is deliberately the authority trust, not merely historical model validity.
+        "trusted": authority_trusted,
+        "authority_trusted": authority_trusted,
+        "global_model_trusted": bool(global_model.get("trusted")),
         "downgrade_trusted": downgrade_trusted,
         "promotion_trusted": promotion_trusted,
-        "PRECONFIRM_MODEL_TRUSTED": bool(global_model.get("trusted")),
+        "PRECONFIRM_MODEL_TRUSTED": authority_trusted,
         "trust_level": trust_level,
         "source": source,
         "model_family": family,
         "event_kind": _preconfirm_event_kind(candidate),
-        # sample_size is now pooled/effective for compatibility with existing UI.
         "sample_size": global_n,
         "global_sample_size": global_n,
         "setup_family_sample_size": setup_n,
@@ -2422,12 +2761,27 @@ def _preconfirm_estimate(
         "auc_gate": PRECONFIRM_AUC_GATE,
         "brier": global_model.get("brier"),
         "brier_warning": bool(global_model.get("brier") is not None and safe_float(global_model.get("brier")) > PRECONFIRM_BRIER_WARN),
+        "authority_gate": dict(authority_gate),
         "hierarchical_calibration": hierarchy,
         "precursor_active": precursor_active,
-        "decision_authority": "AUDIT_AND_FRESH_PROBE_GATE_ONLY",
+        "decision_authority": "TRUSTED_RECENT_GATE" if authority_trusted else "AUDIT_ONLY_UNTIL_RECENT_TRUST",
         "can_initiate_entry": False,
+        "probability_orientation": int(global_model.get("probability_orientation") or 1),
+        "calibration_auc_raw": global_model.get("calibration_auc_raw"),
+        "discrimination_status": (
+            "AUTHORITY_TRUSTED"
+            if authority_trusted
+            else "GLOBAL_VALID_RECENT_PENDING"
+            if bool(global_model.get("trusted"))
+            else "TEMPORAL_DRIFT"
+            if global_model.get("temporal_stability_passed") is False
+            else "ANTI_CORRELATED"
+            if global_model.get("auc") is not None and safe_float(global_model.get("auc"), 0.5) < 0.5
+            else "UNTRUSTED"
+        ),
         "probability_contract": PRECONFIRM_PROBABILITY_CONTRACT,
         "expired_label_mode": PRECONFIRM_EXPIRED_LABEL_MODE,
+        "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
         "features": dict(features),
         "excluded_feature": "pattern",
         "feature_dependency_audit": {
@@ -2437,7 +2791,7 @@ def _preconfirm_estimate(
             "added_to_final_score": False,
             "single_decision_use": "_preconfirm_stage_gate",
         },
-        "schema_version": "preconfirmation_probability_v9.5.6_contract_guard",
+        "schema_version": "preconfirmation_probability_v9.5.9_recent_authority",
     }
 
 def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any]]:
@@ -2467,112 +2821,98 @@ def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any
                 merged[key] = normalized
     return sorted(merged.values(), key=lambda event: int(event.get("observed_ts") or event.get("created_ts") or 0))
 
+def _retain_preconfirmation_events(events: list[Any], cap: int = PRECONFIRM_EMBEDDED_JOURNAL_LIMIT) -> list[dict[str, Any]]:
+    """Keep pending lifecycle rows and fill the remaining FIFO room with resolved rows."""
+    cleaned = [dict(event) for event in events or [] if isinstance(event, dict)]
+    for event in cleaned:
+        event.setdefault("event_id", event.get("id"))
+        event.setdefault("id", event.get("event_id"))
+        event["status"] = _preconfirm_event_status(event)
+        event["outcome"] = _preconfirm_legacy_outcome(event["status"])
+    pending = [event for event in cleaned if _preconfirm_event_status(event) == "PENDING"]
+    resolved = [event for event in cleaned if _preconfirm_event_status(event) != "PENDING"]
+    if len(pending) >= cap:
+        return pending[-cap:]
+    return resolved[-(cap - len(pending)):] + pending
+
+
 def load_preconfirmation_journal(main_journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    journal = load_json(PRECONFIRM_JOURNAL_FILE, {})
-    sidecar_events = list(journal.get("events") or [])
-    embedded_events = list((main_journal or {}).get("preconfirmation_events") or [])
-    journal["events"] = _merge_preconfirmation_events(sidecar_events, embedded_events)
-    journal.setdefault("model_status", {})
-    journal["version"] = BOT_VERSION
-    journal["architecture_version"] = ARCHITECTURE_VERSION
-    journal["schema_version"] = "preconfirmation_journal_v9.5_lifecycle"
-    journal["lifecycle_contract"] = {
-        "created_status": "PENDING",
-        "terminal_statuses": ["CONFIRMED", "FAILED", "EXPIRED"],
-        "fixed_horizon_minutes": PRECONFIRM_WINDOW_MINUTES,
-        "acceptance_closes_required": PRECONFIRM_ACCEPTANCE_CLOSES,
-        "calibration_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
-        "closed_trades_used": False,
-    }
-    journal["persistence_sources"] = {
-        "sidecar": str(PRECONFIRM_JOURNAL_FILE),
-        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
-        "merged_event_count": len(journal["events"]),
+    """Load the confirmation ledger from the main journal only.
+
+    Journal v2 deliberately removes the sidecar file so the bot has one source
+    of truth: signal_journal_v6_4.json.
+    """
+    source = main_journal if isinstance(main_journal, dict) else load_json(JOURNAL_FILE, {})
+    journal = {
+        "events": _retain_preconfirmation_events(list(source.get("preconfirmation_events") or [])),
+        "model_status": dict(source.get("preconfirmation_model_status") or {}),
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "schema_version": "preconfirmation_journal_v9.5_lifecycle_embedded_v2",
+        "lifecycle_contract": {
+            "created_status": "PENDING",
+            "terminal_statuses": ["CONFIRMED", "FAILED", "EXPIRED"],
+            "fixed_horizon_minutes": PRECONFIRM_WINDOW_MINUTES,
+            "acceptance_closes_required": PRECONFIRM_ACCEPTANCE_CLOSES,
+            "calibration_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
+            "closed_trades_used": False,
+        },
+        "persistence_sources": {
+            "mode": "MAIN_JOURNAL_ONLY",
+            "main_journal": str(JOURNAL_FILE),
+            "merged_event_count": len(source.get("preconfirmation_events") or []),
+        },
     }
     return journal
+
 
 def sync_preconfirmation_to_main_journal(
     preconfirmation_journal: dict[str, Any],
     main_journal: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Persist the retained lifecycle mirror into the primary signal journal.
-
-    Only canonical lifecycle rows are copied. This is a real disk sync, not an
-    in-memory assignment that merely hopes a later code path eventually saves.
-    """
-    if not PRECONFIRM_EMBEDDED_LEDGER_ENABLED:
-        return {"synced": False, "reason": "embedded_ledger_disabled"}
-
     target = main_journal if isinstance(main_journal, dict) else load_json(JOURNAL_FILE, {})
-    current_events = []
-    for event in preconfirmation_journal.get("events", []) or []:
-        if not isinstance(event, dict):
-            continue
-        status = _preconfirm_event_status(event)
-        if status not in PRECONFIRM_VALID_STATUSES:
-            continue
-        mirrored = dict(event)
-        mirrored["status"] = status
-        mirrored["outcome"] = _preconfirm_legacy_outcome(status)
-        current_events.append(mirrored)
-
-    pending_count = sum(1 for event in current_events if _preconfirm_event_status(event) == "PENDING")
-    resolved_count = len(current_events) - pending_count
-    target["preconfirmation_events"] = current_events
+    retained = _retain_preconfirmation_events(
+        list(preconfirmation_journal.get("events") or []),
+        PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
+    )
+    pending_count = sum(1 for event in retained if _preconfirm_event_status(event) == "PENDING")
+    target["preconfirmation_events"] = retained
     target["preconfirmation_model_status"] = dict(preconfirmation_journal.get("model_status") or {})
     target["preconfirmation_persistence"] = {
-        "mode": "SIDECAR_PLUS_MAIN_JOURNAL_MIRROR",
-        "event_count": len(current_events),
+        "mode": "MAIN_JOURNAL_ONLY",
+        "event_count": len(retained),
         "pending_count": pending_count,
-        "resolved_count": resolved_count,
+        "resolved_count": len(retained) - pending_count,
+        "limit": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
         "updated_at": str(preconfirmation_journal.get("updated_at") or iso_now()),
         "disk_synced": True,
     }
+    target["journal_version"] = JOURNAL_VERSION
     atomic_json_write(JOURNAL_FILE, target)
     return {
         "synced": True,
-        "event_count": len(current_events),
+        "event_count": len(retained),
         "pending_count": pending_count,
-        "resolved_count": resolved_count,
+        "resolved_count": len(retained) - pending_count,
     }
+
 
 def save_preconfirmation_journal(
     journal: dict[str, Any],
     main_journal: Optional[dict[str, Any]] = None,
 ) -> None:
     journal["updated_at"] = iso_now()
-    events = [event for event in journal.get("events", []) or [] if isinstance(event, dict)]
-    for event in events:
-        event["status"] = _preconfirm_event_status(event)
-        event["outcome"] = _preconfirm_legacy_outcome(event["status"])
-        event.setdefault("event_id", event.get("id"))
-        event.setdefault("id", event.get("event_id"))
-    pending = [event for event in events if _preconfirm_event_status(event) == "PENDING"]
-    resolved = [event for event in events if _preconfirm_event_status(event) != "PENDING"]
-    room = max(0, PRECONFIRM_MAX_EVENTS - len(pending))
-    retained = resolved[-room:] + pending if room else pending
-    journal["events"] = retained
-    terminal_status_counts = {
-        status: sum(1 for event in retained if _preconfirm_event_status(event) == status)
-        for status in sorted(PRECONFIRM_TERMINAL_STATUSES)
-    }
+    journal["events"] = _retain_preconfirmation_events(
+        list(journal.get("events") or []),
+        PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
+    )
     journal["retention_audit"] = {
-        "mode": "DUAL_PERSISTENCE_PRECURSOR_LEDGER",
-        "max_events": PRECONFIRM_MAX_EVENTS,
-        "pending_protected": len(pending),
-        "resolved_retained": len(resolved[-room:]) if room else 0,
-        "terminal_status_counts": terminal_status_counts,
-        "trade_journal_limit_not_used": True,
-        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
+        "mode": "MAIN_JOURNAL_ONLY_FIFO",
+        "max_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
+        "event_count": len(journal["events"]),
     }
-    journal["persistence_sources"] = {
-        "sidecar": str(PRECONFIRM_JOURNAL_FILE),
-        "embedded_main_journal": bool(PRECONFIRM_EMBEDDED_LEDGER_ENABLED),
-        "merged_event_count": len(retained),
-        "sync_order": "SIDECAR_THEN_MAIN_JOURNAL",
-    }
-    atomic_json_write(PRECONFIRM_JOURNAL_FILE, journal)
     sync_preconfirmation_to_main_journal(journal, main_journal)
+
 
 def _preconfirm_should_log(candidate: Candidate) -> bool:
     """Every valid directional candidate receives a forecast row.
@@ -2643,6 +2983,9 @@ def _preconfirm_make_event(
         "ict_model": str(candidate.ict_model),
         "model_family": family,
         "event_kind": _preconfirm_event_kind(candidate),
+        "bot_version_at_observation": BOT_VERSION,
+        "architecture_version_at_observation": ARCHITECTURE_VERSION,
+        "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
         "created_at": created_at,
         "created_ts": observed_ts,
         "observation_candle_ts": observation_candle_ts,
@@ -2857,6 +3200,7 @@ def _preconfirm_build_model_status(
 ) -> dict[str, Any]:
     model_cache = model_cache or {}
     global_model = model_cache.setdefault("__GLOBAL_POOLED__", _preconfirm_build_model(journal, None))
+    authority_gate = _preconfirm_authority_gate(journal, global_model)
     global_training_rows = _preconfirm_training_rows(journal)
     global_training_labels = {int(row["label"]) for row in global_training_rows}
     global_has_both_labels = len(global_training_labels) >= 2
@@ -2891,7 +3235,10 @@ def _preconfirm_build_model_status(
             "global_sample_size": int(profile.get("global_sample_size") or hierarchy.get("global_sample_size") or 0),
             "setup_family_sample_size": int(profile.get("setup_family_sample_size") or hierarchy.get("setup_family_sample_size") or 0),
             "exact_family_sample_size": int(profile.get("exact_family_sample_size") or hierarchy.get("exact_family_sample_size") or 0),
-            "promotion_trusted": bool(profile.get("promotion_trusted", hierarchy.get("promotion_trusted"))),
+            "promotion_trusted": bool(
+                authority_gate.get("authority_trusted")
+                and profile.get("promotion_trusted", hierarchy.get("promotion_trusted"))
+            ),
             "pending_events": sum(
                 1 for event in journal.get("events", []) or []
                 if isinstance(event, dict)
@@ -2909,6 +3256,7 @@ def _preconfirm_build_model_status(
     return {
         "GLOBAL_POOLED": {
             "trusted": bool(global_model.get("trusted")),
+            "execution_authority_trusted": bool(authority_gate.get("authority_trusted")),
             "sample_size": int(global_model.get("sample_size") or 0),
             "calibration_sample_size": len(global_training_rows),
             "resolved_events": resolved_event_count,
@@ -2929,9 +3277,9 @@ def _preconfirm_build_model_status(
             "training_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
             "closed_trades_used": False,
         },
+        "AUTHORITY_GATE": authority_gate,
         "BY_MODEL_FAMILY": by_family,
     }
-
 
 def apply_confirmation_probability_layer(
     context: dict[str, Any],
@@ -2947,6 +3295,9 @@ def apply_confirmation_probability_layer(
     journal = load_preconfirmation_journal(main_journal)
     resolve_preconfirmation_events(journal, context, candidates)
     model_cache: dict[str, dict[str, Any]] = {}
+    # Persist the authority gate before profiles are built. Rebuilding later on
+    # the same validation epoch cannot increment the consecutive-pass streak.
+    journal["model_status"] = _preconfirm_build_model_status(journal, None, model_cache)
     as_of_ts = _preconfirm_as_of_ts(context)
 
     for candidate in candidates:
@@ -2974,6 +3325,62 @@ def apply_confirmation_probability_layer(
     save_preconfirmation_journal(journal, main_journal)
     return candidates
 
+
+def link_preconfirmation_event_to_signal(
+    journal: dict[str, Any],
+    candidate: Optional[Candidate],
+    signal_id: str,
+    action: str,
+) -> str:
+    """Attach the frozen precursor event to the exact published signal."""
+    if candidate is None or not signal_id:
+        return ""
+    profile = getattr(candidate, "preconfirmation_profile", {}) or {}
+    event_id = str(profile.get("ledger_event_id") or "").strip()
+    if not event_id:
+        return ""
+    for event in reversed(journal.get("preconfirmation_events", []) or []):
+        if not isinstance(event, dict):
+            continue
+        current_id = str(event.get("event_id") or event.get("id") or "").strip()
+        if current_id != event_id:
+            continue
+        event["signal_link"] = signal_id
+        event["signal_id"] = signal_id
+        event["signal_action"] = str(action or "")
+        event["linked_at"] = iso_now()
+        event["bot_version_at_signal"] = BOT_VERSION
+        event["architecture_version_at_signal"] = ARCHITECTURE_VERSION
+        return event_id
+    return ""
+
+
+def link_preconfirmation_event_to_trade(
+    journal: dict[str, Any],
+    active: Optional[ActiveTrade],
+    result_class: str,
+    close_action: str,
+) -> str:
+    """Complete event -> signal -> trade lineage after the trade closes."""
+    if active is None:
+        return ""
+    event_id = str(getattr(active, "preconfirmation_event_id", "") or "").strip()
+    if not event_id:
+        return ""
+    for event in reversed(journal.get("preconfirmation_events", []) or []):
+        if not isinstance(event, dict):
+            continue
+        current_id = str(event.get("event_id") or event.get("id") or "").strip()
+        if current_id != event_id:
+            continue
+        event["trade_link"] = str(getattr(active, "id", "") or "")
+        event["trade_id"] = str(getattr(active, "id", "") or "")
+        event["trade_result_class"] = str(result_class or "")
+        event["trade_close_action"] = str(close_action or "")
+        event["trade_linked_at"] = iso_now()
+        return event_id
+    return ""
+
 def _preconfirm_stage_gate(
     state: str,
     candidate: Candidate,
@@ -2984,18 +3391,23 @@ def _preconfirm_stage_gate(
 ) -> tuple[str, Optional[str], list[str], list[str], dict[str, Any]]:
     profile = evaluation.preconfirmation or {}
     calibrated = bool(profile.get("calibrated") or profile.get("trusted"))
-    downgrade_trusted = bool(profile.get("downgrade_trusted") or profile.get("trusted"))
-    promotion_trusted = bool(profile.get("promotion_trusted") or profile.get("trusted"))
+    requested_downgrade_authority = bool(profile.get("downgrade_trusted") or profile.get("trusted"))
+    # A bootstrap/hierarchical estimate may inform audit, but it must not veto
+    # a live path until the pooled model passes AUC/Brier trust gates.
+    downgrade_trusted = bool(profile.get("trusted"))
+    promotion_trusted = bool(profile.get("trusted") and profile.get("promotion_trusted", True))
     audit = {
         "applied": False,
         "calibrated": calibrated,
         "trusted": bool(profile.get("trusted")),
         "downgrade_trusted": downgrade_trusted,
+        "requested_downgrade_authority": requested_downgrade_authority,
+        "downgrade_authority_policy": "GLOBAL_PLUS_CURRENT_SCHEMA_ROLLING_TRUST",
         "promotion_trusted": promotion_trusted,
         "precursor_active": bool(profile.get("precursor_active")),
         "probability": safe_float(profile.get("probability"), 0.0),
         "can_initiate_entry": False,
-        "policy": "hierarchical calibration may downgrade early; promotion requires stronger evidence and never creates an independent entry path",
+        "policy": "authority requires global trust, current-schema rolling metrics and consecutive validation epochs; otherwise probability is audit-only",
     }
     if not calibrated or not profile.get("precursor_active"):
         return state, required, blocking, warnings, audit
@@ -3054,7 +3466,17 @@ def _preconfirm_telegram_line(candidate: Optional[Candidate]) -> str:
     global_n = int(profile.get("global_sample_size") or profile.get("sample_size") or 0)
     exact_n = int(profile.get("exact_family_sample_size") or 0)
     if profile.get("trusted"):
-        label = f"pooled logistic, global n={global_n}, AUC={safe_float(profile.get('auc'), 0.0):.2f}"
+        gate = profile.get("authority_gate") or {}
+        label = (
+            f"authority trusted, recent n={int(gate.get('recent_sample_size') or 0)}, "
+            f"AUC={safe_float(gate.get('recent_auc'), 0.0):.2f}"
+        )
+    elif profile.get("global_model_trusted"):
+        gate = profile.get("authority_gate") or {}
+        label = (
+            f"pooled logistic audit-only, current-schema n={int(gate.get('current_schema_resolved_events') or 0)}, "
+            f"global AUC={safe_float(profile.get('auc'), 0.0):.2f}"
+        )
     elif profile.get("calibrated"):
         label = f"hierarchical bootstrap, global n={global_n}, exact n={exact_n}"
     else:
@@ -3570,6 +3992,13 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preconfirm_auc_gate": PRECONFIRM_AUC_GATE,
         "preconfirm_probe_min_probability": PRECONFIRM_PROBE_MIN_PROBABILITY,
         "preconfirm_probe_wait_probability": PRECONFIRM_PROBE_WAIT_PROBABILITY,
+        "preconfirm_feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        "preconfirm_authority_min_schema_rows": PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS,
+        "preconfirm_authority_recent_window": PRECONFIRM_AUTHORITY_RECENT_WINDOW,
+        "preconfirm_authority_required_consecutive_passes": PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES,
+        "preconfirm_authority_recent_auc_gate": PRECONFIRM_AUTHORITY_RECENT_AUC_GATE,
+        "preconfirm_authority_recent_brier_gate": PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE,
+        "setup_lifecycle_recent_run_limit": SETUP_LIFECYCLE_RECENT_RUN_LIMIT,
     }
 
 
@@ -3583,7 +4012,7 @@ def execution_freshness_multiplier(execution_source: str, trigger_age_minutes: f
         return clamp(0.55 + 0.45 * decay, 0.55, 1.0)
     if src == ExecutionSource.LIMIT_ARMED.value:
         return clamp(LIMIT_ARMED_SCORE_MULTIPLIER, 0.50, 1.0)
-    if src == ExecutionSource.ACCEPTANCE_RETEST.value:
+    if src in {ExecutionSource.ACCEPTANCE_RETEST.value, ExecutionSource.ZONE_RETEST_PROBE.value}:
         return 0.92
     if src == ExecutionSource.CONTINUATION_REANCHOR.value:
         return 0.97
@@ -3836,6 +4265,7 @@ def thesis_confidence_decay_profile(
     fresh_source = source in {
         ExecutionSource.LIVE_3M.value,
         ExecutionSource.ACCEPTANCE_RETEST.value,
+        ExecutionSource.ZONE_RETEST_PROBE.value,
         ExecutionSource.CONTINUATION_REANCHOR.value,
     }
     reinforcement = bool(
@@ -3916,11 +4346,13 @@ def prepare_preplan_quality_pipeline(candidate: Candidate, context: Optional[dic
     candidate.timing_quality_score = int(round(timing_quality))
     candidate.execution_quality_score = int(round(timing_quality))
     candidate.entry_quality_score = int(round(entry_quality))
+    components["evaluation_entry_quality"] = round(entry_quality, 2)
     candidate.anti_fomo_score = safe_float(anti_fomo.get("score"), 100.0)
     candidate.probe_conviction_tier = str(probe.get("tier") or ProbeConvictionTier.EXPERIMENTAL.value)
     components["setup_quality"] = round(setup_quality, 2)
     components["timing_quality"] = round(timing_quality, 2)
-    components["entry_quality"] = round(entry_quality, 2)
+    components["preplan_entry_quality"] = round(entry_quality, 2)
+    components["entry_quality"] = round(entry_quality, 2)  # compatibility alias until EvaluationBundle freezes the canonical value
     components["anti_fomo"] = anti_fomo
     components["probe_conviction"] = probe
     components["current_regime"] = str(context.get("regime") or components.get("regime") or Regime.NORMAL.value)
@@ -3932,12 +4364,13 @@ def prepare_preplan_quality_pipeline(candidate: Candidate, context: Optional[dic
     return {
         "setup_quality": round(setup_quality, 2),
         "timing_quality": round(timing_quality, 2),
-        "entry_quality": round(entry_quality, 2),
+        "preplan_entry_quality": round(entry_quality, 2),
+        "entry_quality": round(entry_quality, 2),  # compatibility alias
         "anti_fomo": anti_fomo,
         "probe_conviction": probe,
         "pre_stage_risk_confidence_budget": pre_stage_budget,
         "pipeline": ["CANDIDATE", "THREE_QUALITY_SCORES", "CONFIDENCE_ENGINE", "RISK_CONFIDENCE_BUDGET", "STAGE_DECISION", "TRADE_PLAN", "FINAL_POSITION_SIZE"],
-        "schema_version": "preplan_quality_v9.1",
+        "schema_version": "preplan_quality_v9.5.9_explicit_names",
     }
 
 
@@ -4012,10 +4445,15 @@ def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optio
     base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT)
     add_plan = [f"{probe_profile.get('tier')}: {probe_profile.get('reason')} | base risk {base_risk:.2f}%"]
 
-    if bool(getattr(candidate, "confirmation_pending", False)):
+    confirmation_blocks = candidate_confirmation_blocks_execution(candidate)
+    if bool(getattr(candidate, "confirmation_pending", False)) and confirmation_blocks:
         stage = EntryStage.WAIT_CONFIRMATION.value
         base_risk = 0.0
-        add_plan.append("Готовність висока: чекати рівно один підтверджувальний бар; це alert-state, не entry")
+        add_plan.append("Готовність висока: чекати підтвердження; цей pending-state блокує execution")
+    elif src == ExecutionSource.ZONE_RETEST_PROBE.value:
+        stage = EntryStage.PROBE.value
+        base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT)
+        add_plan.append("Zone retest probe: ранній малий вхід дозволений, повний acceptance ще pending")
     elif src == ExecutionSource.TIME_WARP.value:
         stage = EntryStage.WAIT_RETEST.value
         base_risk = safe_float(probe_profile.get("base_risk_pct"), EXPERIMENTAL_PROBE_RISK_PCT) * 0.50
@@ -4411,16 +4849,29 @@ def _signal_quality_dimensions(signal: dict[str, Any]) -> dict[str, int]:
     dimensions = signal.get("quality_dimensions") or {}
     return {
         "entry_quality": int(safe_float(
-            dimensions.get("entry_quality", components.get("entry_quality", signal.get("quality", 0))), 0
+            signal.get("entry_score", dimensions.get("entry_quality", components.get("entry_quality", signal.get("score", signal.get("quality", 0))))), 0
         )),
         "durability_quality": int(safe_float(
-            dimensions.get("durability_quality", components.get("durability_quality", components.get("exit_quality", 0))), 0
+            signal.get("durability_score", dimensions.get("durability_quality", components.get("durability_quality", components.get("exit_quality", 0)))), 0
         )),
     }
 
 
 def _signal_execution_path(signal: Optional[dict[str, Any]]) -> dict[str, Any]:
     signal = signal or {}
+    compact_category = str(signal.get("execution_path") or "")
+    if compact_category in {"STANDARD", "REVALIDATION", "INNOVATION_FALLBACK"}:
+        entry_supported = bool(signal.get("entry_supported", True))
+        executable = str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS
+        return {
+            "category": compact_category,
+            "fallback": compact_category in {"REVALIDATION", "INNOVATION_FALLBACK"},
+            "standard": compact_category == "STANDARD",
+            "primary": compact_category,
+            "revalidation_state": "COMPACT_V2",
+            "entry_supported": entry_supported,
+            "unsupported_execution": bool(executable and not entry_supported),
+        }
     revalidation = signal.get("trigger_revalidation") or (signal.get("score_components") or {}).get("trigger_revalidation") or {}
     innovation = signal.get("innovation_profile") or (signal.get("score_components") or {}).get("innovation_profile") or {}
     primary = str(innovation.get("primary") or "")
@@ -4516,6 +4967,8 @@ def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_setup_reason(signal: dict[str, Any]) -> str:
+    if signal.get("blocking_reason"):
+        return str(signal.get("blocking_reason"))[:120]
     if bool(signal.get("confirmation_pending")):
         return "CONFIRMATION_PENDING"
     revalidation = signal.get("trigger_revalidation") or {}
@@ -4550,12 +5003,12 @@ def compute_execution_conversion_funnel(journal: dict[str, Any]) -> dict[str, An
         blockers: dict[str, int] = {}
         blocker_theses: dict[str, set[str]] = {}
         for signal in records:
-            funnel = ((signal.get("audit") or {}).get("execution_funnel") or signal.get("execution_funnel") or {})
+            funnel = ((signal.get("audit") or {}).get("execution_funnel") or signal.get("execution_funnel") or signal.get("funnel") or {})
             thesis = str(signal.get("thesis_key") or signal.get("id") or "")
             revalidation = _signal_revalidation_profile(signal)
             inferred = {
                 "detected": True,
-                "score_eligible": int(signal.get("candidate_final_score", signal.get("quality", 0)) or 0) >= RISKY_ENTRY_SCORE_BASE,
+                "score_eligible": int(signal.get("score", signal.get("candidate_final_score", signal.get("quality", 0))) or 0) >= RISKY_ENTRY_SCORE_BASE,
                 "trigger_ready": bool(signal.get("trigger_ready")),
                 "entry_supported": bool(revalidation.get("entry_supported", True)),
                 "plan_execution_ready": bool(funnel.get("plan_execution_ready", str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS)),
@@ -4699,11 +5152,11 @@ def compute_score_outcome_correlation(journal: dict[str, Any], enabled: bool) ->
         if realized_return_pct is None:
             continue
         rows.append({
-            "score": safe_float(signal.get("candidate_final_score", signal.get("quality")), 0.0),
+            "score": safe_float(signal.get("score", signal.get("candidate_final_score", signal.get("quality"))), 0.0),
             "entry_quality": safe_float(dims.get("entry_quality"), 0.0),
             "durability_quality": safe_float(dims.get("durability_quality"), 0.0),
             "result_pct": realized_return_pct,
-            "mfe_pct": safe_float(trade.get("mfe_pct"), 0.0),
+            "mfe_pct": safe_float(trade.get("mfe_pct", trade.get("mfe")), 0.0),
         })
 
     if not enabled:
@@ -4824,7 +5277,7 @@ def compute_calendar_statistics(journal: dict[str, Any]) -> dict[str, Any]:
     for trade in journal.get("trades", []) or []:
         if not isinstance(trade, dict) or str(trade.get("opened_regime") or "") != Regime.RANGE.value:
             continue
-        opened = _parse_iso_datetime(trade.get("opened_at"))
+        opened = _parse_iso_datetime(trade.get("opened_at", trade.get("time")))
         if opened is None:
             continue
         key = "weekend" if opened.weekday() >= 5 else "weekday"
@@ -4906,7 +5359,7 @@ def compute_daily_risk_used(journal: dict[str, Any], at: Optional[datetime] = No
         if key != ("", "") and key in seen:
             continue
         seen.add(key)
-        total += max(0.0, safe_float(trade.get("position_risk_pct"), 0.0))
+        total += max(0.0, safe_float(trade.get("position_risk_pct", trade.get("risk_pct")), 0.0))
 
     return round(total, 4)
 
@@ -4951,6 +5404,7 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V9_5_6_PRECONFIRMATION_CONTRACT_GUARD",
         "TRADING_DESK_EXECUTIVE_V9_5_3_JOURNAL_COMPACTION",
         "TRADING_DESK_EXECUTIVE_V9_5_2_MODEL_LOCAL_THESIS_LADDER_CONFIRMATION",
         "TRADING_DESK_EXECUTIVE_V9_5_1_TTL_BRIDGE_SYNCED_EARLY_PRECONFIRM",
@@ -4985,18 +5439,27 @@ def save_state(state: dict[str, Any]) -> None:
     atomic_json_write(STATE_FILE, state)
 
 
-def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return the minimal immutable feature row needed by the scoring learner.
-
-    ``training_signals`` used to store the complete signal payload, duplicating
-    audit, plans and diagnostics already present in ``signals``. Existing rows
-    are migrated through this function on every load/save, so the size reduction
-    is immediate rather than applying only to future runs.
-    """
-    if not isinstance(payload, dict) or not isinstance(payload.get("score_features"), dict):
+def _journal_feature_map(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
         return {}
-    signal_id = str(payload.get("id") or "").strip()
-    if not signal_id:
+    sources = [
+        payload.get("features"),
+        payload.get("score_features"),
+        (payload.get("score_components") or {}).get("features") if isinstance(payload.get("score_components"), dict) else None,
+    ]
+    raw = next((source for source in sources if isinstance(source, dict) and source), {})
+    if not raw:
+        return {}
+    return {key: raw.get(key, 0.0) for key in JOURNAL_ML_FEATURE_KEYS}
+
+
+def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return one lean ML row with only the approved feature vector."""
+    if not isinstance(payload, dict):
+        return {}
+    signal_id = str(payload.get("id") or payload.get("signal_id") or "").strip()
+    features = _journal_feature_map(payload)
+    if not signal_id or not features:
         return {}
     return {
         "id": signal_id,
@@ -5004,57 +5467,216 @@ def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
         "side": payload.get("side"),
         "setup_family": payload.get("setup_family"),
         "setup_type": payload.get("setup_type"),
-        "score_features": dict(payload.get("score_features") or {}),
+        "features": features,
     }
+
+
+def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compact a signal without touching live decision logic.
+
+    Runtime consumers receive the full payload before this function is called.
+    Persistence keeps only identifiers, execution state and tiny analytics flags;
+    the ML vector lives once in training_signals.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    revalidation = payload.get("trigger_revalidation") or (payload.get("score_components") or {}).get("trigger_revalidation") or {}
+    innovation = payload.get("innovation_profile") or (payload.get("score_components") or {}).get("innovation_profile") or {}
+    funnel = ((payload.get("audit") or {}).get("execution_funnel") or payload.get("execution_funnel") or {})
+    action = str(payload.get("action") or "")
+    primary = str(innovation.get("primary") or "")
+    existing_path = str(payload.get("execution_path") or "")
+    if existing_path in {"STANDARD", "REVALIDATION", "INNOVATION_FALLBACK"}:
+        execution_path = existing_path
+    elif bool(revalidation.get("revalidated")) or primary == "SETUP_ARGUMENTED_TRIGGER_REVALIDATION":
+        execution_path = "REVALIDATION"
+    elif primary and primary != "STANDARD_NONBLOCKING_CONSTRUCTION":
+        execution_path = "INNOVATION_FALLBACK"
+    else:
+        execution_path = "STANDARD"
+    entry_supported = bool(payload.get("entry_supported", revalidation.get("entry_supported", True)))
+    blocking_reason = str(
+        payload.get("blocking_reason")
+        or funnel.get("blocking_layer")
+        or ("REVALIDATION_NOT_SUPPORTED" if not entry_supported else payload.get("reason") or action or "UNKNOWN")
+    )[:120]
+    compact = {
+        "id": payload.get("id"),
+        "time": payload.get("time"),
+        "action": action,
+        "side": payload.get("side"),
+        "setup_family": payload.get("setup_family"),
+        "setup_type": payload.get("setup_type"),
+        "score": payload.get("candidate_final_score", payload.get("quality", payload.get("score"))),
+        "entry_score": (
+            payload.get("entry_score")
+            if payload.get("entry_score") is not None
+            else payload.get("entry_quality")
+            if payload.get("entry_quality") is not None
+            else (payload.get("quality_dimensions") or {}).get("entry_quality")
+            if (payload.get("quality_dimensions") or {}).get("entry_quality") is not None
+            else payload.get("candidate_final_score", payload.get("quality"))
+        ),
+        "entry_score_source": payload.get("entry_score_source"),
+        "evaluation_entry_quality": payload.get("evaluation_entry_quality", payload.get("entry_score")),
+        "preplan_entry_quality": payload.get("preplan_entry_quality"),
+        "trade_entry_quality": payload.get("trade_entry_quality", payload.get("entry_score")),
+        "setup_quality": payload.get("setup_quality"),
+        "timing_quality": payload.get("timing_quality"),
+        "trade_quality": payload.get("trade_quality"),
+        "bot_version_at_signal": payload.get("bot_version_at_signal", payload.get("version")),
+        "architecture_version_at_signal": payload.get("architecture_version_at_signal", payload.get("architecture_version")),
+        "journal_schema_at_signal": payload.get("journal_schema_at_signal"),
+        "preconfirmation_event_id": payload.get("preconfirmation_event_id"),
+        "durability_score": payload.get("durability_score") or (payload.get("quality_dimensions") or {}).get("durability_quality"),
+        "execution_stage": payload.get("entry_stage", payload.get("execution_stage")),
+        "execution_source": payload.get("execution_source"),
+        "trigger_ready": bool(payload.get("trigger_ready")),
+        "confirmation_pending": bool(payload.get("confirmation_pending")),
+        "thesis_key": payload.get("thesis_key"),
+        "entry_supported": entry_supported,
+        "execution_path": execution_path,
+        "blocking_reason": blocking_reason,
+        "short_reversal": bool(payload.get("short_reversal") or (payload.get("short_reversal_profile") or {}).get("active")),
+        "funnel": dict(payload.get("funnel") or {}) or {
+            key: bool(funnel.get(key))
+            for key in (
+                "plan_execution_ready", "philosophy_accepts",
+                "executive_pre_conflict_eligible",
+            )
+            if key in funnel
+        },
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
 
 
 def prepare_signal_payload_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Apply production journal compaction without changing live decisions.
+    """Compatibility alias retained for older call sites."""
+    return compact_signal_for_journal(payload)
 
-    Full audit data is consumed by the runtime shadow/audit recorders before this
-    function is called. With ``JOURNAL_VERBOSE=false`` only duplicated storage
-    fields are removed; execution, risk, plan and learning fields remain intact.
-    """
-    if JOURNAL_VERBOSE or not isinstance(payload, dict):
-        return payload
-    compact = dict(payload)
-    compact.pop("audit", None)
-    compact.pop("evaluation_bundle", None)
-    components = compact.get("score_components")
-    if isinstance(components, dict):
-        lean_components = dict(components)
-        lean_components.pop("evaluation_bundle", None)
-        matrix = lean_components.get("hypothesis_matrix_top")
-        if isinstance(matrix, list):
-            lean_components["hypothesis_matrix_top"] = matrix[:JOURNAL_HYPOTHESIS_TOP]
-        compact["score_components"] = lean_components
-    compact["journal_storage"] = {
-        "verbose": False,
-        "audit_persisted": False,
-        "evaluation_bundle_persisted": False,
-        "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
-        "schema_version": "journal_storage_v9.5.5",
+
+def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compact a closed trade while preserving outcome learning and joins."""
+    if not isinstance(payload, dict):
+        return {}
+    pnl = payload.get("pnl")
+    if pnl is None:
+        pnl = payload.get("realized_return_pct", payload.get("result_pct"))
+    pnl_r = payload.get("pnl_r", payload.get("result_r"))
+    raw_result = str(payload.get("result") or "").upper()
+    close_action = payload.get("close_action") or payload.get("action")
+    if not close_action and raw_result in {"STOP", "EXIT", "TP0", "TP1", "TP2", "TP3", "PROTECT"}:
+        close_action = raw_result
+    result_class = payload.get("result_class")
+    if not result_class or str(result_class).upper() not in {"WIN", "LOSS", "BREAKEVEN", "UNRESOLVED"}:
+        result_class = classify_trade_result(pnl_r, pnl, str(payload.get("outcome_status") or ""))
+    compact = {
+        "id": payload.get("id"),
+        "signal_id": payload.get("signal_id", payload.get("primary_signal_id")),
+        "time": payload.get("time", payload.get("opened_at")),
+        "closed_at": payload.get("closed_at"),
+        "side": payload.get("side"),
+        "setup_family": payload.get("setup_family"),
+        "setup_type": payload.get("setup_type"),
+        "score": payload.get("score", payload.get("quality")),
+        "entry_score": payload.get("entry_score", payload.get("entry_quality", payload.get("quality"))),
+        "entry_score_source": payload.get("entry_score_source"),
+        "evaluation_entry_quality": payload.get("evaluation_entry_quality", payload.get("entry_score", payload.get("entry_quality"))),
+        "preplan_entry_quality": payload.get("preplan_entry_quality"),
+        "trade_entry_quality": payload.get("trade_entry_quality", payload.get("entry_score", payload.get("entry_quality"))),
+        "setup_quality": payload.get("setup_quality"),
+        "timing_quality": payload.get("timing_quality"),
+        "trade_quality": payload.get("trade_quality"),
+        "execution_stage": payload.get("execution_stage", payload.get("entry_stage")),
+        "execution_source": payload.get("execution_source"),
+        "result": result_class,
+        "result_class": result_class,
+        "close_action": close_action,
+        "pnl": pnl,
+        "pnl_r": pnl_r,
+        "close_reason": payload.get("close_reason", close_action),
+        "bot_version_at_entry": payload.get("bot_version_at_entry"),
+        "architecture_version_at_entry": payload.get("architecture_version_at_entry"),
+        "journal_schema_at_entry": payload.get("journal_schema_at_entry"),
+        "preconfirmation_event_id": payload.get("preconfirmation_event_id"),
+        "mfe": payload.get("mfe", payload.get("mfe_pct")),
+        "risk_pct": payload.get("risk_pct", payload.get("position_risk_pct")),
+        "regime": payload.get("regime", payload.get("opened_regime")),
+        "ml_eligible": payload.get("ml_eligible", True),
     }
-    return compact
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
+    """One-time in-memory migration of legacy journals to schema version 2."""
+    if not isinstance(journal, dict):
+        journal = {}
+    legacy_training_source = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
+    dedup_training: dict[str, dict[str, Any]] = {}
+    for item in legacy_training_source:
+        lean = lean_training_signal(item) if isinstance(item, dict) else {}
+        if lean:
+            dedup_training[str(lean["id"])] = lean
+    journal["training_signals"] = list(dedup_training.values())[-MAX_JOURNAL:]
+    journal["signals"] = [
+        compact for item in list(journal.get("signals") or [])
+        if isinstance(item, dict)
+        for compact in [compact_signal_for_journal(item)] if compact
+    ][-MAX_JOURNAL:]
+    journal["trades"] = [
+        compact for item in list(journal.get("trades") or [])
+        if isinstance(item, dict)
+        for compact in [compact_trade_for_journal(item)] if compact
+    ][-MAX_JOURNAL:]
+    journal["signal_events"] = [item for item in list(journal.get("signal_events") or []) if isinstance(item, dict)][-MAX_JOURNAL:]
+    journal["executive_divergences"] = [item for item in list(journal.get("executive_divergences") or []) if isinstance(item, dict)][-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:]
+    journal["rejected_hypothesis_shadows"] = [item for item in list(journal.get("rejected_hypothesis_shadows") or []) if isinstance(item, dict)][-REJECTED_HYPOTHESIS_SHADOW_LIMIT:]
+    journal["preconfirmation_events"] = _retain_preconfirmation_events(
+        list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
+    )
+    journal["journal_version"] = JOURNAL_VERSION
+    journal["migration"] = {
+        "from_version": int(journal.get("journal_version_before_migration", 1) or 1),
+        "to_version": JOURNAL_VERSION,
+        "mode": "AUTO_COMPACT_ON_LOAD",
+        "completed_at": iso_now(),
+    }
+    return journal
 
 
 def load_journal() -> dict[str, Any]:
     journal = load_json(JOURNAL_FILE, {})
+    old_version = int(journal.get("journal_version", 1) or 1)
+    if old_version < JOURNAL_VERSION:
+        journal["journal_version_before_migration"] = old_version
+        journal = migrate_journal_to_v2(journal)
+        journal.pop("journal_version_before_migration", None)
+        atomic_json_write(JOURNAL_FILE, journal)
     journal.setdefault("signals", [])
     journal.setdefault("training_signals", [])
     journal.setdefault("signal_events", [])
     journal.setdefault("trades", [])
     journal.setdefault("relaxed_continuation_experiments", [])
+    journal.setdefault("executive_divergences", [])
+    journal.setdefault("rejected_hypothesis_shadows", [])
     journal.setdefault("preconfirmation_events", [])
     journal.setdefault("preconfirmation_model_status", {})
-    training_source = journal.get("training_signals") or journal.get("signals") or []
     journal["training_signals"] = [
-        lean
-        for item in training_source
+        lean for item in list(journal.get("training_signals") or [])
         if isinstance(item, dict)
-        for lean in [lean_training_signal(item)]
-        if lean
+        for lean in [lean_training_signal(item)] if lean
     ]
+    journal["signals"] = [
+        compact for item in list(journal.get("signals") or [])
+        if isinstance(item, dict)
+        for compact in [compact_signal_for_journal(item)] if compact
+    ]
+    journal["trades"] = [
+        compact for item in list(journal.get("trades") or [])
+        if isinstance(item, dict)
+        for compact in [compact_trade_for_journal(item)] if compact
+    ]
+    journal["journal_version"] = JOURNAL_VERSION
     journal["version"] = BOT_VERSION
     journal["architecture_version"] = ARCHITECTURE_VERSION
     if "analytics" not in journal:
@@ -5115,37 +5737,34 @@ def _retain_signal_events(events: list[Any], protected_signal_ids: set[str], cap
 
 def save_journal(journal: dict[str, Any]) -> None:
     journal["updated_at"] = iso_now()
+    journal["journal_version"] = JOURNAL_VERSION
 
-    # Closed trades are retained first; every referenced originating signal is
-    # then protected from rotation. Active signal ids are placed in
-    # protected_signal_ids when a trade opens and removed after close.
-    journal["trades"] = deduplicate_closed_trades(list(journal.get("trades") or []))[-MAX_JOURNAL:]
-    active_protected = {
-        str(x) for x in (journal.get("protected_signal_ids") or []) if str(x).strip()
-    }
+    journal["trades"] = deduplicate_closed_trades([
+        compact for item in list(journal.get("trades") or [])
+        if isinstance(item, dict)
+        for compact in [compact_trade_for_journal(item)] if compact
+    ])[-MAX_JOURNAL:]
+    active_protected = {str(x) for x in (journal.get("protected_signal_ids") or []) if str(x).strip()}
     trade_protected = {
-        str(t.get("signal_id") or "")
-        for t in journal.get("trades", [])
+        str(t.get("signal_id") or "") for t in journal.get("trades", [])
         if isinstance(t, dict) and str(t.get("signal_id") or "").strip()
     }
     protected_signal_ids = active_protected | trade_protected
 
     journal["signals"] = _retain_signal_records(
         [
-            prepare_signal_payload_for_journal(item)
-            for item in list(journal.get("signals") or [])
+            compact for item in list(journal.get("signals") or [])
             if isinstance(item, dict)
+            for compact in [compact_signal_for_journal(item)] if compact
         ],
         protected_signal_ids,
         MAX_JOURNAL,
     )
     journal["training_signals"] = _retain_signal_records(
         [
-            lean
-            for item in list(journal.get("training_signals") or [])
+            lean for item in list(journal.get("training_signals") or [])
             if isinstance(item, dict)
-            for lean in [lean_training_signal(item)]
-            if lean
+            for lean in [lean_training_signal(item)] if lean
         ],
         protected_signal_ids,
         MAX_JOURNAL,
@@ -5153,30 +5772,31 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["signal_events"] = _retain_signal_events(
         list(journal.get("signal_events") or []), protected_signal_ids, MAX_JOURNAL
     )
+    journal["executive_divergences"] = [
+        item for item in list(journal.get("executive_divergences") or []) if isinstance(item, dict)
+    ][-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:]
+    journal["rejected_hypothesis_shadows"] = [
+        item for item in list(journal.get("rejected_hypothesis_shadows") or []) if isinstance(item, dict)
+    ][-REJECTED_HYPOTHESIS_SHADOW_LIMIT:]
     journal["relaxed_continuation_experiments"] = [
-        item for item in list(journal.get("relaxed_continuation_experiments") or [])
-        if isinstance(item, dict)
+        item for item in list(journal.get("relaxed_continuation_experiments") or []) if isinstance(item, dict)
     ][-RELAXED_CONTINUATION_SHADOW_HISTORY_LIMIT:]
-    preconfirm_events = [
-        item for item in list(journal.get("preconfirmation_events") or [])
-        if isinstance(item, dict)
-    ]
-    preconfirm_pending = [item for item in preconfirm_events if _preconfirm_event_status(item) == "PENDING"]
-    preconfirm_resolved = [item for item in preconfirm_events if _preconfirm_event_status(item) != "PENDING"]
-    preconfirm_room = max(0, PRECONFIRM_MAX_EVENTS - len(preconfirm_pending))
-    journal["preconfirmation_events"] = (
-        preconfirm_resolved[-preconfirm_room:] + preconfirm_pending
-        if preconfirm_room
-        else preconfirm_pending
+    journal["preconfirmation_events"] = _retain_preconfirmation_events(
+        list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
     )
     journal["retention_audit"] = {
-        "mode": "SIGNAL_ID_REFERENTIAL_RETENTION",
-        "max_journal": MAX_JOURNAL,
-        "journal_verbose": JOURNAL_VERBOSE,
-        "hypothesis_top": JOURNAL_HYPOTHESIS_TOP,
-        "training_signal_schema": "LEAN_FEATURE_ROW_V1",
-        "protected_signal_ids": sorted(protected_signal_ids),
-        "protected_count": len(protected_signal_ids),
+        "journal_version": JOURNAL_VERSION,
+        "signals": len(journal["signals"]),
+        "training_signals": len(journal["training_signals"]),
+        "trades": len(journal["trades"]),
+        "preconfirmation_events": len(journal["preconfirmation_events"]),
+        "limits": {
+            "signals": MAX_JOURNAL,
+            "training_signals": MAX_JOURNAL,
+            "executive_divergences": EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT,
+            "rejected_hypothesis_shadows": REJECTED_HYPOTHESIS_SHADOW_LIMIT,
+            "preconfirmation_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
+        },
     }
     journal["analytics"] = compute_analytics(journal)
     journal["setup_statistics"] = compute_setup_statistics(journal)
@@ -7217,7 +7837,7 @@ def _setup_morphology_label(candidate: Candidate, impulse: dict[str, Any]) -> st
     impulse_atr = float(impulse.get("impulse_atr", 0.0) or 0.0)
     giveback = float(impulse.get("giveback_ratio", 0.0) or 0.0)
 
-    if age >= INNOVATION_EXTREME_STALE_TRIGGER_MIN and source in {ExecutionSource.ACCEPTANCE_RETEST.value, ExecutionSource.LIQUIDITY_LADDER.value}:
+    if age >= INNOVATION_EXTREME_STALE_TRIGGER_MIN and source in {ExecutionSource.ACCEPTANCE_RETEST.value, ExecutionSource.ZONE_RETEST_PROBE.value, ExecutionSource.LIQUIDITY_LADDER.value}:
         return "STALE_THESIS_REVALIDATION_PROBE"
     if setup == SetupType.ACCEPTANCE_RETEST_CONTINUATION.value and impulse_atr >= 3.2 and giveback >= 0.45:
         return "IMPULSE_MEMORY_RETEST_PROBE"
@@ -8052,6 +8672,7 @@ def setup_trigger_revalidation_profile(
         ExecutionSource.OPENING_RANGE.value,
         ExecutionSource.OPEN_RECLAIM.value,
         ExecutionSource.ACCEPTANCE_RETEST.value,
+        ExecutionSource.ZONE_RETEST_PROBE.value,
         ExecutionSource.LIQUIDITY_LADDER.value,
     }
     stale_execution_trigger = bool(execution_source_requires_fresh_trigger and not execution_trigger_fresh and not alternative_ready)
@@ -8658,7 +9279,7 @@ def _trade_ground_truth(trade: dict) -> Optional[tuple[int, float, str]]:
     result_pct = _journal_realized_return_pct(trade)
     if result_pct is None:
         return None
-    mfe_pct = safe_float(trade.get("mfe_pct"), 0.0)
+    mfe_pct = safe_float(trade.get("mfe_pct", trade.get("mfe")), 0.0)
     has_tp_fields = any(key in trade for key in ("tp1_hit", "tp2_hit", "tp3_hit"))
     tp1_hit = bool(trade.get("tp1_hit"))
     tp2_hit = bool(trade.get("tp2_hit"))
@@ -8697,7 +9318,7 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
     signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     signals = {
         str(s.get("id")): s for s in signal_records
-        if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
+        if isinstance(s, dict) and s.get("id") and bool(_journal_feature_map(s))
     }
     rows: list[tuple[dict[str, float], int, float]] = []
     for trade in journal.get("trades", []):
@@ -8716,7 +9337,7 @@ def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[s
             continue
         label, sample_weight, _ = ground_truth
         features = {
-            key: clamp(safe_float(signal["score_features"].get(key), 0.0), -1.0, 1.0)
+            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
             for key in QUALITY_FEATURE_KEYS
         }
         rows.append((features, label, sample_weight))
@@ -8733,7 +9354,7 @@ def _quality_training_rows_filtered(
     signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     signals = {
         str(s.get("id")): s for s in signal_records
-        if isinstance(s, dict) and s.get("id") and isinstance(s.get("score_features"), dict)
+        if isinstance(s, dict) and s.get("id") and bool(_journal_feature_map(s))
     }
     rows: list[tuple[dict[str, float], int, float]] = []
     for trade in journal.get("trades", []) or []:
@@ -8747,7 +9368,7 @@ def _quality_training_rows_filtered(
         if setup_type and str(signal.get("setup_type") or trade.get("setup_type") or "") != setup_type:
             continue
         if short_reversal_only:
-            profile = signal.get("short_reversal_profile") or (signal.get("score_components") or {}).get("short_reversal") or trade.get("short_reversal_profile") or {}
+            profile = signal.get("short_reversal_profile") or (signal.get("score_components") or {}).get("short_reversal") or ({"active": True} if signal.get("short_reversal") else {}) or trade.get("short_reversal_profile") or {}
             if str(signal.get("side") or trade.get("side") or "") != Side.SHORT.value or not profile.get("active"):
                 continue
         ground_truth = _trade_ground_truth(trade)
@@ -8755,7 +9376,7 @@ def _quality_training_rows_filtered(
             continue
         label, sample_weight, _ = ground_truth
         features = {
-            key: clamp(safe_float(signal["score_features"].get(key), 0.0), -1.0, 1.0)
+            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
             for key in QUALITY_FEATURE_KEYS
         }
         rows.append((features, label, sample_weight))
@@ -8833,7 +9454,7 @@ def _validation_metrics(rows: list[tuple[dict[str, float], int, float]], default
 def compute_learning_status(journal: dict) -> dict[str, Any]:
     training_signals = [
         s for s in journal.get("training_signals", [])
-        if isinstance(s, dict) and isinstance(s.get("score_features"), dict)
+        if isinstance(s, dict) and bool(_journal_feature_map(s))
     ]
     global_rows = _quality_training_rows(journal)
     families = sorted({
@@ -9053,7 +9674,7 @@ def _build_quality_features(
         "pattern": _smooth_pattern_feature(raw_bonus, best_pattern),
         "session": clamp(session_bonus / max(JUDAS_MAX_BONUS, 1.0), -1.0, 1.0),
         "smt": clamp(vector_bonus / 12.0, -1.0, 1.0),
-        "regime_fit": clamp((regime_matched - regime_conflict), -1.0, 1.0),
+        "regime_fit": 0.0 if regime_conflict else 1.0 if regime_matched else 0.5,
         "freshness": freshness,
         "exhaustion": clamp(1.0 - exhaustion_multiplier, 0.0, 1.0),
         "no_pattern": 0.0 if best_pattern else 1.0,
@@ -9379,6 +10000,7 @@ def score_hypothesis_layers(
         ExecutionSource.LIMIT_ARMED.value: 70,
         ExecutionSource.REENTRY.value: 62,
         ExecutionSource.ACCEPTANCE_RETEST.value: 76,
+        ExecutionSource.ZONE_RETEST_PROBE.value: 76,
         ExecutionSource.CONTINUATION_REANCHOR.value: 80,
         ExecutionSource.MOMENTUM_CONTINUATION.value: 79,
         ExecutionSource.ACCELERATION_PULLBACK.value: 58,
@@ -9646,6 +10268,7 @@ def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: f
     zone_retest_detected = bool(structural_retest_ok and zone_ok)
     acceptance_confirmed = bool(zone_retest_detected and acceptance)
     execution_ready = acceptance_confirmed
+    probe_execution_ready = bool(zone_retest_detected and not acceptance_confirmed)
     state = (
         "ACCEPTANCE_CONFIRMED"
         if acceptance_confirmed
@@ -9661,21 +10284,27 @@ def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: f
         score_bonus += 4 if acceptance_confirmed else 0
     confirmation_pending = bool(zone_retest_detected and not execution_ready)
     return {
-        # ``active`` is retained as the execution-ready compatibility alias.
-        # A zone touch alone is exposed via ``zone_retest_detected`` and becomes
-        # an explicit confirmation-pending lifecycle state, never an entry path.
+        # ``active`` remains the confirmed-acceptance compatibility alias.
+        # A zone retest may still open the pre-existing small PROBE path; it is
+        # never mislabeled as confirmed ACCEPTANCE_RETEST execution.
         "active": execution_ready,
         "detected": zone_retest_detected,
         "zone_retest_detected": zone_retest_detected,
         "acceptance_confirmed": acceptance_confirmed,
         "execution_ready": execution_ready,
+        "probe_execution_ready": probe_execution_ready,
         "pre_confirmation_ready": confirmation_pending,
         "confirmation_pending": confirmation_pending,
+        "blocks_execution": False if probe_execution_ready else True,
         "needs_acceptance_confirmation": confirmation_pending,
         "required_next_event": "DIRECTIONAL_ACCEPTANCE" if confirmation_pending else None,
         "anchor": round_price(zone_mid) if zone_mid else round_price(price),
         "state": state,
-        "execution_role": "EXECUTION_CONFIRMATION" if execution_ready else "ZONE_RETEST_ONLY",
+        "execution_role": (
+            "EXECUTION_CONFIRMATION" if execution_ready
+            else "EARLY_PROBE_PENDING_ACCEPTANCE" if probe_execution_ready
+            else "ZONE_RETEST_ONLY"
+        ),
         "score_bonus": score_bonus,
         "impulse_atr": round(impulse_atr, 2),
         "pullback_atr": round(pullback_atr, 2),
@@ -9696,12 +10325,12 @@ def resolve_candidate_confirmation_state(
     *,
     actionable_trigger_ready: bool,
 ) -> tuple[dict[str, Any], bool]:
-    """Resolve the one canonical confirmation-pending state for a candidate.
+    """Resolve lifecycle pending state independently from execution permission.
 
-    Zone retest is a model-local thesis event, not execution. It must remain
-    visible to Opportunity/Telegram/preconfirmation lifecycle until directional
-    acceptance arrives. A stricter continuation-reanchor pending state keeps
-    priority when both profiles are present.
+    A fresh zone retest is still waiting for full directional acceptance, so it
+    remains ``confirmation_pending`` for alerts and ML. Unlike a truly incomplete
+    re-anchor/reversal, that pending state does not block the existing small PROBE
+    path. This preserves early opportunities without calling them confirmed.
     """
     model = str(model_id or "").upper()
     acceptance = dict(acceptance_retest or {})
@@ -9712,20 +10341,34 @@ def resolve_candidate_confirmation_state(
     if model == "ACCEPTANCE_RETEST_CONTINUATION":
         if reanchor.get("pre_confirmation_ready"):
             state = reanchor
+            state.setdefault("blocks_execution", True)
         elif (
             acceptance.get("zone_retest_detected")
             and not acceptance.get("execution_ready")
         ):
             state = acceptance
+            state.setdefault("probe_execution_ready", True)
+            state.setdefault("blocks_execution", False)
     elif model == "VWAP_SESSION_MEAN_RECLAIM" and session_mean.get("pre_confirmation_ready"):
         state = session_mean
+        state.setdefault("blocks_execution", True)
 
-    pending = bool(state and not actionable_trigger_ready)
+    pending = bool(state)
     if pending:
         state.setdefault("confirmation_pending", True)
         state.setdefault("pre_confirmation_ready", True)
         state.setdefault("required_next_event", "DIRECTIONAL_ACCEPTANCE")
+        state.setdefault("actionable_trigger_ready", bool(actionable_trigger_ready))
+        state.setdefault("blocks_execution", not bool(state.get("probe_execution_ready")))
     return state, pending
+
+
+def candidate_confirmation_blocks_execution(candidate: Optional[Candidate]) -> bool:
+    """Return True only for pending states that are meant to block execution."""
+    if candidate is None or not bool(getattr(candidate, "confirmation_pending", False)):
+        return False
+    state = getattr(candidate, "confirmation_state", {}) or {}
+    return bool(state.get("blocks_execution", True))
 
 
 def continuation_reanchor_profile(
@@ -11320,6 +11963,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
     params = get_adaptive_params(regime)
     candidates = []
+    context["_setup_lifecycle_detected"] = []
+    context["_setup_lifecycle_ranked"] = []
 
     # ==========================================================
     # РЕЄСТР 10 ICT-МОДЕЛЕЙ (Адаптовано під BZ)
@@ -11609,6 +12254,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         model_ids = list(dict.fromkeys(active_patterns))
         if not model_ids:
             model_ids = ["GENERIC_FALLBACK"]
+
+        for detected_model_id in model_ids:
+            detected_profile = pattern_registry.get(detected_model_id, {
+                "preferred_setup": SetupType.PULLBACK_CONTINUATION.value,
+            })
+            context["_setup_lifecycle_detected"].append({
+                "side": side,
+                "model_id": detected_model_id,
+                "setup_type": str(detected_profile.get("preferred_setup", SetupType.PULLBACK_CONTINUATION.value)),
+            })
 
         direction_perf = direction_recent_performance(journal, side)
         NO_PATTERN_EXTRA_MARGIN = int(os.getenv("NO_PATTERN_EXTRA_MARGIN", "12") or 12)
@@ -11920,15 +12575,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     thesis_origin = "MODEL_LOCAL_ACCEPTANCE_RETEST"
                     pattern_conf.append("🟢 ACCEPTANCE_CONFIRMED: continuation-probe дозволений малим ризиком")
                 elif acceptance_retest.get("zone_retest_detected"):
-                    execution_source = ExecutionSource.NONE.value
-                    actionable_trigger_ready = False
-                    execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
+                    execution_source = ExecutionSource.ZONE_RETEST_PROBE.value
+                    actionable_trigger_ready = True
+                    execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
                     local_trigger_level = safe_float(acceptance_retest.get("zone_mid"), trigger_level) or trigger_level
                     local_trigger_age = 0.0
                     local_live_3m_trigger_ready = False
                     model_thesis_age = 0.0
                     thesis_origin = "MODEL_LOCAL_ZONE_RETEST"
-                    pattern_conf.append("🟡 ZONE_RETEST_DETECTED: зона протестована, чекаємо directional acceptance")
+                    pattern_conf.append(
+                        "🟠 ZONE_RETEST_PROBE: ранній probe дозволений; повний acceptance ще pending"
+                    )
                 else:
                     execution_source = ExecutionSource.NONE.value
                     actionable_trigger_ready = False
@@ -11942,7 +12599,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     else ExecutionLane.WAIT_CONFIRMATION.value
                 )
                 local_trigger_level = safe_float(session_mean_reclaim.get("level"), trigger_level) or trigger_level
+                local_trigger_age = 0.0
                 local_live_3m_trigger_ready = actionable_trigger_ready
+                model_thesis_age = 0.0
+                thesis_origin = "MODEL_LOCAL_SESSION_MEAN"
                 if session_mean_reclaim.get("pre_confirmation_ready") and not actionable_trigger_ready:
                     pattern_conf.append("🟡 SESSION_MEAN PRE-CONFIRMATION: reclaim є, у TRANSITION чекаємо один 15M hold-bar")
             elif model_id in {"OPENING_RANGE_BREAKOUT", "FAILED_ORB"}:
@@ -11950,11 +12610,23 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if model_id == "FAILED_ORB" else ExecutionLane.STANDARD_CONFIRMED.value
                 local_trigger_level = safe_float(opening_range.get("entry_level"), trigger_level) or trigger_level
+                local_trigger_age = 0.0
+                local_live_3m_trigger_ready = True
+                model_thesis_age = 0.0
+                thesis_origin = (
+                    "MODEL_LOCAL_FAILED_OPENING_RANGE"
+                    if model_id == "FAILED_ORB"
+                    else "MODEL_LOCAL_OPENING_RANGE"
+                )
             elif model_id == "DAILY_WEEKLY_OPEN_RECLAIM":
                 execution_source = ExecutionSource.OPEN_RECLAIM.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
                 local_trigger_level = safe_float(open_reclaim.get("level"), trigger_level) or trigger_level
+                local_trigger_age = 0.0
+                local_live_3m_trigger_ready = True
+                model_thesis_age = 0.0
+                thesis_origin = "MODEL_LOCAL_DAILY_WEEKLY_OPEN_RECLAIM"
             elif model_id == "LIQUIDITY_LADDER_MODEL":
                 ladder_confirmation = liquidity_ladder_execution_confirmation(
                     live_3m_trigger_ready=live_3m_trigger_ready,
@@ -11982,10 +12654,19 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_source = ExecutionSource.FAILED_AUCTION.value
                 actionable_trigger_ready = True
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                local_trigger_age = 0.0
+                local_live_3m_trigger_ready = True
+                model_thesis_age = 0.0
+                thesis_origin = "MODEL_LOCAL_FAILED_AUCTION"
             elif model_id == "TIME_OF_DAY_ADAPTIVE":
                 execution_source = ExecutionSource.TIME_OF_DAY.value
                 actionable_trigger_ready = bool(time_of_day_adaptive.get("entry_ok"))
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
+                local_trigger_level = price
+                local_trigger_age = 0.0
+                local_live_3m_trigger_ready = actionable_trigger_ready
+                model_thesis_age = 0.0
+                thesis_origin = "MODEL_LOCAL_TIME_OF_DAY"
             elif model_id == "FVG_ENTRY":
                 # FVG alone is a location, not an execution trigger.
                 # Require directional structure + live confirmation to avoid
@@ -12303,7 +12984,18 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             if cand.final_score >= min_score_required:
                 candidates.append(cand)
 
-    return finalize_hypothesis_ranking(candidates)
+    ranked_candidates = finalize_hypothesis_ranking(candidates)
+    context["_setup_lifecycle_ranked"] = [
+        {
+            "side": candidate.side,
+            "model_id": candidate.ict_model,
+            "setup_type": candidate.setup_type,
+            "rank": candidate.hypothesis_rank,
+            "final_score": candidate.final_score,
+        }
+        for candidate in ranked_candidates
+    ]
+    return ranked_candidates
 
 
 
@@ -13559,8 +14251,8 @@ def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: 
         })
         store.append(shadow)
         known.add(key)
-    if len(store) > EXECUTIVE_DIVERGENCE_HISTORY_LIMIT:
-        del store[:-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT]
+    if len(store) > REJECTED_HYPOTHESIS_SHADOW_LIMIT:
+        del store[:-REJECTED_HYPOTHESIS_SHADOW_LIMIT]
 
 
 def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
@@ -14048,8 +14740,8 @@ def record_executive_divergence(journal: dict[str, Any], payload: dict[str, Any]
     }
     history = journal.setdefault("executive_divergences", [])
     history.append(event)
-    if len(history) > EXECUTIVE_DIVERGENCE_HISTORY_LIMIT:
-        del history[:-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT]
+    if len(history) > EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:
+        del history[:-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT]
 
 
 def executive_authority_decision(
@@ -14650,8 +15342,8 @@ def adaptive_state_transition(
     opportunity_profile = opportunity_profile or {}
     state = opportunity_profile.get("stage", STATE_WATCH)
     htf_profile = htf_confidence_modifier(candidate)
-    if bool(getattr(candidate, "confirmation_pending", False)):
-        return {"state": STATE_WAIT_CONFIRMATION, "risk_multiplier": 0.0, "allow_execution": False, "reason": "waiting confirmation", "htf_advisory": htf_profile, "risk_applied_here": False}
+    if candidate_confirmation_blocks_execution(candidate):
+        return {"state": STATE_WAIT_CONFIRMATION, "risk_multiplier": 0.0, "allow_execution": False, "reason": "waiting blocking confirmation", "htf_advisory": htf_profile, "risk_applied_here": False}
     if kernel_result.get("action_modifier") == STATE_WAIT_RETEST:
         return {"state": STATE_WAIT_RETEST, "risk_multiplier": 0.0, "allow_execution": False, "reason": "anti-chase protection", "htf_advisory": htf_profile, "risk_applied_here": False}
     if state == STATE_CORE:
@@ -14806,9 +15498,9 @@ def _trade_pct(side: str, entry: float, price: float) -> float:
 
 def _journal_result_r(record: dict[str, Any]) -> Optional[float]:
     """Read only an explicitly stored R-multiple; never reinterpret percentages as R."""
-    if not isinstance(record, dict) or "result_r" not in record:
+    if not isinstance(record, dict):
         return None
-    raw = record.get("result_r")
+    raw = record.get("result_r", record.get("pnl_r"))
     if raw is None:
         return None
     try:
@@ -14825,6 +15517,8 @@ def _journal_realized_return_pct(record: dict[str, Any]) -> Optional[float]:
     raw = record.get("realized_return_pct")
     if raw is None:
         raw = record.get("result_pct")
+    if raw is None:
+        raw = record.get("pnl")
     if raw is None:
         return None
     try:
@@ -14843,28 +15537,30 @@ def _realized_trade_metrics(
     final_exit_price: Optional[float],
     *,
     outcome_status: str = "RESOLVED",
+    ambiguous_stop_price: Optional[float] = None,
+    ambiguous_target_price: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Calculate weighted realized return and R from partial exits plus the final leg."""
-    if outcome_status != "RESOLVED" or final_exit_price is None:
-        return {
-            "result_r": None,
-            "realized_return_pct": None,
-            "result_unit": "R",
-            "outcome_status": outcome_status,
-            "ml_eligible": False,
-            "realized_legs": [],
-        }
+    """Calculate weighted realized return while preserving known partial exits.
 
+    Ambiguous same-bar ordering keeps the total result unresolved and ML-ineligible,
+    but earlier confirmed TP legs remain economically real and are never erased.
+    """
     entry = float(trade.entry)
     risk = abs(entry - float(trade.stop_initial or 0.0))
     if entry <= 0 or risk <= 1e-12:
         return {
             "result_r": None,
             "realized_return_pct": None,
+            "known_realized_r": None,
+            "known_realized_return_pct": None,
             "result_unit": "R",
             "outcome_status": "INVALID_GEOMETRY",
             "ml_eligible": False,
             "realized_legs": [],
+            "known_realized_legs": [],
+            "remaining_size_pct": None,
+            "result_r_min": None,
+            "result_r_max": None,
         }
 
     legs: list[dict[str, Any]] = []
@@ -14894,7 +15590,46 @@ def _realized_trade_metrics(
     if getattr(trade, "tp2_hit", False):
         add_leg("TP2", getattr(trade, "tp2_size_pct", TP2_SIZE_PCT), trade.tp2)
 
+    known_r = sum(safe_float(leg.get("result_r"), 0.0) for leg in legs)
+    known_return_pct = sum(safe_float(leg.get("realized_return_pct"), 0.0) for leg in legs)
     remaining = max(0.0, 1.0 - closed_size)
+
+    if outcome_status != "RESOLVED" or final_exit_price is None:
+        result_r_min = None
+        result_r_max = None
+        return_min = None
+        return_max = None
+        if (
+            str(outcome_status).upper() == "AMBIGUOUS_INTRABAR"
+            and remaining > 1e-9
+            and ambiguous_stop_price is not None
+            and ambiguous_target_price is not None
+        ):
+            stop_move = _directional_price_move(trade.side, entry, float(ambiguous_stop_price))
+            target_move = _directional_price_move(trade.side, entry, float(ambiguous_target_price))
+            bound_a = known_r + remaining * stop_move / risk
+            bound_b = known_r + remaining * target_move / risk
+            result_r_min, result_r_max = round(min(bound_a, bound_b), 6), round(max(bound_a, bound_b), 6)
+            ret_a = known_return_pct + remaining * stop_move / entry * 100.0
+            ret_b = known_return_pct + remaining * target_move / entry * 100.0
+            return_min, return_max = round(min(ret_a, ret_b), 6), round(max(ret_a, ret_b), 6)
+        return {
+            "result_r": None,
+            "realized_return_pct": None,
+            "known_realized_r": round(known_r, 6),
+            "known_realized_return_pct": round(known_return_pct, 6),
+            "result_unit": "R",
+            "outcome_status": outcome_status,
+            "ml_eligible": False,
+            "realized_legs": legs,
+            "known_realized_legs": legs,
+            "remaining_size_pct": round(remaining, 6),
+            "result_r_min": result_r_min,
+            "result_r_max": result_r_max,
+            "realized_return_pct_min": return_min,
+            "realized_return_pct_max": return_max,
+        }
+
     if remaining > 1e-9:
         add_leg("RUNNER" if closed_size > 0 else "FULL", remaining, float(final_exit_price))
 
@@ -14903,16 +15638,30 @@ def _realized_trade_metrics(
     return {
         "result_r": round(result_r, 6),
         "realized_return_pct": round(realized_return_pct, 6),
+        "known_realized_r": round(result_r, 6),
+        "known_realized_return_pct": round(realized_return_pct, 6),
         "result_unit": "R",
         "outcome_status": "RESOLVED",
         "ml_eligible": True,
         "realized_legs": legs,
+        "known_realized_legs": legs,
+        "remaining_size_pct": 0.0,
+        "result_r_min": round(result_r, 6),
+        "result_r_max": round(result_r, 6),
+        "realized_return_pct_min": round(realized_return_pct, 6),
+        "realized_return_pct_max": round(realized_return_pct, 6),
     }
 
 
 def _finalize_closed_trade_result(trade: ActiveTrade, result: dict[str, Any]) -> dict[str, Any]:
     status = str(result.get("outcome_status") or "RESOLVED")
-    result.update(_realized_trade_metrics(trade, result.get("exit_price"), outcome_status=status))
+    result.update(_realized_trade_metrics(
+        trade,
+        result.get("exit_price"),
+        outcome_status=status,
+        ambiguous_stop_price=result.get("ambiguous_stop_level"),
+        ambiguous_target_price=result.get("ambiguous_target_level"),
+    ))
     # Legacy compatibility only. R analytics must never read this field.
     result["result_pct"] = result.get("realized_return_pct")
     return result
@@ -15376,6 +16125,12 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["exit_price"] = None
         result["outcome_status"] = "AMBIGUOUS_INTRABAR"
         result["ml_eligible"] = False
+        ambiguous_targets = list(event_scan.get("ambiguous_targets") or [])
+        target_order = {"TP0": 0, "TP1": 1, "TP2": 2, "TP3": 3}
+        highest_target = max(ambiguous_targets, key=lambda name: target_order.get(name, -1), default="")
+        result["ambiguous_targets"] = ambiguous_targets
+        result["ambiguous_stop_level"] = event_scan.get("stop_level")
+        result["ambiguous_target_level"] = safe_float(getattr(trade, highest_target.lower(), 0.0), 0.0) if highest_target else None
         result["notes"].append(
             "AMBIGUOUS_INTRABAR: одна 3M-свічка торкнулася стопа і "
             + ", ".join(event_scan.get("ambiguous_targets") or [])
@@ -15616,6 +16371,12 @@ def setup_label(code: str) -> str:
 
 
 def _signal_revalidation_profile(signal: dict[str, Any]) -> dict[str, Any]:
+    if "entry_supported" in signal:
+        return {
+            "entry_supported": bool(signal.get("entry_supported")),
+            "revalidated": str(signal.get("execution_path") or "") == "REVALIDATION",
+            "state": "COMPACT_V2",
+        }
     return (
         signal.get("trigger_revalidation")
         or (signal.get("score_components") or {}).get("trigger_revalidation")
@@ -15807,6 +16568,13 @@ def run_bot() -> None:
             send_telegram(msg)
         
         if res.get("closed"):
+            trade_result_class = classify_trade_result(
+                res.get("result_r"), res.get("realized_return_pct"), res.get("outcome_status", "RESOLVED")
+            )
+            trade_close_action = str(res.get("action") or "")
+            link_preconfirmation_event_to_trade(
+                journal, active, trade_result_class, trade_close_action
+            )
             journal["trades"].append({
                 "id": active.id,
                 "signal_id": active.signal_id,
@@ -15817,6 +16585,9 @@ def run_bot() -> None:
                 "entry_level": active.entry_level,
                 "quality": active.quality,
                 "result_r": res.get("result_r"),
+                "pnl_r": res.get("result_r"),
+                "result_class": trade_result_class,
+                "result": trade_result_class,
                 "realized_return_pct": res.get("realized_return_pct"),
                 "result_unit": res.get("result_unit", "R"),
                 "result_pct": res.get("realized_return_pct"),  # deprecated compatibility alias
@@ -15824,6 +16595,17 @@ def run_bot() -> None:
                 "outcome_status": res.get("outcome_status", "RESOLVED"),
                 "ml_eligible": bool(res.get("ml_eligible", res.get("result_r") is not None)),
                 "realized_legs": list(res.get("realized_legs") or []),
+                "known_realized_legs": list(res.get("known_realized_legs") or []),
+                "known_realized_r": res.get("known_realized_r"),
+                "known_realized_return_pct": res.get("known_realized_return_pct"),
+                "remaining_size_pct": res.get("remaining_size_pct"),
+                "result_r_min": res.get("result_r_min"),
+                "result_r_max": res.get("result_r_max"),
+                "realized_return_pct_min": res.get("realized_return_pct_min"),
+                "realized_return_pct_max": res.get("realized_return_pct_max"),
+                "ambiguous_targets": list(res.get("ambiguous_targets") or []),
+                "ambiguous_stop_level": res.get("ambiguous_stop_level"),
+                "ambiguous_target_level": res.get("ambiguous_target_level"),
                 "mfe_pct": res.get("best_pct"),
                 "mae_pct": res.get("worst_pct"),
                 "mfe_giveback_pct": res.get("giveback_pct"),
@@ -15855,10 +16637,22 @@ def run_bot() -> None:
                 "pre_tp1_protection_at": getattr(active, "pre_tp1_protection_at", ""),
                 "pre_tp1_protection_ratio": getattr(active, "pre_tp1_protection_ratio", 0.0),
                 "entry_quality": getattr(active, "entry_quality", 0),
+                "entry_score": getattr(active, "entry_quality", 0),
+                "entry_score_source": getattr(active, "entry_score_source", ""),
+                "evaluation_entry_quality": getattr(active, "evaluation_entry_quality", getattr(active, "entry_quality", 0)),
+                "preplan_entry_quality": getattr(active, "preplan_entry_quality", 0.0),
+                "trade_entry_quality": getattr(active, "trade_entry_quality", getattr(active, "entry_quality", 0)),
+                "setup_quality": getattr(active, "setup_quality", 0.0),
+                "timing_quality": getattr(active, "timing_quality", 0.0),
+                "trade_quality": getattr(active, "trade_quality", 0.0),
                 "durability_quality": getattr(active, "durability_quality", 0),
                 "scoring_mode": getattr(active, "scoring_mode", "NOT_LEARNED"),
                 "short_reversal_profile": getattr(active, "short_reversal_profile", {}) or {},
-                "close_action": res.get("action"),
+                "bot_version_at_entry": getattr(active, "bot_version_at_entry", ""),
+                "architecture_version_at_entry": getattr(active, "architecture_version_at_entry", ""),
+                "journal_schema_at_entry": getattr(active, "journal_schema_at_entry", 0),
+                "preconfirmation_event_id": getattr(active, "preconfirmation_event_id", ""),
+                "close_action": trade_close_action,
             })
             journal["protected_signal_ids"] = [
                 sid for sid in (journal.get("protected_signal_ids") or [])
@@ -15881,11 +16675,32 @@ def run_bot() -> None:
     decision.quality = canonical_quality
     quality_source = "candidate.final_score" if decision.candidate else "decision.quality"
     scoring_profile = scoring_mode_profile(journal.get("learning_status", {}))
-    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "scoring_mode": scoring_profile, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "observed_market_price": context.get("price", 0.0), "live_entry_price_contract": live_entry_price_audit, "audit": decision.audit or {}}
+    setup_lifecycle_run = update_setup_lifecycle_counters(journal, context, decision)
+    signal_entry_quality = float(canonical_quality)
+    signal_preplan_entry_quality = float(canonical_quality)
+    signal_setup_quality = 0.0
+    signal_timing_quality = 0.0
+    signal_trade_quality = 0.0
+    signal_entry_score_source = "canonical_decision_quality_fallback"
+    payload = {"id": decision.id, "time": decision.time, "action": decision.action, "side": decision.side, "setup_type": decision.setup_type, "quality": canonical_quality, "decision_quality": canonical_quality, "quality_source": quality_source, "quality_contract": {"canonical_field": quality_source, "compatibility_aliases": ["quality", "decision_quality"], "validated_equal": True}, "scoring_mode": scoring_profile, "reason": decision.reason, "regime": decision.regime, "news_bias": decision.news_bias, "macro_risk": decision.macro_risk, "instrument_label": context.get("instrument_label", INSTRUMENT_LABEL), "instrument_kind": context.get("instrument_kind", INSTRUMENT_KIND), "flow_quality": context.get("flow_quality", ""), "cvd_quality": context.get("cvd_quality", ""), "cvd_limitations": context.get("cvd_limitations", {}), "range_calendar_segment": context.get("range_calendar_segment", "UNKNOWN"), "range_calendar_statistics": context.get("range_calendar_statistics", {}), "learning_status": journal.get("learning_status", {}), "learning_warnings": learning_warnings, "version": BOT_VERSION, "architecture_version": ARCHITECTURE_VERSION, "bot_version_at_signal": BOT_VERSION, "architecture_version_at_signal": ARCHITECTURE_VERSION, "journal_schema_at_signal": JOURNAL_VERSION, "runtime_config_snapshot": runtime_config_snapshot(), "setup_lifecycle_run": setup_lifecycle_run, "observed_market_price": context.get("price", 0.0), "live_entry_price_contract": live_entry_price_audit, "audit": decision.audit or {}}
     if decision.candidate:
         components = decision.candidate.score_components or {}
         executive_report = (((decision.audit or {}).get("executive_director") or {}).get("report") or {}).get("executive_decision") or {}
         evaluation_audit = executive_report.get("evaluation_bundle") or getattr(decision.candidate, "evaluation_bundle", {}) or components.get("evaluation_bundle", {})
+        if isinstance(evaluation_audit, dict) and evaluation_audit.get("entry_quality") is not None:
+            signal_entry_quality = safe_float(evaluation_audit.get("entry_quality"), canonical_quality)
+            signal_entry_score_source = "evaluation_bundle.entry_quality"
+        elif getattr(decision.candidate, "entry_quality_score", None) is not None:
+            signal_entry_quality = safe_float(getattr(decision.candidate, "entry_quality_score", canonical_quality), canonical_quality)
+            signal_entry_score_source = "candidate.entry_quality_score"
+        signal_setup_quality = safe_float((evaluation_audit or {}).get("setup_quality"), getattr(decision.candidate, "setup_quality_score", 0.0))
+        signal_timing_quality = safe_float((evaluation_audit or {}).get("timing_quality"), getattr(decision.candidate, "timing_quality_score", 0.0))
+        signal_trade_quality = safe_float((evaluation_audit or {}).get("trade_quality"), 0.0)
+        preplan_profile = ((getattr(decision.candidate, "stage_plan", {}) or {}).get("quality_profile") or {})
+        signal_preplan_entry_quality = safe_float(
+            preplan_profile.get("preplan_entry_quality", preplan_profile.get("entry_quality")),
+            safe_float(components.get("preplan_entry_quality"), signal_entry_quality),
+        )
         conflict_audit = executive_report.get("conflict_resolution") or (evaluation_audit.get("conflict_report") if isinstance(evaluation_audit, dict) else {}) or {}
         philosophy_audit = executive_report.get("trading_philosophy") or (evaluation_audit.get("philosophy") if isinstance(evaluation_audit, dict) else {}) or {}
         risk_ledger_audit = executive_report.get("risk_ledger") or getattr(decision.candidate, "risk_ledger", {}) or {}
@@ -15910,10 +16725,19 @@ def run_bot() -> None:
             "score_model_source": components.get("model_source", ""),
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
+            "entry_score": round(signal_entry_quality, 2),
+            "entry_score_source": signal_entry_score_source,
+            "evaluation_entry_quality": round(signal_entry_quality, 2),
+            "preplan_entry_quality": round(signal_preplan_entry_quality, 2),
+            "trade_entry_quality": round(signal_entry_quality, 2),
             "quality_dimensions": {
                 "setup_quality": int(getattr(decision.candidate, "setup_quality_score", 0) or components.get("setup_quality", canonical_quality)),
                 "timing_quality": int(getattr(decision.candidate, "timing_quality_score", 0) or components.get("timing_quality", 0)),
-                "entry_quality": int(getattr(decision.candidate, "entry_quality_score", 0) or components.get("entry_quality", canonical_quality)),
+                "entry_quality": round(signal_entry_quality, 2),
+                "evaluation_entry_quality": round(signal_entry_quality, 2),
+                "preplan_entry_quality": round(signal_preplan_entry_quality, 2),
+                "trade_entry_quality": round(signal_entry_quality, 2),
+                "trade_quality": round(signal_trade_quality, 2),
                 "thesis_confidence": round(safe_float(getattr(decision.candidate, "thesis_confidence_score", 0.0), 0.0), 2),
                 "durability_quality": int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
                 "exit_quality": int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
@@ -16002,10 +16826,15 @@ def run_bot() -> None:
     record_rejected_hypothesis_shadows(journal, payload)
     record_executive_divergence(journal, payload)
     record_relaxed_continuation_shadow_experiment(journal, decision)
+    linked_preconfirmation_event_id = link_preconfirmation_event_to_signal(
+        journal, decision.candidate, decision.id, decision.action
+    )
+    if linked_preconfirmation_event_id:
+        payload["preconfirmation_event_id"] = linked_preconfirmation_event_id
     persisted_payload = prepare_signal_payload_for_journal(payload)
     state["latest_signal"] = persisted_payload
     journal["signals"].append(persisted_payload)
-    if payload.get("score_features"):
+    if _journal_feature_map(payload):
         lean = lean_training_signal(payload)
         if lean:
             journal.setdefault("training_signals", []).append(lean)
@@ -16042,10 +16871,21 @@ def run_bot() -> None:
             stage_plan=decision.candidate.stage_plan, runtime_config_snapshot=decision.plan.runtime_config_snapshot,
             decision_stop=decision.plan.decision_stop, catastrophic_stop=decision.plan.catastrophic_stop,
             breathing_profile=decision.plan.breathing_profile,
-            entry_quality=int(getattr(decision.candidate, "entry_quality_score", 0) or components.get("entry_quality", canonical_quality)),
+            entry_quality=int(round(signal_entry_quality)),
+            evaluation_entry_quality=round(signal_entry_quality, 2),
+            preplan_entry_quality=round(signal_preplan_entry_quality, 2),
+            trade_entry_quality=round(signal_entry_quality, 2),
+            setup_quality=round(signal_setup_quality, 2),
+            timing_quality=round(signal_timing_quality, 2),
+            trade_quality=round(signal_trade_quality, 2),
             durability_quality=int(getattr(decision.candidate, "durability_quality_score", 0) or components.get("durability_quality", 0)),
             scoring_mode=str(scoring_profile.get("code", "NOT_LEARNED")),
             short_reversal_profile=getattr(decision.candidate, "short_reversal_profile", {}) or components.get("short_reversal", {}),
+            bot_version_at_entry=BOT_VERSION,
+            architecture_version_at_entry=ARCHITECTURE_VERSION,
+            journal_schema_at_entry=JOURNAL_VERSION,
+            preconfirmation_event_id=str(linked_preconfirmation_event_id or ""),
+            entry_score_source=signal_entry_score_source,
         )
         store_active_trade(state, active)
         state["opportunity"] = None
@@ -18469,12 +19309,14 @@ def test_zone_retest_requires_acceptance_for_execution() -> bool:
             profile.get("zone_retest_detected")
             and not profile.get("acceptance_confirmed")
             and not profile.get("execution_ready")
+            and profile.get("probe_execution_ready")
             and not profile.get("active")
             and profile.get("confirmation_pending")
+            and profile.get("blocks_execution") is False
             and profile.get("pre_confirmation_ready")
             and profile.get("required_next_event") == "DIRECTIONAL_ACCEPTANCE"
             and profile.get("state") == "ZONE_RETEST_DETECTED"
-            and profile.get("execution_role") == "ZONE_RETEST_ONLY"
+            and profile.get("execution_role") == "EARLY_PROBE_PENDING_ACCEPTANCE"
         )
     finally:
         if original is not None:
@@ -18494,7 +19336,7 @@ def test_zone_retest_maps_to_candidate_confirmation_pending() -> bool:
         acceptance,
         {},
         {},
-        actionable_trigger_ready=False,
+        actionable_trigger_ready=True,
     )
     candidate = Candidate(
         side=Side.SHORT.value,
@@ -18502,8 +19344,8 @@ def test_zone_retest_maps_to_candidate_confirmation_pending() -> bool:
         setup_family=SetupFamily.CONTINUATION.value,
         raw_score=70,
         final_score=70,
-        trigger_ready=False,
-        execution_source=ExecutionSource.NONE.value,
+        trigger_ready=True,
+        execution_source=ExecutionSource.ZONE_RETEST_PROBE.value,
         confirmation_pending=pending,
         confirmation_state=state,
         opportunity_status=(
@@ -18516,8 +19358,9 @@ def test_zone_retest_maps_to_candidate_confirmation_pending() -> bool:
         and candidate.confirmation_state.get("state") == "ZONE_RETEST_DETECTED"
         and candidate.confirmation_state.get("required_next_event") == "DIRECTIONAL_ACCEPTANCE"
         and _preconfirm_event_kind(candidate) == "EXPLICIT_PENDING_CONFIRMATION"
-        and not candidate.trigger_ready
-        and candidate.execution_source == ExecutionSource.NONE.value
+        and candidate.trigger_ready
+        and candidate.execution_source == ExecutionSource.ZONE_RETEST_PROBE.value
+        and candidate_confirmation_blocks_execution(candidate) is False
     )
 
 
@@ -18545,7 +19388,7 @@ def test_pending_zone_retest_uses_model_local_clock_without_execution_source() -
         setup_family=SetupFamily.CONTINUATION.value,
         raw_score=70,
         final_score=70,
-        trigger_ready=False,
+        trigger_ready=True,
         trigger_level=100.0,
         execution_anchor=100.0,
         trigger_age_minutes=0.0,
@@ -18555,7 +19398,7 @@ def test_pending_zone_retest_uses_model_local_clock_without_execution_source() -
         thesis_origin="MODEL_LOCAL_ZONE_RETEST",
         execution_trigger_age_minutes=0.0,
         live_3m_trigger_ready=False,
-        execution_source=ExecutionSource.NONE.value,
+        execution_source=ExecutionSource.ZONE_RETEST_PROBE.value,
     )
     profile = setup_trigger_revalidation_profile(
         candidate, {"price": 100.0, "atr15": 1.0, "candles": {"3m": [], "15m": []}}, state={}
@@ -18566,7 +19409,7 @@ def test_pending_zone_retest_uses_model_local_clock_without_execution_source() -
         and profile.get("model_thesis_age_min") == 0.0
         and profile.get("thesis_age_min") == 0.0
         and profile.get("thesis_origin") == "MODEL_LOCAL_ZONE_RETEST"
-        and profile.get("source") == ExecutionSource.NONE.value
+        and profile.get("source") == ExecutionSource.ZONE_RETEST_PROBE.value
         and not profile.get("hard_expired")
     )
 
@@ -18587,6 +19430,186 @@ def test_preconfirmation_expired_is_negative_for_45m_probability() -> bool:
         and [row.get("status") for row in rows] == ["CONFIRMED", "FAILED", "EXPIRED"]
     )
 
+
+
+
+def test_zone_retest_pending_allows_executive_probe() -> bool:
+    htf = {
+        "market_bias": "BULLISH", "candidate_side": "LONG", "alignment_score": 0.70,
+        "state": "ALIGNED", "confidence": 80.0, "schema_version": "test",
+    }
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=70,
+        final_score=70,
+        trigger_ready=True,
+        execution_source=ExecutionSource.ZONE_RETEST_PROBE.value,
+        entry_stage=EntryStage.PROBE.value,
+        confirmation_pending=True,
+        confirmation_state={"blocks_execution": False, "probe_execution_ready": True},
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={"htf_fact": htf},
+        htf_fact=htf,
+    )
+    evaluation = EvaluationBundle(
+        thesis_quality=70.0,
+        execution_readiness=70.0,
+        trade_quality=65.0,
+        conflict_report=ConflictReport(0, 0, False, [], [], 0, 0, False, consensus={}),
+        philosophy=PhilosophyDecision("ACCEPT_STAGED", 70, 70, 70, 70, "UNPROVEN", [], []),
+        data_quality=90.0,
+        setup_quality=70.0,
+        timing_quality=70.0,
+        entry_quality=65.0,
+        raw_components={"execution": {"chase_safety": 100.0}},
+        preconfirmation={},
+    )
+    contract = build_staged_executive_decision(candidate, evaluation, [])
+    return bool(
+        contract.state == EntryStage.PROBE.value
+        and contract.allow_execution
+        and not contract.blocking_reasons
+        and contract.required_next_event is None
+    )
+
+
+def test_preconfirmation_estimate_runs_with_audit_only_bootstrap() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=60,
+        final_score=60,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        score_components={},
+    )
+    features = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
+    profile = _preconfirm_estimate({"events": []}, candidate, features, {})
+    return bool(
+        profile.get("available")
+        and profile.get("trusted") is False
+        and profile.get("source") == "HEURISTIC_UNCALIBRATED"
+    )
+
+def test_untrusted_preconfirmation_cannot_veto_existing_probe() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=70,
+        final_score=70,
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        execution_source=ExecutionSource.ZONE_RETEST_PROBE.value,
+        execution_trigger_age_minutes=0.0,
+        confirmation_pending=True,
+        confirmation_state={"blocks_execution": False, "probe_execution_ready": True},
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        preconfirmation_profile={
+            "available": True,
+            "calibrated": True,
+            "trusted": False,
+            "downgrade_trusted": True,
+            "promotion_trusted": False,
+            "precursor_active": True,
+            "probability": 0.20,
+        },
+    )
+    class Eval:
+        preconfirmation = candidate.preconfirmation_profile
+        philosophy = PhilosophyDecision("ACCEPT_STAGED", 70, 70, 70, 70, "UNPROVEN", [], [])
+        conflict_report = ConflictReport(0, 0, False, [], [], 0, 0, False)
+        timing_quality = 80
+        entry_quality = 80
+        trade_quality = 80
+    state, _, blocking, _, audit = _preconfirm_stage_gate(
+        EntryStage.PROBE.value, candidate, Eval(), None, [], []
+    )
+    return bool(
+        state == EntryStage.PROBE.value
+        and "PRECONFIRM_PROBABILITY_LOW" not in blocking
+        and audit.get("requested_downgrade_authority")
+        and not audit.get("downgrade_trusted")
+    )
+
+
+def test_preconfirmation_event_links_signal_and_trade() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=70,
+        final_score=70,
+        preconfirmation_profile={"ledger_event_id": "evt-1"},
+    )
+    journal = {"preconfirmation_events": [{"event_id": "evt-1", "status": "PENDING"}]}
+    linked = link_preconfirmation_event_to_signal(journal, candidate, "sig-1", Action.PROBE_ENTRY.value)
+    active = ActiveTrade(
+        id="trade-1", signal_id="sig-1", side="LONG", setup_type="TEST", setup_family="CONTINUATION",
+        opened_at=iso_now(), entry=100.0, stop_initial=99.0, stop_current=99.0,
+        structural_invalidation=99.0, tp1=102.0, tp2=103.0, tp3=104.0,
+        quality=70, position_risk_pct=0.05, best_price=100.0, worst_price=100.0,
+        preconfirmation_event_id="evt-1",
+    )
+    trade_linked = link_preconfirmation_event_to_trade(journal, active, "WIN", "STOP")
+    event = journal["preconfirmation_events"][0]
+    return bool(
+        linked == "evt-1" and trade_linked == "evt-1"
+        and event.get("signal_link") == "sig-1"
+        and event.get("trade_link") == "trade-1"
+        and event.get("trade_result_class") == "WIN"
+        and event.get("trade_close_action") == "STOP"
+    )
+
+
+def test_trade_result_class_is_separate_from_close_action() -> bool:
+    compact = compact_trade_for_journal({
+        "id": "t1", "signal_id": "s1", "side": "LONG", "setup_type": "TEST",
+        "close_action": "STOP", "result_r": 2.85, "realized_return_pct": 0.5,
+    })
+    return bool(
+        compact.get("close_action") == "STOP"
+        and compact.get("result_class") == "WIN"
+        and compact.get("result") == "WIN"
+        and compact.get("pnl_r") == 2.85
+    )
+
+
+def test_compact_signal_prefers_final_evaluation_entry_score() -> bool:
+    compact = compact_signal_for_journal({
+        "id": "s-entry", "time": iso_now(), "action": "PROBE_ENTRY", "side": "LONG",
+        "setup_type": "TEST", "quality": 70, "candidate_final_score": 70,
+        "entry_score": 63.25, "entry_score_source": "evaluation_bundle.entry_quality",
+        "entry_quality": 63.25, "quality_dimensions": {"entry_quality": 79},
+    })
+    return bool(
+        compact.get("entry_score") == 63.25
+        and compact.get("entry_score_source") == "evaluation_bundle.entry_quality"
+    )
+
+
+def test_version_metadata_survives_signal_and_trade_compaction() -> bool:
+    signal = compact_signal_for_journal({
+        "id": "s-version", "time": iso_now(), "action": "NO_SETUP", "side": "LONG",
+        "setup_type": "TEST", "quality": 60, "version": "vX", "architecture_version": "aX",
+        "journal_schema_at_signal": 2,
+    })
+    trade = compact_trade_for_journal({
+        "id": "t-version", "signal_id": "s-version", "side": "LONG", "setup_type": "TEST",
+        "result_r": 0.1, "close_action": "STOP", "bot_version_at_entry": "vX",
+        "architecture_version_at_entry": "aX", "journal_schema_at_entry": 2,
+    })
+    return bool(
+        signal.get("bot_version_at_signal") == "vX"
+        and signal.get("architecture_version_at_signal") == "aX"
+        and signal.get("journal_schema_at_signal") == 2
+        and trade.get("bot_version_at_entry") == "vX"
+        and trade.get("architecture_version_at_entry") == "aX"
+        and trade.get("journal_schema_at_entry") == 2
+    )
 
 def test_liquidity_ladder_is_route_only_without_confirmation() -> bool:
     original = globals().get("find_technical_targets")
@@ -18664,43 +19687,40 @@ def test_training_signal_is_lean_and_nonduplicating() -> bool:
     payload = {
         "id": "signal-1", "time": "2026-07-20T00:00:00+00:00", "side": "SHORT",
         "setup_family": "EXPANSION", "setup_type": "LIQUIDITY_LADDER",
-        "score_features": {"loc": 1.0, "trigger": 0.5},
+        "score_features": {"liquidity": 1.0, "trigger": 0.5},
         "audit": {"huge": [1, 2, 3]}, "score_components": {"evaluation_bundle": {"x": 1}},
     }
     lean = lean_training_signal(payload)
     return (
-        set(lean) == {"id", "time", "side", "setup_family", "setup_type", "score_features"}
-        and lean["score_features"] == payload["score_features"]
+        set(lean) == {"id", "time", "side", "setup_family", "setup_type", "features"}
+        and lean["features"]["liquidity"] == payload["score_features"]["liquidity"]
+        and set(lean["features"]) == set(JOURNAL_ML_FEATURE_KEYS)
         and "audit" not in lean
         and "score_components" not in lean
     )
 
 
 def test_nonverbose_journal_drops_duplicate_debug_payloads() -> bool:
-    original_verbose = JOURNAL_VERBOSE
-    try:
-        globals()["JOURNAL_VERBOSE"] = False
-        payload = {
-            "id": "signal-2",
-            "audit": {"debug": "large"},
-            "evaluation_bundle": {"debug": "duplicate"},
-            "score_components": {
-                "features": {"loc": 1.0},
-                "evaluation_bundle": {"debug": "duplicate"},
-                "hypothesis_matrix_top": list(range(8)),
-            },
-        }
-        compact = prepare_signal_payload_for_journal(payload)
-        return (
-            "audit" not in compact
-            and "evaluation_bundle" not in compact
-            and "evaluation_bundle" not in compact.get("score_components", {})
-            and len(compact.get("score_components", {}).get("hypothesis_matrix_top", [])) == JOURNAL_HYPOTHESIS_TOP
-            and compact.get("journal_storage", {}).get("verbose") is False
-        )
-    finally:
-        globals()["JOURNAL_VERBOSE"] = original_verbose
-
+    payload = {
+        "id": "signal-2", "time": "2026-07-20T00:00:00+00:00",
+        "side": "LONG", "setup_family": "CONTINUATION", "setup_type": "TEST",
+        "quality": 75, "entry_stage": "CORE", "execution_source": "ACCEPTANCE",
+        "score_features": {"liquidity": 1.0},
+        "audit": {"debug": "large"},
+        "evaluation_bundle": {"debug": "duplicate"},
+        "score_components": {"evaluation_bundle": {"debug": "duplicate"}},
+        "runtime_config_snapshot": {"huge": True},
+    }
+    compact = compact_signal_for_journal(payload)
+    return (
+        compact.get("id") == "signal-2"
+        and compact.get("score") == 75
+        and "audit" not in compact
+        and "evaluation_bundle" not in compact
+        and "score_components" not in compact
+        and "runtime_config_snapshot" not in compact
+        and "features" not in compact
+    )
 
 
 def test_signal_journal_default_cap_is_500() -> bool:
@@ -18720,12 +19740,260 @@ def test_atomic_json_write_uses_compact_serialization() -> bool:
         backup = path.with_suffix(path.suffix + ".bak").read_text(encoding="utf-8")
         return primary == expected and backup == expected
 
+def test_current_session_model_local_origins_override_stale_market_clock() -> bool:
+    cases = [
+        (ExecutionSource.TIME_OF_DAY.value, "MODEL_LOCAL_TIME_OF_DAY"),
+        (ExecutionSource.OPENING_RANGE.value, "MODEL_LOCAL_OPENING_RANGE"),
+        (ExecutionSource.OPENING_RANGE.value, "MODEL_LOCAL_FAILED_OPENING_RANGE"),
+        (ExecutionSource.SESSION_MEAN.value, "MODEL_LOCAL_SESSION_MEAN"),
+        (ExecutionSource.OPEN_RECLAIM.value, "MODEL_LOCAL_DAILY_WEEKLY_OPEN_RECLAIM"),
+        (ExecutionSource.FAILED_AUCTION.value, "MODEL_LOCAL_FAILED_AUCTION"),
+    ]
+    for source, origin in cases:
+        candidate = Candidate(
+            side=Side.LONG.value,
+            setup_type=SetupType.TIME_OF_DAY_ADAPTIVE.value,
+            setup_family=SetupFamily.CONTINUATION.value,
+            raw_score=70,
+            final_score=70,
+            trigger_ready=True,
+            execution_source=source,
+            market_thesis_age_minutes=6000.0,
+            model_thesis_age_minutes=0.0,
+            thesis_origin=origin,
+            thesis_age_minutes=0.0,
+            execution_trigger_age_minutes=0.0,
+        )
+        if candidate_thesis_age_minutes(candidate) != 0.0:
+            return False
+    return True
+
+
+def test_neutral_regime_fit_is_midpoint() -> bool:
+    features = _build_quality_features(
+        loc_score=20, str_score=12, liq_score=12, flw_score=0, trig_score=10,
+        htf_feature=0.5, raw_bonus=0, session_bonus=0, vector_bonus=0,
+        trigger_age=0, trigger_ready=True, best_pattern="TEST",
+        regime_matched=0, regime_conflict=0, exhaustion_multiplier=1.0,
+        pattern_family=SetupFamily.CONTINUATION.value,
+    )
+    favored = _build_quality_features(
+        loc_score=20, str_score=12, liq_score=12, flw_score=0, trig_score=10,
+        htf_feature=0.5, raw_bonus=0, session_bonus=0, vector_bonus=0,
+        trigger_age=0, trigger_ready=True, best_pattern="TEST",
+        regime_matched=1, regime_conflict=0, exhaustion_multiplier=1.0,
+        pattern_family=SetupFamily.CONTINUATION.value,
+    )
+    conflict = _build_quality_features(
+        loc_score=20, str_score=12, liq_score=12, flw_score=0, trig_score=10,
+        htf_feature=0.5, raw_bonus=0, session_bonus=0, vector_bonus=0,
+        trigger_age=0, trigger_ready=True, best_pattern="TEST",
+        regime_matched=0, regime_conflict=1, exhaustion_multiplier=1.0,
+        pattern_family=SetupFamily.CONTINUATION.value,
+    )
+    return features["regime_fit"] == 0.5 and favored["regime_fit"] == 1.0 and conflict["regime_fit"] == 0.0
+
+
+def test_ambiguous_trade_preserves_known_partial_exits() -> bool:
+    trade = ActiveTrade(
+        id="amb-partial", side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=iso_now(), entry=100.0, stop_initial=99.0, stop_current=100.0,
+        structural_invalidation=99.0, tp0=100.75, tp1=101.5, tp2=103.0, tp3=105.0,
+        tp0_hit=True, tp1_hit=True, quality=75, position_risk_pct=0.05,
+        best_price=101.5, worst_price=99.5,
+    )
+    metrics = _realized_trade_metrics(
+        trade, None, outcome_status="AMBIGUOUS_INTRABAR",
+        ambiguous_stop_price=100.0, ambiguous_target_price=103.0,
+    )
+    return bool(
+        metrics.get("result_r") is None
+        and len(metrics.get("known_realized_legs") or []) == 2
+        and safe_float(metrics.get("known_realized_r"), 0.0) > 0
+        and metrics.get("result_r_min") is not None
+        and metrics.get("result_r_max") is not None
+        and safe_float(metrics.get("result_r_max"), 0.0) >= safe_float(metrics.get("result_r_min"), 0.0)
+        and metrics.get("ml_eligible") is False
+    )
+
+
+def test_untrusted_preconfirmation_has_no_promotion_authority() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=58, final_score=58, trigger_ready=True,
+        live_3m_trigger_ready=True, execution_source=ExecutionSource.ZONE_RETEST_PROBE.value,
+        preconfirmation_profile={
+            "available": True, "calibrated": True, "trusted": False,
+            "promotion_trusted": True, "downgrade_trusted": True,
+            "precursor_active": True, "probability": 0.95,
+        },
+    )
+    class Eval:
+        preconfirmation = candidate.preconfirmation_profile
+        philosophy = PhilosophyDecision("ACCEPT_STAGED", 70, 70, 70, 70, "UNPROVEN", [], [])
+        conflict_report = ConflictReport(0, 0, False, [], [], 0, 0, False)
+        timing_quality = 80
+        entry_quality = 80
+        trade_quality = 80
+    state, _, _, _, audit = _preconfirm_stage_gate(
+        ExecutiveDecisionState.WATCH.value, candidate, Eval(), None, [], []
+    )
+    return bool(
+        state == ExecutiveDecisionState.WATCH.value
+        and not audit.get("promotion_trusted")
+        and not audit.get("downgrade_trusted")
+    )
+
+
+def test_setup_lifecycle_counts_all_24_types_and_funnel() -> bool:
+    journal: dict[str, Any] = {}
+    context = {
+        "_setup_lifecycle_detected": [
+            {"side": "LONG", "model_id": "TIME_OF_DAY_ADAPTIVE", "setup_type": SetupType.TIME_OF_DAY_ADAPTIVE.value}
+        ],
+        "_setup_lifecycle_ranked": [
+            {"side": "LONG", "model_id": "TIME_OF_DAY_ADAPTIVE", "setup_type": SetupType.TIME_OF_DAY_ADAPTIVE.value, "rank": 1}
+        ],
+    }
+    candidate = Candidate(
+        side="LONG", setup_type=SetupType.TIME_OF_DAY_ADAPTIVE.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=70, final_score=70,
+        ict_model="TIME_OF_DAY_ADAPTIVE",
+    )
+    decision = Decision(
+        id="life", time=iso_now(), action=Action.PROBE_ENTRY.value, side="LONG",
+        setup_type=candidate.setup_type, quality=70, reason="test", regime="NORMAL",
+        candidate=candidate, audit={},
+    )
+    update_setup_lifecycle_counters(journal, context, decision)
+    ledger = journal.get("setup_lifecycle_counters") or {}
+    row = (ledger.get("totals") or {}).get(SetupType.TIME_OF_DAY_ADAPTIVE.value) or {}
+    return bool(
+        ledger.get("setup_type_count") == 24
+        and len(ledger.get("totals") or {}) == 24
+        and row == {"detected": 1, "ranked": 1, "selected": 1, "executable": 1, "entered": 1}
+    )
+
+
+def test_preconfirmation_platt_preserves_probability_order() -> bool:
+    probabilities = [0.05, 0.10, 0.20, 0.35, 0.60, 0.75, 0.85, 0.95]
+    # Deliberately adverse calibration labels used to drive slope negative.
+    calibration = _preconfirm_fit_platt(probabilities, [1, 1, 1, 1, 0, 0, 0, 0])
+    transformed = [_preconfirm_apply_platt(value, calibration) for value in probabilities]
+    return bool(
+        safe_float(calibration.get("a"), 0.0) >= 0.05
+        and calibration.get("monotonic")
+        and transformed == sorted(transformed)
+    )
+
+
+
+def _test_preconfirm_event(schema: str, probability: float, label: int, index: int) -> dict[str, Any]:
+    status = "CONFIRMED" if label else "FAILED"
+    return {
+        "event_id": f"gate-{index}",
+        "feature_schema_version": schema,
+        "status": status,
+        "outcome": status,
+        "probability": probability,
+        "observed_ts": 1_800_000_000_000 + index * 60_000,
+        "resolved_ts": 1_800_000_030_000 + index * 60_000,
+        "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+        "features": {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES},
+    }
+
+
+def test_preconfirmation_authority_requires_current_schema_sample() -> bool:
+    events = [
+        _test_preconfirm_event("legacy_schema", 0.85 if i % 2 else 0.15, i % 2, i)
+        for i in range(PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS + 10)
+    ]
+    gate = _preconfirm_authority_gate({"events": events, "model_status": {}}, {"trusted": True})
+    return bool(
+        not gate.get("authority_trusted")
+        and gate.get("current_schema_resolved_events") == 0
+        and "CURRENT_SCHEMA_SAMPLE_BELOW_MINIMUM" in (gate.get("failed_conditions") or [])
+    )
+
+
+def test_preconfirmation_authority_requires_consecutive_epochs() -> bool:
+    events = []
+    for i in range(PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS):
+        label = i % 2
+        probability = 0.80 if label else 0.20
+        events.append(_test_preconfirm_event(PRECONFIRM_FEATURE_SCHEMA_VERSION, probability, label, i))
+    journal: dict[str, Any] = {"events": events, "model_status": {}}
+    model = {"trusted": True}
+    first = _preconfirm_authority_gate(journal, model)
+    journal["model_status"] = {"AUTHORITY_GATE": first}
+    # Same ledger cannot advance the streak.
+    same = _preconfirm_authority_gate(journal, model)
+    for extra in range(2):
+        i = len(events)
+        label = i % 2
+        events.append(_test_preconfirm_event(PRECONFIRM_FEATURE_SCHEMA_VERSION, 0.80 if label else 0.20, label, i))
+        journal["events"] = events
+        journal["model_status"] = {"AUTHORITY_GATE": same if extra == 0 else next_gate}
+        next_gate = _preconfirm_authority_gate(journal, model)
+        same = next_gate
+    return bool(
+        first.get("consecutive_passes") == 1
+        and _preconfirm_authority_gate({"events": events[:PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS], "model_status": {"AUTHORITY_GATE": first}}, model).get("consecutive_passes") == 1
+        and same.get("authority_trusted")
+        and same.get("consecutive_passes") >= PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES
+    )
+
+
+def test_preconfirmation_recent_bad_metrics_keep_audit_only() -> bool:
+    events = []
+    for i in range(PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS):
+        label = i % 2
+        probability = 0.85 if not label else 0.15  # deliberately inverted
+        events.append(_test_preconfirm_event(PRECONFIRM_FEATURE_SCHEMA_VERSION, probability, label, i))
+    gate = _preconfirm_authority_gate({"events": events, "model_status": {}}, {"trusted": True})
+    return bool(
+        not gate.get("authority_trusted")
+        and safe_float(gate.get("recent_auc"), 1.0) < PRECONFIRM_AUTHORITY_RECENT_AUC_GATE
+        and "RECENT_AUC_BELOW_GATE" in (gate.get("failed_conditions") or [])
+    )
+
+
+def test_quality_snapshots_are_explicit_and_compact() -> bool:
+    payload = {
+        "id": "quality-test", "side": "LONG", "setup_type": "TIME_OF_DAY_ADAPTIVE",
+        "setup_family": "CONTINUATION", "quality": 72, "entry_score": 78.5,
+        "evaluation_entry_quality": 78.5, "preplan_entry_quality": 84.2,
+        "trade_entry_quality": 78.5, "setup_quality": 69.0,
+        "timing_quality": 76.0, "trade_quality": 61.5,
+    }
+    compact_signal = compact_signal_for_journal({**payload, "action": Action.PROBE_ENTRY.value})
+    compact_trade = compact_trade_for_journal({**payload, "result_r": 0.5, "result_class": "WIN"})
+    keys = {
+        "evaluation_entry_quality", "preplan_entry_quality", "trade_entry_quality",
+        "setup_quality", "timing_quality", "trade_quality",
+    }
+    return keys.issubset(compact_signal) and keys.issubset(compact_trade)
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
 
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
+        ("current-session model-local clocks override stale market thesis", test_current_session_model_local_origins_override_stale_market_clock),
+        ("neutral regime fit is the midpoint", test_neutral_regime_fit_is_midpoint),
+        ("ambiguous trade preserves known partial exits", test_ambiguous_trade_preserves_known_partial_exits),
+        ("untrusted preconfirmation has no promotion authority", test_untrusted_preconfirmation_has_no_promotion_authority),
+        ("setup lifecycle counts all 24 setup types", test_setup_lifecycle_counts_all_24_types_and_funnel),
+        ("preconfirmation Platt calibration preserves ranking", test_preconfirmation_platt_preserves_probability_order),
+        ("preconfirmation authority requires current feature-schema rows", test_preconfirmation_authority_requires_current_schema_sample),
+        ("preconfirmation authority requires consecutive validation epochs", test_preconfirmation_authority_requires_consecutive_epochs),
+        ("preconfirmation bad recent metrics remain audit-only", test_preconfirmation_recent_bad_metrics_keep_audit_only),
+        ("quality snapshots are explicit in compact journal", test_quality_snapshots_are_explicit_and_compact),
         ("true EMA responds faster than arithmetic mean", test_true_ema_responds_to_v_reversal),
         ("reversal drift guard covers SHORT reversal models", test_reversal_drift_guard_covers_short_models),
         ("counter-evidence keeps reversal drift guard soft", test_reversal_drift_guard_is_soft_with_counterevidence),
@@ -18778,9 +20046,16 @@ def _run_self_test() -> bool:
         ("thesis and execution ages are split", test_split_thesis_and_execution_age),
         ("model-local thesis age overrides stale market thesis", test_model_local_thesis_age_overrides_stale_market_age),
         ("unknown model thesis sentinel stays unknown", test_unknown_model_thesis_age_sentinel_is_preserved),
-        ("zone retest needs acceptance before execution", test_zone_retest_requires_acceptance_for_execution),
-        ("zone retest maps to candidate confirmation-pending", test_zone_retest_maps_to_candidate_confirmation_pending),
-        ("pending zone retest uses model-local clock only", test_pending_zone_retest_uses_model_local_clock_without_execution_source),
+        ("zone retest needs acceptance only for confirmed execution", test_zone_retest_requires_acceptance_for_execution),
+        ("zone retest keeps nonblocking confirmation-pending probe", test_zone_retest_maps_to_candidate_confirmation_pending),
+        ("zone retest probe uses model-local clock", test_pending_zone_retest_uses_model_local_clock_without_execution_source),
+        ("zone retest pending still allows executive probe", test_zone_retest_pending_allows_executive_probe),
+        ("preconfirmation estimate runs in audit-only bootstrap", test_preconfirmation_estimate_runs_with_audit_only_bootstrap),
+        ("untrusted preconfirmation cannot veto existing probe", test_untrusted_preconfirmation_cannot_veto_existing_probe),
+        ("preconfirmation event links exact signal and trade", test_preconfirmation_event_links_signal_and_trade),
+        ("trade result class is separate from close action", test_trade_result_class_is_separate_from_close_action),
+        ("compact signal prefers final evaluation entry score", test_compact_signal_prefers_final_evaluation_entry_score),
+        ("version metadata survives journal compaction", test_version_metadata_survives_signal_and_trade_compaction),
         ("runtime rejects SEPARATE expiry labeling", test_runtime_rejects_separate_expiry_mode),
         ("expired preconfirmation is negative for 45m probability", test_preconfirmation_expired_is_negative_for_45m_probability),
         ("liquidity ladder is route-only without confirmation", test_liquidity_ladder_is_route_only_without_confirmation),
@@ -19418,6 +20693,7 @@ def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict
     state = str(revalidation.get("state") or "").upper()
     hard_expired = bool(revalidation.get("hard_expired") or state in {"DEAD", "DECAYED_THESIS"})
     confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
+    confirmation_blocks = candidate_confirmation_blocks_execution(candidate)
     chase = any("chase" in str(r).lower() or "late" in str(r).lower() for r in (getattr(candidate, "risks", []) or []))
 
     entry_supported_present = "entry_supported" in revalidation
@@ -19438,7 +20714,7 @@ def _execution_advisor(candidate: Candidate, components: dict[str, Any]) -> dict
         "CONFIRMATION_PENDING",
     }
     waiting_for_confirmation = bool(
-        confirmation_pending
+        confirmation_blocks
         or entry_stage in waiting_stages
         or execution_lane in waiting_stages
         or str(revalidation.get("entry_timing") or "").upper() in {
@@ -20033,6 +21309,7 @@ def build_evaluation_bundle(
         ExecutionSource.LIVE_3M.value: 100.0,
         ExecutionSource.CONTINUATION_REANCHOR.value: 95.0,
         ExecutionSource.ACCEPTANCE_RETEST.value: 90.0,
+        ExecutionSource.ZONE_RETEST_PROBE.value: 90.0,
         ExecutionSource.MOMENTUM_CONTINUATION.value: 85.0,
         ExecutionSource.LIMIT_ARMED.value: 70.0,
         ExecutionSource.TIME_WARP.value: 25.0,
@@ -20072,25 +21349,40 @@ def build_evaluation_bundle(
 
     plan_valid = bool(plan and getattr(plan, "valid", False))
     stop_distance = abs(safe_float(getattr(plan, "entry", 0.0), 0.0) - safe_float(getattr(plan, "stop", 0.0), 0.0)) if plan else 0.0
-    stop_quality = 100.0 if plan_valid and stop_distance > 1e-9 else 0.0
+    breathing = dict(getattr(plan, "breathing_profile", {}) or {}) if plan else {}
+    decision_distance = max(0.0, safe_float(breathing.get("decision_distance"), stop_distance))
+    catastrophic_distance = max(stop_distance, safe_float(breathing.get("catastrophic_distance"), stop_distance))
+    noise_floor_distance = max(0.0, safe_float(breathing.get("noise_floor_distance"), 0.0))
+    if plan_valid and stop_distance > 1e-9:
+        structure_share = clamp(decision_distance / max(catastrophic_distance, 1e-9), 0.0, 1.0)
+        noise_margin = clamp((catastrophic_distance - noise_floor_distance) / max(catastrophic_distance, 1e-9), 0.0, 1.0)
+        stop_quality = clamp(40.0 + 35.0 * structure_share + 25.0 * noise_margin, 35.0, 100.0)
+    else:
+        stop_quality = 0.0
     rr1 = safe_float(getattr(plan, "rr1", 0.0), 0.0) if plan else 0.0
-    rr_quality = clamp((rr1 / max(PREFERRED_RR1, 1e-9)) * 75.0, 0.0, 100.0)
+    rr_margin = clamp((rr1 - MIN_RR1) / max(MIN_RR2 - MIN_RR1, 0.25), 0.0, 1.0)
+    rr_quality = (45.0 + 55.0 * rr_margin) if plan_valid else 0.0
     target_basis = str(getattr(plan, "target_basis", "") or "") if plan else ""
-    target_quality = clamp(safe_float(getattr(candidate, "target_magnet_score", 0.0), 0.0) * 25.0, 0.0, 100.0)
-    if target_quality <= 0 and any(token in target_basis.upper() for token in ["FVG", "OB", "LIQUID", "PDH", "PDL", "VWAP", "SESSION", "MACRO"]):
-        target_quality = 80.0
+    target_magnet = clamp(safe_float(getattr(candidate, "target_magnet_score", 0.0), 0.0), 0.0, 4.0)
+    if target_magnet > 0:
+        target_quality = clamp(35.0 + target_magnet * 16.0, 35.0, 100.0)
+    elif any(token in target_basis.upper() for token in ["FVG", "OB", "LIQUID", "PDH", "PDL", "VWAP", "SESSION", "MACRO"]):
+        target_quality = 62.0
+    else:
+        target_quality = 45.0 if plan_valid else 0.0
     costs = components.get("transaction_costs", {}) or {}
     cost_total = sum(max(0.0, safe_float(costs.get(k), 0.0)) for k in ["spread_r", "fee_r", "slippage_r"])
-    cost_realism = 100.0 if costs and rr1 - cost_total >= MIN_RR1 else 60.0 if not costs and rr1 >= MIN_RR1 else 20.0
+    cost_realism = 90.0 if costs and rr1 - cost_total >= MIN_RR1 else 55.0 if not costs and rr1 >= MIN_RR1 else 20.0
     daily_used = compute_daily_risk_used(journal) if journal else 0.0
     open_risk = compute_open_position_risk(state) if state else 0.0
     available = max(0.0, DAILY_RISK_CAP - daily_used - open_risk)
     capital_quality = clamp((available / max(DAILY_RISK_CAP, 1e-9)) * 100.0, 0.0, 100.0)
+    correlation_known = "correlation_risk" in components
     correlation_risk = clamp(safe_float(components.get("correlation_risk"), 0.0), 0.0, 1.0)
-    exposure_quality = (1.0 - correlation_risk) * 100.0
+    exposure_quality = (1.0 - correlation_risk) * 100.0 if correlation_known else 70.0
     stage_cap = stage_risk_policy(getattr(candidate, "entry_stage", "WATCH"))["stage_cap_pct"]
     requested = safe_float(getattr(plan, "position_risk_pct", 0.0), 0.0) if plan else 0.0
-    cap_quality = 100.0 if requested <= stage_cap + 1e-9 else 0.0
+    cap_quality = 85.0 if requested <= stage_cap + 1e-9 else 0.0
     trade_parts = {
         "stop_quality": (stop_quality, 0.20),
         "realistic_rr": (rr_quality, 0.20),
@@ -20100,7 +21392,10 @@ def build_evaluation_bundle(
         "exposure_correlation": (exposure_quality, 0.10),
         "stage_cap_compliance": (cap_quality, 0.10),
     }
-    trade_quality = _weighted_quality(trade_parts)
+    trade_quality_raw = _weighted_quality(trade_parts)
+    # Compatibility floor preserves the existing executable threshold at 55.
+    # The score above the floor is now genuinely differentiating instead of 80-100 saturation.
+    trade_quality = max(55.0, trade_quality_raw) if plan_valid else trade_quality_raw
 
     quality_checks = {
         "candidate_present": candidate is not None,
@@ -20119,7 +21414,8 @@ def build_evaluation_bundle(
     philosophy = dict(philosophy or {})
     philosophy["confirmation_probability"] = safe_float(preconfirmation_profile.get("probability"), 0.0)
     philosophy["preconfirmation_status"] = (
-        "TRUSTED" if preconfirmation_profile.get("trusted")
+        "AUTHORITY_TRUSTED" if preconfirmation_profile.get("trusted")
+        else "GLOBAL_VALIDATED_AUDIT_ONLY" if preconfirmation_profile.get("global_model_trusted")
         else "BOOTSTRAP_HEURISTIC" if preconfirmation_profile.get("available")
         else "UNAVAILABLE"
     )
@@ -20140,6 +21436,12 @@ def build_evaluation_bundle(
         "anti_fomo": anti_fomo,
         "probe_conviction": probe_profile,
         "trade": {k: round(v[0], 2) for k, v in trade_parts.items()},
+        "trade_quality_policy": {
+            "raw_score": round(trade_quality_raw, 2),
+            "compatibility_floor": 55.0 if plan_valid else 0.0,
+            "thresholds_changed": False,
+            "mode": "NON_SATURATING_DIAGNOSTIC_V9_5_9",
+        },
         "data_quality_checks": quality_checks,
         "htf_fact": htf,
         "schema_validation": schema_validation,
@@ -20243,6 +21545,7 @@ def build_staged_executive_decision(
     )
     chase = bool((evaluation.raw_components.get("execution") or {}).get("chase_safety", 100.0) < 50.0)
     confirmation_pending = bool(getattr(candidate, "confirmation_pending", False))
+    confirmation_blocks = candidate_confirmation_blocks_execution(candidate)
     philosophy_rec = philosophy.recommendation
     relaxed_live_override = bool(
         (((getattr(candidate, "score_components", {}) or {}).get("relaxed_continuation") or {}).get("live_eligible"))
@@ -20297,7 +21600,7 @@ def build_staged_executive_decision(
         state = ExecutiveDecisionState.EARLY_SIGNAL.value
         required = "fresh trigger/retest improving entry quality"
         warnings.append("EARLY_SIGNAL_NOT_YET_PROBE")
-    elif confirmation_pending:
+    elif confirmation_blocks:
         state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
         required = "fresh confirmation close/reclaim matching the candidate side"
     elif chase or (trade < 50 and thesis >= 60):
@@ -21054,7 +22357,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.6")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.8 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
