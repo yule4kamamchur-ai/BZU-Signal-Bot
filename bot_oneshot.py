@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.12 (Single Risk Ledger and Audit Namespace Cleanup)
+BZU Professional Hybrid Confluence Signal Bot v9.5.13 (Transparent Setup Preference and Global TP1 Floor)
 =============================================================================================
+Оновлення v9.5.13:
+- Повернено історичні preferred TP1 RR для 17 наявних setup; масове 2R більше не маскується як setup-specific calibration.
+- Сім нових setup зберігають explicit bootstrap preferences, а не копію глобального 2R floor.
+- Audit розділяє preferred_tp1_rr, global_tp1_floor_rr та effective_tp1_rr; live floor 2R не змінено.
+- Усі 24 named setup лишаються explicit; generic fallback тільки для невідомого setup.
 Оновлення v9.5.12:
 - Executive Layer повторно використовує один precomputed RiskAdjustmentLedger; подвійний runtime-розрахунок прибрано.
 - Legacy adaptive-conflict helpers перейменовані та ізольовані як offline audit-only tooling.
@@ -192,8 +197,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.12-single-risk-ledger-audit-namespace-cleanup"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_12_SINGLE_RISK_LEDGER_AUDIT_NAMESPACE_CLEANUP"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.13-transparent-setup-preference-global-tp1-floor"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_13_TRANSPARENT_SETUP_PREFERENCE_GLOBAL_TP1_FLOOR"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -13411,55 +13416,68 @@ def setup_trade_profile_evidence(journal: Optional[dict[str, Any]], setup_type: 
 
 
 def setup_trade_profile(setup_type: str, journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Return explicit bootstrap geometry for every named setup.
+    """Return the setup-specific *preferred* bootstrap geometry.
 
-    These are morphology-based starting profiles, not falsely advertised
-    statistical calibration. Unknown setup types alone use the generic fail-safe.
+    ``tp1_rr`` is a morphology preference, not the final live target. The live
+    plan applies ``TP1_MIN_RR_PRO`` later and records the effective value
+    separately. This keeps setup calibration honest while preserving the global
+    professional floor.
     """
     profiles = {
-        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 2.00, "tp2_rr": 2.70, "tp3_rr": 4.00, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "LIQUIDITY_REVERSAL"},
-        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 2.00, "tp2_rr": 2.80, "tp3_rr": 4.10, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True, "geometry_family": "LIQUIDITY_REVERSAL"},
-        SetupType.DIRECTION_FLIP.value: {"tp1_rr": 2.05, "tp2_rr": 3.20, "tp3_rr": 4.80, "tp1_atr": 1.35, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "STRUCTURAL_TRANSITION"},
-        SetupType.TREND_IGNITION.value: {"tp1_rr": 2.10, "tp2_rr": 3.30, "tp3_rr": 5.60, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True, "geometry_family": "TREND_EXPANSION"},
-        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 2.00, "tp2_rr": 3.30, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2, "geometry_family": "CONTINUATION"},
-        SetupType.FRESH_BASE_CONTINUATION.value: {"tp1_rr": 2.05, "tp2_rr": 3.40, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.90, "stop_max_atr": 2.30, "quality_adjustment": 2, "geometry_family": "OB_RECLAIM_CONTINUATION"},
-        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 4.40, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "BREAKOUT_RETEST"},
-        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 2.00, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True, "geometry_family": "RANGE_BREAKOUT"},
-        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 2.00, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True, "geometry_family": "RANGE_REVERSAL"},
-        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"tp1_rr": 2.00, "tp2_rr": 3.10, "tp3_rr": 5.00, "tp1_atr": 1.35, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "ACCEPTANCE_RETEST"},
-        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: {"tp1_rr": 2.00, "tp2_rr": 3.00, "tp3_rr": 4.80, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "MOMENTUM_CONTINUATION"},
-        SetupType.ACCELERATION_PULLBACK_REENTRY.value: {"tp1_rr": 2.05, "tp2_rr": 3.20, "tp3_rr": 5.20, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.40, "force_risky": True, "geometry_family": "ACCELERATION_REENTRY"},
-        SetupType.SESSION_MEAN_RECLAIM.value: {"tp1_rr": 2.00, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.80, "force_risky": True, "geometry_family": "MEAN_RECLAIM"},
-        SetupType.OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 2.00, "tp2_rr": 3.20, "tp3_rr": 5.10, "tp1_atr": 1.35, "stop_min_atr": 0.75, "stop_max_atr": 1.90, "force_risky": True, "geometry_family": "OPENING_RANGE"},
-        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 2.00, "tp2_rr": 2.85, "tp3_rr": 4.00, "tp1_atr": 1.20, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True, "geometry_family": "FAILED_OPENING_RANGE"},
-        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: {"tp1_rr": 2.00, "tp2_rr": 3.10, "tp3_rr": 4.80, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "OPEN_RECLAIM"},
-        SetupType.LIQUIDITY_LADDER.value: {"tp1_rr": 2.00, "tp2_rr": 3.80, "tp3_rr": 6.00, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.30, "geometry_family": "TARGET_ROUTE"},
-        SetupType.FAILED_AUCTION_REJECTION.value: {"tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.20, "stop_min_atr": 0.75, "stop_max_atr": 1.80, "force_risky": True, "geometry_family": "FAILED_AUCTION"},
-        SetupType.TIME_OF_DAY_ADAPTIVE.value: {"tp1_rr": 2.00, "tp2_rr": 3.10, "tp3_rr": 4.70, "tp1_atr": 1.25, "stop_min_atr": 0.90, "stop_max_atr": 2.10, "geometry_family": "SESSION_BEHAVIOR"},
-        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.75, "tp3_rr": 4.10, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.85, "force_risky": True, "geometry_family": "SHORT_LIQUIDITY_REVERSAL"},
-        SetupType.FAILED_BREAKOUT_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "SHORT_FAILED_BREAKOUT"},
-        SetupType.MSS_REVERSAL_SHORT.value: {"tp1_rr": 2.05, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.15, "force_risky": True, "geometry_family": "SHORT_MSS_REVERSAL"},
-        SetupType.BUYER_EXHAUSTION_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.65, "tp3_rr": 3.80, "tp1_atr": 1.15, "stop_min_atr": 0.80, "stop_max_atr": 1.75, "force_risky": True, "geometry_family": "SHORT_EXHAUSTION"},
-        SetupType.OR_FAILURE_2_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.95, "tp3_rr": 4.30, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.95, "force_risky": True, "geometry_family": "SHORT_OR_FAILURE"},
+        # Historical v9.5.10 preferences restored. Their effective live TP1 was
+        # already floored by enforce_smart_money_rr(), so this is audit/config
+        # transparency rather than a change to current production targets.
+        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.50, "tp2_rr": 2.70, "tp3_rr": 4.00, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "LIQUIDITY_REVERSAL"},
+        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.55, "tp2_rr": 2.80, "tp3_rr": 4.10, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True, "geometry_family": "LIQUIDITY_REVERSAL"},
+        SetupType.TREND_IGNITION.value: {"tp1_rr": 1.70, "tp2_rr": 3.30, "tp3_rr": 5.60, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True, "geometry_family": "TREND_EXPANSION"},
+        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.30, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2, "geometry_family": "CONTINUATION"},
+        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 4.40, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "BREAKOUT_RETEST"},
+        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True, "geometry_family": "RANGE_BREAKOUT"},
+        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.50, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True, "geometry_family": "RANGE_REVERSAL"},
+        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.10, "tp3_rr": 5.00, "tp1_atr": 1.35, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "ACCEPTANCE_RETEST"},
+        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: {"tp1_rr": 1.60, "tp2_rr": 3.00, "tp3_rr": 4.80, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "MOMENTUM_CONTINUATION"},
+        SetupType.ACCELERATION_PULLBACK_REENTRY.value: {"tp1_rr": 1.70, "tp2_rr": 3.20, "tp3_rr": 5.20, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.40, "force_risky": True, "geometry_family": "ACCELERATION_REENTRY"},
+        SetupType.SESSION_MEAN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.80, "force_risky": True, "geometry_family": "MEAN_RECLAIM"},
+        SetupType.OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.60, "tp2_rr": 3.20, "tp3_rr": 5.10, "tp1_atr": 1.35, "stop_min_atr": 0.75, "stop_max_atr": 1.90, "force_risky": True, "geometry_family": "OPENING_RANGE"},
+        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.85, "tp3_rr": 4.00, "tp1_atr": 1.20, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True, "geometry_family": "FAILED_OPENING_RANGE"},
+        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.10, "tp3_rr": 4.80, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "OPEN_RECLAIM"},
+        SetupType.LIQUIDITY_LADDER.value: {"tp1_rr": 1.75, "tp2_rr": 3.80, "tp3_rr": 6.00, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.30, "geometry_family": "TARGET_ROUTE"},
+        SetupType.FAILED_AUCTION_REJECTION.value: {"tp1_rr": 1.50, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.20, "stop_min_atr": 0.75, "stop_max_atr": 1.80, "force_risky": True, "geometry_family": "FAILED_AUCTION"},
+        SetupType.TIME_OF_DAY_ADAPTIVE.value: {"tp1_rr": 1.55, "tp2_rr": 3.10, "tp3_rr": 4.70, "tp1_atr": 1.25, "stop_min_atr": 0.90, "stop_max_atr": 2.10, "geometry_family": "SESSION_BEHAVIOR"},
+
+        # New explicit bootstrap preferences. These are morphology assumptions,
+        # not empirical calibration; the global floor still controls live TP1.
+        SetupType.DIRECTION_FLIP.value: {"tp1_rr": 1.65, "tp2_rr": 3.20, "tp3_rr": 4.80, "tp1_atr": 1.35, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "STRUCTURAL_TRANSITION"},
+        SetupType.FRESH_BASE_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.40, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.90, "stop_max_atr": 2.30, "quality_adjustment": 2, "geometry_family": "OB_RECLAIM_CONTINUATION"},
+        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value: {"tp1_rr": 1.50, "tp2_rr": 2.75, "tp3_rr": 4.10, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.85, "force_risky": True, "geometry_family": "SHORT_LIQUIDITY_REVERSAL"},
+        SetupType.FAILED_BREAKOUT_SHORT.value: {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "SHORT_FAILED_BREAKOUT"},
+        SetupType.MSS_REVERSAL_SHORT.value: {"tp1_rr": 1.65, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.15, "force_risky": True, "geometry_family": "SHORT_MSS_REVERSAL"},
+        SetupType.BUYER_EXHAUSTION_SHORT.value: {"tp1_rr": 1.50, "tp2_rr": 2.65, "tp3_rr": 3.80, "tp1_atr": 1.15, "stop_min_atr": 0.80, "stop_max_atr": 1.75, "force_risky": True, "geometry_family": "SHORT_EXHAUSTION"},
+        SetupType.OR_FAILURE_2_SHORT.value: {"tp1_rr": 1.55, "tp2_rr": 2.95, "tp3_rr": 4.30, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.95, "force_risky": True, "geometry_family": "SHORT_OR_FAILURE"},
     }
     key = str(setup_type or "")
     explicit = key in profiles
     profile = dict(profiles.get(key, {
-        "tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 3.90,
+        "tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 3.90,
         "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20,
         "geometry_family": "GENERIC_FAILSAFE",
     }))
+    preferred_tp1_rr = float(profile.get("tp1_rr", PREFERRED_RR1))
     evidence = setup_trade_profile_evidence(journal, key)
     profile.update({
         "setup_type": key,
         "explicit_profile": explicit,
         "fallback_used": not explicit,
-        "profile_source": "EXPLICIT_BOOTSTRAP_MORPHOLOGY_V9_5_11" if explicit else "GENERIC_FAILSAFE_UNKNOWN_SETUP",
+        "profile_source": "EXPLICIT_BOOTSTRAP_PREFERENCE_V9_5_13" if explicit else "GENERIC_FAILSAFE_UNKNOWN_SETUP",
+        "preferred_tp1_rr": preferred_tp1_rr,
+        "global_tp1_floor_rr": float(max(TP1_MIN_RR_PRO, MIN_RR1)),
+        "effective_tp1_rr": float(max(preferred_tp1_rr, TP1_MIN_RR_PRO, MIN_RR1)),
+        "global_floor_applied": bool(preferred_tp1_rr < max(TP1_MIN_RR_PRO, MIN_RR1)),
         "empirically_calibrated": False,
         "empirical_review_ready": bool(evidence.get("empirical_review_ready")),
         "geometry_evidence": evidence,
         "calibration_status": "EMPIRICAL_REVIEW_READY" if evidence.get("empirical_review_ready") else "BOOTSTRAP_PENDING_EXACT_SETUP_SAMPLE",
-        "schema_version": "setup_trade_profile_v9.5.11",
+        "schema_version": "setup_trade_profile_v9.5.13",
     })
     return profile
 
@@ -13490,6 +13508,8 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     profile = dict(profiles.get(name, profiles[Regime.NORMAL.value]))
     profile.update(overrides.get(regime_type, {}))
     setup_profile = setup_trade_profile(setup_type or "", journal=journal)
+    preferred_tp1_rr = float(setup_profile.get("preferred_tp1_rr", setup_profile.get("tp1_rr", PREFERRED_RR1)))
+    global_tp1_floor_rr = float(max(TP1_MIN_RR_PRO, MIN_RR1))
     
     for key in ("tp1_rr", "tp2_rr", "tp3_rr", "stop_min_atr", "stop_max_atr"):
         if key in setup_profile:
@@ -13506,6 +13526,9 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     profile["quality_cap"] = setup_profile.get("quality_cap", regime.get("quality_cap"))
     profile["force_risky"] = bool(setup_profile.get("force_risky") or regime.get("entry_action") == "RISKY_ONLY")
     profile["reason"] = regime.get("reason", "")
+    profile["preferred_tp1_rr"] = preferred_tp1_rr
+    profile["global_tp1_floor_rr"] = global_tp1_floor_rr
+    profile["pre_floor_merged_tp1_rr"] = float(profile.get("tp1_rr", preferred_tp1_rr))
     
     if profile["force_risky"]:
         profile["be_trigger"] = min(float(profile.get("be_trigger", 0.45)), 0.35)
@@ -13519,6 +13542,12 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
         # Тому не стискаємо RR, а навпаки тримаємо TP1 за межами шуму/1-свічкового руху.
         profile["tp1_rr"] = max(float(profile.get("tp1_rr", PREFERRED_RR1)), TP1_MIN_RR_PRO)
         profile["tp2_rr"] = max(float(profile.get("tp2_rr", MIN_RR2)), max(MIN_RR2, TP1_MIN_RR_PRO + 1.00))
+
+    profile["effective_tp1_rr"] = float(max(profile.get("tp1_rr", preferred_tp1_rr), global_tp1_floor_rr))
+    profile["global_floor_applied"] = bool(profile["effective_tp1_rr"] > profile["pre_floor_merged_tp1_rr"] + 1e-9)
+    profile["tp1_policy"] = "SETUP_PREFERENCE_PLUS_REGIME_THEN_GLOBAL_FLOOR"
+    # Keep the downstream compatibility key equal to the effective planned RR.
+    profile["tp1_rr"] = profile["effective_tp1_rr"]
     
     return profile
 
@@ -20406,6 +20435,39 @@ def test_quality_snapshots_are_explicit_and_compact() -> bool:
     }
     return keys.issubset(compact_signal) and keys.issubset(compact_trade)
 
+def test_setup_tp1_preferences_are_not_global_floor_aliases() -> bool:
+    expected = {
+        SetupType.SWEEP_RECLAIM.value: 1.50,
+        SetupType.PULLBACK_CONTINUATION.value: 1.65,
+        SetupType.BREAKOUT_RETEST.value: 1.55,
+        SetupType.TREND_IGNITION.value: 1.70,
+        SetupType.TIME_OF_DAY_ADAPTIVE.value: 1.55,
+    }
+    for setup_type, preferred in expected.items():
+        profile = setup_trade_profile(setup_type)
+        if abs(safe_float(profile.get("preferred_tp1_rr")) - preferred) > 1e-9:
+            return False
+        if not profile.get("global_floor_applied"):
+            return False
+        if abs(safe_float(profile.get("effective_tp1_rr")) - max(preferred, TP1_MIN_RR_PRO, MIN_RR1)) > 1e-9:
+            return False
+    return True
+
+
+def test_all_named_setup_profiles_expose_tp1_policy_fields() -> bool:
+    for item in _tracked_setup_types():
+        profile = setup_trade_profile(item)
+        if not all(key in profile for key in (
+            "preferred_tp1_rr", "global_tp1_floor_rr", "effective_tp1_rr", "global_floor_applied"
+        )):
+            return False
+        if safe_float(profile.get("effective_tp1_rr")) + 1e-9 < safe_float(profile.get("preferred_tp1_rr")):
+            return False
+        if safe_float(profile.get("effective_tp1_rr")) + 1e-9 < max(TP1_MIN_RR_PRO, MIN_RR1):
+            return False
+    return True
+
+
 def test_all_named_setups_have_explicit_trade_profiles() -> bool:
     named = [item.value for item in SetupType if item.value != SetupType.NONE.value]
     profiles = [setup_trade_profile(item) for item in named]
@@ -20502,6 +20564,8 @@ def _run_self_test() -> bool:
         ("preconfirmation authority requires consecutive validation epochs", test_preconfirmation_authority_requires_consecutive_epochs),
         ("preconfirmation bad recent metrics remain audit-only", test_preconfirmation_recent_bad_metrics_keep_audit_only),
         ("quality snapshots are explicit in compact journal", test_quality_snapshots_are_explicit_and_compact),
+        ("setup TP1 preferences remain distinct from global floor", test_setup_tp1_preferences_are_not_global_floor_aliases),
+        ("all named setup profiles expose transparent TP1 policy", test_all_named_setup_profiles_expose_tp1_policy_fields),
         ("all 24 named setups have explicit trade profiles", test_all_named_setups_have_explicit_trade_profiles),
         ("SHORT reversal profiles do not use generic fallback", test_short_reversal_profiles_are_not_generic_fallback),
         ("unknown setup uses visible generic fail-safe", test_unknown_setup_uses_visible_failsafe_profile),
