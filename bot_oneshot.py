@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.14 (Force-Risky TP1 Scope and Profile Transparency Fix)
+BZU Professional Hybrid Confluence Signal Bot v9.5.15 (Failed Auction Anchor and Probe Follow-Through Guard)
 =============================================================================================
+Оновлення v9.5.15:
+- Failed Auction має setup-local admission gate: market-entry дозволений лише біля rejection anchor; distant candidates переходять у WAIT_RETEST.
+- Rejection anchor і distance-to-anchor ATR зберігаються в Candidate/Opportunity/re-entry audit.
+- PROBE без follow-through більше не висить до повного стопа: після fixed horizon FAILED/EXPIRED + слабкий MFE закривається раннім EXIT.
+- Додано 60-хвилинний fail-safe для stale PROBE без linked outcome, якщо MFE слабкий і позиція не підтверджена.
+- Додано регресійні тести для distant Failed Auction та probe no-follow-through management.
 Оновлення v9.5.14:
 - Відновлено історичні preferred TP1 для 17 існуючих setup profiles; 7 нових лишаються explicit bootstrap profiles.
 - TP1_MIN_RR_PRO у trade_mode_profile застосовується лише до force_risky/RISKY_ONLY профілів.
@@ -199,8 +205,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.14-force-risky-tp1-scope-profile-transparency"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_14_FORCE_RISKY_TP1_SCOPE_PROFILE_TRANSPARENCY"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.15-failed-auction-anchor-probe-followthrough-guard"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_15_FAILED_AUCTION_ANCHOR_PROBE_FOLLOWTHROUGH_GUARD"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -492,6 +498,21 @@ HIGH_CONVICTION_PROBE_RISK_PCT = min(PROBE_RISK_PCT, max(0.01, float(os.getenv("
 MEDIUM_CONVICTION_PROBE_RISK_PCT = min(HIGH_CONVICTION_PROBE_RISK_PCT, max(0.01, float(os.getenv("MEDIUM_CONVICTION_PROBE_RISK_PCT", "0.07") or 0.07)))
 EXPERIMENTAL_PROBE_RISK_PCT = min(MEDIUM_CONVICTION_PROBE_RISK_PCT, max(0.005, float(os.getenv("EXPERIMENTAL_PROBE_RISK_PCT", "0.03") or 0.03)))
 
+# PROBE is a cheap information-gathering position, not permission to absorb a
+# full stop after the expected confirmation window has failed. The first gate is
+# event-backed (FAILED/EXPIRED); the later fail-safe handles missing linkage.
+PROBE_NO_FOLLOWTHROUGH_ENABLED = os.getenv("PROBE_NO_FOLLOWTHROUGH_ENABLED", "true").lower() in {"1", "true", "yes"}
+PROBE_NO_FOLLOWTHROUGH_MINUTES = max(30, int(os.getenv("PROBE_NO_FOLLOWTHROUGH_MINUTES", "45") or 45))
+PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES = max(
+    PROBE_NO_FOLLOWTHROUGH_MINUTES,
+    int(os.getenv("PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES", "60") or 60),
+)
+PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R = min(0.50, max(0.05, float(os.getenv("PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R", "0.25") or 0.25)))
+PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R = min(
+    PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R,
+    max(0.03, float(os.getenv("PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R", "0.20") or 0.20)),
+)
+
 THESIS_CONFIDENCE_DECAY_PER_HOUR = max(0.0, float(os.getenv("THESIS_CONFIDENCE_DECAY_PER_HOUR", "2.25") or 2.25))
 THESIS_CONFIDENCE_FLOOR = min(100.0, max(0.0, float(os.getenv("THESIS_CONFIDENCE_FLOOR", "35") or 35)))
 THESIS_FRESH_EVIDENCE_BONUS = min(30.0, max(0.0, float(os.getenv("THESIS_FRESH_EVIDENCE_BONUS", "15") or 15)))
@@ -552,6 +573,15 @@ OPEN_RECLAIM_MAX_DIST_ATR = float(os.getenv("OPEN_RECLAIM_MAX_DIST_ATR", "1.25")
 ORB_BREAK_BUFFER_ATR = float(os.getenv("ORB_BREAK_BUFFER_ATR", "0.16") or 0.16)
 ORB_RETEST_MAX_DIST_ATR = float(os.getenv("ORB_RETEST_MAX_DIST_ATR", "0.90") or 0.90)
 FAILED_AUCTION_MIN_TAIL_RATIO = float(os.getenv("FAILED_AUCTION_MIN_TAIL_RATIO", "0.54") or 0.54)
+# Failed Auction is a location-sensitive rejection setup. A fresh tail may be
+# remembered beyond the candle, but market execution is allowed only while price
+# remains close to the original rejection level. 0.75..1.20 ATR is WAIT_RETEST;
+# beyond 1.20 ATR the old rejection is audit/thesis memory only.
+FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR = max(0.20, float(os.getenv("FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR", "0.75") or 0.75))
+FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR = max(
+    FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR,
+    float(os.getenv("FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR", "1.20") or 1.20),
+)
 LIQUIDITY_LADDER_MIN_TARGETS = int(os.getenv("LIQUIDITY_LADDER_MIN_TARGETS", "3") or 3)
 LIQUIDITY_LADDER_MIN_SCORE = float(os.getenv("LIQUIDITY_LADDER_MIN_SCORE", "3.20") or 3.20)
 
@@ -1520,6 +1550,7 @@ class Opportunity:
     status: str = OpportunityStatus.ARMED.value
     ict_model: str = "NONE"
     selected_source: str = "RANKED_CANDIDATE"
+    execution_anchor_schema: str = ""
     thesis_key: str = ""
     thesis: str = ""
     missed_at: str = ""
@@ -7849,6 +7880,47 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
     effective_thesis_age = model_age if thesis_origin.upper().startswith("MODEL_LOCAL") and model_age >= 0.0 else market_age
     if effective_thesis_age < 0.0:
         effective_thesis_age = trigger_age
+
+    failed_auction_location: dict[str, Any] = {}
+    if str(opp.setup_type or "") == SetupType.FAILED_AUCTION_REJECTION.value:
+        rejection_anchor = safe_float(opp.trigger_level, price) or price
+        distance_to_anchor_atr = abs(price - rejection_anchor) / max(atr15, 1e-9)
+        anchor_schema = str(getattr(opp, "execution_anchor_schema", "") or "")
+        anchor_provenance_valid = anchor_schema == "FAILED_AUCTION_REJECTION_LEVEL_V9_5_15"
+        location_ok = bool(
+            anchor_provenance_valid
+            and distance_to_anchor_atr <= FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR
+        )
+        failed_auction_location = {
+            "anchor": round_price(rejection_anchor),
+            "current_price": round_price(price),
+            "distance_to_anchor_atr": round(distance_to_anchor_atr, 4),
+            "probe_max_distance_atr": FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR,
+            "retest_max_distance_atr": FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR,
+            "probe_location_ok": location_ok,
+            "retest_envelope_ok": distance_to_anchor_atr <= FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR,
+            "anchor_schema": anchor_schema,
+            "anchor_provenance_valid": anchor_provenance_valid,
+            "admission_state": (
+                "EXECUTABLE_NEAR_ANCHOR"
+                if location_ok
+                else "LEGACY_ANCHOR_UNTRUSTED"
+                if not anchor_provenance_valid
+                else "WAIT_RETEST"
+            ),
+            "blocking_reason": (
+                ""
+                if location_ok
+                else "LEGACY_FAILED_AUCTION_ANCHOR_UNTRUSTED"
+                if not anchor_provenance_valid
+                else "FAILED_AUCTION_TOO_FAR_FROM_REJECTION_ANCHOR"
+            ),
+            "source": "SAVED_OPPORTUNITY_REENTRY",
+        }
+        if not location_ok:
+            trigger_ready = False
+
+    reentry_stage = EntryStage.ACCEPTANCE.value if trigger_ready else EntryStage.WAIT_RETEST.value
     return Candidate(
         side=opp.side,
         setup_type=opp.setup_type,
@@ -7880,8 +7952,12 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         live_3m_trigger_ready=trigger_ready,
         reentry_ready=trigger_ready,
         execution_source=ExecutionSource.REENTRY.value,
-        entry_stage=EntryStage.PROBE.value if not trigger_ready else EntryStage.ACCEPTANCE.value,
-        stage_plan={"stage": EntryStage.PROBE.value if not trigger_ready else EntryStage.ACCEPTANCE.value, "base_risk_pct": PROBE_RISK_PCT if not trigger_ready else ACCEPTANCE_RISK_PCT},
+        entry_stage=reentry_stage,
+        stage_plan={
+            "stage": reentry_stage,
+            "base_risk_pct": ACCEPTANCE_RISK_PCT if trigger_ready else 0.0,
+            "required_next_event": "RETURN_TO_REJECTION_ANCHOR_AND_FRESH_DIRECTIONAL_TRIGGER" if failed_auction_location and not trigger_ready else None,
+        },
         risk_multiplier=0.75,
         score_components={
             "selected_source": "SAVED_OPPORTUNITY_REENTRY",
@@ -7891,7 +7967,18 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
                 "setup_type": str(getattr(opp, "setup_type", "") or ""),
                 "source": "SAVED_OPPORTUNITY_REENTRY",
             },
+            "failed_auction_location": failed_auction_location,
         },
+        confirmation_pending=bool(failed_auction_location and not trigger_ready),
+        confirmation_state=(
+            {
+                **failed_auction_location,
+                "confirmation_pending": True,
+                "blocks_execution": True,
+                "required_next_event": "RETURN_TO_REJECTION_ANCHOR_AND_FRESH_DIRECTIONAL_TRIGGER",
+            }
+            if failed_auction_location and not trigger_ready else {}
+        ),
     )
 
 
@@ -10070,8 +10157,11 @@ def ict_model_execution_contract(
         invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.25)
         invalidation_basis = "Liquidity ladder confirmation structural failure"
     elif model == "FAILED_AUCTION_REJECTION":
-        entry_anchor = price
-        entry_basis = f"Failed auction rejection from {model_context.get('level_name', 'liquidity')}"
+        entry_anchor = safe_float(
+            model_context.get("rejection_anchor"),
+            safe_float(model_context.get("level"), price),
+        ) or price
+        entry_basis = f"Failed auction rejection anchor at {model_context.get('level_name', 'liquidity')}"
         extreme = safe_float(model_context.get("rejection_extreme"), 0.0)
         if extreme:
             invalidation = (extreme - buffer) if side == Side.LONG.value else (extreme + buffer)
@@ -11198,7 +11288,22 @@ def detect_failed_auction_rejection_tail(c15: list[Candle], side: str, price: fl
         tail_ok = upper_tail >= FAILED_AUCTION_MIN_TAIL_RATIO and ((last.high - last.close) / rng >= 0.62)
         active = bool(tail_ok and level > 0 and last.close < level)
         rejection_extreme = last.high
-    return {"active": active, "score_bonus": 14 if active else 0, "level_name": name, "level": round_price(level), "dist_atr": round(dist_atr, 2), "tail_ratio": round(lower_tail if side == Side.LONG.value else upper_tail, 2), "rejection_extreme": round_price(rejection_extreme)}
+    rejection_anchor = safe_float(level, 0.0) or safe_float(last.close, price)
+    current_distance_atr = abs(safe_float(price, last.close) - rejection_anchor) / max(atr15, 1e-9)
+    return {
+        "active": active,
+        "score_bonus": 14 if active else 0,
+        "level_name": name,
+        "level": round_price(level),
+        "rejection_anchor": round_price(rejection_anchor),
+        "level_touch_distance_atr": round(dist_atr, 2),
+        "current_distance_to_anchor_atr": round(current_distance_atr, 4),
+        "probe_max_distance_atr": FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR,
+        "retest_max_distance_atr": FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR,
+        "dist_atr": round(dist_atr, 2),  # compatibility: rejection extreme -> key level
+        "tail_ratio": round(lower_tail if side == Side.LONG.value else upper_tail, 2),
+        "rejection_extreme": round_price(rejection_extreme),
+    }
 
 
 def detect_time_of_day_adaptive_execution(session_profile: dict, side: str, tf15: dict, tf1h: dict, c15: list[Candle], atr15: float) -> dict[str, Any]:
@@ -12711,6 +12816,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             model_thesis_age = -1.0
             thesis_origin = "MARKET_SCAN"
             ladder_confirmation: dict[str, Any] = {}
+            failed_auction_location: dict[str, Any] = {}
             if model_id in SHORT_REVERSAL_MODEL_IDS:
                 model_ready = bool(short_model_profile.get("execution_ready"))
                 aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
@@ -12871,13 +12977,47 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 else:
                     pattern_conf.append("🟡 LIQUIDITY_LADDER is target route only; waiting fresh 3M trigger/retest/acceptance")
             elif model_id == "FAILED_AUCTION_REJECTION":
-                execution_source = ExecutionSource.FAILED_AUCTION.value
-                actionable_trigger_ready = True
-                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                rejection_anchor = safe_float(
+                    failed_auction.get("rejection_anchor"),
+                    safe_float(failed_auction.get("level"), price),
+                ) or price
+                distance_to_anchor_atr = abs(price - rejection_anchor) / max(atr15, 1e-9)
+                probe_location_ok = distance_to_anchor_atr <= FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR
+                retest_envelope_ok = distance_to_anchor_atr <= FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR
+                failed_auction_location = {
+                    "anchor": round_price(rejection_anchor),
+                    "current_price": round_price(price),
+                    "distance_to_anchor_atr": round(distance_to_anchor_atr, 4),
+                    "probe_max_distance_atr": FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR,
+                    "retest_max_distance_atr": FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR,
+                    "probe_location_ok": probe_location_ok,
+                    "retest_envelope_ok": retest_envelope_ok,
+                    "admission_state": (
+                        "EXECUTABLE_NEAR_ANCHOR"
+                        if probe_location_ok
+                        else "WAIT_RETEST_WITHIN_ENVELOPE"
+                        if retest_envelope_ok
+                        else "DISTANT_REJECTION_THESIS_ONLY"
+                    ),
+                    "blocking_reason": "" if probe_location_ok else "FAILED_AUCTION_TOO_FAR_FROM_REJECTION_ANCHOR",
+                }
+                execution_source = ExecutionSource.FAILED_AUCTION.value if probe_location_ok else ExecutionSource.NONE.value
+                actionable_trigger_ready = bool(probe_location_ok)
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if probe_location_ok else ExecutionLane.WAIT_RETEST.value
+                local_trigger_level = rejection_anchor
                 local_trigger_age = 0.0
-                local_live_3m_trigger_ready = True
+                local_live_3m_trigger_ready = bool(probe_location_ok)
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_FAILED_AUCTION"
+                if probe_location_ok:
+                    pattern_conf.append(
+                        f"🟢 FAILED_AUCTION location valid: {distance_to_anchor_atr:.2f} ATR from rejection anchor"
+                    )
+                else:
+                    pattern_conf.append(
+                        f"🟡 FAILED_AUCTION WAIT_RETEST: {distance_to_anchor_atr:.2f} ATR from anchor "
+                        f"> {FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR:.2f} ATR probe limit"
+                    )
             elif model_id == "TIME_OF_DAY_ADAPTIVE":
                 execution_source = ExecutionSource.TIME_OF_DAY.value
                 actionable_trigger_ready = bool(time_of_day_adaptive.get("entry_ok"))
@@ -13054,6 +13194,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 session_mean_reclaim,
                 actionable_trigger_ready=actionable_trigger_ready,
             )
+            if model_id == "FAILED_AUCTION_REJECTION" and failed_auction_location and not failed_auction_location.get("probe_location_ok"):
+                confirmation_state = {
+                    **failed_auction_location,
+                    "confirmation_pending": True,
+                    "pre_confirmation_ready": True,
+                    "required_next_event": "RETURN_TO_REJECTION_ANCHOR_AND_FRESH_DIRECTIONAL_TRIGGER",
+                    "actionable_trigger_ready": False,
+                    "blocks_execution": True,
+                }
+                confirmation_pending = True
 
             cand = Candidate(
                 side=side,
@@ -13142,6 +13292,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         "contract": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
                     },
                     "liquidity_ladder_confirmation": ladder_confirmation if model_id == "LIQUIDITY_LADDER_MODEL" else {},
+                    "failed_auction_location": failed_auction_location if model_id == "FAILED_AUCTION_REJECTION" else {},
+                    "failed_auction_detector": failed_auction if model_id == "FAILED_AUCTION_REJECTION" else {},
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -13781,6 +13933,12 @@ def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, A
         and not revalidation.get("revalidated")
     )
 
+    failed_auction_location = ((getattr(candidate, "score_components", {}) or {}).get("failed_auction_location") or {})
+    failed_auction_location_ok = bool(
+        str(getattr(candidate, "setup_type", "") or "") != SetupType.FAILED_AUCTION_REJECTION.value
+        or failed_auction_location.get("probe_location_ok")
+    )
+
     checks = {
         "score_floor": score >= ARMED_SCORE_BASE,
         "live_3m_trigger": live_ready,
@@ -13788,6 +13946,7 @@ def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, A
         "not_hard_expired": not hard_expired,
         "entry_supported": entry_supported,
         "not_archived_unrevalidated": not archived_unrevalidated,
+        "failed_auction_near_rejection_anchor": failed_auction_location_ok,
     }
     reasons = [name for name, passed in checks.items() if not passed]
     return {
@@ -13800,6 +13959,7 @@ def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, A
         "fresh_age": fresh_age,
         "revalidation_state": revalidation_state,
         "entry_supported": entry_supported,
+        "failed_auction_location": dict(failed_auction_location),
         "checks": checks,
         "reasons": reasons,
     }
@@ -16366,6 +16526,116 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
     return profile
 
 
+def _active_trade_age_minutes(trade: ActiveTrade) -> float:
+    try:
+        opened = datetime.fromisoformat(str(trade.opened_at))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return max(0.0, (now_utc() - opened.astimezone(timezone.utc)).total_seconds() / 60.0)
+    except Exception:
+        return 0.0
+
+
+def _trade_mfe_r(trade: ActiveTrade) -> float:
+    risk = abs(safe_float(trade.entry) - safe_float(trade.stop_initial))
+    if risk <= 1e-9:
+        return 0.0
+    if trade.side == Side.LONG.value:
+        return max(0.0, (safe_float(trade.best_price, trade.entry) - safe_float(trade.entry)) / risk)
+    return max(0.0, (safe_float(trade.entry) - safe_float(trade.best_price, trade.entry)) / risk)
+
+
+def _trade_current_r(trade: ActiveTrade, price: float) -> float:
+    risk = abs(safe_float(trade.entry) - safe_float(trade.stop_initial))
+    if risk <= 1e-9:
+        return 0.0
+    return side_sign(trade.side) * (safe_float(price, trade.entry) - safe_float(trade.entry)) / risk
+
+
+def _linked_preconfirmation_event(trade: ActiveTrade, context: dict[str, Any]) -> Optional[dict[str, Any]]:
+    event_id = str(getattr(trade, "preconfirmation_event_id", "") or "").strip()
+    if not event_id:
+        return None
+    events = list(context.get("preconfirmation_events") or [])
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        current_id = str(event.get("event_id") or event.get("id") or "").strip()
+        if current_id == event_id:
+            return event
+    return None
+
+
+def probe_no_followthrough_exit_profile(trade: ActiveTrade, context: dict[str, Any]) -> dict[str, Any]:
+    """Return a fail-closed management recommendation for an unproven PROBE.
+
+    The first path requires the linked fixed-horizon precursor to be FAILED or
+    EXPIRED. A 60-minute fallback is allowed only when linkage is missing/pending,
+    MFE remains tiny and current R is non-positive. Confirmed probes, any TP0 hit,
+    and non-PROBE entries are untouched.
+    """
+    profile: dict[str, Any] = {
+        "applies": False,
+        "exit": False,
+        "reason_code": "",
+        "age_minutes": round(_active_trade_age_minutes(trade), 2),
+        "mfe_r": round(_trade_mfe_r(trade), 4),
+        "current_r": round(_trade_current_r(trade, safe_float(context.get("price"), trade.entry)), 4),
+        "preconfirmation_status": "UNAVAILABLE",
+    }
+    if not PROBE_NO_FOLLOWTHROUGH_ENABLED:
+        profile["reason_code"] = "DISABLED"
+        return profile
+    if str(getattr(trade, "entry_stage", "") or "").upper() != EntryStage.PROBE.value:
+        profile["reason_code"] = "NOT_PROBE"
+        return profile
+    if any((getattr(trade, "tp0_hit", False), getattr(trade, "tp1_hit", False), getattr(trade, "tp2_hit", False), getattr(trade, "tp3_hit", False))):
+        profile["reason_code"] = "FOLLOWTHROUGH_ALREADY_PROVEN"
+        return profile
+
+    profile["applies"] = True
+    linked_event_id = str(getattr(trade, "preconfirmation_event_id", "") or "").strip()
+    event = _linked_preconfirmation_event(trade, context)
+    status = _preconfirm_event_status(event) if event else ("UNAVAILABLE" if linked_event_id else "UNLINKED_LEGACY")
+    profile["preconfirmation_status"] = status
+    profile["preconfirmation_event_id"] = linked_event_id
+    age = safe_float(profile["age_minutes"])
+    mfe_r = safe_float(profile["mfe_r"])
+    current_r = safe_float(profile["current_r"])
+
+    event_failed = status in {"FAILED", "EXPIRED"}
+    if (
+        event_failed
+        and age >= PROBE_NO_FOLLOWTHROUGH_MINUTES
+        and mfe_r < PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R
+    ):
+        profile.update({
+            "exit": True,
+            "reason_code": "PROBE_FIXED_HORIZON_FAILED_NO_FOLLOWTHROUGH",
+            "threshold_minutes": PROBE_NO_FOLLOWTHROUGH_MINUTES,
+            "max_mfe_r": PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R,
+        })
+        return profile
+
+    linkage_unresolved = bool(linked_event_id and status in {"PENDING", "UNAVAILABLE"})
+    if (
+        linkage_unresolved
+        and age >= PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES
+        and mfe_r < PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R
+        and current_r <= 0.0
+    ):
+        profile.update({
+            "exit": True,
+            "reason_code": "PROBE_STALE_NO_FOLLOWTHROUGH_FAILSAFE",
+            "threshold_minutes": PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES,
+            "max_mfe_r": PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R,
+        })
+        return profile
+
+    profile["reason_code"] = "FOLLOWTHROUGH_WINDOW_STILL_VALID"
+    return profile
+
+
 def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     price = context.get("price")
     # Якщо ціна None через збій API, тримаємо позицію, щоб не наробити помилок
@@ -16478,6 +16748,28 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["exit_price"] = exit_price
         result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
         result["notes"].append(decision_reason)
+        trade.status = "CLOSED"
+        trade.last_action = Action.EXIT.value
+        return _finalize_closed_trade_result(trade, result)
+
+    # PROBE is an information-gathering stage. Once its fixed confirmation
+    # horizon has failed and MFE stayed tiny, holding to the full structural stop
+    # adds risk without new evidence.
+    no_followthrough = probe_no_followthrough_exit_profile(trade, context)
+    result["probe_no_followthrough"] = no_followthrough
+    if no_followthrough.get("exit"):
+        exit_price = round_price(price)
+        result["closed"] = True
+        result["action"] = Action.EXIT.value
+        result["exit_price"] = exit_price
+        result["current_pct"] = _trade_pct(side, trade.entry, exit_price)
+        result["management_state"] = "NO_FOLLOWTHROUGH_EXIT"
+        result["notes"].append(
+            f"PROBE early exit: {no_followthrough.get('reason_code')} | "
+            f"age={no_followthrough.get('age_minutes')}m, MFE={no_followthrough.get('mfe_r')}R, "
+            f"preconfirmation={no_followthrough.get('preconfirmation_status')}"
+        )
+        trade.management_state = "NO_FOLLOWTHROUGH_EXIT"
         trade.status = "CLOSED"
         trade.last_action = Action.EXIT.value
         return _finalize_closed_trade_result(trade, result)
@@ -16836,6 +17128,10 @@ def run_bot() -> None:
             print(f"[INFO] Preconfirmation lifecycle resolved: {resolved_now}")
 
     print(f"PRICE {context['price']:.4f} | {context.get('instrument_label', INSTRUMENT_LABEL)} | REGIME {context['regime']} | ATR15 {context['atr15']:.4f} | Джерело: {context.get('price_source', 'NONE')}")
+
+    # Active-trade management needs the linked fixed-horizon precursor outcome
+    # to distinguish a still-forming PROBE from a failed/expired one.
+    context["preconfirmation_events"] = list(journal.get("preconfirmation_events") or [])
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
@@ -17204,6 +17500,12 @@ def run_bot() -> None:
             execution_lane=decision.candidate.execution_lane, status=opp_status,
             ict_model=str(getattr(decision.candidate, "ict_model", "NONE") or "NONE"),
             selected_source=str(getattr(decision.candidate, "selected_source", "") or "RANKED_CANDIDATE"),
+            execution_anchor_schema=(
+                "FAILED_AUCTION_REJECTION_LEVEL_V9_5_15"
+                if decision.setup_type == SetupType.FAILED_AUCTION_REJECTION.value
+                and bool(((decision.candidate.score_components or {}).get("failed_auction_location") or {}).get("probe_location_ok"))
+                else ""
+            ),
             thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis,
             market_thesis_age_minutes=candidate_market_thesis_age_minutes(decision.candidate),
             model_thesis_age_minutes=candidate_model_thesis_age_minutes(decision.candidate),
@@ -20535,6 +20837,137 @@ def test_trade_mode_profile_force_risky_floor_scope() -> bool:
         and risky.get("global_floor_applied")
     )
 
+def test_failed_auction_far_anchor_blocks_probe() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.FAILED_AUCTION_REJECTION.value,
+        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value,
+        raw_score=72,
+        final_score=72,
+        live_3m_trigger_ready=True,
+        trigger_ready=True,
+        execution_source=ExecutionSource.FAILED_AUCTION.value,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "failed_auction_location": {
+                "anchor": 84.57,
+                "current_price": 85.95,
+                "distance_to_anchor_atr": 3.67,
+                "probe_location_ok": False,
+                "blocking_reason": "FAILED_AUCTION_TOO_FAR_FROM_REJECTION_ANCHOR",
+            }
+        },
+    )
+    profile = fresh_probe_candidate_profile(candidate)
+    return bool(
+        not profile.get("eligible")
+        and "failed_auction_near_rejection_anchor" in (profile.get("reasons") or [])
+    )
+
+
+def test_saved_failed_auction_reentry_waits_when_far_from_anchor() -> bool:
+    opp = Opportunity(
+        side=Side.LONG.value,
+        setup_type=SetupType.FAILED_AUCTION_REJECTION.value,
+        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value,
+        created_at=(now_utc() - timedelta(minutes=10)).isoformat(),
+        expires_at=(now_utc() + timedelta(hours=1)).isoformat(),
+        score=72,
+        trigger_level=84.57,
+        invalidation_level=84.10,
+        ict_model="FAILED_AUCTION_REJECTION",
+        execution_anchor_schema="FAILED_AUCTION_REJECTION_LEVEL_V9_5_15",
+    )
+    context = {
+        "price": 85.95,
+        "atr15": (85.95 - 84.57) / 3.67,
+        "scan_3m_events": {
+            Side.LONG.value: {
+                "stage": "READY",
+                "last_event_ts": int(now_utc().timestamp() * 1000),
+            }
+        },
+    }
+    candidate = candidate_from_missed_opportunity(opp, context)
+    location = ((candidate.score_components or {}).get("failed_auction_location") or {}) if candidate else {}
+    return bool(
+        candidate
+        and not candidate.trigger_ready
+        and candidate.entry_stage == EntryStage.WAIT_RETEST.value
+        and candidate.confirmation_pending
+        and not location.get("probe_location_ok")
+        and safe_float(location.get("distance_to_anchor_atr")) > FAILED_AUCTION_RETEST_MAX_DISTANCE_ATR
+    )
+
+
+def test_legacy_failed_auction_opportunity_requires_fresh_anchor_snapshot() -> bool:
+    opp = Opportunity(
+        side=Side.LONG.value,
+        setup_type=SetupType.FAILED_AUCTION_REJECTION.value,
+        setup_family=SetupFamily.LIQUIDITY_RECOVERY.value,
+        created_at=(now_utc() - timedelta(minutes=5)).isoformat(),
+        expires_at=(now_utc() + timedelta(hours=1)).isoformat(),
+        score=72,
+        trigger_level=85.90,
+        invalidation_level=85.20,
+        ict_model="FAILED_AUCTION_REJECTION",
+        execution_anchor_schema="",
+    )
+    context = {
+        "price": 85.92,
+        "atr15": 0.40,
+        "scan_3m_events": {
+            Side.LONG.value: {"stage": "READY", "last_event_ts": int(now_utc().timestamp() * 1000)}
+        },
+    }
+    candidate = candidate_from_missed_opportunity(opp, context)
+    location = ((candidate.score_components or {}).get("failed_auction_location") or {}) if candidate else {}
+    return bool(
+        candidate
+        and not candidate.trigger_ready
+        and not location.get("anchor_provenance_valid")
+        and location.get("blocking_reason") == "LEGACY_FAILED_AUCTION_ANCHOR_UNTRUSTED"
+    )
+
+
+def test_probe_failed_no_followthrough_exits_early() -> bool:
+    event_id = "probe-expired"
+    trade = ActiveTrade(
+        id="probe-no-followthrough",
+        side=Side.LONG.value,
+        setup_type=SetupType.MSS_REVERSAL_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        opened_at=(now_utc() - timedelta(minutes=50)).isoformat(),
+        entry=100.0,
+        stop_initial=99.0,
+        stop_current=99.0,
+        structural_invalidation=98.8,
+        tp1=102.0,
+        tp2=103.0,
+        tp3=104.0,
+        quality=70,
+        position_risk_pct=0.03,
+        best_price=100.12,
+        worst_price=99.70,
+        entry_stage=EntryStage.PROBE.value,
+        preconfirmation_event_id=event_id,
+    )
+    profile = probe_no_followthrough_exit_profile(
+        trade,
+        {
+            "price": 99.80,
+            "preconfirmation_events": [
+                {"event_id": event_id, "status": "EXPIRED", "outcome": "EXPIRED"}
+            ],
+        },
+    )
+    return bool(
+        profile.get("exit")
+        and profile.get("reason_code") == "PROBE_FIXED_HORIZON_FAILED_NO_FOLLOWTHROUGH"
+        and safe_float(profile.get("mfe_r")) < PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R
+    )
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -20560,6 +20993,10 @@ def _run_self_test() -> bool:
         ("quality snapshots are explicit in compact journal", test_quality_snapshots_are_explicit_and_compact),
         ("all 24 named setups have explicit trade profiles", test_all_named_setups_have_explicit_trade_profiles),
         ("TP1 global floor remains force-risky scoped in profile layer", test_trade_mode_profile_force_risky_floor_scope),
+        ("Failed Auction far from rejection anchor cannot open PROBE", test_failed_auction_far_anchor_blocks_probe),
+        ("saved Failed Auction re-entry waits when far from anchor", test_saved_failed_auction_reentry_waits_when_far_from_anchor),
+        ("legacy Failed Auction opportunity requires fresh anchor snapshot", test_legacy_failed_auction_opportunity_requires_fresh_anchor_snapshot),
+        ("failed PROBE without follow-through exits before full stop", test_probe_failed_no_followthrough_exits_early),
         ("SHORT reversal profiles do not use generic fallback", test_short_reversal_profiles_are_not_generic_fallback),
         ("unknown setup uses visible generic fail-safe", test_unknown_setup_uses_visible_failsafe_profile),
         ("trade-profile empirical review requires exact geometry sample", test_trade_profile_empirical_review_requires_geometry_sample),
