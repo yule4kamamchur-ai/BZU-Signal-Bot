@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.9 (Calibration Authority and Quality Audit)
+BZU Professional Hybrid Confluence Signal Bot v9.5.10 (Opportunity Identity and Setup Calibration Guard)
 =============================================================================================
+Оновлення v9.5.10:
+- Opportunity зберігає ict_model; saved re-entry відновлює named model identity та explicit selected_source.
+- Funnel розділяє detected і qualified_detected та не рахує невідому selection без ranked match.
+- Saved opportunity re-entry дозволений як окреме джерело selected_source=SAVED_OPPORTUNITY_REENTRY.
+- Time of Day Adaptive працює у SHADOW до мінімум 25 закритих угод і позитивної expectancy.
+- Candidate calibration активується тільки після 25 feature-complete closed trades конкретного setup_type.
+- entry_quality перешкаловано через weakest-link + spread transform для кращої дискримінації.
+- Preconfirmation authority лишається audit-only до rolling AUC/Brier gate і 3 послідовних validation epochs.
+- Усі зміни v9.5.9 збережені:
 Оновлення v9.5.9:
 - Preconfirmation authority вимагає global trust + current feature-schema sample + rolling AUC/Brier + 3 послідовні validation epochs.
 - Frozen online probabilities поточної feature-схеми використовуються для rolling trust без повторного навчання на майбутньому outcome.
@@ -168,8 +177,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.9-calibration-authority-quality-audit"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_9_CALIBRATION_AUTHORITY_QUALITY_AUDIT"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.10-opportunity-identity-setup-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_10_OPPORTUNITY_IDENTITY_SETUP_CALIBRATION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -819,6 +828,16 @@ SCORING_MODEL_L2 = float(os.getenv("SCORING_MODEL_L2", "0.015") or 0.015)
 SCORING_MODEL_INITIAL_LEARNED_WEIGHT = float(os.getenv("SCORING_MODEL_INITIAL_LEARNED_WEIGHT", "0.30") or 0.30)
 SCORING_MODEL_MAX_LEARNED_WEIGHT = float(os.getenv("SCORING_MODEL_MAX_LEARNED_WEIGHT", "0.80") or 0.80)
 
+# v9.5.10 exact-setup calibration guard. A broad family/global model may remain
+# useful for audit, but it cannot label one named setup as empirically calibrated
+# before that exact setup has enough feature-complete closed trades.
+SETUP_CALIBRATION_MIN_CLOSED_TRADES = max(20, min(30, int(os.getenv("SETUP_CALIBRATION_MIN_CLOSED_TRADES", "25") or 25)))
+SETUP_CALIBRATION_FULL_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES + 1, int(os.getenv("SETUP_CALIBRATION_FULL_CLOSED_TRADES", "80") or 80))
+TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES, int(os.getenv("TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES", str(SETUP_CALIBRATION_MIN_CLOSED_TRADES)) or SETUP_CALIBRATION_MIN_CLOSED_TRADES))
+TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R = float(os.getenv("TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R", "0.0") or 0.0)
+ENTRY_QUALITY_RESCALE_CENTER = float(os.getenv("ENTRY_QUALITY_RESCALE_CENTER", "70") or 70)
+ENTRY_QUALITY_RESCALE_SLOPE = max(1.0, float(os.getenv("ENTRY_QUALITY_RESCALE_SLOPE", "1.8") or 1.8))
+
 QUALITY_FEATURE_KEYS = [
     "loc", "structure", "liquidity", "flow", "trigger", "htf", "pattern",
     "session", "smt", "regime_fit", "freshness", "exhaustion", "no_pattern",
@@ -1256,7 +1275,8 @@ class Candidate:
     confirmation_tier: int = 2
     stage: str = "DISCOVERED"
     variant: str = ""
-    ict_model: str = "NONE"  # НОВЕ ПОЛЕ: Визначена ICT-модель
+    selected_source: str = ""
+    ict_model: str = "NONE"  # Канонічний model ID named setup
     execution_anchor: float = 0.0
     trigger_ts: int = 0
     # Legacy alias for effective execution-trigger age. New code should use the
@@ -1479,6 +1499,8 @@ class Opportunity:
     evidence_families: list[str] = field(default_factory=list)
     execution_lane: str = "STANDARD_CONFIRMED"
     status: str = OpportunityStatus.ARMED.value
+    ict_model: str = "NONE"
+    selected_source: str = "RANKED_CANDIDATE"
     thesis_key: str = ""
     thesis: str = ""
     missed_at: str = ""
@@ -1741,11 +1763,15 @@ def update_setup_lifecycle_counters(
     totals = ledger.setdefault("totals", {})
     for setup_type in setup_types:
         row = totals.setdefault(setup_type, {})
-        for stage in ("detected", "ranked", "selected", "executable", "entered"):
+        for stage in ("detected", "qualified_detected", "ranked", "selected", "executable", "entered"):
             row[stage] = int(row.get(stage) or 0)
 
     detected_events = [
         dict(item) for item in (context.get("_setup_lifecycle_detected") or [])
+        if isinstance(item, dict) and str(item.get("setup_type") or "") in setup_types
+    ]
+    qualified_events = [
+        dict(item) for item in (context.get("_setup_lifecycle_qualified") or [])
         if isinstance(item, dict) and str(item.get("setup_type") or "") in setup_types
     ]
     ranked_events = [
@@ -1754,43 +1780,73 @@ def update_setup_lifecycle_counters(
     ]
     # Deduplicate within one scan while retaining LONG/SHORT and model identity.
     detected_events = list({_setup_lifecycle_event_key(item): item for item in detected_events}.values())
+    qualified_events = list({_setup_lifecycle_event_key(item): item for item in qualified_events}.values())
     ranked_events = list({_setup_lifecycle_event_key(item): item for item in ranked_events}.values())
 
     for event in detected_events:
         totals[event["setup_type"]]["detected"] += 1
+    for event in qualified_events:
+        totals[event["setup_type"]]["qualified_detected"] += 1
     for event in ranked_events:
         totals[event["setup_type"]]["ranked"] += 1
 
     selected_event: Optional[dict[str, Any]] = None
+    selection_anomaly: Optional[dict[str, Any]] = None
     executable = False
     entered = False
     candidate = getattr(decision, "candidate", None) if decision is not None else None
     selected_type = str(getattr(candidate, "setup_type", "") or "")
     if candidate is not None and selected_type in setup_types:
-        selected_event = {
-            "side": str(getattr(candidate, "side", "NEUTRAL")),
-            "setup_type": selected_type,
-            "model_id": str(getattr(candidate, "ict_model", "UNKNOWN") or "UNKNOWN"),
-        }
-        totals[selected_type]["selected"] += 1
-        executive_report = (
-            (((getattr(decision, "audit", {}) or {}).get("executive_director") or {}).get("report") or {})
-            .get("executive_decision") or {}
+        selected_model = str(getattr(candidate, "ict_model", "UNKNOWN") or "UNKNOWN")
+        selected_source = str(
+            getattr(candidate, "selected_source", "")
+            or ((getattr(candidate, "score_components", {}) or {}).get("selected_source"))
+            or "RANKED_CANDIDATE"
         )
-        executable = bool(executive_report.get("allow_execution")) or str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
-        entered = str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
-        if executable:
-            totals[selected_type]["executable"] += 1
-        if entered:
-            totals[selected_type]["entered"] += 1
+        selected_key = (str(getattr(candidate, "side", "NEUTRAL")), selected_type, selected_model)
+        ranked_keys = {_setup_lifecycle_event_key(item) for item in ranked_events}
+        ranked_match = selected_key in ranked_keys
+        saved_reentry = selected_source == "SAVED_OPPORTUNITY_REENTRY" and str(getattr(candidate, "execution_source", "")) == ExecutionSource.REENTRY.value
+        selection_allowed = ranked_match or saved_reentry
+        if selection_allowed:
+            selected_event = {
+                "side": selected_key[0],
+                "setup_type": selected_type,
+                "model_id": selected_model,
+                "selected_source": selected_source,
+                "ranked_match": ranked_match,
+            }
+            totals[selected_type]["selected"] += 1
+            executive_report = (
+                (((getattr(decision, "audit", {}) or {}).get("executive_director") or {}).get("report") or {})
+                .get("executive_decision") or {}
+            )
+            executable = bool(executive_report.get("allow_execution")) or str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
+            entered = str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
+            if executable:
+                totals[selected_type]["executable"] += 1
+            if entered:
+                totals[selected_type]["entered"] += 1
+        else:
+            selection_anomaly = {
+                "code": "SELECTED_WITHOUT_RANKED_MATCH",
+                "side": selected_key[0],
+                "setup_type": selected_type,
+                "model_id": selected_model,
+                "selected_source": selected_source,
+            }
+            if decision is not None:
+                decision.audit.setdefault("setup_lifecycle", {})["selection_anomaly"] = selection_anomaly
 
     run_row = {
         "time": iso_now(),
         "bot_version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
         "detected": detected_events,
+        "qualified_detected": qualified_events,
         "ranked": ranked_events,
         "selected": selected_event,
+        "selection_anomaly": selection_anomaly,
         "executable": executable,
         "entered": entered,
         "decision_action": str(getattr(decision, "action", Action.NO_SETUP.value) if decision is not None else Action.NO_SETUP.value),
@@ -1801,9 +1857,10 @@ def update_setup_lifecycle_counters(
         del recent[:-SETUP_LIFECYCLE_RECENT_RUN_LIMIT]
     ledger.update({
         "setup_type_count": len(setup_types),
-        "stages": ["detected", "ranked", "selected", "executable", "entered"],
+        "stages": ["detected", "qualified_detected", "ranked", "selected", "executable", "entered"],
+        "selection_contract": "ranked match required; saved opportunity re-entry must declare selected_source",
         "updated_at": run_row["time"],
-        "schema_version": "setup_lifecycle_funnel_v9.5.8",
+        "schema_version": "setup_lifecycle_funnel_v9.5.10",
     })
     return run_row
 
@@ -3409,6 +3466,14 @@ def _preconfirm_stage_gate(
         "can_initiate_entry": False,
         "policy": "authority requires global trust, current-schema rolling metrics and consecutive validation epochs; otherwise probability is audit-only",
     }
+    setup_shadow = ((getattr(candidate, "score_components", {}) or {}).get("time_of_day_shadow") or {})
+    if setup_shadow.get("shadow_active"):
+        audit["effect"] = "SETUP_SHADOW_SUPERSEDES_PRECONFIRMATION"
+        audit["setup_shadow"] = dict(setup_shadow)
+        audit["trusted"] = False
+        audit["downgrade_trusted"] = False
+        audit["promotion_trusted"] = False
+        return state, required, blocking, warnings, audit
     if not calibrated or not profile.get("precursor_active"):
         return state, required, blocking, warnings, audit
     probability = safe_float(profile.get("probability"), 0.0)
@@ -3999,6 +4064,12 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preconfirm_authority_recent_auc_gate": PRECONFIRM_AUTHORITY_RECENT_AUC_GATE,
         "preconfirm_authority_recent_brier_gate": PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE,
         "setup_lifecycle_recent_run_limit": SETUP_LIFECYCLE_RECENT_RUN_LIMIT,
+        "setup_calibration_min_closed_trades": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+        "setup_calibration_full_closed_trades": SETUP_CALIBRATION_FULL_CLOSED_TRADES,
+        "time_of_day_shadow_min_closed_trades": TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,
+        "time_of_day_shadow_min_expectancy_r": TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,
+        "entry_quality_rescale_center": ENTRY_QUALITY_RESCALE_CENTER,
+        "entry_quality_rescale_slope": ENTRY_QUALITY_RESCALE_SLOPE,
     }
 
 
@@ -4175,6 +4246,29 @@ def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) 
     }
 
 
+def rescale_entry_quality(raw_quality: float, parts: Optional[dict[str, tuple[float, float]]] = None) -> float:
+    """Expand the compressed 70-85 band while retaining weakest-link discipline.
+
+    The transform is monotonic in raw quality, but a weak acceptance/location
+    component can no longer hide behind several saturated 100s.
+    """
+    raw = clamp(safe_float(raw_quality, 0.0), 0.0, 100.0)
+    component_values = [clamp(safe_float(value[0]), 0.0, 100.0) for value in (parts or {}).values()]
+    weakest = min(component_values) if component_values else raw
+    spread = (max(component_values) - weakest) if component_values else 0.0
+    expanded = 50.0 + (raw - ENTRY_QUALITY_RESCALE_CENTER) * ENTRY_QUALITY_RESCALE_SLOPE
+    weakest_adjustment = clamp((weakest - 50.0) * 0.08, -4.0, 4.0)
+    dispersion_penalty = min(6.0, spread * 0.06)
+    rescaled = clamp(expanded + weakest_adjustment - dispersion_penalty, 0.0, 100.0)
+    # Preserve the pre-existing Executive eligibility bands while making the
+    # score diagnostic and sizing signal substantially less compressed.
+    if raw >= 75.0:
+        rescaled = max(rescaled, 50.0)
+    elif raw >= 68.0:
+        rescaled = max(rescaled, 44.0)
+    return clamp(rescaled, 0.0, 100.0)
+
+
 def entry_quality_risk_multiplier(entry_quality: float) -> float:
     q = clamp(safe_float(entry_quality, 0.0), 0.0, 100.0)
     if q >= 75.0:
@@ -4340,12 +4434,18 @@ def prepare_preplan_quality_pipeline(candidate: Candidate, context: Optional[dic
     raw_entry = safe_float(getattr(candidate, "entry_quality_score", 0.0), 0.0) or safe_float(components.get("entry_quality"), timing_quality)
     anti_fomo = anti_fomo_profile(candidate, context)
     # Entry quality is moment-specific. A great setup can still have a mediocre entry.
-    entry_quality = clamp(0.70 * raw_entry + 0.30 * safe_float(anti_fomo.get("score"), 100.0), 0.0, 100.0)
+    preplan_parts = {
+        "raw_entry": (raw_entry, 0.70),
+        "anti_fomo": (safe_float(anti_fomo.get("score"), 100.0), 0.30),
+    }
+    entry_quality_raw = _weighted_quality(preplan_parts)
+    entry_quality = rescale_entry_quality(entry_quality_raw, preplan_parts)
     probe = classify_probe_conviction(candidate, setup_quality, timing_quality, entry_quality)
     candidate.setup_quality_score = int(round(setup_quality))
     candidate.timing_quality_score = int(round(timing_quality))
     candidate.execution_quality_score = int(round(timing_quality))
     candidate.entry_quality_score = int(round(entry_quality))
+    components["preplan_entry_quality_raw"] = round(entry_quality_raw, 2)
     components["evaluation_entry_quality"] = round(entry_quality, 2)
     candidate.anti_fomo_score = safe_float(anti_fomo.get("score"), 100.0)
     candidate.probe_conviction_tier = str(probe.get("tier") or ProbeConvictionTier.EXPERIMENTAL.value)
@@ -7697,6 +7797,26 @@ def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: f
 # CANDIDATE + RE-ENTRY
 # ==========================================================
 
+def opportunity_model_id(opp: Opportunity) -> str:
+    """Restore canonical named-model identity from saved opportunity state."""
+    explicit = str(getattr(opp, "ict_model", "") or "").strip().upper()
+    if explicit and explicit not in {"NONE", "UNKNOWN"}:
+        return explicit
+    aliases = {
+        SetupType.SESSION_MEAN_RECLAIM.value: "VWAP_SESSION_MEAN_RECLAIM",
+        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: "FAILED_ORB",
+        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: "DAILY_WEEKLY_OPEN_RECLAIM",
+        SetupType.LIQUIDITY_LADDER.value: "LIQUIDITY_LADDER_MODEL",
+        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value: "SHORT_LIQUIDITY_SWEEP_REVERSAL",
+        SetupType.FAILED_BREAKOUT_SHORT.value: "SHORT_FAILED_BREAKOUT_REVERSAL",
+        SetupType.MSS_REVERSAL_SHORT.value: "SHORT_MSS_REVERSAL",
+        SetupType.BUYER_EXHAUSTION_SHORT.value: "SHORT_BUYER_EXHAUSTION",
+        SetupType.OR_FAILURE_2_SHORT.value: "SHORT_OR_FAILURE_2",
+    }
+    setup_type = str(getattr(opp, "setup_type", "") or "").upper()
+    return aliases.get(setup_type, setup_type if setup_type in _tracked_setup_types() else "NONE")
+
+
 def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
     if not opp:
         return None
@@ -7736,6 +7856,8 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         confirmation_tier=ConfirmationTier.STANDARD.value,
         stage=(OpportunityStage.EXECUTABLE.value if trigger_ready else OpportunityStage.ARMED.value),
         variant="MISSED_IMPULSE_REENTRY",
+        selected_source="SAVED_OPPORTUNITY_REENTRY",
+        ict_model=opportunity_model_id(opp),
         execution_anchor=opp.trigger_level or price,
         trigger_age_minutes=trigger_age,
         thesis_age_minutes=effective_thesis_age,
@@ -7752,6 +7874,15 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         entry_stage=EntryStage.PROBE.value if not trigger_ready else EntryStage.ACCEPTANCE.value,
         stage_plan={"stage": EntryStage.PROBE.value if not trigger_ready else EntryStage.ACCEPTANCE.value, "base_risk_pct": PROBE_RISK_PCT if not trigger_ready else ACCEPTANCE_RISK_PCT},
         risk_multiplier=0.75,
+        score_components={
+            "selected_source": "SAVED_OPPORTUNITY_REENTRY",
+            "reentry_lifecycle": {
+                "opportunity_signal_id": str(getattr(opp, "signal_id", "") or ""),
+                "model_id": opportunity_model_id(opp),
+                "setup_type": str(getattr(opp, "setup_type", "") or ""),
+                "source": "SAVED_OPPORTUNITY_REENTRY",
+            },
+        },
     )
 
 
@@ -9472,6 +9603,11 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
             "ready": len(rows) >= SCORING_MODEL_MIN_FAMILY_TRADES,
             "learned_weight": round(_learned_model_weight(len(rows), SCORING_MODEL_MIN_FAMILY_TRADES, SCORING_MODEL_FULL_FAMILY_TRADES), 4),
         }
+    by_setup: dict[str, Any] = {}
+    for setup_type in _tracked_setup_types():
+        profile = setup_type_calibration_profile(journal, setup_type)
+        if profile.get("total_records") or profile.get("training_rows"):
+            by_setup[setup_type] = profile
     global_ready = len(global_rows) >= SCORING_MODEL_MIN_TRADES
     learned_weight = round(_learned_model_weight(len(global_rows), SCORING_MODEL_MIN_TRADES, SCORING_MODEL_FULL_TRADES), 4)
     mode = scoring_mode_profile({
@@ -9502,6 +9638,8 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
             else "empirical blend active; inspect validation and correlation before threshold changes"
         ),
         "by_family": by_family,
+        "by_setup": by_setup,
+        "setup_calibration_min_closed_trades": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
         "validation": _validation_metrics(global_rows, DEFAULT_QUALITY_COEFFICIENTS["_global"]),
         "score_outcome_correlation": compute_score_outcome_correlation(journal, global_ready),
         "short_specific_ml": compute_short_specific_ml_statistics(journal),
@@ -9577,47 +9715,87 @@ def _blend_coefficients(default: dict[str, float], learned: dict[str, float], le
     }
 
 
+def setup_type_trade_statistics(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
+    resolved: list[float] = []
+    total_records = 0
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict) or str(trade.get("setup_type") or "") != str(setup_type or ""):
+            continue
+        total_records += 1
+        result_r = _journal_result_r(trade)
+        if result_r is not None:
+            resolved.append(float(result_r))
+    closed = len(resolved)
+    wins = sum(1 for value in resolved if value > 0)
+    net_r = sum(resolved)
+    expectancy = net_r / closed if closed else 0.0
+    return {
+        "setup_type": str(setup_type or ""),
+        "closed_trades": closed,
+        "total_records": total_records,
+        "legacy_or_ambiguous_excluded": total_records - closed,
+        "wins": wins,
+        "win_rate": round((wins / closed * 100.0) if closed else 0.0, 2),
+        "net_r": round(net_r, 6),
+        "expectancy_r": round(expectancy, 6),
+    }
+
+
+def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
+    rows = _quality_training_rows_filtered(journal, setup_type=str(setup_type or ""))
+    stats = setup_type_trade_statistics(journal, setup_type)
+    training_rows = len(rows)
+    calibrated = training_rows >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
+    return {
+        **stats,
+        "training_rows": training_rows,
+        "minimum_training_rows": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+        "empirically_calibrated": calibrated,
+        "status": "CALIBRATED" if calibrated else "INSUFFICIENT_EXACT_SETUP_SAMPLE",
+        "schema_version": "exact_setup_calibration_v9.5.10",
+    }
+
+
+def time_of_day_shadow_profile(journal: dict[str, Any]) -> dict[str, Any]:
+    profile = setup_type_calibration_profile(journal, SetupType.TIME_OF_DAY_ADAPTIVE.value)
+    sample_pass = int(profile.get("closed_trades") or 0) >= TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES
+    expectancy_pass = safe_float(profile.get("expectancy_r"), 0.0) > TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R
+    live_eligible = bool(sample_pass and expectancy_pass)
+    return {
+        **profile,
+        "shadow_active": not live_eligible,
+        "live_eligible": live_eligible,
+        "minimum_closed_trades": TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,
+        "minimum_expectancy_r": TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,
+        "sample_pass": sample_pass,
+        "positive_expectancy_pass": expectancy_pass,
+        "policy": "SHADOW_UNTIL_MIN_SAMPLE_AND_POSITIVE_EXPECTANCY",
+        "schema_version": "time_of_day_shadow_v9.5.10",
+    }
+
+
 def _quality_coefficients(
     journal: dict,
     setup_family: str,
     *,
     side: str = "",
     short_reversal: bool = False,
+    setup_type: str = "",
 ) -> tuple[dict[str, float], str, int, float]:
     family_default = DEFAULT_QUALITY_COEFFICIENTS.get(setup_family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
-    if short_reversal and side == Side.SHORT.value:
-        short_rows = _quality_training_rows_filtered(journal, side=Side.SHORT.value, short_reversal_only=True)
-        if len(short_rows) >= SHORT_REVERSAL_ML_MIN_TRADES:
-            rows = short_rows
-            source = "journal:SHORT_REVERSAL"
-            min_rows = SHORT_REVERSAL_ML_MIN_TRADES
-            full_rows = SHORT_REVERSAL_ML_FULL_TRADES
-        else:
-            rows = []
-            source = "bootstrap"
-            min_rows = SHORT_REVERSAL_ML_MIN_TRADES
-            full_rows = SHORT_REVERSAL_ML_FULL_TRADES
-    else:
-        rows = []
-        source = ""
-        min_rows = 0
-        full_rows = 0
+    exact_setup = str(setup_type or "")
+    exact_rows = _quality_training_rows_filtered(journal, setup_type=exact_setup) if exact_setup else []
 
-    family_rows = _quality_training_rows(journal, setup_family)
-    if not rows and len(family_rows) >= SCORING_MODEL_MIN_FAMILY_TRADES:
-        rows = family_rows
-        source = f"journal:{setup_family}"
-        min_rows = SCORING_MODEL_MIN_FAMILY_TRADES
-        full_rows = SCORING_MODEL_FULL_FAMILY_TRADES
-    elif not rows:
-        rows = _quality_training_rows(journal)
-        source = "journal:global" if len(rows) >= SCORING_MODEL_MIN_TRADES else "bootstrap"
-        min_rows = SCORING_MODEL_MIN_TRADES
-        full_rows = SCORING_MODEL_FULL_TRADES
+    # Exact named setup is the calibration unit. Family/global rows may remain
+    # visible in learning analytics, but they cannot grant empirical authority
+    # to a setup with fewer than 20-30 of its own closed feature-complete trades.
+    if not exact_setup or len(exact_rows) < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
+        return dict(family_default), "bootstrap:exact_setup_sample_below_minimum", len(exact_rows), 0.0
 
-    if len(rows) < min_rows:
-        return dict(family_default), "bootstrap", len(rows), 0.0
-
+    rows = exact_rows
+    source = f"journal:setup:{exact_setup}"
+    min_rows = SETUP_CALIBRATION_MIN_CLOSED_TRADES
+    full_rows = SETUP_CALIBRATION_FULL_CLOSED_TRADES
     learned_weight = _learned_model_weight(len(rows), min_rows, full_rows)
 
     # v6.8: кешування навченого logistic-fit у journal. Раніше _fit_logistic_coefficients
@@ -9631,7 +9809,7 @@ def _quality_coefficients(
     trades_list = journal.get("trades") or []
     fingerprint = f"{len(trades_list)}:{trades_list[-1].get('id') if trades_list else ''}:{len(rows)}"
     cache = journal.setdefault("_model_coef_cache", {})
-    cache_key = f"{setup_family}:{source}"
+    cache_key = f"{setup_family}:{setup_type}:{source}"
     cached = cache.get(cache_key)
     if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("coef"), dict):
         learned = cached["coef"]
@@ -9727,9 +9905,10 @@ def _multiplicative_quality_gates(features: dict[str, float], setup_family: str,
 def calibrate_candidate_quality(journal: dict, features: dict[str, float], setup_family: str,
                                 trigger_ready: bool, is_limit_armed: bool,
                                 has_forward_zone: bool, flow_reliable: bool = False,
-                                side: str = "", short_reversal: bool = False) -> dict[str, Any]:
+                                side: str = "", short_reversal: bool = False,
+                                setup_type: str = "") -> dict[str, Any]:
     coef, model_source, sample_size, learned_weight = _quality_coefficients(
-        journal, setup_family, side=side, short_reversal=short_reversal
+        journal, setup_family, side=side, short_reversal=short_reversal, setup_type=setup_type
     )
     logit = coef.get("bias", 0.0) + sum(coef.get(key, 0.0) * features.get(key, 0.0) for key in QUALITY_FEATURE_KEYS)
     base_probability = _sigmoid(logit)
@@ -10107,8 +10286,10 @@ def finalize_hypothesis_ranking(candidates: list[Candidate]) -> list[Candidate]:
 
 
 def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict) -> Candidate:
-    """Re-entry більше не обходить score engine. Він отримує ті самі quality layers,
-    gates і ML/bootstrap audit, але лишається REENTRY execution_source."""
+    """Re-entry is rescored without losing the named setup/model lineage."""
+    prior_components = dict(getattr(candidate, "score_components", {}) or {})
+    reentry_lifecycle = dict(prior_components.get("reentry_lifecycle") or {})
+    selected_source = str(getattr(candidate, "selected_source", "") or prior_components.get("selected_source") or "SAVED_OPPORTUNITY_REENTRY")
     price = context.get("price", 0.0)
     atr15 = context.get("atr15", 0.6) or 0.6
     side = candidate.side
@@ -10154,6 +10335,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
         bool((context.get("flow") or {}).get("reliable")),
         side=side,
         short_reversal=bool((candidate.score_components or {}).get("short_reversal")),
+        setup_type=candidate.setup_type,
     )
     direction_perf = direction_recent_performance(journal, side)
     layers = score_hypothesis_layers(
@@ -10205,6 +10387,14 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
         "hypothesis_score": candidate.final_score,
         "direction_performance": direction_perf,
         "direction_risk_multiplier": direction_perf.get("risk_multiplier", 1.0),
+        "selected_source": selected_source,
+        "reentry_lifecycle": {
+            **reentry_lifecycle,
+            "model_id": str(getattr(candidate, "ict_model", "NONE") or "NONE"),
+            "setup_type": str(getattr(candidate, "setup_type", "") or ""),
+            "source": "SAVED_OPPORTUNITY_REENTRY",
+            "rescored_at": iso_now(),
+        },
     }
     candidate.setup_quality_score = layers["setup_quality"]
     candidate.execution_quality_score = layers["execution_quality"]
@@ -10212,6 +10402,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.entry_quality_score = layers["entry_quality"]
     candidate.durability_quality_score = layers["durability_quality"]
     candidate.hypothesis_score = float(candidate.final_score)
+    candidate.selected_source = selected_source
     candidate.score_components["reentry_risk_recommendation"] = {"source": "direction_performance", "factor": float(direction_perf.get("risk_multiplier", 1.0) or 1.0), "applied_here": False}
     candidate.professional_gate = evaluate_professional_gate(context, candidate)
     candidate.stage_plan = staged_entry_plan(candidate, context, direction_perf)
@@ -11964,6 +12155,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     params = get_adaptive_params(regime)
     candidates = []
     context["_setup_lifecycle_detected"] = []
+    context["_setup_lifecycle_qualified"] = []
     context["_setup_lifecycle_ranked"] = []
 
     # ==========================================================
@@ -12786,6 +12978,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 has_forward_zone, bool((context.get("flow") or {}).get("reliable")),
                 side=side,
                 short_reversal=bool(short_model_profile),
+                setup_type=setup_type,
             )
             layers = score_hypothesis_layers(
                 loc_score=loc_score,
@@ -12970,6 +13163,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 ),
             )
             synchronize_candidate_trigger_with_contract(cand)
+            cand.score_components["exact_setup_calibration"] = setup_type_calibration_profile(journal, cand.setup_type)
+            if cand.setup_type == SetupType.TIME_OF_DAY_ADAPTIVE.value:
+                cand.score_components["time_of_day_shadow"] = time_of_day_shadow_profile(journal)
             cand.professional_gate = evaluate_professional_gate(context, cand)
             cand.stage_plan = staged_entry_plan(cand, context, direction_perf)
             cand.entry_stage = str(cand.stage_plan.get("stage", EntryStage.PROBE.value))
@@ -12983,6 +13179,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 min_score_required += 4
             if cand.final_score >= min_score_required:
                 candidates.append(cand)
+                context["_setup_lifecycle_qualified"].append({
+                    "side": cand.side,
+                    "model_id": cand.ict_model,
+                    "setup_type": cand.setup_type,
+                    "final_score": cand.final_score,
+                    "minimum_score_required": min_score_required,
+                })
 
     ranked_candidates = finalize_hypothesis_ranking(candidates)
     context["_setup_lifecycle_ranked"] = [
@@ -14979,6 +15182,8 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
                             context, list(cands) + [missed_cand], selected=missed_cand
                         ),
                         "reentry_rescored": True,
+                        "selected_source": "SAVED_OPPORTUNITY_REENTRY",
+                        "model_id": str(getattr(missed_cand, "ict_model", "NONE") or "NONE"),
                         "legacy_opportunity_status": proposed_action,
                     },
                 )
@@ -15020,6 +15225,8 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
     # 3. Вибір переможця за hypothesis_score, а не лише за final_score.
     valid_candidates = finalize_hypothesis_ranking(valid_candidates)
     best = valid_candidates[0]
+    best.selected_source = "RANKED_CANDIDATE"
+    best.score_components["selected_source"] = "RANKED_CANDIDATE"
     
     # v6.17.4: Decision Kernel becomes the final execution context layer
     kernel_result = professional_decision_kernel(best)
@@ -16907,6 +17114,8 @@ def run_bot() -> None:
             invalidation_level=decision.candidate.invalidation_level,
             confirmations=decision.candidate.confirmations[:5], evidence_families=decision.candidate.evidence_families,
             execution_lane=decision.candidate.execution_lane, status=opp_status,
+            ict_model=str(getattr(decision.candidate, "ict_model", "NONE") or "NONE"),
+            selected_source=str(getattr(decision.candidate, "selected_source", "") or "RANKED_CANDIDATE"),
             thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis,
             market_thesis_age_minutes=candidate_market_thesis_age_minutes(decision.candidate),
             model_thesis_age_minutes=candidate_model_thesis_age_minutes(decision.candidate),
@@ -19849,10 +20058,100 @@ def test_untrusted_preconfirmation_has_no_promotion_authority() -> bool:
     )
 
 
+def test_opportunity_reentry_preserves_named_model_identity() -> bool:
+    opp = Opportunity(
+        side=Side.LONG.value,
+        setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=1)).isoformat(),
+        score=72, trigger_level=100.0, invalidation_level=99.0,
+        ict_model="MOMENTUM_NO_PULLBACK_CONTINUATION",
+        selected_source="RANKED_CANDIDATE",
+    )
+    context = {"price": 100.1, "atr15": 1.0, "scan_3m_events": {Side.LONG.value: {"stage": "READY", "last_event_ts": int(now_utc().timestamp() * 1000)}}}
+    candidate = candidate_from_missed_opportunity(opp, context)
+    return bool(
+        candidate
+        and candidate.ict_model == "MOMENTUM_NO_PULLBACK_CONTINUATION"
+        and candidate.selected_source == "SAVED_OPPORTUNITY_REENTRY"
+        and ((candidate.score_components or {}).get("reentry_lifecycle") or {}).get("model_id") == "MOMENTUM_NO_PULLBACK_CONTINUATION"
+    )
+
+
+def test_funnel_rejects_unranked_unknown_selection() -> bool:
+    journal: dict[str, Any] = {}
+    context = {"_setup_lifecycle_detected": [], "_setup_lifecycle_qualified": [], "_setup_lifecycle_ranked": []}
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=70, final_score=70,
+        ict_model="NONE", selected_source="RANKED_CANDIDATE",
+    )
+    decision = Decision(id="x", time=iso_now(), action=Action.NO_SETUP.value, side=candidate.side, setup_type=candidate.setup_type, quality=70, reason="test", regime=Regime.NORMAL.value, candidate=candidate)
+    run = update_setup_lifecycle_counters(journal, context, decision)
+    row = ((journal.get("setup_lifecycle_counters") or {}).get("totals") or {}).get(candidate.setup_type) or {}
+    return bool(run.get("selected") is None and run.get("selection_anomaly") and int(row.get("selected") or 0) == 0)
+
+
+def test_funnel_allows_explicit_saved_reentry_selection() -> bool:
+    journal: dict[str, Any] = {}
+    context = {"_setup_lifecycle_detected": [], "_setup_lifecycle_qualified": [], "_setup_lifecycle_ranked": []}
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=70, final_score=70,
+        ict_model="MOMENTUM_NO_PULLBACK_CONTINUATION", selected_source="SAVED_OPPORTUNITY_REENTRY",
+        execution_source=ExecutionSource.REENTRY.value,
+    )
+    decision = Decision(id="x", time=iso_now(), action=Action.NO_SETUP.value, side=candidate.side, setup_type=candidate.setup_type, quality=70, reason="test", regime=Regime.NORMAL.value, candidate=candidate)
+    run = update_setup_lifecycle_counters(journal, context, decision)
+    return bool((run.get("selected") or {}).get("selected_source") == "SAVED_OPPORTUNITY_REENTRY" and not run.get("selection_anomaly"))
+
+
+def test_time_of_day_stays_shadow_until_positive_sample() -> bool:
+    profile = time_of_day_shadow_profile({"trades": [], "training_signals": []})
+    return bool(profile.get("shadow_active") and not profile.get("live_eligible") and profile.get("minimum_closed_trades") >= 20)
+
+
+def test_time_of_day_shadow_cannot_be_promoted_by_preconfirmation() -> bool:
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.TIME_OF_DAY_ADAPTIVE.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=80, final_score=80,
+        trigger_ready=True, live_3m_trigger_ready=True, execution_source=ExecutionSource.TIME_OF_DAY.value,
+        score_components={"time_of_day_shadow": {"shadow_active": True}},
+        preconfirmation_profile={"available": True, "calibrated": True, "trusted": True, "promotion_trusted": True, "precursor_active": True, "probability": 0.95},
+    )
+    class Eval:
+        preconfirmation = candidate.preconfirmation_profile
+        philosophy = PhilosophyDecision("ACCEPT_STAGED", 80, 80, 80, 80, "UNPROVEN", [], [])
+        conflict_report = ConflictReport(0, 0, False, [], [], 0, 0, False)
+        timing_quality = 80
+        entry_quality = 80
+        trade_quality = 80
+    state, _, _, _, audit = _preconfirm_stage_gate(ExecutiveDecisionState.WAIT_CONFIRMATION.value, candidate, Eval(), "shadow sample", ["TIME_OF_DAY_SHADOW_PENDING_POSITIVE_SAMPLE"], [])
+    return bool(state == ExecutiveDecisionState.WAIT_CONFIRMATION.value and audit.get("effect") == "SETUP_SHADOW_SUPERSEDES_PRECONFIRMATION" and not audit.get("promotion_trusted"))
+
+
+def test_exact_setup_calibration_requires_minimum_sample() -> bool:
+    profile = setup_type_calibration_profile({"trades": [], "training_signals": []}, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    return bool(not profile.get("empirically_calibrated") and profile.get("minimum_training_rows") == SETUP_CALIBRATION_MIN_CLOSED_TRADES)
+
+
+def test_entry_quality_rescale_is_more_discriminating() -> bool:
+    weak = {"freshness": (100, .2), "chase": (100, .2), "acceptance": (45, .3), "source": (80, .3)}
+    strong = {"freshness": (100, .2), "chase": (100, .2), "acceptance": (80, .3), "source": (90, .3)}
+    weak_raw = _weighted_quality(weak)
+    strong_raw = _weighted_quality(strong)
+    weak_scaled = rescale_entry_quality(weak_raw, weak)
+    strong_scaled = rescale_entry_quality(strong_raw, strong)
+    return bool(strong_scaled > weak_scaled and (strong_scaled - weak_scaled) > (strong_raw - weak_raw) * 0.9)
+
+
 def test_setup_lifecycle_counts_all_24_types_and_funnel() -> bool:
     journal: dict[str, Any] = {}
     context = {
         "_setup_lifecycle_detected": [
+            {"side": "LONG", "model_id": "TIME_OF_DAY_ADAPTIVE", "setup_type": SetupType.TIME_OF_DAY_ADAPTIVE.value}
+        ],
+        "_setup_lifecycle_qualified": [
             {"side": "LONG", "model_id": "TIME_OF_DAY_ADAPTIVE", "setup_type": SetupType.TIME_OF_DAY_ADAPTIVE.value}
         ],
         "_setup_lifecycle_ranked": [
@@ -19863,6 +20162,7 @@ def test_setup_lifecycle_counts_all_24_types_and_funnel() -> bool:
         side="LONG", setup_type=SetupType.TIME_OF_DAY_ADAPTIVE.value,
         setup_family=SetupFamily.CONTINUATION.value, raw_score=70, final_score=70,
         ict_model="TIME_OF_DAY_ADAPTIVE",
+        selected_source="RANKED_CANDIDATE",
     )
     decision = Decision(
         id="life", time=iso_now(), action=Action.PROBE_ENTRY.value, side="LONG",
@@ -19875,7 +20175,7 @@ def test_setup_lifecycle_counts_all_24_types_and_funnel() -> bool:
     return bool(
         ledger.get("setup_type_count") == 24
         and len(ledger.get("totals") or {}) == 24
-        and row == {"detected": 1, "ranked": 1, "selected": 1, "executable": 1, "entered": 1}
+        and row == {"detected": 1, "qualified_detected": 1, "ranked": 1, "selected": 1, "executable": 1, "entered": 1}
     )
 
 
@@ -19988,6 +20288,13 @@ def _run_self_test() -> bool:
         ("neutral regime fit is the midpoint", test_neutral_regime_fit_is_midpoint),
         ("ambiguous trade preserves known partial exits", test_ambiguous_trade_preserves_known_partial_exits),
         ("untrusted preconfirmation has no promotion authority", test_untrusted_preconfirmation_has_no_promotion_authority),
+        ("opportunity re-entry preserves named model identity", test_opportunity_reentry_preserves_named_model_identity),
+        ("funnel rejects unranked unknown selection", test_funnel_rejects_unranked_unknown_selection),
+        ("funnel allows explicit saved re-entry selection", test_funnel_allows_explicit_saved_reentry_selection),
+        ("Time of Day remains shadow until positive sample", test_time_of_day_stays_shadow_until_positive_sample),
+        ("Time of Day shadow cannot be promoted by preconfirmation", test_time_of_day_shadow_cannot_be_promoted_by_preconfirmation),
+        ("exact setup calibration requires minimum sample", test_exact_setup_calibration_requires_minimum_sample),
+        ("entry quality rescale is more discriminating", test_entry_quality_rescale_is_more_discriminating),
         ("setup lifecycle counts all 24 setup types", test_setup_lifecycle_counts_all_24_types_and_funnel),
         ("preconfirmation Platt calibration preserves ranking", test_preconfirmation_platt_preserves_probability_order),
         ("preconfirmation authority requires current feature-schema rows", test_preconfirmation_authority_requires_current_schema_sample),
@@ -20853,9 +21160,10 @@ def trading_philosophy_layer(
     plan = plan or getattr(candidate, "trade_plan", None)
     rr1 = safe_float(getattr(plan, "rr1", 0.0), 0.0) if plan else 0.0
     family = str(getattr(candidate, "setup_family", "") or "")
-    stats = compute_setup_statistics(journal).get(family, {})
+    setup_type = str(getattr(candidate, "setup_type", "") or "")
+    stats = setup_type_trade_statistics(journal, setup_type)
     expectancy = safe_float(stats.get("expectancy_r"), 0.0)
-    sample = int(stats.get("closed_trades", stats.get("trades", 0)) or 0)
+    sample = int(stats.get("closed_trades", 0) or 0)
     plan_valid = bool(plan and getattr(plan, "valid", True))
 
     invalidation_present = bool(
@@ -20918,7 +21226,7 @@ def trading_philosophy_layer(
         100.0,
     )
 
-    if sample >= SCORING_MODEL_MIN_FAMILY_TRADES:
+    if sample >= SETUP_CALIBRATION_MIN_CLOSED_TRADES:
         statistical_status = "PROVEN_POSITIVE" if expectancy > 0 else "PROVEN_NEGATIVE"
     elif sample > 0:
         statistical_status = "UNPROVEN"
@@ -21338,7 +21646,8 @@ def build_evaluation_bundle(
         "execution_source": (source_quality, 0.05),
         "anti_fomo": (safe_float(anti_fomo.get("score"), 100.0), 0.10),
     }
-    entry_quality = _weighted_quality(entry_parts)
+    entry_quality_raw = _weighted_quality(entry_parts)
+    entry_quality = rescale_entry_quality(entry_quality_raw, entry_parts)
     candidate.timing_quality_score = int(round(timing_quality))
     candidate.execution_quality_score = int(round(timing_quality))
     candidate.entry_quality_score = int(round(entry_quality))
@@ -21433,6 +21742,13 @@ def build_evaluation_bundle(
         "thesis_confidence_decay": confidence_profile,
         "execution": {k: round(v[0], 2) for k, v in execution_parts.items()},
         "entry": {k: round(v[0], 2) for k, v in entry_parts.items()},
+        "entry_quality_policy": {
+            "raw_weighted_quality": round(entry_quality_raw, 2),
+            "rescaled_quality": round(entry_quality, 2),
+            "center": ENTRY_QUALITY_RESCALE_CENTER,
+            "slope": ENTRY_QUALITY_RESCALE_SLOPE,
+            "mode": "WEAKEST_LINK_SPREAD_V9_5_10",
+        },
         "anti_fomo": anti_fomo,
         "probe_conviction": probe_profile,
         "trade": {k: round(v[0], 2) for k, v in trade_parts.items()},
@@ -21567,6 +21883,15 @@ def build_staged_executive_decision(
     elif thesis_invalidated:
         state = ExecutiveDecisionState.REJECT.value
         blocking.append("THESIS_INVALIDATED")
+    elif bool(((getattr(candidate, "score_components", {}) or {}).get("time_of_day_shadow") or {}).get("shadow_active")):
+        shadow = ((getattr(candidate, "score_components", {}) or {}).get("time_of_day_shadow") or {})
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        blocking.append("TIME_OF_DAY_SHADOW_PENDING_POSITIVE_SAMPLE")
+        required = (
+            f"Time of Day remains shadow until {int(shadow.get('minimum_closed_trades') or TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES)} "
+            f"closed trades and positive expectancy"
+        )
+        warnings.append("SETUP_SHADOW_AUDIT_ONLY")
     elif evaluation.data_quality < 62.5 or not htf.get("valid"):
         state = ExecutiveDecisionState.REJECT.value
         blocking.append("DATA_SCHEMA_INVALID")
