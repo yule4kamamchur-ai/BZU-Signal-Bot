@@ -1,7 +1,22 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.10 (Opportunity Identity and Setup Calibration Guard)
+BZU Professional Hybrid Confluence Signal Bot v9.5.12 (Single Risk Ledger and Audit Namespace Cleanup)
 =============================================================================================
+Оновлення v9.5.12:
+- Executive Layer повторно використовує один precomputed RiskAdjustmentLedger; подвійний runtime-розрахунок прибрано.
+- Legacy adaptive-conflict helpers перейменовані та ізольовані як offline audit-only tooling.
+- Live audit payload більше не створює враження, що adaptive score override увімкнений у production.
+- Failed Breakout SHORT і MSS Reversal SHORT мають явну documented volume policy: volume є diagnostic-only, price acceptance/structure лишається hard evidence.
+- Усі explicit setup profiles v9.5.11 та exact-setup empirical review gate збережені.
+- Усі зміни v9.5.11 збережені:
+Оновлення v9.5.11:
+- Усі 24 named setup мають explicit TP/SL bootstrap profile; generic fallback лишився тільки fail-safe для невідомого setup.
+- Додано окремі bootstrap RR/ATR-профілі для DIRECTION_FLIP, FRESH_BASE та п’яти SHORT reversal setup.
+- Geometry profile зберігає source/calibration status і накопичує exact-setup evidence для empirical review після 20 угод.
+- probe_entry_eligibility видалено як осиротіле друге джерело істини; canonical probe fact лишається fresh_probe_candidate_profile + Executive gates.
+- Прибрано неактивні deprecated wrappers/debug helpers; compatibility alias для preconfirmation явно задокументований.
+- Domain payload validation підключено до compact journal serialization.
+- Усі зміни v9.5.10 збережені:
 Оновлення v9.5.10:
 - Opportunity зберігає ict_model; saved re-entry відновлює named model identity та explicit selected_source.
 - Funnel розділяє detected і qualified_detected та не рахує невідому selection без ranked match.
@@ -177,8 +192,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.10-opportunity-identity-setup-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_10_OPPORTUNITY_IDENTITY_SETUP_CALIBRATION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.12-single-risk-ledger-audit-namespace-cleanup"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_12_SINGLE_RISK_LEDGER_AUDIT_NAMESPACE_CLEANUP"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -834,6 +849,14 @@ SCORING_MODEL_MAX_LEARNED_WEIGHT = float(os.getenv("SCORING_MODEL_MAX_LEARNED_WE
 SETUP_CALIBRATION_MIN_CLOSED_TRADES = max(20, min(30, int(os.getenv("SETUP_CALIBRATION_MIN_CLOSED_TRADES", "25") or 25)))
 SETUP_CALIBRATION_FULL_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES + 1, int(os.getenv("SETUP_CALIBRATION_FULL_CLOSED_TRADES", "80") or 80))
 TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES, int(os.getenv("TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES", str(SETUP_CALIBRATION_MIN_CLOSED_TRADES)) or SETUP_CALIBRATION_MIN_CLOSED_TRADES))
+# v9.5.11: RR/ATR geometry calibration is exact-setup scoped. Bootstrap profiles
+# are explicit for every named setup; empirical auto-tuning is intentionally not
+# enabled until enough geometry-complete closed trades exist.
+SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES = max(20, int(os.getenv("SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES", "20") or 20))
+SETUP_TRADE_PROFILE_FULL_CLOSED_TRADES = max(
+    SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES + 1,
+    int(os.getenv("SETUP_TRADE_PROFILE_FULL_CLOSED_TRADES", "60") or 60),
+)
 TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R = float(os.getenv("TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R", "0.0") or 0.0)
 ENTRY_QUALITY_RESCALE_CENTER = float(os.getenv("ENTRY_QUALITY_RESCALE_CENTER", "70") or 70)
 ENTRY_QUALITY_RESCALE_SLOPE = max(1.0, float(os.getenv("ENTRY_QUALITY_RESCALE_SLOPE", "1.8") or 1.8))
@@ -1472,17 +1495,6 @@ DECISION_AUTHORITY_GUARD = DecisionAuthorityGuard()
 
 
 
-def create_advisory_recommendation(module: str, opinion: str, confidence: float = 0, impact: float = 0, reasons=None):
-    """Factory for modules. A module may recommend, never decide."""
-    recommendation = AdvisoryRecommendation(
-        module=module,
-        opinion=opinion,
-        confidence=confidence,
-        impact=impact,
-        reasons=list(reasons or []),
-    )
-    DECISION_AUTHORITY_GUARD.validate_module_output(module, recommendation)
-    return recommendation
 
 
 @dataclass
@@ -1606,15 +1618,15 @@ class ActiveTrade:
 
 
 
-def adaptive_conflict_execution_threshold(
+def _audit_only_conflict_execution_threshold(
     candidate_quality: float,
     conflict: Optional[dict[str, Any]] = None,
 ) -> float:
-    """Floating execution threshold for a reduced entry under real conflict.
+    """Offline replay diagnostic for the retired adaptive-conflict override.
 
-    Stronger conflict demands stronger execution; a stronger candidate can earn
-    a small discount. The result is bounded, auditable and intentionally lives
-    near 70 rather than using the old 75-point cliff.
+    This helper is intentionally excluded from live Executive decisions. It exists
+    only so ``--audit-journal`` can reproduce historical investigations without
+    placing a misleading score override in the production path.
     """
     conflict = conflict or {}
     severity = max(
@@ -1627,16 +1639,16 @@ def adaptive_conflict_execution_threshold(
     return round(clamp(threshold, CONFLICT_OVERRIDE_EXECUTION_MIN, CONFLICT_OVERRIDE_EXECUTION_MAX), 2)
 
 
-def executive_conflict_allows_reduced_entry(
+def _audit_only_conflict_allows_reduced_entry(
     execution_quality: float,
     risk_blocked: bool,
     rr1: float,
     minimum_execution_quality: Optional[float] = None,
 ) -> bool:
-    """HTF/ICT disagreement reduces aggressiveness rather than blindly vetoing.
+    """Offline-only predicate used by historical conflict-scale replay.
 
-    The threshold is supplied by adaptive_conflict_execution_threshold(); the
-    default remains the configured base for backwards-compatible callers.
+    Live PROBE/ENTRY decisions never call this function. Production conflict handling
+    is performed by staged evidence, Trading Philosophy and the Executive contract.
     """
     required = (
         CONFLICT_OVERRIDE_EXECUTION_BASE
@@ -3246,7 +3258,9 @@ def resolve_preconfirmation_events(
     return resolved_count
 
 
-# v9.4 private-name compatibility for external imports/tests.
+# EXTERNAL_COMPATIBILITY_ALIAS: retained only for old imports/tests.
+# Runtime calls resolve_preconfirmation_events() directly; this alias has no
+# independent logic and is not a second lifecycle implementation.
 def _preconfirm_resolve_events(journal: dict[str, Any], context: dict[str, Any], candidates: list[Candidate]) -> None:
     resolve_preconfirmation_events(journal, context, candidates)
 
@@ -4066,6 +4080,8 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "setup_lifecycle_recent_run_limit": SETUP_LIFECYCLE_RECENT_RUN_LIMIT,
         "setup_calibration_min_closed_trades": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
         "setup_calibration_full_closed_trades": SETUP_CALIBRATION_FULL_CLOSED_TRADES,
+        "setup_trade_profile_min_closed_trades": SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES,
+        "setup_trade_profile_full_closed_trades": SETUP_TRADE_PROFILE_FULL_CLOSED_TRADES,
         "time_of_day_shadow_min_closed_trades": TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,
         "time_of_day_shadow_min_expectancy_r": TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,
         "entry_quality_rescale_center": ENTRY_QUALITY_RESCALE_CENTER,
@@ -4870,13 +4886,6 @@ def build_risk_adjustment_ledger(
     )
 
 
-def adaptive_position_risk_pct(candidate: Candidate, context: dict, default_risk_pct: float) -> float:
-    """Compatibility adapter to the single RiskAdjustmentLedger."""
-    ledger = build_risk_adjustment_ledger(candidate, context, stage=getattr(candidate, "entry_stage", "WATCH"))
-    payload = asdict(ledger)
-    candidate.risk_ledger = payload
-    candidate.score_components["risk_adjustment_ledger"] = payload
-    return ledger.final_position_risk_pct
 
 # ==========================================================
 # v6.19 Professional Consolidation Layer (Oil 15M)
@@ -4898,26 +4907,9 @@ CONTEXT_ONLY_SETUPS = {
 }
 
 
-def setup_role(setup_type: str) -> str:
-    """Single hierarchy for setup influence."""
-    name = str(setup_type or "").upper()
-    if name in PRIMARY_EXECUTION_SETUPS:
-        return "PRIMARY_EXECUTION"
-    if name in CONTEXT_ONLY_SETUPS:
-        return "CONTEXT"
-    return "SUPPORT"
 
 
 
-def calculate_unified_risk_adjustment(candidate: Any) -> dict[str, Any]:
-    """Deprecated compatibility view of the canonical risk ledger."""
-    ledger = build_risk_adjustment_ledger(candidate, {}, stage=getattr(candidate, "entry_stage", "WATCH"))
-    return {
-        "multipliers": {a.source: a.factor for a in ledger.adjustments if a.applied},
-        "combined": ledger.combined_confidence_multiplier,
-        "ledger": asdict(ledger),
-        "deprecated": True,
-    }
 
 def scoring_mode_profile(status: Optional[dict[str, Any]]) -> dict[str, Any]:
     status = status or {}
@@ -5571,6 +5563,32 @@ def lean_training_signal(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ==========================================================
+# FINAL DOMAIN PAYLOAD VALIDATION
+# ==========================================================
+# Domain separation:
+# - OpportunityStatus / OpportunityStage: lifecycle of a candidate
+# - ExecutiveDecisionState: decision of the executive layer
+# - Action: execution / active trade management only
+
+FORBIDDEN_ACTION_VALUES = {
+    "ARMED",
+    "WAIT",
+    "DISCOVERED",
+    "EXPIRED",
+}
+
+def validate_serialized_decision_payload(payload: dict[str, Any]) -> bool:
+    """Fail closed when lifecycle states leak into execution-action fields."""
+    action = payload.get("action")
+    if action in FORBIDDEN_ACTION_VALUES:
+        raise DecisionAuthorityViolation(f"Invalid execution action domain: {action}")
+    execution_action = payload.get("execution_action")
+    if execution_action in FORBIDDEN_ACTION_VALUES:
+        raise DecisionAuthorityViolation(f"Invalid execution_action domain: {execution_action}")
+    return True
+
+
 def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     """Compact a signal without touching live decision logic.
 
@@ -5580,6 +5598,7 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(payload, dict):
         return {}
+    validate_serialized_decision_payload(payload)
     revalidation = payload.get("trigger_revalidation") or (payload.get("score_components") or {}).get("trigger_revalidation") or {}
     innovation = payload.get("innovation_profile") or (payload.get("score_components") or {}).get("innovation_profile") or {}
     funnel = ((payload.get("audit") or {}).get("execution_funnel") or payload.get("execution_funnel") or {})
@@ -5624,6 +5643,18 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "setup_quality": payload.get("setup_quality"),
         "timing_quality": payload.get("timing_quality"),
         "trade_quality": payload.get("trade_quality"),
+        "trade_profile_source": payload.get("trade_profile_source"),
+        "trade_profile_calibration_status": payload.get("trade_profile_calibration_status"),
+        "trade_profile_fallback_used": payload.get("trade_profile_fallback_used"),
+        "rr1": payload.get("rr1"),
+        "rr2": payload.get("rr2"),
+        "rr3": payload.get("rr3"),
+        "mfe_r": payload.get("mfe_r"),
+        "mae_r": payload.get("mae_r"),
+        "tp0_hit": payload.get("tp0_hit"),
+        "tp1_hit": payload.get("tp1_hit"),
+        "tp2_hit": payload.get("tp2_hit"),
+        "tp3_hit": payload.get("tp3_hit"),
         "bot_version_at_signal": payload.get("bot_version_at_signal", payload.get("version")),
         "architecture_version_at_signal": payload.get("architecture_version_at_signal", payload.get("architecture_version")),
         "journal_schema_at_signal": payload.get("journal_schema_at_signal"),
@@ -5687,6 +5718,18 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "setup_quality": payload.get("setup_quality"),
         "timing_quality": payload.get("timing_quality"),
         "trade_quality": payload.get("trade_quality"),
+        "trade_profile_source": payload.get("trade_profile_source"),
+        "trade_profile_calibration_status": payload.get("trade_profile_calibration_status"),
+        "trade_profile_fallback_used": payload.get("trade_profile_fallback_used"),
+        "rr1": payload.get("rr1"),
+        "rr2": payload.get("rr2"),
+        "rr3": payload.get("rr3"),
+        "mfe_r": payload.get("mfe_r"),
+        "mae_r": payload.get("mae_r"),
+        "tp0_hit": payload.get("tp0_hit"),
+        "tp1_hit": payload.get("tp1_hit"),
+        "tp2_hit": payload.get("tp2_hit"),
+        "tp3_hit": payload.get("tp3_hit"),
         "execution_stage": payload.get("execution_stage", payload.get("entry_stage")),
         "execution_source": payload.get("execution_source"),
         "result": result_class,
@@ -5945,6 +5988,10 @@ def opportunity_from_state(state: dict[str, Any]) -> Optional[Opportunity]:
     raw = state.get("opportunity")
     if not isinstance(raw, dict):
         return None
+    created_at = str(raw.get("created_at") or "")
+    if created_at and opportunity_is_expired(created_at):
+        state["opportunity"] = None
+        return None
     try:
         return Opportunity(**{k: raw.get(k) for k in Opportunity.__dataclass_fields__ if k in raw})
     except Exception:
@@ -6091,7 +6138,12 @@ def build_decision_message(context: dict, decision: Decision) -> str:
             lines.append(f"⚠️ {html.escape(warning)}")
         return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
     
-    adaptive = ((decision.audit or {}).get("adaptive_conflict_resolver") or {})
+    decision_audit = decision.audit or {}
+    adaptive = (
+        decision_audit.get("legacy_adaptive_conflict_override")
+        or decision_audit.get("adaptive_conflict_resolver")
+        or {}
+    )
     decision_variant = adaptive.get("decision_variant")
     conflict_override = bool(adaptive.get("conflict_override", False))
 
@@ -6182,15 +6234,6 @@ def build_decision_message(context: dict, decision: Decision) -> str:
     return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
 
-def _short_list(items: Any, limit: int = 3) -> list[str]:
-    out: list[str] = []
-    for item in items or []:
-        text = str(item).strip()
-        if text and text not in out:
-            out.append(text)
-        if len(out) >= limit:
-            break
-    return out
 
 
 def _bias_label(block: dict) -> str:
@@ -7366,13 +7409,6 @@ def _candidate_htf_fact(
         "contract": "absolute market bias + candidate-relative alignment",
     }
 
-def _candidate_htf_alignment(
-    side: str,
-    tf15: dict[str, Any],
-    tf1h: dict[str, Any],
-    tf4h: dict[str, Any],
-) -> dict[str, Any]:
-    return _candidate_htf_fact(side, tf15, tf1h, tf4h)
 
 
 def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = None) -> dict:
@@ -7757,40 +7793,6 @@ def calculate_location_score(price: float, zones: list[Zone], side: str, atr15: 
     return min(score, 45)
 
 
-def calculate_acceptance_quality(event: dict, candles_3m: list[Candle], atr15: float, structure_alignment: int, has_forward_zone: bool) -> int:
-    base = int(event.get("acceptance_quality", 40) or 40)
-    
-    if has_forward_zone:
-        base += 12
-
-    if event.get("displacement"):
-        base += 8
-    if event.get("strong_displacement"):
-        base += 10
-    if event.get("retest"):
-        base += 16
-    if event.get("mitigation"):
-        base += 8
-
-    if structure_alignment > 70:
-        base += 6
-    elif structure_alignment > 55:
-        base += 3
-
-    if event.get("stage") == "READY":
-        base += 5
-
-    impulse = event.get("impulse_strength") if isinstance(event.get("impulse_strength"), dict) else {}
-    impulse_score = int(impulse.get("score", 0) or 0)
-    if impulse_score >= 3 and not event.get("retest"):
-        base -= 16
-    elif impulse_score == 2 and not (event.get("retest") or event.get("mitigation")):
-        base -= 6
-
-    if not (event.get("strong_displacement") or event.get("retest")):
-        base -= 10
-
-    return int(clamp(base, 0, 95))
 
 
 # ==========================================================
@@ -9752,7 +9754,7 @@ def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> 
         "minimum_training_rows": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
         "empirically_calibrated": calibrated,
         "status": "CALIBRATED" if calibrated else "INSUFFICIENT_EXACT_SETUP_SAMPLE",
-        "schema_version": "exact_setup_calibration_v9.5.10",
+        "schema_version": "exact_setup_calibration_v9.5.11",
     }
 
 
@@ -9770,7 +9772,7 @@ def time_of_day_shadow_profile(journal: dict[str, Any]) -> dict[str, Any]:
         "sample_pass": sample_pass,
         "positive_expectancy_pass": expectancy_pass,
         "policy": "SHADOW_UNTIL_MIN_SAMPLE_AND_POSITIVE_EXPECTANCY",
-        "schema_version": "time_of_day_shadow_v9.5.10",
+        "schema_version": "time_of_day_shadow_v9.5.11",
     }
 
 
@@ -11609,8 +11611,11 @@ def detect_short_liquidity_sweep_reversal(
 def detect_short_failed_breakout(candles: list[Candle], price: float, atr15: float) -> dict[str, Any]:
     """Soft failed breakout above recent resistance.
 
-    Breakout, close-back-inside, follow-through and retest are scored separately;
-    no single missing component hard-rejects the hypothesis.
+    Breakout, close-back-inside, follow-through and retest are scored separately.
+
+    Volume is intentionally diagnostic-only here. The model is a price-acceptance
+    failure detector, and the current feed may expose synthetic or missing volume.
+    Unlike liquidity-sweep reversal, low volume therefore does not hard-block it.
     """
     confirmed = _confirmed_candles(candles, 26)
     if len(confirmed) < 13 or atr15 <= 0:
@@ -11636,6 +11641,9 @@ def detect_short_failed_breakout(candles: list[Candle], price: float, atr15: flo
     shape = _candle_shape(breakout_candle)
     breakout_depth_atr = (breakout_candle.high - resistance) / max(atr15, 1e-9)
     not_chasing = (resistance - price) / max(atr15, 1e-9) <= 1.35
+    base_volumes = [safe_float(c.volume, 0.0) for c in base if safe_float(c.volume, 0.0) > 0]
+    recent_volumes = [safe_float(c.volume, 0.0) for c in recent if safe_float(c.volume, 0.0) > 0]
+    volume_ratio = mean(recent_volumes) / max(mean(base_volumes), 1e-9) if base_volumes and recent_volumes else None
 
     quality = 0.0
     quality += min(22.0, breakout_depth_atr / 0.40 * 22.0)
@@ -11659,6 +11667,9 @@ def detect_short_failed_breakout(candles: list[Candle], price: float, atr15: flo
         "retest": retest,
         "not_chasing": not_chasing,
         "breakout_depth_atr": round(breakout_depth_atr, 3),
+        "volume_policy": "OPTIONAL_DIAGNOSTIC_PRICE_ACCEPTANCE_IS_HARD_EVIDENCE",
+        "volume_hard_gate": False,
+        "volume_ratio": round(volume_ratio, 3) if volume_ratio is not None else None,
         "reason": "breakout acceptance failed above resistance",
     }
 
@@ -11669,6 +11680,10 @@ def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, 
     It combines the existing structural shift contract with protected-low break,
     lower-high/lower-low geometry and bearish displacement. This avoids inventing
     a second incompatible structure engine.
+
+    Volume is intentionally diagnostic-only: an MSS is defined by price structure,
+    while exchange volume may be synthetic or absent. Missing/low volume adds no
+    execution permission, but it also does not veto a confirmed structural break.
     """
     confirmed = _confirmed_candles(candles, 30)
     if len(confirmed) < 14 or atr15 <= 0:
@@ -11685,6 +11700,9 @@ def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, 
     displacement_atr = abs(recent[-1].close - recent[-1].open) / max(atr15, 1e-9)
     bearish_displacement = recent[-1].close < recent[-1].open and displacement_atr >= 0.16 and last_shape["body_ratio"] >= 0.48
     bearish_closes = sum(1 for c in recent[-5:] if c.close < c.open)
+    pre_volumes = [safe_float(c.volume, 0.0) for c in pre if safe_float(c.volume, 0.0) > 0]
+    recent_volumes = [safe_float(c.volume, 0.0) for c in recent if safe_float(c.volume, 0.0) > 0]
+    volume_ratio = mean(recent_volumes) / max(mean(pre_volumes), 1e-9) if pre_volumes and recent_volumes else None
 
     quality = 0.0
     quality += 32.0 if shift.get("bearish_shift") else 0.0
@@ -11714,6 +11732,9 @@ def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, 
         "displacement_atr": round(displacement_atr, 3),
         "bearish_closes_5": bearish_closes,
         "directional_structure": directional,
+        "volume_policy": "OPTIONAL_DIAGNOSTIC_STRUCTURE_IS_HARD_EVIDENCE",
+        "volume_hard_gate": False,
+        "volume_ratio": round(volume_ratio, 3) if volume_ratio is not None else None,
         "reason": "bullish structure is progressively losing control",
     }
 
@@ -13343,30 +13364,107 @@ def build_trade_breathing_geometry(side: str, price: float, structural_stop: flo
     }
 
 
-def setup_trade_profile(setup_type: str) -> dict:
-    profiles = {
-        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.30, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2},
-        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 4.40, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
-        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 1.50, "tp2_rr": 2.70, "tp3_rr": 4.00, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
-        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 1.55, "tp2_rr": 2.80, "tp3_rr": 4.10, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
-        SetupType.TREND_IGNITION.value: {"tp1_rr": 1.70, "tp2_rr": 3.30, "tp3_rr": 5.60, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True},
-        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True},
-        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 1.50, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True},
-        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"tp1_rr": 1.65, "tp2_rr": 3.10, "tp3_rr": 5.00, "tp1_atr": 1.35, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
-        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: {"tp1_rr": 1.60, "tp2_rr": 3.00, "tp3_rr": 4.80, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True},
-        SetupType.ACCELERATION_PULLBACK_REENTRY.value: {"tp1_rr": 1.70, "tp2_rr": 3.20, "tp3_rr": 5.20, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.40, "force_risky": True},
-        SetupType.SESSION_MEAN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.80, "force_risky": True},
-        SetupType.OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.60, "tp2_rr": 3.20, "tp3_rr": 5.10, "tp1_atr": 1.35, "stop_min_atr": 0.75, "stop_max_atr": 1.90, "force_risky": True},
-        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 1.50, "tp2_rr": 2.85, "tp3_rr": 4.00, "tp1_atr": 1.20, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True},
-        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: {"tp1_rr": 1.55, "tp2_rr": 3.10, "tp3_rr": 4.80, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True},
-        SetupType.LIQUIDITY_LADDER.value: {"tp1_rr": 1.75, "tp2_rr": 3.80, "tp3_rr": 6.00, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.30},
-        SetupType.FAILED_AUCTION_REJECTION.value: {"tp1_rr": 1.50, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.20, "stop_min_atr": 0.75, "stop_max_atr": 1.80, "force_risky": True},
-        SetupType.TIME_OF_DAY_ADAPTIVE.value: {"tp1_rr": 1.55, "tp2_rr": 3.10, "tp3_rr": 4.70, "tp1_atr": 1.25, "stop_min_atr": 0.90, "stop_max_atr": 2.10},
+def setup_trade_profile_evidence(journal: Optional[dict[str, Any]], setup_type: str) -> dict[str, Any]:
+    """Exact-setup geometry evidence, isolated from generic/family statistics.
+
+    This layer does not silently rewrite live RR/SL. It tells us when a setup has
+    enough geometry-complete outcomes for a controlled empirical recalibration.
+    """
+    trades = []
+    if isinstance(journal, dict):
+        trades = [
+            row for row in (journal.get("trades") or [])
+            if isinstance(row, dict) and str(row.get("setup_type") or "") == str(setup_type or "")
+        ]
+    resolved = [row for row in trades if _journal_result_r(row) is not None]
+    geometry_complete = [
+        row for row in resolved
+        if row.get("rr1") is not None and row.get("mfe_r") is not None and row.get("mae_r") is not None
+    ]
+    count = len(resolved)
+    geometry_count = len(geometry_complete)
+    wins = sum(1 for row in resolved if safe_float(_journal_result_r(row), 0.0) > 0)
+    net_r = sum(safe_float(_journal_result_r(row), 0.0) for row in resolved)
+    target_rates = {}
+    for target in ("tp0_hit", "tp1_hit", "tp2_hit", "tp3_hit"):
+        target_rates[target] = round(
+            sum(1 for row in geometry_complete if bool(row.get(target))) / max(geometry_count, 1), 4
+        ) if geometry_count else None
+    return {
+        "setup_type": str(setup_type or ""),
+        "closed_trades": count,
+        "geometry_complete_trades": geometry_count,
+        "minimum_closed_trades": SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES,
+        "minimum_geometry_complete_trades": SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES,
+        "empirical_review_ready": bool(
+            count >= SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES
+            and geometry_count >= SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES
+        ),
+        "wins": wins,
+        "win_rate": round(wins / max(count, 1), 4) if count else None,
+        "net_r": round(net_r, 6),
+        "expectancy_r": round(net_r / max(count, 1), 6) if count else None,
+        "target_hit_rates": target_rates,
+        "policy": "EXACT_SETUP_ONLY; bootstrap geometry remains live until controlled empirical review",
+        "schema_version": "setup_trade_profile_evidence_v9.5.11",
     }
-    return dict(profiles.get(str(setup_type or ""), {"tp1_rr": 1.55, "tp2_rr": 2.90, "tp3_rr": 3.90, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20}))
 
 
-def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Optional[str] = None) -> dict:
+def setup_trade_profile(setup_type: str, journal: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Return explicit bootstrap geometry for every named setup.
+
+    These are morphology-based starting profiles, not falsely advertised
+    statistical calibration. Unknown setup types alone use the generic fail-safe.
+    """
+    profiles = {
+        SetupType.SWEEP_RECLAIM.value: {"tp1_rr": 2.00, "tp2_rr": 2.70, "tp3_rr": 4.00, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "LIQUIDITY_REVERSAL"},
+        SetupType.CAPITULATION_RECOVERY.value: {"tp1_rr": 2.00, "tp2_rr": 2.80, "tp3_rr": 4.10, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True, "geometry_family": "LIQUIDITY_REVERSAL"},
+        SetupType.DIRECTION_FLIP.value: {"tp1_rr": 2.05, "tp2_rr": 3.20, "tp3_rr": 4.80, "tp1_atr": 1.35, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "STRUCTURAL_TRANSITION"},
+        SetupType.TREND_IGNITION.value: {"tp1_rr": 2.10, "tp2_rr": 3.30, "tp3_rr": 5.60, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "force_risky": True, "geometry_family": "TREND_EXPANSION"},
+        SetupType.PULLBACK_CONTINUATION.value: {"tp1_rr": 2.00, "tp2_rr": 3.30, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.50, "quality_adjustment": 2, "geometry_family": "CONTINUATION"},
+        SetupType.FRESH_BASE_CONTINUATION.value: {"tp1_rr": 2.05, "tp2_rr": 3.40, "tp3_rr": 5.50, "tp1_atr": 1.40, "stop_min_atr": 0.90, "stop_max_atr": 2.30, "quality_adjustment": 2, "geometry_family": "OB_RECLAIM_CONTINUATION"},
+        SetupType.BREAKOUT_RETEST.value: {"tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 4.40, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "BREAKOUT_RETEST"},
+        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {"tp1_rr": 2.00, "tp2_rr": 2.50, "tp3_rr": 3.40, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.60, "force_risky": True, "geometry_family": "RANGE_BREAKOUT"},
+        SetupType.RANGE_EDGE_REVERSAL.value: {"tp1_rr": 2.00, "tp2_rr": 2.55, "tp3_rr": 3.50, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.50, "force_risky": True, "geometry_family": "RANGE_REVERSAL"},
+        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"tp1_rr": 2.00, "tp2_rr": 3.10, "tp3_rr": 5.00, "tp1_atr": 1.35, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "ACCEPTANCE_RETEST"},
+        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value: {"tp1_rr": 2.00, "tp2_rr": 3.00, "tp3_rr": 4.80, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20, "force_risky": True, "geometry_family": "MOMENTUM_CONTINUATION"},
+        SetupType.ACCELERATION_PULLBACK_REENTRY.value: {"tp1_rr": 2.05, "tp2_rr": 3.20, "tp3_rr": 5.20, "tp1_atr": 1.40, "stop_min_atr": 0.95, "stop_max_atr": 2.40, "force_risky": True, "geometry_family": "ACCELERATION_REENTRY"},
+        SetupType.SESSION_MEAN_RECLAIM.value: {"tp1_rr": 2.00, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.80, "force_risky": True, "geometry_family": "MEAN_RECLAIM"},
+        SetupType.OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 2.00, "tp2_rr": 3.20, "tp3_rr": 5.10, "tp1_atr": 1.35, "stop_min_atr": 0.75, "stop_max_atr": 1.90, "force_risky": True, "geometry_family": "OPENING_RANGE"},
+        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value: {"tp1_rr": 2.00, "tp2_rr": 2.85, "tp3_rr": 4.00, "tp1_atr": 1.20, "stop_min_atr": 0.85, "stop_max_atr": 2.10, "force_risky": True, "geometry_family": "FAILED_OPENING_RANGE"},
+        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value: {"tp1_rr": 2.00, "tp2_rr": 3.10, "tp3_rr": 4.80, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "OPEN_RECLAIM"},
+        SetupType.LIQUIDITY_LADDER.value: {"tp1_rr": 2.00, "tp2_rr": 3.80, "tp3_rr": 6.00, "tp1_atr": 1.45, "stop_min_atr": 0.95, "stop_max_atr": 2.30, "geometry_family": "TARGET_ROUTE"},
+        SetupType.FAILED_AUCTION_REJECTION.value: {"tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.20, "stop_min_atr": 0.75, "stop_max_atr": 1.80, "force_risky": True, "geometry_family": "FAILED_AUCTION"},
+        SetupType.TIME_OF_DAY_ADAPTIVE.value: {"tp1_rr": 2.00, "tp2_rr": 3.10, "tp3_rr": 4.70, "tp1_atr": 1.25, "stop_min_atr": 0.90, "stop_max_atr": 2.10, "geometry_family": "SESSION_BEHAVIOR"},
+        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.75, "tp3_rr": 4.10, "tp1_atr": 1.20, "stop_min_atr": 0.80, "stop_max_atr": 1.85, "force_risky": True, "geometry_family": "SHORT_LIQUIDITY_REVERSAL"},
+        SetupType.FAILED_BREAKOUT_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 4.25, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 2.00, "force_risky": True, "geometry_family": "SHORT_FAILED_BREAKOUT"},
+        SetupType.MSS_REVERSAL_SHORT.value: {"tp1_rr": 2.05, "tp2_rr": 3.05, "tp3_rr": 4.60, "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.15, "force_risky": True, "geometry_family": "SHORT_MSS_REVERSAL"},
+        SetupType.BUYER_EXHAUSTION_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.65, "tp3_rr": 3.80, "tp1_atr": 1.15, "stop_min_atr": 0.80, "stop_max_atr": 1.75, "force_risky": True, "geometry_family": "SHORT_EXHAUSTION"},
+        SetupType.OR_FAILURE_2_SHORT.value: {"tp1_rr": 2.00, "tp2_rr": 2.95, "tp3_rr": 4.30, "tp1_atr": 1.25, "stop_min_atr": 0.85, "stop_max_atr": 1.95, "force_risky": True, "geometry_family": "SHORT_OR_FAILURE"},
+    }
+    key = str(setup_type or "")
+    explicit = key in profiles
+    profile = dict(profiles.get(key, {
+        "tp1_rr": 2.00, "tp2_rr": 2.90, "tp3_rr": 3.90,
+        "tp1_atr": 1.30, "stop_min_atr": 0.90, "stop_max_atr": 2.20,
+        "geometry_family": "GENERIC_FAILSAFE",
+    }))
+    evidence = setup_trade_profile_evidence(journal, key)
+    profile.update({
+        "setup_type": key,
+        "explicit_profile": explicit,
+        "fallback_used": not explicit,
+        "profile_source": "EXPLICIT_BOOTSTRAP_MORPHOLOGY_V9_5_11" if explicit else "GENERIC_FAILSAFE_UNKNOWN_SETUP",
+        "empirically_calibrated": False,
+        "empirical_review_ready": bool(evidence.get("empirical_review_ready")),
+        "geometry_evidence": evidence,
+        "calibration_status": "EMPIRICAL_REVIEW_READY" if evidence.get("empirical_review_ready") else "BOOTSTRAP_PENDING_EXACT_SETUP_SAMPLE",
+        "schema_version": "setup_trade_profile_v9.5.11",
+    })
+    return profile
+
+
+def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Optional[str] = None, journal: Optional[dict[str, Any]] = None) -> dict:
     regime = context.get("market_regime") if isinstance(context.get("market_regime"), dict) else detect_regime_engine_2(context, side)
     name = str(regime.get("name", context.get("regime", Regime.NORMAL.value)) or Regime.NORMAL.value).upper()
     regime_type = str(regime.get("regime_type", name) or name).upper()
@@ -13391,7 +13489,7 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
     
     profile = dict(profiles.get(name, profiles[Regime.NORMAL.value]))
     profile.update(overrides.get(regime_type, {}))
-    setup_profile = setup_trade_profile(setup_type or "")
+    setup_profile = setup_trade_profile(setup_type or "", journal=journal)
     
     for key in ("tp1_rr", "tp2_rr", "tp3_rr", "stop_min_atr", "stop_max_atr"):
         if key in setup_profile:
@@ -13683,36 +13781,6 @@ def fresh_probe_candidate_profile(candidate: Optional[Candidate]) -> dict[str, A
     }
 
 
-def probe_entry_eligibility(
-    candidate: Optional[Candidate],
-    plan: Optional[TradePlan],
-    *,
-    hard_conflict: bool,
-    risk_blocked: bool,
-    philosophy_accepts: bool,
-) -> dict[str, Any]:
-    """Final Executive gate for Action.PROBE_ENTRY.
-
-    Unlike ENTRY/RISKY_ENTRY, this gate does not use the canonical full/risky conviction
-    thresholds. It requires a fresh live trigger, a valid executable plan,
-    no analytical hard conflict and available risk budget. Capital-at-risk is
-    capped separately at PROBE_RISK_PCT.
-    """
-    profile = fresh_probe_candidate_profile(candidate)
-    checks = dict(profile.get("checks") or {})
-    checks.update({
-        "plan_valid": bool(plan and getattr(plan, "valid", False)),
-        "plan_execution_ready": bool(plan and getattr(plan, "execution_ready", False)),
-        "no_hard_conflict": not bool(hard_conflict),
-        "risk_not_blocked": not bool(risk_blocked),
-        "philosophy_accepts": bool(philosophy_accepts),
-    })
-    return {
-        **profile,
-        "eligible": all(checks.values()),
-        "checks": checks,
-        "reasons": [name for name, passed in checks.items() if not passed],
-    }
 
 
 
@@ -13864,6 +13932,7 @@ def build_trade_plan(
     context: dict,
     candidate: Candidate,
     entry_price_override: Optional[float] = None,
+    journal: Optional[dict[str, Any]] = None,
 ) -> TradePlan:
     price, entry_price_contract = resolve_execution_entry_price(
         context, candidate, entry_price_override=entry_price_override
@@ -13872,7 +13941,7 @@ def build_trade_plan(
     candidate.score_components["preplan_quality_pipeline"] = quality_pipeline
     atr15 = context["atr15"]
     side = candidate.side
-    profile = trade_mode_profile(context, side, candidate.setup_type)
+    profile = trade_mode_profile(context, side, candidate.setup_type, journal=journal)
     zones = context["zones"]
 
     # ДИНАМІЧНИЙ RISK PROFILE на основі Реєстру 10 моделей
@@ -13911,6 +13980,7 @@ def build_trade_plan(
     # decision_stop = close-confirm інвалідація тези; catastrophic_stop = реальний hard stop.
     # Стоп не стискається всередину однієї 15M свічки. Якщо він стає ширшим — sizing зменшується.
     effective_atr15 = _effective_atr15(atr15, price)
+    candidate.score_components["setup_trade_profile"] = dict(profile)
     breathing = build_trade_breathing_geometry(
         side=side, price=price, structural_stop=structural_stop, effective_atr15=effective_atr15,
         profile=profile, context=context, structural_from_zone=structural_from_zone,
@@ -14128,6 +14198,7 @@ def build_trade_plan(
         f"v6.13 breathing: hard stop ширший за noise envelope; sizing x{breathing.get('risk_size_multiplier')}"
     )
 
+    breathing["setup_trade_profile"] = dict(profile)
     partial_plan = dynamic_partial_plan_from_innovation(candidate)
 
     plan = TradePlan(
@@ -14341,7 +14412,11 @@ def build_executive_divergence_audit(
 ) -> dict[str, Any]:
     executive = (report or {}).get("executive_decision") or {}
     executive_audit = executive.get("audit") or {}
-    adaptive = executive_audit.get("adaptive_conflict_resolver") or {}
+    adaptive = (
+        executive_audit.get("legacy_adaptive_conflict_override")
+        or executive_audit.get("adaptive_conflict_resolver")
+        or {}
+    )
     score_profile = executive_audit.get("risky_entry_score_profile") or adaptive.get("score_profile") or {}
     probe_profile = executive_audit.get("probe_entry_eligibility") or {}
     final_action = str((report or {}).get("action") or Action.NO_SETUP.value)
@@ -15021,7 +15096,11 @@ def executive_authority_decision(
     )
     executive_payload = report.get("executive_decision") or {}
     executive_audit = executive_payload.get("audit") or {}
-    decision.audit["adaptive_conflict_resolver"] = executive_audit.get("adaptive_conflict_resolver", {})
+    decision.audit["legacy_adaptive_conflict_override"] = (
+        executive_audit.get("legacy_adaptive_conflict_override")
+        or executive_audit.get("adaptive_conflict_resolver")
+        or {}
+    )
     decision.audit["risky_entry_score_profile"] = executive_audit.get("risky_entry_score_profile", {})
     revalidation = getattr(decision.candidate, "revalidation_profile", {}) if decision.candidate else {}
     entry_supported = bool((revalidation or {}).get("entry_supported", True))
@@ -15036,7 +15115,11 @@ def executive_authority_decision(
     philosophy_accepts = bool((executive_payload.get("trading_philosophy") or {}).get("recommendation") in {"ACCEPT", "ACCEPT_STAGED"})
     risk_blocked = bool(executive_audit.get("risk_blocked"))
     hard_conflict = bool(executive_audit.get("has_hard_conflict"))
-    conflict_override = bool((executive_audit.get("adaptive_conflict_resolver") or {}).get("conflict_override"))
+    conflict_override = bool((
+        executive_audit.get("legacy_adaptive_conflict_override")
+        or executive_audit.get("adaptive_conflict_resolver")
+        or {}
+    ).get("conflict_override"))
     entry_published = decision.action in EXECUTABLE_ENTRY_ACTIONS
     if not effective_entry_supported:
         blocking_layer = "REVALIDATION"
@@ -15084,12 +15167,6 @@ def executive_authority_decision(
     return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
 
 
-def executive_finalize_decision(
-    decision: Decision,
-    state: Optional[dict[str, Any]] = None,
-    journal: Optional[dict[str, Any]] = None,
-) -> Decision:
-    return executive_authority_decision(decision, state=state, journal=journal)
 
 
 def canonical_decision_quality(decision: Decision) -> int:
@@ -15161,7 +15238,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             missed_cand = rescore_reentry_candidate(missed_cand, context, journal)
             guard = event_driven_reentry_guard(state, context, missed_cand)
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context.get("adaptive_regime", context["regime"]))["reentry_aggressiveness"]:
-                plan = build_trade_plan(context, missed_cand)
+                plan = build_trade_plan(context, missed_cand, journal=journal)
                 proposed_action = (
                     Action.ENTRY.value
                     if plan.valid and plan.execution_ready and missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD
@@ -15249,7 +15326,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
 
     # Build a complete draft. The wrapper above is the only place that may
     # convert this analytical recommendation into a published action.
-    plan = build_trade_plan(context, best)
+    plan = build_trade_plan(context, best, journal=journal)
     apply_relaxed_continuation_live_override(best, plan, journal)
     quality = int(best.final_score or 0)
     reval_profile = getattr(best, "revalidation_profile", {}) or {}
@@ -15513,16 +15590,6 @@ def adaptive_opportunity_engine(candidate: Any) -> dict[str, Any]:
     return result
 
 
-def opportunity_preservation_audit(candidate: Any) -> dict[str, Any]:
-    """Audit: чи система втратила можливий рух."""
-    opportunity = adaptive_opportunity_engine(candidate)
-
-    return {
-        "stage": opportunity["stage"],
-        "risk_multiplier": opportunity["risk_multiplier"],
-        "allow_probe": opportunity["allow_probe"],
-        "reasons": opportunity["reasons"]
-    }
 
 
 
@@ -15561,14 +15628,6 @@ def adaptive_state_transition(
         return {"state": STATE_PROBE, "risk_multiplier": PROBE_RISK_MULTIPLIER, "allow_execution": True, "reason": "preserve opportunity", "htf_advisory": htf_profile, "risk_applied_here": False}
     return {"state": STATE_WATCH, "risk_multiplier": 0.0, "allow_execution": False, "reason": "waiting confirmation", "htf_advisory": htf_profile, "risk_applied_here": False}
 
-def state_machine_audit(candidate: Any) -> dict[str, Any]:
-    """Debug snapshot для replay та live monitoring."""
-    opportunity = adaptive_opportunity_engine(candidate)
-    return adaptive_state_transition(
-        candidate,
-        {},
-        opportunity
-    )
 
 
 
@@ -16569,8 +16628,6 @@ def regime_label(code: str) -> str:
     return REGIME_LABELS.get(str(code).upper().split(".")[-1], "НЕ ВИЗНАЧЕНО")
 
 
-def family_label(code: str) -> str:
-    return FAMILY_LABELS.get(str(code).upper().split(".")[-1], "НЕ ВИЗНАЧЕНО")
 
 
 def setup_label(code: str) -> str:
@@ -16591,11 +16648,6 @@ def _signal_revalidation_profile(signal: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _signal_kyiv_date(signal: dict[str, Any]) -> str:
-    dt = _parse_iso_datetime(signal.get("time"))
-    if not dt:
-        return "UNKNOWN"
-    return dt.astimezone(zoneinfo.ZoneInfo("Europe/Kyiv")).date().isoformat()
 
 
 def _signal_utc_date(signal: dict[str, Any]) -> str:
@@ -16782,6 +16834,10 @@ def run_bot() -> None:
             link_preconfirmation_event_to_trade(
                 journal, active, trade_result_class, trade_close_action
             )
+            initial_risk_distance = abs(float(active.entry) - float(active.stop_initial))
+            mfe_r_at_close = abs(float(active.best_price) - float(active.entry)) / max(initial_risk_distance, 1e-9)
+            mae_r_at_close = abs(float(active.worst_price) - float(active.entry)) / max(initial_risk_distance, 1e-9)
+            trade_profile = ((getattr(active, "breathing_profile", {}) or {}).get("setup_trade_profile") or {})
             journal["trades"].append({
                 "id": active.id,
                 "signal_id": active.signal_id,
@@ -16852,6 +16908,14 @@ def run_bot() -> None:
                 "setup_quality": getattr(active, "setup_quality", 0.0),
                 "timing_quality": getattr(active, "timing_quality", 0.0),
                 "trade_quality": getattr(active, "trade_quality", 0.0),
+                "trade_profile_source": trade_profile.get("profile_source"),
+                "trade_profile_calibration_status": trade_profile.get("calibration_status"),
+                "trade_profile_fallback_used": bool(trade_profile.get("fallback_used", False)),
+                "rr1": round(abs(float(active.tp1) - float(active.entry)) / max(initial_risk_distance, 1e-9), 4),
+                "rr2": round(abs(float(active.tp2) - float(active.entry)) / max(initial_risk_distance, 1e-9), 4),
+                "rr3": round(abs(float(active.tp3) - float(active.entry)) / max(initial_risk_distance, 1e-9), 4),
+                "mfe_r": round(mfe_r_at_close, 4),
+                "mae_r": round(mae_r_at_close, 4),
                 "durability_quality": getattr(active, "durability_quality", 0),
                 "scoring_mode": getattr(active, "scoring_mode", "NOT_LEARNED"),
                 "short_reversal_profile": getattr(active, "short_reversal_profile", {}) or {},
@@ -17520,7 +17584,11 @@ def test_selected_eligible_no_setup_alert() -> bool:
                 "execution_eligible_pre_conflict": True,
                 "risky_entry_score_profile": {"eligible": True, "tier": "GRAY"},
                 "probe_entry_eligibility": {"eligible": False},
-                "adaptive_conflict_resolver": {"adaptive_execution_threshold": 70.0},
+                "legacy_adaptive_conflict_override": {
+                    "enabled": False,
+                    "scope": "OFFLINE_AUDIT_ONLY",
+                    "adaptive_execution_threshold": 70.0,
+                },
             },
             "conflict_resolution": {"hard_conflict": True, "hard_conflict_margin": 2.0},
         },
@@ -19092,6 +19160,8 @@ def v9_regression_checks() -> list[tuple[str, bool]]:
     contract = result["executive_decision"]
     checks.append(("Executive: legacy action cannot override staged decision", result["legacy_action_ignored"] == Action.ENTRY.value and result["action"] == Action.PROBE_ENTRY.value))
     checks.append(("Executive: final risk exists once and plan becomes immutable", exec_plan.immutable and exec_plan.position_risk_pct == contract["final_risk_pct"] and bool(exec_plan.risk_ledger)))
+    checks.append(("Executive: precomputed risk ledger is reused", bool(contract.get("audit", {}).get("risk_ledger_reused")) and contract.get("audit", {}).get("risk_ledger_source") == "BUILD_EXECUTIVE_DECISION_OBJECT"))
+    checks.append(("Executive: retired conflict override is explicitly audit-only", "adaptive_conflict_resolver" not in contract.get("audit", {}) and (contract.get("audit", {}).get("legacy_adaptive_conflict_override") or {}).get("scope") == "OFFLINE_AUDIT_ONLY"))
     checks.append(("Executive: machine-readable reason codes are preserved", isinstance(contract["blocking_reasons"], list) and isinstance(contract["warning_reasons"], list)))
 
     # v9.1: differentiated probes, decay, entry-quality pricing and quality voting.
@@ -19126,6 +19196,64 @@ def v9_regression_checks() -> list[tuple[str, bool]]:
 
     return checks
 
+
+
+def test_failed_breakout_and_mss_volume_are_explicit_diagnostic_only() -> bool:
+    base = 1_780_000_000_000
+    candles = [
+        Candle(
+            ts=base + i * 180_000,
+            open=100.0, high=100.2, low=99.8, close=100.0,
+            volume=100.0 + i, confirmed=True,
+        )
+        for i in range(18)
+    ]
+    candles[-4] = Candle(base + 14 * 180_000, 100.0, 100.8, 99.9, 100.1, 120.0, True)
+    candles[-3] = Candle(base + 15 * 180_000, 100.1, 100.25, 99.7, 99.9, 110.0, True)
+    candles[-2] = Candle(base + 16 * 180_000, 99.9, 100.15, 99.5, 99.7, 105.0, True)
+    candles[-1] = Candle(base + 17 * 180_000, 99.7, 100.1, 99.4, 99.5, 100.0, True)
+    failed = detect_short_failed_breakout(candles, price=99.5, atr15=0.5)
+    mss = detect_short_mss_reversal(candles, atr15=0.5)
+    return bool(
+        failed.get("volume_policy") == "OPTIONAL_DIAGNOSTIC_PRICE_ACCEPTANCE_IS_HARD_EVIDENCE"
+        and failed.get("volume_hard_gate") is False
+        and failed.get("volume_ratio") is not None
+        and mss.get("volume_policy") == "OPTIONAL_DIAGNOSTIC_STRUCTURE_IS_HARD_EVIDENCE"
+        and mss.get("volume_hard_gate") is False
+        and mss.get("volume_ratio") is not None
+    )
+
+
+def test_executive_builds_risk_ledger_once_per_decision() -> bool:
+    original = globals()["build_risk_adjustment_ledger"]
+    calls = {"count": 0}
+
+    def counted(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    globals()["build_risk_adjustment_ledger"] = counted
+    try:
+        candidate = _v9_test_candidate()
+        plan = _v9_test_plan()
+        result = executive_decision_engine(
+            candidate, plan=plan, journal=_v9_stats_journal(0.5, 10), state={}
+        )
+        return bool(
+            calls["count"] == 1
+            and result.get("executive_decision", {}).get("audit", {}).get("risk_ledger_reused")
+        )
+    finally:
+        globals()["build_risk_adjustment_ledger"] = original
+
+
+def test_legacy_conflict_helpers_are_audit_only_namespace() -> bool:
+    return bool(
+        "adaptive_conflict_execution_threshold" not in globals()
+        and "executive_conflict_allows_reduced_entry" not in globals()
+        and callable(globals().get("_audit_only_conflict_execution_threshold"))
+        and callable(globals().get("_audit_only_conflict_allows_reduced_entry"))
+    )
 
 
 def test_short_sweep_volume_ratio_is_hard_gate() -> bool:
@@ -20278,6 +20406,79 @@ def test_quality_snapshots_are_explicit_and_compact() -> bool:
     }
     return keys.issubset(compact_signal) and keys.issubset(compact_trade)
 
+def test_all_named_setups_have_explicit_trade_profiles() -> bool:
+    named = [item.value for item in SetupType if item.value != SetupType.NONE.value]
+    profiles = [setup_trade_profile(item) for item in named]
+    return bool(
+        len(named) == 24
+        and all(profile.get("explicit_profile") for profile in profiles)
+        and all(not profile.get("fallback_used") for profile in profiles)
+        and len({profile.get("setup_type") for profile in profiles}) == 24
+    )
+
+
+def test_short_reversal_profiles_are_not_generic_fallback() -> bool:
+    types = [
+        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
+        SetupType.FAILED_BREAKOUT_SHORT.value,
+        SetupType.MSS_REVERSAL_SHORT.value,
+        SetupType.BUYER_EXHAUSTION_SHORT.value,
+        SetupType.OR_FAILURE_2_SHORT.value,
+    ]
+    profiles = [setup_trade_profile(item) for item in types]
+    return all(
+        profile.get("explicit_profile")
+        and not profile.get("fallback_used")
+        and str(profile.get("geometry_family") or "").startswith("SHORT_")
+        for profile in profiles
+    )
+
+
+def test_unknown_setup_uses_visible_failsafe_profile() -> bool:
+    profile = setup_trade_profile("UNKNOWN_SETUP")
+    return bool(
+        profile.get("fallback_used")
+        and not profile.get("explicit_profile")
+        and profile.get("profile_source") == "GENERIC_FAILSAFE_UNKNOWN_SETUP"
+    )
+
+
+def test_trade_profile_empirical_review_requires_geometry_sample() -> bool:
+    rows = []
+    for idx in range(SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES):
+        rows.append({
+            "id": f"geo-{idx}", "setup_type": SetupType.MSS_REVERSAL_SHORT.value,
+            "pnl_r": 0.5 if idx % 2 == 0 else -1.0,
+            "rr1": 2.0, "mfe_r": 1.4, "mae_r": 0.7,
+            "tp0_hit": True, "tp1_hit": idx % 2 == 0, "tp2_hit": False, "tp3_hit": False,
+        })
+    evidence = setup_trade_profile_evidence({"trades": rows}, SetupType.MSS_REVERSAL_SHORT.value)
+    return bool(evidence.get("empirical_review_ready") and evidence.get("geometry_complete_trades") == SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES)
+
+
+def test_compact_trade_preserves_geometry_evidence() -> bool:
+    compact = compact_trade_for_journal({
+        "id": "geometry", "setup_type": SetupType.MSS_REVERSAL_SHORT.value,
+        "result_r": 0.5, "result_class": "WIN", "rr1": 2.0, "rr2": 3.1, "rr3": 4.6,
+        "mfe_r": 1.8, "mae_r": 0.6, "tp0_hit": True, "tp1_hit": True,
+        "trade_profile_source": "EXPLICIT_BOOTSTRAP_MORPHOLOGY_V9_5_11",
+        "trade_profile_fallback_used": False,
+    })
+    return all(key in compact for key in ("rr1", "rr2", "rr3", "mfe_r", "mae_r", "tp0_hit", "tp1_hit", "trade_profile_source"))
+
+
+def test_single_probe_source_of_truth() -> bool:
+    return bool("probe_entry_eligibility" not in globals() and callable(fresh_probe_candidate_profile))
+
+
+def test_domain_validation_is_live_in_compaction() -> bool:
+    try:
+        compact_signal_for_journal({"id": "bad", "action": "ARMED"})
+    except DecisionAuthorityViolation:
+        return True
+    return False
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -20301,6 +20502,13 @@ def _run_self_test() -> bool:
         ("preconfirmation authority requires consecutive validation epochs", test_preconfirmation_authority_requires_consecutive_epochs),
         ("preconfirmation bad recent metrics remain audit-only", test_preconfirmation_recent_bad_metrics_keep_audit_only),
         ("quality snapshots are explicit in compact journal", test_quality_snapshots_are_explicit_and_compact),
+        ("all 24 named setups have explicit trade profiles", test_all_named_setups_have_explicit_trade_profiles),
+        ("SHORT reversal profiles do not use generic fallback", test_short_reversal_profiles_are_not_generic_fallback),
+        ("unknown setup uses visible generic fail-safe", test_unknown_setup_uses_visible_failsafe_profile),
+        ("trade-profile empirical review requires exact geometry sample", test_trade_profile_empirical_review_requires_geometry_sample),
+        ("compact trade preserves geometry evidence", test_compact_trade_preserves_geometry_evidence),
+        ("PROBE has one source of truth", test_single_probe_source_of_truth),
+        ("domain validation is active in journal compaction", test_domain_validation_is_live_in_compaction),
         ("true EMA responds faster than arithmetic mean", test_true_ema_responds_to_v_reversal),
         ("reversal drift guard covers SHORT reversal models", test_reversal_drift_guard_covers_short_models),
         ("counter-evidence keeps reversal drift guard soft", test_reversal_drift_guard_is_soft_with_counterevidence),
@@ -20338,6 +20546,9 @@ def _run_self_test() -> bool:
         ("relaxed shadow deduplicates thesis geometry", test_relaxed_shadow_deduplicates_thesis_geometry),
         ("relaxed policy graduates only on positive counterfactuals", test_relaxed_policy_graduates_only_on_positive_counterfactuals),
         ("execution funnel separates revalidation from executive", test_execution_funnel_separates_revalidation_and_executive),
+        ("failed breakout and MSS volume policies are explicit diagnostic-only", test_failed_breakout_and_mss_volume_are_explicit_diagnostic_only),
+        ("Executive builds one risk ledger per decision", test_executive_builds_risk_ledger_once_per_decision),
+        ("legacy conflict helpers are audit-only namespaced", test_legacy_conflict_helpers_are_audit_only_namespace),
         ("SHORT sweep low volume is a hard gate", test_short_sweep_volume_ratio_is_hard_gate),
         ("aggregate SHORT readiness cannot override model gate", test_aggregate_short_readiness_cannot_override_model_gate),
         ("elevated continuation revalidation is model-local", test_continuation_elevated_micro_does_not_require_reclaim),
@@ -22238,9 +22449,11 @@ def build_executive_decision_object(
                 and plan and getattr(plan, "valid", False) and getattr(plan, "execution_ready", False)
                 and not bundle.conflict_report.capital_blocked
             ),
-            "adaptive_conflict_resolver": {
+            "legacy_adaptive_conflict_override": {
                 "enabled": False,
-                "reason": "v9 actual conflicts are resolved by staged evidence, not score override",
+                "scope": "OFFLINE_AUDIT_ONLY",
+                "live_decision_component": False,
+                "reason": "production conflicts are resolved by staged evidence, not score override",
                 "conflict_override": False,
             },
             "risky_entry_score_profile": {
@@ -22335,16 +22548,20 @@ def executive_decision_engine(
     if candidate is not None:
         candidate.entry_stage = str(decision.get("allowed_stage") or internal_action)
     if plan is not None:
-        geometry_multiplier = safe_float((plan.breathing_profile or {}).get("risk_size_multiplier"), 1.0)
-        ledger = build_risk_adjustment_ledger(
-            candidate,
-            {},
-            stage=decision.get("allowed_stage"),
-            journal=journal,
-            state=state,
-            geometry_multiplier=geometry_multiplier,
-        )
-        final_risk = ledger.final_position_risk_pct if decision.get("allow_execution") else 0.0
+        ledger_payload = decision.get("risk_ledger")
+        ledger_reused = isinstance(ledger_payload, dict) and bool(ledger_payload)
+        if not ledger_reused:
+            # Fail closed rather than silently recalculating a second ledger with a
+            # potentially different context. The canonical ledger is created once
+            # inside build_executive_decision_object().
+            ledger_payload = {}
+            internal_action = ExecutiveDecisionState.REJECT.value
+            final_action = Action.NO_SETUP.value
+            decision["action"] = internal_action
+            decision["state"] = internal_action
+            decision["allow_execution"] = False
+            decision["blocking_reasons"] = sorted(set(list(decision.get("blocking_reasons") or []) + ["MISSING_PRECOMPUTED_RISK_LEDGER"]))
+        final_risk = safe_float(decision.get("final_risk_pct"), 0.0) if decision.get("allow_execution") else 0.0
         if decision.get("allow_execution") and final_risk <= 0:
             internal_action = ExecutiveDecisionState.REJECT.value
             final_action = Action.NO_SETUP.value
@@ -22356,13 +22573,17 @@ def executive_decision_engine(
         plan.risk_pct = plan.position_risk_pct
         plan.entry_stage = str(decision.get("allowed_stage") or internal_action)
         plan.final_stage = plan.entry_stage
-        plan.risk_ledger = asdict(ledger)
+        plan.risk_ledger = dict(ledger_payload)
         plan.immutable = True
-        decision["risk_ledger"] = asdict(ledger)
+        decision["risk_ledger"] = dict(ledger_payload)
         decision["final_risk_pct"] = round(final_risk, 4)
-        decision.setdefault("audit", {})["risk_ledger"] = asdict(ledger)
+        decision.setdefault("audit", {})["risk_ledger"] = dict(ledger_payload)
+        decision.setdefault("audit", {})["risk_ledger_reused"] = ledger_reused
+        decision.setdefault("audit", {})["risk_ledger_source"] = (
+            "BUILD_EXECUTIVE_DECISION_OBJECT" if ledger_reused else "MISSING_PRECOMPUTED_RISK_LEDGER"
+        )
         if candidate is not None:
-            candidate.risk_ledger = asdict(ledger)
+            candidate.risk_ledger = dict(ledger_payload)
             candidate.stage_plan["final_stage"] = plan.final_stage
             candidate.stage_plan["final_risk_pct"] = plan.position_risk_pct
             candidate.stage_plan["immutable_after_executive"] = True
@@ -22393,40 +22614,6 @@ def executive_decision_engine(
         "legacy_action_ignored": existing_action,
     }
 
-def run_module_conflict_audit(candidate=None):
-    """Runtime audit of executive decision architecture."""
-    checks = {
-        "executive_is_single_authority": bool(EXECUTIVE_ACTION_MAP),
-        "modules_return_advice_only": all(callable(x) for x in (_htf_advisor, _ict_advisor, _price_structure_advisor, _execution_advisor)),
-        "conflict_resolution_enabled": callable(executive_conflict_allows_reduced_entry),
-        "trading_philosophy_enabled": bool(
-            callable(trading_philosophy_layer)
-        ),
-        "trading_philosophy_executed": bool(
-            TRADING_PHILOSOPHY_RUNTIME_STATE.get("calls", 0) > 0
-        ),
-        "trading_philosophy_last_call": TRADING_PHILOSOPHY_RUNTIME_STATE.get("last_called_at"),
-        "unified_decision_object_enabled": "Decision" in globals(),
-        "audit_trail_enabled": "audit" in Decision.__annotations__,
-    }
-    required_keys = {
-        "executive_is_single_authority",
-        "modules_return_advice_only",
-        "conflict_resolution_enabled",
-        "trading_philosophy_enabled",
-        "unified_decision_object_enabled",
-        "audit_trail_enabled",
-    }
-    required = {key: bool(checks.get(key)) for key in required_keys}
-    return {
-        "architecture": globals().get("EXECUTIVE_ARCHITECTURE_VERSION", "UNKNOWN"),
-        "checks": checks,
-        "runtime_observation": {
-            "trading_philosophy_executed_in_this_process": checks["trading_philosophy_executed"],
-            "note": "execution is observed after a candidate evaluation; availability is the startup invariant",
-        },
-        "result": "PASS" if all(required.values()) else "FAIL",
-    }
 
 
 # ==========================================================
@@ -22476,38 +22663,6 @@ def execute_runtime_audits():
 
 
 
-def _audit_journal_to_candidate(signal: dict[str, Any]) -> Optional[Candidate]:
-    """Rebuild minimal Candidate object from journal audit payload."""
-    setup_type = signal.get("setup_type")
-    if not setup_type or setup_type == "NONE":
-        return None
-
-    score_components = signal.get("score_components", {}) or {}
-    return Candidate(
-        side=signal.get("side", "NEUTRAL"),
-        setup_type=setup_type,
-        setup_family=signal.get("setup_family", "UNKNOWN"),
-        raw_score=int(signal.get("raw_score", signal.get("candidate_raw_score", 0)) or 0),
-        final_score=int(
-            signal.get(
-                "quality",
-                signal.get("candidate_final_score", 0),
-            )
-            or 0
-        ),
-        score_components=score_components,
-        evidence_families=signal.get("evidence_families", []) or [],
-        confirmations=signal.get("confirmations", []) or [],
-        trigger_ready=bool(signal.get("trigger_ready", False)),
-        trigger_level=float(signal.get("trigger_level", 0.0) or 0.0),
-        invalidation_level=float(signal.get("invalidation_level", 0.0) or 0.0),
-        trigger_age_minutes=safe_float(signal.get("trigger_age_minutes"), 0.0),
-        thesis_age_minutes=safe_float(score_components.get("effective_thesis_age_minutes", score_components.get("original_trigger_age_minutes")), -1.0),
-        market_thesis_age_minutes=safe_float(score_components.get("market_thesis_age_minutes", score_components.get("original_trigger_age_minutes")), -1.0),
-        model_thesis_age_minutes=safe_float(score_components.get("model_thesis_age_minutes"), -1.0),
-        thesis_origin=str(score_components.get("thesis_origin") or "MARKET_SCAN"),
-        execution_trigger_age_minutes=safe_float(score_components.get("effective_trigger_age_minutes"), -1.0),
-    )
 
 
 def _strict_support_paths_from_signal(signal: dict[str, Any]) -> dict[str, Any]:
@@ -22646,7 +22801,12 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         executive_decision = (
             signal.get("audit", {}).get("executive_director", {}).get("report", {}).get("executive_decision", {})
         ) or {}
-        adaptive = executive_decision.get("audit", {}).get("adaptive_conflict_resolver", {}) or {}
+        audit_payload = executive_decision.get("audit", {}) or {}
+        adaptive = (
+            audit_payload.get("legacy_adaptive_conflict_override")
+            or audit_payload.get("adaptive_conflict_resolver")
+            or {}
+        )
         advisors = executive_decision.get("advisors", []) or []
         execution_quality_raw = safe_float(adaptive.get("execution_quality_raw"), 0.0)
         if execution_quality_raw <= 0:
@@ -22660,8 +22820,21 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         risk_blocked = bool(conflict_resolution.get("risk", {}).get("blocked", adaptive.get("risk_blocked", False)))
         rr1 = safe_float(executive_decision.get("trading_philosophy", {}).get("rr1", adaptive.get("rr1", 0.0)), 0.0)
         eligible = hard_conflict and not risk_blocked
-        before_override = executive_conflict_allows_reduced_entry(execution_quality=execution_impact, risk_blocked=risk_blocked, rr1=rr1) if eligible else False
-        after_override = executive_conflict_allows_reduced_entry(execution_quality=execution_quality_raw, risk_blocked=risk_blocked, rr1=rr1) if eligible else False
+        audit_threshold = _audit_only_conflict_execution_threshold(
+            execution_quality_raw, conflict_resolution
+        )
+        before_override = _audit_only_conflict_allows_reduced_entry(
+            execution_quality=execution_impact,
+            risk_blocked=risk_blocked,
+            rr1=rr1,
+            minimum_execution_quality=audit_threshold,
+        ) if eligible else False
+        after_override = _audit_only_conflict_allows_reduced_entry(
+            execution_quality=execution_quality_raw,
+            risk_blocked=risk_blocked,
+            rr1=rr1,
+            minimum_execution_quality=audit_threshold,
+        ) if eligible else False
         if before_override:
             result["before_fix_override_count"] += 1
         if after_override:
@@ -22673,6 +22846,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         result["details"].append({
             "id": signal.get("id"), "time": signal.get("time"), "setup_type": signal.get("setup_type"),
             "execution_quality_raw": execution_quality_raw, "execution_impact": execution_impact,
+            "audit_only_threshold": audit_threshold,
             "before_fix_override": before_override, "after_fix_override": after_override,
             "blocked_by_scale_mismatch": blocked,
         })
@@ -22682,7 +22856,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.8 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.12 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -22709,35 +22883,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# === FINAL DOMAIN PAYLOAD VALIDATION ===
-# Domain separation:
-# - OpportunityStatus / OpportunityStage: lifecycle of a candidate
-# - ExecutiveDecisionState: decision of the executive layer
-# - Action: execution / active trade management only
-
-FORBIDDEN_ACTION_VALUES = {
-    "ARMED",
-    "WAIT",
-    "DISCOVERED",
-    "EXPIRED",
-}
-
-def validate_serialized_decision_payload(payload: dict):
-    """
-    Prevent legacy mixed-domain values from leaking into JSON,
-    audit records or Telegram payloads.
-    """
-    action = payload.get("action")
-    if action in FORBIDDEN_ACTION_VALUES:
-        raise DecisionAuthorityViolation(
-            f"Invalid execution action domain: {action}"
-        )
-
-    if payload.get("execution_action") in FORBIDDEN_ACTION_VALUES:
-        raise DecisionAuthorityViolation(
-            f"Invalid execution_action domain: {payload.get('execution_action')}"
-        )
-
-    return True
