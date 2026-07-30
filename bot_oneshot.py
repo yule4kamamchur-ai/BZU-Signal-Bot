@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.15 (Failed Auction Anchor and Probe Follow-Through Guard)
+BZU Professional Hybrid Confluence Signal Bot v9.5.16 (Reachability Audit and Probe MFE Protection)
 =============================================================================================
+Оновлення v9.5.16:
+- Додано detector reachability telemetry для SWEEP_RECLAIM, RANGE_COMPRESSION_BREAKOUT і RANGE_EDGE_REVERSAL без зміни entry-порогів.
+- Funnel тепер пояснює selected->executable gap: score band, plan readiness, revalidation/TTL clocks і blocking reasons.
+- Rejected-hypothesis audit дедуплікує повторні скани в незалежні market episodes, щоб один рух не рахувався як 3-4 окремі докази.
+- Для PROBE після TP0 protection-ratchet активується при 40% MFE giveback; стандартні входи зберігають 50%.
+- Compact trade journal зберігає protection threshold/ratio та MFE capture ratio для наступної емпіричної перевірки.
+- Видалено осиротілий compatibility alias _preconfirm_resolve_events.
+- Canonical risky score=68, HTF policy та THESIS_HARD_TTL=1440 хв не змінені: поточний журнал не дає незалежної вибірки для послаблення.
 Оновлення v9.5.15:
 - Failed Auction має setup-local admission gate: market-entry дозволений лише біля rejection anchor; distant candidates переходять у WAIT_RETEST.
 - Rejection anchor і distance-to-anchor ATR зберігаються в Candidate/Opportunity/re-entry audit.
@@ -27,7 +35,7 @@ BZU Professional Hybrid Confluence Signal Bot v9.5.15 (Failed Auction Anchor and
 - Додано окремі bootstrap RR/ATR-профілі для DIRECTION_FLIP, FRESH_BASE та п’яти SHORT reversal setup.
 - Geometry profile зберігає source/calibration status і накопичує exact-setup evidence для empirical review після 20 угод.
 - probe_entry_eligibility видалено як осиротіле друге джерело істини; canonical probe fact лишається fresh_probe_candidate_profile + Executive gates.
-- Прибрано неактивні deprecated wrappers/debug helpers; compatibility alias для preconfirmation явно задокументований.
+- Прибрано неактивні deprecated wrappers/debug helpers; старий preconfirmation alias згодом повністю видалено у v9.5.16.
 - Domain payload validation підключено до compact journal serialization.
 - Усі зміни v9.5.10 збережені:
 Оновлення v9.5.10:
@@ -205,8 +213,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.15-failed-auction-anchor-probe-followthrough-guard"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_15_FAILED_AUCTION_ANCHOR_PROBE_FOLLOWTHROUGH_GUARD"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.16-reachability-audit-probe-mfe-protection"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_16_REACHABILITY_AUDIT_PROBE_MFE_PROTECTION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -341,6 +349,12 @@ BE_LOCK_R_MULT = float(os.getenv("BE_LOCK_R_MULT", "0.10") or 0.10)
 # Це management trigger, а не entry filter, тому thresholds входу не змінюються.
 TP0_PROTECT_ENABLED = os.getenv("TP0_PROTECT_ENABLED", "true").lower() in {"1", "true", "yes"}
 TP0_PROTECT_GIVEBACK_RATIO = min(0.95, max(0.10, float(os.getenv("TP0_PROTECT_GIVEBACK_RATIO", "0.50") or 0.50)))
+# PROBE has already paid for information with reduced size. After TP0 proves the
+# direction, it uses an earlier BE ratchet than standard/acceptance entries.
+PROBE_TP0_PROTECT_GIVEBACK_RATIO = min(
+    TP0_PROTECT_GIVEBACK_RATIO,
+    max(0.10, float(os.getenv("PROBE_TP0_PROTECT_GIVEBACK_RATIO", "0.40") or 0.40)),
+)
 TP0_PROTECT_MIN_MFE_PCT = max(0.0, float(os.getenv("TP0_PROTECT_MIN_MFE_PCT", "0.0") or 0.0))
 CATASTROPHIC_STOP_MULT = float(os.getenv("CATASTROPHIC_STOP_MULT", "1.25") or 1.25)
 CATASTROPHIC_STOP_MAX_EXTRA_ATR = max(0.10, float(os.getenv("CATASTROPHIC_STOP_MAX_EXTRA_ATR", "0.45") or 0.45))
@@ -638,6 +652,8 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append(f"MIN_RR2 ({MIN_RR2}) must be lower than MIN_RR3 ({MIN_RR3})")
     if TP0_SIZE_PCT + TP1_SIZE_PCT + TP2_SIZE_PCT > 1.0:
         errors.append("TP partial sizes exceed 100%")
+    if not (0.10 <= PROBE_TP0_PROTECT_GIVEBACK_RATIO <= TP0_PROTECT_GIVEBACK_RATIO <= 0.95):
+        errors.append("PROBE TP0 protection must be no looser than standard TP0 protection")
     if DAILY_RISK_CAP < NORMAL_RISK_PCT:
         errors.append("DAILY_RISK_CAP is below NORMAL_RISK_PCT")
     if not (0 < BOOTSTRAP_RISK_MULTIPLIER <= 2):
@@ -1828,6 +1844,10 @@ def update_setup_lifecycle_counters(
         dict(item) for item in (context.get("_setup_lifecycle_ranked") or [])
         if isinstance(item, dict) and str(item.get("setup_type") or "") in setup_types
     ]
+    reachability_events = [
+        dict(item) for item in (context.get("_detector_reachability") or [])
+        if isinstance(item, dict) and str(item.get("setup_type") or "") in DORMANT_SETUP_REACHABILITY_TYPES
+    ]
     # Deduplicate within one scan while retaining LONG/SHORT and model identity.
     detected_events = list({_setup_lifecycle_event_key(item): item for item in detected_events}.values())
     qualified_events = list({_setup_lifecycle_event_key(item): item for item in qualified_events}.values())
@@ -1839,6 +1859,19 @@ def update_setup_lifecycle_counters(
         totals[event["setup_type"]]["qualified_detected"] += 1
     for event in ranked_events:
         totals[event["setup_type"]]["ranked"] += 1
+
+    reachability_ledger = ledger.setdefault("detector_reachability", {})
+    for event in reachability_events:
+        setup_type = str(event.get("setup_type") or "")
+        row = reachability_ledger.setdefault(setup_type, {
+            "evaluated": 0, "fired": 0, "blocker_counts": {}, "last_observation": {},
+        })
+        row["evaluated"] = int(row.get("evaluated") or 0) + 1
+        row["fired"] = int(row.get("fired") or 0) + int(bool(event.get("fired")))
+        blockers = row.setdefault("blocker_counts", {})
+        for blocker in event.get("blockers") or []:
+            blockers[str(blocker)] = int(blockers.get(str(blocker)) or 0) + 1
+        row["last_observation"] = dict(event)
 
     selected_event: Optional[dict[str, Any]] = None
     selection_anomaly: Optional[dict[str, Any]] = None
@@ -1871,6 +1904,37 @@ def update_setup_lifecycle_counters(
                 (((getattr(decision, "audit", {}) or {}).get("executive_director") or {}).get("report") or {})
                 .get("executive_decision") or {}
             )
+            plan_ready = bool(getattr(getattr(decision, "plan", None), "execution_ready", False))
+            revalidation = dict(getattr(candidate, "revalidation_profile", {}) or {})
+            blocking_reasons = list(executive_report.get("blocking_reasons") or [])
+            if not blocking_reasons and str(getattr(decision, "reason", "") or ""):
+                blocking_reasons = [str(getattr(decision, "reason", ""))]
+            score_value = int(safe_float(getattr(candidate, "final_score", 0), 0.0))
+            if not plan_ready:
+                gap_classification = "PLAN_NOT_EXECUTABLE"
+            elif score_value < RISKY_ENTRY_SCORE_BASE:
+                gap_classification = "CANONICAL_SCORE_BELOW_RISKY"
+            elif blocking_reasons:
+                gap_classification = "EXECUTIVE_BLOCK"
+            else:
+                gap_classification = "NONE"
+            selected_event.update({
+                "final_score": score_value,
+                "canonical_risky_min": RISKY_ENTRY_SCORE_BASE,
+                "trigger_ready": bool(getattr(candidate, "trigger_ready", False)),
+                "entry_stage": str(getattr(candidate, "entry_stage", "") or ""),
+                "execution_source": str(getattr(candidate, "execution_source", "") or ""),
+                "plan_execution_ready": plan_ready,
+                "gap_classification": gap_classification,
+                "blocking_reasons": blocking_reasons,
+                "thesis_clock": {
+                    "market_age_minutes": safe_float(getattr(candidate, "market_thesis_age_minutes", -1.0), -1.0),
+                    "model_age_minutes": safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0),
+                    "effective_age_minutes": safe_float(getattr(candidate, "thesis_age_minutes", -1.0), -1.0),
+                    "origin": str(getattr(candidate, "thesis_origin", "") or ""),
+                    "hard_expired": bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD"),
+                },
+            })
             executable = bool(executive_report.get("allow_execution")) or str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
             entered = str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
             if executable:
@@ -1895,6 +1959,7 @@ def update_setup_lifecycle_counters(
         "detected": detected_events,
         "qualified_detected": qualified_events,
         "ranked": ranked_events,
+        "detector_reachability": reachability_events,
         "selected": selected_event,
         "selection_anomaly": selection_anomaly,
         "executable": executable,
@@ -1910,7 +1975,7 @@ def update_setup_lifecycle_counters(
         "stages": ["detected", "qualified_detected", "ranked", "selected", "executable", "entered"],
         "selection_contract": "ranked match required; saved opportunity re-entry must declare selected_source",
         "updated_at": run_row["time"],
-        "schema_version": "setup_lifecycle_funnel_v9.5.10",
+        "schema_version": "setup_lifecycle_funnel_v9.5.16",
     })
     return run_row
 
@@ -3296,12 +3361,6 @@ def resolve_preconfirmation_events(
     return resolved_count
 
 
-# EXTERNAL_COMPATIBILITY_ALIAS: retained only for old imports/tests.
-# Runtime calls resolve_preconfirmation_events() directly; this alias has no
-# independent logic and is not a second lifecycle implementation.
-def _preconfirm_resolve_events(journal: dict[str, Any], context: dict[str, Any], candidates: list[Candidate]) -> None:
-    resolve_preconfirmation_events(journal, context, candidates)
-
 def _preconfirm_build_model_status(
     journal: dict[str, Any],
     candidates: Optional[list[Candidate]] = None,
@@ -4024,6 +4083,7 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "be_lock_r_mult": BE_LOCK_R_MULT,
         "tp0_protect_enabled": TP0_PROTECT_ENABLED,
         "tp0_protect_giveback_ratio": TP0_PROTECT_GIVEBACK_RATIO,
+        "probe_tp0_protect_giveback_ratio": PROBE_TP0_PROTECT_GIVEBACK_RATIO,
         "tp0_protect_min_mfe_pct": TP0_PROTECT_MIN_MFE_PCT,
         "catastrophic_stop_mult": CATASTROPHIC_STOP_MULT,
         "catastrophic_stop_max_extra_atr": CATASTROPHIC_STOP_MAX_EXTRA_ATR,
@@ -5689,6 +5749,11 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "rr3": payload.get("rr3"),
         "mfe_r": payload.get("mfe_r"),
         "mae_r": payload.get("mae_r"),
+        "mfe_capture_ratio": payload.get("mfe_capture_ratio"),
+        "mfe_giveback_ratio": payload.get("mfe_giveback_ratio"),
+        "pre_tp1_protection_locked": payload.get("pre_tp1_protection_locked"),
+        "pre_tp1_protection_ratio": payload.get("pre_tp1_protection_ratio"),
+        "tp0_protect_threshold": payload.get("tp0_protect_threshold"),
         "tp0_hit": payload.get("tp0_hit"),
         "tp1_hit": payload.get("tp1_hit"),
         "tp2_hit": payload.get("tp2_hit"),
@@ -12256,6 +12321,89 @@ def _smooth_pattern_feature(raw_bonus: float, best_pattern: Optional[str]) -> fl
     return clamp(1.0 - math.exp(-positive / 30.0), 0.0, 0.985)
 
 
+DORMANT_SETUP_REACHABILITY_TYPES = (
+    SetupType.SWEEP_RECLAIM.value,
+    SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+    SetupType.RANGE_EDGE_REVERSAL.value,
+)
+
+
+def build_dormant_detector_reachability(
+    side: str,
+    *,
+    is_raw_sweep: bool,
+    is_sweep: bool,
+    has_choch: bool,
+    has_fvg: bool,
+    strong_displacement: bool,
+    regime: str,
+    has_good_reclaim: bool,
+    compression_atr: float,
+    is_range_compressed: bool,
+    trigger_ready: bool,
+) -> list[dict[str, Any]]:
+    """Explain why historically quiet setup detectors did or did not fire.
+
+    This is telemetry only. It does not add score, change readiness or publish
+    candidates. Keeping the predicates in one helper also makes reachability
+    regression-testable instead of relying on hopeful comments in a large loop.
+    """
+    sweep_2022 = bool(is_sweep and has_choch and has_fvg)
+    sweep_turtle = bool(is_sweep and not strong_displacement)
+    range_edge = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
+    range_compression = bool(is_range_compressed and strong_displacement and trigger_ready)
+
+    def row(setup_type: str, fired: bool, paths: dict[str, bool], conditions: dict[str, Any]) -> dict[str, Any]:
+        blockers = [] if fired else [name for name, value in conditions.items() if isinstance(value, bool) and not value]
+        return {
+            "side": str(side),
+            "setup_type": setup_type,
+            "evaluated": True,
+            "fired": bool(fired),
+            "paths": {str(k): bool(v) for k, v in paths.items()},
+            "conditions": dict(conditions),
+            "blockers": blockers,
+            "audit_only": True,
+        }
+
+    return [
+        row(
+            SetupType.SWEEP_RECLAIM.value,
+            sweep_2022 or sweep_turtle,
+            {"2022_MODEL": sweep_2022, "TURTLE_SOUP": sweep_turtle},
+            {
+                "raw_sweep": bool(is_raw_sweep),
+                "institutional_sweep_valid": bool(is_sweep),
+                "choch": bool(has_choch),
+                "fvg": bool(has_fvg),
+                "turtle_weak_displacement": not bool(strong_displacement),
+            },
+        ),
+        row(
+            SetupType.RANGE_EDGE_REVERSAL.value,
+            range_edge,
+            {"PO3": range_edge},
+            {
+                "range_regime": str(regime) == Regime.RANGE.value,
+                "institutional_sweep_valid": bool(is_sweep),
+                "quality_reclaim": bool(has_good_reclaim),
+            },
+        ),
+        row(
+            SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+            range_compression,
+            {"RANGE_COMPRESSION_MODEL": range_compression},
+            {
+                "compression_window_available": safe_float(compression_atr, 0.0) > 0.0,
+                "range_compressed": bool(is_range_compressed),
+                "strong_displacement": bool(strong_displacement),
+                "live_trigger_ready": bool(trigger_ready),
+                "compression_atr": round(safe_float(compression_atr, 0.0), 4),
+            },
+        ),
+    ]
+
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
     atr15 = context["atr15"]
@@ -12290,6 +12438,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     context["_setup_lifecycle_detected"] = []
     context["_setup_lifecycle_qualified"] = []
     context["_setup_lifecycle_ranked"] = []
+    context["_detector_reachability"] = []
 
     # ==========================================================
     # РЕЄСТР 10 ICT-МОДЕЛЕЙ (Адаптовано під BZ)
@@ -12501,11 +12650,29 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         failed_auction = detect_failed_auction_rejection_tail(c15, side, price, atr15, context)
         time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
 
+        sweep_2022_active = bool(is_sweep and has_choch and has_fvg)
+        range_edge_active = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
+        turtle_soup_active = bool(is_sweep and not strong_displacement)
+        range_compression_active = bool(is_range_compressed and strong_displacement and trigger_ready)
+        context["_detector_reachability"].extend(build_dormant_detector_reachability(
+            side,
+            is_raw_sweep=is_raw_sweep,
+            is_sweep=is_sweep,
+            has_choch=has_choch,
+            has_fvg=has_fvg,
+            strong_displacement=bool(strong_displacement),
+            regime=regime,
+            has_good_reclaim=has_good_reclaim,
+            compression_atr=compression_atr,
+            is_range_compressed=is_range_compressed,
+            trigger_ready=trigger_ready,
+        ))
+
         active_patterns = []
-        if is_sweep and has_choch and has_fvg: active_patterns.append("2022_MODEL")
+        if sweep_2022_active: active_patterns.append("2022_MODEL")
         if is_killzone and has_fvg and strong_displacement: active_patterns.append("SILVER_BULLET")
-        if regime == Regime.RANGE.value and is_sweep and has_good_reclaim: active_patterns.append("PO3")
-        if is_sweep and not strong_displacement: active_patterns.append("TURTLE_SOUP")
+        if range_edge_active: active_patterns.append("PO3")
+        if turtle_soup_active: active_patterns.append("TURTLE_SOUP")
         if has_choch and has_good_reclaim: active_patterns.append("BREAKER_BLOCK")
         if has_fvg and tf1h.get("bias") == side: active_patterns.append("FVG_ENTRY")
         if has_ob and has_good_reclaim: active_patterns.append("OB_RECLAIM")
@@ -12535,7 +12702,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # Нові детектори — див. коментарі в pattern_registry вище.
         if has_choch and strong_displacement and regime in (Regime.TRANSITION.value, Regime.NORMAL.value) and tf15.get("bias") == side:
             active_patterns.append("TREND_IGNITION_MODEL")
-        if is_range_compressed and strong_displacement and trigger_ready:
+        if range_compression_active:
             active_patterns.append("RANGE_COMPRESSION_MODEL")
         if acceptance_retest.get("zone_retest_detected") or continuation_reanchor.get("pre_confirmation_ready"):
             active_patterns.append("ACCEPTANCE_RETEST_CONTINUATION")
@@ -14686,6 +14853,41 @@ def build_executive_divergence_audit(
 
 
 
+def rejected_shadow_episode_key(shadow: dict[str, Any]) -> str:
+    """Collapse repeated scans of one thesis into one independent market episode."""
+    explicit = str(shadow.get("episode_key") or "").strip()
+    if explicit:
+        return explicit
+    test_key = str(shadow.get("test_key") or "")
+    parts = test_key.split("|")
+    if len(parts) >= 5 and parts[0] == "REJECTED":
+        # REJECTED|SIDE|SETUP|MODEL|rounded_thesis_anchor|...geometry
+        return "|".join(parts[:5])
+    opened = _parse_iso_datetime(shadow.get("opened_at"))
+    hour_bucket = opened.replace(minute=0, second=0, microsecond=0).isoformat() if opened else "UNKNOWN"
+    return f"{shadow.get('side')}|{shadow.get('setup_type')}|{hour_bucket}"
+
+
+def deduplicate_rejected_shadow_episodes(shadows: list[Any]) -> list[dict[str, Any]]:
+    canonical: dict[str, dict[str, Any]] = {}
+    rank = {"NONE": 0, "TP0": 1, "TP1": 2, "TP2": 3, "TP3": 4}
+    for item in shadows or []:
+        if not isinstance(item, dict):
+            continue
+        key = rejected_shadow_episode_key(item)
+        current = canonical.get(key)
+        if current is None:
+            canonical[key] = item
+            continue
+        current_rank = rank.get(str(current.get("max_target_hit") or "NONE"), 0)
+        new_rank = rank.get(str(item.get("max_target_hit") or "NONE"), 0)
+        current_terminal = str(current.get("status") or "") not in {"", "OPEN", "PENDING"}
+        new_terminal = str(item.get("status") or "") not in {"", "OPEN", "PENDING"}
+        if (new_terminal and not current_terminal) or new_rank > current_rank or safe_float(item.get("mfe_r"), 0.0) > safe_float(current.get("mfe_r"), 0.0):
+            canonical[key] = item
+    return list(canonical.values())
+
+
 def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: dict[str, Any]) -> None:
     """Persist deduplicated rejected-hypothesis counterfactuals for later path observation."""
     rejected = ((signal_payload.get("audit") or {}).get("rejected_hypotheses") or [])
@@ -14711,6 +14913,7 @@ def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: 
             "audit_only": True,
             "not_realized_pnl": True,
         })
+        shadow["episode_key"] = rejected_shadow_episode_key(shadow)
         store.append(shadow)
         known.add(key)
     if len(store) > REJECTED_HYPOTHESIS_SHADOW_LIMIT:
@@ -14823,6 +15026,12 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
     valid = [x for x in shadows if isinstance(x, dict)]
     closed = [x for x in valid if x.get("status") in terminal_statuses or str(x.get("status", "")).startswith("EXPIRED_")]
     analytics = journal.setdefault("analytics", {}).setdefault("rejected_hypothesis_outcomes", {})
+    episodes = deduplicate_rejected_shadow_episodes(valid)
+    closed_episodes = [x for x in episodes if x.get("status") in terminal_statuses or str(x.get("status", "")).startswith("EXPIRED_")]
+    by_setup_episodes: dict[str, int] = {}
+    for episode in episodes:
+        setup_type = str(episode.get("setup_type") or "UNKNOWN")
+        by_setup_episodes[setup_type] = int(by_setup_episodes.get(setup_type) or 0) + 1
     analytics.update({
         "tracked": len(valid),
         "closed": len(closed),
@@ -14832,6 +15041,12 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
         "inconclusive": sum(1 for x in valid if x.get("rejection_correctness") in {"INCONCLUSIVE", "UNKNOWN"}),
         "average_mfe_r": round(sum(safe_float(x.get("mfe_r"), 0.0) for x in valid) / max(len(valid), 1), 3),
         "average_mae_r": round(sum(safe_float(x.get("mae_r"), 0.0) for x in valid) / max(len(valid), 1), 3),
+        "independent_episodes": len(episodes),
+        "closed_independent_episodes": len(closed_episodes),
+        "likely_correct_episode_rejections": sum(1 for x in episodes if x.get("rejection_correctness") == "LIKELY_CORRECT"),
+        "likely_too_strict_episode_rejections": sum(1 for x in episodes if x.get("rejection_correctness") == "LIKELY_TOO_STRICT"),
+        "by_setup_independent_episodes": by_setup_episodes,
+        "dedup_policy": "REJECTED_TEST_KEY_PREFIX_THROUGH_THESIS_ANCHOR",
         "interpretation": "counterfactual rejection audit; not realized PnL",
         "updated_at": now.isoformat(),
     })
@@ -16446,6 +16661,8 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
     unchecked candles are evaluated against the old stop before this function runs,
     avoiding retroactive stop-outs.
     """
+    is_probe = str(getattr(trade, "entry_stage", "") or "").upper() == EntryStage.PROBE.value
+    protection_threshold = PROBE_TP0_PROTECT_GIVEBACK_RATIO if is_probe else TP0_PROTECT_GIVEBACK_RATIO
     profile = {
         "eligible": False,
         "activated": False,
@@ -16453,7 +16670,8 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         "giveback_ratio": 0.0,
         "mfe_pct": safe_float(result.get("best_pct"), 0.0),
         "current_pct": safe_float(result.get("current_pct"), 0.0),
-        "threshold": TP0_PROTECT_GIVEBACK_RATIO,
+        "threshold": protection_threshold,
+        "threshold_scope": "PROBE" if is_probe else "STANDARD",
     }
     if not TP0_PROTECT_ENABLED or not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
         trade.management_state = "SUPPORTED" if not getattr(trade, "pre_tp1_protection_locked", False) else "PROTECT"
@@ -16482,7 +16700,7 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         profile.update({"activated": True, "state": "PROTECT", "stop": round_price(trade.stop_current)})
         return profile
 
-    if giveback_ratio < TP0_PROTECT_GIVEBACK_RATIO:
+    if giveback_ratio < protection_threshold:
         trade.management_state = "SUPPORTED"
         result["management_state"] = "SUPPORTED"
         return profile
@@ -16798,7 +17016,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         result["action"] = Action.TP0.value
         result["notes"].append(
             f"TP0 досягнуто — зафіксуйте ~{int(getattr(trade, 'tp0_size_pct', TP0_SIZE_PCT) * 100)}% позиції; "
-            f"до {TP0_PROTECT_GIVEBACK_RATIO:.0%} giveback стоп лишається структурним"
+            f"до {(PROBE_TP0_PROTECT_GIVEBACK_RATIO if str(getattr(trade, 'entry_stage', '')).upper() == EntryStage.PROBE.value else TP0_PROTECT_GIVEBACK_RATIO):.0%} giveback стоп лишається структурним"
         )
 
     _tp0_profit_protection(trade, context, result)
@@ -17158,6 +17376,17 @@ def run_bot() -> None:
             mfe_r_at_close = abs(float(active.best_price) - float(active.entry)) / max(initial_risk_distance, 1e-9)
             mae_r_at_close = abs(float(active.worst_price) - float(active.entry)) / max(initial_risk_distance, 1e-9)
             trade_profile = ((getattr(active, "breathing_profile", {}) or {}).get("setup_trade_profile") or {})
+            result_r_at_close = res.get("result_r")
+            mfe_capture_ratio = (
+                max(0.0, safe_float(result_r_at_close, 0.0)) / mfe_r_at_close
+                if result_r_at_close is not None and mfe_r_at_close > 1e-9
+                else None
+            )
+            tp0_protect_threshold = (
+                PROBE_TP0_PROTECT_GIVEBACK_RATIO
+                if str(getattr(active, "entry_stage", "") or "").upper() == EntryStage.PROBE.value
+                else TP0_PROTECT_GIVEBACK_RATIO
+            )
             journal["trades"].append({
                 "id": active.id,
                 "signal_id": active.signal_id,
@@ -17193,6 +17422,8 @@ def run_bot() -> None:
                 "mae_pct": res.get("worst_pct"),
                 "mfe_giveback_pct": res.get("giveback_pct"),
                 "mfe_giveback_ratio": res.get("mfe_giveback_ratio"),
+                "mfe_capture_ratio": round(mfe_capture_ratio, 4) if mfe_capture_ratio is not None else None,
+                "tp0_protect_threshold": tp0_protect_threshold,
                 "tp0_hit": getattr(active, "tp0_hit", False),
                 "tp1_hit": active.tp1_hit,
                 "tp2_hit": active.tp2_hit,
@@ -20968,6 +21199,103 @@ def test_probe_failed_no_followthrough_exits_early() -> bool:
     )
 
 
+def test_dormant_detector_reachability_contract_is_live() -> bool:
+    rows = build_dormant_detector_reachability(
+        Side.LONG.value,
+        is_raw_sweep=True, is_sweep=True, has_choch=True, has_fvg=True,
+        strong_displacement=True, regime=Regime.RANGE.value, has_good_reclaim=True,
+        compression_atr=1.2, is_range_compressed=True, trigger_ready=True,
+    )
+    by_setup = {row.get("setup_type"): row for row in rows}
+    return bool(
+        len(by_setup) == 3
+        and by_setup[SetupType.SWEEP_RECLAIM.value].get("fired")
+        and by_setup[SetupType.RANGE_EDGE_REVERSAL.value].get("fired")
+        and by_setup[SetupType.RANGE_COMPRESSION_BREAKOUT.value].get("fired")
+    )
+
+
+def test_lifecycle_persists_detector_reachability_and_gap_reason() -> bool:
+    journal: dict[str, Any] = {}
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=62, final_score=62,
+        ict_model="MOMENTUM_NO_PULLBACK_CONTINUATION", trigger_ready=False,
+        execution_source=ExecutionSource.MOMENTUM_CONTINUATION.value,
+        revalidation_profile={"state": "WAIT_RETEST", "entry_supported": False},
+    )
+    context = {
+        "_setup_lifecycle_detected": [{"side": "LONG", "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_setup_lifecycle_qualified": [{"side": "LONG", "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_setup_lifecycle_ranked": [{"side": "LONG", "setup_type": candidate.setup_type, "model_id": candidate.ict_model, "rank": 1}],
+        "_detector_reachability": [{
+            "side": "LONG", "setup_type": SetupType.SWEEP_RECLAIM.value, "evaluated": True,
+            "fired": False, "blockers": ["institutional_sweep_valid"], "conditions": {}, "paths": {},
+        }],
+    }
+    decision = Decision(
+        id="gap", time=iso_now(), action=Action.NO_SETUP.value, side=candidate.side,
+        setup_type=candidate.setup_type, quality=62, reason="REVALIDATION", regime=Regime.NORMAL.value,
+        candidate=candidate, plan=None, audit={},
+    )
+    run = update_setup_lifecycle_counters(journal, context, decision)
+    selected = run.get("selected") or {}
+    reach = ((journal.get("setup_lifecycle_counters") or {}).get("detector_reachability") or {}).get(SetupType.SWEEP_RECLAIM.value) or {}
+    return bool(
+        selected.get("gap_classification") == "PLAN_NOT_EXECUTABLE"
+        and selected.get("final_score") == 62
+        and int(reach.get("evaluated") or 0) == 1
+        and int((reach.get("blocker_counts") or {}).get("institutional_sweep_valid") or 0) == 1
+    )
+
+
+def test_rejected_shadow_episode_dedup_collapses_repeat_scans() -> bool:
+    base = {
+        "side": "LONG", "setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,
+        "status": "EXPIRED_TP3", "max_target_hit": "TP3", "mfe_r": 6.0,
+    }
+    rows = [
+        {**base, "test_key": "REJECTED|LONG|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|888|LONG|88.95|88.49|89.86"},
+        {**base, "test_key": "REJECTED|LONG|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|888|LONG|88.97|88.51|89.88"},
+        {**base, "test_key": "REJECTED|LONG|DAILY_WEEKLY_OPEN_RECLAIM|DAILY_WEEKLY_OPEN_RECLAIM|854|LONG|85.79|84.86|87.64", "mfe_r": 4.0},
+    ]
+    episodes = deduplicate_rejected_shadow_episodes(rows)
+    return len(episodes) == 2
+
+
+def test_probe_tp0_protection_is_earlier_than_standard() -> bool:
+    opened = (now_utc() - timedelta(hours=1)).isoformat()
+    probe = ActiveTrade(
+        id="probe-protect", side=Side.LONG.value, setup_type=SetupType.OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.EXPANSION.value, opened_at=opened, entry=100.0,
+        stop_initial=99.0, stop_current=99.0, structural_invalidation=98.0,
+        tp0=100.75, tp1=102.0, tp2=103.0, tp3=104.0, quality=70, position_risk_pct=0.03,
+        best_price=101.2, worst_price=99.8, tp0_hit=True, entry_stage=EntryStage.PROBE.value,
+    )
+    standard = ActiveTrade(
+        id="standard-protect", side=Side.LONG.value, setup_type=SetupType.OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.EXPANSION.value, opened_at=opened, entry=100.0,
+        stop_initial=99.0, stop_current=99.0, structural_invalidation=98.0,
+        tp0=100.75, tp1=102.0, tp2=103.0, tp3=104.0, quality=70, position_risk_pct=0.03,
+        best_price=101.2, worst_price=99.8, tp0_hit=True, entry_stage=EntryStage.ACCEPTANCE.value,
+    )
+    context = {"price": 100.70, "candles": {"3m": [], "15m": []}}
+    probe_result = {"best_pct": _trade_pct(probe.side, probe.entry, probe.best_price), "current_pct": _trade_pct(probe.side, probe.entry, 100.70), "notes": []}
+    standard_result = {"best_pct": _trade_pct(standard.side, standard.entry, standard.best_price), "current_pct": _trade_pct(standard.side, standard.entry, 100.70), "notes": []}
+    probe_profile = _tp0_profit_protection(probe, context, probe_result)
+    standard_profile = _tp0_profit_protection(standard, context, standard_result)
+    return bool(
+        probe_profile.get("activated")
+        and probe_profile.get("threshold") == PROBE_TP0_PROTECT_GIVEBACK_RATIO
+        and not standard_profile.get("activated")
+        and standard_profile.get("threshold") == TP0_PROTECT_GIVEBACK_RATIO
+    )
+
+
+def test_preconfirm_legacy_alias_is_removed() -> bool:
+    return "_preconfirm_resolve_events" not in globals()
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -20975,6 +21303,11 @@ def _run_self_test() -> bool:
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
         ("current-session model-local clocks override stale market thesis", test_current_session_model_local_origins_override_stale_market_clock),
+        ("dormant detector reachability contract is live", test_dormant_detector_reachability_contract_is_live),
+        ("lifecycle records detector reachability and selected gap reason", test_lifecycle_persists_detector_reachability_and_gap_reason),
+        ("rejected shadow audit deduplicates repeat scans into episodes", test_rejected_shadow_episode_dedup_collapses_repeat_scans),
+        ("PROBE TP0 protection is earlier than standard", test_probe_tp0_protection_is_earlier_than_standard),
+        ("legacy preconfirmation resolver alias is removed", test_preconfirm_legacy_alias_is_removed),
         ("neutral regime fit is the midpoint", test_neutral_regime_fit_is_midpoint),
         ("ambiguous trade preserves known partial exits", test_ambiguous_trade_preserves_known_partial_exits),
         ("untrusted preconfirmation has no promotion authority", test_untrusted_preconfirmation_has_no_promotion_authority),
@@ -23350,7 +23683,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.14 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.16 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
