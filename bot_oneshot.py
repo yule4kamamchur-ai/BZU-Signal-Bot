@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.16 (Reachability Audit and Probe MFE Protection)
+BZU Professional Hybrid Confluence Signal Bot v9.5.17 (Integrated Calibration, Thesis Clock and Geometry Audit)
 =============================================================================================
+Оновлення v9.5.17:
+- BREAKOUT_RETEST / BREAKER_BLOCK / BMS_RETEST отримують власний MODEL_LOCAL thesis clock лише за нового detector-backed execution trigger; глобальний TTL не розширено.
+- Preconfirmation переведено на current-forecast schema, recent/current-feature-schema logistic із recency weighting та anti-discrimination lock; untrusted probability стискається до 50% і лишається audit-only.
+- MSS_REVERSAL_SHORT до позитивної exact-setup вибірки обмежений EXPERIMENTAL_PROBE: stage не вище PROBE, risk не вище experimental cap.
+- Compact trade journal зберігає повний management evidence: MFE capture/giveback, TP0 protection threshold/scope, activation evidence та profile provenance.
+- Додано conservative geometry backfill: відновлюються лише доказові поля з trade/signal/event lineage; відсутні entry/stop/MAE не вигадуються.
+- Dormant-detector audit зберігає numeric margins, dominant blockers і predicate-saturation health status без зміни live thresholds.
 Оновлення v9.5.16:
 - Додано detector reachability telemetry для SWEEP_RECLAIM, RANGE_COMPRESSION_BREAKOUT і RANGE_EDGE_REVERSAL без зміни entry-порогів.
 - Funnel тепер пояснює selected->executable gap: score band, plan readiness, revalidation/TTL clocks і blocking reasons.
@@ -213,8 +220,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.16-reachability-audit-probe-mfe-protection"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_16_REACHABILITY_AUDIT_PROBE_MFE_PROTECTION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.17-integrated-calibration-thesis-geometry-audit"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_17_INTEGRATED_CALIBRATION_THESIS_GEOMETRY_AUDIT"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -292,6 +299,33 @@ PRECONFIRM_AUTHORITY_RECENT_AUC_GATE = min(0.95, max(0.50, float(
 )))
 PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE = min(0.50, max(0.05, float(
     os.getenv("PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE", "0.25") or 0.25
+)))
+# v9.5.17: probability-policy lineage is separate from feature lineage.
+# A forecast produced by an old model policy cannot count toward authority for
+# the new recent-weighted calibrator even when the raw feature schema is equal.
+PRECONFIRM_FORECAST_SCHEMA_VERSION = str(
+    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.17_recent_weighted")
+    or "preconfirm_forecast_v9.5.17_recent_weighted"
+).strip()
+PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS = max(
+    PRECONFIRM_MIN_TRAIN_ROWS,
+    int(os.getenv("PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS", "48") or 48),
+)
+PRECONFIRM_RECENT_MODEL_WINDOW = max(
+    PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS,
+    int(os.getenv("PRECONFIRM_RECENT_MODEL_WINDOW", "120") or 120),
+)
+PRECONFIRM_RECENCY_HALF_LIFE_ROWS = max(10.0, float(
+    os.getenv("PRECONFIRM_RECENCY_HALF_LIFE_ROWS", "45") or 45
+))
+PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS = max(20, int(
+    os.getenv("PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS", "30") or 30
+))
+PRECONFIRM_ANTI_DISCRIMINATION_AUC = min(0.50, max(0.0, float(
+    os.getenv("PRECONFIRM_ANTI_DISCRIMINATION_AUC", "0.48") or 0.48
+)))
+PRECONFIRM_UNTRUSTED_MODEL_SHRINK = min(0.75, max(0.05, float(
+    os.getenv("PRECONFIRM_UNTRUSTED_MODEL_SHRINK", "0.35") or 0.35
 )))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
@@ -719,6 +753,14 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Preconfirmation authority recent window must cover the minimum current-schema sample")
     if PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES < 1:
         errors.append("Preconfirmation authority consecutive-pass count must be positive")
+    if PRECONFIRM_RECENT_MODEL_WINDOW < PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS:
+        errors.append("Preconfirmation recent model window must cover the current-schema model floor")
+    if PRECONFIRM_RECENCY_HALF_LIFE_ROWS <= 0:
+        errors.append("Preconfirmation recency half-life must be positive")
+    if not (0.0 <= PRECONFIRM_ANTI_DISCRIMINATION_AUC <= 0.50):
+        errors.append("Preconfirmation anti-discrimination AUC threshold must be in [0, 0.50]")
+    if not (0.0 < PRECONFIRM_UNTRUSTED_MODEL_SHRINK <= 0.75):
+        errors.append("Preconfirmation untrusted-model shrinkage must be in (0, 0.75]")
     if not (0.50 <= PRECONFIRM_AUTHORITY_RECENT_AUC_GATE <= 0.95):
         errors.append("Preconfirmation recent AUC gate must be between 0.50 and 0.95")
     if not (0.05 <= PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE <= 0.50):
@@ -749,6 +791,8 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("SHORT reversal stage thresholds must be strictly increasing")
     if not (0 < SHORT_REVERSAL_PROBE_RISK_PCT <= SHORT_REVERSAL_ACCEPTANCE_RISK_PCT <= ACCEPTANCE_RISK_PCT):
         errors.append("SHORT reversal risk ladder is invalid")
+    if not (0 < MSS_REVERSAL_EXPERIMENTAL_RISK_PCT <= EXPERIMENTAL_PROBE_RISK_PCT):
+        errors.append("MSS reversal experimental risk must not exceed generic experimental probe risk")
 
     htf_weight_sum = HTF_TF15_WEIGHT + HTF_TF1H_WEIGHT + HTF_TF4H_WEIGHT
     if abs(htf_weight_sum - 1.0) > 1e-9:
@@ -803,6 +847,16 @@ SHORT_REVERSAL_ACCEPTANCE_RISK_PCT = min(ACCEPTANCE_RISK_PCT, max(SHORT_REVERSAL
 SHORT_REVERSAL_ML_MIN_TRADES = max(20, int(os.getenv("SHORT_REVERSAL_ML_MIN_TRADES", "30") or 30))
 SHORT_REVERSAL_ML_FULL_TRADES = max(SHORT_REVERSAL_ML_MIN_TRADES + 1, int(os.getenv("SHORT_REVERSAL_ML_FULL_TRADES", "100") or 100))
 SHORT_REVERSAL_ML_MIN_MODEL_TRADES = max(10, int(os.getenv("SHORT_REVERSAL_ML_MIN_MODEL_TRADES", "20") or 20))
+# v9.5.17: MSS has a negative exact-setup live sample. It remains observable
+# through tiny experimental probes, but cannot graduate to ACCEPTANCE/CORE until
+# an exact-setup sample demonstrates positive expectancy.
+MSS_REVERSAL_LIVE_MIN_TRADES = max(10, int(os.getenv("MSS_REVERSAL_LIVE_MIN_TRADES", "12") or 12))
+MSS_REVERSAL_LIVE_MIN_WINS = max(2, int(os.getenv("MSS_REVERSAL_LIVE_MIN_WINS", "3") or 3))
+MSS_REVERSAL_LIVE_MIN_EXPECTANCY_R = float(os.getenv("MSS_REVERSAL_LIVE_MIN_EXPECTANCY_R", "0.05") or 0.05)
+MSS_REVERSAL_EXPERIMENTAL_RISK_PCT = min(
+    EXPERIMENTAL_PROBE_RISK_PCT,
+    max(0.005, float(os.getenv("MSS_REVERSAL_EXPERIMENTAL_RISK_PCT", str(EXPERIMENTAL_PROBE_RISK_PCT)) or EXPERIMENTAL_PROBE_RISK_PCT)),
+)
 
 # === Canonical Scoring Policy ===
 # One score policy only. Other layers may evaluate evidence/geometry, but they may
@@ -1653,6 +1707,12 @@ class ActiveTrade:
     pre_tp1_protection_locked: bool = False
     pre_tp1_protection_at: str = ""
     pre_tp1_protection_ratio: float = 0.0
+    pre_tp1_protection_threshold: float = 0.0
+    pre_tp1_protection_scope: str = ""
+    protection_activation_mfe_r: float = 0.0
+    protection_activation_current_r: float = 0.0
+    protection_activation_stop: float = 0.0
+    management_evidence_schema_version: str = "management_evidence_v9.5.17"
     # Canonical evaluation snapshot remains the compatibility entry_quality.
     entry_quality: int = 0
     evaluation_entry_quality: float = 0.0
@@ -1864,13 +1924,51 @@ def update_setup_lifecycle_counters(
     for event in reachability_events:
         setup_type = str(event.get("setup_type") or "")
         row = reachability_ledger.setdefault(setup_type, {
-            "evaluated": 0, "fired": 0, "blocker_counts": {}, "last_observation": {},
+            "evaluated": 0, "fired": 0, "blocker_counts": {},
+            "condition_true_counts": {}, "condition_false_counts": {},
+            "margin_statistics": {}, "last_observation": {},
+            "health_status": "OBSERVING", "saturated_predicates": [],
         })
         row["evaluated"] = int(row.get("evaluated") or 0) + 1
         row["fired"] = int(row.get("fired") or 0) + int(bool(event.get("fired")))
         blockers = row.setdefault("blocker_counts", {})
         for blocker in event.get("blockers") or []:
             blockers[str(blocker)] = int(blockers.get(str(blocker)) or 0) + 1
+        true_counts = row.setdefault("condition_true_counts", {})
+        false_counts = row.setdefault("condition_false_counts", {})
+        for name, value in (event.get("conditions") or {}).items():
+            if isinstance(value, bool):
+                target = true_counts if value else false_counts
+                target[str(name)] = int(target.get(str(name)) or 0) + 1
+        margin_stats = row.setdefault("margin_statistics", {})
+        for name, value in (event.get("margins") or {}).items():
+            try:
+                number = float(value)
+            except Exception:
+                continue
+            if not math.isfinite(number):
+                continue
+            stat = margin_stats.setdefault(str(name), {"count": 0, "sum": 0.0, "min": number, "max": number})
+            stat["count"] = int(stat.get("count") or 0) + 1
+            stat["sum"] = safe_float(stat.get("sum"), 0.0) + number
+            stat["min"] = min(safe_float(stat.get("min"), number), number)
+            stat["max"] = max(safe_float(stat.get("max"), number), number)
+            stat["mean"] = round(stat["sum"] / max(stat["count"], 1), 6)
+        evaluated = int(row.get("evaluated") or 0)
+        saturated = sorted(
+            name for name, count in false_counts.items()
+            if evaluated >= 50 and int(count or 0) / max(evaluated, 1) >= 0.98
+        )
+        row["saturated_predicates"] = saturated
+        row["health_status"] = (
+            "PREDICATE_SATURATION_SUSPECTED"
+            if evaluated >= 50 and int(row.get("fired") or 0) == 0 and saturated
+            else "DORMANT_MARKET_CONDITIONS"
+            if evaluated >= 50 and int(row.get("fired") or 0) == 0
+            else "REACHABLE"
+            if int(row.get("fired") or 0) > 0
+            else "OBSERVING"
+        )
         row["last_observation"] = dict(event)
 
     selected_event: Optional[dict[str, Any]] = None
@@ -1975,7 +2073,7 @@ def update_setup_lifecycle_counters(
         "stages": ["detected", "qualified_detected", "ranked", "selected", "executable", "entered"],
         "selection_contract": "ranked match required; saved opportunity re-entry must declare selected_source",
         "updated_at": run_row["time"],
-        "schema_version": "setup_lifecycle_funnel_v9.5.16",
+        "schema_version": "setup_lifecycle_funnel_v9.5.17_reachability_health",
     })
     return run_row
 
@@ -2206,35 +2304,81 @@ def _preconfirm_heuristic_probability(features: dict[str, float]) -> float:
     return clamp(_preconfirm_sigmoid(z), 0.08, 0.92)
 
 
+def _preconfirm_select_model_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select a recent, schema-consistent training population without label peeking.
+
+    Selection depends only on chronological order and schema metadata. Labels are
+    never used to choose the window. Legacy rows remain available to hierarchical
+    rate calibration, but the pooled logistic prefers the current feature schema
+    once that schema has enough resolved observations.
+    """
+    ordered = sorted([dict(row) for row in rows if isinstance(row, dict)], key=lambda row: int(row.get("observed_ts") or 0))
+    current = [row for row in ordered if str(row.get("feature_schema_version") or "") == PRECONFIRM_FEATURE_SCHEMA_VERSION]
+    if len(current) >= PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS:
+        selected = current[-PRECONFIRM_RECENT_MODEL_WINDOW:]
+        population = "CURRENT_FEATURE_SCHEMA_RECENT_WINDOW"
+    else:
+        selected = ordered[-PRECONFIRM_RECENT_MODEL_WINDOW:]
+        population = "MIXED_SCHEMA_RECENT_BOOTSTRAP"
+
+    n = len(selected)
+    for index, row in enumerate(selected):
+        age_rows = max(0, n - 1 - index)
+        recency_weight = math.exp(-math.log(2.0) * age_rows / max(PRECONFIRM_RECENCY_HALF_LIFE_ROWS, 1e-9))
+        schema_weight = 1.0 if str(row.get("feature_schema_version") or "") == PRECONFIRM_FEATURE_SCHEMA_VERSION else 0.35
+        row["sample_weight"] = round(recency_weight * schema_weight, 10)
+    return selected, {
+        "population": population,
+        "available_rows": len(ordered),
+        "current_feature_schema_rows": len(current),
+        "selected_rows": len(selected),
+        "recent_window": PRECONFIRM_RECENT_MODEL_WINDOW,
+        "recency_half_life_rows": PRECONFIRM_RECENCY_HALF_LIFE_ROWS,
+        "excluded_rows_total": max(0, len(ordered) - len(selected)),
+        "legacy_feature_schema_rows_available": max(0, len(ordered) - len(current)),
+        "current_schema_rows_excluded_by_window": max(0, len(current) - len(selected)) if population == "CURRENT_FEATURE_SCHEMA_RECENT_WINDOW" else 0,
+        "selection_uses_labels": False,
+        "schema_version": "preconfirm_model_population_v9.5.17",
+    }
+
+
 def _preconfirm_fit_logistic(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {"valid": False, "reason": "no_rows"}
-    means = {name: mean(safe_float(row["features"].get(name)) for row in rows) for name in PRECONFIRM_FEATURE_NAMES}
+    sample_weights = [max(1e-6, safe_float(row.get("sample_weight"), 1.0)) for row in rows]
+    total_weight = sum(sample_weights)
+    means = {
+        name: sum(weight * safe_float(row["features"].get(name)) for row, weight in zip(rows, sample_weights)) / max(total_weight, 1e-9)
+        for name in PRECONFIRM_FEATURE_NAMES
+    }
     stds: dict[str, float] = {}
     for name in PRECONFIRM_FEATURE_NAMES:
-        variance = mean((safe_float(row["features"].get(name)) - means[name]) ** 2 for row in rows)
+        variance = sum(
+            weight * (safe_float(row["features"].get(name)) - means[name]) ** 2
+            for row, weight in zip(rows, sample_weights)
+        ) / max(total_weight, 1e-9)
         stds[name] = max(math.sqrt(variance), 1e-6)
-    positives = sum(int(row["label"]) for row in rows)
-    negatives = len(rows) - positives
-    if positives == 0 or negatives == 0:
+    positive_weight = sum(weight for row, weight in zip(rows, sample_weights) if int(row["label"]) == 1)
+    negative_weight = sum(weight for row, weight in zip(rows, sample_weights) if int(row["label"]) == 0)
+    if positive_weight <= 0 or negative_weight <= 0:
         return {"valid": False, "reason": "single_class"}
     weights = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
-    intercept = _preconfirm_logit(positives / len(rows))
-    pos_weight = 0.5 / positives
-    neg_weight = 0.5 / negatives
+    intercept = _preconfirm_logit(positive_weight / max(positive_weight + negative_weight, 1e-9))
+    pos_class_weight = 0.5 / positive_weight
+    neg_class_weight = 0.5 / negative_weight
     for epoch in range(320):
         grad_b = 0.0
         grad_w = {name: 0.0 for name in PRECONFIRM_FEATURE_NAMES}
-        for row in rows:
+        for row, row_weight in zip(rows, sample_weights):
             label = int(row["label"])
-            sample_weight = pos_weight if label == 1 else neg_weight
+            class_weight = pos_class_weight if label == 1 else neg_class_weight
             z = intercept
             standardized = {}
             for name in PRECONFIRM_FEATURE_NAMES:
                 value = (safe_float(row["features"].get(name)) - means[name]) / stds[name]
                 standardized[name] = value
                 z += weights[name] * value
-            error = (_preconfirm_sigmoid(z) - label) * sample_weight
+            error = (_preconfirm_sigmoid(z) - label) * class_weight * row_weight
             grad_b += error
             for name in PRECONFIRM_FEATURE_NAMES:
                 grad_w[name] += error * standardized[name]
@@ -2242,7 +2386,15 @@ def _preconfirm_fit_logistic(rows: list[dict[str, Any]]) -> dict[str, Any]:
         intercept -= lr * grad_b
         for name in PRECONFIRM_FEATURE_NAMES:
             weights[name] -= lr * (grad_w[name] + 0.002 * weights[name])
-    return {"valid": True, "means": means, "stds": stds, "weights": weights, "intercept": intercept}
+    return {
+        "valid": True,
+        "means": means,
+        "stds": stds,
+        "weights": weights,
+        "intercept": intercept,
+        "weighted_sample_size": round(total_weight, 6),
+        "sample_weight_policy": "RECENCY_EXPONENTIAL_PLUS_SCHEMA_WEIGHT",
+    }
 
 
 def _preconfirm_predict_model(model: dict[str, Any], features: dict[str, float]) -> float:
@@ -2256,25 +2408,34 @@ def _preconfirm_predict_model(model: dict[str, Any], features: dict[str, float])
     return clamp(_preconfirm_sigmoid(z), 0.01, 0.99)
 
 
-def _preconfirm_fit_platt(probabilities: list[float], labels: list[int]) -> dict[str, float]:
+def _preconfirm_fit_platt(
+    probabilities: list[float],
+    labels: list[int],
+    sample_weights: Optional[list[float]] = None,
+) -> dict[str, float]:
     if len(probabilities) < 8 or len(set(labels)) < 2:
         return {"a": 1.0, "b": 0.0, "fitted": False}
+    weights = list(sample_weights or [1.0] * len(labels))
+    if len(weights) != len(labels):
+        raise ValueError("Platt sample_weights must match labels")
+    weights = [max(1e-6, safe_float(value, 1.0)) for value in weights]
+    total_weight = max(sum(weights), 1e-9)
     a, b = 1.0, 0.0
     for epoch in range(240):
         grad_a = 0.0
         grad_b = 0.0
-        for probability, label in zip(probabilities, labels):
+        for probability, label, weight in zip(probabilities, labels, weights):
             x = _preconfirm_logit(probability)
-            error = _preconfirm_sigmoid(a * x + b) - int(label)
-            grad_a += error * x / len(labels)
-            grad_b += error / len(labels)
+            error = (_preconfirm_sigmoid(a * x + b) - int(label)) * weight / total_weight
+            grad_a += error * x
+            grad_b += error
         lr = 0.08 / math.sqrt(1.0 + epoch / 50.0)
         # Calibration may adjust sharpness/intercept, but it must never reverse
         # the ordering learned by the classifier. Negative slope caused AUC 0.75
         # raw predictions to be reported as ~0.25 after calibration.
         a = max(0.05, a - lr * (grad_a + 0.001 * a))
         b -= lr * grad_b
-    return {"a": a, "b": b, "fitted": True, "monotonic": True}
+    return {"a": a, "b": b, "fitted": True, "monotonic": True, "weighted": True}
 
 
 def _preconfirm_apply_platt(probability: float, calibration: dict[str, Any]) -> float:
@@ -2408,43 +2569,42 @@ def _preconfirm_training_rows(
             "event_kind": event_kind_value,
             "event_id": str(event.get("event_id") or event.get("id") or ""),
             "status": status,
+            "feature_schema_version": str(event.get("feature_schema_version") or ""),
+            "forecast_schema_version": str(event.get("forecast_schema_version") or ""),
+            "bot_version_at_observation": str(event.get("bot_version_at_observation") or ""),
         })
     return sorted(rows, key=lambda row: row["observed_ts"])
 
 def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = None) -> dict[str, Any]:
-    """Build a chronologically validated logistic model.
+    """Build a chronologically validated recent/schema-consistent logistic model.
 
-    v9.5 normally calls this with family=None, producing one pooled model over
-    every resolved precursor event. Exact setup buckets are handled by
-    hierarchical shrinkage, so they no longer each need 60 observations.
+    The model population is chosen without outcomes: current feature-schema rows
+    are preferred once numerous enough, then a fixed recent window and exponential
+    recency weights are applied. Hierarchical rates still retain the full resolved
+    ledger, so this change does not erase historical evidence.
     """
-    rows = _preconfirm_training_rows(journal, family)
+    all_rows = _preconfirm_training_rows(journal, family)
+    rows, population = _preconfirm_select_model_rows(all_rows)
     n = len(rows)
     scope = str(family or "GLOBAL_POOLED")
     if n < PRECONFIRM_MIN_TRAIN_ROWS:
         return {
-            "trusted": False,
-            "valid": False,
-            "sample_size": n,
-            "scope": scope,
-            "reason": "pooled_rows_below_logistic_floor",
-            "auc": None,
-            "brier": None,
-            "trust_level": "BOOTSTRAP",
+            "trusted": False, "valid": False, "sample_size": n,
+            "available_sample_size": len(all_rows), "scope": scope,
+            "reason": "selected_rows_below_logistic_floor", "auc": None,
+            "brier": None, "trust_level": "BOOTSTRAP",
+            "training_population": population,
         }
     train_end = max(12, int(n * 0.70))
     calibration_end = max(train_end + 4, int(n * 0.85))
     calibration_end = min(calibration_end, n - 4)
     if calibration_end <= train_end or n - calibration_end < 4:
         return {
-            "trusted": False,
-            "valid": False,
-            "sample_size": n,
-            "scope": scope,
-            "reason": "insufficient_chronological_holdout",
-            "auc": None,
-            "brier": None,
-            "trust_level": "BOOTSTRAP",
+            "trusted": False, "valid": False, "sample_size": n,
+            "available_sample_size": len(all_rows), "scope": scope,
+            "reason": "insufficient_chronological_holdout", "auc": None,
+            "brier": None, "trust_level": "BOOTSTRAP",
+            "training_population": population,
         }
     train_rows = rows[:train_end]
     calibration_rows = rows[train_end:calibration_end]
@@ -2452,66 +2612,57 @@ def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = Non
     base_model = _preconfirm_fit_logistic(train_rows)
     if not base_model.get("valid"):
         return {
-            "trusted": False,
-            "valid": False,
-            "sample_size": n,
-            "scope": scope,
-            "reason": base_model.get("reason", "fit_failed"),
-            "auc": None,
-            "brier": None,
-            "trust_level": "BOOTSTRAP",
+            "trusted": False, "valid": False, "sample_size": n,
+            "available_sample_size": len(all_rows), "scope": scope,
+            "reason": base_model.get("reason", "fit_failed"), "auc": None,
+            "brier": None, "trust_level": "BOOTSTRAP",
+            "training_population": population,
         }
     calibration_labels = [int(row["label"]) for row in calibration_rows]
-    calibration_raw_probabilities = [
-        _preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows
-    ]
+    calibration_raw_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows]
     calibration_auc_raw = _preconfirm_auc(calibration_labels, calibration_raw_probabilities)
     probability_orientation = 1
     base_model["probability_orientation"] = probability_orientation
-    # Platt is monotonic-only. It may recalibrate confidence, never reverse ranks.
-    calibration = _preconfirm_fit_platt(calibration_raw_probabilities, calibration_labels)
-    test_raw_probabilities = [
-        _preconfirm_predict_model(base_model, row["features"]) for row in test_rows
-    ]
-    test_probabilities = [
-        _preconfirm_apply_platt(probability, calibration)
-        for probability in test_raw_probabilities
-    ]
+    calibration = _preconfirm_fit_platt(
+        calibration_raw_probabilities,
+        calibration_labels,
+        [safe_float(row.get("sample_weight"), 1.0) for row in calibration_rows],
+    )
+    test_raw_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in test_rows]
+    test_probabilities = [_preconfirm_apply_platt(probability, calibration) for probability in test_raw_probabilities]
     test_labels = [int(row["label"]) for row in test_rows]
     auc = _preconfirm_auc(test_labels, test_probabilities)
     brier = _preconfirm_brier(test_labels, test_probabilities)
-    temporal_stability_passed = bool(
-        calibration_auc_raw is not None and calibration_auc_raw >= 0.50
-    )
+    temporal_stability_passed = bool(calibration_auc_raw is not None and calibration_auc_raw >= 0.50)
     trusted = bool(
-        auc is not None
-        and auc >= PRECONFIRM_AUC_GATE
-        and brier is not None
-        and brier <= PRECONFIRM_BRIER_WARN
+        auc is not None and auc >= PRECONFIRM_AUC_GATE
+        and brier is not None and brier <= PRECONFIRM_BRIER_WARN
         and temporal_stability_passed
+        and population.get("population") == "CURRENT_FEATURE_SCHEMA_RECENT_WINDOW"
     )
-    final_model = _preconfirm_fit_logistic(rows) if trusted else base_model
+    # Preserve the classifier/calibrator relationship and keep the chronological
+    # test split genuinely unseen. Test rows may enter training on a later epoch,
+    # after new observations move the rolling window forward.
+    final_model = base_model
     return {
         **final_model,
-        "trusted": trusted,
-        "sample_size": n,
-        "scope": scope,
+        "trusted": trusted, "valid": bool(final_model.get("valid")),
+        "sample_size": n, "available_sample_size": len(all_rows), "scope": scope,
         "auc": round(auc, 6) if auc is not None else None,
         "brier": round(brier, 6) if brier is not None else None,
-        "calibration": calibration,
-        "probability_orientation": probability_orientation,
+        "calibration": calibration, "probability_orientation": probability_orientation,
         "calibration_auc_raw": round(calibration_auc_raw, 6) if calibration_auc_raw is not None else None,
         "orientation_policy": "MONOTONIC_PLATT_NO_RANK_REVERSAL",
         "temporal_stability_passed": temporal_stability_passed,
         "reason": (
-            "trusted"
-            if trusted
-            else "temporal_discrimination_instability"
-            if not temporal_stability_passed
+            "trusted" if trusted
+            else "temporal_discrimination_instability" if not temporal_stability_passed
             else "validation_gate_not_passed"
         ),
         "trust_level": "FULL" if trusted and n >= PRECONFIRM_FULL_TRUST_ROWS else "PARTIAL" if trusted else "BOOTSTRAP",
         "chronological_split": {"train": len(train_rows), "calibration": len(calibration_rows), "test": len(test_rows)},
+        "training_population": population,
+        "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
     }
 
 
@@ -2734,18 +2885,32 @@ def _preconfirm_terminal_label(event: dict[str, Any]) -> Optional[int]:
     return None
 
 
-def _preconfirm_current_schema_forecasts(journal: dict[str, Any]) -> list[dict[str, Any]]:
-    """Frozen online forecasts from the current feature schema only."""
+def _preconfirm_feature_schema_forecasts(
+    journal: dict[str, Any],
+    *,
+    forecast_schema: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Frozen online forecasts for drift diagnostics or authority validation.
+
+    Feature-schema rows from an older forecast policy may diagnose drift, but only
+    rows from the exact current forecast schema can accumulate live authority.
+    """
     rows: list[dict[str, Any]] = []
     for event in journal.get("events", []) or []:
         if not isinstance(event, dict):
             continue
         if str(event.get("feature_schema_version") or "") != PRECONFIRM_FEATURE_SCHEMA_VERSION:
             continue
+        event_forecast_schema = str(event.get("forecast_schema_version") or "")
+        if forecast_schema is not None and event_forecast_schema != str(forecast_schema):
+            continue
         label = _preconfirm_terminal_label(event)
         if label is None:
             continue
-        probability = safe_float(event.get("probability", event.get("confirmation_probability")), -1.0)
+        if forecast_schema == PRECONFIRM_FORECAST_SCHEMA_VERSION:
+            probability = safe_float(event.get("validation_probability", event.get("probability", event.get("confirmation_probability"))), -1.0)
+        else:
+            probability = safe_float(event.get("probability", event.get("confirmation_probability")), -1.0)
         if not (0.0 <= probability <= 1.0):
             continue
         rows.append({
@@ -2755,8 +2920,17 @@ def _preconfirm_current_schema_forecasts(journal: dict[str, Any]) -> list[dict[s
             "probability": probability,
             "label": label,
             "status": _preconfirm_event_status(event),
+            "forecast_schema_version": event_forecast_schema,
         })
     return sorted(rows, key=lambda row: (row["observed_ts"], row["resolved_ts"], row["event_id"]))
+
+
+def _preconfirm_current_schema_forecasts(journal: dict[str, Any]) -> list[dict[str, Any]]:
+    """Authority-eligible forecasts from the exact current policy schema."""
+    return _preconfirm_feature_schema_forecasts(
+        journal,
+        forecast_schema=PRECONFIRM_FORECAST_SCHEMA_VERSION,
+    )
 
 
 def _preconfirm_authority_gate(
@@ -2776,15 +2950,42 @@ def _preconfirm_authority_gate(
     recent_brier = _preconfirm_brier(labels, probabilities) if labels else None
     current_n = len(rows)
     recent_n = len(recent)
+
+    diagnostic_rows = _preconfirm_feature_schema_forecasts(journal)
+    diagnostic_recent = diagnostic_rows[-PRECONFIRM_AUTHORITY_RECENT_WINDOW:]
+    diagnostic_labels = [int(row["label"]) for row in diagnostic_recent]
+    diagnostic_probabilities = [safe_float(row["probability"], 0.5) for row in diagnostic_recent]
+    diagnostic_auc = _preconfirm_auc(diagnostic_labels, diagnostic_probabilities) if len(set(diagnostic_labels)) >= 2 else None
+    diagnostic_brier = _preconfirm_brier(diagnostic_labels, diagnostic_probabilities) if diagnostic_labels else None
+    # Before the new forecast policy has its own minimum sample, prior frozen
+    # forecasts from the same feature schema remain valid drift evidence only.
+    if recent_n >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS:
+        drift_auc = recent_auc
+        drift_sample_size = recent_n
+        drift_source = "CURRENT_FORECAST_SCHEMA"
+    else:
+        drift_auc = diagnostic_auc
+        drift_sample_size = len(diagnostic_recent)
+        drift_source = "PRIOR_FORECAST_SCHEMA_DIAGNOSTIC_ONLY"
+
     latest_resolved_ts = max((int(row.get("resolved_ts") or 0) for row in rows), default=0)
-    validation_epoch = f"{PRECONFIRM_FEATURE_SCHEMA_VERSION}:{current_n}:{latest_resolved_ts}"
+    validation_epoch = f"{PRECONFIRM_FEATURE_SCHEMA_VERSION}:{PRECONFIRM_FORECAST_SCHEMA_VERSION}:{current_n}:{latest_resolved_ts}"
 
     global_pass = bool(global_model.get("trusted"))
     sample_pass = current_n >= PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS
     class_balance_pass = len(set(labels)) >= 2
     recent_auc_pass = bool(recent_auc is not None and recent_auc >= PRECONFIRM_AUTHORITY_RECENT_AUC_GATE)
     recent_brier_pass = bool(recent_brier is not None and recent_brier <= PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE)
-    validation_pass = bool(global_pass and sample_pass and class_balance_pass and recent_auc_pass and recent_brier_pass)
+    recently_anti_discriminative = bool(
+        drift_sample_size >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS
+        and drift_auc is not None
+        and drift_auc < PRECONFIRM_ANTI_DISCRIMINATION_AUC
+    )
+    validation_pass = bool(
+        global_pass and sample_pass and class_balance_pass
+        and recent_auc_pass and recent_brier_pass
+        and not recently_anti_discriminative
+    )
 
     previous = ((journal.get("model_status") or {}).get("AUTHORITY_GATE") or {})
     previous_epoch = str(previous.get("validation_epoch") or "")
@@ -2811,6 +3012,8 @@ def _preconfirm_authority_gate(
         failed_conditions.append("RECENT_AUC_BELOW_GATE")
     if not recent_brier_pass:
         failed_conditions.append("RECENT_BRIER_ABOVE_GATE")
+    if recently_anti_discriminative:
+        failed_conditions.append("RECENTLY_ANTI_DISCRIMINATIVE")
     if validation_pass and consecutive < PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES:
         failed_conditions.append("CONSECUTIVE_VALIDATION_EPOCHS_PENDING")
 
@@ -2819,6 +3022,7 @@ def _preconfirm_authority_gate(
         "global_model_trusted": global_pass,
         "validation_pass": validation_pass,
         "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
         "current_schema_resolved_events": current_n,
         "minimum_current_schema_events": PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS,
         "recent_window": PRECONFIRM_AUTHORITY_RECENT_WINDOW,
@@ -2827,14 +3031,25 @@ def _preconfirm_authority_gate(
         "recent_auc_gate": PRECONFIRM_AUTHORITY_RECENT_AUC_GATE,
         "recent_brier": round(recent_brier, 6) if recent_brier is not None else None,
         "recent_brier_gate": PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE,
+        "diagnostic_feature_schema_sample_size": len(diagnostic_rows),
+        "diagnostic_recent_sample_size": len(diagnostic_recent),
+        "diagnostic_recent_auc": round(diagnostic_auc, 6) if diagnostic_auc is not None else None,
+        "diagnostic_recent_brier": round(diagnostic_brier, 6) if diagnostic_brier is not None else None,
+        "drift_evidence_source": drift_source,
+        "drift_evidence_auc": round(drift_auc, 6) if drift_auc is not None else None,
+        "drift_evidence_sample_size": drift_sample_size,
+        "prior_forecast_schema_has_no_authority": True,
+        "recently_anti_discriminative": recently_anti_discriminative,
+        "anti_discrimination_auc_threshold": PRECONFIRM_ANTI_DISCRIMINATION_AUC,
+        "anti_discrimination_min_rows": PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS,
         "class_balance_pass": class_balance_pass,
         "consecutive_passes": consecutive,
         "required_consecutive_passes": PRECONFIRM_AUTHORITY_REQUIRED_CONSECUTIVE_PASSES,
         "validation_epoch": validation_epoch,
         "latest_resolved_ts": latest_resolved_ts,
         "failed_conditions": failed_conditions,
-        "authority_policy": "GLOBAL_AND_CURRENT_SCHEMA_ROLLING_AND_CONSECUTIVE",
-        "schema_version": "preconfirm_authority_gate_v9.5.9",
+        "authority_policy": "GLOBAL_AND_CURRENT_FORECAST_SCHEMA_ROLLING_AND_CONSECUTIVE_WITH_ANTI_DISCRIMINATION_LOCK",
+        "schema_version": "preconfirm_authority_gate_v9.5.17",
     }
 
 
@@ -2851,22 +3066,47 @@ def _preconfirm_estimate(
     heuristic = _preconfirm_heuristic_probability(features)
     hierarchy = _preconfirm_hierarchical_calibration(journal, family, heuristic)
 
-    if global_model.get("trusted"):
+    model_holdout_anti = bool(
+        int(global_model.get("sample_size") or 0) >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS
+        and global_model.get("auc") is not None
+        and safe_float(global_model.get("auc"), 0.5) < PRECONFIRM_ANTI_DISCRIMINATION_AUC
+    )
+    anti_lock = bool(authority_gate.get("recently_anti_discriminative") or model_holdout_anti)
+    validation_probability: Optional[float] = None
+    if global_model.get("valid"):
         raw_probability = _preconfirm_predict_model(global_model, features)
         oriented_probability = _preconfirm_orient_probability(raw_probability, global_model)
-        probability = _preconfirm_apply_platt(oriented_probability, global_model.get("calibration") or {})
-        source = "CALIBRATED_POOLED_LOGISTIC"
+        validation_probability = _preconfirm_apply_platt(oriented_probability, global_model.get("calibration") or {})
+    else:
+        raw_probability = None
+
+    if anti_lock and validation_probability is not None:
+        # Freeze the model's untouched forecast for future chronological
+        # validation, but neutralize the displayed/live audit probability now.
+        probability = 0.50
+        source = "ANTI_DISCRIMINATION_NEUTRALIZED_AUDIT_ONLY"
+        calibrated = True
+        downgrade_trusted = False
+        promotion_trusted = False
+        trust_level = "ANTI_DISCRIMINATION_LOCK"
+    elif global_model.get("trusted") and validation_probability is not None:
+        probability = validation_probability
+        source = "CALIBRATED_RECENT_SCHEMA_LOGISTIC"
         calibrated = True
         downgrade_trusted = authority_trusted
         promotion_trusted = bool(authority_trusted and hierarchy.get("promotion_trusted"))
-        trust_level = (
-            "AUTHORITY_TRUSTED"
-            if authority_trusted
-            else "GLOBAL_VALIDATED_AUDIT_ONLY"
-        )
+        trust_level = "AUTHORITY_TRUSTED" if authority_trusted else "GLOBAL_VALIDATED_AUDIT_ONLY"
+    elif global_model.get("valid") and validation_probability is not None:
+        probability = 0.50 + (validation_probability - 0.50) * PRECONFIRM_UNTRUSTED_MODEL_SHRINK
+        source = "RECENT_SCHEMA_LOGISTIC_AUDIT_ONLY"
+        calibrated = True
+        downgrade_trusted = False
+        promotion_trusted = False
+        trust_level = "RECENT_SCHEMA_BOOTSTRAP"
     elif hierarchy.get("calibrated"):
         raw_probability = None
-        probability = safe_float(hierarchy.get("probability"), heuristic)
+        validation_probability = safe_float(hierarchy.get("probability"), heuristic)
+        probability = validation_probability
         calibration_tier = str(hierarchy.get("calibration_tier") or "HIERARCHICAL_EMPIRICAL_BAYES")
         if calibration_tier == "EARLY_WEAK_BAYES":
             source = "GLOBAL_BAYES_WEAK_CALIBRATION"
@@ -2879,6 +3119,7 @@ def _preconfirm_estimate(
         promotion_trusted = False
     else:
         raw_probability = None
+        validation_probability = heuristic
         probability = heuristic
         source = "HEURISTIC_UNCALIBRATED"
         calibrated = False
@@ -2907,6 +3148,8 @@ def _preconfirm_estimate(
         "probability": round(probability, 6),
         "probability_pct": round(probability * 100.0, 1),
         "raw_model_probability": round(raw_probability, 6) if raw_probability is not None else None,
+        "validation_probability": round(validation_probability, 6) if validation_probability is not None else round(probability, 6),
+        "validation_probability_policy": "FROZEN_UNGUARDED_FORECAST_FOR_AUTHORITY_VALIDATION_ONLY",
         "heuristic_probability": round(heuristic, 6),
         "wilson_low": round(interval_low, 6),
         "wilson_high": round(interval_high, 6),
@@ -2922,6 +3165,20 @@ def _preconfirm_estimate(
         "PRECONFIRM_MODEL_TRUSTED": authority_trusted,
         "trust_level": trust_level,
         "source": source,
+        "drift_shrinkage_applied": bool(
+            global_model.get("valid") and not global_model.get("trusted")
+            and not bool(authority_gate.get("recently_anti_discriminative"))
+        ),
+        "anti_discrimination_neutralized": bool(
+            authority_gate.get("recently_anti_discriminative")
+            or (
+                int(global_model.get("sample_size") or 0) >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS
+                and global_model.get("auc") is not None
+                and safe_float(global_model.get("auc"), 0.5) < PRECONFIRM_ANTI_DISCRIMINATION_AUC
+            )
+        ),
+        "untrusted_model_shrink": PRECONFIRM_UNTRUSTED_MODEL_SHRINK,
+        "training_population": dict(global_model.get("training_population") or {}),
         "model_family": family,
         "event_kind": _preconfirm_event_kind(candidate),
         "sample_size": global_n,
@@ -2954,6 +3211,7 @@ def _preconfirm_estimate(
         "probability_contract": PRECONFIRM_PROBABILITY_CONTRACT,
         "expired_label_mode": PRECONFIRM_EXPIRED_LABEL_MODE,
         "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
         "features": dict(features),
         "excluded_feature": "pattern",
         "feature_dependency_audit": {
@@ -2963,7 +3221,7 @@ def _preconfirm_estimate(
             "added_to_final_score": False,
             "single_decision_use": "_preconfirm_stage_gate",
         },
-        "schema_version": "preconfirmation_probability_v9.5.9_recent_authority",
+        "schema_version": "preconfirmation_probability_v9.5.17_recent_weighted_drift_guarded",
     }
 
 def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any]]:
@@ -3158,6 +3416,7 @@ def _preconfirm_make_event(
         "bot_version_at_observation": BOT_VERSION,
         "architecture_version_at_observation": ARCHITECTURE_VERSION,
         "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
         "created_at": created_at,
         "created_ts": observed_ts,
         "observation_candle_ts": observation_candle_ts,
@@ -3174,6 +3433,7 @@ def _preconfirm_make_event(
         "invalidation_level": round_price(invalidation),
         "probability": round(clamp(safe_float(probability, safe_float(profile.get("probability"), 0.0)), 0.0, 1.0), 6),
         "confirmation_probability": round(clamp(safe_float(probability, safe_float(profile.get("probability"), 0.0)), 0.0, 1.0), 6),
+        "validation_probability": round(clamp(safe_float(profile.get("validation_probability"), safe_float(probability, 0.5)), 0.0, 1.0), 6),
         "status": canonical_status,
         "outcome": _preconfirm_legacy_outcome(canonical_status),
         "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
@@ -3443,6 +3703,8 @@ def _preconfirm_build_model_status(
                 else "HEURISTIC_ONLY"
             ),
             "training_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
+            "training_population": dict(global_model.get("training_population") or {}),
+            "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
             "closed_trades_used": False,
         },
         "AUTHORITY_GATE": authority_gate,
@@ -3734,12 +3996,14 @@ def test_preconfirmation_chronological_model_gate_and_calibration() -> bool:
             "model_family": family,
             "outcome": "CONFIRMED" if label else "INVALIDATED",
             "features": features,
+            "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+            "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
             "observed_ts": base_ts + i * 60_000,
         })
     model = _preconfirm_build_model({"events": events}, family)
     return bool(
         model.get("trusted")
-        and int(model.get("sample_size") or 0) == 220
+        and int(model.get("sample_size") or 0) == min(220, PRECONFIRM_RECENT_MODEL_WINDOW)
         and safe_float(model.get("auc"), 0.0) >= PRECONFIRM_AUC_GATE
         and model.get("brier") is not None
         and (model.get("calibration") or {}).get("fitted")
@@ -4408,8 +4672,14 @@ def classify_probe_conviction(candidate: Any, setup_quality: float, timing_quali
         reversal.get(k) not in {False, None, "UNKNOWN", 0, 0.0}
         for k in ("counter_htf_evidence", "structural_counter_evidence", "mss_quality", "failure_quality")
     )
+    components = getattr(candidate, "score_components", {}) or {}
+    mss_policy = components.get("mss_reversal_live_policy") or {}
 
-    if state == "ALIGNED" and timing_quality >= 68 and entry_quality >= 60 and trigger_strong:
+    if str(getattr(candidate, "setup_type", "") or "") == SetupType.MSS_REVERSAL_SHORT.value and mss_policy.get("experimental_only"):
+        tier = ProbeConvictionTier.EXPERIMENTAL.value
+        risk = MSS_REVERSAL_EXPERIMENTAL_RISK_PCT
+        reason = "MSS exact-setup sample has not graduated from experimental-only mode"
+    elif state == "ALIGNED" and timing_quality >= 68 and entry_quality >= 60 and trigger_strong:
         tier = ProbeConvictionTier.HIGH.value
         risk = HIGH_CONVICTION_PROBE_RISK_PCT
         reason = "HTF aligned + execution ready"
@@ -4438,6 +4708,7 @@ def classify_probe_conviction(candidate: Any, setup_quality: float, timing_quali
         "htf_state": state,
         "strong_trigger": trigger_strong,
         "reversal_evidence": reversal_evidence,
+        "mss_reversal_live_policy": dict(mss_policy),
         "reason": reason,
         "schema_version": "probe_conviction_v9.1",
     }
@@ -4815,6 +5086,7 @@ def build_risk_adjustment_ledger(
     context = context or {}
     journal = journal or {}
     state = state or {}
+    ensure_mss_reversal_empirical_policy(candidate, journal)
     components = getattr(candidate, "score_components", {}) or {}
     stage_name = str(stage or getattr(candidate, "entry_stage", "WATCH") or "WATCH").upper()
     policy = stage_risk_policy(stage_name)
@@ -4822,6 +5094,11 @@ def build_risk_adjustment_ledger(
     stage_cap = policy["stage_cap_pct"]
     probe_payload = components.get("probe_conviction", {}) or getattr(candidate, "stage_plan", {}).get("probe_conviction", {}) if candidate is not None else {}
     probe_tier = str((probe_payload or {}).get("tier") or getattr(candidate, "probe_conviction_tier", "") or "")
+    mss_policy = components.get("mss_reversal_live_policy") or (
+        mss_reversal_empirical_policy(journal)
+        if str(getattr(candidate, "setup_type", "") or "") == SetupType.MSS_REVERSAL_SHORT.value
+        else {}
+    )
     if policy["stage"] == EntryStage.PROBE.value:
         probe_base = safe_float((probe_payload or {}).get("base_risk_pct"), 0.0)
         if probe_base <= 0:
@@ -4832,6 +5109,9 @@ def build_risk_adjustment_ledger(
             }.get(probe_tier, EXPERIMENTAL_PROBE_RISK_PCT)
         base = min(PROBE_RISK_PCT, probe_base)
         stage_cap = base
+    if str(getattr(candidate, "setup_type", "") or "") == SetupType.MSS_REVERSAL_SHORT.value and mss_policy.get("experimental_only"):
+        base = min(base, MSS_REVERSAL_EXPERIMENTAL_RISK_PCT)
+        stage_cap = min(stage_cap, MSS_REVERSAL_EXPERIMENTAL_RISK_PCT)
 
     adjustments: list[RiskAdjustment] = []
     seen: set[str] = set()
@@ -5824,11 +6104,35 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "trade_profile_source": payload.get("trade_profile_source"),
         "trade_profile_calibration_status": payload.get("trade_profile_calibration_status"),
         "trade_profile_fallback_used": payload.get("trade_profile_fallback_used"),
+        "entry": payload.get("entry", payload.get("entry_price")),
+        "stop_initial": payload.get("stop_initial", payload.get("initial_stop")),
+        "stop_at_close": payload.get("stop_at_close", payload.get("stop_current")),
+        "best_price": payload.get("best_price"),
+        "worst_price": payload.get("worst_price"),
+        "tp0": payload.get("tp0"),
+        "tp1": payload.get("tp1"),
+        "tp2": payload.get("tp2"),
+        "tp3": payload.get("tp3"),
         "rr1": payload.get("rr1"),
         "rr2": payload.get("rr2"),
         "rr3": payload.get("rr3"),
         "mfe_r": payload.get("mfe_r"),
         "mae_r": payload.get("mae_r"),
+        "mfe_capture_ratio": payload.get("mfe_capture_ratio"),
+        "mfe_giveback_ratio": payload.get("mfe_giveback_ratio"),
+        "tp0_protect_threshold": payload.get("tp0_protect_threshold"),
+        "pre_tp1_protection_locked": payload.get("pre_tp1_protection_locked"),
+        "pre_tp1_protection_at": payload.get("pre_tp1_protection_at"),
+        "pre_tp1_protection_ratio": payload.get("pre_tp1_protection_ratio"),
+        "pre_tp1_protection_threshold": payload.get("pre_tp1_protection_threshold"),
+        "pre_tp1_protection_scope": payload.get("pre_tp1_protection_scope"),
+        "protection_activation_mfe_r": payload.get("protection_activation_mfe_r"),
+        "protection_activation_current_r": payload.get("protection_activation_current_r"),
+        "protection_activation_stop": payload.get("protection_activation_stop"),
+        "management_state": payload.get("management_state"),
+        "management_evidence_schema_version": payload.get("management_evidence_schema_version"),
+        "geometry_backfill": payload.get("geometry_backfill"),
+        "geometry_complete": payload.get("geometry_complete"),
         "tp0_hit": payload.get("tp0_hit"),
         "tp1_hit": payload.get("tp1_hit"),
         "tp2_hit": payload.get("tp2_hit"),
@@ -5853,10 +6157,194 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
 
 
+def backfill_trade_geometry_evidence(journal: dict[str, Any]) -> dict[str, Any]:
+    """Backfill only geometry facts supported by persisted lineage.
+
+    Exact entry/stop/target arithmetic is used when those prices exist. Poll-price
+    signal events may recover MFE/MAE only when entry and initial stop are known.
+    Setup bootstrap RR is never copied into historical actual-RR fields, and missing
+    MAE is never invented from a stop result.
+    """
+    if not isinstance(journal, dict):
+        return {"processed": 0, "changed": 0, "geometry_complete": 0, "reason": "invalid_journal"}
+    signals = {str(row.get("id") or ""): row for row in (journal.get("signals") or []) if isinstance(row, dict)}
+    events_by_trade: dict[str, list[dict[str, Any]]] = {}
+    for event in journal.get("signal_events") or []:
+        if not isinstance(event, dict):
+            continue
+        trade_id = str(event.get("trade_id") or "")
+        if trade_id:
+            events_by_trade.setdefault(trade_id, []).append(event)
+
+    report = {
+        "processed": 0, "changed": 0, "geometry_complete": 0,
+        "fields_backfilled": {}, "unresolved_reasons": {},
+        "policy": "EVIDENCE_ONLY_NO_SYNTHETIC_GEOMETRY",
+        "schema_version": "geometry_backfill_v9.5.17",
+    }
+    for trade in journal.get("trades") or []:
+        if not isinstance(trade, dict):
+            continue
+        report["processed"] += 1
+        before = dict(trade)
+        trade_id = str(trade.get("id") or "")
+        signal = signals.get(str(trade.get("signal_id") or ""), {})
+        events = sorted(events_by_trade.get(trade_id, []), key=lambda row: str(row.get("time") or ""))
+        filled: list[str] = []
+        unresolved: list[str] = []
+
+        setup_type = str(trade.get("setup_type") or signal.get("setup_type") or "")
+        profile_provenance_found = False
+        for key in ("trade_profile_source", "trade_profile_calibration_status", "trade_profile_fallback_used"):
+            value = signal.get(key)
+            if trade.get(key) is None and value is not None:
+                trade[key] = value
+                filled.append(key)
+                profile_provenance_found = True
+            elif trade.get(key) is not None:
+                profile_provenance_found = True
+        if setup_type and not profile_provenance_found:
+            unresolved.append("TRADE_PROFILE_PROVENANCE_NOT_PERSISTED")
+
+        def first_number(*values: Any) -> Optional[float]:
+            for value in values:
+                try:
+                    number = float(value)
+                except Exception:
+                    continue
+                if math.isfinite(number) and number != 0.0:
+                    return number
+            return None
+
+        entry = first_number(trade.get("entry"), trade.get("entry_price"), signal.get("entry"), signal.get("entry_price"))
+        stop = first_number(trade.get("stop_initial"), trade.get("initial_stop"), trade.get("stop"), signal.get("stop_initial"), signal.get("stop"))
+        risk = abs(entry - stop) if entry is not None and stop is not None else None
+        if risk is not None and risk > 1e-9:
+            for index in (1, 2, 3):
+                key = f"rr{index}"
+                target = first_number(trade.get(f"tp{index}"), signal.get(f"tp{index}"))
+                if trade.get(key) is None and target is not None:
+                    trade[key] = round(abs(target - entry) / risk, 4)
+                    filled.append(key)
+            prices = [safe_float(event.get("price"), 0.0) for event in events if safe_float(event.get("price"), 0.0) > 0]
+            side = str(trade.get("side") or signal.get("side") or "").upper()
+            best = first_number(trade.get("best_price"))
+            worst = first_number(trade.get("worst_price"))
+            if prices:
+                if side == Side.LONG.value:
+                    best = max([entry] + prices) if best is None else max(best, max(prices))
+                    worst = min([entry] + prices) if worst is None else min(worst, min(prices))
+                elif side == Side.SHORT.value:
+                    best = min([entry] + prices) if best is None else min(best, min(prices))
+                    worst = max([entry] + prices) if worst is None else max(worst, max(prices))
+            if side == Side.LONG.value:
+                mfe = (best - entry) / risk if best is not None else None
+                mae = (entry - worst) / risk if worst is not None else None
+            elif side == Side.SHORT.value:
+                mfe = (entry - best) / risk if best is not None else None
+                mae = (worst - entry) / risk if worst is not None else None
+            else:
+                mfe = mae = None
+            if trade.get("mfe_r") is None and mfe is not None:
+                trade["mfe_r"] = round(max(0.0, mfe), 4)
+                filled.append("mfe_r")
+            if trade.get("mae_r") is None and mae is not None:
+                trade["mae_r"] = round(max(0.0, mae), 4)
+                filled.append("mae_r")
+        else:
+            unresolved.append("ENTRY_OR_INITIAL_STOP_NOT_PERSISTED")
+
+        action_rank = {"TP0": 0, "TP1": 1, "TP2": 2, "TP3": 3}
+        observed_actions = [str(event.get("action") or "").upper() for event in events]
+        close_action = str(trade.get("close_action") or "").upper()
+        highest = max([action_rank[a] for a in observed_actions + [close_action] if a in action_rank], default=-1)
+        for index, key in enumerate(("tp0_hit", "tp1_hit", "tp2_hit", "tp3_hit")):
+            if trade.get(key) is None and highest >= index:
+                trade[key] = True
+                filled.append(key)
+        pre_tp1_protect_event: Optional[dict[str, Any]] = None
+        seen_tp0 = False
+        seen_tp1 = False
+        for event in events:
+            action = str(event.get("action") or "").upper()
+            if action == Action.TP0.value:
+                seen_tp0 = True
+            elif action == Action.TP1.value:
+                seen_tp1 = True
+            elif action == Action.PROTECT.value and seen_tp0 and not seen_tp1:
+                pre_tp1_protect_event = event
+                break
+        if pre_tp1_protect_event and trade.get("pre_tp1_protection_locked") is None:
+            trade["pre_tp1_protection_locked"] = True
+            trade["pre_tp1_protection_at"] = str(pre_tp1_protect_event.get("time") or "")
+            trade["pre_tp1_protection_scope"] = "PROBE" if str(trade.get("execution_stage") or "").upper() == EntryStage.PROBE.value else "STANDARD"
+            trade["tp0_protect_threshold"] = PROBE_TP0_PROTECT_GIVEBACK_RATIO if trade["pre_tp1_protection_scope"] == "PROBE" else TP0_PROTECT_GIVEBACK_RATIO
+            filled.extend(["pre_tp1_protection_locked", "pre_tp1_protection_at", "pre_tp1_protection_scope", "tp0_protect_threshold"])
+
+        geometry_complete = all(trade.get(key) is not None for key in ("rr1", "mfe_r", "mae_r"))
+        trade["geometry_complete"] = geometry_complete
+        trade["geometry_backfill"] = {
+            "applied": bool(filled), "fields": sorted(set(filled)),
+            "unresolved": sorted(set(unresolved)),
+            "evidence_sources": [source for source, present in (("TRADE_RECORD", True), ("LINKED_SIGNAL", bool(signal)), ("SIGNAL_EVENTS", bool(events))) if present],
+            "fabricated_values": False,
+            "schema_version": "geometry_backfill_v9.5.17",
+        }
+        if geometry_complete:
+            report["geometry_complete"] += 1
+        if trade != before:
+            report["changed"] += 1
+        for field in filled:
+            report["fields_backfilled"][field] = int(report["fields_backfilled"].get(field) or 0) + 1
+        for reason in unresolved:
+            report["unresolved_reasons"][reason] = int(report["unresolved_reasons"].get(reason) or 0) + 1
+    report["completed_at"] = iso_now()
+    return report
+
+
+def upgrade_dormant_reachability_ledger(journal: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade historical reachability counters without changing detectors."""
+    rows = (((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {})
+    report = {"processed": 0, "updated": 0, "schema_version": "dormant_reachability_upgrade_v9.5.17"}
+    for setup_type in DORMANT_SETUP_REACHABILITY_TYPES:
+        row = rows.get(setup_type)
+        if not isinstance(row, dict):
+            continue
+        report["processed"] += 1
+        evaluated = int(row.get("evaluated") or 0)
+        fired = int(row.get("fired") or 0)
+        blocker_counts = dict(row.get("blocker_counts") or {})
+        saturated = sorted(
+            name for name, count in blocker_counts.items()
+            if evaluated >= 50 and int(count or 0) / max(evaluated, 1) >= 0.98
+        )
+        health = (
+            "PREDICATE_SATURATION_SUSPECTED"
+            if evaluated >= 50 and fired == 0 and saturated
+            else "DORMANT_MARKET_CONDITIONS"
+            if evaluated >= 50 and fired == 0
+            else "REACHABLE" if fired > 0 else "OBSERVING"
+        )
+        before = (row.get("health_status"), tuple(row.get("saturated_predicates") or []))
+        row["saturated_predicates"] = saturated
+        row["health_status"] = health
+        row["historical_upgrade"] = {
+            "source": "AGGREGATED_BLOCKER_COUNTS",
+            "margins_available_only_on_v9_5_17_plus_runs": True,
+            "thresholds_changed": False,
+        }
+        if before != (health, tuple(saturated)):
+            report["updated"] += 1
+    report["completed_at"] = iso_now()
+    return report
+
+
 def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     """One-time in-memory migration of legacy journals to schema version 2."""
     if not isinstance(journal, dict):
         journal = {}
+    journal["geometry_backfill"] = backfill_trade_geometry_evidence(journal)
+    journal["dormant_detector_audit_upgrade"] = upgrade_dormant_reachability_ledger(journal)
     legacy_training_source = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     dedup_training: dict[str, dict[str, Any]] = {}
     for item in legacy_training_source:
@@ -5884,7 +6372,9 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     journal["migration"] = {
         "from_version": int(journal.get("journal_version_before_migration", 1) or 1),
         "to_version": JOURNAL_VERSION,
-        "mode": "AUTO_COMPACT_ON_LOAD",
+        "mode": "AUTO_COMPACT_ON_LOAD_WITH_EVIDENCE_ONLY_GEOMETRY_BACKFILL",
+        "geometry_backfill": dict(journal.get("geometry_backfill") or {}),
+        "dormant_detector_audit_upgrade": dict(journal.get("dormant_detector_audit_upgrade") or {}),
         "completed_at": iso_now(),
     }
     return journal
@@ -5898,6 +6388,19 @@ def load_journal() -> dict[str, Any]:
         journal = migrate_journal_to_v2(journal)
         journal.pop("journal_version_before_migration", None)
         atomic_json_write(JOURNAL_FILE, journal)
+    else:
+        geometry_schema = str((journal.get("geometry_backfill") or {}).get("schema_version") or "")
+        dormant_schema = str((journal.get("dormant_detector_audit_upgrade") or {}).get("schema_version") or "")
+        if geometry_schema != "geometry_backfill_v9.5.17" or dormant_schema != "dormant_reachability_upgrade_v9.5.17":
+            journal["geometry_backfill"] = backfill_trade_geometry_evidence(journal)
+            journal["dormant_detector_audit_upgrade"] = upgrade_dormant_reachability_ledger(journal)
+            journal.setdefault("migration", {}).update({
+                "mode": "V9_5_17_EVIDENCE_UPGRADE_ON_EXISTING_JOURNAL_V2",
+                "geometry_backfill": dict(journal.get("geometry_backfill") or {}),
+                "dormant_detector_audit_upgrade": dict(journal.get("dormant_detector_audit_upgrade") or {}),
+                "completed_at": iso_now(),
+            })
+            atomic_json_write(JOURNAL_FILE, journal)
     journal.setdefault("signals", [])
     journal.setdefault("training_signals", [])
     journal.setdefault("signal_events", [])
@@ -7942,6 +8445,14 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
     if model_age >= 0.0:
         model_age += elapsed_since_save
     thesis_origin = str(getattr(opp, "thesis_origin", "MARKET_SCAN") or "MARKET_SCAN")
+    breakout_retest_reanchor = bool(
+        str(getattr(opp, "setup_type", "") or "") == SetupType.BREAKOUT_RETEST.value
+        and opportunity_model_id(opp) in {"BREAKER_BLOCK", "BMS_RETEST"}
+        and trigger_ready
+    )
+    if breakout_retest_reanchor:
+        model_age = trigger_age
+        thesis_origin = "MODEL_LOCAL_BREAKOUT_RETEST_REENTRY"
     effective_thesis_age = model_age if thesis_origin.upper().startswith("MODEL_LOCAL") and model_age >= 0.0 else market_age
     if effective_thesis_age < 0.0:
         effective_thesis_age = trigger_age
@@ -8033,6 +8544,13 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
                 "source": "SAVED_OPPORTUNITY_REENTRY",
             },
             "failed_auction_location": failed_auction_location,
+            "breakout_retest_thesis_clock": {
+                "reset": breakout_retest_reanchor,
+                "origin": thesis_origin,
+                "model_age_minutes": model_age,
+                "market_age_minutes": market_age,
+                "source": "SAVED_OPPORTUNITY_REENTRY",
+            } if str(opp.setup_type or "") == SetupType.BREAKOUT_RETEST.value else {},
         },
         confirmation_pending=bool(failed_auction_location and not trigger_ready),
         confirmation_state=(
@@ -10568,6 +11086,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.hypothesis_score = float(candidate.final_score)
     candidate.selected_source = selected_source
     candidate.score_components["reentry_risk_recommendation"] = {"source": "direction_performance", "factor": float(direction_perf.get("risk_multiplier", 1.0) or 1.0), "applied_here": False}
+    ensure_mss_reversal_empirical_policy(candidate, journal)
     candidate.professional_gate = evaluate_professional_gate(context, candidate)
     candidate.stage_plan = staged_entry_plan(candidate, context, direction_perf)
     candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
@@ -11851,6 +12370,76 @@ def detect_short_failed_breakout(candles: list[Candle], price: float, atr15: flo
     }
 
 
+def mss_reversal_empirical_policy(journal: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Exact-setup graduation policy for MSS live risk/stage.
+
+    The detector remains live and observable. Until enough exact MSS trades show
+    positive expectancy, execution is capped at a tiny experimental PROBE. Broad
+    SHORT-family performance cannot graduate this named setup.
+    """
+    rows = [
+        row for row in ((journal or {}).get("trades") or [])
+        if isinstance(row, dict) and str(row.get("setup_type") or "") == SetupType.MSS_REVERSAL_SHORT.value
+    ]
+    resolved: list[float] = []
+    for row in rows:
+        value = row.get("pnl_r", row.get("result_r"))
+        try:
+            parsed = float(value)
+        except Exception:
+            continue
+        if math.isfinite(parsed):
+            resolved.append(parsed)
+    closed = len(resolved)
+    wins = sum(1 for value in resolved if value > 1e-9)
+    net_r = sum(resolved)
+    expectancy = net_r / closed if closed else None
+    graduated = bool(
+        closed >= MSS_REVERSAL_LIVE_MIN_TRADES
+        and wins >= MSS_REVERSAL_LIVE_MIN_WINS
+        and expectancy is not None
+        and expectancy >= MSS_REVERSAL_LIVE_MIN_EXPECTANCY_R
+    )
+    return {
+        "setup_type": SetupType.MSS_REVERSAL_SHORT.value,
+        "closed_trades": closed, "wins": wins,
+        "win_rate": round(wins / closed, 4) if closed else None,
+        "net_r": round(net_r, 6),
+        "expectancy_r": round(expectancy, 6) if expectancy is not None else None,
+        "minimum_closed_trades": MSS_REVERSAL_LIVE_MIN_TRADES,
+        "minimum_wins": MSS_REVERSAL_LIVE_MIN_WINS,
+        "minimum_expectancy_r": MSS_REVERSAL_LIVE_MIN_EXPECTANCY_R,
+        "graduated": graduated,
+        "experimental_only": not graduated,
+        "maximum_stage": EntryStage.ACCEPTANCE.value if graduated else EntryStage.PROBE.value,
+        "risk_cap_pct": SHORT_REVERSAL_ACCEPTANCE_RISK_PCT if graduated else MSS_REVERSAL_EXPERIMENTAL_RISK_PCT,
+        "policy": "EXACT_MSS_SAMPLE_ONLY; no family borrowing for stage graduation",
+        "schema_version": "mss_reversal_live_policy_v9.5.17",
+    }
+
+
+def ensure_mss_reversal_empirical_policy(
+    candidate: Optional[Candidate],
+    journal: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach the exact-setup MSS policy at every authority boundary.
+
+    This closes saved-opportunity and replay paths that may not carry the policy
+    created by the current detector run.
+    """
+    if candidate is None or str(getattr(candidate, "setup_type", "") or "") != SetupType.MSS_REVERSAL_SHORT.value:
+        return {}
+    policy = mss_reversal_empirical_policy(journal)
+    components = dict(getattr(candidate, "score_components", {}) or {})
+    components["mss_reversal_live_policy"] = dict(policy)
+    model_profile = dict(components.get("short_reversal_model") or {})
+    if model_profile:
+        model_profile["empirical_live_policy"] = dict(policy)
+        components["short_reversal_model"] = model_profile
+    candidate.score_components = components
+    return policy
+
+
 def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, Any]:
     """Bearish Market Structure Shift with graded evidence.
 
@@ -12215,7 +12804,12 @@ def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
     stage_plan = dict(candidate.stage_plan or {})
     notes = list(stage_plan.get("scale_plan") or [])
     proposed_stage = str(profile.get("stage") or EntryStage.WAIT_CONFIRMATION.value)
-    model_profile = (getattr(candidate, "score_components", {}) or {}).get("short_reversal_model", {}) or {}
+    components = getattr(candidate, "score_components", {}) or {}
+    model_profile = components.get("short_reversal_model", {}) or {}
+    mss_policy = components.get("mss_reversal_live_policy") or model_profile.get("empirical_live_policy") or {}
+    if str(getattr(candidate, "setup_type", "") or "") == SetupType.MSS_REVERSAL_SHORT.value and mss_policy.get("experimental_only"):
+        proposed_stage = EntryStage.PROBE.value
+        notes.append("MSS empirical policy: exact setup remains EXPERIMENTAL_PROBE_ONLY")
     model_execution_ready = bool(model_profile.get("execution_ready"))
     if not model_execution_ready:
         candidate.confirmation_pending = True
@@ -12241,6 +12835,7 @@ def apply_short_reversal_stage_overlay(candidate: Candidate) -> Candidate:
         "volume_gate_passed": model_profile.get("volume_gate_passed"),
         "hard_block_reason": model_profile.get("hard_block_reason", ""),
         "aggregate_execution_ready_is_advisory_only": True,
+        "mss_reversal_live_policy": dict(mss_policy),
     }
     stage_plan["risk_recommendation"] = {
         "source": "short_reversal_policy",
@@ -12341,6 +12936,9 @@ def build_dormant_detector_reachability(
     compression_atr: float,
     is_range_compressed: bool,
     trigger_ready: bool,
+    sweep_quality_multiplier: float = 0.0,
+    sweep_quality_threshold: float = 0.85,
+    compression_threshold_atr: float = 1.60,
 ) -> list[dict[str, Any]]:
     """Explain why historically quiet setup detectors did or did not fire.
 
@@ -12353,7 +12951,10 @@ def build_dormant_detector_reachability(
     range_edge = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
     range_compression = bool(is_range_compressed and strong_displacement and trigger_ready)
 
-    def row(setup_type: str, fired: bool, paths: dict[str, bool], conditions: dict[str, Any]) -> dict[str, Any]:
+    def row(
+        setup_type: str, fired: bool, paths: dict[str, bool], conditions: dict[str, Any],
+        margins: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
         blockers = [] if fired else [name for name, value in conditions.items() if isinstance(value, bool) and not value]
         return {
             "side": str(side),
@@ -12362,8 +12963,11 @@ def build_dormant_detector_reachability(
             "fired": bool(fired),
             "paths": {str(k): bool(v) for k, v in paths.items()},
             "conditions": dict(conditions),
+            "margins": dict(margins or {}),
             "blockers": blockers,
+            "dominant_blocker": blockers[0] if blockers else "",
             "audit_only": True,
+            "threshold_mutation_allowed": False,
         }
 
     return [
@@ -12378,6 +12982,11 @@ def build_dormant_detector_reachability(
                 "fvg": bool(has_fvg),
                 "turtle_weak_displacement": not bool(strong_displacement),
             },
+            {
+                "institutional_sweep_quality_margin": round(safe_float(sweep_quality_multiplier, 0.0) - safe_float(sweep_quality_threshold, 0.85), 4),
+                "institutional_sweep_quality": round(safe_float(sweep_quality_multiplier, 0.0), 4),
+                "institutional_sweep_threshold": round(safe_float(sweep_quality_threshold, 0.85), 4),
+            },
         ),
         row(
             SetupType.RANGE_EDGE_REVERSAL.value,
@@ -12387,6 +12996,9 @@ def build_dormant_detector_reachability(
                 "range_regime": str(regime) == Regime.RANGE.value,
                 "institutional_sweep_valid": bool(is_sweep),
                 "quality_reclaim": bool(has_good_reclaim),
+            },
+            {
+                "regime_match": 1.0 if str(regime) == Regime.RANGE.value else 0.0,
             },
         ),
         row(
@@ -12399,6 +13011,10 @@ def build_dormant_detector_reachability(
                 "strong_displacement": bool(strong_displacement),
                 "live_trigger_ready": bool(trigger_ready),
                 "compression_atr": round(safe_float(compression_atr, 0.0), 4),
+            },
+            {
+                "compression_margin_atr": round(safe_float(compression_threshold_atr, 1.60) - safe_float(compression_atr, 0.0), 4),
+                "compression_threshold_atr": round(safe_float(compression_threshold_atr, 1.60), 4),
             },
         ),
     ]
@@ -12439,6 +13055,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     context["_setup_lifecycle_qualified"] = []
     context["_setup_lifecycle_ranked"] = []
     context["_detector_reachability"] = []
+    mss_live_policy = mss_reversal_empirical_policy(journal)
 
     # ==========================================================
     # РЕЄСТР 10 ICT-МОДЕЛЕЙ (Адаптовано під BZ)
@@ -12666,6 +13283,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             compression_atr=compression_atr,
             is_range_compressed=is_range_compressed,
             trigger_ready=trigger_ready,
+            sweep_quality_multiplier=sweep_quality_multiplier,
+            sweep_quality_threshold=0.85,
+            compression_threshold_atr=1.60,
         ))
 
         active_patterns = []
@@ -12780,6 +13400,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 if side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS
                 else {}
             )
+            if model_id == "SHORT_MSS_REVERSAL" and short_model_profile:
+                short_model_profile = {**short_model_profile, "empirical_live_policy": dict(mss_live_policy)}
             registry_bonus = float(p_data.get("score_bonus", 0.0))
             detector_bonus = 0.0
             regime_bonus_adjustment = 0.0
@@ -13194,6 +13816,29 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 local_live_3m_trigger_ready = actionable_trigger_ready
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_TIME_OF_DAY"
+            elif model_id in {"BREAKER_BLOCK", "BMS_RETEST"}:
+                # A fresh Breaker/BMS retest is a new model thesis, not a lease on
+                # the old market-scan thesis. The clock resets only when the live
+                # detector supplies a fresh execution trigger; otherwise it stays
+                # WAIT_RETEST and inherits no synthetic freshness.
+                breakout_retest_ready = bool(
+                    live_3m_trigger_ready
+                    and (model_id == "BREAKER_BLOCK" or bool(event.get("retest")) or scan_stage in {"RETEST", "READY", "ACCEPTANCE"})
+                )
+                execution_source = ExecutionSource.LIVE_3M.value if breakout_retest_ready else ExecutionSource.NONE.value
+                actionable_trigger_ready = breakout_retest_ready
+                execution_lane_source = ExecutionLane.STANDARD_CONFIRMED.value if breakout_retest_ready else ExecutionLane.WAIT_RETEST.value
+                local_trigger_level = safe_float(ce_level, trigger_level) if ce_level else trigger_level
+                local_trigger_age = max(0.0, safe_float(trigger_age, 0.0))
+                local_live_3m_trigger_ready = breakout_retest_ready
+                if breakout_retest_ready:
+                    model_thesis_age = local_trigger_age
+                    thesis_origin = "MODEL_LOCAL_BREAKOUT_RETEST"
+                    pattern_conf.append(
+                        f"🟢 BREAKOUT_RETEST model-local thesis: {model_id}, fresh trigger age={local_trigger_age:.1f}m"
+                    )
+                else:
+                    pattern_conf.append(f"🟡 BREAKOUT_RETEST {model_id}: waiting fresh detector-backed retest trigger")
             elif model_id == "FVG_ENTRY":
                 # FVG alone is a location, not an execution trigger.
                 # Require directional structure + live confirmation to avoid
@@ -13453,6 +14098,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         else {}
                     ),
                     "short_reversal_model": short_model_profile,
+                    "mss_reversal_live_policy": dict(mss_live_policy) if model_id == "SHORT_MSS_REVERSAL" else {},
                     "short_reversal_scope": {
                         "eligible": bool(side == Side.SHORT.value and model_id in SHORT_REVERSAL_MODEL_IDS),
                         "candidate_model": model_id,
@@ -13461,6 +14107,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "liquidity_ladder_confirmation": ladder_confirmation if model_id == "LIQUIDITY_LADDER_MODEL" else {},
                     "failed_auction_location": failed_auction_location if model_id == "FAILED_AUCTION_REJECTION" else {},
                     "failed_auction_detector": failed_auction if model_id == "FAILED_AUCTION_REJECTION" else {},
+                    "breakout_retest_thesis_clock": {
+                        "reset": bool(model_id in {"BREAKER_BLOCK", "BMS_RETEST"} and thesis_origin == "MODEL_LOCAL_BREAKOUT_RETEST"),
+                        "model_id": model_id,
+                        "origin": thesis_origin,
+                        "market_age_minutes": round(float(market_thesis_age), 2),
+                        "model_age_minutes": round(float(model_thesis_age), 2) if model_thesis_age >= 0.0 else -1.0,
+                        "trigger_age_minutes": round(float(local_trigger_age or 0.0), 2),
+                        "requires_detector_backed_trigger": True,
+                    } if model_id in {"BREAKER_BLOCK", "BMS_RETEST"} else {},
                 },
                 evidence_families=evidence,
                 confirmations=pattern_conf,
@@ -16719,6 +17374,19 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         trade.pre_tp1_protection_locked = True
         trade.pre_tp1_protection_at = iso_now()
         trade.pre_tp1_protection_ratio = round(giveback_ratio, 4)
+        trade.pre_tp1_protection_threshold = round(protection_threshold, 4)
+        trade.pre_tp1_protection_scope = "PROBE" if is_probe else "STANDARD"
+        risk_distance = _trade_risk_distance(trade)
+        if risk_distance > 1e-9:
+            if trade.side == Side.LONG.value:
+                activation_mfe_r = max(0.0, (float(trade.best_price) - float(trade.entry)) / risk_distance)
+                activation_current_r = (safe_float(context.get("price"), trade.entry) - float(trade.entry)) / risk_distance
+            else:
+                activation_mfe_r = max(0.0, (float(trade.entry) - float(trade.best_price)) / risk_distance)
+                activation_current_r = (float(trade.entry) - safe_float(context.get("price"), trade.entry)) / risk_distance
+            trade.protection_activation_mfe_r = round(activation_mfe_r, 4)
+            trade.protection_activation_current_r = round(activation_current_r, 4)
+        trade.protection_activation_stop = round_price(trade.stop_current)
         trade.management_state = "PROTECT"
         result["management_state"] = "PROTECT"
         result["action"] = Action.PROTECT.value
@@ -16732,6 +17400,9 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
             "activated": True,
             "state": "PROTECT",
             "stop": round_price(trade.stop_current),
+            "activation_mfe_r": getattr(trade, "protection_activation_mfe_r", 0.0),
+            "activation_current_r": getattr(trade, "protection_activation_current_r", 0.0),
+            "threshold_scope": getattr(trade, "pre_tp1_protection_scope", ""),
         })
     else:
         result.setdefault("notes", []).append(
@@ -17424,6 +18095,11 @@ def run_bot() -> None:
                 "mfe_giveback_ratio": res.get("mfe_giveback_ratio"),
                 "mfe_capture_ratio": round(mfe_capture_ratio, 4) if mfe_capture_ratio is not None else None,
                 "tp0_protect_threshold": tp0_protect_threshold,
+                "entry": active.entry,
+                "stop_initial": active.stop_initial,
+                "stop_at_close": active.stop_current,
+                "best_price": active.best_price,
+                "worst_price": active.worst_price,
                 "tp0_hit": getattr(active, "tp0_hit", False),
                 "tp1_hit": active.tp1_hit,
                 "tp2_hit": active.tp2_hit,
@@ -17450,6 +18126,12 @@ def run_bot() -> None:
                 "pre_tp1_protection_locked": getattr(active, "pre_tp1_protection_locked", False),
                 "pre_tp1_protection_at": getattr(active, "pre_tp1_protection_at", ""),
                 "pre_tp1_protection_ratio": getattr(active, "pre_tp1_protection_ratio", 0.0),
+                "pre_tp1_protection_threshold": getattr(active, "pre_tp1_protection_threshold", tp0_protect_threshold),
+                "pre_tp1_protection_scope": getattr(active, "pre_tp1_protection_scope", "PROBE" if str(getattr(active, "entry_stage", "")).upper() == EntryStage.PROBE.value else "STANDARD"),
+                "protection_activation_mfe_r": getattr(active, "protection_activation_mfe_r", 0.0),
+                "protection_activation_current_r": getattr(active, "protection_activation_current_r", 0.0),
+                "protection_activation_stop": getattr(active, "protection_activation_stop", 0.0),
+                "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.17"),
                 "entry_quality": getattr(active, "entry_quality", 0),
                 "entry_score": getattr(active, "entry_quality", 0),
                 "entry_score_source": getattr(active, "entry_score_source", ""),
@@ -20882,6 +21564,7 @@ def _test_preconfirm_event(schema: str, probability: float, label: int, index: i
     return {
         "event_id": f"gate-{index}",
         "feature_schema_version": schema,
+        "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
         "status": status,
         "outcome": status,
         "probability": probability,
@@ -21296,6 +21979,303 @@ def test_preconfirm_legacy_alias_is_removed() -> bool:
     return "_preconfirm_resolve_events" not in globals()
 
 
+def test_breakout_retest_gets_model_local_thesis_clock() -> bool:
+    old_market_age = THESIS_HARD_TTL_MIN + 1800.0
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.EXPANSION.value,
+        raw_score=72, final_score=72,
+        ict_model="BREAKER_BLOCK",
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        trigger_age_minutes=8.0,
+        execution_trigger_age_minutes=8.0,
+        market_thesis_age_minutes=old_market_age,
+        model_thesis_age_minutes=8.0,
+        thesis_origin="MODEL_LOCAL_BREAKOUT_RETEST",
+        execution_source=ExecutionSource.LIVE_3M.value,
+    )
+    context = {"price": 100.0, "atr15": 1.0, "candles": {"3m": [], "15m": []}}
+    profile = setup_trigger_revalidation_profile(candidate, context, state={})
+    return bool(
+        candidate_market_thesis_age_minutes(candidate) == old_market_age
+        and candidate_model_thesis_age_minutes(candidate) == 8.0
+        and candidate_thesis_age_minutes(candidate) == 8.0
+        and not profile.get("hard_expired")
+        and profile.get("thesis_origin") == "MODEL_LOCAL_BREAKOUT_RETEST"
+    )
+
+
+def test_preconfirmation_model_prefers_current_recent_schema() -> bool:
+    rows = []
+    base_ts = 1_700_000_000_000
+    for i in range(80):
+        rows.append({
+            "features": {name: float((i + idx) % 7) / 7.0 for idx, name in enumerate(PRECONFIRM_FEATURE_NAMES)},
+            "label": i % 2,
+            "observed_ts": base_ts + i,
+            "feature_schema_version": "legacy" if i < 20 else PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        })
+    selected, audit = _preconfirm_select_model_rows(rows)
+    return bool(
+        audit.get("population") == "CURRENT_FEATURE_SCHEMA_RECENT_WINDOW"
+        and len(selected) == 60
+        and all(row.get("feature_schema_version") == PRECONFIRM_FEATURE_SCHEMA_VERSION for row in selected)
+        and safe_float(selected[-1].get("sample_weight"), 0.0) > safe_float(selected[0].get("sample_weight"), 0.0)
+    )
+
+
+def test_preconfirmation_forecast_schema_resets_authority_sample() -> bool:
+    events = []
+    for i in range(PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS + 5):
+        events.append({
+            "event_id": f"old-{i}", "observed_ts": i + 1, "resolved_ts": i + 2,
+            "status": "CONFIRMED" if i % 2 else "FAILED",
+            "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+            "forecast_schema_version": "preconfirm_forecast_old",
+            "probability": 0.8 if i % 2 else 0.2,
+        })
+    gate = _preconfirm_authority_gate({"events": events, "model_status": {}}, {"trusted": True})
+    return bool(
+        gate.get("current_schema_resolved_events") == 0
+        and not gate.get("authority_trusted")
+        and gate.get("forecast_schema_version") == PRECONFIRM_FORECAST_SCHEMA_VERSION
+    )
+
+
+def test_preconfirmation_anti_discrimination_lock() -> bool:
+    events = []
+    count = max(PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS, PRECONFIRM_AUTHORITY_MIN_SCHEMA_ROWS)
+    for i in range(count):
+        label = i % 2
+        events.append({
+            "event_id": f"anti-{i}", "observed_ts": i + 1, "resolved_ts": i + 2,
+            "status": "CONFIRMED" if label else "FAILED",
+            "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+            "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
+            "probability": 0.1 if label else 0.9,
+        })
+    gate = _preconfirm_authority_gate({"events": events, "model_status": {}}, {"trusted": True})
+    return bool(
+        gate.get("recently_anti_discriminative")
+        and not gate.get("authority_trusted")
+        and "RECENTLY_ANTI_DISCRIMINATIVE" in (gate.get("failed_conditions") or [])
+    )
+
+
+def test_mss_negative_sample_is_experimental_probe_only() -> bool:
+    journal = {"trades": [
+        {"setup_type": SetupType.MSS_REVERSAL_SHORT.value, "pnl_r": -1.0}
+        for _ in range(3)
+    ]}
+    policy = mss_reversal_empirical_policy(journal)
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.MSS_REVERSAL_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        raw_score=90, final_score=90,
+        live_3m_trigger_ready=True,
+        score_components={"mss_reversal_live_policy": policy},
+    )
+    probe = classify_probe_conviction(candidate, 90, 90, 90)
+    return bool(
+        policy.get("experimental_only")
+        and probe.get("tier") == ProbeConvictionTier.EXPERIMENTAL.value
+        and abs(safe_float(probe.get("base_risk_pct"), 0.0) - MSS_REVERSAL_EXPERIMENTAL_RISK_PCT) < 1e-9
+    )
+
+
+def test_compact_trade_preserves_management_evidence() -> bool:
+    compact = compact_trade_for_journal({
+        "id": "management", "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        "result_r": 0.25, "mfe_r": 1.2, "mae_r": 0.3,
+        "mfe_capture_ratio": 0.2083, "mfe_giveback_ratio": 0.72,
+        "tp0_protect_threshold": 0.40, "pre_tp1_protection_locked": True,
+        "pre_tp1_protection_ratio": 0.42, "pre_tp1_protection_threshold": 0.40,
+        "pre_tp1_protection_scope": "PROBE", "protection_activation_mfe_r": 1.1,
+        "protection_activation_current_r": 0.64, "protection_activation_stop": 100.02,
+        "management_state": "PROTECT", "management_evidence_schema_version": "management_evidence_v9.5.17",
+    })
+    required = {
+        "mfe_capture_ratio", "mfe_giveback_ratio", "tp0_protect_threshold",
+        "pre_tp1_protection_locked", "pre_tp1_protection_ratio",
+        "pre_tp1_protection_threshold", "pre_tp1_protection_scope",
+        "protection_activation_mfe_r", "protection_activation_current_r",
+        "protection_activation_stop", "management_state",
+        "management_evidence_schema_version",
+    }
+    return required.issubset(compact.keys())
+
+
+def test_compact_trade_preserves_exact_geometry_anchors() -> bool:
+    compact = compact_trade_for_journal({
+        "id": "geometry", "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "entry": 100.0, "stop_initial": 99.0, "stop_at_close": 100.02,
+        "best_price": 103.0, "worst_price": 98.5,
+        "tp0": 100.75, "tp1": 102.0, "tp2": 103.0, "tp3": 104.0,
+        "pnl_r": 1.0,
+    })
+    required = {"entry", "stop_initial", "stop_at_close", "best_price", "worst_price", "tp0", "tp1", "tp2", "tp3"}
+    return required.issubset(compact.keys())
+
+
+def test_geometry_backfill_reconstructs_only_exact_price_arithmetic() -> bool:
+    journal = {
+        "signals": [{"id": "sig", "setup_type": SetupType.BREAKOUT_RETEST.value, "side": Side.LONG.value}],
+        "trades": [{
+            "id": "trade", "signal_id": "sig", "setup_type": SetupType.BREAKOUT_RETEST.value,
+            "side": Side.LONG.value, "entry": 100.0, "stop_initial": 99.0,
+            "tp1": 102.0, "tp2": 103.0, "tp3": 104.0, "pnl_r": 1.0,
+        }],
+        "signal_events": [
+            {"trade_id": "trade", "action": "HOLD", "price": 103.0, "time": "2026-01-01T00:01:00+00:00"},
+            {"trade_id": "trade", "action": "HOLD", "price": 98.5, "time": "2026-01-01T00:02:00+00:00"},
+        ],
+    }
+    report = backfill_trade_geometry_evidence(journal)
+    trade = journal["trades"][0]
+    return bool(
+        report.get("geometry_complete") == 1
+        and abs(safe_float(trade.get("rr1")) - 2.0) < 1e-9
+        and abs(safe_float(trade.get("rr2")) - 3.0) < 1e-9
+        and abs(safe_float(trade.get("rr3")) - 4.0) < 1e-9
+        and abs(safe_float(trade.get("mfe_r")) - 3.0) < 1e-9
+        and abs(safe_float(trade.get("mae_r")) - 1.5) < 1e-9
+        and trade.get("geometry_backfill", {}).get("fabricated_values") is False
+    )
+
+
+def test_geometry_backfill_never_fabricates_missing_risk_geometry() -> bool:
+    journal = {
+        "signals": [{"id": "sig", "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "side": Side.LONG.value}],
+        "trades": [{"id": "trade", "signal_id": "sig", "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "side": Side.LONG.value, "close_action": "STOP"}],
+        "signal_events": [{"trade_id": "trade", "action": "HOLD", "price": 101.0, "time": iso_now()}],
+    }
+    report = backfill_trade_geometry_evidence(journal)
+    trade = journal["trades"][0]
+    return bool(
+        report.get("changed") == 1
+        and trade.get("rr1") is None
+        and trade.get("mfe_r") is None
+        and trade.get("mae_r") is None
+        and not trade.get("geometry_complete")
+        and trade.get("geometry_backfill", {}).get("fabricated_values") is False
+        and "ENTRY_OR_INITIAL_STOP_NOT_PERSISTED" in trade.get("geometry_backfill", {}).get("unresolved", [])
+    )
+
+
+def test_dormant_reachability_marks_saturated_predicate() -> bool:
+    journal: dict[str, Any] = {}
+    context: dict[str, Any] = {"_detector_reachability": []}
+    for _ in range(50):
+        context["_detector_reachability"] = [{
+            "setup_type": SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+            "fired": False, "blockers": ["range_compressed"],
+            "conditions": {"range_compressed": False, "strong_displacement": True},
+            "margins": {"compression_margin_atr": -1.0},
+        }]
+        update_setup_lifecycle_counters(journal, context, None)
+    row = journal.get("setup_lifecycle_counters", {}).get("detector_reachability", {}).get(SetupType.RANGE_COMPRESSION_BREAKOUT.value, {})
+    return bool(
+        row.get("health_status") == "PREDICATE_SATURATION_SUSPECTED"
+        and "range_compressed" in (row.get("saturated_predicates") or [])
+        and row.get("margin_statistics", {}).get("compression_margin_atr", {}).get("count") == 50
+    )
+
+
+def test_preconfirmation_prior_policy_drift_is_diagnostic_and_neutralized() -> bool:
+    events = []
+    count = max(PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS, PRECONFIRM_AUTHORITY_RECENT_WINDOW)
+    for i in range(count):
+        label = i % 2
+        events.append({
+            "event_id": f"prior-drift-{i}", "observed_ts": i + 1, "resolved_ts": i + 2,
+            "status": "CONFIRMED" if label else "FAILED",
+            "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+            "forecast_schema_version": "prior_policy",
+            "probability": 0.1 if label else 0.9,
+            "model_family": "CONTINUATION:DIRECTIONAL_ACCEPTANCE",
+            "features": {name: (0.8 if label else 0.2) for name in PRECONFIRM_FEATURE_NAMES},
+        })
+    journal = {"events": events, "model_status": {}}
+    model = _preconfirm_build_model(journal, None)
+    gate = _preconfirm_authority_gate(journal, model)
+    journal["model_status"] = {"AUTHORITY_GATE": gate}
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=70, final_score=70,
+        trigger_ready=True, live_3m_trigger_ready=True,
+    )
+    estimate = _preconfirm_estimate(journal, candidate, {name: 0.5 for name in PRECONFIRM_FEATURE_NAMES}, {})
+    return bool(
+        gate.get("current_schema_resolved_events") == 0
+        and gate.get("recently_anti_discriminative")
+        and gate.get("drift_evidence_source") == "PRIOR_FORECAST_SCHEMA_DIAGNOSTIC_ONLY"
+        and not gate.get("authority_trusted")
+        and estimate.get("anti_discrimination_neutralized")
+        and abs(safe_float(estimate.get("probability"), 0.0) - 0.5) < 1e-9
+    )
+
+
+def test_mss_saved_reentry_policy_is_restored_at_executive_boundary() -> bool:
+    journal = {"trades": [
+        {"setup_type": SetupType.MSS_REVERSAL_SHORT.value, "pnl_r": -1.0}
+        for _ in range(3)
+    ]}
+    candidate = Candidate(
+        side=Side.SHORT.value, setup_type=SetupType.MSS_REVERSAL_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value,
+        raw_score=85, final_score=85, trigger_ready=True, live_3m_trigger_ready=True,
+        selected_source="SAVED_OPPORTUNITY_REENTRY", execution_source=ExecutionSource.REENTRY.value,
+        score_components={},
+    )
+    policy = ensure_mss_reversal_empirical_policy(candidate, journal)
+    ledger = build_risk_adjustment_ledger(candidate, stage=EntryStage.ACCEPTANCE.value, journal=journal)
+    return bool(
+        policy.get("experimental_only")
+        and (candidate.score_components or {}).get("mss_reversal_live_policy", {}).get("experimental_only")
+        and ledger.base_stage_risk_pct <= MSS_REVERSAL_EXPERIMENTAL_RISK_PCT + 1e-9
+        and ledger.capital_cap_pct <= MSS_REVERSAL_EXPERIMENTAL_RISK_PCT + 1e-9
+    )
+
+
+def test_geometry_backfill_does_not_assign_current_profile_to_history() -> bool:
+    journal = {"trades": [{
+        "id": "old", "signal_id": "sig", "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        "side": Side.LONG.value, "pnl_r": 1.0,
+    }], "signals": [{"id": "sig", "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value}], "signal_events": []}
+    report = backfill_trade_geometry_evidence(journal)
+    trade = journal["trades"][0]
+    return bool(
+        report.get("processed") == 1
+        and trade.get("trade_profile_source") is None
+        and "TRADE_PROFILE_PROVENANCE_NOT_PERSISTED" in (trade.get("geometry_backfill") or {}).get("unresolved", [])
+    )
+
+
+def test_saved_breakout_retest_gets_model_local_reentry_clock() -> bool:
+    now = iso_now()
+    opp = Opportunity(
+        side=Side.LONG.value, setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.CONTINUATION.value, created_at=now,
+        expires_at=(now_utc() + timedelta(hours=1)).isoformat(), score=72,
+        trigger_level=100.0, invalidation_level=99.0, ict_model="BREAKER_BLOCK",
+        market_thesis_age_minutes=3000.0, model_thesis_age_minutes=-1.0,
+        thesis_origin="MARKET_SCAN",
+    )
+    ts = int(now_utc().timestamp() * 1000)
+    context = {"price": 100.1, "atr15": 1.0, "scan_3m_events": {Side.LONG.value: {"stage": "RETEST", "last_event_ts": ts}}}
+    candidate = candidate_from_missed_opportunity(opp, context)
+    return bool(
+        candidate
+        and candidate.trigger_ready
+        and candidate.thesis_origin == "MODEL_LOCAL_BREAKOUT_RETEST_REENTRY"
+        and candidate.model_thesis_age_minutes >= 0.0
+        and candidate.thesis_age_minutes < 5.0
+    )
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -21305,6 +22285,20 @@ def _run_self_test() -> bool:
         ("current-session model-local clocks override stale market thesis", test_current_session_model_local_origins_override_stale_market_clock),
         ("dormant detector reachability contract is live", test_dormant_detector_reachability_contract_is_live),
         ("lifecycle records detector reachability and selected gap reason", test_lifecycle_persists_detector_reachability_and_gap_reason),
+        ("Breakout Retest uses a model-local thesis clock", test_breakout_retest_gets_model_local_thesis_clock),
+        ("preconfirmation model prefers current recent schema", test_preconfirmation_model_prefers_current_recent_schema),
+        ("preconfirmation forecast schema resets authority sample", test_preconfirmation_forecast_schema_resets_authority_sample),
+        ("preconfirmation anti-discrimination lock is fail-closed", test_preconfirmation_anti_discrimination_lock),
+        ("prior forecast policy drift is diagnostic-only and neutralized", test_preconfirmation_prior_policy_drift_is_diagnostic_and_neutralized),
+        ("MSS negative sample stays experimental-probe only", test_mss_negative_sample_is_experimental_probe_only),
+        ("MSS saved re-entry restores experimental policy", test_mss_saved_reentry_policy_is_restored_at_executive_boundary),
+        ("compact trade preserves management evidence", test_compact_trade_preserves_management_evidence),
+        ("compact trade preserves exact geometry anchors", test_compact_trade_preserves_exact_geometry_anchors),
+        ("geometry backfill reconstructs exact price arithmetic", test_geometry_backfill_reconstructs_only_exact_price_arithmetic),
+        ("geometry backfill never fabricates missing risk geometry", test_geometry_backfill_never_fabricates_missing_risk_geometry),
+        ("geometry backfill does not assign current profile to history", test_geometry_backfill_does_not_assign_current_profile_to_history),
+        ("saved Breakout Retest gets a model-local re-entry clock", test_saved_breakout_retest_gets_model_local_reentry_clock),
+        ("dormant reachability marks saturated predicates", test_dormant_reachability_marks_saturated_predicate),
         ("rejected shadow audit deduplicates repeat scans into episodes", test_rejected_shadow_episode_dedup_collapses_repeat_scans),
         ("PROBE TP0 protection is earlier than standard", test_probe_tp0_protection_is_earlier_than_standard),
         ("legacy preconfirmation resolver alias is removed", test_preconfirm_legacy_alias_is_removed),
@@ -23043,6 +24037,15 @@ def build_staged_executive_decision(
         state, candidate, evaluation, required, blocking, warnings
     )
 
+    mss_policy = (getattr(candidate, "score_components", {}) or {}).get("mss_reversal_live_policy") or {}
+    if (
+        str(getattr(candidate, "setup_type", "") or "") == SetupType.MSS_REVERSAL_SHORT.value
+        and mss_policy.get("experimental_only")
+        and state in {EntryStage.ACCEPTANCE.value, EntryStage.RETEST_ADD.value, EntryStage.CORE.value, EntryStage.ADD_POSITION.value}
+    ):
+        state = EntryStage.PROBE.value
+        warnings.append("MSS_EXACT_SAMPLE_CAPS_STAGE_AT_EXPERIMENTAL_PROBE")
+
     allow = state in {
         EntryStage.PROBE.value,
         EntryStage.ACCEPTANCE.value,
@@ -23077,6 +24080,7 @@ def build_staged_executive_decision(
         "upgrade_requires_new_evidence": True,
         "canonical_score_policy": score_policy,
         "preconfirmation_gate": preconfirm_gate_audit,
+        "mss_reversal_live_policy": dict(mss_policy),
     }
     return ExecutiveDecisionContract(
         state=state,
@@ -23683,7 +24687,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.16 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.17 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
