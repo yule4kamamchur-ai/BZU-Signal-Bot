@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.17 (Integrated Calibration, Thesis Clock and Geometry Audit)
+BZU Professional Hybrid Confluence Signal Bot v9.5.18 (Provenance, Shadow Scan and Fresh Base Clock)
 =============================================================================================
+Оновлення v9.5.18:
+- Trade-profile provenance проходить без втрат setup_trade_profile -> trade_mode_profile -> TradePlan/ActiveTrade -> compact closed trade.
+- Funnel classification більше не трактує explanatory decision.reason як blocking reason; live entry позначається EXECUTED, active-trade shadow capacity — окремо.
+- Dormant predicate saturation використовує власний denominator true+false для кожного predicate та зберігає observation count/false rate.
+- Під час активної угоди працює ізольований audit-only shadow scan: детекція/ranking/preconfirmation/reachability продовжуються, але друга угода та state mutation заборонені.
+- FRESH_BASE_CONTINUATION / OB_RECLAIM отримує MODEL_LOCAL thesis clock лише за нового detector-backed quality reclaim + fresh 3M trigger; saved re-entry має той самий контракт.
 Оновлення v9.5.17:
 - BREAKOUT_RETEST / BREAKER_BLOCK / BMS_RETEST отримують власний MODEL_LOCAL thesis clock лише за нового detector-backed execution trigger; глобальний TTL не розширено.
 - Preconfirmation переведено на current-forecast schema, recent/current-feature-schema logistic із recency weighting та anti-discrimination lock; untrusted probability стискається до 50% і лишається audit-only.
@@ -109,6 +115,7 @@ BZU Professional Hybrid Confluence Signal Bot v9.5.17 (Integrated Calibration, T
 from __future__ import annotations
 
 import argparse
+import copy
 import html
 import json
 import math
@@ -220,8 +227,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.17-integrated-calibration-thesis-geometry-audit"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_17_INTEGRATED_CALIBRATION_THESIS_GEOMETRY_AUDIT"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.18-provenance-shadow-fresh-base-clock"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_18_PROVENANCE_SHADOW_FRESH_BASE_CLOCK"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -347,6 +354,10 @@ EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT = max(1, int(os.getenv("EXECUTIVE_DIVERGENCE_
 REJECTED_HYPOTHESIS_SHADOW_LIMIT = max(1, int(os.getenv("REJECTED_HYPOTHESIS_SHADOW_LIMIT", "50") or 50))
 PRECONFIRM_EMBEDDED_JOURNAL_LIMIT = max(100, int(os.getenv("PRECONFIRM_EMBEDDED_JOURNAL_LIMIT", "500") or 500))
 SETUP_LIFECYCLE_RECENT_RUN_LIMIT = max(50, int(os.getenv("SETUP_LIFECYCLE_RECENT_RUN_LIMIT", "300") or 300))
+ACTIVE_TRADE_SHADOW_SCANNING_ENABLED = os.getenv("ACTIVE_TRADE_SHADOW_SCANNING_ENABLED", "true").lower() in {"1", "true", "yes"}
+ACTIVE_TRADE_SHADOW_SCAN_LIMIT = max(50, int(os.getenv("ACTIVE_TRADE_SHADOW_SCAN_LIMIT", "300") or 300))
+DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS = max(10, int(os.getenv("DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS", "20") or 20))
+DORMANT_PREDICATE_SATURATION_FALSE_RATE = min(1.0, max(0.80, float(os.getenv("DORMANT_PREDICATE_SATURATION_FALSE_RATE", "0.98") or 0.98)))
 
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
@@ -1713,6 +1724,11 @@ class ActiveTrade:
     protection_activation_current_r: float = 0.0
     protection_activation_stop: float = 0.0
     management_evidence_schema_version: str = "management_evidence_v9.5.17"
+    trade_profile_source: str = ""
+    trade_profile_calibration_status: str = ""
+    trade_profile_fallback_used: bool = False
+    trade_profile_empirical_review_ready: bool = False
+    trade_profile_schema_version: str = "trade_profile_provenance_v9.5.18"
     # Canonical evaluation snapshot remains the compatibility entry_quality.
     entry_quality: int = 0
     evaluation_entry_quality: float = 0.0
@@ -1875,21 +1891,29 @@ def update_setup_lifecycle_counters(
     journal: dict[str, Any],
     context: dict[str, Any],
     decision: Optional[Decision],
+    *,
+    scan_mode: str = "LIVE",
+    capacity_blocked: bool = False,
+    active_trade_id: str = "",
 ) -> dict[str, Any]:
-    """Persist the full setup funnel without changing any trading permission.
+    """Persist a truthful setup funnel without changing trading permission.
 
-    detected: raw detector/model fired;
-    ranked: candidate survived candidate construction and received a rank;
-    selected: Executive received it as the winning candidate;
-    executable: final Executive contract allowed execution;
-    entered: published action opened a position.
+    LIVE runs update the canonical totals. ACTIVE_TRADE_SHADOW runs use a
+    separate counter bucket and may report ``would_execute``, but they can never
+    increment live executable/entered counters. Detector reachability is shared
+    because a predicate observation remains valid while capital is occupied.
     """
+    scan_mode = str(scan_mode or "LIVE").upper()
+    shadow_mode = scan_mode != "LIVE"
+    capacity_blocked = bool(capacity_blocked or shadow_mode)
     setup_types = _tracked_setup_types()
     ledger = journal.setdefault("setup_lifecycle_counters", {})
-    totals = ledger.setdefault("totals", {})
+    totals_key = "active_trade_shadow_totals" if shadow_mode else "totals"
+    totals = ledger.setdefault(totals_key, {})
+    stages = ("detected", "qualified_detected", "ranked", "selected", "would_executable", "executable", "entered")
     for setup_type in setup_types:
         row = totals.setdefault(setup_type, {})
-        for stage in ("detected", "qualified_detected", "ranked", "selected", "executable", "entered"):
+        for stage in stages:
             row[stage] = int(row.get(stage) or 0)
 
     detected_events = [
@@ -1908,7 +1932,6 @@ def update_setup_lifecycle_counters(
         dict(item) for item in (context.get("_detector_reachability") or [])
         if isinstance(item, dict) and str(item.get("setup_type") or "") in DORMANT_SETUP_REACHABILITY_TYPES
     ]
-    # Deduplicate within one scan while retaining LONG/SHORT and model identity.
     detected_events = list({_setup_lifecycle_event_key(item): item for item in detected_events}.values())
     qualified_events = list({_setup_lifecycle_event_key(item): item for item in qualified_events}.values())
     ranked_events = list({_setup_lifecycle_event_key(item): item for item in ranked_events}.values())
@@ -1926,11 +1949,15 @@ def update_setup_lifecycle_counters(
         row = reachability_ledger.setdefault(setup_type, {
             "evaluated": 0, "fired": 0, "blocker_counts": {},
             "condition_true_counts": {}, "condition_false_counts": {},
+            "condition_observation_counts": {}, "condition_false_rates": {},
             "margin_statistics": {}, "last_observation": {},
-            "health_status": "OBSERVING", "saturated_predicates": [],
+            "scan_mode_counts": {}, "health_status": "OBSERVING",
+            "saturated_predicates": [],
         })
         row["evaluated"] = int(row.get("evaluated") or 0) + 1
         row["fired"] = int(row.get("fired") or 0) + int(bool(event.get("fired")))
+        mode_counts = row.setdefault("scan_mode_counts", {})
+        mode_counts[scan_mode] = int(mode_counts.get(scan_mode) or 0) + 1
         blockers = row.setdefault("blocker_counts", {})
         for blocker in event.get("blockers") or []:
             blockers[str(blocker)] = int(blockers.get(str(blocker)) or 0) + 1
@@ -1954,27 +1981,44 @@ def update_setup_lifecycle_counters(
             stat["min"] = min(safe_float(stat.get("min"), number), number)
             stat["max"] = max(safe_float(stat.get("max"), number), number)
             stat["mean"] = round(stat["sum"] / max(stat["count"], 1), 6)
-        evaluated = int(row.get("evaluated") or 0)
+
+        observation_counts: dict[str, int] = {}
+        false_rates: dict[str, float] = {}
+        for name in sorted(set(true_counts) | set(false_counts)):
+            observations = int(true_counts.get(name) or 0) + int(false_counts.get(name) or 0)
+            observation_counts[name] = observations
+            false_rates[name] = round(int(false_counts.get(name) or 0) / max(observations, 1), 6)
+        row["condition_observation_counts"] = observation_counts
+        row["condition_false_rates"] = false_rates
         saturated = sorted(
-            name for name, count in false_counts.items()
-            if evaluated >= 50 and int(count or 0) / max(evaluated, 1) >= 0.98
+            name for name, observations in observation_counts.items()
+            if observations >= DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS
+            and false_rates.get(name, 0.0) >= DORMANT_PREDICATE_SATURATION_FALSE_RATE
         )
         row["saturated_predicates"] = saturated
+        evaluated = int(row.get("evaluated") or 0)
+        fired = int(row.get("fired") or 0)
         row["health_status"] = (
             "PREDICATE_SATURATION_SUSPECTED"
-            if evaluated >= 50 and int(row.get("fired") or 0) == 0 and saturated
+            if fired == 0 and saturated
             else "DORMANT_MARKET_CONDITIONS"
-            if evaluated >= 50 and int(row.get("fired") or 0) == 0
+            if evaluated >= 50 and fired == 0
             else "REACHABLE"
-            if int(row.get("fired") or 0) > 0
+            if fired > 0
             else "OBSERVING"
         )
-        row["last_observation"] = dict(event)
+        row["saturation_policy"] = {
+            "denominator": "PREDICATE_TRUE_PLUS_FALSE_OBSERVATIONS",
+            "minimum_observations": DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS,
+            "false_rate_threshold": DORMANT_PREDICATE_SATURATION_FALSE_RATE,
+        }
+        row["last_observation"] = {**dict(event), "scan_mode": scan_mode}
 
     selected_event: Optional[dict[str, Any]] = None
     selection_anomaly: Optional[dict[str, Any]] = None
     executable = False
     entered = False
+    would_executable = False
     candidate = getattr(decision, "candidate", None) if decision is not None else None
     selected_type = str(getattr(candidate, "setup_type", "") or "")
     if candidate is not None and selected_type in setup_types:
@@ -1990,13 +2034,6 @@ def update_setup_lifecycle_counters(
         saved_reentry = selected_source == "SAVED_OPPORTUNITY_REENTRY" and str(getattr(candidate, "execution_source", "")) == ExecutionSource.REENTRY.value
         selection_allowed = ranked_match or saved_reentry
         if selection_allowed:
-            selected_event = {
-                "side": selected_key[0],
-                "setup_type": selected_type,
-                "model_id": selected_model,
-                "selected_source": selected_source,
-                "ranked_match": ranked_match,
-            }
             totals[selected_type]["selected"] += 1
             executive_report = (
                 (((getattr(decision, "audit", {}) or {}).get("executive_director") or {}).get("report") or {})
@@ -2004,11 +2041,18 @@ def update_setup_lifecycle_counters(
             )
             plan_ready = bool(getattr(getattr(decision, "plan", None), "execution_ready", False))
             revalidation = dict(getattr(candidate, "revalidation_profile", {}) or {})
-            blocking_reasons = list(executive_report.get("blocking_reasons") or [])
-            if not blocking_reasons and str(getattr(decision, "reason", "") or ""):
-                blocking_reasons = [str(getattr(decision, "reason", ""))]
+            blocking_reasons = [str(value) for value in (executive_report.get("blocking_reasons") or []) if str(value).strip()]
+            warning_reasons = [str(value) for value in (executive_report.get("warning_reasons") or []) if str(value).strip()]
             score_value = int(safe_float(getattr(candidate, "final_score", 0), 0.0))
-            if not plan_ready:
+            action_is_entry = str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
+            would_executable = bool(executive_report.get("allow_execution")) or action_is_entry
+            if would_executable:
+                totals[selected_type]["would_executable"] += 1
+            if capacity_blocked and would_executable:
+                gap_classification = "ACTIVE_TRADE_CAPACITY_BLOCK"
+            elif action_is_entry:
+                gap_classification = "EXECUTED"
+            elif not plan_ready:
                 gap_classification = "PLAN_NOT_EXECUTABLE"
             elif score_value < RISKY_ENTRY_SCORE_BASE:
                 gap_classification = "CANONICAL_SCORE_BELOW_RISKY"
@@ -2016,15 +2060,30 @@ def update_setup_lifecycle_counters(
                 gap_classification = "EXECUTIVE_BLOCK"
             else:
                 gap_classification = "NONE"
-            selected_event.update({
+            executable = bool(would_executable and not capacity_blocked)
+            entered = bool(action_is_entry and not capacity_blocked)
+            if executable:
+                totals[selected_type]["executable"] += 1
+            if entered:
+                totals[selected_type]["entered"] += 1
+            selected_event = {
+                "side": selected_key[0],
+                "setup_type": selected_type,
+                "model_id": selected_model,
+                "selected_source": selected_source,
+                "ranked_match": ranked_match,
                 "final_score": score_value,
                 "canonical_risky_min": RISKY_ENTRY_SCORE_BASE,
                 "trigger_ready": bool(getattr(candidate, "trigger_ready", False)),
                 "entry_stage": str(getattr(candidate, "entry_stage", "") or ""),
                 "execution_source": str(getattr(candidate, "execution_source", "") or ""),
                 "plan_execution_ready": plan_ready,
+                "would_executable": would_executable,
+                "capacity_blocked": capacity_blocked,
                 "gap_classification": gap_classification,
                 "blocking_reasons": blocking_reasons,
+                "warning_reasons": warning_reasons,
+                "decision_explanation": str(getattr(decision, "reason", "") or ""),
                 "thesis_clock": {
                     "market_age_minutes": safe_float(getattr(candidate, "market_thesis_age_minutes", -1.0), -1.0),
                     "model_age_minutes": safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0),
@@ -2032,13 +2091,7 @@ def update_setup_lifecycle_counters(
                     "origin": str(getattr(candidate, "thesis_origin", "") or ""),
                     "hard_expired": bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD"),
                 },
-            })
-            executable = bool(executive_report.get("allow_execution")) or str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
-            entered = str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS
-            if executable:
-                totals[selected_type]["executable"] += 1
-            if entered:
-                totals[selected_type]["entered"] += 1
+            }
         else:
             selection_anomaly = {
                 "code": "SELECTED_WITHOUT_RANKED_MATCH",
@@ -2046,6 +2099,7 @@ def update_setup_lifecycle_counters(
                 "setup_type": selected_type,
                 "model_id": selected_model,
                 "selected_source": selected_source,
+                "scan_mode": scan_mode,
             }
             if decision is not None:
                 decision.audit.setdefault("setup_lifecycle", {})["selection_anomaly"] = selection_anomaly
@@ -2054,12 +2108,16 @@ def update_setup_lifecycle_counters(
         "time": iso_now(),
         "bot_version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
+        "scan_mode": scan_mode,
+        "capacity_blocked": capacity_blocked,
+        "active_trade_id": str(active_trade_id or ""),
         "detected": detected_events,
         "qualified_detected": qualified_events,
         "ranked": ranked_events,
         "detector_reachability": reachability_events,
         "selected": selected_event,
         "selection_anomaly": selection_anomaly,
+        "would_executable": would_executable,
         "executable": executable,
         "entered": entered,
         "decision_action": str(getattr(decision, "action", Action.NO_SETUP.value) if decision is not None else Action.NO_SETUP.value),
@@ -2070,10 +2128,11 @@ def update_setup_lifecycle_counters(
         del recent[:-SETUP_LIFECYCLE_RECENT_RUN_LIMIT]
     ledger.update({
         "setup_type_count": len(setup_types),
-        "stages": ["detected", "qualified_detected", "ranked", "selected", "executable", "entered"],
-        "selection_contract": "ranked match required; saved opportunity re-entry must declare selected_source",
+        "stages": list(stages),
+        "selection_contract": "ranked match required; decision.reason is explanatory, never a blocking reason",
+        "active_trade_shadow_contract": "separate counters; may observe would_execute; cannot increment live entered",
         "updated_at": run_row["time"],
-        "schema_version": "setup_lifecycle_funnel_v9.5.17_reachability_health",
+        "schema_version": "setup_lifecycle_funnel_v9.5.18_truthful_capacity_and_predicate_denominators",
     })
     return run_row
 
@@ -4396,6 +4455,10 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "no_pullback_min_body_efficiency": NO_PULLBACK_MIN_BODY_EFFICIENCY,
         "no_pullback_max_anchor_distance_atr": NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR,
         "no_pullback_risk_pct": NO_PULLBACK_RISK_PCT,
+        "active_trade_shadow_scanning_enabled": ACTIVE_TRADE_SHADOW_SCANNING_ENABLED,
+        "active_trade_shadow_scan_limit": ACTIVE_TRADE_SHADOW_SCAN_LIMIT,
+        "dormant_predicate_saturation_min_observations": DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS,
+        "dormant_predicate_saturation_false_rate": DORMANT_PREDICATE_SATURATION_FALSE_RATE,
         "relaxed_continuation_shadow_enabled": RELAXED_CONTINUATION_SHADOW_ENABLED,
         "relaxed_continuation_live_enabled": RELAXED_CONTINUATION_LIVE_ENABLED,
         "relaxed_continuation_min_micro_score": RELAXED_CONTINUATION_MIN_MICRO_SCORE,
@@ -5874,6 +5937,7 @@ def load_state() -> dict[str, Any]:
     # and regime memory instead of silently discarding the bar we are waiting for.
     compatible_architectures = {
         ARCHITECTURE_VERSION,
+        "TRADING_DESK_EXECUTIVE_V9_5_17_INTEGRATED_CALIBRATION_THESIS_GEOMETRY_AUDIT",
         "TRADING_DESK_EXECUTIVE_V9_5_6_PRECONFIRMATION_CONTRACT_GUARD",
         "TRADING_DESK_EXECUTIVE_V9_5_3_JOURNAL_COMPACTION",
         "TRADING_DESK_EXECUTIVE_V9_5_2_MODEL_LOCAL_THESIS_LADDER_CONFIRMATION",
@@ -6023,6 +6087,8 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "trade_quality": payload.get("trade_quality"),
         "trade_profile_source": payload.get("trade_profile_source"),
         "trade_profile_calibration_status": payload.get("trade_profile_calibration_status"),
+        "trade_profile_empirical_review_ready": payload.get("trade_profile_empirical_review_ready"),
+        "trade_profile_schema_version": payload.get("trade_profile_schema_version"),
         "trade_profile_fallback_used": payload.get("trade_profile_fallback_used"),
         "rr1": payload.get("rr1"),
         "rr2": payload.get("rr2"),
@@ -6103,6 +6169,8 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "trade_quality": payload.get("trade_quality"),
         "trade_profile_source": payload.get("trade_profile_source"),
         "trade_profile_calibration_status": payload.get("trade_profile_calibration_status"),
+        "trade_profile_empirical_review_ready": payload.get("trade_profile_empirical_review_ready"),
+        "trade_profile_schema_version": payload.get("trade_profile_schema_version"),
         "trade_profile_fallback_used": payload.get("trade_profile_fallback_used"),
         "entry": payload.get("entry", payload.get("entry_price")),
         "stop_initial": payload.get("stop_initial", payload.get("initial_stop")),
@@ -6368,6 +6436,9 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     journal["preconfirmation_events"] = _retain_preconfirmation_events(
         list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
     )
+    journal["active_trade_shadow_scans"] = [
+        item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
+    ][-ACTIVE_TRADE_SHADOW_SCAN_LIMIT:]
     journal["journal_version"] = JOURNAL_VERSION
     journal["migration"] = {
         "from_version": int(journal.get("journal_version_before_migration", 1) or 1),
@@ -6410,6 +6481,10 @@ def load_journal() -> dict[str, Any]:
     journal.setdefault("rejected_hypothesis_shadows", [])
     journal.setdefault("preconfirmation_events", [])
     journal.setdefault("preconfirmation_model_status", {})
+    journal.setdefault("active_trade_shadow_scans", [])
+    journal["active_trade_shadow_scans"] = [
+        item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
+    ][-ACTIVE_TRADE_SHADOW_SCAN_LIMIT:]
     journal["training_signals"] = [
         lean for item in list(journal.get("training_signals") or [])
         if isinstance(item, dict)
@@ -6545,6 +6620,7 @@ def save_journal(journal: dict[str, Any]) -> None:
             "executive_divergences": EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT,
             "rejected_hypothesis_shadows": REJECTED_HYPOTHESIS_SHADOW_LIMIT,
             "preconfirmation_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
+            "active_trade_shadow_scans": ACTIVE_TRADE_SHADOW_SCAN_LIMIT,
         },
     }
     journal["analytics"] = compute_analytics(journal)
@@ -8450,9 +8526,27 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
         and opportunity_model_id(opp) in {"BREAKER_BLOCK", "BMS_RETEST"}
         and trigger_ready
     )
+    current_zones = context.get("zones") or []
+    current_fresh_base_ob = any(
+        getattr(zone, "side", "") == opp.side
+        and getattr(zone, "kind", "") == "OB"
+        and abs(price - (safe_float(getattr(zone, "low", 0.0)) if opp.side == Side.LONG.value else safe_float(getattr(zone, "high", 0.0)))) < atr15 * 1.5
+        for zone in current_zones
+    )
+    current_quality_reclaim = has_quality_reclaim(event)
+    fresh_base_reanchor = bool(
+        str(getattr(opp, "setup_type", "") or "") == SetupType.FRESH_BASE_CONTINUATION.value
+        and opportunity_model_id(opp) == "OB_RECLAIM"
+        and trigger_ready
+        and current_fresh_base_ob
+        and current_quality_reclaim
+    )
     if breakout_retest_reanchor:
         model_age = trigger_age
         thesis_origin = "MODEL_LOCAL_BREAKOUT_RETEST_REENTRY"
+    elif fresh_base_reanchor:
+        model_age = trigger_age
+        thesis_origin = "MODEL_LOCAL_FRESH_BASE_RECLAIM_REENTRY"
     effective_thesis_age = model_age if thesis_origin.upper().startswith("MODEL_LOCAL") and model_age >= 0.0 else market_age
     if effective_thesis_age < 0.0:
         effective_thesis_age = trigger_age
@@ -8544,6 +8638,16 @@ def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Option
                 "source": "SAVED_OPPORTUNITY_REENTRY",
             },
             "failed_auction_location": failed_auction_location,
+            "fresh_base_thesis_clock": {
+                "reset": fresh_base_reanchor,
+                "origin": thesis_origin,
+                "model_age_minutes": model_age,
+                "market_age_minutes": market_age,
+                "source": "SAVED_OPPORTUNITY_REENTRY",
+                "requires_fresh_scan_event": True,
+                "current_ob_available": current_fresh_base_ob,
+                "current_quality_reclaim": current_quality_reclaim,
+            } if str(opp.setup_type or "") == SetupType.FRESH_BASE_CONTINUATION.value else {},
             "breakout_retest_thesis_clock": {
                 "reset": breakout_retest_reanchor,
                 "origin": thesis_origin,
@@ -12923,6 +13027,41 @@ DORMANT_SETUP_REACHABILITY_TYPES = (
 )
 
 
+def fresh_base_thesis_clock_profile(
+    *,
+    model_id: str,
+    has_ob: bool,
+    has_quality_reclaim: bool,
+    live_3m_trigger_ready: bool,
+    trigger_age_minutes: float,
+) -> dict[str, Any]:
+    """Canonical Fresh Base thesis-clock admission contract.
+
+    Location alone is not evidence of a new thesis. The clock may reset only for
+    OB_RECLAIM when the current detector simultaneously proves a nearby OB, a
+    quality reclaim and a fresh 3M execution event.
+    """
+    eligible_model = str(model_id or "") == "OB_RECLAIM"
+    checks = {
+        "eligible_model": eligible_model,
+        "current_ob_available": bool(has_ob),
+        "current_quality_reclaim": bool(has_quality_reclaim),
+        "fresh_3m_trigger": bool(live_3m_trigger_ready),
+    }
+    reset = bool(all(checks.values()))
+    age = max(0.0, safe_float(trigger_age_minutes, 0.0)) if reset else -1.0
+    return {
+        "reset": reset,
+        "origin": "MODEL_LOCAL_FRESH_BASE_RECLAIM" if reset else "MARKET_SCAN",
+        "model_age_minutes": age,
+        "trigger_age_minutes": max(0.0, safe_float(trigger_age_minutes, 0.0)),
+        "checks": checks,
+        "required_evidence": ["OB_RECLAIM", "QUALITY_RECLAIM", "FRESH_3M_TRIGGER"],
+        "clock_authority": "DETECTOR_BACKED_ONLY",
+        "schema_version": "fresh_base_thesis_clock_v9.5.18",
+    }
+
+
 def build_dormant_detector_reachability(
     side: str,
     *,
@@ -13606,6 +13745,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             thesis_origin = "MARKET_SCAN"
             ladder_confirmation: dict[str, Any] = {}
             failed_auction_location: dict[str, Any] = {}
+            fresh_base_clock: dict[str, Any] = {}
             if model_id in SHORT_REVERSAL_MODEL_IDS:
                 model_ready = bool(short_model_profile.get("execution_ready"))
                 aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
@@ -13816,6 +13956,33 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 local_live_3m_trigger_ready = actionable_trigger_ready
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_TIME_OF_DAY"
+            elif model_id == "OB_RECLAIM":
+                # Fresh Base is a new thesis only when the detector proves all
+                # three local facts now: an OB exists, a quality reclaim exists,
+                # and the 3M execution event is fresh. Merely remaining near an
+                # old OB never resets thesis age.
+                fresh_base_clock = fresh_base_thesis_clock_profile(
+                    model_id=model_id,
+                    has_ob=has_ob,
+                    has_quality_reclaim=has_good_reclaim,
+                    live_3m_trigger_ready=live_3m_trigger_ready,
+                    trigger_age_minutes=trigger_age,
+                )
+                fresh_base_ready = bool(fresh_base_clock.get("reset"))
+                execution_source = ExecutionSource.LIVE_3M.value if fresh_base_ready else ExecutionSource.NONE.value
+                actionable_trigger_ready = fresh_base_ready
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if fresh_base_ready else ExecutionLane.WAIT_RETEST.value
+                local_trigger_level = trigger_level
+                local_trigger_age = max(0.0, safe_float(trigger_age, 0.0))
+                local_live_3m_trigger_ready = fresh_base_ready
+                if fresh_base_ready:
+                    model_thesis_age = safe_float(fresh_base_clock.get("model_age_minutes"), local_trigger_age)
+                    thesis_origin = str(fresh_base_clock.get("origin") or "MODEL_LOCAL_FRESH_BASE_RECLAIM")
+                    pattern_conf.append(
+                        f"🟢 FRESH_BASE model-local thesis: OB_RECLAIM + quality reclaim + fresh 3M, age={local_trigger_age:.1f}m"
+                    )
+                else:
+                    pattern_conf.append("🟡 FRESH_BASE: old OB/location only; waiting detector-backed reclaim and fresh 3M trigger")
             elif model_id in {"BREAKER_BLOCK", "BMS_RETEST"}:
                 # A fresh Breaker/BMS retest is a new model thesis, not a lease on
                 # the old market-scan thesis. The clock resets only when the live
@@ -14107,6 +14274,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "liquidity_ladder_confirmation": ladder_confirmation if model_id == "LIQUIDITY_LADDER_MODEL" else {},
                     "failed_auction_location": failed_auction_location if model_id == "FAILED_AUCTION_REJECTION" else {},
                     "failed_auction_detector": failed_auction if model_id == "FAILED_AUCTION_REJECTION" else {},
+                    "fresh_base_thesis_clock": {
+                        **fresh_base_clock,
+                        "model_id": model_id,
+                        "market_age_minutes": round(float(market_thesis_age), 2),
+                        "model_age_minutes": round(float(model_thesis_age), 2) if model_thesis_age >= 0.0 else -1.0,
+                    } if model_id == "OB_RECLAIM" else {},
                     "breakout_retest_thesis_clock": {
                         "reset": bool(model_id in {"BREAKER_BLOCK", "BMS_RETEST"} and thesis_origin == "MODEL_LOCAL_BREAKOUT_RETEST"),
                         "model_id": model_id,
@@ -14480,6 +14653,16 @@ def trade_mode_profile(context: dict, side: Optional[str] = None, setup_type: Op
             else:
                 profile[key] = float(setup_profile[key])
                 
+    # Preserve exact setup-profile lineage through the regime merge. Geometry
+    # values may be merged, but provenance must not disappear on the way to the
+    # TradePlan/ActiveTrade journal.
+    for provenance_key in (
+        "setup_type", "geometry_family", "explicit_profile", "fallback_used",
+        "profile_source", "empirically_calibrated", "empirical_review_ready",
+        "geometry_evidence", "calibration_status",
+    ):
+        profile[provenance_key] = copy.deepcopy(setup_profile.get(provenance_key))
+    profile["profile_contract_schema_version"] = "trade_profile_provenance_v9.5.18"
     profile["regime"] = name
     profile["regime_type"] = regime_type
     profile["entry_action"] = regime.get("entry_action", "ALLOW")
@@ -16273,6 +16456,79 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     return final_decision
 
 
+def evaluate_active_trade_shadow_scan(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    journal: dict[str, Any],
+    active_trade: ActiveTrade,
+) -> dict[str, Any]:
+    """Run the complete setup brain while capacity is occupied, audit-only.
+
+    The state and market context are deep-copied. The copied state has neither an
+    active trade nor a saved opportunity, so the result describes a fresh setup
+    scan. The shared journal intentionally receives precursor forecasts and
+    reachability observations, but no signal/trade is persisted and no published
+    action is executed.
+    """
+    if not ACTIVE_TRADE_SHADOW_SCANNING_ENABLED:
+        return {"enabled": False, "reason": "disabled", "authoritative": False}
+    shadow_state = copy.deepcopy(state)
+    shadow_state["active_trade"] = None
+    shadow_state["opportunity"] = None
+    shadow_context = copy.deepcopy(context)
+    try:
+        decision = evaluate_new_setup(shadow_context, shadow_state, journal)
+        lifecycle = update_setup_lifecycle_counters(
+            journal,
+            shadow_context,
+            decision,
+            scan_mode="ACTIVE_TRADE_SHADOW",
+            capacity_blocked=True,
+            active_trade_id=str(getattr(active_trade, "id", "") or ""),
+        )
+        selected = lifecycle.get("selected") or {}
+        row = {
+            "time": iso_now(),
+            "active_trade_id": str(getattr(active_trade, "id", "") or ""),
+            "active_trade_side": str(getattr(active_trade, "side", "") or ""),
+            "active_trade_setup_type": str(getattr(active_trade, "setup_type", "") or ""),
+            "decision_id": str(getattr(decision, "id", "") or ""),
+            "would_action": str(getattr(decision, "action", Action.NO_SETUP.value) or Action.NO_SETUP.value),
+            "would_executable": bool(lifecycle.get("would_executable")),
+            "selected": selected,
+            "detected_count": len(lifecycle.get("detected") or []),
+            "qualified_count": len(lifecycle.get("qualified_detected") or []),
+            "ranked_count": len(lifecycle.get("ranked") or []),
+            "capacity_block": "ACTIVE_TRADE_SINGLE_POSITION_POLICY",
+            "authoritative": False,
+            "can_open_trade": False,
+            "state_mutation_persisted": False,
+            "preconfirmation_forecasts_persisted": True,
+            "schema_version": "active_trade_shadow_scan_v9.5.18",
+        }
+    except Exception as exc:
+        row = {
+            "time": iso_now(),
+            "active_trade_id": str(getattr(active_trade, "id", "") or ""),
+            "error": f"{type(exc).__name__}: {exc}",
+            "authoritative": False,
+            "can_open_trade": False,
+            "state_mutation_persisted": False,
+            "schema_version": "active_trade_shadow_scan_v9.5.18",
+        }
+    store = journal.setdefault("active_trade_shadow_scans", [])
+    store.append(row)
+    if len(store) > ACTIVE_TRADE_SHADOW_SCAN_LIMIT:
+        del store[:-ACTIVE_TRADE_SHADOW_SCAN_LIMIT]
+    journal["active_trade_shadow_scan_status"] = {
+        "enabled": True,
+        "last_run": row,
+        "single_position_policy_preserved": True,
+        "updated_at": row.get("time"),
+    }
+    return row
+
+
 def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     proposed_opportunity_status = None
     cands = detect_candidates(context, state, journal)
@@ -18047,6 +18303,19 @@ def run_bot() -> None:
             mfe_r_at_close = abs(float(active.best_price) - float(active.entry)) / max(initial_risk_distance, 1e-9)
             mae_r_at_close = abs(float(active.worst_price) - float(active.entry)) / max(initial_risk_distance, 1e-9)
             trade_profile = ((getattr(active, "breathing_profile", {}) or {}).get("setup_trade_profile") or {})
+            direct_profile_source = str(getattr(active, "trade_profile_source", "") or "")
+            trade_profile_source = direct_profile_source or str(trade_profile.get("profile_source") or "")
+            trade_profile_calibration_status = str(getattr(active, "trade_profile_calibration_status", "") or trade_profile.get("calibration_status") or "")
+            trade_profile_fallback_used = (
+                bool(getattr(active, "trade_profile_fallback_used", False))
+                if direct_profile_source
+                else bool(trade_profile.get("fallback_used", False))
+            )
+            trade_profile_empirical_review_ready = (
+                bool(getattr(active, "trade_profile_empirical_review_ready", False))
+                if direct_profile_source
+                else bool(trade_profile.get("empirical_review_ready", False))
+            )
             result_r_at_close = res.get("result_r")
             mfe_capture_ratio = (
                 max(0.0, safe_float(result_r_at_close, 0.0)) / mfe_r_at_close
@@ -18141,9 +18410,11 @@ def run_bot() -> None:
                 "setup_quality": getattr(active, "setup_quality", 0.0),
                 "timing_quality": getattr(active, "timing_quality", 0.0),
                 "trade_quality": getattr(active, "trade_quality", 0.0),
-                "trade_profile_source": trade_profile.get("profile_source"),
-                "trade_profile_calibration_status": trade_profile.get("calibration_status"),
-                "trade_profile_fallback_used": bool(trade_profile.get("fallback_used", False)),
+                "trade_profile_source": trade_profile_source or None,
+                "trade_profile_calibration_status": trade_profile_calibration_status or None,
+                "trade_profile_fallback_used": trade_profile_fallback_used,
+                "trade_profile_empirical_review_ready": trade_profile_empirical_review_ready,
+                "trade_profile_schema_version": str(getattr(active, "trade_profile_schema_version", "trade_profile_provenance_v9.5.18") or "trade_profile_provenance_v9.5.18"),
                 "rr1": round(abs(float(active.tp1) - float(active.entry)) / max(initial_risk_distance, 1e-9), 4),
                 "rr2": round(abs(float(active.tp2) - float(active.entry)) / max(initial_risk_distance, 1e-9), 4),
                 "rr3": round(abs(float(active.tp3) - float(active.entry)) / max(initial_risk_distance, 1e-9), 4),
@@ -18166,6 +18437,17 @@ def run_bot() -> None:
             state["opportunity"] = None
         else:
             store_active_trade(state, active)
+            shadow_scan = evaluate_active_trade_shadow_scan(context, state, journal, active)
+            res["active_trade_shadow_scan"] = shadow_scan
+            if shadow_scan.get("error"):
+                print(f"[WARN] Active-trade shadow scan failed: {shadow_scan.get('error')}")
+            else:
+                selected_shadow = shadow_scan.get("selected") or {}
+                print(
+                    f"[INFO] Active-trade shadow scan: detected={shadow_scan.get('detected_count', 0)} "
+                    f"ranked={shadow_scan.get('ranked_count', 0)} selected={selected_shadow.get('setup_type', 'NONE')} "
+                    f"would_execute={shadow_scan.get('would_executable', False)}"
+                )
         append_history(state, {"type": "FOLLOW" if not res.get("closed") else "CLOSE", "side": active.side, "action": res.get("action"), "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
         journal.setdefault("signal_events", []).append({"time": iso_now(), "type": "FOLLOW" if not res.get("closed") else "CLOSE", "action": res.get("action"), "side": active.side, "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
         save_state(state)
@@ -18375,6 +18657,11 @@ def run_bot() -> None:
             stage_plan=decision.candidate.stage_plan, runtime_config_snapshot=decision.plan.runtime_config_snapshot,
             decision_stop=decision.plan.decision_stop, catastrophic_stop=decision.plan.catastrophic_stop,
             breathing_profile=decision.plan.breathing_profile,
+            trade_profile_source=str((((decision.plan.breathing_profile or {}).get("setup_trade_profile") or {}).get("profile_source")) or ""),
+            trade_profile_calibration_status=str((((decision.plan.breathing_profile or {}).get("setup_trade_profile") or {}).get("calibration_status")) or ""),
+            trade_profile_fallback_used=bool((((decision.plan.breathing_profile or {}).get("setup_trade_profile") or {}).get("fallback_used", False))),
+            trade_profile_empirical_review_ready=bool((((decision.plan.breathing_profile or {}).get("setup_trade_profile") or {}).get("empirical_review_ready", False))),
+            trade_profile_schema_version=str((((decision.plan.breathing_profile or {}).get("setup_trade_profile") or {}).get("profile_contract_schema_version")) or "trade_profile_provenance_v9.5.18"),
             entry_quality=int(round(signal_entry_quality)),
             evaluation_entry_quality=round(signal_entry_quality, 2),
             preplan_entry_quality=round(signal_preplan_entry_quality, 2),
@@ -21542,7 +21829,7 @@ def test_setup_lifecycle_counts_all_24_types_and_funnel() -> bool:
     return bool(
         ledger.get("setup_type_count") == 24
         and len(ledger.get("totals") or {}) == 24
-        and row == {"detected": 1, "qualified_detected": 1, "ranked": 1, "selected": 1, "executable": 1, "entered": 1}
+        and row == {"detected": 1, "qualified_detected": 1, "ranked": 1, "selected": 1, "would_executable": 1, "executable": 1, "entered": 1}
     )
 
 
@@ -22276,6 +22563,185 @@ def test_saved_breakout_retest_gets_model_local_reentry_clock() -> bool:
     )
 
 
+
+
+def test_active_trade_profile_provenance_survives_state_roundtrip() -> bool:
+    active = ActiveTrade(
+        id="prov", side=Side.LONG.value, setup_type=SetupType.FRESH_BASE_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=iso_now(), entry=100.0,
+        stop_initial=99.0, stop_current=99.0, structural_invalidation=99.0,
+        tp1=102.0, tp2=103.0, tp3=104.0, quality=75, position_risk_pct=0.1,
+        best_price=100.0, worst_price=100.0,
+        trade_profile_source="EXPLICIT_BOOTSTRAP_MORPHOLOGY_V9_5_11",
+        trade_profile_calibration_status="BOOTSTRAP_PENDING_EXACT_SETUP_SAMPLE",
+        trade_profile_fallback_used=False,
+        trade_profile_empirical_review_ready=False,
+        trade_profile_schema_version="trade_profile_provenance_v9.5.18",
+    )
+    state: dict[str, Any] = {}
+    store_active_trade(state, active)
+    restored = active_trade_from_state(state)
+    return bool(
+        restored
+        and restored.trade_profile_source == active.trade_profile_source
+        and restored.trade_profile_calibration_status == active.trade_profile_calibration_status
+        and restored.trade_profile_fallback_used is False
+        and restored.trade_profile_schema_version == "trade_profile_provenance_v9.5.18"
+    )
+
+def test_trade_mode_profile_preserves_provenance_contract() -> bool:
+    context = {
+        "regime": Regime.NORMAL.value,
+        "market_regime": {"name": Regime.NORMAL.value, "regime_type": Regime.NORMAL.value, "entry_action": "ALLOW", "hard_block": False},
+    }
+    profile = trade_mode_profile(context, Side.LONG.value, SetupType.FRESH_BASE_CONTINUATION.value, journal={"trades": []})
+    return bool(
+        profile.get("profile_source") == "EXPLICIT_BOOTSTRAP_MORPHOLOGY_V9_5_11"
+        and profile.get("calibration_status") == "BOOTSTRAP_PENDING_EXACT_SETUP_SAMPLE"
+        and profile.get("fallback_used") is False
+        and profile.get("geometry_family") == "OB_RECLAIM_CONTINUATION"
+        and profile.get("profile_contract_schema_version") == "trade_profile_provenance_v9.5.18"
+    )
+
+
+def test_funnel_executed_reason_is_not_misclassified_as_block() -> bool:
+    candidate = _v9_test_candidate()
+    candidate.selected_source = "RANKED_CANDIDATE"
+    candidate.score_components["selected_source"] = "RANKED_CANDIDATE"
+    decision = Decision(
+        id="funnel-executed", time=iso_now(), action=Action.PROBE_ENTRY.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=candidate.final_score,
+        reason="ACCEPTANCE: setup=80 timing=75 trade=70", regime=Regime.NORMAL.value,
+        candidate=candidate, plan=_v9_test_plan(),
+        audit={"executive_director": {"report": {"executive_decision": {"allow_execution": True, "blocking_reasons": []}}}},
+    )
+    context = {
+        "_setup_lifecycle_detected": [{"side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_setup_lifecycle_qualified": [{"side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_setup_lifecycle_ranked": [{"side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_detector_reachability": [],
+    }
+    run = update_setup_lifecycle_counters({}, context, decision)
+    selected = run.get("selected") or {}
+    return bool(run.get("entered") and selected.get("gap_classification") == "EXECUTED" and not selected.get("blocking_reasons"))
+
+
+def test_dormant_saturation_uses_predicate_observation_denominator() -> bool:
+    journal = {"setup_lifecycle_counters": {"detector_reachability": {
+        SetupType.SWEEP_RECLAIM.value: {
+            "evaluated": 100, "fired": 0, "blocker_counts": {},
+            "condition_true_counts": {}, "condition_false_counts": {"turtle_weak_displacement": 19},
+            "margin_statistics": {}, "last_observation": {}, "health_status": "DORMANT_MARKET_CONDITIONS",
+            "saturated_predicates": [],
+        }
+    }}}
+    context = {
+        "_setup_lifecycle_detected": [], "_setup_lifecycle_qualified": [], "_setup_lifecycle_ranked": [],
+        "_detector_reachability": [{
+            "setup_type": SetupType.SWEEP_RECLAIM.value, "fired": False,
+            "conditions": {"turtle_weak_displacement": False}, "blockers": ["turtle_weak_displacement"], "margins": {},
+        }],
+    }
+    update_setup_lifecycle_counters(journal, context, None)
+    row = journal["setup_lifecycle_counters"]["detector_reachability"][SetupType.SWEEP_RECLAIM.value]
+    return bool(
+        row.get("condition_observation_counts", {}).get("turtle_weak_displacement") == 20
+        and row.get("condition_false_rates", {}).get("turtle_weak_displacement") == 1.0
+        and "turtle_weak_displacement" in (row.get("saturated_predicates") or [])
+        and row.get("health_status") == "PREDICATE_SATURATION_SUSPECTED"
+    )
+
+
+def test_active_trade_shadow_scan_cannot_open_or_mutate_state() -> bool:
+    original = globals()["evaluate_new_setup"]
+    candidate = _v9_test_candidate()
+    candidate.selected_source = "RANKED_CANDIDATE"
+    candidate.score_components["selected_source"] = "RANKED_CANDIDATE"
+    def fake_evaluate(context: dict, state: dict, journal: dict) -> Decision:
+        context["_setup_lifecycle_detected"] = [{"side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model}]
+        context["_setup_lifecycle_qualified"] = list(context["_setup_lifecycle_detected"])
+        context["_setup_lifecycle_ranked"] = list(context["_setup_lifecycle_detected"])
+        context["_detector_reachability"] = []
+        state["opportunity"] = {"should_not": "persist"}
+        return Decision(
+            id="shadow-entry", time=iso_now(), action=Action.PROBE_ENTRY.value,
+            side=candidate.side, setup_type=candidate.setup_type, quality=candidate.final_score,
+            reason="would execute if capacity were free", regime=Regime.NORMAL.value,
+            candidate=candidate, plan=_v9_test_plan(),
+            audit={"executive_director": {"report": {"executive_decision": {"allow_execution": True, "blocking_reasons": []}}}},
+        )
+    globals()["evaluate_new_setup"] = fake_evaluate
+    try:
+        state = {"active_trade": {"id": "live"}, "opportunity": None}
+        journal: dict[str, Any] = {}
+        active = ActiveTrade(
+            id="live", side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            setup_family=SetupFamily.CONTINUATION.value, opened_at=iso_now(), entry=100.0,
+            stop_initial=99.0, stop_current=99.0, structural_invalidation=99.0,
+            tp1=102.0, tp2=103.0, tp3=104.0, quality=75, position_risk_pct=0.1,
+            best_price=100.0, worst_price=100.0,
+        )
+        row = evaluate_active_trade_shadow_scan({}, state, journal, active)
+        shadow_totals = journal.get("setup_lifecycle_counters", {}).get("active_trade_shadow_totals", {}).get(candidate.setup_type, {})
+        live_totals = journal.get("setup_lifecycle_counters", {}).get("totals", {}).get(candidate.setup_type, {})
+        return bool(
+            row.get("would_executable") and not row.get("can_open_trade")
+            and state == {"active_trade": {"id": "live"}, "opportunity": None}
+            and shadow_totals.get("would_executable") == 1
+            and shadow_totals.get("entered") == 0
+            and not live_totals
+            and (row.get("selected") or {}).get("gap_classification") == "ACTIVE_TRADE_CAPACITY_BLOCK"
+        )
+    finally:
+        globals()["evaluate_new_setup"] = original
+
+
+
+def test_fresh_base_live_clock_requires_all_detector_facts() -> bool:
+    ready = fresh_base_thesis_clock_profile(
+        model_id="OB_RECLAIM", has_ob=True, has_quality_reclaim=True,
+        live_3m_trigger_ready=True, trigger_age_minutes=7.0,
+    )
+    no_reclaim = fresh_base_thesis_clock_profile(
+        model_id="OB_RECLAIM", has_ob=True, has_quality_reclaim=False,
+        live_3m_trigger_ready=True, trigger_age_minutes=7.0,
+    )
+    stale = fresh_base_thesis_clock_profile(
+        model_id="OB_RECLAIM", has_ob=True, has_quality_reclaim=True,
+        live_3m_trigger_ready=False, trigger_age_minutes=70.0,
+    )
+    wrong_model = fresh_base_thesis_clock_profile(
+        model_id="FVG_ENTRY", has_ob=True, has_quality_reclaim=True,
+        live_3m_trigger_ready=True, trigger_age_minutes=7.0,
+    )
+    return bool(
+        ready.get("reset") and ready.get("origin") == "MODEL_LOCAL_FRESH_BASE_RECLAIM"
+        and abs(safe_float(ready.get("model_age_minutes")) - 7.0) < 1e-9
+        and not no_reclaim.get("reset") and not stale.get("reset") and not wrong_model.get("reset")
+    )
+
+def test_saved_fresh_base_gets_model_local_reentry_clock_only_on_fresh_event() -> bool:
+    now = iso_now()
+    opp = Opportunity(
+        side=Side.LONG.value, setup_type=SetupType.FRESH_BASE_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, created_at=now,
+        expires_at=(now_utc() + timedelta(hours=1)).isoformat(), score=72,
+        trigger_level=100.0, invalidation_level=99.0, ict_model="OB_RECLAIM",
+        market_thesis_age_minutes=3000.0, model_thesis_age_minutes=-1.0,
+        thesis_origin="MARKET_SCAN",
+    )
+    ts = int(now_utc().timestamp() * 1000)
+    ob = Zone(kind="OB", side=Side.LONG.value, low=99.8, high=100.2, created_ts=ts, timeframe="15m", strength=1.0)
+    fresh_event = {"stage": "RETEST", "last_event_ts": ts, "acceptance_quality": RECLAIM_MIN_QUALITY, "retest": True}
+    fresh = candidate_from_missed_opportunity(opp, {"price": 100.1, "atr15": 1.0, "zones": [ob], "scan_3m_events": {Side.LONG.value: fresh_event}})
+    stale = candidate_from_missed_opportunity(opp, {"price": 100.1, "atr15": 1.0, "zones": [ob], "scan_3m_events": {Side.LONG.value: {"stage": "WATCH", "last_event_ts": ts}}})
+    return bool(
+        fresh and fresh.trigger_ready and fresh.thesis_origin == "MODEL_LOCAL_FRESH_BASE_RECLAIM_REENTRY"
+        and fresh.model_thesis_age_minutes >= 0.0 and fresh.thesis_age_minutes < 5.0
+        and stale and not stale.trigger_ready and stale.thesis_origin == "MARKET_SCAN"
+        and stale.thesis_age_minutes > THESIS_HARD_TTL_MIN
+    )
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -22283,6 +22749,13 @@ def _run_self_test() -> bool:
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
         ("current-session model-local clocks override stale market thesis", test_current_session_model_local_origins_override_stale_market_clock),
+        ("v9.5.18 trade profile provenance survives regime merge", test_trade_mode_profile_preserves_provenance_contract),
+        ("v9.5.18 active trade provenance survives state roundtrip", test_active_trade_profile_provenance_survives_state_roundtrip),
+        ("v9.5.18 executed funnel reason is not classified as a block", test_funnel_executed_reason_is_not_misclassified_as_block),
+        ("v9.5.18 dormant saturation uses predicate observations", test_dormant_saturation_uses_predicate_observation_denominator),
+        ("v9.5.18 active-trade shadow scan cannot open or mutate state", test_active_trade_shadow_scan_cannot_open_or_mutate_state),
+        ("v9.5.18 Fresh Base live clock requires all detector facts", test_fresh_base_live_clock_requires_all_detector_facts),
+        ("v9.5.18 Fresh Base re-entry clock requires fresh event", test_saved_fresh_base_gets_model_local_reentry_clock_only_on_fresh_event),
         ("dormant detector reachability contract is live", test_dormant_detector_reachability_contract_is_live),
         ("lifecycle records detector reachability and selected gap reason", test_lifecycle_persists_detector_reachability_and_gap_reason),
         ("Breakout Retest uses a model-local thesis clock", test_breakout_retest_gets_model_local_thesis_clock),
@@ -24687,7 +25160,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.17 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.18 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
