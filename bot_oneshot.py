@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.19 (Trailing Ratchet, Conversion and Predicate Audit)
+BZU Professional Hybrid Confluence Signal Bot v9.5.20 (Episode Identity, Predicate Migration, Quality and Ratchet Evidence)
 =============================================================================================
 Оновлення v9.5.18:
 - Trade-profile provenance проходить без втрат setup_trade_profile -> trade_mode_profile -> TradePlan/ActiveTrade -> compact closed trade.
@@ -110,6 +110,12 @@ BZU Professional Hybrid Confluence Signal Bot v9.5.19 (Trailing Ratchet, Convers
 - Early weak Bayesian calibration починається з 6 resolved observations; hierarchical лишається з 12, pooled logistic — з 24.
 - Додано повний precursor lifecycle: кожен directional candidate створює PENDING event, а fixed-horizon resolver через 45 хвилин присвоює CONFIRMED / FAILED / EXPIRED.
 - Anti-leakage та Executive authority збережені: шар не створює незалежний entry path.
+Оновлення v9.5.20:
+- Episode identity уніфіковано на всіх funnel-стадіях: selected/would-executable/executable/entered успадковують canonical ranked episode key і thesis_key.
+- Додано одноразову міграцію episode registry: старі неузгоджені independent counters архівуються, сирі scan counters та угоди не змінюються.
+- Predicate reachability переведено на schema-scoped counters: legacy mixed false/NOT_APPLICABLE observations архівуються, current-schema health рахується окремо від lifetime totals.
+- Додано повний audit-only entry-quality report: winner/loss distributions, Pearson/Spearman/AUC, calibration bins і setup-normalized discrimination без зміни live weights.
+- Multi-step ratchet зберігає bounded покрокову evidence-chain у state, signal_events і closed trade journal; кожен крок містить peak/lock/stop до-після та anti-retroactive timestamp.
 Оновлення v9.5.19:
 - TP0 protection переписано у справжній high-water trailing ratchet: після першої активації stop перераховується від нового MFE-піку без ретроактивного використання вже пройдених свічок.
 - Додано ranked top-N conversion audit: кожен сильний ranked-кандидат отримує окремий score/plan/executive counterfactual без права на live entry.
@@ -134,7 +140,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Optional
 
 import requests
@@ -233,8 +239,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.19-trailing-conversion-episode-predicate-audit"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_19_TRAILING_CONVERSION_EPISODE_PREDICATE_AUDIT"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.20-episode-predicate-quality-ratchet-evidence"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_20_EPISODE_PREDICATE_QUALITY_RATCHET_EVIDENCE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -376,6 +382,11 @@ DAILY_OPEN_SHADOW_MIN_INDEPENDENT_EPISODES = max(8, int(os.getenv("DAILY_OPEN_SH
 DAILY_OPEN_SHADOW_HORIZON_HOURS = max(4.0, float(os.getenv("DAILY_OPEN_SHADOW_HORIZON_HOURS", "24") or 24))
 DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT = min(0.05, max(0.005, float(os.getenv("DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT", "0.03") or 0.03)))
 DAILY_OPEN_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("DAILY_OPEN_SHADOW_HISTORY_LIMIT", "500") or 500))
+SETUP_EPISODE_SCHEMA_VERSION = "setup_episode_registry_v9.5.20_canonical_stage_identity"
+DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.20_dependency_scoped"
+ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.20"
+ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
+TP0_PROTECT_RATCHET_EVIDENCE_LIMIT = max(20, int(os.getenv("TP0_PROTECT_RATCHET_EVIDENCE_LIMIT", "80") or 80))
 TP0_PROTECT_MIN_RATCHET_STEP_R = max(0.02, float(os.getenv("TP0_PROTECT_MIN_RATCHET_STEP_R", "0.10") or 0.10))
 TP0_PROTECT_PRICE_BUFFER_DOLLARS = max(0.001, float(os.getenv("TP0_PROTECT_PRICE_BUFFER_DOLLARS", "0.02") or 0.02))
 
@@ -1750,7 +1761,9 @@ class ActiveTrade:
     protection_last_ratchet_stop: float = 0.0
     protection_ratchet_missed_due_to_price: int = 0
     protection_last_evaluated_mfe_r: float = 0.0
-    management_evidence_schema_version: str = "management_evidence_v9.5.19_trailing_ratchet"
+    protection_ratchet_new_peak_events: int = 0
+    protection_ratchet_evidence: list[dict[str, Any]] = field(default_factory=list)
+    management_evidence_schema_version: str = "management_evidence_v9.5.20_multistep_ratchet_evidence"
     trade_profile_source: str = ""
     trade_profile_calibration_status: str = ""
     trade_profile_fallback_used: bool = False
@@ -1914,6 +1927,140 @@ def _setup_lifecycle_event_key(event: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _ensure_setup_episode_identity_schema(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Reset only derived independent-episode counters when identity changes.
+
+    Raw scan counters, recent runs, trades and signals remain untouched. The old
+    registry is summarized in a bounded migration archive because its ranked and
+    selected stages may have used different keys and therefore cannot be merged
+    without inventing history.
+    """
+    policy = dict(ledger.get("independent_episode_policy") or {})
+    current_schema = str(policy.get("schema_version") or "")
+    derived_keys = (
+        "episode_registry", "active_trade_shadow_episode_registry",
+        "independent_episode_totals", "active_trade_shadow_independent_episode_totals",
+        "independent_episode_conversion",
+    )
+    has_derived = any(bool(ledger.get(key)) for key in derived_keys)
+    if current_schema == SETUP_EPISODE_SCHEMA_VERSION:
+        return {"changed": False, "schema_version": SETUP_EPISODE_SCHEMA_VERSION}
+
+    if has_derived or current_schema:
+        archive = {
+            "migrated_at": iso_now(),
+            "from_schema": current_schema or "LEGACY_OR_UNKNOWN",
+            "to_schema": SETUP_EPISODE_SCHEMA_VERSION,
+            "live_registry_size": len(ledger.get("episode_registry") or {}),
+            "shadow_registry_size": len(ledger.get("active_trade_shadow_episode_registry") or {}),
+            "live_totals": json_safe(ledger.get("independent_episode_totals") or {}),
+            "shadow_totals": json_safe(ledger.get("active_trade_shadow_independent_episode_totals") or {}),
+            "reason": "RANKED_AND_SELECTED_STAGE_KEYS_WERE_NOT_CANONICALLY_IDENTICAL",
+            "raw_scan_counters_preserved": True,
+        }
+        archives = ledger.setdefault("episode_identity_schema_migrations", [])
+        archives.append(archive)
+        del archives[:-10]
+
+    for key in derived_keys:
+        ledger.pop(key, None)
+    ledger["independent_episode_policy"] = {
+        "identity": "CANONICAL_RANKED_EPISODE_KEY_PROPAGATED_TO_ALL_STAGES",
+        "anchor_bucket_atr": SETUP_EPISODE_ANCHOR_BUCKET_ATR,
+        "time_bucket_minutes": SETUP_EPISODE_TIME_BUCKET_MINUTES,
+        "raw_scan_counters_preserved": True,
+        "schema_version": SETUP_EPISODE_SCHEMA_VERSION,
+    }
+    return {
+        "changed": True,
+        "from_schema": current_schema or "LEGACY_OR_UNKNOWN",
+        "schema_version": SETUP_EPISODE_SCHEMA_VERSION,
+        "archived_derived_registry": bool(has_derived),
+    }
+
+
+def migrate_setup_episode_identity_schema(journal: dict[str, Any]) -> dict[str, Any]:
+    ledger = journal.setdefault("setup_lifecycle_counters", {})
+    report = _ensure_setup_episode_identity_schema(ledger)
+    report["completed_at"] = iso_now()
+    previous = journal.get("setup_episode_identity_migration")
+    if report.get("changed") or not isinstance(previous, dict):
+        journal["setup_episode_identity_migration"] = dict(report)
+    else:
+        previous["last_checked_at"] = report["completed_at"]
+        previous["current_schema"] = SETUP_EPISODE_SCHEMA_VERSION
+    return report
+
+
+def migrate_predicate_reachability_schema(journal: dict[str, Any]) -> dict[str, Any]:
+    """Separate dependency-aware observations from legacy mixed counters.
+
+    Lifetime evaluated/fired/blocker totals remain available. Only predicate
+    truth, applicability, margins and current-schema health are reset because
+    old FALSE rows cannot be distinguished from what should now be N/A.
+    """
+    ledger = journal.setdefault("setup_lifecycle_counters", {})
+    rows = ledger.setdefault("detector_reachability", {})
+    changed = 0
+    for setup_type, row in list(rows.items()):
+        if not isinstance(row, dict):
+            continue
+        current_schema = str(row.get("predicate_schema_version") or "")
+        if current_schema == DETECTOR_REACHABILITY_SCHEMA_VERSION:
+            continue
+        legacy_snapshot = {
+            "migrated_at": iso_now(),
+            "from_schema": current_schema or str((row.get("last_observation") or {}).get("schema_version") or "LEGACY_MIXED"),
+            "to_schema": DETECTOR_REACHABILITY_SCHEMA_VERSION,
+            "lifetime_evaluated_at_migration": int(row.get("evaluated") or 0),
+            "lifetime_fired_at_migration": int(row.get("fired") or 0),
+            "condition_true_counts": json_safe(row.get("condition_true_counts") or {}),
+            "condition_false_counts": json_safe(row.get("condition_false_counts") or {}),
+            "condition_not_applicable_counts": json_safe(row.get("condition_not_applicable_counts") or {}),
+            "margin_statistics": json_safe(row.get("margin_statistics") or {}),
+            "saturated_predicates": list(row.get("saturated_predicates") or []),
+            "reason": "LEGACY_FALSE_COUNTS_CANNOT_BE_RECLASSIFIED_AS_FALSE_VS_NOT_APPLICABLE",
+        }
+        archives = row.setdefault("predicate_schema_archives", [])
+        archives.append(legacy_snapshot)
+        del archives[:-5]
+        for key, empty in (
+            ("condition_true_counts", {}), ("condition_false_counts", {}),
+            ("condition_observation_counts", {}), ("condition_false_rates", {}),
+            ("condition_not_applicable_counts", {}), ("predicate_dependencies", {}),
+            ("margin_statistics", {}), ("current_schema_blocker_counts", {}),
+            ("current_schema_scan_mode_counts", {}),
+        ):
+            row[key] = empty
+        row["current_schema_evaluated"] = 0
+        row["current_schema_fired"] = 0
+        row["saturated_predicates"] = []
+        row["health_status"] = "OBSERVING"
+        row["predicate_schema_version"] = DETECTOR_REACHABILITY_SCHEMA_VERSION
+        changed += 1
+    report = {
+        "changed": changed,
+        "rows_migrated": changed,
+        "schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
+        "lifetime_totals_preserved": True,
+        "trades_and_signals_preserved": True,
+        "completed_at": iso_now(),
+    }
+    ledger["detector_reachability_schema_policy"] = {
+        "current_schema": DETECTOR_REACHABILITY_SCHEMA_VERSION,
+        "health_scope": "CURRENT_SCHEMA_ONLY",
+        "lifetime_evaluated_and_fired_preserved": True,
+        "false_denominator": "CURRENT_SCHEMA_TRUE_PLUS_FALSE_APPLICABLE_OBSERVATIONS",
+    }
+    previous = journal.get("predicate_schema_migration")
+    if changed or not isinstance(previous, dict):
+        journal["predicate_schema_migration"] = dict(report)
+    else:
+        previous["last_checked_at"] = report["completed_at"]
+        previous["current_schema"] = DETECTOR_REACHABILITY_SCHEMA_VERSION
+    return report
+
+
 def setup_market_episode_key(event: dict[str, Any], context: dict[str, Any]) -> str:
     """Stable episode identity for repeated 15-minute scans of one thesis."""
     explicit = str(event.get("episode_key") or "").strip()
@@ -2011,6 +2158,8 @@ def update_setup_lifecycle_counters(
     capacity_blocked = bool(capacity_blocked or shadow_mode)
     setup_types = _tracked_setup_types()
     ledger = journal.setdefault("setup_lifecycle_counters", {})
+    episode_migration = _ensure_setup_episode_identity_schema(ledger)
+    predicate_migration = migrate_predicate_reachability_schema(journal)
     totals_key = "active_trade_shadow_totals" if shadow_mode else "totals"
     totals = ledger.setdefault(totals_key, {})
     stages = ("detected", "qualified_detected", "ranked", "selected", "would_executable", "executable", "entered")
@@ -2039,6 +2188,23 @@ def update_setup_lifecycle_counters(
     qualified_events = list({_setup_lifecycle_event_key(item): item for item in qualified_events}.values())
     ranked_events = list({_setup_lifecycle_event_key(item): item for item in ranked_events}.values())
 
+    # Highest-fidelity ranked identity is propagated back to qualified/detected
+    # rows from the same scan. This makes the independent funnel monotonic while
+    # preserving raw scan counters and event payloads.
+    canonical_by_lifecycle_key = {_setup_lifecycle_event_key(item): item for item in ranked_events}
+    for item in qualified_events:
+        canonical_by_lifecycle_key.setdefault(_setup_lifecycle_event_key(item), item)
+    identity_fields = (
+        "thesis_key", "execution_anchor", "trigger_level", "as_of_ts",
+        "market_thesis_age_minutes", "model_thesis_age_minutes", "thesis_origin",
+    )
+    for collection in (qualified_events, detected_events):
+        for event in collection:
+            canonical = canonical_by_lifecycle_key.get(_setup_lifecycle_event_key(event)) or {}
+            for field_name in identity_fields:
+                if canonical.get(field_name) not in (None, ""):
+                    event[field_name] = canonical.get(field_name)
+
     for event in detected_events:
         totals[event["setup_type"]]["detected"] += 1
     for event in qualified_events:
@@ -2064,14 +2230,27 @@ def update_setup_lifecycle_counters(
             "margin_statistics": {}, "last_observation": {},
             "scan_mode_counts": {}, "health_status": "OBSERVING",
             "saturated_predicates": [],
+            "current_schema_evaluated": 0, "current_schema_fired": 0,
+            "current_schema_blocker_counts": {}, "current_schema_scan_mode_counts": {},
+            "predicate_schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
         })
+        if str(row.get("predicate_schema_version") or "") != DETECTOR_REACHABILITY_SCHEMA_VERSION:
+            migrate_predicate_reachability_schema(journal)
+            row = reachability_ledger.setdefault(setup_type, row)
         row["evaluated"] = int(row.get("evaluated") or 0) + 1
         row["fired"] = int(row.get("fired") or 0) + int(bool(event.get("fired")))
+        row["current_schema_evaluated"] = int(row.get("current_schema_evaluated") or 0) + 1
+        row["current_schema_fired"] = int(row.get("current_schema_fired") or 0) + int(bool(event.get("fired")))
+        row["predicate_schema_version"] = DETECTOR_REACHABILITY_SCHEMA_VERSION
         mode_counts = row.setdefault("scan_mode_counts", {})
         mode_counts[scan_mode] = int(mode_counts.get(scan_mode) or 0) + 1
+        current_mode_counts = row.setdefault("current_schema_scan_mode_counts", {})
+        current_mode_counts[scan_mode] = int(current_mode_counts.get(scan_mode) or 0) + 1
         blockers = row.setdefault("blocker_counts", {})
+        current_blockers = row.setdefault("current_schema_blocker_counts", {})
         for blocker in event.get("blockers") or []:
             blockers[str(blocker)] = int(blockers.get(str(blocker)) or 0) + 1
+            current_blockers[str(blocker)] = int(current_blockers.get(str(blocker)) or 0) + 1
         true_counts = row.setdefault("condition_true_counts", {})
         false_counts = row.setdefault("condition_false_counts", {})
         not_applicable_counts = row.setdefault("condition_not_applicable_counts", {})
@@ -2116,8 +2295,8 @@ def update_setup_lifecycle_counters(
             and false_rates.get(name, 0.0) >= DORMANT_PREDICATE_SATURATION_FALSE_RATE
         )
         row["saturated_predicates"] = saturated
-        evaluated = int(row.get("evaluated") or 0)
-        fired = int(row.get("fired") or 0)
+        evaluated = int(row.get("current_schema_evaluated") or 0)
+        fired = int(row.get("current_schema_fired") or 0)
         row["health_status"] = (
             "PREDICATE_SATURATION_SUSPECTED"
             if fired == 0 and saturated
@@ -2128,9 +2307,11 @@ def update_setup_lifecycle_counters(
             else "OBSERVING"
         )
         row["saturation_policy"] = {
-            "denominator": "PREDICATE_TRUE_PLUS_FALSE_OBSERVATIONS",
+            "denominator": "CURRENT_SCHEMA_APPLICABLE_TRUE_PLUS_FALSE_OBSERVATIONS",
             "minimum_observations": DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS,
             "false_rate_threshold": DORMANT_PREDICATE_SATURATION_FALSE_RATE,
+            "predicate_schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
+            "lifetime_totals_excluded_from_health": True,
         }
         row["last_observation"] = {**dict(event), "scan_mode": scan_mode}
 
@@ -2204,6 +2385,7 @@ def update_setup_lifecycle_counters(
                 "blocking_reasons": blocking_reasons,
                 "warning_reasons": warning_reasons,
                 "decision_explanation": str(getattr(decision, "reason", "") or ""),
+                "thesis_key": str(getattr(candidate, "thesis_key", "") or ""),
                 "thesis_clock": {
                     "market_age_minutes": safe_float(getattr(candidate, "market_thesis_age_minutes", -1.0), -1.0),
                     "model_age_minutes": safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0),
@@ -2214,12 +2396,20 @@ def update_setup_lifecycle_counters(
             }
             selected_episode_event = {
                 **selected_event,
+                "thesis_key": str(getattr(candidate, "thesis_key", "") or ""),
                 "execution_anchor": safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0),
                 "trigger_level": safe_float(getattr(candidate, "trigger_level", 0.0), 0.0),
                 "market_thesis_age_minutes": safe_float(getattr(candidate, "market_thesis_age_minutes", -1.0), -1.0),
                 "model_thesis_age_minutes": safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0),
                 "thesis_origin": str(getattr(candidate, "thesis_origin", "") or ""),
+                "as_of_ts": _preconfirm_as_of_ts(context),
             }
+            ranked_episode_event = next(
+                (item for item in ranked_events if _setup_lifecycle_event_key(item) == selected_key),
+                None,
+            )
+            if isinstance(ranked_episode_event, dict) and ranked_episode_event.get("episode_key"):
+                selected_episode_event["episode_key"] = str(ranked_episode_event["episode_key"])
             selected_event["episode_key"] = _register_setup_episode_stage(
                 ledger, totals, selected_episode_event, "selected", context, shadow_mode=shadow_mode
             )
@@ -2244,11 +2434,12 @@ def update_setup_lifecycle_counters(
     episode_totals_key = "active_trade_shadow_independent_episode_totals" if shadow_mode else "independent_episode_totals"
     episode_totals = ledger.get(episode_totals_key) or {}
     ledger["independent_episode_policy"] = {
-        "identity": "SIDE_SETUP_MODEL_ANCHOR_BUCKET_THESIS_EPOCH",
+        "identity": "CANONICAL_RANKED_EPISODE_KEY_PROPAGATED_TO_ALL_STAGES",
         "anchor_bucket_atr": SETUP_EPISODE_ANCHOR_BUCKET_ATR,
         "time_bucket_minutes": SETUP_EPISODE_TIME_BUCKET_MINUTES,
         "raw_scan_counters_preserved": True,
-        "schema_version": "setup_episode_registry_v9.5.19",
+        "ranked_selected_key_equality_enforced": True,
+        "schema_version": SETUP_EPISODE_SCHEMA_VERSION,
     }
     ledger["independent_episode_conversion"] = {
         setup: {
@@ -2276,6 +2467,8 @@ def update_setup_lifecycle_counters(
         "executable": executable,
         "entered": entered,
         "decision_action": str(getattr(decision, "action", Action.NO_SETUP.value) if decision is not None else Action.NO_SETUP.value),
+        "episode_identity_migration": episode_migration,
+        "predicate_schema_migration": predicate_migration,
     }
     recent = ledger.setdefault("recent_runs", [])
     recent.append(run_row)
@@ -2287,7 +2480,7 @@ def update_setup_lifecycle_counters(
         "selection_contract": "ranked match required; decision.reason is explanatory, never a blocking reason",
         "active_trade_shadow_contract": "separate counters; may observe would_execute; cannot increment live entered",
         "updated_at": run_row["time"],
-        "schema_version": "setup_lifecycle_funnel_v9.5.19_episode_conversion_predicate_audit",
+        "schema_version": "setup_lifecycle_funnel_v9.5.20_canonical_episode_predicate_scope",
     })
     return run_row
 
@@ -5886,6 +6079,147 @@ def compute_score_outcome_correlation(journal: dict[str, Any], enabled: bool) ->
     }
 
 
+def _entry_quality_numeric(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return clamp(number, 0.0, 100.0)
+
+
+def _quality_calibration_bins(rows: list[dict[str, Any]], metric: str) -> list[dict[str, Any]]:
+    boundaries = ((0.0, 50.0), (50.0, 60.0), (60.0, 70.0), (70.0, 80.0), (80.0, 100.000001))
+    output: list[dict[str, Any]] = []
+    for low, high in boundaries:
+        bucket = [row for row in rows if row.get(metric) is not None and low <= float(row[metric]) < high]
+        if not bucket:
+            continue
+        pnl = [float(row["pnl_r"]) for row in bucket]
+        wins = sum(1 for value in pnl if value > 0)
+        output.append({
+            "range": f"{int(low)}-{int(high if high <= 100 else 100)}",
+            "sample": len(bucket),
+            "wins": wins,
+            "win_rate": round(wins / len(bucket), 6),
+            "expectancy_r": round(mean(pnl), 6),
+            "median_pnl_r": round(median(pnl), 6),
+        })
+    return output
+
+
+def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    """Descriptive quality/outcome audit with no live scoring authority."""
+    metrics = (
+        "entry_score", "evaluation_entry_quality", "preplan_entry_quality",
+        "trade_entry_quality", "setup_quality", "timing_quality", "trade_quality",
+    )
+    rows: list[dict[str, Any]] = []
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        pnl_r = _journal_result_r(trade)
+        if pnl_r is None:
+            continue
+        row: dict[str, Any] = {
+            "trade_id": str(trade.get("id") or ""),
+            "setup_type": str(trade.get("setup_type") or "UNKNOWN"),
+            "pnl_r": float(pnl_r),
+            "label": 1 if pnl_r > 0 else 0,
+        }
+        for metric in metrics:
+            source = trade.get(metric)
+            if metric == "entry_score" and source is None:
+                source = trade.get("score")
+            row[metric] = _entry_quality_numeric(source)
+        rows.append(row)
+
+    metric_reports: dict[str, Any] = {}
+    for metric in metrics:
+        scoped = [row for row in rows if row.get(metric) is not None]
+        values = [float(row[metric]) for row in scoped]
+        outcomes = [float(row["pnl_r"]) for row in scoped]
+        labels = [int(row["label"]) for row in scoped]
+        wins = [float(row[metric]) for row in scoped if row["pnl_r"] > 0]
+        losses = [float(row[metric]) for row in scoped if row["pnl_r"] <= 0]
+        pearson = _pearson_correlation(values, outcomes)
+        spearman = _pearson_correlation(_average_ranks(values), _average_ranks(outcomes)) if len(values) >= 3 else None
+        auc = _preconfirm_auc(labels, values) if len(set(labels)) >= 2 else None
+
+        by_setup: dict[str, list[dict[str, Any]]] = {}
+        for row in scoped:
+            by_setup.setdefault(str(row["setup_type"]), []).append(row)
+        centered_quality: list[float] = []
+        centered_pnl: list[float] = []
+        normalized_setup_count = 0
+        for setup_rows in by_setup.values():
+            if len(setup_rows) < 3:
+                continue
+            q_mean = mean(float(row[metric]) for row in setup_rows)
+            r_mean = mean(float(row["pnl_r"]) for row in setup_rows)
+            if max(float(row[metric]) for row in setup_rows) - min(float(row[metric]) for row in setup_rows) <= 1e-9:
+                continue
+            normalized_setup_count += 1
+            centered_quality.extend(float(row[metric]) - q_mean for row in setup_rows)
+            centered_pnl.extend(float(row["pnl_r"]) - r_mean for row in setup_rows)
+        setup_normalized_pearson = _pearson_correlation(centered_quality, centered_pnl)
+        setup_normalized_spearman = (
+            _pearson_correlation(_average_ranks(centered_quality), _average_ranks(centered_pnl))
+            if len(centered_quality) >= 3 else None
+        )
+        spread = math.sqrt(mean((value - mean(values)) ** 2 for value in values)) if values else 0.0
+        metric_reports[metric] = {
+            "sample": len(scoped),
+            "winner_sample": len(wins),
+            "loss_sample": len(losses),
+            "mean": round(mean(values), 6) if values else None,
+            "median": round(median(values), 6) if values else None,
+            "stddev": round(spread, 6) if values else None,
+            "winner_mean": round(mean(wins), 6) if wins else None,
+            "winner_median": round(median(wins), 6) if wins else None,
+            "loss_mean": round(mean(losses), 6) if losses else None,
+            "loss_median": round(median(losses), 6) if losses else None,
+            "winner_loss_mean_gap": round(mean(wins) - mean(losses), 6) if wins and losses else None,
+            "pearson_vs_pnl_r": round(pearson, 6) if pearson is not None else None,
+            "spearman_vs_pnl_r": round(spearman, 6) if spearman is not None else None,
+            "win_auc": round(auc, 6) if auc is not None else None,
+            "setup_normalized_sample": len(centered_quality),
+            "setup_normalized_setup_count": normalized_setup_count,
+            "setup_normalized_pearson": round(setup_normalized_pearson, 6) if setup_normalized_pearson is not None else None,
+            "setup_normalized_spearman": round(setup_normalized_spearman, 6) if setup_normalized_spearman is not None else None,
+            "calibration_bins": _quality_calibration_bins(scoped, metric),
+            "ready_for_review": len(scoped) >= ENTRY_QUALITY_AUDIT_MIN_ROWS,
+        }
+
+    eligible = [
+        (name, safe_float(report.get("setup_normalized_spearman"), safe_float(report.get("spearman_vs_pnl_r"), -999.0)))
+        for name, report in metric_reports.items()
+        if int(report.get("sample") or 0) >= ENTRY_QUALITY_AUDIT_MIN_ROWS
+        and (report.get("spearman_vs_pnl_r") is not None or report.get("setup_normalized_spearman") is not None)
+    ]
+    best_metric = max(eligible, key=lambda item: item[1])[0] if eligible else None
+    eval_report = metric_reports.get("evaluation_entry_quality") or {}
+    warning = bool(
+        int(eval_report.get("sample") or 0) >= ENTRY_QUALITY_AUDIT_MIN_ROWS
+        and safe_float(eval_report.get("spearman_vs_pnl_r"), 0.0) <= 0.05
+    )
+    return {
+        "sample_with_numeric_pnl_r": len(rows),
+        "minimum_rows_for_review": ENTRY_QUALITY_AUDIT_MIN_ROWS,
+        "metrics": metric_reports,
+        "best_diagnostic_metric": best_metric,
+        "evaluation_entry_quality_low_discrimination_warning": warning,
+        "authority": "AUDIT_ONLY_NO_WEIGHT_THRESHOLD_OR_SIZING_CHANGES",
+        "policy": "DESCRIPTIVE_DISTRIBUTION_CORRELATION_AUC_CALIBRATION_AND_SETUP_NORMALIZATION",
+        "schema_version": ENTRY_QUALITY_AUDIT_SCHEMA_VERSION,
+        "updated_at": iso_now(),
+    }
+
+
+
 def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
     """Performance memory by setup type and family.
 
@@ -6366,6 +6700,9 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "protection_last_ratchet_stop": payload.get("protection_last_ratchet_stop"),
         "protection_ratchet_missed_due_to_price": payload.get("protection_ratchet_missed_due_to_price"),
         "protection_last_evaluated_mfe_r": payload.get("protection_last_evaluated_mfe_r"),
+        "protection_ratchet_new_peak_events": payload.get("protection_ratchet_new_peak_events"),
+        "protection_ratchet_evidence": payload.get("protection_ratchet_evidence"),
+        "protection_ratchet_evidence_count": payload.get("protection_ratchet_evidence_count", len(payload.get("protection_ratchet_evidence") or [])),
         "management_state": payload.get("management_state"),
         "management_evidence_schema_version": payload.get("management_evidence_schema_version"),
         "geometry_backfill": payload.get("geometry_backfill"),
@@ -6582,6 +6919,8 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
         journal = {}
     journal["geometry_backfill"] = backfill_trade_geometry_evidence(journal)
     journal["dormant_detector_audit_upgrade"] = upgrade_dormant_reachability_ledger(journal)
+    migrate_setup_episode_identity_schema(journal)
+    migrate_predicate_reachability_schema(journal)
     legacy_training_source = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
     dedup_training: dict[str, dict[str, Any]] = {}
     for item in legacy_training_source:
@@ -6647,6 +6986,16 @@ def load_journal() -> dict[str, Any]:
                 "completed_at": iso_now(),
             })
             atomic_json_write(JOURNAL_FILE, journal)
+    episode_schema_report = migrate_setup_episode_identity_schema(journal)
+    predicate_schema_report = migrate_predicate_reachability_schema(journal)
+    if episode_schema_report.get("changed") or predicate_schema_report.get("changed"):
+        journal.setdefault("migration", {}).update({
+            "mode": "V9_5_20_EPISODE_AND_PREDICATE_SCHEMA_MIGRATION",
+            "setup_episode_identity_migration": episode_schema_report,
+            "predicate_schema_migration": predicate_schema_report,
+            "completed_at": iso_now(),
+        })
+        atomic_json_write(JOURNAL_FILE, journal)
     journal.setdefault("signals", [])
     journal.setdefault("training_signals", [])
     journal.setdefault("signal_events", [])
@@ -6819,6 +7168,7 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["analytics"] = compute_analytics(journal)
     journal["setup_statistics"] = compute_setup_statistics(journal)
     journal["calendar_statistics"] = compute_calendar_statistics(journal)
+    journal["entry_quality_audit"] = compute_entry_quality_audit(journal)
     journal["learning_status"] = compute_learning_status(journal)
     atomic_json_write(JOURNAL_FILE, journal)
 
@@ -10618,6 +10968,7 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
         "setup_calibration_min_closed_trades": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
         "validation": _validation_metrics(global_rows, DEFAULT_QUALITY_COEFFICIENTS["_global"]),
         "score_outcome_correlation": compute_score_outcome_correlation(journal, global_ready),
+        "entry_quality_audit": compute_entry_quality_audit(journal),
         "short_specific_ml": compute_short_specific_ml_statistics(journal),
         "github_actions": bool(os.getenv("GITHUB_ACTIONS")),
         "journal_persistence_confirmed": JOURNAL_PERSISTENCE_CONFIRMED,
@@ -18227,6 +18578,55 @@ def _stop_locked_r(trade: ActiveTrade, stop: Optional[float] = None) -> float:
     return max(0.0, _protection_current_r(trade, value))
 
 
+def _ratchet_observation_ts(context: dict[str, Any]) -> int:
+    candles = ((context.get("candles") or {}).get("3m") or [])
+    confirmed = [int(getattr(candle, "ts", 0) or 0) for candle in candles if getattr(candle, "confirmed", True)]
+    return max(confirmed, default=int(now_utc().timestamp() * 1000))
+
+
+def _append_ratchet_evidence(
+    trade: ActiveTrade,
+    context: dict[str, Any],
+    event_type: str,
+    **details: Any,
+) -> dict[str, Any]:
+    evidence = [dict(item) for item in (getattr(trade, "protection_ratchet_evidence", []) or []) if isinstance(item, dict)]
+    row = {
+        "sequence": len(evidence) + 1,
+        "time": iso_now(),
+        "observation_ts": _ratchet_observation_ts(context),
+        "event_type": str(event_type),
+        "trade_id": str(getattr(trade, "id", "") or ""),
+        "side": str(getattr(trade, "side", "") or ""),
+        "peak_mfe_r": round(safe_float(details.pop("peak_mfe_r", getattr(trade, "protection_peak_mfe_r", 0.0)), 0.0), 6),
+        "locked_r": round(safe_float(details.pop("locked_r", getattr(trade, "protection_locked_r", 0.0)), 0.0), 6),
+        "stop": round_price(details.pop("stop", getattr(trade, "stop_current", 0.0))),
+        "retroactive": False,
+        "schema_version": "ratchet_step_evidence_v9.5.20",
+    }
+    row.update(json_safe(details))
+    signature = (
+        row.get("observation_ts"), row.get("event_type"), row.get("peak_mfe_r"),
+        row.get("locked_r"), row.get("stop"), row.get("requested_locked_r"),
+    )
+    if evidence:
+        last = evidence[-1]
+        last_signature = (
+            last.get("observation_ts"), last.get("event_type"), last.get("peak_mfe_r"),
+            last.get("locked_r"), last.get("stop"), last.get("requested_locked_r"),
+        )
+        if signature == last_signature:
+            return last
+    evidence.append(row)
+    if len(evidence) > TP0_PROTECT_RATCHET_EVIDENCE_LIMIT:
+        evidence = evidence[-TP0_PROTECT_RATCHET_EVIDENCE_LIMIT:]
+        for index, item in enumerate(evidence, 1):
+            item["sequence"] = index
+    trade.protection_ratchet_evidence = evidence
+    trade.management_evidence_schema_version = "management_evidence_v9.5.20_multistep_ratchet_evidence"
+    return row
+
+
 def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     """Trail a proven pre-TP1 position from its MFE high-water mark.
 
@@ -18243,6 +18643,7 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
     risk_distance = _trade_risk_distance(trade)
     peak_mfe_r = _protection_mfe_r(trade)
     current_r = _protection_current_r(trade, price)
+    stop_before_evaluation = round_price(trade.stop_current)
     previous_peak_r = max(0.0, safe_float(getattr(trade, "protection_peak_mfe_r", 0.0), 0.0))
     prior_locked_r = max(
         0.0,
@@ -18250,6 +18651,8 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         _stop_locked_r(trade),
     )
     new_peak = peak_mfe_r > previous_peak_r + 1e-9
+    if new_peak:
+        trade.protection_ratchet_new_peak_events = int(getattr(trade, "protection_ratchet_new_peak_events", 0) or 0) + 1
     trade.protection_peak_mfe_r = round(max(previous_peak_r, peak_mfe_r), 6)
     trade.protection_last_evaluated_mfe_r = round(peak_mfe_r, 6)
 
@@ -18272,6 +18675,8 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         "new_mfe_high_water": new_peak,
         "ratchet_count": int(getattr(trade, "protection_ratchet_count", 0) or 0),
         "missed_due_to_price": int(getattr(trade, "protection_ratchet_missed_due_to_price", 0) or 0),
+        "new_peak_events": int(getattr(trade, "protection_ratchet_new_peak_events", 0) or 0),
+        "evidence_count": len(getattr(trade, "protection_ratchet_evidence", []) or []),
         "policy": "HIGH_WATER_MFE_TRAILING_FROM_CURRENT_OBSERVATION_ONLY",
     }
     result["mfe_giveback_ratio"] = round(giveback_ratio, 6)
@@ -18294,6 +18699,20 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
 
     profile["eligible"] = True
     locked = bool(getattr(trade, "pre_tp1_protection_locked", False))
+    if new_peak:
+        high_water_evidence = _append_ratchet_evidence(
+            trade, context, "MFE_HIGH_WATER_OBSERVED",
+            previous_peak_mfe_r=round(previous_peak_r, 6),
+            peak_mfe_r=round(peak_mfe_r, 6),
+            current_r=round(current_r, 6),
+            giveback_ratio=round(giveback_ratio, 6),
+            locked_r=round(prior_locked_r, 6),
+            stop=stop_before_evaluation,
+            threshold=giveback_threshold,
+            threshold_scope=threshold_scope,
+        )
+        profile["evidence_count"] = len(getattr(trade, "protection_ratchet_evidence", []) or [])
+        profile["last_evidence"] = high_water_evidence
     if not locked and giveback_ratio < giveback_threshold:
         trade.management_state = "SUPPORTED"
         result["management_state"] = "SUPPORTED"
@@ -18327,6 +18746,28 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
                 f"але поточна ціна дозволяє лише {market_feasible_locked_r:.2f}R"
             )
         trade.management_state = "PROTECT" if locked else "WEAKENING"
+        event_type = (
+            "RATCHET_DEFERRED_PRICE"
+            if requested_locked_r > prior_locked_r + minimum_improvement
+            else "RATCHET_NO_MATERIAL_STEP"
+        )
+        deferred_evidence = _append_ratchet_evidence(
+            trade, context, event_type,
+            previous_peak_mfe_r=round(previous_peak_r, 6),
+            peak_mfe_r=round(peak_mfe_r, 6),
+            current_r=round(current_r, 6),
+            giveback_ratio=round(giveback_ratio, 6),
+            prior_locked_r=round(prior_locked_r, 6),
+            requested_locked_r=round(requested_locked_r, 6),
+            market_feasible_locked_r=round(market_feasible_locked_r, 6),
+            feasible_locked_r=round(feasible_locked_r, 6),
+            locked_r=round(prior_locked_r, 6),
+            stop=stop_before_evaluation,
+            minimum_improvement_r=minimum_improvement,
+            missed_due_to_price=trade.protection_ratchet_missed_due_to_price,
+        )
+        profile["evidence_count"] = len(getattr(trade, "protection_ratchet_evidence", []) or [])
+        profile["last_evidence"] = deferred_evidence
         result["management_state"] = trade.management_state
         if locked:
             result["recommended_stop"] = round_price(trade.stop_current)
@@ -18349,6 +18790,16 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         result.setdefault("notes", []).append(
             f"RATCHET WAIT: stop {target_stop} не можна коректно застосувати від поточної ціни {round_price(price)}"
         )
+        rejected_evidence = _append_ratchet_evidence(
+            trade, context, "RATCHET_APPLY_REJECTED",
+            previous_peak_mfe_r=round(previous_peak_r, 6), peak_mfe_r=round(peak_mfe_r, 6),
+            current_r=round(current_r, 6), prior_locked_r=round(prior_locked_r, 6),
+            requested_locked_r=round(requested_locked_r, 6), feasible_locked_r=round(feasible_locked_r, 6),
+            requested_stop=target_stop, stop=stop_before_evaluation, locked_r=round(prior_locked_r, 6),
+            missed_due_to_price=trade.protection_ratchet_missed_due_to_price,
+        )
+        profile["evidence_count"] = len(getattr(trade, "protection_ratchet_evidence", []) or [])
+        profile["last_evidence"] = rejected_evidence
         result["profit_protection"] = profile
         return profile
 
@@ -18367,7 +18818,7 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
     trade.protection_ratchet_count = int(getattr(trade, "protection_ratchet_count", 0) or 0) + int(applied or first_activation)
     trade.protection_last_ratchet_at = now
     trade.protection_last_ratchet_stop = round_price(trade.stop_current)
-    trade.management_evidence_schema_version = "management_evidence_v9.5.19_trailing_ratchet"
+    trade.management_evidence_schema_version = "management_evidence_v9.5.20_multistep_ratchet_evidence"
     trade.management_state = "PROTECT"
     result["management_state"] = "PROTECT"
     result["action"] = Action.PROTECT.value
@@ -18395,6 +18846,27 @@ def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: 
         "last_ratchet_at": trade.protection_last_ratchet_at,
         "missed_due_to_price": trade.protection_ratchet_missed_due_to_price,
     })
+    step_event = _append_ratchet_evidence(
+        trade, context, "RATCHET_ACTIVATED" if first_activation else "RATCHET_APPLIED",
+        previous_peak_mfe_r=round(previous_peak_r, 6),
+        peak_mfe_r=round(peak_mfe_r, 6),
+        current_r=round(current_r, 6),
+        giveback_ratio=round(giveback_ratio, 6),
+        prior_locked_r=round(prior_locked_r, 6),
+        requested_locked_r=round(requested_locked_r, 6),
+        market_feasible_locked_r=round(market_feasible_locked_r, 6),
+        feasible_locked_r=round(feasible_locked_r, 6),
+        locked_r=round(trade.protection_locked_r, 6),
+        stop_before=stop_before_evaluation,
+        requested_stop=target_stop,
+        stop=round_price(trade.stop_current),
+        applied=bool(applied or already_protected),
+        ratchet_count=trade.protection_ratchet_count,
+        threshold=giveback_threshold,
+        threshold_scope=threshold_scope,
+    )
+    profile["evidence_count"] = len(getattr(trade, "protection_ratchet_evidence", []) or [])
+    profile["last_evidence"] = step_event
     result["profit_protection"] = profile
     return profile
 
@@ -18952,6 +19424,7 @@ def compute_analytics(journal: dict) -> dict:
     existing["execution_conversion_funnel"] = compute_execution_conversion_funnel(journal)
     existing["relaxed_continuation_policy"] = compute_relaxed_continuation_policy_comparison(journal)
     existing["short_specific_ml"] = compute_short_specific_ml_statistics(journal)
+    existing["entry_quality_audit"] = compute_entry_quality_audit(journal)
     return existing
 
 
@@ -19134,7 +19607,10 @@ def run_bot() -> None:
                 "protection_last_ratchet_stop": getattr(active, "protection_last_ratchet_stop", 0.0),
                 "protection_ratchet_missed_due_to_price": getattr(active, "protection_ratchet_missed_due_to_price", 0),
                 "protection_last_evaluated_mfe_r": getattr(active, "protection_last_evaluated_mfe_r", 0.0),
-                "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.19_trailing_ratchet"),
+                "protection_ratchet_new_peak_events": getattr(active, "protection_ratchet_new_peak_events", 0),
+                "protection_ratchet_evidence": list(getattr(active, "protection_ratchet_evidence", []) or []),
+                "protection_ratchet_evidence_count": len(getattr(active, "protection_ratchet_evidence", []) or []),
+                "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.20_multistep_ratchet_evidence"),
                 "entry_quality": getattr(active, "entry_quality", 0),
                 "entry_score": getattr(active, "entry_quality", 0),
                 "entry_score_source": getattr(active, "entry_score_source", ""),
@@ -19183,7 +19659,22 @@ def run_bot() -> None:
                     f"would_execute={shadow_scan.get('would_executable', False)}"
                 )
         append_history(state, {"type": "FOLLOW" if not res.get("closed") else "CLOSE", "side": active.side, "action": res.get("action"), "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
-        journal.setdefault("signal_events", []).append({"time": iso_now(), "type": "FOLLOW" if not res.get("closed") else "CLOSE", "action": res.get("action"), "side": active.side, "price": context["price"], "trade_id": active.id, "signal_id": active.signal_id})
+        management_event = {
+            "time": iso_now(),
+            "type": "FOLLOW" if not res.get("closed") else "CLOSE",
+            "action": res.get("action"),
+            "side": active.side,
+            "price": context["price"],
+            "trade_id": active.id,
+            "signal_id": active.signal_id,
+            "management_state": res.get("management_state"),
+            "stop_before": res.get("stop_before"),
+            "stop_after": res.get("stop_after"),
+            "profit_protection": json_safe(res.get("profit_protection") or {}),
+            "ratchet_evidence": json_safe((getattr(active, "protection_ratchet_evidence", []) or [])[-1:] or []),
+            "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.20_multistep_ratchet_evidence"),
+        }
+        journal.setdefault("signal_events", []).append(management_event)
         save_state(state)
         save_journal(journal)
         print("BOT COMPLETE: ACTIVE TRADE MANAGED")
@@ -23366,9 +23857,12 @@ def test_dormant_saturation_uses_predicate_observation_denominator() -> bool:
     journal = {"setup_lifecycle_counters": {"detector_reachability": {
         SetupType.SWEEP_RECLAIM.value: {
             "evaluated": 100, "fired": 0, "blocker_counts": {},
+            "current_schema_evaluated": 19, "current_schema_fired": 0,
+            "current_schema_blocker_counts": {}, "current_schema_scan_mode_counts": {},
             "condition_true_counts": {}, "condition_false_counts": {"turtle_weak_displacement": 19},
+            "condition_not_applicable_counts": {}, "predicate_dependencies": {},
             "margin_statistics": {}, "last_observation": {}, "health_status": "DORMANT_MARKET_CONDITIONS",
-            "saturated_predicates": [],
+            "saturated_predicates": [], "predicate_schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
         }
     }}}
     context = {
@@ -23504,7 +23998,7 @@ def test_tp0_protection_trails_new_mfe_high_water() -> bool:
         and trade.protection_ratchet_count == 2
         and profile.get("ratcheted")
         and trade.stop_current == second_stop
-        and trade.management_evidence_schema_version == "management_evidence_v9.5.19_trailing_ratchet"
+        and trade.management_evidence_schema_version == "management_evidence_v9.5.20_multistep_ratchet_evidence"
     )
 
 
@@ -23658,14 +24152,138 @@ def test_liquidity_ladder_predicate_audit_exposes_route_and_confirmation() -> bo
     )
 
 
+def test_episode_identity_is_monotonic_across_ranked_and_selected() -> bool:
+    journal: dict[str, Any] = {}
+    candidate = _v9_test_candidate()
+    candidate.setup_type = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+    candidate.ict_model = "ACCEPTANCE_RETEST_CONTINUATION"
+    candidate.thesis_key = "LONG|ACCEPTANCE_RETEST_CONTINUATION|ACCEPTANCE_RETEST_CONTINUATION|1000"
+    candidate.execution_anchor = 100.0
+    candidate.trigger_level = 100.0
+    candidate.selected_source = "RANKED_CANDIDATE"
+    context = {
+        "price": 100.0, "atr15": 1.0, "candles": {"3m": []},
+        "_setup_lifecycle_detected": [{"side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_setup_lifecycle_qualified": [{"side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model}],
+        "_setup_lifecycle_ranked": [{
+            "side": candidate.side, "setup_type": candidate.setup_type, "model_id": candidate.ict_model,
+            "rank": 1, "thesis_key": candidate.thesis_key, "execution_anchor": 100.0,
+            "trigger_level": 100.0, "thesis_origin": "MODEL_LOCAL_TEST", "model_thesis_age_minutes": 1.0,
+        }],
+        "_detector_reachability": [],
+    }
+    decision = Decision(
+        id="episode-monotonic", time=iso_now(), action=Action.PROBE_ENTRY.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=candidate.final_score,
+        reason="test", regime=Regime.NORMAL.value, candidate=candidate, plan=_v9_test_plan(),
+        audit={"executive_director": {"report": {"executive_decision": {"allow_execution": True, "blocking_reasons": []}}}},
+    )
+    run = update_setup_lifecycle_counters(journal, context, decision)
+    ranked_key = (run.get("ranked") or [{}])[0].get("episode_key")
+    selected_key = (run.get("selected") or {}).get("episode_key")
+    totals = ((journal.get("setup_lifecycle_counters") or {}).get("independent_episode_totals") or {}).get(candidate.setup_type) or {}
+    return bool(
+        ranked_key and ranked_key == selected_key
+        and totals.get("ranked") == 1 and totals.get("selected") == 1
+        and totals.get("entered") == 1
+        and int(totals.get("selected") or 0) <= int(totals.get("ranked") or 0)
+    )
+
+
+def test_predicate_schema_migration_archives_legacy_and_resets_health_scope() -> bool:
+    journal = {"setup_lifecycle_counters": {"detector_reachability": {
+        SetupType.RANGE_COMPRESSION_BREAKOUT.value: {
+            "evaluated": 400, "fired": 0, "blocker_counts": {"range_compressed": 300},
+            "condition_true_counts": {}, "condition_false_counts": {"live_trigger_ready": 300},
+            "condition_not_applicable_counts": {}, "margin_statistics": {"legacy": {"count": 300}},
+            "health_status": "PREDICATE_SATURATION_SUSPECTED", "saturated_predicates": ["live_trigger_ready"],
+        }
+    }}}
+    report = migrate_predicate_reachability_schema(journal)
+    row = journal["setup_lifecycle_counters"]["detector_reachability"][SetupType.RANGE_COMPRESSION_BREAKOUT.value]
+    return bool(
+        report.get("rows_migrated") == 1
+        and row.get("evaluated") == 400 and row.get("fired") == 0
+        and row.get("condition_false_counts") == {}
+        and row.get("current_schema_evaluated") == 0
+        and row.get("health_status") == "OBSERVING"
+        and row.get("predicate_schema_archives")
+        and row.get("predicate_schema_version") == DETECTOR_REACHABILITY_SCHEMA_VERSION
+    )
+
+
+def test_entry_quality_audit_is_descriptive_and_setup_normalized() -> bool:
+    trades = []
+    for index in range(16):
+        setup = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value if index < 8 else SetupType.SESSION_MEAN_RECLAIM.value
+        quality = 50.0 + index * 2.0
+        pnl = -1.0 if index % 4 == 0 else (quality - 55.0) / 25.0
+        trades.append({
+            "id": f"q-{index}", "setup_type": setup, "pnl_r": pnl,
+            "entry_score": quality, "evaluation_entry_quality": quality,
+            "preplan_entry_quality": quality - 2, "trade_entry_quality": quality + 1,
+            "setup_quality": 65 + (index % 5), "timing_quality": quality,
+            "trade_quality": quality + 3,
+        })
+    report = compute_entry_quality_audit({"trades": trades})
+    metric = (report.get("metrics") or {}).get("evaluation_entry_quality") or {}
+    return bool(
+        report.get("schema_version") == ENTRY_QUALITY_AUDIT_SCHEMA_VERSION
+        and report.get("authority") == "AUDIT_ONLY_NO_WEIGHT_THRESHOLD_OR_SIZING_CHANGES"
+        and metric.get("sample") == 16
+        and metric.get("calibration_bins")
+        and metric.get("setup_normalized_sample", 0) >= 6
+        and metric.get("spearman_vs_pnl_r") is not None
+    )
+
+
+def test_multistep_ratchet_evidence_is_monotonic_and_compact() -> bool:
+    trade = ActiveTrade(
+        id="ratchet-evidence", side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=iso_now(),
+        entry=100.0, stop_initial=99.0, stop_current=99.0, structural_invalidation=98.0,
+        tp0=100.5, tp1=104.0, tp2=105.0, tp3=106.0, quality=75, position_risk_pct=0.1,
+        best_price=101.0, worst_price=100.0, tp0_hit=True, entry_stage=EntryStage.PROBE.value,
+    )
+    _tp0_profit_protection(trade, {"price": 100.4, "candles": {"3m": []}}, {"best_pct": 1.0, "current_pct": 0.4, "notes": []})
+    trade.best_price = 102.0
+    _tp0_profit_protection(trade, {"price": 101.9, "candles": {"3m": []}}, {"best_pct": 2.0, "current_pct": 1.9, "notes": []})
+    trade.best_price = 103.0
+    _tp0_profit_protection(trade, {"price": 102.9, "candles": {"3m": []}}, {"best_pct": 3.0, "current_pct": 2.9, "notes": []})
+    applied = [row for row in trade.protection_ratchet_evidence if row.get("event_type") in {"RATCHET_ACTIVATED", "RATCHET_APPLIED"}]
+    compact = compact_trade_for_journal({
+        "id": trade.id, "setup_type": trade.setup_type, "side": trade.side, "pnl_r": 1.0,
+        "protection_ratchet_count": trade.protection_ratchet_count,
+        "protection_ratchet_new_peak_events": trade.protection_ratchet_new_peak_events,
+        "protection_ratchet_evidence": trade.protection_ratchet_evidence,
+        "management_evidence_schema_version": trade.management_evidence_schema_version,
+    })
+    locks = [safe_float(row.get("locked_r"), 0.0) for row in applied]
+    stops = [safe_float(row.get("stop"), 0.0) for row in applied]
+    return bool(
+        len(applied) >= 3
+        and all(b > a for a, b in zip(locks, locks[1:]))
+        and all(b > a for a, b in zip(stops, stops[1:]))
+        and all(row.get("retroactive") is False for row in applied)
+        and compact.get("protection_ratchet_evidence_count") == len(trade.protection_ratchet_evidence)
+        and compact.get("management_evidence_schema_version") == "management_evidence_v9.5.20_multistep_ratchet_evidence"
+    )
+
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
 
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
+        ("v9.5.20 episode identity is monotonic across funnel stages", test_episode_identity_is_monotonic_across_ranked_and_selected),
+        ("v9.5.20 predicate schema migration isolates legacy counters", test_predicate_schema_migration_archives_legacy_and_resets_health_scope),
+        ("v9.5.20 entry-quality audit is descriptive and setup-normalized", test_entry_quality_audit_is_descriptive_and_setup_normalized),
+        ("v9.5.20 ratchet preserves monotonic multi-step live evidence", test_multistep_ratchet_evidence_is_monotonic_and_compact),
         ("current-session model-local clocks override stale market thesis", test_current_session_model_local_origins_override_stale_market_clock),
-        ("v9.5.19 TP0 protection trails new MFE high-water", test_tp0_protection_trails_new_mfe_high_water),
+        ("v9.5.20 TP0 protection trails new MFE high-water", test_tp0_protection_trails_new_mfe_high_water),
         ("v9.5.19 ranked top-N audits nonselected candidates", test_ranked_top_n_conversion_audits_nonselected_candidate),
         ("v9.5.19 lifecycle counts independent market episodes", test_independent_episode_counting_deduplicates_repeat_scans),
         ("v9.5.19 Daily Open shadow is episode-deduplicated audit-only", test_daily_open_shadow_experiment_is_episode_deduplicated_and_audit_only),
@@ -26078,11 +26696,12 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         })
 
     result["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(payload)
+    result["entry_quality_audit"] = compute_entry_quality_audit(payload)
     result["revalidation_execution_replay"] = _revalidation_fix_replay(payload)
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.19 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.20 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
