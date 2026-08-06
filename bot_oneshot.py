@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.18 (Provenance, Shadow Scan and Fresh Base Clock)
+BZU Professional Hybrid Confluence Signal Bot v9.5.19 (Trailing Ratchet, Conversion and Predicate Audit)
 =============================================================================================
 Оновлення v9.5.18:
 - Trade-profile provenance проходить без втрат setup_trade_profile -> trade_mode_profile -> TradePlan/ActiveTrade -> compact closed trade.
@@ -110,6 +110,12 @@ BZU Professional Hybrid Confluence Signal Bot v9.5.18 (Provenance, Shadow Scan a
 - Early weak Bayesian calibration починається з 6 resolved observations; hierarchical лишається з 12, pooled logistic — з 24.
 - Додано повний precursor lifecycle: кожен directional candidate створює PENDING event, а fixed-horizon resolver через 45 хвилин присвоює CONFIRMED / FAILED / EXPIRED.
 - Anti-leakage та Executive authority збережені: шар не створює незалежний entry path.
+Оновлення v9.5.19:
+- TP0 protection переписано у справжній high-water trailing ratchet: після першої активації stop перераховується від нового MFE-піку без ретроактивного використання вже пройдених свічок.
+- Додано ranked top-N conversion audit: кожен сильний ranked-кандидат отримує окремий score/plan/executive counterfactual без права на live entry.
+- Lifecycle тепер паралельно рахує незалежні market episodes за side/setup/model/anchor/thesis epoch, не підміняючи сирі scan counters.
+- DAILY_WEEKLY_OPEN_RECLAIM отримав окремий audit-only shadow experiment для score 50–67; глобальні canonical score/HTF thresholds не змінено.
+- Predicate reachability став dependency-aware: NOT_APPLICABLE не рахується як FALSE; додано path/applicability audit для Sweep, Range Compression та Liquidity Ladder.
 """
 
 from __future__ import annotations
@@ -227,8 +233,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.18-provenance-shadow-fresh-base-clock"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_18_PROVENANCE_SHADOW_FRESH_BASE_CLOCK"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.19-trailing-conversion-episode-predicate-audit"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_19_TRAILING_CONVERSION_EPISODE_PREDICATE_AUDIT"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -358,6 +364,20 @@ ACTIVE_TRADE_SHADOW_SCANNING_ENABLED = os.getenv("ACTIVE_TRADE_SHADOW_SCANNING_E
 ACTIVE_TRADE_SHADOW_SCAN_LIMIT = max(50, int(os.getenv("ACTIVE_TRADE_SHADOW_SCAN_LIMIT", "300") or 300))
 DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS = max(10, int(os.getenv("DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS", "20") or 20))
 DORMANT_PREDICATE_SATURATION_FALSE_RATE = min(1.0, max(0.80, float(os.getenv("DORMANT_PREDICATE_SATURATION_FALSE_RATE", "0.98") or 0.98)))
+RANKED_CONVERSION_AUDIT_TOP_N = min(10, max(3, int(os.getenv("RANKED_CONVERSION_AUDIT_TOP_N", "5") or 5)))
+RANKED_CONVERSION_AUDIT_LIMIT = max(100, int(os.getenv("RANKED_CONVERSION_AUDIT_LIMIT", "500") or 500))
+SETUP_EPISODE_REGISTRY_LIMIT = max(500, int(os.getenv("SETUP_EPISODE_REGISTRY_LIMIT", "4000") or 4000))
+SETUP_EPISODE_TIME_BUCKET_MINUTES = max(30, int(os.getenv("SETUP_EPISODE_TIME_BUCKET_MINUTES", "240") or 240))
+SETUP_EPISODE_ANCHOR_BUCKET_ATR = max(0.10, float(os.getenv("SETUP_EPISODE_ANCHOR_BUCKET_ATR", "0.25") or 0.25))
+DAILY_OPEN_SHADOW_EXPERIMENT_ENABLED = os.getenv("DAILY_OPEN_SHADOW_EXPERIMENT_ENABLED", "true").lower() in {"1", "true", "yes"}
+DAILY_OPEN_SHADOW_MIN_SCORE = max(0, int(os.getenv("DAILY_OPEN_SHADOW_MIN_SCORE", "50") or 50))
+DAILY_OPEN_SHADOW_MAX_SCORE = min(67, int(os.getenv("DAILY_OPEN_SHADOW_MAX_SCORE", "67") or 67))
+DAILY_OPEN_SHADOW_MIN_INDEPENDENT_EPISODES = max(8, int(os.getenv("DAILY_OPEN_SHADOW_MIN_INDEPENDENT_EPISODES", "12") or 12))
+DAILY_OPEN_SHADOW_HORIZON_HOURS = max(4.0, float(os.getenv("DAILY_OPEN_SHADOW_HORIZON_HOURS", "24") or 24))
+DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT = min(0.05, max(0.005, float(os.getenv("DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT", "0.03") or 0.03)))
+DAILY_OPEN_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("DAILY_OPEN_SHADOW_HISTORY_LIMIT", "500") or 500))
+TP0_PROTECT_MIN_RATCHET_STEP_R = max(0.02, float(os.getenv("TP0_PROTECT_MIN_RATCHET_STEP_R", "0.10") or 0.10))
+TP0_PROTECT_PRICE_BUFFER_DOLLARS = max(0.001, float(os.getenv("TP0_PROTECT_PRICE_BUFFER_DOLLARS", "0.02") or 0.02))
 
 LEVERAGE = float(os.getenv("POSITION_LEVERAGE", "5") or 5)
 NORMAL_RISK_PCT = float(os.getenv("NORMAL_RISK_PCT", "0.50") or 0.50)
@@ -1723,7 +1743,14 @@ class ActiveTrade:
     protection_activation_mfe_r: float = 0.0
     protection_activation_current_r: float = 0.0
     protection_activation_stop: float = 0.0
-    management_evidence_schema_version: str = "management_evidence_v9.5.17"
+    protection_peak_mfe_r: float = 0.0
+    protection_locked_r: float = 0.0
+    protection_ratchet_count: int = 0
+    protection_last_ratchet_at: str = ""
+    protection_last_ratchet_stop: float = 0.0
+    protection_ratchet_missed_due_to_price: int = 0
+    protection_last_evaluated_mfe_r: float = 0.0
+    management_evidence_schema_version: str = "management_evidence_v9.5.19_trailing_ratchet"
     trade_profile_source: str = ""
     trade_profile_calibration_status: str = ""
     trade_profile_fallback_used: bool = False
@@ -1887,6 +1914,82 @@ def _setup_lifecycle_event_key(event: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def setup_market_episode_key(event: dict[str, Any], context: dict[str, Any]) -> str:
+    """Stable episode identity for repeated 15-minute scans of one thesis."""
+    explicit = str(event.get("episode_key") or "").strip()
+    if explicit:
+        return explicit
+    side = str(event.get("side") or "NEUTRAL")
+    setup_type = str(event.get("setup_type") or SetupType.NONE.value)
+    model_id = str(event.get("model_id") or event.get("ict_model") or "UNKNOWN")
+    price = safe_float(context.get("price"), 0.0)
+    atr15 = max(safe_float(context.get("atr15"), 0.0), price * 0.001, 1e-6)
+    anchor = safe_float(
+        event.get("execution_anchor"),
+        safe_float(event.get("trigger_level"), safe_float(event.get("anchor"), price)),
+    )
+    anchor_step = max(atr15 * SETUP_EPISODE_ANCHOR_BUCKET_ATR, price * 0.0005, 1e-6)
+    anchor_bucket = int(round(anchor / anchor_step)) if anchor > 0 else 0
+    as_of_ts = int(event.get("as_of_ts") or _preconfirm_as_of_ts(context))
+    age = safe_float(event.get("model_thesis_age_minutes"), -1.0)
+    if age < 0:
+        age = safe_float(event.get("market_thesis_age_minutes"), -1.0)
+    origin_ts = as_of_ts - int(max(age, 0.0) * 60_000) if age >= 0 else as_of_ts
+    bucket_ms = SETUP_EPISODE_TIME_BUCKET_MINUTES * 60_000
+    thesis_epoch = origin_ts // max(bucket_ms, 1)
+    origin = str(event.get("thesis_origin") or "UNKNOWN")
+    # Qualified/ranked candidates already carry the canonical thesis key, whose
+    # anchor is quantized by candidate construction. Prefer it over recomputing
+    # identity from a changing ATR on every scan. Raw detector events may not yet
+    # have a thesis key, so they retain the conservative anchor bucket fallback.
+    thesis_key = str(event.get("thesis_key") or "").strip()
+    identity = f"K{thesis_key}" if thesis_key else f"A{anchor_bucket}"
+    return f"{side}|{setup_type}|{model_id}|{identity}|T{thesis_epoch}|{origin}"
+
+
+def _register_setup_episode_stage(
+    ledger: dict[str, Any],
+    totals: dict[str, Any],
+    event: dict[str, Any],
+    stage: str,
+    context: dict[str, Any],
+    *,
+    shadow_mode: bool,
+) -> str:
+    registry_key = "active_trade_shadow_episode_registry" if shadow_mode else "episode_registry"
+    registry = ledger.setdefault(registry_key, {})
+    episode_key = setup_market_episode_key(event, context)
+    setup_type = str(event.get("setup_type") or SetupType.NONE.value)
+    episode_totals_key = "active_trade_shadow_independent_episode_totals" if shadow_mode else "independent_episode_totals"
+    episode_totals = ledger.setdefault(episode_totals_key, {})
+    row = episode_totals.setdefault(setup_type, {})
+    for name in ("detected", "qualified_detected", "ranked", "selected", "would_executable", "executable", "entered"):
+        row[name] = int(row.get(name) or 0)
+    record = registry.setdefault(episode_key, {
+        "episode_key": episode_key,
+        "side": str(event.get("side") or "NEUTRAL"),
+        "setup_type": setup_type,
+        "model_id": str(event.get("model_id") or event.get("ict_model") or "UNKNOWN"),
+        "first_seen": iso_now(),
+        "stages_seen": [],
+    })
+    seen = set(str(value) for value in (record.get("stages_seen") or []))
+    if stage not in seen:
+        row[stage] += 1
+        seen.add(stage)
+    record["stages_seen"] = sorted(seen)
+    record["last_seen"] = iso_now()
+    record["last_rank"] = event.get("rank")
+    record["last_score"] = event.get("final_score")
+    record["last_anchor"] = event.get("execution_anchor", event.get("trigger_level"))
+    event["episode_key"] = episode_key
+    if len(registry) > SETUP_EPISODE_REGISTRY_LIMIT:
+        ordered = sorted(registry.items(), key=lambda item: str((item[1] or {}).get("last_seen") or ""))
+        for key, _ in ordered[:len(registry) - SETUP_EPISODE_REGISTRY_LIMIT]:
+            registry.pop(key, None)
+    return episode_key
+
+
 def update_setup_lifecycle_counters(
     journal: dict[str, Any],
     context: dict[str, Any],
@@ -1943,6 +2046,13 @@ def update_setup_lifecycle_counters(
     for event in ranked_events:
         totals[event["setup_type"]]["ranked"] += 1
 
+    for event in detected_events:
+        _register_setup_episode_stage(ledger, totals, event, "detected", context, shadow_mode=shadow_mode)
+    for event in qualified_events:
+        _register_setup_episode_stage(ledger, totals, event, "qualified_detected", context, shadow_mode=shadow_mode)
+    for event in ranked_events:
+        _register_setup_episode_stage(ledger, totals, event, "ranked", context, shadow_mode=shadow_mode)
+
     reachability_ledger = ledger.setdefault("detector_reachability", {})
     for event in reachability_events:
         setup_type = str(event.get("setup_type") or "")
@@ -1950,6 +2060,7 @@ def update_setup_lifecycle_counters(
             "evaluated": 0, "fired": 0, "blocker_counts": {},
             "condition_true_counts": {}, "condition_false_counts": {},
             "condition_observation_counts": {}, "condition_false_rates": {},
+            "condition_not_applicable_counts": {}, "predicate_dependencies": {},
             "margin_statistics": {}, "last_observation": {},
             "scan_mode_counts": {}, "health_status": "OBSERVING",
             "saturated_predicates": [],
@@ -1963,10 +2074,19 @@ def update_setup_lifecycle_counters(
             blockers[str(blocker)] = int(blockers.get(str(blocker)) or 0) + 1
         true_counts = row.setdefault("condition_true_counts", {})
         false_counts = row.setdefault("condition_false_counts", {})
+        not_applicable_counts = row.setdefault("condition_not_applicable_counts", {})
+        applicability = {str(k): bool(v) for k, v in (event.get("condition_applicability") or {}).items()}
+        dependencies = row.setdefault("predicate_dependencies", {})
+        for name, values in (event.get("predicate_dependencies") or {}).items():
+            dependencies[str(name)] = [str(value) for value in values]
         for name, value in (event.get("conditions") or {}).items():
             if isinstance(value, bool):
+                key = str(name)
+                if not applicability.get(key, True):
+                    not_applicable_counts[key] = int(not_applicable_counts.get(key) or 0) + 1
+                    continue
                 target = true_counts if value else false_counts
-                target[str(name)] = int(target.get(str(name)) or 0) + 1
+                target[key] = int(target.get(key) or 0) + 1
         margin_stats = row.setdefault("margin_statistics", {})
         for name, value in (event.get("margins") or {}).items():
             try:
@@ -2092,6 +2212,23 @@ def update_setup_lifecycle_counters(
                     "hard_expired": bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD"),
                 },
             }
+            selected_episode_event = {
+                **selected_event,
+                "execution_anchor": safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0),
+                "trigger_level": safe_float(getattr(candidate, "trigger_level", 0.0), 0.0),
+                "market_thesis_age_minutes": safe_float(getattr(candidate, "market_thesis_age_minutes", -1.0), -1.0),
+                "model_thesis_age_minutes": safe_float(getattr(candidate, "model_thesis_age_minutes", -1.0), -1.0),
+                "thesis_origin": str(getattr(candidate, "thesis_origin", "") or ""),
+            }
+            selected_event["episode_key"] = _register_setup_episode_stage(
+                ledger, totals, selected_episode_event, "selected", context, shadow_mode=shadow_mode
+            )
+            if would_executable:
+                _register_setup_episode_stage(ledger, totals, selected_episode_event, "would_executable", context, shadow_mode=shadow_mode)
+            if executable:
+                _register_setup_episode_stage(ledger, totals, selected_episode_event, "executable", context, shadow_mode=shadow_mode)
+            if entered:
+                _register_setup_episode_stage(ledger, totals, selected_episode_event, "entered", context, shadow_mode=shadow_mode)
         else:
             selection_anomaly = {
                 "code": "SELECTED_WITHOUT_RANKED_MATCH",
@@ -2103,6 +2240,24 @@ def update_setup_lifecycle_counters(
             }
             if decision is not None:
                 decision.audit.setdefault("setup_lifecycle", {})["selection_anomaly"] = selection_anomaly
+
+    episode_totals_key = "active_trade_shadow_independent_episode_totals" if shadow_mode else "independent_episode_totals"
+    episode_totals = ledger.get(episode_totals_key) or {}
+    ledger["independent_episode_policy"] = {
+        "identity": "SIDE_SETUP_MODEL_ANCHOR_BUCKET_THESIS_EPOCH",
+        "anchor_bucket_atr": SETUP_EPISODE_ANCHOR_BUCKET_ATR,
+        "time_bucket_minutes": SETUP_EPISODE_TIME_BUCKET_MINUTES,
+        "raw_scan_counters_preserved": True,
+        "schema_version": "setup_episode_registry_v9.5.19",
+    }
+    ledger["independent_episode_conversion"] = {
+        setup: {
+            **dict(values),
+            "ranked_to_entered_rate": round(safe_float(values.get("entered"), 0.0) / max(int(values.get("ranked") or 0), 1), 6),
+            "detected_to_ranked_rate": round(safe_float(values.get("ranked"), 0.0) / max(int(values.get("detected") or 0), 1), 6),
+        }
+        for setup, values in episode_totals.items() if isinstance(values, dict)
+    }
 
     run_row = {
         "time": iso_now(),
@@ -2132,7 +2287,7 @@ def update_setup_lifecycle_counters(
         "selection_contract": "ranked match required; decision.reason is explanatory, never a blocking reason",
         "active_trade_shadow_contract": "separate counters; may observe would_execute; cannot increment live entered",
         "updated_at": run_row["time"],
-        "schema_version": "setup_lifecycle_funnel_v9.5.18_truthful_capacity_and_predicate_denominators",
+        "schema_version": "setup_lifecycle_funnel_v9.5.19_episode_conversion_predicate_audit",
     })
     return run_row
 
@@ -4457,6 +4612,13 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "no_pullback_risk_pct": NO_PULLBACK_RISK_PCT,
         "active_trade_shadow_scanning_enabled": ACTIVE_TRADE_SHADOW_SCANNING_ENABLED,
         "active_trade_shadow_scan_limit": ACTIVE_TRADE_SHADOW_SCAN_LIMIT,
+        "ranked_conversion_audit_top_n": RANKED_CONVERSION_AUDIT_TOP_N,
+        "setup_episode_time_bucket_minutes": SETUP_EPISODE_TIME_BUCKET_MINUTES,
+        "setup_episode_anchor_bucket_atr": SETUP_EPISODE_ANCHOR_BUCKET_ATR,
+        "daily_open_shadow_experiment_enabled": DAILY_OPEN_SHADOW_EXPERIMENT_ENABLED,
+        "daily_open_shadow_min_score": DAILY_OPEN_SHADOW_MIN_SCORE,
+        "daily_open_shadow_max_score": DAILY_OPEN_SHADOW_MAX_SCORE,
+        "tp0_protect_min_ratchet_step_r": TP0_PROTECT_MIN_RATCHET_STEP_R,
         "dormant_predicate_saturation_min_observations": DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS,
         "dormant_predicate_saturation_false_rate": DORMANT_PREDICATE_SATURATION_FALSE_RATE,
         "relaxed_continuation_shadow_enabled": RELAXED_CONTINUATION_SHADOW_ENABLED,
@@ -6197,6 +6359,13 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "protection_activation_mfe_r": payload.get("protection_activation_mfe_r"),
         "protection_activation_current_r": payload.get("protection_activation_current_r"),
         "protection_activation_stop": payload.get("protection_activation_stop"),
+        "protection_peak_mfe_r": payload.get("protection_peak_mfe_r"),
+        "protection_locked_r": payload.get("protection_locked_r"),
+        "protection_ratchet_count": payload.get("protection_ratchet_count"),
+        "protection_last_ratchet_at": payload.get("protection_last_ratchet_at"),
+        "protection_last_ratchet_stop": payload.get("protection_last_ratchet_stop"),
+        "protection_ratchet_missed_due_to_price": payload.get("protection_ratchet_missed_due_to_price"),
+        "protection_last_evaluated_mfe_r": payload.get("protection_last_evaluated_mfe_r"),
         "management_state": payload.get("management_state"),
         "management_evidence_schema_version": payload.get("management_evidence_schema_version"),
         "geometry_backfill": payload.get("geometry_backfill"),
@@ -6439,6 +6608,12 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     journal["active_trade_shadow_scans"] = [
         item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
     ][-ACTIVE_TRADE_SHADOW_SCAN_LIMIT:]
+    journal["daily_open_shadow_experiments"] = [
+        item for item in list(journal.get("daily_open_shadow_experiments") or []) if isinstance(item, dict)
+    ][-DAILY_OPEN_SHADOW_HISTORY_LIMIT:]
+    journal["ranked_conversion_audits"] = [
+        item for item in list(journal.get("ranked_conversion_audits") or []) if isinstance(item, dict)
+    ][-RANKED_CONVERSION_AUDIT_LIMIT:]
     journal["journal_version"] = JOURNAL_VERSION
     journal["migration"] = {
         "from_version": int(journal.get("journal_version_before_migration", 1) or 1),
@@ -6479,12 +6654,19 @@ def load_journal() -> dict[str, Any]:
     journal.setdefault("relaxed_continuation_experiments", [])
     journal.setdefault("executive_divergences", [])
     journal.setdefault("rejected_hypothesis_shadows", [])
+    journal.setdefault("daily_open_shadow_experiments", [])
     journal.setdefault("preconfirmation_events", [])
     journal.setdefault("preconfirmation_model_status", {})
     journal.setdefault("active_trade_shadow_scans", [])
     journal["active_trade_shadow_scans"] = [
         item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
     ][-ACTIVE_TRADE_SHADOW_SCAN_LIMIT:]
+    journal["daily_open_shadow_experiments"] = [
+        item for item in list(journal.get("daily_open_shadow_experiments") or []) if isinstance(item, dict)
+    ][-DAILY_OPEN_SHADOW_HISTORY_LIMIT:]
+    journal["ranked_conversion_audits"] = [
+        item for item in list(journal.get("ranked_conversion_audits") or []) if isinstance(item, dict)
+    ][-RANKED_CONVERSION_AUDIT_LIMIT:]
     journal["training_signals"] = [
         lean for item in list(journal.get("training_signals") or [])
         if isinstance(item, dict)
@@ -6608,6 +6790,15 @@ def save_journal(journal: dict[str, Any]) -> None:
     journal["preconfirmation_events"] = _retain_preconfirmation_events(
         list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
     )
+    journal["active_trade_shadow_scans"] = [
+        item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
+    ][-ACTIVE_TRADE_SHADOW_SCAN_LIMIT:]
+    journal["daily_open_shadow_experiments"] = [
+        item for item in list(journal.get("daily_open_shadow_experiments") or []) if isinstance(item, dict)
+    ][-DAILY_OPEN_SHADOW_HISTORY_LIMIT:]
+    journal["ranked_conversion_audits"] = [
+        item for item in list(journal.get("ranked_conversion_audits") or []) if isinstance(item, dict)
+    ][-RANKED_CONVERSION_AUDIT_LIMIT:]
     journal["retention_audit"] = {
         "journal_version": JOURNAL_VERSION,
         "signals": len(journal["signals"]),
@@ -6619,8 +6810,10 @@ def save_journal(journal: dict[str, Any]) -> None:
             "training_signals": MAX_JOURNAL,
             "executive_divergences": EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT,
             "rejected_hypothesis_shadows": REJECTED_HYPOTHESIS_SHADOW_LIMIT,
+            "daily_open_shadow_experiments": DAILY_OPEN_SHADOW_HISTORY_LIMIT,
             "preconfirmation_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
             "active_trade_shadow_scans": ACTIVE_TRADE_SHADOW_SCAN_LIMIT,
+            "ranked_conversion_audits": RANKED_CONVERSION_AUDIT_LIMIT,
         },
     }
     journal["analytics"] = compute_analytics(journal)
@@ -11884,6 +12077,10 @@ def detect_liquidity_ladder_model(side: str, price: float, context: dict, atr15:
         "score_bonus": min(16, 5 + int(ladder_score)) if active else 0,
         "ladder_score": round(ladder_score, 2),
         "target_count": len(top),
+        "kind_count": len(kinds),
+        "target_count_pass": len(top) >= LIQUIDITY_LADDER_MIN_TARGETS,
+        "ladder_score_pass": ladder_score >= LIQUIDITY_LADDER_MIN_SCORE,
+        "kind_diversity_pass": len(kinds) >= 2,
         "targets": [{"kind": t.get("kind"), "level": round_price(t.get("level")), "score": round(safe_float(t.get("magnet_score"), 0.0), 2)} for t in top],
         "tf_ok": tf_ok,
         "entry_ok": False,
@@ -13024,6 +13221,7 @@ DORMANT_SETUP_REACHABILITY_TYPES = (
     SetupType.SWEEP_RECLAIM.value,
     SetupType.RANGE_COMPRESSION_BREAKOUT.value,
     SetupType.RANGE_EDGE_REVERSAL.value,
+    SetupType.LIQUIDITY_LADDER.value,
 )
 
 
@@ -13078,23 +13276,44 @@ def build_dormant_detector_reachability(
     sweep_quality_multiplier: float = 0.0,
     sweep_quality_threshold: float = 0.85,
     compression_threshold_atr: float = 1.60,
+    liquidity_ladder: Optional[dict[str, Any]] = None,
+    liquidity_ladder_confirmation: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
-    """Explain why historically quiet setup detectors did or did not fire.
+    """Dependency-aware reachability audit for historically quiet setups.
 
-    This is telemetry only. It does not add score, change readiness or publish
-    candidates. Keeping the predicates in one helper also makes reachability
-    regression-testable instead of relying on hopeful comments in a large loop.
+    A predicate is counted FALSE only when its prerequisites made it applicable.
+    For example, ``live_trigger_ready`` in the compression path is not evaluated
+    until a compressed range and displacement both exist. This prevents a
+    structurally skipped check from masquerading as a saturated hard blocker.
     """
+    liquidity_ladder = dict(liquidity_ladder or {})
+    liquidity_ladder_confirmation = dict(liquidity_ladder_confirmation or {})
     sweep_2022 = bool(is_sweep and has_choch and has_fvg)
     sweep_turtle = bool(is_sweep and not strong_displacement)
     range_edge = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
     range_compression = bool(is_range_compressed and strong_displacement and trigger_ready)
 
     def row(
-        setup_type: str, fired: bool, paths: dict[str, bool], conditions: dict[str, Any],
+        setup_type: str,
+        fired: bool,
+        paths: dict[str, bool],
+        conditions: dict[str, Any],
         margins: Optional[dict[str, Any]] = None,
+        *,
+        applicability: Optional[dict[str, bool]] = None,
+        dependencies: Optional[dict[str, list[str]]] = None,
     ) -> dict[str, Any]:
-        blockers = [] if fired else [name for name, value in conditions.items() if isinstance(value, bool) and not value]
+        applicability = {str(k): bool(v) for k, v in (applicability or {}).items()}
+        blockers = [
+            name for name, value in conditions.items()
+            if isinstance(value, bool)
+            and applicability.get(str(name), True)
+            and not value
+        ] if not fired else []
+        not_applicable = sorted(
+            name for name, value in conditions.items()
+            if isinstance(value, bool) and not applicability.get(str(name), True)
+        )
         return {
             "side": str(side),
             "setup_type": setup_type,
@@ -13102,12 +13321,25 @@ def build_dormant_detector_reachability(
             "fired": bool(fired),
             "paths": {str(k): bool(v) for k, v in paths.items()},
             "conditions": dict(conditions),
+            "condition_applicability": applicability,
+            "predicate_dependencies": {str(k): [str(x) for x in v] for k, v in (dependencies or {}).items()},
+            "not_applicable_predicates": not_applicable,
             "margins": dict(margins or {}),
             "blockers": blockers,
             "dominant_blocker": blockers[0] if blockers else "",
             "audit_only": True,
             "threshold_mutation_allowed": False,
+            "schema_version": "detector_reachability_dependency_aware_v9.5.19",
         }
+
+    ladder_target_count = int(liquidity_ladder.get("target_count") or 0)
+    ladder_score = safe_float(liquidity_ladder.get("ladder_score"), 0.0)
+    ladder_kind_count = int(liquidity_ladder.get("kind_count") or 0)
+    ladder_route_active = bool(liquidity_ladder.get("active"))
+    ladder_ready = bool(liquidity_ladder_confirmation.get("ready"))
+    ladder_reanchor = str(liquidity_ladder_confirmation.get("kind") or "") == "RETEST_REANCHOR"
+    ladder_acceptance = str(liquidity_ladder_confirmation.get("kind") or "") == "ACCEPTANCE_CONFIRMED"
+    ladder_live = str(liquidity_ladder_confirmation.get("kind") or "") == "LIVE_3M_TRIGGER"
 
     return [
         row(
@@ -13126,6 +13358,19 @@ def build_dormant_detector_reachability(
                 "institutional_sweep_quality": round(safe_float(sweep_quality_multiplier, 0.0), 4),
                 "institutional_sweep_threshold": round(safe_float(sweep_quality_threshold, 0.85), 4),
             },
+            applicability={
+                "raw_sweep": True,
+                "institutional_sweep_valid": bool(is_raw_sweep),
+                "choch": bool(is_sweep),
+                "fvg": bool(is_sweep),
+                "turtle_weak_displacement": bool(is_sweep),
+            },
+            dependencies={
+                "institutional_sweep_valid": ["raw_sweep"],
+                "choch": ["institutional_sweep_valid"],
+                "fvg": ["institutional_sweep_valid"],
+                "turtle_weak_displacement": ["institutional_sweep_valid"],
+            },
         ),
         row(
             SetupType.RANGE_EDGE_REVERSAL.value,
@@ -13136,8 +13381,15 @@ def build_dormant_detector_reachability(
                 "institutional_sweep_valid": bool(is_sweep),
                 "quality_reclaim": bool(has_good_reclaim),
             },
-            {
-                "regime_match": 1.0 if str(regime) == Regime.RANGE.value else 0.0,
+            {"regime_match": 1.0 if str(regime) == Regime.RANGE.value else 0.0},
+            applicability={
+                "range_regime": True,
+                "institutional_sweep_valid": str(regime) == Regime.RANGE.value,
+                "quality_reclaim": bool(str(regime) == Regime.RANGE.value and is_sweep),
+            },
+            dependencies={
+                "institutional_sweep_valid": ["range_regime"],
+                "quality_reclaim": ["range_regime", "institutional_sweep_valid"],
             },
         ),
         row(
@@ -13149,15 +13401,73 @@ def build_dormant_detector_reachability(
                 "range_compressed": bool(is_range_compressed),
                 "strong_displacement": bool(strong_displacement),
                 "live_trigger_ready": bool(trigger_ready),
-                "compression_atr": round(safe_float(compression_atr, 0.0), 4),
             },
             {
+                "compression_atr": round(safe_float(compression_atr, 0.0), 4),
                 "compression_margin_atr": round(safe_float(compression_threshold_atr, 1.60) - safe_float(compression_atr, 0.0), 4),
                 "compression_threshold_atr": round(safe_float(compression_threshold_atr, 1.60), 4),
             },
+            applicability={
+                "compression_window_available": True,
+                "range_compressed": safe_float(compression_atr, 0.0) > 0.0,
+                "strong_displacement": bool(is_range_compressed),
+                "live_trigger_ready": bool(is_range_compressed and strong_displacement),
+            },
+            dependencies={
+                "range_compressed": ["compression_window_available"],
+                "strong_displacement": ["range_compressed"],
+                "live_trigger_ready": ["range_compressed", "strong_displacement"],
+            },
+        ),
+        row(
+            SetupType.LIQUIDITY_LADDER.value,
+            bool(ladder_route_active and ladder_ready),
+            {
+                "TARGET_ROUTE_ACTIVE": ladder_route_active,
+                "RETEST_REANCHOR": ladder_reanchor,
+                "ACCEPTANCE_CONFIRMED": ladder_acceptance,
+                "LIVE_3M_TRIGGER": ladder_live,
+            },
+            {
+                "htf_route_supported": bool(liquidity_ladder.get("tf_ok")),
+                "target_count_pass": ladder_target_count >= LIQUIDITY_LADDER_MIN_TARGETS,
+                "ladder_score_pass": ladder_score >= LIQUIDITY_LADDER_MIN_SCORE,
+                "kind_diversity_pass": ladder_kind_count >= 2,
+                "route_active": ladder_route_active,
+                "retest_reanchor_ready": ladder_reanchor,
+                "acceptance_ready": ladder_acceptance,
+                "live_3m_trigger_ready": ladder_live,
+                "execution_confirmation_ready": ladder_ready,
+            },
+            {
+                "target_count": ladder_target_count,
+                "target_count_margin": ladder_target_count - LIQUIDITY_LADDER_MIN_TARGETS,
+                "ladder_score": round(ladder_score, 4),
+                "ladder_score_margin": round(ladder_score - LIQUIDITY_LADDER_MIN_SCORE, 4),
+                "kind_count": ladder_kind_count,
+            },
+            applicability={
+                "htf_route_supported": True,
+                "target_count_pass": True,
+                "ladder_score_pass": ladder_target_count >= LIQUIDITY_LADDER_MIN_TARGETS,
+                "kind_diversity_pass": ladder_target_count >= LIQUIDITY_LADDER_MIN_TARGETS,
+                "route_active": True,
+                "retest_reanchor_ready": ladder_route_active,
+                "acceptance_ready": ladder_route_active,
+                "live_3m_trigger_ready": ladder_route_active,
+                "execution_confirmation_ready": ladder_route_active,
+            },
+            dependencies={
+                "ladder_score_pass": ["target_count_pass"],
+                "kind_diversity_pass": ["target_count_pass"],
+                "route_active": ["htf_route_supported", "target_count_pass", "ladder_score_pass", "kind_diversity_pass"],
+                "retest_reanchor_ready": ["route_active"],
+                "acceptance_ready": ["route_active"],
+                "live_3m_trigger_ready": ["route_active"],
+                "execution_confirmation_ready": ["route_active", "ANY_OF:retest_reanchor_ready|acceptance_ready|live_3m_trigger_ready"],
+            },
         ),
     ]
-
 
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
@@ -13403,6 +13713,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         open_reclaim = detect_daily_weekly_open_reclaim(c15, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
         liquidity_ladder = detect_liquidity_ladder_model(side, price, context, atr15, tf15, tf1h)
+        liquidity_ladder_confirmation_profile = liquidity_ladder_execution_confirmation(
+            live_3m_trigger_ready=live_3m_trigger_ready,
+            trigger_level=trigger_level,
+            trigger_age=trigger_age,
+            acceptance_retest=acceptance_retest,
+            continuation_reanchor=continuation_reanchor,
+            price=price,
+        )
         failed_auction = detect_failed_auction_rejection_tail(c15, side, price, atr15, context)
         time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
 
@@ -13425,6 +13743,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             sweep_quality_multiplier=sweep_quality_multiplier,
             sweep_quality_threshold=0.85,
             compression_threshold_atr=1.60,
+            liquidity_ladder=liquidity_ladder,
+            liquidity_ladder_confirmation=liquidity_ladder_confirmation_profile,
         ))
 
         active_patterns = []
@@ -13514,6 +13834,9 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 "side": side,
                 "model_id": detected_model_id,
                 "setup_type": str(detected_profile.get("preferred_setup", SetupType.PULLBACK_CONTINUATION.value)),
+                "execution_anchor": round_price(price),
+                "trigger_level": round_price(trigger_level),
+                "as_of_ts": _preconfirm_as_of_ts(context),
             })
 
         direction_perf = direction_recent_performance(journal, side)
@@ -13883,14 +14206,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_DAILY_WEEKLY_OPEN_RECLAIM"
             elif model_id == "LIQUIDITY_LADDER_MODEL":
-                ladder_confirmation = liquidity_ladder_execution_confirmation(
-                    live_3m_trigger_ready=live_3m_trigger_ready,
-                    trigger_level=trigger_level,
-                    trigger_age=trigger_age,
-                    acceptance_retest=acceptance_retest,
-                    continuation_reanchor=continuation_reanchor,
-                    price=price,
-                )
+                ladder_confirmation = dict(liquidity_ladder_confirmation_profile)
                 actionable_trigger_ready = bool(ladder_confirmation.get("ready"))
                 execution_source = str(ladder_confirmation.get("execution_source") or ExecutionSource.NONE.value)
                 execution_lane_source = str(ladder_confirmation.get("execution_lane") or ExecutionLane.WAIT_CONFIRMATION.value)
@@ -14360,6 +14676,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     "setup_type": cand.setup_type,
                     "final_score": cand.final_score,
                     "minimum_score_required": min_score_required,
+                    "execution_anchor": round_price(cand.execution_anchor),
+                    "trigger_level": round_price(cand.trigger_level),
+                    "market_thesis_age_minutes": cand.market_thesis_age_minutes,
+                    "model_thesis_age_minutes": cand.model_thesis_age_minutes,
+                    "thesis_origin": cand.thesis_origin,
+                    "thesis_key": cand.thesis_key,
+                    "as_of_ts": _preconfirm_as_of_ts(context),
                 })
 
     ranked_candidates = finalize_hypothesis_ranking(candidates)
@@ -14370,9 +14693,17 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             "setup_type": candidate.setup_type,
             "rank": candidate.hypothesis_rank,
             "final_score": candidate.final_score,
+            "execution_anchor": round_price(candidate.execution_anchor),
+            "trigger_level": round_price(candidate.trigger_level),
+            "market_thesis_age_minutes": candidate.market_thesis_age_minutes,
+            "model_thesis_age_minutes": candidate.model_thesis_age_minutes,
+            "thesis_origin": candidate.thesis_origin,
+            "thesis_key": candidate.thesis_key,
+            "as_of_ts": _preconfirm_as_of_ts(context),
         }
         for candidate in ranked_candidates
     ]
+    context["_ranked_candidate_objects"] = ranked_candidates
     return ranked_candidates
 
 
@@ -15760,7 +16091,12 @@ def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: 
 
 def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
     """Track MFE/MAE and TP/STOP order for rejected hypotheses, without fake PnL."""
-    shadows = journal.get("rejected_hypothesis_shadows") or []
+    rejected_shadows = journal.get("rejected_hypothesis_shadows") or []
+    daily_open_shadows = journal.get("daily_open_shadow_experiments") or []
+    # Both ledgers use the same candle-path resolver, but remain separate so the
+    # 500-row Daily Open experiment cannot evict the general 50-row rejection
+    # audit. Objects are not copied; outcome updates persist in their own ledger.
+    shadows = list(rejected_shadows) + list(daily_open_shadows)
     candles = sorted(
         [c for c in ((context.get("candles") or {}).get("3m") or []) if getattr(c, "confirmed", True)],
         key=lambda c: c.ts,
@@ -15861,7 +16197,7 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
             shadow["closed_at"] = now.isoformat()
             shadow["rejection_correctness"] = "LIKELY_TOO_STRICT" if order.get(max_target, 0) >= order["TP1"] else "LIKELY_CORRECT" if mae_r >= 1.0 else "INCONCLUSIVE"
 
-    valid = [x for x in shadows if isinstance(x, dict)]
+    valid = [x for x in rejected_shadows if isinstance(x, dict)]
     closed = [x for x in valid if x.get("status") in terminal_statuses or str(x.get("status", "")).startswith("EXPIRED_")]
     analytics = journal.setdefault("analytics", {}).setdefault("rejected_hypothesis_outcomes", {})
     episodes = deduplicate_rejected_shadow_episodes(valid)
@@ -15888,6 +16224,32 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
         "interpretation": "counterfactual rejection audit; not realized PnL",
         "updated_at": now.isoformat(),
     })
+    daily_rows = [
+        row for row in daily_open_shadows
+        if isinstance(row, dict) and str(row.get("experiment_name") or "") == "DAILY_OPEN_SUB68_SHADOW"
+    ]
+    daily_episodes = deduplicate_rejected_shadow_episodes(daily_rows)
+    daily_closed = [
+        row for row in daily_episodes
+        if row.get("status") in terminal_statuses or str(row.get("status", "")).startswith("EXPIRED_")
+    ]
+    daily_tp1_plus = sum(1 for row in daily_closed if str(row.get("max_target_hit") or "NONE") in {"TP1", "TP2", "TP3"})
+    daily_stop_first = sum(1 for row in daily_closed if str(row.get("status") or "") == "STOP_FIRST")
+    journal.setdefault("analytics", {})["daily_open_shadow_experiment"] = {
+        "raw_rows": len(daily_rows),
+        "independent_episodes": len(daily_episodes),
+        "closed_independent_episodes": len(daily_closed),
+        "tp1_plus_episodes": daily_tp1_plus,
+        "stop_first_episodes": daily_stop_first,
+        "tp1_plus_rate": round(daily_tp1_plus / max(len(daily_closed), 1), 6),
+        "review_ready": len(daily_closed) >= DAILY_OPEN_SHADOW_MIN_INDEPENDENT_EPISODES,
+        "minimum_independent_episodes": DAILY_OPEN_SHADOW_MIN_INDEPENDENT_EPISODES,
+        "score_range": [DAILY_OPEN_SHADOW_MIN_SCORE, DAILY_OPEN_SHADOW_MAX_SCORE],
+        "live_authority": False,
+        "global_thresholds_mutated": False,
+        "updated_at": now.isoformat(),
+        "schema_version": "daily_open_shadow_analytics_v9.5.19",
+    }
 
 
 def update_executive_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
@@ -16416,6 +16778,276 @@ def canonical_decision_quality(decision: Decision) -> int:
         return int(clamp(safe_float(decision.candidate.final_score, 0.0), 0, 100))
     return int(clamp(safe_float(decision.quality, 0.0), 0, 100))
 
+def _candidate_counterfactual_decision(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    journal: dict[str, Any],
+    candidate: Candidate,
+) -> Decision:
+    """Evaluate one ranked candidate through the real plan/executive contracts.
+
+    The candidate and state are isolated copies. This function may calculate a
+    plan and an Executive verdict, but it cannot publish a signal, persist an
+    opportunity or mutate the production state.
+    """
+    cand = copy.deepcopy(candidate)
+    cand.selected_source = "RANKED_TOP_N_AUDIT"
+    cand.score_components["selected_source"] = "RANKED_TOP_N_AUDIT"
+    kernel_result = professional_decision_kernel(cand)
+    cand = apply_kernel_context(cand, kernel_result)
+    opportunity_profile = adaptive_opportunity_engine(cand)
+    setattr(cand, "opportunity_profile", opportunity_profile)
+    state_result = adaptive_state_transition(cand, kernel_result, opportunity_profile)
+    setattr(cand, "execution_state", state_result)
+    if state_result.get("state") == STATE_PROBE:
+        cand.entry_stage = EntryStage.PROBE.value
+    plan = build_trade_plan(context, cand, journal=journal)
+    apply_relaxed_continuation_live_override(cand, plan, journal)
+    admission = canonical_score_admission_profile(cand)
+    if plan.valid and plan.execution_ready and admission.get("full_entry_eligible"):
+        proposed = Action.ENTRY.value
+    elif plan.valid and plan.execution_ready and admission.get("risky_entry_eligible"):
+        proposed = Action.RISKY_ENTRY.value
+    elif plan.valid and plan.execution_ready and fresh_probe_candidate_profile(cand).get("eligible"):
+        proposed = Action.PROBE_ENTRY.value
+    else:
+        proposed = Action.NO_SETUP.value
+    draft = Decision(
+        id=uuid.uuid4().hex[:10], time=iso_now(), action=proposed,
+        side=cand.side, setup_type=cand.setup_type, quality=int(cand.final_score or 0),
+        reason="Ranked top-N audit draft", regime=str(context.get("regime") or Regime.NORMAL.value),
+        candidate=cand, plan=plan, current_price=safe_float(context.get("price"), 0.0),
+        audit={"audit_only": True, "selected_source": "RANKED_TOP_N_AUDIT"},
+    )
+    audit_state = copy.deepcopy(state)
+    audit_state["active_trade"] = None
+    audit_state["opportunity"] = None
+    return executive_authority_decision(draft, state=audit_state, journal=journal)
+
+
+def _conversion_primary_blocker(row: dict[str, Any]) -> str:
+    if not row.get("plan_valid"):
+        return "PLAN_INVALID"
+    if not row.get("plan_execution_ready"):
+        return "PLAN_NOT_EXECUTABLE"
+    if not row.get("entry_supported"):
+        return "REVALIDATION_NOT_SUPPORTED"
+    if not row.get("would_pass_score"):
+        return "CANONICAL_SCORE_BELOW_RISKY"
+    blocking = [str(value) for value in (row.get("blocking_reasons") or []) if str(value).strip()]
+    if blocking:
+        return blocking[0]
+    if not row.get("would_executable"):
+        return str(row.get("blocking_layer") or "EXECUTIVE_POLICY")
+    return "NONE"
+
+
+def ranked_top_n_conversion_audit(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    journal: dict[str, Any],
+    final_decision: Optional[Decision],
+) -> dict[str, Any]:
+    """Explain the conversion path for every top-ranked candidate, not only #1."""
+    ranked = [
+        copy.deepcopy(candidate) for candidate in (context.get("_ranked_candidate_objects") or [])
+        if isinstance(candidate, Candidate)
+    ]
+    ranked = finalize_hypothesis_ranking(ranked)[:RANKED_CONVERSION_AUDIT_TOP_N]
+    if not ranked:
+        return {
+            "time": iso_now(), "top_n": RANKED_CONVERSION_AUDIT_TOP_N,
+            "rows": [], "candidate_count": 0, "audit_only": True,
+            "schema_version": "ranked_conversion_audit_v9.5.19",
+        }
+    best_score = safe_float(ranked[0].final_score, 0.0)
+    final_candidate = getattr(final_decision, "candidate", None) if final_decision else None
+    final_key = (
+        str(getattr(final_candidate, "side", "") or ""),
+        str(getattr(final_candidate, "setup_type", "") or ""),
+        str(getattr(final_candidate, "ict_model", "") or ""),
+    )
+    # The Executive/Risk stack currently reads the journal, but the audit uses
+    # an isolated copy as a hard capability boundary. A future helper may start
+    # caching diagnostics in the supplied journal; that must never leak from a
+    # counterfactual candidate into production state.
+    audit_journal = copy.deepcopy(journal)
+    rows: list[dict[str, Any]] = []
+    for candidate in ranked:
+        candidate_key = (str(candidate.side), str(candidate.setup_type), str(candidate.ict_model))
+        selected = bool(final_candidate is not None and candidate_key == final_key)
+        try:
+            decision = final_decision if selected else _candidate_counterfactual_decision(context, state, audit_journal, candidate)
+            if decision is None:
+                raise RuntimeError("missing_counterfactual_decision")
+            evaluated = getattr(decision, "candidate", None) or candidate
+            plan = getattr(decision, "plan", None)
+            executive = (
+                (((getattr(decision, "audit", {}) or {}).get("executive_director") or {}).get("report") or {})
+                .get("executive_decision") or {}
+            )
+            funnel = (getattr(decision, "audit", {}) or {}).get("execution_funnel") or {}
+            revalidation = dict(getattr(evaluated, "revalidation_profile", {}) or {})
+            score = int(safe_float(getattr(evaluated, "final_score", 0.0), 0.0))
+            would_executable = bool(executive.get("allow_execution"))
+            plan_valid = bool(plan and plan.valid)
+            plan_ready = bool(plan and plan.execution_ready)
+            entry_supported = bool(revalidation.get("entry_supported", True))
+            row = {
+                "rank": int(getattr(candidate, "hypothesis_rank", 0) or 0),
+                "side": str(candidate.side),
+                "setup_type": str(candidate.setup_type),
+                "model_id": str(candidate.ict_model),
+                "selected": selected,
+                "final_score": score,
+                "best_score": round(best_score, 4),
+                "score_gap_to_best": round(best_score - score, 4),
+                "score_gap_to_risky": round(RISKY_ENTRY_SCORE_BASE - score, 4),
+                "would_pass_score": score >= RISKY_ENTRY_SCORE_BASE,
+                "trigger_ready": bool(getattr(evaluated, "trigger_ready", False)),
+                "execution_source": str(getattr(evaluated, "execution_source", "") or ""),
+                "entry_stage": str(getattr(evaluated, "entry_stage", "") or ""),
+                "plan_valid": plan_valid,
+                "plan_execution_ready": plan_ready,
+                "entry_supported": entry_supported,
+                "would_executable": would_executable,
+                "would_action": str(getattr(decision, "action", Action.NO_SETUP.value) or Action.NO_SETUP.value),
+                "would_publish_entry": str(getattr(decision, "action", "")) in EXECUTABLE_ENTRY_ACTIONS,
+                "blocking_reasons": [str(value) for value in (executive.get("blocking_reasons") or [])],
+                "warning_reasons": [str(value) for value in (executive.get("warning_reasons") or [])],
+                "blocking_layer": str(funnel.get("blocking_layer") or ""),
+                "htf_state": get_htf_state(evaluated),
+                "htf_fact": get_htf_fact(evaluated),
+                "thesis_origin": str(getattr(evaluated, "thesis_origin", "") or ""),
+                "market_thesis_age_minutes": safe_float(getattr(evaluated, "market_thesis_age_minutes", -1.0), -1.0),
+                "model_thesis_age_minutes": safe_float(getattr(evaluated, "model_thesis_age_minutes", -1.0), -1.0),
+                "effective_thesis_age_minutes": safe_float(getattr(evaluated, "thesis_age_minutes", -1.0), -1.0),
+                "hard_ttl_expired": bool(revalidation.get("hard_expired") or revalidation.get("state") == "DEAD"),
+                "execution_anchor": round_price(getattr(evaluated, "execution_anchor", 0.0)),
+                "trigger_level": round_price(getattr(evaluated, "trigger_level", 0.0)),
+                "thesis_key": str(getattr(evaluated, "thesis_key", "") or ""),
+                "audit_only": True,
+                "can_open_trade": False,
+            }
+            row["episode_key"] = setup_market_episode_key(row, context)
+            if plan_valid:
+                row["counterfactual_plan"] = {
+                    "entry": round_price(plan.entry),
+                    "stop": round_price(plan.stop),
+                    "tp0": round_price(plan.tp0),
+                    "tp1": round_price(plan.tp1),
+                    "tp2": round_price(plan.tp2),
+                    "tp3": round_price(plan.tp3),
+                    "risk_pct": safe_float(getattr(plan, "position_risk_pct", 0.0), 0.0),
+                    "valid": plan_valid,
+                    "execution_ready": plan_ready,
+                }
+            row["primary_blocker"] = _conversion_primary_blocker(row)
+        except Exception as exc:
+            row = {
+                "rank": int(getattr(candidate, "hypothesis_rank", 0) or 0),
+                "side": str(candidate.side), "setup_type": str(candidate.setup_type),
+                "model_id": str(candidate.ict_model), "selected": selected,
+                "final_score": int(safe_float(candidate.final_score, 0.0)),
+                "error": f"{type(exc).__name__}: {exc}",
+                "primary_blocker": "AUDIT_EVALUATION_ERROR",
+                "audit_only": True, "can_open_trade": False,
+            }
+            row["episode_key"] = setup_market_episode_key(row, context)
+        rows.append(row)
+
+    episode_rows: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        key = str(row.get("episode_key") or "")
+        current = episode_rows.get(key)
+        if current is None or int(row.get("rank") or 999) < int(current.get("rank") or 999):
+            episode_rows[key] = row
+    report = {
+        "time": iso_now(),
+        "top_n": RANKED_CONVERSION_AUDIT_TOP_N,
+        "candidate_count": len(context.get("_ranked_candidate_objects") or []),
+        "rows": rows,
+        "independent_episode_rows": list(episode_rows.values()),
+        "would_executable_count": sum(1 for row in rows if row.get("would_executable")),
+        "selected_count": sum(1 for row in rows if row.get("selected")),
+        "audit_only": True,
+        "can_open_trade": False,
+        "schema_version": "ranked_conversion_audit_v9.5.19",
+    }
+    store = journal.setdefault("ranked_conversion_audits", [])
+    store.append(report)
+    if len(store) > RANKED_CONVERSION_AUDIT_LIMIT:
+        del store[:-RANKED_CONVERSION_AUDIT_LIMIT]
+    record_daily_open_shadow_experiment(journal, rows)
+    return report
+
+
+def record_daily_open_shadow_experiment(journal: dict[str, Any], conversion_rows: list[dict[str, Any]]) -> None:
+    """Paper-only test for sub-68 Daily/Weekly Open Reclaim candidates."""
+    if not DAILY_OPEN_SHADOW_EXPERIMENT_ENABLED:
+        return
+    store = journal.setdefault("daily_open_shadow_experiments", [])
+    known_episodes = {
+        str(row.get("episode_key") or "") for row in store
+        if isinstance(row, dict) and row.get("experiment_name") == "DAILY_OPEN_SUB68_SHADOW"
+    }
+    for row in conversion_rows or []:
+        if str(row.get("setup_type") or "") != SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value:
+            continue
+        score = int(safe_float(row.get("final_score"), 0.0))
+        plan = dict(row.get("counterfactual_plan") or {})
+        episode_key = str(row.get("episode_key") or "")
+        eligible = bool(
+            DAILY_OPEN_SHADOW_MIN_SCORE <= score <= DAILY_OPEN_SHADOW_MAX_SCORE
+            and row.get("trigger_ready")
+            and plan.get("valid")
+            and plan.get("execution_ready")
+            and episode_key
+        )
+        if not eligible or episode_key in known_episodes:
+            continue
+        entry = safe_float(plan.get("entry"), 0.0)
+        stop = safe_float(plan.get("stop"), 0.0)
+        if entry <= 0 or stop <= 0 or abs(entry - stop) <= 1e-9:
+            continue
+        now = now_utc()
+        shadow = {
+            "status": "OPEN",
+            "opened_at": now.isoformat(),
+            "expires_at": (now + timedelta(hours=DAILY_OPEN_SHADOW_HORIZON_HOURS)).isoformat(),
+            "side": str(row.get("side") or ""),
+            "setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,
+            "setup_family": SETUP_FAMILY_MAP.get(SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, SetupFamily.STRUCTURAL_TRANSITION.value),
+            "model_id": str(row.get("model_id") or "DAILY_WEEKLY_OPEN_RECLAIM"),
+            "entry": round_price(entry), "stop": round_price(stop),
+            "tp0": round_price(plan.get("tp0")), "tp1": round_price(plan.get("tp1")),
+            "tp2": round_price(plan.get("tp2")), "tp3": round_price(plan.get("tp3")),
+            "mfe_r": None, "mae_r": None, "tp_sequence": [], "last_processed_ts": 0,
+            "max_target_hit": "NONE", "best_price": round_price(entry), "worst_price": round_price(entry),
+            "test_key": f"DAILY_OPEN_SHADOW|{episode_key}|{round_price(entry)}|{round_price(stop)}",
+            "episode_key": episode_key,
+            "candidate_score": score,
+            "htf_state": row.get("htf_state"),
+            "primary_blocker": row.get("primary_blocker"),
+            "failed_gate": row.get("primary_blocker"),
+            "experiment_name": "DAILY_OPEN_SUB68_SHADOW",
+            "experiment_policy": {
+                "score_range": [DAILY_OPEN_SHADOW_MIN_SCORE, DAILY_OPEN_SHADOW_MAX_SCORE],
+                "assumed_risk_pct": DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT,
+                "minimum_independent_episodes_before_review": DAILY_OPEN_SHADOW_MIN_INDEPENDENT_EPISODES,
+                "global_thresholds_mutated": False,
+                "live_authority": False,
+            },
+            "rejection_correctness": "PENDING",
+            "audit_only": True, "not_realized_pnl": True,
+            "schema_version": "daily_open_shadow_experiment_v9.5.19",
+        }
+        store.append(shadow)
+        known_episodes.add(episode_key)
+    if len(store) > DAILY_OPEN_SHADOW_HISTORY_LIMIT:
+        del store[:-DAILY_OPEN_SHADOW_HISTORY_LIMIT]
+
+
 def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     """
     v8.5 EXECUTIVE AUTHORITY PIPELINE.
@@ -16453,6 +17085,8 @@ def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
 
     final_decision = executive_authority_decision(draft, state=state, journal=journal)
     final_decision.quality = canonical_decision_quality(final_decision)
+    conversion_audit = ranked_top_n_conversion_audit(context, state, journal, final_decision)
+    final_decision.audit["ranked_top_n_conversion"] = conversion_audit
     return final_decision
 
 
@@ -16504,7 +17138,7 @@ def evaluate_active_trade_shadow_scan(
             "can_open_trade": False,
             "state_mutation_persisted": False,
             "preconfirmation_forecasts_persisted": True,
-            "schema_version": "active_trade_shadow_scan_v9.5.18",
+            "schema_version": "active_trade_shadow_scan_v9.5.19",
         }
     except Exception as exc:
         row = {
@@ -16514,7 +17148,7 @@ def evaluate_active_trade_shadow_scan(
             "authoritative": False,
             "can_open_trade": False,
             "state_mutation_persisted": False,
-            "schema_version": "active_trade_shadow_scan_v9.5.18",
+            "schema_version": "active_trade_shadow_scan_v9.5.19",
         }
     store = journal.setdefault("active_trade_shadow_scans", [])
     store.append(row)
@@ -17565,111 +18199,204 @@ def _strict_breakeven_stop(trade: ActiveTrade) -> float:
     return round_price(float(trade.entry) - COMMISSION_BUFFER_DOLLARS)
 
 
-def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-    """Protect an already proven trade before TP1 after >= configured MFE giveback.
+def _protection_mfe_r(trade: ActiveTrade) -> float:
+    risk_distance = _trade_risk_distance(trade)
+    if trade.side == Side.LONG.value:
+        return max(0.0, (float(trade.best_price) - float(trade.entry)) / risk_distance)
+    return max(0.0, (float(trade.entry) - float(trade.best_price)) / risk_distance)
 
-    The stop is activated only from the current observation forward. Historical
-    unchecked candles are evaluated against the old stop before this function runs,
-    avoiding retroactive stop-outs.
+
+def _protection_current_r(trade: ActiveTrade, price: float) -> float:
+    risk_distance = _trade_risk_distance(trade)
+    if trade.side == Side.LONG.value:
+        return (float(price) - float(trade.entry)) / risk_distance
+    return (float(trade.entry) - float(price)) / risk_distance
+
+
+def _protection_stop_for_locked_r(trade: ActiveTrade, locked_r: float) -> float:
+    risk_distance = _trade_risk_distance(trade)
+    if trade.side == Side.LONG.value:
+        return round_price(float(trade.entry) + max(0.0, locked_r) * risk_distance)
+    return round_price(float(trade.entry) - max(0.0, locked_r) * risk_distance)
+
+
+def _stop_locked_r(trade: ActiveTrade, stop: Optional[float] = None) -> float:
+    value = safe_float(stop, safe_float(getattr(trade, "stop_current", 0.0), 0.0))
+    if value <= 0:
+        return 0.0
+    return max(0.0, _protection_current_r(trade, value))
+
+
+def _tp0_profit_protection(trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Trail a proven pre-TP1 position from its MFE high-water mark.
+
+    Historical unchecked candles are replayed against the stop that existed at
+    that time before this function is called. Any stop change here therefore
+    applies only from the current observation forward. After the first giveback
+    activation the lock is recomputed whenever MFE makes a new high-water mark:
+    PROBE retains 1-40%=60% of peak MFE, STANDARD retains 1-50%=50%.
     """
     is_probe = str(getattr(trade, "entry_stage", "") or "").upper() == EntryStage.PROBE.value
-    protection_threshold = PROBE_TP0_PROTECT_GIVEBACK_RATIO if is_probe else TP0_PROTECT_GIVEBACK_RATIO
-    profile = {
-        "eligible": False,
-        "activated": False,
-        "state": "SUPPORTED",
-        "giveback_ratio": 0.0,
-        "mfe_pct": safe_float(result.get("best_pct"), 0.0),
-        "current_pct": safe_float(result.get("current_pct"), 0.0),
-        "threshold": protection_threshold,
-        "threshold_scope": "PROBE" if is_probe else "STANDARD",
-    }
-    if not TP0_PROTECT_ENABLED or not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
-        trade.management_state = "SUPPORTED" if not getattr(trade, "pre_tp1_protection_locked", False) else "PROTECT"
-        result["management_state"] = trade.management_state
-        return profile
+    giveback_threshold = PROBE_TP0_PROTECT_GIVEBACK_RATIO if is_probe else TP0_PROTECT_GIVEBACK_RATIO
+    threshold_scope = "PROBE" if is_probe else "STANDARD"
+    price = safe_float(context.get("price"), float(trade.entry))
+    risk_distance = _trade_risk_distance(trade)
+    peak_mfe_r = _protection_mfe_r(trade)
+    current_r = _protection_current_r(trade, price)
+    previous_peak_r = max(0.0, safe_float(getattr(trade, "protection_peak_mfe_r", 0.0), 0.0))
+    prior_locked_r = max(
+        0.0,
+        safe_float(getattr(trade, "protection_locked_r", 0.0), 0.0),
+        _stop_locked_r(trade),
+    )
+    new_peak = peak_mfe_r > previous_peak_r + 1e-9
+    trade.protection_peak_mfe_r = round(max(previous_peak_r, peak_mfe_r), 6)
+    trade.protection_last_evaluated_mfe_r = round(peak_mfe_r, 6)
 
     best_pct = max(0.0, safe_float(result.get("best_pct"), 0.0))
     current_pct = safe_float(result.get("current_pct"), 0.0)
-    if best_pct <= max(TP0_PROTECT_MIN_MFE_PCT, 1e-9):
-        result["management_state"] = "SUPPORTED"
-        trade.management_state = "SUPPORTED"
-        return profile
-
-    giveback_ratio = max(0.0, (best_pct - current_pct) / max(best_pct, 1e-9))
-    profile.update({
-        "eligible": True,
-        "giveback_ratio": round(giveback_ratio, 4),
+    giveback_ratio = max(0.0, (peak_mfe_r - current_r) / max(peak_mfe_r, 1e-9)) if peak_mfe_r > 0 else 0.0
+    profile = {
+        "eligible": False,
+        "activated": bool(getattr(trade, "pre_tp1_protection_locked", False)),
+        "ratcheted": False,
+        "state": "PROTECT" if getattr(trade, "pre_tp1_protection_locked", False) else "SUPPORTED",
+        "giveback_ratio": round(giveback_ratio, 6),
         "mfe_pct": round(best_pct, 6),
         "current_pct": round(current_pct, 6),
-    })
-    result["mfe_giveback_ratio"] = round(giveback_ratio, 4)
+        "peak_mfe_r": round(peak_mfe_r, 6),
+        "current_r": round(current_r, 6),
+        "locked_r": round(prior_locked_r, 6),
+        "threshold": giveback_threshold,
+        "threshold_scope": threshold_scope,
+        "new_mfe_high_water": new_peak,
+        "ratchet_count": int(getattr(trade, "protection_ratchet_count", 0) or 0),
+        "missed_due_to_price": int(getattr(trade, "protection_ratchet_missed_due_to_price", 0) or 0),
+        "policy": "HIGH_WATER_MFE_TRAILING_FROM_CURRENT_OBSERVATION_ONLY",
+    }
+    result["mfe_giveback_ratio"] = round(giveback_ratio, 6)
 
-    if getattr(trade, "pre_tp1_protection_locked", False):
-        trade.management_state = "PROTECT"
-        result["management_state"] = "PROTECT"
-        profile.update({"activated": True, "state": "PROTECT", "stop": round_price(trade.stop_current)})
+    if not TP0_PROTECT_ENABLED or not getattr(trade, "tp0_hit", False) or getattr(trade, "tp1_hit", False):
+        trade.management_state = "PROTECT" if getattr(trade, "pre_tp1_protection_locked", False) else "SUPPORTED"
+        result["management_state"] = trade.management_state
+        result["profit_protection"] = profile
         return profile
 
-    if giveback_ratio < protection_threshold:
+    # Preserve the original configuration contract: this floor is expressed
+    # in percentage move, not R. The ratchet itself is R-based, but converting
+    # the percentage threshold to R would silently change behavior whenever the
+    # trade stop distance differs from 1% of entry.
+    if best_pct <= max(TP0_PROTECT_MIN_MFE_PCT, 1e-9):
+        trade.management_state = "PROTECT" if getattr(trade, "pre_tp1_protection_locked", False) else "SUPPORTED"
+        result["management_state"] = trade.management_state
+        result["profit_protection"] = profile
+        return profile
+
+    profile["eligible"] = True
+    locked = bool(getattr(trade, "pre_tp1_protection_locked", False))
+    if not locked and giveback_ratio < giveback_threshold:
         trade.management_state = "SUPPORTED"
         result["management_state"] = "SUPPORTED"
+        result["profit_protection"] = profile
         return profile
 
-    trade.management_state = "WEAKENING"
-    result["management_state"] = "WEAKENING"
     be_stop = _strict_breakeven_stop(trade)
-    applied = _apply_protective_stop(trade, context, be_stop)
-    already_protected = (
-        trade.side == Side.LONG.value and float(trade.stop_current) >= be_stop
-    ) or (
-        trade.side == Side.SHORT.value and float(trade.stop_current) <= be_stop
-    )
+    be_locked_r = _stop_locked_r(trade, be_stop)
+    requested_locked_r = max(be_locked_r, peak_mfe_r * (1.0 - giveback_threshold))
+    price_buffer_r = TP0_PROTECT_PRICE_BUFFER_DOLLARS / max(risk_distance, 1e-9)
+    market_feasible_locked_r = current_r - price_buffer_r
+    feasible_locked_r = min(requested_locked_r, market_feasible_locked_r)
+    profile.update({
+        "requested_locked_r": round(requested_locked_r, 6),
+        "market_feasible_locked_r": round(market_feasible_locked_r, 6),
+        "price_buffer_r": round(price_buffer_r, 6),
+        "clamped_to_current_price": market_feasible_locked_r + 1e-9 < requested_locked_r,
+    })
 
-    if applied or already_protected:
-        trade.pre_tp1_protection_locked = True
-        trade.pre_tp1_protection_at = iso_now()
-        trade.pre_tp1_protection_ratio = round(giveback_ratio, 4)
-        trade.pre_tp1_protection_threshold = round(protection_threshold, 4)
-        trade.pre_tp1_protection_scope = "PROBE" if is_probe else "STANDARD"
-        risk_distance = _trade_risk_distance(trade)
-        if risk_distance > 1e-9:
-            if trade.side == Side.LONG.value:
-                activation_mfe_r = max(0.0, (float(trade.best_price) - float(trade.entry)) / risk_distance)
-                activation_current_r = (safe_float(context.get("price"), trade.entry) - float(trade.entry)) / risk_distance
-            else:
-                activation_mfe_r = max(0.0, (float(trade.entry) - float(trade.best_price)) / risk_distance)
-                activation_current_r = (float(trade.entry) - safe_float(context.get("price"), trade.entry)) / risk_distance
-            trade.protection_activation_mfe_r = round(activation_mfe_r, 4)
-            trade.protection_activation_current_r = round(activation_current_r, 4)
-        trade.protection_activation_stop = round_price(trade.stop_current)
-        trade.management_state = "PROTECT"
-        result["management_state"] = "PROTECT"
-        result["action"] = Action.PROTECT.value
-        result["recommended_stop"] = round_price(trade.stop_current)
-        result["recommended_stop_reason"] = "v8.11 TP0 MFE giveback protection → commission-adjusted breakeven"
-        result.setdefault("notes", []).append(
-            f"PROTECT: після TP0 віддано {giveback_ratio:.0%} MFE; "
-            f"стоп підтягнуто у беззбиток {round_price(trade.stop_current)}"
-        )
+    # Initial activation may use a smaller improvement than later ratchets, but
+    # it must at least establish commission-adjusted breakeven. Subsequent moves
+    # require a material R-step to avoid journal noise and rounding churn.
+    minimum_improvement = 1e-9 if not locked else TP0_PROTECT_MIN_RATCHET_STEP_R
+    if feasible_locked_r < be_locked_r - 1e-9 or feasible_locked_r <= prior_locked_r + minimum_improvement:
+        if requested_locked_r > prior_locked_r + minimum_improvement and feasible_locked_r <= prior_locked_r + minimum_improvement:
+            trade.protection_ratchet_missed_due_to_price = int(getattr(trade, "protection_ratchet_missed_due_to_price", 0) or 0) + 1
+            profile["missed_due_to_price"] = trade.protection_ratchet_missed_due_to_price
+            profile["state"] = "PROTECT" if locked else "WEAKENING"
+            result.setdefault("notes", []).append(
+                f"RATCHET WAIT: peak={peak_mfe_r:.2f}R просить lock={requested_locked_r:.2f}R, "
+                f"але поточна ціна дозволяє лише {market_feasible_locked_r:.2f}R"
+            )
+        trade.management_state = "PROTECT" if locked else "WEAKENING"
+        result["management_state"] = trade.management_state
+        if locked:
+            result["recommended_stop"] = round_price(trade.stop_current)
+            result["recommended_stop_reason"] = "TP0 high-water trailing ratchet active"
+        result["profit_protection"] = profile
+        return profile
+
+    target_stop = _protection_stop_for_locked_r(trade, feasible_locked_r)
+    applied = _apply_protective_stop(trade, context, target_stop)
+    already_protected = _stop_locked_r(trade) >= feasible_locked_r - 1e-6
+    if not (applied or already_protected):
+        trade.protection_ratchet_missed_due_to_price = int(getattr(trade, "protection_ratchet_missed_due_to_price", 0) or 0) + 1
+        trade.management_state = "PROTECT" if locked else "WEAKENING"
+        result["management_state"] = trade.management_state
         profile.update({
-            "activated": True,
-            "state": "PROTECT",
-            "stop": round_price(trade.stop_current),
-            "activation_mfe_r": getattr(trade, "protection_activation_mfe_r", 0.0),
-            "activation_current_r": getattr(trade, "protection_activation_current_r", 0.0),
-            "threshold_scope": getattr(trade, "pre_tp1_protection_scope", ""),
+            "state": trade.management_state,
+            "requested_stop": target_stop,
+            "missed_due_to_price": trade.protection_ratchet_missed_due_to_price,
         })
-    else:
         result.setdefault("notes", []).append(
-            f"WEAKENING: віддано {giveback_ratio:.0%} MFE, але поточна ціна вже не дозволяє "
-            f"коректно поставити BE-stop {be_stop}; потрібен market-risk review"
+            f"RATCHET WAIT: stop {target_stop} не можна коректно застосувати від поточної ціни {round_price(price)}"
         )
-        profile.update({"state": "WEAKENING", "requested_stop": be_stop})
+        result["profit_protection"] = profile
+        return profile
 
+    now = iso_now()
+    first_activation = not locked
+    trade.pre_tp1_protection_locked = True
+    if first_activation:
+        trade.pre_tp1_protection_at = now
+        trade.protection_activation_mfe_r = round(peak_mfe_r, 6)
+        trade.protection_activation_current_r = round(current_r, 6)
+        trade.protection_activation_stop = round_price(trade.stop_current)
+    trade.pre_tp1_protection_ratio = round(giveback_ratio, 6)
+    trade.pre_tp1_protection_threshold = round(giveback_threshold, 6)
+    trade.pre_tp1_protection_scope = threshold_scope
+    trade.protection_locked_r = round(max(prior_locked_r, _stop_locked_r(trade)), 6)
+    trade.protection_ratchet_count = int(getattr(trade, "protection_ratchet_count", 0) or 0) + int(applied or first_activation)
+    trade.protection_last_ratchet_at = now
+    trade.protection_last_ratchet_stop = round_price(trade.stop_current)
+    trade.management_evidence_schema_version = "management_evidence_v9.5.19_trailing_ratchet"
+    trade.management_state = "PROTECT"
+    result["management_state"] = "PROTECT"
+    result["action"] = Action.PROTECT.value
+    result["recommended_stop"] = round_price(trade.stop_current)
+    result["recommended_stop_reason"] = "TP0 high-water MFE trailing ratchet"
+    result.setdefault("notes", []).append(
+        (
+            f"PROTECT ACTIVATE: giveback={giveback_ratio:.0%}, peak={peak_mfe_r:.2f}R, "
+            f"lock={trade.protection_locked_r:.2f}R, stop={round_price(trade.stop_current)}"
+            if first_activation
+            else f"PROTECT RATCHET #{trade.protection_ratchet_count}: peak={peak_mfe_r:.2f}R, "
+                 f"lock={trade.protection_locked_r:.2f}R, stop={round_price(trade.stop_current)}"
+        )
+    )
+    profile.update({
+        "activated": True,
+        "ratcheted": bool(applied),
+        "first_activation": first_activation,
+        "state": "PROTECT",
+        "stop": round_price(trade.stop_current),
+        "locked_r": trade.protection_locked_r,
+        "activation_mfe_r": getattr(trade, "protection_activation_mfe_r", 0.0),
+        "activation_current_r": getattr(trade, "protection_activation_current_r", 0.0),
+        "ratchet_count": trade.protection_ratchet_count,
+        "last_ratchet_at": trade.protection_last_ratchet_at,
+        "missed_due_to_price": trade.protection_ratchet_missed_due_to_price,
+    })
     result["profit_protection"] = profile
     return profile
-
 
 def _active_trade_age_minutes(trade: ActiveTrade) -> float:
     try:
@@ -17997,7 +18724,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
         elif trade.tp1_stop_locked:
             result["recommended_stop_reason"] = "Delayed BE/structural lock активний після TP1"
         elif getattr(trade, "pre_tp1_protection_locked", False):
-            result["recommended_stop_reason"] = "v8.11 TP0 MFE-giveback беззбиток активний"
+            result["recommended_stop_reason"] = "TP0 high-water MFE trailing ratchet активний"
         elif trade.tp1_hit:
             result["recommended_stop_reason"] = "TP1 взято, але BE_DELAY_ENGINE ще не підтвердив перенос стопа"
 
@@ -18400,7 +19127,14 @@ def run_bot() -> None:
                 "protection_activation_mfe_r": getattr(active, "protection_activation_mfe_r", 0.0),
                 "protection_activation_current_r": getattr(active, "protection_activation_current_r", 0.0),
                 "protection_activation_stop": getattr(active, "protection_activation_stop", 0.0),
-                "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.17"),
+                "protection_peak_mfe_r": getattr(active, "protection_peak_mfe_r", 0.0),
+                "protection_locked_r": getattr(active, "protection_locked_r", 0.0),
+                "protection_ratchet_count": getattr(active, "protection_ratchet_count", 0),
+                "protection_last_ratchet_at": getattr(active, "protection_last_ratchet_at", ""),
+                "protection_last_ratchet_stop": getattr(active, "protection_last_ratchet_stop", 0.0),
+                "protection_ratchet_missed_due_to_price": getattr(active, "protection_ratchet_missed_due_to_price", 0),
+                "protection_last_evaluated_mfe_r": getattr(active, "protection_last_evaluated_mfe_r", 0.0),
+                "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.19_trailing_ratchet"),
                 "entry_quality": getattr(active, "entry_quality", 0),
                 "entry_score": getattr(active, "entry_quality", 0),
                 "entry_score_source": getattr(active, "entry_score_source", ""),
@@ -19686,7 +20420,9 @@ def test_tp0_giveback_activates_breakeven_protection() -> bool:
         and result.get("action") == Action.PROTECT.value
         and result.get("management_state") == "PROTECT"
         and trade.pre_tp1_protection_locked
-        and abs(trade.stop_current - round_price(100.0 + COMMISSION_BUFFER_DOLLARS)) < 1e-9
+        and trade.stop_current >= round_price(100.0 + COMMISSION_BUFFER_DOLLARS)
+        and trade.protection_locked_r > 0.0
+        and trade.protection_ratchet_count == 1
     )
 
 
@@ -22178,7 +22914,7 @@ def test_dormant_detector_reachability_contract_is_live() -> bool:
     )
     by_setup = {row.get("setup_type"): row for row in rows}
     return bool(
-        len(by_setup) == 3
+        len(by_setup) == 4
         and by_setup[SetupType.SWEEP_RECLAIM.value].get("fired")
         and by_setup[SetupType.RANGE_EDGE_REVERSAL.value].get("fired")
         and by_setup[SetupType.RANGE_COMPRESSION_BREAKOUT.value].get("fired")
@@ -22742,6 +23478,186 @@ def test_saved_fresh_base_gets_model_local_reentry_clock_only_on_fresh_event() -
         and stale.thesis_age_minutes > THESIS_HARD_TTL_MIN
     )
 
+def test_tp0_protection_trails_new_mfe_high_water() -> bool:
+    trade = ActiveTrade(
+        id="ratchet-trailing", side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=iso_now(),
+        entry=100.0, stop_initial=99.0, stop_current=99.0,
+        structural_invalidation=98.5, tp0=100.5, tp1=103.0, tp2=104.0, tp3=105.0,
+        quality=75, position_risk_pct=0.1, best_price=101.0, worst_price=100.0,
+        tp0_hit=True, entry_stage=EntryStage.PROBE.value,
+    )
+    first = {"action": Action.HOLD.value, "best_pct": 1.0, "current_pct": 0.4, "notes": []}
+    _tp0_profit_protection(trade, {"price": 100.4, "candles": {"3m": []}}, first)
+    first_stop = trade.stop_current
+    trade.best_price = 102.0
+    second = {"action": Action.HOLD.value, "best_pct": 2.0, "current_pct": 1.9, "notes": []}
+    profile = _tp0_profit_protection(trade, {"price": 101.9, "candles": {"3m": []}}, second)
+    second_stop = trade.stop_current
+    third = {"action": Action.HOLD.value, "best_pct": 2.0, "current_pct": 1.8, "notes": []}
+    _tp0_profit_protection(trade, {"price": 101.8, "candles": {"3m": []}}, third)
+    return bool(
+        first_stop > trade.entry
+        and second_stop > first_stop
+        and abs(trade.protection_locked_r - 1.2) < 1e-6
+        and trade.protection_ratchet_count == 2
+        and profile.get("ratcheted")
+        and trade.stop_current == second_stop
+        and trade.management_evidence_schema_version == "management_evidence_v9.5.19_trailing_ratchet"
+    )
+
+
+def test_ranked_top_n_conversion_audits_nonselected_candidate() -> bool:
+    c1 = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=80, final_score=80,
+        ict_model="ACCEPTANCE_RETEST_CONTINUATION", hypothesis_score=90.0,
+        trigger_ready=True, execution_anchor=100.0, trigger_level=100.0,
+        revalidation_profile={"entry_supported": True},
+    )
+    c2 = Candidate(
+        side=Side.SHORT.value, setup_type=SetupType.TREND_IGNITION.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value, raw_score=64, final_score=64,
+        ict_model="TREND_IGNITION_MODEL", hypothesis_score=70.0,
+        trigger_ready=False, execution_anchor=101.0, trigger_level=101.0,
+        revalidation_profile={"entry_supported": False},
+    )
+    finalize_hypothesis_ranking([c1, c2])
+    plan1 = TradePlan(entry=100, stop=99, tp0=101, tp1=102, tp2=103, tp3=104, risk_pct=.1, rr1=2, rr2=3, rr3=4, execution_ready=True, valid=True)
+    final = Decision(
+        id="selected", time=iso_now(), action=Action.ENTRY.value, side=c1.side,
+        setup_type=c1.setup_type, quality=80, reason="selected", regime=Regime.NORMAL.value,
+        candidate=c1, plan=plan1,
+        audit={"executive_director": {"report": {"executive_decision": {"allow_execution": True, "blocking_reasons": []}}},
+               "execution_funnel": {"blocking_layer": "NONE"}},
+    )
+    original = globals().get("_candidate_counterfactual_decision")
+    def fake_counterfactual(context, state, journal, candidate):
+        plan = TradePlan(entry=101, stop=102, tp0=100, tp1=99, tp2=98, tp3=97, risk_pct=0, rr1=2, rr2=3, rr3=4, execution_ready=False, valid=True)
+        return Decision(
+            id="audit", time=iso_now(), action=Action.NO_SETUP.value, side=candidate.side,
+            setup_type=candidate.setup_type, quality=candidate.final_score, reason="blocked",
+            regime=Regime.NORMAL.value, candidate=candidate, plan=plan,
+            audit={"executive_director": {"report": {"executive_decision": {"allow_execution": False, "blocking_reasons": ["REVALIDATION_NOT_SUPPORTED"]}}},
+                   "execution_funnel": {"blocking_layer": "REVALIDATION"}},
+        )
+    globals()["_candidate_counterfactual_decision"] = fake_counterfactual
+    try:
+        context = {"price": 100.0, "atr15": 1.0, "candles": {"3m": []}, "_ranked_candidate_objects": [c1, c2]}
+        journal: dict[str, Any] = {}
+        report = ranked_top_n_conversion_audit(context, {}, journal, final)
+        rows = report.get("rows") or []
+        return bool(
+            len(rows) == 2
+            and rows[0].get("selected") and rows[0].get("would_executable")
+            and not rows[1].get("selected")
+            and rows[1].get("primary_blocker") in {"PLAN_NOT_EXECUTABLE", "REVALIDATION_NOT_SUPPORTED"}
+            and len(journal.get("ranked_conversion_audits") or []) == 1
+            and all(not row.get("can_open_trade") for row in rows)
+        )
+    finally:
+        globals()["_candidate_counterfactual_decision"] = original
+
+
+def test_independent_episode_counting_deduplicates_repeat_scans() -> bool:
+    journal: dict[str, Any] = {}
+    event = {
+        "side": Side.LONG.value, "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "model_id": "BREAKER_BLOCK", "execution_anchor": 100.0,
+        "trigger_level": 100.0, "market_thesis_age_minutes": 60.0,
+        "model_thesis_age_minutes": -1.0, "thesis_origin": "MARKET_SCAN",
+        "rank": 1, "final_score": 62,
+    }
+    context = {
+        "price": 100.1, "atr15": 1.0, "candles": {"3m": []},
+        "_setup_lifecycle_detected": [dict(event)],
+        "_setup_lifecycle_qualified": [dict(event)],
+        "_setup_lifecycle_ranked": [dict(event)],
+        "_detector_reachability": [],
+    }
+    update_setup_lifecycle_counters(journal, context, None)
+    update_setup_lifecycle_counters(journal, context, None)
+    ledger = journal.get("setup_lifecycle_counters") or {}
+    raw = (ledger.get("totals") or {}).get(SetupType.BREAKOUT_RETEST.value) or {}
+    episodes = (ledger.get("independent_episode_totals") or {}).get(SetupType.BREAKOUT_RETEST.value) or {}
+    return bool(
+        raw.get("detected") == 2 and raw.get("ranked") == 2
+        and episodes.get("detected") == 1 and episodes.get("ranked") == 1
+        and len(ledger.get("episode_registry") or {}) == 1
+    )
+
+
+def test_daily_open_shadow_experiment_is_episode_deduplicated_and_audit_only() -> bool:
+    journal: dict[str, Any] = {}
+    row = {
+        "side": Side.LONG.value, "setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,
+        "model_id": "DAILY_WEEKLY_OPEN_RECLAIM", "final_score": 56,
+        "trigger_ready": True, "episode_key": "daily-open-episode-1",
+        "htf_state": "against", "primary_blocker": "CANONICAL_SCORE_BELOW_RISKY",
+        "counterfactual_plan": {
+            "entry": 100.0, "stop": 99.0, "tp0": 101.0, "tp1": 102.0,
+            "tp2": 103.0, "tp3": 104.0, "valid": True, "execution_ready": True,
+        },
+    }
+    record_daily_open_shadow_experiment(journal, [row, dict(row)])
+    store = journal.get("daily_open_shadow_experiments") or []
+    return bool(
+        len(store) == 1
+        and not (journal.get("rejected_hypothesis_shadows") or [])
+        and store[0].get("experiment_name") == "DAILY_OPEN_SUB68_SHADOW"
+        and store[0].get("audit_only")
+        and store[0].get("not_realized_pnl")
+        and not (store[0].get("experiment_policy") or {}).get("live_authority")
+        and not (store[0].get("experiment_policy") or {}).get("global_thresholds_mutated")
+    )
+
+
+def test_predicate_audit_skips_not_applicable_live_trigger() -> bool:
+    journal: dict[str, Any] = {}
+    for _ in range(DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS):
+        event = build_dormant_detector_reachability(
+            Side.LONG.value, is_raw_sweep=False, is_sweep=False, has_choch=False,
+            has_fvg=False, strong_displacement=False, regime=Regime.NORMAL.value,
+            has_good_reclaim=False, compression_atr=4.0, is_range_compressed=False,
+            trigger_ready=False,
+        )[2]
+        update_setup_lifecycle_counters(
+            journal,
+            {"price": 100.0, "atr15": 1.0, "candles": {"3m": []},
+             "_setup_lifecycle_detected": [], "_setup_lifecycle_qualified": [],
+             "_setup_lifecycle_ranked": [], "_detector_reachability": [event]},
+            None,
+        )
+    reach = (((journal.get("setup_lifecycle_counters") or {}).get("detector_reachability") or {})
+             .get(SetupType.RANGE_COMPRESSION_BREAKOUT.value) or {})
+    return bool(
+        reach.get("condition_observation_counts", {}).get("range_compressed") == DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS
+        and reach.get("condition_not_applicable_counts", {}).get("live_trigger_ready") == DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS
+        and "live_trigger_ready" not in (reach.get("condition_false_rates") or {})
+        and "range_compressed" in (reach.get("saturated_predicates") or [])
+    )
+
+
+def test_liquidity_ladder_predicate_audit_exposes_route_and_confirmation() -> bool:
+    rows = build_dormant_detector_reachability(
+        Side.LONG.value, is_raw_sweep=False, is_sweep=False, has_choch=False,
+        has_fvg=False, strong_displacement=False, regime=Regime.NORMAL.value,
+        has_good_reclaim=False, compression_atr=4.0, is_range_compressed=False,
+        trigger_ready=False,
+        liquidity_ladder={"active": True, "tf_ok": True, "target_count": 4, "kind_count": 3, "ladder_score": 5.0},
+        liquidity_ladder_confirmation={"ready": False, "kind": "WAIT_CONFIRMATION"},
+    )
+    ladder = next(row for row in rows if row.get("setup_type") == SetupType.LIQUIDITY_LADDER.value)
+    return bool(
+        not ladder.get("fired")
+        and (ladder.get("conditions") or {}).get("route_active")
+        and not (ladder.get("conditions") or {}).get("execution_confirmation_ready")
+        and "execution_confirmation_ready" in (ladder.get("blockers") or [])
+        and "route_active" in ((ladder.get("predicate_dependencies") or {}).get("execution_confirmation_ready") or [])
+    )
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
@@ -22749,6 +23665,12 @@ def _run_self_test() -> bool:
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
         ("current-session model-local clocks override stale market thesis", test_current_session_model_local_origins_override_stale_market_clock),
+        ("v9.5.19 TP0 protection trails new MFE high-water", test_tp0_protection_trails_new_mfe_high_water),
+        ("v9.5.19 ranked top-N audits nonselected candidates", test_ranked_top_n_conversion_audits_nonselected_candidate),
+        ("v9.5.19 lifecycle counts independent market episodes", test_independent_episode_counting_deduplicates_repeat_scans),
+        ("v9.5.19 Daily Open shadow is episode-deduplicated audit-only", test_daily_open_shadow_experiment_is_episode_deduplicated_and_audit_only),
+        ("v9.5.19 predicate audit skips not-applicable checks", test_predicate_audit_skips_not_applicable_live_trigger),
+        ("v9.5.19 Liquidity Ladder audit exposes route confirmation", test_liquidity_ladder_predicate_audit_exposes_route_and_confirmation),
         ("v9.5.18 trade profile provenance survives regime merge", test_trade_mode_profile_preserves_provenance_contract),
         ("v9.5.18 active trade provenance survives state roundtrip", test_active_trade_profile_provenance_survives_state_roundtrip),
         ("v9.5.18 executed funnel reason is not classified as a block", test_funnel_executed_reason_is_not_misclassified_as_block),
@@ -25160,7 +26082,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.18 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.19 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
