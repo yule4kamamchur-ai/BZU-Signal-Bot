@@ -3,6 +3,7 @@
 BZU Professional Hybrid Confluence Signal Bot v9.5.21 (Quality Audit, Sweep and Ladder Diagnostics)
 =============================================================================================
 Оновлення v9.5.21:
+- Self-test coverage: 12 previously orphaned regression tests are reactivated in the deterministic registry; legacy assertions are aligned with current v9.5.21 contracts without changing live trading logic.
 - Entry-quality audit розділяє canonical trade score від evaluation/entry-quality snapshots; legacy fallback score->entry_score прибрано з аналітики.
 - Best diagnostic metric може використовувати setup-normalized discrimination лише після мінімум 3 незалежних setup types; інакше fallback йде на global Spearman.
 - Institutional sweep validation отримав єдиний audit-profile з декомпозицією topology/SMT/CVD/strict-environment та reason codes без зміни live threshold 0.85.
@@ -20380,12 +20381,30 @@ def run_bot() -> None:
 
 
 def test_conflict_blocks_bad_trade() -> bool:
+    """Current conflict contract: only explicit same-axis opposition is a hard conflict.
+
+    Risk Manager is intentionally excluded from market-conflict construction and
+    therefore cannot manufacture a hard conflict by itself.
+    """
     advisors_bad = [
-        {"module": "HTF_ANALYST", "opinion": "AGAINST", "impact": -20},
-        {"module": "RISK_MANAGER", "opinion": "AGAINST", "impact": -25},
+        advisory_report(
+            "HTF_ANALYST", AdvisoryOpinion.SUPPORT.value, 90, 10,
+            ["forced same-axis support"], axes=[ConflictAxis.DIRECTION],
+            horizon="setup", explicit_conclusion=True,
+        ),
+        advisory_report(
+            "ICT_ANALYST", AdvisoryOpinion.AGAINST.value, 90, -10,
+            ["forced same-axis opposition"], axes=[ConflictAxis.DIRECTION],
+            horizon="setup", explicit_conclusion=True,
+        ),
     ]
     conflict = conflict_resolution_engine(advisors_bad)
-    return conflict["hard_conflict"]
+    return bool(
+        conflict.get("actual_conflict")
+        and conflict.get("hard_conflict")
+        and ConflictAxis.DIRECTION.value in (conflict.get("conflict_axes") or [])
+        and not conflict.get("capital_blocked")
+    )
 
 
 def test_philosophy_rejects_without_edge() -> bool:
@@ -20402,10 +20421,16 @@ def test_philosophy_rejects_without_edge() -> bool:
         risk_pct=0.1, rr1=0.2, rr2=1, rr3=2, valid=True
     )
     result = trading_philosophy_layer(candidate, {}, bad_plan)
-    return result["recommendation"] == "WAIT"
+    reasons = set(result.get("reason_codes") or [])
+    return bool(
+        result.get("recommendation") == "REJECT_NO_EDGE"
+        and "NO_CONCRETE_EDGE" in reasons
+        and "BAD_REALISTIC_RR" in reasons
+    )
 
 
 def test_risk_manager_can_block() -> bool:
+    """Capital exhaustion is tested directly, without unrelated DTO failures."""
     journal = {
         "trades": [{
             "closed_at": iso_now(),
@@ -20413,73 +20438,38 @@ def test_risk_manager_can_block() -> bool:
             "result_r": -1.0,
         }]
     }
-    report = build_executive_decision_object(
-        Candidate(
-            side=Side.LONG.value,
-            setup_type=SetupType.PULLBACK_CONTINUATION.value,
-            setup_family=SetupFamily.CONTINUATION.value,
-            raw_score=90, final_score=90,
-        ),
-        plan=TradePlan(
-            entry=100, stop=99, tp1=101.5, tp2=103, tp3=105,
-            risk_pct=0.1, rr1=1.5, rr2=3, rr3=5, position_risk_pct=0.1
-        ),
-        journal=journal,
-        state={}
+    candidate = _v9_test_candidate()
+    plan = _v9_test_plan(risk=PROBE_RISK_PCT)
+    advisor = _risk_manager_advisor(plan, journal, {})
+    ledger = build_risk_adjustment_ledger(
+        candidate, {}, stage=EntryStage.PROBE.value, journal=journal, state={}, geometry_multiplier=1.0
     )
-    return report["action"] == ExecutiveDecisionState.WAIT.value
+    return bool(
+        advisor.get("opinion") == AdvisoryOpinion.AGAINST.value
+        and ledger.capital_cap_pct <= 1e-9
+        and ledger.final_position_risk_pct <= 1e-9
+    )
 
 
 
 
 def test_probe_reduced_on_hard_conflict() -> bool:
-    candidate = Candidate(
-        side=Side.LONG.value,
-        setup_type=SetupType.PULLBACK_CONTINUATION.value,
-        setup_family=SetupFamily.CONTINUATION.value,
-        raw_score=90,
-        final_score=90,
-        score_components={
-            "htf_score": 80,
-            "str_score": 25,
-            "liq_score": 25,
-            "trig_score": 25,
-        },
+    """Legacy PROBE_REDUCED behavior is retired: real conflict waits for evidence."""
+    candidate = _v9_test_candidate()
+    conflict = _v9_conflict_report(
+        actual=True, severity=0.90, axes=[ConflictAxis.DIRECTION.value]
     )
-    plan = TradePlan(
-        entry=100,
-        stop=99,
-        tp1=101.5,
-        tp2=103,
-        tp3=105,
-        risk_pct=0.1,
-        rr1=2.0,
-        rr2=3.0,
-        rr3=5.0,
-        position_risk_pct=0.3,
-        execution_ready=True,
+    bundle = _v9_bundle(
+        78, 78, 72, recommendation="ACCEPT_STAGED",
+        statistical_status="UNPROVEN", conflict=conflict,
     )
-    # Force a material market conflict while keeping execution and RR valid.
-    # Both directional market advisors oppose the trade at high confidence;
-    # this is deliberately stronger than the weak 25–31% CAUTION case.
-    original_ict = _ict_advisor
-    original_htf = _htf_advisor
-    try:
-        globals()["_ict_advisor"] = lambda _: advisory_report(
-            "ICT_ANALYST", "CAUTION", 90, -15, ["forced material conflict"]
-        )
-        globals()["_htf_advisor"] = lambda _candidate, _components: advisory_report(
-            "HTF_ANALYST", "CAUTION", 90, -10, ["forced material conflict"]
-        )
-        result = build_executive_decision_object(candidate, plan=plan, journal={}, state={})
-        return (
-            result["action"] == ExecutiveDecisionState.PROBE_REDUCED.value
-            and result["conflict_resolution"]["hard_conflict"]
-            and result.get("audit", {}).get("final_action_policy") == "conflict lowers risk, not automatically blocks execution"
-        )
-    finally:
-        globals()["_ict_advisor"] = original_ict
-        globals()["_htf_advisor"] = original_htf
+    result = build_staged_executive_decision(candidate, bundle, [])
+    return bool(
+        result.state == ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        and not result.allow_execution
+        and "ACTUAL_CONFLICT" in (result.warning_reasons or [])
+        and result.state != ExecutiveDecisionState.PROBE_REDUCED.value
+    )
 
 def _probe_test_candidate(*, live: bool = True, score: int = 60) -> Candidate:
     return Candidate(
@@ -20529,13 +20519,19 @@ def _probe_test_plan(*, execution_ready: bool = True) -> TradePlan:
 
 
 def test_fresh_probe_entry_below_68() -> bool:
-    candidate = _probe_test_candidate(live=True, score=max(ARMED_SCORE_BASE, 60))
-    plan = _probe_test_plan(execution_ready=True)
-    report = executive_decision_engine(candidate, plan=plan, journal={}, state={})
-    return (
-        report["action"] == Action.PROBE_ENTRY.value
+    """A fully valid fresh early-probe may remain below risky/full-entry score floors."""
+    candidate = _v9_test_candidate(score=max(ARMED_SCORE_BASE, 60))
+    candidate.entry_stage = EntryStage.PROBE.value
+    plan = _v9_test_plan(risk=PROBE_RISK_PCT)
+    journal = _v9_stats_journal(0.5, 10)
+    report = executive_decision_engine(candidate, plan=plan, journal=journal, state={})
+    admission = ((report.get("executive_decision") or {}).get("audit") or {}).get("risky_entry_score_profile") or {}
+    return bool(
+        report.get("action") == Action.PROBE_ENTRY.value
         and candidate.entry_stage == EntryStage.PROBE.value
         and plan.position_risk_pct <= PROBE_RISK_PCT
+        and int(candidate.final_score) < RISKY_ENTRY_SCORE_BASE
+        and not admission.get("risky_entry_eligible")
     )
 
 
@@ -21481,7 +21477,8 @@ def test_relaxed_live_override_is_tiny_probe_only() -> bool:
         score_components={"common_execution_ok": True, "continuation_reanchor": {
             "ready": False, "six_bar_structure_confirmed": True, "structure_intact": True, "tf_aligned": True,
             "directional_closes": 6, "required_directional_closes": 4, "signed_net_move_atr": 1.0,
-            "pullback_atr": 0.1, "distance_atr": 0.4, "micro_confirmation": {"score": 95},
+            "pullback_atr": 0.1, "distance_atr": 0.4,
+            "confirmed_3m_bars": 6, "micro_confirmation": {"score": 95, "confirmed_3m_bars": 6},
             "directional_structure": {"partial": True, "supports_side": False, "opposite_aligned": False, "close_progression": True},
         }}, stage_plan={"stage": EntryStage.WAIT_RETEST.value, "base_risk_pct": 0.2}
     )
@@ -21489,11 +21486,22 @@ def test_relaxed_live_override_is_tiny_probe_only() -> bool:
                      risk_pct=0.3, rr0=1, rr1=2, rr2=3, rr3=4,
                      position_risk_pct=0.3, valid=True, execution_ready=False)
     profile = apply_relaxed_continuation_live_override(candidate, plan, journal)
+    # The override grants execution eligibility only. Actual sizing is owned by
+    # the canonical risk ledger, so the pre-ledger plan risk must not be mutated.
+    pre_ledger_risk = plan.position_risk_pct
+    ledger = build_risk_adjustment_ledger(
+        candidate, {}, stage=EntryStage.PROBE.value, journal={}, state={}, geometry_multiplier=1.0
+    )
+    override = (candidate.stage_plan or {}).get("relaxed_live_override") or {}
     return bool(
         profile.get("live_eligible")
         and profile.get("live_mode") == "PROBE_ONLY"
         and plan.execution_ready
-        and plan.position_risk_pct <= RELAXED_CONTINUATION_PROBE_RISK_PCT
+        and pre_ledger_risk == 0.3
+        and safe_float((profile.get("risk_recommendation") or {}).get("capital_cap_pct"), 999.0) <= RELAXED_CONTINUATION_PROBE_RISK_PCT
+        and safe_float(ledger.capital_cap_pct, 999.0) <= RELAXED_CONTINUATION_PROBE_RISK_PCT
+        and safe_float(ledger.final_position_risk_pct, 999.0) <= RELAXED_CONTINUATION_PROBE_RISK_PCT
+        and override.get("risk_applied_here") is False
         and candidate.entry_stage == EntryStage.PROBE.value
     )
 
@@ -21715,7 +21723,14 @@ def test_get_htf_state_does_not_infer_direction_from_raw_score() -> bool:
         final_score=68,
         score_components={"htf_score": 20, "features": {"htf": 1.0}},
     )
-    return get_htf_state(candidate) == "neutral"
+    fact = get_htf_fact(candidate)
+    return bool(
+        get_htf_state(candidate) == "unknown"
+        and fact.get("valid") is False
+        and fact.get("state") == "UNKNOWN"
+        and safe_float(fact.get("alignment_score"), 99.0) == 0.0
+        and safe_float((candidate.score_components or {}).get("htf_score"), 0.0) == 20.0
+    )
 
 
 def test_reversal_drift_guard_covers_short_models() -> bool:
@@ -21798,7 +21813,7 @@ def test_pattern_feature_preserves_strong_candidate_ordering() -> bool:
 
 def test_htf_single_fact_mixed_lower_tfs_vs_4h() -> bool:
     # Exact old contradiction: 4H aligned, 1H+15M against.
-    # With 0.15/0.35/0.50 weights the canonical alignment is 0.0.
+    # With 0.15/0.35/0.50 weights the canonical alignment is exactly neutral.
     fact = _candidate_htf_fact(
         Side.LONG.value,
         {"bias": Side.SHORT.value, "composite": -1.0},
@@ -21823,9 +21838,10 @@ def test_htf_single_fact_mixed_lower_tfs_vs_4h() -> bool:
         abs(safe_float(fact.get("alignment_score"), 99.0)) < 1e-9
         and abs(safe_float(fact.get("score_base"), 0.0) - HTF_SCORE_MID) < 1e-9
         and abs(safe_float(fact.get("ml_feature"), 0.0) - 0.5) < 1e-9
-        and fact.get("state") == "mixed"
-        and advisor.get("opinion") == "NEUTRAL"
+        and fact.get("state") == "NEUTRAL"
+        and advisor.get("opinion") == AdvisoryOpinion.UNCERTAIN.value
         and abs(safe_float(advisor.get("impact"), 99.0)) < 1e-9
+        and get_htf_state(candidate) == "neutral"
     )
 
 
@@ -21847,12 +21863,12 @@ def test_htf_single_fact_full_alignment_consistency() -> bool:
     )
     advisor = _htf_advisor(candidate, candidate.score_components)
     return bool(
-        fact.get("state") == "aligned"
+        fact.get("state") == "ALIGNED"
         and safe_float(fact.get("alignment_score"), 0.0) == 1.0
         and safe_float(fact.get("score_base"), 0.0) == HTF_SCORE_MAX
         and safe_float(fact.get("score_weighted"), 0.0) == HTF_SCORE_MAX * TREND_HTF_WEIGHT
         and safe_float(fact.get("ml_feature"), 0.0) == 1.0
-        and advisor.get("opinion") == "SUPPORT"
+        and advisor.get("opinion") == AdvisoryOpinion.SUPPORT.value
         and safe_float(advisor.get("confidence"), 0.0) == 100.0
         and get_htf_state(candidate) == "aligned"
     )
@@ -21876,11 +21892,11 @@ def test_htf_single_fact_full_opposition_consistency() -> bool:
     )
     advisor = _htf_advisor(candidate, candidate.score_components)
     return bool(
-        fact.get("state") == "against"
+        fact.get("state") == "AGAINST"
         and safe_float(fact.get("alignment_score"), 0.0) == -1.0
         and safe_float(fact.get("score_base"), 0.0) == HTF_SCORE_MIN
         and safe_float(fact.get("ml_feature"), 1.0) == 0.0
-        and advisor.get("opinion") == "CAUTION"
+        and advisor.get("opinion") == AdvisoryOpinion.AGAINST.value
         and safe_float(advisor.get("confidence"), 0.0) == 100.0
         and safe_float(advisor.get("impact"), 0.0) < 0
         and get_htf_state(candidate) == "against"
@@ -24868,6 +24884,18 @@ def _run_self_test() -> bool:
         ("v9.5.21 sweep audit preserves neutral non-sweep liquidity multiplier", test_institutional_sweep_audit_preserves_non_sweep_liquidity_multiplier),
         ("v9.5.21 Ladder audit preserves raw live trigger under priority preemption", test_liquidity_ladder_audit_preserves_raw_live_trigger_when_priority_preempts),
         ("v9.5.21 Ladder audit explains stale ready-stage trigger", test_liquidity_ladder_audit_exposes_stale_ready_stage),
+        ("regression: explicit same-axis opposition creates hard conflict", test_conflict_blocks_bad_trade),
+        ("regression: valid fresh early probe remains possible below risky score floor", test_fresh_probe_entry_below_68),
+        ("regression: HTF state never infers direction from raw score", test_get_htf_state_does_not_infer_direction_from_raw_score),
+        ("regression: HTF quality feature is direct canonical-fact projection", test_htf_quality_feature_is_direct_fact_projection),
+        ("regression: HTF full alignment is consistent across score/ML/advisor", test_htf_single_fact_full_alignment_consistency),
+        ("regression: HTF full opposition is consistent across score/ML/advisor", test_htf_single_fact_full_opposition_consistency),
+        ("regression: mixed lower TFs versus 4H resolves to neutral canonical fact", test_htf_single_fact_mixed_lower_tfs_vs_4h),
+        ("regression: Trading Philosophy rejects score-only/no-edge plan", test_philosophy_rejects_without_edge),
+        ("regression: real hard conflict waits for confirmation; legacy reduced-probe path stays retired", test_probe_reduced_on_hard_conflict),
+        ("regression: relaxed live override can graduate only to tiny PROBE", test_relaxed_live_override_is_tiny_probe_only),
+        ("regression: Risk Manager exhausts capital budget without unrelated schema failure", test_risk_manager_can_block),
+        ("regression: weak cautions do not manufacture hard conflict", test_weak_cautions_do_not_create_hard_conflict),
         ("v9.5.20 episode identity is monotonic across funnel stages", test_episode_identity_is_monotonic_across_ranked_and_selected),
         ("v9.5.20 predicate schema migration isolates legacy counters", test_predicate_schema_migration_archives_legacy_and_resets_health_scope),
         ("v9.5.20 entry-quality audit is descriptive and setup-normalized", test_entry_quality_audit_is_descriptive_and_setup_normalized),
