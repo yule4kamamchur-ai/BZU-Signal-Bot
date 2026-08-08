@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.20 (Episode Identity, Predicate Migration, Quality and Ratchet Evidence)
+BZU Professional Hybrid Confluence Signal Bot v9.5.21 (Quality Audit, Sweep and Ladder Diagnostics)
 =============================================================================================
+Оновлення v9.5.21:
+- Entry-quality audit розділяє canonical trade score від evaluation/entry-quality snapshots; legacy fallback score->entry_score прибрано з аналітики.
+- Best diagnostic metric може використовувати setup-normalized discrimination лише після мінімум 3 незалежних setup types; інакше fallback йде на global Spearman.
+- Institutional sweep validation отримав єдиний audit-profile з декомпозицією topology/SMT/CVD/strict-environment та reason codes без зміни live threshold 0.85.
+- RANGE_EDGE_REVERSAL reachability більше не називає institutional_sweep_valid blocker, якщо raw sweep взагалі не було.
+- Liquidity Ladder audit розділяє raw 3M readiness, stage/freshness, acceptance/reanchor та обраний priority confirmation kind; telemetry більше не плутає preemption з відсутністю trigger.
+- Predicate schema bumped, щоб старі семантично змішані sweep/ladder counters не забруднювали v9.5.21 diagnostics.
 Оновлення v9.5.18:
 - Trade-profile provenance проходить без втрат setup_trade_profile -> trade_mode_profile -> TradePlan/ActiveTrade -> compact closed trade.
 - Funnel classification більше не трактує explanatory decision.reason як blocking reason; live entry позначається EXECUTED, active-trade shadow capacity — окремо.
@@ -239,8 +246,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.20-episode-predicate-quality-ratchet-evidence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_20_EPISODE_PREDICATE_QUALITY_RATCHET_EVIDENCE"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.21-quality-sweep-ladder-diagnostics"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_21_QUALITY_SWEEP_LADDER_DIAGNOSTICS"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -383,9 +390,11 @@ DAILY_OPEN_SHADOW_HORIZON_HOURS = max(4.0, float(os.getenv("DAILY_OPEN_SHADOW_HO
 DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT = min(0.05, max(0.005, float(os.getenv("DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT", "0.03") or 0.03)))
 DAILY_OPEN_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("DAILY_OPEN_SHADOW_HISTORY_LIMIT", "500") or 500))
 SETUP_EPISODE_SCHEMA_VERSION = "setup_episode_registry_v9.5.20_canonical_stage_identity"
-DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.20_dependency_scoped"
-ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.20"
+DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.21_sweep_ladder_semantics"
+ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_score_lineage"
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
+ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
+INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD = 0.85
 TP0_PROTECT_RATCHET_EVIDENCE_LIMIT = max(20, int(os.getenv("TP0_PROTECT_RATCHET_EVIDENCE_LIMIT", "80") or 80))
 TP0_PROTECT_MIN_RATCHET_STEP_R = max(0.02, float(os.getenv("TP0_PROTECT_MIN_RATCHET_STEP_R", "0.10") or 0.10))
 TP0_PROTECT_PRICE_BUFFER_DOLLARS = max(0.001, float(os.getenv("TP0_PROTECT_PRICE_BUFFER_DOLLARS", "0.02") or 0.02))
@@ -2018,8 +2027,12 @@ def migrate_predicate_reachability_schema(journal: dict[str, Any]) -> dict[str, 
             "condition_false_counts": json_safe(row.get("condition_false_counts") or {}),
             "condition_not_applicable_counts": json_safe(row.get("condition_not_applicable_counts") or {}),
             "margin_statistics": json_safe(row.get("margin_statistics") or {}),
+            "diagnostic_reason_counts": json_safe(row.get("diagnostic_reason_counts") or {}),
+            "current_schema_diagnostic_reason_counts": json_safe(row.get("current_schema_diagnostic_reason_counts") or {}),
+            "path_true_counts": json_safe(row.get("path_true_counts") or {}),
+            "path_observation_counts": json_safe(row.get("path_observation_counts") or {}),
             "saturated_predicates": list(row.get("saturated_predicates") or []),
-            "reason": "LEGACY_FALSE_COUNTS_CANNOT_BE_RECLASSIFIED_AS_FALSE_VS_NOT_APPLICABLE",
+            "reason": "PREDICATE_SEMANTICS_CHANGED; LEGACY_FALSE_COUNTS_CANNOT_BE_RECLASSIFIED_AS_FALSE_VS_NOT_APPLICABLE; SWEEP_RAW_PREREQUISITE_AND_LADDER_RAW_TRIGGER_ARE_SEPARATED",
         }
         archives = row.setdefault("predicate_schema_archives", [])
         archives.append(legacy_snapshot)
@@ -2029,7 +2042,8 @@ def migrate_predicate_reachability_schema(journal: dict[str, Any]) -> dict[str, 
             ("condition_observation_counts", {}), ("condition_false_rates", {}),
             ("condition_not_applicable_counts", {}), ("predicate_dependencies", {}),
             ("margin_statistics", {}), ("current_schema_blocker_counts", {}),
-            ("current_schema_scan_mode_counts", {}),
+            ("current_schema_scan_mode_counts", {}), ("current_schema_diagnostic_reason_counts", {}),
+            ("path_true_counts", {}), ("path_observation_counts", {}),
         ):
             row[key] = empty
         row["current_schema_evaluated"] = 0
@@ -2232,6 +2246,8 @@ def update_setup_lifecycle_counters(
             "saturated_predicates": [],
             "current_schema_evaluated": 0, "current_schema_fired": 0,
             "current_schema_blocker_counts": {}, "current_schema_scan_mode_counts": {},
+            "diagnostic_reason_counts": {}, "current_schema_diagnostic_reason_counts": {},
+            "path_true_counts": {}, "path_observation_counts": {},
             "predicate_schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
         })
         if str(row.get("predicate_schema_version") or "") != DETECTOR_REACHABILITY_SCHEMA_VERSION:
@@ -2251,6 +2267,23 @@ def update_setup_lifecycle_counters(
         for blocker in event.get("blockers") or []:
             blockers[str(blocker)] = int(blockers.get(str(blocker)) or 0) + 1
             current_blockers[str(blocker)] = int(current_blockers.get(str(blocker)) or 0) + 1
+        diagnostics = dict(event.get("diagnostics") or {})
+        reason_codes = diagnostics.get("reason_codes") or []
+        lifetime_diagnostic_counts = row.setdefault("diagnostic_reason_counts", {})
+        current_diagnostic_counts = row.setdefault("current_schema_diagnostic_reason_counts", {})
+        for reason in reason_codes:
+            key = str(reason or "").strip()
+            if not key:
+                continue
+            lifetime_diagnostic_counts[key] = int(lifetime_diagnostic_counts.get(key) or 0) + 1
+            current_diagnostic_counts[key] = int(current_diagnostic_counts.get(key) or 0) + 1
+        path_true_counts = row.setdefault("path_true_counts", {})
+        path_observation_counts = row.setdefault("path_observation_counts", {})
+        for path_name, path_value in (event.get("paths") or {}).items():
+            key = str(path_name)
+            path_observation_counts[key] = int(path_observation_counts.get(key) or 0) + 1
+            if bool(path_value):
+                path_true_counts[key] = int(path_true_counts.get(key) or 0) + 1
         true_counts = row.setdefault("condition_true_counts", {})
         false_counts = row.setdefault("condition_false_counts", {})
         not_applicable_counts = row.setdefault("condition_not_applicable_counts", {})
@@ -6112,12 +6145,31 @@ def _quality_calibration_bins(rows: list[dict[str, Any]], metric: str) -> list[d
 
 
 def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
-    """Descriptive quality/outcome audit with no live scoring authority."""
+    """Descriptive quality/outcome audit with explicit score lineage.
+
+    ``canonical_score`` is the admission/ranking score persisted as trade["score"].
+    ``entry_score`` and ``evaluation_entry_quality`` remain separate evaluation
+    snapshots. Missing entry-quality fields are not silently backfilled from the
+    canonical score, because that would make two different concepts look equal.
+    The report is audit-only and never mutates live weights or thresholds.
+    """
     metrics = (
-        "entry_score", "evaluation_entry_quality", "preplan_entry_quality",
-        "trade_entry_quality", "setup_quality", "timing_quality", "trade_quality",
+        "canonical_score", "entry_score", "evaluation_entry_quality",
+        "preplan_entry_quality", "trade_entry_quality", "setup_quality",
+        "timing_quality", "trade_quality",
     )
+    lineage = {
+        "canonical_score": "trade.score / canonical decision quality",
+        "entry_score": "trade.entry_score / persisted entry-quality snapshot",
+        "evaluation_entry_quality": "trade.evaluation_entry_quality / final EvaluationBundle.entry_quality",
+        "preplan_entry_quality": "trade.preplan_entry_quality",
+        "trade_entry_quality": "trade.trade_entry_quality",
+        "setup_quality": "trade.setup_quality",
+        "timing_quality": "trade.timing_quality",
+        "trade_quality": "trade.trade_quality",
+    }
     rows: list[dict[str, Any]] = []
+    missing_by_metric = {metric: 0 for metric in metrics}
     for trade in journal.get("trades", []) or []:
         if not isinstance(trade, dict):
             continue
@@ -6130,11 +6182,20 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
             "pnl_r": float(pnl_r),
             "label": 1 if pnl_r > 0 else 0,
         }
-        for metric in metrics:
-            source = trade.get(metric)
-            if metric == "entry_score" and source is None:
-                source = trade.get("score")
+        sources = {
+            "canonical_score": trade.get("score"),
+            "entry_score": trade.get("entry_score"),
+            "evaluation_entry_quality": trade.get("evaluation_entry_quality"),
+            "preplan_entry_quality": trade.get("preplan_entry_quality"),
+            "trade_entry_quality": trade.get("trade_entry_quality"),
+            "setup_quality": trade.get("setup_quality"),
+            "timing_quality": trade.get("timing_quality"),
+            "trade_quality": trade.get("trade_quality"),
+        }
+        for metric, source in sources.items():
             row[metric] = _entry_quality_numeric(source)
+            if row[metric] is None:
+                missing_by_metric[metric] += 1
         rows.append(row)
 
     metric_reports: dict[str, Any] = {}
@@ -6155,14 +6216,17 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
         centered_quality: list[float] = []
         centered_pnl: list[float] = []
         normalized_setup_count = 0
-        for setup_rows in by_setup.values():
+        normalized_setup_names: list[str] = []
+        for setup_name, setup_rows in by_setup.items():
             if len(setup_rows) < 3:
                 continue
-            q_mean = mean(float(row[metric]) for row in setup_rows)
-            r_mean = mean(float(row["pnl_r"]) for row in setup_rows)
-            if max(float(row[metric]) for row in setup_rows) - min(float(row[metric]) for row in setup_rows) <= 1e-9:
+            q_values = [float(row[metric]) for row in setup_rows]
+            if max(q_values) - min(q_values) <= 1e-9:
                 continue
+            q_mean = mean(q_values)
+            r_mean = mean(float(row["pnl_r"]) for row in setup_rows)
             normalized_setup_count += 1
+            normalized_setup_names.append(setup_name)
             centered_quality.extend(float(row[metric]) - q_mean for row in setup_rows)
             centered_pnl.extend(float(row["pnl_r"]) - r_mean for row in setup_rows)
         setup_normalized_pearson = _pearson_correlation(centered_quality, centered_pnl)
@@ -6170,9 +6234,16 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
             _pearson_correlation(_average_ranks(centered_quality), _average_ranks(centered_pnl))
             if len(centered_quality) >= 3 else None
         )
+        setup_normalized_eligible_for_best = bool(
+            normalized_setup_count >= ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS
+            and len(centered_quality) >= ENTRY_QUALITY_AUDIT_MIN_ROWS
+            and setup_normalized_spearman is not None
+        )
         spread = math.sqrt(mean((value - mean(values)) ** 2 for value in values)) if values else 0.0
         metric_reports[metric] = {
+            "lineage": lineage[metric],
             "sample": len(scoped),
+            "missing": int(missing_by_metric.get(metric) or 0),
             "winner_sample": len(wins),
             "loss_sample": len(losses),
             "mean": round(mean(values), 6) if values else None,
@@ -6188,36 +6259,174 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
             "win_auc": round(auc, 6) if auc is not None else None,
             "setup_normalized_sample": len(centered_quality),
             "setup_normalized_setup_count": normalized_setup_count,
+            "setup_normalized_setups": sorted(normalized_setup_names),
             "setup_normalized_pearson": round(setup_normalized_pearson, 6) if setup_normalized_pearson is not None else None,
             "setup_normalized_spearman": round(setup_normalized_spearman, 6) if setup_normalized_spearman is not None else None,
+            "setup_normalized_eligible_for_best": setup_normalized_eligible_for_best,
             "calibration_bins": _quality_calibration_bins(scoped, metric),
             "ready_for_review": len(scoped) >= ENTRY_QUALITY_AUDIT_MIN_ROWS,
         }
 
-    eligible = [
-        (name, safe_float(report.get("setup_normalized_spearman"), safe_float(report.get("spearman_vs_pnl_r"), -999.0)))
-        for name, report in metric_reports.items()
-        if int(report.get("sample") or 0) >= ENTRY_QUALITY_AUDIT_MIN_ROWS
-        and (report.get("spearman_vs_pnl_r") is not None or report.get("setup_normalized_spearman") is not None)
-    ]
-    best_metric = max(eligible, key=lambda item: item[1])[0] if eligible else None
+    eligible: list[dict[str, Any]] = []
+    for name, report in metric_reports.items():
+        if int(report.get("sample") or 0) < ENTRY_QUALITY_AUDIT_MIN_ROWS:
+            continue
+        if report.get("setup_normalized_eligible_for_best"):
+            value = safe_float(report.get("setup_normalized_spearman"), -999.0)
+            basis = "SETUP_NORMALIZED_SPEARMAN"
+        elif report.get("spearman_vs_pnl_r") is not None:
+            value = safe_float(report.get("spearman_vs_pnl_r"), -999.0)
+            basis = "GLOBAL_SPEARMAN_FALLBACK"
+        else:
+            continue
+        eligible.append({"metric": name, "value": value, "basis": basis})
+    best = max(eligible, key=lambda item: item["value"]) if eligible else None
+
     eval_report = metric_reports.get("evaluation_entry_quality") or {}
     warning = bool(
         int(eval_report.get("sample") or 0) >= ENTRY_QUALITY_AUDIT_MIN_ROWS
         and safe_float(eval_report.get("spearman_vs_pnl_r"), 0.0) <= 0.05
     )
+
+    paired = [
+        row for row in rows
+        if row.get("entry_score") is not None and row.get("evaluation_entry_quality") is not None
+    ]
+    exact_equal = sum(
+        1 for row in paired
+        if abs(float(row["entry_score"]) - float(row["evaluation_entry_quality"])) <= 1e-9
+    )
+    canonical_entry_pairs = [
+        row for row in rows if row.get("canonical_score") is not None and row.get("entry_score") is not None
+    ]
+    canonical_entry_equal = sum(
+        1 for row in canonical_entry_pairs
+        if abs(float(row["canonical_score"]) - float(row["entry_score"])) <= 1e-9
+    )
+
     return {
         "sample_with_numeric_pnl_r": len(rows),
         "minimum_rows_for_review": ENTRY_QUALITY_AUDIT_MIN_ROWS,
+        "minimum_setups_for_setup_normalized_best": ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS,
         "metrics": metric_reports,
-        "best_diagnostic_metric": best_metric,
+        "best_diagnostic_metric": best.get("metric") if best else None,
+        "best_diagnostic_metric_basis": best.get("basis") if best else None,
+        "best_diagnostic_metric_value": round(float(best["value"]), 6) if best else None,
+        "eligible_metric_rankings": sorted(eligible, key=lambda item: item["value"], reverse=True),
+        "score_lineage": lineage,
+        "entry_vs_evaluation_exact_match": {
+            "paired_sample": len(paired),
+            "exact_equal": exact_equal,
+            "exact_equal_rate": round(exact_equal / len(paired), 6) if paired else None,
+            "note": "Equality is reported as lineage diagnostics; it does not merge the metrics.",
+        },
+        "canonical_vs_entry_exact_match": {
+            "paired_sample": len(canonical_entry_pairs),
+            "exact_equal": canonical_entry_equal,
+            "exact_equal_rate": round(canonical_entry_equal / len(canonical_entry_pairs), 6) if canonical_entry_pairs else None,
+        },
         "evaluation_entry_quality_low_discrimination_warning": warning,
         "authority": "AUDIT_ONLY_NO_WEIGHT_THRESHOLD_OR_SIZING_CHANGES",
-        "policy": "DESCRIPTIVE_DISTRIBUTION_CORRELATION_AUC_CALIBRATION_AND_SETUP_NORMALIZATION",
+        "policy": "CANONICAL_SCORE_SEPARATE_FROM_ENTRY_QUALITY; MULTI_SETUP_GATE_FOR_NORMALIZED_BEST",
         "schema_version": ENTRY_QUALITY_AUDIT_SCHEMA_VERSION,
         "updated_at": iso_now(),
     }
 
+
+
+def _reachability_rate_summary(row: dict[str, Any]) -> dict[str, Any]:
+    observations = dict(row.get("condition_observation_counts") or {})
+    false_counts = dict(row.get("condition_false_counts") or {})
+    true_counts = dict(row.get("condition_true_counts") or {})
+    return {
+        name: {
+            "observations": int(observations.get(name) or 0),
+            "true": int(true_counts.get(name) or 0),
+            "false": int(false_counts.get(name) or 0),
+            "false_rate": round(int(false_counts.get(name) or 0) / max(int(observations.get(name) or 0), 1), 6),
+        }
+        for name in sorted(observations)
+    }
+
+
+def compute_institutional_sweep_predicate_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    """Explain the shared sweep predicate without changing its live threshold."""
+    reachability = (((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {})
+    setups: dict[str, Any] = {}
+    for setup_type in (SetupType.SWEEP_RECLAIM.value, SetupType.RANGE_EDGE_REVERSAL.value):
+        row = dict(reachability.get(setup_type) or {})
+        setups[setup_type] = {
+            "current_schema_evaluated": int(row.get("current_schema_evaluated") or 0),
+            "current_schema_fired": int(row.get("current_schema_fired") or 0),
+            "conditions": _reachability_rate_summary(row),
+            "current_schema_blocker_counts": dict(row.get("current_schema_blocker_counts") or {}),
+            "diagnostic_reason_counts": dict(row.get("current_schema_diagnostic_reason_counts") or {}),
+            "margin_statistics": dict(row.get("margin_statistics") or {}),
+            "health_status": str(row.get("health_status") or "OBSERVING"),
+            "predicate_schema_version": str(row.get("predicate_schema_version") or ""),
+            "last_diagnostics": dict(((row.get("last_observation") or {}).get("diagnostics") or {})),
+        }
+
+    theoretical_no_smt = 1.0 * 0.7 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
+    theoretical_with_smt = 1.0 * 1.4 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
+    return {
+        "setups": setups,
+        "shared_predicate": "institutional_sweep_valid",
+        "threshold": INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+        "strict_environment_math": {
+            "effective_topology_cap": 1.0,
+            "max_quality_without_smt_even_with_positive_cvd": round(theoretical_no_smt, 6),
+            "max_quality_with_smt_and_positive_cvd": round(theoretical_with_smt, 6),
+            "smt_is_de_facto_required_to_reach_threshold": theoretical_no_smt < INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+            "note": "This is a diagnostic implication of the existing formula; live threshold and multipliers are unchanged.",
+        },
+        "range_edge_raw_sweep_prerequisite_is_explicit": True,
+        "authority": "AUDIT_ONLY_NO_THRESHOLD_MUTATION",
+        "schema_version": "institutional_sweep_predicate_audit_v9.5.21",
+        "updated_at": iso_now(),
+    }
+
+
+def compute_liquidity_ladder_execution_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    """Summarize route geometry separately from raw and selected execution facts."""
+    row = dict(((((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {}).get(SetupType.LIQUIDITY_LADDER.value) or {}))
+    path_true = dict(row.get("path_true_counts") or {})
+    path_obs = dict(row.get("path_observation_counts") or {})
+    path_rates = {
+        name: {
+            "observations": int(path_obs.get(name) or 0),
+            "true": int(path_true.get(name) or 0),
+            "true_rate": round(int(path_true.get(name) or 0) / max(int(path_obs.get(name) or 0), 1), 6),
+        }
+        for name in sorted(path_obs)
+    }
+    reasons = dict(row.get("current_schema_diagnostic_reason_counts") or {})
+    conditions = _reachability_rate_summary(row)
+    live_path = path_rates.get("LIVE_3M_AVAILABLE") or {}
+    route_condition = conditions.get("route_active") or {}
+    stale_ready_count = int(reasons.get("SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED") or 0)
+    raw_live_count = int(reasons.get("RAW_LIVE_3M_TRIGGER_AVAILABLE") or 0)
+    return {
+        "current_schema_evaluated": int(row.get("current_schema_evaluated") or 0),
+        "current_schema_fired": int(row.get("current_schema_fired") or 0),
+        "conditions": conditions,
+        "paths": path_rates,
+        "diagnostic_reason_counts": reasons,
+        "margin_statistics": dict(row.get("margin_statistics") or {}),
+        "health_status": str(row.get("health_status") or "OBSERVING"),
+        "predicate_schema_version": str(row.get("predicate_schema_version") or ""),
+        "last_diagnostics": dict(((row.get("last_observation") or {}).get("diagnostics") or {})),
+        "interpretation_flags": {
+            "route_geometry_often_inactive": bool(int(route_condition.get("observations") or 0) >= 20 and safe_float(route_condition.get("false_rate"), 0.0) >= 0.80),
+            "raw_live_3m_never_observed": bool(int(live_path.get("observations") or 0) >= 20 and int(live_path.get("true") or 0) == 0),
+            "stale_ready_stage_observed": stale_ready_count > 0,
+            "raw_live_3m_observed": raw_live_count > 0,
+            "priority_preemption_is_separate_from_raw_trigger": True,
+        },
+        "authority": "AUDIT_ONLY_NO_EXECUTION_POLICY_CHANGE",
+        "schema_version": "liquidity_ladder_execution_audit_v9.5.21",
+        "updated_at": iso_now(),
+    }
 
 
 def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
@@ -12447,54 +12656,105 @@ def liquidity_ladder_execution_confirmation(
     acceptance_retest: Optional[dict[str, Any]] = None,
     continuation_reanchor: Optional[dict[str, Any]] = None,
     price: float = 0.0,
+    scan_stage: str = "",
 ) -> dict[str, Any]:
     """Route Liquidity Ladder through independent execution evidence.
 
-    Priority is a fresh structural re-anchor/retest, then explicit acceptance,
-    then a fresh scan-level 3M trigger. The ladder itself is never returned as
-    the execution source when admission is ready.
+    Live behavior is unchanged: reanchor has priority, then explicit acceptance,
+    then raw live 3M confirmation. v9.5.21 additionally preserves *all* input
+    readiness facts so reachability telemetry can distinguish "3M absent" from
+    "3M present but a higher-priority confirmation kind was selected".
     """
     acceptance_retest = acceptance_retest or {}
     continuation_reanchor = continuation_reanchor or {}
-    if continuation_reanchor.get("ready"):
-        anchor = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level or price
-        age = max(0.0, safe_float(continuation_reanchor.get("anchor_age_min"), 0.0))
-        return {
-            "ready": True, "kind": "RETEST_REANCHOR",
-            "execution_source": ExecutionSource.CONTINUATION_REANCHOR.value,
-            "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
-            "anchor": anchor, "age_minutes": age, "live_3m": True,
-        }
+    scan_stage = str(scan_stage or "").upper()
+    stage_ready = scan_stage in {"ACCEPTANCE", "RETEST", "READY"} if scan_stage else bool(live_3m_trigger_ready)
+    freshness_pass = bool(stage_ready and safe_float(trigger_age, 999.0) <= TRIGGER_MAX_AGE_MINUTES)
+    raw_live_ready = bool(live_3m_trigger_ready)
+    reanchor_ready = bool(continuation_reanchor.get("ready"))
     acceptance_ready = bool(
         acceptance_retest.get("execution_ready")
         or acceptance_retest.get("acceptance_confirmed")
         or (acceptance_retest.get("active") and acceptance_retest.get("acceptance"))
     )
+    available_paths = [
+        name for name, ready in (
+            ("RETEST_REANCHOR", reanchor_ready),
+            ("ACCEPTANCE_CONFIRMED", acceptance_ready),
+            ("LIVE_3M_TRIGGER", raw_live_ready),
+        ) if ready
+    ]
+    reason_codes: list[str] = []
+    if scan_stage and not stage_ready:
+        reason_codes.append("SCAN_STAGE_NOT_EXECUTION_READY")
+    elif scan_stage and stage_ready and not freshness_pass:
+        reason_codes.append("SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED")
+    if raw_live_ready:
+        reason_codes.append("RAW_LIVE_3M_TRIGGER_AVAILABLE")
+    if reanchor_ready:
+        reason_codes.append("RETEST_REANCHOR_AVAILABLE")
+    if acceptance_ready:
+        reason_codes.append("ACCEPTANCE_AVAILABLE")
+
+    common = {
+        "input_live_3m_trigger_ready": raw_live_ready,
+        "input_reanchor_ready": reanchor_ready,
+        "input_acceptance_ready": acceptance_ready,
+        "input_trigger_age_minutes": round(max(0.0, safe_float(trigger_age, 999.0)), 6),
+        "input_scan_stage": scan_stage,
+        "scan_stage_execution_ready": stage_ready,
+        "trigger_freshness_pass": freshness_pass,
+        "trigger_ttl_minutes": TRIGGER_MAX_AGE_MINUTES,
+        "available_confirmation_paths": available_paths,
+        "audit_reason_codes": reason_codes,
+        "priority_order": ["RETEST_REANCHOR", "ACCEPTANCE_CONFIRMED", "LIVE_3M_TRIGGER"],
+        "audit_only_fields_do_not_change_execution": True,
+        "schema_version": "liquidity_ladder_confirmation_v9.5.21",
+    }
+
+    if reanchor_ready:
+        anchor = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level or price
+        age = max(0.0, safe_float(continuation_reanchor.get("anchor_age_min"), 0.0))
+        return {
+            **common,
+            "ready": True, "kind": "RETEST_REANCHOR",
+            "execution_source": ExecutionSource.CONTINUATION_REANCHOR.value,
+            "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
+            "anchor": anchor, "age_minutes": age, "live_3m": True,
+            "live_3m_path_preempted_by_priority": raw_live_ready,
+        }
     if acceptance_ready:
         anchor = safe_float(acceptance_retest.get("zone_mid"), price) or price or trigger_level
         return {
+            **common,
             "ready": True, "kind": "ACCEPTANCE_CONFIRMED",
             "execution_source": ExecutionSource.ACCEPTANCE_RETEST.value,
             "execution_role": "INDEPENDENT_EXECUTION_CONFIRMATION",
             "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
             "anchor": anchor, "age_minutes": 0.0, "live_3m": False,
+            "live_3m_path_preempted_by_priority": raw_live_ready,
         }
-    if live_3m_trigger_ready:
+    if raw_live_ready:
         return {
+            **common,
             "ready": True, "kind": "LIVE_3M_TRIGGER",
             "execution_source": ExecutionSource.LIVE_3M.value,
             "execution_lane": ExecutionLane.STANDARD_CONFIRMED.value,
             "anchor": trigger_level or price, "age_minutes": max(0.0, trigger_age),
             "live_3m": True,
+            "live_3m_path_preempted_by_priority": False,
         }
     return {
+        **common,
         "ready": False, "kind": "WAIT_CONFIRMATION",
         "execution_source": ExecutionSource.NONE.value,
         "execution_role": "TARGET_ROUTE_ONLY",
         "execution_lane": ExecutionLane.WAIT_CONFIRMATION.value,
         "anchor": price or trigger_level, "age_minutes": max(0.0, trigger_age),
         "live_3m": False,
+        "live_3m_path_preempted_by_priority": False,
     }
+
 
 
 def detect_failed_auction_rejection_tail(c15: list[Candle], side: str, price: float, atr15: float, context: dict) -> dict[str, Any]:
@@ -13611,6 +13871,147 @@ def fresh_base_thesis_clock_profile(
     }
 
 
+
+def institutional_sweep_validation_profile(
+    side: str,
+    event: dict[str, Any],
+    context: dict[str, Any],
+    atr15: float,
+    smt_bias: str,
+    cvd: dict[str, Any],
+    regime: str,
+    session_profile: dict[str, Any],
+    *,
+    threshold: float = INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+) -> dict[str, Any]:
+    """Single-source institutional sweep validation plus audit decomposition.
+
+    This helper intentionally preserves the v9.5.20 live admission math. The
+    v9.5.21 change is observability: topology, SMT, synthetic-CVD and regime
+    effects are exposed separately so a failed sweep is not reduced to one
+    opaque boolean. Threshold mutation is explicitly outside this helper.
+    """
+    side = str(side or "").upper()
+    event = dict(event or {})
+    cvd = dict(cvd or {})
+    session_profile = dict(session_profile or {})
+    threshold = safe_float(threshold, INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD)
+    is_raw_sweep = str(event.get("source") or "") == "LIQUIDITY_SWEEP"
+    in_chop = bool((session_profile.get("chop_zone") or {}).get("active", False))
+    strict_environment = bool(regime in (Regime.RANGE.value, Regime.TRANSITION.value) or in_chop)
+
+    liquidity = context.get("liquidity", {}) or {}
+    bsl_pools: list[float] = []
+    ssl_pools: list[float] = []
+    for tf in ("15m", "1h"):
+        tf_liq = liquidity.get(tf, {}) or {}
+        bsl_pools.extend(safe_float(value) for value in (tf_liq.get("bsl") or []) if safe_float(value, 0.0) > 0)
+        ssl_pools.extend(safe_float(value) for value in (tf_liq.get("ssl") or []) if safe_float(value, 0.0) > 0)
+    # Preserve the legacy live calculation: it intentionally used the nearest
+    # major pool from either side. Directional pools are reported separately so
+    # a later policy review can assess that choice without silently changing it.
+    major_pools = bsl_pools + ssl_pools
+    directional_pools = ssl_pools if side == Side.LONG.value else bsl_pools
+    opposite_pools = bsl_pools if side == Side.LONG.value else ssl_pools
+    sweep_level = safe_float(event.get("trigger_level"), safe_float(context.get("price"), 0.0))
+
+    nearest_any_dist = min((abs(sweep_level - pool) for pool in major_pools), default=max(atr15, 0.0))
+    nearest_directional_dist = min((abs(sweep_level - pool) for pool in directional_pools), default=max(atr15, 0.0))
+    nearest_opposite_dist = min((abs(sweep_level - pool) for pool in opposite_pools), default=max(atr15, 0.0))
+    if atr15 > 0:
+        topology_weight = max(0.3, min(1.2, 1.0 - (nearest_any_dist / (atr15 * 1.5))))
+        nearest_any_atr = nearest_any_dist / atr15
+        nearest_directional_atr = nearest_directional_dist / atr15
+        nearest_opposite_atr = nearest_opposite_dist / atr15
+    else:
+        topology_weight = 0.3
+        nearest_any_atr = nearest_directional_atr = nearest_opposite_atr = 999.0
+
+    has_smt_support = bool(str(smt_bias or "").upper() == side)
+    has_cvd_absorption = bool(str(cvd.get("bias") or "").upper() == side and safe_float(cvd.get("strength"), 0.0) > 0.0)
+    smt_multiplier = 1.4 if has_smt_support else 0.7
+    cvd_multiplier = SYNTHETIC_CVD_ABSORPTION_POS_MULT if has_cvd_absorption else SYNTHETIC_CVD_ABSORPTION_NEG_MULT
+    footprint_score = smt_multiplier * cvd_multiplier
+
+    quality = 0.0
+    valid = False
+    if is_raw_sweep:
+        if strict_environment:
+            quality = topology_weight * footprint_score
+            valid = bool(quality >= threshold)
+        else:
+            quality = topology_weight
+            valid = True
+
+    # Preserve the historical scoring contract: when there is no raw sweep,
+    # sweep quality is not an audit observation, but the generic liquidity score
+    # multiplier remains neutral (1.0) rather than collapsing to zero.
+    live_score_multiplier = quality if is_raw_sweep else 1.0
+
+    max_without_smt = topology_weight * 0.7 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
+    max_with_smt = topology_weight * 1.4 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
+    theoretical_topology_cap = 1.0  # distance is non-negative in the preserved formula
+    theoretical_max_without_smt = theoretical_topology_cap * 0.7 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
+    theoretical_max_with_smt = theoretical_topology_cap * 1.4 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
+
+    reason_codes: list[str] = []
+    if not is_raw_sweep:
+        reason_codes.append("NO_RAW_SWEEP")
+    elif not strict_environment:
+        reason_codes.append("TREND_OR_NORMAL_RAW_SWEEP_ACCEPTED_BY_RELAXED_POLICY")
+    elif valid:
+        reason_codes.append("STRICT_ENVIRONMENT_QUALITY_PASS")
+    else:
+        reason_codes.append("STRICT_ENVIRONMENT_QUALITY_BELOW_THRESHOLD")
+        if not has_smt_support and theoretical_max_without_smt < threshold:
+            reason_codes.append("NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_THEORETICAL_TOPOLOGY_CAP")
+        elif not has_smt_support and max_without_smt < threshold:
+            reason_codes.append("NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_CURRENT_TOPOLOGY")
+        if max_with_smt < threshold:
+            reason_codes.append("CURRENT_TOPOLOGY_CANNOT_PASS_EVEN_WITH_SMT_AND_POSITIVE_CVD")
+        if not has_cvd_absorption:
+            reason_codes.append("CVD_ABSORPTION_NOT_SUPPORTIVE")
+        if not has_smt_support:
+            reason_codes.append("SMT_NOT_SUPPORTIVE")
+
+    return {
+        "raw_sweep": is_raw_sweep,
+        "valid": valid,
+        "quality": float(quality),
+        "live_score_multiplier": float(live_score_multiplier),
+        "quality_threshold": round(threshold, 6),
+        "quality_margin": round(quality - threshold, 6),
+        "strict_environment": strict_environment,
+        "regime": str(regime),
+        "chop_active": in_chop,
+        "topology_weight": round(topology_weight, 6),
+        "topology_pool_scope_used_by_live_math": "BOTH_BSL_AND_SSL_LEGACY_COMPATIBILITY",
+        "directional_pool_kind": "SSL" if side == Side.LONG.value else "BSL",
+        "major_pool_count": len(major_pools),
+        "directional_pool_count": len(directional_pools),
+        "opposite_pool_count": len(opposite_pools),
+        "nearest_any_pool_distance_atr": round(nearest_any_atr, 6),
+        "nearest_directional_pool_distance_atr": round(nearest_directional_atr, 6),
+        "nearest_opposite_pool_distance_atr": round(nearest_opposite_atr, 6),
+        "smt_support": has_smt_support,
+        "smt_bias": str(smt_bias or Side.NEUTRAL.value),
+        "smt_multiplier": round(smt_multiplier, 6),
+        "cvd_absorption_support": has_cvd_absorption,
+        "cvd_bias": str(cvd.get("bias") or "NEUTRAL"),
+        "cvd_strength": round(safe_float(cvd.get("strength"), 0.0), 6),
+        "cvd_multiplier": round(cvd_multiplier, 6),
+        "footprint_score": round(footprint_score, 6),
+        "max_quality_without_smt_at_current_topology": round(max_without_smt, 6),
+        "max_quality_with_smt_at_current_topology": round(max_with_smt, 6),
+        "theoretical_max_without_smt": round(theoretical_max_without_smt, 6),
+        "theoretical_max_with_smt": round(theoretical_max_with_smt, 6),
+        "threshold_reachable_without_smt_theoretically": theoretical_max_without_smt >= threshold,
+        "reason_codes": reason_codes,
+        "threshold_mutation_allowed": False,
+        "live_math_changed": False,
+        "schema_version": "institutional_sweep_audit_v9.5.21",
+    }
+
 def build_dormant_detector_reachability(
     side: str,
     *,
@@ -13625,7 +14026,8 @@ def build_dormant_detector_reachability(
     is_range_compressed: bool,
     trigger_ready: bool,
     sweep_quality_multiplier: float = 0.0,
-    sweep_quality_threshold: float = 0.85,
+    sweep_quality_threshold: float = INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+    sweep_validation_profile: Optional[dict[str, Any]] = None,
     compression_threshold_atr: float = 1.60,
     liquidity_ladder: Optional[dict[str, Any]] = None,
     liquidity_ladder_confirmation: Optional[dict[str, Any]] = None,
@@ -13639,6 +14041,8 @@ def build_dormant_detector_reachability(
     """
     liquidity_ladder = dict(liquidity_ladder or {})
     liquidity_ladder_confirmation = dict(liquidity_ladder_confirmation or {})
+    sweep_validation_profile = dict(sweep_validation_profile or {})
+    sweep_audit_quality = safe_float(sweep_validation_profile.get("quality"), sweep_quality_multiplier if is_raw_sweep else 0.0)
     sweep_2022 = bool(is_sweep and has_choch and has_fvg)
     sweep_turtle = bool(is_sweep and not strong_displacement)
     range_edge = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
@@ -13653,6 +14057,7 @@ def build_dormant_detector_reachability(
         *,
         applicability: Optional[dict[str, bool]] = None,
         dependencies: Optional[dict[str, list[str]]] = None,
+        diagnostics: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         applicability = {str(k): bool(v) for k, v in (applicability or {}).items()}
         blockers = [
@@ -13676,11 +14081,12 @@ def build_dormant_detector_reachability(
             "predicate_dependencies": {str(k): [str(x) for x in v] for k, v in (dependencies or {}).items()},
             "not_applicable_predicates": not_applicable,
             "margins": dict(margins or {}),
+            "diagnostics": dict(diagnostics or {}),
             "blockers": blockers,
             "dominant_blocker": blockers[0] if blockers else "",
             "audit_only": True,
             "threshold_mutation_allowed": False,
-            "schema_version": "detector_reachability_dependency_aware_v9.5.19",
+            "schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
         }
 
     ladder_target_count = int(liquidity_ladder.get("target_count") or 0)
@@ -13688,9 +14094,13 @@ def build_dormant_detector_reachability(
     ladder_kind_count = int(liquidity_ladder.get("kind_count") or 0)
     ladder_route_active = bool(liquidity_ladder.get("active"))
     ladder_ready = bool(liquidity_ladder_confirmation.get("ready"))
-    ladder_reanchor = str(liquidity_ladder_confirmation.get("kind") or "") == "RETEST_REANCHOR"
-    ladder_acceptance = str(liquidity_ladder_confirmation.get("kind") or "") == "ACCEPTANCE_CONFIRMED"
-    ladder_live = str(liquidity_ladder_confirmation.get("kind") or "") == "LIVE_3M_TRIGGER"
+    ladder_selected_kind = str(liquidity_ladder_confirmation.get("kind") or "WAIT_CONFIRMATION")
+    ladder_reanchor = bool(liquidity_ladder_confirmation.get("input_reanchor_ready"))
+    ladder_acceptance = bool(liquidity_ladder_confirmation.get("input_acceptance_ready"))
+    ladder_live = bool(liquidity_ladder_confirmation.get("input_live_3m_trigger_ready"))
+    ladder_scan_stage_ready = bool(liquidity_ladder_confirmation.get("scan_stage_execution_ready"))
+    ladder_trigger_fresh = bool(liquidity_ladder_confirmation.get("trigger_freshness_pass"))
+    ladder_trigger_age = safe_float(liquidity_ladder_confirmation.get("input_trigger_age_minutes"), 999.0)
 
     return [
         row(
@@ -13705,9 +14115,13 @@ def build_dormant_detector_reachability(
                 "turtle_weak_displacement": not bool(strong_displacement),
             },
             {
-                "institutional_sweep_quality_margin": round(safe_float(sweep_quality_multiplier, 0.0) - safe_float(sweep_quality_threshold, 0.85), 4),
-                "institutional_sweep_quality": round(safe_float(sweep_quality_multiplier, 0.0), 4),
-                "institutional_sweep_threshold": round(safe_float(sweep_quality_threshold, 0.85), 4),
+                "institutional_sweep_quality_margin": round(sweep_audit_quality - safe_float(sweep_quality_threshold, INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD), 4),
+                "institutional_sweep_quality": round(sweep_audit_quality, 4),
+                "institutional_sweep_threshold": round(safe_float(sweep_quality_threshold, INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD), 4),
+                "topology_weight": round(safe_float(sweep_validation_profile.get("topology_weight"), 0.0), 4),
+                "nearest_directional_pool_distance_atr": round(safe_float(sweep_validation_profile.get("nearest_directional_pool_distance_atr"), 999.0), 4),
+                "nearest_any_pool_distance_atr": round(safe_float(sweep_validation_profile.get("nearest_any_pool_distance_atr"), 999.0), 4),
+                "max_quality_without_smt_at_current_topology": round(safe_float(sweep_validation_profile.get("max_quality_without_smt_at_current_topology"), 0.0), 4),
             },
             applicability={
                 "raw_sweep": True,
@@ -13722,6 +14136,10 @@ def build_dormant_detector_reachability(
                 "fvg": ["institutional_sweep_valid"],
                 "turtle_weak_displacement": ["institutional_sweep_valid"],
             },
+            diagnostics={
+                "institutional_sweep": sweep_validation_profile,
+                "reason_codes": list(sweep_validation_profile.get("reason_codes") or []),
+            },
         ),
         row(
             SetupType.RANGE_EDGE_REVERSAL.value,
@@ -13729,18 +14147,30 @@ def build_dormant_detector_reachability(
             {"PO3": range_edge},
             {
                 "range_regime": str(regime) == Regime.RANGE.value,
+                "raw_sweep": bool(is_raw_sweep),
                 "institutional_sweep_valid": bool(is_sweep),
                 "quality_reclaim": bool(has_good_reclaim),
             },
-            {"regime_match": 1.0 if str(regime) == Regime.RANGE.value else 0.0},
+            {
+                "regime_match": 1.0 if str(regime) == Regime.RANGE.value else 0.0,
+                "institutional_sweep_quality_margin": round(safe_float(sweep_validation_profile.get("quality_margin"), 0.0), 4),
+                "institutional_sweep_quality": round(safe_float(sweep_validation_profile.get("quality"), 0.0), 4),
+                "topology_weight": round(safe_float(sweep_validation_profile.get("topology_weight"), 0.0), 4),
+            },
             applicability={
                 "range_regime": True,
-                "institutional_sweep_valid": str(regime) == Regime.RANGE.value,
+                "raw_sweep": str(regime) == Regime.RANGE.value,
+                "institutional_sweep_valid": bool(str(regime) == Regime.RANGE.value and is_raw_sweep),
                 "quality_reclaim": bool(str(regime) == Regime.RANGE.value and is_sweep),
             },
             dependencies={
-                "institutional_sweep_valid": ["range_regime"],
+                "raw_sweep": ["range_regime"],
+                "institutional_sweep_valid": ["range_regime", "raw_sweep"],
                 "quality_reclaim": ["range_regime", "institutional_sweep_valid"],
+            },
+            diagnostics={
+                "institutional_sweep": sweep_validation_profile,
+                "reason_codes": list(sweep_validation_profile.get("reason_codes") or []),
             },
         ),
         row(
@@ -13775,9 +14205,10 @@ def build_dormant_detector_reachability(
             bool(ladder_route_active and ladder_ready),
             {
                 "TARGET_ROUTE_ACTIVE": ladder_route_active,
-                "RETEST_REANCHOR": ladder_reanchor,
-                "ACCEPTANCE_CONFIRMED": ladder_acceptance,
-                "LIVE_3M_TRIGGER": ladder_live,
+                "RETEST_REANCHOR_AVAILABLE": ladder_reanchor,
+                "ACCEPTANCE_AVAILABLE": ladder_acceptance,
+                "LIVE_3M_AVAILABLE": ladder_live,
+                "SELECTED_CONFIRMATION_READY": ladder_ready,
             },
             {
                 "htf_route_supported": bool(liquidity_ladder.get("tf_ok")),
@@ -13785,6 +14216,8 @@ def build_dormant_detector_reachability(
                 "ladder_score_pass": ladder_score >= LIQUIDITY_LADDER_MIN_SCORE,
                 "kind_diversity_pass": ladder_kind_count >= 2,
                 "route_active": ladder_route_active,
+                "scan_stage_execution_ready": ladder_scan_stage_ready,
+                "trigger_freshness_pass": ladder_trigger_fresh,
                 "retest_reanchor_ready": ladder_reanchor,
                 "acceptance_ready": ladder_acceptance,
                 "live_3m_trigger_ready": ladder_live,
@@ -13796,6 +14229,8 @@ def build_dormant_detector_reachability(
                 "ladder_score": round(ladder_score, 4),
                 "ladder_score_margin": round(ladder_score - LIQUIDITY_LADDER_MIN_SCORE, 4),
                 "kind_count": ladder_kind_count,
+                "trigger_age_minutes": round(ladder_trigger_age, 4),
+                "trigger_freshness_margin_minutes": round(float(TRIGGER_MAX_AGE_MINUTES) - ladder_trigger_age, 4),
             },
             applicability={
                 "htf_route_supported": True,
@@ -13803,19 +14238,36 @@ def build_dormant_detector_reachability(
                 "ladder_score_pass": ladder_target_count >= LIQUIDITY_LADDER_MIN_TARGETS,
                 "kind_diversity_pass": ladder_target_count >= LIQUIDITY_LADDER_MIN_TARGETS,
                 "route_active": True,
+                "scan_stage_execution_ready": ladder_route_active,
+                "trigger_freshness_pass": bool(ladder_route_active and ladder_scan_stage_ready),
                 "retest_reanchor_ready": ladder_route_active,
                 "acceptance_ready": ladder_route_active,
-                "live_3m_trigger_ready": ladder_route_active,
+                "live_3m_trigger_ready": bool(ladder_route_active and ladder_scan_stage_ready),
                 "execution_confirmation_ready": ladder_route_active,
             },
             dependencies={
                 "ladder_score_pass": ["target_count_pass"],
                 "kind_diversity_pass": ["target_count_pass"],
                 "route_active": ["htf_route_supported", "target_count_pass", "ladder_score_pass", "kind_diversity_pass"],
+                "scan_stage_execution_ready": ["route_active"],
+                "trigger_freshness_pass": ["route_active", "scan_stage_execution_ready"],
+                "live_3m_trigger_ready": ["route_active", "scan_stage_execution_ready", "trigger_freshness_pass"],
                 "retest_reanchor_ready": ["route_active"],
                 "acceptance_ready": ["route_active"],
-                "live_3m_trigger_ready": ["route_active"],
                 "execution_confirmation_ready": ["route_active", "ANY_OF:retest_reanchor_ready|acceptance_ready|live_3m_trigger_ready"],
+            },
+            diagnostics={
+                "selected_confirmation_kind": ladder_selected_kind,
+                "raw_live_3m_trigger_ready": ladder_live,
+                "raw_retest_reanchor_ready": ladder_reanchor,
+                "raw_acceptance_ready": ladder_acceptance,
+                "scan_stage": str(liquidity_ladder_confirmation.get("input_scan_stage") or ""),
+                "scan_stage_execution_ready": ladder_scan_stage_ready,
+                "trigger_age_minutes": round(ladder_trigger_age, 4),
+                "trigger_ttl_minutes": TRIGGER_MAX_AGE_MINUTES,
+                "priority_preempted_live_3m": bool(ladder_live and ladder_selected_kind != "LIVE_3M_TRIGGER"),
+                "reason_codes": list(liquidity_ladder_confirmation.get("audit_reason_codes") or []),
+                "confirmation_profile": liquidity_ladder_confirmation,
             },
         ),
     ]
@@ -13939,59 +14391,24 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         has_ob = any(z.side == side and z.kind == "OB" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
 
         # === Динамічна валідація свіпу (Dynamic Sweep Validation Engine) ===
-        # Замість жорсткого is_sweep = (source == LIQUIDITY_SWEEP) оцінюємо
-        # свіп за трьома вимірами інституційного сліду:
-        #   1. Топологія — близькість до реальних пулів ліквідності 15m/1h;
-        #   2. SMT Divergence — підтвердження розбіжністю з іншим активом;
-        #   3. CVD Absorption — підтвердження внутрішнім тиском свічок.
-        # У боковику (RANGE/TRANSITION/chop) звичайний свіп без підтверджень
-        # деградується нижче прохідного порогу; у тренді вимоги м'якші
-        # (структурний pullback вже підтверджений іншими факторами).
-        is_raw_sweep = event.get("source") == "LIQUIDITY_SWEEP"
-        sweep_quality_multiplier = 1.0
-        valid_institutional_sweep = False
-
-        if is_raw_sweep:
-            # 1. Топологічна вага (відстань до реальних пулів старшого TF)
-            major_pools = []
-            for tf in ["15m", "1h"]:
-                major_pools.extend(context.get("liquidity", {}).get(tf, {}).get("bsl", []))
-                major_pools.extend(context.get("liquidity", {}).get(tf, {}).get("ssl", []))
-
-            sweep_lvl = event.get("trigger_level", price)
-            nearest_pool_dist = min([abs(sweep_lvl - p) for p in major_pools]) if major_pools else atr15
-
-            # Чим ближче свіп до старшої ліквідності, тим вища його технічна вага (0.3–1.2)
-            topology_weight = max(0.3, min(1.2, 1.0 - (nearest_pool_dist / (atr15 * 1.5)))) if atr15 else 0.3
-
-            # 2. Інституційний footprint (SMT та CVD)
-            has_smt_support = (smt_bias == side)
-            has_cvd_absorption = (cvd.get("bias") == side and cvd.get("strength", 0) > 0)
-
-            # 3. Динамічна оцінка середовища
-            in_chop = session_profile.get("chop_zone", {}).get("active", False)
-
-            if regime in (Regime.RANGE.value, Regime.TRANSITION.value) or in_chop:
-                # У боковику звичайна тінь не працює — свіп повинен мати підтвердження.
-                smt_mult = 1.4 if has_smt_support else 0.7
-                # Candle-pressure CVD is a low-confidence proxy, so its positive
-                # and negative multipliers remain deliberately close to neutral.
-                cvd_mult = (
-                    SYNTHETIC_CVD_ABSORPTION_POS_MULT
-                    if has_cvd_absorption else SYNTHETIC_CVD_ABSORPTION_NEG_MULT
-                )
-
-                footprint_score = smt_mult * cvd_mult
-                sweep_quality_multiplier = topology_weight * footprint_score
-
-                # Замість жорсткого блоку — вимагаємо, щоб якість свіпу перекрила "шум" боковика
-                valid_institutional_sweep = (sweep_quality_multiplier >= 0.85)
-            else:
-                # У тренді вимоги до свіпів м'якші (структурний pullback)
-                sweep_quality_multiplier = topology_weight
-                valid_institutional_sweep = True
-
-        is_sweep = is_raw_sweep and valid_institutional_sweep
+        # v9.5.21: live math is unchanged, but all components now come from one
+        # profile so SWEEP_RECLAIM/RANGE_EDGE audit can distinguish missing raw
+        # sweep from a raw sweep that actually failed topology/SMT/CVD quality.
+        sweep_validation_profile = institutional_sweep_validation_profile(
+            side=side,
+            event=event,
+            context=context,
+            atr15=atr15,
+            smt_bias=smt_bias,
+            cvd=cvd,
+            regime=regime,
+            session_profile=session_profile,
+            threshold=INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+        )
+        is_raw_sweep = bool(sweep_validation_profile.get("raw_sweep"))
+        sweep_quality_multiplier = safe_float(sweep_validation_profile.get("live_score_multiplier"), 1.0)
+        valid_institutional_sweep = bool(sweep_validation_profile.get("valid"))
+        is_sweep = bool(is_raw_sweep and valid_institutional_sweep)
         # ==========================================================
 
         has_choch = recent_struct["bullish_shift"] if side == Side.LONG.value else recent_struct["bearish_shift"]
@@ -14071,6 +14488,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             acceptance_retest=acceptance_retest,
             continuation_reanchor=continuation_reanchor,
             price=price,
+            scan_stage=scan_stage,
         )
         failed_auction = detect_failed_auction_rejection_tail(c15, side, price, atr15, context)
         time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
@@ -14092,7 +14510,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             is_range_compressed=is_range_compressed,
             trigger_ready=trigger_ready,
             sweep_quality_multiplier=sweep_quality_multiplier,
-            sweep_quality_threshold=0.85,
+            sweep_quality_threshold=INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+            sweep_validation_profile=sweep_validation_profile,
             compression_threshold_atr=1.60,
             liquidity_ladder=liquidity_ladder,
             liquidity_ladder_confirmation=liquidity_ladder_confirmation_profile,
@@ -24272,12 +24691,183 @@ def test_multistep_ratchet_evidence_is_monotonic_and_compact() -> bool:
 
 
 
+def test_entry_quality_audit_separates_canonical_score_lineage() -> bool:
+    trades = []
+    for index in range(12):
+        pnl = -1.0 + index * 0.20
+        trades.append({
+            "id": f"canonical-{index}",
+            "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            "pnl_r": pnl,
+            "score": 90.0 - index * 2.0,
+            "entry_score": 50.0 + index * 2.0,
+            "evaluation_entry_quality": 50.0 + index * 2.0,
+        })
+    report = compute_entry_quality_audit({"trades": trades})
+    metrics = report.get("metrics") or {}
+    canonical = metrics.get("canonical_score") or {}
+    entry = metrics.get("entry_score") or {}
+    lineage = report.get("score_lineage") or {}
+    return bool(
+        canonical.get("sample") == 12
+        and entry.get("sample") == 12
+        and safe_float(canonical.get("spearman_vs_pnl_r"), 0.0) < -0.9
+        and safe_float(entry.get("spearman_vs_pnl_r"), 0.0) > 0.9
+        and lineage.get("canonical_score") == "trade.score / canonical decision quality"
+        and safe_float(report.get("canonical_vs_entry_exact_match", {}).get("exact_equal_rate"), 1.0) < 0.10
+    )
+
+
+def test_best_diagnostic_metric_requires_multiple_setups_for_normalized_basis() -> bool:
+    trades = []
+    for index in range(16):
+        trades.append({
+            "id": f"one-setup-{index}",
+            "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            "pnl_r": -0.8 + index * 0.12,
+            "timing_quality": 45.0 + index * 2.5,
+        })
+    report = compute_entry_quality_audit({"trades": trades})
+    timing = (report.get("metrics") or {}).get("timing_quality") or {}
+    return bool(
+        timing.get("setup_normalized_setup_count") == 1
+        and timing.get("setup_normalized_spearman") is not None
+        and timing.get("setup_normalized_eligible_for_best") is False
+        and report.get("best_diagnostic_metric") == "timing_quality"
+        and report.get("best_diagnostic_metric_basis") == "GLOBAL_SPEARMAN_FALLBACK"
+        and report.get("minimum_setups_for_setup_normalized_best") == ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS
+    )
+
+
+def test_range_edge_audit_requires_raw_sweep_before_institutional_quality() -> bool:
+    rows = build_dormant_detector_reachability(
+        Side.LONG.value,
+        is_raw_sweep=False, is_sweep=False, has_choch=False, has_fvg=False,
+        strong_displacement=False, regime=Regime.RANGE.value, has_good_reclaim=False,
+        compression_atr=3.0, is_range_compressed=False, trigger_ready=False,
+        sweep_quality_multiplier=0.0,
+        sweep_validation_profile={"raw_sweep": False, "valid": False, "quality": 0.0, "reason_codes": ["NO_RAW_SWEEP"]},
+    )
+    row = next(item for item in rows if item.get("setup_type") == SetupType.RANGE_EDGE_REVERSAL.value)
+    return bool(
+        "raw_sweep" in (row.get("blockers") or [])
+        and "institutional_sweep_valid" not in (row.get("blockers") or [])
+        and "institutional_sweep_valid" in (row.get("not_applicable_predicates") or [])
+        and (row.get("predicate_dependencies") or {}).get("institutional_sweep_valid") == ["range_regime", "raw_sweep"]
+    )
+
+
+def test_institutional_sweep_audit_exposes_threshold_math_without_mutation() -> bool:
+    context = {
+        "price": 100.0,
+        "liquidity": {
+            "15m": {"ssl": [100.0], "bsl": [104.0]},
+            "1h": {"ssl": [], "bsl": []},
+        },
+    }
+    profile = institutional_sweep_validation_profile(
+        side=Side.LONG.value,
+        event={"source": "LIQUIDITY_SWEEP", "trigger_level": 100.0},
+        context=context,
+        atr15=1.0,
+        smt_bias=Side.NEUTRAL.value,
+        cvd={"bias": Side.LONG.value, "strength": 1.0},
+        regime=Regime.RANGE.value,
+        session_profile={"chop_zone": {"active": False}},
+    )
+    reasons = set(profile.get("reason_codes") or [])
+    return bool(
+        profile.get("raw_sweep") is True
+        and profile.get("strict_environment") is True
+        and profile.get("valid") is False
+        and profile.get("threshold_reachable_without_smt_theoretically") is False
+        and "NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_THEORETICAL_TOPOLOGY_CAP" in reasons
+        and profile.get("threshold_mutation_allowed") is False
+        and profile.get("live_math_changed") is False
+    )
+
+
+def test_liquidity_ladder_audit_preserves_raw_live_trigger_when_priority_preempts() -> bool:
+    confirmation = liquidity_ladder_execution_confirmation(
+        live_3m_trigger_ready=True,
+        trigger_level=100.0,
+        trigger_age=5.0,
+        acceptance_retest={},
+        continuation_reanchor={"ready": True, "anchor": 99.8, "anchor_age_min": 3.0},
+        price=100.0,
+        scan_stage="READY",
+    )
+    rows = build_dormant_detector_reachability(
+        Side.LONG.value,
+        is_raw_sweep=False, is_sweep=False, has_choch=False, has_fvg=False,
+        strong_displacement=False, regime=Regime.NORMAL.value, has_good_reclaim=False,
+        compression_atr=3.0, is_range_compressed=False, trigger_ready=False,
+        liquidity_ladder={"active": True, "tf_ok": True, "target_count": 3, "ladder_score": 4.5, "kind_count": 2},
+        liquidity_ladder_confirmation=confirmation,
+    )
+    row = next(item for item in rows if item.get("setup_type") == SetupType.LIQUIDITY_LADDER.value)
+    diagnostics = row.get("diagnostics") or {}
+    return bool(
+        confirmation.get("kind") == "RETEST_REANCHOR"
+        and confirmation.get("input_live_3m_trigger_ready") is True
+        and confirmation.get("live_3m_path_preempted_by_priority") is True
+        and (row.get("conditions") or {}).get("live_3m_trigger_ready") is True
+        and diagnostics.get("priority_preempted_live_3m") is True
+        and diagnostics.get("selected_confirmation_kind") == "RETEST_REANCHOR"
+    )
+
+
+def test_liquidity_ladder_audit_exposes_stale_ready_stage() -> bool:
+    confirmation = liquidity_ladder_execution_confirmation(
+        live_3m_trigger_ready=False,
+        trigger_level=100.0,
+        trigger_age=TRIGGER_MAX_AGE_MINUTES + 10.0,
+        acceptance_retest={}, continuation_reanchor={}, price=100.0,
+        scan_stage="READY",
+    )
+    reasons = set(confirmation.get("audit_reason_codes") or [])
+    return bool(
+        confirmation.get("scan_stage_execution_ready") is True
+        and confirmation.get("trigger_freshness_pass") is False
+        and confirmation.get("input_live_3m_trigger_ready") is False
+        and confirmation.get("kind") == "WAIT_CONFIRMATION"
+        and "SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED" in reasons
+    )
+
+
+def test_institutional_sweep_audit_preserves_non_sweep_liquidity_multiplier() -> bool:
+    profile = institutional_sweep_validation_profile(
+        side=Side.LONG.value,
+        event={"source": "NONE", "trigger_level": 100.0},
+        context={"price": 100.0, "liquidity": {"15m": {"ssl": [], "bsl": []}, "1h": {"ssl": [], "bsl": []}}},
+        atr15=1.0,
+        smt_bias=Side.NEUTRAL.value,
+        cvd={},
+        regime=Regime.NORMAL.value,
+        session_profile={},
+    )
+    return bool(
+        profile.get("raw_sweep") is False
+        and safe_float(profile.get("quality"), -1.0) == 0.0
+        and safe_float(profile.get("live_score_multiplier"), 0.0) == 1.0
+        and profile.get("valid") is False
+        and profile.get("live_math_changed") is False
+    )
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
 
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
+        ("v9.5.21 entry-quality audit separates canonical score lineage", test_entry_quality_audit_separates_canonical_score_lineage),
+        ("v9.5.21 best metric requires multi-setup normalized evidence", test_best_diagnostic_metric_requires_multiple_setups_for_normalized_basis),
+        ("v9.5.21 Range Edge audit gates institutional quality behind raw sweep", test_range_edge_audit_requires_raw_sweep_before_institutional_quality),
+        ("v9.5.21 institutional sweep audit exposes threshold math", test_institutional_sweep_audit_exposes_threshold_math_without_mutation),
+        ("v9.5.21 sweep audit preserves neutral non-sweep liquidity multiplier", test_institutional_sweep_audit_preserves_non_sweep_liquidity_multiplier),
+        ("v9.5.21 Ladder audit preserves raw live trigger under priority preemption", test_liquidity_ladder_audit_preserves_raw_live_trigger_when_priority_preempts),
+        ("v9.5.21 Ladder audit explains stale ready-stage trigger", test_liquidity_ladder_audit_exposes_stale_ready_stage),
         ("v9.5.20 episode identity is monotonic across funnel stages", test_episode_identity_is_monotonic_across_ranked_and_selected),
         ("v9.5.20 predicate schema migration isolates legacy counters", test_predicate_schema_migration_archives_legacy_and_resets_health_scope),
         ("v9.5.20 entry-quality audit is descriptive and setup-normalized", test_entry_quality_audit_is_descriptive_and_setup_normalized),
@@ -26697,11 +27287,13 @@ def run_audit_journal(path: str) -> dict[str, Any]:
 
     result["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(payload)
     result["entry_quality_audit"] = compute_entry_quality_audit(payload)
+    result["institutional_sweep_predicate_audit"] = compute_institutional_sweep_predicate_audit(payload)
+    result["liquidity_ladder_execution_audit"] = compute_liquidity_ladder_execution_audit(payload)
     result["revalidation_execution_replay"] = _revalidation_fix_replay(payload)
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.20 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.21 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
