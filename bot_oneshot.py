@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.21 (Quality Audit, Sweep and Ladder Diagnostics)
+BZU Professional Hybrid Confluence Signal Bot v9.5.22 (Regime Memory Schema Lineage)
 =============================================================================================
+Оновлення v9.5.22:
+- Regime Memory schema lineage виправлено end-to-end: canonical opened_regime зберігається в compact trade journal, legacy regime читається лише як контрольований fallback.
+- Старі journal rows автоматично backfill-яться regime -> opened_regime без очищення trades/signals; migration idempotent і зберігає lineage source/conflict evidence.
+- market_regime_memory_profile та RANGE calendar audit використовують один resolver, тому історичні compact trades більше не зникають із regime sample.
+- opened_regime є джерелом істини при конфлікті з legacy regime; конфлікт журналюється, а не мовчки змішується.
+- Risk multipliers, REGIME_MEMORY_MIN_TRADES, score/HTF/TTL/TP-SL thresholds не змінені.
 Оновлення v9.5.21:
 - Self-test coverage: 12 previously orphaned regression tests are reactivated in the deterministic registry; legacy assertions are aligned with current v9.5.21 contracts without changing live trading logic.
 - Entry-quality audit розділяє canonical trade score від evaluation/entry-quality snapshots; legacy fallback score->entry_score прибрано з аналітики.
@@ -247,8 +253,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.21-quality-sweep-ladder-diagnostics"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_21_QUALITY_SWEEP_LADDER_DIAGNOSTICS"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.22-regime-memory-lineage"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_22_REGIME_MEMORY_LINEAGE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -619,6 +625,8 @@ THESIS_FRESH_EVIDENCE_BONUS = min(30.0, max(0.0, float(os.getenv("THESIS_FRESH_E
 THESIS_FRESH_EVIDENCE_MAX_AGE_MIN = max(1.0, float(os.getenv("THESIS_FRESH_EVIDENCE_MAX_AGE_MIN", "120") or 120))
 REGIME_MEMORY_LOOKBACK = max(20, int(os.getenv("REGIME_MEMORY_LOOKBACK", "100") or 100))
 REGIME_MEMORY_MIN_TRADES = max(5, int(os.getenv("REGIME_MEMORY_MIN_TRADES", "12") or 12))
+TRADE_REGIME_LINEAGE_SCHEMA_VERSION = "trade_regime_lineage_v9.5.22"
+REGIME_MEMORY_SCHEMA_VERSION = "regime_memory_v9.5.22_open_regime_lineage"
 ENTRY_QUALITY_LOW_RISK_MULT = min(1.0, max(0.05, float(os.getenv("ENTRY_QUALITY_LOW_RISK_MULT", "0.40") or 0.40)))
 ENTRY_QUALITY_VERY_LOW_RISK_MULT = min(ENTRY_QUALITY_LOW_RISK_MULT, max(0.01, float(os.getenv("ENTRY_QUALITY_VERY_LOW_RISK_MULT", "0.25") or 0.25)))
 RISKY_GRAY_RISK_PCT = float(os.getenv("RISKY_GRAY_RISK_PCT", str(min(PROBE_RISK_PCT, 0.10))) or min(PROBE_RISK_PCT, 0.10))
@@ -5218,14 +5226,96 @@ def thesis_confidence_decay_profile(
     }
 
 
+def _normalize_trade_open_regime(value: Any) -> str:
+    """Normalize a persisted trade-open regime without inventing a bucket."""
+    raw = str(value or "").strip().upper()
+    valid = {item.value for item in Regime}
+    return raw if raw in valid else ""
+
+
+def trade_open_regime_lineage(record: Any) -> dict[str, Any]:
+    """Resolve the trade's regime-at-entry with explicit schema lineage.
+
+    ``opened_regime`` is canonical. Historical compact journals used ``regime``
+    as the only persisted alias, so it is accepted as a read-only fallback. If
+    both fields exist and disagree, the canonical field wins and the mismatch is
+    surfaced instead of silently mixing two market states.
+    """
+    if not isinstance(record, dict):
+        return {
+            "regime": "",
+            "source": "MISSING_OR_INVALID",
+            "conflict": False,
+            "invalid_fields": [],
+            "schema_version": TRADE_REGIME_LINEAGE_SCHEMA_VERSION,
+        }
+    canonical_raw = str(record.get("opened_regime") or "").strip()
+    legacy_raw = str(record.get("regime") or "").strip()
+    canonical = _normalize_trade_open_regime(canonical_raw)
+    legacy = _normalize_trade_open_regime(legacy_raw)
+    invalid_fields: list[str] = []
+    if canonical_raw and not canonical:
+        invalid_fields.append("opened_regime")
+    if legacy_raw and not legacy:
+        invalid_fields.append("regime")
+    conflict = bool(canonical and legacy and canonical != legacy)
+    if canonical:
+        resolved = canonical
+        source = "OPENED_REGIME_CANONICAL_CONFLICT" if conflict else "OPENED_REGIME_CANONICAL"
+    elif legacy:
+        resolved = legacy
+        source = "LEGACY_REGIME_FALLBACK"
+    else:
+        resolved = ""
+        source = "MISSING_OR_INVALID"
+    return {
+        "regime": resolved,
+        "source": source,
+        "conflict": conflict,
+        "invalid_fields": invalid_fields,
+        "opened_regime_raw": canonical_raw,
+        "legacy_regime_raw": legacy_raw,
+        "schema_version": TRADE_REGIME_LINEAGE_SCHEMA_VERSION,
+    }
+
+
 def market_regime_memory_profile(candidate: Any, journal: Optional[dict[str, Any]], context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Remember recent regime performance and price risk softly; never filter."""
+    """Remember recent regime performance softly using canonical open-regime lineage.
+
+    Historical compact trades that only contain ``regime`` remain eligible via a
+    controlled fallback. This changes data visibility, not the risk thresholds or
+    the minimum-sample policy.
+    """
     journal = journal or {}
     context = context or {}
     components = getattr(candidate, "score_components", {}) or {}
-    current = str(context.get("regime") or components.get("current_regime") or components.get("regime") or Regime.NORMAL.value).upper()
+    current_raw = str(context.get("regime") or components.get("current_regime") or components.get("regime") or Regime.NORMAL.value).upper()
+    current = _normalize_trade_open_regime(current_raw) or current_raw
     trades = [t for t in (journal.get("trades") or []) if isinstance(t, dict)][-REGIME_MEMORY_LOOKBACK:]
-    bucket = [t for t in trades if str(t.get("opened_regime") or "").upper() == current]
+
+    bucket: list[dict[str, Any]] = []
+    source_counts: dict[str, int] = {}
+    matching_legacy_fallback_rows = 0
+    unresolved_lineage = 0
+    lineage_conflicts = 0
+    invalid_lineage_rows = 0
+    for trade in trades:
+        lineage = trade_open_regime_lineage(trade)
+        source = str(trade.get("regime_lineage_source") or lineage.get("source") or "MISSING_OR_INVALID")
+        source_counts[source] = int(source_counts.get(source) or 0) + 1
+        if lineage.get("conflict") or bool(trade.get("regime_lineage_conflict")):
+            lineage_conflicts += 1
+        if lineage.get("invalid_fields"):
+            invalid_lineage_rows += 1
+        resolved = str(lineage.get("regime") or "")
+        if not resolved:
+            unresolved_lineage += 1
+            continue
+        if resolved == current:
+            bucket.append(trade)
+            if source == "LEGACY_REGIME_FALLBACK":
+                matching_legacy_fallback_rows += 1
+
     r_rows = [(t, _journal_result_r(t)) for t in bucket]
     r_rows = [(t, result_r) for t, result_r in r_rows if result_r is not None]
     sample = len(r_rows)
@@ -5249,18 +5339,30 @@ def market_regime_memory_profile(candidate: Any, journal: Optional[dict[str, Any
         status = "STRONG"
     return {
         "regime": current,
+        "current_regime_valid": bool(_normalize_trade_open_regime(current)),
         "lookback": REGIME_MEMORY_LOOKBACK,
+        "lookback_trade_records": len(trades),
+        "matching_regime_trades": len(bucket),
         "sample": sample,
-        "legacy_or_ambiguous_excluded": len(bucket) - sample,
+        # Compatibility field: only truly unresolved lineage is excluded now;
+        # legacy regime rows are deliberately recovered rather than discarded.
+        "legacy_or_ambiguous_excluded": unresolved_lineage,
+        "lineage_unresolved_excluded": unresolved_lineage,
+        "outcome_missing_excluded": len(bucket) - sample,
+        "legacy_fallback_rows": int(source_counts.get("LEGACY_REGIME_FALLBACK") or 0),
+        "matching_legacy_fallback_rows": matching_legacy_fallback_rows,
+        "lineage_conflicts": lineage_conflicts,
+        "invalid_lineage_rows": invalid_lineage_rows,
+        "regime_source_counts": source_counts,
         "wins": wins,
         "win_rate": round(win_rate, 2),
         "expectancy_r": round(expectancy, 4),
         "risk_multiplier": round(factor, 3),
         "status": status,
         "filtering": False,
-        "schema_version": "regime_memory_v9.1",
+        "lineage_policy": "OPENED_REGIME_CANONICAL_WITH_LEGACY_REGIME_FALLBACK",
+        "schema_version": REGIME_MEMORY_SCHEMA_VERSION,
     }
-
 
 def prepare_preplan_quality_pipeline(candidate: Candidate, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Candidate -> setup -> timing -> entry quality, before TradePlan geometry."""
@@ -6514,7 +6616,9 @@ def compute_calendar_statistics(journal: dict[str, Any]) -> dict[str, Any]:
         "weekday": {"closed_trades": 0, "wins": 0, "net_result": 0.0},
     }
     for trade in journal.get("trades", []) or []:
-        if not isinstance(trade, dict) or str(trade.get("opened_regime") or "") != Regime.RANGE.value:
+        if not isinstance(trade, dict):
+            continue
+        if str(trade_open_regime_lineage(trade).get("regime") or "") != Regime.RANGE.value:
             continue
         opened = _parse_iso_datetime(trade.get("opened_at", trade.get("time")))
         if opened is None:
@@ -6856,6 +6960,13 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     result_class = payload.get("result_class")
     if not result_class or str(result_class).upper() not in {"WIN", "LOSS", "BREAKEVEN", "UNRESOLVED"}:
         result_class = classify_trade_result(pnl_r, pnl, str(payload.get("outcome_status") or ""))
+    regime_lineage = trade_open_regime_lineage(payload)
+    resolved_open_regime = str(regime_lineage.get("regime") or "")
+    stored_lineage_source = str(payload.get("regime_lineage_source") or regime_lineage.get("source") or "MISSING_OR_INVALID")
+    prior_conflict = bool(payload.get("regime_lineage_conflict"))
+    legacy_conflict_value = payload.get("regime_lineage_legacy_value")
+    if legacy_conflict_value in (None, "") and regime_lineage.get("conflict"):
+        legacy_conflict_value = regime_lineage.get("legacy_regime_raw")
     compact = {
         "id": payload.get("id"),
         "signal_id": payload.get("signal_id", payload.get("primary_signal_id")),
@@ -6935,10 +7046,98 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "preconfirmation_event_id": payload.get("preconfirmation_event_id"),
         "mfe": payload.get("mfe", payload.get("mfe_pct")),
         "risk_pct": payload.get("risk_pct", payload.get("position_risk_pct")),
-        "regime": payload.get("regime", payload.get("opened_regime")),
+        "opened_regime": resolved_open_regime,
+        "regime": resolved_open_regime,  # compatibility alias; opened_regime is canonical
+        "regime_lineage_source": stored_lineage_source,
+        "regime_lineage_conflict": True if (prior_conflict or bool(regime_lineage.get("conflict"))) else None,
+        "regime_lineage_legacy_value": legacy_conflict_value,
+        "regime_lineage_schema_version": TRADE_REGIME_LINEAGE_SCHEMA_VERSION if resolved_open_regime else None,
         "ml_eligible": payload.get("ml_eligible", True),
     }
     return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+def migrate_trade_regime_lineage(journal: dict[str, Any]) -> dict[str, Any]:
+    """Backfill canonical ``opened_regime`` without rewriting trade outcomes.
+
+    Historical v9.5 compact rows commonly contain only ``regime``. The migration
+    copies that value into ``opened_regime`` when valid, keeps a compatibility
+    alias, records the original lineage source, and is idempotent. Trades with a
+    canonical/legacy conflict keep canonical ``opened_regime`` and retain the old
+    legacy value as conflict evidence.
+    """
+    if not isinstance(journal, dict):
+        return {
+            "changed": 0,
+            "processed": 0,
+            "legacy_backfilled": 0,
+            "conflicts_found": 0,
+            "unresolved": 0,
+            "schema_version": TRADE_REGIME_LINEAGE_SCHEMA_VERSION,
+            "reason": "invalid_journal",
+        }
+    rows = journal.setdefault("trades", [])
+    report = {
+        "changed": 0,
+        "processed": 0,
+        "legacy_backfilled": 0,
+        "canonical_rows": 0,
+        "conflicts_found": 0,
+        "unresolved": 0,
+        "invalid_rows": 0,
+        "schema_version": TRADE_REGIME_LINEAGE_SCHEMA_VERSION,
+        "trades_and_outcomes_preserved": True,
+    }
+    for trade in rows:
+        if not isinstance(trade, dict):
+            continue
+        report["processed"] += 1
+        lineage = trade_open_regime_lineage(trade)
+        resolved = str(lineage.get("regime") or "")
+        if lineage.get("invalid_fields"):
+            report["invalid_rows"] += 1
+        if not resolved:
+            report["unresolved"] += 1
+            continue
+        source_before = str(trade.get("regime_lineage_source") or lineage.get("source") or "MISSING_OR_INVALID")
+        was_legacy = str(lineage.get("source") or "") == "LEGACY_REGIME_FALLBACK"
+        if was_legacy:
+            report["legacy_backfilled"] += 1
+        else:
+            report["canonical_rows"] += 1
+        conflict = bool(lineage.get("conflict"))
+        if conflict:
+            report["conflicts_found"] += 1
+        before = (
+            trade.get("opened_regime"), trade.get("regime"), trade.get("regime_lineage_source"),
+            trade.get("regime_lineage_conflict"), trade.get("regime_lineage_legacy_value"),
+            trade.get("regime_lineage_schema_version"),
+        )
+        if conflict and trade.get("regime_lineage_legacy_value") in (None, ""):
+            trade["regime_lineage_legacy_value"] = lineage.get("legacy_regime_raw")
+        trade["opened_regime"] = resolved
+        trade["regime"] = resolved
+        trade["regime_lineage_source"] = source_before
+        if conflict or bool(trade.get("regime_lineage_conflict")):
+            trade["regime_lineage_conflict"] = True
+        else:
+            trade.pop("regime_lineage_conflict", None)
+        trade["regime_lineage_schema_version"] = TRADE_REGIME_LINEAGE_SCHEMA_VERSION
+        after = (
+            trade.get("opened_regime"), trade.get("regime"), trade.get("regime_lineage_source"),
+            trade.get("regime_lineage_conflict"), trade.get("regime_lineage_legacy_value"),
+            trade.get("regime_lineage_schema_version"),
+        )
+        if before != after:
+            report["changed"] += 1
+    report["completed_at"] = iso_now()
+    previous = journal.get("trade_regime_lineage_migration")
+    if report["changed"] or not isinstance(previous, dict):
+        journal["trade_regime_lineage_migration"] = dict(report)
+    else:
+        previous["last_checked_at"] = report["completed_at"]
+        previous["current_schema"] = TRADE_REGIME_LINEAGE_SCHEMA_VERSION
+    return report
 
 
 def backfill_trade_geometry_evidence(journal: dict[str, Any]) -> dict[str, Any]:
@@ -7127,6 +7326,7 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     """One-time in-memory migration of legacy journals to schema version 2."""
     if not isinstance(journal, dict):
         journal = {}
+    journal["trade_regime_lineage_migration"] = migrate_trade_regime_lineage(journal)
     journal["geometry_backfill"] = backfill_trade_geometry_evidence(journal)
     journal["dormant_detector_audit_upgrade"] = upgrade_dormant_reachability_ledger(journal)
     migrate_setup_episode_identity_schema(journal)
@@ -7196,11 +7396,13 @@ def load_journal() -> dict[str, Any]:
                 "completed_at": iso_now(),
             })
             atomic_json_write(JOURNAL_FILE, journal)
+    regime_lineage_report = migrate_trade_regime_lineage(journal)
     episode_schema_report = migrate_setup_episode_identity_schema(journal)
     predicate_schema_report = migrate_predicate_reachability_schema(journal)
-    if episode_schema_report.get("changed") or predicate_schema_report.get("changed"):
+    if regime_lineage_report.get("changed") or episode_schema_report.get("changed") or predicate_schema_report.get("changed"):
         journal.setdefault("migration", {}).update({
-            "mode": "V9_5_20_EPISODE_AND_PREDICATE_SCHEMA_MIGRATION",
+            "mode": "V9_5_22_REGIME_LINEAGE_WITH_EXISTING_EPISODE_PREDICATE_MIGRATIONS",
+            "trade_regime_lineage_migration": regime_lineage_report,
             "setup_episode_identity_migration": episode_schema_report,
             "predicate_schema_migration": predicate_schema_report,
             "completed_at": iso_now(),
@@ -7404,7 +7606,8 @@ def active_trade_from_state(state: dict[str, Any]) -> Optional[ActiveTrade]:
         clean.setdefault("mfe_giveback_streak", int(raw.get("mfe_giveback_streak", 0) or 0))
         clean.setdefault("mfe_giveback_last_state", str(raw.get("mfe_giveback_last_state", "OK")))
         clean.setdefault("trigger_level", float(raw.get("trigger_level", 0) or 0))
-        clean.setdefault("opened_regime", str(raw.get("opened_regime", "")))
+        if not str(clean.get("opened_regime") or "").strip():
+            clean["opened_regime"] = str(trade_open_regime_lineage(raw).get("regime") or "")
         clean.setdefault("tp1_stop_locked", bool(raw.get("tp1_stop_locked", False)))
         clean.setdefault("tp2_stop_locked", bool(raw.get("tp2_stop_locked", False)))
         clean.setdefault("tp1_locked_stop", float(raw.get("tp1_locked_stop", 0) or 0))
@@ -24871,12 +25074,191 @@ def test_institutional_sweep_audit_preserves_non_sweep_liquidity_multiplier() ->
     )
 
 
+
+def test_regime_lineage_reads_legacy_regime_fallback() -> bool:
+    lineage = trade_open_regime_lineage({"regime": Regime.RANGE.value})
+    return bool(
+        lineage.get("regime") == Regime.RANGE.value
+        and lineage.get("source") == "LEGACY_REGIME_FALLBACK"
+        and not lineage.get("conflict")
+    )
+
+
+def test_compact_trade_persists_canonical_opened_regime() -> bool:
+    compact = compact_trade_for_journal({
+        "id": "legacy-range",
+        "regime": Regime.RANGE.value,
+        "pnl_r": 0.5,
+        "result_class": "WIN",
+    })
+    return bool(
+        compact.get("opened_regime") == Regime.RANGE.value
+        and compact.get("regime") == Regime.RANGE.value
+        and compact.get("regime_lineage_source") == "LEGACY_REGIME_FALLBACK"
+        and compact.get("regime_lineage_schema_version") == TRADE_REGIME_LINEAGE_SCHEMA_VERSION
+    )
+
+
+def test_regime_lineage_prefers_canonical_on_conflict() -> bool:
+    lineage = trade_open_regime_lineage({
+        "opened_regime": Regime.RANGE.value,
+        "regime": Regime.TRANSITION.value,
+    })
+    compact = compact_trade_for_journal({
+        "id": "conflict",
+        "opened_regime": Regime.RANGE.value,
+        "regime": Regime.TRANSITION.value,
+        "pnl_r": -1.0,
+        "result_class": "LOSS",
+    })
+    return bool(
+        lineage.get("regime") == Regime.RANGE.value
+        and lineage.get("conflict")
+        and compact.get("opened_regime") == Regime.RANGE.value
+        and compact.get("regime") == Regime.RANGE.value
+        and compact.get("regime_lineage_conflict") is True
+        and compact.get("regime_lineage_legacy_value") == Regime.TRANSITION.value
+    )
+
+
+def test_regime_lineage_migration_is_idempotent() -> bool:
+    journal = {
+        "trades": [
+            {"id": "legacy", "regime": Regime.RANGE.value, "pnl_r": 1.0},
+            {"id": "canonical", "opened_regime": Regime.TRANSITION.value, "pnl_r": -1.0},
+        ]
+    }
+    first = migrate_trade_regime_lineage(journal)
+    first_snapshot = json.dumps(journal.get("trades"), sort_keys=True, ensure_ascii=False)
+    second = migrate_trade_regime_lineage(journal)
+    second_snapshot = json.dumps(journal.get("trades"), sort_keys=True, ensure_ascii=False)
+    return bool(
+        first.get("changed") == 2
+        and first.get("legacy_backfilled") == 1
+        and second.get("changed") == 0
+        and first_snapshot == second_snapshot
+        and journal["trades"][0].get("opened_regime") == Regime.RANGE.value
+        and journal["trades"][0].get("regime_lineage_source") == "LEGACY_REGIME_FALLBACK"
+    )
+
+
+def test_regime_memory_recovers_legacy_compact_history() -> bool:
+    trades = []
+    for index in range(REGIME_MEMORY_MIN_TRADES):
+        trades.append({
+            "id": f"range-{index}",
+            "regime": Regime.RANGE.value,
+            "pnl_r": 1.0 if index < 8 else -1.0,
+        })
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=75,
+        final_score=75,
+    )
+    profile = market_regime_memory_profile(candidate, {"trades": trades}, {"regime": Regime.RANGE.value})
+    return bool(
+        profile.get("sample") == REGIME_MEMORY_MIN_TRADES
+        and profile.get("wins") == 8
+        and profile.get("matching_legacy_fallback_rows") == REGIME_MEMORY_MIN_TRADES
+        and profile.get("status") == "STRONG"
+        and abs(safe_float(profile.get("risk_multiplier"), 0.0) - 1.05) < 1e-9
+        and profile.get("schema_version") == REGIME_MEMORY_SCHEMA_VERSION
+    )
+
+
+
+def test_regime_memory_reaches_risk_confidence_budget() -> bool:
+    trades = [
+        {"id": f"budget-{index}", "regime": Regime.RANGE.value, "pnl_r": 1.0 if index < 8 else -1.0}
+        for index in range(REGIME_MEMORY_MIN_TRADES)
+    ]
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=75,
+        final_score=75,
+        entry_quality_score=70,
+        score_components={
+            "liq_score": 60,
+            "str_score": 60,
+            "htf_fact": {
+                "market_bias": "NEUTRAL", "candidate_side": Side.LONG.value,
+                "alignment_score": 0.0, "state": "NEUTRAL",
+                "timeframe_components": {}, "confidence": 0.0,
+                "schema_version": "selftest",
+            },
+        },
+    )
+    budget = build_risk_confidence_budget(
+        candidate,
+        {"trades": trades},
+        {"regime": Regime.RANGE.value, "price": 100.0, "atr15": 1.0},
+    )
+    regime_rows = [row for row in (budget.get("breakdown") or []) if row.get("source") == "regime_memory"]
+    return bool(
+        len(regime_rows) == 1
+        and abs(safe_float(regime_rows[0].get("delta_pct"), 0.0) - 5.0) < 1e-9
+        and (budget.get("regime_memory") or {}).get("sample") == REGIME_MEMORY_MIN_TRADES
+    )
+
+
+def test_calendar_statistics_reads_legacy_range_regime() -> bool:
+    journal = {
+        "trades": [{
+            "id": "weekend-range",
+            "regime": Regime.RANGE.value,
+            "time": "2026-08-08T12:00:00+00:00",
+            "pnl_r": 1.0,
+        }]
+    }
+    stats = compute_calendar_statistics(journal).get("range_weekend_vs_weekday") or {}
+    return bool(
+        (stats.get("weekend") or {}).get("closed_trades") == 1
+        and (stats.get("weekday") or {}).get("closed_trades") == 0
+    )
+
+
+def test_active_trade_state_recovers_legacy_regime_alias() -> bool:
+    raw = {
+        "id": "legacy-active",
+        "side": Side.LONG.value,
+        "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        "setup_family": SetupFamily.CONTINUATION.value,
+        "opened_at": iso_now(),
+        "entry": 100.0,
+        "stop_initial": 99.0,
+        "stop_current": 99.0,
+        "structural_invalidation": 99.0,
+        "tp1": 102.0,
+        "tp2": 103.0,
+        "tp3": 104.0,
+        "quality": 75,
+        "position_risk_pct": 0.1,
+        "best_price": 100.0,
+        "worst_price": 100.0,
+        "regime": Regime.RANGE.value,
+    }
+    trade = active_trade_from_state({"active_trade": raw})
+    return bool(trade is not None and trade.opened_regime == Regime.RANGE.value)
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
 
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
+        ("v9.5.22 legacy compact regime is a controlled fallback", test_regime_lineage_reads_legacy_regime_fallback),
+        ("v9.5.22 compact trade persists canonical opened_regime", test_compact_trade_persists_canonical_opened_regime),
+        ("v9.5.22 canonical opened_regime wins lineage conflicts", test_regime_lineage_prefers_canonical_on_conflict),
+        ("v9.5.22 trade regime lineage migration is idempotent", test_regime_lineage_migration_is_idempotent),
+        ("v9.5.22 Regime Memory recovers legacy compact history", test_regime_memory_recovers_legacy_compact_history),
+        ("v9.5.22 Regime Memory reaches the risk confidence budget", test_regime_memory_reaches_risk_confidence_budget),
+        ("v9.5.22 RANGE calendar audit reads legacy regime lineage", test_calendar_statistics_reads_legacy_range_regime),
+        ("v9.5.22 active trade state recovers legacy regime alias", test_active_trade_state_recovers_legacy_regime_alias),
         ("v9.5.21 entry-quality audit separates canonical score lineage", test_entry_quality_audit_separates_canonical_score_lineage),
         ("v9.5.21 best metric requires multi-setup normalized evidence", test_best_diagnostic_metric_requires_multiple_setups_for_normalized_basis),
         ("v9.5.21 Range Edge audit gates institutional quality behind raw sweep", test_range_edge_audit_requires_raw_sweep_before_institutional_quality),
@@ -27321,7 +27703,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.21 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.22 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
