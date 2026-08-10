@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.22 (Regime Memory Schema Lineage)
+BZU Professional Hybrid Confluence Signal Bot v9.5.23 (Journal Compaction + Validated Exact Calibration)
 =============================================================================================
+Оновлення v9.5.23:
+- Journal Compaction v2: setup lifecycle recent_runs обмежено 100 записами; per-run detector reachability зберігається як lean summary, повна статистика лишається в aggregate ledger.
+- Ranked top-N audit retention зменшено до 180 batches; повні candidate rows зберігаються лише для нових independent episode keys, повторні scans стають summary-only.
+- LIVE і ACTIVE_TRADE_SHADOW independent conversion мають окремі outputs; compatibility alias independent_episode_conversion завжди означає LIVE і більше не перезаписується shadow-run.
+- Exact-setup calibration authority вимагає не лише n>=25, а chronological out-of-sample validation (AUC/Brier + bootstrap comparison); failed validation повертає setup до explicit bootstrap coefficients.
+- Side-aware calibration audit окремо вимірює LONG/SHORT rows, win rate та expectancy; material two-sided divergence блокує pooled learned authority до окремої directional review, але не блокує сам setup.
+- Canonical score 68/75, HTF, thesis TTL, TP/SL, risk constants і preconfirmation authority gates не змінені.
 Оновлення v9.5.22:
 - Regime Memory schema lineage виправлено end-to-end: canonical opened_regime зберігається в compact trade journal, legacy regime читається лише як контрольований fallback.
 - Старі journal rows автоматично backfill-яться regime -> opened_regime без очищення trades/signals; migration idempotent і зберігає lineage source/conflict evidence.
@@ -253,8 +260,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.22-regime-memory-lineage"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_22_REGIME_MEMORY_LINEAGE"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.23-journal-compaction-validated-exact-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_23_JOURNAL_COMPACTION_VALIDATED_EXACT_CALIBRATION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -379,13 +386,13 @@ JOURNAL_ML_FEATURE_KEYS = (
 EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT = max(1, int(os.getenv("EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT", "100") or 100))
 REJECTED_HYPOTHESIS_SHADOW_LIMIT = max(1, int(os.getenv("REJECTED_HYPOTHESIS_SHADOW_LIMIT", "50") or 50))
 PRECONFIRM_EMBEDDED_JOURNAL_LIMIT = max(100, int(os.getenv("PRECONFIRM_EMBEDDED_JOURNAL_LIMIT", "500") or 500))
-SETUP_LIFECYCLE_RECENT_RUN_LIMIT = max(50, int(os.getenv("SETUP_LIFECYCLE_RECENT_RUN_LIMIT", "300") or 300))
+SETUP_LIFECYCLE_RECENT_RUN_LIMIT = min(100, max(50, int(os.getenv("SETUP_LIFECYCLE_RECENT_RUN_LIMIT", "100") or 100)))
 ACTIVE_TRADE_SHADOW_SCANNING_ENABLED = os.getenv("ACTIVE_TRADE_SHADOW_SCANNING_ENABLED", "true").lower() in {"1", "true", "yes"}
 ACTIVE_TRADE_SHADOW_SCAN_LIMIT = max(50, int(os.getenv("ACTIVE_TRADE_SHADOW_SCAN_LIMIT", "300") or 300))
 DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS = max(10, int(os.getenv("DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS", "20") or 20))
 DORMANT_PREDICATE_SATURATION_FALSE_RATE = min(1.0, max(0.80, float(os.getenv("DORMANT_PREDICATE_SATURATION_FALSE_RATE", "0.98") or 0.98)))
 RANKED_CONVERSION_AUDIT_TOP_N = min(10, max(3, int(os.getenv("RANKED_CONVERSION_AUDIT_TOP_N", "5") or 5)))
-RANKED_CONVERSION_AUDIT_LIMIT = max(100, int(os.getenv("RANKED_CONVERSION_AUDIT_LIMIT", "500") or 500))
+RANKED_CONVERSION_AUDIT_LIMIT = min(200, max(100, int(os.getenv("RANKED_CONVERSION_AUDIT_LIMIT", "180") or 180)))
 SETUP_EPISODE_REGISTRY_LIMIT = max(500, int(os.getenv("SETUP_EPISODE_REGISTRY_LIMIT", "4000") or 4000))
 SETUP_EPISODE_TIME_BUCKET_MINUTES = max(30, int(os.getenv("SETUP_EPISODE_TIME_BUCKET_MINUTES", "240") or 240))
 SETUP_EPISODE_ANCHOR_BUCKET_ATR = max(0.10, float(os.getenv("SETUP_EPISODE_ANCHOR_BUCKET_ATR", "0.25") or 0.25))
@@ -401,6 +408,17 @@ DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.21_sweep_ladd
 ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_score_lineage"
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
+JOURNAL_COMPACTION_SCHEMA_VERSION = "journal_compaction_v9.5.23_lifecycle_ranked_episode_retention"
+RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.23_episode_retention"
+SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.23_chronological_oos_side_audit"
+SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(8, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "10") or 10))
+SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.50, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.52") or 0.52)))
+SETUP_CALIBRATION_VALIDATION_MAX_BRIER = min(0.50, max(0.15, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_BRIER", "0.30") or 0.30)))
+SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION = min(0.10, max(0.0, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION", "0.02") or 0.02)))
+SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION = min(0.10, max(0.0, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION", "0.02") or 0.02)))
+SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES = max(6, int(os.getenv("SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES", "8") or 8))
+SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R = max(0.05, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R", "0.20") or 0.20))
+SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP = max(5.0, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP", "15") or 15))
 INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD = 0.85
 TP0_PROTECT_RATCHET_EVIDENCE_LIMIT = max(20, int(os.getenv("TP0_PROTECT_RATCHET_EVIDENCE_LIMIT", "80") or 80))
 TP0_PROTECT_MIN_RATCHET_STEP_R = max(0.02, float(os.getenv("TP0_PROTECT_MIN_RATCHET_STEP_R", "0.10") or 0.10))
@@ -821,6 +839,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Preconfirmation anti-discrimination AUC threshold must be in [0, 0.50]")
     if not (0.0 < PRECONFIRM_UNTRUSTED_MODEL_SHRINK <= 0.75):
         errors.append("Preconfirmation untrusted-model shrinkage must be in (0, 0.75]")
+    if SETUP_LIFECYCLE_RECENT_RUN_LIMIT > 100:
+        errors.append("Journal Compaction v2 lifecycle retention hard cap exceeded")
+    if RANKED_CONVERSION_AUDIT_LIMIT > 200:
+        errors.append("Journal Compaction v2 ranked-audit retention hard cap exceeded")
+    if SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS < 8:
+        errors.append("Exact-setup validation requires at least 8 OOS predictions")
+    if not (0.50 <= SETUP_CALIBRATION_VALIDATION_MIN_AUC <= 0.80):
+        errors.append("Exact-setup validation AUC gate must be in [0.50, 0.80]")
+    if not (0.15 <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER <= 0.50):
+        errors.append("Exact-setup validation Brier gate must be in [0.15, 0.50]")
     if not (0.50 <= PRECONFIRM_AUTHORITY_RECENT_AUC_GATE <= 0.95):
         errors.append("Preconfirmation recent AUC gate must be between 0.50 and 0.95")
     if not (0.05 <= PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE <= 0.50):
@@ -1958,7 +1986,8 @@ def _ensure_setup_episode_identity_schema(ledger: dict[str, Any]) -> dict[str, A
     derived_keys = (
         "episode_registry", "active_trade_shadow_episode_registry",
         "independent_episode_totals", "active_trade_shadow_independent_episode_totals",
-        "independent_episode_conversion",
+        "independent_episode_conversion", "live_independent_episode_conversion",
+        "shadow_independent_episode_conversion",
     )
     has_derived = any(bool(ledger.get(key)) for key in derived_keys)
     if current_schema == SETUP_EPISODE_SCHEMA_VERSION:
@@ -2158,6 +2187,114 @@ def _register_setup_episode_stage(
         for key, _ in ordered[:len(registry) - SETUP_EPISODE_REGISTRY_LIMIT]:
             registry.pop(key, None)
     return episode_key
+
+
+def _compact_lifecycle_candidate_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Lean per-run candidate snapshot. Aggregate ledgers keep the full counters."""
+    if not isinstance(event, dict):
+        return {}
+    keys = (
+        "side", "setup_type", "model_id", "ict_model", "rank", "final_score",
+        "episode_key", "thesis_key", "thesis_origin", "execution_anchor",
+        "trigger_level", "trigger_ready", "entry_stage", "execution_source",
+        "model_thesis_age_minutes", "market_thesis_age_minutes",
+    )
+    return {key: json_safe(event.get(key)) for key in keys if event.get(key) not in (None, "", [], {})}
+
+
+def _compact_reachability_event_for_run(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep only episode-local reachability evidence in recent_runs.
+
+    Full condition counts, margins, dependencies and health remain in
+    setup_lifecycle_counters.detector_reachability. Repeating those payloads on
+    every scan was the main source of journal growth.
+    """
+    if not isinstance(event, dict):
+        return {}
+    conditions = dict(event.get("conditions") or {})
+    applicability = {str(k): bool(v) for k, v in (event.get("condition_applicability") or {}).items()}
+    diagnostics = dict(event.get("diagnostics") or {})
+    false_predicates = [
+        str(name) for name, value in conditions.items()
+        if isinstance(value, bool) and applicability.get(str(name), True) and value is False
+    ][:10]
+    not_applicable = [str(name) for name, applies in applicability.items() if not applies][:10]
+    true_paths = [str(name) for name, value in (event.get("paths") or {}).items() if bool(value)][:8]
+    return {
+        "setup_type": str(event.get("setup_type") or ""),
+        "fired": bool(event.get("fired")),
+        "blockers": [str(value) for value in (event.get("blockers") or [])][:8],
+        "false_predicates": false_predicates,
+        "not_applicable_predicates": not_applicable,
+        "true_paths": true_paths,
+        "reason_codes": [str(value) for value in (diagnostics.get("reason_codes") or [])][:8],
+        "selected_confirmation_kind": str(diagnostics.get("selected_confirmation_kind") or ""),
+        "schema_version": str(event.get("schema_version") or DETECTOR_REACHABILITY_SCHEMA_VERSION),
+    }
+
+
+def compact_setup_lifecycle_run_for_journal(run_row: dict[str, Any]) -> dict[str, Any]:
+    """Bounded recent-run representation; never used as live decision authority."""
+    if not isinstance(run_row, dict):
+        return {}
+    if str(run_row.get("schema_version") or "") == "setup_lifecycle_recent_run_v9.5.23_compact":
+        return copy.deepcopy(run_row)
+    reachability_source = run_row.get("detector_reachability")
+    if not isinstance(reachability_source, list):
+        reachability_source = run_row.get("detector_reachability_summary") or []
+    compact = {
+        "time": str(run_row.get("time") or ""),
+        "bot_version": str(run_row.get("bot_version") or ""),
+        "architecture_version": str(run_row.get("architecture_version") or ""),
+        "scan_mode": str(run_row.get("scan_mode") or "LIVE"),
+        "capacity_blocked": bool(run_row.get("capacity_blocked")),
+        "active_trade_id": str(run_row.get("active_trade_id") or ""),
+        "detected": [_compact_lifecycle_candidate_event(item) for item in (run_row.get("detected") or []) if isinstance(item, dict)],
+        "qualified_detected": [_compact_lifecycle_candidate_event(item) for item in (run_row.get("qualified_detected") or []) if isinstance(item, dict)],
+        "ranked": [_compact_lifecycle_candidate_event(item) for item in (run_row.get("ranked") or []) if isinstance(item, dict)],
+        "detector_reachability_summary": [
+            _compact_reachability_event_for_run(item) for item in reachability_source if isinstance(item, dict)
+        ],
+        "selected": json_safe(run_row.get("selected")) if isinstance(run_row.get("selected"), dict) else None,
+        "selection_anomaly": json_safe(run_row.get("selection_anomaly")) if isinstance(run_row.get("selection_anomaly"), dict) else None,
+        "would_executable": bool(run_row.get("would_executable")),
+        "executable": bool(run_row.get("executable")),
+        "entered": bool(run_row.get("entered")),
+        "decision_action": str(run_row.get("decision_action") or Action.NO_SETUP.value),
+        "migration_flags": {
+            "episode_identity_changed": bool((run_row.get("episode_identity_migration") or {}).get("changed")),
+            "predicate_rows_migrated": int((run_row.get("predicate_schema_migration") or {}).get("rows_migrated") or 0),
+        },
+        "schema_version": "setup_lifecycle_recent_run_v9.5.23_compact",
+    }
+    return compact
+
+
+def _episode_conversion_table(values_by_setup: dict[str, Any]) -> dict[str, Any]:
+    return {
+        setup: {
+            **dict(values),
+            "ranked_to_entered_rate": round(safe_float(values.get("entered"), 0.0) / max(int(values.get("ranked") or 0), 1), 6),
+            "detected_to_ranked_rate": round(safe_float(values.get("ranked"), 0.0) / max(int(values.get("detected") or 0), 1), 6),
+        }
+        for setup, values in (values_by_setup or {}).items() if isinstance(values, dict)
+    }
+
+
+def compact_setup_lifecycle_history(journal: dict[str, Any]) -> dict[str, Any]:
+    ledger = journal.setdefault("setup_lifecycle_counters", {})
+    before = list(ledger.get("recent_runs") or [])
+    kept = before[-SETUP_LIFECYCLE_RECENT_RUN_LIMIT:]
+    compacted = [compact_setup_lifecycle_run_for_journal(row) for row in kept if isinstance(row, dict)]
+    changed = before != compacted
+    ledger["recent_runs"] = compacted
+    return {
+        "changed": changed,
+        "before": len(before),
+        "after": len(compacted),
+        "limit": SETUP_LIFECYCLE_RECENT_RUN_LIMIT,
+        "full_detector_reachability_retained_per_run": False,
+    }
 
 
 def update_setup_lifecycle_counters(
@@ -2483,14 +2620,15 @@ def update_setup_lifecycle_counters(
         "ranked_selected_key_equality_enforced": True,
         "schema_version": SETUP_EPISODE_SCHEMA_VERSION,
     }
-    ledger["independent_episode_conversion"] = {
-        setup: {
-            **dict(values),
-            "ranked_to_entered_rate": round(safe_float(values.get("entered"), 0.0) / max(int(values.get("ranked") or 0), 1), 6),
-            "detected_to_ranked_rate": round(safe_float(values.get("ranked"), 0.0) / max(int(values.get("detected") or 0), 1), 6),
-        }
-        for setup, values in episode_totals.items() if isinstance(values, dict)
-    }
+    live_conversion = _episode_conversion_table(ledger.get("independent_episode_totals") or {})
+    shadow_conversion = _episode_conversion_table(ledger.get("active_trade_shadow_independent_episode_totals") or {})
+    ledger["live_independent_episode_conversion"] = live_conversion
+    ledger["shadow_independent_episode_conversion"] = shadow_conversion
+    # Compatibility alias is deliberately LIVE-only. A shadow run may update the
+    # shadow table but can no longer overwrite the analytics used to describe
+    # real entry conversion.
+    ledger["independent_episode_conversion"] = copy.deepcopy(live_conversion)
+    ledger["independent_episode_conversion_scope"] = "LIVE_COMPATIBILITY_ALIAS"
 
     run_row = {
         "time": iso_now(),
@@ -2513,7 +2651,7 @@ def update_setup_lifecycle_counters(
         "predicate_schema_migration": predicate_migration,
     }
     recent = ledger.setdefault("recent_runs", [])
-    recent.append(run_row)
+    recent.append(compact_setup_lifecycle_run_for_journal(run_row))
     if len(recent) > SETUP_LIFECYCLE_RECENT_RUN_LIMIT:
         del recent[:-SETUP_LIFECYCLE_RECENT_RUN_LIMIT]
     ledger.update({
@@ -4900,7 +5038,10 @@ def runtime_config_snapshot() -> dict[str, Any]:
         "preconfirm_authority_recent_auc_gate": PRECONFIRM_AUTHORITY_RECENT_AUC_GATE,
         "preconfirm_authority_recent_brier_gate": PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE,
         "setup_lifecycle_recent_run_limit": SETUP_LIFECYCLE_RECENT_RUN_LIMIT,
+        "ranked_conversion_audit_limit": RANKED_CONVERSION_AUDIT_LIMIT,
+        "journal_compaction_schema": JOURNAL_COMPACTION_SCHEMA_VERSION,
         "setup_calibration_min_closed_trades": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+        "setup_calibration_validation_schema": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
         "setup_calibration_full_closed_trades": SETUP_CALIBRATION_FULL_CLOSED_TRADES,
         "setup_trade_profile_min_closed_trades": SETUP_TRADE_PROFILE_MIN_CLOSED_TRADES,
         "setup_trade_profile_full_closed_trades": SETUP_TRADE_PROFILE_FULL_CLOSED_TRADES,
@@ -7362,7 +7503,8 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     ][-DAILY_OPEN_SHADOW_HISTORY_LIMIT:]
     journal["ranked_conversion_audits"] = [
         item for item in list(journal.get("ranked_conversion_audits") or []) if isinstance(item, dict)
-    ][-RANKED_CONVERSION_AUDIT_LIMIT:]
+    ]
+    compact_journal_diagnostics_v23(journal)
     journal["journal_version"] = JOURNAL_VERSION
     journal["migration"] = {
         "from_version": int(journal.get("journal_version_before_migration", 1) or 1),
@@ -7427,7 +7569,10 @@ def load_journal() -> dict[str, Any]:
     ][-DAILY_OPEN_SHADOW_HISTORY_LIMIT:]
     journal["ranked_conversion_audits"] = [
         item for item in list(journal.get("ranked_conversion_audits") or []) if isinstance(item, dict)
-    ][-RANKED_CONVERSION_AUDIT_LIMIT:]
+    ]
+    journal_compaction_report = compact_journal_diagnostics_v23(journal)
+    if journal_compaction_report.get("changed"):
+        atomic_json_write(JOURNAL_FILE, journal)
     journal["training_signals"] = [
         lean for item in list(journal.get("training_signals") or [])
         if isinstance(item, dict)
@@ -7559,7 +7704,8 @@ def save_journal(journal: dict[str, Any]) -> None:
     ][-DAILY_OPEN_SHADOW_HISTORY_LIMIT:]
     journal["ranked_conversion_audits"] = [
         item for item in list(journal.get("ranked_conversion_audits") or []) if isinstance(item, dict)
-    ][-RANKED_CONVERSION_AUDIT_LIMIT:]
+    ]
+    compact_journal_diagnostics_v23(journal)
     journal["retention_audit"] = {
         "journal_version": JOURNAL_VERSION,
         "signals": len(journal["signals"]),
@@ -7574,6 +7720,7 @@ def save_journal(journal: dict[str, Any]) -> None:
             "daily_open_shadow_experiments": DAILY_OPEN_SHADOW_HISTORY_LIMIT,
             "preconfirmation_events": PRECONFIRM_EMBEDDED_JOURNAL_LIMIT,
             "active_trade_shadow_scans": ACTIVE_TRADE_SHADOW_SCAN_LIMIT,
+            "setup_lifecycle_recent_runs": SETUP_LIFECYCLE_RECENT_RUN_LIMIT,
             "ranked_conversion_audits": RANKED_CONVERSION_AUDIT_LIMIT,
         },
     }
@@ -11481,18 +11628,213 @@ def setup_type_trade_statistics(journal: dict[str, Any], setup_type: str) -> dic
     }
 
 
+def _setup_type_side_trade_statistics(journal: dict[str, Any], setup_type: str, side: str) -> dict[str, Any]:
+    resolved: list[float] = []
+    records = 0
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        if str(trade.get("setup_type") or "") != str(setup_type or ""):
+            continue
+        if str(trade.get("side") or "").upper() != str(side or "").upper():
+            continue
+        records += 1
+        result_r = _journal_result_r(trade)
+        if result_r is not None:
+            resolved.append(float(result_r))
+    wins = sum(1 for value in resolved if value > 0)
+    return {
+        "side": str(side or "").upper(),
+        "total_records": records,
+        "closed_trades": len(resolved),
+        "wins": wins,
+        "win_rate": round((wins / len(resolved) * 100.0) if resolved else 0.0, 2),
+        "net_r": round(sum(resolved), 6),
+        "expectancy_r": round(mean(resolved), 6) if resolved else 0.0,
+        "training_rows": len(_quality_training_rows_filtered(journal, setup_type=str(setup_type or ""), side=str(side or "").upper())),
+    }
+
+
+def setup_type_side_calibration_audit(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
+    long_stats = _setup_type_side_trade_statistics(journal, setup_type, Side.LONG.value)
+    short_stats = _setup_type_side_trade_statistics(journal, setup_type, Side.SHORT.value)
+    enough_both = bool(
+        int(long_stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
+        and int(short_stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
+    )
+    expectancy_gap = abs(safe_float(long_stats.get("expectancy_r"), 0.0) - safe_float(short_stats.get("expectancy_r"), 0.0))
+    win_rate_gap = abs(safe_float(long_stats.get("win_rate"), 0.0) - safe_float(short_stats.get("win_rate"), 0.0))
+    material = bool(
+        enough_both and (
+            expectancy_gap >= SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R
+            or win_rate_gap >= SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP
+        )
+    )
+    return {
+        "long": long_stats,
+        "short": short_stats,
+        "both_sides_reviewable": enough_both,
+        "expectancy_gap_r": round(expectancy_gap, 6),
+        "win_rate_gap_pp": round(win_rate_gap, 4),
+        "material_side_divergence": material,
+        "pooled_learned_authority_safe": not material,
+        "minimum_trades_per_side_for_divergence_gate": SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES,
+        "expectancy_gap_gate_r": SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R,
+        "win_rate_gap_gate_pp": SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP,
+        "policy": "AUDIT_SIDES_SEPARATELY; MATERIAL_TWO_SIDED_DIVERGENCE_BLOCKS_POOLED_LEARNED_AUTHORITY_ONLY",
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+
+
+def _quality_probability_from_coefficients(coef: dict[str, float], features: dict[str, float]) -> float:
+    return clamp(_sigmoid(safe_float(coef.get("bias"), 0.0) + sum(
+        safe_float(coef.get(key), 0.0) * safe_float(features.get(key), 0.0)
+        for key in QUALITY_FEATURE_KEYS
+    )), 1e-5, 1.0 - 1e-5)
+
+
+def setup_type_out_of_sample_validation(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
+    """Expanding-window validation for hypothetical exact-setup learned influence.
+
+    Historical labels are never used to choose a validation window. Each OOS
+    prediction trains only on rows that appeared before that prediction. The
+    learned component is tested at the initial 30% blend before it can obtain
+    live authority. This gate validates the model, not the setup itself.
+    """
+    exact_setup = str(setup_type or "")
+    rows = _quality_training_rows_filtered(journal, setup_type=exact_setup)
+    family = next((
+        str(signal.get("setup_family") or "")
+        for signal in list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
+        if isinstance(signal, dict) and str(signal.get("setup_type") or "") == exact_setup
+    ), "")
+    family_default = DEFAULT_QUALITY_COEFFICIENTS.get(family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
+    n = len(rows)
+    if n < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
+        return {
+            "enabled": False, "authority_pass": False, "reason": "EXACT_SETUP_SAMPLE_BELOW_MINIMUM",
+            "sample_size": n, "minimum_sample_size": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+            "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+        }
+
+    trades = [trade for trade in journal.get("trades", []) or [] if isinstance(trade, dict)]
+    fingerprint = f"{len(trades)}:{trades[-1].get('id') if trades else ''}:{exact_setup}:{n}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
+    cache = journal.setdefault("_exact_setup_validation_cache", {})
+    cached = cache.get(exact_setup)
+    if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("report"), dict):
+        return dict(cached["report"])
+
+    validation_count = min(
+        max(SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS, int(math.ceil(n * 0.30))),
+        max(1, n - 12),
+    )
+    warmup = n - validation_count
+    train_rows = rows[:warmup]
+    validation_rows = rows[warmup:]
+    learned = _fit_logistic_coefficients(train_rows, family_default)
+    blended = _blend_coefficients(family_default, learned, SCORING_MODEL_INITIAL_LEARNED_WEIGHT)
+    labels = [int(label) for _features, label, _weight in validation_rows]
+    learned_probs = [_quality_probability_from_coefficients(blended, features) for features, _label, _weight in validation_rows]
+    bootstrap_probs = [_quality_probability_from_coefficients(family_default, features) for features, _label, _weight in validation_rows]
+
+    class_balance = len(set(labels)) >= 2
+    learned_auc = _preconfirm_auc(labels, learned_probs) if class_balance else None
+    bootstrap_auc = _preconfirm_auc(labels, bootstrap_probs) if class_balance else None
+    learned_brier = _preconfirm_brier(labels, learned_probs) if labels else None
+    bootstrap_brier = _preconfirm_brier(labels, bootstrap_probs) if labels else None
+    auc_pass = bool(learned_auc is not None and learned_auc >= SETUP_CALIBRATION_VALIDATION_MIN_AUC)
+    brier_pass = bool(learned_brier is not None and learned_brier <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER)
+    bootstrap_auc_pass = bool(
+        bootstrap_auc is None or learned_auc is None
+        or learned_auc + SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION >= bootstrap_auc
+    )
+    bootstrap_brier_pass = bool(
+        bootstrap_brier is None or learned_brier is None
+        or learned_brier <= bootstrap_brier + SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION
+    )
+    prediction_pass = len(labels) >= SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS
+    authority_pass = bool(prediction_pass and class_balance and auc_pass and brier_pass and bootstrap_auc_pass and bootstrap_brier_pass)
+    failed: list[str] = []
+    if not prediction_pass:
+        failed.append("OOS_PREDICTIONS_BELOW_MINIMUM")
+    if not class_balance:
+        failed.append("OOS_SINGLE_CLASS")
+    if not auc_pass:
+        failed.append("OOS_AUC_BELOW_GATE")
+    if not brier_pass:
+        failed.append("OOS_BRIER_ABOVE_GATE")
+    if not bootstrap_auc_pass:
+        failed.append("OOS_AUC_WORSE_THAN_BOOTSTRAP")
+    if not bootstrap_brier_pass:
+        failed.append("OOS_BRIER_WORSE_THAN_BOOTSTRAP")
+    report = {
+        "enabled": True,
+        "authority_pass": authority_pass,
+        "reason": "VALIDATED" if authority_pass else "VALIDATION_GATE_FAILED",
+        "failed_conditions": failed,
+        "sample_size": n,
+        "warmup_rows": warmup,
+        "oos_predictions": len(labels),
+        "oos_positive_labels": sum(labels),
+        "oos_negative_labels": len(labels) - sum(labels),
+        "learned_blend_weight_tested": SCORING_MODEL_INITIAL_LEARNED_WEIGHT,
+        "learned_auc": round(learned_auc, 6) if learned_auc is not None else None,
+        "bootstrap_auc": round(bootstrap_auc, 6) if bootstrap_auc is not None else None,
+        "learned_brier": round(learned_brier, 6) if learned_brier is not None else None,
+        "bootstrap_brier": round(bootstrap_brier, 6) if bootstrap_brier is not None else None,
+        "minimum_auc": SETUP_CALIBRATION_VALIDATION_MIN_AUC,
+        "maximum_brier": SETUP_CALIBRATION_VALIDATION_MAX_BRIER,
+        "maximum_auc_degradation_vs_bootstrap": SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION,
+        "maximum_brier_degradation_vs_bootstrap": SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION,
+        "chronological": True,
+        "label_selection_used": False,
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+    cache[exact_setup] = {"fingerprint": fingerprint, "report": dict(report)}
+    # Cache is small and diagnostic-only; bound it to named setups.
+    for key in list(cache):
+        if key not in _tracked_setup_types():
+            cache.pop(key, None)
+    return report
+
+
 def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
     rows = _quality_training_rows_filtered(journal, setup_type=str(setup_type or ""))
     stats = setup_type_trade_statistics(journal, setup_type)
     training_rows = len(rows)
-    calibrated = training_rows >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
+    sample_ready = training_rows >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
+    validation = setup_type_out_of_sample_validation(journal, setup_type) if sample_ready else {
+        "enabled": False, "authority_pass": False, "reason": "EXACT_SETUP_SAMPLE_BELOW_MINIMUM",
+        "sample_size": training_rows, "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+    side_audit = setup_type_side_calibration_audit(journal, setup_type)
+    validation_pass = bool(validation.get("authority_pass"))
+    side_pass = bool(side_audit.get("pooled_learned_authority_safe", True))
+    learned_authority = bool(sample_ready and validation_pass and side_pass)
+    if not sample_ready:
+        status = "INSUFFICIENT_EXACT_SETUP_SAMPLE"
+    elif not validation_pass and not side_pass:
+        status = "VALIDATION_FAILED_AND_SIDE_DIVERGENCE_BOOTSTRAP_ONLY"
+    elif not validation_pass:
+        status = "SAMPLE_READY_VALIDATION_FAILED_BOOTSTRAP_ONLY"
+    elif not side_pass:
+        status = "SIDE_DIVERGENCE_REQUIRES_DIRECTIONAL_REVIEW_BOOTSTRAP_ONLY"
+    else:
+        status = "VALIDATED_CALIBRATED"
     return {
         **stats,
         "training_rows": training_rows,
         "minimum_training_rows": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
-        "empirically_calibrated": calibrated,
-        "status": "CALIBRATED" if calibrated else "INSUFFICIENT_EXACT_SETUP_SAMPLE",
-        "schema_version": "exact_setup_calibration_v9.5.11",
+        "sample_ready": sample_ready,
+        "validation_pass": validation_pass,
+        "side_pooling_pass": side_pass,
+        "learned_authority_allowed": learned_authority,
+        "empirically_calibrated": learned_authority,
+        "status": status,
+        "out_of_sample_validation": validation,
+        "side_aware_audit": side_audit,
+        "policy": "N>=MIN_IS_NECESSARY_NOT_SUFFICIENT; OOS_VALIDATION_AND_SIDE_POOLING_GATE_LEARNED_AUTHORITY",
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
     }
 
 
@@ -11531,6 +11873,11 @@ def _quality_coefficients(
     # to a setup with fewer than 20-30 of its own closed feature-complete trades.
     if not exact_setup or len(exact_rows) < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
         return dict(family_default), "bootstrap:exact_setup_sample_below_minimum", len(exact_rows), 0.0
+
+    calibration_profile = setup_type_calibration_profile(journal, exact_setup)
+    if not calibration_profile.get("learned_authority_allowed"):
+        status = str(calibration_profile.get("status") or "VALIDATION_GATE_FAILED")
+        return dict(family_default), f"bootstrap:exact_setup_learned_authority_blocked:{status}", len(exact_rows), 0.0
 
     rows = exact_rows
     source = f"journal:setup:{exact_setup}"
@@ -17816,6 +18163,132 @@ def _conversion_primary_blocker(row: dict[str, Any]) -> str:
     return "NONE"
 
 
+def _ranked_audit_episode_keys(report: dict[str, Any]) -> list[str]:
+    explicit = [str(value) for value in (report.get("episode_keys") or []) if str(value)]
+    if explicit:
+        return list(dict.fromkeys(explicit))
+    source = list(report.get("independent_episode_rows") or []) or list(report.get("rows") or [])
+    return list(dict.fromkeys(
+        str(row.get("episode_key") or "") for row in source
+        if isinstance(row, dict) and str(row.get("episode_key") or "")
+    ))
+
+
+def _ranked_audit_summary_counts(rows: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int]]:
+    blockers: dict[str, int] = {}
+    setups: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        blocker = str(row.get("primary_blocker") or "NONE")
+        setup = str(row.get("setup_type") or "UNKNOWN")
+        blockers[blocker] = int(blockers.get(blocker) or 0) + 1
+        setups[setup] = int(setups.get(setup) or 0) + 1
+    return blockers, setups
+
+
+def compact_ranked_conversion_audit_for_journal(report: dict[str, Any], known_episode_keys: set[str]) -> dict[str, Any]:
+    """Persist full counterfactual rows only once per independent episode."""
+    if not isinstance(report, dict):
+        return {}
+    rows = [dict(row) for row in (report.get("rows") or []) if isinstance(row, dict)]
+    episode_keys = _ranked_audit_episode_keys(report)
+    new_keys = [key for key in episode_keys if key not in known_episode_keys]
+    new_key_set = set(new_keys)
+    blockers, setups = _ranked_audit_summary_counts(rows)
+    base = {
+        "time": str(report.get("time") or ""),
+        "top_n": int(report.get("top_n") or RANKED_CONVERSION_AUDIT_TOP_N),
+        "candidate_count": int(report.get("candidate_count") or 0),
+        "would_executable_count": int(report.get("would_executable_count") or 0),
+        "selected_count": int(report.get("selected_count") or 0),
+        "audit_only": True,
+        "can_open_trade": False,
+        "episode_keys": episode_keys,
+        "new_episode_keys": new_keys,
+        "repeat_episode_count": max(0, len(episode_keys) - len(new_keys)),
+        "primary_blocker_counts": blockers,
+        "setup_counts": setups,
+        "schema_version": RANKED_CONVERSION_AUDIT_SCHEMA_VERSION,
+    }
+    if new_keys:
+        full_rows = [row for row in rows if str(row.get("episode_key") or "") in new_key_set]
+        base.update({
+            "storage_mode": "FULL_NEW_INDEPENDENT_EPISODES",
+            "rows": full_rows,
+            "independent_episode_rows": [
+                row for row in (report.get("independent_episode_rows") or [])
+                if isinstance(row, dict) and str(row.get("episode_key") or "") in new_key_set
+            ],
+        })
+    else:
+        base["storage_mode"] = "REPEAT_SCAN_SUMMARY_ONLY"
+    return base
+
+
+def compact_ranked_conversion_audit_history(journal: dict[str, Any]) -> dict[str, Any]:
+    original = [row for row in (journal.get("ranked_conversion_audits") or []) if isinstance(row, dict)]
+    already_current = all(
+        str(row.get("schema_version") or "") == RANKED_CONVERSION_AUDIT_SCHEMA_VERSION
+        and str(row.get("storage_mode") or "") in {"FULL_NEW_INDEPENDENT_EPISODES", "REPEAT_SCAN_SUMMARY_ONLY"}
+        for row in original
+    )
+    if already_current:
+        retained = copy.deepcopy(original[-RANKED_CONVERSION_AUDIT_LIMIT:])
+        changed = original != retained
+        journal["ranked_conversion_audits"] = retained
+        return {
+            "changed": changed,
+            "before": len(original),
+            "after": len(retained),
+            "limit": RANKED_CONVERSION_AUDIT_LIMIT,
+            "full_new_episode_batches": sum(1 for row in retained if row.get("storage_mode") == "FULL_NEW_INDEPENDENT_EPISODES"),
+            "repeat_summary_batches": sum(1 for row in retained if row.get("storage_mode") == "REPEAT_SCAN_SUMMARY_ONLY"),
+            "already_current_schema": True,
+        }
+    seen: set[str] = set()
+    compacted: list[dict[str, Any]] = []
+    full_batches = 0
+    summary_batches = 0
+    for report in original:
+        compact = compact_ranked_conversion_audit_for_journal(report, seen)
+        if compact.get("storage_mode") == "FULL_NEW_INDEPENDENT_EPISODES":
+            full_batches += 1
+        else:
+            summary_batches += 1
+        compacted.append(compact)
+        seen.update(_ranked_audit_episode_keys(report))
+    retained = compacted[-RANKED_CONVERSION_AUDIT_LIMIT:]
+    changed = original != retained
+    journal["ranked_conversion_audits"] = retained
+    return {
+        "changed": changed,
+        "before": len(original),
+        "after": len(journal["ranked_conversion_audits"]),
+        "limit": RANKED_CONVERSION_AUDIT_LIMIT,
+        "full_new_episode_batches": full_batches,
+        "repeat_summary_batches": summary_batches,
+    }
+
+
+def compact_journal_diagnostics_v23(journal: dict[str, Any]) -> dict[str, Any]:
+    lifecycle = compact_setup_lifecycle_history(journal)
+    ranked = compact_ranked_conversion_audit_history(journal)
+    previous_schema = str((journal.get("journal_compaction") or {}).get("schema_version") or "")
+    report = {
+        "changed": bool(lifecycle.get("changed") or ranked.get("changed") or previous_schema != JOURNAL_COMPACTION_SCHEMA_VERSION),
+        "schema_version": JOURNAL_COMPACTION_SCHEMA_VERSION,
+        "lifecycle_recent_runs": lifecycle,
+        "ranked_conversion_audits": ranked,
+        "trades_preserved": len(journal.get("trades") or []),
+        "training_signals_preserved": len(journal.get("training_signals") or []),
+        "preconfirmation_events_preserved": len(journal.get("preconfirmation_events") or []),
+        "updated_at": iso_now(),
+    }
+    journal["journal_compaction"] = report
+    return report
+
+
 def ranked_top_n_conversion_audit(
     context: dict[str, Any],
     state: dict[str, Any],
@@ -17832,7 +18305,7 @@ def ranked_top_n_conversion_audit(
         return {
             "time": iso_now(), "top_n": RANKED_CONVERSION_AUDIT_TOP_N,
             "rows": [], "candidate_count": 0, "audit_only": True,
-            "schema_version": "ranked_conversion_audit_v9.5.19",
+            "schema_version": RANKED_CONVERSION_AUDIT_SCHEMA_VERSION,
         }
     best_score = safe_float(ranked[0].final_score, 0.0)
     final_candidate = getattr(final_decision, "candidate", None) if final_decision else None
@@ -17946,10 +18419,14 @@ def ranked_top_n_conversion_audit(
         "selected_count": sum(1 for row in rows if row.get("selected")),
         "audit_only": True,
         "can_open_trade": False,
-        "schema_version": "ranked_conversion_audit_v9.5.19",
+        "schema_version": RANKED_CONVERSION_AUDIT_SCHEMA_VERSION,
     }
     store = journal.setdefault("ranked_conversion_audits", [])
-    store.append(report)
+    known_episode_keys: set[str] = set()
+    for stored in store:
+        if isinstance(stored, dict):
+            known_episode_keys.update(_ranked_audit_episode_keys(stored))
+    store.append(compact_ranked_conversion_audit_for_journal(report, known_episode_keys))
     if len(store) > RANKED_CONVERSION_AUDIT_LIMIT:
         del store[:-RANKED_CONVERSION_AUDIT_LIMIT]
     record_daily_open_shadow_experiment(journal, rows)
@@ -25245,12 +25722,144 @@ def test_active_trade_state_recovers_legacy_regime_alias() -> bool:
     return bool(trade is not None and trade.opened_regime == Regime.RANGE.value)
 
 
+def test_journal_compaction_v2_bounds_recent_runs_and_keeps_aggregate() -> bool:
+    reach = {
+        "setup_type": SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+        "fired": False,
+        "blockers": ["range_compressed"],
+        "conditions": {"range_compressed": False, "live_trigger_ready": False},
+        "condition_applicability": {"range_compressed": True, "live_trigger_ready": False},
+        "margins": {"compression_atr": 3.5},
+        "diagnostics": {"reason_codes": ["NO_COMPRESSION"], "large_blob": "x" * 4000},
+    }
+    recent = []
+    for index in range(SETUP_LIFECYCLE_RECENT_RUN_LIMIT + 35):
+        recent.append({
+            "time": f"t{index}", "scan_mode": "LIVE", "detector_reachability": [reach],
+            "detected": [], "qualified_detected": [], "ranked": [], "decision_action": Action.NO_SETUP.value,
+        })
+    journal = {"setup_lifecycle_counters": {"recent_runs": recent, "detector_reachability": {"KEEP": {"evaluated": 999}}}}
+    report = compact_setup_lifecycle_history(journal)
+    rows = journal["setup_lifecycle_counters"]["recent_runs"]
+    return bool(
+        report.get("after") == SETUP_LIFECYCLE_RECENT_RUN_LIMIT
+        and len(rows) == SETUP_LIFECYCLE_RECENT_RUN_LIMIT
+        and all("detector_reachability" not in row for row in rows)
+        and all("detector_reachability_summary" in row for row in rows)
+        and journal["setup_lifecycle_counters"]["detector_reachability"]["KEEP"]["evaluated"] == 999
+    )
+
+
+def test_ranked_audit_retention_stores_repeat_scans_summary_only() -> bool:
+    base_row = {
+        "rank": 1, "side": Side.LONG.value, "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        "model_id": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "episode_key": "EP1",
+        "primary_blocker": "PLAN_NOT_EXECUTABLE", "counterfactual_plan": {"entry": 100, "stop": 99, "tp1": 102},
+    }
+    report = {
+        "time": iso_now(), "top_n": 5, "candidate_count": 1, "rows": [base_row],
+        "independent_episode_rows": [base_row], "would_executable_count": 0, "selected_count": 0,
+    }
+    first = compact_ranked_conversion_audit_for_journal(report, set())
+    second = compact_ranked_conversion_audit_for_journal(report, {"EP1"})
+    return bool(
+        first.get("storage_mode") == "FULL_NEW_INDEPENDENT_EPISODES"
+        and first.get("rows")
+        and second.get("storage_mode") == "REPEAT_SCAN_SUMMARY_ONLY"
+        and "rows" not in second
+        and second.get("repeat_episode_count") == 1
+    )
+
+
+def test_live_shadow_conversion_summaries_are_isolated() -> bool:
+    ledger = {
+        "independent_episode_totals": {SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"detected": 10, "ranked": 5, "entered": 2}},
+        "active_trade_shadow_independent_episode_totals": {SetupType.ACCEPTANCE_RETEST_CONTINUATION.value: {"detected": 20, "ranked": 12, "entered": 0}},
+    }
+    live = _episode_conversion_table(ledger["independent_episode_totals"])
+    shadow = _episode_conversion_table(ledger["active_trade_shadow_independent_episode_totals"])
+    ledger["live_independent_episode_conversion"] = live
+    ledger["shadow_independent_episode_conversion"] = shadow
+    ledger["independent_episode_conversion"] = copy.deepcopy(live)
+    return bool(
+        ledger["live_independent_episode_conversion"][SetupType.ACCEPTANCE_RETEST_CONTINUATION.value]["entered"] == 2
+        and ledger["shadow_independent_episode_conversion"][SetupType.ACCEPTANCE_RETEST_CONTINUATION.value]["entered"] == 0
+        and ledger["independent_episode_conversion"][SetupType.ACCEPTANCE_RETEST_CONTINUATION.value]["entered"] == 2
+    )
+
+
+def _synthetic_setup_calibration_journal(*, divergent_sides: bool = False) -> dict[str, Any]:
+    setup = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+    family = SetupFamily.CONTINUATION.value
+    trades = []
+    training = []
+    for index in range(30):
+        side = Side.LONG.value if index % 2 == 0 else Side.SHORT.value
+        signal_id = f"cal-{index}"
+        feature_value = index / 29.0
+        features = {key: 0.0 for key in QUALITY_FEATURE_KEYS}
+        features["loc"] = feature_value
+        features["trigger"] = 1.0
+        # Deliberately anti-generalizing labels: first history appears learnable,
+        # later OOS labels reverse the relation. Side divergence can be overlaid.
+        if divergent_sides:
+            pnl = 1.0 if side == Side.LONG.value else -1.0
+        else:
+            pnl = (1.0 if feature_value < 0.50 else -1.0) if index < 20 else (1.0 if feature_value > 0.50 else -1.0)
+        training.append({
+            "id": signal_id, "setup_type": setup, "setup_family": family, "side": side,
+            "features": features,
+        })
+        trades.append({
+            "id": f"trade-{index}", "signal_id": signal_id, "setup_type": setup,
+            "setup_family": family, "side": side, "pnl_r": pnl, "result_pct": pnl,
+            "tp1_hit": pnl > 0, "tp2_hit": False, "tp3_hit": False,
+        })
+    return {"trades": trades, "training_signals": training, "signals": []}
+
+
+def test_exact_setup_sample_no_longer_grants_unvalidated_learned_authority() -> bool:
+    journal = _synthetic_setup_calibration_journal(divergent_sides=False)
+    profile = setup_type_calibration_profile(journal, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    coef, source, sample, weight = _quality_coefficients(
+        journal, SetupFamily.CONTINUATION.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+    )
+    return bool(
+        sample >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
+        and profile.get("sample_ready") is True
+        and profile.get("validation_pass") is False
+        and profile.get("learned_authority_allowed") is False
+        and weight == 0.0
+        and str(source).startswith("bootstrap:exact_setup_learned_authority_blocked")
+        and coef == DEFAULT_QUALITY_COEFFICIENTS[SetupFamily.CONTINUATION.value]
+    )
+
+
+def test_side_aware_calibration_audit_blocks_material_pooled_divergence() -> bool:
+    journal = _synthetic_setup_calibration_journal(divergent_sides=True)
+    audit = setup_type_side_calibration_audit(journal, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    profile = setup_type_calibration_profile(journal, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    return bool(
+        audit.get("both_sides_reviewable") is True
+        and audit.get("material_side_divergence") is True
+        and audit.get("pooled_learned_authority_safe") is False
+        and profile.get("side_pooling_pass") is False
+        and profile.get("learned_authority_allowed") is False
+    )
+
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
 
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
+        ("v9.5.23 journal compaction bounds lifecycle recent runs", test_journal_compaction_v2_bounds_recent_runs_and_keeps_aggregate),
+        ("v9.5.23 ranked audit stores repeat episodes summary-only", test_ranked_audit_retention_stores_repeat_scans_summary_only),
+        ("v9.5.23 LIVE/SHADOW conversion summaries are isolated", test_live_shadow_conversion_summaries_are_isolated),
+        ("v9.5.23 exact setup requires OOS validation before learned authority", test_exact_setup_sample_no_longer_grants_unvalidated_learned_authority),
+        ("v9.5.23 side-aware audit blocks materially divergent pooled authority", test_side_aware_calibration_audit_blocks_material_pooled_divergence),
         ("v9.5.22 legacy compact regime is a controlled fallback", test_regime_lineage_reads_legacy_regime_fallback),
         ("v9.5.22 compact trade persists canonical opened_regime", test_compact_trade_persists_canonical_opened_regime),
         ("v9.5.22 canonical opened_regime wins lineage conflicts", test_regime_lineage_prefers_canonical_on_conflict),
