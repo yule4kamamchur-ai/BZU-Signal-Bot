@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.23 (Journal Compaction + Validated Exact Calibration)
+BZU Professional Hybrid Confluence Signal Bot v9.5.24 (Legacy Health + Dormant Detector Lineage)
 =============================================================================================
+Оновлення v9.5.24:
+- execution_path_health розділяє lineage-aware current unsupported execution і legacy unversioned debt; старі липневі records більше не роблять сучасний runtime фальшиво CRITICAL.
+- SMT lineage виправлено end-to-end: smt_candles проходять collect_market_data -> build_context -> detect_candidates; legacy WTI-USDT-SWAP alias резолвиться в актуальний OKX CL-USDT-SWAP.
+- SWEEP_RECLAIM / RANGE_EDGE_REVERSAL більше не вважають persistent scan source=LIQUIDITY_SWEEP доказом raw sweep; raw sweep детектується з фактичної bilateral 15M liquidity geometry.
+- Sweep execution отримав model-local 3M confirmation від реального sweep reference, а SMT audit розрізняє DATA_UNAVAILABLE і реально несумісну divergence.
+- RANGE_COMPRESSION_BREAKOUT використовує strict 1.60 ATR або вже існуючий RANGE_COMPRESSION context до 2.30 ATR, але лише з явним directional breakout + displacement + fresh trigger.
+- Predicate schema bumped, щоб старі семантично хибні raw_sweep/compression counters не змішувалися з новим audit.
+- Canonical score 68/75, institutional sweep threshold 0.85, HTF, TP/SL, risk constants і calibration gates не послаблені.
 Оновлення v9.5.23:
 - Journal Compaction v2: setup lifecycle recent_runs обмежено 100 записами; per-run detector reachability зберігається як lean summary, повна статистика лишається в aggregate ledger.
 - Ranked top-N audit retention зменшено до 180 batches; повні candidate rows зберігаються лише для нових independent episode keys, повторні scans стають summary-only.
@@ -260,8 +268,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.23-journal-compaction-validated-exact-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_23_JOURNAL_COMPACTION_VALIDATED_EXACT_CALIBRATION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.24-legacy-health-dormant-detector-lineage"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_24_LEGACY_HEALTH_DORMANT_DETECTOR_LINEAGE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -270,7 +278,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 OKX_BASE_URL = "https://www.okx.com/api/v5/market"
 TRADINGVIEW_SCAN_URL = "https://scanner.tradingview.com/crypto/scan"
 OKX_INST_ID = os.getenv("OKX_INST_ID", "BZ-USDT-SWAP")
-SMT_ASSET_ID = os.getenv("SMT_ASSET_ID", "WTI-USDT-SWAP") # Корелюючий OKX crypto-proxy своп для SMT
+# v9.5.24: OKX exposes its WTI commodity perpetual as CL-USDT-SWAP.
+# Preserve legacy deployments that still export WTI-USDT-SWAP, but resolve that
+# historical alias before any market-data request.
+SMT_ASSET_ID_CONFIGURED = str(os.getenv("SMT_ASSET_ID", "CL-USDT-SWAP") or "CL-USDT-SWAP").strip().upper()
+SMT_ASSET_ID_ALIASES = {"WTI-USDT-SWAP": "CL-USDT-SWAP"}
+SMT_ASSET_ID = SMT_ASSET_ID_ALIASES.get(SMT_ASSET_ID_CONFIGURED, SMT_ASSET_ID_CONFIGURED)
+SMT_ASSET_ALIAS_APPLIED = SMT_ASSET_ID != SMT_ASSET_ID_CONFIGURED
 INSTRUMENT_LABEL = os.getenv("INSTRUMENT_LABEL", f"{OKX_INST_ID} crypto Brent proxy")
 INSTRUMENT_KIND = os.getenv("INSTRUMENT_KIND", "OKX crypto perpetual swap proxy, not ICE/CME oil futures")
 JOURNAL_PERSISTENCE_CONFIRMED = os.getenv("JOURNAL_PERSISTENCE_CONFIRMED", "").lower() in {"1", "true", "yes"}
@@ -404,7 +418,7 @@ DAILY_OPEN_SHADOW_HORIZON_HOURS = max(4.0, float(os.getenv("DAILY_OPEN_SHADOW_HO
 DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT = min(0.05, max(0.005, float(os.getenv("DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT", "0.03") or 0.03)))
 DAILY_OPEN_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("DAILY_OPEN_SHADOW_HISTORY_LIMIT", "500") or 500))
 SETUP_EPISODE_SCHEMA_VERSION = "setup_episode_registry_v9.5.20_canonical_stage_identity"
-DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.21_sweep_ladder_semantics"
+DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.24_real_sweep_smt_compression_breakout"
 ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_score_lineage"
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
@@ -420,6 +434,14 @@ SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES = max(6, int(os.getenv("SETUP_CALIBRATIO
 SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R = max(0.05, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R", "0.20") or 0.20))
 SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP = max(5.0, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP", "15") or 15))
 INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD = 0.85
+EXECUTION_PATH_HEALTH_SCHEMA_VERSION = "execution_path_health_v9.5.24_lineage_scoped"
+INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR = 0.04
+RANGE_COMPRESSION_STRICT_MAX_ATR = 1.60
+# 2.30 is not a new free-standing threshold: detect_regime_engine_2 already uses
+# it to define RANGE_COMPRESSION. The wider band is legal only when that
+# independent regime context agrees and the market actually breaks the prior range.
+RANGE_COMPRESSION_CONTEXT_MAX_ATR = 2.30
+RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR = 0.03
 TP0_PROTECT_RATCHET_EVIDENCE_LIMIT = max(20, int(os.getenv("TP0_PROTECT_RATCHET_EVIDENCE_LIMIT", "80") or 80))
 TP0_PROTECT_MIN_RATCHET_STEP_R = max(0.02, float(os.getenv("TP0_PROTECT_MIN_RATCHET_STEP_R", "0.10") or 0.10))
 TP0_PROTECT_PRICE_BUFFER_DOLLARS = max(0.001, float(os.getenv("TP0_PROTECT_PRICE_BUFFER_DOLLARS", "0.02") or 0.02))
@@ -843,6 +865,10 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Journal Compaction v2 lifecycle retention hard cap exceeded")
     if RANKED_CONVERSION_AUDIT_LIMIT > 200:
         errors.append("Journal Compaction v2 ranked-audit retention hard cap exceeded")
+    if not (0 < RANGE_COMPRESSION_STRICT_MAX_ATR <= RANGE_COMPRESSION_CONTEXT_MAX_ATR <= 2.30):
+        errors.append("Range-compression thresholds must satisfy 0 < strict <= contextual <= 2.30 ATR")
+    if not (0.0 < INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR <= 0.25):
+        errors.append("Institutional sweep minimum depth is outside safe range")
     if SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS < 8:
         errors.append("Exact-setup validation requires at least 8 OOS predictions")
     if not (0.50 <= SETUP_CALIBRATION_VALIDATION_MIN_AUC <= 0.80):
@@ -2070,7 +2096,7 @@ def migrate_predicate_reachability_schema(journal: dict[str, Any]) -> dict[str, 
             "path_true_counts": json_safe(row.get("path_true_counts") or {}),
             "path_observation_counts": json_safe(row.get("path_observation_counts") or {}),
             "saturated_predicates": list(row.get("saturated_predicates") or []),
-            "reason": "PREDICATE_SEMANTICS_CHANGED; LEGACY_FALSE_COUNTS_CANNOT_BE_RECLASSIFIED_AS_FALSE_VS_NOT_APPLICABLE; SWEEP_RAW_PREREQUISITE_AND_LADDER_RAW_TRIGGER_ARE_SEPARATED",
+            "reason": "PREDICATE_SEMANTICS_CHANGED; V9_5_24_REPLACES_SCAN_SOURCE_RAW_SWEEP_WITH_REAL_15M_GEOMETRY, RESTORES_SMT_LINEAGE, AND ADDS_DIRECTIONAL_RANGE_COMPRESSION_BREAKOUT",
         }
         archives = row.setdefault("predicate_schema_archives", [])
         archives.append(legacy_snapshot)
@@ -6064,6 +6090,23 @@ def _signal_execution_path(signal: Optional[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _execution_path_lineage_version(trade: dict[str, Any], signal: Optional[dict[str, Any]]) -> str:
+    """Best available version lineage for an executed trade.
+
+    Very old compact rows predate bot_version_at_entry/bot_version_at_signal.
+    Those rows remain useful historical evidence, but they cannot prove a
+    defect in the current architecture and therefore must not trigger a current
+    CRITICAL health state.
+    """
+    signal = signal or {}
+    return str(
+        trade.get("bot_version_at_entry")
+        or signal.get("bot_version_at_signal")
+        or signal.get("bot_version")
+        or ""
+    ).strip()
+
+
 def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
     signals = {
         str(s.get("id")): s
@@ -6071,8 +6114,11 @@ def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
         if isinstance(s, dict) and s.get("id")
     }
     counts = {"STANDARD": 0, "REVALIDATION": 0, "INNOVATION_FALLBACK": 0, "UNKNOWN": 0}
-    unsupported: list[dict[str, Any]] = []
+    current_unsupported: list[dict[str, Any]] = []
+    versioned_historical_unsupported: list[dict[str, Any]] = []
+    legacy_unversioned_unsupported: list[dict[str, Any]] = []
     by_setup: dict[str, dict[str, int]] = {}
+    current_version_trades = 0
 
     trades = [t for t in journal.get("trades", []) or [] if isinstance(t, dict)]
     for trade in trades:
@@ -6091,21 +6137,38 @@ def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
             row["standard"] += 1
         elif category in {"REVALIDATION", "INNOVATION_FALLBACK"}:
             row["fallback"] += 1
+
+        lineage_version = _execution_path_lineage_version(trade, signal)
+        is_current_version = bool(lineage_version and lineage_version == BOT_VERSION)
+        if is_current_version:
+            current_version_trades += 1
         if profile.get("unsupported_execution"):
-            unsupported.append({
+            evidence = {
                 "trade_id": trade.get("id"),
                 "signal_id": trade.get("signal_id"),
                 "setup_type": setup,
                 "innovation_primary": profile.get("primary"),
-            })
+                "bot_version_at_entry": lineage_version or None,
+                "lineage_scope": (
+                    "CURRENT_VERSION" if is_current_version
+                    else "VERSIONED_HISTORICAL" if lineage_version
+                    else "LEGACY_UNVERSIONED"
+                ),
+            }
+            if is_current_version:
+                current_unsupported.append(evidence)
+            elif lineage_version:
+                versioned_historical_unsupported.append(evidence)
+            else:
+                legacy_unversioned_unsupported.append(evidence)
 
     total = len(trades)
     fallback_count = counts.get("REVALIDATION", 0) + counts.get("INNOVATION_FALLBACK", 0)
     fallback_pct = round(100.0 * fallback_count / total, 2) if total else 0.0
     standard_pct = round(100.0 * counts.get("STANDARD", 0) / total, 2) if total else 0.0
-    if unsupported:
+    if current_unsupported:
         health = "CRITICAL"
-        reason = "executable trade detected while entry_supported=false"
+        reason = "current-version executable trade detected while entry_supported=false"
     elif total and fallback_pct >= 100.0:
         health = "CRITICAL"
         reason = "all closed trades depend on revalidation/innovation"
@@ -6116,17 +6179,28 @@ def compute_execution_path_health(journal: dict[str, Any]) -> dict[str, Any]:
         health = "OK" if total else "NO_DATA"
         reason = "execution paths are diversified" if total else "no closed trades"
 
+    historical_debt = versioned_historical_unsupported + legacy_unversioned_unsupported
     return {
         "closed_trades": total,
+        "current_version_closed_trades": current_version_trades,
         "counts": counts,
         "standard_pct": standard_pct,
         "revalidation_or_innovation_pct": fallback_pct,
-        "unsupported_execution_count": len(unsupported),
-        "unsupported_executions": unsupported[-20:],
+        # Compatibility name now deliberately means actionable/current health.
+        "unsupported_execution_count": len(current_unsupported),
+        "unsupported_executions": current_unsupported[-20:],
+        "versioned_historical_unsupported_count": len(versioned_historical_unsupported),
+        "versioned_historical_unsupported_executions": versioned_historical_unsupported[-20:],
+        "legacy_unversioned_unsupported_count": len(legacy_unversioned_unsupported),
+        "legacy_unversioned_unsupported_executions": legacy_unversioned_unsupported[-20:],
+        "unsupported_execution_total_including_historical": len(current_unsupported) + len(historical_debt),
+        "historical_debt_present": bool(historical_debt),
+        "historical_debt_is_current_health_authority": False,
         "by_setup_type": by_setup,
         "health": health,
         "reason": reason,
-        "definition": "closed trades joined to originating signal_id; fallback = REVALIDATION or non-standard INNOVATION primary",
+        "definition": "current CRITICAL unsupported execution requires current bot-version lineage; legacy/unversioned debt is reported separately",
+        "schema_version": EXECUTION_PATH_HEALTH_SCHEMA_VERSION,
         "updated_at": iso_now(),
     }
 
@@ -6625,11 +6699,46 @@ def compute_institutional_sweep_predicate_audit(journal: dict[str, Any]) -> dict
             "note": "This is a diagnostic implication of the existing formula; live threshold and multipliers are unchanged.",
         },
         "range_edge_raw_sweep_prerequisite_is_explicit": True,
+        "raw_sweep_contract": "CONFIRMED_15M_DIRECTIONAL_POOL_SWEEP_NOT_SCAN_SOURCE_METADATA",
+        "smt_contract": {
+            "configured_instrument": SMT_ASSET_ID_CONFIGURED,
+            "resolved_instrument": SMT_ASSET_ID,
+            "legacy_alias_applied": SMT_ASSET_ALIAS_APPLIED,
+            "data_lineage": "collect_market_data.smt_candles -> build_context.smt_candles -> timestamp-aligned SMT profile",
+        },
         "authority": "AUDIT_ONLY_NO_THRESHOLD_MUTATION",
-        "schema_version": "institutional_sweep_predicate_audit_v9.5.21",
+        "schema_version": "institutional_sweep_predicate_audit_v9.5.24_real_evidence_lineage",
         "updated_at": iso_now(),
     }
 
+
+
+def compute_range_compression_predicate_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    row = dict(((((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {}).get(SetupType.RANGE_COMPRESSION_BREAKOUT.value) or {}))
+    last = dict(row.get("last_observation") or {})
+    diagnostics = dict((last.get("diagnostics") or {}).get("compression_profile") or {})
+    return {
+        "current_schema_evaluated": int(row.get("current_schema_evaluated") or 0),
+        "current_schema_fired": int(row.get("current_schema_fired") or 0),
+        "conditions": _reachability_rate_summary(row),
+        "current_schema_blocker_counts": dict(row.get("current_schema_blocker_counts") or {}),
+        "margin_statistics": dict(row.get("margin_statistics") or {}),
+        "health_status": str(row.get("health_status") or "OBSERVING"),
+        "predicate_schema_version": str(row.get("predicate_schema_version") or ""),
+        "last_compression_profile": diagnostics,
+        "contract": {
+            "strict_max_atr": RANGE_COMPRESSION_STRICT_MAX_ATR,
+            "context_max_atr": RANGE_COMPRESSION_CONTEXT_MAX_ATR,
+            "contextual_band_requires_regime_engine": "RANGE_COMPRESSION",
+            "directional_breakout_required": True,
+            "strong_displacement_required": True,
+            "fresh_trigger_required": True,
+            "threshold_fitted_from_dormant_sample": False,
+        },
+        "authority": "AUDIT_ONLY_SUMMARY_OF_LIVE_DETECTOR",
+        "schema_version": "range_compression_predicate_audit_v9.5.24",
+        "updated_at": iso_now(),
+    }
 
 def compute_liquidity_ladder_execution_audit(journal: dict[str, Any]) -> dict[str, Any]:
     """Summarize route geometry separately from raw and selected execution facts."""
@@ -7543,7 +7652,7 @@ def load_journal() -> dict[str, Any]:
     predicate_schema_report = migrate_predicate_reachability_schema(journal)
     if regime_lineage_report.get("changed") or episode_schema_report.get("changed") or predicate_schema_report.get("changed"):
         journal.setdefault("migration", {}).update({
-            "mode": "V9_5_22_REGIME_LINEAGE_WITH_EXISTING_EPISODE_PREDICATE_MIGRATIONS",
+            "mode": "V9_5_24_REGIME_LINEAGE_EPISODE_AND_PREDICATE_SCHEMA_MIGRATIONS",
             "trade_regime_lineage_migration": regime_lineage_report,
             "setup_episode_identity_migration": episode_schema_report,
             "predicate_schema_migration": predicate_schema_report,
@@ -8372,35 +8481,78 @@ def identify_liquidity_and_range(candles: list[Candle], left_bars: int = 5, righ
         "eq": eq,
     }
 
-def detect_smt_divergence(asset_candles: list[Candle], smt_candles: list[Candle]) -> str:
-    """Шукає SMT-розбіжності між OKX crypto-proxy свопами, не між ICE/CME futures."""
-    if len(asset_candles) < 20 or len(smt_candles) < 20:
-        return Side.NEUTRAL.value
-        
-    asset_lows = [c.low for c in asset_candles[-10:]]
-    smt_lows = [c.low for c in smt_candles[-10:]]
-    asset_highs = [c.high for c in asset_candles[-10:]]
-    smt_highs = [c.high for c in smt_candles[-10:]]
-    
+def detect_smt_divergence_profile(asset_candles: list[Candle], smt_candles: list[Candle]) -> dict[str, Any]:
+    """Timestamp-aligned SMT profile for the BZ/WTI commodity-proxy pair.
+
+    A missing feed is not the same fact as a neutral divergence. The old
+    implementation collapsed both cases to NEUTRAL, which made the sweep audit
+    blame market structure when SMT candles had actually disappeared upstream.
+    """
+    asset = [c for c in asset_candles if getattr(c, "confirmed", True)]
+    smt = [c for c in smt_candles if getattr(c, "confirmed", True)]
+    if len(asset) < 20 or len(smt) < 20:
+        return {
+            "bias": Side.NEUTRAL.value,
+            "data_available": False,
+            "aligned_candles": 0,
+            "asset_candles": len(asset),
+            "smt_candles": len(smt),
+            "reason": "INSUFFICIENT_SOURCE_CANDLES",
+            "schema_version": "smt_profile_v9.5.24_timestamp_aligned",
+        }
+
+    asset_by_ts = {int(c.ts): c for c in asset}
+    smt_by_ts = {int(c.ts): c for c in smt}
+    common_ts = sorted(set(asset_by_ts).intersection(smt_by_ts))
+    aligned = [(asset_by_ts[ts], smt_by_ts[ts]) for ts in common_ts]
+    if len(aligned) < 20:
+        return {
+            "bias": Side.NEUTRAL.value,
+            "data_available": False,
+            "aligned_candles": len(aligned),
+            "asset_candles": len(asset),
+            "smt_candles": len(smt),
+            "reason": "INSUFFICIENT_TIMESTAMP_ALIGNMENT",
+            "schema_version": "smt_profile_v9.5.24_timestamp_aligned",
+        }
+
+    recent = aligned[-10:]
+    asset_recent = [pair[0] for pair in recent]
+    smt_recent = [pair[1] for pair in recent]
+    asset_lows = [c.low for c in asset_recent]
+    smt_lows = [c.low for c in smt_recent]
+    asset_highs = [c.high for c in asset_recent]
+    smt_highs = [c.high for c in smt_recent]
+
     asset_current_low = min(asset_lows[-3:])
     asset_prev_low = min(asset_lows[:-3])
     smt_current_low = min(smt_lows[-3:])
     smt_prev_low = min(smt_lows[:-3])
-    
-    # Bullish SMT
     if smt_current_low < smt_prev_low and asset_current_low >= asset_prev_low:
-        return Side.LONG.value
-        
-    asset_current_high = max(asset_highs[-3:])
-    asset_prev_high = max(asset_highs[:-3])
-    smt_current_high = max(smt_highs[-3:])
-    smt_prev_high = max(smt_highs[:-3])
-    
-    # Bearish SMT
-    if smt_current_high > smt_prev_high and asset_current_high <= asset_prev_high:
-        return Side.SHORT.value
-        
-    return Side.NEUTRAL.value
+        bias = Side.LONG.value
+        reason = "BULLISH_SMT_DIVERGENCE"
+    else:
+        asset_current_high = max(asset_highs[-3:])
+        asset_prev_high = max(asset_highs[:-3])
+        smt_current_high = max(smt_highs[-3:])
+        smt_prev_high = max(smt_highs[:-3])
+        if smt_current_high > smt_prev_high and asset_current_high <= asset_prev_high:
+            bias = Side.SHORT.value
+            reason = "BEARISH_SMT_DIVERGENCE"
+        else:
+            bias = Side.NEUTRAL.value
+            reason = "NO_DIVERGENCE"
+
+    return {
+        "bias": bias,
+        "data_available": True,
+        "aligned_candles": len(aligned),
+        "asset_candles": len(asset),
+        "smt_candles": len(smt),
+        "latest_aligned_ts": common_ts[-1] if common_ts else 0,
+        "reason": reason,
+        "schema_version": "smt_profile_v9.5.24_timestamp_aligned",
+    }
 
 
 # ==========================================================
@@ -8556,6 +8708,8 @@ def collect_market_data() -> dict:
         "instrument_label": INSTRUMENT_LABEL,
         "instrument_kind": INSTRUMENT_KIND,
         "smt_instrument": SMT_ASSET_ID,
+        "smt_instrument_configured": SMT_ASSET_ID_CONFIGURED,
+        "smt_instrument_alias_applied": SMT_ASSET_ALIAS_APPLIED,
         "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
         "smt_candles": {"15m": smt_c15},
         "ticker": ticker,
@@ -9256,6 +9410,9 @@ def build_context(data: dict, state: dict, journal: Optional[dict[str, Any]] = N
         "instrument_label": data.get("instrument_label", INSTRUMENT_LABEL),
         "instrument_kind": data.get("instrument_kind", INSTRUMENT_KIND),
         "smt_instrument": data.get("smt_instrument", SMT_ASSET_ID),
+        "smt_instrument_configured": data.get("smt_instrument_configured", SMT_ASSET_ID_CONFIGURED),
+        "smt_instrument_alias_applied": bool(data.get("smt_instrument_alias_applied", SMT_ASSET_ALIAS_APPLIED)),
+        "smt_candles": data.get("smt_candles", {}) or {},
         "regime": regime,
         "regime_reason": regime_reason,
         "adaptive_regime": regime,
@@ -9457,7 +9614,7 @@ def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
     
     for side in [Side.LONG.value, Side.SHORT.value]:
         event = events.get(side, {
-            "side": side, "stage": "SWEEP", "source": "LIQUIDITY_SWEEP",
+            "side": side, "stage": "SWEEP", "source": "SCAN_3M_CHAIN",
             "event_ts": 0, "last_event_ts": 0, "trigger_level": context["price"],
             "event_price": context["price"], "invalidation_level": context["price"],
             "sweep_level": context["price"], "extreme": context["price"],
@@ -13695,6 +13852,123 @@ def _candle_shape(candle: Candle) -> dict[str, float]:
     }
 
 
+
+def detect_directional_liquidity_sweep_profile(
+    candles: list[Candle],
+    side: str,
+    price: float,
+    atr15: float,
+) -> dict[str, Any]:
+    """Bilateral raw-liquidity-sweep fact derived from actual 15M candles.
+
+    This is deliberately separate from the persistent 3M scan state. A scan
+    object's source label is metadata, not proof that price actually swept a
+    prior BSL/SSL pool. The last four confirmed 15M bars are compared with the
+    preceding reference window, mirroring the already-live SHORT sweep detector.
+    """
+    side = str(side or "").upper()
+    confirmed = _confirmed_candles(candles, 28)
+    if side not in {Side.LONG.value, Side.SHORT.value} or len(confirmed) < 14 or atr15 <= 0:
+        return {
+            "raw_sweep": False, "reclaim": False, "rejection": False,
+            "directional_followthrough": False, "reason": "NOT_ENOUGH_DATA",
+            "schema_version": "directional_sweep_v9.5.24_real_15m_geometry",
+        }
+
+    reference_window = confirmed[-20:-4]
+    signal_window = confirmed[-4:]
+    if side == Side.LONG.value:
+        reference_level = min(c.low for c in reference_window)
+        sweep_idx, sweep_candle = min(enumerate(signal_window), key=lambda item: item[1].low)
+        sweep_extreme = sweep_candle.low
+        sweep_depth_atr = max(0.0, (reference_level - sweep_extreme) / max(atr15, 1e-9))
+        closes_after = signal_window[sweep_idx:]
+        reclaim = any(c.close > reference_level - atr15 * 0.03 for c in closes_after)
+        directional_followthrough = bool(
+            signal_window[-1].close > signal_window[-1].open
+            or signal_window[-1].close > signal_window[-2].close
+            or sum(1 for c in signal_window[-3:] if c.close > c.open) >= 2
+        )
+        shape = _candle_shape(sweep_candle)
+        rejection = bool(
+            shape["lower_wick_ratio"] >= 0.32
+            or sweep_candle.close > sweep_candle.low + shape["range"] * 0.55
+        )
+        not_chasing = (price - reference_level) / max(atr15, 1e-9) <= 1.35
+        pool_kind = "SSL"
+    else:
+        reference_level = max(c.high for c in reference_window)
+        sweep_idx, sweep_candle = max(enumerate(signal_window), key=lambda item: item[1].high)
+        sweep_extreme = sweep_candle.high
+        sweep_depth_atr = max(0.0, (sweep_extreme - reference_level) / max(atr15, 1e-9))
+        closes_after = signal_window[sweep_idx:]
+        reclaim = any(c.close < reference_level + atr15 * 0.03 for c in closes_after)
+        directional_followthrough = bool(
+            signal_window[-1].close < signal_window[-1].open
+            or signal_window[-1].close < signal_window[-2].close
+            or sum(1 for c in signal_window[-3:] if c.close < c.open) >= 2
+        )
+        shape = _candle_shape(sweep_candle)
+        rejection = bool(
+            shape["upper_wick_ratio"] >= 0.32
+            or sweep_candle.close < sweep_candle.high - shape["range"] * 0.55
+        )
+        not_chasing = (reference_level - price) / max(atr15, 1e-9) <= 1.35
+        pool_kind = "BSL"
+
+    raw_sweep = bool(sweep_depth_atr >= INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR)
+    sweep_age_bars = max(0, len(signal_window) - 1 - int(sweep_idx))
+    return {
+        "raw_sweep": raw_sweep,
+        "side": side,
+        "pool_kind": pool_kind,
+        "reference_level": round_price(reference_level),
+        "sweep_extreme": round_price(sweep_extreme),
+        "sweep_depth_atr": round(sweep_depth_atr, 6),
+        "minimum_sweep_depth_atr": INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR,
+        "sweep_age_15m_bars": sweep_age_bars,
+        "reclaim": bool(reclaim),
+        "rejection": bool(rejection),
+        "directional_followthrough": bool(directional_followthrough),
+        "not_chasing": bool(not_chasing),
+        "sweep_candle_ts": int(getattr(sweep_candle, "ts", 0) or 0),
+        "reason": "RAW_SWEEP_DETECTED" if raw_sweep else "NO_DIRECTIONAL_POOL_SWEEP",
+        "schema_version": "directional_sweep_v9.5.24_real_15m_geometry",
+    }
+
+
+def sweep_model_local_execution_profile(
+    c3: list[Candle],
+    side: str,
+    atr15: float,
+    sweep_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Fresh 3M confirmation tied to the actual sweep reference level."""
+    sweep_profile = dict(sweep_profile or {})
+    reference = safe_float(sweep_profile.get("reference_level"), 0.0)
+    recent3 = _confirmed_candles(c3, 15)
+    if not sweep_profile.get("raw_sweep") or not sweep_profile.get("reclaim") or reference <= 0 or len(recent3) < 5:
+        return {
+            "ready": False,
+            "reference_level": round_price(reference) if reference else 0.0,
+            "reason": "RAW_SWEEP_RECLAIM_OR_3M_DATA_MISSING",
+            "schema_version": "sweep_execution_v9.5.24_model_local_3m",
+        }
+    snap = trigger_snapshot(recent3, side, reference, atr15)
+    ready = bool(snap.get("ready"))
+    return {
+        "ready": ready,
+        "reference_level": round_price(reference),
+        "trigger_quality": int(safe_float(snap.get("quality"), 0.0)),
+        "reclaim": bool(snap.get("reclaim")),
+        "displacement": bool(snap.get("displacement")),
+        "strong_displacement": bool(snap.get("strong_displacement")),
+        "retest": bool(snap.get("retest")),
+        "last_confirmed_3m_ts": int(recent3[-1].ts),
+        "reason": "FRESH_3M_SWEEP_CONFIRMATION" if ready else "WAIT_FRESH_3M_SWEEP_CONFIRMATION",
+        "schema_version": "sweep_execution_v9.5.24_model_local_3m",
+    }
+
 def detect_short_liquidity_sweep_reversal(
     candles: list[Candle],
     price: float,
@@ -14432,6 +14706,7 @@ def institutional_sweep_validation_profile(
     cvd: dict[str, Any],
     regime: str,
     session_profile: dict[str, Any],
+    smt_profile: Optional[dict[str, Any]] = None,
     *,
     threshold: float = INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
 ) -> dict[str, Any]:
@@ -14446,8 +14721,11 @@ def institutional_sweep_validation_profile(
     event = dict(event or {})
     cvd = dict(cvd or {})
     session_profile = dict(session_profile or {})
+    smt_profile = dict(smt_profile or {})
     threshold = safe_float(threshold, INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD)
-    is_raw_sweep = str(event.get("source") or "") == "LIQUIDITY_SWEEP"
+    raw_sweep_explicit = "raw_sweep" in event
+    is_raw_sweep = bool(event.get("raw_sweep")) if raw_sweep_explicit else str(event.get("source") or "") == "LIQUIDITY_SWEEP"
+    raw_sweep_source = "EXPLICIT_REAL_GEOMETRY" if raw_sweep_explicit else "LEGACY_SOURCE_FALLBACK"
     in_chop = bool((session_profile.get("chop_zone") or {}).get("active", False))
     strict_environment = bool(regime in (Regime.RANGE.value, Regime.TRANSITION.value) or in_chop)
 
@@ -14478,7 +14756,8 @@ def institutional_sweep_validation_profile(
         topology_weight = 0.3
         nearest_any_atr = nearest_directional_atr = nearest_opposite_atr = 999.0
 
-    has_smt_support = bool(str(smt_bias or "").upper() == side)
+    smt_data_available = bool(smt_profile.get("data_available", True))
+    has_smt_support = bool(smt_data_available and str(smt_bias or "").upper() == side)
     has_cvd_absorption = bool(str(cvd.get("bias") or "").upper() == side and safe_float(cvd.get("strength"), 0.0) > 0.0)
     smt_multiplier = 1.4 if has_smt_support else 0.7
     cvd_multiplier = SYNTHETIC_CVD_ABSORPTION_POS_MULT if has_cvd_absorption else SYNTHETIC_CVD_ABSORPTION_NEG_MULT
@@ -14523,10 +14802,11 @@ def institutional_sweep_validation_profile(
         if not has_cvd_absorption:
             reason_codes.append("CVD_ABSORPTION_NOT_SUPPORTIVE")
         if not has_smt_support:
-            reason_codes.append("SMT_NOT_SUPPORTIVE")
+            reason_codes.append("SMT_NOT_SUPPORTIVE" if smt_data_available else "SMT_DATA_UNAVAILABLE")
 
     return {
         "raw_sweep": is_raw_sweep,
+        "raw_sweep_source": raw_sweep_source,
         "valid": valid,
         "quality": float(quality),
         "live_score_multiplier": float(live_score_multiplier),
@@ -14545,7 +14825,9 @@ def institutional_sweep_validation_profile(
         "nearest_directional_pool_distance_atr": round(nearest_directional_atr, 6),
         "nearest_opposite_pool_distance_atr": round(nearest_opposite_atr, 6),
         "smt_support": has_smt_support,
+        "smt_data_available": smt_data_available,
         "smt_bias": str(smt_bias or Side.NEUTRAL.value),
+        "smt_profile": json_safe(smt_profile),
         "smt_multiplier": round(smt_multiplier, 6),
         "cvd_absorption_support": has_cvd_absorption,
         "cvd_bias": str(cvd.get("bias") or "NEUTRAL"),
@@ -14560,7 +14842,96 @@ def institutional_sweep_validation_profile(
         "reason_codes": reason_codes,
         "threshold_mutation_allowed": False,
         "live_math_changed": False,
-        "schema_version": "institutional_sweep_audit_v9.5.21",
+        "evidence_lineage_changed": raw_sweep_explicit,
+        "schema_version": "institutional_sweep_audit_v9.5.24_real_sweep_smt_lineage",
+    }
+
+
+def range_compression_breakout_profile(
+    candles: list[Candle],
+    side: str,
+    atr15: float,
+    regime: str,
+    market_regime: Optional[dict[str, Any]],
+    *,
+    strong_displacement: bool,
+    trigger_ready: bool,
+) -> dict[str, Any]:
+    """Compression must be a prior range plus an actual directional breakout.
+
+    The strict 1.60 ATR definition remains valid everywhere. A 1.60..2.30 ATR
+    range is accepted only when the independent Regime Engine already labels
+    the market RANGE_COMPRESSION. This reuses an existing production threshold
+    instead of fitting a new number to the same dormant sample. Neither mode is
+    executable without a close beyond the prior range, displacement and a fresh
+    execution trigger.
+    """
+    side = str(side or "").upper()
+    confirmed = _confirmed_candles(candles, 24)
+    if side not in {Side.LONG.value, Side.SHORT.value} or len(confirmed) < 13 or atr15 <= 0:
+        return {
+            "active": False, "compression_supported": False,
+            "directional_breakout": False, "compression_atr": 0.0,
+            "reason": "NOT_ENOUGH_CONFIRMED_15M_DATA",
+            "schema_version": "range_compression_breakout_v9.5.24",
+        }
+    prior = confirmed[-13:-1]
+    current = confirmed[-1]
+    prior_high = max(c.high for c in prior)
+    prior_low = min(c.low for c in prior)
+    compression_atr = (prior_high - prior_low) / max(atr15, 1e-9)
+    strict = bool(0 < compression_atr <= RANGE_COMPRESSION_STRICT_MAX_ATR)
+    regime_type = str((market_regime or {}).get("regime_type") or "").upper()
+    contextual = bool(
+        not strict
+        and 0 < compression_atr <= RANGE_COMPRESSION_CONTEXT_MAX_ATR
+        and regime_type == "RANGE_COMPRESSION"
+    )
+    supported = bool(strict or contextual)
+    buffer = atr15 * RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR
+    if side == Side.LONG.value:
+        breakout_margin_atr = (current.close - prior_high) / max(atr15, 1e-9)
+        directional_breakout = bool(current.close > prior_high + buffer)
+        breakout_level = prior_high
+    else:
+        breakout_margin_atr = (prior_low - current.close) / max(atr15, 1e-9)
+        directional_breakout = bool(current.close < prior_low - buffer)
+        breakout_level = prior_low
+    current_impulse = calculate_impulse_strength(confirmed, side, atr15)
+    current_displacement = bool(int(current_impulse.get("score") or 0) >= 1)
+    active = bool(supported and directional_breakout and current_displacement and trigger_ready)
+    return {
+        "active": active,
+        "compression_supported": supported,
+        "strict_compression": strict,
+        "contextual_compression": contextual,
+        "compression_mode": "STRICT_1_60" if strict else "RANGE_CONTEXT_2_30" if contextual else "NONE",
+        "compression_atr": round(compression_atr, 6),
+        "strict_threshold_atr": RANGE_COMPRESSION_STRICT_MAX_ATR,
+        "context_threshold_atr": RANGE_COMPRESSION_CONTEXT_MAX_ATR,
+        "market_regime_type": regime_type,
+        "legacy_regime": str(regime or ""),
+        "prior_high": round_price(prior_high),
+        "prior_low": round_price(prior_low),
+        "breakout_level": round_price(breakout_level),
+        "breakout_close": round_price(current.close),
+        "breakout_margin_atr": round(breakout_margin_atr, 6),
+        "breakout_buffer_atr": RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR,
+        "directional_breakout": directional_breakout,
+        "strong_displacement": current_displacement,
+        "current_impulse": json_safe(current_impulse),
+        "legacy_scan_strong_displacement": bool(strong_displacement),
+        "legacy_scan_strong_displacement_is_authority": False,
+        "trigger_ready": bool(trigger_ready),
+        "reason": (
+            "EXECUTABLE_RANGE_COMPRESSION_BREAKOUT" if active
+            else "NO_COMPRESSION_CONTEXT" if not supported
+            else "NO_DIRECTIONAL_BREAKOUT" if not directional_breakout
+            else "NO_STRONG_DISPLACEMENT" if not current_displacement
+            else "WAIT_FRESH_TRIGGER"
+        ),
+        "threshold_fitted_from_dormant_sample": False,
+        "schema_version": "range_compression_breakout_v9.5.24",
     }
 
 def build_dormant_detector_reachability(
@@ -14579,7 +14950,8 @@ def build_dormant_detector_reachability(
     sweep_quality_multiplier: float = 0.0,
     sweep_quality_threshold: float = INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
     sweep_validation_profile: Optional[dict[str, Any]] = None,
-    compression_threshold_atr: float = 1.60,
+    compression_threshold_atr: float = RANGE_COMPRESSION_STRICT_MAX_ATR,
+    compression_profile: Optional[dict[str, Any]] = None,
     liquidity_ladder: Optional[dict[str, Any]] = None,
     liquidity_ladder_confirmation: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
@@ -14593,11 +14965,19 @@ def build_dormant_detector_reachability(
     liquidity_ladder = dict(liquidity_ladder or {})
     liquidity_ladder_confirmation = dict(liquidity_ladder_confirmation or {})
     sweep_validation_profile = dict(sweep_validation_profile or {})
+    compression_profile = dict(compression_profile or {})
     sweep_audit_quality = safe_float(sweep_validation_profile.get("quality"), sweep_quality_multiplier if is_raw_sweep else 0.0)
     sweep_2022 = bool(is_sweep and has_choch and has_fvg)
     sweep_turtle = bool(is_sweep and not strong_displacement)
     range_edge = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
-    range_compression = bool(is_range_compressed and strong_displacement and trigger_ready)
+    compression_supported = bool(compression_profile.get("compression_supported", is_range_compressed))
+    compression_directional_breakout = bool(compression_profile.get("directional_breakout", True if not compression_profile else False))
+    compression_strong_displacement = bool(compression_profile.get("strong_displacement", strong_displacement))
+    range_compression = bool(
+        compression_profile.get("active")
+        if compression_profile
+        else is_range_compressed and strong_displacement and trigger_ready
+    )
 
     def row(
         setup_type: str,
@@ -14730,25 +15110,34 @@ def build_dormant_detector_reachability(
             {"RANGE_COMPRESSION_MODEL": range_compression},
             {
                 "compression_window_available": safe_float(compression_atr, 0.0) > 0.0,
-                "range_compressed": bool(is_range_compressed),
-                "strong_displacement": bool(strong_displacement),
+                "range_compressed": compression_supported,
+                "directional_breakout": compression_directional_breakout,
+                "strong_displacement": compression_strong_displacement,
                 "live_trigger_ready": bool(trigger_ready),
             },
             {
-                "compression_atr": round(safe_float(compression_atr, 0.0), 4),
-                "compression_margin_atr": round(safe_float(compression_threshold_atr, 1.60) - safe_float(compression_atr, 0.0), 4),
-                "compression_threshold_atr": round(safe_float(compression_threshold_atr, 1.60), 4),
+                "compression_atr": round(safe_float(compression_profile.get("compression_atr"), compression_atr), 4),
+                "strict_compression_margin_atr": round(RANGE_COMPRESSION_STRICT_MAX_ATR - safe_float(compression_profile.get("compression_atr"), compression_atr), 4),
+                "context_compression_margin_atr": round(RANGE_COMPRESSION_CONTEXT_MAX_ATR - safe_float(compression_profile.get("compression_atr"), compression_atr), 4),
+                "breakout_margin_atr": round(safe_float(compression_profile.get("breakout_margin_atr"), 0.0), 4),
+                "compression_threshold_atr": round(safe_float(compression_threshold_atr, RANGE_COMPRESSION_STRICT_MAX_ATR), 4),
             },
             applicability={
                 "compression_window_available": True,
                 "range_compressed": safe_float(compression_atr, 0.0) > 0.0,
-                "strong_displacement": bool(is_range_compressed),
-                "live_trigger_ready": bool(is_range_compressed and strong_displacement),
+                "directional_breakout": compression_supported,
+                "strong_displacement": bool(compression_supported and compression_directional_breakout),
+                "live_trigger_ready": bool(compression_supported and compression_directional_breakout and compression_strong_displacement),
             },
             dependencies={
                 "range_compressed": ["compression_window_available"],
-                "strong_displacement": ["range_compressed"],
-                "live_trigger_ready": ["range_compressed", "strong_displacement"],
+                "directional_breakout": ["range_compressed"],
+                "strong_displacement": ["range_compressed", "directional_breakout"],
+                "live_trigger_ready": ["range_compressed", "directional_breakout", "strong_displacement"],
+            },
+            diagnostics={
+                "compression_profile": json_safe(compression_profile),
+                "reason_codes": [str(compression_profile.get("reason") or "LEGACY_COMPRESSION_AUDIT")],
             },
         ),
         row(
@@ -14841,7 +15230,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
     # Liquidity/range-контекст уже підготовлений у build_context().
     # Тут використовується лише готовий SMT-контекст; повторне сканування
     # liquidity/range у detect_candidates було б зайвим CPU-витратним дублем.
-    smt_bias = detect_smt_divergence(c15, smt_c15)
+    smt_profile = detect_smt_divergence_profile(c15, smt_c15)
+    smt_profile.update({
+        "configured_instrument": str(context.get("smt_instrument_configured") or SMT_ASSET_ID_CONFIGURED),
+        "resolved_instrument": str(context.get("smt_instrument") or SMT_ASSET_ID),
+        "instrument_alias_applied": bool(context.get("smt_instrument_alias_applied", SMT_ASSET_ALIAS_APPLIED)),
+    })
+    smt_bias = str(smt_profile.get("bias") or Side.NEUTRAL.value)
+    context["_smt_profile"] = smt_profile
 
     kyiv_tz = zoneinfo.ZoneInfo("Europe/Kyiv")
     now_kyiv = datetime.now(kyiv_tz)
@@ -14941,21 +15337,40 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         has_fvg = any(z.side == side and z.kind == "FVG" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
         has_ob = any(z.side == side and z.kind == "OB" and abs(price - (z.low if side == Side.LONG.value else z.high)) < atr15 * 1.5 for z in zones)
 
-        # === Динамічна валідація свіпу (Dynamic Sweep Validation Engine) ===
-        # v9.5.21: live math is unchanged, but all components now come from one
-        # profile so SWEEP_RECLAIM/RANGE_EDGE audit can distinguish missing raw
-        # sweep from a raw sweep that actually failed topology/SMT/CVD quality.
+        # === Динамічна валідація свіпу (real evidence lineage) ===
+        # Persistent scan metadata is NOT a raw-sweep fact. v9.5.24 derives the
+        # sweep from confirmed 15M geometry and ties any execution confirmation
+        # to that actual reference level.
+        directional_sweep_profile = detect_directional_liquidity_sweep_profile(c15, side, price, atr15)
+        sweep_execution_profile = sweep_model_local_execution_profile(c3, side, atr15, directional_sweep_profile)
+        sweep_extreme = safe_float(directional_sweep_profile.get("sweep_extreme"), price)
+        sweep_invalidation_pad = max(atr15 * 0.12, ABS_MIN_STOP_DOLLARS * 0.20)
+        sweep_event_for_validation = {
+            "raw_sweep": bool(directional_sweep_profile.get("raw_sweep")),
+            "source": "BILATERAL_15M_LIQUIDITY_SWEEP",
+            "trigger_level": safe_float(directional_sweep_profile.get("reference_level"), price),
+            "sweep_level": safe_float(directional_sweep_profile.get("reference_level"), price),
+            "sweep_extreme": sweep_extreme,
+            "invalidation_level": (
+                sweep_extreme - sweep_invalidation_pad
+                if side == Side.LONG.value
+                else sweep_extreme + sweep_invalidation_pad
+            ),
+        }
         sweep_validation_profile = institutional_sweep_validation_profile(
             side=side,
-            event=event,
+            event=sweep_event_for_validation,
             context=context,
             atr15=atr15,
             smt_bias=smt_bias,
             cvd=cvd,
             regime=regime,
             session_profile=session_profile,
+            smt_profile=smt_profile,
             threshold=INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
         )
+        sweep_validation_profile["raw_sweep_profile"] = json_safe(directional_sweep_profile)
+        sweep_validation_profile["model_local_execution"] = json_safe(sweep_execution_profile)
         is_raw_sweep = bool(sweep_validation_profile.get("raw_sweep"))
         sweep_quality_multiplier = safe_float(sweep_validation_profile.get("live_score_multiplier"), 1.0)
         valid_institutional_sweep = bool(sweep_validation_profile.get("valid"))
@@ -14963,8 +15378,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # ==========================================================
 
         has_choch = recent_struct["bullish_shift"] if side == Side.LONG.value else recent_struct["bearish_shift"]
-        strong_displacement = event.get("strong_displacement")
+        strong_displacement = bool(event.get("strong_displacement"))
         has_good_reclaim = has_quality_reclaim(event)
+        sweep_local_reclaim = bool(directional_sweep_profile.get("reclaim"))
+        sweep_strong_displacement = bool(sweep_execution_profile.get("strong_displacement"))
         is_limit_armed = False
         ce_level = 0.0
         if has_choch and has_fvg:
@@ -14986,16 +15403,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         judas = session_profile["judas"]
         chop = session_profile["chop_zone"]
 
-        # Компресія діапазону за останні 12 закритих 15m-свічок (без поточної, щоб
-        # мірялась саме ПОПЕРЕДНЯ консолідація, а не сам поточний пробійний бар).
-        # Використовується для RANGE_COMPRESSION_MODEL нижче.
-        if len(c15) >= 13:
-            compression_window = c15[-13:-1]
-            compression_range = max(c.high for c in compression_window) - min(c.low for c in compression_window)
-            compression_atr = compression_range / atr15 if atr15 else 0.0
-        else:
-            compression_atr = 0.0
-        is_range_compressed = 0 < compression_atr <= 1.6
+        # RANGE_COMPRESSION v9.5.24: previous-range compression plus an explicit
+        # directional close outside the range. The wider 1.60..2.30 ATR band is
+        # available only when Regime Engine independently says RANGE_COMPRESSION.
+        compression_profile = range_compression_breakout_profile(
+            c15, side, atr15, regime, context.get("market_regime") or {},
+            strong_displacement=strong_displacement,
+            trigger_ready=trigger_ready,
+        )
+        compression_atr = safe_float(compression_profile.get("compression_atr"), 0.0)
+        is_range_compressed = bool(compression_profile.get("compression_supported"))
         acceptance_retest = detect_acceptance_retest_continuation(c15, side, price, atr15, zones, tf15, tf1h)
         continuation_reanchor = continuation_reanchor_profile(c3, c15, zones, side, price, atr15, tf15, tf1h)
         momentum_no_pullback = detect_momentum_no_pullback_continuation(c3, c15, zones, side, price, atr15, tf15, tf1h)
@@ -15045,25 +15462,26 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
 
         sweep_2022_active = bool(is_sweep and has_choch and has_fvg)
-        range_edge_active = bool(regime == Regime.RANGE.value and is_sweep and has_good_reclaim)
-        turtle_soup_active = bool(is_sweep and not strong_displacement)
-        range_compression_active = bool(is_range_compressed and strong_displacement and trigger_ready)
+        range_edge_active = bool(regime == Regime.RANGE.value and is_sweep and sweep_local_reclaim)
+        turtle_soup_active = bool(is_sweep and not sweep_strong_displacement)
+        range_compression_active = bool(compression_profile.get("active"))
         context["_detector_reachability"].extend(build_dormant_detector_reachability(
             side,
             is_raw_sweep=is_raw_sweep,
             is_sweep=is_sweep,
             has_choch=has_choch,
             has_fvg=has_fvg,
-            strong_displacement=bool(strong_displacement),
+            strong_displacement=sweep_strong_displacement,
             regime=regime,
-            has_good_reclaim=has_good_reclaim,
+            has_good_reclaim=sweep_local_reclaim,
             compression_atr=compression_atr,
             is_range_compressed=is_range_compressed,
             trigger_ready=trigger_ready,
             sweep_quality_multiplier=sweep_quality_multiplier,
             sweep_quality_threshold=INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
             sweep_validation_profile=sweep_validation_profile,
-            compression_threshold_atr=1.60,
+            compression_threshold_atr=RANGE_COMPRESSION_STRICT_MAX_ATR,
+            compression_profile=compression_profile,
             liquidity_ladder=liquidity_ladder,
             liquidity_ladder_confirmation=liquidity_ladder_confirmation_profile,
         ))
@@ -15276,12 +15694,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     f"(cap x{pattern_bonus_audit.get('cap_multiplier')})"
                 )
 
+            model_counter_reclaim = sweep_local_reclaim if model_id in {"2022_MODEL", "TURTLE_SOUP", "PO3"} else has_good_reclaim
             drift_guard = reversal_drift_guard_profile(
                 side=side,
                 drift_atr=drift_atr,
                 setup_family=setup_family,
                 model_id=model_id,
-                structural_counter_evidence=bool(has_choch and is_sweep and has_good_reclaim),
+                structural_counter_evidence=bool(has_choch and is_sweep and model_counter_reclaim),
                 short_reversal_profile=short_reversal_profile if short_model_profile else {},
             )
             if drift_guard.get("against"):
@@ -15339,6 +15758,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
                 if model_reanchor_ready else trigger_age
             )
+            if model_id in {"2022_MODEL", "TURTLE_SOUP", "PO3"}:
+                # Sweep-family score/readiness must use the same actual sweep
+                # reference that later reaches the execution contract.
+                model_live_3m_trigger_ready = bool(sweep_execution_profile.get("ready"))
+                model_trigger_age = (
+                    0.0 if model_live_3m_trigger_ready
+                    else max(0.0, safe_float(directional_sweep_profile.get("sweep_age_15m_bars"), 0.0) * 15.0)
+                )
 
             loc_score = calculate_location_score(price, zones, side, atr15, tf15, tf1h)
             str_score = (19 if tf15.get("bias") == side else 10) * str_weight
@@ -15390,7 +15817,25 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             ladder_confirmation: dict[str, Any] = {}
             failed_auction_location: dict[str, Any] = {}
             fresh_base_clock: dict[str, Any] = {}
-            if model_id in SHORT_REVERSAL_MODEL_IDS:
+            if model_id in {"2022_MODEL", "TURTLE_SOUP", "PO3"}:
+                actionable_trigger_ready = bool(sweep_execution_profile.get("ready"))
+                local_live_3m_trigger_ready = actionable_trigger_ready
+                local_trigger_level = safe_float(sweep_execution_profile.get("reference_level"), trigger_level) or trigger_level
+                local_trigger_age = 0.0 if actionable_trigger_ready else max(0.0, safe_float(directional_sweep_profile.get("sweep_age_15m_bars"), 0.0) * 15.0)
+                execution_source = ExecutionSource.LIVE_3M.value if actionable_trigger_ready else ExecutionSource.NONE.value
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
+                if actionable_trigger_ready:
+                    model_thesis_age = 0.0
+                    thesis_origin = "MODEL_LOCAL_REAL_LIQUIDITY_SWEEP"
+                    pattern_conf.append(
+                        f"🟢 {model_id}: real 15M sweep + reclaim + model-local fresh 3M confirmation @ {local_trigger_level:.2f}"
+                    )
+                else:
+                    pattern_conf.append(
+                        f"🟡 {model_id}: real sweep thesis observed; waiting model-local 3M confirmation "
+                        f"({sweep_execution_profile.get('reason', 'WAIT')})"
+                    )
+            elif model_id in SHORT_REVERSAL_MODEL_IDS:
                 model_ready = bool(short_model_profile.get("execution_ready"))
                 aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
                 # v9.2 model-local execution contract: aggregate readiness is context only.
@@ -15684,12 +16129,13 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     setup_type = SetupType.SWEEP_RECLAIM.value
                 setup_family = SETUP_FAMILY_MAP.get(setup_type, SetupFamily.CONTINUATION.value)
 
+            contract_event = sweep_event_for_validation if model_id in {"2022_MODEL", "TURTLE_SOUP", "PO3"} else event
             contract = ict_model_execution_contract(
                 model_id=model_id,
                 setup_type=setup_type,
                 side=side,
                 context=context,
-                event=event,
+                event=contract_event,
                 trigger_level=local_trigger_level,
                 ce_level=ce_level,
                 is_limit_armed=limit_armed_ready,
@@ -22028,14 +22474,14 @@ def test_not_learned_scoring_is_explicit() -> bool:
 def test_execution_path_health_counts_standard_and_fallback() -> bool:
     journal = {
         "signals": [
-            {"id": "s1", "action": Action.RISKY_ENTRY.value, "setup_type": "A", "innovation_profile": {"primary": "SETUP_ARGUMENTED_TRIGGER_REVALIDATION"}, "trigger_revalidation": {"entry_supported": True, "revalidated": True}},
-            {"id": "s2", "action": Action.RISKY_ENTRY.value, "setup_type": "A", "innovation_profile": {"primary": "STALE_THESIS_WAIT_SETUP_ARGUMENT"}, "trigger_revalidation": {"entry_supported": False, "revalidated": False}},
-            {"id": "s3", "action": Action.RISKY_ENTRY.value, "setup_type": "B", "innovation_profile": {"primary": "STANDARD_NONBLOCKING_CONSTRUCTION"}, "trigger_revalidation": {"entry_supported": True, "revalidated": False}},
+            {"id": "s1", "bot_version_at_signal": BOT_VERSION, "action": Action.RISKY_ENTRY.value, "setup_type": "A", "innovation_profile": {"primary": "SETUP_ARGUMENTED_TRIGGER_REVALIDATION"}, "trigger_revalidation": {"entry_supported": True, "revalidated": True}},
+            {"id": "s2", "bot_version_at_signal": BOT_VERSION, "action": Action.RISKY_ENTRY.value, "setup_type": "A", "innovation_profile": {"primary": "STALE_THESIS_WAIT_SETUP_ARGUMENT"}, "trigger_revalidation": {"entry_supported": False, "revalidated": False}},
+            {"id": "s3", "bot_version_at_signal": BOT_VERSION, "action": Action.RISKY_ENTRY.value, "setup_type": "B", "innovation_profile": {"primary": "STANDARD_NONBLOCKING_CONSTRUCTION"}, "trigger_revalidation": {"entry_supported": True, "revalidated": False}},
         ],
         "trades": [
-            {"id": "t1", "signal_id": "s1", "setup_type": "A", "result_pct": -0.2},
-            {"id": "t2", "signal_id": "s2", "setup_type": "A", "result_pct": -0.3},
-            {"id": "t3", "signal_id": "s3", "setup_type": "B", "result_pct": 0.4},
+            {"id": "t1", "bot_version_at_entry": BOT_VERSION, "signal_id": "s1", "setup_type": "A", "result_pct": -0.2},
+            {"id": "t2", "bot_version_at_entry": BOT_VERSION, "signal_id": "s2", "setup_type": "A", "result_pct": -0.3},
+            {"id": "t3", "bot_version_at_entry": BOT_VERSION, "signal_id": "s3", "setup_type": "B", "result_pct": 0.4},
         ],
     }
     health = compute_execution_path_health(journal)
@@ -22048,6 +22494,37 @@ def test_execution_path_health_counts_standard_and_fallback() -> bool:
         and health.get("health") == "CRITICAL"
     )
 
+
+
+def test_execution_path_health_legacy_unversioned_does_not_poison_current_health() -> bool:
+    journal = {
+        "signals": [
+            {
+                "id": "legacy-signal", "action": Action.RISKY_ENTRY.value,
+                "setup_type": SetupType.OPENING_RANGE_BREAKOUT.value,
+                "execution_path": "INNOVATION_FALLBACK", "entry_supported": False,
+            },
+            {
+                "id": "current-signal", "bot_version_at_signal": BOT_VERSION,
+                "action": Action.RISKY_ENTRY.value,
+                "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+                "execution_path": "STANDARD", "entry_supported": True,
+            },
+        ],
+        "trades": [
+            {"id": "legacy-trade", "signal_id": "legacy-signal", "setup_type": SetupType.OPENING_RANGE_BREAKOUT.value},
+            {"id": "current-trade", "bot_version_at_entry": BOT_VERSION, "signal_id": "current-signal", "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value},
+        ],
+    }
+    health = compute_execution_path_health(journal)
+    return bool(
+        health.get("unsupported_execution_count") == 0
+        and health.get("legacy_unversioned_unsupported_count") == 1
+        and health.get("historical_debt_present") is True
+        and health.get("historical_debt_is_current_health_authority") is False
+        and health.get("health") != "CRITICAL"
+        and health.get("schema_version") == EXECUTION_PATH_HEALTH_SCHEMA_VERSION
+    )
 
 
 def _synthetic_policy_shadow(key: str, status: str, max_target: str) -> dict[str, Any]:
@@ -25849,12 +26326,180 @@ def test_side_aware_calibration_audit_blocks_material_pooled_divergence() -> boo
     )
 
 
+
+def test_build_context_preserves_smt_candle_lineage() -> bool:
+    base_ts = 1_700_000_000_000
+    def make_series(count: int, step_ms: int, base_price: float) -> list[Candle]:
+        rows = []
+        for index in range(count):
+            value = base_price + index * 0.01
+            rows.append(Candle(
+                base_ts + index * step_ms, value, value + 0.20, value - 0.20,
+                value + 0.05, 10.0, True,
+            ))
+        return rows
+    c3 = make_series(60, 180_000, 100.0)
+    c15 = make_series(60, 900_000, 100.0)
+    c1h = make_series(60, 3_600_000, 100.0)
+    c4h = make_series(60, 14_400_000, 100.0)
+    smt = make_series(60, 900_000, 90.0)
+    data = {
+        "time": iso_now(), "price": c3[-1].close,
+        "price_source": "OKX", "execution_price_trusted": True,
+        "execution_venue": "OKX", "execution_price_quality": "LIVE_TICKER",
+        "instrument": OKX_INST_ID, "instrument_label": INSTRUMENT_LABEL,
+        "instrument_kind": INSTRUMENT_KIND,
+        "smt_instrument": SMT_ASSET_ID,
+        "smt_instrument_configured": SMT_ASSET_ID_CONFIGURED,
+        "smt_instrument_alias_applied": SMT_ASSET_ALIAS_APPLIED,
+        "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
+        "smt_candles": {"15m": smt},
+    }
+    context = build_context(data, {}, {})
+    return bool(
+        len(((context.get("smt_candles") or {}).get("15m") or [])) == len(smt)
+        and context.get("smt_instrument") == SMT_ASSET_ID
+        and context.get("smt_instrument_configured") == SMT_ASSET_ID_CONFIGURED
+    )
+
+
+def test_smt_profile_is_timestamp_aligned_and_detects_divergence() -> bool:
+    base_ts = 1_700_000_000_000
+    asset: list[Candle] = []
+    smt: list[Candle] = []
+    for index in range(24):
+        ts = base_ts + index * 900_000
+        # Asset holds its prior low during the last three candles.
+        asset_low = 100.0 if index < 21 else 100.2
+        # SMT makes the lower low during the last three candles.
+        smt_low = 100.0 if index < 21 else 99.4
+        asset.append(Candle(ts, 100.5, 101.0, asset_low, 100.6, 10.0, True))
+        smt.append(Candle(ts, 100.5, 101.0, smt_low, 100.4, 10.0, True))
+    profile = detect_smt_divergence_profile(asset, smt)
+    return bool(
+        profile.get("data_available") is True
+        and profile.get("aligned_candles") == 24
+        and profile.get("bias") == Side.LONG.value
+        and profile.get("reason") == "BULLISH_SMT_DIVERGENCE"
+    )
+
+
+def test_smt_legacy_wti_alias_resolves_to_okx_cl_contract() -> bool:
+    return bool(
+        SMT_ASSET_ID_ALIASES.get("WTI-USDT-SWAP") == "CL-USDT-SWAP"
+        and SMT_ASSET_ID == SMT_ASSET_ID_ALIASES.get(SMT_ASSET_ID_CONFIGURED, SMT_ASSET_ID_CONFIGURED)
+    )
+
+
+def test_institutional_sweep_explicit_raw_fact_overrides_legacy_source_label() -> bool:
+    profile = institutional_sweep_validation_profile(
+        side=Side.LONG.value,
+        event={"source": "LIQUIDITY_SWEEP", "raw_sweep": False, "trigger_level": 100.0},
+        context={"price": 100.0, "liquidity": {"15m": {"ssl": [100.0], "bsl": [104.0]}, "1h": {}}},
+        atr15=1.0,
+        smt_bias=Side.LONG.value,
+        cvd={"bias": Side.LONG.value, "strength": 1.0},
+        regime=Regime.RANGE.value,
+        session_profile={},
+        smt_profile={"data_available": True, "bias": Side.LONG.value},
+    )
+    return bool(
+        profile.get("raw_sweep") is False
+        and profile.get("raw_sweep_source") == "EXPLICIT_REAL_GEOMETRY"
+        and profile.get("valid") is False
+        and "NO_RAW_SWEEP" in (profile.get("reason_codes") or [])
+    )
+
+
+def test_directional_sweep_profile_uses_real_15m_geometry() -> bool:
+    base_ts = 1_700_000_000_000
+    candles: list[Candle] = []
+    for index in range(24):
+        ts = base_ts + index * 900_000
+        low = 100.0
+        high = 101.0
+        open_p = 100.5
+        close_p = 100.6
+        if index == 21:
+            low = 99.7
+            open_p = 100.2
+            close_p = 100.35
+        elif index >= 22:
+            low = 100.05
+            close_p = 100.7
+        candles.append(Candle(ts, open_p, high, low, close_p, 10.0, True))
+    profile = detect_directional_liquidity_sweep_profile(candles, Side.LONG.value, 100.7, 1.0)
+    return bool(
+        profile.get("raw_sweep") is True
+        and profile.get("pool_kind") == "SSL"
+        and safe_float(profile.get("sweep_depth_atr"), 0.0) >= INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR
+        and profile.get("reclaim") is True
+        and safe_float(profile.get("reference_level"), 0.0) == 100.0
+    )
+
+
+def test_institutional_sweep_remains_reachable_with_real_smt_support() -> bool:
+    profile = institutional_sweep_validation_profile(
+        side=Side.LONG.value,
+        event={"raw_sweep": True, "source": "BILATERAL_15M_LIQUIDITY_SWEEP", "trigger_level": 100.0},
+        context={"price": 100.0, "liquidity": {"15m": {"ssl": [100.0], "bsl": [104.0]}, "1h": {}}},
+        atr15=1.0,
+        smt_bias=Side.LONG.value,
+        cvd={"bias": Side.LONG.value, "strength": 1.0},
+        regime=Regime.RANGE.value,
+        session_profile={},
+        smt_profile={"data_available": True, "bias": Side.LONG.value},
+    )
+    return bool(
+        profile.get("raw_sweep") is True
+        and profile.get("smt_support") is True
+        and safe_float(profile.get("quality"), 0.0) >= INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD
+        and profile.get("valid") is True
+        and "STRICT_ENVIRONMENT_QUALITY_PASS" in (profile.get("reason_codes") or [])
+    )
+
+
+
+def test_range_compression_context_band_requires_real_directional_breakout() -> bool:
+    base_ts = 1_700_000_000_000
+    prior = [
+        Candle(base_ts + i * 900_000, 100.0, 101.0, 99.0, 100.0, 10.0, True)
+        for i in range(12)
+    ]
+    breakout = Candle(base_ts + 12 * 900_000, 100.2, 101.5, 100.0, 101.2, 12.0, True)
+    profile = range_compression_breakout_profile(
+        prior + [breakout], Side.LONG.value, 1.0, Regime.RANGE.value,
+        {"regime_type": "RANGE_COMPRESSION"}, strong_displacement=True, trigger_ready=True,
+    )
+    no_breakout = Candle(base_ts + 12 * 900_000, 100.2, 100.9, 99.8, 100.8, 12.0, True)
+    blocked = range_compression_breakout_profile(
+        prior + [no_breakout], Side.LONG.value, 1.0, Regime.RANGE.value,
+        {"regime_type": "RANGE_COMPRESSION"}, strong_displacement=True, trigger_ready=True,
+    )
+    return bool(
+        profile.get("strict_compression") is False
+        and profile.get("contextual_compression") is True
+        and profile.get("directional_breakout") is True
+        and profile.get("active") is True
+        and blocked.get("contextual_compression") is True
+        and blocked.get("directional_breakout") is False
+        and blocked.get("active") is False
+    )
+
 def _run_self_test() -> bool:
     """Deterministic offline regression suite for v9 architecture and retained mechanics."""
     checks: list[tuple[str, bool]] = []
 
     # Retained mechanics that are orthogonal to the architecture refactor.
     retained = [
+        ("v9.5.24 legacy unsupported execution does not poison current health", test_execution_path_health_legacy_unversioned_does_not_poison_current_health),
+        ("v9.5.24 build_context preserves SMT candle lineage", test_build_context_preserves_smt_candle_lineage),
+        ("v9.5.24 SMT profile aligns timestamps and detects divergence", test_smt_profile_is_timestamp_aligned_and_detects_divergence),
+        ("v9.5.24 legacy WTI SMT alias resolves to CL contract", test_smt_legacy_wti_alias_resolves_to_okx_cl_contract),
+        ("v9.5.24 explicit raw-sweep fact overrides legacy source metadata", test_institutional_sweep_explicit_raw_fact_overrides_legacy_source_label),
+        ("v9.5.24 directional sweep uses real 15M geometry", test_directional_sweep_profile_uses_real_15m_geometry),
+        ("v9.5.24 institutional sweep remains reachable with real SMT support", test_institutional_sweep_remains_reachable_with_real_smt_support),
+        ("v9.5.24 contextual compression requires real directional breakout", test_range_compression_context_band_requires_real_directional_breakout),
         ("v9.5.23 journal compaction bounds lifecycle recent runs", test_journal_compaction_v2_bounds_recent_runs_and_keeps_aggregate),
         ("v9.5.23 ranked audit stores repeat episodes summary-only", test_ranked_audit_retention_stores_repeat_scans_summary_only),
         ("v9.5.23 LIVE/SHADOW conversion summaries are isolated", test_live_shadow_conversion_summaries_are_isolated),
@@ -28307,12 +28952,13 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     result["entry_supported_scan_rate"] = compute_entry_supported_scan_analytics(payload)
     result["entry_quality_audit"] = compute_entry_quality_audit(payload)
     result["institutional_sweep_predicate_audit"] = compute_institutional_sweep_predicate_audit(payload)
+    result["range_compression_predicate_audit"] = compute_range_compression_predicate_audit(payload)
     result["liquidity_ladder_execution_audit"] = compute_liquidity_ladder_execution_audit(payload)
     result["revalidation_execution_replay"] = _revalidation_fix_replay(payload)
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.22 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.24 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
