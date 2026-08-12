@@ -1,7 +1,24 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.24 (Legacy Health + Dormant Detector Lineage)
+BZU Professional Hybrid Confluence Signal Bot v9.5.26 (Evidence-Adjusted Selection Authority)
 =============================================================================================
+Оновлення v9.5.26:
+- Ranking отримав окремий evidence_adjusted_selection_score. Raw final_score/setup_quality/execution_quality/entry_quality/hypothesis_score не переписуються і лишаються чистою технічною діагностикою.
+- Exact-setup evidence впливає лише на selection authority: sample maturity, shrinked expectancy, side-specific expectancy, chronological OOS validation, side-safety та empirical quarantine формують bounded adjustment і selection-authority cap.
+- Малий позитивний sample не отримує фальшивого бонусу: expectancy shrink-иться до нуля через empirical-Bayes-like credibility n/(n+prior), а tiny/unvalidated samples мають capped selection authority.
+- UNDERPERFORMING/REACTIVATED EXPERIMENTAL_PROBE не можуть витіснити зрілий кандидат лише високим raw score: їх selection score capped біля canonical risky band, але вони залишаються в detection/ranking і можуть збирати tiny-PROBE evidence, якщо немає кращого кандидата.
+- Saved re-entry більше не має безумовного preemption: його evidence-adjusted selection score порівнюється з найкращим fresh ranked candidate, закриваючи обхід нового ranking contract.
+- Lifecycle/ranked-top-N/best-per-side audit тепер зберігають raw hypothesis score і evidence-adjusted selection score окремо.
+- Canonical 68/75 score gates, risk caps, HTF, hard TTL, RR/SL geometry та raw quality calibration не змінені.
+Оновлення v9.5.25:
+- SWEEP_RECLAIM / RANGE_EDGE_REVERSAL: strict RANGE/TRANSITION sweep validation moved from multiplicative SMT-dependent math to an explicit evidence budget. Real sweep geometry, reclaim, rejection, follow-through, directional pool topology and chase distance are primary; SMT/CVD are bounded supporting evidence, never a hidden mandatory key. Canonical quality threshold 0.85 is unchanged.
+- RANGE_COMPRESSION_BREAKOUT: added relative volatility/energy contraction path next to the existing absolute 1.60/2.30 ATR definitions. Detection and execution are split: a 15M breakout may create a hypothesis, but live entry requires a model-local 3M reclaim/displacement/retest at the actual breakout boundary.
+- LIQUIDITY_LADDER: persistent scan trigger age is no longer the only 3M path. A route-active ladder may obtain fresh model-local 3M directional confirmation from current confirmed candles; stale persistent scan metadata remains telemetry only.
+- Preconfirmation: chronological calibration may orient an anti-correlated classifier only from the calibration slice, never from the OOS test slice; exact-family models may be selected for audit forecasts only when their own OOS AUC/Brier dominate the pooled model. Forecast schema bumped, so live authority remains locked until new frozen forecasts pass the recent trust gate.
+- MOMENTUM_NO_PULLBACK, MSS_REVERSAL_SHORT, FAILED_AUCTION_REJECTION and LIQUIDITY_SWEEP_REVERSAL_SHORT are placed behind an exact-setup evidence quarantine. Reactivated SWEEP_RECLAIM, RANGE_EDGE_REVERSAL, RANGE_COMPRESSION_BREAKOUT and the newly repaired LIQUIDITY_LADDER local-3M path use the same fail-closed experimental quarantine until exact setup evidence accumulates. Tiny experimental PROBE risk remains observable; full staged authority requires positive early evidence plus exact-setup OOS calibration/side-safety.
+- MOMENTUM_NO_PULLBACK adds anti-climax execution checks; Failed Auction and the two weak SHORT reversal models require fresh model-local 3M confirmation rather than treating 15M pattern readiness as execution readiness.
+- TIME_OF_DAY_ADAPTIVE remains SHADOW and can graduate only after positive expectancy AND exact-setup OOS/side calibration authority; future live execution also requires fresh local directional confirmation.
+- Canonical 68/75 score thresholds, HTF policy, hard thesis TTL, TP/SL safety floors and daily risk cap are not loosened.
 Оновлення v9.5.24:
 - execution_path_health розділяє lineage-aware current unsupported execution і legacy unversioned debt; старі липневі records більше не роблять сучасний runtime фальшиво CRITICAL.
 - SMT lineage виправлено end-to-end: smt_candles проходять collect_market_data -> build_context -> detect_candidates; legacy WTI-USDT-SWAP alias резолвиться в актуальний OKX CL-USDT-SWAP.
@@ -268,8 +285,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.24-legacy-health-dormant-detector-lineage"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_24_LEGACY_HEALTH_DORMANT_DETECTOR_LINEAGE"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.26-evidence-adjusted-selection-evidence-budget-underperformer-quarantine"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_26_EVIDENCE_ADJUSTED_SELECTION_EVIDENCE_BUDGET_UNDERPERFORMER_QUARANTINE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -358,8 +375,8 @@ PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE = min(0.50, max(0.05, float(
 # A forecast produced by an old model policy cannot count toward authority for
 # the new recent-weighted calibrator even when the raw feature schema is equal.
 PRECONFIRM_FORECAST_SCHEMA_VERSION = str(
-    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.17_recent_weighted")
-    or "preconfirm_forecast_v9.5.17_recent_weighted"
+    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.25_family_oos_orientation")
+    or "preconfirm_forecast_v9.5.25_family_oos_orientation"
 ).strip()
 PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS = max(
     PRECONFIRM_MIN_TRAIN_ROWS,
@@ -418,12 +435,12 @@ DAILY_OPEN_SHADOW_HORIZON_HOURS = max(4.0, float(os.getenv("DAILY_OPEN_SHADOW_HO
 DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT = min(0.05, max(0.005, float(os.getenv("DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT", "0.03") or 0.03)))
 DAILY_OPEN_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("DAILY_OPEN_SHADOW_HISTORY_LIMIT", "500") or 500))
 SETUP_EPISODE_SCHEMA_VERSION = "setup_episode_registry_v9.5.20_canonical_stage_identity"
-DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.24_real_sweep_smt_compression_breakout"
+DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.25_evidence_budget_relative_compression_local_3m"
 ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_score_lineage"
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
 JOURNAL_COMPACTION_SCHEMA_VERSION = "journal_compaction_v9.5.23_lifecycle_ranked_episode_retention"
-RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.23_episode_retention"
+RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.26_evidence_adjusted_selection"
 SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.23_chronological_oos_side_audit"
 SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(8, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "10") or 10))
 SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.50, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.52") or 0.52)))
@@ -434,7 +451,7 @@ SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES = max(6, int(os.getenv("SETUP_CALIBRATIO
 SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R = max(0.05, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R", "0.20") or 0.20))
 SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP = max(5.0, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP", "15") or 15))
 INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD = 0.85
-EXECUTION_PATH_HEALTH_SCHEMA_VERSION = "execution_path_health_v9.5.24_lineage_scoped"
+EXECUTION_PATH_HEALTH_SCHEMA_VERSION = "execution_path_health_v9.5.25_setup_guard_lineage_scoped"
 INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR = 0.04
 RANGE_COMPRESSION_STRICT_MAX_ATR = 1.60
 # 2.30 is not a new free-standing threshold: detect_regime_engine_2 already uses
@@ -442,6 +459,11 @@ RANGE_COMPRESSION_STRICT_MAX_ATR = 1.60
 # independent regime context agrees and the market actually breaks the prior range.
 RANGE_COMPRESSION_CONTEXT_MAX_ATR = 2.30
 RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR = 0.03
+RANGE_COMPRESSION_RELATIVE_TR_RATIO_MAX = min(0.90, max(0.45, float(os.getenv("RANGE_COMPRESSION_RELATIVE_TR_RATIO_MAX", "0.72") or 0.72)))
+RANGE_COMPRESSION_RELATIVE_EFFICIENCY_MAX = min(0.60, max(0.10, float(os.getenv("RANGE_COMPRESSION_RELATIVE_EFFICIENCY_MAX", "0.35") or 0.35)))
+RANGE_COMPRESSION_RELATIVE_WINDOW = max(6, min(10, int(os.getenv("RANGE_COMPRESSION_RELATIVE_WINDOW", "8") or 8)))
+RANGE_COMPRESSION_BASELINE_WINDOW = max(10, min(20, int(os.getenv("RANGE_COMPRESSION_BASELINE_WINDOW", "12") or 12)))
+
 TP0_PROTECT_RATCHET_EVIDENCE_LIMIT = max(20, int(os.getenv("TP0_PROTECT_RATCHET_EVIDENCE_LIMIT", "80") or 80))
 TP0_PROTECT_MIN_RATCHET_STEP_R = max(0.02, float(os.getenv("TP0_PROTECT_MIN_RATCHET_STEP_R", "0.10") or 0.10))
 TP0_PROTECT_PRICE_BUFFER_DOLLARS = max(0.001, float(os.getenv("TP0_PROTECT_PRICE_BUFFER_DOLLARS", "0.02") or 0.02))
@@ -869,6 +891,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Range-compression thresholds must satisfy 0 < strict <= contextual <= 2.30 ATR")
     if not (0.0 < INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR <= 0.25):
         errors.append("Institutional sweep minimum depth is outside safe range")
+    if not (0.45 <= RANGE_COMPRESSION_RELATIVE_TR_RATIO_MAX <= 0.90):
+        errors.append("Relative range-compression TR ratio must be in [0.45, 0.90]")
+    if not (0.10 <= RANGE_COMPRESSION_RELATIVE_EFFICIENCY_MAX <= 0.60):
+        errors.append("Relative range-compression efficiency must be in [0.10, 0.60]")
+    if not (0 < UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT <= UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT <= PROBE_RISK_PCT):
+        errors.append("Underperforming setup risk ladder is invalid")
+    if not (RISKY_ENTRY_SCORE_BASE <= EVIDENCE_SELECTION_EXPERIMENTAL_CAP <= EVIDENCE_SELECTION_VALIDATION_PROBE_CAP <= EVIDENCE_SELECTION_ZERO_SAMPLE_CAP <= EVIDENCE_SELECTION_TINY_SAMPLE_CAP <= EVIDENCE_SELECTION_SMALL_SAMPLE_CAP <= EVIDENCE_SELECTION_PRECALIBRATION_CAP <= EVIDENCE_SELECTION_VALIDATION_FAILED_CAP <= 100):
+        errors.append("Evidence-adjusted selection caps are not monotonic")
+    if EVIDENCE_SELECTION_PRIOR_TRADES <= 0 or EVIDENCE_SELECTION_EXPECTANCY_SCALE_R <= 0:
+        errors.append("Evidence-adjusted selection shrinkage parameters must be positive")
     if SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS < 8:
         errors.append("Exact-setup validation requires at least 8 OOS predictions")
     if not (0.50 <= SETUP_CALIBRATION_VALIDATION_MIN_AUC <= 0.80):
@@ -1133,6 +1165,36 @@ EXECUTION_TRIGGER_TTL_MIN = int(
 # Deprecated compatibility alias. All semantics are execution-trigger freshness,
 # never thesis memory lifetime.
 TRIGGER_MAX_AGE_MINUTES = EXECUTION_TRIGGER_TTL_MIN
+
+# Evidence quarantine for historically weak named setups. This does not delete
+# hypotheses; it limits capital/stage until the exact setup earns authority.
+UNDERPERFORMING_SETUP_GUARD_MIN_TRADES = max(10, int(os.getenv("UNDERPERFORMING_SETUP_GUARD_MIN_TRADES", "12") or 12))
+UNDERPERFORMING_SETUP_GUARD_MIN_WINS = max(3, int(os.getenv("UNDERPERFORMING_SETUP_GUARD_MIN_WINS", "5") or 5))
+UNDERPERFORMING_SETUP_GUARD_MIN_EXPECTANCY_R = float(os.getenv("UNDERPERFORMING_SETUP_GUARD_MIN_EXPECTANCY_R", "0.05") or 0.05)
+UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT = min(EXPERIMENTAL_PROBE_RISK_PCT, max(0.005, float(os.getenv("UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT", "0.03") or 0.03)))
+UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT = min(PROBE_RISK_PCT, max(UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT, float(os.getenv("UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT", "0.07") or 0.07)))
+
+# v9.5.26 Evidence-adjusted selection is a ranking-only authority layer. It may
+# change WHICH hypothesis wins selection, but it may never rewrite the raw
+# technical score or lower/raise canonical 68/75 execution admission.
+EVIDENCE_SELECTION_SCHEMA_VERSION = "evidence_adjusted_selection_v9.5.26"
+EVIDENCE_SELECTION_PRIOR_TRADES = max(8.0, float(os.getenv("EVIDENCE_SELECTION_PRIOR_TRADES", "20") or 20))
+EVIDENCE_SELECTION_EXPECTANCY_SCALE_R = max(0.10, float(os.getenv("EVIDENCE_SELECTION_EXPECTANCY_SCALE_R", "0.35") or 0.35))
+EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT = min(6.0, max(0.0, float(os.getenv("EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT", "4.0") or 4.0)))
+EVIDENCE_SELECTION_MAX_NEGATIVE_ADJUSTMENT = min(8.0, max(0.0, float(os.getenv("EVIDENCE_SELECTION_MAX_NEGATIVE_ADJUSTMENT", "6.0") or 6.0)))
+EVIDENCE_SELECTION_EXPERIMENTAL_CAP = min(74.0, max(float(RISKY_ENTRY_SCORE_BASE), float(os.getenv("EVIDENCE_SELECTION_EXPERIMENTAL_CAP", "69") or 69)))
+EVIDENCE_SELECTION_VALIDATION_PROBE_CAP = min(80.0, max(EVIDENCE_SELECTION_EXPERIMENTAL_CAP, float(os.getenv("EVIDENCE_SELECTION_VALIDATION_PROBE_CAP", "73") or 73)))
+EVIDENCE_SELECTION_ZERO_SAMPLE_CAP = min(82.0, max(EVIDENCE_SELECTION_VALIDATION_PROBE_CAP, float(os.getenv("EVIDENCE_SELECTION_ZERO_SAMPLE_CAP", "74") or 74)))
+EVIDENCE_SELECTION_TINY_SAMPLE_CAP = min(84.0, max(EVIDENCE_SELECTION_ZERO_SAMPLE_CAP, float(os.getenv("EVIDENCE_SELECTION_TINY_SAMPLE_CAP", "75") or 75)))
+EVIDENCE_SELECTION_SMALL_SAMPLE_CAP = min(86.0, max(EVIDENCE_SELECTION_TINY_SAMPLE_CAP, float(os.getenv("EVIDENCE_SELECTION_SMALL_SAMPLE_CAP", "77") or 77)))
+EVIDENCE_SELECTION_PRECALIBRATION_CAP = min(92.0, max(EVIDENCE_SELECTION_SMALL_SAMPLE_CAP, float(os.getenv("EVIDENCE_SELECTION_PRECALIBRATION_CAP", "82") or 82)))
+EVIDENCE_SELECTION_VALIDATION_FAILED_CAP = min(95.0, max(EVIDENCE_SELECTION_PRECALIBRATION_CAP, float(os.getenv("EVIDENCE_SELECTION_VALIDATION_FAILED_CAP", "86") or 86)))
+
+MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR = min(NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR, max(0.35, float(os.getenv("MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR", "0.75") or 0.75)))
+MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN = min(float(EXECUTION_TRIGGER_TTL_MIN), max(6.0, float(os.getenv("MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN", "24") or 24)))
+MOMENTUM_EXEC_MIN_MICRO_SCORE = min(95.0, max(50.0, float(os.getenv("MOMENTUM_EXEC_MIN_MICRO_SCORE", "65") or 65)))
+MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR = max(0.8, float(os.getenv("MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR", "1.35") or 1.35))
+MOMENTUM_EXEC_MAX_MOVE_ATR = max(NO_PULLBACK_MIN_MOVE_ATR, float(os.getenv("MOMENTUM_EXEC_MAX_MOVE_ATR", "2.80") or 2.80))
 RECLAIM_MIN_QUALITY = int(os.getenv("RECLAIM_MIN_QUALITY", "58") or 58)
 EARLY_ENTRY_MIN_SCORE = int(os.getenv("EARLY_ENTRY_MIN_SCORE", "68") or 68)
 STRONG_IMPULSE_CHASE_PENALTY = int(os.getenv("STRONG_IMPULSE_CHASE_PENALTY", "12") or 12)
@@ -1566,6 +1628,9 @@ class Candidate:
     regime_memory_profile: dict[str, Any] = field(default_factory=dict)
     durability_quality_score: int = 0
     hypothesis_score: float = 0.0
+    # v9.5.26: selection authority is intentionally separate from raw technical quality.
+    evidence_adjusted_selection_score: float = 0.0
+    evidence_selection_profile: dict[str, Any] = field(default_factory=dict)
     hypothesis_rank: int = 0
     active_model_count: int = 0
     competing_hypotheses: list[dict[str, Any]] = field(default_factory=list)
@@ -2220,7 +2285,7 @@ def _compact_lifecycle_candidate_event(event: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(event, dict):
         return {}
     keys = (
-        "side", "setup_type", "model_id", "ict_model", "rank", "final_score",
+        "side", "setup_type", "model_id", "ict_model", "rank", "final_score", "evidence_adjusted_selection_score",
         "episode_key", "thesis_key", "thesis_origin", "execution_anchor",
         "trigger_level", "trigger_ready", "entry_stage", "execution_source",
         "model_thesis_age_minutes", "market_thesis_age_minutes",
@@ -2579,6 +2644,7 @@ def update_setup_lifecycle_counters(
                 "selected_source": selected_source,
                 "ranked_match": ranked_match,
                 "final_score": score_value,
+                "evidence_adjusted_selection_score": round(_candidate_selection_score(candidate), 4),
                 "canonical_risky_min": RISKY_ENTRY_SCORE_BASE,
                 "trigger_ready": bool(getattr(candidate, "trigger_ready", False)),
                 "entry_stage": str(getattr(candidate, "entry_stage", "") or ""),
@@ -3189,94 +3255,92 @@ def _preconfirm_training_rows(
     return sorted(rows, key=lambda row: row["observed_ts"])
 
 def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = None) -> dict[str, Any]:
-    """Build a chronologically validated recent/schema-consistent logistic model.
+    """Chronologically validated, schema-consistent logistic model.
 
-    The model population is chosen without outcomes: current feature-schema rows
-    are preferred once numerous enough, then a fixed recent window and exponential
-    recency weights are applied. Hierarchical rates still retain the full resolved
-    ledger, so this change does not erase historical evidence.
+    v9.5.25 permits an anti-correlated classifier to be *oriented* only from the
+    calibration slice. The unseen OOS slice is never consulted to choose sign,
+    window, family or calibration. This fixes persistent anti-discrimination
+    without turning the test set into training data.
     """
     all_rows = _preconfirm_training_rows(journal, family)
     rows, population = _preconfirm_select_model_rows(all_rows)
     n = len(rows)
     scope = str(family or "GLOBAL_POOLED")
     if n < PRECONFIRM_MIN_TRAIN_ROWS:
-        return {
-            "trusted": False, "valid": False, "sample_size": n,
-            "available_sample_size": len(all_rows), "scope": scope,
-            "reason": "selected_rows_below_logistic_floor", "auc": None,
-            "brier": None, "trust_level": "BOOTSTRAP",
-            "training_population": population,
-        }
+        return {"trusted": False, "valid": False, "sample_size": n,
+                "available_sample_size": len(all_rows), "scope": scope,
+                "reason": "selected_rows_below_logistic_floor", "auc": None,
+                "brier": None, "trust_level": "BOOTSTRAP", "training_population": population}
     train_end = max(12, int(n * 0.70))
     calibration_end = max(train_end + 4, int(n * 0.85))
     calibration_end = min(calibration_end, n - 4)
     if calibration_end <= train_end or n - calibration_end < 4:
-        return {
-            "trusted": False, "valid": False, "sample_size": n,
-            "available_sample_size": len(all_rows), "scope": scope,
-            "reason": "insufficient_chronological_holdout", "auc": None,
-            "brier": None, "trust_level": "BOOTSTRAP",
-            "training_population": population,
-        }
+        return {"trusted": False, "valid": False, "sample_size": n,
+                "available_sample_size": len(all_rows), "scope": scope,
+                "reason": "insufficient_chronological_holdout", "auc": None,
+                "brier": None, "trust_level": "BOOTSTRAP", "training_population": population}
     train_rows = rows[:train_end]
     calibration_rows = rows[train_end:calibration_end]
     test_rows = rows[calibration_end:]
     base_model = _preconfirm_fit_logistic(train_rows)
     if not base_model.get("valid"):
-        return {
-            "trusted": False, "valid": False, "sample_size": n,
-            "available_sample_size": len(all_rows), "scope": scope,
-            "reason": base_model.get("reason", "fit_failed"), "auc": None,
-            "brier": None, "trust_level": "BOOTSTRAP",
-            "training_population": population,
-        }
+        return {"trusted": False, "valid": False, "sample_size": n,
+                "available_sample_size": len(all_rows), "scope": scope,
+                "reason": base_model.get("reason", "fit_failed"), "auc": None,
+                "brier": None, "trust_level": "BOOTSTRAP", "training_population": population}
+
     calibration_labels = [int(row["label"]) for row in calibration_rows]
-    calibration_raw_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows]
-    calibration_auc_raw = _preconfirm_auc(calibration_labels, calibration_raw_probabilities)
-    probability_orientation = 1
+    calibration_raw = [_preconfirm_predict_model(base_model, row["features"]) for row in calibration_rows]
+    auc_raw = _preconfirm_auc(calibration_labels, calibration_raw)
+    auc_inverted = _preconfirm_auc(calibration_labels, [1.0 - p for p in calibration_raw])
+    probability_orientation = -1 if (
+        auc_raw is not None and auc_inverted is not None
+        and auc_raw < PRECONFIRM_ANTI_DISCRIMINATION_AUC
+        and auc_inverted >= PRECONFIRM_AUC_GATE
+        and auc_inverted >= auc_raw + 0.10
+    ) else 1
     base_model["probability_orientation"] = probability_orientation
+    calibration_oriented = [_preconfirm_orient_probability(p, base_model) for p in calibration_raw]
+    calibration_auc_oriented = _preconfirm_auc(calibration_labels, calibration_oriented)
     calibration = _preconfirm_fit_platt(
-        calibration_raw_probabilities,
-        calibration_labels,
+        calibration_oriented, calibration_labels,
         [safe_float(row.get("sample_weight"), 1.0) for row in calibration_rows],
     )
-    test_raw_probabilities = [_preconfirm_predict_model(base_model, row["features"]) for row in test_rows]
-    test_probabilities = [_preconfirm_apply_platt(probability, calibration) for probability in test_raw_probabilities]
+
+    test_raw = [_preconfirm_predict_model(base_model, row["features"]) for row in test_rows]
+    test_oriented = [_preconfirm_orient_probability(p, base_model) for p in test_raw]
+    test_probabilities = [_preconfirm_apply_platt(p, calibration) for p in test_oriented]
     test_labels = [int(row["label"]) for row in test_rows]
     auc = _preconfirm_auc(test_labels, test_probabilities)
     brier = _preconfirm_brier(test_labels, test_probabilities)
-    temporal_stability_passed = bool(calibration_auc_raw is not None and calibration_auc_raw >= 0.50)
+    temporal_stability_passed = bool(calibration_auc_oriented is not None and calibration_auc_oriented >= 0.50)
     trusted = bool(
         auc is not None and auc >= PRECONFIRM_AUC_GATE
         and brier is not None and brier <= PRECONFIRM_BRIER_WARN
         and temporal_stability_passed
         and population.get("population") == "CURRENT_FEATURE_SCHEMA_RECENT_WINDOW"
     )
-    # Preserve the classifier/calibrator relationship and keep the chronological
-    # test split genuinely unseen. Test rows may enter training on a later epoch,
-    # after new observations move the rolling window forward.
-    final_model = base_model
     return {
-        **final_model,
-        "trusted": trusted, "valid": bool(final_model.get("valid")),
-        "sample_size": n, "available_sample_size": len(all_rows), "scope": scope,
+        **base_model,
+        "trusted": trusted, "valid": True, "sample_size": n,
+        "available_sample_size": len(all_rows), "scope": scope,
         "auc": round(auc, 6) if auc is not None else None,
         "brier": round(brier, 6) if brier is not None else None,
-        "calibration": calibration, "probability_orientation": probability_orientation,
-        "calibration_auc_raw": round(calibration_auc_raw, 6) if calibration_auc_raw is not None else None,
-        "orientation_policy": "MONOTONIC_PLATT_NO_RANK_REVERSAL",
+        "calibration": calibration,
+        "probability_orientation": probability_orientation,
+        "calibration_auc_raw": round(auc_raw, 6) if auc_raw is not None else None,
+        "calibration_auc_inverted": round(auc_inverted, 6) if auc_inverted is not None else None,
+        "calibration_auc_oriented": round(calibration_auc_oriented, 6) if calibration_auc_oriented is not None else None,
+        "orientation_policy": "CALIBRATION_SLICE_ONLY; OOS_LABELS_NEVER_SELECT_ORIENTATION",
         "temporal_stability_passed": temporal_stability_passed,
-        "reason": (
-            "trusted" if trusted
-            else "temporal_discrimination_instability" if not temporal_stability_passed
-            else "validation_gate_not_passed"
-        ),
+        "reason": "trusted" if trusted else "temporal_discrimination_instability" if not temporal_stability_passed else "validation_gate_not_passed",
         "trust_level": "FULL" if trusted and n >= PRECONFIRM_FULL_TRUST_ROWS else "PARTIAL" if trusted else "BOOTSTRAP",
         "chronological_split": {"train": len(train_rows), "calibration": len(calibration_rows), "test": len(test_rows)},
         "training_population": population,
         "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
+        "selection_uses_oos_labels": False,
     }
+
 
 
 def _preconfirm_rate_posterior(
@@ -3667,175 +3731,131 @@ def _preconfirm_authority_gate(
 
 
 def _preconfirm_estimate(
-    journal: dict[str, Any],
-    candidate: Candidate,
-    features: dict[str, float],
+    journal: dict[str, Any], candidate: Candidate, features: dict[str, float],
     model_cache: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     family = _preconfirm_model_family(candidate)
     global_model = model_cache.setdefault("__GLOBAL_POOLED__", _preconfirm_build_model(journal, None))
+    family_key = f"__FAMILY__:{family}"
+    family_model = model_cache.setdefault(family_key, _preconfirm_build_model(journal, family))
     authority_gate = ((journal.get("model_status") or {}).get("AUTHORITY_GATE") or {})
     authority_trusted = bool(authority_gate.get("authority_trusted"))
     heuristic = _preconfirm_heuristic_probability(features)
     hierarchy = _preconfirm_hierarchical_calibration(journal, family, heuristic)
 
+    def model_rank(model: dict[str, Any]) -> tuple[float, float, int]:
+        auc = safe_float(model.get("auc"), -1.0) if model.get("auc") is not None else -1.0
+        brier = safe_float(model.get("brier"), 9.0) if model.get("brier") is not None else 9.0
+        return (auc, -brier, int(model.get("sample_size") or 0))
+
+    family_oos_usable = bool(
+        family_model.get("valid")
+        and family_model.get("auc") is not None
+        and safe_float(family_model.get("auc"), 0.0) >= PRECONFIRM_AUC_GATE
+        and family_model.get("brier") is not None
+        and safe_float(family_model.get("brier"), 1.0) <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER
+    )
+    global_oos_usable = bool(global_model.get("valid"))
+    selected_model = global_model
+    selected_scope = "GLOBAL_POOLED"
+    if family_oos_usable and (
+        not global_oos_usable
+        or model_rank(family_model) > model_rank(global_model)
+        or safe_float(family_model.get("auc"), 0.0) >= safe_float(global_model.get("auc"), 0.0) + 0.03
+        or safe_float(family_model.get("brier"), 1.0) <= safe_float(global_model.get("brier"), 1.0) - 0.02
+    ):
+        selected_model = family_model
+        selected_scope = "EXACT_MODEL_FAMILY_OOS"
+
     model_holdout_anti = bool(
-        int(global_model.get("sample_size") or 0) >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS
-        and global_model.get("auc") is not None
-        and safe_float(global_model.get("auc"), 0.5) < PRECONFIRM_ANTI_DISCRIMINATION_AUC
+        int(selected_model.get("sample_size") or 0) >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS
+        and selected_model.get("auc") is not None
+        and safe_float(selected_model.get("auc"), 0.5) < PRECONFIRM_ANTI_DISCRIMINATION_AUC
     )
     anti_lock = bool(authority_gate.get("recently_anti_discriminative") or model_holdout_anti)
     validation_probability: Optional[float] = None
-    if global_model.get("valid"):
-        raw_probability = _preconfirm_predict_model(global_model, features)
-        oriented_probability = _preconfirm_orient_probability(raw_probability, global_model)
-        validation_probability = _preconfirm_apply_platt(oriented_probability, global_model.get("calibration") or {})
-    else:
-        raw_probability = None
+    raw_probability: Optional[float] = None
+    if selected_model.get("valid"):
+        raw_probability = _preconfirm_predict_model(selected_model, features)
+        oriented_probability = _preconfirm_orient_probability(raw_probability, selected_model)
+        validation_probability = _preconfirm_apply_platt(oriented_probability, selected_model.get("calibration") or {})
 
     if anti_lock and validation_probability is not None:
-        # Freeze the model's untouched forecast for future chronological
-        # validation, but neutralize the displayed/live audit probability now.
-        probability = 0.50
-        source = "ANTI_DISCRIMINATION_NEUTRALIZED_AUDIT_ONLY"
-        calibrated = True
-        downgrade_trusted = False
-        promotion_trusted = False
+        probability, source, calibrated = 0.50, "ANTI_DISCRIMINATION_NEUTRALIZED_AUDIT_ONLY", True
+        downgrade_trusted = promotion_trusted = False
         trust_level = "ANTI_DISCRIMINATION_LOCK"
-    elif global_model.get("trusted") and validation_probability is not None:
+    elif selected_model.get("trusted") and validation_probability is not None:
         probability = validation_probability
-        source = "CALIBRATED_RECENT_SCHEMA_LOGISTIC"
+        source = "FAMILY_OOS_LOGISTIC_AUDIT_ONLY" if selected_scope != "GLOBAL_POOLED" else "CALIBRATED_RECENT_SCHEMA_LOGISTIC"
         calibrated = True
-        downgrade_trusted = authority_trusted
-        promotion_trusted = bool(authority_trusted and hierarchy.get("promotion_trusted"))
-        trust_level = "AUTHORITY_TRUSTED" if authority_trusted else "GLOBAL_VALIDATED_AUDIT_ONLY"
-    elif global_model.get("valid") and validation_probability is not None:
+        # A family model can improve the audit forecast, but cannot borrow the
+        # global authority token. New forecast-schema frozen rows must validate it first.
+        downgrade_trusted = bool(authority_trusted and selected_scope == "GLOBAL_POOLED")
+        promotion_trusted = bool(downgrade_trusted and hierarchy.get("promotion_trusted"))
+        trust_level = "AUTHORITY_TRUSTED" if downgrade_trusted else "OOS_VALIDATED_AUDIT_ONLY"
+    elif selected_model.get("valid") and validation_probability is not None:
         probability = 0.50 + (validation_probability - 0.50) * PRECONFIRM_UNTRUSTED_MODEL_SHRINK
-        source = "RECENT_SCHEMA_LOGISTIC_AUDIT_ONLY"
-        calibrated = True
-        downgrade_trusted = False
-        promotion_trusted = False
+        source = "FAMILY_OOS_LOGISTIC_AUDIT_ONLY" if selected_scope != "GLOBAL_POOLED" else "RECENT_SCHEMA_LOGISTIC_AUDIT_ONLY"
+        calibrated = True; downgrade_trusted = promotion_trusted = False
         trust_level = "RECENT_SCHEMA_BOOTSTRAP"
     elif hierarchy.get("calibrated"):
-        raw_probability = None
         validation_probability = safe_float(hierarchy.get("probability"), heuristic)
         probability = validation_probability
-        calibration_tier = str(hierarchy.get("calibration_tier") or "HIERARCHICAL_EMPIRICAL_BAYES")
-        if calibration_tier == "EARLY_WEAK_BAYES":
-            source = "GLOBAL_BAYES_WEAK_CALIBRATION"
-            trust_level = "WEAK_BAYES_BOOTSTRAP"
-        else:
-            source = "HIERARCHICAL_EMPIRICAL_BAYES"
-            trust_level = "HIERARCHICAL_BOOTSTRAP"
-        calibrated = True
-        downgrade_trusted = False
-        promotion_trusted = False
+        tier = str(hierarchy.get("calibration_tier") or "HIERARCHICAL_EMPIRICAL_BAYES")
+        source = "GLOBAL_BAYES_WEAK_CALIBRATION" if tier == "EARLY_WEAK_BAYES" else "HIERARCHICAL_EMPIRICAL_BAYES"
+        trust_level = "WEAK_BAYES_BOOTSTRAP" if tier == "EARLY_WEAK_BAYES" else "HIERARCHICAL_BOOTSTRAP"
+        calibrated = True; downgrade_trusted = promotion_trusted = False
     else:
-        raw_probability = None
-        validation_probability = heuristic
-        probability = heuristic
-        source = "HEURISTIC_UNCALIBRATED"
-        calibrated = False
-        downgrade_trusted = False
-        promotion_trusted = False
-        trust_level = "HEURISTIC_ONLY"
+        validation_probability = heuristic; probability = heuristic
+        source = "HEURISTIC_UNCALIBRATED"; trust_level = "HEURISTIC_ONLY"
+        calibrated = False; downgrade_trusted = promotion_trusted = False
 
     exact_rows = _preconfirm_training_rows(journal, family)
     interval_low = safe_float(hierarchy.get("interval_low"), 0.0)
     interval_high = safe_float(hierarchy.get("interval_high"), 1.0)
     interval_scope = str(hierarchy.get("interval_scope") or "NONE")
-    if global_model.get("trusted"):
-        low, high, neighbor_count = _preconfirm_local_interval(exact_rows, features, global_model)
+    if selected_model.get("trusted"):
+        low, high, neighbor_count = _preconfirm_local_interval(exact_rows, features, selected_model)
         if neighbor_count >= PRECONFIRM_EXACT_FAMILY_MIN_ROWS:
-            interval_low, interval_high = low, high
-            interval_scope = "EXACT_NEIGHBORHOOD"
+            interval_low, interval_high, interval_scope = low, high, "EXACT_NEIGHBORHOOD"
     else:
         neighbor_count = len(exact_rows)
-
-    precursor_active = _preconfirm_should_log(candidate)
     global_n = int(hierarchy.get("global_sample_size") or global_model.get("sample_size") or 0)
     setup_n = int(hierarchy.get("setup_family_sample_size") or 0)
     exact_n = int(hierarchy.get("exact_family_sample_size") or len(exact_rows))
+    precursor_active = _preconfirm_should_log(candidate)
     return {
-        "available": True,
-        "probability": round(probability, 6),
-        "probability_pct": round(probability * 100.0, 1),
+        "available": True, "probability": round(probability, 6), "probability_pct": round(probability * 100.0, 1),
         "raw_model_probability": round(raw_probability, 6) if raw_probability is not None else None,
         "validation_probability": round(validation_probability, 6) if validation_probability is not None else round(probability, 6),
         "validation_probability_policy": "FROZEN_UNGUARDED_FORECAST_FOR_AUTHORITY_VALIDATION_ONLY",
-        "heuristic_probability": round(heuristic, 6),
-        "wilson_low": round(interval_low, 6),
-        "wilson_high": round(interval_high, 6),
-        "wilson_neighbors": neighbor_count,
-        "interval_scope": interval_scope,
-        "calibrated": calibrated,
-        # trusted is deliberately the authority trust, not merely historical model validity.
-        "trusted": authority_trusted,
-        "authority_trusted": authority_trusted,
-        "global_model_trusted": bool(global_model.get("trusted")),
-        "downgrade_trusted": downgrade_trusted,
-        "promotion_trusted": promotion_trusted,
-        "PRECONFIRM_MODEL_TRUSTED": authority_trusted,
-        "trust_level": trust_level,
-        "source": source,
-        "drift_shrinkage_applied": bool(
-            global_model.get("valid") and not global_model.get("trusted")
-            and not bool(authority_gate.get("recently_anti_discriminative"))
-        ),
-        "anti_discrimination_neutralized": bool(
-            authority_gate.get("recently_anti_discriminative")
-            or (
-                int(global_model.get("sample_size") or 0) >= PRECONFIRM_ANTI_DISCRIMINATION_MIN_ROWS
-                and global_model.get("auc") is not None
-                and safe_float(global_model.get("auc"), 0.5) < PRECONFIRM_ANTI_DISCRIMINATION_AUC
-            )
-        ),
-        "untrusted_model_shrink": PRECONFIRM_UNTRUSTED_MODEL_SHRINK,
-        "training_population": dict(global_model.get("training_population") or {}),
-        "model_family": family,
-        "event_kind": _preconfirm_event_kind(candidate),
-        "sample_size": global_n,
-        "global_sample_size": global_n,
-        "setup_family_sample_size": setup_n,
-        "exact_family_sample_size": exact_n,
+        "heuristic_probability": round(heuristic, 6), "wilson_low": round(interval_low, 6), "wilson_high": round(interval_high, 6),
+        "wilson_neighbors": neighbor_count, "interval_scope": interval_scope, "calibrated": calibrated,
+        "trusted": authority_trusted, "authority_trusted": authority_trusted,
+        "global_model_trusted": bool(global_model.get("trusted")), "selected_model_trusted": bool(selected_model.get("trusted")),
+        "selected_model_scope": selected_scope, "selected_model_family": family if selected_scope != "GLOBAL_POOLED" else "GLOBAL_POOLED",
+        "downgrade_trusted": downgrade_trusted, "promotion_trusted": promotion_trusted,
+        "PRECONFIRM_MODEL_TRUSTED": authority_trusted, "trust_level": trust_level, "source": source,
+        "drift_shrinkage_applied": bool(selected_model.get("valid") and not selected_model.get("trusted") and not anti_lock),
+        "anti_discrimination_neutralized": anti_lock, "untrusted_model_shrink": PRECONFIRM_UNTRUSTED_MODEL_SHRINK,
+        "training_population": dict(selected_model.get("training_population") or {}),
+        "global_training_population": dict(global_model.get("training_population") or {}),
+        "family_training_population": dict(family_model.get("training_population") or {}),
+        "model_family": family, "event_kind": _preconfirm_event_kind(candidate), "sample_size": global_n,
+        "global_sample_size": global_n, "setup_family_sample_size": setup_n, "exact_family_sample_size": exact_n,
         "effective_sample_size": hierarchy.get("effective_sample_size", float(global_n)),
-        "auc": global_model.get("auc"),
-        "auc_gate": PRECONFIRM_AUC_GATE,
-        "brier": global_model.get("brier"),
-        "brier_warning": bool(global_model.get("brier") is not None and safe_float(global_model.get("brier")) > PRECONFIRM_BRIER_WARN),
-        "authority_gate": dict(authority_gate),
-        "hierarchical_calibration": hierarchy,
-        "precursor_active": precursor_active,
+        "auc": selected_model.get("auc"), "global_auc": global_model.get("auc"), "family_auc": family_model.get("auc"),
+        "auc_gate": PRECONFIRM_AUC_GATE, "brier": selected_model.get("brier"), "global_brier": global_model.get("brier"), "family_brier": family_model.get("brier"),
+        "brier_warning": bool(selected_model.get("brier") is not None and safe_float(selected_model.get("brier")) > PRECONFIRM_BRIER_WARN),
+        "authority_gate": dict(authority_gate), "hierarchical_calibration": hierarchy, "precursor_active": precursor_active,
         "decision_authority": "TRUSTED_RECENT_GATE" if authority_trusted else "AUDIT_ONLY_UNTIL_RECENT_TRUST",
-        "can_initiate_entry": False,
-        "probability_orientation": int(global_model.get("probability_orientation") or 1),
-        "calibration_auc_raw": global_model.get("calibration_auc_raw"),
-        "discrimination_status": (
-            "AUTHORITY_TRUSTED"
-            if authority_trusted
-            else "GLOBAL_VALID_RECENT_PENDING"
-            if bool(global_model.get("trusted"))
-            else "TEMPORAL_DRIFT"
-            if global_model.get("temporal_stability_passed") is False
-            else "ANTI_CORRELATED"
-            if global_model.get("auc") is not None and safe_float(global_model.get("auc"), 0.5) < 0.5
-            else "UNTRUSTED"
-        ),
-        "probability_contract": PRECONFIRM_PROBABILITY_CONTRACT,
-        "expired_label_mode": PRECONFIRM_EXPIRED_LABEL_MODE,
-        "feature_schema_version": PRECONFIRM_FEATURE_SCHEMA_VERSION,
+        "can_initiate_entry": False, "probability_orientation": int(selected_model.get("probability_orientation") or 1),
+        "calibration_auc_raw": selected_model.get("calibration_auc_raw"),
+        "calibration_auc_oriented": selected_model.get("calibration_auc_oriented"),
+        "discrimination_status": "AUTHORITY_TRUSTED" if authority_trusted else "OOS_VALIDATED_AUDIT_ONLY" if selected_model.get("trusted") else "TEMPORAL_DRIFT",
         "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
-        "features": dict(features),
-        "excluded_feature": "pattern",
-        "feature_dependency_audit": {
-            "shared_raw_facts": ["htf_alignment", "liquidity_swept", "flow_alignment"],
-            "aggregation_mode": "POOLED_MODEL_PLUS_HIERARCHICAL_SHRINKAGE_NOT_SCORE_SUM",
-            "added_as_advisor": False,
-            "added_to_final_score": False,
-            "single_decision_use": "_preconfirm_stage_gate",
-        },
-        "schema_version": "preconfirmation_probability_v9.5.17_recent_weighted_drift_guarded",
     }
+
 
 def _merge_preconfirmation_events(*event_lists: list[Any]) -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
@@ -5809,6 +5829,12 @@ def build_risk_adjustment_ledger(
     state = state or {}
     ensure_mss_reversal_empirical_policy(candidate, journal)
     components = getattr(candidate, "score_components", {}) or {}
+    setup_guard = underperforming_setup_empirical_guard(journal, str(getattr(candidate, "setup_type", "") or ""))
+    if setup_guard.get("applies"):
+        components = dict(components)
+        components["underperforming_setup_guard"] = setup_guard
+        if candidate is not None:
+            candidate.score_components = components
     stage_name = str(stage or getattr(candidate, "entry_stage", "WATCH") or "WATCH").upper()
     policy = stage_risk_policy(stage_name)
     base = policy["base_risk_pct"]
@@ -5833,6 +5859,10 @@ def build_risk_adjustment_ledger(
     if str(getattr(candidate, "setup_type", "") or "") == SetupType.MSS_REVERSAL_SHORT.value and mss_policy.get("experimental_only"):
         base = min(base, MSS_REVERSAL_EXPERIMENTAL_RISK_PCT)
         stage_cap = min(stage_cap, MSS_REVERSAL_EXPERIMENTAL_RISK_PCT)
+    if setup_guard.get("applies") and setup_guard.get("mode") != "GRADUATED":
+        guard_cap = max(0.0, safe_float(setup_guard.get("risk_cap_pct"), UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT))
+        base = min(base, guard_cap)
+        stage_cap = min(stage_cap, guard_cap)
 
     adjustments: list[RiskAdjustment] = []
     seen: set[str] = set()
@@ -11996,21 +12026,13 @@ def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> 
 
 
 def time_of_day_shadow_profile(journal: dict[str, Any]) -> dict[str, Any]:
-    profile = setup_type_calibration_profile(journal, SetupType.TIME_OF_DAY_ADAPTIVE.value)
-    sample_pass = int(profile.get("closed_trades") or 0) >= TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES
-    expectancy_pass = safe_float(profile.get("expectancy_r"), 0.0) > TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R
-    live_eligible = bool(sample_pass and expectancy_pass)
-    return {
-        **profile,
-        "shadow_active": not live_eligible,
-        "live_eligible": live_eligible,
-        "minimum_closed_trades": TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,
-        "minimum_expectancy_r": TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,
-        "sample_pass": sample_pass,
-        "positive_expectancy_pass": expectancy_pass,
-        "policy": "SHADOW_UNTIL_MIN_SAMPLE_AND_POSITIVE_EXPECTANCY",
-        "schema_version": "time_of_day_shadow_v9.5.11",
-    }
+    profile=setup_type_calibration_profile(journal,SetupType.TIME_OF_DAY_ADAPTIVE.value)
+    sample_pass=int(profile.get("closed_trades") or 0)>=TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES
+    expectancy_pass=safe_float(profile.get("expectancy_r"),0.0)>TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R
+    calibration_pass=bool(profile.get("learned_authority_allowed"))
+    live_eligible=bool(sample_pass and expectancy_pass and calibration_pass)
+    return {**profile,"shadow_active":not live_eligible,"live_eligible":live_eligible,"minimum_closed_trades":TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,"minimum_expectancy_r":TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,"sample_pass":sample_pass,"positive_expectancy_pass":expectancy_pass,"exact_oos_side_validation_pass":calibration_pass,"policy":"SHADOW_UNTIL_MIN_SAMPLE_POSITIVE_EXPECTANCY_AND_EXACT_OOS_SIDE_VALIDATION","schema_version":"time_of_day_shadow_v9.5.25"}
+
 
 
 def _quality_coefficients(
@@ -12237,7 +12259,17 @@ def ict_model_execution_contract(
         invalidation = (safe_float(opp_struct.low) - buffer) if side == Side.LONG.value else (safe_float(opp_struct.high) + buffer)
         invalidation_basis = f"opposite {opp_struct.timeframe} {opp_struct.kind} guard"
 
-    if model in {"FVG_ENTRY", "SILVER_BULLET", "BMS_RETEST", "RANGE_COMPRESSION_MODEL"} and fvg:
+    if model == "RANGE_COMPRESSION_MODEL" and safe_float(model_context.get("breakout_level"), 0.0):
+        entry_anchor = safe_float(model_context.get("breakout_level"), price) or price
+        entry_basis = "RANGE_COMPRESSION actual breakout boundary"
+        opposite_edge = safe_float(model_context.get("prior_low" if side == Side.LONG.value else "prior_high"), 0.0)
+        if opposite_edge:
+            invalidation = opposite_edge - buffer if side == Side.LONG.value else opposite_edge + buffer
+            invalidation_basis = "RANGE_COMPRESSION opposite range edge"
+        else:
+            invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.10)
+            invalidation_basis = "RANGE_COMPRESSION structural fallback"
+    elif model in {"FVG_ENTRY", "SILVER_BULLET", "BMS_RETEST"} and fvg:
         entry_anchor = _zone_midpoint(fvg)
         entry_basis = f"{model} CE/FVG midpoint"
         invalidation = (safe_float(fvg.low) - buffer) if side == Side.LONG.value else (safe_float(fvg.high) + buffer)
@@ -12489,8 +12521,23 @@ def score_hypothesis_layers(
     }
 
 
+def _candidate_selection_score(candidate: Optional[Candidate]) -> float:
+    """Return ranking authority without mutating raw technical quality."""
+    if candidate is None:
+        return 0.0
+    components = getattr(candidate, "score_components", {}) or {}
+    profile = components.get("evidence_adjusted_selection") or getattr(candidate, "evidence_selection_profile", {}) or {}
+    if isinstance(profile, dict) and profile.get("active") and profile.get("selection_score") is not None:
+        return safe_float(profile.get("selection_score"), safe_float(getattr(candidate, "hypothesis_score", 0.0), 0.0))
+    explicit = safe_float(getattr(candidate, "evidence_adjusted_selection_score", 0.0), 0.0)
+    if explicit > 0:
+        return explicit
+    return safe_float(getattr(candidate, "hypothesis_score", 0.0), safe_float(getattr(candidate, "final_score", 0.0), 0.0))
+
+
 def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
     comps = c.score_components or {}
+    evidence_profile = comps.get("evidence_adjusted_selection") or getattr(c, "evidence_selection_profile", {}) or {}
     return {
         "rank": c.hypothesis_rank,
         "side": c.side,
@@ -12498,6 +12545,9 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
         "setup_type": c.setup_type,
         "final_score": c.final_score,
         "hypothesis_score": round(float(c.hypothesis_score or comps.get("hypothesis_score", c.final_score)), 2),
+        "evidence_adjusted_selection_score": round(_candidate_selection_score(c), 2),
+        "evidence_selection_mode": str((evidence_profile or {}).get("mode") or "RAW_FALLBACK"),
+        "evidence_selection_cap": (evidence_profile or {}).get("selection_authority_cap"),
         "setup_q": c.setup_quality_score,
         "execution_q": c.execution_quality_score,
         "plan_q": c.trade_plan_quality_score,
@@ -12521,7 +12571,16 @@ def hypothesis_audit_row(c: Candidate) -> dict[str, Any]:
 
 
 def finalize_hypothesis_ranking(candidates: list[Candidate]) -> list[Candidate]:
-    candidates.sort(key=lambda c: (float(c.hypothesis_score or c.final_score), c.final_score), reverse=True)
+    # v9.5.26 ranking authority uses evidence-adjusted score first. Raw technical
+    # hypothesis/final scores remain deterministic tie-breakers and diagnostics.
+    candidates.sort(
+        key=lambda c: (
+            _candidate_selection_score(c),
+            float(c.hypothesis_score or c.final_score),
+            c.final_score,
+        ),
+        reverse=True,
+    )
     matrix = [hypothesis_audit_row(c) for c in candidates]
     for idx, cand in enumerate(candidates, start=1):
         cand.hypothesis_rank = idx
@@ -12656,6 +12715,8 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.stage_plan = staged_entry_plan(candidate, context, direction_perf)
     candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
     candidate = apply_setup_innovation_overlay(candidate, context, {}, journal)
+    candidate = apply_underperforming_setup_guard(candidate, journal)
+    candidate = apply_evidence_adjusted_selection_score(candidate, journal)
     return candidate
 
 def _same_side_zone_support(zones: list, side: str, price: float, atr15: float, kinds: set[str] = {"FVG", "OB"}) -> tuple[bool, float, str]:
@@ -12971,72 +13032,27 @@ def continuation_reanchor_profile(
     }
 
 
-def detect_momentum_no_pullback_continuation(
-    c3: list[Candle],
-    c15: list[Candle],
-    zones: list,
-    side: str,
-    price: float,
-    atr15: float,
-    tf15: dict,
-    tf1h: dict,
-) -> dict[str, Any]:
-    """Trend continuation without a deep retest.
-
-    This is intentionally a probe-only model. It requires orderly directional
-    acceptance and a fresh micro-anchor; it does not convert a vertical candle
-    into permission to chase at full size.
-    """
-    if len(c15) < 8 or atr15 <= 0:
-        return {"active": False, "entry_ready": False, "reason": "not_enough_candles"}
-
-    recent = _recent_confirmed(c15, 8)
-    direction = 1.0 if side == Side.LONG.value else -1.0
-    move_atr = direction * (recent[-1].close - recent[0].open) / max(atr15, 1e-9)
-    directional_closes = sum(
-        1 for c in recent[-6:]
-        if (c.close >= c.open if side == Side.LONG.value else c.close <= c.open)
-    )
-    ranges = [max(c.high - c.low, 1e-9) for c in recent]
-    body_efficiency = sum(abs(c.close - c.open) for c in recent) / max(sum(ranges), 1e-9)
-    if side == Side.LONG.value:
-        extreme = max(c.high for c in recent)
-        giveback_ratio = (extreme - recent[-1].close) / max(extreme - min(c.low for c in recent), 1e-9)
-        structure_intact = recent[-1].close > min(c.low for c in recent[-5:]) + atr15 * 0.25
+def detect_momentum_no_pullback_continuation(c3: list[Candle], c15: list[Candle], zones: list, side: str, price: float, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
+    """No-pullback continuation with a conservative anti-climax execution gate."""
+    if len(c15)<8 or atr15<=0: return {"active":False,"entry_ready":False,"reason":"not_enough_candles"}
+    recent=_recent_confirmed(c15,8); direction=1.0 if side==Side.LONG.value else -1.0
+    move_atr=direction*(recent[-1].close-recent[0].open)/max(atr15,1e-9)
+    directional_closes=sum(1 for c in recent[-6:] if (c.close>=c.open if side==Side.LONG.value else c.close<=c.open))
+    ranges=[max(c.high-c.low,1e-9) for c in recent]; body_efficiency=sum(abs(c.close-c.open) for c in recent)/max(sum(ranges),1e-9)
+    if side==Side.LONG.value:
+        extreme=max(c.high for c in recent); giveback=(extreme-recent[-1].close)/max(extreme-min(c.low for c in recent),1e-9); structure=recent[-1].close>min(c.low for c in recent[-5:])+atr15*0.25
     else:
-        extreme = min(c.low for c in recent)
-        giveback_ratio = (recent[-1].close - extreme) / max(max(c.high for c in recent) - extreme, 1e-9)
-        structure_intact = recent[-1].close < max(c.high for c in recent[-5:]) - atr15 * 0.25
+        extreme=min(c.low for c in recent); giveback=(recent[-1].close-extreme)/max(max(c.high for c in recent)-extreme,1e-9); structure=recent[-1].close<max(c.high for c in recent[-5:])-atr15*0.25
+    tf_ok=bool(tf15.get("bias")==side or tf1h.get("bias")==side); reanchor=continuation_reanchor_profile(c3,c15,zones,side,price,atr15,tf15,tf1h)
+    micro=dict(reanchor.get("micro_confirmation") or {}); anchor_dist=safe_float(reanchor.get("distance_atr"),999.0); anchor_age=safe_float(reanchor.get("anchor_age_min"),999.0)
+    last_range_atr=(recent[-1].high-recent[-1].low)/max(atr15,1e-9)
+    overextended=bool(move_atr>MOMENTUM_EXEC_MAX_MOVE_ATR or anchor_dist>MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR or last_range_atr>MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR)
+    active=bool(tf_ok and structure and move_atr>=NO_PULLBACK_MIN_MOVE_ATR and directional_closes>=5 and body_efficiency>=NO_PULLBACK_MIN_BODY_EFFICIENCY and giveback<=NO_PULLBACK_MAX_GIVEBACK_RATIO)
+    execution_checks={"reanchor_ready":bool(reanchor.get("ready")),"anchor_distance_ok":anchor_dist<=MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR,"anchor_age_ok":anchor_age<=MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN,"micro_score_ok":safe_float(micro.get("score"),0.0)>=MOMENTUM_EXEC_MIN_MICRO_SCORE,"six_3m_bars":bool(micro.get("six_confirmed_bars_available") or int(micro.get("confirmed_3m_bars") or 0) >= 6),"anti_climax":not overextended}
+    entry_ready=bool(active and all(execution_checks.values()))
+    score_bonus=(14 if active else 0)+(4 if entry_ready else 0)-(8 if overextended else 0)
+    return {"active":active,"entry_ready":entry_ready,"score_bonus":score_bonus,"move_atr":round(move_atr,2),"directional_closes_6":directional_closes,"body_efficiency":round(body_efficiency,3),"giveback_ratio":round(clamp(giveback,0.0,1.0),3),"structure_intact":structure,"tf_ok":tf_ok,"overextended":overextended,"last_15m_range_atr":round(last_range_atr,3),"reanchor":reanchor,"execution_checks":execution_checks,"execution_policy":"DETECT_BROADLY; EXECUTE_ONLY_FRESH_MICRO_BASE_WITH_ANTI_CLIMAX","schema_version":"momentum_no_pullback_v9.5.25"}
 
-    tf_ok = bool(tf15.get("bias") == side or tf1h.get("bias") == side)
-    reanchor = continuation_reanchor_profile(c3, c15, zones, side, price, atr15, tf15, tf1h)
-    overextended = bool(
-        move_atr > max(NO_PULLBACK_MIN_MOVE_ATR * 3.2, 3.5)
-        or safe_float(reanchor.get("distance_atr"), 999.0) > NO_PULLBACK_MAX_ANCHOR_DISTANCE_ATR
-    )
-    active = bool(
-        tf_ok
-        and structure_intact
-        and move_atr >= NO_PULLBACK_MIN_MOVE_ATR
-        and directional_closes >= 5
-        and body_efficiency >= NO_PULLBACK_MIN_BODY_EFFICIENCY
-        and giveback_ratio <= NO_PULLBACK_MAX_GIVEBACK_RATIO
-    )
-    entry_ready = bool(active and reanchor.get("ready") and not overextended)
-    score_bonus = (14 if active else 0) + (4 if entry_ready else 0) - (8 if overextended else 0)
-    return {
-        "active": active,
-        "entry_ready": entry_ready,
-        "score_bonus": score_bonus,
-        "move_atr": round(move_atr, 2),
-        "directional_closes_6": directional_closes,
-        "body_efficiency": round(body_efficiency, 3),
-        "giveback_ratio": round(clamp(giveback_ratio, 0.0, 1.0), 3),
-        "structure_intact": structure_intact,
-        "tf_ok": tf_ok,
-        "overextended": overextended,
-        "reanchor": reanchor,
-    }
 
 
 def detect_acceleration_pullback_reentry(c15: list[Candle], side: str, price: float, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
@@ -13355,113 +13371,60 @@ def detect_liquidity_ladder_model(side: str, price: float, context: dict, atr15:
         "execution_role": "TARGET_ROUTE_ONLY",
     }
 
+def liquidity_ladder_model_local_confirmation(c3: list[Candle], c15: list[Candle], side: str, atr15: float, tf15: dict, tf1h: dict, route: dict[str, Any]) -> dict[str, Any]:
+    """Current-candle 3M confirmation for an already valid DOL ladder route.
+
+    It deliberately does not reuse persistent scan timestamps. A route must be
+    active first, then current confirmed 3M price action must show directional
+    acceptance with controlled extension.
+    """
+    if not (route or {}).get("active"):
+        return {"ready":False,"reason":"LADDER_ROUTE_NOT_ACTIVE","schema_version":"ladder_local_3m_v9.5.25"}
+    micro=_directional_confirmation_profile(side,c3,c15,atr15,tf15,tf1h)
+    recent=_recent_confirmed(c3,6)
+    if len(recent)<6:
+        return {"ready":False,"micro":micro,"reason":"NEED_SIX_CONFIRMED_3M_BARS","schema_version":"ladder_local_3m_v9.5.25"}
+    directional_closes=int(micro.get("directional_closes") or 0); net=safe_float(micro.get("signed_net_move_atr"),0.0); pullback=safe_float(micro.get("pullback_atr"),999.0)
+    controlled=bool(0.12<=net<=1.35 and pullback<=0.45)
+    ready=bool(micro.get("supported") and directional_closes>=4 and controlled)
+    counter=[c for c in recent[-5:] if (c.close<c.open if side==Side.LONG.value else c.close>c.open)]
+    anchor=(counter[-1].open+counter[-1].close)/2.0 if counter else recent[-2].close
+    return {"ready":ready,"anchor":round_price(anchor),"age_minutes":0.0 if ready else 999.0,"directional_closes":directional_closes,"signed_net_move_atr":round(net,4),"pullback_atr":round(pullback,4),"controlled_extension":controlled,"micro":micro,"reason":"CURRENT_3M_LADDER_CONFIRMATION" if ready else "WAIT_CURRENT_3M_DIRECTIONAL_ACCEPTANCE","schema_version":"ladder_local_3m_v9.5.25"}
+
+
 
 def liquidity_ladder_execution_confirmation(
-    *,
-    live_3m_trigger_ready: bool,
-    trigger_level: float,
-    trigger_age: float,
-    acceptance_retest: Optional[dict[str, Any]] = None,
-    continuation_reanchor: Optional[dict[str, Any]] = None,
-    price: float = 0.0,
-    scan_stage: str = "",
+    *, live_3m_trigger_ready: bool, trigger_level: float, trigger_age: float,
+    acceptance_retest: Optional[dict[str, Any]]=None, continuation_reanchor: Optional[dict[str, Any]]=None,
+    model_local_3m: Optional[dict[str, Any]]=None, price: float=0.0, scan_stage: str="",
 ) -> dict[str, Any]:
-    """Route Liquidity Ladder through independent execution evidence.
-
-    Live behavior is unchanged: reanchor has priority, then explicit acceptance,
-    then raw live 3M confirmation. v9.5.21 additionally preserves *all* input
-    readiness facts so reachability telemetry can distinguish "3M absent" from
-    "3M present but a higher-priority confirmation kind was selected".
-    """
-    acceptance_retest = acceptance_retest or {}
-    continuation_reanchor = continuation_reanchor or {}
-    scan_stage = str(scan_stage or "").upper()
-    stage_ready = scan_stage in {"ACCEPTANCE", "RETEST", "READY"} if scan_stage else bool(live_3m_trigger_ready)
-    freshness_pass = bool(stage_ready and safe_float(trigger_age, 999.0) <= TRIGGER_MAX_AGE_MINUTES)
-    raw_live_ready = bool(live_3m_trigger_ready)
-    reanchor_ready = bool(continuation_reanchor.get("ready"))
-    acceptance_ready = bool(
-        acceptance_retest.get("execution_ready")
-        or acceptance_retest.get("acceptance_confirmed")
-        or (acceptance_retest.get("active") and acceptance_retest.get("acceptance"))
-    )
-    available_paths = [
-        name for name, ready in (
-            ("RETEST_REANCHOR", reanchor_ready),
-            ("ACCEPTANCE_CONFIRMED", acceptance_ready),
-            ("LIVE_3M_TRIGGER", raw_live_ready),
-        ) if ready
-    ]
-    reason_codes: list[str] = []
-    if scan_stage and not stage_ready:
-        reason_codes.append("SCAN_STAGE_NOT_EXECUTION_READY")
-    elif scan_stage and stage_ready and not freshness_pass:
-        reason_codes.append("SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED")
-    if raw_live_ready:
-        reason_codes.append("RAW_LIVE_3M_TRIGGER_AVAILABLE")
+    """Route Ladder through independent fresh execution evidence."""
+    acceptance_retest=acceptance_retest or {}; continuation_reanchor=continuation_reanchor or {}; model_local_3m=model_local_3m or {}
+    scan_stage=str(scan_stage or "").upper(); stage_ready=scan_stage in {"ACCEPTANCE","RETEST","READY"} if scan_stage else bool(live_3m_trigger_ready)
+    freshness_pass=bool(stage_ready and safe_float(trigger_age,999.0)<=TRIGGER_MAX_AGE_MINUTES)
+    raw_live_ready=bool(live_3m_trigger_ready); local_ready=bool(model_local_3m.get("ready")); reanchor_ready=bool(continuation_reanchor.get("ready"))
+    acceptance_ready=bool(acceptance_retest.get("execution_ready") or acceptance_retest.get("acceptance_confirmed") or (acceptance_retest.get("active") and acceptance_retest.get("acceptance")))
+    available=[n for n,r in (("RETEST_REANCHOR",reanchor_ready),("ACCEPTANCE_CONFIRMED",acceptance_ready),("MODEL_LOCAL_3M",local_ready),("LIVE_3M_TRIGGER",raw_live_ready)) if r]
+    reasons=[]
+    if scan_stage and not stage_ready: reasons.append("SCAN_STAGE_NOT_EXECUTION_READY")
+    elif scan_stage and stage_ready and not freshness_pass: reasons.append("SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED")
+    if raw_live_ready: reasons.append("RAW_LIVE_3M_TRIGGER_AVAILABLE")
+    if local_ready: reasons.append("MODEL_LOCAL_3M_AVAILABLE")
+    if reanchor_ready: reasons.append("RETEST_REANCHOR_AVAILABLE")
+    if acceptance_ready: reasons.append("ACCEPTANCE_AVAILABLE")
+    common={"input_live_3m_trigger_ready":raw_live_ready,"input_model_local_3m_ready":local_ready,"input_reanchor_ready":reanchor_ready,"input_acceptance_ready":acceptance_ready,"input_trigger_age_minutes":round(max(0.0,safe_float(trigger_age,999.0)),6),"input_scan_stage":scan_stage,"scan_stage_execution_ready":stage_ready,"trigger_freshness_pass":freshness_pass,"trigger_ttl_minutes":TRIGGER_MAX_AGE_MINUTES,"available_confirmation_paths":available,"audit_reason_codes":reasons,"priority_order":["RETEST_REANCHOR","ACCEPTANCE_CONFIRMED","MODEL_LOCAL_3M","LIVE_3M_TRIGGER"],"schema_version":"liquidity_ladder_confirmation_v9.5.25"}
     if reanchor_ready:
-        reason_codes.append("RETEST_REANCHOR_AVAILABLE")
+        anchor=safe_float(continuation_reanchor.get("anchor"),trigger_level) or trigger_level or price; age=max(0.0,safe_float(continuation_reanchor.get("anchor_age_min"),0.0))
+        return {**common,"ready":True,"kind":"RETEST_REANCHOR","execution_source":ExecutionSource.CONTINUATION_REANCHOR.value,"execution_lane":ExecutionLane.EARLY_TACTICAL.value,"anchor":anchor,"age_minutes":age,"live_3m":True,"live_3m_path_preempted_by_priority":raw_live_ready}
     if acceptance_ready:
-        reason_codes.append("ACCEPTANCE_AVAILABLE")
-
-    common = {
-        "input_live_3m_trigger_ready": raw_live_ready,
-        "input_reanchor_ready": reanchor_ready,
-        "input_acceptance_ready": acceptance_ready,
-        "input_trigger_age_minutes": round(max(0.0, safe_float(trigger_age, 999.0)), 6),
-        "input_scan_stage": scan_stage,
-        "scan_stage_execution_ready": stage_ready,
-        "trigger_freshness_pass": freshness_pass,
-        "trigger_ttl_minutes": TRIGGER_MAX_AGE_MINUTES,
-        "available_confirmation_paths": available_paths,
-        "audit_reason_codes": reason_codes,
-        "priority_order": ["RETEST_REANCHOR", "ACCEPTANCE_CONFIRMED", "LIVE_3M_TRIGGER"],
-        "audit_only_fields_do_not_change_execution": True,
-        "schema_version": "liquidity_ladder_confirmation_v9.5.21",
-    }
-
-    if reanchor_ready:
-        anchor = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level or price
-        age = max(0.0, safe_float(continuation_reanchor.get("anchor_age_min"), 0.0))
-        return {
-            **common,
-            "ready": True, "kind": "RETEST_REANCHOR",
-            "execution_source": ExecutionSource.CONTINUATION_REANCHOR.value,
-            "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
-            "anchor": anchor, "age_minutes": age, "live_3m": True,
-            "live_3m_path_preempted_by_priority": raw_live_ready,
-        }
-    if acceptance_ready:
-        anchor = safe_float(acceptance_retest.get("zone_mid"), price) or price or trigger_level
-        return {
-            **common,
-            "ready": True, "kind": "ACCEPTANCE_CONFIRMED",
-            "execution_source": ExecutionSource.ACCEPTANCE_RETEST.value,
-            "execution_role": "INDEPENDENT_EXECUTION_CONFIRMATION",
-            "execution_lane": ExecutionLane.EARLY_TACTICAL.value,
-            "anchor": anchor, "age_minutes": 0.0, "live_3m": False,
-            "live_3m_path_preempted_by_priority": raw_live_ready,
-        }
+        anchor=safe_float(acceptance_retest.get("zone_mid"),price) or price or trigger_level
+        return {**common,"ready":True,"kind":"ACCEPTANCE_CONFIRMED","execution_source":ExecutionSource.ACCEPTANCE_RETEST.value,"execution_lane":ExecutionLane.EARLY_TACTICAL.value,"anchor":anchor,"age_minutes":0.0,"live_3m":False,"live_3m_path_preempted_by_priority":raw_live_ready}
+    if local_ready:
+        return {**common,"ready":True,"kind":"MODEL_LOCAL_3M","execution_source":ExecutionSource.LIVE_3M.value,"execution_lane":ExecutionLane.STANDARD_CONFIRMED.value,"anchor":safe_float(model_local_3m.get("anchor"),price) or price,"age_minutes":max(0.0,safe_float(model_local_3m.get("age_minutes"),0.0)),"live_3m":True,"model_local_3m":json_safe(model_local_3m),"live_3m_path_preempted_by_priority":raw_live_ready}
     if raw_live_ready:
-        return {
-            **common,
-            "ready": True, "kind": "LIVE_3M_TRIGGER",
-            "execution_source": ExecutionSource.LIVE_3M.value,
-            "execution_lane": ExecutionLane.STANDARD_CONFIRMED.value,
-            "anchor": trigger_level or price, "age_minutes": max(0.0, trigger_age),
-            "live_3m": True,
-            "live_3m_path_preempted_by_priority": False,
-        }
-    return {
-        **common,
-        "ready": False, "kind": "WAIT_CONFIRMATION",
-        "execution_source": ExecutionSource.NONE.value,
-        "execution_role": "TARGET_ROUTE_ONLY",
-        "execution_lane": ExecutionLane.WAIT_CONFIRMATION.value,
-        "anchor": price or trigger_level, "age_minutes": max(0.0, trigger_age),
-        "live_3m": False,
-        "live_3m_path_preempted_by_priority": False,
-    }
+        return {**common,"ready":True,"kind":"LIVE_3M_TRIGGER","execution_source":ExecutionSource.LIVE_3M.value,"execution_lane":ExecutionLane.STANDARD_CONFIRMED.value,"anchor":trigger_level or price,"age_minutes":max(0.0,trigger_age),"live_3m":True,"live_3m_path_preempted_by_priority":False}
+    return {**common,"ready":False,"kind":"WAIT_CONFIRMATION","execution_source":ExecutionSource.NONE.value,"execution_role":"TARGET_ROUTE_ONLY","execution_lane":ExecutionLane.WAIT_CONFIRMATION.value,"anchor":price or trigger_level,"age_minutes":max(0.0,trigger_age),"live_3m":False,"model_local_3m":json_safe(model_local_3m),"live_3m_path_preempted_by_priority":False}
+
 
 
 
@@ -13508,6 +13471,14 @@ def detect_failed_auction_rejection_tail(c15: list[Candle], side: str, price: fl
         "tail_ratio": round(lower_tail if side == Side.LONG.value else upper_tail, 2),
         "rejection_extreme": round_price(rejection_extreme),
     }
+
+def failed_auction_model_local_confirmation(c3: list[Candle], c15: list[Candle], side: str, atr15: float, tf15: dict, tf1h: dict, detector: dict[str, Any]) -> dict[str, Any]:
+    detector=dict(detector or {}); anchor=safe_float(detector.get("rejection_anchor"),0.0)
+    if not detector.get("active") or anchor<=0: return {"ready":False,"anchor":round_price(anchor) if anchor else 0.0,"reason":"NO_ACTIVE_FAILED_AUCTION","schema_version":"failed_auction_local_3m_v9.5.25"}
+    micro=_directional_confirmation_profile(side,c3,c15,atr15,tf15,tf1h)
+    ready=bool(micro.get("supported") and safe_float(micro.get("score"),0.0)>=65 and ("directional_3m_close" in (micro.get("passed_checks") or []) or "micro_sweep_reclaim" in (micro.get("passed_checks") or [])))
+    return {"ready":ready,"anchor":round_price(anchor),"age_minutes":0.0 if ready else 999.0,"micro":micro,"reason":"FAILED_AUCTION_FRESH_3M_CONFIRMATION" if ready else "WAIT_FAILED_AUCTION_3M_CONFIRMATION","schema_version":"failed_auction_local_3m_v9.5.25"}
+
 
 
 def detect_time_of_day_adaptive_execution(session_profile: dict, side: str, tf15: dict, tf1h: dict, c15: list[Candle], atr15: float) -> dict[str, Any]:
@@ -13619,7 +13590,7 @@ def best_candidate_per_side_audit(
     rows: dict[str, Any] = {}
     ranked = finalize_hypothesis_ranking(list(candidates or [])) if candidates else []
     selected_side = str(getattr(selected, "side", "") or "")
-    selected_score = float(getattr(selected, "hypothesis_score", 0.0) or getattr(selected, "final_score", 0.0) or 0.0)
+    selected_score = _candidate_selection_score(selected) if selected is not None else 0.0
     armed_score = get_adaptive_params(context.get("adaptive_regime", context.get("regime", Regime.NORMAL.value)))["armed_score"]
 
     for side in (Side.LONG.value, Side.SHORT.value):
@@ -13647,7 +13618,7 @@ def best_candidate_per_side_audit(
                 or best.final_score >= armed_score
             )
         )
-        is_selected = bool(selected is best or (selected_side == side and abs(float(best.hypothesis_score or best.final_score) - selected_score) < 1e-9))
+        is_selected = bool(selected is best or (selected_side == side and abs(_candidate_selection_score(best) - selected_score) < 1e-9))
         if is_selected:
             rejection = ""
             status = "SELECTED"
@@ -13655,7 +13626,7 @@ def best_candidate_per_side_audit(
             rejection = explain_candidate_gate_failure(context, best, gate)
             status = "REJECTED"
         elif selected is not None:
-            rejection = f"LOST_TO_SELECTED_{selected_side}: {float(best.hypothesis_score or best.final_score):.2f} < {selected_score:.2f}"
+            rejection = f"LOST_TO_SELECTED_{selected_side}: selection={_candidate_selection_score(best):.2f} < {selected_score:.2f}; raw={float(best.hypothesis_score or best.final_score):.2f}"
             status = "VALID_BUT_NOT_SELECTED"
         else:
             rejection = "ELIGIBLE_BUT_NO_EXECUTIVE_SELECTION"
@@ -13872,7 +13843,7 @@ def detect_directional_liquidity_sweep_profile(
         return {
             "raw_sweep": False, "reclaim": False, "rejection": False,
             "directional_followthrough": False, "reason": "NOT_ENOUGH_DATA",
-            "schema_version": "directional_sweep_v9.5.24_real_15m_geometry",
+            "schema_version": "directional_sweep_v9.5.25_real_15m_geometry",
         }
 
     reference_window = confirmed[-20:-4]
@@ -13933,7 +13904,7 @@ def detect_directional_liquidity_sweep_profile(
         "not_chasing": bool(not_chasing),
         "sweep_candle_ts": int(getattr(sweep_candle, "ts", 0) or 0),
         "reason": "RAW_SWEEP_DETECTED" if raw_sweep else "NO_DIRECTIONAL_POOL_SWEEP",
-        "schema_version": "directional_sweep_v9.5.24_real_15m_geometry",
+        "schema_version": "directional_sweep_v9.5.25_real_15m_geometry",
     }
 
 
@@ -13952,7 +13923,7 @@ def sweep_model_local_execution_profile(
             "ready": False,
             "reference_level": round_price(reference) if reference else 0.0,
             "reason": "RAW_SWEEP_RECLAIM_OR_3M_DATA_MISSING",
-            "schema_version": "sweep_execution_v9.5.24_model_local_3m",
+            "schema_version": "sweep_execution_v9.5.25_model_local_3m",
         }
     snap = trigger_snapshot(recent3, side, reference, atr15)
     ready = bool(snap.get("ready"))
@@ -13966,7 +13937,7 @@ def sweep_model_local_execution_profile(
         "retest": bool(snap.get("retest")),
         "last_confirmed_3m_ts": int(recent3[-1].ts),
         "reason": "FRESH_3M_SWEEP_CONFIRMATION" if ready else "WAIT_FRESH_3M_SWEEP_CONFIRMATION",
-        "schema_version": "sweep_execution_v9.5.24_model_local_3m",
+        "schema_version": "sweep_execution_v9.5.25_model_local_3m",
     }
 
 def detect_short_liquidity_sweep_reversal(
@@ -14176,6 +14147,234 @@ def ensure_mss_reversal_empirical_policy(
     candidate.score_components = components
     return policy
 
+UNDERPERFORMING_SETUP_GUARD_TYPES = frozenset({
+    SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+    SetupType.MSS_REVERSAL_SHORT.value,
+    SetupType.FAILED_AUCTION_REJECTION.value,
+    SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
+})
+# Reactivated/repaired paths are deliberately allowed to collect live evidence,
+# but not at normal risk before they prove an exact-setup edge. This is separate
+# from "bad historical performance": these setups simply do not yet have enough
+# closed observations for the new v9.5.25 execution semantics.
+REACTIVATED_SETUP_GUARD_TYPES = frozenset({
+    SetupType.SWEEP_RECLAIM.value,
+    SetupType.RANGE_EDGE_REVERSAL.value,
+    SetupType.RANGE_COMPRESSION_BREAKOUT.value,
+    SetupType.LIQUIDITY_LADDER.value,
+})
+EMPIRICAL_QUARANTINE_SETUP_TYPES = UNDERPERFORMING_SETUP_GUARD_TYPES | REACTIVATED_SETUP_GUARD_TYPES
+
+def underperforming_setup_empirical_guard(journal: Optional[dict[str, Any]], setup_type: str) -> dict[str, Any]:
+    """Fail-closed exact-setup guard for weak or materially changed live paths."""
+    setup_type=str(setup_type or "")
+    if setup_type not in EMPIRICAL_QUARANTINE_SETUP_TYPES:
+        return {"applies":False,"mode":"NOT_APPLICABLE","risk_cap_pct":PROBE_RISK_PCT,"schema_version":"empirical_quarantine_v9.5.25"}
+    guard_class = "UNDERPERFORMING_HISTORY" if setup_type in UNDERPERFORMING_SETUP_GUARD_TYPES else "REACTIVATED_PATH_VALIDATION"
+    values=[]
+    for row in ((journal or {}).get("trades") or []):
+        if not isinstance(row,dict) or str(row.get("setup_type") or "")!=setup_type: continue
+        raw=row.get("pnl_r",row.get("result_r"))
+        try: value=float(raw)
+        except Exception: continue
+        if math.isfinite(value): values.append(value)
+    n=len(values); wins=sum(v>1e-9 for v in values); net=sum(values); exp=net/n if n else None
+    early_pass=bool(n>=UNDERPERFORMING_SETUP_GUARD_MIN_TRADES and wins>=UNDERPERFORMING_SETUP_GUARD_MIN_WINS and exp is not None and exp>=UNDERPERFORMING_SETUP_GUARD_MIN_EXPECTANCY_R)
+    calibration=setup_type_calibration_profile(journal or {},setup_type)
+    fully_validated=bool(early_pass and calibration.get("learned_authority_allowed"))
+    if fully_validated: mode="GRADUATED"; cap=ACCEPTANCE_RISK_PCT; max_stage=EntryStage.ACCEPTANCE.value
+    elif early_pass: mode="VALIDATION_PROBE"; cap=UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT; max_stage=EntryStage.PROBE.value
+    else: mode="EXPERIMENTAL_PROBE"; cap=UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT; max_stage=EntryStage.PROBE.value
+    return {"applies":True,"guard_class":guard_class,"setup_type":setup_type,"closed_trades":n,"wins":wins,"win_rate":round(wins/n,4) if n else None,"net_r":round(net,6),"expectancy_r":round(exp,6) if exp is not None else None,"early_evidence_pass":early_pass,"exact_setup_validation_pass":bool(calibration.get("learned_authority_allowed")),"mode":mode,"experimental_only":mode=="EXPERIMENTAL_PROBE","maximum_stage":max_stage,"risk_cap_pct":cap,"minimum_closed_trades":UNDERPERFORMING_SETUP_GUARD_MIN_TRADES,"minimum_wins":UNDERPERFORMING_SETUP_GUARD_MIN_WINS,"minimum_expectancy_r":UNDERPERFORMING_SETUP_GUARD_MIN_EXPECTANCY_R,"policy":"EARLY_POSITIVE_EVIDENCE_THEN_EXACT_OOS_AND_SIDE_SAFE_GRADUATION","schema_version":"empirical_quarantine_v9.5.25"}
+
+def apply_underperforming_setup_guard(candidate: Candidate, journal: Optional[dict[str, Any]]) -> Candidate:
+    guard=underperforming_setup_empirical_guard(journal,str(getattr(candidate,"setup_type","") or ""))
+    if not guard.get("applies"): return candidate
+    components=dict(candidate.score_components or {}); components["empirical_quarantine_guard"]=guard; components["underperforming_setup_guard"]=guard; candidate.score_components=components
+    if guard.get("mode")!="GRADUATED":
+        plan=dict(candidate.stage_plan or {}); notes=list(plan.get("scale_plan") or [])
+        candidate.entry_stage=EntryStage.PROBE.value; plan["stage"]=EntryStage.PROBE.value; candidate.probe_conviction_tier=ProbeConvictionTier.EXPERIMENTAL.value if guard.get("mode")=="EXPERIMENTAL_PROBE" else ProbeConvictionTier.MEDIUM.value
+        notes.append(f"Exact-setup evidence guard: {guard.get('mode')} risk cap={safe_float(guard.get('risk_cap_pct'),0.0):.3f}%")
+        plan["empirical_quarantine_guard"]=guard; plan["underperforming_setup_guard"]=guard; plan["scale_plan"]=notes; candidate.stage_plan=plan
+    return candidate
+
+
+def evidence_adjusted_selection_profile(
+    journal: Optional[dict[str, Any]],
+    candidate: Optional[Candidate],
+) -> dict[str, Any]:
+    """Build a bounded ranking-only empirical authority score.
+
+    Design invariants:
+    - raw final_score / hypothesis_score / quality dimensions are immutable here;
+    - tiny samples are shrunk toward zero edge rather than rewarded for lucky 2/2;
+    - candidate-side evidence is blended only when it exists, never invented;
+    - quarantine changes selection authority, not detection or canonical entry score;
+    - OOS calibration maturity may remove a cap, but it cannot manufacture edge.
+    """
+    if candidate is None:
+        return {"active": False, "selection_score": 0.0, "schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION}
+    journal = journal or {}
+    setup_type = str(getattr(candidate, "setup_type", "") or "")
+    side = str(getattr(candidate, "side", "") or "").upper()
+    raw_hypothesis = safe_float(
+        getattr(candidate, "hypothesis_score", 0.0),
+        safe_float(getattr(candidate, "final_score", 0.0), 0.0),
+    )
+    stats = setup_type_trade_statistics(journal, setup_type)
+    side_stats = _setup_type_side_trade_statistics(journal, setup_type, side) if side in {Side.LONG.value, Side.SHORT.value} else {}
+    calibration = setup_type_calibration_profile(journal, setup_type)
+    guard = underperforming_setup_empirical_guard(journal, setup_type)
+
+    closed = int(stats.get("closed_trades") or 0)
+    side_closed = int(side_stats.get("closed_trades") or 0)
+    pooled_expectancy = safe_float(stats.get("expectancy_r"), 0.0)
+    side_expectancy = safe_float(side_stats.get("expectancy_r"), pooled_expectancy)
+
+    # Side evidence gets meaningful weight only after several same-side outcomes.
+    # The cap at 0.75 prevents a small directional pocket from erasing the exact
+    # setup's pooled history.
+    side_weight = min(0.75, side_closed / (side_closed + 8.0)) if side_closed >= 4 else 0.0
+    blended_expectancy = (1.0 - side_weight) * pooled_expectancy + side_weight * side_expectancy
+    credibility = closed / (closed + EVIDENCE_SELECTION_PRIOR_TRADES) if closed > 0 else 0.0
+    expectancy_signal = math.tanh(blended_expectancy / EVIDENCE_SELECTION_EXPECTANCY_SCALE_R)
+    if expectancy_signal >= 0:
+        expectancy_adjustment = EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT * credibility * expectancy_signal
+    else:
+        expectancy_adjustment = EVIDENCE_SELECTION_MAX_NEGATIVE_ADJUSTMENT * credibility * expectancy_signal
+
+    if closed == 0:
+        maturity_penalty = -5.0
+        maturity_band = "ZERO_SAMPLE"
+        generic_cap = EVIDENCE_SELECTION_ZERO_SAMPLE_CAP
+    elif closed < 6:
+        maturity_penalty = -4.0
+        maturity_band = "TINY_SAMPLE"
+        generic_cap = EVIDENCE_SELECTION_TINY_SAMPLE_CAP
+    elif closed < UNDERPERFORMING_SETUP_GUARD_MIN_TRADES:
+        maturity_penalty = -3.0
+        maturity_band = "SMALL_SAMPLE"
+        generic_cap = EVIDENCE_SELECTION_SMALL_SAMPLE_CAP
+    elif closed < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
+        maturity_penalty = -1.5
+        maturity_band = "PRECALIBRATION_SAMPLE"
+        generic_cap = EVIDENCE_SELECTION_PRECALIBRATION_CAP
+    else:
+        maturity_penalty = 0.0
+        maturity_band = "CALIBRATION_REVIEWABLE"
+        generic_cap = 100.0 if calibration.get("learned_authority_allowed") else EVIDENCE_SELECTION_VALIDATION_FAILED_CAP
+
+    calibration_adjustment = 0.0
+    if bool(calibration.get("sample_ready")) and not bool(calibration.get("validation_pass")):
+        calibration_adjustment -= 1.5
+    if bool(calibration.get("sample_ready")) and not bool(calibration.get("side_pooling_pass", True)):
+        calibration_adjustment -= 0.75
+    if bool(calibration.get("learned_authority_allowed")) and blended_expectancy > 0:
+        calibration_adjustment += min(1.5, 0.5 + credibility)
+
+    guard_adjustment = 0.0
+    selection_cap = generic_cap
+    guard_mode = str(guard.get("mode") or "NOT_APPLICABLE") if guard.get("applies") else "NOT_APPLICABLE"
+    if guard.get("applies"):
+        if guard_mode == "EXPERIMENTAL_PROBE":
+            guard_adjustment -= 6.0 if guard.get("guard_class") == "UNDERPERFORMING_HISTORY" else 5.0
+            selection_cap = min(selection_cap, EVIDENCE_SELECTION_EXPERIMENTAL_CAP)
+        elif guard_mode == "VALIDATION_PROBE":
+            guard_adjustment -= 2.0
+            selection_cap = min(selection_cap, EVIDENCE_SELECTION_VALIDATION_PROBE_CAP)
+        elif guard_mode == "GRADUATED":
+            selection_cap = min(selection_cap, 100.0)
+
+    # A deliberately SHADOW-only setup must remain observable but cannot consume
+    # the live #1 selection slot and then fail closed after displacing a live model.
+    shadow_only = False
+    if setup_type == SetupType.TIME_OF_DAY_ADAPTIVE.value:
+        tod_shadow = time_of_day_shadow_profile(journal)
+        shadow_only = bool(tod_shadow.get("shadow_active"))
+        if shadow_only:
+            guard_adjustment -= 4.0
+            selection_cap = min(selection_cap, max(0.0, float(ARMED_SCORE_BASE - 1)))
+
+    uncapped = raw_hypothesis + maturity_penalty + expectancy_adjustment + calibration_adjustment + guard_adjustment
+    selection_score = clamp(min(uncapped, selection_cap), 0.0, 100.0)
+    total_adjustment = selection_score - raw_hypothesis
+    mode = (
+        "SHADOW_ONLY" if shadow_only
+        else "EMPIRICAL_QUARANTINE" if guard.get("applies") and guard_mode != "GRADUATED"
+        else "VALIDATED_EMPIRICAL" if calibration.get("learned_authority_allowed")
+        else "EVIDENCE_MATURITY_GUARDED"
+    )
+    return {
+        "active": True,
+        "setup_type": setup_type,
+        "side": side,
+        "raw_hypothesis_score": round(raw_hypothesis, 4),
+        "selection_score": round(selection_score, 4),
+        "uncapped_selection_score": round(uncapped, 4),
+        "selection_authority_cap": round(selection_cap, 4),
+        "total_adjustment": round(total_adjustment, 4),
+        "components": {
+            "maturity_penalty": round(maturity_penalty, 4),
+            "expectancy_adjustment": round(expectancy_adjustment, 4),
+            "calibration_adjustment": round(calibration_adjustment, 4),
+            "guard_adjustment": round(guard_adjustment, 4),
+        },
+        "evidence": {
+            "closed_trades": closed,
+            "wins": int(stats.get("wins") or 0),
+            "pooled_expectancy_r": round(pooled_expectancy, 6),
+            "side_closed_trades": side_closed,
+            "side_expectancy_r": round(side_expectancy, 6),
+            "side_weight": round(side_weight, 6),
+            "blended_expectancy_r": round(blended_expectancy, 6),
+            "credibility": round(credibility, 6),
+            "maturity_band": maturity_band,
+            "sample_ready": bool(calibration.get("sample_ready")),
+            "oos_validation_pass": bool(calibration.get("validation_pass")),
+            "side_pooling_pass": bool(calibration.get("side_pooling_pass", True)),
+            "learned_authority_allowed": bool(calibration.get("learned_authority_allowed")),
+            "quarantine_mode": guard_mode,
+            "guard_class": str(guard.get("guard_class") or ""),
+            "shadow_only": shadow_only,
+        },
+        "mode": mode,
+        "raw_quality_mutated": False,
+        "canonical_entry_thresholds_mutated": False,
+        "policy": "RANKING_ONLY; RAW_TECHNICAL_QUALITY_IMMUTABLE; SMALL_SAMPLE_SHRINKAGE; BOUNDED_SELECTION_AUTHORITY",
+        "schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION,
+    }
+
+
+def apply_evidence_adjusted_selection_score(
+    candidate: Candidate,
+    journal: Optional[dict[str, Any]],
+) -> Candidate:
+    raw_snapshot = {
+        "final_score": int(getattr(candidate, "final_score", 0) or 0),
+        "hypothesis_score": safe_float(getattr(candidate, "hypothesis_score", 0.0), 0.0),
+        "setup_quality": int(getattr(candidate, "setup_quality_score", 0) or 0),
+        "execution_quality": int(getattr(candidate, "execution_quality_score", 0) or 0),
+        "entry_quality": int(getattr(candidate, "entry_quality_score", 0) or 0),
+    }
+    profile = evidence_adjusted_selection_profile(journal, candidate)
+    candidate.evidence_adjusted_selection_score = safe_float(profile.get("selection_score"), raw_snapshot["hypothesis_score"] or raw_snapshot["final_score"])
+    candidate.evidence_selection_profile = dict(profile)
+    components = dict(candidate.score_components or {})
+    components["evidence_adjusted_selection"] = dict(profile)
+    candidate.score_components = components
+    # Hard invariant: this layer may never mutate raw technical quality.
+    after_snapshot = {
+        "final_score": int(getattr(candidate, "final_score", 0) or 0),
+        "hypothesis_score": safe_float(getattr(candidate, "hypothesis_score", 0.0), 0.0),
+        "setup_quality": int(getattr(candidate, "setup_quality_score", 0) or 0),
+        "execution_quality": int(getattr(candidate, "execution_quality_score", 0) or 0),
+        "entry_quality": int(getattr(candidate, "entry_quality_score", 0) or 0),
+    }
+    if after_snapshot != raw_snapshot:
+        raise RuntimeError("Evidence-adjusted selection attempted to mutate raw technical quality")
+    return candidate
+
+
 
 def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, Any]:
     """Bearish Market Structure Shift with graded evidence.
@@ -14240,6 +14439,25 @@ def detect_short_mss_reversal(candles: list[Candle], atr15: float) -> dict[str, 
         "volume_ratio": round(volume_ratio, 3) if volume_ratio is not None else None,
         "reason": "bullish structure is progressively losing control",
     }
+
+def short_reversal_model_local_confirmation(c3: list[Candle], c15: list[Candle], atr15: float, tf15: dict, tf1h: dict, model_id: str, model_profile: dict[str, Any]) -> dict[str, Any]:
+    """Fresh 3M authority for the two historically weak SHORT reversal models."""
+    model_profile=dict(model_profile or {})
+    if model_id not in {"SHORT_LIQUIDITY_SWEEP_REVERSAL","SHORT_MSS_REVERSAL"}:
+        return {"ready":bool(model_profile.get("execution_ready")),"required":False,"schema_version":"short_reversal_local_3m_v9.5.25"}
+    if not model_profile.get("execution_ready"):
+        return {"ready":False,"required":True,"reason":"MODEL_15M_NOT_READY","schema_version":"short_reversal_local_3m_v9.5.25"}
+    micro=_directional_confirmation_profile(Side.SHORT.value,c3,c15,atr15,tf15,tf1h)
+    score=safe_float(micro.get("score"),0.0); passed=set(micro.get("passed_checks") or [])
+    if model_id=="SHORT_MSS_REVERSAL":
+        evidence_ok="directional_3m_close" in passed and "strong_3m_body" in passed
+        floor=65.0
+    else:
+        evidence_ok=("directional_3m_close" in passed or "micro_sweep_reclaim" in passed) and "strong_3m_body" in passed
+        floor=65.0
+    ready=bool(micro.get("supported") and score>=floor and evidence_ok)
+    return {"ready":ready,"required":True,"model_id":model_id,"score":round(score,2),"micro":micro,"reason":"FRESH_SHORT_REVERSAL_3M_CONFIRMATION" if ready else "WAIT_SHORT_REVERSAL_3M_CONFIRMATION","schema_version":"short_reversal_local_3m_v9.5.25"}
+
 
 
 def detect_buyer_exhaustion_short(candles: list[Candle], price: float, atr15: float) -> dict[str, Any]:
@@ -14698,241 +14916,207 @@ def fresh_base_thesis_clock_profile(
 
 
 def institutional_sweep_validation_profile(
-    side: str,
-    event: dict[str, Any],
-    context: dict[str, Any],
-    atr15: float,
-    smt_bias: str,
-    cvd: dict[str, Any],
-    regime: str,
-    session_profile: dict[str, Any],
-    smt_profile: Optional[dict[str, Any]] = None,
-    *,
-    threshold: float = INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
+    side: str, event: dict[str, Any], context: dict[str, Any], atr15: float,
+    smt_bias: str, cvd: dict[str, Any], regime: str, session_profile: dict[str, Any],
+    smt_profile: Optional[dict[str, Any]] = None, *, threshold: float = INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD,
 ) -> dict[str, Any]:
-    """Single-source institutional sweep validation plus audit decomposition.
+    """Institutional sweep validation with a lineage-safe evidence budget.
 
-    This helper intentionally preserves the v9.5.20 live admission math. The
-    v9.5.21 change is observability: topology, SMT, synthetic-CVD and regime
-    effects are exposed separately so a failed sweep is not reduced to one
-    opaque boolean. Threshold mutation is explicitly outside this helper.
+    Current v9.5.25 detector events carry explicit directional geometry. Those
+    rows use a bounded additive evidence budget where SMT/CVD are supporting
+    evidence only. Legacy/replay callers that do not carry the new geometry
+    fields retain the old multiplicative calculation, so historical journals
+    and offline tools are not silently reinterpreted.
     """
-    side = str(side or "").upper()
-    event = dict(event or {})
-    cvd = dict(cvd or {})
-    session_profile = dict(session_profile or {})
-    smt_profile = dict(smt_profile or {})
-    threshold = safe_float(threshold, INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD)
-    raw_sweep_explicit = "raw_sweep" in event
-    is_raw_sweep = bool(event.get("raw_sweep")) if raw_sweep_explicit else str(event.get("source") or "") == "LIQUIDITY_SWEEP"
-    raw_sweep_source = "EXPLICIT_REAL_GEOMETRY" if raw_sweep_explicit else "LEGACY_SOURCE_FALLBACK"
-    in_chop = bool((session_profile.get("chop_zone") or {}).get("active", False))
-    strict_environment = bool(regime in (Regime.RANGE.value, Regime.TRANSITION.value) or in_chop)
+    side=str(side or "").upper(); event=dict(event or {}); cvd=dict(cvd or {})
+    session_profile=dict(session_profile or {}); smt_profile=dict(smt_profile or {})
+    threshold=safe_float(threshold,INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD)
+    raw_sweep_explicit="raw_sweep" in event
+    is_raw_sweep=bool(event.get("raw_sweep")) if raw_sweep_explicit else str(event.get("source") or "")=="LIQUIDITY_SWEEP"
+    evidence_lineage=all(k in event for k in ("sweep_depth_atr","reclaim","rejection","directional_followthrough","not_chasing"))
+    in_chop=bool((session_profile.get("chop_zone") or {}).get("active",False))
+    strict_environment=bool(regime in (Regime.RANGE.value,Regime.TRANSITION.value) or in_chop)
 
-    liquidity = context.get("liquidity", {}) or {}
-    bsl_pools: list[float] = []
-    ssl_pools: list[float] = []
-    for tf in ("15m", "1h"):
-        tf_liq = liquidity.get(tf, {}) or {}
-        bsl_pools.extend(safe_float(value) for value in (tf_liq.get("bsl") or []) if safe_float(value, 0.0) > 0)
-        ssl_pools.extend(safe_float(value) for value in (tf_liq.get("ssl") or []) if safe_float(value, 0.0) > 0)
-    # Preserve the legacy live calculation: it intentionally used the nearest
-    # major pool from either side. Directional pools are reported separately so
-    # a later policy review can assess that choice without silently changing it.
-    major_pools = bsl_pools + ssl_pools
-    directional_pools = ssl_pools if side == Side.LONG.value else bsl_pools
-    opposite_pools = bsl_pools if side == Side.LONG.value else ssl_pools
-    sweep_level = safe_float(event.get("trigger_level"), safe_float(context.get("price"), 0.0))
+    liquidity=context.get("liquidity",{}) or {}; bsl=[]; ssl=[]
+    for tf in ("15m","1h"):
+        row=liquidity.get(tf,{}) or {}
+        bsl.extend(safe_float(v) for v in (row.get("bsl") or []) if safe_float(v,0)>0)
+        ssl.extend(safe_float(v) for v in (row.get("ssl") or []) if safe_float(v,0)>0)
+    major=bsl+ssl; directional=ssl if side==Side.LONG.value else bsl; opposite_pools=bsl if side==Side.LONG.value else ssl
+    level=safe_float(event.get("sweep_level"),safe_float(event.get("trigger_level"),safe_float(context.get("price"),0.0)))
+    nearest_any=min((abs(level-p) for p in major),default=max(atr15,0.0))
+    nearest_dir=min((abs(level-p) for p in directional),default=max(atr15,0.0))
+    nearest_opp=min((abs(level-p) for p in opposite_pools),default=max(atr15,0.0))
+    if atr15>0:
+        any_atr=nearest_any/atr15; dir_atr=nearest_dir/atr15; opp_atr=nearest_opp/atr15
+    else: any_atr=dir_atr=opp_atr=999.0
+    legacy_topology=max(0.3,min(1.2,1.0-(nearest_any/(max(atr15,1e-9)*1.5)))) if atr15>0 else 0.3
+    directional_topology=clamp(1.0-dir_atr/1.25,0.0,1.0)
+    smt_available=bool(smt_profile.get("data_available",True)); smt_support=bool(smt_available and str(smt_bias or "").upper()==side)
+    cvd_support=bool(str(cvd.get("bias") or "").upper()==side and safe_float(cvd.get("strength"),0.0)>0)
 
-    nearest_any_dist = min((abs(sweep_level - pool) for pool in major_pools), default=max(atr15, 0.0))
-    nearest_directional_dist = min((abs(sweep_level - pool) for pool in directional_pools), default=max(atr15, 0.0))
-    nearest_opposite_dist = min((abs(sweep_level - pool) for pool in opposite_pools), default=max(atr15, 0.0))
-    if atr15 > 0:
-        topology_weight = max(0.3, min(1.2, 1.0 - (nearest_any_dist / (atr15 * 1.5))))
-        nearest_any_atr = nearest_any_dist / atr15
-        nearest_directional_atr = nearest_directional_dist / atr15
-        nearest_opposite_atr = nearest_opposite_dist / atr15
-    else:
-        topology_weight = 0.3
-        nearest_any_atr = nearest_directional_atr = nearest_opposite_atr = 999.0
-
-    smt_data_available = bool(smt_profile.get("data_available", True))
-    has_smt_support = bool(smt_data_available and str(smt_bias or "").upper() == side)
-    has_cvd_absorption = bool(str(cvd.get("bias") or "").upper() == side and safe_float(cvd.get("strength"), 0.0) > 0.0)
-    smt_multiplier = 1.4 if has_smt_support else 0.7
-    cvd_multiplier = SYNTHETIC_CVD_ABSORPTION_POS_MULT if has_cvd_absorption else SYNTHETIC_CVD_ABSORPTION_NEG_MULT
-    footprint_score = smt_multiplier * cvd_multiplier
-
-    quality = 0.0
-    valid = False
-    if is_raw_sweep:
-        if strict_environment:
-            quality = topology_weight * footprint_score
-            valid = bool(quality >= threshold)
+    # Compatibility branch for historical/replay rows without v9.5.25 evidence lineage.
+    if not evidence_lineage:
+        smt_mult=1.4 if smt_support else 0.7
+        cvd_mult=SYNTHETIC_CVD_ABSORPTION_POS_MULT if cvd_support else SYNTHETIC_CVD_ABSORPTION_NEG_MULT
+        footprint=smt_mult*cvd_mult
+        quality=0.0; valid=False
+        if is_raw_sweep:
+            if strict_environment:
+                quality=legacy_topology*footprint; valid=quality>=threshold
+            else:
+                quality=legacy_topology; valid=True
+        live_mult=quality if is_raw_sweep else 1.0
+        max_no=legacy_topology*0.7*SYNTHETIC_CVD_ABSORPTION_POS_MULT
+        max_yes=legacy_topology*1.4*SYNTHETIC_CVD_ABSORPTION_POS_MULT
+        theoretical_no=1.0*0.7*SYNTHETIC_CVD_ABSORPTION_POS_MULT
+        theoretical_yes=1.0*1.4*SYNTHETIC_CVD_ABSORPTION_POS_MULT
+        reasons=[]
+        if not is_raw_sweep: reasons.append("NO_RAW_SWEEP")
+        elif not strict_environment: reasons.append("TREND_OR_NORMAL_RAW_SWEEP_ACCEPTED_BY_RELAXED_POLICY")
+        elif valid: reasons.append("STRICT_ENVIRONMENT_QUALITY_PASS")
         else:
-            quality = topology_weight
-            valid = True
+            reasons.append("STRICT_ENVIRONMENT_QUALITY_BELOW_THRESHOLD")
+            if not smt_support and theoretical_no<threshold: reasons.append("NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_THEORETICAL_TOPOLOGY_CAP")
+            elif not smt_support and max_no<threshold: reasons.append("NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_CURRENT_TOPOLOGY")
+            if max_yes<threshold: reasons.append("CURRENT_TOPOLOGY_CANNOT_PASS_EVEN_WITH_SMT_AND_POSITIVE_CVD")
+            if not cvd_support: reasons.append("CVD_ABSORPTION_NOT_SUPPORTIVE")
+            if not smt_support: reasons.append("SMT_NOT_SUPPORTIVE" if smt_available else "SMT_DATA_UNAVAILABLE")
+        return {
+            "raw_sweep":is_raw_sweep,"raw_sweep_source":"EXPLICIT_REAL_GEOMETRY" if raw_sweep_explicit else "LEGACY_SOURCE_FALLBACK",
+            "valid":bool(valid),"quality":float(quality),"live_score_multiplier":float(live_mult),"quality_threshold":round(threshold,6),"quality_margin":round(quality-threshold,6),
+            "strict_environment":strict_environment,"regime":str(regime),"chop_active":in_chop,"topology_weight":round(legacy_topology,6),
+            "topology_pool_scope_used_by_live_math":"BOTH_BSL_AND_SSL_LEGACY_COMPATIBILITY","directional_pool_kind":"SSL" if side==Side.LONG.value else "BSL",
+            "major_pool_count":len(major),"directional_pool_count":len(directional),"opposite_pool_count":len(opposite_pools),
+            "nearest_any_pool_distance_atr":round(any_atr,6),"nearest_directional_pool_distance_atr":round(dir_atr,6),"nearest_opposite_pool_distance_atr":round(opp_atr,6),
+            "smt_support":smt_support,"smt_data_available":smt_available,"smt_bias":str(smt_bias or Side.NEUTRAL.value),"smt_profile":json_safe(smt_profile),"smt_multiplier":round(smt_mult,6),
+            "cvd_absorption_support":cvd_support,"cvd_bias":str(cvd.get("bias") or "NEUTRAL"),"cvd_strength":round(safe_float(cvd.get("strength"),0.0),6),"cvd_multiplier":round(cvd_mult,6),"footprint_score":round(footprint,6),
+            "max_quality_without_smt_at_current_topology":round(max_no,6),"max_quality_with_smt_at_current_topology":round(max_yes,6),"theoretical_max_without_smt":round(theoretical_no,6),"theoretical_max_with_smt":round(theoretical_yes,6),
+            "threshold_reachable_without_smt_theoretically":theoretical_no>=threshold,"reason_codes":reasons,"threshold_mutation_allowed":False,"live_math_changed":False,"evidence_lineage_changed":False,"schema_version":"institutional_sweep_legacy_compat_v9.5.25",
+        }
 
-    # Preserve the historical scoring contract: when there is no raw sweep,
-    # sweep quality is not an audit observation, but the generic liquidity score
-    # multiplier remains neutral (1.0) rather than collapsing to zero.
-    live_score_multiplier = quality if is_raw_sweep else 1.0
-
-    max_without_smt = topology_weight * 0.7 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
-    max_with_smt = topology_weight * 1.4 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
-    theoretical_topology_cap = 1.0  # distance is non-negative in the preserved formula
-    theoretical_max_without_smt = theoretical_topology_cap * 0.7 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
-    theoretical_max_with_smt = theoretical_topology_cap * 1.4 * SYNTHETIC_CVD_ABSORPTION_POS_MULT
-
-    reason_codes: list[str] = []
-    if not is_raw_sweep:
-        reason_codes.append("NO_RAW_SWEEP")
-    elif not strict_environment:
-        reason_codes.append("TREND_OR_NORMAL_RAW_SWEEP_ACCEPTED_BY_RELAXED_POLICY")
-    elif valid:
-        reason_codes.append("STRICT_ENVIRONMENT_QUALITY_PASS")
-    else:
-        reason_codes.append("STRICT_ENVIRONMENT_QUALITY_BELOW_THRESHOLD")
-        if not has_smt_support and theoretical_max_without_smt < threshold:
-            reason_codes.append("NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_THEORETICAL_TOPOLOGY_CAP")
-        elif not has_smt_support and max_without_smt < threshold:
-            reason_codes.append("NO_SMT_PATH_CANNOT_REACH_THRESHOLD_AT_CURRENT_TOPOLOGY")
-        if max_with_smt < threshold:
-            reason_codes.append("CURRENT_TOPOLOGY_CANNOT_PASS_EVEN_WITH_SMT_AND_POSITIVE_CVD")
-        if not has_cvd_absorption:
-            reason_codes.append("CVD_ABSORPTION_NOT_SUPPORTIVE")
-        if not has_smt_support:
-            reason_codes.append("SMT_NOT_SUPPORTIVE" if smt_data_available else "SMT_DATA_UNAVAILABLE")
-
-    return {
-        "raw_sweep": is_raw_sweep,
-        "raw_sweep_source": raw_sweep_source,
-        "valid": valid,
-        "quality": float(quality),
-        "live_score_multiplier": float(live_score_multiplier),
-        "quality_threshold": round(threshold, 6),
-        "quality_margin": round(quality - threshold, 6),
-        "strict_environment": strict_environment,
-        "regime": str(regime),
-        "chop_active": in_chop,
-        "topology_weight": round(topology_weight, 6),
-        "topology_pool_scope_used_by_live_math": "BOTH_BSL_AND_SSL_LEGACY_COMPATIBILITY",
-        "directional_pool_kind": "SSL" if side == Side.LONG.value else "BSL",
-        "major_pool_count": len(major_pools),
-        "directional_pool_count": len(directional_pools),
-        "opposite_pool_count": len(opposite_pools),
-        "nearest_any_pool_distance_atr": round(nearest_any_atr, 6),
-        "nearest_directional_pool_distance_atr": round(nearest_directional_atr, 6),
-        "nearest_opposite_pool_distance_atr": round(nearest_opposite_atr, 6),
-        "smt_support": has_smt_support,
-        "smt_data_available": smt_data_available,
-        "smt_bias": str(smt_bias or Side.NEUTRAL.value),
-        "smt_profile": json_safe(smt_profile),
-        "smt_multiplier": round(smt_multiplier, 6),
-        "cvd_absorption_support": has_cvd_absorption,
-        "cvd_bias": str(cvd.get("bias") or "NEUTRAL"),
-        "cvd_strength": round(safe_float(cvd.get("strength"), 0.0), 6),
-        "cvd_multiplier": round(cvd_multiplier, 6),
-        "footprint_score": round(footprint_score, 6),
-        "max_quality_without_smt_at_current_topology": round(max_without_smt, 6),
-        "max_quality_with_smt_at_current_topology": round(max_with_smt, 6),
-        "theoretical_max_without_smt": round(theoretical_max_without_smt, 6),
-        "theoretical_max_with_smt": round(theoretical_max_with_smt, 6),
-        "threshold_reachable_without_smt_theoretically": theoretical_max_without_smt >= threshold,
-        "reason_codes": reason_codes,
-        "threshold_mutation_allowed": False,
-        "live_math_changed": False,
-        "evidence_lineage_changed": raw_sweep_explicit,
-        "schema_version": "institutional_sweep_audit_v9.5.24_real_sweep_smt_lineage",
+    depth=max(0.0,safe_float(event.get("sweep_depth_atr"),0.0)); depth_q=clamp((depth-INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR)/0.31,0.0,1.0) if is_raw_sweep else 0.0
+    reclaim=bool(event.get("reclaim")); rejection=bool(event.get("rejection")); follow=bool(event.get("directional_followthrough")); not_chasing=bool(event.get("not_chasing"))
+    evidence={
+        "directional_topology":0.22*directional_topology,
+        "sweep_depth":0.16*depth_q,
+        "reclaim":0.20 if reclaim else 0.0,
+        "rejection":0.12 if rejection else 0.0,
+        "directional_followthrough":0.16 if follow else 0.0,
+        "not_chasing":0.06 if not_chasing else 0.0,
+        "smt_support":0.05 if smt_support else 0.0,
+        "cvd_support":0.03 if cvd_support else 0.0,
     }
+    primary=sum(v for k,v in evidence.items() if k not in {"smt_support","cvd_support"}); quality=sum(evidence.values()) if is_raw_sweep else 0.0
+    core=bool(reclaim and follow and not_chasing and (rejection or depth_q>=0.40))
+    valid=bool(is_raw_sweep and core and quality >= (threshold if strict_environment else 0.72))
+    live_mult=clamp(0.55+quality*0.55,0.55,1.10) if is_raw_sweep else 1.0
+    reasons=[]
+    if not is_raw_sweep: reasons.append("NO_RAW_SWEEP")
+    else:
+        if not reclaim: reasons.append("NO_RECLAIM")
+        if not follow: reasons.append("NO_DIRECTIONAL_FOLLOWTHROUGH")
+        if not rejection: reasons.append("WEAK_REJECTION_SHAPE")
+        if not not_chasing: reasons.append("CHASE_DISTANCE_EXCEEDED")
+        if directional_topology<0.35: reasons.append("WEAK_DIRECTIONAL_POOL_TOPOLOGY")
+        if strict_environment and quality<threshold: reasons.append("STRICT_ENVIRONMENT_EVIDENCE_BUDGET_BELOW_THRESHOLD")
+        if valid: reasons.extend(["INSTITUTIONAL_SWEEP_EVIDENCE_PASS","STRICT_ENVIRONMENT_QUALITY_PASS"] if strict_environment else ["INSTITUTIONAL_SWEEP_EVIDENCE_PASS"])
+        if not smt_support: reasons.append("SMT_NOT_SUPPORTIVE" if smt_available else "SMT_DATA_UNAVAILABLE")
+        if not cvd_support: reasons.append("CVD_ABSORPTION_NOT_SUPPORTIVE")
+    max_no=min(0.95,primary+(0.03 if cvd_support else 0.0)); max_yes=min(1.0,primary+0.05+(0.03 if cvd_support else 0.0))
+    return {
+        "raw_sweep":is_raw_sweep,"raw_sweep_source":"EXPLICIT_REAL_GEOMETRY","valid":valid,"quality":round(quality,6),"primary_price_quality":round(primary,6),
+        "live_score_multiplier":round(live_mult,6),"quality_threshold":round(threshold,6),"quality_margin":round(quality-threshold,6),"strict_environment":strict_environment,"regime":str(regime),"chop_active":in_chop,
+        "evidence_budget":{k:round(v,6) for k,v in evidence.items()},"evidence_budget_total":round(quality,6),"core_price_evidence_pass":core,
+        "topology_weight":round(directional_topology,6),"topology_pool_scope_used_by_live_math":"DIRECTIONAL_POOL_ONLY","directional_pool_kind":"SSL" if side==Side.LONG.value else "BSL",
+        "major_pool_count":len(major),"directional_pool_count":len(directional),"opposite_pool_count":len(opposite_pools),"nearest_any_pool_distance_atr":round(any_atr,6),"nearest_directional_pool_distance_atr":round(dir_atr,6),"nearest_opposite_pool_distance_atr":round(opp_atr,6),
+        "sweep_depth_atr":round(depth,6),"reclaim":reclaim,"rejection":rejection,"directional_followthrough":follow,"not_chasing":not_chasing,
+        "smt_support":smt_support,"smt_data_available":smt_available,"smt_bias":str(smt_bias or Side.NEUTRAL.value),"smt_profile":json_safe(smt_profile),"cvd_absorption_support":cvd_support,"cvd_bias":str(cvd.get("bias") or "NEUTRAL"),"cvd_strength":round(safe_float(cvd.get("strength"),0.0),6),
+        "max_quality_without_smt_at_current_topology":round(max_no,6),"max_quality_with_smt_at_current_topology":round(max_yes,6),"theoretical_max_without_smt":0.95,"theoretical_max_with_smt":1.0,"threshold_reachable_without_smt_theoretically":0.95>=threshold,
+        "reason_codes":reasons,"threshold_mutation_allowed":False,"live_math_changed":True,"evidence_lineage_changed":True,"schema_version":"institutional_sweep_evidence_budget_v9.5.25",
+    }
+
+
 
 
 def range_compression_breakout_profile(
-    candles: list[Candle],
-    side: str,
-    atr15: float,
-    regime: str,
-    market_regime: Optional[dict[str, Any]],
-    *,
-    strong_displacement: bool,
-    trigger_ready: bool,
+    candles: list[Candle], side: str, atr15: float, regime: str,
+    market_regime: Optional[dict[str, Any]], *, strong_displacement: bool, trigger_ready: bool,
 ) -> dict[str, Any]:
-    """Compression must be a prior range plus an actual directional breakout.
+    """Detect absolute or relative compression, then require a real breakout.
 
-    The strict 1.60 ATR definition remains valid everywhere. A 1.60..2.30 ATR
-    range is accepted only when the independent Regime Engine already labels
-    the market RANGE_COMPRESSION. This reuses an existing production threshold
-    instead of fitting a new number to the same dormant sample. Neither mode is
-    executable without a close beyond the prior range, displacement and a fresh
-    execution trigger.
+    Absolute 1.60/2.30 ATR semantics are preserved. The additional relative path
+    compares recent true-range energy with a prior baseline and requires low
+    directional efficiency, so a slow trend is not mislabeled compression.
+    Execution readiness remains separate and must be supplied by a fresh local
+    3M confirmation at the breakout boundary.
     """
-    side = str(side or "").upper()
-    confirmed = _confirmed_candles(candles, 24)
-    if side not in {Side.LONG.value, Side.SHORT.value} or len(confirmed) < 13 or atr15 <= 0:
-        return {
-            "active": False, "compression_supported": False,
-            "directional_breakout": False, "compression_atr": 0.0,
-            "reason": "NOT_ENOUGH_CONFIRMED_15M_DATA",
-            "schema_version": "range_compression_breakout_v9.5.24",
-        }
-    prior = confirmed[-13:-1]
-    current = confirmed[-1]
-    prior_high = max(c.high for c in prior)
-    prior_low = min(c.low for c in prior)
-    compression_atr = (prior_high - prior_low) / max(atr15, 1e-9)
-    strict = bool(0 < compression_atr <= RANGE_COMPRESSION_STRICT_MAX_ATR)
-    regime_type = str((market_regime or {}).get("regime_type") or "").upper()
-    contextual = bool(
-        not strict
-        and 0 < compression_atr <= RANGE_COMPRESSION_CONTEXT_MAX_ATR
-        and regime_type == "RANGE_COMPRESSION"
-    )
-    supported = bool(strict or contextual)
-    buffer = atr15 * RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR
-    if side == Side.LONG.value:
-        breakout_margin_atr = (current.close - prior_high) / max(atr15, 1e-9)
-        directional_breakout = bool(current.close > prior_high + buffer)
-        breakout_level = prior_high
+    side=str(side or "").upper(); confirmed=_confirmed_candles(candles, 40)
+    need=RANGE_COMPRESSION_RELATIVE_WINDOW+RANGE_COMPRESSION_BASELINE_WINDOW+1
+    if side not in {Side.LONG.value,Side.SHORT.value} or len(confirmed)<13 or atr15<=0:
+        return {"active":False,"detected":False,"entry_ready":False,"compression_supported":False,"directional_breakout":False,"compression_atr":0.0,"reason":"NOT_ENOUGH_CONFIRMED_15M_DATA","schema_version":"range_compression_breakout_v9.5.25"}
+    current=confirmed[-1]
+    absolute_prior=confirmed[-13:-1]
+    abs_high=max(c.high for c in absolute_prior); abs_low=min(c.low for c in absolute_prior)
+    compression_atr=(abs_high-abs_low)/max(atr15,1e-9)
+    strict=bool(0<compression_atr<=RANGE_COMPRESSION_STRICT_MAX_ATR)
+    regime_type=str((market_regime or {}).get("regime_type") or "").upper()
+    contextual=bool(not strict and 0<compression_atr<=RANGE_COMPRESSION_CONTEXT_MAX_ATR and regime_type=="RANGE_COMPRESSION")
+
+    relative_available = len(confirmed) >= need
+    if relative_available:
+        recent=confirmed[-(RANGE_COMPRESSION_RELATIVE_WINDOW+1):-1]
+        baseline=confirmed[-(RANGE_COMPRESSION_RELATIVE_WINDOW+RANGE_COMPRESSION_BASELINE_WINDOW+1):-(RANGE_COMPRESSION_RELATIVE_WINDOW+1)]
+        recent_tr=[max(c.high-c.low,1e-9) for c in recent]; baseline_tr=[max(c.high-c.low,1e-9) for c in baseline]
+        recent_median=median(recent_tr); baseline_median=max(median(baseline_tr),1e-9)
+        tr_ratio=recent_median/baseline_median
+        path=sum(abs(recent[i].close-recent[i-1].close) for i in range(1,len(recent)))
+        net=abs(recent[-1].close-recent[0].open)
+        efficiency=net/max(path, atr15*0.05, 1e-9)
+        relative=bool(tr_ratio<=RANGE_COMPRESSION_RELATIVE_TR_RATIO_MAX and efficiency<=RANGE_COMPRESSION_RELATIVE_EFFICIENCY_MAX)
     else:
-        breakout_margin_atr = (prior_low - current.close) / max(atr15, 1e-9)
-        directional_breakout = bool(current.close < prior_low - buffer)
-        breakout_level = prior_low
-    current_impulse = calculate_impulse_strength(confirmed, side, atr15)
-    current_displacement = bool(int(current_impulse.get("score") or 0) >= 1)
-    active = bool(supported and directional_breakout and current_displacement and trigger_ready)
+        recent=absolute_prior[-min(RANGE_COMPRESSION_RELATIVE_WINDOW, len(absolute_prior)):]
+        recent_median=0.0; baseline_median=0.0; tr_ratio=999.0; efficiency=999.0; relative=False
+    supported=bool(strict or contextual or relative)
+
+    # For relative compression, the breakout boundary belongs to the contracted
+    # window itself, not to a stale 12-bar absolute box.
+    prior_high=max(c.high for c in (recent if relative and not (strict or contextual) else absolute_prior))
+    prior_low=min(c.low for c in (recent if relative and not (strict or contextual) else absolute_prior))
+    buffer=atr15*RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR
+    if side==Side.LONG.value:
+        breakout_margin_atr=(current.close-prior_high)/max(atr15,1e-9); directional_breakout=current.close>prior_high+buffer; breakout_level=prior_high
+    else:
+        breakout_margin_atr=(prior_low-current.close)/max(atr15,1e-9); directional_breakout=current.close<prior_low-buffer; breakout_level=prior_low
+    impulse=calculate_impulse_strength(confirmed,side,atr15); current_displacement=bool(int(impulse.get("score") or 0)>=1)
+    detected=bool(supported and directional_breakout and current_displacement)
+    entry_ready=bool(detected and trigger_ready)
+    mode="STRICT_1_60" if strict else "RANGE_CONTEXT_2_30" if contextual else "RELATIVE_ENERGY_CONTRACTION" if relative else "NONE"
     return {
-        "active": active,
-        "compression_supported": supported,
-        "strict_compression": strict,
-        "contextual_compression": contextual,
-        "compression_mode": "STRICT_1_60" if strict else "RANGE_CONTEXT_2_30" if contextual else "NONE",
-        "compression_atr": round(compression_atr, 6),
-        "strict_threshold_atr": RANGE_COMPRESSION_STRICT_MAX_ATR,
-        "context_threshold_atr": RANGE_COMPRESSION_CONTEXT_MAX_ATR,
-        "market_regime_type": regime_type,
-        "legacy_regime": str(regime or ""),
-        "prior_high": round_price(prior_high),
-        "prior_low": round_price(prior_low),
-        "breakout_level": round_price(breakout_level),
-        "breakout_close": round_price(current.close),
-        "breakout_margin_atr": round(breakout_margin_atr, 6),
-        "breakout_buffer_atr": RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR,
-        "directional_breakout": directional_breakout,
-        "strong_displacement": current_displacement,
-        "current_impulse": json_safe(current_impulse),
-        "legacy_scan_strong_displacement": bool(strong_displacement),
-        "legacy_scan_strong_displacement_is_authority": False,
-        "trigger_ready": bool(trigger_ready),
-        "reason": (
-            "EXECUTABLE_RANGE_COMPRESSION_BREAKOUT" if active
-            else "NO_COMPRESSION_CONTEXT" if not supported
-            else "NO_DIRECTIONAL_BREAKOUT" if not directional_breakout
-            else "NO_STRONG_DISPLACEMENT" if not current_displacement
-            else "WAIT_FRESH_TRIGGER"
-        ),
-        "threshold_fitted_from_dormant_sample": False,
-        "schema_version": "range_compression_breakout_v9.5.24",
+        "active": detected, "detected":detected, "entry_ready":entry_ready, "compression_supported":supported,
+        "strict_compression":strict,"contextual_compression":contextual,"relative_compression":relative,"relative_compression_available":relative_available,"compression_mode":mode,
+        "compression_atr":round(compression_atr,6),"relative_tr_ratio":round(tr_ratio,6),"relative_tr_ratio_max":RANGE_COMPRESSION_RELATIVE_TR_RATIO_MAX,
+        "relative_directional_efficiency":round(efficiency,6),"relative_efficiency_max":RANGE_COMPRESSION_RELATIVE_EFFICIENCY_MAX,
+        "recent_median_true_range":round(recent_median,6),"baseline_median_true_range":round(baseline_median,6),
+        "strict_threshold_atr":RANGE_COMPRESSION_STRICT_MAX_ATR,"context_threshold_atr":RANGE_COMPRESSION_CONTEXT_MAX_ATR,
+        "market_regime_type":regime_type,"legacy_regime":str(regime or ""),"prior_high":round_price(prior_high),"prior_low":round_price(prior_low),
+        "breakout_level":round_price(breakout_level),"breakout_close":round_price(current.close),"breakout_margin_atr":round(breakout_margin_atr,6),
+        "breakout_buffer_atr":RANGE_COMPRESSION_BREAKOUT_BUFFER_ATR,"directional_breakout":bool(directional_breakout),"strong_displacement":current_displacement,
+        "current_impulse":json_safe(impulse),"legacy_scan_strong_displacement":bool(strong_displacement),"legacy_scan_strong_displacement_is_authority":False,
+        "persistent_trigger_ready":bool(trigger_ready),"reason":"DETECTED_WAIT_LOCAL_3M" if detected and not trigger_ready else "EXECUTABLE_RANGE_COMPRESSION_BREAKOUT" if entry_ready else "NO_COMPRESSION_CONTEXT" if not supported else "NO_DIRECTIONAL_BREAKOUT" if not directional_breakout else "NO_STRONG_DISPLACEMENT",
+        "threshold_fitted_from_dormant_sample":False,"schema_version":"range_compression_breakout_v9.5.25",
     }
+
+def range_compression_model_local_execution_profile(c3: list[Candle], side: str, atr15: float, profile: dict[str, Any]) -> dict[str, Any]:
+    """Fresh 3M execution package tied to the detected breakout boundary."""
+    profile=dict(profile or {}); level=safe_float(profile.get("breakout_level"),0.0); recent=_confirmed_candles(c3,15)
+    if not profile.get("detected") or level<=0 or len(recent)<5:
+        return {"ready":False,"anchor":round_price(level) if level else 0.0,"reason":"NO_DETECTED_BREAKOUT_OR_3M_DATA","schema_version":"range_compression_local_3m_v9.5.25"}
+    snap=trigger_snapshot(recent,side,level,atr15)
+    ready=bool(snap.get("ready") and int(safe_float(snap.get("quality"),0.0))>=58 and not bool(snap.get("chase_risk")))
+    return {"ready":ready,"anchor":round_price(level),"age_minutes":0.0 if ready else 999.0,"quality":int(safe_float(snap.get("quality"),0.0)),"reclaim":bool(snap.get("reclaim")),"displacement":bool(snap.get("displacement")),"retest":bool(snap.get("retest")),"chase_risk":bool(snap.get("chase_risk")),"last_confirmed_3m_ts":int(recent[-1].ts),"reason":"FRESH_BREAKOUT_BOUNDARY_CONFIRMATION" if ready else "WAIT_BREAKOUT_BOUNDARY_RECLAIM_OR_RETEST","schema_version":"range_compression_local_3m_v9.5.25"}
+
+
 
 def build_dormant_detector_reachability(
     side: str,
@@ -15029,6 +15213,7 @@ def build_dormant_detector_reachability(
     ladder_reanchor = bool(liquidity_ladder_confirmation.get("input_reanchor_ready"))
     ladder_acceptance = bool(liquidity_ladder_confirmation.get("input_acceptance_ready"))
     ladder_live = bool(liquidity_ladder_confirmation.get("input_live_3m_trigger_ready"))
+    ladder_local = bool(liquidity_ladder_confirmation.get("input_model_local_3m_ready"))
     ladder_scan_stage_ready = bool(liquidity_ladder_confirmation.get("scan_stage_execution_ready"))
     ladder_trigger_fresh = bool(liquidity_ladder_confirmation.get("trigger_freshness_pass"))
     ladder_trigger_age = safe_float(liquidity_ladder_confirmation.get("input_trigger_age_minutes"), 999.0)
@@ -15113,7 +15298,7 @@ def build_dormant_detector_reachability(
                 "range_compressed": compression_supported,
                 "directional_breakout": compression_directional_breakout,
                 "strong_displacement": compression_strong_displacement,
-                "live_trigger_ready": bool(trigger_ready),
+                "live_trigger_ready": bool((compression_profile.get("model_local_3m") or {}).get("ready") or trigger_ready),
             },
             {
                 "compression_atr": round(safe_float(compression_profile.get("compression_atr"), compression_atr), 4),
@@ -15147,6 +15332,7 @@ def build_dormant_detector_reachability(
                 "TARGET_ROUTE_ACTIVE": ladder_route_active,
                 "RETEST_REANCHOR_AVAILABLE": ladder_reanchor,
                 "ACCEPTANCE_AVAILABLE": ladder_acceptance,
+                "MODEL_LOCAL_3M_AVAILABLE": ladder_local,
                 "LIVE_3M_AVAILABLE": ladder_live,
                 "SELECTED_CONFIRMATION_READY": ladder_ready,
             },
@@ -15160,6 +15346,7 @@ def build_dormant_detector_reachability(
                 "trigger_freshness_pass": ladder_trigger_fresh,
                 "retest_reanchor_ready": ladder_reanchor,
                 "acceptance_ready": ladder_acceptance,
+                "model_local_3m_ready": ladder_local,
                 "live_3m_trigger_ready": ladder_live,
                 "execution_confirmation_ready": ladder_ready,
             },
@@ -15351,6 +15538,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             "trigger_level": safe_float(directional_sweep_profile.get("reference_level"), price),
             "sweep_level": safe_float(directional_sweep_profile.get("reference_level"), price),
             "sweep_extreme": sweep_extreme,
+            "sweep_depth_atr": safe_float(directional_sweep_profile.get("sweep_depth_atr"), 0.0),
+            "reclaim": bool(directional_sweep_profile.get("reclaim")),
+            "rejection": bool(directional_sweep_profile.get("rejection")),
+            "directional_followthrough": bool(directional_sweep_profile.get("directional_followthrough")),
+            "not_chasing": bool(directional_sweep_profile.get("not_chasing")),
             "invalidation_level": (
                 sweep_extreme - sweep_invalidation_pad
                 if side == Side.LONG.value
@@ -15413,6 +15605,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         )
         compression_atr = safe_float(compression_profile.get("compression_atr"), 0.0)
         is_range_compressed = bool(compression_profile.get("compression_supported"))
+        compression_local_execution = range_compression_model_local_execution_profile(c3, side, atr15, compression_profile)
+        compression_profile["model_local_3m"] = json_safe(compression_local_execution)
         acceptance_retest = detect_acceptance_retest_continuation(c15, side, price, atr15, zones, tf15, tf1h)
         continuation_reanchor = continuation_reanchor_profile(c3, c15, zones, side, price, atr15, tf15, tf1h)
         momentum_no_pullback = detect_momentum_no_pullback_continuation(c3, c15, zones, side, price, atr15, tf15, tf1h)
@@ -15449,22 +15643,26 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
 
         open_reclaim = detect_daily_weekly_open_reclaim(c15, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
         liquidity_ladder = detect_liquidity_ladder_model(side, price, context, atr15, tf15, tf1h)
+        liquidity_ladder_local_3m = liquidity_ladder_model_local_confirmation(c3, c15, side, atr15, tf15, tf1h, liquidity_ladder)
         liquidity_ladder_confirmation_profile = liquidity_ladder_execution_confirmation(
             live_3m_trigger_ready=live_3m_trigger_ready,
             trigger_level=trigger_level,
             trigger_age=trigger_age,
             acceptance_retest=acceptance_retest,
             continuation_reanchor=continuation_reanchor,
+            model_local_3m=liquidity_ladder_local_3m,
             price=price,
             scan_stage=scan_stage,
         )
         failed_auction = detect_failed_auction_rejection_tail(c15, side, price, atr15, context)
+        failed_auction_local_3m = failed_auction_model_local_confirmation(c3, c15, side, atr15, tf15, tf1h, failed_auction)
         time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
+        time_of_day_local_3m = _directional_confirmation_profile(side, c3, c15, atr15, tf15, tf1h)
 
         sweep_2022_active = bool(is_sweep and has_choch and has_fvg)
         range_edge_active = bool(regime == Regime.RANGE.value and is_sweep and sweep_local_reclaim)
         turtle_soup_active = bool(is_sweep and not sweep_strong_displacement)
-        range_compression_active = bool(compression_profile.get("active"))
+        range_compression_active = bool(compression_profile.get("detected"))
         context["_detector_reachability"].extend(build_dormant_detector_reachability(
             side,
             is_raw_sweep=is_raw_sweep,
@@ -15840,11 +16038,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 aggregate_ready = bool(short_reversal_profile.get("execution_ready"))
                 # v9.2 model-local execution contract: aggregate readiness is context only.
                 # It may rank hypotheses, but it cannot override this model's failed hard gate.
-                actionable_trigger_ready = bool(model_ready)
-                local_live_3m_trigger_ready = bool(actionable_trigger_ready and live_3m_trigger_ready)
+                short_local_confirmation = short_reversal_model_local_confirmation(c3, c15, atr15, tf15, tf1h, model_id, short_model_profile)
+                local_required = bool(short_local_confirmation.get("required"))
+                actionable_trigger_ready = bool(model_ready and (short_local_confirmation.get("ready") if local_required else True))
+                local_live_3m_trigger_ready = bool(actionable_trigger_ready and (short_local_confirmation.get("ready") if local_required else live_3m_trigger_ready))
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
                 local_trigger_level = safe_float(short_model_profile.get("entry_anchor"), price) or price
                 local_trigger_age = 0.0 if actionable_trigger_ready else trigger_age
+                if local_required:
+                    short_model_profile = {**short_model_profile, "model_local_3m_confirmation": short_local_confirmation}
                 if actionable_trigger_ready:
                     model_thesis_age = 0.0
                     thesis_origin = "MODEL_LOCAL_SHORT_REVERSAL"
@@ -15864,6 +16066,19 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         f"🟡 {model_id}: WATCH/CONFIRMATION, model-local execution not ready; "
                         f"aggregate_ready={aggregate_ready} cannot override{suffix}"
                     )
+            elif model_id == "RANGE_COMPRESSION_MODEL":
+                actionable_trigger_ready = bool(compression_local_execution.get("ready"))
+                local_live_3m_trigger_ready = actionable_trigger_ready
+                execution_source = ExecutionSource.LIVE_3M.value if actionable_trigger_ready else ExecutionSource.NONE.value
+                execution_lane_source = ExecutionLane.STANDARD_CONFIRMED.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
+                local_trigger_level = safe_float(compression_local_execution.get("anchor"), safe_float(compression_profile.get("breakout_level"), trigger_level)) or trigger_level
+                local_trigger_age = 0.0 if actionable_trigger_ready else trigger_age
+                if actionable_trigger_ready:
+                    model_thesis_age = 0.0
+                    thesis_origin = "MODEL_LOCAL_RANGE_COMPRESSION_BREAKOUT"
+                    pattern_conf.append("🟢 RANGE_COMPRESSION: 15M breakout + fresh model-local 3M boundary confirmation")
+                else:
+                    pattern_conf.append("🟡 RANGE_COMPRESSION detected; waiting fresh 3M reclaim/retest at breakout boundary")
             elif model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
                 execution_source = ExecutionSource.MOMENTUM_CONTINUATION.value
                 actionable_trigger_ready = bool(momentum_no_pullback.get("entry_ready"))
@@ -16012,29 +16227,31 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     ),
                     "blocking_reason": "" if probe_location_ok else "FAILED_AUCTION_TOO_FAR_FROM_REJECTION_ANCHOR",
                 }
-                execution_source = ExecutionSource.FAILED_AUCTION.value if probe_location_ok else ExecutionSource.NONE.value
-                actionable_trigger_ready = bool(probe_location_ok)
-                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if probe_location_ok else ExecutionLane.WAIT_RETEST.value
+                failed_auction_confirmation_ready = bool(failed_auction_local_3m.get("ready"))
+                actionable_trigger_ready = bool(probe_location_ok and failed_auction_confirmation_ready)
+                execution_source = ExecutionSource.FAILED_AUCTION.value if actionable_trigger_ready else ExecutionSource.NONE.value
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else (ExecutionLane.WAIT_CONFIRMATION.value if probe_location_ok else ExecutionLane.WAIT_RETEST.value)
                 local_trigger_level = rejection_anchor
-                local_trigger_age = 0.0
-                local_live_3m_trigger_ready = bool(probe_location_ok)
+                local_trigger_age = 0.0 if actionable_trigger_ready else trigger_age
+                local_live_3m_trigger_ready = actionable_trigger_ready
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_FAILED_AUCTION"
-                if probe_location_ok:
-                    pattern_conf.append(
-                        f"🟢 FAILED_AUCTION location valid: {distance_to_anchor_atr:.2f} ATR from rejection anchor"
-                    )
+                if actionable_trigger_ready:
+                    pattern_conf.append(f"🟢 FAILED_AUCTION: near anchor + fresh model-local 3M rejection confirmation")
+                elif probe_location_ok:
+                    pattern_conf.append(f"🟡 FAILED_AUCTION near anchor ({distance_to_anchor_atr:.2f} ATR), waiting fresh 3M confirmation")
                 else:
                     pattern_conf.append(
                         f"🟡 FAILED_AUCTION WAIT_RETEST: {distance_to_anchor_atr:.2f} ATR from anchor "
                         f"> {FAILED_AUCTION_PROBE_MAX_DISTANCE_ATR:.2f} ATR probe limit"
                     )
             elif model_id == "TIME_OF_DAY_ADAPTIVE":
-                execution_source = ExecutionSource.TIME_OF_DAY.value
-                actionable_trigger_ready = bool(time_of_day_adaptive.get("entry_ok"))
-                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
+                local_time_ready = bool(time_of_day_adaptive.get("entry_ok") and time_of_day_local_3m.get("supported") and safe_float(time_of_day_local_3m.get("score"),0.0) >= 65)
+                execution_source = ExecutionSource.TIME_OF_DAY.value if local_time_ready else ExecutionSource.NONE.value
+                actionable_trigger_ready = local_time_ready
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_CONFIRMATION.value
                 local_trigger_level = price
-                local_trigger_age = 0.0
+                local_trigger_age = 0.0 if actionable_trigger_ready else trigger_age
                 local_live_3m_trigger_ready = actionable_trigger_ready
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_TIME_OF_DAY"
@@ -16140,6 +16357,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 ce_level=ce_level,
                 is_limit_armed=limit_armed_ready,
                 model_context={
+                    "RANGE_COMPRESSION_MODEL": {**compression_profile, "local_execution": compression_local_execution},
                     "ACCEPTANCE_RETEST_CONTINUATION": {**acceptance_retest, "reanchor": continuation_reanchor},
                     "MOMENTUM_NO_PULLBACK_CONTINUATION": momentum_no_pullback,
                     "ACCELERATION_PULLBACK_REENTRY": acceleration_reentry,
@@ -16354,8 +16572,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         "candidate_model": model_id,
                         "contract": "candidate.ict_model in SHORT_REVERSAL_MODEL_IDS",
                     },
+                    "range_compression": {**compression_profile, "model_local_3m": compression_local_execution} if model_id == "RANGE_COMPRESSION_MODEL" else {},
                     "liquidity_ladder_confirmation": ladder_confirmation if model_id == "LIQUIDITY_LADDER_MODEL" else {},
                     "failed_auction_location": failed_auction_location if model_id == "FAILED_AUCTION_REJECTION" else {},
+                    "failed_auction_model_local_3m": failed_auction_local_3m if model_id == "FAILED_AUCTION_REJECTION" else {},
+                    "time_of_day_model_local_3m": time_of_day_local_3m if model_id == "TIME_OF_DAY_ADAPTIVE" else {},
                     "failed_auction_detector": failed_auction if model_id == "FAILED_AUCTION_REJECTION" else {},
                     "fresh_base_thesis_clock": {
                         **fresh_base_clock,
@@ -16430,6 +16651,8 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             cand = apply_short_reversal_stage_overlay(cand)
             cand = apply_reversal_drift_stage_overlay(cand)
             cand = apply_setup_innovation_overlay(cand, context, state, journal)
+            cand = apply_underperforming_setup_guard(cand, journal)
+            cand = apply_evidence_adjusted_selection_score(cand, journal)
 
             min_score_required = params["armed_score"] - 10 if not is_fallback else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
             # TIME_WARP не блокується, але мусить бути достатньо сильним, щоб хоча б ARMED/WATCH.
@@ -16460,6 +16683,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             "setup_type": candidate.setup_type,
             "rank": candidate.hypothesis_rank,
             "final_score": candidate.final_score,
+            "evidence_adjusted_selection_score": round(_candidate_selection_score(candidate), 4),
             "execution_anchor": round_price(candidate.execution_anchor),
             "trigger_level": round_price(candidate.trigger_level),
             "market_thesis_age_minutes": candidate.market_thesis_age_minutes,
@@ -18753,7 +18977,7 @@ def ranked_top_n_conversion_audit(
             "rows": [], "candidate_count": 0, "audit_only": True,
             "schema_version": RANKED_CONVERSION_AUDIT_SCHEMA_VERSION,
         }
-    best_score = safe_float(ranked[0].final_score, 0.0)
+    best_score = _candidate_selection_score(ranked[0])
     final_candidate = getattr(final_decision, "candidate", None) if final_decision else None
     final_key = (
         str(getattr(final_candidate, "side", "") or ""),
@@ -18782,6 +19006,7 @@ def ranked_top_n_conversion_audit(
             funnel = (getattr(decision, "audit", {}) or {}).get("execution_funnel") or {}
             revalidation = dict(getattr(evaluated, "revalidation_profile", {}) or {})
             score = int(safe_float(getattr(evaluated, "final_score", 0.0), 0.0))
+            selection_score = _candidate_selection_score(evaluated)
             would_executable = bool(executive.get("allow_execution"))
             plan_valid = bool(plan and plan.valid)
             plan_ready = bool(plan and plan.execution_ready)
@@ -18793,8 +19018,10 @@ def ranked_top_n_conversion_audit(
                 "model_id": str(candidate.ict_model),
                 "selected": selected,
                 "final_score": score,
+                "evidence_adjusted_selection_score": round(selection_score, 4),
                 "best_score": round(best_score, 4),
-                "score_gap_to_best": round(best_score - score, 4),
+                "score_gap_to_best": round(best_score - selection_score, 4),
+                "raw_score_gap_to_best_raw": round(safe_float(ranked[0].final_score, 0.0) - score, 4),
                 "score_gap_to_risky": round(RISKY_ENTRY_SCORE_BASE - score, 4),
                 "would_pass_score": score >= RISKY_ENTRY_SCORE_BASE,
                 "trigger_ready": bool(getattr(evaluated, "trigger_ready", False)),
@@ -19079,16 +19306,27 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             missed_cand = rescore_reentry_candidate(missed_cand, context, journal)
             guard = event_driven_reentry_guard(state, context, missed_cand)
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context.get("adaptive_regime", context["regime"]))["reentry_aggressiveness"]:
-                plan = build_trade_plan(context, missed_cand, journal=journal)
-                proposed_action = (
-                    Action.ENTRY.value
-                    if plan.valid and plan.execution_ready and missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD
-                    else Action.RISKY_ENTRY.value
-                    if plan.valid and plan.execution_ready
-                    else OpportunityStatus.ARMED.value
+                fresh_ranked = finalize_hypothesis_ranking(list(cands)) if cands else []
+                fresh_best = fresh_ranked[0] if fresh_ranked else None
+                reentry_wins_selection = bool(
+                    fresh_best is None
+                    or _candidate_selection_score(missed_cand) >= _candidate_selection_score(fresh_best)
                 )
-                return Decision(
-                    id=uuid.uuid4().hex[:10], time=iso_now(), action=Action.NO_SETUP.value,
+                if not reentry_wins_selection:
+                    # Keep it visible in the common audit/ranking, but do not let a
+                    # saved weak thesis bypass a stronger fresh evidence candidate.
+                    cands.append(missed_cand)
+                else:
+                    plan = build_trade_plan(context, missed_cand, journal=journal)
+                    proposed_action = (
+                        Action.ENTRY.value
+                        if plan.valid and plan.execution_ready and missed_cand.final_score >= REENTRY_AGGRESSIVE_THRESHOLD
+                        else Action.RISKY_ENTRY.value
+                        if plan.valid and plan.execution_ready
+                        else OpportunityStatus.ARMED.value
+                    )
+                    return Decision(
+                        id=uuid.uuid4().hex[:10], time=iso_now(), action=Action.NO_SETUP.value,
                     side=missed_cand.side, setup_type=missed_cand.setup_type,
                     quality=missed_cand.final_score,
                     reason="Re-entry analyst submitted a draft for executive review",
@@ -19140,7 +19378,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             }
         )
 
-    # 3. Вибір переможця за hypothesis_score, а не лише за final_score.
+    # 3. v9.5.26: winner uses evidence-adjusted selection authority; raw hypothesis/final scores remain diagnostics.
     valid_candidates = finalize_hypothesis_ranking(valid_candidates)
     best = valid_candidates[0]
     best.selected_source = "RANKED_CANDIDATE"
@@ -26902,6 +27140,167 @@ def _run_self_test() -> bool:
         globals()["get_okx_ticker"] = original_get_okx_ticker
         globals()["get_tradingview_price_fallback"] = original_get_tv
 
+
+    # v9.5.26: evidence-adjusted selection must preserve raw quality and prevent
+    # weak/quarantined raw-score inflation from hijacking top ranking.
+    _sel_journal = {
+        "trades": (
+            [{"setup_type": SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value, "side": Side.LONG.value, "pnl_r": -0.5} for _ in range(4)]
+            + [{"setup_type": SetupType.SESSION_MEAN_RECLAIM.value, "side": Side.LONG.value, "pnl_r": 0.25} for _ in range(30)]
+        ),
+        "training_signals": [],
+        "signals": [],
+    }
+    _weak_rank = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=90, final_score=90, hypothesis_score=90.0,
+        setup_quality_score=91, execution_quality_score=88, entry_quality_score=89,
+    )
+    _mature_rank = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.SESSION_MEAN_RECLAIM.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value, raw_score=76, final_score=76, hypothesis_score=76.0,
+        setup_quality_score=79, execution_quality_score=77, entry_quality_score=78,
+    )
+    _weak_raw_before = (_weak_rank.final_score, _weak_rank.hypothesis_score, _weak_rank.setup_quality_score, _weak_rank.execution_quality_score, _weak_rank.entry_quality_score)
+    _weak_rank = apply_underperforming_setup_guard(_weak_rank, _sel_journal)
+    _weak_rank = apply_evidence_adjusted_selection_score(_weak_rank, _sel_journal)
+    _mature_rank = apply_evidence_adjusted_selection_score(_mature_rank, _sel_journal)
+    _weak_raw_after = (_weak_rank.final_score, _weak_rank.hypothesis_score, _weak_rank.setup_quality_score, _weak_rank.execution_quality_score, _weak_rank.entry_quality_score)
+    _ranked_pair = finalize_hypothesis_ranking([_weak_rank, _mature_rank])
+    checks.append((
+        "v9.5.26 Selection: raw quality is immutable",
+        _weak_raw_before == _weak_raw_after and (_weak_rank.score_components.get("evidence_adjusted_selection") or {}).get("raw_quality_mutated") is False,
+    ))
+    checks.append((
+        "v9.5.26 Selection: quarantined raw-90 cannot displace mature profitable raw-76",
+        _ranked_pair[0].setup_type == SetupType.SESSION_MEAN_RECLAIM.value
+        and _candidate_selection_score(_weak_rank) <= EVIDENCE_SELECTION_EXPERIMENTAL_CAP + 1e-9
+        and _candidate_selection_score(_mature_rank) > _candidate_selection_score(_weak_rank),
+    ))
+    _lucky = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.OPENING_RANGE_BREAKOUT.value,
+        setup_family=SetupFamily.EXPANSION.value, raw_score=88, final_score=88, hypothesis_score=88.0,
+    )
+    _lucky_journal = {"trades":[
+        {"setup_type":SetupType.OPENING_RANGE_BREAKOUT.value,"side":Side.LONG.value,"pnl_r":1.0},
+        {"setup_type":SetupType.OPENING_RANGE_BREAKOUT.value,"side":Side.LONG.value,"pnl_r":1.0},
+    ],"training_signals":[],"signals":[]}
+    _lucky = apply_evidence_adjusted_selection_score(_lucky, _lucky_journal)
+    checks.append((
+        "v9.5.26 Selection: 2/2 lucky sample is shrinked/capped, not promoted",
+        _candidate_selection_score(_lucky) <= EVIDENCE_SELECTION_TINY_SAMPLE_CAP + 1e-9
+        and safe_float((_lucky.evidence_selection_profile.get("evidence") or {}).get("credibility"), 1.0) < 0.20,
+    ))
+
+    _tod_rank = Candidate(
+        side=Side.SHORT.value, setup_type=SetupType.TIME_OF_DAY_ADAPTIVE.value,
+        setup_family=SetupFamily.RANGE_EXECUTION.value, raw_score=95, final_score=95, hypothesis_score=95.0,
+    )
+    _tod_rank = apply_evidence_adjusted_selection_score(_tod_rank, {"trades":[],"training_signals":[],"signals":[]})
+    checks.append((
+        "v9.5.26 Selection: shadow-only Time-of-Day cannot consume live top rank",
+        _tod_rank.evidence_selection_profile.get("mode") == "SHADOW_ONLY"
+        and _candidate_selection_score(_tod_rank) <= ARMED_SCORE_BASE - 1 + 1e-9,
+    ))
+
+    # v9.5.25: primary sweep evidence can pass strict quality without SMT, but only with real price evidence.
+    sweep_ctx={"price":100.0,"liquidity":{"15m":{"ssl":[99.5],"bsl":[101.0]},"1h":{"ssl":[],"bsl":[]}}}
+    sweep_event={"raw_sweep":True,"sweep_level":99.5,"trigger_level":99.5,"sweep_depth_atr":0.35,"reclaim":True,"rejection":True,"directional_followthrough":True,"not_chasing":True}
+    sweep_prof=institutional_sweep_validation_profile(Side.LONG.value,sweep_event,sweep_ctx,1.0,Side.NEUTRAL.value,{"bias":"NEUTRAL","strength":0.0},Regime.RANGE.value,{"chop_zone":{"active":False}},{"data_available":False})
+    checks.append(("v9.5.25 Sweep: strict primary evidence can pass without SMT", bool(sweep_prof.get("valid")) and sweep_prof.get("threshold_reachable_without_smt_theoretically") is True))
+
+    # v9.5.25: Time-of-Day cannot graduate on expectancy/sample alone without exact OOS authority.
+    tod=time_of_day_shadow_profile({"trades":[{"setup_type":SetupType.TIME_OF_DAY_ADAPTIVE.value,"pnl_r":1.0} for _ in range(TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES)],"training_signals":[]})
+    checks.append(("v9.5.25 Time-of-Day: exact OOS calibration required for graduation", tod.get("shadow_active") is True and tod.get("exact_oos_side_validation_pass") is False))
+
+    # v9.5.25: weak setups are capped at experimental probe risk before evidence graduation.
+    weak=Candidate(side=Side.LONG.value,setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,setup_family=SetupFamily.CONTINUATION.value,raw_score=80,final_score=80,entry_stage=EntryStage.CORE.value)
+    weak=apply_underperforming_setup_guard(weak,{"trades":[],"training_signals":[]})
+    weak_ledger=build_risk_adjustment_ledger(weak,{},stage=EntryStage.PROBE.value,journal={"trades":[],"training_signals":[]})
+    checks.append(("v9.5.25 Underperformer: experimental stage and risk cap", weak.entry_stage==EntryStage.PROBE.value and weak_ledger.final_position_risk_pct<=UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT+1e-9))
+    _reactivated=underperforming_setup_empirical_guard({"trades":[],"training_signals":[]},SetupType.RANGE_COMPRESSION_BREAKOUT.value)
+    checks.append(("v9.5.25 Reactivated setup: new live path starts in empirical quarantine", _reactivated.get("guard_class")=="REACTIVATED_PATH_VALIDATION" and _reactivated.get("mode")=="EXPERIMENTAL_PROBE" and safe_float(_reactivated.get("risk_cap_pct"),1.0)<=UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT+1e-9))
+
+    # v9.5.25: relative contraction catches a volatility squeeze without weakening the legacy absolute ATR box.
+    _ts0 = 1_780_000_000_000
+    _baseline15 = []
+    _baseline_closes = [98.8, 99.1, 99.4, 99.7, 100.0, 100.3, 100.6, 100.9, 99.2, 100.0, 101.0, 103.0]
+    for i, close in enumerate(_baseline_closes):
+        _baseline15.append(Candle(ts=_ts0+i*900_000, open=close-0.25, high=close+0.50, low=close-0.50, close=close, confirmed=True))
+    _recent15 = []
+    for j, close in enumerate([103.00,103.04,102.99,103.03,103.00,103.05,103.01,103.04], start=len(_baseline15)):
+        _recent15.append(Candle(ts=_ts0+j*900_000, open=close-0.02, high=close+0.10, low=close-0.10, close=close, confirmed=True))
+    _breakout15 = Candle(ts=_ts0+20*900_000, open=103.06, high=103.37, low=103.04, close=103.34, confirmed=True)
+    _compression = range_compression_breakout_profile(
+        _baseline15+_recent15+[_breakout15], Side.LONG.value, 1.0, Regime.NORMAL.value,
+        {"regime_type":"NORMAL"}, strong_displacement=False, trigger_ready=False,
+    )
+    checks.append((
+        "v9.5.25 Range Compression: relative energy contraction is independently detectable",
+        _compression.get("relative_compression") is True
+        and _compression.get("strict_compression") is False
+        and _compression.get("contextual_compression") is False
+        and _compression.get("detected") is True
+        and _compression.get("entry_ready") is False,
+    ))
+
+    # Shared current-candle fixtures make sure new local-confirmation wrappers call the canonical helper correctly.
+    _c3_long = [
+        Candle(ts=_ts0+i*180_000, open=o, high=h, low=l, close=c, confirmed=True)
+        for i,(o,h,l,c) in enumerate([
+            (100.00,100.08,99.98,100.05),
+            (100.05,100.14,100.03,100.12),
+            (100.12,100.20,100.10,100.18),
+            (100.18,100.20,100.11,100.14),
+            (100.14,100.23,100.12,100.20),
+            (100.20,100.58,100.18,100.55),
+        ])
+    ]
+    _c15_long = [
+        Candle(ts=_ts0+i*900_000, open=99.6+i*0.12, high=100.2+i*0.12, low=99.4+i*0.12, close=99.9+i*0.12, confirmed=True)
+        for i in range(6)
+    ]
+    _tf_long={"bias":Side.LONG.value}
+    _ladder_local=liquidity_ladder_model_local_confirmation(_c3_long,_c15_long,Side.LONG.value,1.0,_tf_long,{}, {"active":True})
+    _ladder_exec=liquidity_ladder_execution_confirmation(
+        live_3m_trigger_ready=False, trigger_level=99.0, trigger_age=500.0, model_local_3m=_ladder_local, price=100.55
+    )
+    checks.append((
+        "v9.5.25 Liquidity Ladder: current model-local 3M path revives stale persistent trigger safely",
+        _ladder_local.get("ready") is True and _ladder_exec.get("ready") is True and _ladder_exec.get("kind")=="MODEL_LOCAL_3M",
+    ))
+
+    _fa_local=failed_auction_model_local_confirmation(
+        _c3_long,_c15_long,Side.LONG.value,1.0,_tf_long,{}, {"active":True,"rejection_anchor":100.0}
+    )
+    checks.append((
+        "v9.5.25 Failed Auction: fresh directional 3M confirmation is required and callable",
+        _fa_local.get("ready") is True and _fa_local.get("micro",{}).get("supported") is True,
+    ))
+
+    _c3_short = [
+        Candle(ts=_ts0+i*180_000, open=o, high=h, low=l, close=c, confirmed=True)
+        for i,(o,h,l,c) in enumerate([
+            (100.55,100.57,100.47,100.50),
+            (100.50,100.52,100.40,100.43),
+            (100.43,100.45,100.34,100.36),
+            (100.36,100.43,100.34,100.39),
+            (100.39,100.41,100.30,100.32),
+            (100.32,100.34,99.93,99.96),
+        ])
+    ]
+    _c15_short = [
+        Candle(ts=_ts0+i*900_000, open=100.8-i*0.12, high=101.0-i*0.12, low=100.2-i*0.12, close=100.5-i*0.12, confirmed=True)
+        for i in range(6)
+    ]
+    _short_local=short_reversal_model_local_confirmation(
+        _c3_short,_c15_short,1.0,{"bias":Side.SHORT.value},{},"SHORT_MSS_REVERSAL",{"execution_ready":True}
+    )
+    checks.append((
+        "v9.5.25 MSS reversal: 15M readiness alone cannot bypass fresh 3M confirmation contract",
+        _short_local.get("required") is True and _short_local.get("ready") is True and _short_local.get("score",0)>=65,
+    ))
+
     ok = all(passed for _, passed in checks)
     for name, passed in checks:
         print(f"  [{'OK' if passed else 'FAIL'}] {name}")
@@ -28958,7 +29357,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.24 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.26 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
