@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.27 (Adaptive Evidence Authority & Fresh Execution)
+BZU Professional Hybrid Confluence Signal Bot v9.5.28 (Persistent Preconfirmation, Momentum Anchor Selection & Directional Calibration)
 =============================================================================================
+Оновлення v9.5.28:
+- Preconfirmation feature persistence restored end-to-end: every new frozen forecast persists its exact feature vector; authority forecast schema bumped so pre-fix heuristic-only rows cannot grant new authority.
+- Momentum No-Pullback uses a dedicated current 3M execution-anchor selector. Canonical 0.75 ATR / 24m / micro-score / anti-climax limits are unchanged; a stale/less suitable ICT-zone may no longer hide a newer safe micro-base.
+- Fresh execution edge ledger records deduplicated audit-only model-local firings for Breakout Retest / Fresh Base / Pullback / Momentum / Failed Breakout SHORT and resolves MFE/MAE/final-move over a fixed future window without pretending counterfactual PnL.
+- Exact setup calibration gains fail-closed directional authority. Material LONG/SHORT divergence blocks pooled learning, while each side may graduate independently only after its own nested chronological OOS validation and non-negative exact-side expectancy.
+- Calibration/Preconfirmation health reporting exposes feature-complete sample counts and directional authority separately; no global fit may masquerade as named-setup or side-specific live authority.
+- Canonical 68/75 score gates, RR/SL floors, 35m execution TTL, 1440m thesis TTL, institutional sweep threshold and risk caps remain unchanged.
 Оновлення v9.5.27:
 - Institutional Sweep v2 нормалізує admission лише по primary price evidence; SMT/CVD лишаються support-only і більше не займають обов’язкові 8% шкали. Threshold 0.85 не змінений.
 - Breakout Retest / Fresh Base / Pullback отримують fresh model-local 15M→3M execution anchors і pending leases; старий scan trigger більше не є єдиним шляхом до fresh execution.
@@ -294,8 +301,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.27-adaptive-evidence-authority-fresh-execution"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_27_ADAPTIVE_EVIDENCE_AUTHORITY_FRESH_EXECUTION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.28-persistent-preconfirm-momentum-anchor-directional-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_28_PERSISTENT_PRECONFIRM_MOMENTUM_ANCHOR_DIRECTIONAL_CALIBRATION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -384,8 +391,8 @@ PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE = min(0.50, max(0.05, float(
 # A forecast produced by an old model policy cannot count toward authority for
 # the new recent-weighted calibrator even when the raw feature schema is equal.
 PRECONFIRM_FORECAST_SCHEMA_VERSION = str(
-    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.27_calibration_champion_ensemble")
-    or "preconfirm_forecast_v9.5.27_calibration_champion_ensemble"
+    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.28_feature_persistence_directional_safe")
+    or "preconfirm_forecast_v9.5.28_feature_persistence_directional_safe"
 ).strip()
 PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS = max(
     PRECONFIRM_MIN_TRAIN_ROWS,
@@ -444,13 +451,13 @@ DAILY_OPEN_SHADOW_HORIZON_HOURS = max(4.0, float(os.getenv("DAILY_OPEN_SHADOW_HO
 DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT = min(0.05, max(0.005, float(os.getenv("DAILY_OPEN_SHADOW_ASSUMED_RISK_PCT", "0.03") or 0.03)))
 DAILY_OPEN_SHADOW_HISTORY_LIMIT = max(100, int(os.getenv("DAILY_OPEN_SHADOW_HISTORY_LIMIT", "500") or 500))
 SETUP_EPISODE_SCHEMA_VERSION = "setup_episode_registry_v9.5.20_canonical_stage_identity"
-DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.27_primary_normalized_fresh_execution"
+DETECTOR_REACHABILITY_SCHEMA_VERSION = "detector_reachability_v9.5.28_momentum_anchor_rootcause"
 ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_score_lineage"
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
 JOURNAL_COMPACTION_SCHEMA_VERSION = "journal_compaction_v9.5.23_lifecycle_ranked_episode_retention"
 RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.26_evidence_adjusted_selection"
-SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.27_nested_blend_oos_side_audit"
+SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.28_directional_nested_oos_authority"
 SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(8, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "10") or 10))
 SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.50, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.52") or 0.52)))
 SETUP_CALIBRATION_VALIDATION_MAX_BRIER = min(0.50, max(0.15, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_BRIER", "0.30") or 0.30)))
@@ -459,6 +466,9 @@ SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION = min(0.10, max(0.0, float(os
 SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES = max(6, int(os.getenv("SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES", "8") or 8))
 SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R = max(0.05, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R", "0.20") or 0.20))
 SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP = max(5.0, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP", "15") or 15))
+SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS = max(20, int(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS", "25") or 25))
+SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS = max(SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS + 1, int(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS", "60") or 60))
+SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R = float(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R", "0.0") or 0.0)
 INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD = 0.85
 EXECUTION_PATH_HEALTH_SCHEMA_VERSION = "execution_path_health_v9.5.25_setup_guard_lineage_scoped"
 INSTITUTIONAL_SWEEP_MIN_DEPTH_ATR = 0.04
@@ -922,6 +932,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Exact-setup validation AUC gate must be in [0.50, 0.80]")
     if not (0.15 <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER <= 0.50):
         errors.append("Exact-setup validation Brier gate must be in [0.15, 0.50]")
+    if SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS < SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES:
+        errors.append("Directional calibration row floor cannot be below the side-audit evidence floor")
+    if SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS <= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS:
+        errors.append("Directional calibration full-sample floor must exceed its minimum row floor")
+    if FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES < PRECONFIRM_WINDOW_MINUTES:
+        errors.append("Fresh execution outcome horizon cannot be shorter than the preconfirmation horizon")
+    if FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT < 200:
+        errors.append("Fresh execution outcome ledger must retain at least 200 episodes")
+    if not (0.10 <= FRESH_EXECUTION_OUTCOME_ANCHOR_BUCKET_ATR <= 1.00):
+        errors.append("Fresh execution outcome anchor bucket must be in [0.10, 1.00] ATR")
     if not (0.50 <= PRECONFIRM_AUTHORITY_RECENT_AUC_GATE <= 0.95):
         errors.append("Preconfirmation recent AUC gate must be between 0.50 and 0.95")
     if not (0.05 <= PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE <= 0.50):
@@ -1192,7 +1212,7 @@ UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT = min(PROBE_RISK_PCT, max(UNDERP
 # v9.5.26 Evidence-adjusted selection is a ranking-only authority layer. It may
 # change WHICH hypothesis wins selection, but it may never rewrite the raw
 # technical score or lower/raise canonical 68/75 execution admission.
-EVIDENCE_SELECTION_SCHEMA_VERSION = "evidence_adjusted_selection_v9.5.27_calibration_authority_aware"
+EVIDENCE_SELECTION_SCHEMA_VERSION = "evidence_adjusted_selection_v9.5.28_directional_authority_aware"
 EVIDENCE_SELECTION_PRIOR_TRADES = max(8.0, float(os.getenv("EVIDENCE_SELECTION_PRIOR_TRADES", "20") or 20))
 EVIDENCE_SELECTION_EXPECTANCY_SCALE_R = max(0.10, float(os.getenv("EVIDENCE_SELECTION_EXPECTANCY_SCALE_R", "0.35") or 0.35))
 EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT = min(6.0, max(0.0, float(os.getenv("EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT", "4.0") or 4.0)))
@@ -1214,6 +1234,13 @@ FRESH_EXECUTION_MIN_MICRO_SCORE = min(90.0, max(50.0, float(os.getenv("FRESH_EXE
 BREAKOUT_RETEST_LOCAL_MAX_DISTANCE_ATR = min(1.20, max(0.45, float(os.getenv("BREAKOUT_RETEST_LOCAL_MAX_DISTANCE_ATR", "0.90") or 0.90)))
 BREAKOUT_RETEST_BUFFER_ATR = min(0.20, max(0.01, float(os.getenv("BREAKOUT_RETEST_BUFFER_ATR", "0.05") or 0.05)))
 FAILED_BREAKOUT_SHORT_LOCAL_MAX_DISTANCE_ATR = min(1.25, max(0.40, float(os.getenv("FAILED_BREAKOUT_SHORT_LOCAL_MAX_DISTANCE_ATR", "0.95") or 0.95)))
+
+# v9.5.28 audit-only prospective edge ledger for model-local fresh execution.
+# No threshold, score, sizing or entry permission is derived from this ledger.
+FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES = max(45, int(os.getenv("FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES", "120") or 120))
+FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT = max(200, int(os.getenv("FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT", "800") or 800))
+FRESH_EXECUTION_OUTCOME_EPISODE_BUCKET_MINUTES = max(30, int(os.getenv("FRESH_EXECUTION_OUTCOME_EPISODE_BUCKET_MINUTES", "60") or 60))
+FRESH_EXECUTION_OUTCOME_ANCHOR_BUCKET_ATR = max(0.10, float(os.getenv("FRESH_EXECUTION_OUTCOME_ANCHOR_BUCKET_ATR", "0.25") or 0.25))
 
 # Primary sweep admission is normalized independently of optional SMT/CVD support.
 INSTITUTIONAL_SWEEP_PRIMARY_MAX = 0.92
@@ -3305,7 +3332,7 @@ def _preconfirm_select_calibration_champion(
 ) -> dict[str, Any]:
     """Select a tiny regularized ensemble only on the calibration slice."""
     if len(labels)<6 or len(set(labels))<2:
-        return {"logistic_weight":1.0,"neutral_shrink":PRECONFIRM_UNTRUSTED_MODEL_SHRINK,"reason":"CALIBRATION_SLICE_TOO_SMALL","selection_uses_oos_labels":False,"schema_version":"preconfirm_calibration_champion_v9.5.27"}
+        return {"logistic_weight":1.0,"neutral_shrink":PRECONFIRM_UNTRUSTED_MODEL_SHRINK,"reason":"CALIBRATION_SLICE_TOO_SMALL","selection_uses_oos_labels":False,"schema_version":"preconfirm_calibration_champion_v9.5.28"}
     candidates=[]
     for logistic_weight in (0.0,0.25,0.50,0.75,1.0):
         for shrink in (0.35,0.50,0.75,1.0):
@@ -3316,7 +3343,7 @@ def _preconfirm_select_calibration_champion(
             objective=safe_float(brier,9.0)+0.0025*logistic_weight+0.0015*shrink
             candidates.append({"logistic_weight":logistic_weight,"neutral_shrink":shrink,"brier":brier,"auc":auc,"objective":objective})
     chosen=min(candidates,key=lambda row:(safe_float(row.get("objective"),9.0),-safe_float(row.get("auc"),0.5),safe_float(row.get("logistic_weight"),1.0)))
-    return {"logistic_weight":chosen["logistic_weight"],"neutral_shrink":chosen["neutral_shrink"],"calibration_brier":round(chosen["brier"],6) if chosen["brier"] is not None else None,"calibration_auc":round(chosen["auc"],6) if chosen["auc"] is not None else None,"candidate_count":len(candidates),"reason":"CALIBRATION_SLICE_CHAMPION","selection_uses_oos_labels":False,"schema_version":"preconfirm_calibration_champion_v9.5.27"}
+    return {"logistic_weight":chosen["logistic_weight"],"neutral_shrink":chosen["neutral_shrink"],"calibration_brier":round(chosen["brier"],6) if chosen["brier"] is not None else None,"calibration_auc":round(chosen["auc"],6) if chosen["auc"] is not None else None,"candidate_count":len(candidates),"reason":"CALIBRATION_SLICE_CHAMPION","selection_uses_oos_labels":False,"schema_version":"preconfirm_calibration_champion_v9.5.28"}
 
 def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = None) -> dict[str, Any]:
     """Chronologically validated, schema-consistent logistic model.
@@ -3929,6 +3956,13 @@ def _preconfirm_estimate(
         "calibration_auc_raw": selected_model.get("calibration_auc_raw"),
         "calibration_auc_oriented": selected_model.get("calibration_auc_oriented"),
         "discrimination_status": "AUTHORITY_TRUSTED" if authority_trusted else "OOS_VALIDATED_AUDIT_ONLY" if selected_model.get("trusted") else "TEMPORAL_DRIFT",
+        # v9.5.28: persist the exact frozen feature vector that produced this forecast.
+        # _preconfirm_make_event() reads it from the profile; without this field the
+        # event ledger silently stored {}, making every resolved row unusable for
+        # logistic/hierarchical retraining while rolling heuristic AUC still looked healthy.
+        "features": {name: round(safe_float(features.get(name), 0.0), 6) for name in PRECONFIRM_FEATURE_NAMES},
+        "feature_snapshot_complete": all(name in features for name in PRECONFIRM_FEATURE_NAMES),
+        "feature_snapshot_count": sum(1 for name in PRECONFIRM_FEATURE_NAMES if name in features),
         "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
     }
 
@@ -4147,6 +4181,11 @@ def _preconfirm_make_event(
         "outcome": _preconfirm_legacy_outcome(canonical_status),
         "outcome_contract": "FIXED_45M_WINDOW; FIRST_ACCEPTANCE_VS_INVALIDATION; NO_TERMINAL_EVIDENCE=EXPIRED",
         "features": dict(profile.get("features") or {}),
+        "feature_snapshot_complete": bool(
+            profile.get("feature_snapshot_complete")
+            and all(name in (profile.get("features") or {}) for name in PRECONFIRM_FEATURE_NAMES)
+        ),
+        "feature_snapshot_count": len(profile.get("features") or {}),
         "estimate_at_observation": {k: v for k, v in profile.items() if k != "features"},
         "signal_link": None,
     }
@@ -4349,6 +4388,32 @@ def _preconfirm_build_model_status(
         1 for event in journal.get("events", []) or []
         if isinstance(event, dict) and _preconfirm_event_status(event) == "EXPIRED"
     )
+    resolved_current_feature_events = [
+        event for event in (journal.get("events", []) or [])
+        if isinstance(event, dict)
+        and _preconfirm_event_status(event) in PRECONFIRM_TERMINAL_STATUSES
+        and str(event.get("feature_schema_version") or "") == PRECONFIRM_FEATURE_SCHEMA_VERSION
+    ]
+    feature_complete_current = [
+        event for event in resolved_current_feature_events
+        if isinstance(event.get("features"), dict)
+        and all(name in (event.get("features") or {}) for name in PRECONFIRM_FEATURE_NAMES)
+    ]
+    resolved_current_forecast_events = [
+        event for event in resolved_current_feature_events
+        if str(event.get("forecast_schema_version") or "") == PRECONFIRM_FORECAST_SCHEMA_VERSION
+    ]
+    feature_complete_current_forecast = [
+        event for event in resolved_current_forecast_events
+        if isinstance(event.get("features"), dict)
+        and all(name in (event.get("features") or {}) for name in PRECONFIRM_FEATURE_NAMES)
+    ]
+    missing_current_forecast_features = max(0, len(resolved_current_forecast_events) - len(feature_complete_current_forecast))
+    feature_persistence_integrity = (
+        "OBSERVING_NEW_FORECAST_SCHEMA" if not resolved_current_forecast_events
+        else "OK" if missing_current_forecast_features == 0
+        else "BROKEN_MISSING_FEATURE_SNAPSHOTS"
+    )
     families = {
         str(event.get("model_family") or "").upper()
         for event in journal.get("events", []) or []
@@ -4413,6 +4478,13 @@ def _preconfirm_build_model_status(
             ),
             "training_source": "RESOLVED_PRECONFIRMATION_EVENTS_ONLY",
             "training_population": dict(global_model.get("training_population") or {}),
+            "resolved_current_feature_schema_events": len(resolved_current_feature_events),
+            "feature_complete_current_feature_schema_events": len(feature_complete_current),
+            "resolved_current_forecast_schema_events": len(resolved_current_forecast_events),
+            "feature_complete_current_forecast_schema_events": len(feature_complete_current_forecast),
+            "missing_feature_snapshots_current_forecast_schema": missing_current_forecast_features,
+            "feature_persistence_integrity": feature_persistence_integrity,
+            "legacy_missing_feature_rows_are_not_current_authority": True,
             "forecast_schema_version": PRECONFIRM_FORECAST_SCHEMA_VERSION,
             "closed_trades_used": False,
         },
@@ -6885,14 +6957,242 @@ def compute_liquidity_ladder_execution_audit(journal: dict[str, Any]) -> dict[st
     }
 
 
+
+def _fresh_execution_outcome_target_setups() -> frozenset[str]:
+    return frozenset({
+        SetupType.BREAKOUT_RETEST.value,
+        SetupType.FRESH_BASE_CONTINUATION.value,
+        SetupType.PULLBACK_CONTINUATION.value,
+        SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+        SetupType.FAILED_BREAKOUT_SHORT.value,
+    })
+
+
+def _fresh_execution_outcome_anchor(row: dict[str, Any], context: dict[str, Any]) -> tuple[float, str]:
+    diagnostics = dict(row.get("diagnostics") or {})
+    setup = str(row.get("setup_type") or "")
+    profile = dict(diagnostics.get("profile") or {})
+    if setup == SetupType.FAILED_BREAKOUT_SHORT.value:
+        profile = dict(diagnostics.get("model_local_3m") or profile)
+    if setup == SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value:
+        momentum_anchor = dict(profile.get("momentum_execution_anchor") or diagnostics.get("selected_anchor") or {})
+        value = safe_float(momentum_anchor.get("anchor"), safe_float(profile.get("execution_anchor"), 0.0))
+        return value, str(momentum_anchor.get("anchor_source") or momentum_anchor.get("source") or "MOMENTUM_CURRENT_ANCHOR")
+    for key in ("anchor", "entry_anchor", "breakout_level", "resistance", "level"):
+        value = safe_float(profile.get(key), 0.0)
+        if value > 0:
+            return value, str(profile.get("anchor_source") or profile.get("source") or key.upper())
+    return safe_float(context.get("price"), 0.0), "OBSERVED_PRICE_FALLBACK"
+
+
+def record_fresh_execution_outcome_events(
+    journal: dict[str, Any], context: dict[str, Any], reachability_rows: list[dict[str, Any]],
+) -> int:
+    """Record independent model-local firings for future path measurement.
+
+    This ledger is audit-only. It stores no synthetic stop/TP and therefore does
+    not manufacture counterfactual PnL. Future candles resolve only directional
+    MFE, MAE and final displacement in ATR units.
+    """
+    targets = _fresh_execution_outcome_target_setups()
+    rows = [
+        dict(row) for row in (reachability_rows or [])
+        if isinstance(row, dict)
+        and bool(row.get("fired"))
+        and str(row.get("setup_type") or "") in targets
+    ]
+    if not rows:
+        return 0
+    c3 = _recent_confirmed(((context.get("candles") or {}).get("3m") or []), 6)
+    if not c3:
+        return 0
+    observation_candle_ts = int(c3[-1].ts)
+    observed_ts = observation_candle_ts + PRECONFIRM_RESOLUTION_BAR_MS
+    observed_price = safe_float(c3[-1].close, safe_float(context.get("price"), 0.0))
+    atr15 = max(safe_float(context.get("atr15"), 0.0), observed_price * 0.001, 1e-6)
+    store = journal.setdefault("fresh_execution_outcome_events", [])
+    added = 0
+    bucket_ms = FRESH_EXECUTION_OUTCOME_EPISODE_BUCKET_MINUTES * 60_000
+    anchor_step = max(atr15 * FRESH_EXECUTION_OUTCOME_ANCHOR_BUCKET_ATR, observed_price * 0.0005, 1e-6)
+    for row in rows:
+        setup = str(row.get("setup_type") or "")
+        side = str(row.get("side") or "").upper()
+        if side not in {Side.LONG.value, Side.SHORT.value}:
+            continue
+        anchor, anchor_source = _fresh_execution_outcome_anchor(row, context)
+        anchor_bucket = int(round(anchor / anchor_step)) if anchor > 0 else 0
+        time_bucket = observed_ts // max(bucket_ms, 1)
+        episode_key = f"{setup}|{side}|A{anchor_bucket}|T{time_bucket}"
+        duplicate = next((
+            event for event in reversed(store)
+            if isinstance(event, dict)
+            and str(event.get("episode_key") or "") == episode_key
+            and str(event.get("status") or "PENDING") == "PENDING"
+        ), None)
+        if duplicate:
+            continue
+        event_id = uuid.uuid4().hex[:16]
+        store.append({
+            "event_id": event_id,
+            "episode_key": episode_key,
+            "setup_type": setup,
+            "side": side,
+            "observed_at": iso_now(),
+            "observation_candle_ts": observation_candle_ts,
+            "observed_ts": observed_ts,
+            "resolve_after_ts": observed_ts + FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES * 60_000,
+            "horizon_minutes": FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES,
+            "observed_price": round_price(observed_price),
+            "atr15_at_observation": round(atr15, 8),
+            "execution_anchor": round_price(anchor),
+            "anchor_source": anchor_source,
+            "status": "PENDING",
+            "source_reachability_schema": str(row.get("schema_version") or DETECTOR_REACHABILITY_SCHEMA_VERSION),
+            "bot_version_at_observation": BOT_VERSION,
+            "architecture_version_at_observation": ARCHITECTURE_VERSION,
+            "counterfactual_pnl_claimed": False,
+            "authority": "AUDIT_ONLY_NO_THRESHOLD_WEIGHT_SIZING_OR_ENTRY_MUTATION",
+            "schema_version": "fresh_execution_outcome_event_v9.5.28",
+        })
+        added += 1
+    if len(store) > FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT:
+        del store[:-FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT]
+    return added
+
+
+def resolve_fresh_execution_outcome_events(journal: dict[str, Any], context: dict[str, Any]) -> int:
+    store = journal.get("fresh_execution_outcome_events") or []
+    if not store:
+        return 0
+    all_candles = sorted(
+        [c for c in ((context.get("candles") or {}).get("3m") or []) if getattr(c, "confirmed", True)],
+        key=lambda c: int(getattr(c, "ts", 0) or 0),
+    )
+    if not all_candles:
+        return 0
+    available_through = int(all_candles[-1].ts) + PRECONFIRM_RESOLUTION_BAR_MS
+    resolved = 0
+    for event in store:
+        if not isinstance(event, dict) or str(event.get("status") or "PENDING") != "PENDING":
+            continue
+        observed_ts = int(event.get("observed_ts") or 0)
+        resolve_after_ts = int(event.get("resolve_after_ts") or 0)
+        if observed_ts <= 0 or resolve_after_ts <= observed_ts or available_through < resolve_after_ts:
+            continue
+        candles = [
+            c for c in all_candles
+            if int(getattr(c, "ts", 0) or 0) >= observed_ts
+            and int(getattr(c, "ts", 0) or 0) + PRECONFIRM_RESOLUTION_BAR_MS <= resolve_after_ts
+        ]
+        if not candles:
+            event.update({
+                "status": "NO_DATA",
+                "resolved_at": iso_now(),
+                "resolved_ts": resolve_after_ts,
+                "resolution_reason": "HORIZON_ELAPSED_WITHOUT_3M_CANDLES",
+            })
+            resolved += 1
+            continue
+        side = str(event.get("side") or "").upper()
+        sign = 1.0 if side == Side.LONG.value else -1.0
+        observed_price = safe_float(event.get("observed_price"), safe_float(candles[0].open, 0.0))
+        atr15 = max(safe_float(event.get("atr15_at_observation"), 0.0), observed_price * 0.001, 1e-6)
+        if sign > 0:
+            favorable_price = max(safe_float(c.high) for c in candles)
+            adverse_price = min(safe_float(c.low) for c in candles)
+            mfe_atr = (favorable_price - observed_price) / atr15
+            mae_atr = (observed_price - adverse_price) / atr15
+        else:
+            favorable_price = min(safe_float(c.low) for c in candles)
+            adverse_price = max(safe_float(c.high) for c in candles)
+            mfe_atr = (observed_price - favorable_price) / atr15
+            mae_atr = (adverse_price - observed_price) / atr15
+        final_close = safe_float(candles[-1].close, observed_price)
+        final_move_atr = sign * (final_close - observed_price) / atr15
+        total_excursion = max(mfe_atr, 0.0) + max(mae_atr, 0.0)
+        event.update({
+            "status": "RESOLVED",
+            "resolved_at": iso_now(),
+            "resolved_ts": resolve_after_ts,
+            "window_candles": len(candles),
+            "mfe_atr": round(max(mfe_atr, 0.0), 6),
+            "mae_atr": round(max(mae_atr, 0.0), 6),
+            "final_move_atr": round(final_move_atr, 6),
+            "path_dominance_atr": round(max(mfe_atr, 0.0) - max(mae_atr, 0.0), 6),
+            "mfe_share_of_total_excursion": round(max(mfe_atr, 0.0) / max(total_excursion, 1e-9), 6),
+            "favorable_price": round_price(favorable_price),
+            "adverse_price": round_price(adverse_price),
+            "final_price": round_price(final_close),
+            "counterfactual_pnl_claimed": False,
+            "resolution_reason": "FIXED_HORIZON_DIRECTIONAL_PATH_OBSERVED",
+        })
+        resolved += 1
+    return resolved
+
+
+def compute_fresh_execution_outcome_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    events = [event for event in (journal.get("fresh_execution_outcome_events") or []) if isinstance(event, dict)]
+    by_setup: dict[str, Any] = {}
+    for setup in sorted(_fresh_execution_outcome_target_setups()):
+        scoped = [event for event in events if str(event.get("setup_type") or "") == setup]
+        resolved = [event for event in scoped if str(event.get("status") or "") == "RESOLVED"]
+        pending = [event for event in scoped if str(event.get("status") or "PENDING") == "PENDING"]
+        mfe = [safe_float(event.get("mfe_atr"), 0.0) for event in resolved]
+        mae = [safe_float(event.get("mae_atr"), 0.0) for event in resolved]
+        final = [safe_float(event.get("final_move_atr"), 0.0) for event in resolved]
+        dominance = [safe_float(event.get("path_dominance_atr"), 0.0) for event in resolved]
+        by_setup[setup] = {
+            "observations": len(scoped),
+            "resolved": len(resolved),
+            "pending": len(pending),
+            "mean_mfe_atr": round(mean(mfe), 6) if mfe else None,
+            "median_mfe_atr": round(median(mfe), 6) if mfe else None,
+            "mean_mae_atr": round(mean(mae), 6) if mae else None,
+            "median_mae_atr": round(median(mae), 6) if mae else None,
+            "mean_final_move_atr": round(mean(final), 6) if final else None,
+            "positive_final_move_rate": round(sum(value > 0 for value in final) / len(final), 6) if final else None,
+            "mfe_exceeds_mae_rate": round(sum(m > a for m, a in zip(mfe, mae)) / len(resolved), 6) if resolved else None,
+            "mean_path_dominance_atr": round(mean(dominance), 6) if dominance else None,
+        }
+    return {
+        "events_total": len(events),
+        "by_setup": by_setup,
+        "horizon_minutes": FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES,
+        "interpretation": "PROSPECTIVE MODEL-LOCAL PATH EVIDENCE; MFE/MAE/FINAL MOVE ONLY; NOT REALIZED OR COUNTERFACTUAL PNL",
+        "authority": "AUDIT_ONLY_NO_THRESHOLD_WEIGHT_SIZING_OR_ENTRY_MUTATION",
+        "schema_version": "fresh_execution_outcome_audit_v9.5.28",
+        "updated_at": iso_now(),
+    }
+
+
 def compute_fresh_execution_conversion_audit(journal: dict[str, Any]) -> dict[str, Any]:
     reachability=((((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {}))
     setup_types=(SetupType.BREAKOUT_RETEST.value,SetupType.FRESH_BASE_CONTINUATION.value,SetupType.PULLBACK_CONTINUATION.value,SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,SetupType.FAILED_BREAKOUT_SHORT.value)
     setups={}
     for setup in setup_types:
         row=dict(reachability.get(setup) or {})
-        setups[setup]={"current_schema_evaluated":int(row.get("current_schema_evaluated") or 0),"current_schema_fired":int(row.get("current_schema_fired") or 0),"conditions":_reachability_rate_summary(row),"blockers":dict(row.get("current_schema_blocker_counts") or {}),"health_status":str(row.get("health_status") or "OBSERVING"),"last_diagnostics":dict(((row.get("last_observation") or {}).get("diagnostics") or {}))}
-    return {"setups":setups,"contract":"CURRENT_CONFIRMED_MODEL_LOCAL_EVIDENCE; PENDING_LEASE_IS_NON_EXECUTABLE; STALE_SCAN_EVENT_CANNOT_RESET_CLOCK","authority":"AUDIT_ONLY_NO_THRESHOLD_MUTATION","schema_version":"fresh_execution_conversion_audit_v9.5.27","updated_at":iso_now()}
+        stored_schema=str(row.get("predicate_schema_version") or "")
+        schema_current=stored_schema==DETECTOR_REACHABILITY_SCHEMA_VERSION
+        setups[setup]={
+            "current_schema_evaluated":int(row.get("current_schema_evaluated") or 0) if schema_current else 0,
+            "current_schema_fired":int(row.get("current_schema_fired") or 0) if schema_current else 0,
+            "stored_pre_migration_evaluated":int(row.get("current_schema_evaluated") or 0) if not schema_current else 0,
+            "stored_pre_migration_fired":int(row.get("current_schema_fired") or 0) if not schema_current else 0,
+            "stored_predicate_schema_version":stored_schema,
+            "expected_predicate_schema_version":DETECTOR_REACHABILITY_SCHEMA_VERSION,
+            "schema_current":schema_current,
+            "conditions":_reachability_rate_summary(row) if schema_current else {},
+            "blockers":dict(row.get("current_schema_blocker_counts") or {}) if schema_current else {},
+            "health_status":str(row.get("health_status") or "OBSERVING") if schema_current else "AWAITING_V9_5_28_SCHEMA_MIGRATION",
+            "last_diagnostics":dict(((row.get("last_observation") or {}).get("diagnostics") or {})) if schema_current else {},
+        }
+    return {
+        "setups":setups,
+        "contract":"CURRENT_CONFIRMED_MODEL_LOCAL_EVIDENCE; PENDING_LEASE_IS_NON_EXECUTABLE; STALE_SCAN_EVENT_CANNOT_RESET_CLOCK; OLD_SCHEMA_COUNTERS_ARE_NOT_CURRENT_AUTHORITY",
+        "authority":"AUDIT_ONLY_NO_THRESHOLD_MUTATION",
+        "schema_version":"fresh_execution_conversion_audit_v9.5.28",
+        "updated_at":iso_now(),
+    }
 
 
 def compute_calibration_authority_audit(journal: dict[str, Any]) -> dict[str, Any]:
@@ -6901,7 +7201,22 @@ def compute_calibration_authority_audit(journal: dict[str, Any]) -> dict[str, An
     status=compute_learning_status(journal)
     by_setup=dict(status.get("by_setup") or {})
     validated=sorted(setup for setup,row in by_setup.items() if bool((row or {}).get("learned_authority_allowed")))
-    return {"global_model_fit_ready":bool(status.get("global_ready")),"global_theoretical_learned_weight":safe_float(status.get("global_learned_weight"),0.0),"global_validation":dict(status.get("validation") or {}),"validated_exact_setups":validated,"live_learned_authority_active":bool(validated),"authority_contract":"GLOBAL_FIT_IS_AUDIT_ONLY; ONLY_EXACT_SETUP_NESTED_OOS_PLUS_SIDE_SAFE_CALIBRATION_MAY_CHANGE_LIVE_COEFFICIENTS","schema_version":"calibration_authority_audit_v9.5.27","updated_at":iso_now()}
+    directional=sorted(
+        f"{setup}:{side}"
+        for setup,row in by_setup.items()
+        for side in ((row or {}).get("directional_authority_sides") or [])
+    )
+    return {
+        "global_model_fit_ready":bool(status.get("global_ready")),
+        "global_theoretical_learned_weight":safe_float(status.get("global_learned_weight"),0.0),
+        "global_validation":dict(status.get("validation") or {}),
+        "validated_exact_setups":validated,
+        "validated_directional_setup_sides":directional,
+        "live_learned_authority_active":bool(validated or directional),
+        "authority_contract":"GLOBAL_FIT_IS_AUDIT_ONLY; POOLED EXACT SETUP REQUIRES SIDE-SAFE OOS; MATERIAL SIDE DIVERGENCE MAY USE ONLY INDEPENDENT SIDE-SPECIFIC NESTED OOS AUTHORITY",
+        "schema_version":"calibration_authority_audit_v9.5.28_directional",
+        "updated_at":iso_now(),
+    }
 
 
 def compute_setup_statistics(journal: dict[str, Any]) -> dict[str, Any]:
@@ -7726,6 +8041,9 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     journal["preconfirmation_events"] = _retain_preconfirmation_events(
         list(journal.get("preconfirmation_events") or []), PRECONFIRM_EMBEDDED_JOURNAL_LIMIT
     )
+    journal["fresh_execution_outcome_events"] = [
+        item for item in list(journal.get("fresh_execution_outcome_events") or []) if isinstance(item, dict)
+    ][-FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT:]
     journal["active_trade_shadow_scans"] = [
         item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
     ][-ACTIVE_TRADE_SHADOW_SCAN_LIMIT:]
@@ -11763,10 +12081,17 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
     global_ready = len(global_rows) >= SCORING_MODEL_MIN_TRADES
     learned_weight = round(_learned_model_weight(len(global_rows), SCORING_MODEL_MIN_TRADES, SCORING_MODEL_FULL_TRADES), 4)
     validated_setups = sorted(setup for setup, profile in by_setup.items() if bool((profile or {}).get("learned_authority_allowed")))
+    validated_directional_setup_sides = sorted(
+        f"{setup}:{side}"
+        for setup, profile in by_setup.items()
+        for side in ((profile or {}).get("directional_authority_sides") or [])
+    )
+    live_learned_authority_active = bool(validated_setups or validated_directional_setup_sides)
     global_validation = _validation_metrics(global_rows, DEFAULT_QUALITY_COEFFICIENTS["_global"])
     mode = scoring_mode_profile({
         "global_ready": global_ready, "global_learned_weight": learned_weight, "training_rows": len(global_rows),
-        "validated_setup_count": len(validated_setups), "live_learned_authority_active": bool(validated_setups),
+        "validated_setup_count": len(validated_setups) + len(validated_directional_setup_sides),
+        "live_learned_authority_active": live_learned_authority_active,
     })
     latest_signal = next(
         (s for s in reversed(journal.get("signals", []) or []) if isinstance(s, dict)),
@@ -11788,7 +12113,8 @@ def compute_learning_status(journal: dict) -> dict[str, Any]:
         "global_model_fit_ready": global_ready,
         "global_reporting_authority": "LIVE_EXACT_SETUP_ONLY" if validated_setups else "AUDIT_ONLY_NO_NAMED_SETUP_AUTHORITY",
         "validated_learned_setups": validated_setups,
-        "live_learned_authority_active": bool(validated_setups),
+        "validated_directional_setup_sides": validated_directional_setup_sides,
+        "live_learned_authority_active": live_learned_authority_active,
         "scoring_mode": mode,
         "score_interpretation": (
             "heuristic ranking only; do not interpret score gaps as empirically proven"
@@ -11832,6 +12158,21 @@ def learning_health_warnings(journal: dict) -> list[str]:
         warnings.append(
             "GLOBAL MODEL AUDIT-ONLY: pooled fit is available, but no named setup has passed "
             "nested chronological OOS + side-safety authority; live coefficients remain bootstrap."
+        )
+    current_preconfirm_rows = [
+        row for row in (journal.get("preconfirmation_events") or [])
+        if isinstance(row, dict)
+        and str(row.get("forecast_schema_version") or "") == PRECONFIRM_FORECAST_SCHEMA_VERSION
+    ]
+    missing_preconfirm_features = [
+        row for row in current_preconfirm_rows
+        if not isinstance(row.get("features"), dict)
+        or not all(name in (row.get("features") or {}) for name in PRECONFIRM_FEATURE_NAMES)
+    ]
+    if current_preconfirm_rows and missing_preconfirm_features:
+        warnings.append(
+            f"PRECONFIRM FEATURE PERSISTENCE BROKEN: {len(missing_preconfirm_features)}/{len(current_preconfirm_rows)} "
+            "current-forecast rows lack a complete frozen feature snapshot; authority remains fail-closed."
         )
     if os.getenv("GITHUB_ACTIONS") and not JOURNAL_PERSISTENCE_CONFIRMED:
         warnings.append("GitHub Actions: не підтверджено commit/cache persistence для journal/state.")
@@ -11967,6 +12308,173 @@ def setup_type_side_calibration_audit(journal: dict[str, Any], setup_type: str) 
     }
 
 
+
+def setup_type_side_out_of_sample_validation(
+    journal: dict[str, Any], setup_type: str, side: str,
+) -> dict[str, Any]:
+    """Nested chronological OOS validation for one exact setup *and* side.
+
+    This is not a shortcut around pooled calibration. It exists specifically for
+    setups whose LONG/SHORT economics materially diverge. Each side must earn its
+    own feature-complete sample, inner calibration choice and untouched outer OOS
+    result. The opposite side contributes zero rows and zero authority.
+    """
+    exact_setup = str(setup_type or "")
+    exact_side = str(side or "").upper()
+    rows = _quality_training_rows_filtered(journal, setup_type=exact_setup, side=exact_side)
+    family = next((
+        str(signal.get("setup_family") or "")
+        for signal in list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
+        if isinstance(signal, dict)
+        and str(signal.get("setup_type") or "") == exact_setup
+        and str(signal.get("side") or "").upper() == exact_side
+    ), "")
+    family_default = DEFAULT_QUALITY_COEFFICIENTS.get(family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
+    n = len(rows)
+    base = {
+        "setup_type": exact_setup,
+        "side": exact_side,
+        "sample_size": n,
+        "minimum_sample_size": SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS,
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+        "directional": True,
+    }
+    if exact_side not in {Side.LONG.value, Side.SHORT.value}:
+        return {**base, "enabled": False, "authority_pass": False, "reason": "INVALID_SIDE"}
+    if n < SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS:
+        return {**base, "enabled": False, "authority_pass": False, "reason": "DIRECTIONAL_SAMPLE_BELOW_MINIMUM"}
+
+    trades = [trade for trade in journal.get("trades", []) or [] if isinstance(trade, dict)]
+    fingerprint = (
+        f"{len(trades)}:{trades[-1].get('id') if trades else ''}:"
+        f"{exact_setup}:{exact_side}:{n}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
+    )
+    cache = journal.setdefault("_directional_setup_validation_cache", {})
+    cache_key = f"{exact_setup}:{exact_side}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("report"), dict):
+        return dict(cached["report"])
+
+    validation_count = min(
+        max(SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS, int(math.ceil(n * 0.30))),
+        max(1, n - 12),
+    )
+    warmup = n - validation_count
+    train_rows = rows[:warmup]
+    validation_rows = rows[warmup:]
+    blend_selection = _select_quality_blend_weight(train_rows, family_default)
+    approved_weight = safe_float(blend_selection.get("selected_weight"), 0.0)
+    learned = _fit_logistic_coefficients(train_rows, family_default)
+    blended = _blend_coefficients(family_default, learned, approved_weight)
+    labels = [int(label) for _features, label, _weight in validation_rows]
+    learned_probs = [_quality_probability_from_coefficients(blended, features) for features, _label, _weight in validation_rows]
+    bootstrap_probs = [_quality_probability_from_coefficients(family_default, features) for features, _label, _weight in validation_rows]
+    class_balance = len(set(labels)) >= 2
+    learned_auc = _preconfirm_auc(labels, learned_probs) if class_balance else None
+    bootstrap_auc = _preconfirm_auc(labels, bootstrap_probs) if class_balance else None
+    learned_brier = _quality_weighted_brier(validation_rows, learned_probs)
+    bootstrap_brier = _quality_weighted_brier(validation_rows, bootstrap_probs)
+    auc_pass = bool(learned_auc is not None and learned_auc >= SETUP_CALIBRATION_VALIDATION_MIN_AUC)
+    brier_pass = bool(learned_brier is not None and learned_brier <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER)
+    bootstrap_auc_pass = bool(
+        bootstrap_auc is None or learned_auc is None
+        or learned_auc + SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION >= bootstrap_auc
+    )
+    bootstrap_brier_pass = bool(
+        bootstrap_brier is None or learned_brier is None
+        or learned_brier <= bootstrap_brier + SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION
+    )
+    prediction_pass = len(labels) >= SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS
+    learned_influence_tested = approved_weight > 0.0
+    side_stats = _setup_type_side_trade_statistics(journal, exact_setup, exact_side)
+    expectancy_pass = bool(
+        int(side_stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
+        and safe_float(side_stats.get("expectancy_r"), 0.0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R
+    )
+    authority_pass = bool(
+        prediction_pass and class_balance and learned_influence_tested
+        and auc_pass and brier_pass and bootstrap_auc_pass and bootstrap_brier_pass
+        and expectancy_pass
+    )
+    failed: list[str] = []
+    if not prediction_pass: failed.append("OOS_PREDICTIONS_BELOW_MINIMUM")
+    if not class_balance: failed.append("OOS_SINGLE_CLASS")
+    if not learned_influence_tested: failed.append("INNER_CALIBRATION_SELECTED_BOOTSTRAP_ONLY")
+    if not auc_pass: failed.append("OOS_AUC_BELOW_GATE")
+    if not brier_pass: failed.append("OOS_BRIER_ABOVE_GATE")
+    if not bootstrap_auc_pass: failed.append("OOS_AUC_WORSE_THAN_BOOTSTRAP")
+    if not bootstrap_brier_pass: failed.append("OOS_BRIER_WORSE_THAN_BOOTSTRAP")
+    if not expectancy_pass: failed.append("DIRECTIONAL_EXPECTANCY_NOT_NON_NEGATIVE_OR_SAMPLE_TOO_SMALL")
+    report = {
+        **base,
+        "enabled": True,
+        "authority_pass": authority_pass,
+        "reason": "VALIDATED_DIRECTIONAL" if authority_pass else "DIRECTIONAL_VALIDATION_GATE_FAILED",
+        "failed_conditions": failed,
+        "warmup_rows": warmup,
+        "oos_predictions": len(labels),
+        "oos_positive_labels": sum(labels),
+        "oos_negative_labels": len(labels) - sum(labels),
+        "approved_learned_blend_weight": round(approved_weight, 4),
+        "learned_influence_tested": learned_influence_tested,
+        "blend_selection": blend_selection,
+        "learned_auc": round(learned_auc, 6) if learned_auc is not None else None,
+        "bootstrap_auc": round(bootstrap_auc, 6) if bootstrap_auc is not None else None,
+        "learned_brier": round(learned_brier, 6) if learned_brier is not None else None,
+        "bootstrap_brier": round(bootstrap_brier, 6) if bootstrap_brier is not None else None,
+        "minimum_auc": SETUP_CALIBRATION_VALIDATION_MIN_AUC,
+        "maximum_brier": SETUP_CALIBRATION_VALIDATION_MAX_BRIER,
+        "minimum_directional_expectancy_r": SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R,
+        "directional_trade_statistics": side_stats,
+        "chronological": True,
+        "nested_calibration": True,
+        "opposite_side_rows_used": 0,
+        "outer_oos_labels_select_blend_weight": False,
+        "authority_scope": f"{exact_setup}:{exact_side}",
+    }
+    cache[cache_key] = {"fingerprint": fingerprint, "report": dict(report)}
+    return report
+
+
+def setup_type_directional_calibration_profile(
+    journal: dict[str, Any], setup_type: str, side: str,
+) -> dict[str, Any]:
+    exact_side = str(side or "").upper()
+    stats = _setup_type_side_trade_statistics(journal, setup_type, exact_side)
+    training_rows = int(stats.get("training_rows") or 0)
+    validation = setup_type_side_out_of_sample_validation(journal, setup_type, exact_side)
+    sample_ready = training_rows >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+    expectancy_pass = bool(
+        int(stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
+        and safe_float(stats.get("expectancy_r"), 0.0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R
+    )
+    authority = bool(sample_ready and expectancy_pass and validation.get("authority_pass"))
+    if not sample_ready:
+        status = "INSUFFICIENT_DIRECTIONAL_FEATURE_SAMPLE"
+    elif not expectancy_pass:
+        status = "DIRECTIONAL_EDGE_NOT_ESTABLISHED"
+    elif not validation.get("authority_pass"):
+        status = "DIRECTIONAL_OOS_VALIDATION_FAILED"
+    else:
+        status = "VALIDATED_DIRECTIONAL_CALIBRATED"
+    return {
+        **stats,
+        "setup_type": str(setup_type or ""),
+        "side": exact_side,
+        "training_rows": training_rows,
+        "minimum_training_rows": SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS,
+        "sample_ready": sample_ready,
+        "expectancy_pass": expectancy_pass,
+        "validation_pass": bool(validation.get("authority_pass")),
+        "learned_authority_allowed": authority,
+        "empirically_calibrated": authority,
+        "status": status,
+        "out_of_sample_validation": validation,
+        "policy": "ONE_SETUP_ONE_SIDE_ONLY; NESTED_OOS; NON_NEGATIVE_DIRECTIONAL_EXPECTANCY; NO_OPPOSITE_SIDE_BORROWING",
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+
+
 def _quality_probability_from_coefficients(coef: dict[str, float], features: dict[str, float]) -> float:
     return clamp(_sigmoid(safe_float(coef.get("bias"), 0.0) + sum(
         safe_float(coef.get(key), 0.0) * safe_float(features.get(key), 0.0)
@@ -12090,6 +12598,25 @@ def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> 
     validation_pass = bool(validation.get("authority_pass"))
     side_pass = bool(side_audit.get("pooled_learned_authority_safe", True))
     learned_authority = bool(sample_ready and validation_pass and side_pass)
+
+    # Directional calibration is computed independently and never rescues the
+    # pooled model. It is merely a future authority lane for a setup whose side
+    # economics are demonstrably different. Each side remains fail-closed until
+    # its own feature-complete nested OOS validation passes.
+    directional_profiles: dict[str, Any] = {}
+    directional_authority_sides: list[str] = []
+    review_directional = bool(
+        side_audit.get("material_side_divergence")
+        or int((side_audit.get("long") or {}).get("training_rows") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+        or int((side_audit.get("short") or {}).get("training_rows") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+    )
+    if review_directional:
+        for direction in (Side.LONG.value, Side.SHORT.value):
+            profile = setup_type_directional_calibration_profile(journal, setup_type, direction)
+            directional_profiles[direction] = profile
+            if profile.get("learned_authority_allowed"):
+                directional_authority_sides.append(direction)
+
     if not sample_ready:
         status = "INSUFFICIENT_EXACT_SETUP_SAMPLE"
     elif not validation_pass and not side_pass:
@@ -12097,7 +12624,11 @@ def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> 
     elif not validation_pass:
         status = "SAMPLE_READY_VALIDATION_FAILED_BOOTSTRAP_ONLY"
     elif not side_pass:
-        status = "SIDE_DIVERGENCE_REQUIRES_DIRECTIONAL_REVIEW_BOOTSTRAP_ONLY"
+        status = (
+            "SIDE_DIVERGENCE_DIRECTIONAL_AUTHORITY_AVAILABLE"
+            if directional_authority_sides
+            else "SIDE_DIVERGENCE_REQUIRES_DIRECTIONAL_REVIEW_BOOTSTRAP_ONLY"
+        )
     else:
         status = "VALIDATED_CALIBRATED"
     return {
@@ -12109,13 +12640,16 @@ def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> 
         "side_pooling_pass": side_pass,
         "learned_authority_allowed": learned_authority,
         "empirically_calibrated": learned_authority,
+        "directional_review_active": review_directional,
+        "directional_authority": directional_profiles,
+        "directional_authority_sides": directional_authority_sides,
+        "any_directional_learned_authority": bool(directional_authority_sides),
         "status": status,
         "out_of_sample_validation": validation,
         "side_aware_audit": side_audit,
-        "policy": "N>=MIN_IS_NECESSARY_NOT_SUFFICIENT; OOS_VALIDATION_AND_SIDE_POOLING_GATE_LEARNED_AUTHORITY",
+        "policy": "POOLED_REQUIRES_NESTED_OOS_PLUS_SIDE_SAFETY; MATERIAL_DIVERGENCE_MAY_USE_ONLY_INDEPENDENT_SIDE_OOS_AUTHORITY",
         "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
     }
-
 
 def time_of_day_shadow_profile(journal: dict[str, Any]) -> dict[str, Any]:
     profile=setup_type_calibration_profile(journal,SetupType.TIME_OF_DAY_ADAPTIVE.value)
@@ -12137,39 +12671,63 @@ def _quality_coefficients(
 ) -> tuple[dict[str, float], str, int, float]:
     family_default = DEFAULT_QUALITY_COEFFICIENTS.get(setup_family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
     exact_setup = str(setup_type or "")
+    exact_side = str(side or "").upper()
     exact_rows = _quality_training_rows_filtered(journal, setup_type=exact_setup) if exact_setup else []
 
-    # Exact named setup is the calibration unit. Family/global rows may remain
-    # visible in learning analytics, but they cannot grant empirical authority
-    # to a setup with fewer than 20-30 of its own closed feature-complete trades.
+    # Exact named setup remains the primary calibration unit. A broad family or
+    # global fit can never grant a named setup live learned authority.
     if not exact_setup or len(exact_rows) < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
         return dict(family_default), "bootstrap:exact_setup_sample_below_minimum", len(exact_rows), 0.0
 
     calibration_profile = setup_type_calibration_profile(journal, exact_setup)
-    if not calibration_profile.get("learned_authority_allowed"):
-        status = str(calibration_profile.get("status") or "VALIDATION_GATE_FAILED")
-        return dict(family_default), f"bootstrap:exact_setup_learned_authority_blocked:{status}", len(exact_rows), 0.0
+    side_divergent = bool((calibration_profile.get("side_aware_audit") or {}).get("material_side_divergence"))
 
-    rows = exact_rows
-    source = f"journal:setup:{exact_setup}"
-    min_rows = SETUP_CALIBRATION_MIN_CLOSED_TRADES
-    full_rows = SETUP_CALIBRATION_FULL_CLOSED_TRADES
-    validated_weight = safe_float((calibration_profile.get("out_of_sample_validation") or {}).get("approved_learned_blend_weight"), 0.0)
+    # v9.5.28: when pooled LONG/SHORT economics materially diverge, pooled
+    # coefficients remain blocked. A candidate may use learned coefficients only
+    # if *its own side* has independently passed the same nested chronological OOS
+    # discipline. No rows from the opposite side are allowed into that fit.
+    if side_divergent and exact_side in {Side.LONG.value, Side.SHORT.value}:
+        directional_profile = (
+            (calibration_profile.get("directional_authority") or {}).get(exact_side)
+            or setup_type_directional_calibration_profile(journal, exact_setup, exact_side)
+        )
+        directional_rows = _quality_training_rows_filtered(journal, setup_type=exact_setup, side=exact_side)
+        if not directional_profile.get("learned_authority_allowed"):
+            status = str(directional_profile.get("status") or "DIRECTIONAL_AUTHORITY_BLOCKED")
+            return (
+                dict(family_default),
+                f"bootstrap:exact_setup_directional_authority_blocked:{exact_side}:{status}",
+                len(directional_rows),
+                0.0,
+            )
+        rows = directional_rows
+        source = f"journal:setup:{exact_setup}:side:{exact_side}"
+        min_rows = SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+        full_rows = SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS
+        validated_weight = safe_float(
+            (directional_profile.get("out_of_sample_validation") or {}).get("approved_learned_blend_weight"),
+            0.0,
+        )
+    else:
+        if not calibration_profile.get("learned_authority_allowed"):
+            status = str(calibration_profile.get("status") or "VALIDATION_GATE_FAILED")
+            return dict(family_default), f"bootstrap:exact_setup_learned_authority_blocked:{status}", len(exact_rows), 0.0
+        rows = exact_rows
+        source = f"journal:setup:{exact_setup}"
+        min_rows = SETUP_CALIBRATION_MIN_CLOSED_TRADES
+        full_rows = SETUP_CALIBRATION_FULL_CLOSED_TRADES
+        validated_weight = safe_float(
+            (calibration_profile.get("out_of_sample_validation") or {}).get("approved_learned_blend_weight"),
+            0.0,
+        )
+
     sample_weight_cap = _learned_model_weight(len(rows), min_rows, full_rows)
     learned_weight = min(validated_weight, sample_weight_cap)
 
-    # v6.8: кешування навченого logistic-fit у journal. Раніше _fit_logistic_coefficients
-    # (SCORING_MODEL_EPOCHS ітерацій градієнтного спуску по всіх training rows)
-    # перераховувався заново на КОЖЕН запуск бота — а це scheduled one-shot скрипт,
-    # який може запускатись кожні кілька хвилин, тоді як training rows між запусками
-    # найчастіше взагалі не змінюються (нова угода закривається рідко). Кеш
-    # інвалідується за відбитком стану journal["trades"] (кількість + id останньої
-    # угоди + фактична кількість rows) — детермінований fit на тих самих rows завжди
-    # дає той самий результат, тож пропуск обчислення безпечний, а не апроксимація.
     trades_list = journal.get("trades") or []
-    fingerprint = f"{len(trades_list)}:{trades_list[-1].get('id') if trades_list else ''}:{len(rows)}"
+    fingerprint = f"{len(trades_list)}:{trades_list[-1].get('id') if trades_list else ''}:{len(rows)}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
     cache = journal.setdefault("_model_coef_cache", {})
-    cache_key = f"{setup_family}:{setup_type}:{source}"
+    cache_key = f"{setup_family}:{exact_setup}:{exact_side if side_divergent else 'POOLED'}:{source}"
     cached = cache.get(cache_key)
     if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("coef"), dict):
         learned = cached["coef"]
@@ -12394,13 +12952,19 @@ def ict_model_execution_contract(
             invalidation = entry_anchor - side_sign(side) * max(ABS_MIN_STOP_DOLLARS, atr15 * 1.05)
             invalidation_basis = "ACCEPTANCE_RETEST structural probe invalidation"
     elif model == "MOMENTUM_NO_PULLBACK_CONTINUATION":
-        reanchor = model_context.get("reanchor") or {}
-        entry_anchor = safe_float(reanchor.get("anchor"), price) or price
-        entry_basis = f"MOMENTUM_NO_PULLBACK fresh {reanchor.get('zone_label', 'micro-base')}"
-        zone_low = safe_float(reanchor.get("anchor_low"), entry_anchor)
-        zone_high = safe_float(reanchor.get("anchor_high"), entry_anchor)
+        # v9.5.28: trade geometry must consume the same current safe anchor that
+        # granted Momentum execution. Falling back to the broad continuation
+        # reanchor is allowed only when no model-local anchor exists (WAIT/audit).
+        momentum_anchor = dict(model_context.get("momentum_execution_anchor") or {})
+        reanchor = dict(model_context.get("reanchor") or {})
+        selected_anchor = momentum_anchor if safe_float(momentum_anchor.get("anchor"), 0.0) > 0 else reanchor
+        entry_anchor = safe_float(selected_anchor.get("anchor"), price) or price
+        anchor_source = str(selected_anchor.get("anchor_source") or selected_anchor.get("source") or selected_anchor.get("zone_label") or "micro-base")
+        entry_basis = f"MOMENTUM_NO_PULLBACK current anchor ({anchor_source})"
+        zone_low = safe_float(selected_anchor.get("anchor_low"), entry_anchor)
+        zone_high = safe_float(selected_anchor.get("anchor_high"), entry_anchor)
         invalidation = (zone_low - buffer) if side == Side.LONG.value else (zone_high + buffer)
-        invalidation_basis = "MOMENTUM_NO_PULLBACK micro-structure failure"
+        invalidation_basis = "MOMENTUM_NO_PULLBACK current-anchor micro-structure failure"
     elif model == "ACCELERATION_PULLBACK_REENTRY":
         pull50 = safe_float(model_context.get("pullback_50"), 0.0)
         pull382 = safe_float(model_context.get("pullback_382"), 0.0)
@@ -13126,27 +13690,173 @@ def continuation_reanchor_profile(
     }
 
 
+def momentum_execution_anchor_profile(
+    c3: list[Candle], side: str, price: float, atr15: float, continuation_reanchor: dict[str, Any],
+) -> dict[str, Any]:
+    """Choose the safest *current* execution anchor for Momentum No-Pullback.
+
+    v9.5.27 reused the continuation anchor chosen for a broader model. That anchor
+    could be a valid ICT zone yet still be older than 24m or 0.75 ATR away, while
+    a newer 3M micro-base already existed. The detector then reported a live
+    continuation context but could never satisfy its own stricter Momentum entry
+    envelope. This selector does not widen any limit. It searches current confirmed
+    3M structure for an anchor that already satisfies the existing 24m / 0.75 ATR
+    contract and keeps the older zone as audit evidence only.
+    """
+    side = str(side or "").upper()
+    recent3 = _recent_confirmed(c3, 6)
+    if atr15 <= 0 or len(recent3) < 6:
+        return {
+            "ready": False, "reason": "NOT_ENOUGH_CONFIRMED_3M_BARS", "candidates": [],
+            "max_age_minutes": MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN,
+            "max_distance_atr": MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR,
+            "schema_version": "momentum_execution_anchor_v9.5.28",
+        }
+    reference_ts = int(recent3[-1].ts)
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(anchor: float, low: float, high: float, ts: int, source: str) -> None:
+        if anchor <= 0 or ts <= 0:
+            return
+        age = max(0.0, (reference_ts - int(ts)) / 60000.0)
+        distance = abs(price - anchor) / max(atr15, 1e-9)
+        structure_hold = bool(
+            price >= low - atr15 * 0.10 if side == Side.LONG.value
+            else price <= high + atr15 * 0.10
+        )
+        safe = bool(
+            age <= MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN
+            and distance <= MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR
+            and structure_hold
+        )
+        # Ranking among already legal anchors only. This score is not a new gate.
+        age_ratio = age / max(MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN, 1e-9)
+        dist_ratio = distance / max(MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR, 1e-9)
+        source_penalty = 0.0 if source == "CURRENT_3M_MICRO_BASE" else 0.08
+        fitness = 0.55 * dist_ratio + 0.35 * age_ratio + source_penalty
+        candidates.append({
+            "anchor": round_price(anchor), "anchor_low": round_price(low), "anchor_high": round_price(high),
+            "anchor_ts": int(ts), "source": source, "age_minutes": round(age, 3),
+            "distance_atr": round(distance, 4), "structure_hold": structure_hold,
+            "safe": safe, "fitness": round(fitness, 6),
+        })
+
+    base = dict(continuation_reanchor or {})
+    base_anchor = safe_float(base.get("anchor"), 0.0)
+    if base_anchor > 0:
+        add_candidate(
+            base_anchor,
+            safe_float(base.get("anchor_low"), base_anchor),
+            safe_float(base.get("anchor_high"), base_anchor),
+            int(base.get("anchor_ts") or reference_ts),
+            str(base.get("anchor_source") or "CONTINUATION_REANCHOR"),
+        )
+
+    # A momentum micro-base is a recent counter-direction pause. If none exists,
+    # include only the narrowest recent candle as a conservative fallback anchor.
+    dynamic_bases = [
+        candle for candle in recent3[:-1]
+        if (candle.close <= candle.open if side == Side.LONG.value else candle.close >= candle.open)
+    ]
+    if not dynamic_bases and recent3[:-1]:
+        dynamic_bases = [min(recent3[:-1], key=lambda c: max(c.high - c.low, 1e-9))]
+    for candle in dynamic_bases:
+        body_low = min(candle.open, candle.close)
+        body_high = max(candle.open, candle.close)
+        wick_pad = max((candle.high - candle.low) * 0.15, atr15 * 0.03)
+        low = body_low - wick_pad
+        high = body_high + wick_pad
+        add_candidate((low + high) / 2.0, low, high, int(candle.ts), "CURRENT_3M_MICRO_BASE")
+
+    safe_candidates = [row for row in candidates if row.get("safe")]
+    selected = min(safe_candidates, key=lambda row: safe_float(row.get("fitness"), 999.0)) if safe_candidates else (
+        min(candidates, key=lambda row: safe_float(row.get("fitness"), 999.0)) if candidates else {}
+    )
+    return {
+        "ready": bool(safe_candidates),
+        "selected": dict(selected),
+        "anchor": safe_float(selected.get("anchor"), 0.0),
+        "anchor_low": safe_float(selected.get("anchor_low"), 0.0),
+        "anchor_high": safe_float(selected.get("anchor_high"), 0.0),
+        "anchor_ts": int(selected.get("anchor_ts") or 0),
+        "anchor_source": str(selected.get("source") or ""),
+        "anchor_age_min": safe_float(selected.get("age_minutes"), 999.0),
+        "distance_atr": safe_float(selected.get("distance_atr"), 999.0),
+        "safe_candidate_count": len(safe_candidates),
+        "candidate_count": len(candidates),
+        "candidates": sorted(candidates, key=lambda row: safe_float(row.get("fitness"), 999.0))[:6],
+        "max_age_minutes": MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN,
+        "max_distance_atr": MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR,
+        "thresholds_relaxed": False,
+        "reason": "SAFE_CURRENT_MICRO_ANCHOR" if safe_candidates else "NO_ANCHOR_INSIDE_EXISTING_MOMENTUM_ENVELOPE",
+        "schema_version": "momentum_execution_anchor_v9.5.28",
+    }
+
+
 def detect_momentum_no_pullback_continuation(c3: list[Candle], c15: list[Candle], zones: list, side: str, price: float, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
-    """No-pullback continuation with a conservative anti-climax execution gate."""
-    if len(c15)<8 or atr15<=0: return {"active":False,"entry_ready":False,"reason":"not_enough_candles"}
-    recent=_recent_confirmed(c15,8); direction=1.0 if side==Side.LONG.value else -1.0
+    """No-pullback continuation with current-anchor selection and anti-climax gate."""
+    if len(c15)<8 or atr15<=0:
+        return {"active":False,"entry_ready":False,"reason":"not_enough_candles","schema_version":"momentum_no_pullback_v9.5.28"}
+    recent=_recent_confirmed(c15,8)
+    direction=1.0 if side==Side.LONG.value else -1.0
     move_atr=direction*(recent[-1].close-recent[0].open)/max(atr15,1e-9)
     directional_closes=sum(1 for c in recent[-6:] if (c.close>=c.open if side==Side.LONG.value else c.close<=c.open))
-    ranges=[max(c.high-c.low,1e-9) for c in recent]; body_efficiency=sum(abs(c.close-c.open) for c in recent)/max(sum(ranges),1e-9)
+    ranges=[max(c.high-c.low,1e-9) for c in recent]
+    body_efficiency=sum(abs(c.close-c.open) for c in recent)/max(sum(ranges),1e-9)
     if side==Side.LONG.value:
-        extreme=max(c.high for c in recent); giveback=(extreme-recent[-1].close)/max(extreme-min(c.low for c in recent),1e-9); structure=recent[-1].close>min(c.low for c in recent[-5:])+atr15*0.25
+        extreme=max(c.high for c in recent)
+        giveback=(extreme-recent[-1].close)/max(extreme-min(c.low for c in recent),1e-9)
+        structure=recent[-1].close>min(c.low for c in recent[-5:])+atr15*0.25
     else:
-        extreme=min(c.low for c in recent); giveback=(recent[-1].close-extreme)/max(max(c.high for c in recent)-extreme,1e-9); structure=recent[-1].close<max(c.high for c in recent[-5:])-atr15*0.25
-    tf_ok=bool(tf15.get("bias")==side or tf1h.get("bias")==side); reanchor=continuation_reanchor_profile(c3,c15,zones,side,price,atr15,tf15,tf1h)
-    micro=dict(reanchor.get("micro_confirmation") or {}); anchor_dist=safe_float(reanchor.get("distance_atr"),999.0); anchor_age=safe_float(reanchor.get("anchor_age_min"),999.0)
+        extreme=min(c.low for c in recent)
+        giveback=(recent[-1].close-extreme)/max(max(c.high for c in recent)-extreme,1e-9)
+        structure=recent[-1].close<max(c.high for c in recent[-5:])-atr15*0.25
+    tf_ok=bool(tf15.get("bias")==side or tf1h.get("bias")==side)
+    reanchor=continuation_reanchor_profile(c3,c15,zones,side,price,atr15,tf15,tf1h)
+    momentum_anchor=momentum_execution_anchor_profile(c3,side,price,atr15,reanchor)
+    micro=dict(reanchor.get("micro_confirmation") or {})
+    anchor_dist=safe_float(momentum_anchor.get("distance_atr"),999.0)
+    anchor_age=safe_float(momentum_anchor.get("anchor_age_min"),999.0)
     last_range_atr=(recent[-1].high-recent[-1].low)/max(atr15,1e-9)
-    overextended=bool(move_atr>MOMENTUM_EXEC_MAX_MOVE_ATR or anchor_dist>MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR or last_range_atr>MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR)
-    active=bool(tf_ok and structure and move_atr>=NO_PULLBACK_MIN_MOVE_ATR and directional_closes>=5 and body_efficiency>=NO_PULLBACK_MIN_BODY_EFFICIENCY and giveback<=NO_PULLBACK_MAX_GIVEBACK_RATIO)
-    execution_checks={"reanchor_ready":bool(reanchor.get("ready")),"anchor_distance_ok":anchor_dist<=MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR,"anchor_age_ok":anchor_age<=MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN,"micro_score_ok":safe_float(micro.get("score"),0.0)>=MOMENTUM_EXEC_MIN_MICRO_SCORE,"six_3m_bars":bool(micro.get("six_confirmed_bars_available") or int(micro.get("confirmed_3m_bars") or 0) >= 6),"anti_climax":not overextended}
+    overextended=bool(
+        move_atr>MOMENTUM_EXEC_MAX_MOVE_ATR
+        or last_range_atr>MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR
+        or not bool(momentum_anchor.get("ready"))
+    )
+    active=bool(
+        tf_ok and structure and move_atr>=NO_PULLBACK_MIN_MOVE_ATR
+        and directional_closes>=5 and body_efficiency>=NO_PULLBACK_MIN_BODY_EFFICIENCY
+        and giveback<=NO_PULLBACK_MAX_GIVEBACK_RATIO
+    )
+    structural_context=bool(reanchor.get("six_bar_structure_confirmed"))
+    micro_supported=bool(micro.get("supported"))
+    execution_checks={
+        "structural_reanchor_context":structural_context,
+        "safe_current_anchor":bool(momentum_anchor.get("ready")),
+        "anchor_distance_ok":anchor_dist<=MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR,
+        "anchor_age_ok":anchor_age<=MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN,
+        "micro_supported":micro_supported,
+        "micro_score_ok":safe_float(micro.get("score"),0.0)>=MOMENTUM_EXEC_MIN_MICRO_SCORE,
+        "six_3m_bars":bool(micro.get("six_confirmed_bars_available") or int(micro.get("confirmed_3m_bars") or 0) >= 6),
+        "anti_climax":not overextended,
+    }
     entry_ready=bool(active and all(execution_checks.values()))
+    blockers=[name for name,ok in execution_checks.items() if not ok]
     score_bonus=(14 if active else 0)+(4 if entry_ready else 0)-(8 if overextended else 0)
-    return {"active":active,"entry_ready":entry_ready,"score_bonus":score_bonus,"move_atr":round(move_atr,2),"directional_closes_6":directional_closes,"body_efficiency":round(body_efficiency,3),"giveback_ratio":round(clamp(giveback,0.0,1.0),3),"structure_intact":structure,"tf_ok":tf_ok,"overextended":overextended,"last_15m_range_atr":round(last_range_atr,3),"reanchor":reanchor,"execution_checks":execution_checks,"execution_policy":"DETECT_BROADLY; EXECUTE_ONLY_FRESH_MICRO_BASE_WITH_ANTI_CLIMAX","schema_version":"momentum_no_pullback_v9.5.25"}
-
+    return {
+        "active":active,"entry_ready":entry_ready,"score_bonus":score_bonus,
+        "move_atr":round(move_atr,2),"directional_closes_6":directional_closes,
+        "body_efficiency":round(body_efficiency,3),"giveback_ratio":round(clamp(giveback,0.0,1.0),3),
+        "structure_intact":structure,"tf_ok":tf_ok,"overextended":overextended,
+        "last_15m_range_atr":round(last_range_atr,3),"reanchor":reanchor,
+        "momentum_execution_anchor":momentum_anchor,
+        "execution_anchor":safe_float(momentum_anchor.get("anchor"),0.0),
+        "execution_anchor_source":str(momentum_anchor.get("anchor_source") or ""),
+        "execution_checks":execution_checks,"execution_blockers":blockers,
+        "thresholds_relaxed":False,
+        "execution_policy":"DETECT_BROADLY; SELECT_CURRENT_SAFE_ANCHOR; EXECUTE_ONLY_WITH_EXISTING_0_75ATR_24M_MICRO_AND_ANTI_CLIMAX_GATES",
+        "schema_version":"momentum_no_pullback_v9.5.28",
+    }
 
 
 def detect_acceleration_pullback_reentry(c15: list[Candle], side: str, price: float, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
@@ -14319,6 +15029,10 @@ def evidence_adjusted_selection_profile(
     stats = setup_type_trade_statistics(journal, setup_type)
     side_stats = _setup_type_side_trade_statistics(journal, setup_type, side) if side in {Side.LONG.value, Side.SHORT.value} else {}
     calibration = setup_type_calibration_profile(journal, setup_type)
+    directional_calibration = (calibration.get("directional_authority") or {}).get(side) or {}
+    directional_authority = bool(directional_calibration.get("learned_authority_allowed"))
+    pooled_authority = bool(calibration.get("learned_authority_allowed"))
+    effective_learned_authority = bool(pooled_authority or directional_authority)
     guard = underperforming_setup_empirical_guard(journal, setup_type)
 
     closed = int(stats.get("closed_trades") or 0)
@@ -14357,14 +15071,16 @@ def evidence_adjusted_selection_profile(
     else:
         maturity_penalty = 0.0
         maturity_band = "CALIBRATION_REVIEWABLE"
-        generic_cap = 100.0 if calibration.get("learned_authority_allowed") else EVIDENCE_SELECTION_VALIDATION_FAILED_CAP
+        generic_cap = 100.0 if effective_learned_authority else EVIDENCE_SELECTION_VALIDATION_FAILED_CAP
 
     calibration_adjustment = 0.0
     if bool(calibration.get("sample_ready")) and not bool(calibration.get("validation_pass")):
         calibration_adjustment -= 1.5
     if bool(calibration.get("sample_ready")) and not bool(calibration.get("side_pooling_pass", True)):
-        calibration_adjustment -= 0.75
-    if bool(calibration.get("learned_authority_allowed")) and blended_expectancy > 0:
+        # Material divergence is a penalty only while the candidate side has not
+        # independently earned directional authority.
+        calibration_adjustment -= 0.75 if not directional_authority else 0.0
+    if effective_learned_authority and blended_expectancy > 0:
         calibration_adjustment += min(1.5, 0.5 + credibility)
 
     guard_adjustment = 0.0
@@ -14396,7 +15112,8 @@ def evidence_adjusted_selection_profile(
     mode = (
         "SHADOW_ONLY" if shadow_only
         else "EMPIRICAL_QUARANTINE" if guard.get("applies") and guard_mode != "GRADUATED"
-        else "VALIDATED_EMPIRICAL" if calibration.get("learned_authority_allowed")
+        else "VALIDATED_DIRECTIONAL_EMPIRICAL" if directional_authority
+        else "VALIDATED_EMPIRICAL" if pooled_authority
         else "EVIDENCE_MATURITY_GUARDED"
     )
     return {
@@ -14427,7 +15144,10 @@ def evidence_adjusted_selection_profile(
             "sample_ready": bool(calibration.get("sample_ready")),
             "oos_validation_pass": bool(calibration.get("validation_pass")),
             "side_pooling_pass": bool(calibration.get("side_pooling_pass", True)),
-            "learned_authority_allowed": bool(calibration.get("learned_authority_allowed")),
+            "pooled_learned_authority_allowed": pooled_authority,
+            "directional_learned_authority_allowed": directional_authority,
+            "effective_learned_authority_allowed": effective_learned_authority,
+            "directional_calibration_status": str(directional_calibration.get("status") or "NOT_ACTIVE"),
             "quarantine_mode": guard_mode,
             "guard_class": str(guard.get("guard_class") or ""),
             "shadow_only": shadow_only,
@@ -15370,8 +16090,28 @@ def build_fresh_execution_reachability(
             "fresh_zone_detected":bool(pb.get("detected")),"zone_reaction_pending":bool(pb.get("pending")),"fresh_3m_execution_ready":bool(pb.get("ready")),
         },{"distance_to_anchor_atr":safe_float(pb.get("distance_to_anchor_atr"),999.0),"zone_age_minutes":safe_float(pb.get("zone_age_minutes"),9999.0)}, {"profile":pb,"reason_codes":list(pb.get("reason_codes") or [])}),
         row(SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,bool(mm.get("entry_ready")),{
-            "momentum_active":bool(mm.get("active")),"fresh_reanchor_pending":bool(reanchor.get("pre_confirmation_ready")),"fresh_reanchor_ready":bool(reanchor.get("ready")),"anti_climax_execution_ready":bool(mm.get("entry_ready")),
-        },{"reanchor_distance_atr":safe_float(reanchor.get("distance_atr"),999.0),"reanchor_age_minutes":safe_float(reanchor.get("anchor_age_min"),9999.0),"micro_score":safe_float(reanchor.get("micro_score"),0.0)}, {"profile":mm,"reason_codes":list(mm.get("execution_blockers") or [])}),
+            "momentum_active":bool(mm.get("active")),
+            "structural_reanchor_context":bool((mm.get("execution_checks") or {}).get("structural_reanchor_context")),
+            "safe_current_anchor":bool((mm.get("execution_checks") or {}).get("safe_current_anchor")),
+            "anchor_distance_ok":bool((mm.get("execution_checks") or {}).get("anchor_distance_ok")),
+            "anchor_age_ok":bool((mm.get("execution_checks") or {}).get("anchor_age_ok")),
+            "micro_supported":bool((mm.get("execution_checks") or {}).get("micro_supported")),
+            "micro_score_ok":bool((mm.get("execution_checks") or {}).get("micro_score_ok")),
+            "six_3m_bars":bool((mm.get("execution_checks") or {}).get("six_3m_bars")),
+            "anti_climax":bool((mm.get("execution_checks") or {}).get("anti_climax")),
+            "fresh_execution_ready":bool(mm.get("entry_ready")),
+        },{
+            "reanchor_distance_atr":safe_float((mm.get("momentum_execution_anchor") or {}).get("distance_atr"),999.0),
+            "reanchor_age_minutes":safe_float((mm.get("momentum_execution_anchor") or {}).get("anchor_age_min"),9999.0),
+            "micro_score":safe_float((reanchor.get("micro_confirmation") or {}).get("score"),0.0),
+            "move_atr":safe_float(mm.get("move_atr"),0.0),
+            "last_15m_range_atr":safe_float(mm.get("last_15m_range_atr"),0.0),
+        }, {
+            "profile":mm,
+            "selected_anchor":dict(mm.get("momentum_execution_anchor") or {}),
+            "reason_codes":list(mm.get("execution_blockers") or []),
+            "thresholds_relaxed":bool(mm.get("thresholds_relaxed")),
+        }),
     ]
     if str(side).upper()==Side.SHORT.value:
         rows.append(row(SetupType.FAILED_BREAKOUT_SHORT.value,bool(fsl.get("ready")),{
@@ -15952,10 +16692,15 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             liquidity_ladder=liquidity_ladder,
             liquidity_ladder_confirmation=liquidity_ladder_confirmation_profile,
         ))
-        context["_detector_reachability"].extend(build_fresh_execution_reachability(
+        fresh_execution_reachability_rows = build_fresh_execution_reachability(
             side, breakout_retest=breakout_retest_local, fresh_base=fresh_base_local, pullback=pullback_local,
             momentum=momentum_no_pullback, failed_breakout_short=short_failure, failed_breakout_short_local=failed_breakout_short_local,
-        ))
+        )
+        context["_detector_reachability"].extend(fresh_execution_reachability_rows)
+        # v9.5.28: collect prospective edge evidence for current model-local paths.
+        # This is audit-only MFE/MAE/final displacement, never synthetic PnL and
+        # never a new execution authority.
+        record_fresh_execution_outcome_events(journal, context, fresh_execution_reachability_rows)
 
         active_patterns = []
         if sweep_2022_active: active_patterns.append("2022_MODEL")
@@ -16360,19 +17105,25 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_source = ExecutionSource.MOMENTUM_CONTINUATION.value
                 actionable_trigger_ready = bool(momentum_no_pullback.get("entry_ready"))
                 execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if actionable_trigger_ready else ExecutionLane.WAIT_RETEST.value
-                local_trigger_level = safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor"), trigger_level) or trigger_level
-                local_trigger_age = safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor_age_min"), trigger_age)
+                momentum_anchor = dict(momentum_no_pullback.get("momentum_execution_anchor") or {})
+                local_trigger_level = safe_float(momentum_anchor.get("anchor"), safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor"), trigger_level)) or trigger_level
+                local_trigger_age = safe_float(momentum_anchor.get("anchor_age_min"), safe_float((momentum_no_pullback.get("reanchor") or {}).get("anchor_age_min"), trigger_age))
                 local_live_3m_trigger_ready = actionable_trigger_ready
                 if actionable_trigger_ready:
                     model_thesis_age = max(0.0, local_trigger_age)
-                    thesis_origin = "MODEL_LOCAL_MOMENTUM_REANCHOR"
-                    pattern_conf.append(f"🟢 MOMENTUM_CONTINUATION: fresh micro-base {local_trigger_level:.2f}; probe-only, без chase")
-                elif bool((momentum_no_pullback.get("reanchor") or {}).get("pre_confirmation_ready")):
+                    thesis_origin = "MODEL_LOCAL_MOMENTUM_CURRENT_SAFE_ANCHOR"
+                    pattern_conf.append(
+                        f"🟢 MOMENTUM_CONTINUATION: current safe micro-base {local_trigger_level:.2f} "
+                        f"({momentum_anchor.get('anchor_source','UNKNOWN')}, age={local_trigger_age:.1f}m); probe-only, без chase"
+                    )
+                elif bool((momentum_no_pullback.get("reanchor") or {}).get("pre_confirmation_ready")) or bool(momentum_anchor.get("candidate_count")):
                     model_thesis_age = 0.0
                     thesis_origin = "MODEL_LOCAL_MOMENTUM_PENDING"
                     local_trigger_age = 0.0
                     execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
-                    pattern_conf.append("🟡 MOMENTUM_CONTINUATION: current micro-base pending; thesis lease refreshed, execution still blocked")
+                    pattern_conf.append(
+                        "🟡 MOMENTUM_CONTINUATION: current structure/anchor observed, but existing 0.75ATR/24m/micro/anti-climax gates are not all satisfied"
+                    )
                 else:
                     pattern_conf.append("⏳ MOMENTUM_CONTINUATION: тренд є, але свіжого безпечного micro-anchor ще немає")
             elif model_id == "ACCELERATION_PULLBACK_REENTRY":
@@ -21498,6 +22249,7 @@ def compute_analytics(journal: dict) -> dict:
     existing["relaxed_continuation_policy"] = compute_relaxed_continuation_policy_comparison(journal)
     existing["short_specific_ml"] = compute_short_specific_ml_statistics(journal)
     existing["entry_quality_audit"] = compute_entry_quality_audit(journal)
+    existing["fresh_execution_outcome_audit"] = compute_fresh_execution_outcome_audit(journal)
     return existing
 
 
@@ -21533,6 +22285,9 @@ def run_bot() -> None:
     update_executive_shadow_outcomes(journal, context)
     update_rejected_hypothesis_shadow_outcomes(journal, context)
     update_relaxed_continuation_shadow_outcomes(journal, context)
+    resolved_fresh_execution = resolve_fresh_execution_outcome_events(journal, context)
+    if resolved_fresh_execution:
+        print(f"[INFO] Fresh execution outcome evidence resolved: {resolved_fresh_execution}")
 
     # Resolve precursor labels on every run, including runs that only manage an
     # active trade and return before candidate detection. Otherwise PENDING rows
@@ -27675,6 +28430,146 @@ def _run_self_test() -> bool:
         {SetupType.BREAKOUT_RETEST.value,SetupType.FRESH_BASE_CONTINUATION.value,SetupType.PULLBACK_CONTINUATION.value,SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,SetupType.FAILED_BREAKOUT_SHORT.value}.issubset(_fresh_types),
     ))
 
+
+    # v9.5.28: the frozen feature vector must survive estimate -> event -> training row.
+    _pc_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=60, final_score=60,
+        trigger_level=100.0, execution_anchor=100.0, ict_model="FVG_ENTRY",
+    )
+    _pc_features = {name: round(0.05 * (idx + 1), 6) for idx, name in enumerate(PRECONFIRM_FEATURE_NAMES)}
+    _pc_profile = _preconfirm_estimate({"events": []}, _pc_candidate, _pc_features, {})
+    _pc_event = _preconfirm_make_event(
+        {"price": 100.0, "atr15": 1.0, "candles": {"3m": _c3_long, "15m": _c15_long}},
+        _pc_candidate, _pc_profile, status="CONFIRMED",
+    )
+    _pc_rows = _preconfirm_training_rows({"events": [_pc_event]})
+    checks.append((
+        "v9.5.28 Preconfirmation: frozen features persist into trainable event rows",
+        _pc_profile.get("feature_snapshot_complete") is True
+        and _pc_event.get("feature_snapshot_complete") is True
+        and len(_pc_event.get("features") or {}) == len(PRECONFIRM_FEATURE_NAMES)
+        and len(_pc_rows) == 1
+        and all(name in (_pc_rows[0].get("features") or {}) for name in PRECONFIRM_FEATURE_NAMES),
+    ))
+
+    # v9.5.28: Momentum may choose a newer current micro-base, but the existing
+    # 24m / 0.75 ATR envelope remains unchanged. An older continuation zone cannot
+    # mask the newer safe anchor.
+    _old_momentum_anchor = {
+        "anchor": 99.65, "anchor_low": 99.60, "anchor_high": 99.70,
+        "anchor_ts": int(_c3_long[-1].ts - 30 * 60_000),
+        "anchor_source": "ICT_ZONE", "six_bar_structure_confirmed": True,
+    }
+    _momentum_anchor = momentum_execution_anchor_profile(
+        _c3_long, Side.LONG.value, 100.55, 1.0, _old_momentum_anchor,
+    )
+    checks.append((
+        "v9.5.28 Momentum: current micro-base can replace stale broad anchor without relaxing thresholds",
+        _momentum_anchor.get("ready") is True
+        and _momentum_anchor.get("anchor_source") == "CURRENT_3M_MICRO_BASE"
+        and safe_float(_momentum_anchor.get("anchor_age_min"), 999.0) <= MOMENTUM_EXEC_MAX_ANCHOR_AGE_MIN
+        and safe_float(_momentum_anchor.get("distance_atr"), 999.0) <= MOMENTUM_EXEC_MAX_REANCHOR_DISTANCE_ATR
+        and _momentum_anchor.get("thresholds_relaxed") is False,
+    ))
+
+    _momentum_contract = ict_model_execution_contract(
+        model_id="MOMENTUM_NO_PULLBACK_CONTINUATION",
+        setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
+        side=Side.LONG.value,
+        context={"price": 100.55, "atr15": 1.0, "zones": []},
+        event={}, trigger_level=99.65, ce_level=0.0, is_limit_armed=False,
+        model_context={"reanchor": _old_momentum_anchor, "momentum_execution_anchor": _momentum_anchor},
+    )
+    checks.append((
+        "v9.5.28 Momentum: trade geometry consumes the same selected current anchor end-to-end",
+        abs(safe_float(_momentum_contract.get("entry_anchor"), 0.0) - safe_float(_momentum_anchor.get("anchor"), -1.0)) < 1e-6
+        and "current anchor" in str(_momentum_contract.get("entry_basis") or ""),
+    ))
+
+    # Telemetry must report the nested canonical micro score rather than the old
+    # nonexistent reanchor.micro_score field.
+    _mm_audit_fixture = {
+        "active": True, "entry_ready": False,
+        "execution_checks": {
+            "structural_reanchor_context": True, "safe_current_anchor": True,
+            "anchor_distance_ok": True, "anchor_age_ok": True,
+            "micro_supported": True, "micro_score_ok": True,
+            "six_3m_bars": True, "anti_climax": False,
+        },
+        "reanchor": {"micro_confirmation": {"score": 85.0, "supported": True}},
+        "momentum_execution_anchor": {"distance_atr": 0.30, "anchor_age_min": 6.0, "anchor": 100.25},
+        "execution_blockers": ["anti_climax"], "thresholds_relaxed": False,
+    }
+    _mm_reach = build_fresh_execution_reachability(
+        Side.LONG.value, breakout_retest={}, fresh_base={}, pullback={}, momentum=_mm_audit_fixture,
+        failed_breakout_short={}, failed_breakout_short_local={},
+    )
+    _mm_row = next(row for row in _mm_reach if row.get("setup_type") == SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value)
+    checks.append((
+        "v9.5.28 Momentum telemetry: root-cause audit reads canonical nested micro score",
+        abs(safe_float((_mm_row.get("margins") or {}).get("micro_score"), 0.0) - 85.0) < 1e-9
+        and (_mm_row.get("diagnostics") or {}).get("thresholds_relaxed") is False,
+    ))
+
+    # v9.5.28: fresh-path edge is accumulated prospectively as MFE/MAE/final move,
+    # never as invented counterfactual R.
+    _edge_journal: dict[str, Any] = {}
+    _edge_context_now = {"price": 100.55, "atr15": 1.0, "candles": {"3m": list(_c3_long)}}
+    _edge_reach = [{
+        "side": Side.LONG.value, "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "fired": True, "schema_version": DETECTOR_REACHABILITY_SCHEMA_VERSION,
+        "diagnostics": {"profile": {"anchor": 100.20, "source": "SELFTEST_BREAKOUT"}},
+    }]
+    _edge_added = record_fresh_execution_outcome_events(_edge_journal, _edge_context_now, _edge_reach)
+    _edge_event = (_edge_journal.get("fresh_execution_outcome_events") or [{}])[0]
+    _future_start = int(_edge_event.get("observed_ts") or 0)
+    _future_c3 = list(_c3_long) + [
+        Candle(ts=_future_start+i*180_000, open=100.55+0.01*i, high=100.62+0.02*i,
+               low=100.48+0.005*i, close=100.58+0.015*i, confirmed=True)
+        for i in range(40)
+    ]
+    _edge_resolved = resolve_fresh_execution_outcome_events(
+        _edge_journal, {"price": 101.17, "atr15": 1.0, "candles": {"3m": _future_c3}}
+    )
+    _edge_audit = compute_fresh_execution_outcome_audit(_edge_journal)
+    _edge_event = (_edge_journal.get("fresh_execution_outcome_events") or [{}])[0]
+    checks.append((
+        "v9.5.28 Fresh execution: prospective edge ledger resolves path metrics without synthetic PnL",
+        _edge_added == 1 and _edge_resolved == 1 and _edge_event.get("status") == "RESOLVED"
+        and safe_float(_edge_event.get("mfe_atr"), 0.0) > 0.0
+        and "pnl_r" not in _edge_event and "result_r" not in _edge_event
+        and _edge_event.get("counterfactual_pnl_claimed") is False
+        and int(((_edge_audit.get("by_setup") or {}).get(SetupType.BREAKOUT_RETEST.value) or {}).get("resolved") or 0) == 1,
+    ))
+
+    # v9.5.28: directional calibration must never borrow rows from the opposite side.
+    _dir_journal = {"training_signals": [], "signals": [], "trades": []}
+    _dir_setup = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+    _n_long = max(1, SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS - 1)
+    _n_short = SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS + 5
+    for _side, _n in ((Side.LONG.value, _n_long), (Side.SHORT.value, _n_short)):
+        for _i in range(_n):
+            _sid = f"dir-{_side}-{_i}"
+            _f = {key: (0.75 if _i % 2 == 0 else 0.25) for key in JOURNAL_ML_FEATURE_KEYS}
+            _dir_journal["training_signals"].append({
+                "id": _sid, "side": _side, "setup_type": _dir_setup,
+                "setup_family": SetupFamily.CONTINUATION.value, "features": _f,
+            })
+            _dir_journal["trades"].append({
+                "id": _sid, "signal_id": _sid, "side": _side, "setup_type": _dir_setup,
+                "result_pct": 0.50 if _i % 2 == 0 else -0.50, "ml_eligible": True,
+            })
+    _long_dir = setup_type_side_out_of_sample_validation(_dir_journal, _dir_setup, Side.LONG.value)
+    _short_dir = setup_type_side_out_of_sample_validation(_dir_journal, _dir_setup, Side.SHORT.value)
+    checks.append((
+        "v9.5.28 Directional calibration: LONG cannot borrow SHORT rows to reach authority floor",
+        int(_long_dir.get("sample_size") or 0) == _n_long
+        and _long_dir.get("enabled") is False
+        and _long_dir.get("reason") == "DIRECTIONAL_SAMPLE_BELOW_MINIMUM"
+        and int(_short_dir.get("sample_size") or 0) == _n_short,
+    ))
+
     ok = all(passed for _, passed in checks)
     for name, passed in checks:
         print(f"  [{'OK' if passed else 'FAIL'}] {name}")
@@ -29728,6 +30623,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     result["range_compression_predicate_audit"] = compute_range_compression_predicate_audit(payload)
     result["liquidity_ladder_execution_audit"] = compute_liquidity_ladder_execution_audit(payload)
     result["fresh_execution_conversion_audit"] = compute_fresh_execution_conversion_audit(payload)
+    result["fresh_execution_outcome_audit"] = compute_fresh_execution_outcome_audit(payload)
     result["calibration_authority_audit"] = compute_calibration_authority_audit(payload)
     result["revalidation_execution_replay"] = _revalidation_fix_replay(payload)
     return result
