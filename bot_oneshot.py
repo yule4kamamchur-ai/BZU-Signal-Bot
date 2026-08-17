@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.28 (Persistent Preconfirmation, Momentum Anchor Selection & Directional Calibration)
+BZU Professional Hybrid Confluence Signal Bot v9.5.29 (Execution-Source Empirical Authority & Lane-Safe Selection)
 =============================================================================================
+Оновлення v9.5.29:
+- Evidence authority тепер ієрархічна setup -> side -> execution_source: сильний ZONE_RETEST_PROBE і слабкий ACCEPTANCE_RETEST більше не ділять одну empirical reputation.
+- Negative execution-source evidence може окремо знизити selection authority та stage/risk саме проблемного lane, не змінюючи raw technical quality або canonical 68/75 gates.
+- ACCEPTANCE_RETEST_CONTINUATION: confirmed ACCEPTANCE_RETEST оцінюється окремо для LONG/SHORT; SHORT не може позичати позитивну історію ZONE_RETEST_PROBE або LONG confirmed lane.
+- DAILY_WEEKLY_OPEN_RECLAIM додано до explicit exact-setup empirical quarantine через негативну поточну expectancy та малий sample; tiny probes зберігають можливість збирати evidence.
+- Journal audit отримав execution-source authority table з pooled/side expectancy, recent deterioration та фактичним guard mode.
+- Canonical score/RR/TTL/risk floors та raw quality dimensions не змінені.
 Оновлення v9.5.28:
 - Preconfirmation feature persistence restored end-to-end: every new frozen forecast persists its exact feature vector; authority forecast schema bumped so pre-fix heuristic-only rows cannot grant new authority.
 - Momentum No-Pullback uses a dedicated current 3M execution-anchor selector. Canonical 0.75 ATR / 24m / micro-score / anti-climax limits are unchanged; a stale/less suitable ICT-zone may no longer hide a newer safe micro-base.
@@ -301,8 +308,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.28-persistent-preconfirm-momentum-anchor-directional-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_28_PERSISTENT_PRECONFIRM_MOMENTUM_ANCHOR_DIRECTIONAL_CALIBRATION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.29-execution-source-empirical-authority-lane-safe-selection"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_29_EXECUTION_SOURCE_EMPIRICAL_AUTHORITY_LANE_SAFE_SELECTION"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -456,7 +463,7 @@ ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_scor
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
 JOURNAL_COMPACTION_SCHEMA_VERSION = "journal_compaction_v9.5.23_lifecycle_ranked_episode_retention"
-RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.26_evidence_adjusted_selection"
+RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.29_execution_source_authority"
 SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.28_directional_nested_oos_authority"
 SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(8, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "10") or 10))
 SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.50, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.52") or 0.52)))
@@ -926,6 +933,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Evidence-adjusted selection caps are not monotonic")
     if EVIDENCE_SELECTION_PRIOR_TRADES <= 0 or EVIDENCE_SELECTION_EXPECTANCY_SCALE_R <= 0:
         errors.append("Evidence-adjusted selection shrinkage parameters must be positive")
+    if EXECUTION_SOURCE_EVIDENCE_MIN_TRADES < 8 or EXECUTION_SOURCE_SIDE_MIN_TRADES < 8:
+        errors.append("Execution-source empirical authority requires at least 8 closed trades per eligible scope")
+    if EXECUTION_SOURCE_EVIDENCE_MIN_WINS < 3:
+        errors.append("Execution-source empirical authority minimum wins must be at least 3")
+    if EXECUTION_SOURCE_POSITIVE_EXPECTANCY_R <= 0:
+        errors.append("Execution-source positive expectancy gate must be above zero")
+    if EXECUTION_SOURCE_SEVERE_NEGATIVE_EXPECTANCY_R >= 0:
+        errors.append("Execution-source severe negative expectancy gate must stay below zero")
+    if not (0.50 <= EXECUTION_SOURCE_MAX_WEIGHT <= 0.90):
+        errors.append("Execution-source empirical weight cap must remain in [0.50, 0.90]")
     if SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS < 8:
         errors.append("Exact-setup validation requires at least 8 OOS predictions")
     if not (0.50 <= SETUP_CALIBRATION_VALIDATION_MIN_AUC <= 0.80):
@@ -1212,7 +1229,7 @@ UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT = min(PROBE_RISK_PCT, max(UNDERP
 # v9.5.26 Evidence-adjusted selection is a ranking-only authority layer. It may
 # change WHICH hypothesis wins selection, but it may never rewrite the raw
 # technical score or lower/raise canonical 68/75 execution admission.
-EVIDENCE_SELECTION_SCHEMA_VERSION = "evidence_adjusted_selection_v9.5.28_directional_authority_aware"
+EVIDENCE_SELECTION_SCHEMA_VERSION = "evidence_adjusted_selection_v9.5.29_execution_source_directional_authority"
 EVIDENCE_SELECTION_PRIOR_TRADES = max(8.0, float(os.getenv("EVIDENCE_SELECTION_PRIOR_TRADES", "20") or 20))
 EVIDENCE_SELECTION_EXPECTANCY_SCALE_R = max(0.10, float(os.getenv("EVIDENCE_SELECTION_EXPECTANCY_SCALE_R", "0.35") or 0.35))
 EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT = min(6.0, max(0.0, float(os.getenv("EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT", "4.0") or 4.0)))
@@ -1224,6 +1241,18 @@ EVIDENCE_SELECTION_TINY_SAMPLE_CAP = min(84.0, max(EVIDENCE_SELECTION_ZERO_SAMPL
 EVIDENCE_SELECTION_SMALL_SAMPLE_CAP = min(86.0, max(EVIDENCE_SELECTION_TINY_SAMPLE_CAP, float(os.getenv("EVIDENCE_SELECTION_SMALL_SAMPLE_CAP", "77") or 77)))
 EVIDENCE_SELECTION_PRECALIBRATION_CAP = min(92.0, max(EVIDENCE_SELECTION_SMALL_SAMPLE_CAP, float(os.getenv("EVIDENCE_SELECTION_PRECALIBRATION_CAP", "82") or 82)))
 EVIDENCE_SELECTION_VALIDATION_FAILED_CAP = min(95.0, max(EVIDENCE_SELECTION_PRECALIBRATION_CAP, float(os.getenv("EVIDENCE_SELECTION_VALIDATION_FAILED_CAP", "86") or 86)))
+
+# v9.5.29: execution-source empirical authority. A named setup is not assumed
+# homogeneous when its entry lanes have materially different realized economics.
+# This layer is hierarchical and fail-closed: setup -> side -> execution_source.
+EXECUTION_SOURCE_EVIDENCE_MIN_TRADES = max(8, int(os.getenv("EXECUTION_SOURCE_EVIDENCE_MIN_TRADES", "12") or 12))
+EXECUTION_SOURCE_SIDE_MIN_TRADES = max(8, int(os.getenv("EXECUTION_SOURCE_SIDE_MIN_TRADES", "12") or 12))
+EXECUTION_SOURCE_EVIDENCE_MIN_WINS = max(3, int(os.getenv("EXECUTION_SOURCE_EVIDENCE_MIN_WINS", "5") or 5))
+EXECUTION_SOURCE_POSITIVE_EXPECTANCY_R = float(os.getenv("EXECUTION_SOURCE_POSITIVE_EXPECTANCY_R", "0.05") or 0.05)
+EXECUTION_SOURCE_SEVERE_NEGATIVE_EXPECTANCY_R = min(-0.02, float(os.getenv("EXECUTION_SOURCE_SEVERE_NEGATIVE_EXPECTANCY_R", "-0.10") or -0.10))
+EXECUTION_SOURCE_EMPIRICAL_PRIOR_TRADES = max(8.0, float(os.getenv("EXECUTION_SOURCE_EMPIRICAL_PRIOR_TRADES", "12") or 12))
+EXECUTION_SOURCE_MAX_WEIGHT = min(0.90, max(0.50, float(os.getenv("EXECUTION_SOURCE_MAX_WEIGHT", "0.80") or 0.80)))
+EXECUTION_SOURCE_RECENT_AUDIT_TRADES = max(4, int(os.getenv("EXECUTION_SOURCE_RECENT_AUDIT_TRADES", "6") or 6))
 
 # v9.5.27 fresh model-local execution contracts. These create a new thesis clock only
 # from current confirmed market evidence; they never resurrect a stale scan event.
@@ -5978,9 +6007,13 @@ def build_risk_adjustment_ledger(
     ensure_mss_reversal_empirical_policy(candidate, journal)
     components = getattr(candidate, "score_components", {}) or {}
     setup_guard = underperforming_setup_empirical_guard(journal, str(getattr(candidate, "setup_type", "") or ""))
-    if setup_guard.get("applies"):
+    source_guard = execution_source_empirical_profile(journal, candidate)
+    if setup_guard.get("applies") or source_guard.get("active"):
         components = dict(components)
-        components["underperforming_setup_guard"] = setup_guard
+        if setup_guard.get("applies"):
+            components["underperforming_setup_guard"] = setup_guard
+        if source_guard.get("active"):
+            components["execution_source_empirical_authority"] = source_guard
         if candidate is not None:
             candidate.score_components = components
     stage_name = str(stage or getattr(candidate, "entry_stage", "WATCH") or "WATCH").upper()
@@ -6011,6 +6044,10 @@ def build_risk_adjustment_ledger(
         guard_cap = max(0.0, safe_float(setup_guard.get("risk_cap_pct"), UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT))
         base = min(base, guard_cap)
         stage_cap = min(stage_cap, guard_cap)
+    if source_guard.get("guard_active"):
+        source_cap = max(0.0, safe_float(source_guard.get("risk_cap_pct"), UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT))
+        base = min(base, source_cap)
+        stage_cap = min(stage_cap, source_cap)
 
     adjustments: list[RiskAdjustment] = []
     seen: set[str] = set()
@@ -7192,6 +7229,54 @@ def compute_fresh_execution_conversion_audit(journal: dict[str, Any]) -> dict[st
         "authority":"AUDIT_ONLY_NO_THRESHOLD_MUTATION",
         "schema_version":"fresh_execution_conversion_audit_v9.5.28",
         "updated_at":iso_now(),
+    }
+
+
+def compute_execution_source_authority_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    """Audit realized economics by setup -> execution_source -> side."""
+    keys: set[tuple[str, str]] = set()
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict) or _journal_result_r(trade) is None:
+            continue
+        setup_type = str(trade.get("setup_type") or "")
+        source = str(trade.get("execution_source") or "").upper()
+        if setup_type and source:
+            keys.add((setup_type, source))
+    rows = []
+    for setup_type, source in sorted(keys):
+        pooled = execution_source_trade_statistics(journal, setup_type, source)
+        side_rows = {}
+        guard_modes = {}
+        for side in (Side.LONG.value, Side.SHORT.value):
+            side_rows[side] = execution_source_trade_statistics(journal, setup_type, source, side)
+            dummy = Candidate(
+                side=side, setup_type=setup_type, setup_family=SetupFamily.NONE.value,
+                raw_score=0, final_score=0, execution_source=source,
+            )
+            guard = execution_source_empirical_profile(journal, dummy)
+            guard_modes[side] = {
+                "mode": guard.get("mode"),
+                "guard_active": bool(guard.get("guard_active")),
+                "evidence_scope": guard.get("evidence_scope"),
+                "expectancy_r": guard.get("expectancy_r"),
+                "risk_cap_pct": guard.get("risk_cap_pct"),
+                "selection_cap": guard.get("selection_cap"),
+            }
+        rows.append({
+            "setup_type": setup_type,
+            "execution_source": source,
+            "pooled": pooled,
+            "by_side": side_rows,
+            "authority_by_side": guard_modes,
+        })
+    return {
+        "rows": rows,
+        "row_count": len(rows),
+        "authority_key": "setup_type + side + execution_source",
+        "negative_lane_can_borrow_parent_reputation": False,
+        "raw_quality_authority": False,
+        "schema_version": "execution_source_authority_audit_v9.5.29",
+        "updated_at": iso_now(),
     }
 
 
@@ -12277,6 +12362,182 @@ def _setup_type_side_trade_statistics(journal: dict[str, Any], setup_type: str, 
     }
 
 
+def execution_source_trade_statistics(
+    journal: dict[str, Any],
+    setup_type: str,
+    execution_source: str,
+    side: str = "",
+) -> dict[str, Any]:
+    """Canonical realized-R statistics for one setup execution source.
+
+    `execution_source` is an empirical child of setup_type, not a replacement for
+    the setup identity. Side filtering is optional. Missing legacy source lineage
+    is never guessed from setup_type.
+    """
+    exact_setup = str(setup_type or "")
+    exact_source = str(execution_source or "").upper()
+    exact_side = str(side or "").upper()
+    signals = {
+        str(row.get("id")): row
+        for row in (journal.get("signals") or [])
+        if isinstance(row, dict) and row.get("id")
+    }
+    resolved: list[tuple[int, float]] = []
+    total_records = 0
+    for index, trade in enumerate(journal.get("trades", []) or []):
+        if not isinstance(trade, dict) or str(trade.get("setup_type") or "") != exact_setup:
+            continue
+        if exact_side in {Side.LONG.value, Side.SHORT.value} and str(trade.get("side") or "").upper() != exact_side:
+            continue
+        source = str(trade.get("execution_source") or "").upper()
+        if not source:
+            signal = signals.get(str(trade.get("signal_id") or "")) or {}
+            source = str(signal.get("execution_source") or "").upper()
+        if source != exact_source:
+            continue
+        total_records += 1
+        result_r = _journal_result_r(trade)
+        if result_r is None:
+            continue
+        opened = _parse_iso_datetime(trade.get("opened_at", trade.get("time")))
+        order_key = int(opened.timestamp() * 1000) if opened is not None else index
+        resolved.append((order_key, float(result_r)))
+    resolved.sort(key=lambda item: item[0])
+    values = [value for _, value in resolved]
+    recent_values = values[-EXECUTION_SOURCE_RECENT_AUDIT_TRADES:]
+    wins = sum(value > 1e-9 for value in values)
+    recent_wins = sum(value > 1e-9 for value in recent_values)
+    net_r = sum(values)
+    return {
+        "setup_type": exact_setup,
+        "side": exact_side if exact_side in {Side.LONG.value, Side.SHORT.value} else "POOLED",
+        "execution_source": exact_source,
+        "total_records": total_records,
+        "closed_trades": len(values),
+        "wins": wins,
+        "win_rate": round((wins / len(values) * 100.0) if values else 0.0, 2),
+        "net_r": round(net_r, 6),
+        "expectancy_r": round(mean(values), 6) if values else 0.0,
+        "recent_closed_trades": len(recent_values),
+        "recent_wins": recent_wins,
+        "recent_win_rate": round((recent_wins / len(recent_values) * 100.0) if recent_values else 0.0, 2),
+        "recent_expectancy_r": round(mean(recent_values), 6) if recent_values else 0.0,
+        "legacy_or_ambiguous_excluded": total_records - len(values),
+        "schema_version": "execution_source_statistics_v9.5.29",
+    }
+
+
+def execution_source_empirical_profile(
+    journal: Optional[dict[str, Any]],
+    candidate: Optional[Candidate],
+) -> dict[str, Any]:
+    """Side-aware empirical authority for the candidate's exact execution source.
+
+    The side-specific lane wins authority over the pooled lane after its own
+    minimum sample. Until then pooled source evidence may be used. Positive
+    history is diagnostic/ranking evidence; only negative mature evidence creates
+    an explicit stage/risk guard.
+    """
+    if candidate is None:
+        return {"active": False, "mode": "NO_CANDIDATE", "schema_version": "execution_source_authority_v9.5.29"}
+    journal = journal or {}
+    setup_type = str(getattr(candidate, "setup_type", "") or "")
+    side = str(getattr(candidate, "side", "") or "").upper()
+    source = str(getattr(candidate, "execution_source", "") or "").upper()
+    if not source or source == ExecutionSource.NONE.value:
+        return {
+            "active": False, "setup_type": setup_type, "side": side,
+            "execution_source": source or ExecutionSource.NONE.value,
+            "mode": "NO_EXECUTION_SOURCE", "schema_version": "execution_source_authority_v9.5.29",
+        }
+    pooled = execution_source_trade_statistics(journal, setup_type, source)
+    side_stats = execution_source_trade_statistics(journal, setup_type, source, side) if side in {Side.LONG.value, Side.SHORT.value} else {}
+    pooled_n = int(pooled.get("closed_trades") or 0)
+    side_n = int(side_stats.get("closed_trades") or 0)
+    if side_n >= EXECUTION_SOURCE_SIDE_MIN_TRADES:
+        scope = "SIDE_EXECUTION_SOURCE"
+        evidence = side_stats
+        minimum = EXECUTION_SOURCE_SIDE_MIN_TRADES
+    elif pooled_n >= EXECUTION_SOURCE_EVIDENCE_MIN_TRADES:
+        scope = "POOLED_EXECUTION_SOURCE"
+        evidence = pooled
+        minimum = EXECUTION_SOURCE_EVIDENCE_MIN_TRADES
+    else:
+        scope = "OBSERVING"
+        evidence = side_stats if side_n >= pooled_n and side_n > 0 else pooled
+        minimum = EXECUTION_SOURCE_SIDE_MIN_TRADES if side_n > 0 else EXECUTION_SOURCE_EVIDENCE_MIN_TRADES
+    n = int(evidence.get("closed_trades") or 0)
+    wins = int(evidence.get("wins") or 0)
+    expectancy = safe_float(evidence.get("expectancy_r"), 0.0)
+    sample_ready = scope != "OBSERVING"
+    severe_negative = bool(sample_ready and expectancy <= EXECUTION_SOURCE_SEVERE_NEGATIVE_EXPECTANCY_R)
+    negative = bool(sample_ready and expectancy < 0.0)
+    positive = bool(
+        sample_ready
+        and wins >= EXECUTION_SOURCE_EVIDENCE_MIN_WINS
+        and expectancy >= EXECUTION_SOURCE_POSITIVE_EXPECTANCY_R
+    )
+    if severe_negative:
+        mode = "EXPERIMENTAL_PROBE"
+        risk_cap = UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT
+        selection_cap = EVIDENCE_SELECTION_EXPERIMENTAL_CAP
+        selection_adjustment = -6.0
+        guard_active = True
+    elif negative:
+        mode = "VALIDATION_PROBE"
+        risk_cap = UNDERPERFORMING_SETUP_VALIDATION_PROBE_RISK_PCT
+        selection_cap = EVIDENCE_SELECTION_VALIDATION_PROBE_CAP
+        selection_adjustment = -3.0
+        guard_active = True
+    elif positive:
+        mode = "POSITIVE_EVIDENCE"
+        risk_cap = PROBE_RISK_PCT
+        selection_cap = 100.0
+        selection_adjustment = 0.0
+        guard_active = False
+    else:
+        mode = "OBSERVING" if not sample_ready else "NEAR_ZERO_EVIDENCE"
+        risk_cap = PROBE_RISK_PCT
+        selection_cap = 100.0
+        selection_adjustment = 0.0
+        guard_active = False
+    credibility = n / (n + EXECUTION_SOURCE_EMPIRICAL_PRIOR_TRADES) if n else 0.0
+    return {
+        "active": True,
+        "setup_type": setup_type,
+        "side": side,
+        "execution_source": source,
+        "evidence_scope": scope,
+        "sample_ready": sample_ready,
+        "closed_trades": n,
+        "wins": wins,
+        "win_rate": evidence.get("win_rate"),
+        "net_r": evidence.get("net_r"),
+        "expectancy_r": round(expectancy, 6),
+        "recent_closed_trades": int(evidence.get("recent_closed_trades") or 0),
+        "recent_win_rate": evidence.get("recent_win_rate"),
+        "recent_expectancy_r": safe_float(evidence.get("recent_expectancy_r"), 0.0),
+        "pooled_statistics": pooled,
+        "side_statistics": side_stats,
+        "credibility": round(credibility, 6),
+        "positive_evidence": positive,
+        "negative_evidence": negative,
+        "severe_negative_evidence": severe_negative,
+        "guard_active": guard_active,
+        "mode": mode,
+        "maximum_stage": EntryStage.PROBE.value if guard_active else "UNCHANGED",
+        "risk_cap_pct": risk_cap,
+        "selection_cap": selection_cap,
+        "selection_adjustment": selection_adjustment,
+        "minimum_sample": minimum,
+        "minimum_wins": EXECUTION_SOURCE_EVIDENCE_MIN_WINS,
+        "positive_expectancy_gate_r": EXECUTION_SOURCE_POSITIVE_EXPECTANCY_R,
+        "severe_negative_expectancy_gate_r": EXECUTION_SOURCE_SEVERE_NEGATIVE_EXPECTANCY_R,
+        "policy": "SIDE_EXECUTION_SOURCE_OVERRIDES_POOLED_AFTER_OWN_SAMPLE; NEGATIVE_LANE_CANNOT_BORROW_SETUP_OR_OTHER_LANE_REPUTATION",
+        "schema_version": "execution_source_authority_v9.5.29",
+    }
+
+
 def setup_type_side_calibration_audit(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
     long_stats = _setup_type_side_trade_statistics(journal, setup_type, Side.LONG.value)
     short_stats = _setup_type_side_trade_statistics(journal, setup_type, Side.SHORT.value)
@@ -13374,6 +13635,7 @@ def rescore_reentry_candidate(candidate: Candidate, context: dict, journal: dict
     candidate.entry_stage = str(candidate.stage_plan.get("stage", candidate.entry_stage))
     candidate = apply_setup_innovation_overlay(candidate, context, {}, journal)
     candidate = apply_underperforming_setup_guard(candidate, journal)
+    candidate = apply_execution_source_empirical_guard(candidate, journal)
     candidate = apply_evidence_adjusted_selection_score(candidate, journal)
     return candidate
 
@@ -14953,6 +15215,7 @@ def ensure_mss_reversal_empirical_policy(
 
 UNDERPERFORMING_SETUP_GUARD_TYPES = frozenset({
     SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+    SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,
     SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
     SetupType.MSS_REVERSAL_SHORT.value,
     SetupType.FAILED_AUCTION_REJECTION.value,
@@ -15004,6 +15267,33 @@ def apply_underperforming_setup_guard(candidate: Candidate, journal: Optional[di
     return candidate
 
 
+def apply_execution_source_empirical_guard(candidate: Candidate, journal: Optional[dict[str, Any]]) -> Candidate:
+    profile = execution_source_empirical_profile(journal, candidate)
+    components = dict(candidate.score_components or {})
+    components["execution_source_empirical_authority"] = dict(profile)
+    candidate.score_components = components
+    if not profile.get("guard_active"):
+        return candidate
+    plan = dict(candidate.stage_plan or {})
+    notes = list(plan.get("scale_plan") or [])
+    candidate.entry_stage = EntryStage.PROBE.value
+    plan["stage"] = EntryStage.PROBE.value
+    candidate.probe_conviction_tier = (
+        ProbeConvictionTier.EXPERIMENTAL.value
+        if profile.get("mode") == "EXPERIMENTAL_PROBE"
+        else ProbeConvictionTier.MEDIUM.value
+    )
+    notes.append(
+        f"Execution-source evidence guard: {profile.get('execution_source')} {profile.get('evidence_scope')} "
+        f"{profile.get('mode')} exp={safe_float(profile.get('expectancy_r'), 0.0):+.3f}R "
+        f"risk cap={safe_float(profile.get('risk_cap_pct'), 0.0):.3f}%"
+    )
+    plan["execution_source_empirical_authority"] = dict(profile)
+    plan["scale_plan"] = notes
+    candidate.stage_plan = plan
+    return candidate
+
+
 def evidence_adjusted_selection_profile(
     journal: Optional[dict[str, Any]],
     candidate: Optional[Candidate],
@@ -15034,6 +15324,7 @@ def evidence_adjusted_selection_profile(
     pooled_authority = bool(calibration.get("learned_authority_allowed"))
     effective_learned_authority = bool(pooled_authority or directional_authority)
     guard = underperforming_setup_empirical_guard(journal, setup_type)
+    source_profile = execution_source_empirical_profile(journal, candidate)
 
     closed = int(stats.get("closed_trades") or 0)
     side_closed = int(side_stats.get("closed_trades") or 0)
@@ -15046,11 +15337,24 @@ def evidence_adjusted_selection_profile(
     side_weight = min(0.75, side_closed / (side_closed + 8.0)) if side_closed >= 4 else 0.0
     blended_expectancy = (1.0 - side_weight) * pooled_expectancy + side_weight * side_expectancy
     credibility = closed / (closed + EVIDENCE_SELECTION_PRIOR_TRADES) if closed > 0 else 0.0
-    expectancy_signal = math.tanh(blended_expectancy / EVIDENCE_SELECTION_EXPECTANCY_SCALE_R)
+
+    # v9.5.29: an execution source is an empirical child of setup+side. Once it
+    # has its own evidence, it progressively replaces the parent reputation for
+    # ranking authority. Raw technical scores remain untouched.
+    source_closed = int(source_profile.get("closed_trades") or 0) if source_profile.get("active") else 0
+    source_expectancy = safe_float(source_profile.get("expectancy_r"), blended_expectancy)
+    source_weight = (
+        min(EXECUTION_SOURCE_MAX_WEIGHT, source_closed / (source_closed + EXECUTION_SOURCE_EMPIRICAL_PRIOR_TRADES))
+        if source_closed >= 4 else 0.0
+    )
+    authority_expectancy = (1.0 - source_weight) * blended_expectancy + source_weight * source_expectancy
+    source_credibility = source_closed / (source_closed + EXECUTION_SOURCE_EMPIRICAL_PRIOR_TRADES) if source_closed > 0 else 0.0
+    authority_credibility = (1.0 - source_weight) * credibility + source_weight * source_credibility
+    expectancy_signal = math.tanh(authority_expectancy / EVIDENCE_SELECTION_EXPECTANCY_SCALE_R)
     if expectancy_signal >= 0:
-        expectancy_adjustment = EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT * credibility * expectancy_signal
+        expectancy_adjustment = EVIDENCE_SELECTION_MAX_POSITIVE_ADJUSTMENT * authority_credibility * expectancy_signal
     else:
-        expectancy_adjustment = EVIDENCE_SELECTION_MAX_NEGATIVE_ADJUSTMENT * credibility * expectancy_signal
+        expectancy_adjustment = EVIDENCE_SELECTION_MAX_NEGATIVE_ADJUSTMENT * authority_credibility * expectancy_signal
 
     if closed == 0:
         maturity_penalty = -5.0
@@ -15084,6 +15388,7 @@ def evidence_adjusted_selection_profile(
         calibration_adjustment += min(1.5, 0.5 + credibility)
 
     guard_adjustment = 0.0
+    execution_source_adjustment = 0.0
     selection_cap = generic_cap
     guard_mode = str(guard.get("mode") or "NOT_APPLICABLE") if guard.get("applies") else "NOT_APPLICABLE"
     if guard.get("applies"):
@@ -15096,6 +15401,11 @@ def evidence_adjusted_selection_profile(
         elif guard_mode == "GRADUATED":
             selection_cap = min(selection_cap, 100.0)
 
+    source_guard_mode = str(source_profile.get("mode") or "NOT_APPLICABLE")
+    if source_profile.get("guard_active"):
+        execution_source_adjustment += safe_float(source_profile.get("selection_adjustment"), 0.0)
+        selection_cap = min(selection_cap, safe_float(source_profile.get("selection_cap"), selection_cap))
+
     # A deliberately SHADOW-only setup must remain observable but cannot consume
     # the live #1 selection slot and then fail closed after displacing a live model.
     shadow_only = False
@@ -15106,11 +15416,12 @@ def evidence_adjusted_selection_profile(
             guard_adjustment -= 4.0
             selection_cap = min(selection_cap, max(0.0, float(ARMED_SCORE_BASE - 1)))
 
-    uncapped = raw_hypothesis + maturity_penalty + expectancy_adjustment + calibration_adjustment + guard_adjustment
+    uncapped = raw_hypothesis + maturity_penalty + expectancy_adjustment + calibration_adjustment + guard_adjustment + execution_source_adjustment
     selection_score = clamp(min(uncapped, selection_cap), 0.0, 100.0)
     total_adjustment = selection_score - raw_hypothesis
     mode = (
         "SHADOW_ONLY" if shadow_only
+        else "EXECUTION_SOURCE_QUARANTINE" if source_profile.get("guard_active")
         else "EMPIRICAL_QUARANTINE" if guard.get("applies") and guard_mode != "GRADUATED"
         else "VALIDATED_DIRECTIONAL_EMPIRICAL" if directional_authority
         else "VALIDATED_EMPIRICAL" if pooled_authority
@@ -15130,6 +15441,7 @@ def evidence_adjusted_selection_profile(
             "expectancy_adjustment": round(expectancy_adjustment, 4),
             "calibration_adjustment": round(calibration_adjustment, 4),
             "guard_adjustment": round(guard_adjustment, 4),
+            "execution_source_adjustment": round(execution_source_adjustment, 4),
         },
         "evidence": {
             "closed_trades": closed,
@@ -15139,7 +15451,14 @@ def evidence_adjusted_selection_profile(
             "side_expectancy_r": round(side_expectancy, 6),
             "side_weight": round(side_weight, 6),
             "blended_expectancy_r": round(blended_expectancy, 6),
+            "execution_source": str(source_profile.get("execution_source") or getattr(candidate, "execution_source", "") or ""),
+            "execution_source_scope": str(source_profile.get("evidence_scope") or "NONE"),
+            "execution_source_closed_trades": source_closed,
+            "execution_source_expectancy_r": round(source_expectancy, 6) if source_closed else None,
+            "execution_source_weight": round(source_weight, 6),
+            "authority_expectancy_r": round(authority_expectancy, 6),
             "credibility": round(credibility, 6),
+            "authority_credibility": round(authority_credibility, 6),
             "maturity_band": maturity_band,
             "sample_ready": bool(calibration.get("sample_ready")),
             "oos_validation_pass": bool(calibration.get("validation_pass")),
@@ -15150,12 +15469,16 @@ def evidence_adjusted_selection_profile(
             "directional_calibration_status": str(directional_calibration.get("status") or "NOT_ACTIVE"),
             "quarantine_mode": guard_mode,
             "guard_class": str(guard.get("guard_class") or ""),
+            "execution_source_guard_mode": source_guard_mode,
+            "execution_source_guard_active": bool(source_profile.get("guard_active")),
+            "execution_source_recent_win_rate": source_profile.get("recent_win_rate"),
+            "execution_source_recent_expectancy_r": source_profile.get("recent_expectancy_r"),
             "shadow_only": shadow_only,
         },
         "mode": mode,
         "raw_quality_mutated": False,
         "canonical_entry_thresholds_mutated": False,
-        "policy": "RANKING_ONLY; RAW_TECHNICAL_QUALITY_IMMUTABLE; SMALL_SAMPLE_SHRINKAGE; BOUNDED_SELECTION_AUTHORITY",
+        "policy": "RANKING_ONLY; RAW_TECHNICAL_QUALITY_IMMUTABLE; HIERARCHICAL_SETUP_SIDE_EXECUTION_SOURCE_EVIDENCE; SMALL_SAMPLE_SHRINKAGE; BOUNDED_SELECTION_AUTHORITY",
         "schema_version": EVIDENCE_SELECTION_SCHEMA_VERSION,
     }
 
@@ -17692,6 +18015,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             cand = apply_reversal_drift_stage_overlay(cand)
             cand = apply_setup_innovation_overlay(cand, context, state, journal)
             cand = apply_underperforming_setup_guard(cand, journal)
+            cand = apply_execution_source_empirical_guard(cand, journal)
             cand = apply_evidence_adjusted_selection_score(cand, journal)
 
             min_score_required = params["armed_score"] - 10 if not is_fallback else params["armed_score"] + NO_PATTERN_EXTRA_MARGIN
@@ -28247,6 +28571,98 @@ def _run_self_test() -> bool:
         and _candidate_selection_score(_tod_rank) <= ARMED_SCORE_BASE - 1 + 1e-9,
     ))
 
+    # v9.5.29: execution-source evidence must separate profitable probe lanes from weak confirmed lanes.
+    _lane_trades = []
+    _lane_trades += [
+        {"setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "side": Side.SHORT.value,
+         "execution_source": ExecutionSource.ACCEPTANCE_RETEST.value, "pnl_r": (-1.0 if i < 10 else 0.55)}
+        for i in range(17)
+    ]
+    _lane_trades += [
+        {"setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, "side": Side.LONG.value,
+         "execution_source": ExecutionSource.ACCEPTANCE_RETEST.value, "pnl_r": (0.60 if i < 9 else -0.45)}
+        for i in range(17)
+    ]
+    _lane_trades += [
+        {"setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+         "side": Side.LONG.value if i % 2 == 0 else Side.SHORT.value,
+         "execution_source": ExecutionSource.ZONE_RETEST_PROBE.value, "pnl_r": (0.80 if i < 14 else -0.50)}
+        for i in range(20)
+    ]
+    _lane_journal = {"trades": _lane_trades, "training_signals": [], "signals": []}
+    _confirmed_short = Candidate(
+        side=Side.SHORT.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=82, final_score=82, hypothesis_score=82.0,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value, entry_stage=EntryStage.ACCEPTANCE.value,
+    )
+    _confirmed_long = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=82, final_score=82, hypothesis_score=82.0,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value, entry_stage=EntryStage.ACCEPTANCE.value,
+    )
+    _probe_short = Candidate(
+        side=Side.SHORT.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=78, final_score=78, hypothesis_score=78.0,
+        execution_source=ExecutionSource.ZONE_RETEST_PROBE.value, entry_stage=EntryStage.PROBE.value,
+    )
+    _short_guard = execution_source_empirical_profile(_lane_journal, _confirmed_short)
+    _long_guard = execution_source_empirical_profile(_lane_journal, _confirmed_long)
+    _probe_guard = execution_source_empirical_profile(_lane_journal, _probe_short)
+    checks.append((
+        "v9.5.29 Lane authority: weak SHORT confirmed Acceptance cannot borrow LONG/probe reputation",
+        _short_guard.get("evidence_scope") == "SIDE_EXECUTION_SOURCE"
+        and _short_guard.get("guard_active") is True
+        and _short_guard.get("mode") == "EXPERIMENTAL_PROBE"
+        and safe_float(_short_guard.get("expectancy_r"), 0.0) < -0.10,
+    ))
+    checks.append((
+        "v9.5.29 Lane authority: positive LONG confirmed Acceptance is not punished by SHORT history",
+        _long_guard.get("evidence_scope") == "SIDE_EXECUTION_SOURCE"
+        and _long_guard.get("guard_active") is False
+        and safe_float(_long_guard.get("expectancy_r"), 0.0) >= EXECUTION_SOURCE_POSITIVE_EXPECTANCY_R,
+    ))
+    checks.append((
+        "v9.5.29 Lane authority: profitable Zone Retest Probe remains unquarantined",
+        _probe_guard.get("guard_active") is False
+        and safe_float(_probe_guard.get("expectancy_r"), 0.0) > 0.0,
+    ))
+    _confirmed_short_before = (_confirmed_short.final_score, _confirmed_short.hypothesis_score)
+    _confirmed_short = apply_execution_source_empirical_guard(_confirmed_short, _lane_journal)
+    _confirmed_short = apply_evidence_adjusted_selection_score(_confirmed_short, _lane_journal)
+    _probe_short = apply_execution_source_empirical_guard(_probe_short, _lane_journal)
+    _probe_short = apply_evidence_adjusted_selection_score(_probe_short, _lane_journal)
+    checks.append((
+        "v9.5.29 Lane selection: weak confirmed SHORT is probe-capped while raw quality stays immutable",
+        _confirmed_short.entry_stage == EntryStage.PROBE.value
+        and _candidate_selection_score(_confirmed_short) <= EVIDENCE_SELECTION_EXPERIMENTAL_CAP + 1e-9
+        and (_confirmed_short.final_score, _confirmed_short.hypothesis_score) == _confirmed_short_before,
+    ))
+    _lane_risk = build_risk_adjustment_ledger(
+        Candidate(
+            side=Side.SHORT.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            setup_family=SetupFamily.CONTINUATION.value, raw_score=82, final_score=82,
+            execution_source=ExecutionSource.ACCEPTANCE_RETEST.value, entry_stage=EntryStage.ACCEPTANCE.value,
+        ), {}, stage=EntryStage.ACCEPTANCE.value, journal=_lane_journal,
+    )
+    checks.append((
+        "v9.5.29 Lane risk: risk ledger independently enforces severe negative execution-source cap",
+        _lane_risk.final_position_risk_pct <= UNDERPERFORMING_SETUP_EXPERIMENTAL_RISK_PCT + 1e-9,
+    ))
+    _daily_guard = underperforming_setup_empirical_guard(
+        {"trades": [
+            {"setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, "pnl_r": 0.8},
+            {"setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, "pnl_r": -1.0},
+            {"setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, "pnl_r": -1.0},
+            {"setup_type": SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value, "pnl_r": -0.6},
+        ], "training_signals": []},
+        SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,
+    )
+    checks.append((
+        "v9.5.29 Daily/Weekly Open Reclaim: negative tiny exact sample is explicitly evidence-capped",
+        _daily_guard.get("guard_class") == "UNDERPERFORMING_HISTORY"
+        and _daily_guard.get("mode") == "EXPERIMENTAL_PROBE",
+    ))
+
     # v9.5.25: primary sweep evidence can pass strict quality without SMT, but only with real price evidence.
     sweep_ctx={"price":100.0,"liquidity":{"15m":{"ssl":[99.5],"bsl":[101.0]},"1h":{"ssl":[],"bsl":[]}}}
     sweep_event={"raw_sweep":True,"sweep_level":99.5,"trigger_level":99.5,"sweep_depth_atr":0.35,"reclaim":True,"rejection":True,"directional_followthrough":True,"not_chasing":True}
@@ -30625,11 +31041,12 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     result["fresh_execution_conversion_audit"] = compute_fresh_execution_conversion_audit(payload)
     result["fresh_execution_outcome_audit"] = compute_fresh_execution_outcome_audit(payload)
     result["calibration_authority_audit"] = compute_calibration_authority_audit(payload)
+    result["execution_source_authority_audit"] = compute_execution_source_authority_audit(payload)
     result["revalidation_execution_replay"] = _revalidation_fix_replay(payload)
     return result
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.26 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.29 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
