@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.29 (Execution-Source Empirical Authority & Lane-Safe Selection)
+BZU Professional Hybrid Confluence Signal Bot v9.5.30 (Professional Edge Execution & Drift-Safe Calibration)
 =============================================================================================
+Оновлення v9.5.30:
+- OR_FAILURE_2_SHORT та DAILY_WEEKLY_OPEN_RECLAIM переведено на ordered execution contracts: pattern/reclaim лише формує hypothesis, а live execution вимагає post-reclaim 3M role-flip confirmation.
+- Preconfirmation отримав past-only channel router та AUC-preserving calibration; кращий внутрішній predictor більше не губиться через слабший validation channel, але authority лишається fail-closed до forward validation.
+- FRESH_BASE_CONTINUATION і PULLBACK_CONTINUATION більше не вважають старий OB/FVG новою fresh hypothesis без current model-local evidence.
+- Fresh-execution outcome analytics дедуплікує один underlying market episode між кількома setup labels, щоб maturity не завищувалась дублями.
+- Rejected-hypothesis shadow audit розділяє favorable price path від empirical profitability policy, усуваючи методологічний конфлікт з real-PnL calibration.
+- Після закриття активної позиції capacity звільняється в тому самому run і виконується fresh market rescan без дозволу одночасних позицій.
+- RANGE_COMPRESSION_BREAKOUT та LIQUIDITY_LADDER не послаблювалися: їх current-schema reachability уже жива; telemetry лише точніше відділяє legacy freshness від model-local execution.
+- Canonical score/RR/TTL/risk floors не змінені.
+
 Оновлення v9.5.29:
 - Evidence authority тепер ієрархічна setup -> side -> execution_source: сильний ZONE_RETEST_PROBE і слабкий ACCEPTANCE_RETEST більше не ділять одну empirical reputation.
 - Negative execution-source evidence може окремо знизити selection authority та stage/risk саме проблемного lane, не змінюючи raw technical quality або canonical 68/75 gates.
@@ -308,8 +318,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.29-execution-source-empirical-authority-lane-safe-selection"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_29_EXECUTION_SOURCE_EMPIRICAL_AUTHORITY_LANE_SAFE_SELECTION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.30-ordered-confirmation-drift-safe-dedup-postclose-rescan"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_30_ORDERED_CONFIRMATION_DRIFT_SAFE_DEDUP_POSTCLOSE_RESCAN"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -398,8 +408,8 @@ PRECONFIRM_AUTHORITY_RECENT_BRIER_GATE = min(0.50, max(0.05, float(
 # A forecast produced by an old model policy cannot count toward authority for
 # the new recent-weighted calibrator even when the raw feature schema is equal.
 PRECONFIRM_FORECAST_SCHEMA_VERSION = str(
-    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.28_feature_persistence_directional_safe")
-    or "preconfirm_forecast_v9.5.28_feature_persistence_directional_safe"
+    os.getenv("PRECONFIRM_FORECAST_SCHEMA_VERSION", "preconfirm_forecast_v9.5.30_auc_preserving_calibration")
+    or "preconfirm_forecast_v9.5.30_auc_preserving_calibration"
 ).strip()
 PRECONFIRM_CURRENT_SCHEMA_MIN_MODEL_ROWS = max(
     PRECONFIRM_MIN_TRAIN_ROWS,
@@ -420,6 +430,27 @@ PRECONFIRM_ANTI_DISCRIMINATION_AUC = min(0.50, max(0.0, float(
 )))
 PRECONFIRM_UNTRUSTED_MODEL_SHRINK = min(0.75, max(0.05, float(
     os.getenv("PRECONFIRM_UNTRUSTED_MODEL_SHRINK", "0.35") or 0.35
+)))
+# v9.5.30: calibration may improve probability calibration, but it may not destroy
+# ranking discrimination. Candidate ensembles are selected on the calibration
+# slice only and must remain close to the best calibration-slice AUC channel.
+PRECONFIRM_CHAMPION_MAX_AUC_DEGRADATION = min(0.08, max(0.0, float(
+    os.getenv("PRECONFIRM_CHAMPION_MAX_AUC_DEGRADATION", "0.02") or 0.02
+)))
+PRECONFIRM_CHAMPION_MIN_AUC = min(0.80, max(0.50, float(
+    os.getenv("PRECONFIRM_CHAMPION_MIN_AUC", "0.50") or 0.50
+)))
+PRECONFIRM_CHANNEL_ROUTER_MIN_ROWS = max(20, int(
+    os.getenv("PRECONFIRM_CHANNEL_ROUTER_MIN_ROWS", "30") or 30
+))
+PRECONFIRM_CHANNEL_ROUTER_WINDOW = max(PRECONFIRM_CHANNEL_ROUTER_MIN_ROWS, int(
+    os.getenv("PRECONFIRM_CHANNEL_ROUTER_WINDOW", "50") or 50
+))
+PRECONFIRM_CHANNEL_ROUTER_MIN_AUC = min(0.80, max(0.50, float(
+    os.getenv("PRECONFIRM_CHANNEL_ROUTER_MIN_AUC", "0.52") or 0.52
+)))
+PRECONFIRM_CHANNEL_ROUTER_MAX_BRIER = min(0.45, max(0.15, float(
+    os.getenv("PRECONFIRM_CHANNEL_ROUTER_MAX_BRIER", "0.35") or 0.35
 )))
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or 12)
@@ -463,7 +494,7 @@ ENTRY_QUALITY_AUDIT_SCHEMA_VERSION = "entry_quality_audit_v9.5.21_canonical_scor
 ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROWS", "12") or 12))
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
 JOURNAL_COMPACTION_SCHEMA_VERSION = "journal_compaction_v9.5.23_lifecycle_ranked_episode_retention"
-RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.29_execution_source_authority"
+RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.30_ordered_confirmation_edge_aware"
 SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.28_directional_nested_oos_authority"
 SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(8, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "10") or 10))
 SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.50, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.52") or 0.52)))
@@ -909,6 +940,16 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("Preconfirmation anti-discrimination AUC threshold must be in [0, 0.50]")
     if not (0.0 < PRECONFIRM_UNTRUSTED_MODEL_SHRINK <= 0.75):
         errors.append("Preconfirmation untrusted-model shrinkage must be in (0, 0.75]")
+    if not (0.0 <= PRECONFIRM_CHAMPION_MAX_AUC_DEGRADATION <= 0.08):
+        errors.append("Preconfirmation champion AUC degradation allowance must be in [0, 0.08]")
+    if not (0.50 <= PRECONFIRM_CHAMPION_MIN_AUC <= 0.80):
+        errors.append("Preconfirmation champion minimum AUC must be in [0.50, 0.80]")
+    if PRECONFIRM_CHANNEL_ROUTER_WINDOW < PRECONFIRM_CHANNEL_ROUTER_MIN_ROWS:
+        errors.append("Preconfirmation channel router window must cover its minimum sample")
+    if not (0.50 <= PRECONFIRM_CHANNEL_ROUTER_MIN_AUC <= 0.80):
+        errors.append("Preconfirmation channel router minimum AUC must be in [0.50, 0.80]")
+    if not (0.15 <= PRECONFIRM_CHANNEL_ROUTER_MAX_BRIER <= 0.45):
+        errors.append("Preconfirmation channel router Brier ceiling must be in [0.15, 0.45]")
     if SETUP_LIFECYCLE_RECENT_RUN_LIMIT > 100:
         errors.append("Journal Compaction v2 lifecycle retention hard cap exceeded")
     if RANKED_CONVERSION_AUDIT_LIMIT > 200:
@@ -3359,20 +3400,84 @@ def _preconfirm_apply_calibration_champion(logistic_probability: float, heuristi
 def _preconfirm_select_calibration_champion(
     logistic_probabilities: list[float], heuristic_probabilities: list[float], labels: list[int], sample_weights: list[float],
 ) -> dict[str, Any]:
-    """Select a tiny regularized ensemble only on the calibration slice."""
-    if len(labels)<6 or len(set(labels))<2:
-        return {"logistic_weight":1.0,"neutral_shrink":PRECONFIRM_UNTRUSTED_MODEL_SHRINK,"reason":"CALIBRATION_SLICE_TOO_SMALL","selection_uses_oos_labels":False,"schema_version":"preconfirm_calibration_champion_v9.5.28"}
-    candidates=[]
-    for logistic_weight in (0.0,0.25,0.50,0.75,1.0):
-        for shrink in (0.35,0.50,0.75,1.0):
-            probs=[_preconfirm_apply_calibration_champion(lp,hp,{"logistic_weight":logistic_weight,"neutral_shrink":shrink}) for lp,hp in zip(logistic_probabilities,heuristic_probabilities)]
-            brier=_preconfirm_weighted_brier(labels,probs,sample_weights); auc=_preconfirm_auc(labels,probs)
-            # Small complexity penalty prefers calibrated/shrunk forecasts when
-            # empirical calibration is effectively tied.
-            objective=safe_float(brier,9.0)+0.0025*logistic_weight+0.0015*shrink
-            candidates.append({"logistic_weight":logistic_weight,"neutral_shrink":shrink,"brier":brier,"auc":auc,"objective":objective})
-    chosen=min(candidates,key=lambda row:(safe_float(row.get("objective"),9.0),-safe_float(row.get("auc"),0.5),safe_float(row.get("logistic_weight"),1.0)))
-    return {"logistic_weight":chosen["logistic_weight"],"neutral_shrink":chosen["neutral_shrink"],"calibration_brier":round(chosen["brier"],6) if chosen["brier"] is not None else None,"calibration_auc":round(chosen["auc"],6) if chosen["auc"] is not None else None,"candidate_count":len(candidates),"reason":"CALIBRATION_SLICE_CHAMPION","selection_uses_oos_labels":False,"schema_version":"preconfirm_calibration_champion_v9.5.28"}
+    """Select calibration on the calibration slice without sacrificing discrimination.
+
+    v9.5.30 treats AUC and Brier as different jobs: the ensemble may improve Brier,
+    but it cannot win merely by flattening/reversing a more discriminative channel.
+    OOS labels are never consulted for the choice.
+    """
+    if len(labels) < 6 or len(set(labels)) < 2:
+        return {
+            "logistic_weight": 1.0,
+            "neutral_shrink": PRECONFIRM_UNTRUSTED_MODEL_SHRINK,
+            "reason": "CALIBRATION_SLICE_TOO_SMALL",
+            "selection_uses_oos_labels": False,
+            "auc_preservation_enforced": True,
+            "schema_version": "preconfirm_calibration_champion_v9.5.30_auc_preserving",
+        }
+    logistic_auc = _preconfirm_auc(labels, logistic_probabilities)
+    heuristic_auc = _preconfirm_auc(labels, heuristic_probabilities)
+    reference_auc = max(
+        safe_float(logistic_auc, 0.50) if logistic_auc is not None else 0.50,
+        safe_float(heuristic_auc, 0.50) if heuristic_auc is not None else 0.50,
+    )
+    auc_floor = max(PRECONFIRM_CHAMPION_MIN_AUC, reference_auc - PRECONFIRM_CHAMPION_MAX_AUC_DEGRADATION)
+    candidates = []
+    for logistic_weight in (0.0, 0.25, 0.50, 0.75, 1.0):
+        for shrink in (0.35, 0.50, 0.75, 1.0):
+            probs = [
+                _preconfirm_apply_calibration_champion(
+                    lp, hp, {"logistic_weight": logistic_weight, "neutral_shrink": shrink}
+                )
+                for lp, hp in zip(logistic_probabilities, heuristic_probabilities)
+            ]
+            brier = _preconfirm_weighted_brier(labels, probs, sample_weights)
+            auc = _preconfirm_auc(labels, probs)
+            eligible = bool(auc is not None and safe_float(auc, 0.0) + 1e-12 >= auc_floor)
+            objective = safe_float(brier, 9.0) + 0.0025 * logistic_weight + 0.0015 * shrink
+            candidates.append({
+                "logistic_weight": logistic_weight,
+                "neutral_shrink": shrink,
+                "brier": brier,
+                "auc": auc,
+                "eligible": eligible,
+                "objective": objective,
+            })
+    eligible = [row for row in candidates if row.get("eligible")]
+    if not eligible:
+        # Fail closed to the most discriminative unblended calibration channel.
+        chosen = max(
+            candidates,
+            key=lambda row: (safe_float(row.get("auc"), -1.0), -safe_float(row.get("brier"), 9.0)),
+        )
+        reason = "NO_ENSEMBLE_PASSED_AUC_FLOOR_BEST_DISCRIMINATION_FALLBACK"
+    else:
+        chosen = min(
+            eligible,
+            key=lambda row: (
+                safe_float(row.get("objective"), 9.0),
+                -safe_float(row.get("auc"), 0.5),
+                safe_float(row.get("logistic_weight"), 1.0),
+            ),
+        )
+        reason = "AUC_PRESERVING_CALIBRATION_SLICE_CHAMPION"
+    return {
+        "logistic_weight": chosen["logistic_weight"],
+        "neutral_shrink": chosen["neutral_shrink"],
+        "calibration_brier": round(chosen["brier"], 6) if chosen["brier"] is not None else None,
+        "calibration_auc": round(chosen["auc"], 6) if chosen["auc"] is not None else None,
+        "reference_logistic_auc": round(logistic_auc, 6) if logistic_auc is not None else None,
+        "reference_heuristic_auc": round(heuristic_auc, 6) if heuristic_auc is not None else None,
+        "reference_auc": round(reference_auc, 6),
+        "auc_floor": round(auc_floor, 6),
+        "auc_degradation_allowance": PRECONFIRM_CHAMPION_MAX_AUC_DEGRADATION,
+        "candidate_count": len(candidates),
+        "eligible_candidate_count": len(eligible),
+        "reason": reason,
+        "selection_uses_oos_labels": False,
+        "auc_preservation_enforced": True,
+        "schema_version": "preconfirm_calibration_champion_v9.5.30_auc_preserving",
+    }
 
 def _preconfirm_build_model(journal: dict[str, Any], family: Optional[str] = None) -> dict[str, Any]:
     """Chronologically validated, schema-consistent logistic model.
@@ -3859,6 +3964,61 @@ def _preconfirm_authority_gate(
     }
 
 
+def _preconfirm_recent_channel_router(journal: dict[str, Any]) -> dict[str, Any]:
+    """Choose the next audit forecast channel from completed historical forecasts only.
+
+    This is online model routing, not OOS leakage: the current pending event has no
+    outcome yet and therefore cannot influence its own channel. Authority remains
+    separately locked until new frozen forecasts pass the normal rolling gates.
+    """
+    completed=[]
+    for event in journal.get("events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        status=_preconfirm_event_status(event)
+        if status=="CONFIRMED": label=1
+        elif status in {"FAILED","EXPIRED"}: label=0
+        else: continue
+        if str(event.get("feature_schema_version") or "") != PRECONFIRM_FEATURE_SCHEMA_VERSION:
+            continue
+        est=dict(event.get("estimate_at_observation") or {})
+        completed.append((int(event.get("observed_ts") or 0),label,est))
+    completed=sorted(completed,key=lambda row:row[0])[-PRECONFIRM_CHANNEL_ROUTER_WINDOW:]
+    channel_extractors={
+        "HIERARCHICAL_POSTERIOR": lambda est: safe_float((est.get("hierarchical_calibration") or {}).get("selected_posterior_probability"), float("nan")),
+        "CALIBRATED_LOGISTIC": lambda est: safe_float(est.get("calibrated_logistic_probability"), float("nan")),
+        "HEURISTIC": lambda est: safe_float(est.get("heuristic_probability"), float("nan")),
+        "LEGACY_VALIDATION_POLICY": lambda est: safe_float(est.get("validation_probability"), float("nan")),
+    }
+    rows=[]
+    for name,extract in channel_extractors.items():
+        labels=[]; probs=[]
+        for _,label,est in completed:
+            try: value=extract(est)
+            except Exception: continue
+            if math.isfinite(value):
+                labels.append(label); probs.append(clamp(value,0.0,1.0))
+        auc=_preconfirm_auc(labels,probs) if len(labels)>=PRECONFIRM_CHANNEL_ROUTER_MIN_ROWS and len(set(labels))>=2 else None
+        brier=_preconfirm_brier(labels,probs) if labels else None
+        eligible=bool(
+            len(labels)>=PRECONFIRM_CHANNEL_ROUTER_MIN_ROWS and auc is not None and auc>=PRECONFIRM_CHANNEL_ROUTER_MIN_AUC
+            and brier is not None and brier<=PRECONFIRM_CHANNEL_ROUTER_MAX_BRIER
+        )
+        rows.append({"channel":name,"sample_size":len(labels),"auc":auc,"brier":brier,"eligible":eligible})
+    eligible=[row for row in rows if row.get("eligible")]
+    chosen=max(eligible,key=lambda row:(safe_float(row.get("auc"),0.0),-safe_float(row.get("brier"),9.0))) if eligible else None
+    return {
+        "selected_channel": str((chosen or {}).get("channel") or "NONE"),
+        "selected_auc": round(safe_float((chosen or {}).get("auc")),6) if chosen else None,
+        "selected_brier": round(safe_float((chosen or {}).get("brier")),6) if chosen else None,
+        "selected_sample_size": int((chosen or {}).get("sample_size") or 0),
+        "channel_rows": [{**row,"auc":round(row["auc"],6) if row.get("auc") is not None else None,"brier":round(row["brier"],6) if row.get("brier") is not None else None} for row in rows],
+        "selection_uses_current_event_outcome": False,
+        "authority_granted": False,
+        "schema_version": "preconfirm_channel_router_v9.5.30_past_only",
+    }
+
+
 def _preconfirm_estimate(
     journal: dict[str, Any], candidate: Candidate, features: dict[str, float],
     model_cache: dict[str, dict[str, Any]],
@@ -3904,13 +4064,36 @@ def _preconfirm_estimate(
     anti_lock = bool(authority_gate.get("recently_anti_discriminative") or model_holdout_anti)
     validation_probability: Optional[float] = None
     raw_probability: Optional[float] = None
+    calibrated_logistic_probability: Optional[float] = None
     if selected_model.get("valid"):
         raw_probability = _preconfirm_predict_model(selected_model, features)
         oriented_probability = _preconfirm_orient_probability(raw_probability, selected_model)
         calibrated_logistic_probability = _preconfirm_apply_platt(oriented_probability, selected_model.get("calibration") or {})
         validation_probability = _preconfirm_apply_calibration_champion(calibrated_logistic_probability, heuristic, selected_model.get("calibration_champion") or {})
 
+    channel_router = _preconfirm_recent_channel_router(journal)
+    routed_channel = str(channel_router.get("selected_channel") or "NONE")
+    routed_probability: Optional[float] = None
+    if routed_channel == "HIERARCHICAL_POSTERIOR" and hierarchy.get("calibrated"):
+        routed_probability = safe_float(hierarchy.get("selected_posterior_probability"), safe_float(hierarchy.get("probability"), heuristic))
+    elif routed_channel == "CALIBRATED_LOGISTIC" and calibrated_logistic_probability is not None:
+        routed_probability = calibrated_logistic_probability
+    elif routed_channel == "HEURISTIC":
+        routed_probability = heuristic
+    elif routed_channel == "LEGACY_VALIDATION_POLICY" and validation_probability is not None:
+        routed_probability = validation_probability
+    router_safe = bool(routed_probability is not None and safe_float(channel_router.get("selected_auc"),0.0) >= PRECONFIRM_CHANNEL_ROUTER_MIN_AUC)
+    if router_safe:
+        validation_probability = clamp(safe_float(routed_probability,0.5),0.01,0.99)
+        # Past-only routing is diagnostic forecast selection, never live authority.
+        anti_lock = False
+
     if anti_lock and validation_probability is not None:
+        # v9.5.30: once past-only diagnostics declare this policy anti-discriminative,
+        # the *new forecast schema* freezes a neutral validation forecast instead
+        # of continuing to accumulate known-bad ranking probabilities. This cannot
+        # create authority; it deliberately forces a clean future re-validation.
+        validation_probability = 0.50
         probability, source, calibrated = 0.50, "ANTI_DISCRIMINATION_NEUTRALIZED_AUDIT_ONLY", True
         downgrade_trusted = promotion_trusted = False
         trust_level = "ANTI_DISCRIMINATION_LOCK"
@@ -3924,10 +4107,15 @@ def _preconfirm_estimate(
         promotion_trusted = bool(downgrade_trusted and hierarchy.get("promotion_trusted"))
         trust_level = "AUTHORITY_TRUSTED" if downgrade_trusted else "OOS_VALIDATED_AUDIT_ONLY"
     elif selected_model.get("valid") and validation_probability is not None:
-        probability = 0.50 + (validation_probability - 0.50) * PRECONFIRM_UNTRUSTED_MODEL_SHRINK
-        source = "FAMILY_OOS_LOGISTIC_AUDIT_ONLY" if selected_scope != "GLOBAL_POOLED" else "RECENT_SCHEMA_LOGISTIC_AUDIT_ONLY"
+        if router_safe:
+            probability = validation_probability
+            source = f"DRIFT_SAFE_{routed_channel}_AUDIT_ONLY"
+            trust_level = "PAST_ONLY_CHANNEL_ROUTED_AUDIT"
+        else:
+            probability = 0.50 + (validation_probability - 0.50) * PRECONFIRM_UNTRUSTED_MODEL_SHRINK
+            source = "FAMILY_OOS_LOGISTIC_AUDIT_ONLY" if selected_scope != "GLOBAL_POOLED" else "RECENT_SCHEMA_LOGISTIC_AUDIT_ONLY"
+            trust_level = "RECENT_SCHEMA_BOOTSTRAP"
         calibrated = True; downgrade_trusted = promotion_trusted = False
-        trust_level = "RECENT_SCHEMA_BOOTSTRAP"
     elif hierarchy.get("calibrated"):
         validation_probability = safe_float(hierarchy.get("probability"), heuristic)
         probability = validation_probability
@@ -3959,8 +4147,11 @@ def _preconfirm_estimate(
         "raw_model_probability": round(raw_probability, 6) if raw_probability is not None else None,
         "calibrated_logistic_probability": round(calibrated_logistic_probability, 6) if selected_model.get("valid") and raw_probability is not None else None,
         "calibration_champion": json_safe(selected_model.get("calibration_champion") or {}),
+        "channel_router": json_safe(channel_router),
+        "routed_channel": routed_channel,
+        "router_safe": router_safe,
         "validation_probability": round(validation_probability, 6) if validation_probability is not None else round(probability, 6),
-        "validation_probability_policy": "FROZEN_UNGUARDED_FORECAST_FOR_AUTHORITY_VALIDATION_ONLY",
+        "validation_probability_policy": "FROZEN_AUC_PRESERVING_OR_NEUTRAL_FAIL_CLOSED_FORECAST_FOR_AUTHORITY_VALIDATION_ONLY",
         "heuristic_probability": round(heuristic, 6), "wilson_low": round(interval_low, 6), "wilson_high": round(interval_high, 6),
         "wilson_neighbors": neighbor_count, "interval_scope": interval_scope, "calibrated": calibrated,
         "trusted": authority_trusted, "authority_trusted": authority_trusted,
@@ -7025,19 +7216,13 @@ def _fresh_execution_outcome_anchor(row: dict[str, Any], context: dict[str, Any]
 def record_fresh_execution_outcome_events(
     journal: dict[str, Any], context: dict[str, Any], reachability_rows: list[dict[str, Any]],
 ) -> int:
-    """Record independent model-local firings for future path measurement.
+    """Record one market path per side/anchor/time episode, with setup memberships.
 
-    This ledger is audit-only. It stores no synthetic stop/TP and therefore does
-    not manufacture counterfactual PnL. Future candles resolve only directional
-    MFE, MAE and final displacement in ATR units.
+    Multiple setup labels may recognize the same underlying move. v9.5.30 merges
+    those memberships instead of counting the same future MFE/MAE path twice.
     """
     targets = _fresh_execution_outcome_target_setups()
-    rows = [
-        dict(row) for row in (reachability_rows or [])
-        if isinstance(row, dict)
-        and bool(row.get("fired"))
-        and str(row.get("setup_type") or "") in targets
-    ]
+    rows = [dict(row) for row in (reachability_rows or []) if isinstance(row, dict) and bool(row.get("fired")) and str(row.get("setup_type") or "") in targets]
     if not rows:
         return 0
     c3 = _recent_confirmed(((context.get("candles") or {}).get("3m") or []), 6)
@@ -7059,20 +7244,28 @@ def record_fresh_execution_outcome_events(
         anchor, anchor_source = _fresh_execution_outcome_anchor(row, context)
         anchor_bucket = int(round(anchor / anchor_step)) if anchor > 0 else 0
         time_bucket = observed_ts // max(bucket_ms, 1)
-        episode_key = f"{setup}|{side}|A{anchor_bucket}|T{time_bucket}"
+        market_episode_key = f"{side}|A{anchor_bucket}|T{time_bucket}"
         duplicate = next((
             event for event in reversed(store)
             if isinstance(event, dict)
-            and str(event.get("episode_key") or "") == episode_key
-            and str(event.get("status") or "PENDING") == "PENDING"
+            and str(event.get("market_episode_key") or event.get("episode_key") or "") == market_episode_key
+            and str(event.get("status") or "PENDING") in {"PENDING", "RESOLVED"}
         ), None)
         if duplicate:
+            memberships = list(dict.fromkeys([str(x) for x in (duplicate.get("setup_types") or [duplicate.get("setup_type")]) if x] + [setup]))
+            duplicate["setup_types"] = memberships
+            duplicate["cross_setup_membership_count"] = len(memberships)
+            duplicate.setdefault("setup_anchor_sources", {})[setup] = anchor_source
             continue
         event_id = uuid.uuid4().hex[:16]
         store.append({
             "event_id": event_id,
-            "episode_key": episode_key,
+            "episode_key": market_episode_key,
+            "market_episode_key": market_episode_key,
             "setup_type": setup,
+            "setup_types": [setup],
+            "cross_setup_membership_count": 1,
+            "setup_anchor_sources": {setup: anchor_source},
             "side": side,
             "observed_at": iso_now(),
             "observation_candle_ts": observation_candle_ts,
@@ -7089,13 +7282,12 @@ def record_fresh_execution_outcome_events(
             "architecture_version_at_observation": ARCHITECTURE_VERSION,
             "counterfactual_pnl_claimed": False,
             "authority": "AUDIT_ONLY_NO_THRESHOLD_WEIGHT_SIZING_OR_ENTRY_MUTATION",
-            "schema_version": "fresh_execution_outcome_event_v9.5.28",
+            "schema_version": "fresh_execution_outcome_event_v9.5.30_cross_setup_market_episode",
         })
         added += 1
     if len(store) > FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT:
         del store[:-FRESH_EXECUTION_OUTCOME_LEDGER_LIMIT]
     return added
-
 
 def resolve_fresh_execution_outcome_events(journal: dict[str, Any], context: dict[str, Any]) -> int:
     store = journal.get("fresh_execution_outcome_events") or []
@@ -7169,17 +7361,35 @@ def resolve_fresh_execution_outcome_events(journal: dict[str, Any], context: dic
 
 def compute_fresh_execution_outcome_audit(journal: dict[str, Any]) -> dict[str, Any]:
     events = [event for event in (journal.get("fresh_execution_outcome_events") or []) if isinstance(event, dict)]
+    def memberships(event: dict[str, Any]) -> list[str]:
+        values = [str(x) for x in (event.get("setup_types") or []) if str(x)]
+        if not values and event.get("setup_type"):
+            values = [str(event.get("setup_type"))]
+        return list(dict.fromkeys(values))
     by_setup: dict[str, Any] = {}
     for setup in sorted(_fresh_execution_outcome_target_setups()):
-        scoped = [event for event in events if str(event.get("setup_type") or "") == setup]
-        resolved = [event for event in scoped if str(event.get("status") or "") == "RESOLVED"]
-        pending = [event for event in scoped if str(event.get("status") or "PENDING") == "PENDING"]
+        scoped = [event for event in events if setup in memberships(event)]
+        # old pre-v9.5.30 rows can duplicate the same path. Collapse only for audit maturity.
+        unique_map: dict[str, dict[str, Any]] = {}
+        for event in scoped:
+            key = str(event.get("market_episode_key") or "")
+            if not key:
+                # legacy key begins with setup|side; strip setup for best-effort lineage.
+                legacy = str(event.get("episode_key") or event.get("event_id") or "")
+                parts = legacy.split("|")
+                key = "|".join(parts[1:]) if len(parts) > 3 else legacy
+            unique_map.setdefault(key, event)
+        unique = list(unique_map.values())
+        resolved = [event for event in unique if str(event.get("status") or "") == "RESOLVED"]
+        pending = [event for event in unique if str(event.get("status") or "PENDING") == "PENDING"]
         mfe = [safe_float(event.get("mfe_atr"), 0.0) for event in resolved]
         mae = [safe_float(event.get("mae_atr"), 0.0) for event in resolved]
         final = [safe_float(event.get("final_move_atr"), 0.0) for event in resolved]
         dominance = [safe_float(event.get("path_dominance_atr"), 0.0) for event in resolved]
         by_setup[setup] = {
-            "observations": len(scoped),
+            "raw_membership_observations": len(scoped),
+            "unique_market_episodes": len(unique),
+            "cross_setup_or_legacy_duplicates_removed_for_maturity": max(0, len(scoped) - len(unique)),
             "resolved": len(resolved),
             "pending": len(pending),
             "mean_mfe_atr": round(mean(mfe), 6) if mfe else None,
@@ -7191,16 +7401,25 @@ def compute_fresh_execution_outcome_audit(journal: dict[str, Any]) -> dict[str, 
             "mfe_exceeds_mae_rate": round(sum(m > a for m, a in zip(mfe, mae)) / len(resolved), 6) if resolved else None,
             "mean_path_dominance_atr": round(mean(dominance), 6) if dominance else None,
         }
+    unique_market_keys = set()
+    for event in events:
+        key = str(event.get("market_episode_key") or "")
+        if not key:
+            legacy = str(event.get("episode_key") or event.get("event_id") or "")
+            parts = legacy.split("|")
+            key = "|".join(parts[1:]) if len(parts) > 3 else legacy
+        unique_market_keys.add(key)
     return {
         "events_total": len(events),
+        "unique_market_episodes_total": len(unique_market_keys),
+        "cross_setup_duplicate_rows_or_memberships": max(0, len(events) - len(unique_market_keys)),
         "by_setup": by_setup,
         "horizon_minutes": FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES,
-        "interpretation": "PROSPECTIVE MODEL-LOCAL PATH EVIDENCE; MFE/MAE/FINAL MOVE ONLY; NOT REALIZED OR COUNTERFACTUAL PNL",
+        "interpretation": "PROSPECTIVE MARKET-EPISODE PATH EVIDENCE; CROSS-SETUP DUPLICATES DO NOT INFLATE MATURITY; NOT PNL",
         "authority": "AUDIT_ONLY_NO_THRESHOLD_WEIGHT_SIZING_OR_ENTRY_MUTATION",
-        "schema_version": "fresh_execution_outcome_audit_v9.5.28",
+        "schema_version": "fresh_execution_outcome_audit_v9.5.30_cross_setup_episode_dedup",
         "updated_at": iso_now(),
     }
-
 
 def compute_fresh_execution_conversion_audit(journal: dict[str, Any]) -> dict[str, Any]:
     reachability=((((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {}))
@@ -7291,6 +7510,13 @@ def compute_calibration_authority_audit(journal: dict[str, Any]) -> dict[str, An
         for setup,row in by_setup.items()
         for side in ((row or {}).get("directional_authority_sides") or [])
     )
+    acceptance_short_confirmed = execution_source_trade_statistics(
+        journal, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, ExecutionSource.ACCEPTANCE_RETEST.value, Side.SHORT.value
+    )
+    keep_directional_split = bool(
+        int(acceptance_short_confirmed.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
+        and safe_float(acceptance_short_confirmed.get("expectancy_r"), 0.0) < 0.0
+    )
     return {
         "global_model_fit_ready":bool(status.get("global_ready")),
         "global_theoretical_learned_weight":safe_float(status.get("global_learned_weight"),0.0),
@@ -7298,8 +7524,15 @@ def compute_calibration_authority_audit(journal: dict[str, Any]) -> dict[str, An
         "validated_exact_setups":validated,
         "validated_directional_setup_sides":directional,
         "live_learned_authority_active":bool(validated or directional),
-        "authority_contract":"GLOBAL_FIT_IS_AUDIT_ONLY; POOLED EXACT SETUP REQUIRES SIDE-SAFE OOS; MATERIAL SIDE DIVERGENCE MAY USE ONLY INDEPENDENT SIDE-SPECIFIC NESTED OOS AUTHORITY",
-        "schema_version":"calibration_authority_audit_v9.5.28_directional",
+        "acceptance_directional_split_review":{
+            "relax_directional_split_recommended": False if keep_directional_split else None,
+            "confirmed_short_execution_source_expectancy_r": safe_float(acceptance_short_confirmed.get("expectancy_r"),0.0),
+            "confirmed_short_execution_source_closed_trades": int(acceptance_short_confirmed.get("closed_trades") or 0),
+            "reason":"KEEP_DIRECTIONAL_SPLIT_BECAUSE_CONFIRMED_SHORT_LANE_IS_NEGATIVE" if keep_directional_split else "INSUFFICIENT_OR_NONNEGATIVE_LANE_EVIDENCE_FOR_DECISION",
+            "pooled_positive_setup_does_not_override_negative_lane": True,
+        },
+        "authority_contract":"GLOBAL_FIT_IS_AUDIT_ONLY; POOLED EXACT SETUP REQUIRES SIDE-SAFE OOS; MATERIAL SIDE DIVERGENCE MAY USE ONLY INDEPENDENT SIDE-SPECIFIC NESTED OOS AUTHORITY; NEGATIVE EXECUTION-SOURCE LANE CANNOT BORROW POOLED SETUP REPUTATION",
+        "schema_version":"calibration_authority_audit_v9.5.30_lane_aware_directional",
         "updated_at":iso_now(),
     }
 
@@ -14390,24 +14623,107 @@ def detect_opening_range_model(c15: list[Candle], side: str, price: float, atr15
     }
 
 
-def detect_daily_weekly_open_reclaim(c15: list[Candle], side: str, price: float, atr15: float, macro: dict, tf15: dict, tf1h: dict) -> dict[str, Any]:
-    if len(c15) < 4 or atr15 <= 0:
-        return {"active": False, "reason": "not_enough_candles"}
-    name, level, dist_atr = _nearest_key_level(price, [("DAILY_OPEN", macro.get("daily_open")), ("WEEKLY_OPEN", macro.get("weekly_open"))], atr15, OPEN_RECLAIM_MAX_DIST_ATR)
-    if not level:
-        return {"active": False, "reason": "far_from_open", "dist_atr": round(dist_atr, 2)}
-    last = c15[-1]
-    recent = c15[-5:]
-    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
-    if side == Side.LONG.value:
-        reclaimed = any(c.low < level - atr15 * 0.08 for c in recent) and last.close > level
-        acceptance = last.close >= last.open or ((last.close - last.low) / max(last.high - last.low, 1e-9) >= 0.58)
-    else:
-        reclaimed = any(c.high > level + atr15 * 0.08 for c in recent) and last.close < level
-        acceptance = last.close <= last.open or ((last.high - last.close) / max(last.high - last.low, 1e-9) >= 0.58)
-    active = bool(tf_ok and reclaimed and acceptance)
-    return {"active": active, "score_bonus": 12 if active and name == "WEEKLY_OPEN" else (9 if active else 0), "level_name": name, "level": round_price(level), "dist_atr": round(dist_atr, 2), "reclaimed": reclaimed, "acceptance": acceptance, "tf_ok": tf_ok}
+def ordered_level_reclaim_confirmation(
+    c3: list[Candle], side: str, level: float, atr15: float, *, require_retest: bool = True,
+) -> dict[str, Any]:
+    """Current 3M role-flip confirmation around a reclaimed level.
 
+    This is sequence evidence, not a score shortcut: price must be on the correct
+    side of the level now, show directional close structure, and either retest the
+    level after reclaim or produce a clear directional acceptance path.
+    """
+    q3 = _recent_confirmed(c3, 8)
+    if side not in {Side.LONG.value, Side.SHORT.value} or level <= 0 or atr15 <= 0 or len(q3) < 6:
+        return {"ready": False, "reason": "NEED_SIX_CONFIRMED_3M_BARS", "schema_version": "ordered_level_reclaim_3m_v9.5.30"}
+    sign = 1 if side == Side.LONG.value else -1
+    closes_correct = [c for c in q3[-6:] if (c.close > level if sign > 0 else c.close < level)]
+    directional = sum(1 for c in q3[-6:] if (c.close > c.open if sign > 0 else c.close < c.open))
+    retest = any(
+        (c.low <= level + atr15 * 0.12 and c.close > level) if sign > 0
+        else (c.high >= level - atr15 * 0.12 and c.close < level)
+        for c in q3[-5:]
+    )
+    latest = q3[-1]
+    latest_hold = latest.close > level if sign > 0 else latest.close < level
+    net = sign * (q3[-1].close - q3[-6].open) / max(atr15, 1e-9)
+    acceptance = bool(latest_hold and len(closes_correct) >= 4 and directional >= 3 and net >= 0.08)
+    ready = bool(acceptance and (retest or not require_retest))
+    return {
+        "ready": ready,
+        "latest_hold": latest_hold,
+        "correct_side_closes": len(closes_correct),
+        "directional_closes": directional,
+        "post_reclaim_retest": retest,
+        "signed_net_move_atr": round(net, 4),
+        "reason": "ORDERED_LEVEL_ROLE_FLIP_CONFIRMED" if ready else "WAIT_ORDERED_3M_ROLE_FLIP",
+        "schema_version": "ordered_level_reclaim_3m_v9.5.30",
+    }
+
+
+def detect_daily_weekly_open_reclaim(
+    c15: list[Candle], c3: list[Candle], side: str, price: float, atr15: float,
+    macro: dict, tf15: dict, tf1h: dict,
+) -> dict[str, Any]:
+    """Daily/Weekly Open reclaim with ordered breach -> reclaim -> role-flip execution.
+
+    The old detector allowed the final 15M reclaim candle to be hypothesis and
+    execution evidence simultaneously. v9.5.30 keeps the hypothesis visible but
+    requires a subsequent current 3M role flip before market execution.
+    """
+    confirmed15 = _confirmed_candles(c15, 10)
+    if len(confirmed15) < 5 or atr15 <= 0:
+        return {"active": False, "execution_ready": False, "reason": "not_enough_candles", "schema_version": "daily_weekly_open_reclaim_v9.5.30"}
+    name, level, dist_atr = _nearest_key_level(
+        price,
+        [("DAILY_OPEN", macro.get("daily_open")), ("WEEKLY_OPEN", macro.get("weekly_open"))],
+        atr15, OPEN_RECLAIM_MAX_DIST_ATR,
+    )
+    if not level:
+        return {"active": False, "execution_ready": False, "reason": "far_from_open", "dist_atr": round(dist_atr, 2), "schema_version": "daily_weekly_open_reclaim_v9.5.30"}
+    recent = confirmed15[-7:]
+    tf_ok = (tf15.get("bias") == side) or (tf1h.get("bias") == side)
+    sign = 1 if side == Side.LONG.value else -1
+    breach_indices = [
+        i for i, c in enumerate(recent)
+        if (c.low < level - atr15 * 0.08 if sign > 0 else c.high > level + atr15 * 0.08)
+    ]
+    breach_index = breach_indices[-1] if breach_indices else -1
+    reclaim_indices = [
+        i for i, c in enumerate(recent)
+        if i > breach_index and (c.close > level if sign > 0 else c.close < level)
+    ] if breach_index >= 0 else []
+    reclaim_index = reclaim_indices[0] if reclaim_indices else -1
+    ordered_reclaim = breach_index >= 0 and reclaim_index > breach_index
+    last = recent[-1]
+    hold = last.close > level if sign > 0 else last.close < level
+    reclaim_candle = recent[reclaim_index] if reclaim_index >= 0 else last
+    shape = _candle_shape(reclaim_candle)
+    acceptance = bool(
+        (reclaim_candle.close >= reclaim_candle.open if sign > 0 else reclaim_candle.close <= reclaim_candle.open)
+        or (safe_float(shape.get("close_position"), 0.5) >= 0.58 if sign > 0 else safe_float(shape.get("close_position"), 0.5) <= 0.42)
+    )
+    active = bool(tf_ok and ordered_reclaim and hold and acceptance)
+    current_3m = ordered_level_reclaim_confirmation(c3, side, level, atr15, require_retest=True) if active else {"ready": False, "reason": "HYPOTHESIS_NOT_ACTIVE"}
+    execution_ready = bool(active and current_3m.get("ready") and dist_atr <= OPEN_RECLAIM_MAX_DIST_ATR)
+    return {
+        "active": active,
+        "execution_ready": execution_ready,
+        "score_bonus": 12 if active and name == "WEEKLY_OPEN" else (9 if active else 0),
+        "level_name": name,
+        "level": round_price(level),
+        "entry_anchor": round_price(level),
+        "dist_atr": round(dist_atr, 2),
+        "breach_index": breach_index,
+        "reclaim_index": reclaim_index,
+        "ordered_reclaim": ordered_reclaim,
+        "reclaimed": ordered_reclaim,
+        "acceptance": acceptance,
+        "hold": hold,
+        "tf_ok": tf_ok,
+        "current_3m_confirmation": current_3m,
+        "reason": "ORDERED_OPEN_RECLAIM_EXECUTION_READY" if execution_ready else "OPEN_RECLAIM_HYPOTHESIS_WAIT_POST_RECLAIM_CONFIRMATION" if active else "OPEN_RECLAIM_NOT_ACTIVE",
+        "schema_version": "daily_weekly_open_reclaim_v9.5.30_ordered_role_flip",
+    }
 
 def detect_liquidity_ladder_model(side: str, price: float, context: dict, atr15: float, tf15: dict, tf1h: dict) -> dict[str, Any]:
     targets = find_technical_targets(side, price, context.get("zones") or [], context.get("liquidity", {}) or {}, atr15, macro=context.get("macro_liquidity", {}) or {})
@@ -14472,8 +14788,10 @@ def liquidity_ladder_execution_confirmation(
     acceptance_ready=bool(acceptance_retest.get("execution_ready") or acceptance_retest.get("acceptance_confirmed") or (acceptance_retest.get("active") and acceptance_retest.get("acceptance")))
     available=[n for n,r in (("RETEST_REANCHOR",reanchor_ready),("ACCEPTANCE_CONFIRMED",acceptance_ready),("MODEL_LOCAL_3M",local_ready),("LIVE_3M_TRIGGER",raw_live_ready)) if r]
     reasons=[]
-    if scan_stage and not stage_ready: reasons.append("SCAN_STAGE_NOT_EXECUTION_READY")
-    elif scan_stage and stage_ready and not freshness_pass: reasons.append("SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED")
+    alternate_ready = bool(local_ready or reanchor_ready or acceptance_ready)
+    if scan_stage and not stage_ready and not alternate_ready: reasons.append("SCAN_STAGE_NOT_EXECUTION_READY")
+    elif scan_stage and stage_ready and not freshness_pass:
+        reasons.append("LEGACY_LIVE_3M_TRIGGER_AGE_EXPIRED" if alternate_ready else "SCAN_STAGE_READY_BUT_TRIGGER_AGE_EXPIRED")
     if raw_live_ready: reasons.append("RAW_LIVE_3M_TRIGGER_AVAILABLE")
     if local_ready: reasons.append("MODEL_LOCAL_3M_AVAILABLE")
     if reanchor_ready: reasons.append("RETEST_REANCHOR_AVAILABLE")
@@ -15662,66 +15980,86 @@ def detect_buyer_exhaustion_short(candles: list[Candle], price: float, atr15: fl
 def detect_or_failure_2_short(
     opening_range: dict[str, Any],
     candles: list[Candle],
+    c3: list[Candle],
     price: float,
     atr15: float,
     mss: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Opening Range Failure 2.0 for SHORT.
+    """Opening Range Failure 2.1 SHORT: ordered auction failure execution.
 
-    Existing OR geometry is reused. The model scores sweep, close back inside,
-    bearish acceptance, MSS and retest separately instead of requiring a brittle
-    all-or-nothing chain.
+    Hypothesis: sweep above OR high followed by a later close back inside.
+    Execution: the reclaimed level must then behave as resistance on current 3M
+    evidence. A single dramatic reclaim candle is no longer allowed to provide
+    sweep, reclaim, retest and execution permission all at once.
     """
     mss = mss or {}
-    confirmed = _confirmed_candles(candles, 12)
+    confirmed = _confirmed_candles(candles, 14)
     or_high = safe_float(opening_range.get("or_high"), 0.0)
     or_low = safe_float(opening_range.get("or_low"), 0.0)
-    if len(confirmed) < 5 or atr15 <= 0 or not or_high or not or_low:
-        return {"active": False, "execution_ready": False, "quality": 0, "reason": "opening_range_unavailable"}
+    if len(confirmed) < 6 or atr15 <= 0 or not or_high or not or_low:
+        return {"active": False, "execution_ready": False, "quality": 0, "reason": "opening_range_unavailable", "schema_version": "or_failure_2_1_v9.5.30"}
 
-    recent = confirmed[-6:]
-    swept_or_high = any(c.high > or_high + atr15 * ORB_BREAK_BUFFER_ATR for c in recent)
-    close_inside = recent[-1].close < or_high
+    recent = confirmed[-8:]
+    sweep_indices = [i for i, c in enumerate(recent) if c.high > or_high + atr15 * ORB_BREAK_BUFFER_ATR]
+    sweep_index = sweep_indices[-1] if sweep_indices else -1
+    # A sweep candle may itself close back inside and form the hypothesis, but
+    # execution still requires later/current 3M role-flip evidence.
+    reclaim_indices = [i for i, c in enumerate(recent) if i >= sweep_index and c.close < or_high] if sweep_index >= 0 else []
+    reclaim_index = reclaim_indices[0] if reclaim_indices else -1
+    ordered_reclaim = sweep_index >= 0 and reclaim_index >= sweep_index
+    same_candle_sweep_reclaim = bool(ordered_reclaim and reclaim_index == sweep_index)
+    post_reclaim_15 = recent[reclaim_index + 1:] if reclaim_index >= 0 else []
+    post_reclaim_retest_15m = any(c.high >= or_high - atr15 * 0.16 and c.close < or_high for c in post_reclaim_15)
+    last = recent[-1]
     bearish_acceptance = bool(
-        recent[-1].close < recent[-1].open
-        or recent[-1].close < recent[-2].close
-        or (recent[-1].high - recent[-1].close) / max(recent[-1].high - recent[-1].low, 1e-9) >= 0.58
+        last.close < or_high
+        and (last.close < last.open or last.close < recent[-2].close)
     )
-    retest = bool(recent[-1].high >= or_high - atr15 * 0.18 and recent[-1].close < or_high)
     mss_support = safe_float(mss.get("quality"), 0.0) >= 45
     width_atr = safe_float(opening_range.get("or_width_atr"), 0.0)
     valid_width = 0.35 <= width_atr <= 4.5
-    not_chasing = (or_high - price) / max(atr15, 1e-9) <= 1.45
+    not_chasing = 0.0 <= (or_high - price) / max(atr15, 1e-9) <= 1.45
+    current_3m = ordered_level_reclaim_confirmation(c3, Side.SHORT.value, or_high, atr15, require_retest=True) if ordered_reclaim else {"ready": False, "reason": "WAIT_ORDERED_RECLAIM"}
+    post_reclaim_confirmation = bool(current_3m.get("ready") and (post_reclaim_retest_15m or mss_support or current_3m.get("post_reclaim_retest")))
 
     quality = 0.0
-    quality += 24.0 if swept_or_high else 0.0
-    quality += 24.0 if close_inside else 0.0
+    quality += 24.0 if sweep_index >= 0 else 0.0
+    quality += 24.0 if ordered_reclaim else 0.0
     quality += 18.0 if bearish_acceptance else 0.0
-    quality += 14.0 if retest else 0.0
+    quality += 14.0 if (post_reclaim_retest_15m or current_3m.get("post_reclaim_retest")) else 0.0
     quality += min(12.0, safe_float(mss.get("quality"), 0.0) * 0.12)
     quality += 5.0 if valid_width else 0.0
     quality += 3.0 if not_chasing else 0.0
     quality = clamp(quality, 0.0, 100.0)
 
     extreme = max(c.high for c in recent)
+    active = bool(ordered_reclaim and bearish_acceptance and quality >= 48)
+    execution_ready = bool(active and post_reclaim_confirmation and quality >= 66 and not_chasing)
     return {
-        "active": bool(swept_or_high and close_inside and quality >= 48),
-        "execution_ready": bool(swept_or_high and close_inside and bearish_acceptance and quality >= 66 and (mss_support or retest) and not_chasing),
+        "active": active,
+        "execution_ready": execution_ready,
         "quality": round(quality, 2),
         "or_high": round_price(or_high),
         "or_low": round_price(or_low),
         "entry_anchor": round_price(or_high),
         "invalidation": round_price(extreme + max(atr15 * 0.10, ABS_MIN_STOP_DOLLARS * 0.18)),
-        "swept_or_high": swept_or_high,
-        "close_inside": close_inside,
+        "swept_or_high": sweep_index >= 0,
+        "sweep_index": sweep_index,
+        "reclaim_index": reclaim_index,
+        "ordered_reclaim": ordered_reclaim,
+        "same_candle_sweep_reclaim": same_candle_sweep_reclaim,
+        "close_inside": ordered_reclaim,
         "bearish_acceptance": bearish_acceptance,
-        "retest": retest,
+        "post_reclaim_retest_15m": post_reclaim_retest_15m,
+        "retest": bool(post_reclaim_retest_15m or current_3m.get("post_reclaim_retest")),
         "mss_support": mss_support,
         "valid_width": valid_width,
         "not_chasing": not_chasing,
-        "reason": "opening-range upside auction failed and returned inside",
+        "current_3m_confirmation": current_3m,
+        "post_reclaim_confirmation": post_reclaim_confirmation,
+        "reason": "ORDERED_OR_SWEEP_RECLAIM_ROLE_FLIP_READY" if execution_ready else "OR_FAILURE_HYPOTHESIS_WAIT_POST_RECLAIM_CONFIRMATION" if active else "OR_FAILURE_SEQUENCE_NOT_COMPLETE",
+        "schema_version": "or_failure_2_1_v9.5.30_ordered_role_flip",
     }
-
 
 def calculate_short_reversal_score(
     liquidity: dict[str, Any],
@@ -16949,7 +17287,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             short_failure = detect_short_failed_breakout(c15, price, atr15)
             short_mss = detect_short_mss_reversal(c15, atr15)
             short_exhaustion = detect_buyer_exhaustion_short(c15, price, atr15)
-            short_or_failure = detect_or_failure_2_short(opening_range, c15, price, atr15, short_mss)
+            short_or_failure = detect_or_failure_2_short(opening_range, c15, c3, price, atr15, short_mss)
             scan_execution_quality = max(
                 safe_float(event.get("confirmation_quality"), 0.0),
                 safe_float(event.get("acceptance_quality"), 0.0),
@@ -16973,7 +17311,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if side == Side.SHORT.value and short_failure:
             failed_breakout_short_local = failed_breakout_short_model_local_confirmation(c3, c15, atr15, tf15, tf1h, short_failure, price)
 
-        open_reclaim = detect_daily_weekly_open_reclaim(c15, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
+        open_reclaim = detect_daily_weekly_open_reclaim(c15, c3, side, price, atr15, context.get("macro_liquidity", {}) or {}, tf15, tf1h)
         liquidity_ladder = detect_liquidity_ladder_model(side, price, context, atr15, tf15, tf1h)
         liquidity_ladder_local_3m = liquidity_ladder_model_local_confirmation(c3, c15, side, atr15, tf15, tf1h, liquidity_ladder)
         liquidity_ladder_confirmation_profile = liquidity_ladder_execution_confirmation(
@@ -17031,8 +17369,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         if range_edge_active: active_patterns.append("PO3")
         if turtle_soup_active: active_patterns.append("TURTLE_SOUP")
         if (has_choch and has_good_reclaim) or breakout_retest_local.get("pending") or breakout_retest_local.get("ready"): active_patterns.append("BREAKER_BLOCK")
-        if (has_fvg and tf1h.get("bias") == side) or (pullback_local.get("pending") and (tf15.get("bias") == side or tf1h.get("bias") == side)): active_patterns.append("FVG_ENTRY")
-        if (has_ob and has_good_reclaim) or fresh_base_local.get("pending"): active_patterns.append("OB_RECLAIM")
+        # v9.5.30: historical FVG/OB presence is location memory, not a fresh hypothesis.
+        # Keep legacy compatibility only when a current live trigger + structure exists.
+        pullback_current = bool(pullback_local.get("detected") or pullback_local.get("pending") or pullback_local.get("ready"))
+        pullback_legacy_fresh = bool(has_fvg and has_choch and live_3m_trigger_ready and (tf15.get("bias") == side or tf1h.get("bias") == side))
+        fresh_base_current = bool(fresh_base_local.get("detected") or fresh_base_local.get("pending") or fresh_base_local.get("ready"))
+        fresh_base_legacy_fresh = bool(has_ob and has_good_reclaim and live_3m_trigger_ready)
+        if pullback_current or pullback_legacy_fresh: active_patterns.append("FVG_ENTRY")
+        if fresh_base_current or fresh_base_legacy_fresh: active_patterns.append("OB_RECLAIM")
         # Замість крудого "is_killzone + sweep + рух>1.5%" — точний AMD-детект:
         # свіжий свіп Азійського хая/лоу з підтвердженим реклеймом у цю ж сторону.
         if judas["bias"] == side and judas["bonus"] > 0: active_patterns.append("JUDAS_SWING")
@@ -17535,14 +17879,16 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     else "MODEL_LOCAL_OPENING_RANGE"
                 )
             elif model_id == "DAILY_WEEKLY_OPEN_RECLAIM":
-                execution_source = ExecutionSource.OPEN_RECLAIM.value
-                actionable_trigger_ready = True
-                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
+                open_reclaim_ready = bool(open_reclaim.get("execution_ready"))
+                execution_source = ExecutionSource.OPEN_RECLAIM.value if open_reclaim_ready else ExecutionSource.NONE.value
+                actionable_trigger_ready = open_reclaim_ready
+                execution_lane_source = ExecutionLane.EARLY_TACTICAL.value if open_reclaim_ready else ExecutionLane.WAIT_CONFIRMATION.value
                 local_trigger_level = safe_float(open_reclaim.get("level"), trigger_level) or trigger_level
-                local_trigger_age = 0.0
-                local_live_3m_trigger_ready = True
-                model_thesis_age = 0.0
-                thesis_origin = "MODEL_LOCAL_DAILY_WEEKLY_OPEN_RECLAIM"
+                local_trigger_age = 0.0 if open_reclaim_ready else trigger_age
+                local_live_3m_trigger_ready = open_reclaim_ready
+                model_thesis_age = 0.0 if open_reclaim.get("active") else model_thesis_age
+                thesis_origin = "MODEL_LOCAL_DAILY_WEEKLY_OPEN_RECLAIM_READY" if open_reclaim_ready else "MODEL_LOCAL_DAILY_WEEKLY_OPEN_RECLAIM_PENDING"
+                pattern_conf.append("🟢 DAILY/WEEKLY OPEN: ordered reclaim + current 3M role flip confirmed" if open_reclaim_ready else "🟡 DAILY/WEEKLY OPEN: reclaim hypothesis active, waiting post-reclaim 3M role flip")
             elif model_id == "LIQUIDITY_LADDER_MODEL":
                 ladder_confirmation = dict(liquidity_ladder_confirmation_profile)
                 actionable_trigger_ready = bool(ladder_confirmation.get("ready"))
@@ -19444,6 +19790,18 @@ def record_rejected_hypothesis_shadows(journal: dict[str, Any], signal_payload: 
         del store[:-REJECTED_HYPOTHESIS_SHADOW_LIMIT]
 
 
+def rejected_shadow_policy_assessment(journal: dict[str, Any], shadow: dict[str, Any]) -> str:
+    """Interpret price-path evidence in the context of realized setup economics."""
+    raw = str(shadow.get("price_path_assessment") or "")
+    setup = str(shadow.get("setup_type") or "")
+    if raw != "FAVORABLE_PATH":
+        return "REJECTION_SUPPORTED_BY_PATH" if raw == "UNFAVORABLE_PATH" else "INCONCLUSIVE_POLICY"
+    guard = underperforming_setup_empirical_guard(journal, setup) if setup else {}
+    if guard.get("mode") in {"EXPERIMENTAL_PROBE", "VALIDATION_PROBE"} and safe_float(guard.get("expectancy_r"), 0.0) < 0.0:
+        return "PATH_FAVORABLE_BUT_EMPIRICAL_GUARD_JUSTIFIED"
+    return "LIKELY_TOO_STRICT"
+
+
 def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context: dict[str, Any]) -> None:
     """Track MFE/MAE and TP/STOP order for rejected hypotheses, without fake PnL."""
     rejected_shadows = journal.get("rejected_hypothesis_shadows") or []
@@ -19525,7 +19883,9 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
             if stop_hit:
                 shadow["status"] = "STOP_AFTER_TARGET" if order.get(max_target, 0) > 0 else "STOP_FIRST"
                 shadow["tp_sequence"] = list(shadow.get("tp_sequence") or []) + ["STOP"]
-                shadow["rejection_correctness"] = "LIKELY_CORRECT" if max_target in {"NONE", "TP0"} else "LIKELY_TOO_STRICT"
+                shadow["price_path_assessment"] = "UNFAVORABLE_PATH" if max_target in {"NONE", "TP0"} else "FAVORABLE_PATH"
+                shadow["policy_assessment"] = rejected_shadow_policy_assessment(journal, shadow)
+                shadow["rejection_correctness"] = "LIKELY_CORRECT" if shadow["policy_assessment"] == "REJECTION_SUPPORTED_BY_PATH" else "LIKELY_TOO_STRICT" if shadow["policy_assessment"] == "LIKELY_TOO_STRICT" else "INCONCLUSIVE"
                 shadow["closed_at"] = datetime.fromtimestamp(candle.ts / 1000, tz=timezone.utc).isoformat()
                 terminal = True
                 break
@@ -19546,11 +19906,15 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
         shadow["updated_at"] = now.isoformat()
 
         if not terminal and order.get(max_target, 0) >= order["TP1"]:
-            shadow["rejection_correctness"] = "LIKELY_TOO_STRICT"
+            shadow["price_path_assessment"] = "FAVORABLE_PATH"
+            shadow["policy_assessment"] = rejected_shadow_policy_assessment(journal, shadow)
+            shadow["rejection_correctness"] = "LIKELY_TOO_STRICT" if shadow["policy_assessment"] == "LIKELY_TOO_STRICT" else "INCONCLUSIVE"
         if not terminal and expires and now >= expires:
             shadow["status"] = f"EXPIRED_{max_target}" if max_target != "NONE" else "EXPIRED_NO_TARGET"
             shadow["closed_at"] = now.isoformat()
-            shadow["rejection_correctness"] = "LIKELY_TOO_STRICT" if order.get(max_target, 0) >= order["TP1"] else "LIKELY_CORRECT" if mae_r >= 1.0 else "INCONCLUSIVE"
+            shadow["price_path_assessment"] = "FAVORABLE_PATH" if order.get(max_target, 0) >= order["TP1"] else "UNFAVORABLE_PATH" if mae_r >= 1.0 else "AMBIGUOUS_PATH"
+            shadow["policy_assessment"] = rejected_shadow_policy_assessment(journal, shadow)
+            shadow["rejection_correctness"] = "LIKELY_TOO_STRICT" if shadow["policy_assessment"] == "LIKELY_TOO_STRICT" else "LIKELY_CORRECT" if shadow["policy_assessment"] == "REJECTION_SUPPORTED_BY_PATH" else "INCONCLUSIVE"
 
     valid = [x for x in rejected_shadows if isinstance(x, dict)]
     closed = [x for x in valid if x.get("status") in terminal_statuses or str(x.get("status", "")).startswith("EXPIRED_")]
@@ -19567,6 +19931,8 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
         "open": len(valid) - len(closed),
         "likely_correct_rejections": sum(1 for x in valid if x.get("rejection_correctness") == "LIKELY_CORRECT"),
         "likely_too_strict_rejections": sum(1 for x in valid if x.get("rejection_correctness") == "LIKELY_TOO_STRICT"),
+        "path_favorable_but_empirical_guard_justified": sum(1 for x in valid if x.get("policy_assessment") == "PATH_FAVORABLE_BUT_EMPIRICAL_GUARD_JUSTIFIED"),
+        "favorable_price_paths": sum(1 for x in valid if x.get("price_path_assessment") == "FAVORABLE_PATH"),
         "inconclusive": sum(1 for x in valid if x.get("rejection_correctness") in {"INCONCLUSIVE", "UNKNOWN"}),
         "average_mfe_r": round(sum(safe_float(x.get("mfe_r"), 0.0) for x in valid) / max(len(valid), 1), 3),
         "average_mae_r": round(sum(safe_float(x.get("mae_r"), 0.0) for x in valid) / max(len(valid), 1), 3),
@@ -19576,7 +19942,7 @@ def update_rejected_hypothesis_shadow_outcomes(journal: dict[str, Any], context:
         "likely_too_strict_episode_rejections": sum(1 for x in episodes if x.get("rejection_correctness") == "LIKELY_TOO_STRICT"),
         "by_setup_independent_episodes": by_setup_episodes,
         "dedup_policy": "REJECTED_TEST_KEY_PREFIX_THROUGH_THESIS_ANCHOR",
-        "interpretation": "counterfactual rejection audit; not realized PnL",
+        "interpretation": "price-path counterfactual separated from empirical policy assessment; favorable MFE path does not by itself prove a negative-expectancy setup was wrongly rejected",
         "updated_at": now.isoformat(),
     })
     daily_rows = [
@@ -20622,11 +20988,13 @@ def evaluate_active_trade_shadow_scan(
             "qualified_count": len(lifecycle.get("qualified_detected") or []),
             "ranked_count": len(lifecycle.get("ranked") or []),
             "capacity_block": "ACTIVE_TRADE_SINGLE_POSITION_POLICY",
+            "capacity_opportunity_score": safe_float(selected.get("evidence_adjusted_selection_score"), safe_float(selected.get("final_score"), 0.0)),
+            "post_close_requires_fresh_rescan": True,
             "authoritative": False,
             "can_open_trade": False,
             "state_mutation_persisted": False,
             "preconfirmation_forecasts_persisted": True,
-            "schema_version": "active_trade_shadow_scan_v9.5.19",
+            "schema_version": "active_trade_shadow_scan_v9.5.30_capacity_opportunity",
         }
     except Exception as exc:
         row = {
@@ -20636,7 +21004,7 @@ def evaluate_active_trade_shadow_scan(
             "authoritative": False,
             "can_open_trade": False,
             "state_mutation_persisted": False,
-            "schema_version": "active_trade_shadow_scan_v9.5.19",
+            "schema_version": "active_trade_shadow_scan_v9.5.30_capacity_opportunity",
         }
     store = journal.setdefault("active_trade_shadow_scans", [])
     store.append(row)
@@ -22829,8 +23197,20 @@ def run_bot() -> None:
         journal.setdefault("signal_events", []).append(management_event)
         save_state(state)
         save_journal(journal)
-        print("BOT COMPLETE: ACTIVE TRADE MANAGED")
-        return
+        if not res.get("closed"):
+            print("BOT COMPLETE: ACTIVE TRADE MANAGED")
+            return
+        # v9.5.30: a closed trade releases capacity immediately. Re-run the fresh
+        # setup brain in this same scheduler cycle instead of waiting for the next
+        # cron invocation. We never reuse a queued shadow candidate and never hold
+        # two positions: the market is rescanned from current context after close.
+        journal.setdefault("analytics", {}).setdefault("capacity_opportunity_audit", {}).update({
+            "last_post_close_rescan_at": iso_now(),
+            "closed_trade_id": str(active.id),
+            "policy": "SINGLE_POSITION_PRESERVED; FRESH_RESCAN_AFTER_CLOSE; NO_STALE_SHADOW_AUTO_ENTRY",
+            "schema_version": "capacity_opportunity_audit_v9.5.30",
+        })
+        print("[INFO] Active trade closed; capacity released, evaluating a fresh setup in the same run")
 
     decision = evaluate_new_setup(context, state, journal)
     live_entry_price_audit = validate_live_entry_price_contract(context, decision)
@@ -28661,6 +29041,132 @@ def _run_self_test() -> bool:
         "v9.5.29 Daily/Weekly Open Reclaim: negative tiny exact sample is explicitly evidence-capped",
         _daily_guard.get("guard_class") == "UNDERPERFORMING_HISTORY"
         and _daily_guard.get("mode") == "EXPERIMENTAL_PROBE",
+    ))
+
+    # v9.5.30: calibration champion may improve Brier only inside an AUC-preserving envelope.
+    _pc_labels = [0,0,0,1,1,1,0,1]
+    _pc_logistic = [0.10,0.20,0.30,0.70,0.80,0.90,0.35,0.65]
+    _pc_heuristic = [0.60,0.55,0.52,0.48,0.45,0.40,0.58,0.42]
+    _pc_champ = _preconfirm_select_calibration_champion(_pc_logistic, _pc_heuristic, _pc_labels, [1.0]*8)
+    checks.append((
+        "v9.5.30 Preconfirmation: calibration champion preserves discrimination while optimizing calibration",
+        _pc_champ.get("auc_preservation_enforced") is True
+        and safe_float(_pc_champ.get("calibration_auc"), 0.0) + 1e-9 >= safe_float(_pc_champ.get("auc_floor"), 0.0)
+        and _pc_champ.get("selection_uses_oos_labels") is False,
+    ))
+
+    _router_events=[]
+    for i in range(40):
+        y=1 if i%2 else 0
+        good=0.78 if y else 0.22
+        bad=0.30 if y else 0.70
+        _router_events.append({
+            "status":"CONFIRMED" if y else "FAILED", "observed_ts":i+1,
+            "feature_schema_version":PRECONFIRM_FEATURE_SCHEMA_VERSION,
+            "estimate_at_observation":{
+                "validation_probability":bad, "calibrated_logistic_probability":0.65 if y else 0.35,
+                "heuristic_probability":0.55 if y else 0.45,
+                "hierarchical_calibration":{"selected_posterior_probability":good},
+            },
+        })
+    _router=_preconfirm_recent_channel_router({"events":_router_events})
+    checks.append((
+        "v9.5.30 Preconfirmation: past-only router selects the historically discriminative channel without authority",
+        _router.get("selected_channel")=="HIERARCHICAL_POSTERIOR"
+        and safe_float(_router.get("selected_auc"),0.0)>0.90
+        and _router.get("selection_uses_current_event_outcome") is False
+        and _router.get("authority_granted") is False,
+    ))
+
+    # OR Failure cannot use the sweep/reclaim candle as all execution evidence.
+    _v9530_ts0 = 1_790_000_000_000
+    _or15 = [
+        Candle(ts=_v9530_ts0+i*900_000, open=o, high=h, low=l, close=c, confirmed=True)
+        for i,(o,h,l,c) in enumerate([
+            (99.5,99.8,99.3,99.6),(99.6,99.9,99.4,99.7),(99.7,100.0,99.5,99.8),
+            (99.8,100.1,99.6,99.9),(99.9,100.35,99.8,99.95),(99.95,100.30,99.7,99.80),
+        ])
+    ]
+    _or_open={"or_high":100.0,"or_low":99.0,"or_width_atr":1.0}
+    _or_weak=detect_or_failure_2_short(_or_open,_or15,[],99.8,1.0,{"quality":60})
+    checks.append((
+        "v9.5.30 OR Failure: ordered reclaim is hypothesis-only until post-reclaim 3M role flip",
+        _or_weak.get("active") is True and _or_weak.get("execution_ready") is False and _or_weak.get("ordered_reclaim") is True,
+    ))
+
+    # Daily/Weekly Open similarly separates hypothesis from execution authority.
+    _daily15=[
+        Candle(ts=_v9530_ts0+i*900_000,open=o,high=h,low=l,close=c,confirmed=True)
+        for i,(o,h,l,c) in enumerate([(100.1,100.3,99.9,100.0),(100.0,100.25,99.7,99.9),(99.9,100.15,99.75,100.05),(100.05,100.2,99.95,100.10),(100.1,100.2,100.0,100.12)])
+    ]
+    _daily_prof=detect_daily_weekly_open_reclaim(_daily15,[],Side.LONG.value,100.12,1.0,{"daily_open":100.0,"weekly_open":101.0},{"bias":Side.LONG.value},{"bias":"NEUTRAL"})
+    checks.append((
+        "v9.5.30 Daily Open: reclaim pattern does not auto-promote itself to execution-ready",
+        _daily_prof.get("active") is True and _daily_prof.get("execution_ready") is False,
+    ))
+
+    _short3=[
+        Candle(ts=_v9530_ts0+i*180_000,open=o,high=h,low=l,close=c,confirmed=True)
+        for i,(o,h,l,c) in enumerate([
+            (99.98,100.02,99.90,99.94),(99.94,99.99,99.84,99.88),(99.88,99.93,99.78,99.82),
+            (99.82,99.90,99.74,99.77),(99.77,99.86,99.68,99.71),(99.71,99.82,99.60,99.64),
+        ])
+    ]
+    _or_ready=detect_or_failure_2_short(_or_open,_or15,_short3,99.64,1.0,{"quality":60})
+    checks.append((
+        "v9.5.30 OR Failure: ordered post-reclaim path remains reachable without threshold relaxation",
+        _or_ready.get("execution_ready") is True and (_or_ready.get("current_3m_confirmation") or {}).get("ready") is True,
+    ))
+    _long3=[
+        Candle(ts=_v9530_ts0+i*180_000,open=o,high=h,low=l,close=c,confirmed=True)
+        for i,(o,h,l,c) in enumerate([
+            (100.02,100.10,99.98,100.06),(100.06,100.16,100.02,100.12),(100.12,100.22,100.08,100.18),
+            (100.18,100.25,100.10,100.15),(100.15,100.28,100.12,100.23),(100.23,100.36,100.18,100.32),
+        ])
+    ]
+    _daily_ready=detect_daily_weekly_open_reclaim(_daily15,_long3,Side.LONG.value,100.32,1.0,{"daily_open":100.0,"weekly_open":101.0},{"bias":Side.LONG.value},{"bias":"NEUTRAL"})
+    checks.append((
+        "v9.5.30 Daily Open: post-reclaim 3M role flip can graduate a valid hypothesis to execution-ready",
+        _daily_ready.get("execution_ready") is True and (_daily_ready.get("current_3m_confirmation") or {}).get("ready") is True,
+    ))
+
+    # One underlying fresh move may carry Fresh Base + Pullback memberships but counts once.
+    _dedup_j={}
+    _dedup_c3=[Candle(ts=_v9530_ts0+i*180_000,open=100,high=100.2,low=99.9,close=100.1,confirmed=True) for i in range(6)]
+    _dedup_ctx={"price":100.1,"atr15":1.0,"candles":{"3m":_dedup_c3}}
+    _base_diag={"profile":{"anchor":100.0}}
+    _rows=[
+        {"fired":True,"setup_type":SetupType.FRESH_BASE_CONTINUATION.value,"side":Side.LONG.value,"diagnostics":_base_diag},
+        {"fired":True,"setup_type":SetupType.PULLBACK_CONTINUATION.value,"side":Side.LONG.value,"diagnostics":_base_diag},
+    ]
+    _added=record_fresh_execution_outcome_events(_dedup_j,_dedup_ctx,_rows)
+    _event=(_dedup_j.get("fresh_execution_outcome_events") or [{}])[0]
+    checks.append((
+        "v9.5.30 Fresh path ledger: cross-setup labels share one market episode",
+        _added == 1 and len(_dedup_j.get("fresh_execution_outcome_events") or []) == 1
+        and set(_event.get("setup_types") or []) == {SetupType.FRESH_BASE_CONTINUATION.value,SetupType.PULLBACK_CONTINUATION.value},
+    ))
+
+    # Favorable raw MFE does not overrule a setup with negative realized economics.
+    _shadow_j={"trades":[
+        {"setup_type":SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,"pnl_r":0.4},
+        {"setup_type":SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,"pnl_r":-1.0},
+        {"setup_type":SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,"pnl_r":-1.0},
+        {"setup_type":SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,"pnl_r":-0.6},
+    ],"training_signals":[]}
+    _shadow={"setup_type":SetupType.DAILY_WEEKLY_OPEN_RECLAIM.value,"price_path_assessment":"FAVORABLE_PATH"}
+    checks.append((
+        "v9.5.30 Shadow methodology: favorable price path cannot contradict justified empirical guard",
+        rejected_shadow_policy_assessment(_shadow_j,_shadow)=="PATH_FAVORABLE_BUT_EMPIRICAL_GUARD_JUSTIFIED",
+    ))
+
+    # Safety invariants remain exactly canonical.
+    checks.append((
+        "v9.5.30 Safety: canonical score/RR/TTL/risk floors remain unchanged",
+        LIVE_ENTRY_SCORE_BASE==75 and LIVE_RISKY_ENTRY_SCORE_BASE==68 and THESIS_TTL_BASELINE_MIN==1440.0
+        and EXECUTION_TRIGGER_TTL_MIN==35 and abs(INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD-0.85)<1e-12
+        and MIN_RR1==1.5 and MIN_RR2==2.5 and MIN_RR3==4.0 and ABS_MIN_STOP_DOLLARS==0.40
+        and ABS_MIN_TP1_DOLLARS==0.65 and DAILY_RISK_CAP==1.0 and EXPERIMENTAL_PROBE_RISK_PCT==0.03,
     ))
 
     # v9.5.25: primary sweep evidence can pass strict quality without SMT, but only with real price evidence.
