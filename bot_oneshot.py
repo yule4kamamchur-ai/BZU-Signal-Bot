@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.34 (Execution Starvation Repair & HTF Data Health)
+BZU Professional Hybrid Confluence Signal Bot v9.5.35 (Execution Economics Repair & 15M Cadence Integrity)
 =============================================================================================
+Оновлення v9.5.35:
+- Execution Economics Repair: MARKET_NOW now prices liquidity runway explicitly; short known runway routes to better pricing/confirmation instead of being treated as merely missing a bonus.
+- Regime-based MARKET_NOW acceleration requires both directional fit and regime reliability; high-entropy near-neutral regime can no longer trigger aggressive execution by itself.
+- Confirmation-equivalence contract reconciles confirmation_pending with native continuation/fast-displacement evidence; pending evidence cannot be silently treated as consumed.
+- ACCEPTANCE/RISKY no-followthrough management can exit a factually failed thesis early when MFE stayed tiny and current path remains weak.
+- 15-minute production cadence is restored as an invariant; one next-scan confirmed-3M replay is preserved without switching GitHub Actions to 5m.
+- Canonical 58/68/75, setup availability, RR floors and capital risk caps remain unchanged.
+
 Оновлення v9.5.34:
 - OKX HTF bars normalized to 1H/4H; explicit HTF data-health with conservative confirmed-15M resample fallback.
-- Router lifecycle is confirmed-3M-bar based (5 bars) with an 18m wall-clock emergency cap; intended production scheduler cadence is 5m.
+- Production scheduler remains 15m. Router replays confirmed 3M bars across the next scan and uses a 35m wall-clock fail-safe only as emergency protection.
 - Acceptance Fast Displacement Path allows a fresh high-quality continuation role flip without waiting for an artificial 4/6 correct-side-close count.
 - Consumed Evidence prevents Router from requesting a second retest/confirmation already proven by the setup-native execution contract.
 - Regime uncertainty shrinks candidate-relative regime fit toward neutral 0.50 instead of treating uncertainty as strong negative evidence.
@@ -364,8 +372,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.34-execution-starvation-repair-htf-resample-bar-ttl"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_34_CADENCE_ALIGNED_DIRECTIONAL_ROUTER"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_35_EXECUTION_ECONOMICS_15M_CADENCE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -1973,6 +1981,9 @@ class Opportunity:
     selected_source: str = "RANKED_CANDIDATE"
     # v9.5.33: preserve the Router's intended execution tactic across the bounded wait/re-entry lifecycle.
     execution_tactic: str = ""
+    # v9.5.35: causal watermark for 15M scheduler -> confirmed 3M intracycle replay.
+    router_decision_3m_ts: int = 0
+    router_recheck_count: int = 0
     execution_anchor_schema: str = ""
     thesis_key: str = ""
     thesis: str = ""
@@ -23569,6 +23580,8 @@ def run_bot() -> None:
             ict_model=str(getattr(decision.candidate, "ict_model", "NONE") or "NONE"),
             selected_source=str(getattr(decision.candidate, "selected_source", "") or "RANKED_CANDIDATE"),
             execution_tactic=str((((getattr(decision.candidate, "stage_plan", {}) or {}).get("execution_intelligence_v9532") or {}).get("router")) or ""),
+            router_decision_3m_ts=int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_decision_3m_ts"), _preconfirm_as_of_ts(context))),
+            router_recheck_count=int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_recheck_count"), 0.0)),
             execution_anchor_schema=(
                 "FAILED_AUCTION_REJECTION_LEVEL_V9_5_15"
                 if decision.setup_type == SetupType.FAILED_AUCTION_REJECTION.value
@@ -35225,8 +35238,677 @@ def run_audit_journal(path: str) -> dict[str,Any]:
     return out
 
 
+
+# ==========================================================
+# v9.5.35 EXECUTION ECONOMICS REPAIR / 15M CADENCE INTEGRITY
+# ==========================================================
+# This release does not raise the canonical 58/68/75 thresholds and does not
+# blacklist setups. It repairs *how* an already-valid thesis is executed.
+# The production scheduler is intentionally 15 minutes; confirmed 3M candles
+# are replayed causally between runs.
+
+BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_35_EXECUTION_ECONOMICS_15M_CADENCE"
+
+# Production cadence invariant requested by the deployment contract.
+EXECUTION_SCHEDULER_CADENCE_MINUTES = 15
+EXECUTION_ROUTER_MAX_WAIT_BARS = 5  # one full 15m polling interval of confirmed 3M evidence
+EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES = 35  # fail-safe only; bar/recheck semantics are primary
+EXECUTION_ROUTER_MAX_WAIT_MINUTES = EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES
+EXECUTION_ROUTER_MAX_RECHECKS = 1
+
+# Execution economics. These are tactic-shaping values, NOT entry-score gates.
+V9535_RUNWAY_CRITICAL_R = max(0.30, min(0.60, float(os.getenv("V9535_RUNWAY_CRITICAL_R", "0.50") or 0.50)))
+V9535_RUNWAY_SOFT_R = max(V9535_RUNWAY_CRITICAL_R + 0.05, min(0.90, float(os.getenv("V9535_RUNWAY_SOFT_R", "0.75") or 0.75)))
+V9535_RUNWAY_COMFORT_R = max(V9535_RUNWAY_SOFT_R + 0.05, min(1.20, float(os.getenv("V9535_RUNWAY_COMFORT_R", "1.00") or 1.00)))
+V9535_RUNWAY_STRONG_R = max(V9535_RUNWAY_COMFORT_R, min(1.60, float(os.getenv("V9535_RUNWAY_STRONG_R", "1.20") or 1.20)))
+V9535_REGIME_MARKET_MIN_RELIABILITY = max(0.25, min(0.70, float(os.getenv("V9535_REGIME_MARKET_MIN_RELIABILITY", "0.40") or 0.40)))
+V9535_REGIME_MARKET_MIN_FIT = max(0.52, min(0.75, float(os.getenv("V9535_REGIME_MARKET_MIN_FIT", "0.58") or 0.58)))
+
+# Acceptance/RISKY thesis-failure management. This is an exit rule after a
+# factual fixed-horizon failure, never a new entry filter.
+V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_ENABLED = os.getenv("V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_ENABLED", "true").lower() in {"1","true","yes"}
+V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MINUTES = max(30, int(os.getenv("V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MINUTES", "45") or 45))
+V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_MFE_R = min(0.40, max(0.10, float(os.getenv("V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_MFE_R", "0.25") or 0.25)))
+V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_CURRENT_R = min(0.0, max(-0.50, float(os.getenv("V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_CURRENT_R", "-0.10") or -0.10)))
+V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_PATH_INTEGRITY = min(60.0, max(20.0, float(os.getenv("V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_PATH_INTEGRITY", "45") or 45)))
+
+EXECUTION_ECONOMICS_SCHEMA_VERSION = "execution_economics_v9.5.35_runway_regime_confirmation"
+CONFIRMATION_EQUIVALENCE_SCHEMA_VERSION = "confirmation_equivalence_v9.5.35_explicit_native_contract"
+ACCEPTANCE_NO_FOLLOWTHROUGH_SCHEMA_VERSION = "acceptance_no_followthrough_v9.5.35"
+
+
+def confirmation_equivalence_profile_v9535(candidate: Candidate, state_machine: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Reconcile lifecycle `confirmation_pending` with explicit native evidence.
+
+    A source name alone is not enough to consume confirmation while the candidate
+    still says confirmation is pending. Equivalence is granted only by concrete
+    setup-native evidence (confirmed acceptance, fast displacement, or a completed
+    continuation re-anchor with its own confirmation bar).
+    """
+    components = dict(getattr(candidate, "score_components", {}) or {})
+    pending = bool(getattr(candidate, "confirmation_pending", False))
+    state_machine = state_machine or {}
+    native_ready = bool((state_machine.get("native_execution_bridge") or {}).get("native_ready"))
+
+    acc = dict(components.get("acceptance_retest") or {})
+    role = dict(acc.get("current_3m_role_flip") or {})
+    fast = dict(acc.get("fast_displacement_confirmation") or {})
+    reanchor = dict(components.get("continuation_reanchor") or {})
+    micro = dict(reanchor.get("micro_confirmation") or {})
+
+    acceptance_equivalent = bool(
+        acc.get("execution_ready")
+        and (
+            acc.get("acceptance_confirmed")
+            or role.get("ready")
+            or fast.get("ready")
+            or str(acc.get("confirmation_mode") or "").upper() == "FAST_DISPLACEMENT"
+        )
+    )
+    fast_equivalent = bool(
+        fast.get("ready")
+        or role.get("fast_displacement_path")
+        or str(acc.get("confirmation_mode") or "").upper() == "FAST_DISPLACEMENT"
+    )
+    reanchor_equivalent = bool(
+        reanchor.get("ready")
+        and reanchor.get("confirmation_bar_supported")
+        and reanchor.get("six_bar_structure_confirmed")
+        and (micro.get("supported") or int(reanchor.get("confirmation_bar_ts") or 0) > 0)
+    )
+
+    explicit_equivalent = bool(acceptance_equivalent or fast_equivalent or reanchor_equivalent)
+    # When lifecycle is not pending, a fresh native execution-ready bridge remains
+    # a valid consumed confirmation. When pending is explicit, concrete evidence
+    # above is mandatory; source labels cannot silently overrule lifecycle state.
+    equivalent = bool(explicit_equivalent or (not pending and native_ready))
+    mode = (
+        "FAST_DISPLACEMENT" if fast_equivalent
+        else "ACCEPTANCE_ROLE_FLIP" if acceptance_equivalent
+        else "CONTINUATION_REANCHOR_CONFIRMATION_BAR" if reanchor_equivalent
+        else "NATIVE_READY_NON_PENDING" if equivalent
+        else "PENDING_NOT_EQUIVALENT" if pending
+        else "NOT_PROVEN"
+    )
+    return {
+        "confirmation_pending": pending,
+        "equivalent_consumed": equivalent,
+        "explicit_equivalent": explicit_equivalent,
+        "acceptance_equivalent": acceptance_equivalent,
+        "fast_displacement_equivalent": fast_equivalent,
+        "continuation_reanchor_equivalent": reanchor_equivalent,
+        "native_execution_ready": native_ready,
+        "mode": mode,
+        "policy": "PENDING_CONFIRMATION_REQUIRES_EXPLICIT_SETUP_NATIVE_EQUIVALENCE",
+        "schema_version": CONFIRMATION_EQUIVALENCE_SCHEMA_VERSION,
+    }
+
+
+_consumed_execution_evidence_v9534_effective = consumed_execution_evidence_v9534
+def consumed_execution_evidence_v9534(candidate: Candidate, state_machine: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    out = dict(_consumed_execution_evidence_v9534_effective(candidate, state_machine) or {})
+    eq = confirmation_equivalence_profile_v9535(candidate, state_machine)
+    out["confirmation_consumed"] = bool(eq.get("equivalent_consumed"))
+    out["confirmation_equivalent_consumed"] = bool(eq.get("equivalent_consumed"))
+    out["confirmation_equivalence"] = eq
+    out["confirmation_pending"] = bool(getattr(candidate, "confirmation_pending", False))
+    out["policy"] = "RETEST_CAN_BE_CONSUMED; CONFIRMATION_PENDING_NEEDS_EXPLICIT_EQUIVALENCE"
+    out["schema_version"] = "consumed_execution_evidence_v9.5.35"
+    return out
+
+
+def execution_economics_profile_v9535(context: dict[str, Any], candidate: Candidate, intel: dict[str, Any]) -> dict[str, Any]:
+    runway = dict(intel.get("liquidity_runway") or {})
+    runway_r = safe_float(runway.get("runway_r"), 1.5)
+    runway_known = bool(runway.get("known", False))
+    rv = dict(intel.get("regime_vector") or {})
+    sm = dict(intel.get("state_machine") or {})
+    kind = str(sm.get("kind") or "CONTINUATION")
+    regime = candidate_regime_fit_profile_v9534(rv, candidate, kind)
+    outcome = dict(intel.get("outcome_model") or {})
+    consumed = dict(intel.get("consumed_evidence") or {})
+    equivalence = dict(consumed.get("confirmation_equivalence") or confirmation_equivalence_profile_v9535(candidate, sm))
+
+    if not runway_known:
+        runway_state = "UNKNOWN"
+    elif runway_r < V9535_RUNWAY_CRITICAL_R:
+        runway_state = "CRITICAL_SHORT"
+    elif runway_r < V9535_RUNWAY_SOFT_R:
+        runway_state = "SHORT"
+    elif runway_r < V9535_RUNWAY_COMFORT_R:
+        runway_state = "MARGINAL"
+    elif runway_r >= V9535_RUNWAY_STRONG_R:
+        runway_state = "STRONG"
+    else:
+        runway_state = "ADEQUATE"
+
+    reliability = safe_float(regime.get("reliability"), 0.0)
+    fit = safe_float(regime.get("effective_fit"), 0.5)
+    regime_market_support = bool(
+        reliability >= V9535_REGIME_MARKET_MIN_RELIABILITY
+        and fit >= V9535_REGIME_MARKET_MIN_FIT
+    )
+    return {
+        "runway_r": round(runway_r, 4),
+        "runway_known": runway_known,
+        "runway_state": runway_state,
+        "regime_fit": round(fit, 6),
+        "regime_reliability": round(reliability, 6),
+        "regime_market_support": regime_market_support,
+        "outcome_probability": round(safe_float(outcome.get("probability"), 0.5), 6),
+        "outcome_authority_trusted": bool(outcome.get("authority_trusted")),
+        "confirmation_pending": bool(getattr(candidate, "confirmation_pending", False)),
+        "confirmation_equivalent": bool(equivalence.get("equivalent_consumed")),
+        "market_now_requires_better_economics": bool(runway_known and runway_r < V9535_RUNWAY_SOFT_R),
+        "setup_blocked": False,
+        "raw_score_mutated": False,
+        "schema_version": EXECUTION_ECONOMICS_SCHEMA_VERSION,
+    }
+
+
+_execution_router_profile_v9534_effective = execution_router_profile
+def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
+    """v9.5.35 tactic router: execution economics before MARKET_NOW.
+
+    The setup remains alive. Poor economics can remove only the aggressive
+    MARKET_NOW tactic, never the setup itself or the canonical score admission.
+    """
+    sm = dict(intel.get("state_machine") or {})
+    asi = safe_float((intel.get("adverse_selection") or {}).get("index"), 50.0)
+    structural = safe_float(intel.get("structural_score"), 50.0)
+    runway_profile = dict(intel.get("liquidity_runway") or {})
+    runway = safe_float(runway_profile.get("runway_r"), 1.5)
+    runway_known = bool(runway_profile.get("known", False))
+    outcome = dict(intel.get("outcome_model") or {})
+    rv = dict(intel.get("regime_vector") or {})
+    hazard = dict(intel.get("survival_hazard") or {})
+    uncertainty = safe_float(outcome.get("uncertainty_width"), .35)
+    consumed = dict(intel.get("consumed_evidence") or consumed_execution_evidence_v9534(candidate, sm))
+    equivalence = dict(consumed.get("confirmation_equivalence") or confirmation_equivalence_profile_v9535(candidate, sm))
+    economics = execution_economics_profile_v9535(context, candidate, {**intel, "consumed_evidence": consumed})
+
+    anchor = safe_float(getattr(candidate,"execution_anchor",0.0), safe_float(getattr(candidate,"trigger_level",0.0),0.0))
+    atr = max(safe_float(context.get("atr15"),0.0), 1e-9)
+    price = safe_float(context.get("price"),0.0)
+    dist = abs(price-anchor)/atr if anchor>0 and price>0 else 9.0
+
+    base = {"MARKET_NOW":0.55,"FIRST_RETEST":0.50,"ONE_3M_CONFIRM":0.48,"LIMIT_AT_ANCHOR":0.46}
+    preferred = list(sm.get("preferred_tactics") or EXECUTION_ROUTER_ACTIONS)
+    preference_bonus = (0.08,0.05,0.025,0.0)
+    for idx, action in enumerate(preferred[:4]):
+        if action in base:
+            base[action] += preference_bonus[min(idx,len(preference_bonus)-1)]
+    intended = str(((getattr(candidate,"stage_plan",{}) or {}).get("router_intended_tactic")) or "")
+    if intended in base:
+        base[intended] += 0.10
+
+    # Adverse selection / structural state.
+    if asi >= 55 or str(sm.get("current_state")) == "LOCATION":
+        base["FIRST_RETEST"] += 0.34
+    if structural < 55 or uncertainty > 0.34 or str(sm.get("current_state")) in {"CONTROL","TRIGGER"}:
+        base["ONE_3M_CONFIRM"] += 0.30
+    if anchor > 0 and 0.10 <= dist <= 0.85:
+        base["LIMIT_AT_ANCHOR"] += 0.18
+
+    # --- v9.5.35 LIQUIDITY RUNWAY ECONOMICS ---
+    # Unknown runway is neutral. A missing measurement must never masquerade as
+    # the old synthetic 1.5R and accidentally earn a MARKET_NOW bonus.
+    economic_reprice = False
+    if runway_known:
+        if runway < V9535_RUNWAY_CRITICAL_R:
+            base["MARKET_NOW"] -= 0.42
+            base["FIRST_RETEST"] += 0.22
+            base["ONE_3M_CONFIRM"] += 0.16
+            economic_reprice = True
+        elif runway < V9535_RUNWAY_SOFT_R:
+            base["MARKET_NOW"] -= 0.28
+            base["FIRST_RETEST"] += 0.16
+            base["ONE_3M_CONFIRM"] += 0.10
+            economic_reprice = True
+        elif runway < V9535_RUNWAY_COMFORT_R:
+            base["MARKET_NOW"] -= 0.12
+            base["FIRST_RETEST"] += 0.07
+        elif runway >= V9535_RUNWAY_STRONG_R and asi <= 38 and structural >= 60:
+            base["MARKET_NOW"] += 0.30
+    elif asi <= 34 and structural >= 68:
+        # Unknown runway may contribute a tiny structural preference, never the
+        # full +0.30 formerly granted by the default 1.5R surrogate.
+        base["MARKET_NOW"] += 0.04
+
+    kind = str(sm.get("kind") or "CONTINUATION")
+    regime_profile = candidate_regime_fit_profile_v9534(rv, candidate, kind)
+    regime_fit = safe_float(regime_profile.get("effective_fit"),0.5)
+    regime_reliability = safe_float(regime_profile.get("reliability"),0.0)
+    regime_market_bonus = False
+    # Near-neutral high-entropy regime is not positive evidence. MARKET_NOW
+    # acceleration requires *both* directional fit and reliability.
+    if (
+        str(sm.get("current_state")) == "EXECUTION"
+        and regime_reliability >= V9535_REGIME_MARKET_MIN_RELIABILITY
+        and regime_fit >= V9535_REGIME_MARKET_MIN_FIT
+    ):
+        base["MARKET_NOW"] += 0.10
+        regime_market_bonus = True
+    elif regime_reliability >= V9535_REGIME_MARKET_MIN_RELIABILITY and regime_fit < 0.35:
+        base["ONE_3M_CONFIRM"] += 0.08
+        base["FIRST_RETEST"] += 0.06
+    elif regime_reliability < 0.25:
+        # Uncertainty means "unknown", not "against". Spend only a tiny timing
+        # premium for more evidence; no directional penalty is invented.
+        base["ONE_3M_CONFIRM"] += 0.04
+
+    if kind in {"REVERSAL","AUCTION_MEAN"}:
+        base["FIRST_RETEST"] += 0.08
+        base["ONE_3M_CONFIRM"] += 0.08
+
+    # Consumed evidence may accelerate execution only when economics are not
+    # already telling us the current price is poor.
+    if consumed.get("retest_consumed") and not economic_reprice:
+        base["MARKET_NOW"] += 0.06
+    if consumed.get("confirmation_consumed") and not economic_reprice:
+        base["MARKET_NOW"] += 0.08
+    if consumed.get("retest_consumed") and consumed.get("confirmation_consumed") and not economic_reprice:
+        base["MARKET_NOW"] += 0.05
+
+    # Explicit lifecycle inconsistency: pending confirmation without a concrete
+    # setup-native equivalent cannot execute MARKET_NOW.
+    pending_without_equivalent = bool(getattr(candidate,"confirmation_pending",False) and not equivalence.get("equivalent_consumed"))
+    if pending_without_equivalent:
+        base["MARKET_NOW"] -= 0.35
+        base["ONE_3M_CONFIRM"] += 0.22
+
+    # Outcome ML only moves timing when its OOS authority is actually trusted.
+    if bool(outcome.get("authority_trusted")):
+        p_tp0 = safe_float(outcome.get("probability"),0.5)
+        if p_tp0 >= 0.62 and uncertainty <= 0.24 and str(sm.get("current_state")) == "EXECUTION":
+            base["MARKET_NOW"] += 0.05
+        elif p_tp0 < 0.45:
+            base["ONE_3M_CONFIRM"] += 0.07
+            base["FIRST_RETEST"] += 0.05
+
+    # Mature, reliable time-to-edge remains route guidance only.
+    hsample = int(hazard.get("sample_size") or 0)
+    hrel = safe_float(hazard.get("timing_reliability"),0.0)
+    hp = dict(hazard.get("p_tp0_by_minutes") or {})
+    hp15 = safe_float(hp.get("15"),0.0)
+    hp60 = safe_float(hp.get("60"),0.0)
+    if hsample >= 4 and hrel >= 0.50:
+        if hp15 >= 0.45 and str(sm.get("current_state")) == "EXECUTION" and not economic_reprice:
+            base["MARKET_NOW"] += 0.06
+        if hp15 < 0.25 and hp60 >= hp15 + 0.15:
+            base["ONE_3M_CONFIRM"] += 0.08
+            base["FIRST_RETEST"] += 0.05
+        if safe_float(hazard.get("expected_reaction_window_minutes"),45.0) > 45.0:
+            base["ONE_3M_CONFIRM"] += 0.04
+
+    context_key = _bandit_context_key(candidate,rv)
+    parent_key = _bandit_parent_context_key(candidate,rv)
+    action_rows = {a:_bandit_action_profile(journal,context_key,a,parent_key=parent_key) for a in EXECUTION_ROUTER_ACTIONS}
+    max_route_n = max((safe_float(row.get("n"),0.0) for row in action_rows.values()),default=0.0)
+    parent_route_n = max((safe_float(row.get("parent_n"),0.0) for row in action_rows.values()),default=0.0)
+    route_maturity = clamp((max_route_n+0.35*parent_route_n)/20.0,0.0,1.0)
+    bandit_weight = 0.16 + 0.22*route_maturity
+    combined = {a:base[a]+bandit_weight*safe_float(action_rows[a].get("utility"),0.0) for a in EXECUTION_ROUTER_ACTIONS}
+
+    eligible = set(EXECUTION_ROUTER_ACTIONS)
+    if anchor <= 0:
+        eligible -= {"FIRST_RETEST","LIMIT_AT_ANCHOR"}
+    if not _v9532_recent_confirmed(context,"3m",2):
+        eligible.discard("ONE_3M_CONFIRM")
+    phase = str(sm.get("current_state") or "EXECUTION")
+    if phase == "LOCATION":
+        eligible &= {"FIRST_RETEST","LIMIT_AT_ANCHOR"}
+    elif phase in {"CONTROL","TRIGGER"}:
+        eligible &= {"ONE_3M_CONFIRM","FIRST_RETEST"}
+    elif phase == "THESIS":
+        eligible &= {"ONE_3M_CONFIRM","FIRST_RETEST","LIMIT_AT_ANCHOR"}
+
+    # Consumed proof is not requested twice. The one exception is a *pricing*
+    # re-entry when known liquidity runway is critically short. In that case
+    # FIRST_RETEST is explicitly an ECONOMIC_REPRICE, not a second proof event.
+    if consumed.get("retest_consumed") and not economic_reprice:
+        eligible.discard("FIRST_RETEST")
+    if consumed.get("confirmation_consumed"):
+        eligible.discard("ONE_3M_CONFIRM")
+    if pending_without_equivalent:
+        eligible.discard("MARKET_NOW")
+        if _v9532_recent_confirmed(context,"3m",2):
+            eligible.add("ONE_3M_CONFIRM")
+    if runway_known and runway < V9535_RUNWAY_CRITICAL_R and phase == "EXECUTION":
+        eligible.discard("MARKET_NOW")
+        eligible.discard("LIMIT_AT_ANCHOR")  # same current-price economics in a signal-only bot
+        if anchor > 0:
+            eligible.add("FIRST_RETEST")
+            economic_reprice = True
+        elif _v9532_recent_confirmed(context,"3m",2):
+            eligible.add("ONE_3M_CONFIRM")
+
+    if not eligible:
+        if economic_reprice and anchor > 0:
+            eligible = {"FIRST_RETEST"}
+        elif pending_without_equivalent and _v9532_recent_confirmed(context,"3m",2):
+            eligible = {"ONE_3M_CONFIRM"}
+        elif phase == "EXECUTION":
+            eligible = {"MARKET_NOW"}
+        elif anchor > 0:
+            eligible = {"LIMIT_AT_ANCHOR"}
+        else:
+            eligible = {"MARKET_NOW"}
+
+    chosen = max(eligible,key=lambda a:combined[a])
+    return {
+        "action":chosen,
+        "scores":{a:round(combined[a],6) for a in EXECUTION_ROUTER_ACTIONS},
+        "eligible_actions":sorted(eligible),
+        "consumed_evidence":consumed,
+        "confirmation_equivalence":equivalence,
+        "execution_economics":economics,
+        "economic_reprice":bool(economic_reprice and chosen=="FIRST_RETEST"),
+        "economic_reprice_reason":"LIQUIDITY_RUNWAY_TOO_SHORT_FOR_MARKET_NOW" if economic_reprice else "",
+        "bandit":action_rows,
+        "bandit_weight":round(bandit_weight,6),
+        "route_evidence_maturity":round(route_maturity,6),
+        "context_key":context_key,
+        "parent_context_key":parent_key,
+        "candidate_regime_fit":round(regime_fit,6),
+        "candidate_regime_reliability":round(regime_reliability,6),
+        "regime_market_bonus_applied":regime_market_bonus,
+        "runway_r":round(runway,4),
+        "runway_known":runway_known,
+        "max_wait_bars":EXECUTION_ROUTER_MAX_WAIT_BARS,
+        "emergency_wall_cap_minutes":EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES,
+        "scheduler_cadence_minutes":EXECUTION_SCHEDULER_CADENCE_MINUTES,
+        "setup_blocked":False,
+        "only_routes_execution":True,
+        "reason":"BEST_EXECUTION_TACTIC_AFTER_EXECUTION_ECONOMICS",
+        "schema_version":"execution_router_v9.5.35_economics_15m",
+    }
+
+
+# ---------- 15M scheduler -> causal 3M next-scan watermark ----------
+_router_wait_lifecycle_v9534_effective = router_wait_lifecycle_v9534
+def router_wait_lifecycle_v9534(opp: Opportunity, context: dict[str, Any]) -> dict[str, Any]:
+    created = _parse_time_any(getattr(opp,"created_at","") or "")
+    created_ts = int(created.timestamp()*1000) if created else 0
+    watermark = int(safe_float(getattr(opp,"router_decision_3m_ts",0),0.0)) or created_ts
+    age_minutes = max(0.0,(now_utc()-created).total_seconds()/60.0) if created else 1e9
+    post_bars = [c for c in _v9532_recent_confirmed(context,"3m",40) if int(getattr(c,"ts",0) or 0) > watermark]
+    bar_count = len(post_bars)
+    rechecks = int(safe_float(getattr(opp,"router_recheck_count",0),0.0))
+    expired_by_bars = bar_count > EXECUTION_ROUTER_MAX_WAIT_BARS
+    expired_by_rechecks = rechecks >= EXECUTION_ROUTER_MAX_RECHECKS
+    expired_by_wall = age_minutes > EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES
+    return {
+        "expired":bool(expired_by_bars or expired_by_rechecks or expired_by_wall),
+        "post_decision_confirmed_3m_bars":bar_count,
+        "decision_3m_watermark_ts":watermark,
+        "max_wait_bars":EXECUTION_ROUTER_MAX_WAIT_BARS,
+        "max_rechecks":EXECUTION_ROUTER_MAX_RECHECKS,
+        "router_recheck_count":rechecks,
+        "bar_minutes":EXECUTION_ROUTER_BAR_MINUTES,
+        "age_minutes":round(age_minutes,3),
+        "emergency_wall_cap_minutes":EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES,
+        "expired_by_bars":expired_by_bars,
+        "expired_by_rechecks":expired_by_rechecks,
+        "expired_by_wall_clock":expired_by_wall,
+        "scheduler_cadence_minutes":EXECUTION_SCHEDULER_CADENCE_MINUTES,
+        "schema_version":"router_lifecycle_v9.5.35_next_scan_watermark",
+    }
+
+
+_router_reentry_tactic_readiness_v9534_effective = router_reentry_tactic_readiness_v9533
+def router_reentry_tactic_readiness_v9533(opp: Opportunity, context: dict[str,Any]) -> dict[str,Any]:
+    watermark = int(safe_float(getattr(opp,"router_decision_3m_ts",0),0.0))
+    if watermark <= 0:
+        return _router_reentry_tactic_readiness_v9534_effective(opp,context)
+    # Reuse the proven causal route checker, but align its decision boundary to
+    # the last confirmed 3M bar seen when the route was created rather than the
+    # wall-clock second at which Python happened to run.
+    shadow = copy.copy(opp)
+    shadow.created_at = datetime.fromtimestamp(watermark/1000.0,tz=timezone.utc).isoformat()
+    out = dict(_router_reentry_tactic_readiness_v9534_effective(shadow,context) or {})
+    out["router_decision_3m_ts"] = watermark
+    out["scheduler_cadence_minutes"] = EXECUTION_SCHEDULER_CADENCE_MINUTES
+    out["schema_version"] = "router_reentry_tactic_v9.5.35_3m_watermark"
+    return out
+
+
+_candidate_from_missed_opportunity_v9534_effective = candidate_from_missed_opportunity
+def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
+    lane = str(getattr(opp,"execution_lane","") or "")
+    if lane in {ExecutionLane.WAIT_RETEST.value,ExecutionLane.WAIT_CONFIRMATION.value}:
+        lifecycle = router_wait_lifecycle_v9534(opp,context)
+        if lifecycle.get("expired"):
+            return None
+    cand = _candidate_from_missed_opportunity_v9534_effective(opp,context)
+    if cand is not None and lane in {ExecutionLane.WAIT_RETEST.value,ExecutionLane.WAIT_CONFIRMATION.value}:
+        cand.stage_plan = cand.stage_plan or {}
+        watermark = int(safe_float(getattr(opp,"router_decision_3m_ts",0),0.0))
+        if watermark <= 0:
+            watermark = int(safe_float(_preconfirm_as_of_ts(context),0.0))
+        cand.stage_plan["router_decision_3m_ts"] = watermark
+        cand.stage_plan["router_recheck_count"] = int(safe_float(getattr(opp,"router_recheck_count",0),0.0)) + 1
+        cand.stage_plan["router_15m_cadence_contract"] = {
+            "scheduler_cadence_minutes":EXECUTION_SCHEDULER_CADENCE_MINUTES,
+            "one_next_scan_recheck":True,
+            "max_rechecks":EXECUTION_ROUTER_MAX_RECHECKS,
+            "schema_version":"router_15m_cadence_v9.5.35",
+        }
+    return cand
+
+
+# ---------- ACCEPTANCE/RISKY factual thesis-failure management ----------
+def acceptance_no_followthrough_exit_profile_v9535(trade: ActiveTrade, context: dict[str, Any]) -> dict[str, Any]:
+    price = safe_float(context.get("price"),trade.entry)
+    profile = {
+        "applies":False,
+        "exit":False,
+        "reason_code":"",
+        "age_minutes":round(_active_trade_age_minutes(trade),2),
+        "mfe_r":round(_trade_mfe_r(trade),4),
+        "current_r":round(_trade_current_r(trade,price),4),
+        "path_integrity":round(_active_path_integrity_v9532(trade,context),2),
+        "preconfirmation_status":"UNAVAILABLE",
+        "schema_version":ACCEPTANCE_NO_FOLLOWTHROUGH_SCHEMA_VERSION,
+    }
+    if not V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_ENABLED:
+        profile["reason_code"]="DISABLED"; return profile
+    if str(getattr(trade,"entry_stage","") or "").upper() != EntryStage.ACCEPTANCE.value:
+        profile["reason_code"]="NOT_ACCEPTANCE_STAGE"; return profile
+    if any((getattr(trade,"tp0_hit",False),getattr(trade,"tp1_hit",False),getattr(trade,"tp2_hit",False),getattr(trade,"tp3_hit",False))):
+        profile["reason_code"]="FOLLOWTHROUGH_ALREADY_PROVEN"; return profile
+    event = _linked_preconfirmation_event(trade,context)
+    status = _preconfirm_event_status(event) if event else "UNAVAILABLE"
+    profile["preconfirmation_status"] = status
+    profile["preconfirmation_event_id"] = str(getattr(trade,"preconfirmation_event_id","") or "")
+    if status not in {"FAILED","EXPIRED"}:
+        profile["reason_code"]="THESIS_NOT_FACTUALLY_FAILED"; return profile
+    profile["applies"] = True
+    age = safe_float(profile["age_minutes"])
+    mfe = safe_float(profile["mfe_r"])
+    current_r = safe_float(profile["current_r"])
+    integrity = safe_float(profile["path_integrity"])
+    if (
+        age >= V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MINUTES
+        and mfe < V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_MFE_R
+        and current_r <= V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_CURRENT_R
+        and integrity < V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_PATH_INTEGRITY
+    ):
+        profile.update({
+            "exit":True,
+            "reason_code":"ACCEPTANCE_FIXED_HORIZON_FAILED_NO_FOLLOWTHROUGH",
+            "threshold_minutes":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MINUTES,
+            "max_mfe_r":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_MFE_R,
+            "max_current_r":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_CURRENT_R,
+            "max_path_integrity":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_PATH_INTEGRITY,
+        })
+        return profile
+    profile["reason_code"]="FAILED_EVENT_BUT_EARLY_EXIT_CONDITIONS_NOT_MET"
+    return profile
+
+
+_manage_active_trade_v9534_effective = manage_active_trade
+def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
+    result = _manage_active_trade_v9534_effective(trade,context)
+    if result.get("closed"):
+        return result
+    profile = acceptance_no_followthrough_exit_profile_v9535(trade,context)
+    result["acceptance_no_followthrough"] = profile
+    if not profile.get("exit"):
+        return result
+    price = safe_float(context.get("price"),trade.entry)
+    result.setdefault("notes",[])
+    result["closed"] = True
+    result["action"] = Action.EXIT.value
+    result["exit_price"] = round_price(price)
+    result["current_pct"] = _trade_pct(trade.side,trade.entry,price)
+    result["management_state"] = "THESIS_FAILURE_EARLY_EXIT"
+    result["notes"].append(
+        f"v9.5.35 early thesis-failure exit: {profile.get('reason_code')} | "
+        f"age={profile.get('age_minutes')}m MFE={profile.get('mfe_r')}R "
+        f"current={profile.get('current_r')}R integrity={profile.get('path_integrity')}"
+    )
+    trade.management_state = "THESIS_FAILURE_EARLY_EXIT"
+    trade.status = "CLOSED"
+    trade.last_action = Action.EXIT.value
+    return _finalize_closed_trade_result(trade,result)
+
+
+# ---------- Runtime validation ----------
+_validate_runtime_configuration_v9534_effective = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str,Any]:
+    report = _validate_runtime_configuration_v9534_effective()
+    obsolete = (
+        "v9.5.34 scheduler cadence must be <=5 minutes",
+        "v9.5.34 Router emergency wall cap must be 15..24 minutes",
+    )
+    errors = [e for e in (report.get("errors") or []) if not any(token in str(e) for token in obsolete)]
+    if EXECUTION_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.35 production scheduler cadence must remain exactly 15 minutes")
+    if EXECUTION_ROUTER_MAX_WAIT_BARS != 5:
+        errors.append("v9.5.35 one-scan Router lease must remain 5 confirmed 3M bars")
+    if not (30 <= EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES <= 40):
+        errors.append("v9.5.35 Router emergency wall cap must be 30..40 minutes")
+    if EXECUTION_ROUTER_MAX_RECHECKS != 1:
+        errors.append("v9.5.35 Router may carry a deferred tactic across only one next-scan recheck")
+    if not (0 < V9535_RUNWAY_CRITICAL_R < V9535_RUNWAY_SOFT_R < V9535_RUNWAY_COMFORT_R <= V9535_RUNWAY_STRONG_R):
+        errors.append("v9.5.35 liquidity-runway economics thresholds are not monotonic")
+    if not (0.25 <= V9535_REGIME_MARKET_MIN_RELIABILITY <= 0.70):
+        errors.append("v9.5.35 regime reliability floor is outside safe range")
+    if not (0.52 <= V9535_REGIME_MARKET_MIN_FIT <= 0.75):
+        errors.append("v9.5.35 regime fit floor is outside safe range")
+    if not (30 <= V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MINUTES <= 90):
+        errors.append("v9.5.35 acceptance no-followthrough horizon is outside safe range")
+    if ENTRY_SCORE_BASE != 75 or RISKY_ENTRY_SCORE_BASE != 68 or ARMED_SCORE_BASE != 58:
+        errors.append("v9.5.35 must not change canonical 58/68/75 admission")
+    return {"valid":not errors,"errors":errors}
+
+
+# Replace the one obsolete v9.5.34 cadence assertion so the inherited regression
+# suite verifies the corrected 15m deployment rather than protecting the old bug.
+_v9534_regression_checks_effective = v9534_regression_checks
+def v9534_regression_checks() -> list[tuple[str,bool]]:
+    checks = _v9534_regression_checks_effective()
+    out=[]
+    for name,ok in checks:
+        if "Router TTL is confirmed-3M-bar based with wall clock only fail-safe" in name:
+            out.append((
+                "v9.5.34/v9.5.35 Router survives one 15m polling interval using confirmed 3M bars",
+                EXECUTION_SCHEDULER_CADENCE_MINUTES==15
+                and EXECUTION_ROUTER_MAX_WAIT_BARS==5
+                and 30<=EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES<=40,
+            ))
+        else:
+            out.append((name,ok))
+    return out
+
+
+def v9535_regression_checks() -> list[tuple[str,bool]]:
+    checks=[]
+    checks.append(("v9.5.35 production scheduler remains exactly 15 minutes",EXECUTION_SCHEDULER_CADENCE_MINUTES==15))
+    checks.append(("v9.5.35 canonical 58/68/75 thresholds are unchanged",ARMED_SCORE_BASE==58 and RISKY_ENTRY_SCORE_BASE==68 and ENTRY_SCORE_BASE==75))
+
+    ts0=int(datetime(2026,8,21,0,0,tzinfo=timezone.utc).timestamp()*1000)
+    c3=[Candle(ts=ts0+i*180_000,open=100+i*.01,high=100.08+i*.01,low=99.96+i*.01,close=100.04+i*.01,confirmed=True) for i in range(10)]
+    c=Candidate(side=Side.LONG.value,setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,setup_family=SetupFamily.CONTINUATION.value,raw_score=78,final_score=78,trigger_ready=True,live_3m_trigger_ready=True,trigger_level=100,execution_anchor=100,execution_source=ExecutionSource.CONTINUATION_REANCHOR.value,entry_stage=EntryStage.ACCEPTANCE.value)
+    ctx={"price":100.0,"atr15":1.0,"regime":Regime.TRANSITION.value,"candles":{"3m":c3,"15m":[]},"zones":[],"liquidity":{},"macro_liquidity":{}}
+    sm={"current_state":"EXECUTION","kind":"CONTINUATION","preferred_tactics":list(EXECUTION_ROUTER_ACTIONS),"native_execution_bridge":{"native_ready":True}}
+
+    # Exact class of the bad 91.94 trade: known 0.2R runway, near-neutral highly
+    # uncertain regime, otherwise execution-ready continuation.
+    c.confirmation_pending=False
+    consumed={"retest_consumed":True,"confirmation_consumed":True,"confirmation_equivalence":{"equivalent_consumed":True}}
+    intel={"state_machine":sm,"adverse_selection":{"index":23.0},"structural_score":72.0,"liquidity_runway":{"runway_r":0.20,"known":True},"outcome_model":{"probability":0.517,"uncertainty_width":0.31,"authority_trusted":False},"regime_vector":{"probabilities":{"TREND_CONTINUATION":.25,"MEAN_REVERSION":.30,"RANGE_EXPANSION":.25,"REVERSAL":.15,"SHOCK":.05},"bullish_trend_probability":.26,"bearish_trend_probability":.24,"directional_sign":1,"uncertainty":.943},"survival_hazard":{"sample_size":0,"timing_reliability":0.0},"consumed_evidence":consumed}
+    route=execution_router_profile({},ctx,c,intel)
+    checks.append(("v9.5.35 0.2R known liquidity runway cannot route directly to MARKET_NOW",route.get("action")!="MARKET_NOW" and "MARKET_NOW" not in route.get("eligible_actions",[]) and route.get("economic_reprice") is True))
+    checks.append(("v9.5.35 94% regime uncertainty cannot earn MARKET_NOW regime bonus",route.get("regime_market_bonus_applied") is False and safe_float(route.get("candidate_regime_reliability"))<V9535_REGIME_MARKET_MIN_RELIABILITY))
+
+    pending=copy.deepcopy(c); pending.confirmation_pending=True; pending.score_components={"continuation_reanchor":{"ready":False,"pre_confirmation_ready":True,"confirmation_bar_supported":False,"six_bar_structure_confirmed":True,"micro_confirmation":{"supported":False}}}
+    eq_pending=confirmation_equivalence_profile_v9535(pending,sm)
+    consumed_pending=consumed_execution_evidence_v9534(pending,sm)
+    intel_pending={**intel,"liquidity_runway":{"runway_r":1.3,"known":True},"consumed_evidence":consumed_pending}
+    route_pending=execution_router_profile({},ctx,pending,intel_pending)
+    checks.append(("v9.5.35 confirmation_pending cannot be silently consumed by execution-source label",eq_pending.get("equivalent_consumed") is False and consumed_pending.get("confirmation_consumed") is False and "MARKET_NOW" not in route_pending.get("eligible_actions",[])))
+
+    explicit=copy.deepcopy(c); explicit.confirmation_pending=True; explicit.score_components={"acceptance_retest":{"execution_ready":True,"acceptance_confirmed":True,"confirmation_mode":"FAST_DISPLACEMENT","fast_displacement_confirmation":{"ready":True},"current_3m_role_flip":{"ready":True,"fast_displacement_path":True}}}
+    eq_explicit=confirmation_equivalence_profile_v9535(explicit,sm)
+    checks.append(("v9.5.35 explicit fast-displacement/native acceptance can satisfy pending confirmation equivalently",eq_explicit.get("equivalent_consumed") is True))
+
+    # 15m scheduler causal watermark: the bar whose open precedes wall-clock
+    # decision by seconds is still visible if it is newer than decision watermark.
+    opp=Opportunity(side=Side.LONG.value,setup_type=SetupType.PULLBACK_CONTINUATION.value,setup_family=SetupFamily.CONTINUATION.value,created_at=(now_utc()-timedelta(minutes=16)).isoformat(),expires_at=(now_utc()+timedelta(hours=1)).isoformat(),score=72,trigger_level=100,invalidation_level=99,execution_lane=ExecutionLane.WAIT_CONFIRMATION.value,execution_tactic="ONE_3M_CONFIRM",router_decision_3m_ts=ts0,router_recheck_count=0)
+    bars=[Candle(ts=ts0+(i+1)*180_000,open=100,high=100.15+i*.03,low=99.98,close=100.10+i*.03,confirmed=True) for i in range(5)]
+    life=router_wait_lifecycle_v9534(opp,{"candles":{"3m":bars}})
+    checks.append(("v9.5.35 one next 15m scan survives exactly five confirmed 3M bars",life.get("expired") is False and life.get("post_decision_confirmed_3m_bars")==5))
+
+    # Acceptance early-failure management.
+    event_id="v9535-accept-failed"
+    trade=ActiveTrade(id="v9535-accept",side=Side.LONG.value,setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,setup_family=SetupFamily.CONTINUATION.value,opened_at=(now_utc()-timedelta(minutes=50)).isoformat(),entry=100.0,stop_initial=99.0,stop_current=99.0,structural_invalidation=98.8,tp1=102.0,tp2=103.0,tp3=104.0,quality=78,position_risk_pct=.1,best_price=100.10,worst_price=99.55,entry_stage=EntryStage.ACCEPTANCE.value,preconfirmation_event_id=event_id)
+    weak_bars=[Candle(ts=ts0+(i+1)*180_000,open=100.0-i*.05,high=100.02-i*.05,low=99.88-i*.06,close=99.91-i*.06,confirmed=True) for i in range(5)]
+    fail_ctx={"price":99.70,"atr15":1.0,"candles":{"3m":weak_bars,"15m":[]},"preconfirmation_events":[{"event_id":event_id,"status":"FAILED","outcome":"FAILED"}]}
+    prof=acceptance_no_followthrough_exit_profile_v9535(trade,fail_ctx)
+    checks.append(("v9.5.35 failed ACCEPTANCE with tiny MFE and weak path can exit before full stop",prof.get("exit") is True and prof.get("reason_code")=="ACCEPTANCE_FIXED_HORIZON_FAILED_NO_FOLLOWTHROUGH"))
+    trade_good=copy.deepcopy(trade); trade_good.best_price=100.40
+    prof_good=acceptance_no_followthrough_exit_profile_v9535(trade_good,fail_ctx)
+    checks.append(("v9.5.35 acceptance early exit does not kill trades that already produced meaningful MFE",prof_good.get("exit") is False))
+    checks.append(("v9.5.35 runtime validates execution economics and 15m cadence invariants",validate_runtime_configuration().get("valid") is True))
+    return checks
+
+
+_run_self_test_v9534_effective = _run_self_test
+def _run_self_test() -> bool:
+    base_ok=_run_self_test_v9534_effective()
+    checks=v9535_regression_checks(); passed=0
+    for name,ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed+=int(bool(ok))
+    total=358+len(checks)
+    print(f"SELF-TEST v9.5.35 SUMMARY: {358 if base_ok else 0}+{passed}/{total} => {358+passed if base_ok else passed}/{total} passed")
+    return bool(base_ok and passed==len(checks))
+
+
+_run_audit_journal_v9534_effective = run_audit_journal
+def run_audit_journal(path: str) -> dict[str,Any]:
+    out=_run_audit_journal_v9534_effective(path)
+    out["v9535_execution_economics_repair"]={
+        "production_scheduler_cadence_minutes":EXECUTION_SCHEDULER_CADENCE_MINUTES,
+        "router_one_scan_confirmed_3m_bars":EXECUTION_ROUTER_MAX_WAIT_BARS,
+        "router_max_rechecks":EXECUTION_ROUTER_MAX_RECHECKS,
+        "router_emergency_wall_cap_minutes":EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES,
+        "runway_economics":{"critical_r":V9535_RUNWAY_CRITICAL_R,"soft_r":V9535_RUNWAY_SOFT_R,"comfort_r":V9535_RUNWAY_COMFORT_R,"strong_r":V9535_RUNWAY_STRONG_R},
+        "regime_market_now":{"min_fit":V9535_REGIME_MARKET_MIN_FIT,"min_reliability":V9535_REGIME_MARKET_MIN_RELIABILITY},
+        "acceptance_no_followthrough":{"minutes":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MINUTES,"max_mfe_r":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_MFE_R,"max_current_r":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_CURRENT_R,"max_path_integrity":V9535_ACCEPTANCE_NO_FOLLOWTHROUGH_MAX_PATH_INTEGRITY},
+        "canonical_thresholds_unchanged":{"armed":ARMED_SCORE_BASE,"risky":RISKY_ENTRY_SCORE_BASE,"full":ENTRY_SCORE_BASE},
+        "promised_win_rate":False,
+        "policy":"IMPROVE_EXECUTION_ECONOMICS_WITHOUT_RAISING_SCORE_GATES_OR_BLACKLISTING_SETUPS",
+        "schema_version":"v9.5.35_execution_economics_audit",
+    }
+    return out
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.34 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.35 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
