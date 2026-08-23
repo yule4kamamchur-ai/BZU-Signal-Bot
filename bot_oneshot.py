@@ -373,7 +373,7 @@ def get_htf_state(candidate: Any) -> str:
 # ==========================================================
 
 BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_35_EXECUTION_ECONOMICS_15M_CADENCE"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -14118,7 +14118,7 @@ def candidate_confirmation_blocks_execution(candidate: Optional[Candidate]) -> b
     if candidate is None or not bool(getattr(candidate, "confirmation_pending", False)):
         return False
     state = getattr(candidate, "confirmation_state", {}) or {}
-    return bool(state.get("blocks_execution", True))
+    return bool(state.get("blocks_execution", False))
 
 
 def continuation_reanchor_profile(
@@ -33560,12 +33560,25 @@ def build_staged_executive_decision(
         required = "first live timing evidence"
         warnings.append("THESIS_EXISTS_BUT_TIMING_NOT_READY")
     elif timing_quality < 50 or entry_quality < 42:
-        state = ExecutiveDecisionState.EARLY_SIGNAL.value
-        required = "fresh trigger/retest improving entry quality"
-        warnings.append("EARLY_SIGNAL_NOT_YET_PROBE")
+        # v9.5.36: entry_quality is a readiness dimension, not a hard kill switch.
+        # A strong thesis with valid execution evidence must remain executable through
+        # staged paths instead of freezing until a perfect score appears.
+        if thesis >= 65 and execution >= 60 and entry_quality >= 35 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
+            state = EntryStage.PROBE.value
+            warnings.append("LOWER_ENTRY_QUALITY_ROUTED_TO_PROBE_NOT_BLOCK")
+        else:
+            state = ExecutiveDecisionState.EARLY_SIGNAL.value
+            required = "fresh trigger/retest improving entry quality"
+            warnings.append("EARLY_SIGNAL_NOT_YET_PROBE")
     elif confirmation_blocks:
-        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
-        required = "fresh confirmation close/reclaim matching the candidate side"
+        # v9.5.36: confirmation_pending remains lifecycle telemetry. Only explicit
+        # blocks_execution=True may stop execution. A pending retest is not a dead setup.
+        if thesis >= 70 and execution >= 65 and trade >= 55 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
+            state = EntryStage.PROBE.value
+            warnings.append("CONFIRMATION_PENDING_KEPT_LIVE_STAGED_PATH")
+        else:
+            state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+            required = "fresh confirmation close/reclaim matching the candidate side"
     elif chase or (trade < 50 and thesis >= 60):
         state = ExecutiveDecisionState.WAIT_RETEST.value
         required = "retest of the execution anchor without thesis invalidation"
@@ -33593,11 +33606,11 @@ def build_staged_executive_decision(
             and not conflict.actual_conflict
         ):
             state = EntryStage.CORE.value
-        elif thesis >= 70 and execution >= 68 and entry_quality >= 55 and trade >= 60 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
+        elif thesis >= 70 and execution >= 68 and entry_quality >= 50 and trade >= 60 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
             state = EntryStage.ACCEPTANCE.value if philosophy_rec == "ACCEPT" else EntryStage.PROBE.value
             if philosophy_rec == "ACCEPT_STAGED":
                 warnings.append("UNPROVEN_EDGE_CAPS_STAGE_AT_PROBE")
-        elif thesis >= 55 and execution >= 50 and entry_quality >= 45 and trade >= 55 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
+        elif thesis >= 55 and execution >= 50 and entry_quality >= 40 and trade >= 55 and philosophy_rec in {"ACCEPT", "ACCEPT_STAGED"}:
             state = EntryStage.PROBE.value
         else:
             state = ExecutiveDecisionState.WATCH.value
@@ -35248,7 +35261,7 @@ def run_audit_journal(path: str) -> dict[str,Any]:
 # are replayed causally between runs.
 
 BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_35_EXECUTION_ECONOMICS_15M_CADENCE"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE"
 
 # Production cadence invariant requested by the deployment contract.
 EXECUTION_SCHEDULER_CADENCE_MINUTES = 15
@@ -35576,8 +35589,10 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
         if _v9532_recent_confirmed(context,"3m",2):
             eligible.add("ONE_3M_CONFIRM")
     if runway_known and runway < V9535_RUNWAY_CRITICAL_R and phase == "EXECUTION":
+        # v9.5.36: liquidity runway modifies execution tactic, not setup validity.
+        # MARKET_NOW can be removed when economics are poor, but LIMIT remains a
+        # valid controlled-price route. The setup must not be frozen.
         eligible.discard("MARKET_NOW")
-        eligible.discard("LIMIT_AT_ANCHOR")  # same current-price economics in a signal-only bot
         if anchor > 0:
             eligible.add("FIRST_RETEST")
             economic_reprice = True
