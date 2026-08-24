@@ -2,6 +2,12 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v9.5.35 (Execution Economics Repair & 15M Cadence Integrity)
 =============================================================================================
+Оновлення v9.5.39:
+- Confirmed Acceptance Economic Downgrade: a fresh, location-valid ACCEPTANCE that Executive already approved can downgrade from ENTRY/RISKY_ENTRY to tiny PROBE_ENTRY when known liquidity runway is 0.08R..0.50R and the Router is repricing only because MARKET_NOW economics are poor. Stronger confirmed evidence can no longer receive worse reachability than the weaker native zone probe.
+- Near-zero runway (<0.08R), hard invalidation, stale execution, late location, adverse-selection stress or weak structure still prevent a forced market probe and keep the setup in WAIT_RETEST / better-price routing.
+- Telegram semantics are separated: preconfirmation is labelled as setup-confirmation estimate, audit-only status is explicit, and every decision gets a separate Entry Now status so 82% can no longer look like an 82% win probability.
+- Untrusted preconfirmation never creates or sizes a trade; canonical 58/68/75, RR floors, daily risk cap, 15M cadence and journal streams remain unchanged.
+
 Оновлення v9.5.38:
 - Acceptance execution precedence repair: a real location-preserved ZONE_RETEST_PROBE now outranks generic CONTINUATION_REANCHOR pre-confirmation; a pending helper can no longer shadow a stronger native execution lane.
 - Anti-late-entry asymmetry: early PROBE is allowed only while favorable-direction chase from the zone anchor is <=0.40 ATR; confirmed ACCEPTANCE gets a slightly wider <=0.50 ATR envelope. Value-side retests are not penalized by this signed chase rule.
@@ -36894,8 +36900,373 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 
+
+# ==========================================================
+# v9.5.39 EXECUTION CLARITY / CONFIRMED-ACCEPTANCE BALANCE
+# ==========================================================
+BOT_VERSION = "pro-hybrid-confluence-v9.5.39-execution-clarity-balance-journal-neutral"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE"
+
+# A confirmed ACCEPTANCE is stronger evidence than an unconfirmed native probe.
+# If the only problem is short known liquidity runway, downgrade capital, not the
+# already-confirmed thesis. The lower bound prevents paying spread/stop risk for
+# effectively zero remaining room.
+V9539_CONFIRMED_ACCEPTANCE_MIN_SCORE = ENTRY_SCORE_BASE
+V9539_CONFIRMED_ACCEPTANCE_MIN_MARKET_RUNWAY_R = V9537_NATIVE_PROBE_MIN_MARKET_RUNWAY_R
+V9539_CONFIRMED_ACCEPTANCE_PROBE_RISK_CAP = min(
+    EXPERIMENTAL_PROBE_RISK_PCT,
+    max(0.005, float(os.getenv("V9539_CONFIRMED_ACCEPTANCE_PROBE_RISK_CAP", str(EXPERIMENTAL_PROBE_RISK_PCT)) or EXPERIMENTAL_PROBE_RISK_PCT)),
+)
+V9539_CONFIRMED_ACCEPTANCE_MAX_ASI = min(
+    V9537_NATIVE_PROBE_MAX_ASI_FOR_CRITICAL_RUNWAY,
+    max(15.0, float(os.getenv("V9539_CONFIRMED_ACCEPTANCE_MAX_ASI", "35") or 35)),
+)
+V9539_CONFIRMED_ACCEPTANCE_MIN_STRUCTURAL = max(
+    V9537_NATIVE_PROBE_MIN_STRUCTURAL_FOR_CRITICAL_RUNWAY,
+    min(80.0, float(os.getenv("V9539_CONFIRMED_ACCEPTANCE_MIN_STRUCTURAL", "55") or 55)),
+)
+
+
+def confirmed_acceptance_economic_probe_profile_v9539(decision: Optional[Decision]) -> dict[str, Any]:
+    """Return whether a confirmed ACCEPTANCE may be reduced to a tiny market PROBE.
+
+    This is deliberately narrow. It cannot manufacture execution from probability,
+    pending evidence, stale triggers or late price. It only prevents the Router's
+    *pricing* preference from turning a fully confirmed, already Executive-approved
+    setup into NO_SETUP when a very small probe is still economically defensible.
+    """
+    if decision is None or decision.candidate is None:
+        return {"eligible": False, "reason": "NO_CANDIDATE"}
+    c = decision.candidate
+    if str(getattr(c, "setup_type", "") or "") != SetupType.ACCEPTANCE_RETEST_CONTINUATION.value:
+        return {"eligible": False, "reason": "NOT_ACCEPTANCE_SETUP"}
+    if str(getattr(c, "execution_source", "") or "") != ExecutionSource.ACCEPTANCE_RETEST.value:
+        return {"eligible": False, "reason": "NOT_CONFIRMED_ACCEPTANCE_SOURCE"}
+    if bool(getattr(c, "confirmation_pending", False)):
+        return {"eligible": False, "reason": "CONFIRMATION_PENDING"}
+    if safe_float(getattr(c, "final_score", 0), 0.0) < V9539_CONFIRMED_ACCEPTANCE_MIN_SCORE:
+        return {"eligible": False, "reason": "SCORE_BELOW_FULL"}
+    if not bool(getattr(c, "trigger_ready", False)):
+        return {"eligible": False, "reason": "TRIGGER_NOT_READY"}
+    if candidate_execution_trigger_age_minutes(c) > float(EXECUTION_TRIGGER_TTL_MIN):
+        return {"eligible": False, "reason": "TRIGGER_STALE"}
+
+    reval = dict(getattr(c, "revalidation_profile", {}) or {})
+    reval_state = str(reval.get("state") or "").upper()
+    if bool(reval.get("hard_expired")) or reval_state in {"DEAD", "INVALIDATED"}:
+        return {"eligible": False, "reason": "REVALIDATION_HARD_BLOCK"}
+
+    comp = dict(getattr(c, "score_components", {}) or {})
+    acceptance = dict(comp.get("acceptance_retest") or {})
+    # The detector's confirmed state already contains the v9.5.38 signed anti-late
+    # contract. Re-check the persisted/current facts so a late/stretched hypothesis
+    # can never use this downgrade as a chase loophole.
+    if not bool(acceptance.get("execution_ready") or acceptance.get("acceptance_confirmed")):
+        return {"eligible": False, "reason": "ACCEPTANCE_NOT_CONFIRMED"}
+    if bool(acceptance.get("late_confirmation_wait_retest")):
+        return {"eligible": False, "reason": "LATE_LOCATION_WAIT_RETEST"}
+    if not bool(acceptance.get("location_preserved", True)):
+        return {"eligible": False, "reason": "LOCATION_NOT_PRESERVED"}
+    distance = safe_float(acceptance.get("distance_from_zone_atr"), 99.0)
+    if distance > ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR + 1e-9:
+        return {"eligible": False, "reason": "ZONE_DISTANCE_TOO_LARGE"}
+
+    plan_ready = bool(decision.plan and decision.plan.valid and decision.plan.execution_ready)
+    if not plan_ready:
+        return {"eligible": False, "reason": "PLAN_NOT_READY"}
+
+    xi = dict(comp.get("execution_intelligence_v9532") or {})
+    route = dict(xi.get("execution_router") or {})
+    economics = dict(route.get("execution_economics") or {})
+    runway_known = bool(route.get("runway_known", economics.get("runway_known", False)))
+    runway = safe_float(route.get("runway_r"), safe_float(economics.get("runway_r"), 1.5))
+    economic_reprice = bool(route.get("economic_reprice"))
+    reprice_reason = str(route.get("economic_reprice_reason") or "")
+    asi = safe_float(xi.get("asi"), safe_float((xi.get("adverse_selection") or {}).get("index"), 50.0))
+    structural = safe_float(xi.get("structural"), safe_float(xi.get("structural_score"), 50.0))
+
+    eligible = bool(
+        runway_known
+        and V9539_CONFIRMED_ACCEPTANCE_MIN_MARKET_RUNWAY_R <= runway < V9535_RUNWAY_CRITICAL_R
+        and economic_reprice
+        and reprice_reason == "LIQUIDITY_RUNWAY_TOO_SHORT_FOR_MARKET_NOW"
+        and asi <= V9539_CONFIRMED_ACCEPTANCE_MAX_ASI
+        and structural >= V9539_CONFIRMED_ACCEPTANCE_MIN_STRUCTURAL
+    )
+    return {
+        "eligible": eligible,
+        "runway_known": runway_known,
+        "runway_r": round(runway, 4),
+        "economic_reprice": economic_reprice,
+        "reprice_reason": reprice_reason,
+        "asi": round(asi, 2),
+        "structural": round(structural, 2),
+        "distance_from_zone_atr": round(distance, 4),
+        "reason": "CONFIRMED_ACCEPTANCE_TINY_PROBE" if eligible else "ECONOMIC_PROBE_GATES_NOT_MET",
+    }
+
+
+# Final Router adapter. Strong confirmed evidence may downgrade *risk* on poor
+# MARKET_NOW economics, but it may not be treated worse than the weaker pending
+# native-probe lane. All non-economic timing/confirmation deferrals remain intact.
+_executive_route_resolution_v9538_effective = executive_route_resolution_v9533
+def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decision:
+    if (
+        decision is not None
+        and decision.candidate is not None
+        and decision.action in EXECUTABLE_ENTRY_ACTIONS
+    ):
+        profile = confirmed_acceptance_economic_probe_profile_v9539(decision)
+        if profile.get("eligible"):
+            decision.action = Action.PROBE_ENTRY.value
+            decision.candidate.entry_stage = EntryStage.PROBE.value
+            if decision.plan is not None:
+                decision.plan.entry_stage = EntryStage.PROBE.value
+                decision.plan.final_stage = EntryStage.PROBE.value
+                cap = V9539_CONFIRMED_ACCEPTANCE_PROBE_RISK_CAP
+                current = safe_float(decision.plan.position_risk_pct, cap)
+                decision.plan.position_risk_pct = round(min(current if current > 0 else cap, cap), 4)
+                decision.plan.risk_pct = decision.plan.position_risk_pct
+            return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+    return _executive_route_resolution_v9538_effective(decision, tactic)
+
+
+# Telegram clarity: this number describes confirmation, not trade win probability.
+# Keep the model visible for research, but make authority and human meaning explicit.
+_preconfirm_telegram_line_v9538_effective = _preconfirm_telegram_line
+def _preconfirm_telegram_line(candidate: Optional[Candidate]) -> str:
+    profile = getattr(candidate, "preconfirmation_profile", {}) if candidate else {}
+    if not profile or not profile.get("available"):
+        return ""
+    probability = safe_float(profile.get("probability"), 0.0) * 100.0
+    low = safe_float(profile.get("wilson_low"), 0.0) * 100.0
+    high = safe_float(profile.get("wilson_high"), 1.0) * 100.0
+    trusted = bool(profile.get("trusted") or profile.get("authority_trusted"))
+    pending = bool(getattr(candidate, "confirmation_pending", False)) if candidate else False
+    if trusted:
+        authority = "✅ trusted authority"
+    else:
+        authority = "⚠️ audit-only"
+    title = "Ймовірність підтвердження сетапу" if pending else "Preconfirm-модель"
+    line = f"🧠 <b>{title}:</b> {probability:.0f}% | CI {low:.0f}–{high:.0f}% | {authority}"
+    if pending:
+        meaning = "<i>Це шанс підтвердження структури, не шанс прибуткової угоди.</i>"
+    else:
+        meaning = "<i>Detector уже має окремий фактичний статус; цей % не є шансом виграшу або командою на вхід.</i>"
+    return f"{line}\n{meaning}"
+
+
+def _entry_now_telegram_line_v9539(decision: Optional[Decision]) -> str:
+    if decision is None:
+        return ""
+    c = decision.candidate
+    quality = int(safe_float(getattr(c, "entry_quality_score", 0) if c else 0, 0.0))
+    quality_suffix = f" | якість точки {quality}/100" if quality > 0 else ""
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS:
+        action_label = {
+            Action.ENTRY.value: "ENTRY",
+            Action.RISKY_ENTRY.value: "RISKY_ENTRY",
+            Action.PROBE_ENTRY.value: "PROBE_ENTRY",
+        }.get(decision.action, decision.action)
+        return f"⚡ <b>Вхід зараз:</b> ГОТОВИЙ ✅ | {action_label}{quality_suffix}"
+    if c is None:
+        return "⚡ <b>Вхід зараз:</b> НЕ ГОТОВИЙ"
+
+    comp = dict(getattr(c, "score_components", {}) or {})
+    xi = dict(comp.get("execution_intelligence_v9532") or {})
+    route = dict(xi.get("execution_router") or {})
+    if bool(route.get("economic_reprice")):
+        runway = safe_float(route.get("runway_r"), safe_float((route.get("execution_economics") or {}).get("runway_r"), 0.0))
+        return f"⚡ <b>Вхід зараз:</b> WAIT_RETEST 🟡 | runway {runway:.2f}R{quality_suffix}"
+    if bool(getattr(c, "confirmation_pending", False)):
+        return f"⚡ <b>Вхід зараз:</b> WAIT_CONFIRMATION 🟡{quality_suffix}"
+    plan_ready = bool(decision.plan and decision.plan.valid and decision.plan.execution_ready)
+    if not plan_ready:
+        return f"⚡ <b>Вхід зараз:</b> НЕ ГОТОВИЙ | plan/execution{quality_suffix}"
+    return f"⚡ <b>Вхід зараз:</b> НЕ ГОТОВИЙ{quality_suffix}"
+
+
+_build_decision_message_v9538_effective = build_decision_message
+def build_decision_message(context: dict, decision: Decision) -> str:
+    text = _build_decision_message_v9538_effective(context, decision)
+    readiness = _entry_now_telegram_line_v9539(decision)
+    if not readiness:
+        return text
+    lines = text.splitlines()
+    # Put execution readiness before the model probability so the human sees the
+    # actionable fact first. Do not duplicate if another wrapper reuses the text.
+    if any("<b>Вхід зараз:</b>" in line for line in lines):
+        return text
+    insert_at = next((i for i, line in enumerate(lines) if "Preconfirm-модель" in line or "Ймовірність підтвердження сетапу" in line), len(lines))
+    lines.insert(insert_at, readiness)
+    return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
+
+
+_validate_runtime_configuration_v9538_effective = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9538_effective()
+    errors = list(report.get("errors") or [])
+    if V9539_CONFIRMED_ACCEPTANCE_MIN_SCORE != ENTRY_SCORE_BASE:
+        errors.append("v9.5.39 confirmed acceptance fallback must preserve full-score admission")
+    if not (0.0 <= V9539_CONFIRMED_ACCEPTANCE_MIN_MARKET_RUNWAY_R < V9535_RUNWAY_CRITICAL_R):
+        errors.append("v9.5.39 confirmed acceptance runway interval is invalid")
+    if not (0.005 <= V9539_CONFIRMED_ACCEPTANCE_PROBE_RISK_CAP <= EXPERIMENTAL_PROBE_RISK_PCT):
+        errors.append("v9.5.39 confirmed acceptance probe risk cap must stay experimental/tiny")
+    if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
+        errors.append("v9.5.39 must not change canonical 58/68/75 thresholds")
+    return {"valid": not errors, "errors": errors}
+
+
+def v9539_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    htf = {
+        "market_bias": "BEARISH", "candidate_side": "SHORT", "alignment_score": 0.70,
+        "state": "ALIGNED", "confidence": 80.0, "schema_version": "test", "valid": True,
+    }
+    c = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=79,
+        final_score=79,
+        trigger_ready=True,
+        trigger_level=91.25,
+        execution_anchor=91.25,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        entry_stage=EntryStage.ACCEPTANCE.value,
+        confirmation_pending=False,
+        execution_trigger_age_minutes=0.0,
+        model_thesis_age_minutes=0.0,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        preconfirmation_profile={
+            "available": True, "probability": 0.82, "wilson_low": 0.62, "wilson_high": 0.92,
+            "trusted": False, "authority_trusted": False,
+        },
+        score_components={
+            "htf_fact": htf,
+            "acceptance_retest": {
+                "zone_retest_detected": True, "acceptance_confirmed": True, "execution_ready": True,
+                "location_preserved": True, "distance_from_zone_atr": 0.22,
+                "late_confirmation_wait_retest": False,
+            },
+            "execution_intelligence_v9532": {
+                "asi": 26.0, "structural": 60.0,
+                "execution_router": {
+                    "action": "FIRST_RETEST", "runway_known": True, "runway_r": 0.278,
+                    "economic_reprice": True,
+                    "economic_reprice_reason": "LIQUIDITY_RUNWAY_TOO_SHORT_FOR_MARKET_NOW",
+                    "execution_economics": {"runway_known": True, "runway_r": 0.278},
+                },
+            },
+        },
+        htf_fact=htf,
+        entry_quality_score=78,
+    )
+    plan = TradePlan(
+        entry=91.25, stop=92.25, tp1=89.75, tp2=88.75, tp3=87.25,
+        risk_pct=0.22, rr1=1.5, rr2=2.5, rr3=4.0,
+        position_risk_pct=0.22, execution_ready=True, valid=True,
+        entry_stage=EntryStage.ACCEPTANCE.value,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+    )
+    d = Decision(
+        id="v9539-82pct", time=iso_now(), action=Action.RISKY_ENTRY.value,
+        side=c.side, setup_type=c.setup_type, quality=c.final_score,
+        reason="test", regime=Regime.TRANSITION.value, candidate=c, plan=plan,
+        current_price=91.25,
+    )
+    profile = confirmed_acceptance_economic_probe_profile_v9539(d)
+    checks.append((
+        "v9.5.39 confirmed score79 acceptance with 0.278R runway is eligible for tiny economic PROBE",
+        profile.get("eligible") is True,
+    ))
+    routed = executive_route_resolution_v9533(copy.deepcopy(d), "FIRST_RETEST")
+    checks.append((
+        "v9.5.39 stronger confirmed acceptance is downgraded to PROBE, not NO_SETUP",
+        routed.action == Action.PROBE_ENTRY.value
+        and routed.plan is not None
+        and routed.plan.position_risk_pct <= V9539_CONFIRMED_ACCEPTANCE_PROBE_RISK_CAP + 1e-9,
+    ))
+
+    near_zero = copy.deepcopy(d)
+    near_zero.candidate.score_components["execution_intelligence_v9532"]["execution_router"]["runway_r"] = 0.01
+    near_zero.candidate.score_components["execution_intelligence_v9532"]["execution_router"]["execution_economics"]["runway_r"] = 0.01
+    checks.append((
+        "v9.5.39 near-zero runway still cannot force a market probe",
+        confirmed_acceptance_economic_probe_profile_v9539(near_zero).get("eligible") is False,
+    ))
+
+    late = copy.deepcopy(d)
+    late.candidate.score_components["acceptance_retest"]["late_confirmation_wait_retest"] = True
+    checks.append((
+        "v9.5.39 late confirmed-looking location cannot bypass WAIT_RETEST via economic probe",
+        confirmed_acceptance_economic_probe_profile_v9539(late).get("eligible") is False,
+    ))
+
+    weak_structure = copy.deepcopy(d)
+    weak_structure.candidate.score_components["execution_intelligence_v9532"]["structural"] = 40.0
+    checks.append((
+        "v9.5.39 weak structure does not earn forced economic probe",
+        confirmed_acceptance_economic_probe_profile_v9539(weak_structure).get("eligible") is False,
+    ))
+
+    untrusted_line = _preconfirm_telegram_line(c)
+    checks.append((
+        "v9.5.39 Telegram labels untrusted 82 percent as audit-only and not win probability",
+        "82%" in untrusted_line and "audit-only" in untrusted_line and "не є шансом виграшу" in untrusted_line,
+    ))
+    msg = build_decision_message({"price": 91.25, "learning_status": {}}, routed)
+    checks.append((
+        "v9.5.39 Telegram shows actionable Entry Now status before preconfirm model",
+        "<b>Вхід зараз:</b> ГОТОВИЙ" in msg
+        and msg.find("<b>Вхід зараз:</b>") < msg.find("Preconfirm-модель"),
+    ))
+    checks.append((
+        "v9.5.39 no new signal-journal event stream is introduced",
+        all(name not in globals() for name in ("V9539_SIGNAL_EVENTS", "ENTRY_READINESS_EVENTS", "CONFIRMED_ACCEPTANCE_PROBE_EVENTS")),
+    ))
+    checks.append((
+        "v9.5.39 canonical thresholds and runtime invariants remain valid",
+        validate_runtime_configuration().get("valid") is True
+        and (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) == (58, 68, 75),
+    ))
+    return checks
+
+
+_run_self_test_v9538_effective = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9538_effective()
+    checks = v9539_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.39 SUMMARY: base={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+_run_audit_journal_v9538_effective = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    out = _run_audit_journal_v9538_effective(path)
+    out["v9539_execution_clarity_balance"] = {
+        "confirmed_acceptance_short_runway_disposition": Action.PROBE_ENTRY.value,
+        "confirmed_acceptance_min_market_runway_r": V9539_CONFIRMED_ACCEPTANCE_MIN_MARKET_RUNWAY_R,
+        "confirmed_acceptance_critical_runway_ceiling_r": V9535_RUNWAY_CRITICAL_R,
+        "confirmed_acceptance_probe_risk_cap_pct": V9539_CONFIRMED_ACCEPTANCE_PROBE_RISK_CAP,
+        "near_zero_runway_disposition": ExecutiveDecisionState.WAIT_RETEST.value,
+        "telegram_preconfirm_is_win_probability": False,
+        "telegram_entry_now_status_enabled": True,
+        "untrusted_preconfirmation_can_initiate_entry": False,
+        "new_journal_event_streams": 0,
+        "canonical_thresholds_unchanged": {
+            "armed": ARMED_SCORE_BASE, "risky": RISKY_ENTRY_SCORE_BASE, "full": ENTRY_SCORE_BASE,
+        },
+        "schema_version": "v9.5.39_execution_clarity_balance_journal_neutral",
+    }
+    return out
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.38 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.39 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
