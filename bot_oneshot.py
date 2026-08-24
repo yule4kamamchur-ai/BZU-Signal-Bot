@@ -2,6 +2,12 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v9.5.35 (Execution Economics Repair & 15M Cadence Integrity)
 =============================================================================================
+Оновлення v9.5.38:
+- Acceptance execution precedence repair: a real location-preserved ZONE_RETEST_PROBE now outranks generic CONTINUATION_REANCHOR pre-confirmation; a pending helper can no longer shadow a stronger native execution lane.
+- Anti-late-entry asymmetry: early PROBE is allowed only while favorable-direction chase from the zone anchor is <=0.40 ATR; confirmed ACCEPTANCE gets a slightly wider <=0.50 ATR envelope. Value-side retests are not penalized by this signed chase rule.
+- Late/stretched acceptance hypotheses are not deleted or frozen: they remain live as bounded WAIT_RETEST opportunities for a better price instead of being chased at market.
+- Preconfirmation probability remains audit-only unless trusted; canonical 58/68/75, RR floors, daily risk cap, 15M cadence and journal schema/retention are unchanged.
+
 Оновлення v9.5.37:
 - Native Probe Bridge: location-preserved ACCEPTANCE_RETEST zone retest with current probe-ready evidence becomes a real reduced-risk PROBE plan instead of dying at PLAN_NOT_EXECUTION_READY.
 - Win-rate preserving stage policy: pending native zone-retest evidence can open only PROBE; full ACCEPTANCE/CORE still requires explicit current 3M role-flip / fast-displacement equivalence.
@@ -14097,7 +14103,18 @@ def resolve_candidate_confirmation_state(
 
     state: dict[str, Any] = {}
     if model == "ACCEPTANCE_RETEST_CONTINUATION":
-        if reanchor.get("pre_confirmation_ready"):
+        # v9.5.38: a native zone-retest that is already probe-ready is stronger
+        # execution evidence than a generic reanchor that is merely PRE-confirmed.
+        # The latter remains useful only when the native lane is not executable.
+        if (
+            acceptance.get("zone_retest_detected")
+            and acceptance.get("probe_execution_ready")
+            and not acceptance.get("execution_ready")
+        ):
+            state = acceptance
+            state["probe_execution_ready"] = True
+            state["blocks_execution"] = False
+        elif reanchor.get("pre_confirmation_ready"):
             state = reanchor
             state.setdefault("blocks_execution", True)
         elif (
@@ -14105,8 +14122,8 @@ def resolve_candidate_confirmation_state(
             and not acceptance.get("execution_ready")
         ):
             state = acceptance
-            state.setdefault("probe_execution_ready", True)
-            state.setdefault("blocks_execution", False)
+            state.setdefault("probe_execution_ready", False)
+            state.setdefault("blocks_execution", True)
     elif model == "VWAP_SESSION_MEAN_RECLAIM" and session_mean.get("pre_confirmation_ready"):
         state = session_mean
         state.setdefault("blocks_execution", True)
@@ -17904,7 +17921,10 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 execution_lane_source = ExecutionLane.WAIT_RETEST.value
                 pattern_conf.append("⏳ ACCELERATION_PULLBACK: імпульс уже відірвався — чекати 38–50% ретест, не market")
             elif model_id == "ACCEPTANCE_RETEST_CONTINUATION":
-                if continuation_reanchor.get("ready") and trigger_age > TRIGGER_MAX_AGE_MINUTES:
+                _acceptance_route = acceptance_execution_precedence_v9538(
+                    acceptance_retest, continuation_reanchor, trigger_age
+                )
+                if _acceptance_route == "REANCHOR_READY":
                     execution_source = ExecutionSource.CONTINUATION_REANCHOR.value
                     actionable_trigger_ready = True
                     execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
@@ -17917,19 +17937,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         f"🧭 REANCHORED_TRIGGER: old={trigger_age:.0f}m → fresh={local_trigger_age:.1f}m | "
                         f"{continuation_reanchor.get('zone_label')} @ {local_trigger_level:.2f}"
                     )
-                elif continuation_reanchor.get("pre_confirmation_ready"):
-                    execution_source = ExecutionSource.CONTINUATION_REANCHOR.value
-                    actionable_trigger_ready = False
-                    execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
-                    local_trigger_level = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level
-                    local_trigger_age = safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
-                    local_live_3m_trigger_ready = False
-                    pattern_conf.append(
-                        f"🟡 REANCHOR PRE-CONFIRMATION: readiness high, wait one 3M bar | "
-                        f"dir_closes={continuation_reanchor.get('directional_closes')}/6 "
-                        f"(required={continuation_reanchor.get('required_directional_closes')})"
-                    )
-                elif acceptance_retest.get("execution_ready"):
+                elif _acceptance_route == "ACCEPTANCE_CONFIRMED":
                     execution_source = ExecutionSource.ACCEPTANCE_RETEST.value
                     actionable_trigger_ready = True
                     execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
@@ -17939,7 +17947,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     model_thesis_age = 0.0
                     thesis_origin = "MODEL_LOCAL_ACCEPTANCE_RETEST"
                     pattern_conf.append("🟢 ACCEPTANCE_CONFIRMED: continuation-probe дозволений малим ризиком")
-                elif acceptance_retest.get("zone_retest_detected"):
+                elif _acceptance_route == "ZONE_RETEST_PROBE":
                     execution_source = ExecutionSource.ZONE_RETEST_PROBE.value
                     actionable_trigger_ready = True
                     execution_lane_source = ExecutionLane.EARLY_TACTICAL.value
@@ -17951,6 +17959,28 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     pattern_conf.append(
                         "🟠 ZONE_RETEST_PROBE: ранній probe дозволений; повний acceptance ще pending"
                     )
+                elif _acceptance_route == "REANCHOR_PRECONFIRM":
+                    execution_source = ExecutionSource.CONTINUATION_REANCHOR.value
+                    actionable_trigger_ready = False
+                    execution_lane_source = ExecutionLane.WAIT_CONFIRMATION.value
+                    local_trigger_level = safe_float(continuation_reanchor.get("anchor"), trigger_level) or trigger_level
+                    local_trigger_age = safe_float(continuation_reanchor.get("anchor_age_min"), trigger_age)
+                    local_live_3m_trigger_ready = False
+                    pattern_conf.append(
+                        f"🟡 REANCHOR PRE-CONFIRMATION: readiness high, wait one 3M bar | "
+                        f"dir_closes={continuation_reanchor.get('directional_closes')}/6 "
+                        f"(required={continuation_reanchor.get('required_directional_closes')})"
+                    )
+                elif _acceptance_route == "ZONE_RETEST_WAIT_RETEST":
+                    execution_source = ExecutionSource.ZONE_RETEST_PROBE.value
+                    actionable_trigger_ready = False
+                    execution_lane_source = ExecutionLane.WAIT_RETEST.value
+                    local_trigger_level = safe_float(acceptance_retest.get("zone_mid"), trigger_level) or trigger_level
+                    local_trigger_age = 0.0
+                    local_live_3m_trigger_ready = False
+                    model_thesis_age = 0.0
+                    thesis_origin = "MODEL_LOCAL_ZONE_RETEST"
+                    pattern_conf.append("🟡 ZONE_RETEST_WAIT_RETEST: сетап живий, але market-вхід уже запізнений; чекати повернення до anchor")
                 else:
                     execution_source = ExecutionSource.NONE.value
                     actionable_trigger_ready = False
@@ -26129,6 +26159,9 @@ def test_zone_retest_maps_to_candidate_confirmation_pending() -> bool:
         "zone_retest_detected": True,
         "acceptance_confirmed": False,
         "execution_ready": False,
+        "probe_execution_ready": True,
+        "location_preserved": True,
+        "distance_from_zone_atr": 0.20,
         "state": "ZONE_RETEST_DETECTED",
         "zone_mid": 100.25,
     }
@@ -28633,6 +28666,16 @@ PROBE_INFORMATION_MFE_TRIGGER_R = 0.75
 PROBE_INFORMATION_GIVEBACK_RATIO = 0.40
 ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR = 0.70
 ACCEPTANCE_WAIT_RETEST_MAX_ZONE_DISTANCE_ATR = 1.10
+# v9.5.38: signed favorable-direction extension is stricter than absolute zone
+# distance. This prevents late chase while preserving value-side retests.
+V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR = min(
+    ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR,
+    max(0.20, float(os.getenv("V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR", "0.40") or 0.40)),
+)
+V9538_CONFIRMED_ACCEPTANCE_MAX_FAVORABLE_CHASE_ATR = min(
+    ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR,
+    max(V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR, float(os.getenv("V9538_CONFIRMED_ACCEPTANCE_MAX_FAVORABLE_CHASE_ATR", "0.50") or 0.50)),
+)
 SESSION_MEAN_RANGE_MIN_ESCAPE_ATR = 0.18
 SESSION_MEAN_RANGE_MAX_ESCAPE_ATR = 0.90
 
@@ -28930,17 +28973,37 @@ def detect_acceptance_retest_continuation(c15: list[Candle], side: str, price: f
     micro = ordered_level_reclaim_confirmation(c3, side, zone, atr15, require_retest=True)
     location_preserved = dist <= ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR
     wait_retest_location = ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR < dist <= ACCEPTANCE_WAIT_RETEST_MAX_ZONE_DISTANCE_ATR
-    confirmed = bool(base.get("acceptance_confirmed") and micro.get("ready") and location_preserved)
+    signed_extension_atr = side_sign(side) * (price - zone) / max(atr15, 1e-9)
+    favorable_chase_atr = max(0.0, signed_extension_atr)
+    confirmed_location_ok = bool(
+        location_preserved
+        and favorable_chase_atr <= V9538_CONFIRMED_ACCEPTANCE_MAX_FAVORABLE_CHASE_ATR
+    )
+    probe_location_ok = bool(
+        location_preserved
+        and favorable_chase_atr <= V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR
+    )
+    confirmed = bool(base.get("acceptance_confirmed") and micro.get("ready") and confirmed_location_ok)
     base["legacy_15m_acceptance_confirmed"] = bool(base.get("acceptance_confirmed"))
     base["current_3m_role_flip"] = micro
     base["distance_from_zone_atr"] = round(dist, 4)
     base["location_preserved"] = location_preserved
-    base["late_confirmation_wait_retest"] = bool(base.get("acceptance_confirmed") and (wait_retest_location or dist > ACCEPTANCE_WAIT_RETEST_MAX_ZONE_DISTANCE_ATR))
+    # Do not persist another chase metric into signal_journal. The signed value is
+    # execution-local; existing distance/state fields are enough for audit.
+    base["late_confirmation_wait_retest"] = bool(
+        base.get("zone_retest_detected")
+        and not confirmed
+        and (
+            wait_retest_location
+            or dist > ACCEPTANCE_WAIT_RETEST_MAX_ZONE_DISTANCE_ATR
+            or favorable_chase_atr > V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR
+        )
+    )
     base["acceptance_confirmed"] = confirmed; base["execution_ready"] = confirmed; base["active"] = confirmed
-    base["probe_execution_ready"] = bool(base.get("zone_retest_detected") and not confirmed and location_preserved)
+    base["probe_execution_ready"] = bool(base.get("zone_retest_detected") and not confirmed and probe_location_ok)
     base["pre_confirmation_ready"] = bool(base.get("zone_retest_detected") and not confirmed)
     base["confirmation_pending"] = bool(base.get("zone_retest_detected") and not confirmed)
-    base["required_next_event"] = None if confirmed else "RETURN_TO_ZONE_AND_FRESH_3M_ROLE_FLIP" if not location_preserved else "FRESH_3M_ROLE_FLIP_CONFIRMATION"
+    base["required_next_event"] = None if confirmed else "RETURN_TO_ZONE_AND_FRESH_3M_ROLE_FLIP" if base["late_confirmation_wait_retest"] or not location_preserved else "FRESH_3M_ROLE_FLIP_CONFIRMATION"
     base["state"] = "ACCEPTANCE_CONFIRMED_LOCATION_PRESERVED" if confirmed else "LATE_CONFIRMATION_WAIT_RETEST" if base["late_confirmation_wait_retest"] else "ZONE_RETEST_WAIT_3M_CONFIRMATION"
     base["execution_role"] = "EXECUTION_CONFIRMATION" if confirmed else "WAIT_RETEST" if base["late_confirmation_wait_retest"] else "EARLY_PROBE_PENDING_ACCEPTANCE"
     base["schema_version"] = "acceptance_retest_v9.5.31_location_preserving_3m"
@@ -36652,8 +36715,187 @@ def run_audit_journal(path: str) -> dict[str, Any]:
 
 
 
+# ==========================================================
+# v9.5.38 BALANCED EARLY ENTRY / ANTI-LATE PRECEDENCE
+# ==========================================================
+BOT_VERSION = "pro-hybrid-confluence-v9.5.38-balanced-early-entry-anti-late-journal-neutral"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE"
+
+
+def acceptance_execution_precedence_v9538(
+    acceptance: Optional[dict[str, Any]],
+    reanchor: Optional[dict[str, Any]],
+    trigger_age_minutes: float,
+) -> str:
+    """Choose the strongest *current* execution fact without letting PRE-state shadow it.
+
+    Actual ready evidence wins first. A native location-preserved zone probe then
+    outranks generic reanchor PRE-confirmation. A stretched zone hypothesis stays
+    live as WAIT_RETEST rather than being chased at market.
+    """
+    acceptance = dict(acceptance or {})
+    reanchor = dict(reanchor or {})
+    if bool(reanchor.get("ready")) and safe_float(trigger_age_minutes, 0.0) > TRIGGER_MAX_AGE_MINUTES:
+        return "REANCHOR_READY"
+    if bool(acceptance.get("execution_ready")):
+        return "ACCEPTANCE_CONFIRMED"
+    if bool(acceptance.get("probe_execution_ready")):
+        return "ZONE_RETEST_PROBE"
+    if bool(reanchor.get("pre_confirmation_ready")):
+        return "REANCHOR_PRECONFIRM"
+    if bool(acceptance.get("zone_retest_detected")):
+        return "ZONE_RETEST_WAIT_RETEST"
+    return "NONE"
+
+
+def _v9538_acceptance_wait_retest(candidate: Optional[Candidate]) -> bool:
+    if candidate is None:
+        return False
+    if str(getattr(candidate, "setup_type", "") or "") != SetupType.ACCEPTANCE_RETEST_CONTINUATION.value:
+        return False
+    if str(getattr(candidate, "execution_lane", "") or "") != ExecutionLane.WAIT_RETEST.value:
+        return False
+    components = dict(getattr(candidate, "score_components", {}) or {})
+    acceptance = dict(components.get("acceptance_retest") or {})
+    return bool(
+        acceptance.get("zone_retest_detected")
+        and not acceptance.get("execution_ready")
+        and not acceptance.get("probe_execution_ready")
+    )
+
+
+# Final Executive guard: a deliberately deferred stretched acceptance must be
+# WAIT_RETEST, not recycled into generic PROBE by the v9.5.36 pending-state bridge.
+_build_staged_executive_decision_v9537_effective = build_staged_executive_decision
+def build_staged_executive_decision(
+    candidate: Candidate,
+    evaluation: EvaluationBundle,
+    stage_history: list[dict[str, Any]],
+) -> ExecutiveDecisionContract:
+    if _v9538_acceptance_wait_retest(candidate):
+        return ExecutiveDecisionContract(
+            state=ExecutiveDecisionState.WAIT_RETEST.value,
+            allow_execution=False,
+            allowed_stage=ExecutiveDecisionState.WAIT_RETEST.value,
+            final_risk_pct=0.0,
+            required_next_event="return to the execution anchor with fresh 3M support",
+            blocking_reasons=[],
+            warning_reasons=[],
+            audit={},
+        )
+    return _build_staged_executive_decision_v9537_effective(candidate, evaluation, stage_history)
+
+
+_validate_runtime_configuration_v9537_effective = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9537_effective()
+    errors = list(report.get("errors") or [])
+    if not (
+        0.20 <= V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR
+        <= V9538_CONFIRMED_ACCEPTANCE_MAX_FAVORABLE_CHASE_ATR
+        <= ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR
+    ):
+        errors.append("v9.5.38 signed anti-late acceptance envelopes are invalid")
+    if RISKY_ENTRY_SCORE_BASE != 68 or ENTRY_SCORE_BASE != 75 or ARMED_SCORE_BASE != 58:
+        errors.append("v9.5.38 must not change canonical 58/68/75 thresholds")
+    return {"valid": not errors, "errors": errors}
+
+
+def v9538_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    acceptance_probe = {
+        "zone_retest_detected": True,
+        "execution_ready": False,
+        "probe_execution_ready": True,
+        "location_preserved": True,
+        "distance_from_zone_atr": 0.18,
+        "pre_confirmation_ready": True,
+    }
+    reanchor_pending = {"ready": False, "pre_confirmation_ready": True, "blocks_execution": True}
+    state, pending = resolve_candidate_confirmation_state(
+        "ACCEPTANCE_RETEST_CONTINUATION",
+        acceptance_probe,
+        reanchor_pending,
+        {},
+        actionable_trigger_ready=True,
+    )
+    checks.append((
+        "v9.5.38 native zone probe outranks generic reanchor PRE-confirmation",
+        pending is True and state.get("probe_execution_ready") is True and state.get("blocks_execution") is False,
+    ))
+    checks.append((
+        "v9.5.38 execution-source precedence chooses native probe before reanchor PRE-state",
+        acceptance_execution_precedence_v9538(acceptance_probe, reanchor_pending, 0.0) == "ZONE_RETEST_PROBE",
+    ))
+
+    confirmed = dict(acceptance_probe)
+    confirmed.update({"execution_ready": True, "probe_execution_ready": False})
+    checks.append((
+        "v9.5.38 real confirmed acceptance still outranks pending helper",
+        acceptance_execution_precedence_v9538(confirmed, reanchor_pending, 0.0) == "ACCEPTANCE_CONFIRMED",
+    ))
+
+    late = dict(acceptance_probe)
+    late.update({"probe_execution_ready": False, "late_confirmation_wait_retest": True})
+    checks.append((
+        "v9.5.38 stretched zone hypothesis remains alive as WAIT_RETEST",
+        acceptance_execution_precedence_v9538(late, {}, 0.0) == "ZONE_RETEST_WAIT_RETEST",
+    ))
+
+    checks.append((
+        "v9.5.38 signed chase envelope is stricter for early probe than confirmed acceptance",
+        V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR
+        < V9538_CONFIRMED_ACCEPTANCE_MAX_FAVORABLE_CHASE_ATR
+        <= ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR,
+    ))
+    checks.append((
+        "v9.5.38 canonical 58/68/75 remain unchanged",
+        (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) == (58, 68, 75),
+    ))
+    checks.append((
+        "v9.5.38 adds no signal-journal event stream",
+        all(name not in globals() for name in ("V9538_SIGNAL_EVENTS", "ANTI_LATE_EVENT_STREAM", "ENTRY_PRECEDENCE_EVENTS")),
+    ))
+    checks.append((
+        "v9.5.38 runtime validates balanced early-entry invariants",
+        validate_runtime_configuration().get("valid") is True,
+    ))
+    return checks
+
+
+_run_self_test_v9537_effective = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9537_effective()
+    checks = v9538_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.38 SUMMARY: base={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+_run_audit_journal_v9537_effective = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    out = _run_audit_journal_v9537_effective(path)
+    out["v9538_balanced_early_entry_anti_late"] = {
+        "native_probe_precedes_reanchor_preconfirmation": True,
+        "native_probe_max_favorable_chase_atr": V9538_NATIVE_PROBE_MAX_FAVORABLE_CHASE_ATR,
+        "confirmed_acceptance_max_favorable_chase_atr": V9538_CONFIRMED_ACCEPTANCE_MAX_FAVORABLE_CHASE_ATR,
+        "late_acceptance_disposition": ExecutiveDecisionState.WAIT_RETEST.value,
+        "late_setup_deleted_or_frozen": False,
+        "new_journal_event_streams": 0,
+        "canonical_thresholds_unchanged": {
+            "armed": ARMED_SCORE_BASE, "risky": RISKY_ENTRY_SCORE_BASE, "full": ENTRY_SCORE_BASE,
+        },
+        "schema_version": "v9.5.38_balanced_early_entry_anti_late_journal_neutral",
+    }
+    return out
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.37 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.38 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
