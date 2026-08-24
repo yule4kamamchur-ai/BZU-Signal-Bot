@@ -35922,8 +35922,291 @@ def run_audit_journal(path: str) -> dict[str,Any]:
     return out
 
 
+
+# ==========================================================
+# v9.5.36 EXECUTION REACHABILITY REPAIR / JOURNAL-NEUTRAL
+# ==========================================================
+# Repair scope:
+# - Router cannot turn an Executive-approved, fresh setup-native execution into
+#   NO_SETUP merely because a different timing tactic scores slightly higher.
+# - Explicit economic repricing remains allowed to defer MARKET_NOW.
+# - Setup-native fresh execution evidence satisfies the generic revalidation
+#   bridge once; the same confirmation is not requested again by Plan/Executive.
+# - Route bandit learns on the same one-scan 15m horizon available to live
+#   execution. The existing 120m fresh-execution research ledger remains research.
+# - No new per-signal/per-scan journal stream or duplicated payload is added.
+
+BOT_VERSION = "pro-hybrid-confluence-v9.5.36-execution-reachability-journal-neutral"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_REACHABILITY_JOURNAL_NEUTRAL"
+
+# One causal horizon for route tactic learning and live route authority.
+# Reuse the existing matrix row shape: changing the horizon adds ZERO fields to
+# signal_journal and makes PENDING rows resolve/compact sooner.
+ROUTE_LIVE_LEARNING_HORIZON_MINUTES = EXECUTION_SCHEDULER_CADENCE_MINUTES
+OPPORTUNITY_OUTCOME_HORIZON_MINUTES = ROUTE_LIVE_LEARNING_HORIZON_MINUTES
+
+_V9536_NATIVE_CONFIRMED_EXECUTION_SOURCES = frozenset({
+    ExecutionSource.ACCEPTANCE_RETEST.value,
+    ExecutionSource.CONTINUATION_REANCHOR.value,
+    ExecutionSource.MOMENTUM_CONTINUATION.value,
+    ExecutionSource.ACCELERATION_PULLBACK.value,
+    ExecutionSource.SESSION_MEAN.value,
+    ExecutionSource.OPENING_RANGE.value,
+    ExecutionSource.OPEN_RECLAIM.value,
+    ExecutionSource.LIQUIDITY_LADDER.value,
+    ExecutionSource.FAILED_AUCTION.value,
+    ExecutionSource.SHORT_LIQUIDITY_SWEEP.value,
+    ExecutionSource.SHORT_FAILED_BREAKOUT.value,
+    ExecutionSource.SHORT_MSS_CONFIRMATION.value,
+    ExecutionSource.SHORT_BUYER_EXHAUSTION.value,
+    ExecutionSource.SHORT_OR_FAILURE_2.value,
+})
+
+
+def _native_execution_contract_ready_v9536(candidate: Optional[Candidate]) -> bool:
+    """True only for a fresh, current, setup-native executable contract.
+
+    This does NOT alter score, HTF, risk, RR or setup-specific detector gates.
+    It only prevents a generic downstream layer from charging the same
+    confirmation twice after the named setup already produced it.
+    """
+    if candidate is None:
+        return False
+    source = str(getattr(candidate, "execution_source", "") or "")
+    if source not in _V9536_NATIVE_CONFIRMED_EXECUTION_SOURCES:
+        return False
+    if not bool(getattr(candidate, "trigger_ready", False)):
+        return False
+    trigger_age = candidate_execution_trigger_age_minutes(candidate)
+    if trigger_age > float(EXECUTION_TRIGGER_TTL_MIN):
+        return False
+    revalidation = dict(getattr(candidate, "revalidation_profile", {}) or {})
+    state_name = str(revalidation.get("state") or "").upper()
+    if bool(revalidation.get("hard_expired")) or state_name in {"DEAD", "INVALIDATED"}:
+        return False
+
+    if bool(getattr(candidate, "confirmation_pending", False)):
+        equivalence = confirmation_equivalence_profile_v9535(candidate, {})
+        if not bool(equivalence.get("equivalent_consumed")):
+            return False
+    return True
+
+
+# ----- Generic revalidation may not re-charge setup-native execution evidence.
+_candidate_revalidation_gate_v9535_effective = _candidate_revalidation_gate
+def _candidate_revalidation_gate(candidate: Candidate) -> dict[str, Any]:
+    out = dict(_candidate_revalidation_gate_v9535_effective(candidate) or {})
+    if _native_execution_contract_ready_v9536(candidate):
+        # Reuse the existing schema/keys. No extra journal payload is introduced.
+        out["ok"] = True
+        out["strict_alternative_support"] = True
+        support = dict(out.get("execution_support_paths") or {})
+        support["alternative_ready"] = True
+        out["execution_support_paths"] = support
+    return out
+
+
+# ----- Router is execution-tactic intelligence, not a second trade/no-trade authority.
+_executive_route_resolution_v9535_effective = executive_route_resolution_v9533
+def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decision:
+    tactic = str(tactic or "MARKET_NOW")
+    if (
+        decision is None
+        or decision.action not in EXECUTABLE_ENTRY_ACTIONS
+        or tactic == "MARKET_NOW"
+        or decision.candidate is None
+    ):
+        return _executive_route_resolution_v9535_effective(decision, tactic)
+
+    candidate = decision.candidate
+    plan_ready = bool(decision.plan and decision.plan.valid and decision.plan.execution_ready)
+    xi = dict(((candidate.score_components or {}).get("execution_intelligence_v9532") or {}))
+    route = dict(xi.get("execution_router") or {})
+    economic_reprice = bool(route.get("economic_reprice"))
+
+    # If Executive has already approved a fresh setup-native executable contract,
+    # a non-economic Router preference is advisory only. Otherwise we would turn
+    # "better execution timing" into "do not trade", which contradicts Router's
+    # own tactic-only contract and caused selected/executable -> NO_SETUP starvation.
+    if plan_ready and _native_execution_contract_ready_v9536(candidate) and not economic_reprice:
+        return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+
+    # Genuine pricing/economics problems may still defer execution. Likewise an
+    # unconfirmed early probe must still earn its missing setup-native evidence.
+    return _executive_route_resolution_v9535_effective(decision, tactic)
+
+
+# ----- Runtime invariants for the repair.
+_validate_runtime_configuration_v9535_effective = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9535_effective()
+    errors = list(report.get("errors") or [])
+    if ROUTE_LIVE_LEARNING_HORIZON_MINUTES != EXECUTION_SCHEDULER_CADENCE_MINUTES:
+        errors.append("v9.5.36 route learning horizon must equal the live scheduler cadence")
+    if OPPORTUNITY_OUTCOME_HORIZON_MINUTES != 15:
+        errors.append("v9.5.36 route counterfactual authority must resolve on the 15m live horizon")
+    if FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES < PRECONFIRM_WINDOW_MINUTES:
+        errors.append("v9.5.36 long-horizon fresh-execution research ledger must remain research-capable")
+    if OPPORTUNITY_OUTCOME_MATRIX_LIMIT > 140:
+        errors.append("v9.5.36 route matrix retention must remain bounded")
+    if JOURNAL_VERBOSE:
+        # Not a runtime error: explicit operator choice. Keep validation neutral.
+        pass
+    return {"valid": not errors, "errors": errors}
+
+
+def v9536_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    checks.append((
+        "v9.5.36 canonical 58/68/75 admission remains unchanged",
+        ARMED_SCORE_BASE == 58 and RISKY_ENTRY_SCORE_BASE == 68 and ENTRY_SCORE_BASE == 75,
+    ))
+    checks.append((
+        "v9.5.36 route bandit horizon equals one live 15m scan while 120m research remains separate",
+        OPPORTUNITY_OUTCOME_HORIZON_MINUTES == 15
+        and ROUTE_LIVE_LEARNING_HORIZON_MINUTES == EXECUTION_SCHEDULER_CADENCE_MINUTES == 15
+        and FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES >= 45,
+    ))
+
+    c = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=78,
+        final_score=78,
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        confirmation_pending=True,
+        execution_trigger_age_minutes=3.0,
+        revalidation_profile={"needs_revalidation": True, "entry_supported": False, "state": "STALE_TRIGGER"},
+        score_components={
+            "acceptance_retest": {
+                "execution_ready": True,
+                "acceptance_confirmed": True,
+                "confirmation_mode": "FAST_DISPLACEMENT",
+                "fast_displacement_confirmation": {"ready": True},
+                "current_3m_role_flip": {
+                    "ready": True,
+                    "post_reclaim_retest": True,
+                    "fast_displacement_path": True,
+                },
+            }
+        },
+    )
+    gate = _candidate_revalidation_gate(c)
+    checks.append((
+        "v9.5.36 setup-native consumed confirmation satisfies generic revalidation once",
+        gate.get("ok") is True
+        and gate.get("strict_alternative_support") is True
+        and (gate.get("execution_support_paths") or {}).get("alternative_ready") is True,
+    ))
+
+    plan = TradePlan(
+        entry=100.0, stop=99.0, tp1=101.5, tp2=102.5, tp3=104.0,
+        risk_pct=0.1, rr1=1.5, rr2=2.5, rr3=4.0,
+        execution_ready=True, valid=True,
+    )
+    c.score_components["execution_intelligence_v9532"] = {
+        "execution_router": {"action": "FIRST_RETEST", "economic_reprice": False}
+    }
+    d = Decision(
+        id="v9536-route-live", time=iso_now(), action=Action.RISKY_ENTRY.value,
+        side=c.side, setup_type=c.setup_type, quality=c.final_score,
+        reason="executive approved", regime=Regime.TREND.value,
+        candidate=c, plan=plan, current_price=100.0,
+        audit={"executive_director": {"report": {"executive_decision": {"allow_execution": True}}}},
+    )
+    routed = executive_route_resolution_v9533(copy.deepcopy(d), "FIRST_RETEST")
+    checks.append((
+        "v9.5.36 Router cannot downgrade Executive-approved fresh native entry to NO_SETUP",
+        routed.action == Action.RISKY_ENTRY.value,
+    ))
+
+    d_econ = copy.deepcopy(d)
+    d_econ.candidate.score_components["execution_intelligence_v9532"] = {
+        "execution_router": {"action": "FIRST_RETEST", "economic_reprice": True}
+    }
+    routed_econ = executive_route_resolution_v9533(d_econ, "FIRST_RETEST")
+    checks.append((
+        "v9.5.36 explicit execution-economics repricing may still defer MARKET_NOW",
+        routed_econ.action == Action.NO_SETUP.value,
+    ))
+
+    # Journal-neutrality: no new per-event stream/field is needed for the repair.
+    # The matrix keeps its existing bounded shape and now resolves sooner.
+    j = {
+        "opportunity_outcome_matrix": [{
+            "episode_key": "v9536-size",
+            "status": "RESOLVED",
+            "setup_type": c.setup_type,
+            "side": c.side,
+            "execution_source": c.execution_source,
+            "origin": "SELECTED_HYPOTHESIS",
+            "xi": {"kind": "CONTINUATION", "regime": "TREND_CONTINUATION", "huge": {"payload": "x" * 4000}},
+            "outcomes": {
+                "MARKET_NOW": {
+                    "filled": True, "result_r": 1.0, "tp0_hit": True,
+                    "mfe_r": 1.2, "mae_r": 0.2, "terminal": "TP0",
+                    "fill_reason": "verbose",
+                }
+            },
+        }]
+    }
+    before = len(json.dumps(j, ensure_ascii=False, separators=(",", ":")))
+    v9532_journal_budget_compaction(j)
+    after = len(json.dumps(j, ensure_ascii=False, separators=(",", ":")))
+    checks.append((
+        "v9.5.36 repair adds no signal-journal stream and preserves compact resolved route rows",
+        after < before
+        and "route_learning_events" not in j
+        and len(j.get("opportunity_outcome_matrix") or []) <= OPPORTUNITY_OUTCOME_MATRIX_LIMIT,
+    ))
+    checks.append((
+        "v9.5.36 runtime validates reachability and journal-neutral invariants",
+        validate_runtime_configuration().get("valid") is True,
+    ))
+    return checks
+
+
+_run_self_test_v9535_effective = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9535_effective()
+    checks = v9536_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.36 SUMMARY: base={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+_run_audit_journal_v9535_effective = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    out = _run_audit_journal_v9535_effective(path)
+    out["v9536_execution_reachability_repair"] = {
+        "router_live_learning_horizon_minutes": OPPORTUNITY_OUTCOME_HORIZON_MINUTES,
+        "fresh_execution_research_horizon_minutes": FRESH_EXECUTION_OUTCOME_HORIZON_MINUTES,
+        "native_execution_revalidation_bridge": True,
+        "router_cannot_veto_executive_native_entry": True,
+        "economic_reprice_defer_preserved": True,
+        "new_journal_event_streams": 0,
+        "matrix_limit": OPPORTUNITY_OUTCOME_MATRIX_LIMIT,
+        "journal_verbose_default": JOURNAL_VERBOSE,
+        "canonical_thresholds_unchanged": {
+            "armed": ARMED_SCORE_BASE,
+            "risky": RISKY_ENTRY_SCORE_BASE,
+            "full": ENTRY_SCORE_BASE,
+        },
+        "schema_version": "v9.5.36_execution_reachability_journal_neutral",
+    }
+    return out
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.35 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.36 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
