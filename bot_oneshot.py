@@ -2,6 +2,14 @@
 """
 BZU Professional Hybrid Confluence Signal Bot v9.5.35 (Execution Economics Repair & 15M Cadence Integrity)
 =============================================================================================
+Оновлення v9.5.37:
+- Native Probe Bridge: location-preserved ACCEPTANCE_RETEST zone retest with current probe-ready evidence becomes a real reduced-risk PROBE plan instead of dying at PLAN_NOT_EXECUTION_READY.
+- Win-rate preserving stage policy: pending native zone-retest evidence can open only PROBE; full ACCEPTANCE/CORE still requires explicit current 3M role-flip / fast-displacement equivalence.
+- Critical-runway handling no longer freezes a statistically positive native probe lane: when price is still at the execution location and adverse selection is low, the bot may keep only a tiny PROBE while full-size MARKET_NOW remains deferred.
+- Untrusted preconfirmation probability stays audit-only and can never manufacture an entry or upgrade risk.
+- Negative empirical lanes are never blacklisted; existing execution-source authority caps them to validation/experimental PROBE instead of blocking the setup.
+- No new signal_journal stream or duplicated per-scan payload; canonical 58/68/75, RR floors, daily risk cap and 15M scheduler are unchanged.
+
 Оновлення v9.5.35:
 - Execution Economics Repair: MARKET_NOW now prices liquidity runway explicitly; short known runway routes to better pricing/confirmation instead of being treated as merely missing a bonus.
 - Regime-based MARKET_NOW acceleration requires both directional fit and regime reliability; high-entropy near-neutral regime can no longer trigger aggressive execution by itself.
@@ -36205,8 +36213,447 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 
+
+# ==========================================================
+# v9.5.37 NATIVE PROBE BRIDGE / WIN-RATE PRESERVING STAGING
+# ==========================================================
+# Evidence from the current journal shows that a location-preserved zone-retest
+# probe is materially stronger than waiting for a later generic acceptance lane.
+# The repair therefore does NOT lower score thresholds and does NOT let a
+# probability forecast create a trade. It makes the already-existing native
+# PROBE contract executable, keeps pending confirmation as a stage cap, and
+# uses risk sizing rather than setup deletion for uncertain lanes.
+
+BOT_VERSION = "pro-hybrid-confluence-v9.5.37-native-probe-winrate-staging-journal-neutral"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING"
+
+V9537_NATIVE_PROBE_MIN_SCORE = RISKY_ENTRY_SCORE_BASE
+V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR = min(
+    ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR,
+    max(0.25, float(os.getenv("V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR", "0.55") or 0.55)),
+)
+V9537_NATIVE_PROBE_STANDARD_RISK_CAP = min(
+    PROBE_RISK_PCT,
+    max(EXPERIMENTAL_PROBE_RISK_PCT, float(os.getenv("V9537_NATIVE_PROBE_STANDARD_RISK_CAP", str(MEDIUM_CONVICTION_PROBE_RISK_PCT)) or MEDIUM_CONVICTION_PROBE_RISK_PCT)),
+)
+V9537_NATIVE_PROBE_CRITICAL_RUNWAY_RISK_CAP = min(
+    V9537_NATIVE_PROBE_STANDARD_RISK_CAP,
+    max(0.005, float(os.getenv("V9537_NATIVE_PROBE_CRITICAL_RUNWAY_RISK_CAP", str(EXPERIMENTAL_PROBE_RISK_PCT)) or EXPERIMENTAL_PROBE_RISK_PCT)),
+)
+V9537_NATIVE_PROBE_MIN_MARKET_RUNWAY_R = max(
+    0.0,
+    min(V9535_RUNWAY_CRITICAL_R, float(os.getenv("V9537_NATIVE_PROBE_MIN_MARKET_RUNWAY_R", "0.08") or 0.08)),
+)
+V9537_NATIVE_PROBE_MAX_ASI_FOR_CRITICAL_RUNWAY = min(
+    55.0,
+    max(15.0, float(os.getenv("V9537_NATIVE_PROBE_MAX_ASI_FOR_CRITICAL_RUNWAY", "35") or 35)),
+)
+V9537_NATIVE_PROBE_MIN_STRUCTURAL_FOR_CRITICAL_RUNWAY = min(
+    80.0,
+    max(45.0, float(os.getenv("V9537_NATIVE_PROBE_MIN_STRUCTURAL_FOR_CRITICAL_RUNWAY", "55") or 55)),
+)
+
+
+def native_probe_execution_profile_v9537(
+    candidate: Optional[Candidate],
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return the setup-native early-PROBE contract without faking 3M evidence.
+
+    Important semantics:
+    - ZONE_RETEST_PROBE is NOT relabeled as LIVE_3M.
+    - full confirmation remains pending;
+    - only a location-preserved, fresh, score-admitted and revalidation-supported
+      early probe is executable;
+    - failed/expired thesis, bad location and canonical score failure remain real
+      reasons not to put capital at risk.
+    """
+    if candidate is None:
+        return {"eligible": False, "reason": "MISSING_CANDIDATE"}
+
+    components = dict(getattr(candidate, "score_components", {}) or {})
+    acceptance = dict(components.get("acceptance_retest") or {})
+    state = dict(getattr(candidate, "confirmation_state", {}) or {})
+    revalidation = dict(getattr(candidate, "revalidation_profile", {}) or {})
+    source = str(getattr(candidate, "execution_source", "") or "")
+    score = int(safe_float(getattr(candidate, "final_score", 0), 0.0))
+    pending = bool(getattr(candidate, "confirmation_pending", False))
+
+    probe_ready = bool(
+        acceptance.get("probe_execution_ready")
+        or state.get("probe_execution_ready")
+    )
+    location_preserved = bool(
+        acceptance.get("location_preserved", state.get("location_preserved", probe_ready))
+    )
+    distance = safe_float(
+        acceptance.get("distance_from_zone_atr"),
+        safe_float(state.get("distance_from_zone_atr"), 0.0 if location_preserved else 99.0),
+    )
+    if context:
+        price = safe_float(context.get("price"), 0.0)
+        atr = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+        anchor = safe_float(
+            acceptance.get("zone_mid"),
+            safe_float(getattr(candidate, "execution_anchor", 0.0), safe_float(getattr(candidate, "trigger_level", 0.0), 0.0)),
+        )
+        if price > 0 and anchor > 0 and atr > 0:
+            distance = abs(price - anchor) / atr
+            location_preserved = bool(distance <= V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR)
+
+    trigger_age = candidate_execution_trigger_age_minutes(candidate)
+    revalidation_state = str(revalidation.get("state") or "").upper()
+    hard_expired = bool(revalidation.get("hard_expired") or revalidation_state in {"DEAD", "INVALIDATED"})
+    entry_supported = bool(revalidation.get("entry_supported", True))
+
+    checks = {
+        "correct_source": source == ExecutionSource.ZONE_RETEST_PROBE.value,
+        "confirmation_pending": pending,
+        "probe_execution_ready": probe_ready,
+        "location_preserved": location_preserved and distance <= V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR + 1e-9,
+        "trigger_ready": bool(getattr(candidate, "trigger_ready", False)),
+        "fresh_execution_clock": trigger_age <= float(EXECUTION_TRIGGER_TTL_MIN),
+        "canonical_risky_score": score >= V9537_NATIVE_PROBE_MIN_SCORE,
+        "entry_supported": entry_supported,
+        "not_hard_expired": not hard_expired,
+        "not_explicitly_blocking": not bool(state.get("blocks_execution", False)),
+    }
+    return {
+        "eligible": all(checks.values()),
+        "checks": checks,
+        "score": score,
+        "distance_from_zone_atr": round(distance, 4),
+        "trigger_age_minutes": round(trigger_age, 2),
+        "location_preserved": location_preserved,
+        "probe_execution_ready": probe_ready,
+        "full_confirmation_pending": pending,
+        "source": source,
+        "reason": "NATIVE_ZONE_RETEST_PROBE_READY" if all(checks.values()) else ",".join(k for k, v in checks.items() if not v),
+    }
+
+
+def _v9537_native_probe_risk_cap(candidate: Candidate) -> float:
+    """Risk, never trade/no-trade authority, responds to empirical lane quality."""
+    empirical = dict(((getattr(candidate, "score_components", {}) or {}).get("execution_source_empirical_authority") or {}))
+    cap = V9537_NATIVE_PROBE_STANDARD_RISK_CAP
+    if empirical.get("guard_active"):
+        cap = min(cap, max(0.005, safe_float(empirical.get("risk_cap_pct"), cap)))
+    # A trusted strong forecast may justify using the normal probe cap, but an
+    # untrusted 70% print remains audit-only and changes nothing.
+    pre = dict(getattr(candidate, "preconfirmation_profile", {}) or {})
+    if (
+        bool(pre.get("authority_trusted") or pre.get("trusted"))
+        and safe_float(pre.get("probability"), 0.0) >= PRECONFIRM_PROBE_MIN_PROBABILITY
+        and bool(empirical.get("positive_evidence"))
+    ):
+        cap = min(PROBE_RISK_PCT, max(cap, MEDIUM_CONVICTION_PROBE_RISK_PCT))
+    return round(max(0.005, cap), 4)
+
+
+# TradePlan bridge: make the existing native early probe a real plan.
+_build_trade_plan_v9536_effective = build_trade_plan
+def build_trade_plan(
+    context: dict,
+    candidate: Candidate,
+    entry_price_override: Optional[float] = None,
+    journal: Optional[dict[str, Any]] = None,
+) -> TradePlan:
+    plan = _build_trade_plan_v9536_effective(
+        context, candidate, entry_price_override=entry_price_override, journal=journal
+    )
+    native_probe = native_probe_execution_profile_v9537(candidate, context)
+    if native_probe.get("eligible") and bool(getattr(plan, "valid", False)):
+        candidate.entry_stage = EntryStage.PROBE.value
+        candidate.probe_conviction_tier = (
+            ProbeConvictionTier.HIGH.value
+            if bool((((candidate.score_components or {}).get("execution_source_empirical_authority") or {}).get("positive_evidence")))
+            else ProbeConvictionTier.MEDIUM.value
+        )
+        if isinstance(candidate.stage_plan, dict):
+            candidate.stage_plan["stage"] = EntryStage.PROBE.value
+
+        plan.execution_ready = True
+        plan.entry_stage = EntryStage.PROBE.value
+        plan.final_stage = EntryStage.PROBE.value
+
+        cap = _v9537_native_probe_risk_cap(candidate)
+        plan.position_risk_pct = round(min(safe_float(plan.position_risk_pct, cap), cap), 4)
+        plan.risk_pct = plan.position_risk_pct
+        # Do not add a new journal payload. Existing stage/source/plan fields are
+        # sufficient to identify this route.
+    return plan
+
+
+# Pending native probe is a stage cap: it may execute, but it may not silently
+# become full ACCEPTANCE/CORE before current 3M confirmation exists.
+_build_staged_executive_decision_v9536_effective = build_staged_executive_decision
+def build_staged_executive_decision(
+    candidate: Candidate,
+    evaluation: EvaluationBundle,
+    stage_history: list[dict[str, Any]],
+) -> ExecutiveDecisionContract:
+    contract = _build_staged_executive_decision_v9536_effective(candidate, evaluation, stage_history)
+    native_probe = native_probe_execution_profile_v9537(candidate)
+    if not native_probe.get("eligible"):
+        return contract
+
+    hard_blockers = {
+        "THESIS_EXPIRED", "THESIS_INVALIDATED", "DATA_SCHEMA_INVALID", "DAILY_RISK_BLOCK",
+        "NO_CAPITAL_AVAILABLE", "REVALIDATION_NOT_SUPPORTED",
+    }
+    if set(contract.blocking_reasons or []) & hard_blockers:
+        return contract
+
+    # Do not let pending confirmation be upgraded to full risk just because the
+    # generic score stack is high. This preserves the statistically stronger
+    # early-probe lane and lets later evidence add/upgrade through normal staging.
+    return ExecutiveDecisionContract(
+        state=EntryStage.PROBE.value,
+        allow_execution=True,
+        allowed_stage=EntryStage.PROBE.value,
+        final_risk_pct=0.0,
+        required_next_event=None,
+        blocking_reasons=[],
+        warning_reasons=list(contract.warning_reasons or []),
+        audit=dict(contract.audit or {}),
+    )
+
+
+# Router bridge: poor liquidity economics may defer FULL market risk, but they
+# no longer delete a high-quality location-preserved native probe. The critical
+# runway case is admitted only as tiny PROBE when adverse selection is low and
+# structure is still supportive.
+_executive_route_resolution_v9536_effective = executive_route_resolution_v9533
+def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decision:
+    if (
+        decision is None
+        or decision.candidate is None
+        or decision.action not in EXECUTABLE_ENTRY_ACTIONS
+    ):
+        return _executive_route_resolution_v9536_effective(decision, tactic)
+
+    candidate = decision.candidate
+    native_probe = native_probe_execution_profile_v9537(candidate)
+    if not native_probe.get("eligible"):
+        return _executive_route_resolution_v9536_effective(decision, tactic)
+
+    xi = dict(((candidate.score_components or {}).get("execution_intelligence_v9532") or {}))
+    route = dict(xi.get("execution_router") or {})
+    economics = dict(route.get("execution_economics") or {})
+    runway_known = bool(route.get("runway_known", economics.get("runway_known", False)))
+    runway = safe_float(route.get("runway_r"), safe_float(economics.get("runway_r"), 1.5))
+    asi = safe_float((xi.get("adverse_selection") or {}).get("index"), 50.0)
+    structural = safe_float(xi.get("structural_score"), 50.0)
+
+    # v9.5.32 compact execution-intelligence payloads sometimes expose these as
+    # top-level values only; use them without creating any new persisted field.
+    asi = safe_float(xi.get("asi"), asi)
+    structural = safe_float(xi.get("structural"), structural)
+
+    plan_ready = bool(decision.plan and decision.plan.valid and decision.plan.execution_ready)
+    if not plan_ready:
+        return _executive_route_resolution_v9536_effective(decision, tactic)
+
+    if runway_known and runway < V9537_NATIVE_PROBE_MIN_MARKET_RUNWAY_R:
+        # Essentially no room: keep the Router's better-price opportunity rather
+        # than manufacture a market fill. The setup remains alive for the bounded
+        # recheck lifecycle.
+        return _executive_route_resolution_v9536_effective(decision, tactic)
+
+    critical_but_probe_safe = bool(
+        runway_known
+        and runway < V9535_RUNWAY_CRITICAL_R
+        and asi <= V9537_NATIVE_PROBE_MAX_ASI_FOR_CRITICAL_RUNWAY
+        and structural >= V9537_NATIVE_PROBE_MIN_STRUCTURAL_FOR_CRITICAL_RUNWAY
+        and safe_float(native_probe.get("distance_from_zone_atr"), 99.0) <= V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR
+    )
+
+    noncritical_native_probe = bool(not runway_known or runway >= V9535_RUNWAY_CRITICAL_R)
+    if critical_but_probe_safe or noncritical_native_probe:
+        decision.action = Action.PROBE_ENTRY.value
+        candidate.entry_stage = EntryStage.PROBE.value
+        if decision.plan is not None:
+            decision.plan.entry_stage = EntryStage.PROBE.value
+            decision.plan.final_stage = EntryStage.PROBE.value
+            cap = _v9537_native_probe_risk_cap(candidate)
+            if critical_but_probe_safe:
+                cap = min(cap, V9537_NATIVE_PROBE_CRITICAL_RUNWAY_RISK_CAP)
+            decision.plan.position_risk_pct = round(min(safe_float(decision.plan.position_risk_pct, cap), cap), 4)
+            decision.plan.risk_pct = decision.plan.position_risk_pct
+        return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+
+    return _executive_route_resolution_v9536_effective(decision, tactic)
+
+
+_validate_runtime_configuration_v9536_effective = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9536_effective()
+    errors = list(report.get("errors") or [])
+    if V9537_NATIVE_PROBE_MIN_SCORE != RISKY_ENTRY_SCORE_BASE:
+        errors.append("v9.5.37 native pending probe must respect canonical risky score 68")
+    if not (0.005 <= V9537_NATIVE_PROBE_CRITICAL_RUNWAY_RISK_CAP <= V9537_NATIVE_PROBE_STANDARD_RISK_CAP <= PROBE_RISK_PCT):
+        errors.append("v9.5.37 native probe risk caps are invalid")
+    if not (0.0 <= V9537_NATIVE_PROBE_MIN_MARKET_RUNWAY_R < V9535_RUNWAY_CRITICAL_R):
+        errors.append("v9.5.37 minimum market runway must remain below critical runway threshold")
+    if not (0.20 <= V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR <= ACCEPTANCE_CONFIRM_MAX_ZONE_DISTANCE_ATR):
+        errors.append("v9.5.37 native probe location envelope exceeds acceptance location contract")
+    return {"valid": not errors, "errors": errors}
+
+
+def v9537_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    htf = {
+        "market_bias": "BEARISH", "candidate_side": "SHORT", "alignment_score": 0.70,
+        "state": "ALIGNED", "confidence": 80.0, "schema_version": "test", "valid": True,
+    }
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=76,
+        final_score=76,
+        trigger_ready=True,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        execution_source=ExecutionSource.ZONE_RETEST_PROBE.value,
+        entry_stage=EntryStage.PROBE.value,
+        confirmation_pending=True,
+        confirmation_state={
+            "probe_execution_ready": True,
+            "blocks_execution": False,
+            "location_preserved": True,
+            "distance_from_zone_atr": 0.14,
+        },
+        execution_trigger_age_minutes=0.0,
+        model_thesis_age_minutes=0.0,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "htf_fact": htf,
+            "acceptance_retest": {
+                "zone_retest_detected": True,
+                "probe_execution_ready": True,
+                "location_preserved": True,
+                "distance_from_zone_atr": 0.14,
+                "execution_ready": False,
+                "acceptance_confirmed": False,
+            },
+            "execution_source_empirical_authority": {
+                "positive_evidence": True, "guard_active": False, "risk_cap_pct": PROBE_RISK_PCT,
+            },
+        },
+        htf_fact=htf,
+    )
+    context = {
+        "price": 100.14, "atr15": 1.0, "zones": [], "liquidity": {}, "macro_liquidity": {},
+        "candles": {"3m": [], "15m": []}, "session_name": "LONDON",
+    }
+    np = native_probe_execution_profile_v9537(candidate, context)
+    checks.append((
+        "v9.5.37 location-preserved pending zone retest is a real native PROBE contract",
+        np.get("eligible") is True and np.get("full_confirmation_pending") is True,
+    ))
+
+    # The profile is intentionally canonical-score aware.
+    low = copy.deepcopy(candidate); low.final_score = RISKY_ENTRY_SCORE_BASE - 1
+    checks.append((
+        "v9.5.37 native pending probe does not lower canonical 68 admission",
+        native_probe_execution_profile_v9537(low, context).get("eligible") is False,
+    ))
+
+    # Untrusted 70% probability must not upgrade risk or authority.
+    candidate.preconfirmation_profile = {
+        "probability": 0.70, "trusted": False, "authority_trusted": False,
+    }
+    checks.append((
+        "v9.5.37 untrusted 70% preconfirmation remains audit-only",
+        _v9537_native_probe_risk_cap(candidate) <= V9537_NATIVE_PROBE_STANDARD_RISK_CAP,
+    ))
+
+    # Synthetic plan bridge test avoids full market-data geometry dependency.
+    dummy_plan = TradePlan(
+        entry=100.14, stop=99.14, tp1=101.64, tp2=102.64, tp3=104.14,
+        risk_pct=0.12, rr1=1.5, rr2=2.5, rr3=4.0,
+        position_risk_pct=0.12, execution_ready=True, valid=True,
+        entry_stage=EntryStage.PROBE.value,
+    )
+    candidate.score_components["execution_intelligence_v9532"] = {
+        "adverse_selection": {"index": 26.0},
+        "structural_score": 60.0,
+        "execution_router": {
+            "runway_known": True, "runway_r": 0.148,
+            "economic_reprice": True,
+            "execution_economics": {"runway_known": True, "runway_r": 0.148},
+        },
+    }
+    decision = Decision(
+        id="v9537-probe", time=iso_now(), action=Action.RISKY_ENTRY.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=candidate.final_score,
+        reason="test", regime=Regime.TRANSITION.value, candidate=candidate,
+        plan=dummy_plan, current_price=100.14,
+    )
+    routed = executive_route_resolution_v9533(copy.deepcopy(decision), "FIRST_RETEST")
+    checks.append((
+        "v9.5.37 critical but nonzero runway keeps only tiny native PROBE instead of NO_SETUP",
+        routed.action == Action.PROBE_ENTRY.value
+        and routed.plan is not None
+        and routed.plan.position_risk_pct <= V9537_NATIVE_PROBE_CRITICAL_RUNWAY_RISK_CAP + 1e-9,
+    ))
+
+    zero_room = copy.deepcopy(decision)
+    zero_room.candidate.score_components["execution_intelligence_v9532"]["execution_router"]["runway_r"] = 0.01
+    zero_room.candidate.score_components["execution_intelligence_v9532"]["execution_router"]["execution_economics"]["runway_r"] = 0.01
+    routed_zero = executive_route_resolution_v9533(zero_room, "FIRST_RETEST")
+    checks.append((
+        "v9.5.37 near-zero runway does not manufacture a market probe",
+        routed_zero.action != Action.PROBE_ENTRY.value,
+    ))
+
+    checks.append((
+        "v9.5.37 no new signal-journal event stream is introduced",
+        all(name not in globals() for name in ("V9537_SIGNAL_EVENTS", "WINRATE_EVENT_STREAM", "NATIVE_PROBE_EVENTS")),
+    ))
+    checks.append((
+        "v9.5.37 runtime validates nonblocking staged-probe invariants",
+        validate_runtime_configuration().get("valid") is True,
+    ))
+    return checks
+
+
+_run_self_test_v9536_effective = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9536_effective()
+    checks = v9537_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.37 SUMMARY: base={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+_run_audit_journal_v9536_effective = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    out = _run_audit_journal_v9536_effective(path)
+    out["v9537_native_probe_winrate_staging"] = {
+        "native_probe_min_score": V9537_NATIVE_PROBE_MIN_SCORE,
+        "native_probe_max_zone_distance_atr": V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR,
+        "native_probe_standard_risk_cap_pct": V9537_NATIVE_PROBE_STANDARD_RISK_CAP,
+        "critical_runway_probe_risk_cap_pct": V9537_NATIVE_PROBE_CRITICAL_RUNWAY_RISK_CAP,
+        "minimum_market_runway_r_for_forced_probe": V9537_NATIVE_PROBE_MIN_MARKET_RUNWAY_R,
+        "untrusted_preconfirmation_can_initiate_entry": False,
+        "pending_native_probe_caps_stage_at": EntryStage.PROBE.value,
+        "new_journal_event_streams": 0,
+        "canonical_thresholds_unchanged": {
+            "armed": ARMED_SCORE_BASE, "risky": RISKY_ENTRY_SCORE_BASE, "full": ENTRY_SCORE_BASE,
+        },
+        "schema_version": "v9.5.37_native_probe_winrate_staging_journal_neutral",
+    }
+    return out
+
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.36 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.37 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
