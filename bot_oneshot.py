@@ -35604,6 +35604,31 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
     # Explicit lifecycle inconsistency: pending confirmation without a concrete
     # setup-native equivalent cannot execute MARKET_NOW.
     pending_without_equivalent = bool(getattr(candidate,"confirmation_pending",False) and not equivalence.get("equivalent_consumed"))
+
+    # --- v9.5.40 EXECUTION LATENCY REPAIR ---
+    # Problem addressed: early setup-confirmation was often correct, but the
+    # execution lane waited until price had already expanded. This is NOT a new
+    # signal source and cannot create a trade from preconfirmation alone.
+    # It only changes the preferred execution tactic when existing evidence is
+    # already present.
+    latency_bridge = False
+    confirmation_estimate = safe_float(getattr(candidate, "confirmation_probability", 0.0), 0.0)
+    pre_profile = dict(getattr(candidate, "preconfirmation_profile", {}) or {})
+    pre_trusted = bool(pre_profile.get("trusted") or pre_profile.get("authority_trusted"))
+    anchor_distance_ok = bool(anchor > 0 and dist <= 0.45)
+
+    if (
+        confirmation_estimate >= 0.68
+        and anchor_distance_ok
+        and (getattr(candidate, "trigger_ready", False) or getattr(candidate, "live_3m_trigger_ready", False))
+    ):
+        # Preserve win-rate economics: use a controlled early route instead of
+        # chasing a late market entry. Full sizing logic remains untouched.
+        base["FIRST_RETEST"] += 0.18
+        if pre_trusted:
+            base["MARKET_NOW"] += 0.04
+        latency_bridge = True
+
     if pending_without_equivalent:
         base["MARKET_NOW"] -= 0.35
         base["ONE_3M_CONFIRM"] += 0.22
@@ -35698,6 +35723,8 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
         "execution_economics":economics,
         "economic_reprice":bool(economic_reprice and chosen=="FIRST_RETEST"),
         "economic_reprice_reason":"LIQUIDITY_RUNWAY_TOO_SHORT_FOR_MARKET_NOW" if economic_reprice else "",
+        "latency_bridge_applied": bool(latency_bridge),
+        "latency_bridge_policy": "EVIDENCE_ASSISTED_EARLIER_ROUTING_NO_NEW_SIGNAL_NO_SCORE_OVERRIDE",
         "bandit":action_rows,
         "bandit_weight":round(bandit_weight,6),
         "route_evidence_maturity":round(route_maturity,6),
