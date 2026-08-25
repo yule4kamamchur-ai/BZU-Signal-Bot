@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.35 (Execution Economics Repair & 15M Cadence Integrity)
+BZU Professional Hybrid Confluence Signal Bot v9.5.40 (Execution Latency Repair & 15M Cadence Integrity)
 =============================================================================================
+Оновлення v9.5.40:
+- Execution Latency Repair: Evidence Assisted Earlier Routing reduces avoidable execution delay without changing signal authority.
+- Early routing uses existing validated evidence only; it cannot create entries from preconfirmation and cannot bypass Executive Layer.
+- Score gates 58/68/75, risk caps, RR floors and 15M cadence remain unchanged.
+- Latency bridge audit records signal -> confirmation -> delay -> repair decision -> execution path.
+- No FOMO execution path: latency repair adjusts routing only, not trade authority.
+
 Оновлення v9.5.39:
 - Confirmed Acceptance Economic Downgrade: a fresh, location-valid ACCEPTANCE that Executive already approved can downgrade from ENTRY/RISKY_ENTRY to tiny PROBE_ENTRY when known liquidity runway is 0.08R..0.50R and the Router is repricing only because MARKET_NOW economics are poor. Stronger confirmed evidence can no longer receive worse reachability than the weaker native zone probe.
 - Near-zero runway (<0.08R), hard invalidation, stale execution, late location, adverse-selection stress or weak structure still prevent a forced market probe and keep the setup in WAIT_RETEST / better-price routing.
@@ -392,8 +399,8 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-cadence"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
