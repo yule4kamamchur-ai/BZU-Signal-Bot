@@ -429,8 +429,6 @@ JOURNAL_FILE = Path(os.getenv("SIGNAL_JOURNAL_FILE", str(WORKSPACE / "signal_jou
 # === v9.5 Hierarchical Confirmation Probability Layer ===
 # Journal v2 keeps precursor rows inside the main signal journal; no sidecar file is written.
 PRECONFIRMATION_LAYER_ENABLED = os.getenv("PRECONFIRMATION_LAYER_ENABLED", "true").lower() in {"1", "true", "yes"}
-PRECONFIRM_JOURNAL_FILE = JOURNAL_FILE  # compatibility alias; journal v2 uses one file only
-PRECONFIRM_MAX_EVENTS = max(1000, int(os.getenv("PRECONFIRM_MAX_EVENTS", "20000") or 20000))
 PRECONFIRM_WINDOW_MINUTES = max(6, int(os.getenv("PRECONFIRM_WINDOW_MINUTES", "45") or 45))
 PRECONFIRM_ACCEPTANCE_CLOSES = max(1, int(os.getenv("PRECONFIRM_ACCEPTANCE_CLOSES", "2") or 2))
 PRECONFIRM_RESOLUTION_BAR_MS = 3 * 60_000  # resolver uses confirmed 3M candles; OKX timestamps are bar-open times
@@ -777,14 +775,6 @@ WEEKEND_RANGE_WILSON_Z = float(os.getenv("WEEKEND_RANGE_WILSON_Z", "1.96") or 1.
 # HTF більше не hard-block risky entry: воно зменшує ризик, якщо execution підтверджений.
 HTF_RISKY_OVERRIDE = os.getenv("HTF_RISKY_OVERRIDE", "true").lower() in {"1", "true", "yes"}
 HTF_OVERRIDE_MIN_SCORE = float(os.getenv("HTF_OVERRIDE_MIN_SCORE", "72") or 72)
-HTF_OVERRIDE_RISK_MULT = float(os.getenv("HTF_OVERRIDE_RISK_MULT", "0.45") or 0.45)
-
-# Старі thesis не зависають ARMED назавжди.
-STALE_THESIS_PROBE_ATR = float(os.getenv("STALE_THESIS_PROBE_ATR", "1.5") or 1.5)
-STALE_THESIS_ACCEPTANCE_REQUIRED = os.getenv("STALE_THESIS_ACCEPTANCE_REQUIRED", "true").lower() in {"1", "true", "yes"}
-
-# Missed move audit
-MISSED_MOVE_ATR = float(os.getenv("MISSED_MOVE_ATR", "1.8") or 1.8)
 
 SETUP_REVALIDATION_RISK_MULT_STALE = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_STALE", "0.55") or 0.55)
 SETUP_REVALIDATION_RISK_MULT_EXTREME = float(os.getenv("SETUP_REVALIDATION_RISK_MULT_EXTREME", "0.35") or 0.35)
@@ -860,7 +850,6 @@ FRESHNESS_IMPULSE_SOFT_ATR = float(os.getenv("FRESHNESS_IMPULSE_SOFT_ATR", "1.8"
 FRESHNESS_IMPULSE_WARNING_ATR = float(os.getenv("FRESHNESS_IMPULSE_WARNING_ATR", "2.5") or 2.5)
 FRESHNESS_IMPULSE_HARD_ATR = float(os.getenv("FRESHNESS_IMPULSE_HARD_ATR", "3.5") or 3.5)
 FRESHNESS_MAX_DISTANCE_ZONE_ATR = float(os.getenv("FRESHNESS_MAX_DISTANCE_ZONE_ATR", "1.25") or 1.25)
-FRESHNESS_CORE_MAX_DISTANCE_ATR = float(os.getenv("FRESHNESS_CORE_MAX_DISTANCE_ATR", "0.75") or 0.75)
 FRESHNESS_EXTENDED_RISK_MULT = float(os.getenv("FRESHNESS_EXTENDED_RISK_MULT", "0.45") or 0.45)
 FRESHNESS_WARNING_RISK_MULT = float(os.getenv("FRESHNESS_WARNING_RISK_MULT", "0.70") or 0.70)
 
@@ -871,8 +860,6 @@ FRESHNESS_CONTINUATION_WEIGHT = float(os.getenv("FRESHNESS_CONTINUATION_WEIGHT",
 HTF_OVERRIDE_ACTIVE_RISK_MULT = float(os.getenv("HTF_OVERRIDE_ACTIVE_RISK_MULT", "0.45") or 0.45)
 HTF_NEUTRAL_RISK_MULT = float(os.getenv("HTF_NEUTRAL_RISK_MULT", "0.75") or 0.75)
 HTF_STRONG_AGAINST_RISK_MULT = float(os.getenv("HTF_STRONG_AGAINST_RISK_MULT", "0.35") or 0.35)
-
-MISSED_MOVE_PULLBACK_ATR = float(os.getenv("MISSED_MOVE_PULLBACK_ATR", "1.8") or 1.8)
 
 # === Market-Structure Plus v6.12 ===
 # Soft detectors: не блокують сетапи, а створюють окремі гіпотези в matrix.
@@ -1152,7 +1139,6 @@ SHORT_REVERSAL_WEIGHT_OR_FAILURE = float(os.getenv("SHORT_REVERSAL_WEIGHT_OR_FAI
 SHORT_REVERSAL_WEIGHT_CONTEXT = float(os.getenv("SHORT_REVERSAL_WEIGHT_CONTEXT", "0.08") or 0.08)
 SHORT_REVERSAL_WEIGHT_EXECUTION = float(os.getenv("SHORT_REVERSAL_WEIGHT_EXECUTION", "0.07") or 0.07)
 SHORT_REVERSAL_MAX_SCORE_LIFT = float(os.getenv("SHORT_REVERSAL_MAX_SCORE_LIFT", "8.0") or 8.0)
-SHORT_REVERSAL_MAX_CONFLICT_RELIEF = float(os.getenv("SHORT_REVERSAL_MAX_CONFLICT_RELIEF", "2.25") or 2.25)
 
 SHORT_REVERSAL_WATCH_SCORE = int(os.getenv("SHORT_REVERSAL_WATCH_SCORE", "48") or 48)
 SHORT_REVERSAL_PROBE_SCORE = int(os.getenv("SHORT_REVERSAL_PROBE_SCORE", "62") or 62)
@@ -1202,7 +1188,6 @@ CONFLICT_CAUTION_WEIGHT = float(os.getenv("CONFLICT_CAUTION_WEIGHT", "0.45") or 
 CONFLICT_HARD_MARGIN = float(os.getenv("CONFLICT_HARD_MARGIN", "1.75") or 1.75)
 NEAR_MISS_SCORE_GAP = max(0, int(os.getenv("NEAR_MISS_SCORE_GAP", "2") or 2))
 NEAR_MISS_EXECUTION_GAP = float(os.getenv("NEAR_MISS_EXECUTION_GAP", "5") or 5)
-EXECUTIVE_DIVERGENCE_HISTORY_LIMIT = max(20, int(os.getenv("EXECUTIVE_DIVERGENCE_HISTORY_LIMIT", "100") or 100))
 EXECUTIVE_SHADOW_HORIZON_HOURS = max(1.0, float(os.getenv("EXECUTIVE_SHADOW_HORIZON_HOURS", "24") or 24))
 
 # === Re-Entry ===
@@ -1382,6 +1367,11 @@ FRESH_EXECUTION_ZONE_MAX_AGE_MIN = max(30.0, float(os.getenv("FRESH_EXECUTION_ZO
 FRESH_EXECUTION_ZONE_MAX_DISTANCE_ATR = min(1.20, max(0.45, float(os.getenv("FRESH_EXECUTION_ZONE_MAX_DISTANCE_ATR", "0.95") or 0.95)))
 FRESH_EXECUTION_PENDING_DISTANCE_ATR = min(1.50, max(FRESH_EXECUTION_ZONE_MAX_DISTANCE_ATR, float(os.getenv("FRESH_EXECUTION_PENDING_DISTANCE_ATR", "1.15") or 1.15)))
 FRESH_EXECUTION_MIN_MICRO_SCORE = min(90.0, max(50.0, float(os.getenv("FRESH_EXECUTION_MIN_MICRO_SCORE", "62") or 62)))
+# A 15-minute production scan receives five new confirmed 3M bars. Fresh
+# execution evidence is therefore leased for exactly that observation window;
+# the evidence threshold is unchanged, but a valid bar is no longer lost merely
+# because it was not the final 3M candle when the scheduler woke up.
+FRESH_3M_EXECUTION_LEASE_BARS = 5
 BREAKOUT_RETEST_LOCAL_MAX_DISTANCE_ATR = min(1.20, max(0.45, float(os.getenv("BREAKOUT_RETEST_LOCAL_MAX_DISTANCE_ATR", "0.90") or 0.90)))
 BREAKOUT_RETEST_BUFFER_ATR = min(0.20, max(0.01, float(os.getenv("BREAKOUT_RETEST_BUFFER_ATR", "0.05") or 0.05)))
 FAILED_BREAKOUT_SHORT_LOCAL_MAX_DISTANCE_ATR = min(1.25, max(0.40, float(os.getenv("FAILED_BREAKOUT_SHORT_LOCAL_MAX_DISTANCE_ATR", "0.95") or 0.95)))
@@ -1403,8 +1393,6 @@ MOMENTUM_EXEC_MIN_MICRO_SCORE = min(95.0, max(50.0, float(os.getenv("MOMENTUM_EX
 MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR = max(0.8, float(os.getenv("MOMENTUM_EXEC_MAX_LAST_15M_RANGE_ATR", "1.35") or 1.35))
 MOMENTUM_EXEC_MAX_MOVE_ATR = max(NO_PULLBACK_MIN_MOVE_ATR, float(os.getenv("MOMENTUM_EXEC_MAX_MOVE_ATR", "2.80") or 2.80))
 RECLAIM_MIN_QUALITY = int(os.getenv("RECLAIM_MIN_QUALITY", "58") or 58)
-EARLY_ENTRY_MIN_SCORE = int(os.getenv("EARLY_ENTRY_MIN_SCORE", "68") or 68)
-STRONG_IMPULSE_CHASE_PENALTY = int(os.getenv("STRONG_IMPULSE_CHASE_PENALTY", "12") or 12)
 
 # === Telegram ===
 TELEGRAM_NOTIFY_EVERY_RUN = os.getenv("TELEGRAM_NOTIFY_EVERY_RUN", "true").lower() in {"1", "true", "yes"}
@@ -2630,6 +2618,15 @@ def update_setup_lifecycle_counters(
     stages = ("detected", "qualified_detected", "ranked", "selected", "would_executable", "executable", "entered")
     for setup_type in setup_types:
         row = totals.setdefault(setup_type, {})
+        for stage in stages:
+            row[stage] = int(row.get(stage) or 0)
+    # The independent episode ledger is a full 24-setup matrix, not a sparse
+    # dictionary of whichever setup happened to fire first. This keeps dormant
+    # setups (including DIRECTION_FLIP_15M) visible and auditable at zero.
+    episode_totals_key = "active_trade_shadow_independent_episode_totals" if shadow_mode else "independent_episode_totals"
+    episode_totals = ledger.setdefault(episode_totals_key, {})
+    for setup_type in setup_types:
+        row = episode_totals.setdefault(setup_type, {})
         for stage in stages:
             row[stage] = int(row.get(stage) or 0)
 
@@ -6484,26 +6481,6 @@ def build_risk_adjustment_ledger(
 # v6.19 Professional Consolidation Layer (Oil 15M)
 # ==========================================================
 
-PRIMARY_EXECUTION_SETUPS = {
-    "OB_RECLAIM",
-    "ACCEPTANCE_RETEST_CONTINUATION",
-    "LIQUIDITY_RECOVERY",
-}
-
-CONTEXT_ONLY_SETUPS = {
-    "SILVER_BULLET",
-    "JUDAS_SWING",
-    "OPENING_RANGE_BREAKOUT",
-    "SESSION_MEAN_RECLAIM",
-    "FAILED_AUCTION_REJECTION",
-    "DAILY_WEEKLY_OPEN_RECLAIM",
-}
-
-
-
-
-
-
 def scoring_mode_profile(status: Optional[dict[str, Any]]) -> dict[str, Any]:
     status=status or {}; global_ready=bool(status.get("global_ready")); theoretical_weight=safe_float(status.get("global_learned_weight"),0.0); rows=int(status.get("training_rows",0) or 0)
     validated_count=int(status.get("validated_setup_count",0) or 0); live_authority=bool(status.get("live_learned_authority_active") or validated_count>0)
@@ -7835,6 +7812,11 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 V9533_MEMORY_COMPATIBLE_ARCHITECTURES = frozenset({
     ARCHITECTURE_VERSION,
+    "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE",
+    "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE",
+    "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING",
+    "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_REACHABILITY_JOURNAL_NEUTRAL",
+    "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE",
     "TRADING_DESK_EXECUTIVE_V9_5_32_EXECUTION_INTELLIGENCE_OUTCOME_ROUTER",
     "TRADING_DESK_EXECUTIVE_V9_5_31_PRODUCTION_RESEARCH_CONTEXTUAL_EDGE_CAUSAL_EXECUTION",
     "TRADING_DESK_EXECUTIVE_V9_5_30_ORDERED_CONFIRMATION_DRIFT_SAFE_DEDUP_POSTCLOSE_RESCAN",
@@ -7847,7 +7829,13 @@ def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     # Router tactic lineage exists only in v9.5.33. Old saved opportunities are
     # intentionally not carried across the boundary; active trades are handled
     # separately and remain preserved by load_state().
-    opportunity_compatible=bool(source==ARCHITECTURE_VERSION)
+    opportunity_compatible=bool(source==ARCHITECTURE_VERSION or source in {
+        "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE",
+        "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE",
+        "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING",
+        "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_REACHABILITY_JOURNAL_NEUTRAL",
+        "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE",
+    })
     return {
         "source_architecture":source or "UNKNOWN",
         "memory_compatible":memory_compatible,
@@ -8066,6 +8054,14 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
             if key in funnel
         },
     }
+    # Compaction is intentionally idempotent. A journal row may be compacted on
+    # append, migration and save; top-level compact intelligence must survive all
+    # later passes just like the original nested score-component payload.
+    intelligence = payload.get("execution_intelligence")
+    if not isinstance(intelligence, dict) or not intelligence:
+        intelligence = (payload.get("score_components") or {}).get("execution_intelligence_v9532") or {}
+    if isinstance(intelligence, dict) and intelligence:
+        compact["execution_intelligence"] = compact_execution_intelligence_v9532(intelligence)
     return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
 
 
@@ -8182,7 +8178,14 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "regime_lineage_legacy_value": legacy_conflict_value,
         "regime_lineage_schema_version": TRADE_REGIME_LINEAGE_SCHEMA_VERSION if resolved_open_regime else None,
         "ml_eligible": payload.get("ml_eligible", True),
+        "loss_code": payload.get("loss_code"),
+        "loss_secondary": payload.get("loss_secondary"),
+        "tp0_hit_at": payload.get("tp0_hit_at"),
+        "tp0_hit_ts": int(safe_float(payload.get("tp0_hit_ts"), 0.0)) or None,
     }
+    intelligence = payload.get("execution_intelligence")
+    if isinstance(intelligence, dict) and intelligence:
+        compact["execution_intelligence"] = compact_execution_intelligence_v9532(intelligence)
     return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
 
 
@@ -8641,6 +8644,8 @@ def _retain_signal_events(events: list[Any], protected_signal_ids: set[str], cap
 def save_journal(journal: dict[str, Any]) -> None:
     journal["updated_at"] = iso_now()
     journal["journal_version"] = JOURNAL_VERSION
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
 
     journal["trades"] = deduplicate_closed_trades([
         compact for item in list(journal.get("trades") or [])
@@ -10418,7 +10423,7 @@ def calculate_impulse_strength(candles: list[Candle], side: str, atr15: float) -
     return {"score": score, "level": level, "body_strength": round(body_strength, 2), "consecutive": consecutive}
 
 
-def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr15: float) -> dict:
+def _trigger_snapshot_at_bar_v9540(candles: list[Candle], side: str, trigger_level: float, atr15: float) -> dict:
     if len(candles) < 5:
         return {"ready": False, "age_bars": 999, "quality": 0, "displacement": False,
                 "strong_displacement": False, "retest": False, "mitigation": False,
@@ -10469,6 +10474,70 @@ def trigger_snapshot(candles: list[Candle], side: str, trigger_level: float, atr
         "sweep_level": trigger_level,
         "extreme": last.low if side == Side.LONG.value else last.high
     }
+
+
+def trigger_snapshot(
+    candles: list[Candle],
+    side: str,
+    trigger_level: float,
+    atr15: float,
+    *,
+    not_before_ts: int = 0,
+    lease_bars: int = 0,
+) -> dict:
+    """Return the newest valid 3M trigger inside one production scan window.
+
+    The production cadence is 15 minutes, so inspecting only the final 3M bar
+    drops up to four valid confirmations. This wrapper replays the same strict
+    per-bar predicate over the five newest confirmed bars. It does not lower a
+    quality threshold and it refuses evidence older than the supplied model
+    event timestamp.
+    """
+    confirmed = sorted(
+        [c for c in (candles or []) if bool(getattr(c, "confirmed", True))],
+        key=lambda c: int(getattr(c, "ts", 0) or 0),
+    )
+    max_bars = max(1, int(lease_bars or globals().get("FRESH_3M_EXECUTION_LEASE_BARS", 5)))
+    newest_ts = int(confirmed[-1].ts) if confirmed else 0
+    fallback = _trigger_snapshot_at_bar_v9540(confirmed, side, trigger_level, atr15)
+    fallback.update({
+        "evidence_ts": newest_ts if fallback.get("ready") else 0,
+        "evidence_age_bars": 0 if fallback.get("ready") else 999,
+        "lease_bars": max_bars,
+        "lease_valid": bool(fallback.get("ready") and newest_ts >= int(not_before_ts or 0)),
+        "replayed_within_scan": False,
+        "schema_version": "trigger_snapshot_v9.5.40_scan_window_lease",
+    })
+    if len(confirmed) < 5:
+        if not fallback.get("lease_valid"):
+            fallback["ready"] = False
+        return fallback
+
+    oldest_index = max(1, len(confirmed) - max_bars)
+    for index in range(len(confirmed) - 1, oldest_index - 1, -1):
+        evidence_ts = int(confirmed[index].ts)
+        if evidence_ts < int(not_before_ts or 0):
+            break
+        snapshot = _trigger_snapshot_at_bar_v9540(confirmed[: index + 1], side, trigger_level, atr15)
+        if not snapshot.get("ready"):
+            continue
+        age_bars = len(confirmed) - 1 - index
+        snapshot.update({
+            "evidence_ts": evidence_ts,
+            "evidence_age_bars": age_bars,
+            "lease_bars": max_bars,
+            "lease_valid": True,
+            "replayed_within_scan": age_bars > 0,
+            "last_observed_3m_ts": newest_ts,
+            "schema_version": "trigger_snapshot_v9.5.40_scan_window_lease",
+        })
+        return snapshot
+
+    fallback["ready"] = False
+    fallback["lease_valid"] = False
+    fallback["evidence_ts"] = 0
+    fallback["evidence_age_bars"] = 999
+    return fallback
 
 
 def has_quality_reclaim(event: dict, min_quality: int = RECLAIM_MIN_QUALITY) -> bool:
@@ -10952,7 +11021,7 @@ def _recent_confirmed(candles: list[Candle], n: int = 3) -> list[Candle]:
     return sorted(confirmed, key=lambda c: c.ts)[-n:]
 
 
-def _directional_confirmation_profile(
+def _directional_confirmation_at_bar_v9540(
     side: str,
     c3: list[Candle],
     c15: list[Candle],
@@ -11081,6 +11150,68 @@ def _directional_confirmation_profile(
     return base
 
 
+def _directional_confirmation_profile(
+    side: str,
+    c3: list[Candle],
+    c15: list[Candle],
+    atr15: float,
+    tf15: Optional[dict[str, Any]] = None,
+    tf1h: Optional[dict[str, Any]] = None,
+    *,
+    not_before_ts: int = 0,
+    lease_bars: int = 0,
+) -> dict[str, Any]:
+    """Replay the unchanged confirmation contract across one 15M scan window.
+
+    A strict confirmation remains strict; only its observation lifetime changes.
+    The newest qualifying confirmed 3M bar is returned, and setup-local callers
+    may bind it to a zone/retest timestamp through ``not_before_ts``.
+    """
+    confirmed = sorted(
+        [c for c in (c3 or []) if bool(getattr(c, "confirmed", True))],
+        key=lambda c: int(getattr(c, "ts", 0) or 0),
+    )
+    max_bars = max(1, int(lease_bars or globals().get("FRESH_3M_EXECUTION_LEASE_BARS", 5)))
+    current = _directional_confirmation_at_bar_v9540(side, confirmed, c15, atr15, tf15, tf1h)
+    newest_ts = int(confirmed[-1].ts) if confirmed else 0
+    oldest_index = max(1, len(confirmed) - max_bars)
+
+    for index in range(len(confirmed) - 1, oldest_index - 1, -1):
+        evidence_ts = int(confirmed[index].ts)
+        if evidence_ts < int(not_before_ts or 0):
+            break
+        profile = _directional_confirmation_at_bar_v9540(
+            side, confirmed[: index + 1], c15, atr15, tf15, tf1h,
+        )
+        if not profile.get("supported"):
+            continue
+        age_bars = len(confirmed) - 1 - index
+        profile.update({
+            "evidence_ts": evidence_ts,
+            "evidence_age_bars": age_bars,
+            "lease_bars": max_bars,
+            "lease_valid": True,
+            "replayed_within_scan": age_bars > 0,
+            "last_observed_3m_ts": newest_ts,
+            "schema_version": "directional_confirmation_v9.5.40_scan_window_lease",
+        })
+        return profile
+
+    current.update({
+        "supported": False,
+        "evidence_ts": 0,
+        "evidence_age_bars": 999,
+        "lease_bars": max_bars,
+        "lease_valid": False,
+        "replayed_within_scan": False,
+        "last_observed_3m_ts": newest_ts,
+        "schema_version": "directional_confirmation_v9.5.40_scan_window_lease",
+    })
+    if int(not_before_ts or 0) > newest_ts:
+        current["kind"] = "WAIT_MODEL_EVENT_BEFORE_3M_CONFIRMATION"
+    return current
+
+
 def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle], atr15: float) -> dict[str, Any]:
     """Compatibility wrapper over the unified directional confirmation profile."""
     profile = _directional_confirmation_profile(side, c3, c15, atr15)
@@ -11103,6 +11234,10 @@ def _side_directional_revalidation(side: str, c3: list[Candle], c15: list[Candle
         "tf_aligned": bool(profile.get("tf_aligned")),
         "directional_structure": dict(profile.get("directional_structure") or {}),
         "last_confirmed_3m_ts": int(profile.get("last_confirmed_3m_ts", 0) or 0),
+        "evidence_ts": int(profile.get("evidence_ts", 0) or 0),
+        "evidence_age_bars": int(profile.get("evidence_age_bars", 999) or 999),
+        "lease_valid": bool(profile.get("lease_valid")),
+        "replayed_within_scan": bool(profile.get("replayed_within_scan")),
     }
 
 
@@ -14204,6 +14339,11 @@ def continuation_reanchor_profile(
         "confirmed_3m_bars": int(directional.get("confirmed_3m_bars", 0) or 0),
         "six_bar_structure_confirmed": bool(directional.get("six_bar_structure_confirmed")),
         "last_confirmed_3m_ts": int(directional.get("last_confirmed_3m_ts", 0) or 0),
+        "evidence_ts": int(directional.get("evidence_ts", 0) or 0),
+        "evidence_age_bars": int(directional.get("evidence_age_bars", 999) or 999),
+        "lease_bars": int(directional.get("lease_bars", FRESH_3M_EXECUTION_LEASE_BARS) or FRESH_3M_EXECUTION_LEASE_BARS),
+        "lease_valid": bool(directional.get("lease_valid")),
+        "replayed_within_scan": bool(directional.get("replayed_within_scan")),
     }
     directional_structure = directional.get("directional_structure", {}) or {}
     strong_trend_context = bool(
@@ -16567,10 +16707,12 @@ def zone_model_local_execution_profile(
     _,_,age,z=min(candidates,key=lambda item:(item[0],item[1],item[2]))
     low=safe_float(getattr(z,"low",0.0)); high=safe_float(getattr(z,"high",0.0)); anchor=high if side==Side.LONG.value else low
     recent=list(confirmed15[-3:])+list(confirmed3[-6:])
-    touched=any(safe_float(c.low)<=high and safe_float(c.high)>=low for c in recent)
+    touch_rows=[c for c in recent if safe_float(c.low)<=high and safe_float(c.high)>=low]
+    touched=bool(touch_rows)
+    reaction_ts=min((int(c.ts) for c in touch_rows),default=0)
     last15=confirmed15[-1]; hold=bool(last15.close>=high if side==Side.LONG.value else last15.close<=low)
-    micro=_directional_confirmation_profile(side,c3,c15,atr15,tf15,tf1h)
-    snap=trigger_snapshot(confirmed3,side,anchor,atr15)
+    micro=_directional_confirmation_profile(side,c3,c15,atr15,tf15,tf1h,not_before_ts=reaction_ts)
+    snap=trigger_snapshot(confirmed3,side,anchor,atr15,not_before_ts=reaction_ts)
     distance=abs(price-anchor)/max(atr15,1e-9)
     micro_sequence_ok=bool(micro.get("six_confirmed_bars_available") and int(micro.get("directional_closes") or 0)>=4 and micro.get("structure_intact"))
     micro_ok=bool(micro.get("supported") and micro_sequence_ok and safe_float(micro.get("score"),0.0)>=FRESH_EXECUTION_MIN_MICRO_SCORE)
@@ -16589,8 +16731,8 @@ def zone_model_local_execution_profile(
         "detected":bool(touched or pending),"pending":pending,"ready":ready,"profile_name":profile_name,
         "zone_kind":str(getattr(z,"kind","")),"zone_low":round_price(low),"zone_high":round_price(high),"anchor":round_price(anchor),
         "zone_age_minutes":round(age,3),"distance_to_anchor_atr":round(distance,4),"touched":touched,"reclaim_hold":hold,
-        "micro":micro,"micro_sequence_ok":micro_sequence_ok,"trigger_snapshot":snap,"reason_codes":reasons,"clock_authority":"CURRENT_CONFIRMED_ZONE_REACTION_ONLY",
-        "schema_version":"zone_model_local_execution_v9.5.27",
+        "reaction_ts":reaction_ts,"micro":micro,"micro_sequence_ok":micro_sequence_ok,"trigger_snapshot":snap,"reason_codes":reasons,"clock_authority":"CURRENT_CONFIRMED_ZONE_REACTION_ONLY",
+        "schema_version":"zone_model_local_execution_v9.5.40_scan_window_lease",
     }
 
 
@@ -16608,12 +16750,15 @@ def breakout_retest_model_local_execution_profile(
     breakout_indices=[i for i,c in enumerate(recent) if (c.close>boundary+buffer if side==Side.LONG.value else c.close<boundary-buffer)]
     if not breakout_indices:
         return {"detected":False,"pending":False,"ready":False,"anchor":round_price(boundary),"reason":"NO_FRESH_15M_BREAKOUT","schema_version":"breakout_retest_local_v9.5.27"}
-    first=breakout_indices[0]; after=recent[first:]
+    first=breakout_indices[0]; after=recent[first:]; breakout_ts=int(recent[first].ts)
     retest15=any((c.low<=boundary+atr15*0.18 if side==Side.LONG.value else c.high>=boundary-atr15*0.18) for c in after[1:]) if len(after)>1 else False
-    retest3=any((c.low<=boundary+atr15*0.15 if side==Side.LONG.value else c.high>=boundary-atr15*0.15) for c in q3[-6:])
+    retest3_rows=[c for c in q3[-6:] if int(c.ts)>=breakout_ts and (c.low<=boundary+atr15*0.15 if side==Side.LONG.value else c.high>=boundary-atr15*0.15)]
+    retest3=bool(retest3_rows)
+    retest15_rows=[c for c in after[1:] if (c.low<=boundary+atr15*0.18 if side==Side.LONG.value else c.high>=boundary-atr15*0.18)]
+    reaction_ts=min([int(c.ts) for c in retest15_rows+retest3_rows],default=breakout_ts)
     hold=bool(q3[-1].close>boundary if side==Side.LONG.value else q3[-1].close<boundary)
     distance=abs(price-boundary)/max(atr15,1e-9)
-    micro=_directional_confirmation_profile(side,c3,c15,atr15,tf15,tf1h); snap=trigger_snapshot(q3,side,boundary,atr15)
+    micro=_directional_confirmation_profile(side,c3,c15,atr15,tf15,tf1h,not_before_ts=reaction_ts); snap=trigger_snapshot(q3,side,boundary,atr15,not_before_ts=reaction_ts)
     retested=bool(retest15 or retest3); pending=bool(retested and hold and distance<=FRESH_EXECUTION_PENDING_DISTANCE_ATR)
     micro_sequence_ok=bool(micro.get("six_confirmed_bars_available") and int(micro.get("directional_closes") or 0)>=4 and micro.get("structure_intact"))
     micro_ok=bool(micro.get("supported") and micro_sequence_ok and safe_float(micro.get("score"),0.0)>=FRESH_EXECUTION_MIN_MICRO_SCORE)
@@ -16623,7 +16768,7 @@ def breakout_retest_model_local_execution_profile(
     if retested and not hold: reasons.append("WAIT_POST_RETEST_HOLD")
     if pending and not micro_ok: reasons.append("WAIT_FRESH_3M_DIRECTIONAL_CONFIRMATION")
     if ready: reasons.append("MODEL_LOCAL_BREAKOUT_RETEST_READY")
-    return {"detected":True,"pending":pending,"ready":ready,"anchor":round_price(boundary),"distance_to_anchor_atr":round(distance,4),"retest_15m":retest15,"retest_3m":retest3,"hold":hold,"micro":micro,"micro_sequence_ok":micro_sequence_ok,"trigger_snapshot":snap,"reason_codes":reasons,"clock_authority":"CURRENT_15M_BREAKOUT_PLUS_3M_RETEST_ONLY","schema_version":"breakout_retest_local_v9.5.27"}
+    return {"detected":True,"pending":pending,"ready":ready,"anchor":round_price(boundary),"distance_to_anchor_atr":round(distance,4),"breakout_ts":breakout_ts,"reaction_ts":reaction_ts,"retest_15m":retest15,"retest_3m":retest3,"hold":hold,"micro":micro,"micro_sequence_ok":micro_sequence_ok,"trigger_snapshot":snap,"reason_codes":reasons,"clock_authority":"CURRENT_15M_BREAKOUT_PLUS_3M_RETEST_ONLY","schema_version":"breakout_retest_local_v9.5.40_scan_window_lease"}
 
 
 def failed_breakout_short_model_local_confirmation(
@@ -16632,14 +16777,15 @@ def failed_breakout_short_model_local_confirmation(
     profile=dict(model_profile or {}); anchor=safe_float(profile.get("entry_anchor"),safe_float(profile.get("resistance"),0.0))
     if not profile.get("execution_ready") or anchor<=0 or atr15<=0:
         return {"required":True,"ready":False,"reason":"FAILED_BREAKOUT_15M_NOT_READY","schema_version":"failed_breakout_short_local_v9.5.27"}
-    q3=_recent_confirmed(c3,8); micro=_directional_confirmation_profile(Side.SHORT.value,c3,c15,atr15,tf15,tf1h)
-    snap=trigger_snapshot(q3,Side.SHORT.value,anchor,atr15) if len(q3)>=5 else {"ready":False,"chase_risk":False}
+    model_event_ts=int(safe_float(profile.get("confirmed_ts"),safe_float(profile.get("event_ts"),0.0)))
+    q3=_recent_confirmed(c3,8); micro=_directional_confirmation_profile(Side.SHORT.value,c3,c15,atr15,tf15,tf1h,not_before_ts=model_event_ts)
+    snap=trigger_snapshot(q3,Side.SHORT.value,anchor,atr15,not_before_ts=model_event_ts) if len(q3)>=5 else {"ready":False,"chase_risk":False}
     distance=abs(price-anchor)/max(atr15,1e-9)
     passed=set(micro.get("passed_checks") or [])
     evidence_ok=bool("strong_3m_body" in passed and ("directional_3m_close" in passed or "micro_sweep_reclaim" in passed))
     micro_sequence_ok=bool(micro.get("six_confirmed_bars_available") and int(micro.get("directional_closes") or 0)>=4 and micro.get("structure_intact"))
     ready=bool(distance<=FAILED_BREAKOUT_SHORT_LOCAL_MAX_DISTANCE_ATR and micro.get("supported") and micro_sequence_ok and safe_float(micro.get("score"),0.0)>=65 and evidence_ok and (snap.get("ready") or micro.get("directional_acceptance_path") or micro.get("sweep_reclaim_path")) and not snap.get("chase_risk"))
-    return {"required":True,"ready":ready,"anchor":round_price(anchor),"distance_to_anchor_atr":round(distance,4),"micro":micro,"micro_sequence_ok":micro_sequence_ok,"trigger_snapshot":snap,"reason":"FRESH_FAILED_BREAKOUT_SHORT_3M_CONFIRMATION" if ready else "WAIT_FAILED_BREAKOUT_SHORT_3M_CONFIRMATION","schema_version":"failed_breakout_short_local_v9.5.27"}
+    return {"required":True,"ready":ready,"anchor":round_price(anchor),"distance_to_anchor_atr":round(distance,4),"model_event_ts":model_event_ts,"micro":micro,"micro_sequence_ok":micro_sequence_ok,"trigger_snapshot":snap,"reason":"FRESH_FAILED_BREAKOUT_SHORT_3M_CONFIRMATION" if ready else "WAIT_FAILED_BREAKOUT_SHORT_3M_CONFIRMATION","schema_version":"failed_breakout_short_local_v9.5.40_scan_window_lease"}
 
 
 
@@ -16853,7 +16999,7 @@ def range_compression_model_local_execution_profile(c3: list[Candle], side: str,
         return {"ready":False,"anchor":round_price(level) if level else 0.0,"reason":"NO_DETECTED_BREAKOUT_OR_3M_DATA","schema_version":"range_compression_local_3m_v9.5.25"}
     snap=trigger_snapshot(recent,side,level,atr15)
     ready=bool(snap.get("ready") and int(safe_float(snap.get("quality"),0.0))>=58 and not bool(snap.get("chase_risk")))
-    return {"ready":ready,"anchor":round_price(level),"age_minutes":0.0 if ready else 999.0,"quality":int(safe_float(snap.get("quality"),0.0)),"reclaim":bool(snap.get("reclaim")),"displacement":bool(snap.get("displacement")),"retest":bool(snap.get("retest")),"chase_risk":bool(snap.get("chase_risk")),"last_confirmed_3m_ts":int(recent[-1].ts),"reason":"FRESH_BREAKOUT_BOUNDARY_CONFIRMATION" if ready else "WAIT_BREAKOUT_BOUNDARY_RECLAIM_OR_RETEST","schema_version":"range_compression_local_3m_v9.5.25"}
+    return {"ready":ready,"anchor":round_price(level),"age_minutes":float(safe_float(snap.get("evidence_age_bars"),999.0))*3.0 if ready else 999.0,"quality":int(safe_float(snap.get("quality"),0.0)),"reclaim":bool(snap.get("reclaim")),"displacement":bool(snap.get("displacement")),"retest":bool(snap.get("retest")),"chase_risk":bool(snap.get("chase_risk")),"evidence_age_bars":int(safe_float(snap.get("evidence_age_bars"),999.0)),"last_confirmed_3m_ts":int(safe_float(snap.get("evidence_ts"),0.0)) if ready else int(recent[-1].ts),"reason":"FRESH_BREAKOUT_BOUNDARY_CONFIRMATION" if ready else "WAIT_BREAKOUT_BOUNDARY_RECLAIM_OR_RETEST","schema_version":"range_compression_local_3m_v9.5.40_scan_window_lease"}
 
 
 
@@ -16877,13 +17023,23 @@ def build_fresh_execution_reachability(
     reanchor=dict(mm.get("reanchor") or {}); fs=dict(failed_breakout_short or {}); fsl=dict(failed_breakout_short_local or {})
     rows=[
         row(SetupType.BREAKOUT_RETEST.value,bool(br.get("ready")),{
-            "fresh_breakout_detected":bool(br.get("detected")),"fresh_retest_pending":bool(br.get("pending")),"fresh_3m_execution_ready":bool(br.get("ready")),
+            "fresh_breakout_detected":bool(br.get("detected")),
+            "fresh_retest_pending":bool(br.get("pending")),
+            "location_inside_execution_envelope":safe_float(br.get("distance_to_anchor_atr"),999.0)<=BREAKOUT_RETEST_LOCAL_MAX_DISTANCE_ATR,
+            "fresh_3m_evidence_leased":bool((br.get("micro") or {}).get("supported") and (br.get("micro") or {}).get("lease_valid")),
+            "no_chase_risk":not bool((br.get("trigger_snapshot") or {}).get("chase_risk")),
         },{"distance_to_anchor_atr":safe_float(br.get("distance_to_anchor_atr"),999.0)}, {"profile":br,"reason_codes":list(br.get("reason_codes") or [])}),
         row(SetupType.FRESH_BASE_CONTINUATION.value,bool(fb.get("ready")),{
-            "fresh_zone_detected":bool(fb.get("detected")),"zone_reaction_pending":bool(fb.get("pending")),"fresh_3m_execution_ready":bool(fb.get("ready")),
+            "fresh_zone_detected":bool(fb.get("detected")),"zone_reaction_pending":bool(fb.get("pending")),
+            "location_inside_execution_envelope":safe_float(fb.get("distance_to_anchor_atr"),999.0)<=FRESH_EXECUTION_ZONE_MAX_DISTANCE_ATR,
+            "fresh_3m_evidence_leased":bool((fb.get("micro") or {}).get("supported") and (fb.get("micro") or {}).get("lease_valid")),
+            "no_chase_risk":not bool((fb.get("trigger_snapshot") or {}).get("chase_risk")),
         },{"distance_to_anchor_atr":safe_float(fb.get("distance_to_anchor_atr"),999.0),"zone_age_minutes":safe_float(fb.get("zone_age_minutes"),9999.0)}, {"profile":fb,"reason_codes":list(fb.get("reason_codes") or [])}),
         row(SetupType.PULLBACK_CONTINUATION.value,bool(pb.get("ready")),{
-            "fresh_zone_detected":bool(pb.get("detected")),"zone_reaction_pending":bool(pb.get("pending")),"fresh_3m_execution_ready":bool(pb.get("ready")),
+            "fresh_zone_detected":bool(pb.get("detected")),"zone_reaction_pending":bool(pb.get("pending")),
+            "location_inside_execution_envelope":safe_float(pb.get("distance_to_anchor_atr"),999.0)<=FRESH_EXECUTION_ZONE_MAX_DISTANCE_ATR,
+            "fresh_3m_evidence_leased":bool((pb.get("micro") or {}).get("supported") and (pb.get("micro") or {}).get("lease_valid")),
+            "no_chase_risk":not bool((pb.get("trigger_snapshot") or {}).get("chase_risk")),
         },{"distance_to_anchor_atr":safe_float(pb.get("distance_to_anchor_atr"),999.0),"zone_age_minutes":safe_float(pb.get("zone_age_minutes"),9999.0)}, {"profile":pb,"reason_codes":list(pb.get("reason_codes") or [])}),
         row(SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,bool(mm.get("entry_ready")),{
             "momentum_active":bool(mm.get("active")),
@@ -16893,9 +17049,9 @@ def build_fresh_execution_reachability(
             "anchor_age_ok":bool((mm.get("execution_checks") or {}).get("anchor_age_ok")),
             "micro_supported":bool((mm.get("execution_checks") or {}).get("micro_supported")),
             "micro_score_ok":bool((mm.get("execution_checks") or {}).get("micro_score_ok")),
+            "micro_lease_valid":bool((reanchor.get("micro_confirmation") or {}).get("lease_valid")),
             "six_3m_bars":bool((mm.get("execution_checks") or {}).get("six_3m_bars")),
             "anti_climax":bool((mm.get("execution_checks") or {}).get("anti_climax")),
-            "fresh_execution_ready":bool(mm.get("entry_ready")),
         },{
             "reanchor_distance_atr":safe_float((mm.get("momentum_execution_anchor") or {}).get("distance_atr"),999.0),
             "reanchor_age_minutes":safe_float((mm.get("momentum_execution_anchor") or {}).get("anchor_age_min"),9999.0),
@@ -16911,7 +17067,10 @@ def build_fresh_execution_reachability(
     ]
     if str(side).upper()==Side.SHORT.value:
         rows.append(row(SetupType.FAILED_BREAKOUT_SHORT.value,bool(fsl.get("ready")),{
-            "failed_breakout_active":bool(fs.get("active")),"failed_breakout_15m_ready":bool(fs.get("execution_ready")),"fresh_3m_execution_ready":bool(fsl.get("ready")),
+            "failed_breakout_active":bool(fs.get("active")),"failed_breakout_15m_ready":bool(fs.get("execution_ready")),
+            "location_inside_execution_envelope":safe_float(fsl.get("distance_to_anchor_atr"),999.0)<=FAILED_BREAKOUT_SHORT_LOCAL_MAX_DISTANCE_ATR,
+            "fresh_3m_evidence_leased":bool((fsl.get("micro") or {}).get("supported") and (fsl.get("micro") or {}).get("lease_valid")),
+            "no_chase_risk":not bool((fsl.get("trigger_snapshot") or {}).get("chase_risk")),
         },{"distance_to_anchor_atr":safe_float(fsl.get("distance_to_anchor_atr"),999.0),"model_quality":safe_float(fs.get("quality"),0.0)}, {"detector":fs,"model_local_3m":fsl,"reason_codes":[str(fsl.get("reason") or "")] if fsl else []}))
     return rows
 
@@ -17526,7 +17685,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         mmbm_htf_ok = mmbm_tf1h_ok or mmbm_tf15_ok
         if mmbm_htf_ok and has_choch and is_sweep:
             active_patterns.append("MMBM")
-        if False and os.getenv("MMBM_DEBUG_LOG"):
+        if os.getenv("MMBM_DEBUG_LOG"):
             print(
                 f"[MMBM_DEBUG] side={side} tf1h_ok={mmbm_tf1h_ok} tf15_ok={mmbm_tf15_ok} "
                 f"has_choch={has_choch} is_sweep={is_sweep} -> "
@@ -22934,7 +23093,6 @@ REGIME_LABELS = {
     "NEWS_SHOCK": "НОВИННИЙ ІМПУЛЬС",
     "EXHAUSTION": "ВИСНАЖЕННЯ РУХУ",
 }
-FAMILY_LABELS = {"CONTINUATION": "ПРОДОВЖЕННЯ ТРЕНДУ", "LIQUIDITY_RECOVERY": "ВІДНОВЛЕННЯ ПІСЛЯ ЛІКВІДНОСТІ", "STRUCTURAL_TRANSITION": "СТРУКТУРНА ЗМІНА", "EXPANSION": "РОЗШИРЕННЯ РУХУ", "RANGE_EXECUTION": "ТОРГІВЛЯ В ДІАПАЗОНІ", "NONE": "НЕ ВИЗНАЧЕНО"}
 SETUP_LABELS = {
     SetupType.SWEEP_RECLAIM.value: "Зняття ліквідності + повернення за рівень",
     SetupType.CAPITULATION_RECOVERY.value: "Відновлення після капітуляційного імпульсу",
@@ -29272,11 +29430,11 @@ def compute_learning_status(journal: dict[str, Any]) -> dict[str, Any]:
 #   retention of verbose shadow rows;
 # - Outcome ML predicts P(TP0 before invalidation), NOT P(confirmation).
 
-EXECUTION_INTELLIGENCE_SCHEMA_VERSION = "execution_intelligence_v9.5.33_organic_directional_native_contract"
-REGIME_VECTOR_SCHEMA_VERSION = "regime_probability_vector_v9.5.33_directional"
+EXECUTION_INTELLIGENCE_SCHEMA_VERSION = "execution_intelligence_v9.5.40_idempotent_feedback"
+REGIME_VECTOR_SCHEMA_VERSION = "regime_probability_vector_v9.5.40_directional"
 OUTCOME_MODEL_SCHEMA_VERSION = "trade_outcome_tp0_before_invalidation_v9.5.32"
 SURVIVAL_MODEL_SCHEMA_VERSION = "time_to_edge_hazard_v9.5.33_exact_tp0_timestamp"
-EXECUTION_ROUTER_SCHEMA_VERSION = "execution_router_v9.5.33_hierarchical_directional"
+EXECUTION_ROUTER_SCHEMA_VERSION = "execution_router_v9.5.40_fresh_3m_lease"
 LOSS_ATTRIBUTION_SCHEMA_VERSION = "loss_attribution_v9.5.32_compact_aggregate"
 COUNTERFACTUAL_MATRIX_SCHEMA_VERSION = "opportunity_outcome_matrix_v9.5.33_distinct_routes_hierarchical_bandit"
 DYNAMIC_GEOMETRY_SCHEMA_VERSION = "route_geometry_v9.5.32_mfe_mae"
@@ -29474,7 +29632,7 @@ def regime_probability_vector(context: dict[str, Any]) -> dict[str, Any]:
         "bearish_trend_probability": round(bearish_trend_p, 6),
         "relative_range_ratio": round(range_ratio,6),
         "shock_ratio": round(shock_ratio,6),
-        "schema_version": "regime_probability_vector_v9.5.33_directional",
+        "schema_version": REGIME_VECTOR_SCHEMA_VERSION,
     }
 
 
@@ -30239,7 +30397,7 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
         "setup_blocked":False,
         "only_routes_execution":True,
         "reason":"BEST_EXECUTION_TACTIC_FOR_CURRENT_STATE",
-        "schema_version":"execution_router_v9.5.33_hierarchical_directional",
+        "schema_version":EXECUTION_ROUTER_SCHEMA_VERSION,
     }
 
 
@@ -30277,7 +30435,7 @@ def build_execution_intelligence_v9532(context: dict[str,Any], candidate: Candid
     intel["assistants"]=execution_intelligence_assistants(context,candidate,intel)
     intel["execution_router"]=execution_router_profile(journal,context,candidate,intel)
     intel["route_geometry"]=route_geometry_profile(journal,candidate,str((intel.get("execution_router") or {}).get("action") or ""))
-    intel["schema_version"]="execution_intelligence_v9.5.33_organic_directional_native_contract"
+    intel["schema_version"]=EXECUTION_INTELLIGENCE_SCHEMA_VERSION
     return intel
 
 
@@ -30285,6 +30443,21 @@ def build_execution_intelligence_v9532(context: dict[str,Any], candidate: Candid
 def compact_execution_intelligence_v9532(intel: dict[str,Any]) -> dict[str,Any]:
     if not isinstance(intel,dict):
         return {}
+    # Already-compact records pass through a normalized allow-list. This is the
+    # second half of journal idempotency: compact(compact(x)) must not replace
+    # real assistant metrics with neutral defaults.
+    if "asi" in intel and "structural" in intel and "adverse_selection" not in intel:
+        keys = (
+            "router", "state", "kind", "asi", "structural", "runway_r",
+            "regime", "regime_bias", "regime_fit", "regime_uncertainty",
+            "setup_pct", "ctx_edge", "outcome_p", "outcome_uncertainty",
+            "hazard_15", "hazard_30", "hazard_60", "hazard_reliability",
+            "reaction_window", "geo_n", "assistant_opinions", "assistant_metrics",
+            "assistant_feedback_complete", "schema",
+        )
+        normalized = {key: copy.deepcopy(intel.get(key)) for key in keys if key in intel}
+        normalized.setdefault("schema", "xi40")
+        return normalized
     rv=intel.get("regime_vector") or {}
     sm=intel.get("state_machine") or {}
     router=intel.get("execution_router") or {}
@@ -30292,6 +30465,15 @@ def compact_execution_intelligence_v9532(intel: dict[str,Any]) -> dict[str,Any]:
     geo=intel.get("route_geometry") or {}
     hazard=intel.get("survival_hazard") or {}
     hp=hazard.get("p_tp0_by_minutes") or {}
+    assistant_modules=((intel.get("assistants") or {}).get("modules") or {})
+    assistant_opinions={
+        str(name):str((row or {}).get("opinion") or "")
+        for name,row in assistant_modules.items() if isinstance(row,dict)
+    }
+    assistant_metrics={
+        str(name):round(safe_float((row or {}).get("metric"),50.0),4)
+        for name,row in assistant_modules.items() if isinstance(row,dict)
+    }
     return {
         "router":router.get("action"),
         "state":sm.get("current_state"),
@@ -30313,7 +30495,10 @@ def compact_execution_intelligence_v9532(intel: dict[str,Any]) -> dict[str,Any]:
         "hazard_reliability":round(safe_float(hazard.get("timing_reliability"),0.0),3),
         "reaction_window":round(safe_float(hazard.get("expected_reaction_window_minutes"),45.0),1),
         "geo_n":int(geo.get("n") or 0),
-        "schema":"xi33",
+        "assistant_opinions":assistant_opinions,
+        "assistant_metrics":assistant_metrics,
+        "assistant_feedback_complete":len(assistant_opinions)==5,
+        "schema":"xi40",
     }
 
 
@@ -30890,29 +31075,7 @@ def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
     return result
 
 
-# ---------------- Compact persistence wrappers ----------------
-_compact_signal_for_journal_v9531 = compact_signal_for_journal
-def compact_signal_for_journal(payload: dict[str,Any]) -> dict[str,Any]:
-    out=_compact_signal_for_journal_v9531(payload); intel=((payload.get("score_components") or {}).get("execution_intelligence_v9532") or {}) if isinstance(payload,dict) else {}
-    if intel: out["execution_intelligence"]=compact_execution_intelligence_v9532(intel)
-    return out
-
-_compact_trade_for_journal_v9531 = compact_trade_for_journal
-
-def compact_trade_for_journal(payload: dict[str,Any]) -> dict[str,Any]:
-    out=_compact_trade_for_journal_v9531(payload)
-    if isinstance(payload,dict) and payload.get("execution_intelligence"):
-        out["execution_intelligence"]=dict(payload.get("execution_intelligence") or {})
-    if isinstance(payload,dict) and payload.get("loss_code"):
-        out["loss_code"]=str(payload.get("loss_code"))
-        out["loss_secondary"]=str(payload.get("loss_secondary") or "NONE")
-    if isinstance(payload,dict):
-        if payload.get("tp0_hit_at"):
-            out["tp0_hit_at"]=str(payload.get("tp0_hit_at"))
-        if int(safe_float(payload.get("tp0_hit_ts"),0.0))>0:
-            out["tp0_hit_ts"]=int(safe_float(payload.get("tp0_hit_ts"),0.0))
-    return out
-
+# ---------------- Compact persistence link ----------------
 _save_journal_v9531 = save_journal
 def save_journal(journal: dict) -> None:
     # Link compact entry intelligence into newly closed trades before the canonical compactor runs.
@@ -30926,8 +31089,36 @@ def save_journal(journal: dict) -> None:
 
 
 _compute_learning_status_v9531 = compute_learning_status
+def assistant_feedback_coverage_v9540(journal: Optional[dict[str,Any]]) -> dict[str,Any]:
+    """Measure whether live assistant evidence can reach resolved trade learning."""
+    payload=journal or {}
+    signals=[row for row in (payload.get("signals") or []) if isinstance(row,dict)]
+    trades=[row for row in (payload.get("trades") or []) if isinstance(row,dict)]
+    signal_xi=[row for row in signals if isinstance(row.get("execution_intelligence"),dict)]
+    trade_xi=[row for row in trades if isinstance(row.get("execution_intelligence"),dict)]
+    complete_signal_xi=[row for row in signal_xi if bool((row.get("execution_intelligence") or {}).get("assistant_feedback_complete"))]
+    complete_trade_xi=[row for row in trade_xi if bool((row.get("execution_intelligence") or {}).get("assistant_feedback_complete"))]
+    return {
+        "signals":len(signals),"signals_with_execution_intelligence":len(signal_xi),
+        "signals_with_complete_assistant_feedback":len(complete_signal_xi),
+        "trades":len(trades),"trades_with_execution_intelligence":len(trade_xi),
+        "trades_with_complete_assistant_feedback":len(complete_trade_xi),
+        "signal_coverage":round(len(signal_xi)/max(len(signals),1),6),
+        "trade_coverage":round(len(trade_xi)/max(len(trades),1),6),
+        "future_feedback_path_operational":True,
+        "legacy_rows_backfilled_without_source_evidence":False,
+        "schema_version":"assistant_feedback_coverage_v9.5.40",
+    }
+
 def compute_learning_status(journal: dict[str,Any]) -> dict[str,Any]:
-    status=_compute_learning_status_v9531(journal); status["contextual_authority_v9532"]=contextual_edge_v9532_oos(journal); status["trade_outcome_model_v9532"]=outcome_model_oos_status(journal); status["execution_route_bandit_contexts"]=len(journal.get("execution_route_bandit") or {}); status["opportunity_outcome_matrix_rows"]=len(journal.get("opportunity_outcome_matrix") or []); return status
+    status=_compute_learning_status_v9531(journal)
+    status["contextual_authority_v9532"]=contextual_edge_v9532_oos(journal)
+    status["trade_outcome_model_v9532"]=outcome_model_oos_status(journal)
+    status["execution_route_bandit_contexts"]=len(journal.get("execution_route_bandit") or {})
+    status["opportunity_outcome_matrix_rows"]=len(journal.get("opportunity_outcome_matrix") or [])
+    status["assistant_feedback_loop_v9540"]=assistant_feedback_coverage_v9540(journal)
+    status["authority_safety_contract"]="NO_THRESHOLD_RELAXATION; EXACT_SETUP_OR_SIDE_REQUIRES_CHRONOLOGICAL_OOS_PASS"
+    return status
 
 _compute_analytics_v9531 = compute_analytics
 def compute_analytics(journal: dict) -> dict:
@@ -32049,7 +32240,10 @@ def _run_self_test() -> bool:
         Candle(ts=_ts0+8*900_000,open=100.42,high=100.48,low=100.02,close=100.18,confirmed=True),
         Candle(ts=_ts0+9*900_000,open=100.18,high=100.62,low=100.14,close=100.52,confirmed=True),
     ])
-    _br_local=breakout_retest_model_local_execution_profile(_c3_long,_br15,Side.LONG.value,100.55,1.0,_tf_long,{})
+    _br3=[copy.deepcopy(c) for c in _c3_long]
+    for i,candle in enumerate(_br3):
+        candle.ts=_ts0+8*900_000+i*180_000
+    _br_local=breakout_retest_model_local_execution_profile(_br3,_br15,Side.LONG.value,100.55,1.0,_tf_long,{})
     checks.append((
         "v9.5.27 Breakout Retest: fresh 15M boundary plus 3M confirmation is executable",
         _br_local.get("detected") is True and _br_local.get("pending") is True and _br_local.get("ready") is True,
@@ -32060,7 +32254,7 @@ def _run_self_test() -> bool:
     _fb_local=failed_breakout_short_model_local_confirmation(_c3_short,_c15_short,1.0,{"bias":Side.SHORT.value},{},_fb_profile,99.96)
     checks.append((
         "v9.5.27 Failed Breakout SHORT: fresh model-local 3M confirmation is required",
-        _fb_local.get("required") is True and _fb_local.get("ready") is True and _fb_local.get("schema_version")=="failed_breakout_short_local_v9.5.27",
+        _fb_local.get("required") is True and _fb_local.get("ready") is True and _fb_local.get("schema_version")=="failed_breakout_short_local_v9.5.40_scan_window_lease",
     ))
 
     # v9.5.27: global fit readiness is not presented as named-setup learned authority.
@@ -32336,10 +32530,6 @@ def _run_self_test() -> bool:
 # ==========================================================
 # v8.8 EXECUTIVE DECISION LAYER - CONFIDENCE-AWARE SINGLE AUTHORITY
 # ==========================================================
-
-EXECUTIVE_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_0_STAGED_CONTRACT"
-
-
 
 def advisory_report(
     module,
@@ -34400,6 +34590,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     result["contextual_edge_authority_audit"] = contextual_edge_v9532_oos(payload)
     result["trade_outcome_model_audit"] = outcome_model_oos_status(payload)
     result["loss_attribution_audit"] = refresh_loss_attribution_v9532(payload)
+    result["assistant_feedback_loop_audit"] = assistant_feedback_coverage_v9540(payload)
     _budget_probe = copy.deepcopy(payload)
     _budget_before_bytes = len(json.dumps(_budget_probe, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     _budget_report = v9532_journal_budget_compaction(_budget_probe)
@@ -34907,7 +35098,7 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
         "setup_blocked":False,
         "only_routes_execution":True,
         "reason":"BEST_EXECUTION_TACTIC_WITH_CONSUMED_EVIDENCE_AND_UNCERTAINTY_SHRINK",
-        "schema_version":"execution_router_v9.5.34_consumed_evidence_bar_ttl",
+        "schema_version":EXECUTION_ROUTER_SCHEMA_VERSION,
     }
 
 
@@ -34933,7 +35124,7 @@ def build_execution_intelligence_v9532(context: dict[str,Any], candidate: Candid
     intel["assistants"]=execution_intelligence_assistants(context,candidate,intel)
     intel["execution_router"]=execution_router_profile(journal,context,candidate,intel)
     intel["route_geometry"]=route_geometry_profile(journal,candidate,str((intel.get("execution_router") or {}).get("action") or ""))
-    intel["schema_version"]="execution_intelligence_v9.5.34_starvation_repair"
+    intel["schema_version"]=EXECUTION_INTELLIGENCE_SCHEMA_VERSION
     return intel
 
 
@@ -35344,8 +35535,8 @@ def run_audit_journal(path: str) -> dict[str,Any]:
 # The production scheduler is intentionally 15 minutes; confirmed 3M candles
 # are replayed causally between runs.
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE"
+V9535_BOT_VERSION = "pro-hybrid-confluence-v9.5.35-execution-economics-repair-15m-cadence"
+V9535_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE"
 
 # Production cadence invariant requested by the deployment contract.
 EXECUTION_SCHEDULER_CADENCE_MINUTES = 15
@@ -35748,7 +35939,7 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
         "setup_blocked":False,
         "only_routes_execution":True,
         "reason":"BEST_EXECUTION_TACTIC_AFTER_EXECUTION_ECONOMICS",
-        "schema_version":"execution_router_v9.5.35_economics_15m",
+        "schema_version":EXECUTION_ROUTER_SCHEMA_VERSION,
     }
 
 
@@ -36047,8 +36238,8 @@ def run_audit_journal(path: str) -> dict[str,Any]:
 #   execution. The existing 120m fresh-execution research ledger remains research.
 # - No new per-signal/per-scan journal stream or duplicated payload is added.
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.36-execution-reachability-journal-neutral"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_REACHABILITY_JOURNAL_NEUTRAL"
+V9536_BOT_VERSION = "pro-hybrid-confluence-v9.5.36-execution-reachability-journal-neutral"
+V9536_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_REACHABILITY_JOURNAL_NEUTRAL"
 
 # One causal horizon for route tactic learning and live route authority.
 # Reuse the existing matrix row shape: changing the horizon adds ZERO fields to
@@ -36327,8 +36518,8 @@ def run_audit_journal(path: str) -> dict[str, Any]:
 # PROBE contract executable, keeps pending confirmation as a stage cap, and
 # uses risk sizing rather than setup deletion for uncertain lanes.
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.37-native-probe-winrate-staging-journal-neutral"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING"
+V9537_BOT_VERSION = "pro-hybrid-confluence-v9.5.37-native-probe-winrate-staging-journal-neutral"
+V9537_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING"
 
 V9537_NATIVE_PROBE_MIN_SCORE = RISKY_ENTRY_SCORE_BASE
 V9537_NATIVE_PROBE_MAX_ZONE_DISTANCE_ATR = min(
@@ -36758,8 +36949,8 @@ def run_audit_journal(path: str) -> dict[str, Any]:
 # ==========================================================
 # v9.5.38 BALANCED EARLY ENTRY / ANTI-LATE PRECEDENCE
 # ==========================================================
-BOT_VERSION = "pro-hybrid-confluence-v9.5.38-balanced-early-entry-anti-late-journal-neutral"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE"
+V9538_BOT_VERSION = "pro-hybrid-confluence-v9.5.38-balanced-early-entry-anti-late-journal-neutral"
+V9538_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE"
 
 
 def acceptance_execution_precedence_v9538(
@@ -36938,8 +37129,8 @@ def run_audit_journal(path: str) -> dict[str, Any]:
 # ==========================================================
 # v9.5.39 EXECUTION CLARITY / CONFIRMED-ACCEPTANCE BALANCE
 # ==========================================================
-BOT_VERSION = "pro-hybrid-confluence-v9.5.39-execution-clarity-balance-journal-neutral"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE"
+V9539_BOT_VERSION = "pro-hybrid-confluence-v9.5.39-execution-clarity-balance-journal-neutral"
+V9539_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE"
 
 # A confirmed ACCEPTANCE is stronger evidence than an unconfirmed native probe.
 # If the only problem is short known liquidity runway, downgrade capital, not the
@@ -37148,6 +37339,10 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("v9.5.39 confirmed acceptance probe risk cap must stay experimental/tiny")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.39 must not change canonical 58/68/75 thresholds")
+    if "v9.5.40" not in BOT_VERSION or "V9_5_40" not in ARCHITECTURE_VERSION:
+        errors.append("v9.5.40 release seal is not the effective runtime version")
+    if EXECUTION_SCHEDULER_CADENCE_MINUTES != 15 or FRESH_3M_EXECUTION_LEASE_BARS != 5:
+        errors.append("v9.5.40 fresh-3M lease must cover exactly one 15M production scan")
     return {"valid": not errors, "errors": errors}
 
 
@@ -37267,6 +37462,97 @@ def v9539_regression_checks() -> list[tuple[str, bool]]:
     return checks
 
 
+RELEASE_LINEAGE_V9540 = {
+    "v9.5.35": {"bot": V9535_BOT_VERSION, "architecture": V9535_ARCHITECTURE_VERSION},
+    "v9.5.36": {"bot": V9536_BOT_VERSION, "architecture": V9536_ARCHITECTURE_VERSION},
+    "v9.5.37": {"bot": V9537_BOT_VERSION, "architecture": V9537_ARCHITECTURE_VERSION},
+    "v9.5.38": {"bot": V9538_BOT_VERSION, "architecture": V9538_ARCHITECTURE_VERSION},
+    "v9.5.39": {"bot": V9539_BOT_VERSION, "architecture": V9539_ARCHITECTURE_VERSION},
+    "v9.5.40": {"bot": BOT_VERSION, "architecture": ARCHITECTURE_VERSION},
+}
+
+
+def v9540_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    # The strict trigger occurs four bars before the scheduler wakes up. It must
+    # remain usable for this scan and expire on the next 3M bar.
+    base_ts=1_800_000_000_000
+    c3=[]
+    for i in range(12):
+        center=99.80+0.02*i
+        c3.append(Candle(base_ts+i*180_000,center,center+0.10,center-0.10,center+0.01,100.0,True))
+    c3[6]=Candle(base_ts+6*180_000,99.72,99.95,99.60,99.80,100.0,True)
+    c3[7]=Candle(base_ts+7*180_000,99.70,100.85,99.55,100.80,100.0,True)
+    for i in range(8,12):
+        c3[i]=Candle(base_ts+i*180_000,99.92,100.05,99.82,99.90,100.0,True)
+    leased=trigger_snapshot(c3,Side.LONG.value,100.0,1.0)
+    c3_expired=c3+[Candle(base_ts+12*180_000,99.91,100.04,99.81,99.89,100.0,True)]
+    expired=trigger_snapshot(c3_expired,Side.LONG.value,100.0,1.0)
+    checks.append((
+        "v9.5.40 strict fresh 3M trigger survives one 15M scan without threshold relaxation",
+        leased.get("ready") is True and leased.get("evidence_age_bars")==4 and leased.get("replayed_within_scan") is True,
+    ))
+    checks.append((
+        "v9.5.40 fresh 3M trigger expires after the five-bar lease",
+        expired.get("ready") is False and expired.get("lease_valid") is False,
+    ))
+
+    c15=[Candle(base_ts+i*900_000,99.5,101.0,99.0,100.2,500.0,True) for i in range(8)]
+    directional=_directional_confirmation_profile(
+        Side.LONG.value,c3,c15,1.0,{"bias":Side.LONG.value},{"bias":Side.LONG.value},
+    )
+    causally_blocked=_directional_confirmation_profile(
+        Side.LONG.value,c3,c15,1.0,{"bias":Side.LONG.value},{"bias":Side.LONG.value},
+        not_before_ts=int(c3[7].ts)+1,
+    )
+    checks.append((
+        "v9.5.40 directional confirmation replays the newest strict bar and respects causal ordering",
+        directional.get("supported") is True
+        and directional.get("evidence_age_bars")==4
+        and causally_blocked.get("supported") is False,
+    ))
+
+    full_xi={
+        "adverse_selection":{"index":27.0},"structural_score":61.0,
+        "liquidity_runway":{"runway_r":1.35},
+        "regime_vector":{"dominant":"TREND","directional_bias":"LONG","uncertainty":0.31},
+        "state_machine":{"current_state":"EXECUTION","kind":"CONTINUATION"},
+        "execution_router":{"action":"ONE_3M_CONFIRM","candidate_regime_fit":0.62},
+        "setup_relative_quality":{"percentile":0.58},
+        "contextual_authority":{"edge_probability":0.55},
+        "outcome_model":{"probability":0.54,"uncertainty_width":0.32},
+        "survival_hazard":{"p_tp0_by_minutes":{"15":0.2,"30":0.35,"60":0.5},"timing_reliability":0.6,"expected_reaction_window_minutes":30},
+        "route_geometry":{"n":12},
+        "assistants":{"modules":{
+            name:{"opinion":"SUPPORT","metric":60.0} for name in (
+                "LOCATION_ASSISTANT","STRUCTURE_ASSISTANT","REGIME_ASSISTANT","LIQUIDITY_ASSISTANT","STATISTICAL_ASSISTANT"
+            )
+        }},
+    }
+    payload={"id":"v9540-xi","time":iso_now(),"action":Action.NO_SETUP.value,"score_components":{"execution_intelligence_v9532":full_xi}}
+    once=compact_signal_for_journal(payload); twice=compact_signal_for_journal(once)
+    checks.append((
+        "v9.5.40 journal compaction is idempotent and preserves all assistant feedback",
+        once.get("execution_intelligence")==twice.get("execution_intelligence")
+        and bool((twice.get("execution_intelligence") or {}).get("assistant_feedback_complete")),
+    ))
+
+    lifecycle_journal={}
+    update_setup_lifecycle_counters(lifecycle_journal,{"_setup_lifecycle_detected":[],"_setup_lifecycle_qualified":[],"_setup_lifecycle_ranked":[],"_detector_reachability":[]},None)
+    episode_rows=((lifecycle_journal.get("setup_lifecycle_counters") or {}).get("independent_episode_totals") or {})
+    checks.append((
+        "v9.5.40 independent episode ledger retains all 24 setups including Direction Flip",
+        set(episode_rows)==set(_tracked_setup_types()) and SetupType.DIRECTION_FLIP.value in episode_rows,
+    ))
+    checks.append((
+        "v9.5.40 runtime release seal and safety gates are effective",
+        BOT_VERSION==RELEASE_LINEAGE_V9540["v9.5.40"]["bot"]
+        and validate_runtime_configuration().get("valid") is True,
+    ))
+    return checks
+
+
 _run_self_test_v9538_effective = _run_self_test
 def _run_self_test() -> bool:
     base_ok = _run_self_test_v9538_effective()
@@ -37276,7 +37562,13 @@ def _run_self_test() -> bool:
         print(f"  [{'OK' if ok else 'FAIL'}] {name}")
         passed += int(bool(ok))
     print(f"SELF-TEST v9.5.39 SUMMARY: base={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
-    return bool(base_ok and passed == len(checks))
+    v9540_checks=v9540_regression_checks()
+    v9540_passed=0
+    for name, ok in v9540_checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        v9540_passed+=int(bool(ok))
+    print(f"SELF-TEST v9.5.40 SUMMARY: prior={'PASS' if base_ok and passed==len(checks) else 'FAIL'} + {v9540_passed}/{len(v9540_checks)} repair checks")
+    return bool(base_ok and passed == len(checks) and v9540_passed == len(v9540_checks))
 
 
 _run_audit_journal_v9538_effective = run_audit_journal
@@ -37297,10 +37589,22 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         },
         "schema_version": "v9.5.39_execution_clarity_balance_journal_neutral",
     }
+    out["v9540_professional_repair"] = {
+        "effective_bot_version":BOT_VERSION,
+        "effective_architecture_version":ARCHITECTURE_VERSION,
+        "fresh_3m_execution_lease_bars":FRESH_3M_EXECUTION_LEASE_BARS,
+        "production_cadence_minutes":EXECUTION_SCHEDULER_CADENCE_MINUTES,
+        "freshness_thresholds_relaxed":False,
+        "journal_compaction_idempotent":True,
+        "assistant_feedback_loop":assistant_feedback_coverage_v9540(json.loads(Path(path).read_text(encoding="utf-8"))),
+        "calibration_authority_gates_relaxed":False,
+        "release_lineage":RELEASE_LINEAGE_V9540,
+        "schema_version":"v9.5.40_professional_repair",
+    }
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.39 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.40 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
