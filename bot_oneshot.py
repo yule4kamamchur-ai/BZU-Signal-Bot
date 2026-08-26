@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.43 (Execution Anchor Repair & Trigger Separation)
+BZU Professional Hybrid Confluence Signal Bot v9.5.42 (Realized Router Feedback & Setup Management Calibration)
 =============================================================================================
-Оновлення v9.5.43:
-- Execution trigger separation: structural trigger_level is no longer treated as a live fill level when displaced from current futures price.
-- Added execution_anchor contract layer with distance/ATR audit and stale-trigger recovery to prevent late entries after impulse moves.
-- Entry contracts preserve structural levels while routing execution through current executable anchors.
-
 Оновлення v9.5.42:
 - Realized closed-trade outcome now reaches the exact Router tactic/context as a separate, idempotently rebuilt evidence channel; legacy trades without trustworthy tactic lineage are excluded rather than guessed.
 - Router tactics receive paired, same-episode comparison against every other filled tactic, avoiding invalid comparisons across different market episodes.
@@ -422,8 +417,8 @@ V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-
 V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 V9541_BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
 V9541_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
-BOT_VERSION = "pro-hybrid-confluence-v9.5.50-counterfactual-execution-validation"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_44_EXECUTION_AUTHORITY_UNIFICATION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.42-realized-router-feedback-paired-tactics-setup-management"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_42_REALIZED_ROUTER_FEEDBACK_PAIRED_TACTICS_SETUP_MANAGEMENT"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -566,24 +561,6 @@ MAX_JOURNAL = max(1, int(os.getenv("SIGNAL_JOURNAL_LIMIT", str(DEFAULT_SIGNAL_JO
 JOURNAL_VERBOSE = os.getenv("JOURNAL_VERBOSE", "false").lower() in {"1", "true", "yes"}
 JOURNAL_HYPOTHESIS_TOP = min(10, max(1, int(os.getenv("JOURNAL_HYPOTHESIS_TOP", "3") or 3)))
 JOURNAL_VERSION = 2
-
-# v9.5.47: legacy score gates are audited as quality constraints only.
-# They cannot be final execution vetoes.
-DEAD_GATE_REMOVAL_AUDIT = {
-    "canonical_score_reject_attempts": 0,
-    "calibration_reject_attempts": 0,
-    "preconfirm_reject_attempts": 0,
-    "quality_limitations_observed": 0,
-    "hard_blockers_only": True,
-}
-
-# v9.5.44: compact execution authority telemetry. These are aggregate-only
-# counters: no candles, features, candidate snapshots or market payloads.
-EXECUTION_AUTHORITY_SCHEMA_VERSION = "execution_authority_unification_v9.5.44"
-LIVE_EXECUTION_READINESS_THRESHOLD = 75
-ARMED_EXECUTION_READINESS_THRESHOLD = 60
-CALIBRATION_MAX_SCORE_IMPACT_PCT = 0.05
-
 JOURNAL_ML_FEATURE_KEYS = (
     "liquidity", "structure", "trigger", "flow", "htf", "pattern",
     "session", "smt", "freshness", "regime_fit",
@@ -1738,132 +1715,6 @@ class ExecutiveInput:
     philosophy: PhilosophyDecision
     conflict: ConflictReport
     risk_ledger: RiskAdjustmentLedger
-
-
-@dataclass(frozen=True)
-class ExecutionReadinessContract:
-    """Unified execution gate. Score/calibration/preconfirmation are not authorities."""
-    structure: float
-    liquidity: float
-    trigger_freshness: float
-    risk_quality: float
-    execution_anchor: float
-    readiness: float
-    state: str
-    hard_blockers: list[str] = field(default_factory=list)
-    audit: dict[str, Any] = field(default_factory=dict)
-    schema_version: str = "execution_readiness_v9.5.46"
-
-
-def build_execution_readiness(
-    structure: float,
-    liquidity: float,
-    trigger_freshness: float,
-    risk_quality: float,
-    execution_anchor: float,
-    hard_blockers: Optional[list[str]] = None,
-) -> ExecutionReadinessContract:
-    """Calculate execution readiness without score/calibration/preconfirmation veto."""
-    blockers = list(hard_blockers or [])
-    readiness = sum([
-        max(0.0, min(100.0, structure)),
-        max(0.0, min(100.0, liquidity)),
-        max(0.0, min(100.0, trigger_freshness)),
-        max(0.0, min(100.0, risk_quality)),
-        max(0.0, min(100.0, execution_anchor)),
-    ]) / 5.0
-
-    if blockers:
-        state = "WATCH"
-    elif readiness >= 75:
-        state = "LIVE_ALLOWED"
-    elif readiness >= 60:
-        state = "ARMED"
-    else:
-        state = "WATCH"
-
-    return ExecutionReadinessContract(
-        structure=structure,
-        liquidity=liquidity,
-        trigger_freshness=trigger_freshness,
-        risk_quality=risk_quality,
-        execution_anchor=execution_anchor,
-        readiness=readiness,
-        state=state,
-        hard_blockers=blockers,
-    )
-
-
-@dataclass(frozen=True)
-class FinalExecutionAuthority:
-    """Single final authority input contract."""
-    execution_readiness: ExecutionReadinessContract
-    trigger_valid: bool
-    anchor_valid: bool
-    risk_valid: bool
-    action: str
-    reasons: list[str] = field(default_factory=list)
-    schema_version: str = "final_execution_authority_v9.5.46"
-
-
-def resolve_final_execution_authority(
-    execution_readiness: ExecutionReadinessContract,
-    trigger_valid: bool,
-    anchor_valid: bool,
-    risk_valid: bool,
-) -> FinalExecutionAuthority:
-    reasons = list(execution_readiness.hard_blockers)
-    if not trigger_valid:
-        reasons.append("TRIGGER_INVALID")
-    if not anchor_valid:
-        reasons.append("EXECUTION_ANCHOR_INVALID")
-    if not risk_valid:
-        reasons.append("RISK_INVALID")
-
-    allowed = (
-        execution_readiness.state == "LIVE_ALLOWED"
-        and not reasons
-        and trigger_valid
-        and anchor_valid
-        and risk_valid
-    )
-
-    return FinalExecutionAuthority(
-        execution_readiness=execution_readiness,
-        trigger_valid=trigger_valid,
-        anchor_valid=anchor_valid,
-        risk_valid=risk_valid,
-        action="ALLOW_EXECUTION" if allowed else "WAIT",
-        reasons=reasons,
-    )
-
-
-@dataclass(frozen=True)
-class ExecutionPathAuthorityAudit:
-    """Proves that advisory layers cannot reject execution."""
-    calibration_reject_attempts: int = 0
-    preconfirm_reject_attempts: int = 0
-    score_gate_reject_attempts: int = 0
-    final_authority_source: str = "EXECUTION_READINESS_ONLY"
-    schema_version: str = "execution_path_authority_audit_v9.5.46"
-
-
-def build_execution_path_authority_audit(staged: Any, bundle: EvaluationBundle) -> dict[str, Any]:
-    blocking = list(getattr(staged, "blocking_reasons", []) or [])
-    calibration_attempt = any("CALIBRATION" in str(x).upper() for x in blocking)
-    preconfirm_attempt = any("PRECONFIRM" in str(x).upper() for x in blocking)
-    score_attempt = any("SCORE" in str(x).upper() for x in blocking)
-    return {
-        "calibration_reject_attempts": int(calibration_attempt),
-        "preconfirm_reject_attempts": int(preconfirm_attempt),
-        "score_gate_reject_attempts": int(score_attempt),
-        "final_authority_source": "EXECUTION_READINESS_ONLY",
-        "advisory_only": {
-            "calibration": True,
-            "preconfirmation": True,
-            "score": True,
-        },
-    }
 
 
 @dataclass(frozen=True)
@@ -5072,58 +4923,6 @@ def link_preconfirmation_event_to_trade(
         return event_id
     return ""
 
-
-
-# v9.5.49 Hidden Gate Sweep: classify every execution blocker source.
-# Hard blockers are execution safety conditions. Quality/advisory signals cannot veto.
-HIDDEN_GATE_ALLOWED_HARD_BLOCKERS = {
-    "INVALIDATION",
-    "RISK",
-    "DATA",
-    "EXECUTION_FAILURE",
-}
-
-HIDDEN_GATE_FORBIDDEN_VETO_SOURCES = {
-    "SCORE",
-    "CALIBRATION",
-    "PRECONFIRMATION",
-    "ADVISORY_MODEL",
-    "ROUTER_PREFERENCE",
-}
-
-def classify_execution_blocker(reason: str) -> str:
-    r = str(reason or "").upper()
-    if any(x in r for x in ("INVALID", "THESIS_FAIL", "INvalidation".upper())):
-        return "INVALIDATION"
-    if any(x in r for x in ("RISK", "CAPITAL", "DAILY_LIMIT")):
-        return "RISK"
-    if any(x in r for x in ("DATA", "SCHEMA", "MISSING")):
-        return "DATA"
-    if any(x in r for x in ("EXECUTION", "ANCHOR_FAIL", "PRICE_UNAVAILABLE")):
-        return "EXECUTION_FAILURE"
-    if any(x in r for x in ("SCORE", "CANONICAL_SCORE")):
-        return "SCORE"
-    if "CALIBRATION" in r:
-        return "CALIBRATION"
-    if "PRECONFIRM" in r:
-        return "PRECONFIRMATION"
-    if "ROUTER" in r:
-        return "ROUTER_PREFERENCE"
-    return "ADVISORY_MODEL"
-
-def hidden_gate_sweep_audit(blocking: list[str], allow_execution: bool = False) -> dict[str, object]:
-    classified = [classify_execution_blocker(x) for x in (blocking or [])]
-    forbidden = [x for x in classified if x in HIDDEN_GATE_FORBIDDEN_VETO_SOURCES]
-    hard = [x for x in classified if x in HIDDEN_GATE_ALLOWED_HARD_BLOCKERS]
-    return {
-        "blocking_count": len(classified),
-        "hard_blockers": hard,
-        "forbidden_veto_sources": forbidden,
-        "execution_allowed": bool(allow_execution),
-        "single_authority": "FINAL_EXECUTION_AUTHORITY",
-        "status": "CLEAN" if not forbidden else "LEGACY_GATE_FOUND",
-    }
-
 def _preconfirm_stage_gate(
     state: str,
     candidate: Candidate,
@@ -5140,7 +4939,6 @@ def _preconfirm_stage_gate(
     downgrade_trusted = bool(profile.get("trusted"))
     promotion_trusted = bool(profile.get("trusted") and profile.get("promotion_trusted", True))
     audit = {
-        "hidden_gate_policy": "PRECONFIRMATION_AUDIT_ONLY_NO_VETO",
         "applied": False,
         "calibrated": calibrated,
         "trusted": bool(profile.get("trusted")),
@@ -5151,7 +4949,7 @@ def _preconfirm_stage_gate(
         "precursor_active": bool(profile.get("precursor_active")),
         "probability": safe_float(profile.get("probability"), 0.0),
         "can_initiate_entry": False,
-        "policy": "authority requires global trust, current-schema rolling metrics and consecutive validation epochs; otherwise probability is audit-only; never execution veto",
+        "policy": "authority requires global trust, current-schema rolling metrics and consecutive validation epochs; otherwise probability is audit-only",
     }
     setup_shadow = ((getattr(candidate, "score_components", {}) or {}).get("time_of_day_shadow") or {})
     if setup_shadow.get("shadow_active"):
@@ -5180,10 +4978,10 @@ def _preconfirm_stage_gate(
         and state in executable_states
         and probe_profile.get("eligible")
     ):
-        # v9.5.47: preconfirmation is not an execution veto.
-        # Preserve visibility as audit only.
-        audit["effect"] = "PRECONFIRM_LOW_PROBABILITY_AUDIT_ONLY"
-        warnings.append("PRECONFIRM_LOW_NO_EXECUTION_BLOCK")
+        state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        required = f"confirmation probability above {PRECONFIRM_PROBE_WAIT_PROBABILITY:.0%} or new precursor evidence"
+        blocking.append("PRECONFIRM_PROBABILITY_LOW")
+        audit["effect"] = "DOWNGRADE_FRESH_PROBE_TO_WAIT"
     elif (
         promotion_trusted
         and probability >= PRECONFIRM_PROBE_MIN_PROBABILITY
@@ -6342,7 +6140,6 @@ def build_risk_confidence_budget(candidate: Any, journal: Optional[dict[str, Any
 
 
 def staged_entry_plan(candidate: Candidate, context: dict, direction_perf: Optional[dict] = None) -> dict[str, Any]:
-    # v9.5.49: stage is execution construction, not score admission authority.
     """Ladder execution: один сигнал описує, яку частину і на якій стадії брати.
     Це не block-filter, а position construction."""
     quality_profile = prepare_preplan_quality_pipeline(candidate, context)
@@ -8747,51 +8544,6 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     return journal
 
 
-def ensure_execution_authority_audit(journal: dict[str, Any]) -> dict[str, Any]:
-    """Create compact execution audits without expanding signal payloads."""
-    journal.setdefault("execution_anchor_repair_audit", {
-        "runs": 0,
-        "blocked_candidates": 0,
-        "recovered_candidates": 0,
-        "missed_move_r": 0.0,
-        "avg_delay_bars": 0.0,
-        "top_blockers": {},
-        "schema_version": EXECUTION_AUTHORITY_SCHEMA_VERSION,
-    })
-    journal.setdefault("PRECONFIRM_IMPACT_AUDIT", {
-        "blocked_by_preconfirm": 0,
-        "entered_without_preconfirm": 0,
-        "false_negative_count": 0,
-        "missed_R": 0.0,
-    })
-    return journal
-
-
-def execution_readiness_state(readiness: float, hard_blocker: bool = False) -> str:
-    """Unified stage classifier. Score is intentionally not an authority gate."""
-    if hard_blocker:
-        return "WATCH"
-    value = float(readiness or 0.0)
-    if value >= LIVE_EXECUTION_READINESS_THRESHOLD:
-        return "LIVE_ALLOWED"
-    if value >= ARMED_EXECUTION_READINESS_THRESHOLD:
-        return "ARMED"
-    return "WATCH"
-
-
-def apply_calibration_as_probability_only(raw_probability: float, correction: float, confidence: str) -> dict[str, Any]:
-    """Calibration adjusts probability only and cannot veto execution."""
-    conf = str(confidence or "LOW").upper()
-    if conf not in {"HIGH", "MEDIUM", "LOW"}:
-        conf = "LOW"
-    bounded = max(-CALIBRATION_MAX_SCORE_IMPACT_PCT, min(CALIBRATION_MAX_SCORE_IMPACT_PCT, float(correction or 0.0)))
-    return {
-        "probability": max(0.0, min(1.0, float(raw_probability or 0.0) + bounded)),
-        "calibration_confidence": conf,
-        "authority": "RANKING_ONLY" if conf != "HIGH" else "RANKING_SUPPORTED",
-    }
-
-
 def load_journal() -> dict[str, Any]:
     journal = load_json(JOURNAL_FILE, {})
     old_version = int(journal.get("journal_version", 1) or 1)
@@ -8835,7 +8587,6 @@ def load_journal() -> dict[str, Any]:
     journal.setdefault("daily_open_shadow_experiments", [])
     journal.setdefault("preconfirmation_events", [])
     journal.setdefault("preconfirmation_model_status", {})
-    ensure_execution_authority_audit(journal)
     journal.setdefault("active_trade_shadow_scans", [])
     journal["active_trade_shadow_scans"] = [
         item for item in list(journal.get("active_trade_shadow_scans") or []) if isinstance(item, dict)
@@ -8924,7 +8675,6 @@ def _retain_signal_events(events: list[Any], protected_signal_ids: set[str], cap
     return sorted(kept, key=lambda record: order.get(id(record), 0))
 
 def save_journal(journal: dict[str, Any]) -> None:
-    ensure_execution_authority_audit(journal)
     journal["updated_at"] = iso_now()
     journal["journal_version"] = JOURNAL_VERSION
     journal["version"] = BOT_VERSION
@@ -9530,7 +9280,7 @@ def canonical_score_admission_profile(candidate_or_score: Any) -> dict[str, Any]
     gray_shadow_only = gray_lower <= score < RISKY_ENTRY_SCORE_BASE
     band = "ENTRY" if full_entry else "RISKY" if risky_entry else "GRAY_SHADOW_ONLY" if gray_shadow_only else "BELOW"
     return {
-        "authority": "CANONICAL_SCORE_POLICY_ADVISORY_ONLY",
+        "authority": "CANONICAL_SCORE_POLICY",
         "mode": SCORE_POLICY_MODE,
         "score": score,
         "entry_threshold": ENTRY_SCORE_BASE,
@@ -13909,45 +13659,6 @@ def _nearest_opposite_structural_zone(zones: list, side: str, price: float) -> O
     return sorted(opposite_zones, key=lambda z: (-safe_float(getattr(z, "strength", 0.0)), abs(_zone_midpoint(z) - price)))[0]
 
 
-
-def _resolve_execution_anchor_v9543(
-    *,
-    side: str,
-    price: float,
-    atr15: float,
-    structural_anchor: float,
-    trigger_level: float,
-    model: str,
-) -> dict[str, Any]:
-    """Separate structural thesis level from executable entry anchor.
-
-    A trigger can remain valid as market structure while being too far away
-    for actual futures execution. This prevents late chasing after impulse.
-    """
-    structural_anchor = safe_float(structural_anchor, price) or price
-    trigger_level = safe_float(trigger_level, structural_anchor) or structural_anchor
-    atr = max(safe_float(atr15, 0.0), 1e-9)
-
-    structural_distance_atr = abs(structural_anchor - price) / atr
-    trigger_distance_atr = abs(trigger_level - price) / atr
-
-    # Execution should not wait for a displaced historical trigger.
-    # Structural levels remain available for invalidation/audit.
-    stale_trigger = trigger_distance_atr > 0.65
-    execution_anchor = price if stale_trigger else structural_anchor
-
-    return {
-        "execution_anchor": round_price(execution_anchor),
-        "structural_anchor": round_price(structural_anchor),
-        "trigger_level": round_price(trigger_level),
-        "trigger_distance_atr": round(trigger_distance_atr, 4),
-        "structural_distance_atr": round(structural_distance_atr, 4),
-        "anchor_source": "CURRENT_PRICE_RECOVERY_FROM_DISPLACED_TRIGGER" if stale_trigger else "MODEL_STRUCTURAL_ANCHOR",
-        "model": model,
-        "schema_version": "execution_anchor_repair_v9.5.43",
-    }
-
-
 def ict_model_execution_contract(
     model_id: str,
     setup_type: str,
@@ -14122,19 +13833,8 @@ def ict_model_execution_contract(
     else:
         target_magnet_score = 0.0
 
-    execution_anchor_profile = _resolve_execution_anchor_v9543(
-        side=side,
-        price=price,
-        atr15=atr15,
-        structural_anchor=entry_anchor,
-        trigger_level=trigger_level,
-        model=model,
-    )
-
     return {
         "entry_anchor": round_price(entry_anchor),
-        "execution_anchor": execution_anchor_profile["execution_anchor"],
-        "execution_anchor_profile": execution_anchor_profile,
         "entry_basis": entry_basis,
         "invalidation_level": round_price(invalidation),
         "invalidation_basis": invalidation_basis,
@@ -18726,7 +18426,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
             if model_id == "LIQUIDITY_LADDER_MODEL":
                 # Single source of truth: the candidate trigger and any persisted
                 # opportunity must use the exact execution-contract anchor.
-                local_trigger_level = safe_float(contract.get("execution_anchor"), local_trigger_level) or local_trigger_level
+                local_trigger_level = safe_float(contract.get("entry_anchor"), local_trigger_level) or local_trigger_level
 
             evidence = ["ICT_LOCATION", "PRICE_STRUCTURE", f"ICT_MODEL_{model_id}"]
             if model_id == "LIQUIDITY_LADDER_MODEL":
@@ -34256,12 +33956,29 @@ def build_staged_executive_decision(
         state = previous_state
         warnings.append("NO_STAGE_UPGRADE_WITHOUT_NEW_EVIDENCE")
 
-    # v9.5.48: score policy is fully removed from stage authority.
-    # It remains available for ranking/telemetry only. EntryStage may only be
-    # changed by execution readiness, hard blockers, risk and invalidation.
+    # One canonical score policy caps the maximum executable stage. Independent
+    # quality scores decide readiness inside that cap; they do not create a second
+    # hidden pair of full/risky thresholds.
     score_policy = canonical_score_admission_profile(candidate)
-    score_policy["authority"] = "RANKING_ONLY"
-    score_policy["can_block_execution"] = False
+    if state in {EntryStage.CORE.value, EntryStage.ADD_POSITION.value} and not score_policy.get("full_entry_eligible"):
+        if score_policy.get("risky_entry_eligible"):
+            state = EntryStage.ACCEPTANCE.value
+            warnings.append("CANONICAL_SCORE_CAP_CORE_TO_ACCEPTANCE")
+        elif fresh_probe_candidate_profile(candidate).get("eligible"):
+            state = EntryStage.PROBE.value
+            warnings.append("CANONICAL_SCORE_CAP_CORE_TO_PROBE")
+        else:
+            state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+            required = f"score >= {RISKY_ENTRY_SCORE_BASE} or a fresh probe-qualified execution event"
+            blocking.append("CANONICAL_SCORE_BELOW_RISKY")
+    elif state in {EntryStage.ACCEPTANCE.value, EntryStage.RETEST_ADD.value} and not score_policy.get("risky_entry_eligible"):
+        if fresh_probe_candidate_profile(candidate).get("eligible"):
+            state = EntryStage.PROBE.value
+            warnings.append("CANONICAL_SCORE_CAP_ACCEPTANCE_TO_PROBE")
+        else:
+            state = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+            required = f"score >= {RISKY_ENTRY_SCORE_BASE} or a fresh probe-qualified execution event"
+            blocking.append("CANONICAL_SCORE_BELOW_RISKY")
 
     state, required, blocking, warnings, preconfirm_gate_audit = _preconfirm_stage_gate(
         state, candidate, evaluation, required, blocking, warnings
@@ -34359,35 +34076,6 @@ def risky_entry_score_profile(
 
 
 
-def final_execution_authority_v9548(
-    staged: ExecutiveDecisionContract,
-    plan: Optional[TradePlan],
-    candidate: Candidate,
-) -> dict[str, Any]:
-    """Single final authority boundary. Advisory models cannot veto execution."""
-    hard_blockers = {
-        "THESIS_INVALIDATED",
-        "DATA_SCHEMA_INVALID",
-        "DAILY_RISK_BLOCK",
-        "HARD_EXECUTION_INVALIDATION",
-    }
-    blockers = [str(x) for x in (staged.blocking_reasons or [])]
-    hard = [x for x in blockers if x in hard_blockers]
-    plan_ready = bool(plan and getattr(plan, "valid", False) and getattr(plan, "execution_ready", False))
-    return {
-        "authority": "FINAL_EXECUTION_AUTHORITY",
-        "allow": bool(staged.allow_execution and not hard and plan_ready),
-        "hard_blockers": hard,
-        "plan_ready": plan_ready,
-        "forbidden_veto_sources": {
-            "score": True,
-            "calibration": True,
-            "preconfirmation": True,
-            "router": True,
-        },
-    }
-
-
 def build_executive_decision_object(
     candidate,
     plan: Optional[TradePlan] = None,
@@ -34439,7 +34127,6 @@ def build_executive_decision_object(
             if isinstance(row, dict) and (not thesis_key_value or row.get("thesis_key") == thesis_key_value)
         )
     staged = build_staged_executive_decision(candidate, bundle, stage_history)
-    execution_path_authority_audit = build_execution_path_authority_audit(staged, bundle)
     plan_execution_ready = bool(
         plan
         and getattr(plan, "valid", False)
@@ -34469,16 +34156,15 @@ def build_executive_decision_object(
         geometry_multiplier=geometry_multiplier,
     )
     final_risk = ledger.final_position_risk_pct if staged.allow_execution else 0.0
-    final_authority = final_execution_authority_v9548(staged, plan, candidate)
     contract = ExecutiveDecisionContract(
         state=staged.state,
-        allow_execution=bool(final_authority["allow"] and final_risk > 0.0),
+        allow_execution=staged.allow_execution and final_risk > 0.0,
         allowed_stage=staged.allowed_stage,
         final_risk_pct=round(final_risk, 4),
         required_next_event=staged.required_next_event,
         blocking_reasons=list(staged.blocking_reasons),
         warning_reasons=list(staged.warning_reasons),
-        audit={**staged.audit, "risk_ledger": asdict(ledger), "execution_path_authority": execution_path_authority_audit, "final_execution_authority": final_authority},
+        audit={**staged.audit, "risk_ledger": asdict(ledger)},
     )
     if staged.allow_execution and final_risk <= 0.0:
         contract = ExecutiveDecisionContract(
@@ -34489,7 +34175,7 @@ def build_executive_decision_object(
             required_next_event=None,
             blocking_reasons=sorted(set(list(staged.blocking_reasons) + ["NO_CAPITAL_AVAILABLE"])),
             warning_reasons=list(staged.warning_reasons),
-            audit={**staged.audit, "risk_ledger": asdict(ledger), "execution_path_authority": execution_path_authority_audit, "final_execution_authority": final_authority},
+            audit={**staged.audit, "risk_ledger": asdict(ledger)},
         )
 
     confidence = round((bundle.thesis_quality + bundle.execution_readiness + bundle.trade_quality) / 3.0, 2)
@@ -34522,8 +34208,6 @@ def build_executive_decision_object(
         "audit": {
             "director_reason": "setup -> thesis confidence -> timing -> entry quality -> trade geometry -> final risk",
             "single_authority": "EXECUTIVE_DECISION_LAYER",
-            "execution_path_authority": execution_path_authority_audit,
-            "final_execution_authority": final_authority,
             "modules_are_advisors": True,
             "has_hard_conflict": bool(bundle.conflict_report.actual_conflict and bundle.conflict_report.conflict_severity >= 0.45),
             "risk_blocked": bundle.conflict_report.capital_blocked,
@@ -39693,78 +39377,6 @@ def main() -> None:
 
     run_bot()
 
-
-
-# ==========================================================
-# v9.5.50 Counterfactual Execution Validation
-# Compact audit only. Does not create trade authority.
-# ==========================================================
-
-COUNTERFACTUAL_EXECUTION_AUDIT_SCHEMA = "counterfactual_execution_validation_v9.5.50"
-
-
-def init_counterfactual_execution_audit() -> dict[str, object]:
-    return {
-        "schema": COUNTERFACTUAL_EXECUTION_AUDIT_SCHEMA,
-        "evaluated_candidates": 0,
-        "old_execution_missed_r": 0.0,
-        "recovered_entries": 0,
-        "new_false_positive": 0,
-        "setup_impact": {},
-    }
-
-
-def update_counterfactual_execution_audit(
-    audit: dict[str, object],
-    *,
-    setup: str,
-    old_entry_available: bool,
-    recovered: bool,
-    missed_r: float,
-    false_positive: bool,
-) -> dict[str, object]:
-    """Aggregate-only counterfactual metrics. No candles/features/snapshots."""
-    audit["evaluated_candidates"] = int(audit.get("evaluated_candidates", 0)) + 1
-
-    if old_entry_available:
-        audit["old_execution_missed_r"] = round(
-            float(audit.get("old_execution_missed_r", 0.0)) + max(0.0, float(missed_r)),
-            4,
-        )
-
-    if recovered:
-        audit["recovered_entries"] = int(audit.get("recovered_entries", 0)) + 1
-
-    if false_positive:
-        audit["new_false_positive"] = int(audit.get("new_false_positive", 0)) + 1
-
-    impact = audit.setdefault("setup_impact", {})
-    if isinstance(impact, dict):
-        item = impact.setdefault(setup or "UNKNOWN", {
-            "recovered": 0,
-            "missed_r": 0.0,
-            "false_positive": 0,
-        })
-        item["recovered"] += 1 if recovered else 0
-        item["missed_r"] = round(item["missed_r"] + max(0.0, float(missed_r)), 4)
-        item["false_positive"] += 1 if false_positive else 0
-
-    return audit
-
-
-def counterfactual_execution_summary(audit: dict[str, object]) -> dict[str, object]:
-    """Returns only aggregate conclusions for backtest comparison."""
-    return {
-        "missed_R_due_old_execution": audit.get("old_execution_missed_r", 0.0),
-        "entries_recovered_by_authority": audit.get("recovered_entries", 0),
-        "additional_false_positive": audit.get("new_false_positive", 0),
-        "winning_setups": sorted(
-            [
-                name for name, data in (audit.get("setup_impact", {}) or {}).items()
-                if isinstance(data, dict) and data.get("recovered", 0) > 0
-            ]
-        ),
-    }
 
 if __name__ == "__main__":
     main()
