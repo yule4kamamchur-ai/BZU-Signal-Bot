@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.40 (Execution Latency Repair & 15M Cadence Integrity)
+BZU Professional Hybrid Confluence Signal Bot v9.5.41 (Router Chain & Saturation Telemetry Integrity)
 =============================================================================================
+Оновлення v9.5.41:
+- Router lifecycle is persisted end-to-end: DEFERRED -> causal next-scan RECHECK -> EXECUTED/EXPIRED, without resetting its watermark or recheck budget.
+- A bounded Router opportunity queue prevents a fresh deferred candidate from silently overwriting an older live route; one-position execution policy is unchanged.
+- Ranked top-N conversion telemetry is reconciled after the final Executive Router decision, so an Executive-approved draft cannot be reported as an entry after it was deferred.
+- LIQUIDITY_LADDER and FAILED_BREAKOUT_SHORT saturation audits are dependency-aware: skipped child predicates are NOT_APPLICABLE, not false hard blockers.
+- Targeted saturation migration archives mixed legacy counters and restarts only the two affected predicate ledgers; no score, RR, risk, TTL or setup thresholds are relaxed.
+
 Оновлення v9.5.40:
 - Execution Latency Repair: Evidence Assisted Earlier Routing reduces avoidable execution delay without changing signal authority.
 - Early routing uses existing validated evidence only; it cannot create entries from preconfirmation and cannot bypass Executive Layer.
@@ -399,8 +406,10 @@ def get_htf_state(candidate: Any) -> str:
 # CONFIGURATION
 # ==========================================================
 
-BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-cadence"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
+V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-cadence"
+V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -2012,6 +2021,14 @@ class Opportunity:
     # відстежити ланцюжок ARMED-сигнал -> (можливий) re-entry Decision, навіть
     # якщо сама Opportunity так і не конвертувалась у ActiveTrade.
     signal_id: str = ""
+    # v9.5.41: explicit Router episode lineage. These fields make the defer ->
+    # recheck -> terminal transition durable instead of inferring it from a
+    # mutable single ``state["opportunity"]`` slot.
+    router_chain_id: str = ""
+    deferred_from_action: str = ""
+    last_transition: str = "DEFERRED"
+    last_recheck_at: str = ""
+    parent_signal_id: str = ""
 
 
 @dataclass
@@ -7812,6 +7829,7 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 V9533_MEMORY_COMPATIBLE_ARCHITECTURES = frozenset({
     ARCHITECTURE_VERSION,
+    V9540_ARCHITECTURE_VERSION,
     "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE",
     "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE",
     "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING",
@@ -7830,6 +7848,7 @@ def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     # intentionally not carried across the boundary; active trades are handled
     # separately and remain preserved by load_state().
     opportunity_compatible=bool(source==ARCHITECTURE_VERSION or source in {
+        V9540_ARCHITECTURE_VERSION,
         "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE",
         "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE",
         "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING",
@@ -7873,6 +7892,11 @@ def load_state() -> dict[str, Any]:
         "architecture_version": ARCHITECTURE_VERSION,
         "active_trade": raw.get("active_trade"),
         "opportunity": raw.get("opportunity") if opportunity_compatible else None,
+        "router_opportunity_queue_v9541": (
+            list(raw.get("router_opportunity_queue_v9541") or [])[:4]
+            if opportunity_compatible
+            else []
+        ),
         "scan_3m": _normalize_scan3m_state(raw.get("scan_3m")) if same_arch else _empty_scan3m_state(),
         "regime_memory": raw.get("regime_memory", {}) if same_arch and isinstance(raw.get("regime_memory"), dict) else {},
         "stage_history": (
@@ -21271,6 +21295,7 @@ def evaluate_active_trade_shadow_scan(
     shadow_state["active_trade"] = None
     shadow_state["opportunity"] = None
     shadow_context = copy.deepcopy(context)
+    shadow_context["_audit_shadow_scan"] = True
     try:
         decision = evaluate_new_setup(shadow_context, shadow_state, journal)
         lifecycle = update_setup_lifecycle_counters(
@@ -23767,7 +23792,7 @@ def run_bot() -> None:
             entry_score_source=signal_entry_score_source,
         )
         store_active_trade(state, active)
-        state["opportunity"] = None
+        clear_router_chain_v9541(state, decision.candidate, journal, "EXECUTED")
         print(f"[INFO] Угода відкрита: {decision.side} {decision.setup_type} | signal_id={active.signal_id} trade_id={active.id}")
     elif decision.audit.get("opportunity_status") in {
         OpportunityStatus.ARMED.value, OpportunityStatus.CONFIRMATION_PENDING.value
@@ -23788,7 +23813,11 @@ def run_bot() -> None:
             execution_lane=decision.candidate.execution_lane, status=opp_status,
             ict_model=str(getattr(decision.candidate, "ict_model", "NONE") or "NONE"),
             selected_source=str(getattr(decision.candidate, "selected_source", "") or "RANKED_CANDIDATE"),
-            execution_tactic=str((((getattr(decision.candidate, "stage_plan", {}) or {}).get("execution_intelligence_v9532") or {}).get("router")) or ""),
+            execution_tactic=str(
+                ((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_intended_tactic"))
+                or (((getattr(decision.candidate, "stage_plan", {}) or {}).get("execution_intelligence_v9532") or {}).get("router"))
+                or ""
+            ),
             router_decision_3m_ts=int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_decision_3m_ts"), _preconfirm_as_of_ts(context))),
             router_recheck_count=int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_recheck_count"), 0.0)),
             execution_anchor_schema=(
@@ -23802,8 +23831,13 @@ def run_bot() -> None:
             model_thesis_age_minutes=candidate_model_thesis_age_minutes(decision.candidate),
             thesis_origin=str(getattr(decision.candidate, "thesis_origin", "MARKET_SCAN") or "MARKET_SCAN"),
             signal_id=decision.id,
+            router_chain_id=str((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_chain_id") or ""),
+            deferred_from_action=str((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_deferred_from_action") or ""),
+            last_transition="RECHECK_DEFERRED" if int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_recheck_count"), 0.0)) else "DEFERRED",
+            last_recheck_at=str((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_last_recheck_at") or ""),
+            parent_signal_id=str((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_parent_signal_id") or ""),
         )
-        store_opportunity(state, opp)
+        store_router_opportunity_v9541(state, opp, decision=decision, journal=journal, context=context)
         store_active_trade(state, None)
     else:
         store_active_trade(state, None)
@@ -37339,8 +37373,8 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("v9.5.39 confirmed acceptance probe risk cap must stay experimental/tiny")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.39 must not change canonical 58/68/75 thresholds")
-    if "v9.5.40" not in BOT_VERSION or "V9_5_40" not in ARCHITECTURE_VERSION:
-        errors.append("v9.5.40 release seal is not the effective runtime version")
+    if not any(tag in BOT_VERSION for tag in ("v9.5.40", "v9.5.41")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_40", "V9_5_41")):
+        errors.append("v9.5.40+ release seal is not the effective runtime version")
     if EXECUTION_SCHEDULER_CADENCE_MINUTES != 15 or FRESH_3M_EXECUTION_LEASE_BARS != 5:
         errors.append("v9.5.40 fresh-3M lease must cover exactly one 15M production scan")
     return {"valid": not errors, "errors": errors}
@@ -37468,7 +37502,8 @@ RELEASE_LINEAGE_V9540 = {
     "v9.5.37": {"bot": V9537_BOT_VERSION, "architecture": V9537_ARCHITECTURE_VERSION},
     "v9.5.38": {"bot": V9538_BOT_VERSION, "architecture": V9538_ARCHITECTURE_VERSION},
     "v9.5.39": {"bot": V9539_BOT_VERSION, "architecture": V9539_ARCHITECTURE_VERSION},
-    "v9.5.40": {"bot": BOT_VERSION, "architecture": ARCHITECTURE_VERSION},
+    "v9.5.40": {"bot": V9540_BOT_VERSION, "architecture": V9540_ARCHITECTURE_VERSION},
+    "v9.5.41": {"bot": BOT_VERSION, "architecture": ARCHITECTURE_VERSION},
 }
 
 
@@ -37547,7 +37582,7 @@ def v9540_regression_checks() -> list[tuple[str, bool]]:
     ))
     checks.append((
         "v9.5.40 runtime release seal and safety gates are effective",
-        BOT_VERSION==RELEASE_LINEAGE_V9540["v9.5.40"]["bot"]
+        V9540_BOT_VERSION==RELEASE_LINEAGE_V9540["v9.5.40"]["bot"]
         and validate_runtime_configuration().get("valid") is True,
     ))
     return checks
@@ -37603,8 +37638,988 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     }
     return out
 
+
+# ==========================================================
+# v9.5.41 ROUTER CHAIN + SATURATION TELEMETRY INTEGRITY
+# ==========================================================
+
+ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541 = 4
+ROUTER_LIFECYCLE_EVENT_LIMIT_V9541 = 96
+ROUTER_CHAIN_SCHEMA_V9541 = "router_chain_v9.5.41_causal_single_recheck"
+SATURATION_DEPENDENCY_SCHEMA_V9541 = "saturation_dependencies_v9.5.41"
+SATURATION_AUDIT_SCHEMA_V9541 = "saturation_root_cause_v9.5.41"
+
+
+def _opportunity_from_raw_v9541(raw: Any) -> Optional[Opportunity]:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        fields = Opportunity.__dataclass_fields__
+        return Opportunity(**{key: raw.get(key) for key in fields if key in raw})
+    except Exception:
+        return None
+
+
+def _router_tactic_v9541(item: Any) -> str:
+    direct = str(getattr(item, "execution_tactic", "") or "")
+    if direct:
+        return direct
+    stage = dict(getattr(item, "stage_plan", {}) or {})
+    compact = dict(stage.get("execution_intelligence_v9532") or {})
+    return str(
+        stage.get("router_intended_tactic")
+        or compact.get("router")
+        or ""
+    )
+
+
+def _router_chain_id_v9541(item: Any) -> str:
+    stage = dict(getattr(item, "stage_plan", {}) or {})
+    explicit = str(getattr(item, "router_chain_id", "") or stage.get("router_chain_id") or "")
+    if explicit:
+        return explicit
+    side = str(getattr(item, "side", Side.NEUTRAL.value) or Side.NEUTRAL.value)
+    setup = str(getattr(item, "setup_type", SetupType.NONE.value) or SetupType.NONE.value)
+    thesis = str(getattr(item, "thesis_key", "") or "NO_THESIS")
+    tactic = _router_tactic_v9541(item) or "UNSPECIFIED"
+    anchor = safe_float(
+        getattr(item, "trigger_level", 0.0),
+        safe_float(getattr(item, "execution_anchor", 0.0), 0.0),
+    )
+    return f"{side}|{setup}|{thesis}|{tactic}|{round(anchor, 8)}"
+
+
+def _is_router_deferred_opportunity_v9541(opp: Opportunity) -> bool:
+    return bool(
+        _router_tactic_v9541(opp) in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"}
+        or str(getattr(opp, "execution_lane", "") or "")
+        in {ExecutionLane.WAIT_RETEST.value, ExecutionLane.WAIT_CONFIRMATION.value}
+    )
+
+
+def _record_router_lifecycle_v9541(
+    journal: Optional[dict[str, Any]],
+    transition: str,
+    item: Any,
+    *,
+    reason: str = "",
+    details: Optional[dict[str, Any]] = None,
+) -> None:
+    if not isinstance(journal, dict):
+        return
+    ledger = journal.setdefault("setup_lifecycle_counters", {}).setdefault("router_lifecycle_v9541", {})
+    counters = ledger.setdefault("transition_counts", {})
+    transition = str(transition or "UNKNOWN")
+    counters[transition] = int(counters.get(transition) or 0) + 1
+    chain_id = _router_chain_id_v9541(item) if item is not None else ""
+    event = {
+        "time": iso_now(),
+        "transition": transition,
+        "router_chain_id": chain_id,
+        "side": str(getattr(item, "side", "") or ""),
+        "setup_type": str(getattr(item, "setup_type", "") or ""),
+        "tactic": _router_tactic_v9541(item) if item is not None else "",
+        "router_recheck_count": int(safe_float(getattr(item, "router_recheck_count", 0), 0.0)) if item is not None else 0,
+        "reason": str(reason or "")[:160],
+        "details": json_safe(details or {}),
+        "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
+    }
+    events = ledger.setdefault("events", [])
+    if not events or any(
+        events[-1].get(key) != event.get(key)
+        for key in ("transition", "router_chain_id", "reason")
+    ):
+        events.append(event)
+        del events[:-ROUTER_LIFECYCLE_EVENT_LIMIT_V9541]
+    if chain_id:
+        ledger.setdefault("latest_by_chain", {})[chain_id] = {
+            key: event[key] for key in (
+                "time", "transition", "side", "setup_type", "tactic",
+                "router_recheck_count", "reason", "schema_version",
+            )
+        }
+        latest = ledger["latest_by_chain"]
+        if len(latest) > ROUTER_LIFECYCLE_EVENT_LIMIT_V9541:
+            ordered = sorted(latest.items(), key=lambda pair: str((pair[1] or {}).get("time") or ""))
+            ledger["latest_by_chain"] = dict(ordered[-ROUTER_LIFECYCLE_EVENT_LIMIT_V9541:])
+    ledger["schema_version"] = ROUTER_CHAIN_SCHEMA_V9541
+    ledger["single_position_policy_unchanged"] = True
+    ledger["score_rr_risk_thresholds_changed"] = False
+
+
+def _router_opportunity_expiry_reason_v9541(opp: Opportunity) -> str:
+    expires = _parse_time_any(getattr(opp, "expires_at", "") or "")
+    if expires and now_utc() > expires:
+        return "GENERIC_OPPORTUNITY_TTL_EXPIRED"
+    created = _parse_time_any(getattr(opp, "created_at", "") or "")
+    age_minutes = (now_utc() - created).total_seconds() / 60.0 if created else 1e9
+    if _is_router_deferred_opportunity_v9541(opp):
+        if int(safe_float(getattr(opp, "router_recheck_count", 0), 0.0)) >= EXECUTION_ROUTER_MAX_RECHECKS:
+            return "CAUSAL_RECHECK_BUDGET_CONSUMED"
+        if age_minutes > EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES:
+            return "ROUTER_EMERGENCY_WALL_CAP_EXPIRED"
+    elif created and opportunity_is_expired(str(getattr(opp, "created_at", "") or "")):
+        return "OPPORTUNITY_EXPIRED"
+    return ""
+
+
+def _router_queue_candidates_v9541(state: dict[str, Any]) -> list[Opportunity]:
+    raw_rows = [row for row in (state.get("router_opportunity_queue_v9541") or []) if isinstance(row, dict)]
+    current = state.get("opportunity")
+    if isinstance(current, dict):
+        raw_rows.append(current)
+    unique: dict[str, Opportunity] = {}
+    tombstones = state.setdefault("router_lifecycle_tombstones_v9541", [])
+    for raw in raw_rows:
+        opp = _opportunity_from_raw_v9541(raw)
+        if opp is None:
+            continue
+        chain_id = _router_chain_id_v9541(opp)
+        opp.router_chain_id = chain_id
+        expiry_reason = _router_opportunity_expiry_reason_v9541(opp)
+        if expiry_reason:
+            tombstones.append({
+                "time": iso_now(), "transition": "EXPIRED", "router_chain_id": chain_id,
+                "side": opp.side, "setup_type": opp.setup_type, "tactic": _router_tactic_v9541(opp),
+                "router_recheck_count": int(opp.router_recheck_count or 0), "reason": expiry_reason,
+            })
+            continue
+        prior = unique.get(chain_id)
+        if prior is None or int(opp.router_recheck_count or 0) > int(prior.router_recheck_count or 0):
+            unique[chain_id] = opp
+    del tombstones[:-20]
+    return list(unique.values())
+
+
+_opportunity_from_state_v9540_effective = opportunity_from_state
+def opportunity_from_state(state: dict[str, Any]) -> Optional[Opportunity]:
+    candidates = _router_queue_candidates_v9541(state)
+    if not candidates:
+        state["router_opportunity_queue_v9541"] = []
+        state["opportunity"] = None
+        return None
+    # Honor the oldest still-live causal defer first. Score is a tie-breaker;
+    # it never changes the canonical admission score or the one-position policy.
+    def key(opp: Opportunity) -> tuple[int, float, int]:
+        created = _parse_time_any(getattr(opp, "created_at", "") or "")
+        created_ts = created.timestamp() if created else float("inf")
+        return (int(opp.router_recheck_count or 0), created_ts, -int(opp.score or 0))
+    candidates.sort(key=key)
+    state["router_opportunity_queue_v9541"] = [asdict(opp) for opp in candidates[:ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541]]
+    selected = candidates[0]
+    state["opportunity"] = asdict(selected)
+    return selected
+
+
+def _remove_router_chain_v9541(state: dict[str, Any], chain_id: str) -> None:
+    chain_id = str(chain_id or "")
+    queue = []
+    for raw in (state.get("router_opportunity_queue_v9541") or []):
+        opp = _opportunity_from_raw_v9541(raw)
+        if opp is not None and _router_chain_id_v9541(opp) != chain_id:
+            queue.append(asdict(opp))
+    state["router_opportunity_queue_v9541"] = queue[:ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541]
+    current = _opportunity_from_raw_v9541(state.get("opportunity"))
+    if current is not None and (not chain_id or _router_chain_id_v9541(current) == chain_id):
+        state["opportunity"] = None
+    if state.get("opportunity") is None and queue:
+        state["opportunity"] = dict(queue[0])
+
+
+def clear_router_chain_v9541(
+    state: dict[str, Any], item: Any, journal: Optional[dict[str, Any]], transition: str,
+) -> None:
+    stage = dict(getattr(item, "stage_plan", {}) or {}) if item is not None else {}
+    explicit_chain = str(getattr(item, "router_chain_id", "") or stage.get("router_chain_id") or "") if item is not None else ""
+    queued = _router_queue_candidates_v9541(state)
+    _flush_router_tombstones_v9541(state, journal if isinstance(journal, dict) else {})
+    if explicit_chain:
+        _record_router_lifecycle_v9541(journal, transition, item, reason="FINAL_EXECUTIVE_DISPOSITION")
+    # Any opened trade consumes the single-position capacity. Keeping unrelated
+    # deferred routes alive until after that trade closes would turn a causal
+    # next-scan setup into a stale future entry, so all remaining routes end here.
+    for queued_opp in queued:
+        queued_chain = _router_chain_id_v9541(queued_opp)
+        if explicit_chain and queued_chain == explicit_chain:
+            continue
+        _record_router_lifecycle_v9541(
+            journal, "EXPIRED", queued_opp,
+            reason="SINGLE_POSITION_CAPACITY_CONSUMED_BY_EXECUTED_ROUTE",
+        )
+    state["router_opportunity_queue_v9541"] = []
+    state["opportunity"] = None
+
+
+def store_router_opportunity_v9541(
+    state: dict[str, Any],
+    opp: Optional[Opportunity],
+    *,
+    decision: Optional[Decision] = None,
+    journal: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    if opp is None:
+        state["opportunity"] = None
+        return
+    if not _is_router_deferred_opportunity_v9541(opp):
+        store_opportunity(state, opp)
+        return
+    chain_id = _router_chain_id_v9541(opp)
+    opp.router_chain_id = chain_id
+    if decision is not None:
+        opp.parent_signal_id = str(opp.parent_signal_id or opp.signal_id or decision.id)
+    rechecks = int(safe_float(getattr(opp, "router_recheck_count", 0), 0.0))
+    if rechecks >= EXECUTION_ROUTER_MAX_RECHECKS:
+        _remove_router_chain_v9541(state, chain_id)
+        _record_router_lifecycle_v9541(
+            journal, "EXPIRED", opp,
+            reason="ONE_CAUSAL_RECHECK_COMPLETED_WITHOUT_EXECUTION",
+        )
+        return
+
+    queue = _router_queue_candidates_v9541(state)
+    _flush_router_tombstones_v9541(state, journal if isinstance(journal, dict) else {})
+    merged: list[Opportunity] = []
+    matched = False
+    for existing in queue:
+        if _router_chain_id_v9541(existing) != chain_id:
+            merged.append(existing)
+            continue
+        matched = True
+        # Never reset the original causal clock or recheck budget when the same
+        # setup is deferred again by a later scan.
+        opp.created_at = existing.created_at or opp.created_at
+        opp.router_decision_3m_ts = int(existing.router_decision_3m_ts or opp.router_decision_3m_ts)
+        opp.router_recheck_count = max(int(existing.router_recheck_count or 0), rechecks)
+        opp.signal_id = str(existing.signal_id or opp.signal_id)
+        opp.parent_signal_id = str(existing.parent_signal_id or existing.signal_id or opp.parent_signal_id)
+        opp.last_transition = "RECHECK_PENDING"
+        merged.append(opp)
+    if not matched:
+        opp.last_transition = "DEFERRED"
+        merged.append(opp)
+
+    merged.sort(key=lambda item: (
+        int(item.router_recheck_count or 0),
+        (_parse_time_any(item.created_at).timestamp() if _parse_time_any(item.created_at) else float("inf")),
+        -int(item.score or 0),
+    ))
+    evicted = merged[ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541:]
+    kept = merged[:ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541]
+    state["router_opportunity_queue_v9541"] = [asdict(item) for item in kept]
+    state["opportunity"] = asdict(kept[0]) if kept else None
+    _record_router_lifecycle_v9541(
+        journal, "RECHECK_PENDING" if matched else "DEFERRED", opp,
+        reason="EXECUTIVE_ROUTER_DEFER_PERSISTED",
+        details={
+            "queue_depth": len(kept),
+            "deferred_from_action": str(opp.deferred_from_action or ""),
+            "decision_id": str(getattr(decision, "id", "") or ""),
+            "causal_watermark": int(opp.router_decision_3m_ts or 0),
+        },
+    )
+    for item in evicted:
+        _record_router_lifecycle_v9541(journal, "EXPIRED", item, reason="BOUNDED_ROUTER_QUEUE_EVICTION")
+
+
+def _flush_router_tombstones_v9541(state: dict[str, Any], journal: dict[str, Any]) -> None:
+    tombstones = [row for row in (state.pop("router_lifecycle_tombstones_v9541", []) or []) if isinstance(row, dict)]
+    for row in tombstones:
+        shadow = _opportunity_from_raw_v9541({
+            "side": row.get("side") or Side.NEUTRAL.value,
+            "setup_type": row.get("setup_type") or SetupType.NONE.value,
+            "setup_family": SetupFamily.NONE.value,
+            "created_at": row.get("time") or iso_now(),
+            "expires_at": row.get("time") or iso_now(),
+            "score": 0,
+            "trigger_level": 0.0,
+            "invalidation_level": 0.0,
+            "execution_tactic": row.get("tactic") or "",
+            "router_chain_id": row.get("router_chain_id") or "",
+            "router_recheck_count": row.get("router_recheck_count") or 0,
+        })
+        _record_router_lifecycle_v9541(journal, "EXPIRED", shadow, reason=str(row.get("reason") or "ROUTER_TTL_EXPIRED"))
+
+
+_candidate_from_missed_opportunity_v9540_effective = candidate_from_missed_opportunity
+def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
+    lifecycle = router_wait_lifecycle_v9534(opp, context) if _is_router_deferred_opportunity_v9541(opp) else {}
+    candidate = _candidate_from_missed_opportunity_v9540_effective(opp, context)
+    if not _is_router_deferred_opportunity_v9541(opp):
+        return candidate
+    post_bars = int(lifecycle.get("post_decision_confirmed_3m_bars") or 0)
+    consumed = bool(post_bars > 0 and not lifecycle.get("expired"))
+    next_count = int(safe_float(getattr(opp, "router_recheck_count", 0), 0.0)) + int(consumed)
+    chain_id = _router_chain_id_v9541(opp)
+    marker = {
+        "router_chain_id": chain_id,
+        "consumed": consumed,
+        "post_decision_confirmed_3m_bars": post_bars,
+        "router_recheck_count": next_count,
+        "tactic": _router_tactic_v9541(opp),
+        "opportunity": asdict(opp),
+        "candidate_created": candidate is not None,
+        "lifecycle": lifecycle,
+    }
+    markers = context.setdefault("_router_recheck_markers_v9541", [])
+    if not any(str(row.get("router_chain_id") or "") == chain_id for row in markers if isinstance(row, dict)):
+        markers.append(marker)
+    if candidate is not None:
+        candidate.stage_plan = candidate.stage_plan or {}
+        candidate.stage_plan["router_chain_id"] = chain_id
+        candidate.stage_plan["router_parent_signal_id"] = str(getattr(opp, "parent_signal_id", "") or getattr(opp, "signal_id", "") or "")
+        candidate.stage_plan["router_decision_3m_ts"] = int(getattr(opp, "router_decision_3m_ts", 0) or lifecycle.get("decision_3m_watermark_ts") or 0)
+        candidate.stage_plan["router_recheck_count"] = next_count
+        candidate.stage_plan["router_recheck_consumed"] = consumed
+        candidate.stage_plan["router_last_recheck_at"] = iso_now() if consumed else ""
+        candidate.stage_plan["router_lifecycle_v9541"] = {
+            "transition": "RECHECK_EVALUATED" if consumed else "WAITING_CAUSAL_BAR",
+            "post_decision_confirmed_3m_bars": post_bars,
+            "recheck_budget_consumed": consumed,
+            "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
+        }
+    return candidate
+
+
+_executive_route_resolution_v9540_effective = executive_route_resolution_v9533
+def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decision:
+    original_action = str(getattr(decision, "action", Action.NO_SETUP.value) or Action.NO_SETUP.value)
+    out = _executive_route_resolution_v9540_effective(decision, tactic)
+    candidate = getattr(out, "candidate", None)
+    if candidate is None:
+        return out
+    out.audit = out.audit or {}
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    tactic = str(tactic or "MARKET_NOW")
+    chain_id = _router_chain_id_v9541(candidate)
+    if original_action in EXECUTABLE_ENTRY_ACTIONS and out.action == Action.NO_SETUP.value and tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"}:
+        stage.update({
+            "router_chain_id": chain_id,
+            "router_intended_tactic": tactic,
+            "router_deferred_from_action": original_action,
+            "router_final_disposition": "DEFERRED",
+            "router_parent_signal_id": str(getattr(out, "id", "") or ""),
+        })
+        out.audit.setdefault("router_chain_v9541", {}).update({
+            "router_chain_id": chain_id,
+            "tactic": tactic,
+            "deferred_from_action": original_action,
+            "final_action": out.action,
+            "transition": "DEFERRED",
+            "persist_for_causal_recheck": True,
+            "max_rechecks": EXECUTION_ROUTER_MAX_RECHECKS,
+            "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
+        })
+    elif out.action in EXECUTABLE_ENTRY_ACTIONS:
+        stage["router_final_disposition"] = "EXECUTE_NOW"
+    return out
+
+
+def _reconcile_ranked_router_telemetry_v9541(
+    decision: Decision, journal: dict[str, Any],
+) -> dict[str, Any]:
+    decision.audit = decision.audit or {}
+    report = dict((decision.audit or {}).get("ranked_top_n_conversion") or {})
+    rows = [dict(row) for row in (report.get("rows") or []) if isinstance(row, dict)]
+    selected = next((row for row in rows if row.get("selected")), None)
+    candidate = decision.candidate
+    stage = dict(getattr(candidate, "stage_plan", {}) or {}) if candidate is not None else {}
+    route_audit = dict((decision.audit or {}).get("router_chain_v9541") or {})
+    tactic = str(route_audit.get("tactic") or stage.get("router_intended_tactic") or "MARKET_NOW")
+    executive = (((decision.audit or {}).get("executive_director") or {}).get("report") or {}).get("executive_decision") or {}
+    final_executable = bool(
+        decision.action in EXECUTABLE_ENTRY_ACTIONS
+        and decision.plan is not None and decision.plan.valid and decision.plan.execution_ready
+        and bool(executive.get("allow_execution", True))
+    )
+    deferred = bool(decision.action == Action.NO_SETUP.value and tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"} and (route_audit or stage.get("router_final_disposition") == "DEFERRED"))
+    final_blocker = "EXECUTION_ROUTER_TACTIC" if deferred else "NONE" if final_executable else str(((decision.audit or {}).get("execution_funnel") or {}).get("blocking_layer") or "EXECUTIVE_POLICY")
+    old_would = False
+    old_primary = "NONE"
+    if selected is not None:
+        old_would = bool(selected.get("would_executable"))
+        old_primary = str(selected.get("primary_blocker") or "NONE")
+        selected.setdefault("pre_router_outcome", {
+            "would_executable": old_would,
+            "would_action": str(selected.get("would_action") or Action.NO_SETUP.value),
+            "would_publish_entry": bool(selected.get("would_publish_entry")),
+            "blocking_layer": str(selected.get("blocking_layer") or ""),
+            "primary_blocker": old_primary,
+        })
+        selected.update({
+            "would_executable": final_executable,
+            "would_action": str(decision.action),
+            "would_publish_entry": bool(decision.action in EXECUTABLE_ENTRY_ACTIONS),
+            "blocking_layer": "" if final_executable else final_blocker,
+            "blocking_reasons": [] if final_executable else ([f"ROUTER_DEFERRED:{tactic}"] if deferred else list(selected.get("blocking_reasons") or [])),
+            "primary_blocker": "NONE" if final_executable else final_blocker,
+            "final_router_resolution": {
+                "tactic": tactic,
+                "final_action": str(decision.action),
+                "final_allow_execution": final_executable,
+                "deferred_from_action": str(route_audit.get("deferred_from_action") or stage.get("router_deferred_from_action") or ""),
+                "opportunity_status": str((decision.audit or {}).get("opportunity_status") or ""),
+                "required_next_event": str(executive.get("required_next_event") or ""),
+                "authoritative": True,
+                "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
+            },
+        })
+    report["rows"] = rows
+    report["would_executable_count"] = max(
+        0,
+        int(report.get("would_executable_count") or 0) - int(old_would) + int(final_executable if selected is not None else False),
+    )
+    blockers, setups = _ranked_audit_summary_counts(rows)
+    report["primary_blocker_counts"] = blockers
+    report["setup_counts"] = setups
+    report["final_selected_outcome"] = {
+        "action": str(decision.action),
+        "would_executable": final_executable,
+        "blocking_layer": "" if final_executable else final_blocker,
+        "tactic": tactic,
+        "router_deferred": deferred,
+        "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
+    }
+    report["telemetry_finalized_after_router"] = True
+    report["schema_version"] = "ranked_conversion_v9.5.41_final_router_outcome"
+    decision.audit["ranked_top_n_conversion"] = report
+
+    stored = journal.get("ranked_conversion_audits") or []
+    if (
+        selected is not None
+        and stored and isinstance(stored[-1], dict)
+        and str(stored[-1].get("time") or "") == str(report.get("time") or "")
+    ):
+        last = stored[-1]
+        prior_count = int(last.get("would_executable_count") or 0)
+        last["would_executable_count"] = max(0, prior_count - int(old_would) + int(final_executable if selected is not None else False))
+        counts = dict(last.get("primary_blocker_counts") or {})
+        if selected is not None:
+            if int(counts.get(old_primary) or 0) > 0:
+                counts[old_primary] = int(counts.get(old_primary) or 0) - 1
+                if counts[old_primary] <= 0:
+                    counts.pop(old_primary, None)
+            new_primary = "NONE" if final_executable else final_blocker
+            counts[new_primary] = int(counts.get(new_primary) or 0) + 1
+        last["primary_blocker_counts"] = counts
+        last["final_selected_outcome"] = dict(report["final_selected_outcome"])
+        last["telemetry_finalized_after_router"] = True
+        last["schema_version"] = "ranked_conversion_v9.5.41_final_router_outcome"
+        stored_rows = [row for row in (last.get("rows") or []) if isinstance(row, dict)]
+        selected_episode = str((selected or {}).get("episode_key") or "")
+        for index, row in enumerate(stored_rows):
+            if row.get("selected") or (selected_episode and str(row.get("episode_key") or "") == selected_episode):
+                stored_rows[index] = copy.deepcopy(selected)
+                break
+        if stored_rows:
+            last["rows"] = stored_rows
+    return report["final_selected_outcome"]
+
+
+def _consume_router_rechecks_v9541(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any], decision: Decision,
+) -> None:
+    markers = [row for row in (context.pop("_router_recheck_markers_v9541", []) or []) if isinstance(row, dict)]
+    if bool(context.get("_audit_shadow_scan")):
+        return
+    final_chain = _router_chain_id_v9541(decision.candidate) if decision.candidate is not None else ""
+    for marker in markers:
+        if not marker.get("consumed"):
+            continue
+        opp = _opportunity_from_raw_v9541(marker.get("opportunity"))
+        if opp is None:
+            continue
+        opp.router_recheck_count = int(marker.get("router_recheck_count") or 1)
+        opp.last_recheck_at = iso_now()
+        opp.last_transition = "RECHECK_EVALUATED"
+        chain_id = str(marker.get("router_chain_id") or _router_chain_id_v9541(opp))
+        _record_router_lifecycle_v9541(
+            journal, "RECHECK_EVALUATED", opp,
+            reason="NEW_CONFIRMED_3M_BAR_AFTER_ROUTER_WATERMARK",
+            details={
+                "post_decision_confirmed_3m_bars": int(marker.get("post_decision_confirmed_3m_bars") or 0),
+                "candidate_created": bool(marker.get("candidate_created")),
+                "final_action": str(decision.action),
+                "selected_same_chain": final_chain == chain_id,
+            },
+        )
+        _remove_router_chain_v9541(state, chain_id)
+        if final_chain == chain_id and decision.action in EXECUTABLE_ENTRY_ACTIONS:
+            _record_router_lifecycle_v9541(journal, "EXECUTED", opp, reason="CAUSAL_RECHECK_EXECUTED")
+        else:
+            reason = "CAUSAL_RECHECK_COMPLETED_WITHOUT_EXECUTION" if final_chain == chain_id else "CAUSAL_RECHECK_LOST_FINAL_SELECTION"
+            _record_router_lifecycle_v9541(journal, "EXPIRED", opp, reason=reason)
+
+
+_evaluate_new_setup_v9540_effective = evaluate_new_setup
+def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
+    decision = _evaluate_new_setup_v9540_effective(context, state, journal)
+    _flush_router_tombstones_v9541(state, journal)
+    _consume_router_rechecks_v9541(context, state, journal, decision)
+    final_outcome = _reconcile_ranked_router_telemetry_v9541(decision, journal)
+    decision.audit.setdefault("router_chain_v9541", {}).update({
+        "final_telemetry": final_outcome,
+        "queue_depth_after_evaluation": len(state.get("router_opportunity_queue_v9541") or []),
+        "score_rr_risk_thresholds_changed": False,
+        "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
+    })
+    return decision
+
+
+def _apply_dependency_contract_v9541(
+    row: dict[str, Any], applicability: dict[str, bool], dependencies: dict[str, list[str]],
+) -> dict[str, Any]:
+    conditions = dict(row.get("conditions") or {})
+    normalized = {str(name): bool(value) for name, value in applicability.items()}
+    row["condition_applicability"] = normalized
+    row["predicate_dependencies"] = {str(name): [str(value) for value in values] for name, values in dependencies.items()}
+    row["not_applicable_predicates"] = sorted(
+        name for name, value in conditions.items()
+        if isinstance(value, bool) and not normalized.get(str(name), True)
+    )
+    blockers = [
+        name for name, value in conditions.items()
+        if isinstance(value, bool) and normalized.get(str(name), True) and not value
+    ] if not bool(row.get("fired")) else []
+    row["blockers"] = blockers
+    row["dominant_blocker"] = blockers[0] if blockers else ""
+    row["dependency_contract_schema"] = SATURATION_DEPENDENCY_SCHEMA_V9541
+    row["threshold_mutation_allowed"] = False
+    return row
+
+
+_build_fresh_execution_reachability_v9540_effective = build_fresh_execution_reachability
+def build_fresh_execution_reachability(
+    side: str, *, breakout_retest: dict[str, Any], fresh_base: dict[str, Any], pullback: dict[str, Any],
+    momentum: dict[str, Any], failed_breakout_short: dict[str, Any], failed_breakout_short_local: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows = _build_fresh_execution_reachability_v9540_effective(
+        side, breakout_retest=breakout_retest, fresh_base=fresh_base, pullback=pullback,
+        momentum=momentum, failed_breakout_short=failed_breakout_short,
+        failed_breakout_short_local=failed_breakout_short_local,
+    )
+    for row in rows:
+        if str(row.get("setup_type") or "") != SetupType.FAILED_BREAKOUT_SHORT.value:
+            continue
+        cond = dict(row.get("conditions") or {})
+        active = bool(cond.get("failed_breakout_active"))
+        ready15 = bool(cond.get("failed_breakout_15m_ready"))
+        location = bool(cond.get("location_inside_execution_envelope"))
+        _apply_dependency_contract_v9541(row, {
+            "failed_breakout_active": True,
+            "failed_breakout_15m_ready": active,
+            "location_inside_execution_envelope": active and ready15,
+            "fresh_3m_evidence_leased": active and ready15 and location,
+            "no_chase_risk": active and ready15 and location,
+        }, {
+            "failed_breakout_15m_ready": ["failed_breakout_active"],
+            "location_inside_execution_envelope": ["failed_breakout_active", "failed_breakout_15m_ready"],
+            "fresh_3m_evidence_leased": ["failed_breakout_active", "failed_breakout_15m_ready", "location_inside_execution_envelope"],
+            "no_chase_risk": ["failed_breakout_active", "failed_breakout_15m_ready", "location_inside_execution_envelope"],
+        })
+    return rows
+
+
+_build_dormant_detector_reachability_v9540_effective = build_dormant_detector_reachability
+def build_dormant_detector_reachability(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    rows = _build_dormant_detector_reachability_v9540_effective(*args, **kwargs)
+    for row in rows:
+        if str(row.get("setup_type") or "") != SetupType.LIQUIDITY_LADDER.value:
+            continue
+        cond = dict(row.get("conditions") or {})
+        prereqs = bool(
+            cond.get("htf_route_supported")
+            and cond.get("target_count_pass")
+            and cond.get("ladder_score_pass")
+            and cond.get("kind_diversity_pass")
+        )
+        route = bool(cond.get("route_active"))
+        scan_ready = bool(cond.get("scan_stage_execution_ready"))
+        _apply_dependency_contract_v9541(row, {
+            "htf_route_supported": True,
+            "target_count_pass": True,
+            "ladder_score_pass": bool(cond.get("target_count_pass")),
+            "kind_diversity_pass": bool(cond.get("target_count_pass")),
+            "route_active": prereqs,
+            "scan_stage_execution_ready": route,
+            "trigger_freshness_pass": route and scan_ready,
+            "retest_reanchor_ready": route,
+            "acceptance_ready": route,
+            "model_local_3m_ready": route,
+            "live_3m_trigger_ready": route and scan_ready and bool(cond.get("trigger_freshness_pass")),
+            "execution_confirmation_ready": route,
+        }, {
+            "ladder_score_pass": ["target_count_pass"],
+            "kind_diversity_pass": ["target_count_pass"],
+            "route_active": ["htf_route_supported", "target_count_pass", "ladder_score_pass", "kind_diversity_pass"],
+            "scan_stage_execution_ready": ["route_active"],
+            "trigger_freshness_pass": ["route_active", "scan_stage_execution_ready"],
+            "retest_reanchor_ready": ["route_active"],
+            "acceptance_ready": ["route_active"],
+            "model_local_3m_ready": ["route_active"],
+            "live_3m_trigger_ready": ["route_active", "scan_stage_execution_ready", "trigger_freshness_pass"],
+            "execution_confirmation_ready": ["route_active", "ANY_OF:retest_reanchor_ready|acceptance_ready|model_local_3m_ready|live_3m_trigger_ready"],
+        })
+    return rows
+
+
+def _reset_target_saturation_predicates_v9541(journal: dict[str, Any]) -> dict[str, Any]:
+    rows = (((journal or {}).get("setup_lifecycle_counters") or {}).get("detector_reachability") or {})
+    migrated: list[str] = []
+    for setup in (SetupType.LIQUIDITY_LADDER.value, SetupType.FAILED_BREAKOUT_SHORT.value):
+        row = rows.get(setup)
+        if not isinstance(row, dict) or str(row.get("saturation_dependency_schema") or "") == SATURATION_DEPENDENCY_SCHEMA_V9541:
+            continue
+        snapshot = {
+            "migrated_at": iso_now(),
+            "reason": "CHILD_PREDICATES_WERE_COUNTED_FALSE_WHILE_PARENT_PRECONDITIONS_WERE_INACTIVE",
+            "condition_true_counts": json_safe(row.get("condition_true_counts") or {}),
+            "condition_false_counts": json_safe(row.get("condition_false_counts") or {}),
+            "condition_observation_counts": json_safe(row.get("condition_observation_counts") or {}),
+            "condition_false_rates": json_safe(row.get("condition_false_rates") or {}),
+            "condition_not_applicable_counts": json_safe(row.get("condition_not_applicable_counts") or {}),
+            "current_schema_evaluated": int(row.get("current_schema_evaluated") or 0),
+            "current_schema_fired": int(row.get("current_schema_fired") or 0),
+            "health_status": str(row.get("health_status") or "OBSERVING"),
+            "saturated_predicates": list(row.get("saturated_predicates") or []),
+            "to_schema": SATURATION_DEPENDENCY_SCHEMA_V9541,
+        }
+        archives = row.setdefault("dependency_schema_archives", [])
+        archives.append(snapshot)
+        del archives[:-3]
+        for key in (
+            "condition_true_counts", "condition_false_counts", "condition_observation_counts",
+            "condition_false_rates", "condition_not_applicable_counts", "predicate_dependencies",
+            "margin_statistics", "current_schema_blocker_counts", "current_schema_scan_mode_counts",
+            "current_schema_diagnostic_reason_counts", "path_true_counts", "path_observation_counts",
+        ):
+            row[key] = {}
+        row["current_schema_evaluated"] = 0
+        row["current_schema_fired"] = 0
+        row["saturated_predicates"] = []
+        row["health_status"] = "OBSERVING"
+        row["saturation_dependency_schema"] = SATURATION_DEPENDENCY_SCHEMA_V9541
+        row["saturation_migration_policy"] = {
+            "scope": "ONLY_LIQUIDITY_LADDER_AND_FAILED_BREAKOUT_SHORT",
+            "lifetime_evaluated_and_fired_preserved": True,
+            "live_thresholds_changed": False,
+            "schema_version": SATURATION_DEPENDENCY_SCHEMA_V9541,
+        }
+        migrated.append(setup)
+    return {
+        "changed": bool(migrated),
+        "migrated_setups": migrated,
+        "schema_version": SATURATION_DEPENDENCY_SCHEMA_V9541,
+    }
+
+
+def _saturation_source_row_v9541(journal: dict[str, Any], setup: str) -> tuple[dict[str, Any], str]:
+    row = dict((((journal.get("setup_lifecycle_counters") or {}).get("detector_reachability") or {}).get(setup) or {}))
+    if (
+        str(row.get("saturation_dependency_schema") or "") == SATURATION_DEPENDENCY_SCHEMA_V9541
+        and int(row.get("current_schema_evaluated") or 0) > 0
+    ):
+        return row, "CURRENT_DEPENDENCY_AWARE_COUNTERS"
+    archives = [item for item in (row.get("dependency_schema_archives") or []) if isinstance(item, dict)]
+    if archives:
+        return dict(archives[-1]), "ARCHIVED_PRE_V9541_MIXED_COUNTERS"
+    return row, "PRE_V9541_MIXED_COUNTERS" if row else "NO_COUNTERS"
+
+
+def saturation_root_cause_audit_v9541(journal: dict[str, Any]) -> dict[str, Any]:
+    contracts = {
+        SetupType.LIQUIDITY_LADDER.value: {
+            "upstream": ["htf_route_supported", "target_count_pass", "ladder_score_pass", "kind_diversity_pass", "route_active"],
+            "dependencies": {
+                "route_active": ["htf_route_supported", "target_count_pass", "ladder_score_pass", "kind_diversity_pass"],
+                "model_local_3m_ready": ["route_active"],
+                "scan_stage_execution_ready": ["route_active"],
+                "execution_confirmation_ready": ["route_active"],
+            },
+        },
+        SetupType.FAILED_BREAKOUT_SHORT.value: {
+            "upstream": ["failed_breakout_active", "failed_breakout_15m_ready"],
+            "dependencies": {
+                "failed_breakout_15m_ready": ["failed_breakout_active"],
+                "location_inside_execution_envelope": ["failed_breakout_15m_ready"],
+                "fresh_3m_evidence_leased": ["failed_breakout_15m_ready", "location_inside_execution_envelope"],
+            },
+        },
+    }
+    findings: dict[str, Any] = {}
+    for setup, contract in contracts.items():
+        row, source = _saturation_source_row_v9541(journal, setup)
+        true_counts = {str(k): int(v or 0) for k, v in (row.get("condition_true_counts") or {}).items()}
+        false_counts = {str(k): int(v or 0) for k, v in (row.get("condition_false_counts") or {}).items()}
+        observations = {str(k): int(v or 0) for k, v in (row.get("condition_observation_counts") or {}).items()}
+        for name in set(true_counts) | set(false_counts):
+            observations.setdefault(name, int(true_counts.get(name) or 0) + int(false_counts.get(name) or 0))
+        inflation = []
+        for child, parents in contract["dependencies"].items():
+            child_obs = int(observations.get(child) or 0)
+            for parent in parents:
+                parent_true = int(true_counts.get(parent) or 0)
+                if child_obs > parent_true:
+                    inflation.append({
+                        "child": child, "child_observations": child_obs,
+                        "parent": parent, "parent_true": parent_true,
+                        "excess_false_observations": child_obs - parent_true,
+                    })
+        blocker_rows = sorted(
+            ({
+                "predicate": name,
+                "false": count,
+                "true": int(true_counts.get(name) or 0),
+                "observations": int(observations.get(name) or 0),
+                "false_rate": round(count / max(int(observations.get(name) or 0), 1), 6),
+                "stage": "UPSTREAM" if name in contract["upstream"] else "DOWNSTREAM",
+            } for name, count in false_counts.items()),
+            key=lambda item: (-int(item["false"]), str(item["predicate"])),
+        )
+        evaluated = int(row.get("current_schema_evaluated") or row.get("evaluated") or 0)
+        fired = int(row.get("current_schema_fired") or row.get("fired") or 0)
+        upstream_true = sum(int(true_counts.get(name) or 0) for name in contract["upstream"])
+        if inflation:
+            classification = "TELEMETRY_DEPENDENCY_SATURATION"
+        elif fired > 0:
+            classification = "REACHABLE_LOW_FREQUENCY" if fired < max(3, evaluated // 20) else "REACHABLE"
+        elif evaluated < DORMANT_PREDICATE_SATURATION_MIN_OBSERVATIONS:
+            classification = "OBSERVING"
+        elif upstream_true == 0:
+            classification = "MARKET_PREREQUISITES_DORMANT"
+        else:
+            classification = "EXECUTION_CONFIRMATION_STARVED"
+        findings[setup] = {
+            "source": source,
+            "evaluated": evaluated,
+            "fired": fired,
+            "reported_health_status": str(row.get("health_status") or "OBSERVING"),
+            "classification": classification,
+            "dependency_count_inflation": inflation,
+            "root_causes_ranked": blocker_rows[:8],
+            "saturated_predicates_reported": list(row.get("saturated_predicates") or []),
+            "repair": "DEPENDENCY_APPLICABILITY_FIXED_AND_AFFECTED_COUNTERS_ARCHIVED",
+            "thresholds_relaxed": False,
+            "live_detector_logic_changed": False,
+        }
+    return {
+        "setups": findings,
+        "conclusion": "SATURATION_IS_SEPARATED_INTO_MARKET_DORMANCY_VS_TELEMETRY_DEPENDENCY_INFLATION",
+        "authority": "AUDIT_ONLY_NO_THRESHOLD_OR_ENTRY_OVERRIDE",
+        "canonical_thresholds": {"armed": ARMED_SCORE_BASE, "risky": RISKY_ENTRY_SCORE_BASE, "full": ENTRY_SCORE_BASE},
+        "schema_version": SATURATION_AUDIT_SCHEMA_V9541,
+        "updated_at": iso_now(),
+    }
+
+
+_load_journal_v9540_effective = load_journal
+def load_journal() -> dict[str, Any]:
+    journal = _load_journal_v9540_effective()
+    migration = _reset_target_saturation_predicates_v9541(journal)
+    audit = saturation_root_cause_audit_v9541(journal)
+    journal.setdefault("dormant_detector_audit_upgrade", {})["saturation_root_cause_v9541"] = audit
+    journal["dormant_detector_audit_upgrade"]["targeted_dependency_migration_v9541"] = migration
+    return journal
+
+
+_save_journal_v9540_effective = save_journal
+def save_journal(journal: dict[str, Any]) -> None:
+    migration = _reset_target_saturation_predicates_v9541(journal)
+    audit = saturation_root_cause_audit_v9541(journal)
+    upgrade = journal.setdefault("dormant_detector_audit_upgrade", {})
+    upgrade["saturation_root_cause_v9541"] = audit
+    upgrade["targeted_dependency_migration_v9541"] = migration
+    return _save_journal_v9540_effective(journal)
+
+
+_validate_runtime_configuration_v9540_effective = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9540_effective()
+    errors = list(report.get("errors") or [])
+    if "v9.5.41" not in BOT_VERSION or "V9_5_41" not in ARCHITECTURE_VERSION:
+        errors.append("v9.5.41 Router-chain release seal is not effective")
+    if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
+        errors.append("v9.5.41 must preserve canonical 58/68/75 score gates")
+    if EXECUTION_ROUTER_MAX_RECHECKS != 1:
+        errors.append("v9.5.41 Router lifecycle must consume exactly one causal recheck")
+    if ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541 > 4:
+        errors.append("v9.5.41 Router opportunity queue must remain tightly bounded")
+    return {"valid": not errors, "errors": errors}
+
+
+def v9541_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    prior_upgrade = state_upgrade_policy_v9533(V9540_ARCHITECTURE_VERSION)
+    checks.append((
+        "v9.5.41 upgrade preserves v9.5.40 scan memory and Router opportunity lineage",
+        prior_upgrade.get("memory_compatible") is True
+        and prior_upgrade.get("opportunity_lineage_compatible") is True,
+    ))
+    now = now_utc()
+    journal: dict[str, Any] = {}
+    state: dict[str, Any] = {}
+    old = Opportunity(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, created_at=(now - timedelta(minutes=2)).isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(), score=73, trigger_level=100.0,
+        invalidation_level=99.0, execution_lane=ExecutionLane.WAIT_CONFIRMATION.value,
+        execution_tactic="ONE_3M_CONFIRM", router_decision_3m_ts=1_800_000_000_000,
+        router_chain_id="old-chain", deferred_from_action=Action.ENTRY.value,
+    )
+    newer = Opportunity(
+        side=Side.SHORT.value, setup_type=SetupType.FAILED_BREAKOUT_SHORT.value,
+        setup_family=SetupFamily.STRUCTURAL_TRANSITION.value, created_at=now.isoformat(),
+        expires_at=(now + timedelta(hours=1)).isoformat(), score=60, trigger_level=101.0,
+        invalidation_level=102.0, execution_lane=ExecutionLane.WAIT_RETEST.value,
+        execution_tactic="FIRST_RETEST", router_decision_3m_ts=1_800_000_180_000,
+        router_chain_id="new-chain", deferred_from_action=Action.RISKY_ENTRY.value,
+    )
+    store_router_opportunity_v9541(state, old, journal=journal)
+    store_router_opportunity_v9541(state, newer, journal=journal)
+    selected = opportunity_from_state(state)
+    checks.append((
+        "v9.5.41 a fresh defer cannot silently overwrite the prior live Router chain",
+        len(state.get("router_opportunity_queue_v9541") or []) == 2
+        and selected is not None and selected.router_chain_id == "old-chain",
+    ))
+    refreshed = copy.deepcopy(old)
+    refreshed.created_at = now.isoformat()
+    refreshed.router_decision_3m_ts = 1_900_000_000_000
+    store_router_opportunity_v9541(state, refreshed, journal=journal)
+    merged = next(
+        (_opportunity_from_raw_v9541(row) for row in state.get("router_opportunity_queue_v9541") or [] if row.get("router_chain_id") == "old-chain"),
+        None,
+    )
+    checks.append((
+        "v9.5.41 same-chain defer preserves the original causal clock",
+        merged is not None and merged.created_at == old.created_at and merged.router_decision_3m_ts == old.router_decision_3m_ts,
+    ))
+
+    candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, raw_score=76, final_score=76,
+        trigger_ready=True, trigger_level=100.0, execution_anchor=100.0,
+        stage_plan={"router_intended_tactic": "FIRST_RETEST", "router_deferred_from_action": Action.ENTRY.value},
+    )
+    decision = Decision(
+        id="v9541-router", time=iso_now(), action=Action.NO_SETUP.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=76, reason="deferred",
+        regime=Regime.NORMAL.value, candidate=candidate,
+        plan=TradePlan(entry=100.0, stop=99.0, tp1=101.5, tp2=102.5, tp3=104.0, risk_pct=0.2, rr1=1.5, rr2=2.5, rr3=4.0, position_risk_pct=0.2, valid=True, execution_ready=True),
+        current_price=100.0,
+        audit={
+            "router_chain_v9541": {"tactic": "FIRST_RETEST", "deferred_from_action": Action.ENTRY.value},
+            "ranked_top_n_conversion": {
+                "would_executable_count": 1,
+                "rows": [{"selected": True, "setup_type": candidate.setup_type, "would_executable": True, "would_action": Action.ENTRY.value, "would_publish_entry": True, "primary_blocker": "NONE", "plan_valid": True, "plan_execution_ready": True, "entry_supported": True}],
+            },
+            "executive_director": {"report": {"executive_decision": {"allow_execution": False, "required_next_event": "FIRST_RETEST"}}},
+            "execution_funnel": {"blocking_layer": "EXECUTION_ROUTER_TACTIC"},
+        },
+    )
+    final = _reconcile_ranked_router_telemetry_v9541(decision, {})
+    selected_row = decision.audit["ranked_top_n_conversion"]["rows"][0]
+    checks.append((
+        "v9.5.41 ranked telemetry reports the final Router defer, preserving the pre-Router draft",
+        final.get("would_executable") is False
+        and selected_row.get("would_action") == Action.NO_SETUP.value
+        and (selected_row.get("pre_router_outcome") or {}).get("would_action") == Action.ENTRY.value
+        and decision.audit["ranked_top_n_conversion"].get("would_executable_count") == 0,
+    ))
+
+    ladder_rows = build_dormant_detector_reachability(
+        Side.LONG.value, is_raw_sweep=False, is_sweep=False, has_choch=False, has_fvg=False,
+        strong_displacement=False, regime=Regime.NORMAL.value, has_good_reclaim=False,
+        compression_atr=0.0, is_range_compressed=False, trigger_ready=False,
+        liquidity_ladder={"active": False, "tf_ok": False, "target_count": 0, "ladder_score": 0.0, "kind_count": 0},
+        liquidity_ladder_confirmation={"ready": False},
+    )
+    ladder = next(row for row in ladder_rows if row.get("setup_type") == SetupType.LIQUIDITY_LADDER.value)
+    checks.append((
+        "v9.5.41 inactive Ladder route marks child confirmation predicates NOT_APPLICABLE",
+        "model_local_3m_ready" in (ladder.get("not_applicable_predicates") or [])
+        and "model_local_3m_ready" not in (ladder.get("blockers") or [])
+        and "route_active" in (ladder.get("not_applicable_predicates") or []),
+    ))
+    fresh_rows = build_fresh_execution_reachability(
+        Side.SHORT.value, breakout_retest={}, fresh_base={}, pullback={}, momentum={},
+        failed_breakout_short={"active": False, "execution_ready": False},
+        failed_breakout_short_local={"ready": False},
+    )
+    failed = next(row for row in fresh_rows if row.get("setup_type") == SetupType.FAILED_BREAKOUT_SHORT.value)
+    checks.append((
+        "v9.5.41 inactive Failed Breakout marks local 3M evidence NOT_APPLICABLE",
+        "fresh_3m_evidence_leased" in (failed.get("not_applicable_predicates") or [])
+        and failed.get("blockers") == ["failed_breakout_active"],
+    ))
+    synthetic = {"setup_lifecycle_counters": {"detector_reachability": {
+        SetupType.LIQUIDITY_LADDER.value: {
+            "current_schema_evaluated": 60, "current_schema_fired": 0,
+            "condition_true_counts": {"route_active": 0},
+            "condition_false_counts": {"route_active": 60, "model_local_3m_ready": 60},
+            "condition_observation_counts": {"route_active": 60, "model_local_3m_ready": 60},
+            "health_status": "PREDICATE_SATURATION_SUSPECTED",
+        },
+        SetupType.FAILED_BREAKOUT_SHORT.value: {
+            "current_schema_evaluated": 60, "current_schema_fired": 0,
+            "condition_true_counts": {"failed_breakout_active": 2, "failed_breakout_15m_ready": 1},
+            "condition_false_counts": {"failed_breakout_active": 58, "fresh_3m_evidence_leased": 60},
+            "condition_observation_counts": {"failed_breakout_active": 60, "fresh_3m_evidence_leased": 60},
+            "health_status": "PREDICATE_SATURATION_SUSPECTED",
+        },
+    }}}
+    root = saturation_root_cause_audit_v9541(synthetic)
+    checks.append((
+        "v9.5.41 saturation audit identifies dependency-count inflation separately for both setups",
+        all((root["setups"][setup].get("dependency_count_inflation") or []) for setup in (SetupType.LIQUIDITY_LADDER.value, SetupType.FAILED_BREAKOUT_SHORT.value)),
+    ))
+    checks.append((
+        "v9.5.41 preserves canonical score, RR, risk and one-recheck safety invariants",
+        validate_runtime_configuration().get("valid") is True
+        and (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) == (58, 68, 75)
+        and EXECUTION_ROUTER_MAX_RECHECKS == 1,
+    ))
+    return checks
+
+
+_run_self_test_v9540_effective = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9540_effective()
+    checks = v9541_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.41 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+_run_audit_journal_v9540_effective = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    out = _run_audit_journal_v9540_effective(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    root = saturation_root_cause_audit_v9541(payload)
+    out["v9541_router_chain_and_saturation_integrity"] = {
+        "effective_bot_version": BOT_VERSION,
+        "effective_architecture_version": ARCHITECTURE_VERSION,
+        "router_chain": {
+            "persisted_defer": True,
+            "causal_next_scan_recheck": True,
+            "max_rechecks": EXECUTION_ROUTER_MAX_RECHECKS,
+            "bounded_queue_limit": ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541,
+            "ranked_telemetry_finalized_after_router": True,
+        },
+        "saturation_root_cause": root,
+        "canonical_thresholds_unchanged": {
+            "armed": ARMED_SCORE_BASE, "risky": RISKY_ENTRY_SCORE_BASE, "full": ENTRY_SCORE_BASE,
+        },
+        "risk_rr_ttl_relaxed": False,
+        "schema_version": "v9.5.41_router_chain_saturation_integrity",
+    }
+    return out
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.40 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.41 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
