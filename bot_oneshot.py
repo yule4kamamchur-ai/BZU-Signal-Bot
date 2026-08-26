@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
-BZU Professional Hybrid Confluence Signal Bot v9.5.43 (Execution Anchor Repair & Trigger Separation)
-=============================================================================================
+BZU Professional Oil 15M Signal Bot v9.5.51 (Final Authority & Walk-Forward Calibration)
+=========================================================================================
+Оновлення v9.5.51 (чинний production-контракт; замінює старі policy-примітки нижче):
+- Старт більше не залежить обов'язково від requests: доступний stdlib HTTP fallback, а конфігурація перевіряється до live-loop.
+- FINAL_EXECUTION_AUTHORITY є останнім mutator після Router і єдиною точкою trade/no-trade; advisory, calibration та preconfirmation не можуть приховано відхилити setup.
+- Score-контракт єдиний для всіх 24 setup: 58-67 SHADOW_ARMED, 68-74 RISKY_STAGED, 75+ FULL_LIVE. Setup зберігається в detection/ranking на кожному рівні.
+- execution_anchor керує реальною ціною виконання: своєчасний fill дозволяється, late/FOMO fill переводиться у WAIT_RETEST без видалення setup.
+- П'ять закритих угод запускають лише bounded Bayesian provisional calibration; повна authority потребує explicit-time rolling walk-forward, >=20 OOS прогнозів, AUC>=0.58, Brier<=0.24 та позитивної expectancy.
+- Calibration cache є process-only, обмеженим за розміром і content-hashed по timestamps/outcomes/features; legacy cache автоматично видаляється з журналу.
+- Counterfactual execution audit рахує recovered entries, false positives, missed-R і net result без надання собі live authority.
+
 Оновлення v9.5.43:
 - Execution trigger separation: structural trigger_level is no longer treated as a live fill level when displaced from current futures price.
 - Added execution_anchor contract layer with distance/ATR audit and stale-trigger recovery to prevent late entries after impulse moves.
@@ -307,6 +316,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import html
 import json
 import math
@@ -314,6 +324,8 @@ import os
 import tempfile
 import time
 import uuid
+import urllib.error
+import urllib.request
 import zoneinfo
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -322,7 +334,51 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Optional
 
-import requests
+try:
+    import requests
+except ImportError:  # Production-safe stdlib fallback for clean runners.
+    class _StdlibResponse:
+        def __init__(self, status_code: int, body: bytes):
+            self.status_code = int(status_code)
+            self.content = body
+            self.text = body.decode("utf-8", errors="replace")
+
+        def json(self) -> Any:
+            return json.loads(self.text)
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}: {self.text[:300]}")
+
+    class _StdlibRequests:
+        Response = _StdlibResponse
+
+        @staticmethod
+        def get(url: str, headers: Optional[dict[str, str]] = None, timeout: int = 12) -> _StdlibResponse:
+            request = urllib.request.Request(url, headers=headers or {}, method="GET")
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return _StdlibResponse(response.status, response.read())
+            except urllib.error.HTTPError as exc:
+                return _StdlibResponse(exc.code, exc.read())
+
+        @staticmethod
+        def post(
+            url: str,
+            headers: Optional[dict[str, str]] = None,
+            json: Optional[dict[str, Any]] = None,
+            timeout: int = 12,
+        ) -> _StdlibResponse:
+            body = globals()["json"].dumps(json or {}, ensure_ascii=False).encode("utf-8")
+            merged_headers = {"Content-Type": "application/json", **(headers or {})}
+            request = urllib.request.Request(url, data=body, headers=merged_headers, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return _StdlibResponse(response.status, response.read())
+            except urllib.error.HTTPError as exc:
+                return _StdlibResponse(exc.code, exc.read())
+
+    requests = _StdlibRequests()
 
 
 
@@ -422,8 +478,8 @@ V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-
 V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 V9541_BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
 V9541_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
-BOT_VERSION = "pro-hybrid-confluence-v9.5.50-counterfactual-execution-validation"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_44_EXECUTION_AUTHORITY_UNIFICATION"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.51-professional-execution-calibration"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_51_FINAL_AUTHORITY_WALK_FORWARD"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -615,17 +671,17 @@ ENTRY_QUALITY_AUDIT_MIN_ROWS = max(8, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_ROW
 ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS = max(2, int(os.getenv("ENTRY_QUALITY_AUDIT_MIN_NORMALIZED_SETUPS", "3") or 3))
 JOURNAL_COMPACTION_SCHEMA_VERSION = "journal_compaction_v9.5.23_lifecycle_ranked_episode_retention"
 RANKED_CONVERSION_AUDIT_SCHEMA_VERSION = "ranked_conversion_audit_v9.5.30_ordered_confirmation_edge_aware"
-SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.28_directional_nested_oos_authority"
-SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(8, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "10") or 10))
-SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.50, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.52") or 0.52)))
-SETUP_CALIBRATION_VALIDATION_MAX_BRIER = min(0.50, max(0.15, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_BRIER", "0.30") or 0.30)))
+SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION = "exact_setup_validation_v9.5.51_rolling_walk_forward_content_hashed"
+SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS = max(20, int(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS", "20") or 20))
+SETUP_CALIBRATION_VALIDATION_MIN_AUC = min(0.80, max(0.58, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MIN_AUC", "0.58") or 0.58)))
+SETUP_CALIBRATION_VALIDATION_MAX_BRIER = min(0.24, max(0.15, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_BRIER", "0.24") or 0.24)))
 SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION = min(0.10, max(0.0, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION", "0.02") or 0.02)))
 SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION = min(0.10, max(0.0, float(os.getenv("SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION", "0.02") or 0.02)))
-SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES = max(6, int(os.getenv("SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES", "8") or 8))
+SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES = max(5, int(os.getenv("SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES", "5") or 5))
 SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R = max(0.05, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_EXPECTANCY_GAP_R", "0.20") or 0.20))
 SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP = max(5.0, float(os.getenv("SETUP_CALIBRATION_SIDE_MAX_WIN_RATE_GAP_PP", "15") or 15))
-SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS = max(20, int(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS", "25") or 25))
-SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS = max(SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS + 1, int(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS", "60") or 60))
+SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS = max(5, int(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS", "5") or 5))
+SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS = max(SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS + 1, int(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS", "30") or 30))
 SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R = float(os.getenv("SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R", "0.0") or 0.0)
 INSTITUTIONAL_SWEEP_QUALITY_THRESHOLD = 0.85
 EXECUTION_PATH_HEALTH_SCHEMA_VERSION = "execution_path_health_v9.5.25_setup_guard_lineage_scoped"
@@ -1299,8 +1355,9 @@ SCORING_MODEL_MAX_LEARNED_WEIGHT = float(os.getenv("SCORING_MODEL_MAX_LEARNED_WE
 # v9.5.10 exact-setup calibration guard. A broad family/global model may remain
 # useful for audit, but it cannot label one named setup as empirically calibrated
 # before that exact setup has enough feature-complete closed trades.
-SETUP_CALIBRATION_MIN_CLOSED_TRADES = max(20, min(30, int(os.getenv("SETUP_CALIBRATION_MIN_CLOSED_TRADES", "25") or 25)))
-SETUP_CALIBRATION_FULL_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES + 1, int(os.getenv("SETUP_CALIBRATION_FULL_CLOSED_TRADES", "80") or 80))
+SETUP_CALIBRATION_MIN_CLOSED_TRADES = max(5, int(os.getenv("SETUP_CALIBRATION_MIN_CLOSED_TRADES", "5") or 5))
+SETUP_CALIBRATION_FULL_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES + 1, int(os.getenv("SETUP_CALIBRATION_FULL_CLOSED_TRADES", "40") or 40))
+SETUP_CALIBRATION_MIN_EXPECTANCY_R = max(0.0, float(os.getenv("SETUP_CALIBRATION_MIN_EXPECTANCY_R", "0.0") or 0.0))
 TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES = max(SETUP_CALIBRATION_MIN_CLOSED_TRADES, int(os.getenv("TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES", str(SETUP_CALIBRATION_MIN_CLOSED_TRADES)) or SETUP_CALIBRATION_MIN_CLOSED_TRADES))
 # v9.5.11: RR/ATR geometry calibration is exact-setup scoped. Bootstrap profiles
 # are explicit for every named setup; empirical auto-tuning is intentionally not
@@ -1773,14 +1830,7 @@ def build_execution_readiness(
         max(0.0, min(100.0, execution_anchor)),
     ]) / 5.0
 
-    if blockers:
-        state = "WATCH"
-    elif readiness >= 75:
-        state = "LIVE_ALLOWED"
-    elif readiness >= 60:
-        state = "ARMED"
-    else:
-        state = "WATCH"
+    state = execution_readiness_state(readiness, hard_blocker=bool(blockers))
 
     return ExecutionReadinessContract(
         structure=structure,
@@ -5115,6 +5165,18 @@ def hidden_gate_sweep_audit(blocking: list[str], allow_execution: bool = False) 
     classified = [classify_execution_blocker(x) for x in (blocking or [])]
     forbidden = [x for x in classified if x in HIDDEN_GATE_FORBIDDEN_VETO_SOURCES]
     hard = [x for x in classified if x in HIDDEN_GATE_ALLOWED_HARD_BLOCKERS]
+    counter_keys = {
+        "SCORE": "canonical_score_reject_attempts",
+        "CALIBRATION": "calibration_reject_attempts",
+        "PRECONFIRMATION": "preconfirm_reject_attempts",
+    }
+    for source in forbidden:
+        key = counter_keys.get(source)
+        if key:
+            DEAD_GATE_REMOVAL_AUDIT[key] = int(DEAD_GATE_REMOVAL_AUDIT.get(key, 0) or 0) + 1
+    DEAD_GATE_REMOVAL_AUDIT["quality_limitations_observed"] = int(
+        DEAD_GATE_REMOVAL_AUDIT.get("quality_limitations_observed", 0) or 0
+    ) + max(0, len(classified) - len(hard))
     return {
         "blocking_count": len(classified),
         "hard_blockers": hard,
@@ -13378,12 +13440,8 @@ def setup_type_side_out_of_sample_validation(
     if n < SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS:
         return {**base, "enabled": False, "authority_pass": False, "reason": "DIRECTIONAL_SAMPLE_BELOW_MINIMUM"}
 
-    trades = [trade for trade in journal.get("trades", []) or [] if isinstance(trade, dict)]
-    fingerprint = (
-        f"{len(trades)}:{trades[-1].get('id') if trades else ''}:"
-        f"{exact_setup}:{exact_side}:{n}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
-    )
-    cache = journal.setdefault("_directional_setup_validation_cache", {})
+    fingerprint = _calibration_content_fingerprint(journal, exact_setup, exact_side)
+    cache = globals().setdefault("_LEGACY_CALIBRATION_TRANSIENT_CACHE", {}).setdefault("directional", {})
     cache_key = f"{exact_setup}:{exact_side}"
     cached = cache.get(cache_key)
     if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("report"), dict):
@@ -13573,9 +13631,8 @@ def setup_type_out_of_sample_validation(journal: dict[str, Any], setup_type: str
     n=len(rows)
     if n<SETUP_CALIBRATION_MIN_CLOSED_TRADES:
         return {"enabled":False,"authority_pass":False,"reason":"EXACT_SETUP_SAMPLE_BELOW_MINIMUM","sample_size":n,"minimum_sample_size":SETUP_CALIBRATION_MIN_CLOSED_TRADES,"schema_version":SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}
-    trades=[trade for trade in journal.get("trades",[]) or [] if isinstance(trade,dict)]
-    fingerprint=f"{len(trades)}:{trades[-1].get('id') if trades else ''}:{exact_setup}:{n}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
-    cache=journal.setdefault("_exact_setup_validation_cache",{}); cached=cache.get(exact_setup)
+    fingerprint=_calibration_content_fingerprint(journal, exact_setup)
+    cache=globals().setdefault("_LEGACY_CALIBRATION_TRANSIENT_CACHE",{}).setdefault("exact",{}); cached=cache.get(exact_setup)
     if isinstance(cached,dict) and cached.get("fingerprint")==fingerprint and isinstance(cached.get("report"),dict): return dict(cached["report"])
     validation_count=min(max(SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS,int(math.ceil(n*0.30))),max(1,n-12))
     warmup=n-validation_count; train_rows=rows[:warmup]; validation_rows=rows[warmup:]
@@ -13758,9 +13815,8 @@ def _quality_coefficients(
     sample_weight_cap = _learned_model_weight(len(rows), min_rows, full_rows)
     learned_weight = min(validated_weight, sample_weight_cap)
 
-    trades_list = journal.get("trades") or []
-    fingerprint = f"{len(trades_list)}:{trades_list[-1].get('id') if trades_list else ''}:{len(rows)}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
-    cache = journal.setdefault("_model_coef_cache", {})
+    fingerprint = _calibration_content_fingerprint(journal, exact_setup, exact_side if side_divergent else "")
+    cache = globals().setdefault("_LEGACY_CALIBRATION_TRANSIENT_CACHE", {}).setdefault("coefficients", {})
     cache_key = f"{setup_family}:{exact_setup}:{exact_side if side_divergent else 'POOLED'}:{source}"
     cached = cache.get(cache_key)
     if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("coef"), dict):
@@ -24306,7 +24362,7 @@ def _probe_test_plan(*, execution_ready: bool = True) -> TradePlan:
 
 
 def test_fresh_probe_entry_below_68() -> bool:
-    """A fully valid fresh early-probe may remain below risky/full-entry score floors."""
+    """A valid 58-67 idea stays armed/shadow and cannot publish live risk."""
     candidate = _v9_test_candidate(score=max(ARMED_SCORE_BASE, 60))
     candidate.entry_stage = EntryStage.PROBE.value
     plan = _v9_test_plan(risk=PROBE_RISK_PCT)
@@ -24314,9 +24370,7 @@ def test_fresh_probe_entry_below_68() -> bool:
     report = executive_decision_engine(candidate, plan=plan, journal=journal, state={})
     admission = ((report.get("executive_decision") or {}).get("audit") or {}).get("risky_entry_score_profile") or {}
     return bool(
-        report.get("action") == Action.PROBE_ENTRY.value
-        and candidate.entry_stage == EntryStage.PROBE.value
-        and plan.position_risk_pct <= PROBE_RISK_PCT
+        report.get("action") == Action.NO_SETUP.value
         and int(candidate.final_score) < RISKY_ENTRY_SCORE_BASE
         and not admission.get("risky_entry_eligible")
     )
@@ -24406,7 +24460,7 @@ def test_score_68_continuation_is_not_cliff_blocked() -> bool:
     candidate, plan = _continuation_near_miss_fixture(68, 73)
     profile = canonical_score_admission_profile(candidate)
     return bool(
-        profile.get("band") == "RISKY"
+        profile.get("band") == "RISKY_STAGED"
         and profile.get("risky_entry_eligible")
         and not profile.get("full_entry_eligible")
         and plan.execution_ready
@@ -25426,7 +25480,8 @@ def test_live_entry_price_contract_prefers_market_price() -> bool:
         selected == round_price(82.72)
         and contract.get("source") == "LIVE_MARKET_PRICE"
         and contract.get("analysis_anchor") == round_price(83.125)
-        and contract.get("anchor_is_analytical_only") is True
+        and contract.get("anchor_is_analytical_only") is False
+        and contract.get("anchor_is_final_authority_input") is True
     )
 
 
@@ -26050,10 +26105,10 @@ def v9_regression_checks() -> list[tuple[str, bool]]:
     checks.append(("Philosophy: good RR without logical target is rejected", p["recommendation"] == "REJECT_BAD_ASYMMETRY" and "NO_LOGICAL_TARGET" in p["reason_codes"]))
 
     small_sample = trading_philosophy_layer(_v9_test_candidate(), _v9_stats_journal(0.5, 10), plan)
-    checks.append(("Philosophy: positive small sample is ACCEPT_STAGED", small_sample["recommendation"] == "ACCEPT_STAGED" and small_sample["statistical_status"] == "UNPROVEN"))
+    checks.append(("Philosophy: positive five-trade sample is provisional ACCEPT_STAGED", small_sample["recommendation"] == "ACCEPT_STAGED" and small_sample["statistical_status"] == "PROVISIONAL_POSITIVE"))
 
     negative_stats = trading_philosophy_layer(_v9_test_candidate(), _v9_stats_journal(-0.4, SCORING_MODEL_MIN_FAMILY_TRADES), plan)
-    checks.append(("Philosophy: sufficient negative expectancy blocks CORE", negative_stats["recommendation"] == "REJECT_NO_EDGE" and "NEGATIVE_EXPECTANCY" in negative_stats["reason_codes"]))
+    checks.append(("Philosophy: negative calibration is risk/stage evidence, not setup veto", negative_stats["recommendation"] == "ACCEPT_STAGED" and "PROVISIONAL_NEGATIVE_EXPECTANCY_RISK_ONLY" in negative_stats["reason_codes"]))
 
     reversal_no_inv = _v9_test_candidate(side=Side.SHORT.value, market_bias="BULLISH", setup_type=SetupType.MSS_REVERSAL_SHORT.value, setup_family=SetupFamily.STRUCTURAL_TRANSITION.value)
     reversal_no_inv.invalidation_level = 0.0
@@ -27245,7 +27300,12 @@ def test_funnel_allows_explicit_saved_reentry_selection() -> bool:
 
 def test_time_of_day_stays_shadow_until_positive_sample() -> bool:
     profile = time_of_day_shadow_profile({"trades": [], "training_signals": []})
-    return bool(profile.get("shadow_active") and not profile.get("live_eligible") and profile.get("minimum_closed_trades") >= 20)
+    return bool(
+        profile.get("shadow_active") is False
+        and profile.get("live_eligible") is True
+        and profile.get("validation_mode") == "EXPERIMENTAL_PROBE"
+        and profile.get("minimum_closed_trades") == 5
+    )
 
 
 def test_time_of_day_shadow_cannot_be_promoted_by_preconfirmation() -> bool:
@@ -28971,9 +29031,10 @@ def test_exact_setup_sample_no_longer_grants_unvalidated_learned_authority() -> 
         and profile.get("sample_ready") is True
         and profile.get("validation_pass") is False
         and profile.get("learned_authority_allowed") is False
-        and weight == 0.0
-        and str(source).startswith("bootstrap:exact_setup_learned_authority_blocked")
-        and coef == DEFAULT_QUALITY_COEFFICIENTS[SetupFamily.CONTINUATION.value]
+        and profile.get("provisional_calibration_allowed") is True
+        and 0.0 < weight <= CALIBRATION_PROVISIONAL_MAX_WEIGHT
+        and str(source).startswith("provisional_five_trade_shrinkage:")
+        and coef != DEFAULT_QUALITY_COEFFICIENTS[SetupFamily.CONTINUATION.value]
     )
 
 
@@ -29166,8 +29227,8 @@ CONTEXT_EDGE_EXPECTANCY_SCALE_R = 0.30
 CONTEXT_EDGE_RECENCY_HALF_LIFE_TRADES = 45.0
 CONTEXT_EDGE_EXPECTANCY_PROBABILITY_WEIGHT = 0.12
 CONTEXT_EDGE_OOS_MIN_PREDICTIONS = 20
-CONTEXT_EDGE_OOS_MIN_AUC = 0.52
-CONTEXT_EDGE_OOS_MAX_BRIER = 0.30
+CONTEXT_EDGE_OOS_MIN_AUC = 0.58
+CONTEXT_EDGE_OOS_MAX_BRIER = 0.24
 RESEARCH_PROBE_FORWARD_MIN_TRADES = 6
 RESEARCH_PROBE_FORWARD_MIN_WINS = 4
 RESEARCH_PROBE_FORWARD_MIN_EXPECTANCY_R = 0.08
@@ -31799,7 +31860,7 @@ def _run_self_test() -> bool:
         ("v9.5.21 Ladder audit preserves raw live trigger under priority preemption", test_liquidity_ladder_audit_preserves_raw_live_trigger_when_priority_preempts),
         ("v9.5.21 Ladder audit explains stale ready-stage trigger", test_liquidity_ladder_audit_exposes_stale_ready_stage),
         ("regression: explicit same-axis opposition creates hard conflict", test_conflict_blocks_bad_trade),
-        ("regression: valid fresh early probe remains possible below risky score floor", test_fresh_probe_entry_below_68),
+        ("regression: 58-67 fresh probe stays armed/shadow without live action", test_fresh_probe_entry_below_68),
         ("regression: HTF state never infers direction from raw score", test_get_htf_state_does_not_infer_direction_from_raw_score),
         ("regression: HTF quality feature is direct canonical-fact projection", test_htf_quality_feature_is_direct_fact_projection),
         ("regression: HTF full alignment is consistent across score/ML/advisor", test_htf_single_fact_full_alignment_consistency),
@@ -31853,7 +31914,7 @@ def _run_self_test() -> bool:
         ("opportunity re-entry preserves named model identity", test_opportunity_reentry_preserves_named_model_identity),
         ("funnel rejects unranked unknown selection", test_funnel_rejects_unranked_unknown_selection),
         ("funnel allows explicit saved re-entry selection", test_funnel_allows_explicit_saved_reentry_selection),
-        ("Time of Day remains shadow until positive sample", test_time_of_day_stays_shadow_until_positive_sample),
+        ("Time of Day stays ranked/live with provisional evidence-aware sizing", test_time_of_day_stays_shadow_until_positive_sample),
         ("Time of Day shadow cannot be promoted by preconfirmation", test_time_of_day_shadow_cannot_be_promoted_by_preconfirmation),
         ("exact setup calibration requires minimum sample", test_exact_setup_calibration_requires_minimum_sample),
         ("entry quality rescale is more discriminating", test_entry_quality_rescale_is_more_discriminating),
@@ -32238,9 +32299,9 @@ def _run_self_test() -> bool:
     )
     _tod_rank = apply_evidence_adjusted_selection_score(_tod_rank, {"trades":[],"training_signals":[],"signals":[]})
     checks.append((
-        "v9.5.26 Selection: shadow-only Time-of-Day cannot consume live top rank",
-        _tod_rank.evidence_selection_profile.get("mode") == "SHADOW_ONLY"
-        and _candidate_selection_score(_tod_rank) <= ARMED_SCORE_BASE - 1 + 1e-9,
+        "v9.5.51 Selection: Time-of-Day remains a ranked live setup under evidence-aware sizing",
+        _tod_rank.evidence_selection_profile.get("mode") != "SHADOW_ONLY"
+        and _tod_rank.final_score == 95,
     ))
 
     # v9.5.29: execution-source evidence must separate profitable probe lanes from weak confirmed lanes.
@@ -32467,9 +32528,9 @@ def _run_self_test() -> bool:
     sweep_prof=institutional_sweep_validation_profile(Side.LONG.value,sweep_event,sweep_ctx,1.0,Side.NEUTRAL.value,{"bias":"NEUTRAL","strength":0.0},Regime.RANGE.value,{"chop_zone":{"active":False}},{"data_available":False})
     checks.append(("v9.5.25 Sweep: strict primary evidence can pass without SMT", bool(sweep_prof.get("valid")) and sweep_prof.get("threshold_reachable_without_smt_theoretically") is True))
 
-    # v9.5.25: Time-of-Day cannot graduate on expectancy/sample alone without exact OOS authority.
+    # v9.5.51: Time-of-Day stays available; OOS maturity changes confidence/risk only.
     tod=time_of_day_shadow_profile({"trades":[{"setup_type":SetupType.TIME_OF_DAY_ADAPTIVE.value,"pnl_r":1.0} for _ in range(TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES)],"training_signals":[]})
-    checks.append(("v9.5.25 Time-of-Day: exact OOS calibration required for graduation", tod.get("shadow_active") is True and tod.get("exact_oos_side_validation_pass") is False))
+    checks.append(("v9.5.51 Time-of-Day: setup remains available while OOS calibration is provisional", tod.get("shadow_active") is False and tod.get("live_eligible") is True and tod.get("exact_oos_side_validation_pass") is False))
 
     # v9.5.25: weak setups are capped at experimental probe risk before evidence graduation.
     weak=Candidate(side=Side.LONG.value,setup_type=SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,setup_family=SetupFamily.CONTINUATION.value,raw_score=80,final_score=80,entry_stage=EntryStage.CORE.value)
@@ -32783,7 +32844,7 @@ def _run_self_test() -> bool:
         "v9.5.28 Directional calibration: LONG cannot borrow SHORT rows to reach authority floor",
         int(_long_dir.get("sample_size") or 0) == _n_long
         and _long_dir.get("enabled") is False
-        and _long_dir.get("reason") == "DIRECTIONAL_SAMPLE_BELOW_MINIMUM"
+        and _long_dir.get("reason") == "EXACT_SETUP_SAMPLE_BELOW_FIVE_TRADE_MINIMUM"
         and int(_short_dir.get("sample_size") or 0) == _n_short,
     ))
 
@@ -33492,8 +33553,13 @@ def trading_philosophy_layer(
         100.0,
     )
 
-    if sample >= SETUP_CALIBRATION_MIN_CLOSED_TRADES:
-        statistical_status = "PROVEN_POSITIVE" if expectancy > 0 else "PROVEN_NEGATIVE"
+    calibration_profile = setup_type_calibration_profile(journal, setup_type)
+    if calibration_profile.get("learned_authority_allowed") and expectancy > 0:
+        statistical_status = "PROVEN_POSITIVE"
+    elif sample >= SETUP_CALIBRATION_MIN_CLOSED_TRADES and expectancy > 0:
+        statistical_status = "PROVISIONAL_POSITIVE"
+    elif sample >= SETUP_CALIBRATION_MIN_CLOSED_TRADES:
+        statistical_status = "PROVISIONAL_NEGATIVE"
     elif sample > 0:
         statistical_status = "UNPROVEN"
     else:
@@ -33516,19 +33582,18 @@ def trading_philosophy_layer(
     if incompatible_regime or shock_without_policy:
         failed.append("Setup incompatible with regime")
         reason_codes.append("REGIME_MISMATCH")
-    if statistical_status == "PROVEN_NEGATIVE":
-        failed.append("Negative expectancy with sufficient sample")
-        reason_codes.append("NEGATIVE_EXPECTANCY")
+    if statistical_status == "PROVISIONAL_NEGATIVE":
+        reason_codes.append("PROVISIONAL_NEGATIVE_EXPECTANCY_RISK_ONLY")
     if evidence_independence < 50:
         reason_codes.append("EVIDENCE_DEPENDENCE")
 
-    if not plan_valid or not concrete_entry_reason or not invalidation_present or edge_quality < 50 or statistical_status == "PROVEN_NEGATIVE":
+    if not plan_valid or not concrete_entry_reason or not invalidation_present or edge_quality < 50:
         recommendation = "REJECT_NO_EDGE"
     elif not logical_target or realistic_rr < MIN_RR1 or asymmetry_quality < 60:
         recommendation = "REJECT_BAD_ASYMMETRY"
     elif regime_fit < 45 or evidence_independence < 40:
         recommendation = "WAIT_FOR_EVIDENCE"
-    elif statistical_status in {"UNPROVEN", "NO_SAMPLE"}:
+    elif statistical_status in {"UNPROVEN", "NO_SAMPLE", "PROVISIONAL_POSITIVE", "PROVISIONAL_NEGATIVE"}:
         recommendation = "ACCEPT_STAGED"
         reason_codes.append("EDGE_UNPROVEN_STAGE_ONLY")
     else:
@@ -37709,7 +37774,7 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("v9.5.39 confirmed acceptance probe risk cap must stay experimental/tiny")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.39 must not change canonical 58/68/75 thresholds")
-    if not any(tag in BOT_VERSION for tag in ("v9.5.40", "v9.5.41", "v9.5.42")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_40", "V9_5_41", "V9_5_42")):
+    if not any(tag in BOT_VERSION for tag in ("v9.5.40", "v9.5.41", "v9.5.42", "v9.5.51")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_40", "V9_5_41", "V9_5_42", "V9_5_51")):
         errors.append("v9.5.40+ release seal is not the effective runtime version")
     if EXECUTION_SCHEDULER_CADENCE_MINUTES != 15 or FRESH_3M_EXECUTION_LEASE_BARS != 5:
         errors.append("v9.5.40 fresh-3M lease must cover exactly one 15M production scan")
@@ -38773,7 +38838,7 @@ _validate_runtime_configuration_v9540_effective = validate_runtime_configuration
 def validate_runtime_configuration() -> dict[str, Any]:
     report = _validate_runtime_configuration_v9540_effective()
     errors = list(report.get("errors") or [])
-    if not any(tag in BOT_VERSION for tag in ("v9.5.41", "v9.5.42")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_41", "V9_5_42")):
+    if not any(tag in BOT_VERSION for tag in ("v9.5.41", "v9.5.42", "v9.5.51")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_41", "V9_5_42", "V9_5_51")):
         errors.append("v9.5.41+ Router-chain release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.41 must preserve canonical 58/68/75 score gates")
@@ -39490,7 +39555,7 @@ _validate_runtime_configuration_v9541_effective = validate_runtime_configuration
 def validate_runtime_configuration() -> dict[str, Any]:
     report = _validate_runtime_configuration_v9541_effective()
     errors = list(report.get("errors") or [])
-    if "v9.5.42" not in BOT_VERSION or "V9_5_42" not in ARCHITECTURE_VERSION:
+    if not any(tag in BOT_VERSION for tag in ("v9.5.42", "v9.5.51")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_42", "V9_5_51")):
         errors.append("v9.5.42 release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.42 must preserve canonical 58/68/75 admission")
@@ -39669,7 +39734,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Hybrid Confluence Signal Bot v9.5.42 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.51 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -39700,7 +39765,7 @@ def main() -> None:
 # Compact audit only. Does not create trade authority.
 # ==========================================================
 
-COUNTERFACTUAL_EXECUTION_AUDIT_SCHEMA = "counterfactual_execution_validation_v9.5.50"
+COUNTERFACTUAL_EXECUTION_AUDIT_SCHEMA = "counterfactual_execution_validation_v9.5.51_net_outcomes"
 
 
 def init_counterfactual_execution_audit() -> dict[str, object]:
@@ -39746,7 +39811,8 @@ def update_counterfactual_execution_audit(
             "false_positive": 0,
         })
         item["recovered"] += 1 if recovered else 0
-        item["missed_r"] = round(item["missed_r"] + max(0.0, float(missed_r)), 4)
+        if old_entry_available:
+            item["missed_r"] = round(item["missed_r"] + max(0.0, float(missed_r)), 4)
         item["false_positive"] += 1 if false_positive else 0
 
     return audit
@@ -39754,17 +39820,1563 @@ def update_counterfactual_execution_audit(
 
 def counterfactual_execution_summary(audit: dict[str, object]) -> dict[str, object]:
     """Returns only aggregate conclusions for backtest comparison."""
+    evaluated = int(audit.get("evaluated_candidates", 0) or 0)
+    recovered = int(audit.get("recovered_entries", 0) or 0)
+    false_positive = int(audit.get("new_false_positive", 0) or 0)
     return {
+        "evaluated_candidates": evaluated,
         "missed_R_due_old_execution": audit.get("old_execution_missed_r", 0.0),
-        "entries_recovered_by_authority": audit.get("recovered_entries", 0),
-        "additional_false_positive": audit.get("new_false_positive", 0),
+        "entries_recovered_by_authority": recovered,
+        "additional_false_positive": false_positive,
+        "net_recovered_entries": recovered - false_positive,
         "winning_setups": sorted(
             [
                 name for name, data in (audit.get("setup_impact", {}) or {}).items()
-                if isinstance(data, dict) and data.get("recovered", 0) > 0
+                if isinstance(data, dict)
+                and int(data.get("recovered", 0) or 0) > int(data.get("false_positive", 0) or 0)
+                and safe_float(data.get("missed_r"), 0.0) > 0.0
             ]
         ),
     }
+
+# ==========================================================
+# v9.5.51 PROFESSIONAL EXECUTION + WALK-FORWARD CALIBRATION
+# ==========================================================
+
+V9551_SCHEMA_VERSION = "professional_execution_calibration_v9.5.51"
+CALIBRATION_PROVISIONAL_MAX_WEIGHT = min(0.15, max(0.05, float(
+    os.getenv("CALIBRATION_PROVISIONAL_MAX_WEIGHT", "0.10") or 0.10
+)))
+CALIBRATION_VALIDATED_MAX_WEIGHT = min(0.50, max(0.10, float(
+    os.getenv("CALIBRATION_VALIDATED_MAX_WEIGHT", "0.40") or 0.40
+)))
+CALIBRATION_ROLLING_MAX_FOLDS = max(3, min(8, int(
+    os.getenv("CALIBRATION_ROLLING_MAX_FOLDS", "5") or 5
+)))
+EXECUTION_ANCHOR_MAX_MARKET_MISSED_R = max(0.15, min(0.80, float(
+    os.getenv("EXECUTION_ANCHOR_MAX_MARKET_MISSED_R", "0.45") or 0.45
+)))
+EXECUTION_ANCHOR_MAX_DISTANCE_ATR = max(0.30, min(1.00, float(
+    os.getenv("EXECUTION_ANCHOR_MAX_DISTANCE_ATR", "0.65") or 0.65
+)))
+EXECUTION_ANCHOR_MIN_LIVE_RR = max(1.0, float(
+    os.getenv("EXECUTION_ANCHOR_MIN_LIVE_RR", str(MIN_RR1)) or MIN_RR1
+))
+CALIBRATION_RUNTIME_CACHE_LIMIT = max(24, int(os.getenv("CALIBRATION_RUNTIME_CACHE_LIMIT", "96") or 96))
+CALIBRATION_LEGACY_JOURNAL_CACHE_KEYS = (
+    "_exact_setup_validation_cache",
+    "_directional_setup_validation_cache",
+    "_model_coef_cache",
+)
+_CALIBRATION_RUNTIME_CACHE: dict[str, dict[str, Any]] = {
+    "exact": {}, "directional": {}, "coefficients": {},
+}
+
+
+def _calibration_timestamp(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        numeric = float(value)
+        if numeric > 10_000_000_000:
+            numeric /= 1000.0
+        return numeric if numeric > 0 else None
+    parsed = _parse_time_any(str(value))
+    return parsed.timestamp() if parsed is not None else None
+
+
+def _calibration_record_time(trade: dict[str, Any], signal: dict[str, Any]) -> tuple[float, bool]:
+    for row in (trade, signal):
+        for key in (
+            "closed_at", "close_time", "closed_ts", "resolved_at", "exit_time",
+            "opened_at", "open_time", "time", "timestamp", "ts",
+        ):
+            parsed = _calibration_timestamp(row.get(key))
+            if parsed is not None:
+                return parsed, True
+    return 0.0, False
+
+
+def _quality_training_records_v9551(
+    journal: dict[str, Any], *, family: str = "", side: str = "",
+    short_reversal_only: bool = False, setup_type: str = "",
+) -> list[dict[str, Any]]:
+    signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
+    signals = {
+        str(signal.get("id")): signal
+        for signal in signal_records
+        if isinstance(signal, dict) and signal.get("id") and bool(_journal_feature_map(signal))
+    }
+    records: list[dict[str, Any]] = []
+    for trade in journal.get("trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        signal_id = str(trade.get("signal_id") or trade.get("id") or "")
+        signal = signals.get(signal_id)
+        if signal is None:
+            continue
+        signal_side = str(signal.get("side") or trade.get("side") or "").upper()
+        signal_setup = str(signal.get("setup_type") or trade.get("setup_type") or "")
+        signal_family = str(signal.get("setup_family") or trade.get("setup_family") or "")
+        if family and signal_family != family:
+            continue
+        if side and signal_side != str(side).upper():
+            continue
+        if setup_type and signal_setup != str(setup_type):
+            continue
+        if short_reversal_only:
+            reversal = (
+                signal.get("short_reversal_profile")
+                or (signal.get("score_components") or {}).get("short_reversal")
+                or ({"active": True} if signal.get("short_reversal") else {})
+                or trade.get("short_reversal_profile")
+                or {}
+            )
+            if signal_side != Side.SHORT.value or not reversal.get("active"):
+                continue
+        ground_truth = _trade_ground_truth(trade)
+        if ground_truth is None:
+            continue
+        label, sample_weight, label_source = ground_truth
+        event_ts, explicit_time = _calibration_record_time(trade, signal)
+        features = {
+            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
+            for key in QUALITY_FEATURE_KEYS
+        }
+        records.append({
+            "features": features,
+            "label": int(label),
+            "weight": float(sample_weight),
+            "label_source": str(label_source),
+            "event_ts": float(event_ts),
+            "explicit_time": bool(explicit_time),
+            "trade_id": str(trade.get("id") or ""),
+            "signal_id": signal_id,
+            "setup_type": signal_setup,
+            "setup_family": signal_family,
+            "side": signal_side,
+            "result_r": _journal_result_r(trade),
+        })
+    # JSON insertion order is never statistical chronology. Missing-time legacy
+    # rows are deterministic but make full authority fail via chronology_complete.
+    records.sort(key=lambda row: (
+        safe_float(row.get("event_ts"), 0.0),
+        str(row.get("trade_id") or ""),
+        str(row.get("signal_id") or ""),
+    ))
+    return records
+
+
+def _quality_training_rows(
+    journal: dict, family: str = "",
+) -> list[tuple[dict[str, float], int, float]]:
+    return [
+        (dict(row["features"]), int(row["label"]), float(row["weight"]))
+        for row in _quality_training_records_v9551(journal, family=family)
+    ]
+
+
+def _quality_training_rows_filtered(
+    journal: dict, *, side: str = "", short_reversal_only: bool = False,
+    setup_type: str = "",
+) -> list[tuple[dict[str, float], int, float]]:
+    return [
+        (dict(row["features"]), int(row["label"]), float(row["weight"]))
+        for row in _quality_training_records_v9551(
+            journal, side=side, short_reversal_only=short_reversal_only,
+            setup_type=setup_type,
+        )
+    ]
+
+
+def _calibration_content_fingerprint(
+    journal: dict[str, Any], setup_type: str = "", side: str = "",
+) -> str:
+    records = _quality_training_records_v9551(journal, setup_type=setup_type, side=side)
+    canonical = [{
+        "trade_id": row["trade_id"], "signal_id": row["signal_id"],
+        "event_ts": row["event_ts"], "explicit_time": row["explicit_time"],
+        "setup_type": row["setup_type"], "setup_family": row["setup_family"],
+        "side": row["side"], "label": row["label"], "weight": round(row["weight"], 8),
+        "result_r": row["result_r"],
+        "features": {key: round(safe_float(row["features"].get(key), 0.0), 8) for key in QUALITY_FEATURE_KEYS},
+    } for row in records]
+    payload = json.dumps(canonical, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _runtime_calibration_cache_get(bucket: str, key: str, fingerprint: str) -> Optional[dict[str, Any]]:
+    row = _CALIBRATION_RUNTIME_CACHE.setdefault(bucket, {}).get(key)
+    if isinstance(row, dict) and row.get("fingerprint") == fingerprint:
+        return copy.deepcopy(row.get("value"))
+    return None
+
+
+def _runtime_calibration_cache_set(
+    bucket: str, key: str, fingerprint: str, value: dict[str, Any],
+) -> None:
+    cache = _CALIBRATION_RUNTIME_CACHE.setdefault(bucket, {})
+    cache[key] = {"fingerprint": fingerprint, "value": copy.deepcopy(value)}
+    while len(cache) > CALIBRATION_RUNTIME_CACHE_LIMIT:
+        cache.pop(next(iter(cache)))
+
+
+def _select_quality_blend_weight(
+    train_rows: list[tuple[dict[str, float], int, float]],
+    default: dict[str, float], *, minimum_fit_rows: int = 5,
+) -> dict[str, Any]:
+    """Past-only inner selection; no outer labels ever choose the blend."""
+    n = len(train_rows)
+    if n < minimum_fit_rows:
+        return {
+            "selected_weight": 0.0, "reason": "INNER_TRAIN_BELOW_FIVE_ROWS",
+            "train_rows": n, "calibration_rows": 0,
+            "selection_uses_outer_oos_labels": False,
+        }
+    inner_val_count = max(2, min(8, int(math.ceil(n * 0.25))))
+    inner_train_count = n - inner_val_count
+    if inner_train_count < 3:
+        return {
+            "selected_weight": 0.0, "reason": "INNER_CALIBRATION_TOO_SMALL",
+            "train_rows": inner_train_count, "calibration_rows": inner_val_count,
+            "selection_uses_outer_oos_labels": False,
+        }
+    inner_train = train_rows[:inner_train_count]
+    inner_val = train_rows[inner_train_count:]
+    learned = _fit_logistic_coefficients(inner_train, default)
+    labels = [int(label) for _features, label, _weight in inner_val]
+    bootstrap_probs = [_quality_probability_from_coefficients(default, features) for features, _label, _weight in inner_val]
+    bootstrap_brier = _quality_weighted_brier(inner_val, bootstrap_probs)
+    bootstrap_auc = _preconfirm_auc(labels, bootstrap_probs) if len(set(labels)) >= 2 else None
+    max_weight = CALIBRATION_PROVISIONAL_MAX_WEIGHT if n < SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS else CALIBRATION_VALIDATED_MAX_WEIGHT
+    candidates: list[dict[str, Any]] = []
+    for weight in sorted(set((0.0, 0.05, 0.10, 0.20, 0.30, round(max_weight, 4)))):
+        if weight > max_weight + 1e-9:
+            continue
+        coef = _blend_coefficients(default, learned, weight)
+        probabilities = [_quality_probability_from_coefficients(coef, features) for features, _label, _weight in inner_val]
+        brier = _quality_weighted_brier(inner_val, probabilities)
+        auc = _preconfirm_auc(labels, probabilities) if len(set(labels)) >= 2 else None
+        auc_safe = bool(bootstrap_auc is None or auc is None or auc + SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION >= bootstrap_auc)
+        brier_safe = bool(bootstrap_brier is None or brier is None or brier <= bootstrap_brier + SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION)
+        candidates.append({
+            "weight": weight, "brier": brier, "auc": auc,
+            "safe_vs_bootstrap": bool(auc_safe and brier_safe),
+        })
+    safe = [row for row in candidates if row["safe_vs_bootstrap"]]
+    chosen = min(
+        safe or candidates,
+        key=lambda row: (
+            safe_float(row.get("brier"), 9.0),
+            -safe_float(row.get("auc"), 0.5),
+            safe_float(row.get("weight"), 0.0),
+        ),
+    )
+    return {
+        "selected_weight": round(safe_float(chosen.get("weight"), 0.0), 4),
+        "reason": "PAST_ONLY_INNER_CALIBRATION_CHAMPION",
+        "train_rows": inner_train_count, "calibration_rows": inner_val_count,
+        "bootstrap_brier": round(bootstrap_brier, 6) if bootstrap_brier is not None else None,
+        "bootstrap_auc": round(bootstrap_auc, 6) if bootstrap_auc is not None else None,
+        "candidates": [{
+            "weight": row["weight"],
+            "brier": round(row["brier"], 6) if row["brier"] is not None else None,
+            "auc": round(row["auc"], 6) if row["auc"] is not None else None,
+            "safe_vs_bootstrap": row["safe_vs_bootstrap"],
+        } for row in candidates],
+        "selection_uses_outer_oos_labels": False,
+        "schema_version": "quality_blend_selection_v9.5.51_past_only",
+    }
+
+
+def _rolling_setup_validation_v9551(
+    journal: dict[str, Any], setup_type: str, side: str = "",
+) -> dict[str, Any]:
+    exact_setup = str(setup_type or "")
+    exact_side = str(side or "").upper()
+    records = _quality_training_records_v9551(
+        journal, setup_type=exact_setup, side=exact_side,
+    )
+    rows = [(row["features"], row["label"], row["weight"]) for row in records]
+    n = len(rows)
+    directional = exact_side in {Side.LONG.value, Side.SHORT.value}
+    minimum_sample = SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS if directional else SETUP_CALIBRATION_MIN_CLOSED_TRADES
+    family = next((str(row.get("setup_family") or "") for row in records if row.get("setup_family")), "")
+    default = DEFAULT_QUALITY_COEFFICIENTS.get(family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
+    fingerprint = _calibration_content_fingerprint(journal, exact_setup, exact_side)
+    cache_bucket = "directional" if directional else "exact"
+    cache_key = f"{exact_setup}:{exact_side or 'POOLED'}:{SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}"
+    cached = _runtime_calibration_cache_get(cache_bucket, cache_key, fingerprint)
+    if cached is not None:
+        return cached
+    base = {
+        "setup_type": exact_setup, "side": exact_side, "directional": directional,
+        "sample_size": n, "minimum_sample_size": minimum_sample,
+        "content_fingerprint": fingerprint, "cache_scope": "PROCESS_MEMORY_ONLY",
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+    if n < minimum_sample:
+        report = {
+            **base, "enabled": False, "provisional": False, "authority_pass": False,
+            "reason": "EXACT_SETUP_SAMPLE_BELOW_FIVE_TRADE_MINIMUM",
+        }
+        _runtime_calibration_cache_set(cache_bucket, cache_key, fingerprint, report)
+        return report
+
+    chronology_complete = all(bool(row.get("explicit_time")) for row in records)
+    warmup = max(5, min(12, n - SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS))
+    warmup = min(warmup, n)
+    remaining = max(0, n - warmup)
+    fold_count = min(CALIBRATION_ROLLING_MAX_FOLDS, max(1, remaining // 4)) if remaining else 0
+    fold_sizes: list[int] = []
+    if fold_count:
+        base_size, extra = divmod(remaining, fold_count)
+        fold_sizes = [base_size + (1 if index < extra else 0) for index in range(fold_count)]
+    labels: list[int] = []
+    learned_probs: list[float] = []
+    bootstrap_probs: list[float] = []
+    prediction_rows: list[tuple[dict[str, float], int, float]] = []
+    fold_reports: list[dict[str, Any]] = []
+    start = warmup
+    learned_influence_tested = False
+    for fold_index, fold_size in enumerate(fold_sizes):
+        end = start + fold_size
+        train_rows = rows[:start]
+        test_rows = rows[start:end]
+        selection = _select_quality_blend_weight(train_rows, default)
+        selected_weight = safe_float(selection.get("selected_weight"), 0.0)
+        learned_influence_tested = bool(learned_influence_tested or selected_weight > 0.0)
+        learned = _fit_logistic_coefficients(train_rows, default)
+        blended = _blend_coefficients(default, learned, selected_weight)
+        labels.extend(int(label) for _features, label, _weight in test_rows)
+        learned_probs.extend(_quality_probability_from_coefficients(blended, features) for features, _label, _weight in test_rows)
+        bootstrap_probs.extend(_quality_probability_from_coefficients(default, features) for features, _label, _weight in test_rows)
+        prediction_rows.extend(test_rows)
+        fold_reports.append({
+            "fold": fold_index + 1, "train_rows": len(train_rows), "test_rows": len(test_rows),
+            "selected_weight": round(selected_weight, 4),
+            "train_end_ts": records[start - 1]["event_ts"] if start else None,
+            "test_start_ts": records[start]["event_ts"] if start < len(records) else None,
+            "past_only": True,
+        })
+        start = end
+
+    class_balance = len(set(labels)) >= 2
+    learned_auc = _preconfirm_auc(labels, learned_probs) if class_balance else None
+    bootstrap_auc = _preconfirm_auc(labels, bootstrap_probs) if class_balance else None
+    learned_brier = _quality_weighted_brier(prediction_rows, learned_probs)
+    bootstrap_brier = _quality_weighted_brier(prediction_rows, bootstrap_probs)
+    prediction_pass = len(labels) >= SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS
+    auc_pass = bool(learned_auc is not None and learned_auc >= SETUP_CALIBRATION_VALIDATION_MIN_AUC)
+    brier_pass = bool(learned_brier is not None and learned_brier <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER)
+    bootstrap_auc_pass = bool(
+        bootstrap_auc is None or learned_auc is None
+        or learned_auc + SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION >= bootstrap_auc
+    )
+    bootstrap_brier_pass = bool(
+        bootstrap_brier is None or learned_brier is None
+        or learned_brier <= bootstrap_brier + SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION
+    )
+    final_selection = _select_quality_blend_weight(rows, default)
+    approved_weight = min(
+        safe_float(final_selection.get("selected_weight"), 0.0),
+        CALIBRATION_VALIDATED_MAX_WEIGHT,
+    )
+    authority_pass = bool(
+        prediction_pass and chronology_complete and class_balance and learned_influence_tested
+        and approved_weight > 0.0 and auc_pass and brier_pass
+        and bootstrap_auc_pass and bootstrap_brier_pass
+    )
+    failed: list[str] = []
+    if not prediction_pass: failed.append("WALK_FORWARD_PREDICTIONS_BELOW_20")
+    if not chronology_complete: failed.append("EXPLICIT_CHRONOLOGY_INCOMPLETE")
+    if not class_balance: failed.append("WALK_FORWARD_SINGLE_CLASS")
+    if not learned_influence_tested or approved_weight <= 0.0: failed.append("PAST_ONLY_SELECTION_CHOSE_BOOTSTRAP")
+    if not auc_pass: failed.append("WALK_FORWARD_AUC_BELOW_0_58")
+    if not brier_pass: failed.append("WALK_FORWARD_BRIER_ABOVE_0_24")
+    if not bootstrap_auc_pass: failed.append("WALK_FORWARD_AUC_WORSE_THAN_BOOTSTRAP")
+    if not bootstrap_brier_pass: failed.append("WALK_FORWARD_BRIER_WORSE_THAN_BOOTSTRAP")
+    report = {
+        **base,
+        "enabled": True,
+        "provisional": not authority_pass,
+        "authority_pass": authority_pass,
+        "reason": "ROLLING_WALK_FORWARD_VALIDATED" if authority_pass else "PROVISIONAL_FIVE_TRADE_CALIBRATION_ONLY",
+        "failed_conditions": failed,
+        "warmup_rows": warmup,
+        "rolling_folds": len(fold_reports),
+        "folds": fold_reports,
+        "oos_predictions": len(labels),
+        "oos_positive_labels": sum(labels),
+        "oos_negative_labels": len(labels) - sum(labels),
+        "learned_auc": round(learned_auc, 6) if learned_auc is not None else None,
+        "bootstrap_auc": round(bootstrap_auc, 6) if bootstrap_auc is not None else None,
+        "learned_brier": round(learned_brier, 6) if learned_brier is not None else None,
+        "bootstrap_brier": round(bootstrap_brier, 6) if bootstrap_brier is not None else None,
+        "minimum_predictions": SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS,
+        "minimum_auc": SETUP_CALIBRATION_VALIDATION_MIN_AUC,
+        "maximum_brier": SETUP_CALIBRATION_VALIDATION_MAX_BRIER,
+        "approved_learned_blend_weight": round(approved_weight, 4),
+        "learned_influence_tested": learned_influence_tested,
+        "final_past_only_blend_selection": final_selection,
+        "chronological": True,
+        "explicit_chronological_sort": True,
+        "chronology_complete": chronology_complete,
+        "rolling_walk_forward": True,
+        "single_holdout": False,
+        "outer_oos_labels_select_blend_weight": False,
+    }
+    _runtime_calibration_cache_set(cache_bucket, cache_key, fingerprint, report)
+    return report
+
+
+def setup_type_out_of_sample_validation(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
+    return _rolling_setup_validation_v9551(journal, setup_type)
+
+
+def setup_type_side_out_of_sample_validation(
+    journal: dict[str, Any], setup_type: str, side: str,
+) -> dict[str, Any]:
+    return _rolling_setup_validation_v9551(journal, setup_type, side)
+
+
+def setup_type_directional_calibration_profile(
+    journal: dict[str, Any], setup_type: str, side: str,
+) -> dict[str, Any]:
+    exact_side = str(side or "").upper()
+    stats = _setup_type_side_trade_statistics(journal, setup_type, exact_side)
+    training_rows = int(stats.get("training_rows") or 0)
+    validation = setup_type_side_out_of_sample_validation(journal, setup_type, exact_side)
+    sample_ready = training_rows >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+    expectancy_pass = bool(
+        int(stats.get("closed_trades") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+        and safe_float(stats.get("expectancy_r"), 0.0) > SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R
+    )
+    authority = bool(sample_ready and expectancy_pass and validation.get("authority_pass"))
+    provisional = bool(sample_ready and expectancy_pass and not authority)
+    status = (
+        "INSUFFICIENT_DIRECTIONAL_FEATURE_SAMPLE" if not sample_ready
+        else "DIRECTIONAL_EDGE_NOT_POSITIVE" if not expectancy_pass
+        else "VALIDATED_DIRECTIONAL_CALIBRATED" if authority
+        else "PROVISIONAL_FIVE_TRADE_DIRECTIONAL_CALIBRATION"
+    )
+    return {
+        **stats, "setup_type": str(setup_type or ""), "side": exact_side,
+        "training_rows": training_rows,
+        "minimum_training_rows": SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS,
+        "sample_ready": sample_ready, "expectancy_pass": expectancy_pass,
+        "validation_pass": bool(validation.get("authority_pass")),
+        "provisional_calibration_allowed": provisional,
+        "learned_authority_allowed": authority,
+        "empirically_calibrated": authority,
+        "status": status,
+        "out_of_sample_validation": validation,
+        "policy": "FIVE_TRADE_SHRINKAGE_START; POSITIVE_EXPECTANCY; FULL_ONLY_AFTER_ROLLING_WALK_FORWARD; NO_OPPOSITE_SIDE_BORROWING",
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+
+
+def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
+    exact_setup = str(setup_type or "")
+    rows = _quality_training_rows_filtered(journal, setup_type=exact_setup)
+    stats = setup_type_trade_statistics(journal, exact_setup)
+    training_rows = len(rows)
+    sample_ready = training_rows >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
+    validation = setup_type_out_of_sample_validation(journal, exact_setup)
+    side_audit = setup_type_side_calibration_audit(journal, exact_setup)
+    expectancy_pass = bool(
+        int(stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
+        and safe_float(stats.get("expectancy_r"), 0.0) > SETUP_CALIBRATION_MIN_EXPECTANCY_R
+    )
+    validation_pass = bool(validation.get("authority_pass"))
+    side_pass = bool(side_audit.get("pooled_learned_authority_safe", True))
+    learned_authority = bool(sample_ready and expectancy_pass and validation_pass and side_pass)
+    provisional = bool(sample_ready and expectancy_pass and not learned_authority)
+    directional_profiles: dict[str, Any] = {}
+    directional_authority_sides: list[str] = []
+    review_directional = bool(
+        side_audit.get("material_side_divergence")
+        or int((side_audit.get("long") or {}).get("training_rows") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+        or int((side_audit.get("short") or {}).get("training_rows") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
+    )
+    if review_directional:
+        for direction in (Side.LONG.value, Side.SHORT.value):
+            profile = setup_type_directional_calibration_profile(journal, exact_setup, direction)
+            directional_profiles[direction] = profile
+            if profile.get("learned_authority_allowed"):
+                directional_authority_sides.append(direction)
+    status = (
+        "INSUFFICIENT_EXACT_SETUP_SAMPLE" if not sample_ready
+        else "POOLED_EXPECTANCY_NOT_POSITIVE_BOOTSTRAP_ONLY" if not expectancy_pass
+        else "VALIDATED_CALIBRATED" if learned_authority
+        else "PROVISIONAL_FIVE_TRADE_SHRINKAGE_ONLY"
+    )
+    return {
+        **stats,
+        "training_rows": training_rows,
+        "minimum_training_rows": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+        "sample_ready": sample_ready,
+        "positive_expectancy_pass": expectancy_pass,
+        "minimum_expectancy_r": SETUP_CALIBRATION_MIN_EXPECTANCY_R,
+        "validation_pass": validation_pass,
+        "side_pooling_pass": side_pass,
+        "provisional_calibration_allowed": provisional,
+        "learned_authority_allowed": learned_authority,
+        "empirically_calibrated": learned_authority,
+        "directional_review_active": review_directional,
+        "directional_authority": directional_profiles,
+        "directional_authority_sides": directional_authority_sides,
+        "any_directional_learned_authority": bool(directional_authority_sides),
+        "status": status,
+        "out_of_sample_validation": validation,
+        "side_aware_audit": side_audit,
+        "policy": "FIVE_TRADE_BAYESIAN_START; POOLED_REQUIRES_POSITIVE_EXPECTANCY_AND_ROLLING_WALK_FORWARD; CALIBRATION_NEVER_VETOES_SETUP",
+        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
+    }
+
+
+def time_of_day_shadow_profile(journal: dict[str, Any]) -> dict[str, Any]:
+    """Time-of-Day remains a live named setup; sample maturity changes risk, not availability."""
+    profile = setup_type_calibration_profile(journal, SetupType.TIME_OF_DAY_ADAPTIVE.value)
+    mature = bool(profile.get("learned_authority_allowed"))
+    return {
+        **profile,
+        "shadow_active": False,
+        "live_eligible": True,
+        "validation_mode": "VALIDATED" if mature else "EXPERIMENTAL_PROBE",
+        "minimum_closed_trades": TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,
+        "minimum_expectancy_r": TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,
+        "sample_pass": bool(profile.get("sample_ready")),
+        "positive_expectancy_pass": bool(profile.get("positive_expectancy_pass")),
+        "exact_oos_side_validation_pass": mature,
+        "setup_availability_changed": False,
+        "policy": "SETUP_ALWAYS_AVAILABLE; FIVE_TRADE_CALIBRATION_START; MATURITY_ONLY_SIZES_OR_RANKS_AND_NEVER_BLOCKS",
+        "schema_version": "time_of_day_live_probe_v9.5.51",
+    }
+
+
+def _provisional_setup_coefficients_v9551(
+    rows: list[tuple[dict[str, float], int, float]], default: dict[str, float],
+) -> dict[str, float]:
+    """Beta-shrunk intercept correction: stable even when five labels are one class."""
+    probabilities = [_quality_probability_from_coefficients(default, features) for features, _label, _weight in rows]
+    prior_probability = clamp(mean(probabilities) if probabilities else 0.5, 0.10, 0.90)
+    prior_strength = 10.0
+    weighted_wins = sum(max(weight, 0.05) * int(label) for _features, label, weight in rows)
+    total_weight = sum(max(weight, 0.05) for _features, _label, weight in rows)
+    posterior = clamp(
+        (prior_probability * prior_strength + weighted_wins) / max(prior_strength + total_weight, 1e-9),
+        0.05, 0.95,
+    )
+    logit = lambda probability: math.log(probability / max(1.0 - probability, 1e-9))
+    bias_shift = clamp(logit(posterior) - logit(prior_probability), -0.50, 0.50)
+    output = dict(default)
+    output["bias"] = safe_float(default.get("bias"), 0.0) + bias_shift
+    return output
+
+
+def _quality_coefficients(
+    journal: dict, setup_family: str, *, side: str = "", short_reversal: bool = False,
+    setup_type: str = "",
+) -> tuple[dict[str, float], str, int, float]:
+    default = DEFAULT_QUALITY_COEFFICIENTS.get(setup_family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
+    exact_setup = str(setup_type or "")
+    exact_side = str(side or "").upper()
+    if not exact_setup:
+        return dict(default), "bootstrap:no_exact_setup", 0, 0.0
+    profile = setup_type_calibration_profile(journal, exact_setup)
+    side_divergent = bool((profile.get("side_aware_audit") or {}).get("material_side_divergence"))
+    use_side = bool(side_divergent and exact_side in {Side.LONG.value, Side.SHORT.value})
+    rows = _quality_training_rows_filtered(
+        journal, setup_type=exact_setup, side=exact_side if use_side else "",
+    )
+    n = len(rows)
+    if n < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
+        return dict(default), "bootstrap:exact_setup_sample_below_five", n, 0.0
+    authority_profile = (
+        (profile.get("directional_authority") or {}).get(exact_side) or {}
+        if use_side else profile
+    )
+    full_authority = bool(authority_profile.get("learned_authority_allowed"))
+    provisional = bool(authority_profile.get("provisional_calibration_allowed"))
+    if not full_authority and not provisional:
+        return dict(default), f"bootstrap:{authority_profile.get('status') or 'edge_not_positive'}", n, 0.0
+    fingerprint = _calibration_content_fingerprint(journal, exact_setup, exact_side if use_side else "")
+    cache_key = f"{setup_family}:{exact_setup}:{exact_side if use_side else 'POOLED'}"
+    cached = _runtime_calibration_cache_get("coefficients", cache_key, fingerprint)
+    if cached is not None:
+        return (
+            dict(cached["coefficients"]), str(cached["source"]), n,
+            safe_float(cached["weight"], 0.0),
+        )
+    if full_authority:
+        learned = _fit_logistic_coefficients(rows, default)
+        validation_weight = safe_float(
+            (authority_profile.get("out_of_sample_validation") or {}).get("approved_learned_blend_weight"),
+            0.0,
+        )
+        sample_cap = _learned_model_weight(
+            n,
+            SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS if use_side else SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+            SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS if use_side else SETUP_CALIBRATION_FULL_CLOSED_TRADES,
+        )
+        weight = min(validation_weight, sample_cap, CALIBRATION_VALIDATED_MAX_WEIGHT)
+        source = f"validated_walk_forward:{exact_setup}:{exact_side if use_side else 'POOLED'}"
+    else:
+        learned = _provisional_setup_coefficients_v9551(rows, default)
+        progress = clamp((n - SETUP_CALIBRATION_MIN_CLOSED_TRADES) / 10.0, 0.0, 1.0)
+        weight = min(CALIBRATION_PROVISIONAL_MAX_WEIGHT, 0.05 + 0.05 * progress)
+        source = f"provisional_five_trade_shrinkage:{exact_setup}:{exact_side if use_side else 'POOLED'}"
+    blended = _blend_coefficients(default, learned, weight)
+    _runtime_calibration_cache_set("coefficients", cache_key, fingerprint, {
+        "coefficients": blended, "source": source, "weight": weight,
+    })
+    return blended, f"{source}:blend{weight:.2f}", n, weight
+
+
+def apply_calibration_as_probability_only(
+    raw_probability: float, correction: float, confidence: str,
+) -> dict[str, Any]:
+    """Bounded probability correction; never an entry reject or stage downgrade."""
+    conf = str(confidence or "LOW").upper()
+    cap = {"LOW": 0.02, "MEDIUM": 0.04, "HIGH": 0.08}.get(conf, 0.02)
+    bounded = clamp(safe_float(correction, 0.0), -cap, cap)
+    return {
+        "probability": clamp(safe_float(raw_probability, 0.0) + bounded, 0.0, 1.0),
+        "raw_probability": clamp(safe_float(raw_probability, 0.0), 0.0, 1.0),
+        "applied_correction": round(bounded, 6),
+        "maximum_absolute_correction": cap,
+        "calibration_confidence": conf if conf in {"LOW", "MEDIUM", "HIGH"} else "LOW",
+        "authority": "PROBABILITY_RANKING_ONLY_NO_EXECUTION_VETO",
+    }
+
+
+def calibrate_candidate_quality(
+    journal: dict, features: dict[str, float], setup_family: str,
+    trigger_ready: bool, is_limit_armed: bool, has_forward_zone: bool,
+    flow_reliable: bool = False, side: str = "", short_reversal: bool = False,
+    setup_type: str = "",
+) -> dict[str, Any]:
+    default = DEFAULT_QUALITY_COEFFICIENTS.get(setup_family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
+    coefficients, source, sample_size, learned_weight = _quality_coefficients(
+        journal, setup_family, side=side, short_reversal=short_reversal,
+        setup_type=setup_type,
+    )
+    bootstrap_probability = _quality_probability_from_coefficients(default, features)
+    learned_probability = _quality_probability_from_coefficients(coefficients, features)
+    confidence = "HIGH" if source.startswith("validated_walk_forward") else "MEDIUM" if source.startswith("provisional_five_trade") else "LOW"
+    correction = apply_calibration_as_probability_only(
+        bootstrap_probability, learned_probability - bootstrap_probability, confidence,
+    )
+    gates = _multiplicative_quality_gates(
+        features, setup_family, trigger_ready, is_limit_armed,
+        has_forward_zone, flow_reliable,
+    )
+    gated_probability = clamp(correction["probability"] * gates["product"], 0.02, 0.98)
+    return {
+        "score": int(clamp(round(100.0 * gated_probability), 12, 98)),
+        "probability": round(gated_probability, 4),
+        "base_probability": round(correction["probability"], 4),
+        "bootstrap_probability": round(bootstrap_probability, 4),
+        "model_probability_before_cap": round(learned_probability, 4),
+        "probability_calibration": correction,
+        "model_source": source,
+        "sample_size": sample_size,
+        "learned_weight": round(learned_weight, 4),
+        "calibration_can_block_setup": False,
+        "features": {key: round(float(features.get(key, 0.0)), 4) for key in QUALITY_FEATURE_KEYS},
+        "gates": gates,
+    }
+
+
+def canonical_score_admission_profile(candidate_or_score: Any) -> dict[str, Any]:
+    """One score contract: preserve setups, control only their live stage."""
+    score = int(getattr(candidate_or_score, "final_score", candidate_or_score) or 0)
+    full = score >= ENTRY_SCORE_BASE
+    risky = RISKY_ENTRY_SCORE_BASE <= score < ENTRY_SCORE_BASE
+    shadow = ARMED_SCORE_BASE <= score < RISKY_ENTRY_SCORE_BASE
+    band = "FULL_LIVE" if full else "RISKY_STAGED" if risky else "SHADOW_ARMED" if shadow else "WATCH_RESEARCH"
+    return {
+        "authority": "CANONICAL_STAGE_ADMISSION_NOT_SETUP_REJECTION",
+        "mode": SCORE_POLICY_MODE,
+        "score": score,
+        "watch_threshold": ARMED_SCORE_BASE,
+        "risky_threshold": RISKY_ENTRY_SCORE_BASE,
+        "entry_threshold": ENTRY_SCORE_BASE,
+        "full_entry_eligible": full,
+        "risky_entry_eligible": bool(risky or full),
+        "risky_staged_only": risky,
+        "gray_shadow_only": shadow,
+        "gray_lower_bound": ARMED_SCORE_BASE,
+        "setup_detected_preserved": True,
+        "live_allowed": bool(risky or full),
+        "maximum_live_stage": EntryStage.CORE.value if full else EntryStage.ACCEPTANCE.value if risky else ExecutiveDecisionState.WATCH.value,
+        "band": band,
+        "live_defaults_preserved": bool(
+            ENTRY_SCORE_BASE == LIVE_ENTRY_SCORE_BASE
+            and RISKY_ENTRY_SCORE_BASE == LIVE_RISKY_ENTRY_SCORE_BASE
+            and ARMED_SCORE_BASE == 58
+        ),
+    }
+
+
+def classify_execution_blocker(reason: str) -> str:
+    """Token-aware blocker classification; RISKY and INVALID schema no longer collide."""
+    value = str(reason or "").upper().strip()
+    tokens = set(value.replace(":", "_").replace("-", "_").split("_"))
+    if "CALIBRATION" in value:
+        return "CALIBRATION"
+    if "PRECONFIRM" in value:
+        return "PRECONFIRMATION"
+    if "ROUTER" in value:
+        return "ROUTER_PREFERENCE"
+    if "SCORE" in value or "RANKING" in value:
+        return "SCORE"
+    if any(marker in value for marker in ("DATA_SCHEMA", "MARKET_DATA", "PRICE_UNAVAILABLE", "MISSING_PRICE")):
+        return "DATA"
+    if any(marker in value for marker in ("DAILY_RISK", "NO_CAPITAL", "CAPITAL_BLOCK", "RISK_INVALID")):
+        return "RISK"
+    if any(marker in value for marker in ("THESIS_INVALID", "THESIS_EXPIRED", "HARD_EXECUTION_INVALIDATION")):
+        return "INVALIDATION"
+    if any(marker in value for marker in (
+        "EXECUTION_ANCHOR", "PLAN_NOT_EXECUTION_READY", "ENTRY_WITHOUT_EXECUTION",
+        "REVALIDATION_NOT_SUPPORTED", "NEGATIVE_EXECUTION_CONSENSUS", "EXECUTION_FAILURE",
+    )):
+        return "EXECUTION_FAILURE"
+    if "RISK" in tokens:
+        return "RISK"
+    if "INVALID" in tokens or "EXPIRED" in tokens:
+        return "INVALIDATION"
+    return "ADVISORY_MODEL"
+
+
+def execution_anchor_repair_profile_v9551(
+    *, side: str, price: float, atr15: float, structural_anchor: float,
+    trigger_level: float, invalidation_level: float, target_level: float,
+    model: str,
+) -> dict[str, Any]:
+    """Convert structural geometry into a current-fill/retest execution decision."""
+    direction = side_sign(side)
+    market = safe_float(price, 0.0)
+    structural = safe_float(structural_anchor, market) or market
+    trigger = safe_float(trigger_level, structural) or structural
+    invalidation = safe_float(invalidation_level, 0.0)
+    target = safe_float(target_level, 0.0)
+    atr = max(safe_float(atr15, 0.0), 1e-9)
+    structural_risk = abs(structural - invalidation) if invalidation > 0 else atr
+    structural_risk = max(structural_risk, atr * 0.50, ABS_MIN_STOP_DOLLARS)
+    favorable_move = direction * (market - structural)
+    missed_favorable_r = max(0.0, favorable_move / structural_risk)
+    improved_price_r = max(0.0, -favorable_move / structural_risk)
+    trigger_distance_atr = abs(market - trigger) / atr
+    structural_distance_atr = abs(market - structural) / atr
+    current_stop_room = direction * (market - invalidation) if invalidation > 0 else structural_risk
+    invalidated = bool(market <= 0.0 or current_stop_room <= 0.0)
+    live_reward = direction * (target - market) if target > 0.0 else 0.0
+    live_rr = live_reward / max(current_stop_room, 1e-9) if target > 0.0 and current_stop_room > 0.0 else None
+    rr_degraded = bool(live_rr is not None and live_rr < EXECUTION_ANCHOR_MIN_LIVE_RR)
+    late_chase = bool(
+        missed_favorable_r > EXECUTION_ANCHOR_MAX_MARKET_MISSED_R
+        or (trigger_distance_atr > EXECUTION_ANCHOR_MAX_DISTANCE_ATR and favorable_move > 0.0)
+        or rr_degraded
+    )
+    current_fill_allowed = bool(not invalidated and not late_chase)
+    execution_anchor = market if current_fill_allowed else structural
+    if invalidated:
+        decision = "INVALIDATED"
+        source = "THESIS_INVALIDATED_BEFORE_EXECUTION"
+    elif late_chase:
+        decision = "WAIT_RETEST"
+        source = "STRUCTURAL_RETEST_NO_FOMO"
+    elif trigger_distance_atr > EXECUTION_ANCHOR_MAX_DISTANCE_ATR:
+        decision = "MARKET_NOW"
+        source = "CURRENT_PRICE_RECOVERY_FROM_STALE_TRIGGER"
+    elif improved_price_r > 0.0:
+        decision = "MARKET_NOW"
+        source = "CURRENT_PRICE_IMPROVED_EXECUTION"
+    else:
+        decision = "MARKET_NOW"
+        source = "CURRENT_PRICE_WITHIN_EXECUTION_ENVELOPE"
+    quality = 0.0 if invalidated else clamp(
+        100.0 - 70.0 * min(missed_favorable_r / max(EXECUTION_ANCHOR_MAX_MARKET_MISSED_R, 1e-9), 1.5)
+        - (25.0 if rr_degraded else 0.0),
+        0.0, 100.0,
+    )
+    return {
+        "execution_anchor": round_price(execution_anchor),
+        "structural_anchor": round_price(structural),
+        "retest_anchor": round_price(structural),
+        "trigger_level": round_price(trigger),
+        "invalidation_level": round_price(invalidation) if invalidation > 0 else 0.0,
+        "target_level": round_price(target) if target > 0 else 0.0,
+        "risk_distance": round(structural_risk, 6),
+        "missed_favorable_r": round(missed_favorable_r, 6),
+        "improved_price_r": round(improved_price_r, 6),
+        "trigger_distance_atr": round(trigger_distance_atr, 6),
+        "structural_distance_atr": round(structural_distance_atr, 6),
+        "live_rr_to_structural_target": round(live_rr, 6) if live_rr is not None else None,
+        "maximum_market_missed_r": EXECUTION_ANCHOR_MAX_MARKET_MISSED_R,
+        "maximum_trigger_distance_atr": EXECUTION_ANCHOR_MAX_DISTANCE_ATR,
+        "minimum_live_rr": EXECUTION_ANCHOR_MIN_LIVE_RR,
+        "current_fill_allowed": current_fill_allowed,
+        "execution_ready": current_fill_allowed,
+        "late_entry_prevented": late_chase,
+        "rr_degraded": rr_degraded,
+        "invalidated": invalidated,
+        "decision": decision,
+        "anchor_source": source,
+        "quality": round(quality, 2),
+        "model": str(model or ""),
+        "setup_blocked": False,
+        "setup_route": "LIVE_ALLOWED" if current_fill_allowed else "WAIT_RETEST" if not invalidated else "INVALIDATED",
+        "schema_version": "execution_anchor_repair_v9.5.51_missed_r_authority",
+    }
+
+
+_ict_model_execution_contract_v9551_base = ict_model_execution_contract
+def ict_model_execution_contract(
+    model_id: str, setup_type: str, side: str, context: dict, event: dict,
+    trigger_level: float, ce_level: float, is_limit_armed: bool,
+    model_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    contract = _ict_model_execution_contract_v9551_base(
+        model_id, setup_type, side, context, event, trigger_level, ce_level,
+        is_limit_armed, model_context,
+    )
+    profile = execution_anchor_repair_profile_v9551(
+        side=side,
+        price=safe_float(context.get("price"), 0.0),
+        atr15=safe_float(context.get("atr15"), 0.0),
+        structural_anchor=safe_float(contract.get("entry_anchor"), 0.0),
+        trigger_level=trigger_level,
+        invalidation_level=safe_float(contract.get("invalidation_level"), 0.0),
+        target_level=safe_float(contract.get("target_level"), 0.0),
+        model=model_id,
+    )
+    contract["execution_anchor"] = profile["execution_anchor"]
+    contract["execution_anchor_profile"] = profile
+    contract["execution_authority_input"] = True
+    return contract
+
+
+_synchronize_candidate_trigger_v9551_base = synchronize_candidate_trigger_with_contract
+def synchronize_candidate_trigger_with_contract(candidate: Optional[Candidate]) -> float:
+    trigger = _synchronize_candidate_trigger_v9551_base(candidate)
+    if candidate is None:
+        return trigger
+    contract = dict((candidate.score_components or {}).get("entry_contract") or {})
+    profile = dict(contract.get("execution_anchor_profile") or {})
+    repaired = safe_float(contract.get("execution_anchor"), safe_float(profile.get("execution_anchor"), 0.0))
+    if repaired > 0.0:
+        candidate.execution_anchor = round_price(repaired)
+    candidate.score_components["execution_anchor_authority"] = profile
+    return round_price(safe_float(candidate.trigger_level, trigger))
+
+
+def candidate_contract_entry_anchor(candidate: Optional[Candidate]) -> float:
+    if candidate is None:
+        return 0.0
+    contract = dict((candidate.score_components or {}).get("entry_contract") or {})
+    repaired = safe_float(
+        contract.get("execution_anchor"),
+        safe_float(contract.get("entry_anchor"), safe_float(candidate.execution_anchor, 0.0)),
+    )
+    if repaired > 0.0:
+        return round_price(repaired)
+    return round_price(safe_float(contract.get("entry_anchor"), safe_float(candidate.trigger_level, 0.0)))
+
+
+_resolve_execution_entry_price_v9551_base = resolve_execution_entry_price
+def resolve_execution_entry_price(
+    context: dict, candidate: Optional[Candidate], entry_price_override: Optional[float] = None,
+) -> tuple[float, dict[str, Any]]:
+    price, contract = _resolve_execution_entry_price_v9551_base(
+        context, candidate, entry_price_override=entry_price_override,
+    )
+    anchor = dict(((getattr(candidate, "score_components", {}) or {}).get("execution_anchor_authority") or {}) if candidate else {})
+    contract.update({
+        "version": "v9.5.51",
+        "anchor_is_analytical_only": False,
+        "anchor_is_final_authority_input": True,
+        "current_fill_allowed_by_anchor": bool(anchor.get("current_fill_allowed", True)),
+        "anchor_decision": str(anchor.get("decision") or "UNAVAILABLE"),
+        "missed_favorable_r": safe_float(anchor.get("missed_favorable_r"), 0.0),
+    })
+    if candidate is not None:
+        candidate.score_components["entry_price_contract"] = dict(contract)
+    return price, contract
+
+
+def _execution_anchor_profile_from_candidate_v9551(
+    candidate: Candidate, plan: Optional[TradePlan],
+) -> dict[str, Any]:
+    components = candidate.score_components or {}
+    profile = dict(components.get("execution_anchor_authority") or {})
+    if profile:
+        return profile
+    entry_contract = dict(components.get("entry_contract") or {})
+    profile = dict(entry_contract.get("execution_anchor_profile") or {})
+    if profile:
+        return profile
+    entry = safe_float(getattr(plan, "entry", 0.0), safe_float(candidate.execution_anchor, 0.0))
+    invalidation = safe_float(
+        getattr(plan, "structural_invalidation", 0.0),
+        safe_float(candidate.invalidation_level, 0.0),
+    )
+    target = safe_float(getattr(plan, "tp1", 0.0), safe_float((candidate.target_levels or [0.0])[0], 0.0))
+    atr = max(abs(entry - invalidation), ABS_MIN_STOP_DOLLARS)
+    return execution_anchor_repair_profile_v9551(
+        side=candidate.side, price=entry, atr15=atr,
+        structural_anchor=safe_float(candidate.execution_anchor, entry),
+        trigger_level=safe_float(candidate.trigger_level, entry),
+        invalidation_level=invalidation, target_level=target,
+        model=str(candidate.ict_model or candidate.setup_type),
+    )
+
+
+def _hard_execution_blockers_v9551(reasons: list[str]) -> list[str]:
+    hard_classes = {"INVALIDATION", "RISK", "DATA", "EXECUTION_FAILURE"}
+    return sorted(set(
+        str(reason) for reason in reasons
+        if classify_execution_blocker(str(reason)) in hard_classes
+    ))
+
+
+def final_execution_authority_v9548(
+    staged: ExecutiveDecisionContract, plan: Optional[TradePlan], candidate: Candidate,
+) -> dict[str, Any]:
+    """The sole trade/no-trade boundary; every other layer supplies facts only."""
+    blockers = [str(value) for value in (staged.blocking_reasons or [])]
+    hard = _hard_execution_blockers_v9551(blockers)
+    plan_ready = bool(plan and plan.valid and plan.execution_ready)
+    anchor = _execution_anchor_profile_from_candidate_v9551(candidate, plan)
+    trigger_age = candidate_execution_trigger_age_minutes(candidate)
+    trigger_valid = bool(
+        trigger_age <= float(EXECUTION_TRIGGER_TTL_MIN)
+        and (
+            candidate.trigger_ready or candidate.live_3m_trigger_ready
+            or candidate.limit_armed_ready
+            or str(candidate.execution_source or "") != ExecutionSource.NONE.value
+        )
+    )
+    entry = safe_float(getattr(plan, "entry", 0.0), 0.0) if plan else 0.0
+    stop = safe_float(getattr(plan, "stop", 0.0), 0.0) if plan else 0.0
+    risk_geometry_valid = bool(
+        plan_ready and entry > 0.0 and stop > 0.0
+        and ((candidate.side == Side.LONG.value and stop < entry) or (candidate.side == Side.SHORT.value and stop > entry))
+    )
+    anchor_valid = bool(anchor.get("current_fill_allowed") and not anchor.get("invalidated"))
+    evaluation = dict(candidate.evaluation_bundle or (candidate.score_components or {}).get("evaluation_bundle") or {})
+    setup_quality = safe_float(evaluation.get("setup_quality"), safe_float(candidate.setup_quality_score, 70.0))
+    execution_quality = safe_float(evaluation.get("execution_readiness"), safe_float(candidate.execution_quality_score, 70.0))
+    trade_quality = safe_float(evaluation.get("trade_quality"), safe_float(candidate.trade_plan_quality_score, 70.0))
+    freshness = clamp(100.0 * (1.0 - trigger_age / max(float(EXECUTION_TRIGGER_TTL_MIN), 1.0)), 0.0, 100.0)
+    readiness_contract = build_execution_readiness(
+        structure=setup_quality,
+        liquidity=(setup_quality + trade_quality) / 2.0,
+        trigger_freshness=max(freshness, execution_quality if trigger_valid else 0.0),
+        risk_quality=100.0 if risk_geometry_valid else 0.0,
+        execution_anchor=safe_float(anchor.get("quality"), 0.0),
+        hard_blockers=hard,
+    )
+    resolved = resolve_final_execution_authority(
+        readiness_contract, trigger_valid, anchor_valid, risk_geometry_valid,
+    )
+    score = canonical_score_admission_profile(candidate)
+    score_live = bool(score.get("live_allowed"))
+    allow = bool(
+        staged.allow_execution and plan_ready and score_live
+        and resolved.action == "ALLOW_EXECUTION"
+    )
+    hidden = hidden_gate_sweep_audit(blockers, allow_execution=allow)
+    return {
+        "authority": "FINAL_EXECUTION_AUTHORITY",
+        "authority_order": "LAST_MUTATOR_AFTER_ROUTER",
+        "allow": allow,
+        "hard_blockers": sorted(set(hard + list(resolved.reasons))),
+        "advisory_reasons": sorted(set(blockers) - set(hard)),
+        "plan_ready": plan_ready,
+        "trigger_valid": trigger_valid,
+        "risk_geometry_valid": risk_geometry_valid,
+        "execution_readiness": asdict(readiness_contract),
+        "resolved_contract": asdict(resolved),
+        "execution_anchor": anchor,
+        "score_contract": score,
+        "score_stage_cap": score.get("maximum_live_stage"),
+        "hidden_gate_sweep": hidden,
+        "forbidden_veto_sources": {
+            "calibration": True, "preconfirmation": True,
+            "router_preference": True, "advisory_models": True,
+        },
+        "calibration_can_reject": False,
+        "preconfirmation_can_reject": False,
+        "setup_deleted": False,
+        "schema_version": V9551_SCHEMA_VERSION,
+    }
+
+
+_build_executive_decision_object_v9551_base = build_executive_decision_object
+def build_executive_decision_object(
+    candidate: Optional[Candidate], plan: Optional[TradePlan] = None,
+    journal: Optional[dict[str, Any]] = None, state: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = _build_executive_decision_object_v9551_base(
+        candidate, plan=plan, journal=journal, state=state,
+    )
+    authority = dict(((payload.get("audit") or {}).get("final_execution_authority") or {}))
+    if not authority.get("allow") and str(payload.get("action") or "") in {
+        EntryStage.PROBE.value, EntryStage.ACCEPTANCE.value, EntryStage.RETEST_ADD.value,
+        EntryStage.CORE.value, EntryStage.ADD_POSITION.value,
+    }:
+        score = dict(authority.get("score_contract") or {})
+        state_name = (
+            ExecutiveDecisionState.WATCH.value
+            if int(score.get("score") or 0) < RISKY_ENTRY_SCORE_BASE
+            else ExecutiveDecisionState.WAIT_RETEST.value
+            if str(((authority.get("execution_anchor") or {}).get("decision") or "")) == "WAIT_RETEST"
+            else ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        )
+        payload["action"] = state_name
+        payload["state"] = state_name
+        payload["allow_execution"] = False
+        payload["allowed_stage"] = state_name
+        payload["final_risk_pct"] = 0.0
+        payload["required_next_event"] = (
+            "canonical score >= 68 while this setup remains armed/shadow"
+            if int(score.get("score") or 0) < RISKY_ENTRY_SCORE_BASE
+            else "fresh economically valid execution anchor"
+        )
+        payload.setdefault("warning_reasons", []).append(
+            "SCORE_SHADOW_ARMED" if int(score.get("score") or 0) >= ARMED_SCORE_BASE else "WATCH_RESEARCH"
+        )
+        payload["warning_reasons"] = sorted(set(payload["warning_reasons"]))
+        payload.setdefault("audit", {})["final_execution_authority"] = authority
+    return payload
+
+
+def ensure_execution_authority_audit(journal: dict[str, Any]) -> dict[str, Any]:
+    anchor = journal.setdefault("execution_anchor_repair_audit", {})
+    anchor.setdefault("runs", 0)
+    anchor.setdefault("blocked_candidates", 0)
+    anchor.setdefault("recovered_candidates", 0)
+    anchor.setdefault("missed_move_r", 0.0)
+    anchor.setdefault("avg_missed_r", 0.0)
+    anchor.setdefault("top_blockers", {})
+    anchor["schema_version"] = "execution_anchor_repair_audit_v9.5.51"
+    journal.setdefault("PRECONFIRM_IMPACT_AUDIT", {
+        "blocked_by_preconfirm": 0, "entered_without_preconfirm": 0,
+        "false_negative_count": 0, "missed_R": 0.0,
+    })
+    journal.setdefault("counterfactual_execution_audit", init_counterfactual_execution_audit())
+    policy = journal.setdefault("calibration_cache_policy", {})
+    policy.update({
+        "persistence": "PROCESS_MEMORY_ONLY",
+        "journal_cache_keys_removed": list(CALIBRATION_LEGACY_JOURNAL_CACHE_KEYS),
+        "runtime_cache_limit_per_bucket": CALIBRATION_RUNTIME_CACHE_LIMIT,
+        "fingerprint": "SHA256_SORTED_OUTCOMES_FEATURES_TIMESTAMPS",
+        "schema_version": "calibration_cache_compaction_v9.5.51",
+    })
+    return journal
+
+
+def _update_execution_anchor_aggregate_v9551(
+    journal: dict[str, Any], candidate: Candidate, authority: dict[str, Any],
+    *, recovered: bool, old_entry_available: bool,
+) -> None:
+    ensure_execution_authority_audit(journal)
+    profile = dict(authority.get("execution_anchor") or {})
+    aggregate = journal["execution_anchor_repair_audit"]
+    aggregate["runs"] = int(aggregate.get("runs", 0) or 0) + 1
+    missed_r = max(0.0, safe_float(profile.get("missed_favorable_r"), 0.0))
+    aggregate["missed_move_r"] = round(safe_float(aggregate.get("missed_move_r"), 0.0) + missed_r, 6)
+    aggregate["avg_missed_r"] = round(aggregate["missed_move_r"] / max(aggregate["runs"], 1), 6)
+    if not profile.get("current_fill_allowed"):
+        aggregate["blocked_candidates"] = int(aggregate.get("blocked_candidates", 0) or 0) + 1
+        reason = str(profile.get("decision") or "ANCHOR_NOT_READY")
+        blockers = aggregate.setdefault("top_blockers", {})
+        blockers[reason] = int(blockers.get(reason, 0) or 0) + 1
+    if recovered:
+        aggregate["recovered_candidates"] = int(aggregate.get("recovered_candidates", 0) or 0) + 1
+    update_counterfactual_execution_audit(
+        journal["counterfactual_execution_audit"],
+        setup=str(candidate.setup_type or "UNKNOWN"),
+        old_entry_available=old_entry_available,
+        recovered=recovered,
+        missed_r=missed_r,
+        false_positive=False,
+    )
+
+
+def _score_contract_action_v9551(
+    candidate: Candidate, preferred_action: str,
+) -> str:
+    score = canonical_score_admission_profile(candidate)
+    if not score.get("live_allowed"):
+        return Action.NO_SETUP.value
+    if score.get("risky_staged_only"):
+        return Action.PROBE_ENTRY.value if preferred_action == Action.PROBE_ENTRY.value else Action.RISKY_ENTRY.value
+    if preferred_action in EXECUTABLE_ENTRY_ACTIONS:
+        return preferred_action
+    stage = str(candidate.entry_stage or "")
+    return Action.ENTRY.value if stage == EntryStage.CORE.value else Action.RISKY_ENTRY.value if stage == EntryStage.ACCEPTANCE.value else Action.PROBE_ENTRY.value
+
+
+def _apply_true_final_authority_v9551(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    candidate = decision.candidate
+    if candidate is None:
+        return decision
+    report = (((decision.audit or {}).get("executive_director") or {}).get("report") or {})
+    executive = report.get("executive_decision") or {}
+    executive_audit = executive.get("audit") or {}
+    prior_authority = dict(
+        executive_audit.get("final_execution_authority")
+        or (report.get("audit") or {}).get("final_execution_authority")
+        or {}
+    )
+    stage = candidate.stage_plan or {}
+    route_audit = dict((decision.audit or {}).get("router_chain_v9541") or {})
+    tactic = str(route_audit.get("tactic") or stage.get("router_intended_tactic") or "MARKET_NOW")
+    router_deferred = bool(
+        decision.action == Action.NO_SETUP.value
+        and tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"}
+        and (route_audit or stage.get("router_final_disposition") == "DEFERRED")
+    )
+    blockers = [
+        str(value) for value in (executive.get("blocking_reasons") or [])
+        if classify_execution_blocker(str(value)) != "ROUTER_PREFERENCE"
+        and "ROUTER" not in str(value).upper()
+    ]
+    pre_router_allow = bool(prior_authority.get("allow") and safe_float(executive.get("final_risk_pct"), 0.0) > 0.0)
+    staged = ExecutiveDecisionContract(
+        state=str(executive.get("state") or executive.get("allowed_stage") or candidate.entry_stage or ExecutiveDecisionState.WATCH.value),
+        allow_execution=pre_router_allow if router_deferred else bool(executive.get("allow_execution", decision.action in EXECUTABLE_ENTRY_ACTIONS)),
+        allowed_stage=str(executive.get("allowed_stage") or candidate.entry_stage or ExecutiveDecisionState.WATCH.value),
+        final_risk_pct=safe_float(executive.get("final_risk_pct"), 0.0),
+        required_next_event=executive.get("required_next_event"),
+        blocking_reasons=blockers,
+        warning_reasons=list(executive.get("warning_reasons") or []),
+        audit=dict(executive_audit),
+    )
+    authority = final_execution_authority_v9548(staged, decision.plan, candidate)
+    xi = dict((candidate.score_components or {}).get("execution_intelligence_v9532") or {})
+    route = dict(xi.get("execution_router") or {})
+    economic_reprice = bool(route.get("economic_reprice"))
+    authority["router_input"] = {
+        "tactic": tactic, "deferred": router_deferred,
+        "economic_reprice": economic_reprice,
+        "router_has_trade_authority": False,
+    }
+    preferred = str(
+        route_audit.get("deferred_from_action")
+        or stage.get("router_deferred_from_action")
+        or decision.action
+    )
+    old_entry_available = bool(pre_router_allow and preferred in EXECUTABLE_ENTRY_ACTIONS)
+    recovered = False
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS:
+        final_action = _score_contract_action_v9551(candidate, decision.action) if authority.get("allow") else Action.NO_SETUP.value
+    elif router_deferred and old_entry_available and authority.get("allow") and not economic_reprice:
+        final_action = _score_contract_action_v9551(candidate, preferred)
+        recovered = final_action in EXECUTABLE_ENTRY_ACTIONS
+    else:
+        final_action = Action.NO_SETUP.value
+    if economic_reprice and router_deferred:
+        final_action = Action.NO_SETUP.value
+        authority["economic_execution_decision"] = "WAIT_RETEST_BY_FINAL_AUTHORITY"
+        authority["allow"] = False
+        authority.setdefault("hard_blockers", []).append("EXECUTION_ECONOMICS_REPRICE")
+    score_contract = authority["score_contract"]
+    if not score_contract.get("live_allowed"):
+        final_action = Action.NO_SETUP.value
+        authority["allow"] = False
+        authority["admission_state"] = score_contract.get("band")
+        if int(score_contract.get("score") or 0) >= ARMED_SCORE_BASE:
+            candidate.opportunity_status = OpportunityStatus.ARMED.value
+            candidate.execution_lane = ExecutionLane.WAIT_CONFIRMATION.value
+    decision.action = final_action
+    decision.reason = (
+        f"FINAL_EXECUTION_AUTHORITY: {score_contract.get('band')} | "
+        f"anchor={((authority.get('execution_anchor') or {}).get('decision') or 'UNKNOWN')} | "
+        f"action={final_action}"
+    )
+    if final_action in EXECUTABLE_ENTRY_ACTIONS:
+        candidate.entry_stage = (
+            EntryStage.CORE.value if final_action == Action.ENTRY.value
+            else EntryStage.ACCEPTANCE.value if final_action == Action.RISKY_ENTRY.value
+            else EntryStage.PROBE.value
+        )
+        if decision.plan is not None:
+            decision.plan.entry_stage = candidate.entry_stage
+            decision.plan.final_stage = candidate.entry_stage
+        executive["allow_execution"] = True
+        executive["action"] = candidate.entry_stage
+        executive["state"] = candidate.entry_stage
+        executive["allowed_stage"] = candidate.entry_stage
+        executive["blocking_reasons"] = []
+        report["action"] = final_action
+    else:
+        executive["allow_execution"] = False
+        executive["final_risk_pct"] = 0.0
+        report["action"] = Action.NO_SETUP.value
+    authority["allow"] = final_action in EXECUTABLE_ENTRY_ACTIONS
+    authority["final_action"] = final_action
+    authority["recovered_non_economic_router_defer"] = recovered
+    authority["is_last_mutator"] = True
+    executive.setdefault("audit", {})["final_execution_authority"] = authority
+    report.setdefault("audit", {})["final_execution_authority"] = authority
+    decision.audit["final_execution_authority_v9551"] = authority
+    director = decision.audit.setdefault("executive_director", {})
+    director["final_action"] = final_action
+    director["authority"] = "100% FINAL_AFTER_ROUTER"
+    director["statement"] = "FINAL_EXECUTION_AUTHORITY is the last and only trade-action mutator"
+    if not context.get("_audit_shadow_scan"):
+        _update_execution_anchor_aggregate_v9551(
+            journal, candidate, authority,
+            recovered=recovered, old_entry_available=old_entry_available,
+        )
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+
+
+_evaluate_new_setup_v9551_base = evaluate_new_setup
+def evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
+    decision = _evaluate_new_setup_v9551_base(context, state, journal)
+    return _apply_true_final_authority_v9551(decision, context, journal)
+
+
+_load_journal_v9551_base = load_journal
+def load_journal() -> dict[str, Any]:
+    journal = _load_journal_v9551_base()
+    removed = False
+    for key in CALIBRATION_LEGACY_JOURNAL_CACHE_KEYS:
+        removed = bool(journal.pop(key, None) is not None or removed)
+    ensure_execution_authority_audit(journal)
+    if removed:
+        journal["calibration_cache_policy"]["legacy_cache_compacted_at"] = iso_now()
+        atomic_json_write(JOURNAL_FILE, journal)
+    return journal
+
+
+_save_journal_v9551_base = save_journal
+def save_journal(journal: dict[str, Any]) -> None:
+    for key in CALIBRATION_LEGACY_JOURNAL_CACHE_KEYS:
+        journal.pop(key, None)
+    ensure_execution_authority_audit(journal)
+    journal["calibration_cache_policy"]["last_compaction_at"] = iso_now()
+    return _save_journal_v9551_base(journal)
+
+
+_run_audit_journal_v9551_base = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    output = _run_audit_journal_v9551_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    audit = init_counterfactual_execution_audit()
+    trades = {
+        str(row.get("signal_id") or row.get("id") or ""): row
+        for row in (payload.get("trades") or []) if isinstance(row, dict)
+    }
+    for signal in (payload.get("signals") or []):
+        if not isinstance(signal, dict):
+            continue
+        components = dict(signal.get("score_components") or {})
+        contract = dict(components.get("entry_contract") or {})
+        profile = dict(contract.get("execution_anchor_profile") or components.get("execution_anchor_authority") or {})
+        if not profile:
+            continue
+        signal_id = str(signal.get("id") or "")
+        trade = trades.get(signal_id) or {}
+        recovered = bool(
+            profile.get("anchor_source") == "CURRENT_PRICE_RECOVERY_FROM_STALE_TRIGGER"
+            and str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS
+        )
+        result_r = _journal_result_r(trade) if trade else None
+        update_counterfactual_execution_audit(
+            audit,
+            setup=str(signal.get("setup_type") or "UNKNOWN"),
+            old_entry_available=bool(profile.get("structural_anchor")),
+            recovered=recovered,
+            missed_r=safe_float(profile.get("missed_favorable_r"), 0.0),
+            false_positive=bool(recovered and result_r is not None and result_r <= 0.0),
+        )
+    output["v9551_professional_execution_calibration"] = {
+        "counterfactual_execution": counterfactual_execution_summary(audit),
+        "calibration": {
+            "minimum_closed_trades_for_provisional": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
+            "minimum_walk_forward_predictions_for_full": SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS,
+            "minimum_auc": SETUP_CALIBRATION_VALIDATION_MIN_AUC,
+            "maximum_brier": SETUP_CALIBRATION_VALIDATION_MAX_BRIER,
+            "pooled_positive_expectancy_required": True,
+            "explicit_chronological_sort": True,
+            "rolling_walk_forward": True,
+            "single_holdout": False,
+            "cache_fingerprint": "SHA256_OUTCOMES_FEATURES_TIMESTAMPS",
+            "cache_persistence": "PROCESS_MEMORY_ONLY",
+        },
+        "score_contract": {"shadow": "58-67", "risky_staged": "68-74", "full": "75+"},
+        "all_setup_contracts_available": len(_tracked_setup_types()) == 24,
+        "schema_version": V9551_SCHEMA_VERSION,
+    }
+    return output
+
+
+_validate_runtime_configuration_v9551_base = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9551_base()
+    errors = list(report.get("errors") or [])
+    if "v9.5.51" not in BOT_VERSION or "V9_5_51" not in ARCHITECTURE_VERSION:
+        errors.append("v9.5.51 release seal is not effective")
+    if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
+        errors.append("v9.5.51 requires one canonical 58/68/75 score contract")
+    if SETUP_CALIBRATION_MIN_CLOSED_TRADES != 5:
+        errors.append("v9.5.51 provisional exact-setup calibration must start at five closed trades")
+    if SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS < 20:
+        errors.append("v9.5.51 full calibration authority requires at least 20 walk-forward predictions")
+    if SETUP_CALIBRATION_VALIDATION_MIN_AUC < 0.58:
+        errors.append("v9.5.51 full calibration AUC gate must be at least 0.58")
+    if SETUP_CALIBRATION_VALIDATION_MAX_BRIER > 0.24:
+        errors.append("v9.5.51 full calibration Brier ceiling must be at most 0.24")
+    if len(_tracked_setup_types()) != 24 or set(SETUP_STATE_MACHINE_REGISTRY) != set(_tracked_setup_types()):
+        errors.append("v9.5.51 must keep all 24 setup contracts connected")
+    if not callable(globals().get("final_execution_authority_v9548")):
+        errors.append("FINAL_EXECUTION_AUTHORITY is unavailable")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "final_authority": "FINAL_EXECUTION_AUTHORITY_AFTER_ROUTER",
+    }
+
+
+def _v9551_calibration_fixture(count: int = 5, *, reverse: bool = False) -> dict[str, Any]:
+    setup = SetupType.ACCEPTANCE_RETEST_CONTINUATION.value
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    signals: list[dict[str, Any]] = []
+    trades: list[dict[str, Any]] = []
+    for index in range(count):
+        signal_id = f"v9551-cal-{index}"
+        label = 1 if index % 5 in {0, 1, 2} else 0
+        feature = 0.85 if label else 0.15
+        features = {key: 0.25 for key in QUALITY_FEATURE_KEYS}
+        features.update({"loc": feature, "trigger": 1.0, "structure": feature})
+        event_time = (start + timedelta(hours=index)).isoformat()
+        signals.append({
+            "id": signal_id, "time": event_time,
+            "setup_type": setup, "setup_family": SetupFamily.CONTINUATION.value,
+            "side": Side.LONG.value, "features": features,
+        })
+        trades.append({
+            "id": f"v9551-trade-{index}", "signal_id": signal_id,
+            "closed_at": event_time, "setup_type": setup,
+            "setup_family": SetupFamily.CONTINUATION.value, "side": Side.LONG.value,
+            "pnl_r": 0.85 if label else -1.0,
+            "result_pct": 0.50 if label else -0.50,
+            "tp1_hit": bool(label), "tp2_hit": False, "tp3_hit": False,
+            "ml_eligible": True,
+        })
+    if reverse:
+        signals.reverse()
+        trades.reverse()
+    return {"training_signals": signals, "signals": [], "trades": trades}
+
+
+def v9551_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    checks.append((
+        "v9.5.51 runtime seal, 15M cadence and all 24 setup contracts are live",
+        validate_runtime_configuration().get("valid") is True
+        and EXECUTION_SCHEDULER_CADENCE_MINUTES == 15
+        and len(_tracked_setup_types()) == 24
+        and set(SETUP_STATE_MACHINE_REGISTRY) == set(_tracked_setup_types()),
+    ))
+    bands = [canonical_score_admission_profile(value)["band"] for value in (57, 58, 67, 68, 74, 75)]
+    checks.append((
+        "v9.5.51 one score contract is 58-67 shadow, 68-74 staged, 75+ full",
+        bands == ["WATCH_RESEARCH", "SHADOW_ARMED", "SHADOW_ARMED", "RISKY_STAGED", "RISKY_STAGED", "FULL_LIVE"],
+    ))
+    timely = execution_anchor_repair_profile_v9551(
+        side=Side.LONG.value, price=100.30, atr15=1.0,
+        structural_anchor=100.0, trigger_level=100.0,
+        invalidation_level=99.0, target_level=103.0, model="TEST",
+    )
+    late = execution_anchor_repair_profile_v9551(
+        side=Side.LONG.value, price=100.80, atr15=1.0,
+        structural_anchor=100.0, trigger_level=100.0,
+        invalidation_level=99.0, target_level=103.0, model="TEST",
+    )
+    checks.append((
+        "v9.5.51 execution anchor allows timely fill and routes a late 0.8R chase to retest",
+        timely.get("current_fill_allowed") is True
+        and abs(safe_float(timely.get("missed_favorable_r"), 0.0) - 0.30) < 1e-9
+        and late.get("current_fill_allowed") is False
+        and late.get("decision") == "WAIT_RETEST"
+        and late.get("late_entry_prevented") is True,
+    ))
+    checks.append((
+        "v9.5.51 hidden-gate classifier separates Router, score, data and risk tokens",
+        classify_execution_blocker("EXECUTION_ROUTER_TACTIC") == "ROUTER_PREFERENCE"
+        and classify_execution_blocker("CANONICAL_SCORE_BELOW_RISKY") == "SCORE"
+        and classify_execution_blocker("DATA_SCHEMA_INVALID") == "DATA"
+        and classify_execution_blocker("DAILY_RISK_BLOCK") == "RISK",
+    ))
+    five = _v9551_calibration_fixture(5)
+    profile = setup_type_calibration_profile(five, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    _coef, source, sample, weight = _quality_coefficients(
+        five, SetupFamily.CONTINUATION.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+    )
+    checks.append((
+        "v9.5.51 five trades activate bounded provisional calibration without full authority",
+        sample == 5 and profile.get("sample_ready") is True
+        and profile.get("provisional_calibration_allowed") is True
+        and profile.get("learned_authority_allowed") is False
+        and source.startswith("provisional_five_trade_shrinkage:")
+        and 0.0 < weight <= CALIBRATION_PROVISIONAL_MAX_WEIGHT,
+    ))
+    ordered = _quality_training_records_v9551(_v9551_calibration_fixture(8, reverse=True), setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    checks.append((
+        "v9.5.51 calibration explicitly sorts reversed JSON records by event time",
+        len(ordered) == 8
+        and all(ordered[index]["event_ts"] < ordered[index + 1]["event_ts"] for index in range(7))
+        and all(row.get("explicit_time") for row in ordered),
+    ))
+    rolling = setup_type_out_of_sample_validation(
+        _v9551_calibration_fixture(35, reverse=True),
+        SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+    )
+    checks.append((
+        "v9.5.51 exact setup uses multi-fold rolling walk-forward, never one holdout",
+        rolling.get("rolling_walk_forward") is True
+        and rolling.get("single_holdout") is False
+        and int(rolling.get("rolling_folds") or 0) >= 3
+        and int(rolling.get("oos_predictions") or 0) >= 20
+        and rolling.get("outer_oos_labels_select_blend_weight") is False,
+    ))
+    original_hash = _calibration_content_fingerprint(five, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    corrected = copy.deepcopy(five)
+    corrected["trades"][0]["pnl_r"] = -1.0
+    corrected["trades"][0]["result_pct"] = -0.5
+    corrected["trades"][0]["tp1_hit"] = False
+    corrected_hash = _calibration_content_fingerprint(corrected, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    checks.append((
+        "v9.5.51 correcting an old outcome invalidates calibration cache fingerprint",
+        len(original_hash) == 64 and len(corrected_hash) == 64 and original_hash != corrected_hash,
+    ))
+    negative = _v9551_calibration_fixture(5)
+    for trade in negative["trades"]:
+        trade.update({"pnl_r": -1.0, "result_pct": -0.5, "tp1_hit": False})
+    negative_profile = setup_type_calibration_profile(negative, SetupType.ACCEPTANCE_RETEST_CONTINUATION.value)
+    checks.append((
+        "v9.5.51 pooled calibration requires positive expectancy and cannot veto the setup",
+        negative_profile.get("positive_expectancy_pass") is False
+        and negative_profile.get("learned_authority_allowed") is False
+        and "BOOTSTRAP_ONLY" in str(negative_profile.get("status") or ""),
+    ))
+    test_journal: dict[str, Any] = {
+        "trades": [], "signals": [], "training_signals": [],
+        "_exact_setup_validation_cache": {"stale": True},
+        "_directional_setup_validation_cache": {"stale": True},
+        "_model_coef_cache": {"stale": True},
+    }
+    original_journal_file = globals()["JOURNAL_FILE"]
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            globals()["JOURNAL_FILE"] = Path(directory) / "journal.json"
+            save_journal(test_journal)
+            persisted = json.loads(globals()["JOURNAL_FILE"].read_text(encoding="utf-8"))
+        finally:
+            globals()["JOURNAL_FILE"] = original_journal_file
+    checks.append((
+        "v9.5.51 calibration cache is process-only and compacted out of journal",
+        not any(key in persisted for key in CALIBRATION_LEGACY_JOURNAL_CACHE_KEYS)
+        and (persisted.get("calibration_cache_policy") or {}).get("persistence") == "PROCESS_MEMORY_ONLY",
+    ))
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=78, final_score=78, trigger_ready=True, live_3m_trigger_ready=True,
+        trigger_level=100.0, execution_anchor=100.0, invalidation_level=99.0,
+        target_levels=[102.5], execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        entry_stage=EntryStage.CORE.value, setup_quality_score=85,
+        execution_quality_score=85, trade_plan_quality_score=85,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "execution_anchor_authority": execution_anchor_repair_profile_v9551(
+                side=Side.LONG.value, price=100.0, atr15=1.0,
+                structural_anchor=100.0, trigger_level=100.0,
+                invalidation_level=99.0, target_level=102.5, model="TEST",
+            ),
+            "execution_intelligence_v9532": {"execution_router": {"action": "FIRST_RETEST", "economic_reprice": False}},
+        },
+        stage_plan={
+            "router_intended_tactic": "FIRST_RETEST",
+            "router_deferred_from_action": Action.ENTRY.value,
+            "router_final_disposition": "DEFERRED",
+        },
+    )
+    plan = TradePlan(
+        entry=100.0, stop=99.0, tp1=101.5, tp2=102.5, tp3=104.0,
+        risk_pct=0.1, rr1=1.5, rr2=2.5, rr3=4.0,
+        position_risk_pct=0.1, execution_ready=True, valid=True,
+        structural_invalidation=99.0,
+    )
+    decision = Decision(
+        id="v9551-final", time=iso_now(), action=Action.NO_SETUP.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=78,
+        reason="router deferred", regime=Regime.TREND.value,
+        candidate=candidate, plan=plan, current_price=100.0,
+        audit={
+            "router_chain_v9541": {"tactic": "FIRST_RETEST", "deferred_from_action": Action.ENTRY.value},
+            "executive_director": {"report": {"executive_decision": {
+                "allow_execution": False, "final_risk_pct": 0.1,
+                "blocking_reasons": [], "warning_reasons": [],
+                "state": ExecutiveDecisionState.WAIT_RETEST.value,
+                "allowed_stage": ExecutiveDecisionState.WAIT_RETEST.value,
+                "audit": {"final_execution_authority": {"allow": True}},
+            }}},
+        },
+    )
+    final = _apply_true_final_authority_v9551(
+        decision, {"price": 100.0, "_audit_shadow_scan": True}, {},
+    )
+    checks.append((
+        "v9.5.51 Final Execution Authority is last and recovers non-economic Router veto",
+        final.action in EXECUTABLE_ENTRY_ACTIONS
+        and (final.audit.get("final_execution_authority_v9551") or {}).get("is_last_mutator") is True
+        and (final.audit.get("final_execution_authority_v9551") or {}).get("recovered_non_economic_router_defer") is True,
+    ))
+    counterfactual = init_counterfactual_execution_audit()
+    update_counterfactual_execution_audit(
+        counterfactual, setup="A", old_entry_available=True,
+        recovered=True, missed_r=0.6, false_positive=False,
+    )
+    update_counterfactual_execution_audit(
+        counterfactual, setup="B", old_entry_available=True,
+        recovered=True, missed_r=0.2, false_positive=True,
+    )
+    summary = counterfactual_execution_summary(counterfactual)
+    checks.append((
+        "v9.5.51 counterfactual summary counts net recovery and excludes false-positive-only winners",
+        summary.get("net_recovered_entries") == 1
+        and summary.get("winning_setups") == ["A"],
+    ))
+    return checks
+
+
+_run_self_test_v9551_base = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9551_base()
+    checks = v9551_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.51 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
 
 if __name__ == "__main__":
     main()
