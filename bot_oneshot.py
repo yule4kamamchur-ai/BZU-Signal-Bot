@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.51 (Final Authority & Walk-Forward Calibration)
-=========================================================================================
-Оновлення v9.5.51 (чинний production-контракт; замінює старі policy-примітки нижче):
+BZU Professional Oil 15M Signal Bot v9.5.52 (Directional Control Transfer Repair)
+====================================================================================
+Оновлення v9.5.52 (чинний production-контракт; замінює старі policy-примітки нижче):
+- ONE_3M_CONFIRM є фактичною вимогою виконання: Final Authority не може перетворити незавершене підтвердження на MARKET_NOW.
+- Фактична model-local інвалідація активної тези закриває позицію в тому самому scheduler cycle; наявний fresh post-close rescan одразу звільняє capacity для протилежного сетапу.
+- FIRST_RETEST лишається execution-timing рекомендацією: свіжий, не запізнілий anchor може бути виконаний Final Authority без прихованого Router veto.
+- Setup не видаляється: незавершений ONE_3M_CONFIRM зберігається як CONFIRMATION_PENDING, а інвалідований епізод може бути повторно виявлений лише як нова теза.
+- Audit журналу окремо показує confirmation bypass, затримку виходу після інвалідації та протилежні executable shadow-кандидати, не збільшуючи production journal.
+
+Оновлення v9.5.51:
 - Старт більше не залежить обов'язково від requests: доступний stdlib HTTP fallback, а конфігурація перевіряється до live-loop.
 - FINAL_EXECUTION_AUTHORITY є останнім mutator після Router і єдиною точкою trade/no-trade; advisory, calibration та preconfirmation не можуть приховано відхилити setup.
 - Score-контракт єдиний для всіх 24 setup: 58-67 SHADOW_ARMED, 68-74 RISKY_STAGED, 75+ FULL_LIVE. Setup зберігається в detection/ranking на кожному рівні.
@@ -478,8 +485,8 @@ V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-
 V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 V9541_BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
 V9541_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
-BOT_VERSION = "pro-hybrid-confluence-v9.5.51-professional-execution-calibration"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_51_FINAL_AUTHORITY_WALK_FORWARD"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.52-directional-control-transfer"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_52_DIRECTIONAL_CONTROL_TRANSFER"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -37774,7 +37781,7 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("v9.5.39 confirmed acceptance probe risk cap must stay experimental/tiny")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.39 must not change canonical 58/68/75 thresholds")
-    if not any(tag in BOT_VERSION for tag in ("v9.5.40", "v9.5.41", "v9.5.42", "v9.5.51")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_40", "V9_5_41", "V9_5_42", "V9_5_51")):
+    if not any(tag in BOT_VERSION for tag in ("v9.5.40", "v9.5.41", "v9.5.42", "v9.5.51", "v9.5.52")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_40", "V9_5_41", "V9_5_42", "V9_5_51", "V9_5_52")):
         errors.append("v9.5.40+ release seal is not the effective runtime version")
     if EXECUTION_SCHEDULER_CADENCE_MINUTES != 15 or FRESH_3M_EXECUTION_LEASE_BARS != 5:
         errors.append("v9.5.40 fresh-3M lease must cover exactly one 15M production scan")
@@ -38838,7 +38845,7 @@ _validate_runtime_configuration_v9540_effective = validate_runtime_configuration
 def validate_runtime_configuration() -> dict[str, Any]:
     report = _validate_runtime_configuration_v9540_effective()
     errors = list(report.get("errors") or [])
-    if not any(tag in BOT_VERSION for tag in ("v9.5.41", "v9.5.42", "v9.5.51")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_41", "V9_5_42", "V9_5_51")):
+    if not any(tag in BOT_VERSION for tag in ("v9.5.41", "v9.5.42", "v9.5.51", "v9.5.52")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_41", "V9_5_42", "V9_5_51", "V9_5_52")):
         errors.append("v9.5.41+ Router-chain release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.41 must preserve canonical 58/68/75 score gates")
@@ -39555,7 +39562,7 @@ _validate_runtime_configuration_v9541_effective = validate_runtime_configuration
 def validate_runtime_configuration() -> dict[str, Any]:
     report = _validate_runtime_configuration_v9541_effective()
     errors = list(report.get("errors") or [])
-    if not any(tag in BOT_VERSION for tag in ("v9.5.42", "v9.5.51")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_42", "V9_5_51")):
+    if not any(tag in BOT_VERSION for tag in ("v9.5.42", "v9.5.51", "v9.5.52")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_42", "V9_5_51", "V9_5_52")):
         errors.append("v9.5.42 release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.42 must preserve canonical 58/68/75 admission")
@@ -39734,7 +39741,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.51 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.52 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -40960,12 +40967,27 @@ def _apply_true_final_authority_v9551(
         audit=dict(executive_audit),
     )
     authority = final_execution_authority_v9548(staged, decision.plan, candidate)
-    xi = dict((candidate.score_components or {}).get("execution_intelligence_v9532") or {})
+    xi = dict(
+        (candidate.score_components or {}).get("execution_intelligence_v9532")
+        or stage.get("execution_intelligence_v9532")
+        or {}
+    )
     route = dict(xi.get("execution_router") or {})
     economic_reprice = bool(route.get("economic_reprice"))
+    router_recommended_tactic = str(route.get("action") or tactic or "MARKET_NOW")
+    state_machine = dict(xi.get("state_machine") or {})
+    confirmation_equivalence = confirmation_equivalence_profile_v9535(candidate, state_machine)
+    confirmation_equivalent = bool(confirmation_equivalence.get("equivalent_consumed"))
+    confirmation_required = bool(
+        "ONE_3M_CONFIRM" in {tactic, router_recommended_tactic}
+        and not confirmation_equivalent
+    )
     authority["router_input"] = {
         "tactic": tactic, "deferred": router_deferred,
         "economic_reprice": economic_reprice,
+        "router_recommended_tactic": router_recommended_tactic,
+        "confirmation_required": confirmation_required,
+        "confirmation_equivalence": confirmation_equivalence,
         "router_has_trade_authority": False,
     }
     preferred = str(
@@ -40977,7 +40999,10 @@ def _apply_true_final_authority_v9551(
     recovered = False
     if decision.action in EXECUTABLE_ENTRY_ACTIONS:
         final_action = _score_contract_action_v9551(candidate, decision.action) if authority.get("allow") else Action.NO_SETUP.value
-    elif router_deferred and old_entry_available and authority.get("allow") and not economic_reprice:
+    elif (
+        router_deferred and old_entry_available and authority.get("allow")
+        and not economic_reprice and not confirmation_required
+    ):
         final_action = _score_contract_action_v9551(candidate, preferred)
         recovered = final_action in EXECUTABLE_ENTRY_ACTIONS
     else:
@@ -40987,6 +41012,21 @@ def _apply_true_final_authority_v9551(
         authority["economic_execution_decision"] = "WAIT_RETEST_BY_FINAL_AUTHORITY"
         authority["allow"] = False
         authority.setdefault("hard_blockers", []).append("EXECUTION_ECONOMICS_REPRICE")
+    if confirmation_required:
+        final_action = Action.NO_SETUP.value
+        recovered = False
+        authority["allow"] = False
+        authority["execution_confirmation_decision"] = "WAIT_FOR_POST_DECISION_3M_CONFIRMATION"
+        authority["setup_deleted"] = False
+        authority.setdefault("hard_blockers", []).append("EXECUTION_CONFIRMATION_NOT_CONSUMED")
+        candidate.confirmation_pending = True
+        candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value
+        candidate.execution_lane = ExecutionLane.WAIT_CONFIRMATION.value
+        candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
+        decision.audit["opportunity_status"] = OpportunityStatus.CONFIRMATION_PENDING.value
+        executive["required_next_event"] = "fresh post-decision 3M confirmation or explicit setup-native equivalent"
+        executive["state"] = ExecutiveDecisionState.WAIT_CONFIRMATION.value
+        executive["allowed_stage"] = ExecutiveDecisionState.WAIT_CONFIRMATION.value
     score_contract = authority["score_contract"]
     if not score_contract.get("live_allowed"):
         final_action = Action.NO_SETUP.value
@@ -41124,7 +41164,7 @@ _validate_runtime_configuration_v9551_base = validate_runtime_configuration
 def validate_runtime_configuration() -> dict[str, Any]:
     report = _validate_runtime_configuration_v9551_base()
     errors = list(report.get("errors") or [])
-    if "v9.5.51" not in BOT_VERSION or "V9_5_51" not in ARCHITECTURE_VERSION:
+    if not any(tag in BOT_VERSION for tag in ("v9.5.51", "v9.5.52")) or not any(tag in ARCHITECTURE_VERSION for tag in ("V9_5_51", "V9_5_52")):
         errors.append("v9.5.51 release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.51 requires one canonical 58/68/75 score contract")
@@ -41375,6 +41415,438 @@ def _run_self_test() -> bool:
         print(f"  [{'OK' if ok else 'FAIL'}] {name}")
         passed += int(bool(ok))
     print(f"SELF-TEST v9.5.51 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+# =============================================================================
+# v9.5.52 DIRECTIONAL CONTROL TRANSFER REPAIR
+# =============================================================================
+V9552_SCHEMA_VERSION = "directional_control_transfer_v9.5.52"
+
+
+def model_local_thesis_invalidation_profile_v9552(
+    trade: ActiveTrade, context: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve only factual invalidation of the exact linked live thesis.
+
+    A forecast probability, calibration state or opposite candidate cannot close
+    the trade here. Authority comes only from the already-linked precursor event
+    recording an observed price invalidation of this exact side/thesis.
+    """
+    event = _linked_preconfirmation_event(trade, context)
+    status = _preconfirm_event_status(event) if event else "UNAVAILABLE"
+    outcome = str((event or {}).get("outcome") or "").upper()
+    resolution_reason = str((event or {}).get("resolution_reason") or "").lower()
+    evidence = dict((event or {}).get("resolution_evidence") or {})
+    event_side = str((event or {}).get("side") or "").upper()
+    same_side = bool(event_side and event_side == str(trade.side or "").upper())
+    factual_invalidation = bool(
+        status == "FAILED"
+        and (
+            outcome == "INVALIDATED"
+            or bool(evidence.get("thesis_invalidated"))
+            or "thesis_invalidated" in resolution_reason
+        )
+    )
+    return {
+        "applies": bool(event and same_side),
+        "exit": bool(event and same_side and factual_invalidation),
+        "status": status,
+        "outcome": outcome or "UNAVAILABLE",
+        "event_side": event_side or "UNKNOWN",
+        "trade_side": str(trade.side or "UNKNOWN").upper(),
+        "same_side": same_side,
+        "factual_market_invalidation": factual_invalidation,
+        "invalidation_level": safe_float((event or {}).get("invalidation_level"), 0.0),
+        "invalidation_ts": int(safe_float(evidence.get("invalidation_ts"), 0.0)),
+        "resolved_at": str((event or {}).get("resolved_at") or ""),
+        "preconfirmation_event_id": str(getattr(trade, "preconfirmation_event_id", "") or ""),
+        "prediction_or_calibration_can_exit": False,
+        "opposite_candidate_can_open_second_position": False,
+        "post_close_fresh_rescan_required": True,
+        "reason_code": (
+            "MODEL_LOCAL_THESIS_FACTUALLY_INVALIDATED"
+            if factual_invalidation and same_side
+            else "EVENT_SIDE_MISMATCH"
+            if event and not same_side
+            else "NO_FACTUAL_LINKED_INVALIDATION"
+        ),
+        "schema_version": V9552_SCHEMA_VERSION,
+    }
+
+
+_manage_active_trade_v9552_base = manage_active_trade
+def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
+    """Close a factually invalidated thesis before it occupies the next setup."""
+    result = _manage_active_trade_v9552_base(trade, context)
+    if result.get("closed"):
+        return result
+    invalidation = model_local_thesis_invalidation_profile_v9552(trade, context)
+    result["model_local_thesis_invalidation"] = invalidation
+    if not invalidation.get("exit"):
+        return result
+    price = safe_float(context.get("price"), trade.entry)
+    result.setdefault("notes", [])
+    result.update({
+        "closed": True,
+        "action": Action.EXIT.value,
+        "exit_price": round_price(price),
+        "current_pct": _trade_pct(trade.side, trade.entry, price),
+        "management_state": "MODEL_LOCAL_THESIS_INVALIDATION_EXIT",
+        "close_reason": "MODEL_LOCAL_THESIS_INVALIDATION",
+    })
+    result["notes"].append(
+        "v9.5.52 factual exit: linked model-local thesis was invalidated; "
+        "capacity must be released for a fresh same-cycle market rescan"
+    )
+    trade.management_state = "MODEL_LOCAL_THESIS_INVALIDATION_EXIT"
+    trade.status = "CLOSED"
+    trade.last_action = Action.EXIT.value
+    return _finalize_closed_trade_result(trade, result)
+
+
+def _minutes_between_v9552(start: Any, end: Any) -> Optional[float]:
+    first = _parse_time_any(start)
+    second = _parse_time_any(end)
+    if first is None or second is None:
+        return None
+    return round(max(0.0, (second - first).total_seconds() / 60.0), 4)
+
+
+def directional_control_transfer_audit_v9552(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compact, read-only causal audit for confirmation bypass and missed flips."""
+    signals = {
+        str(row.get("id") or ""): row
+        for row in (payload.get("signals") or []) if isinstance(row, dict)
+    }
+    trades = [row for row in (payload.get("trades") or []) if isinstance(row, dict)]
+    events = [row for row in (payload.get("preconfirmation_events") or []) if isinstance(row, dict)]
+    event_by_id = {
+        str(row.get("event_id") or row.get("id") or ""): row for row in events
+    }
+    confirmation_bypasses: list[dict[str, Any]] = []
+    invalidated_trades: list[dict[str, Any]] = []
+
+    for trade in trades:
+        signal_id = str(trade.get("signal_id") or "")
+        signal = signals.get(signal_id) or {}
+        recommended = str(signal.get("router_recommended_tactic") or "")
+        executed = str(signal.get("router_execution_tactic") or "")
+        if (
+            str(signal.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS
+            and bool(signal.get("confirmation_pending"))
+            and recommended == "ONE_3M_CONFIRM"
+            and executed == "MARKET_NOW"
+        ):
+            confirmation_bypasses.append({
+                "signal_id": signal_id,
+                "trade_id": str(trade.get("id") or ""),
+                "side": str(trade.get("side") or signal.get("side") or ""),
+                "setup_type": str(trade.get("setup_type") or signal.get("setup_type") or ""),
+                "entry": safe_float(trade.get("entry"), 0.0),
+                "recommended_tactic": recommended,
+                "executed_tactic": executed,
+            })
+
+        event_id = str(trade.get("preconfirmation_event_id") or signal.get("preconfirmation_event_id") or "")
+        event = event_by_id.get(event_id) or {}
+        evidence = dict(event.get("resolution_evidence") or {})
+        invalidated = bool(
+            str(event.get("status") or "").upper() == "FAILED"
+            and (
+                str(event.get("outcome") or "").upper() == "INVALIDATED"
+                or evidence.get("thesis_invalidated")
+                or "thesis_invalidated" in str(event.get("resolution_reason") or "").lower()
+            )
+        )
+        if not invalidated:
+            continue
+        resolved_at = str(event.get("resolved_at") or "")
+        closed_at = str(trade.get("closed_at") or "")
+        opposite_rows: list[dict[str, Any]] = []
+        event_resolved_dt = _parse_time_any(resolved_at)
+        trade_closed_dt = _parse_time_any(closed_at)
+        for batch in (payload.get("ranked_conversion_audits") or []):
+            if not isinstance(batch, dict):
+                continue
+            batch_dt = _parse_time_any(batch.get("time"))
+            if batch_dt is None or event_resolved_dt is None or trade_closed_dt is None:
+                continue
+            if not (event_resolved_dt <= batch_dt <= trade_closed_dt):
+                continue
+            for row in (batch.get("independent_episode_rows") or batch.get("rows") or []):
+                if not isinstance(row, dict) or not row.get("selected"):
+                    continue
+                if str(row.get("side") or "") == str(trade.get("side") or ""):
+                    continue
+                if not bool(row.get("would_publish_entry")):
+                    continue
+                plan = dict(row.get("counterfactual_plan") or {})
+                opposite_rows.append({
+                    "time": str(batch.get("time") or ""),
+                    "side": str(row.get("side") or ""),
+                    "setup_type": str(row.get("setup_type") or ""),
+                    "score": int(row.get("final_score") or 0),
+                    "entry": safe_float(plan.get("entry"), 0.0),
+                    "would_action": str(row.get("would_action") or ""),
+                })
+        invalidated_trades.append({
+            "signal_id": signal_id,
+            "trade_id": str(trade.get("id") or ""),
+            "side": str(trade.get("side") or ""),
+            "setup_type": str(trade.get("setup_type") or ""),
+            "event_resolved_at": resolved_at,
+            "trade_closed_at": closed_at,
+            "exit_delay_after_known_invalidation_minutes": _minutes_between_v9552(resolved_at, closed_at),
+            "opposite_executable_shadow_count": len(opposite_rows),
+            "opposite_executable_shadows": opposite_rows[:5],
+        })
+
+    delays = [
+        safe_float(row.get("exit_delay_after_known_invalidation_minutes"), 0.0)
+        for row in invalidated_trades
+        if row.get("exit_delay_after_known_invalidation_minutes") is not None
+    ]
+    return {
+        "confirmation_bypass_entries": len(confirmation_bypasses),
+        "confirmation_bypass_details": confirmation_bypasses[:20],
+        "factually_invalidated_trades": len(invalidated_trades),
+        "invalidated_trade_details": invalidated_trades[:20],
+        "max_exit_delay_after_known_invalidation_minutes": round(max(delays), 4) if delays else 0.0,
+        "opposite_executable_shadows_while_invalid_trade_open": sum(
+            int(row.get("opposite_executable_shadow_count") or 0) for row in invalidated_trades
+        ),
+        "policy": "ONE_3M_CONFIRM_CANNOT_BECOME_MARKET_NOW; FACTUAL_INVALIDATION_EXITS; FRESH_POST_CLOSE_RESCAN",
+        "journal_growth": "NONE_AUDIT_OUTPUT_ONLY",
+        "schema_version": V9552_SCHEMA_VERSION,
+    }
+
+
+_run_audit_journal_v9552_base = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    output = _run_audit_journal_v9552_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    output["v9552_directional_control_transfer"] = directional_control_transfer_audit_v9552(payload)
+    return output
+
+
+_validate_runtime_configuration_v9552_base = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9552_base()
+    errors = [
+        str(value) for value in (report.get("errors") or [])
+        if "v9.5.51 release seal is not effective" not in str(value)
+    ]
+    if "v9.5.52" not in BOT_VERSION or "V9_5_52" not in ARCHITECTURE_VERSION:
+        errors.append("v9.5.52 directional control transfer release seal is not effective")
+    if not callable(globals().get("model_local_thesis_invalidation_profile_v9552")):
+        errors.append("v9.5.52 factual active-thesis invalidation is unavailable")
+    if len(_tracked_setup_types()) != 24 or set(SETUP_STATE_MACHINE_REGISTRY) != set(_tracked_setup_types()):
+        errors.append("v9.5.52 must preserve all 24 setup contracts")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "directional_control_transfer": "FACTUAL_INVALIDATION_THEN_FRESH_RESCAN",
+    }
+
+
+def _v9552_router_decision_fixture(*, explicit_confirmation: bool) -> Decision:
+    acceptance = {
+        "execution_ready": explicit_confirmation,
+        "acceptance_confirmed": explicit_confirmation,
+        "confirmation_mode": "ACCEPTANCE" if explicit_confirmation else "PENDING",
+    }
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=84, final_score=84,
+        trigger_ready=True, confirmation_pending=True,
+        trigger_level=85.68, execution_anchor=85.78, invalidation_level=86.08,
+        target_levels=[84.50], execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        entry_stage=EntryStage.PROBE.value, setup_quality_score=80,
+        execution_quality_score=80, trade_plan_quality_score=80,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "acceptance_retest": acceptance,
+            "execution_anchor_authority": execution_anchor_repair_profile_v9551(
+                side=Side.SHORT.value, price=85.78, atr15=0.20,
+                structural_anchor=85.78, trigger_level=85.68,
+                invalidation_level=86.08, target_level=84.50, model="TEST",
+            ),
+            "execution_intelligence_v9532": {
+                "state_machine": {"current_state": "EXECUTION", "kind": "CONTINUATION"},
+                "execution_router": {"action": "ONE_3M_CONFIRM", "economic_reprice": False},
+            },
+        },
+        stage_plan={
+            "router_intended_tactic": "ONE_3M_CONFIRM",
+            "router_deferred_from_action": Action.PROBE_ENTRY.value,
+            "router_final_disposition": "DEFERRED",
+        },
+    )
+    plan = TradePlan(
+        entry=85.78, stop=86.08, tp1=85.18, tp2=84.88, tp3=84.28,
+        risk_pct=0.02, rr1=2.0, rr2=3.0, rr3=5.0,
+        position_risk_pct=0.02, execution_ready=True, valid=True,
+        structural_invalidation=86.08,
+    )
+    return Decision(
+        id="v9552-router", time=iso_now(), action=Action.NO_SETUP.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=84,
+        reason="router deferred", regime=Regime.TRANSITION.value,
+        candidate=candidate, plan=plan, current_price=85.78,
+        audit={
+            "router_chain_v9541": {
+                "tactic": "ONE_3M_CONFIRM",
+                "deferred_from_action": Action.PROBE_ENTRY.value,
+            },
+            "executive_director": {"report": {"executive_decision": {
+                "allow_execution": False, "final_risk_pct": 0.02,
+                "blocking_reasons": [], "warning_reasons": [],
+                "state": ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+                "allowed_stage": ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+                "audit": {"final_execution_authority": {"allow": True}},
+            }}},
+        },
+    )
+
+
+def v9552_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    checks.append((
+        "v9.5.52 runtime seal and all 24 setup contracts are live",
+        validate_runtime_configuration().get("valid") is True
+        and len(_tracked_setup_types()) == 24,
+    ))
+
+    pending = _apply_true_final_authority_v9551(
+        _v9552_router_decision_fixture(explicit_confirmation=False),
+        {"price": 85.78, "_audit_shadow_scan": True}, {},
+    )
+    pending_authority = dict((pending.audit or {}).get("final_execution_authority_v9551") or {})
+    checks.append((
+        "v9.5.52 pending ONE_3M_CONFIRM cannot be converted into MARKET_NOW",
+        pending.action == Action.NO_SETUP.value
+        and pending.candidate is not None
+        and pending.candidate.opportunity_status == OpportunityStatus.CONFIRMATION_PENDING.value
+        and pending_authority.get("execution_confirmation_decision") == "WAIT_FOR_POST_DECISION_3M_CONFIRMATION"
+        and pending_authority.get("setup_deleted") is False,
+    ))
+
+    confirmed = _apply_true_final_authority_v9551(
+        _v9552_router_decision_fixture(explicit_confirmation=True),
+        {"price": 85.78, "_audit_shadow_scan": True}, {},
+    )
+    checks.append((
+        "v9.5.52 explicit setup-native confirmation releases the saved setup",
+        confirmed.action in EXECUTABLE_ENTRY_ACTIONS,
+    ))
+
+    event_id = "v9552-invalidated"
+    trade = ActiveTrade(
+        id="v9552-trade", signal_id="v9552-signal",
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=(now_utc() - timedelta(minutes=5)).isoformat(),
+        entry=85.78, stop_initial=87.89, stop_current=87.89,
+        structural_invalidation=87.89,
+        tp1=81.55, tp2=79.22, tp3=75.20,
+        quality=84, position_risk_pct=0.02,
+        best_price=85.71, worst_price=86.33,
+        entry_stage=EntryStage.PROBE.value,
+        preconfirmation_event_id=event_id,
+    )
+    invalidated_context = {
+        "price": 86.33, "atr15": 0.20,
+        "candles": {"3m": [], "15m": []},
+        "preconfirmation_events": [{
+            "event_id": event_id, "side": Side.SHORT.value,
+            "status": "FAILED", "outcome": "INVALIDATED",
+            "resolution_reason": "thesis_invalidated_before_directional_acceptance",
+            "resolution_evidence": {"thesis_invalidated": True, "invalidation_ts": 1},
+        }],
+    }
+    invalidated_result = manage_active_trade(trade, invalidated_context)
+    checks.append((
+        "v9.5.52 factual model-local invalidation exits immediately and releases capacity",
+        invalidated_result.get("closed") is True
+        and invalidated_result.get("action") == Action.EXIT.value
+        and invalidated_result.get("management_state") == "MODEL_LOCAL_THESIS_INVALIDATION_EXIT"
+        and trade.status == "CLOSED",
+    ))
+
+    non_invalidated = copy.deepcopy(trade)
+    non_invalidated.id = "v9552-non-invalidated"
+    non_invalidated.status = "OPEN"
+    non_invalidated.last_action = Action.ENTRY.value
+    non_invalidated.management_state = "SUPPORTED"
+    non_invalidated_context = copy.deepcopy(invalidated_context)
+    non_invalidated_context["preconfirmation_events"][0].update({
+        "status": "EXPIRED", "outcome": "EXPIRED",
+        "resolution_reason": "confirmation_window_expired",
+        "resolution_evidence": {"thesis_invalidated": False},
+    })
+    non_invalidated_result = manage_active_trade(non_invalidated, non_invalidated_context)
+    checks.append((
+        "v9.5.52 calibration or expiry alone cannot force an active-trade exit",
+        non_invalidated_result.get("closed") is False
+        and ((non_invalidated_result.get("model_local_thesis_invalidation") or {}).get("exit") is False),
+    ))
+
+    audit_fixture = {
+        "signals": [{
+            "id": "s1", "action": Action.PROBE_ENTRY.value,
+            "side": Side.SHORT.value, "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            "confirmation_pending": True, "router_recommended_tactic": "ONE_3M_CONFIRM",
+            "router_execution_tactic": "MARKET_NOW", "preconfirmation_event_id": "e1",
+        }],
+        "trades": [{
+            "id": "t1", "signal_id": "s1", "side": Side.SHORT.value,
+            "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+            "entry": 85.78, "preconfirmation_event_id": "e1",
+            "closed_at": "2026-08-27T08:48:00+00:00",
+        }],
+        "preconfirmation_events": [{
+            "event_id": "e1", "status": "FAILED", "outcome": "INVALIDATED",
+            "resolved_at": "2026-08-27T08:32:44+00:00",
+            "resolution_evidence": {"thesis_invalidated": True},
+        }],
+        "ranked_conversion_audits": [{
+            "time": "2026-08-27T08:32:47+00:00",
+            "independent_episode_rows": [{
+                "selected": True, "side": Side.LONG.value,
+                "setup_type": SetupType.BREAKOUT_RETEST.value,
+                "final_score": 84, "would_publish_entry": True,
+                "would_action": Action.PROBE_ENTRY.value,
+                "counterfactual_plan": {"entry": 86.33},
+            }],
+        }],
+    }
+    audit = directional_control_transfer_audit_v9552(audit_fixture)
+    checks.append((
+        "v9.5.52 audit identifies confirmation bypass, delayed exit and missed opposite setup",
+        audit.get("confirmation_bypass_entries") == 1
+        and audit.get("factually_invalidated_trades") == 1
+        and audit.get("opposite_executable_shadows_while_invalid_trade_open") == 1
+        and safe_float(audit.get("max_exit_delay_after_known_invalidation_minutes"), 0.0) > 15.0,
+    ))
+    return checks
+
+
+_run_self_test_v9552_base = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9552_base()
+    checks = v9552_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.52 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
     return bool(base_ok and passed == len(checks))
 
 
