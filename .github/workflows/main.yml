@@ -40,7 +40,7 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
-      - name: Validate v9.5.8
+      - name: Validate v9.5.54
         env:
           PRECONFIRM_EXPIRED_LABEL_MODE: "NEGATIVE"
         run: |
@@ -83,11 +83,13 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update v9.5.8 signal memory and journal [skip ci]"
+          git commit -m "Update v9.5.54 signal memory and journal [skip ci]"
 
+          push_succeeded=false
           for i in 1 2 3 4 5; do
             if git push origin HEAD:main; then
               echo "Pushed successfully."
+              push_succeeded=true
               break
             fi
 
@@ -106,6 +108,11 @@ jobs:
               exit 0
             fi
 
-            git commit -m "Update v9.5.8 signal memory and journal [skip ci]"
+            git commit -m "Update v9.5.54 signal memory and journal [skip ci]"
             sleep 3
           done
+
+          if [ "$push_succeeded" != "true" ]; then
+            echo "::error::State/journal push failed after 5 attempts."
+            exit 1
+          fi
