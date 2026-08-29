@@ -488,8 +488,8 @@ V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-
 V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 V9541_BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
 V9541_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
-BOT_VERSION = "pro-hybrid-confluence-v9.5.53-canonical-router-execution-repair"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_53_CANONICAL_ROUTER_EXECUTION_REPAIR"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.54-lifecycle-router-direction-flip"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_54_LIFECYCLE_ROUTER_DIRECTION_FLIP"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -914,6 +914,32 @@ PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R = min(0.50, max(0.05, float(os.getenv("PROBE_NO
 PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R = min(
     PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R,
     max(0.03, float(os.getenv("PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R", "0.20") or 0.20)),
+)
+# A confirmed precursor proves that the first trigger was real; it does not grant
+# an unlimited holding lease. A weak PROBE must either create useful excursion or
+# yield to a fresh executable opposite structure within a bounded window.
+CONFIRMED_PROBE_STALE_MINUTES = max(
+    PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES,
+    int(os.getenv("CONFIRMED_PROBE_STALE_MINUTES", "240") or 240),
+)
+CONFIRMED_PROBE_STALE_MAX_MFE_R = min(
+    0.75,
+    max(PROBE_NO_FOLLOWTHROUGH_MAX_MFE_R, float(os.getenv("CONFIRMED_PROBE_STALE_MAX_MFE_R", "0.50") or 0.50)),
+)
+CONFIRMED_PROBE_STALE_MAX_CURRENT_R = min(
+    0.0,
+    float(os.getenv("CONFIRMED_PROBE_STALE_MAX_CURRENT_R", "0.00") or 0.00),
+)
+CONFIRMED_PROBE_MIN_PATH_INTEGRITY = min(
+    100.0,
+    max(0.0, float(os.getenv("CONFIRMED_PROBE_MIN_PATH_INTEGRITY", "45") or 45)),
+)
+
+# A nearby, still-live liquidity pool is a valid first partial for a small PROBE.
+# It must never replace the professional TP1/TP2/TP3 geometry.
+RUNWAY_SCOUT_TP0_MIN_R = min(
+    TP0_MIN_RR,
+    max(0.10, float(os.getenv("RUNWAY_SCOUT_TP0_MIN_R", "0.18") or 0.18)),
 )
 
 THESIS_CONFIDENCE_DECAY_PER_HOUR = max(0.0, float(os.getenv("THESIS_CONFIDENCE_DECAY_PER_HOUR", "2.25") or 2.25))
@@ -5960,31 +5986,47 @@ def calculate_entry_freshness(candidate: Any, context: dict[str, Any] | None = N
 
 
 def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Price-extension penalty based on both impulse and live distance from the analytical anchor.
+    """Measure extension from immutable trigger/structure, never current-to-current.
 
-    A setup can be fresh in time and still be late in price. The old implementation
-    only read generic context.impulse_atr, which was often absent and therefore
-    returned a misleading 100/100 even when live entry was several ATR away.
+    ``candidate.execution_anchor`` may legitimately be repaired to the current
+    market fill. Reusing it as the anti-FOMO origin makes displacement exactly zero
+    and hides a chased entry. The scoring origin therefore comes from the original
+    trigger and the structural anchor persisted in the entry contract.
     """
     context = context or {}
     freshness = getattr(candidate, "entry_freshness_profile", {}) or calculate_entry_freshness(candidate, context)
     impulse_extension = max(0.0, safe_float(freshness.get("impulse_atr"), 0.0))
 
     price = safe_float(context.get("price"), 0.0)
-    anchor = (
-        safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
+    components = dict(getattr(candidate, "score_components", {}) or {})
+    entry_contract = dict(components.get("entry_contract") or {})
+    anchor_profile = dict(entry_contract.get("execution_anchor_profile") or {})
+    trigger = (
+        safe_float(anchor_profile.get("trigger_level"), 0.0)
         or safe_float(getattr(candidate, "trigger_level", 0.0), 0.0)
+    )
+    structural_anchor = (
+        safe_float(anchor_profile.get("structural_anchor"), 0.0)
+        or safe_float(entry_contract.get("entry_anchor"), 0.0)
+        or safe_float(components.get("structural_anchor"), 0.0)
+        or safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
+        or trigger
     )
     atr15 = safe_float(context.get("atr15"), 0.0)
     side = str(getattr(candidate, "side", "") or "").upper()
-    anchor_extension = 0.0
-    if price and anchor and atr15 > 0:
+    trigger_extension = 0.0
+    structural_extension = 0.0
+    if price and atr15 > 0:
         if side == Side.LONG.value:
-            anchor_extension = max(0.0, (price - anchor) / atr15)
+            trigger_extension = max(0.0, (price - trigger) / atr15) if trigger else 0.0
+            structural_extension = max(0.0, (price - structural_anchor) / atr15) if structural_anchor else 0.0
         elif side == Side.SHORT.value:
-            anchor_extension = max(0.0, (anchor - price) / atr15)
+            trigger_extension = max(0.0, (trigger - price) / atr15) if trigger else 0.0
+            structural_extension = max(0.0, (structural_anchor - price) / atr15) if structural_anchor else 0.0
         else:
-            anchor_extension = abs(price - anchor) / atr15
+            trigger_extension = abs(price - trigger) / atr15 if trigger else 0.0
+            structural_extension = abs(price - structural_anchor) / atr15 if structural_anchor else 0.0
+    anchor_extension = max(trigger_extension, structural_extension)
 
     revalidation = getattr(candidate, "revalidation_profile", {}) or {}
     revalidation_distance = max(0.0, safe_float(revalidation.get("distance_from_anchor_atr"), 0.0))
@@ -6015,12 +6057,16 @@ def anti_fomo_profile(candidate: Any, context: Optional[dict[str, Any]] = None) 
         "price_extension_atr": round(extension, 3),
         "impulse_extension_atr": round(impulse_extension, 3),
         "anchor_extension_atr": round(anchor_extension, 3),
+        "trigger_extension_atr": round(trigger_extension, 3),
+        "structural_extension_atr": round(structural_extension, 3),
         "revalidation_distance_atr": round(revalidation_distance, 3),
-        "analysis_anchor": round_price(anchor) if anchor else 0.0,
+        "trigger_anchor": round_price(trigger) if trigger else 0.0,
+        "structural_anchor": round_price(structural_anchor) if structural_anchor else 0.0,
+        "analysis_anchor": round_price(structural_anchor or trigger) if (structural_anchor or trigger) else 0.0,
         "market_price": round_price(price) if price else 0.0,
         "strong_momentum_continuation": strong_continuation,
         "policy": "late price is penalized; hard execution eligibility is enforced by revalidation",
-        "schema_version": "anti_fomo_v9.3",
+        "schema_version": "anti_fomo_v9.5.54_immutable_origins",
     }
 
 
@@ -8820,26 +8866,6 @@ def migrate_journal_to_v2(journal: dict[str, Any]) -> dict[str, Any]:
     return journal
 
 
-def ensure_execution_authority_audit(journal: dict[str, Any]) -> dict[str, Any]:
-    """Create compact execution audits without expanding signal payloads."""
-    journal.setdefault("execution_anchor_repair_audit", {
-        "runs": 0,
-        "blocked_candidates": 0,
-        "recovered_candidates": 0,
-        "missed_move_r": 0.0,
-        "avg_delay_bars": 0.0,
-        "top_blockers": {},
-        "schema_version": EXECUTION_AUTHORITY_SCHEMA_VERSION,
-    })
-    journal.setdefault("PRECONFIRM_IMPACT_AUDIT", {
-        "blocked_by_preconfirm": 0,
-        "entered_without_preconfirm": 0,
-        "false_negative_count": 0,
-        "missed_R": 0.0,
-    })
-    return journal
-
-
 def execution_readiness_state(readiness: float, hard_blocker: bool = False) -> str:
     """Unified stage classifier. Score is intentionally not an authority gate."""
     if hard_blocker:
@@ -8850,19 +8876,6 @@ def execution_readiness_state(readiness: float, hard_blocker: bool = False) -> s
     if value >= ARMED_EXECUTION_READINESS_THRESHOLD:
         return "ARMED"
     return "WATCH"
-
-
-def apply_calibration_as_probability_only(raw_probability: float, correction: float, confidence: str) -> dict[str, Any]:
-    """Calibration adjusts probability only and cannot veto execution."""
-    conf = str(confidence or "LOW").upper()
-    if conf not in {"HIGH", "MEDIUM", "LOW"}:
-        conf = "LOW"
-    bounded = max(-CALIBRATION_MAX_SCORE_IMPACT_PCT, min(CALIBRATION_MAX_SCORE_IMPACT_PCT, float(correction or 0.0)))
-    return {
-        "probability": max(0.0, min(1.0, float(raw_probability or 0.0) + bounded)),
-        "calibration_confidence": conf,
-        "authority": "RANKING_ONLY" if conf != "HIGH" else "RANKING_SUPPORTED",
-    }
 
 
 def load_journal() -> dict[str, Any]:
@@ -17753,6 +17766,112 @@ def build_dormant_detector_reachability(
         ),
     ]
 
+def direction_flip_15m_profile(
+    side: str, c15: list[Candle], c3: list[Candle], atr15: float,
+    tf15: dict[str, Any], tf1h: dict[str, Any], *, has_choch: bool,
+    sweep_support: bool = False,
+) -> dict[str, Any]:
+    """Causal 15M direction-flip detector with a fresh 3M execution lease."""
+    bars15 = _confirmed_candles(c15, 6)
+    sign = side_sign(side)
+    atr = max(safe_float(atr15, 0.0), 1e-9)
+    micro = _directional_confirmation_profile(side, c3, bars15, atr, tf15, tf1h)
+    if len(bars15) < 4:
+        conditions = {
+            "confirmed_15m_history": False,
+            "prior_counterflow_or_balance": False,
+            "choch": bool(has_choch),
+            "directional_close_break": False,
+            "displacement_body": False,
+            "fresh_3m_confirmation": bool(micro.get("supported")),
+            "htf_not_against": False,
+        }
+        return {
+            "detected": False, "pending": False, "ready": False,
+            "conditions": conditions, "micro_confirmation": micro,
+            "reason": "INSUFFICIENT_CONFIRMED_15M_HISTORY",
+            "schema_version": "direction_flip_15m_v9.5.54",
+        }
+
+    current = bars15[-1]
+    prior = bars15[-4:-1]
+    prior_high = max(safe_float(c.high) for c in prior)
+    prior_low = min(safe_float(c.low) for c in prior)
+    structural_anchor = prior_high if sign > 0 else prior_low
+    close_break = sign * (safe_float(current.close) - structural_anchor) >= 0.02 * atr
+    candle_range = max(safe_float(current.high) - safe_float(current.low), 1e-9)
+    signed_body = sign * (safe_float(current.close) - safe_float(current.open))
+    displacement = bool(signed_body >= 0.30 * atr and signed_body / candle_range >= 0.55)
+    prior_net = sign * (safe_float(prior[-1].close) - safe_float(prior[0].open)) / atr
+    prior_counterflow = prior_net <= 0.15
+    tf15_bias = str((tf15 or {}).get("bias") or Side.NEUTRAL.value).upper()
+    tf1h_bias = str((tf1h or {}).get("bias") or Side.NEUTRAL.value).upper()
+    htf_not_against = bool(
+        tf15_bias == side
+        and tf1h_bias in {side, Side.NEUTRAL.value, "NEUTRAL", "NONE", ""}
+    )
+    detected = bool(has_choch and prior_counterflow and close_break and displacement and htf_not_against)
+    ready = bool(detected and micro.get("supported") and micro.get("lease_valid", True))
+    pending = bool(detected and not ready)
+    conditions = {
+        "confirmed_15m_history": True,
+        "prior_counterflow_or_balance": prior_counterflow,
+        "choch": bool(has_choch),
+        "directional_close_break": close_break,
+        "displacement_body": displacement,
+        "fresh_3m_confirmation": bool(micro.get("supported") and micro.get("lease_valid", True)),
+        "htf_not_against": htf_not_against,
+    }
+    return {
+        "detected": detected,
+        "pending": pending,
+        "ready": ready,
+        "side": side,
+        "trigger_level": round_price(safe_float(current.close)),
+        "structural_anchor": round_price(structural_anchor),
+        "evidence_ts": int(safe_float(micro.get("evidence_ts"), 0.0)),
+        "prior_net_atr": round(prior_net, 4),
+        "body_atr": round(signed_body / atr, 4),
+        "body_ratio": round(signed_body / candle_range, 4),
+        "sweep_support": bool(sweep_support),
+        "conditions": conditions,
+        "micro_confirmation": micro,
+        "reason": "READY" if ready else "WAIT_FRESH_3M_CONFIRMATION" if pending else "NO_15M_DIRECTION_FLIP",
+        "schema_version": "direction_flip_15m_v9.5.54",
+    }
+
+
+def direction_flip_reachability_row(side: str, profile: dict[str, Any]) -> dict[str, Any]:
+    conditions = dict(profile.get("conditions") or {})
+    blockers = [name for name, passed in conditions.items() if passed is False]
+    return {
+        "side": side,
+        "setup_type": SetupType.DIRECTION_FLIP.value,
+        "evaluated": True,
+        "fired": bool(profile.get("ready")),
+        "paths": {"DIRECTION_FLIP_15M": bool(profile.get("ready"))},
+        "conditions": conditions,
+        "condition_applicability": {name: True for name in conditions},
+        "predicate_dependencies": {
+            "directional_close_break": ["confirmed_15m_history", "choch"],
+            "displacement_body": ["confirmed_15m_history", "choch"],
+            "fresh_3m_confirmation": ["directional_close_break", "displacement_body"],
+        },
+        "not_applicable_predicates": [],
+        "margins": {
+            "prior_net_atr": safe_float(profile.get("prior_net_atr"), 0.0),
+            "body_atr": safe_float(profile.get("body_atr"), 0.0),
+            "body_ratio": safe_float(profile.get("body_ratio"), 0.0),
+        },
+        "diagnostics": {"direction_flip_profile": json_safe(profile)},
+        "blockers": [] if profile.get("ready") else blockers,
+        "dominant_blocker": "" if profile.get("ready") or not blockers else blockers[0],
+        "audit_only": True,
+        "threshold_mutation_allowed": False,
+        "schema_version": "direction_flip_reachability_v9.5.54",
+    }
+
+
 def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candidate]:
     price = context["price"]
     atr15 = context["atr15"]
@@ -18020,6 +18139,11 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         failed_auction_local_3m = failed_auction_model_local_confirmation(c3, c15, side, atr15, tf15, tf1h, failed_auction)
         time_of_day_adaptive = detect_time_of_day_adaptive_execution(session_profile, side, tf15, tf1h, c15, atr15)
         time_of_day_local_3m = _directional_confirmation_profile(side, c3, c15, atr15, tf15, tf1h)
+        direction_flip = direction_flip_15m_profile(
+            side, c15, c3, atr15, tf15, tf1h,
+            has_choch=has_choch, sweep_support=is_sweep,
+        )
+        context["_detector_reachability"].append(direction_flip_reachability_row(side, direction_flip))
 
         sweep_2022_active = bool(is_sweep and has_choch and has_fvg)
         range_edge_active = bool(regime == Regime.RANGE.value and is_sweep and sweep_local_reclaim)
@@ -18073,21 +18197,14 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
         # свіжий свіп Азійського хая/лоу з підтвердженим реклеймом у цю ж сторону.
         if judas["bias"] == side and judas["bonus"] > 0: active_patterns.append("JUDAS_SWING")
 
-        # MMBM (v6.8 fix): раніше вимагав ОДНОЧАСНО tf1h==side AND tf15==side AND
-        # CHoCH AND sweep — жорсткий AND 4 незалежних умов, який жодного разу не
-        # спрацював за весь видимий журнал при score_bonus=25 (найдорожчий паттерн).
-        # Послаблено: HTF-вирівнювання тепер OR (tf1h ЛІБО tf15), CHoCH і sweep
-        # лишаються обов'язковими (вони і є структурна суть MMBM/MMSM).
-        mmbm_tf1h_ok = tf1h.get("bias") == side
-        mmbm_tf15_ok = tf15.get("bias") == side
-        mmbm_htf_ok = mmbm_tf1h_ok or mmbm_tf15_ok
-        if mmbm_htf_ok and has_choch and is_sweep:
+        # DIRECTION_FLIP_15M is now a real causal detector. A sweep improves its
+        # evidence but is not a hard prerequisite for a structural direction flip.
+        if direction_flip.get("ready"):
             active_patterns.append("MMBM")
         if os.getenv("MMBM_DEBUG_LOG"):
             print(
-                f"[MMBM_DEBUG] side={side} tf1h_ok={mmbm_tf1h_ok} tf15_ok={mmbm_tf15_ok} "
-                f"has_choch={has_choch} is_sweep={is_sweep} -> "
-                f"{'FIRED' if (mmbm_htf_ok and has_choch and is_sweep) else 'skip'}"
+                f"[MMBM_DEBUG] side={side} detected={direction_flip.get('detected')} "
+                f"ready={direction_flip.get('ready')} reason={direction_flip.get('reason')}"
             )
 
         if (tf15.get("bias") == side and event.get("retest")) or (breakout_retest_local.get("pending") and tf15.get("bias") == side): active_patterns.append("BMS_RETEST")
@@ -18219,6 +18336,12 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 pattern_conf.append(
                     f"🔁 Acceptance-retest: pullback={acceptance_retest.get('pullback_atr')} ATR | "
                     f"zone={acceptance_retest.get('zone_label') or 'none'} | acceptance={acceptance_retest.get('acceptance')}"
+                )
+            if model_id == "MMBM":
+                pattern_conf.append(
+                    f"↔️ Direction Flip 15M: body={direction_flip.get('body_atr')} ATR | "
+                    f"prior_net={direction_flip.get('prior_net_atr')} ATR | "
+                    f"3M={direction_flip.get('micro_confirmation', {}).get('kind')}"
                 )
             if model_id == "MOMENTUM_NO_PULLBACK_CONTINUATION":
                 detector_bonus = safe_float(momentum_no_pullback.get("score_bonus"), 0.0)
@@ -18663,6 +18786,20 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                 local_live_3m_trigger_ready = actionable_trigger_ready
                 model_thesis_age = 0.0
                 thesis_origin = "MODEL_LOCAL_TIME_OF_DAY"
+            elif model_id == "MMBM":
+                direction_flip_ready = bool(direction_flip.get("ready"))
+                execution_source = ExecutionSource.LIVE_3M.value if direction_flip_ready else ExecutionSource.NONE.value
+                actionable_trigger_ready = direction_flip_ready
+                execution_lane_source = (
+                    ExecutionLane.STANDARD_CONFIRMED.value
+                    if direction_flip_ready else ExecutionLane.WAIT_CONFIRMATION.value
+                    if direction_flip.get("detected") else ExecutionLane.WAIT_RETEST.value
+                )
+                local_trigger_level = safe_float(direction_flip.get("trigger_level"), trigger_level) or trigger_level
+                local_trigger_age = 0.0 if direction_flip_ready else trigger_age
+                local_live_3m_trigger_ready = direction_flip_ready
+                model_thesis_age = 0.0 if direction_flip.get("detected") else -1.0
+                thesis_origin = "MODEL_LOCAL_DIRECTION_FLIP_15M" if direction_flip.get("detected") else "MARKET_SCAN"
             elif model_id == "OB_RECLAIM":
                 # v9.5.27: current OB reaction is the preferred thesis clock. Legacy
                 # persistent reclaim remains compatibility fallback, not sole authority.
@@ -18782,6 +18919,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                     },
                     "FAILED_AUCTION_REJECTION": failed_auction,
                     "TIME_OF_DAY_ADAPTIVE": time_of_day_adaptive,
+                    "MMBM": direction_flip,
                     "SHORT_LIQUIDITY_SWEEP_REVERSAL": short_model_profile,
                     "SHORT_FAILED_BREAKOUT_REVERSAL": short_model_profile,
                     "SHORT_MSS_REVERSAL": short_model_profile,
@@ -18920,6 +19058,7 @@ def detect_candidates(context: dict, state: dict, journal: dict) -> list[Candida
                         "1h": tf1h.get("bias"),
                         "4h": tf4h.get("bias"),
                     },
+                    "direction_flip_15m": json_safe(direction_flip),
                     "pattern_bonus": round(raw_bonus, 2),
                     "pattern_bonus_components": pattern_bonus_audit,
                     "reversal_drift_guard": drift_guard,
@@ -19854,6 +19993,83 @@ def synchronize_candidate_trigger_with_contract(candidate: Optional[Candidate]) 
     return round_price(safe_float(getattr(candidate, "trigger_level", 0.0), anchor))
 
 
+def runway_target_management_profile(
+    context: dict[str, Any], candidate: Candidate, entry: float, stop: float,
+    tp0: float, tp1: float, technical_targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind a PROBE first partial to the nearest unconsumed liquidity.
+
+    The nearby pool is used only as a scout partial. TP1/TP2/TP3 remain governed
+    by structural RR. Already accepted/swept levels are rolled forward, so a dead
+    liquidity print cannot keep shrinking the apparent runway.
+    """
+    side = str(candidate.side or "").upper()
+    sign = side_sign(side)
+    atr = max(safe_float(context.get("atr15"), 0.0), abs(entry) * 0.001, 1e-6)
+    risk = max(abs(entry - stop), ABS_MIN_STOP_DOLLARS, 1e-6)
+    stage = str(candidate.entry_stage or (candidate.stage_plan or {}).get("stage") or "").upper()
+    recent_fn = globals().get("_v9532_recent_confirmed")
+    bars = recent_fn(context, "3m", 10) if callable(recent_fn) else list(((context.get("candles") or {}).get("3m") or [])[-10:])
+    consumed_fn = globals().get("_target_consumed_v9553")
+    rolled: list[dict[str, Any]] = []
+    live: list[dict[str, Any]] = []
+    for target in technical_targets or []:
+        level = safe_float(target.get("level"), 0.0)
+        directional_distance = sign * (level - entry)
+        if level <= 0.0 or directional_distance <= max(0.01 * atr, 1e-6):
+            continue
+        status = consumed_fn(target, side, bars, atr) if callable(consumed_fn) else {
+            "consumed": False, "accepted": False, "swept": False,
+        }
+        row = {**target, **status, "directional_distance": directional_distance}
+        (rolled if status.get("consumed") else live).append(row)
+    live.sort(key=lambda row: safe_float(row.get("directional_distance"), float("inf")))
+    selected = live[0] if live else None
+    runway_r = safe_float(selected.get("directional_distance"), 0.0) / risk if selected else 0.0
+    selected_level = safe_float(selected.get("level"), 0.0) if selected else 0.0
+    between_entry_and_tp1 = bool(
+        selected
+        and sign * (selected_level - entry) > 0.0
+        and sign * (tp1 - selected_level) > max(0.01 * atr, 1e-6)
+    )
+    scout_partial = bool(
+        stage == EntryStage.PROBE.value
+        and between_entry_and_tp1
+        and RUNWAY_SCOUT_TP0_MIN_R <= runway_r < TP0_MIN_RR
+    )
+    explicit_reprice = bool(
+        stage == EntryStage.PROBE.value and selected and runway_r < RUNWAY_SCOUT_TP0_MIN_R
+    )
+    resolved_tp0 = selected_level if scout_partial else tp0
+    state = (
+        "NEAREST_LIQUIDITY_SCOUT_PARTIAL" if scout_partial
+        else "EXPLICIT_REPRICE" if explicit_reprice
+        else "STRUCTURAL_TP0"
+    )
+    return {
+        "state": state,
+        "entry_stage": stage,
+        "tp0": round_price(resolved_tp0),
+        "tp0_rr": round(abs(resolved_tp0 - entry) / risk, 4),
+        "runway_r": round(runway_r, 4) if selected else None,
+        "nearest_target_level": round_price(selected_level) if selected else None,
+        "nearest_target_kind": str((selected or {}).get("kind") or "UNAVAILABLE"),
+        "scout_partial": scout_partial,
+        "explicit_reprice": explicit_reprice,
+        "setup_blocked": False,
+        "rolled_consumed_targets": [
+            {
+                "kind": str(row.get("kind") or ""),
+                "level": round_price(safe_float(row.get("level"), 0.0)),
+                "accepted": bool(row.get("accepted")),
+                "swept": bool(row.get("swept")),
+            }
+            for row in rolled[:6]
+        ],
+        "schema_version": "runway_target_management_v9.5.54",
+    }
+
+
 def build_trade_plan(
     context: dict,
     candidate: Candidate,
@@ -20095,6 +20311,7 @@ def build_trade_plan(
     else:
         tp0 = max(price - tp0_dist, tp1 + max(step * 0.10, price * 0.0001))
     rr0 = abs(tp0 - price) / risk_distance if risk_distance > 1e-9 else TP0_RR
+    tp0_basis = f"{TP0_MIN_RR}R/noise service fix"
 
     default_risk = RISKY_RISK_PCT if is_risky_lane or profile.get("force_risky") else NORMAL_RISK_PCT
     if not candidate.stage_plan:
@@ -20108,6 +20325,18 @@ def build_trade_plan(
         candidate.entry_stage = EntryStage.PROBE.value
         candidate.stage_plan["stage"] = EntryStage.PROBE.value
         candidate.stage_plan["probe_cap_recommendation"] = PROBE_RISK_PCT
+    runway_targets = runway_target_management_profile(
+        context, candidate, price, stop, tp0, tp1, tech_targets,
+    )
+    candidate.stage_plan["runway_target_management"] = dict(runway_targets)
+    candidate.score_components["runway_target_management"] = dict(runway_targets)
+    if runway_targets.get("scout_partial"):
+        tp0 = safe_float(runway_targets.get("tp0"), tp0)
+        rr0 = safe_float(runway_targets.get("tp0_rr"), rr0)
+        tp0_basis = (
+            f"nearest live {runway_targets.get('nearest_target_kind')} liquidity "
+            f"({rr0:.2f}R scout partial)"
+        )
     risk_ledger = build_risk_adjustment_ledger(
         candidate,
         context,
@@ -20136,7 +20365,7 @@ def build_trade_plan(
         position_risk_pct=position_risk_pct,
         invalidation=f"decision stop: 15M close за {round_price(structural_stop)} | hard stop: {round_price(stop)}",
         stop_basis=f"v6.13 breathing geometry | decision={round_price(structural_stop)} catastrophic={round_price(stop)} | noise={breathing['noise']}",
-        target_basis=f"TP0: {TP0_MIN_RR}R/noise service fix | TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
+        target_basis=f"TP0: {tp0_basis} | TP1: {tp_sources['tp1']} | TP2: {tp_sources['tp2']} | TP3: {tp_sources['tp3']}",
         stop_timeframe="1H" if any(z.timeframe == "1h" for z in zones) else "15M",
         structural_invalidation=round_price(structural_stop),
         trigger_level=candidate.trigger_level,
@@ -23148,10 +23377,10 @@ def _linked_preconfirmation_event(trade: ActiveTrade, context: dict[str, Any]) -
 def probe_no_followthrough_exit_profile(trade: ActiveTrade, context: dict[str, Any]) -> dict[str, Any]:
     """Return a fail-closed management recommendation for an unproven PROBE.
 
-    The first path requires the linked fixed-horizon precursor to be FAILED or
-    EXPIRED. A 60-minute fallback is allowed only when linkage is missing/pending,
-    MFE remains tiny and current R is non-positive. Confirmed probes, any TP0 hit,
-    and non-PROBE entries are untouched.
+    FAILED/EXPIRED precursors retain the fast exit. CONFIRMED precursors receive a
+    longer but finite lease: after that lease, a weak non-profitable probe yields
+    only when path integrity has decayed or a fresh opposite executable structure
+    is present. This prevents both immortal HOLDs and blind time-based exits.
     """
     profile: dict[str, Any] = {
         "applies": False,
@@ -23181,6 +23410,18 @@ def probe_no_followthrough_exit_profile(trade: ActiveTrade, context: dict[str, A
     age = safe_float(profile["age_minutes"])
     mfe_r = safe_float(profile["mfe_r"])
     current_r = safe_float(profile["current_r"])
+    opposite_evidence = dict(context.get("fresh_opposite_execution") or {})
+    opposite_executable = bool(
+        opposite_evidence.get("executable")
+        and opposite_evidence.get("opposite", str(opposite_evidence.get("side") or "").upper() == _opposite_side(trade.side))
+    )
+    integrity_fn = globals().get("_active_path_integrity_v9532")
+    path_integrity = safe_float(integrity_fn(trade, context), 50.0) if callable(integrity_fn) else 50.0
+    profile.update({
+        "opposite_executable": opposite_executable,
+        "opposite_structure": opposite_evidence,
+        "path_integrity": round(path_integrity, 2),
+    })
 
     event_failed = status in {"FAILED", "EXPIRED"}
     if (
@@ -23209,6 +23450,31 @@ def probe_no_followthrough_exit_profile(trade: ActiveTrade, context: dict[str, A
             "threshold_minutes": PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MINUTES,
             "max_mfe_r": PROBE_NO_FOLLOWTHROUGH_FAILSAFE_MAX_MFE_R,
         })
+        return profile
+
+    confirmed_stale = bool(
+        status == "CONFIRMED"
+        and age >= CONFIRMED_PROBE_STALE_MINUTES
+        and mfe_r < CONFIRMED_PROBE_STALE_MAX_MFE_R
+        and current_r <= CONFIRMED_PROBE_STALE_MAX_CURRENT_R
+    )
+    control_transfer = bool(
+        confirmed_stale
+        and (opposite_executable or path_integrity < CONFIRMED_PROBE_MIN_PATH_INTEGRITY)
+    )
+    if control_transfer:
+        profile.update({
+            "exit": True,
+            "reason_code": "CONFIRMED_PROBE_STALE_CONTROL_TRANSFER",
+            "threshold_minutes": CONFIRMED_PROBE_STALE_MINUTES,
+            "max_mfe_r": CONFIRMED_PROBE_STALE_MAX_MFE_R,
+            "max_current_r": CONFIRMED_PROBE_STALE_MAX_CURRENT_R,
+            "minimum_path_integrity": CONFIRMED_PROBE_MIN_PATH_INTEGRITY,
+            "control_transfer_source": "FRESH_OPPOSITE_EXECUTABLE" if opposite_executable else "PATH_DECAY",
+        })
+        return profile
+    if confirmed_stale:
+        profile["reason_code"] = "CONFIRMED_PROBE_STALE_BUT_STRUCTURE_NOT_INVALIDATED"
         return profile
 
     profile["reason_code"] = "FOLLOWTHROUGH_WINDOW_STILL_VALID"
@@ -23723,8 +23989,29 @@ def run_bot() -> None:
 
     active = active_trade_from_state(state)
     if active and active.status != "CLOSED":
+        # The active-trade scan is management evidence, so it must be available
+        # before the HOLD/EXIT decision. Previously it ran after management and a
+        # fresh opposite executable setup could not transfer control until the
+        # next job (or, for a confirmed PROBE, ever).
+        shadow_scan = evaluate_active_trade_shadow_scan(context, state, journal, active)
+        selected_shadow = dict(shadow_scan.get("selected") or {})
+        shadow_side = str(selected_shadow.get("side") or "").upper()
+        context["fresh_opposite_execution"] = {
+            "executable": bool(shadow_scan.get("would_executable")),
+            "opposite": bool(shadow_side and shadow_side == _opposite_side(active.side)),
+            "side": shadow_side,
+            "setup_type": str(selected_shadow.get("setup_type") or ""),
+            "score": safe_float(
+                selected_shadow.get("evidence_adjusted_selection_score"),
+                safe_float(selected_shadow.get("final_score"), 0.0),
+            ),
+            "decision_id": str(shadow_scan.get("decision_id") or ""),
+            "observed_at": str(shadow_scan.get("time") or iso_now()),
+            "schema_version": "fresh_opposite_execution_v9.5.54",
+        }
         stop_before = active.stop_current
         res = manage_active_trade(active, context)
+        res["active_trade_shadow_scan"] = shadow_scan
         stop_after = active.stop_current
         res["stop_changed"] = bool(stop_after) and round_price(stop_after) != round_price(stop_before)
         res["stop_before"] = stop_before
@@ -23890,12 +24177,9 @@ def run_bot() -> None:
             state["opportunity"] = None
         else:
             store_active_trade(state, active)
-            shadow_scan = evaluate_active_trade_shadow_scan(context, state, journal, active)
-            res["active_trade_shadow_scan"] = shadow_scan
             if shadow_scan.get("error"):
                 print(f"[WARN] Active-trade shadow scan failed: {shadow_scan.get('error')}")
             else:
-                selected_shadow = shadow_scan.get("selected") or {}
                 print(
                     f"[INFO] Active-trade shadow scan: detected={shadow_scan.get('detected_count', 0)} "
                     f"ranked={shadow_scan.get('ranked_count', 0)} selected={selected_shadow.get('setup_type', 'NONE')} "
@@ -23914,6 +24198,9 @@ def run_bot() -> None:
             "stop_before": res.get("stop_before"),
             "stop_after": res.get("stop_after"),
             "profit_protection": json_safe(res.get("profit_protection") or {}),
+            "probe_no_followthrough": json_safe(res.get("probe_no_followthrough") or {}),
+            "fresh_opposite_execution": json_safe(context.get("fresh_opposite_execution") or {}),
+            "path_decay_defense": json_safe(res.get("path_decay_defense") or {}),
             "ratchet_evidence": json_safe((getattr(active, "protection_ratchet_evidence", []) or [])[-1:] or []),
             "management_evidence_schema_version": getattr(active, "management_evidence_schema_version", "management_evidence_v9.5.20_multistep_ratchet_evidence"),
         }
@@ -30938,7 +31225,7 @@ def _simulate_route_path_v9532(event: dict[str,Any], candles: list[Candle], acti
     anchor=safe_float(event.get("anchor"),0.0)
     atr=max(safe_float(event.get("atr15"),1.0),1e-9)
     risk=max(safe_float(event.get("risk_distance"),0.0),atr*0.8,1e-6)
-    rr0=max(.65,safe_float(event.get("rr0"),1.0))
+    rr0=max(RUNWAY_SCOUT_TP0_MIN_R,safe_float(event.get("rr0"),1.0))
     rr1=max(MIN_RR1,safe_float(event.get("rr1"),MIN_RR1))
     kind=str((event.get("xi") or {}).get("kind") or "CONTINUATION")
 
@@ -31203,7 +31490,7 @@ def record_rejected_opportunity_events_v9532(journal: dict[str,Any], context: di
             "anchor":round_price(anchor),
             "atr15":round(atr,6),
             "risk_distance":round(risk,6),
-            "rr0":round(max(.65,rr0),3),
+            "rr0":round(max(RUNWAY_SCOUT_TP0_MIN_R,rr0),3),
             "rr1":round(max(MIN_RR1,rr1),3),
             "router_action":"UNOBSERVED_REJECTED",
             "actual_action":Action.NO_SETUP.value,
@@ -34400,42 +34687,6 @@ def build_staged_executive_decision(
         audit=audit,
     )
 
-def risky_entry_score_profile(
-    candidate: Candidate,
-    plan: Optional[TradePlan],
-    philosophy_accepts: bool,
-    risk_blocked: bool,
-) -> dict[str, Any]:
-    """Compatibility audit wrapper around the single canonical score policy.
-
-    The old automatic 66–67 gray live path is intentionally removed. To test
-    66–67, run a separate PAPER/SHADOW process with ICT_RISKY_ENTRY_SCORE=66.
-    """
-    profile = canonical_score_admission_profile(candidate)
-    plan_executable = bool(plan and getattr(plan, "valid", False) and getattr(plan, "execution_ready", False))
-    return {
-        **profile,
-        "quality": profile["score"],
-        "base_threshold": profile["risky_threshold"],
-        "lower_bound": profile["gray_lower_bound"],
-        "distance_to_base": profile["risky_threshold"] - profile["score"],
-        "full_threshold": profile["risky_entry_eligible"],
-        "in_gray_zone": profile["gray_shadow_only"],
-        "gray_eligible": False,
-        "shadow_eligible": bool(profile["gray_shadow_only"] and plan_executable and philosophy_accepts and not risk_blocked),
-        "eligible": profile["risky_entry_eligible"],
-        "tier": "FULL" if profile["risky_entry_eligible"] else "GRAY_SHADOW_ONLY" if profile["gray_shadow_only"] else "BELOW",
-        "risk_cap": RISKY_RISK_PCT if profile["risky_entry_eligible"] else 0.0,
-        "checks": {
-            "plan_executable": plan_executable,
-            "philosophy_accepts": bool(philosophy_accepts),
-            "risk_available": not bool(risk_blocked),
-            "live_gray_execution_disabled": True,
-        },
-    }
-
-
-
 def final_execution_authority_v9548(
     staged: ExecutiveDecisionContract,
     plan: Optional[TradePlan],
@@ -35761,7 +36012,7 @@ def record_rejected_opportunity_events_v9532(journal: dict[str,Any], context: di
         ev={
             "episode_key":key,"base_market_episode_key":base_key,"execution_state_key":state_key,
             "observed_ts":ts,"horizon_ts":ts+OPPORTUNITY_OUTCOME_HORIZON_MINUTES*60_000,"status":"PENDING","side":side,"setup_type":setup,"setup_family":setup_family,"execution_source":execution_source,
-            "price":round_price(entry),"anchor":round_price(anchor),"atr15":round(atr,6),"risk_distance":round(risk,6),"rr0":round(max(.65,rr0),3),"rr1":round(max(MIN_RR1,rr1),3),
+            "price":round_price(entry),"anchor":round_price(anchor),"atr15":round(atr,6),"risk_distance":round(risk,6),"rr0":round(max(RUNWAY_SCOUT_TP0_MIN_R,rr0),3),"rr1":round(max(MIN_RR1,rr1),3),
             "router_action":"UNOBSERVED_REJECTED","actual_action":Action.NO_SETUP.value,"origin":"REJECTED_HYPOTHESIS","route_learning_weight":0.35,
             "bandit_context":f"{setup}|{side}|{dominant}","bandit_parent_context":f"{setup_family}|{dominant}",
             "xi":{"kind":str((SETUP_STATE_MACHINE_REGISTRY.get(setup) or {}).get("kind") or "CONTINUATION"),"regime":dominant},
@@ -38240,30 +38491,6 @@ def _remove_router_chain_v9541(state: dict[str, Any], chain_id: str) -> None:
         state["opportunity"] = dict(queue[0])
 
 
-def clear_router_chain_v9541(
-    state: dict[str, Any], item: Any, journal: Optional[dict[str, Any]], transition: str,
-) -> None:
-    stage = dict(getattr(item, "stage_plan", {}) or {}) if item is not None else {}
-    explicit_chain = str(getattr(item, "router_chain_id", "") or stage.get("router_chain_id") or "") if item is not None else ""
-    queued = _router_queue_candidates_v9541(state)
-    _flush_router_tombstones_v9541(state, journal if isinstance(journal, dict) else {})
-    if explicit_chain:
-        _record_router_lifecycle_v9541(journal, transition, item, reason="FINAL_EXECUTIVE_DISPOSITION")
-    # Any opened trade consumes the single-position capacity. Keeping unrelated
-    # deferred routes alive until after that trade closes would turn a causal
-    # next-scan setup into a stale future entry, so all remaining routes end here.
-    for queued_opp in queued:
-        queued_chain = _router_chain_id_v9541(queued_opp)
-        if explicit_chain and queued_chain == explicit_chain:
-            continue
-        _record_router_lifecycle_v9541(
-            journal, "EXPIRED", queued_opp,
-            reason="SINGLE_POSITION_CAPACITY_CONSUMED_BY_EXECUTED_ROUTE",
-        )
-    state["router_opportunity_queue_v9541"] = []
-    state["opportunity"] = None
-
-
 def store_router_opportunity_v9541(
     state: dict[str, Any],
     opp: Optional[Opportunity],
@@ -38439,14 +38666,30 @@ def _reconcile_ranked_router_telemetry_v9541(
     candidate = decision.candidate
     stage = dict(getattr(candidate, "stage_plan", {}) or {}) if candidate is not None else {}
     route_audit = dict((decision.audit or {}).get("router_chain_v9541") or {})
-    tactic = str(route_audit.get("tactic") or stage.get("router_intended_tactic") or "MARKET_NOW")
+    canonical = dict((decision.audit or {}).get("canonical_router_result_v9553") or {})
+    tactic = str(
+        canonical.get("router_final_tactic")
+        or stage.get("router_final_tactic")
+        or route_audit.get("tactic")
+        or stage.get("router_intended_tactic")
+        or "MARKET_NOW"
+    )
+    disposition = str(
+        canonical.get("router_final_disposition")
+        or stage.get("router_final_disposition")
+        or ""
+    )
     executive = (((decision.audit or {}).get("executive_director") or {}).get("report") or {}).get("executive_decision") or {}
     final_executable = bool(
         decision.action in EXECUTABLE_ENTRY_ACTIONS
         and decision.plan is not None and decision.plan.valid and decision.plan.execution_ready
         and bool(executive.get("allow_execution", True))
     )
-    deferred = bool(decision.action == Action.NO_SETUP.value and tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"} and (route_audit or stage.get("router_final_disposition") == "DEFERRED"))
+    deferred = bool(
+        decision.action == Action.NO_SETUP.value
+        and tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"}
+        and (disposition == "DEFERRED" or (not canonical and bool(route_audit)))
+    )
     final_blocker = "EXECUTION_ROUTER_TACTIC" if deferred else "NONE" if final_executable else str(((decision.audit or {}).get("execution_funnel") or {}).get("blocking_layer") or "EXECUTIVE_POLICY")
     old_would = False
     old_primary = "NONE"
@@ -38469,12 +38712,16 @@ def _reconcile_ranked_router_telemetry_v9541(
             "primary_blocker": "NONE" if final_executable else final_blocker,
             "final_router_resolution": {
                 "tactic": tactic,
+                "disposition": disposition,
+                "router_chain_id": str(canonical.get("router_chain_id") or stage.get("router_chain_id") or ""),
+                "evidence_ts": int(safe_float(canonical.get("evidence_ts"), safe_float(stage.get("evidence_ts"), 0.0))),
                 "final_action": str(decision.action),
                 "final_allow_execution": final_executable,
                 "deferred_from_action": str(route_audit.get("deferred_from_action") or stage.get("router_deferred_from_action") or ""),
                 "opportunity_status": str((decision.audit or {}).get("opportunity_status") or ""),
                 "required_next_event": str(executive.get("required_next_event") or ""),
-                "authoritative": True,
+                "authoritative": False,
+                "authority_source": "COPY_OF_CANONICAL_ROUTER_RESULT",
                 "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
             },
         })
@@ -38492,6 +38739,8 @@ def _reconcile_ranked_router_telemetry_v9541(
         "blocking_layer": "" if final_executable else final_blocker,
         "tactic": tactic,
         "router_deferred": deferred,
+        "authoritative": False,
+        "authority_source": "COPY_OF_CANONICAL_ROUTER_RESULT",
         "schema_version": ROUTER_CHAIN_SCHEMA_V9541,
     }
     report["telemetry_finalized_after_router"] = True
@@ -38528,41 +38777,6 @@ def _reconcile_ranked_router_telemetry_v9541(
         if stored_rows:
             last["rows"] = stored_rows
     return report["final_selected_outcome"]
-
-
-def _consume_router_rechecks_v9541(
-    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any], decision: Decision,
-) -> None:
-    markers = [row for row in (context.pop("_router_recheck_markers_v9541", []) or []) if isinstance(row, dict)]
-    if bool(context.get("_audit_shadow_scan")):
-        return
-    final_chain = _router_chain_id_v9541(decision.candidate) if decision.candidate is not None else ""
-    for marker in markers:
-        if not marker.get("consumed"):
-            continue
-        opp = _opportunity_from_raw_v9541(marker.get("opportunity"))
-        if opp is None:
-            continue
-        opp.router_recheck_count = int(marker.get("router_recheck_count") or 1)
-        opp.last_recheck_at = iso_now()
-        opp.last_transition = "RECHECK_EVALUATED"
-        chain_id = str(marker.get("router_chain_id") or _router_chain_id_v9541(opp))
-        _record_router_lifecycle_v9541(
-            journal, "RECHECK_EVALUATED", opp,
-            reason="NEW_CONFIRMED_3M_BAR_AFTER_ROUTER_WATERMARK",
-            details={
-                "post_decision_confirmed_3m_bars": int(marker.get("post_decision_confirmed_3m_bars") or 0),
-                "candidate_created": bool(marker.get("candidate_created")),
-                "final_action": str(decision.action),
-                "selected_same_chain": final_chain == chain_id,
-            },
-        )
-        _remove_router_chain_v9541(state, chain_id)
-        if final_chain == chain_id and decision.action in EXECUTABLE_ENTRY_ACTIONS:
-            _record_router_lifecycle_v9541(journal, "EXECUTED", opp, reason="CAUSAL_RECHECK_EXECUTED")
-        else:
-            reason = "CAUSAL_RECHECK_COMPLETED_WITHOUT_EXECUTION" if final_chain == chain_id else "CAUSAL_RECHECK_LOST_FINAL_SELECTION"
-            _record_router_lifecycle_v9541(journal, "EXPIRED", opp, reason=reason)
 
 
 _evaluate_new_setup_v9540_effective = evaluate_new_setup
@@ -39180,32 +39394,6 @@ def build_trade_plan(
     return plan
 
 
-def _executed_router_tactic_from_signal_v9542(payload: dict[str, Any]) -> str:
-    explicit = str(payload.get("router_execution_tactic") or "")
-    if explicit in EXECUTION_ROUTER_ACTIONS:
-        return explicit
-    action = str(payload.get("action") or "")
-    if action not in EXECUTABLE_ENTRY_ACTIONS:
-        return ""
-    stage = dict(payload.get("stage_plan") or {})
-    components = dict(payload.get("score_components") or {})
-    lineage = dict(components.get("router_reentry_lineage") or {})
-    tactic_state = dict(stage.get("router_tactic_state") or {})
-    intended = str(stage.get("router_intended_tactic") or "")
-    routed_reentry = bool(
-        lineage.get("overall_ready")
-        or tactic_state.get("ready")
-        or int(safe_float(stage.get("router_recheck_count"), 0.0)) > 0
-        or stage.get("router_chain_id")
-    )
-    if routed_reentry and intended in EXECUTION_ROUTER_ACTIONS:
-        return intended
-    # An executable signal without a completed deferred route is, by definition,
-    # a current-price execution. This also correctly labels Executive economic
-    # PROBE downgrades where the advisory Router recommendation was FIRST_RETEST.
-    return "MARKET_NOW"
-
-
 def _router_recommended_tactic_from_signal_v9542(payload: dict[str, Any]) -> str:
     intelligence = payload.get("execution_intelligence")
     if not isinstance(intelligence, dict) or not intelligence:
@@ -39551,16 +39739,6 @@ def save_journal(journal: dict[str, Any]) -> None:
             trade["setup_management_calibration"] = copy.deepcopy(signal.get("setup_management_calibration"))
     rebuild_router_learning_v9542(journal)
     return _save_journal_v9541_effective(journal)
-
-
-_state_upgrade_policy_v9541_effective = state_upgrade_policy_v9533
-def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
-    profile = dict(_state_upgrade_policy_v9541_effective(source_architecture))
-    if str(source_architecture or "") == V9541_ARCHITECTURE_VERSION:
-        profile["memory_compatible"] = True
-        profile["opportunity_lineage_compatible"] = True
-        profile["policy"] = "PRESERVE_V9_5_41_ROUTER_CHAIN_AND_SCAN_MEMORY_IN_V9_5_42"
-    return profile
 
 
 _validate_runtime_configuration_v9541_effective = validate_runtime_configuration
@@ -40577,9 +40755,21 @@ def execution_anchor_repair_profile_v9551(
     atr = max(safe_float(atr15, 0.0), 1e-9)
     structural_risk = abs(structural - invalidation) if invalidation > 0 else atr
     structural_risk = max(structural_risk, atr * 0.50, ABS_MIN_STOP_DOLLARS)
-    favorable_move = direction * (market - structural)
-    missed_favorable_r = max(0.0, favorable_move / structural_risk)
-    improved_price_r = max(0.0, -favorable_move / structural_risk)
+    trigger_risk = abs(trigger - invalidation) if invalidation > 0 else atr
+    trigger_risk = max(trigger_risk, atr * 0.50, ABS_MIN_STOP_DOLLARS)
+    structural_favorable_move = direction * (market - structural)
+    trigger_favorable_move = direction * (market - trigger)
+    missed_from_structural_r = max(0.0, structural_favorable_move / structural_risk)
+    missed_from_trigger_r = max(0.0, trigger_favorable_move / trigger_risk)
+    # The repaired execution anchor may equal market by design. The immutable
+    # trigger still carries the real displacement and must remain authoritative.
+    missed_favorable_r = max(missed_from_structural_r, missed_from_trigger_r)
+    favorable_move = max(structural_favorable_move, trigger_favorable_move)
+    improved_price_r = max(
+        0.0,
+        -structural_favorable_move / structural_risk,
+        -trigger_favorable_move / trigger_risk,
+    )
     trigger_distance_atr = abs(market - trigger) / atr
     structural_distance_atr = abs(market - structural) / atr
     current_stop_room = direction * (market - invalidation) if invalidation > 0 else structural_risk
@@ -40622,7 +40812,10 @@ def execution_anchor_repair_profile_v9551(
         "invalidation_level": round_price(invalidation) if invalidation > 0 else 0.0,
         "target_level": round_price(target) if target > 0 else 0.0,
         "risk_distance": round(structural_risk, 6),
+        "trigger_risk_distance": round(trigger_risk, 6),
         "missed_favorable_r": round(missed_favorable_r, 6),
+        "missed_from_trigger_r": round(missed_from_trigger_r, 6),
+        "missed_from_structural_r": round(missed_from_structural_r, 6),
         "improved_price_r": round(improved_price_r, 6),
         "trigger_distance_atr": round(trigger_distance_atr, 6),
         "structural_distance_atr": round(structural_distance_atr, 6),
@@ -40641,7 +40834,7 @@ def execution_anchor_repair_profile_v9551(
         "model": str(model or ""),
         "setup_blocked": False,
         "setup_route": "LIVE_ALLOWED" if current_fill_allowed else "WAIT_RETEST" if not invalidated else "INVALIDATED",
-        "schema_version": "execution_anchor_repair_v9.5.51_missed_r_authority",
+        "schema_version": "execution_anchor_repair_v9.5.54_dual_origin_displacement",
     }
 
 
@@ -41862,9 +42055,9 @@ def _run_self_test() -> bool:
 # boundary. Detectors, all 24 setup identities, RR floors, stop geometry,
 # calibration and the single-position policy remain unchanged.
 
-V9553_SCHEMA_VERSION = "canonical_router_execution_v9.5.53"
-V9553_BOT_VERSION = "pro-hybrid-confluence-v9.5.53-canonical-router-execution-repair"
-V9553_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_53_CANONICAL_ROUTER_EXECUTION_REPAIR"
+V9553_SCHEMA_VERSION = "lifecycle_router_direction_flip_v9.5.54"
+V9553_BOT_VERSION = "pro-hybrid-confluence-v9.5.54-lifecycle-router-direction-flip"
+V9553_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_54_LIFECYCLE_ROUTER_DIRECTION_FLIP"
 
 V9553_EARLY_PROBE_RISK_CAP = min(
     EXPERIMENTAL_PROBE_RISK_PCT,
@@ -42284,28 +42477,24 @@ def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decisio
     return out
 
 
-def _selected_router_resolution_v9553(decision: Decision) -> dict[str, Any]:
-    report = dict((decision.audit or {}).get("ranked_top_n_conversion") or {})
-    rows = [row for row in (report.get("rows") or []) if isinstance(row, dict)]
-    selected = next((row for row in rows if row.get("selected")), None)
-    resolution = dict((selected or {}).get("final_router_resolution") or {})
-    return resolution if resolution.get("authoritative") else {}
-
-
 def canonical_router_result_v9553(decision: Decision) -> dict[str, Any]:
     """Translate all Router output once; downstream authority reads only this DTO."""
     candidate = decision.candidate
     if candidate is None:
-        return {
+        result = {
             "router_final_tactic": "NONE",
             "router_final_disposition": "NO_CANDIDATE",
             "router_chain_id": "",
             "evidence_ts": 0,
+            "authoritative": True,
+            "authority_source": "CANONICAL_ROUTER_RESULT",
             "schema_version": V9553_SCHEMA_VERSION,
         }
+        decision.audit = decision.audit or {}
+        decision.audit["canonical_router_result_v9553"] = copy.deepcopy(result)
+        return result
     stage = candidate.stage_plan = candidate.stage_plan or {}
     route_audit = dict((decision.audit or {}).get("router_chain_v9541") or {})
-    ranked = _selected_router_resolution_v9553(decision)
 
     # This is the only compatibility boundary allowed to inspect the pre-v9.5.53
     # Router payload. Final Authority below consumes only the normalized fields.
@@ -42317,7 +42506,6 @@ def canonical_router_result_v9553(decision: Decision) -> dict[str, Any]:
     legacy_route = dict(xi.get("execution_router") or {})
     tactic = str(
         stage.get("router_final_tactic")
-        or ranked.get("tactic")
         or route_audit.get("tactic")
         or stage.get("router_intended_tactic")
         or legacy_route.get("action")
@@ -42382,13 +42570,14 @@ def canonical_router_result_v9553(decision: Decision) -> dict[str, Any]:
         "retest_consumed": retest_consumed,
         "consumed_tactic": str(stage.get("consumed_tactic") or ""),
         "deferred_from_action": str(
-            ranked.get("deferred_from_action")
-            or route_audit.get("deferred_from_action")
+            route_audit.get("deferred_from_action")
             or stage.get("router_deferred_from_action")
             or ""
         ),
         "economic_reprice": bool(legacy_economic_reprice or runway.get("explicit_reprice")),
         "runway_risk": runway,
+        "authoritative": True,
+        "authority_source": "CANONICAL_ROUTER_RESULT",
         "schema_version": V9553_SCHEMA_VERSION,
     }
     stage.update(result)
@@ -42825,13 +43014,25 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         return {}
     stage = dict(payload.get("stage_plan") or {})
     for key in V9553_ROUTER_CANONICAL_FIELDS:
-        if key in stage:
-            compact[key] = copy.deepcopy(stage.get(key))
-    for key in ("router_confirmation_consumed", "router_recheck_consumed", "consumed_tactic", "retest_consumed", "decision_watermark"):
-        if key in stage:
-            compact[key] = copy.deepcopy(stage.get(key))
+        # After the first compaction stage_plan may be intentionally absent.
+        # Falling back to the already-canonical top level makes compaction
+        # idempotent instead of deleting Router authority on the second pass.
+        if key in stage or key in payload:
+            compact[key] = copy.deepcopy(stage.get(key, payload.get(key)))
+    for key in (
+        "router_confirmation_consumed", "router_recheck_consumed",
+        "consumed_tactic", "retest_consumed", "decision_watermark",
+        "authoritative", "authority_source",
+    ):
+        if key in stage or key in payload:
+            compact[key] = copy.deepcopy(stage.get(key, payload.get(key)))
     if str(compact.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS:
-        compact["router_execution_tactic"] = str(stage.get("router_final_tactic") or "MARKET_NOW")
+        compact["router_execution_tactic"] = str(
+            stage.get("router_final_tactic")
+            or payload.get("router_final_tactic")
+            or payload.get("router_execution_tactic")
+            or "MARKET_NOW"
+        )
     return compact
 
 
@@ -42854,8 +43055,8 @@ def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     if source.startswith(marker):
         suffix = source[len(marker):].split("_", 1)[0]
         release = int(suffix) if suffix.isdigit() else 0
-    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 53)
-    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 53)
+    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 54)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 54)
     return {
         "source_architecture": source or "UNKNOWN",
         "source_release": release,
@@ -42904,11 +43105,69 @@ def load_state() -> dict[str, Any]:
 
 
 _load_journal_v9553_base = load_journal
+
+
+def close_orphan_deferred_router_records_v9554(
+    journal: dict[str, Any], state: dict[str, Any], *, as_of: Optional[datetime] = None,
+) -> int:
+    """Close durable DEFERRED telemetry that has no matching runtime route."""
+    if not isinstance(journal, dict) or not isinstance(state, dict):
+        return 0
+    now = as_of or now_utc()
+    live_chain_ids = {
+        _router_chain_id_v9541(opp) for opp in _router_queue_candidates_v9541(state)
+    }
+    ledger = journal.setdefault("setup_lifecycle_counters", {}).setdefault("router_lifecycle_v9541", {})
+    latest = dict(ledger.get("latest_by_chain") or {})
+    open_transitions = {"DEFERRED", "RECHECK_PENDING", "RECHECK_EVALUATED", "WAITING_CAUSAL_BAR"}
+    closed = 0
+    for chain_id, raw in list(latest.items()):
+        row = dict(raw or {})
+        if str(row.get("transition") or "") not in open_transitions or chain_id in live_chain_ids:
+            continue
+        observed = _parse_time_any(str(row.get("time") or ""))
+        age_minutes = (now - observed).total_seconds() / 60.0 if observed else float("inf")
+        if age_minutes <= EXECUTION_ROUTER_EMERGENCY_MAX_WAIT_MINUTES:
+            continue
+        shadow = Opportunity(
+            side=str(row.get("side") or Side.NEUTRAL.value),
+            setup_type=str(row.get("setup_type") or SetupType.NONE.value),
+            setup_family=SETUP_FAMILY_MAP.get(str(row.get("setup_type") or ""), SetupFamily.NONE.value),
+            created_at=str(row.get("time") or now.isoformat()),
+            expires_at=now.isoformat(),
+            score=0,
+            trigger_level=0.0,
+            invalidation_level=0.0,
+            execution_tactic=str(row.get("tactic") or ""),
+            router_chain_id=str(chain_id),
+            router_recheck_count=int(safe_float(row.get("router_recheck_count"), 0.0)),
+            last_transition=str(row.get("transition") or "DEFERRED"),
+        )
+        _record_router_lifecycle_v9541(
+            journal, "EXPIRED", shadow,
+            reason="ORPHAN_DEFERRED_NOT_PRESENT_IN_RUNTIME_QUEUE",
+            details={
+                "previous_transition": str(row.get("transition") or ""),
+                "age_minutes": round(age_minutes, 2) if math.isfinite(age_minutes) else None,
+                "live_runtime_chain_count": len(live_chain_ids),
+            },
+        )
+        closed += 1
+    ledger["orphan_cleanup"] = {
+        "checked_at": now.isoformat(),
+        "closed_count": closed,
+        "live_runtime_chain_count": len(live_chain_ids),
+        "schema_version": "router_orphan_cleanup_v9.5.54",
+    }
+    return closed
+
+
 def load_journal() -> dict[str, Any]:
     journal = _load_journal_v9553_base()
     state = _V9553_LAST_LOADED_STATE
     if isinstance(state, dict):
         _flush_router_tombstones_v9541(state, journal)
+        close_orphan_deferred_router_records_v9554(journal, state)
         commit = state.get("router_execution_commit_v9553") or {}
         if commit.get("status") == "CONSISTENCY_ERROR" and not commit.get("reported_to_journal"):
             _record_router_lifecycle_v9541(
@@ -42942,20 +43201,21 @@ def validate_runtime_configuration() -> dict[str, Any]:
         if not any(token in str(value) for token in obsolete_release_seals)
     ]
     if BOT_VERSION != V9553_BOT_VERSION or ARCHITECTURE_VERSION != V9553_ARCHITECTURE_VERSION:
-        errors.append("v9.5.53 canonical Router execution release seal is not effective")
+        errors.append("v9.5.54 lifecycle/Router/Direction-Flip release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
-        errors.append("v9.5.53 requires the canonical 58/68/75 contract")
+        errors.append("v9.5.54 requires the canonical 58/68/75 contract")
     if SETUP_CALIBRATION_MIN_CLOSED_TRADES != 5:
-        errors.append("v9.5.53 provisional calibration must start at five closed trades")
+        errors.append("v9.5.54 provisional calibration must start at five closed trades")
     if len(_tracked_setup_types()) != 24 or set(SETUP_STATE_MACHINE_REGISTRY) != set(_tracked_setup_types()):
         errors.append("v9.5.53 must preserve all 24 setup contracts")
     if not (0.0 < V9553_EARLY_PROBE_RISK_CAP <= EXPERIMENTAL_PROBE_RISK_PCT):
         errors.append("v9.5.53 early-probe risk cap is outside the experimental envelope")
     if not all(callable(globals().get(name)) for name in (
         "canonical_router_result_v9553", "strict_early_probe_profile_v9553",
-        "_execution_commit_invariant_v9553",
+        "_execution_commit_invariant_v9553", "close_orphan_deferred_router_records_v9554",
+        "direction_flip_15m_profile", "runway_target_management_profile",
     )):
-        errors.append("v9.5.53 canonical execution boundary is incomplete")
+        errors.append("v9.5.54 production execution boundary is incomplete")
     return {
         **report,
         "valid": not errors,
@@ -43000,6 +43260,23 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         "all_24_setups_preserved": len(_tracked_setup_types()) == 24,
         "calibration_min_closed_trades": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
         "calibration_full_oos_predictions": SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS,
+        "schema_version": V9553_SCHEMA_VERSION,
+    }
+    latest = dict(router.get("latest_by_chain") or {})
+    output["v9554_lifecycle_router_direction_flip"] = {
+        "bounded_confirmed_probe_minutes": CONFIRMED_PROBE_STALE_MINUTES,
+        "confirmed_probe_max_mfe_r": CONFIRMED_PROBE_STALE_MAX_MFE_R,
+        "runway_scout_tp0_min_r": RUNWAY_SCOUT_TP0_MIN_R,
+        "open_orphan_deferred_records": sum(
+            1 for row in latest.values()
+            if str((row or {}).get("transition") or "")
+            in {"DEFERRED", "RECHECK_PENDING", "RECHECK_EVALUATED", "WAITING_CAUSAL_BAR"}
+        ),
+        "router_authority": "ONE_CANONICAL_RESULT; ALL_OTHER_AUDITS_ARE_NON_AUTHORITATIVE_COPIES",
+        "anti_fomo_origin": "IMMUTABLE_TRIGGER_AND_STRUCTURAL_ANCHOR",
+        "direction_flip_detector": "DIRECTION_FLIP_15M_CAUSAL_15M_BREAK_PLUS_FRESH_3M",
+        "dead_unaliased_override_layers": 0,
+        "workflow_persistence_failure": "JOB_FAILS_AFTER_FIVE_PUSH_ATTEMPTS",
         "schema_version": V9553_SCHEMA_VERSION,
     }
     return output
@@ -43318,6 +43595,248 @@ def v9553_regression_checks() -> list[tuple[str, bool]]:
     return checks
 
 
+def _count_canonical_router_authorities_v9554(payload: Any) -> int:
+    if isinstance(payload, dict):
+        own = int(
+            payload.get("authoritative") is True
+            and payload.get("authority_source") == "CANONICAL_ROUTER_RESULT"
+        )
+        return own + sum(_count_canonical_router_authorities_v9554(value) for value in payload.values())
+    if isinstance(payload, list):
+        return sum(_count_canonical_router_authorities_v9554(value) for value in payload)
+    return 0
+
+
+def v9554_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    # Exact production episode: LONG 88.06, >15h, MFE 0.369R, current -0.205R,
+    # confirmed precursor, and a fresh opposite executable structure.
+    initial_risk = 0.7318
+    trade = ActiveTrade(
+        id="episode-88.06-long", signal_id="episode-88.06-signal",
+        side=Side.LONG.value, setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.EXPANSION.value,
+        opened_at=(now_utc() - timedelta(hours=15, minutes=20)).isoformat(),
+        entry=88.06, stop_initial=88.06 - initial_risk, stop_current=88.06 - initial_risk,
+        structural_invalidation=87.45,
+        tp1=89.5236, tp2=90.2554, tp3=91.7190,
+        quality=74, position_risk_pct=0.005983,
+        best_price=88.06 + 0.369 * initial_risk,
+        worst_price=87.71,
+        entry_stage=EntryStage.PROBE.value,
+        preconfirmation_event_id="episode-88.06-confirmed",
+    )
+    episode_context = {
+        "price": 88.06 - 0.205 * initial_risk,
+        "atr15": 0.27,
+        "candles": {"3m": [], "15m": []},
+        "preconfirmation_events": [{
+            "event_id": "episode-88.06-confirmed", "status": "CONFIRMED", "outcome": "CONFIRMED",
+        }],
+        "fresh_opposite_execution": {
+            "executable": True, "opposite": True, "side": Side.SHORT.value,
+            "setup_type": SetupType.BREAKOUT_RETEST.value, "score": 60,
+        },
+    }
+    episode_profile = probe_no_followthrough_exit_profile(trade, episode_context)
+    episode_result = manage_active_trade(copy.deepcopy(trade), episode_context)
+    checks.append((
+        "v9.5.54 exact 88.06 LONG transfers control after confirmed stale weak PROBE and fresh executable SHORT",
+        episode_profile.get("exit") is True
+        and episode_profile.get("reason_code") == "CONFIRMED_PROBE_STALE_CONTROL_TRANSFER"
+        and episode_profile.get("control_transfer_source") == "FRESH_OPPOSITE_EXECUTABLE"
+        and abs(safe_float(episode_profile.get("mfe_r")) - 0.369) <= 0.001
+        and abs(safe_float(episode_profile.get("current_r")) + 0.205) <= 0.001
+        and episode_result.get("closed") is True
+        and episode_result.get("action") == Action.EXIT.value,
+    ))
+
+    healthy = copy.deepcopy(trade)
+    healthy.id = "confirmed-stale-healthy"
+    healthy.best_price = healthy.entry + 0.80 * initial_risk
+    healthy_context = copy.deepcopy(episode_context)
+    healthy_context["price"] = healthy.entry + 0.20 * initial_risk
+    healthy_context["fresh_opposite_execution"] = {"executable": False, "opposite": False}
+    healthy_profile = probe_no_followthrough_exit_profile(healthy, healthy_context)
+    checks.append((
+        "v9.5.54 bounded stale lifecycle does not time-exit a healthy confirmed PROBE",
+        healthy_profile.get("exit") is False,
+    ))
+
+    anti_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=60, final_score=60,
+        trigger_level=100.0, execution_anchor=102.0,
+        score_components={"entry_contract": {
+            "entry_anchor": 99.8,
+            "execution_anchor_profile": {"trigger_level": 100.0, "structural_anchor": 99.8},
+        }},
+    )
+    anti = anti_fomo_profile(anti_candidate, {"price": 102.0, "atr15": 1.0})
+    checks.append((
+        "v9.5.54 anti-FOMO measures immutable trigger and structural displacement",
+        safe_float(anti.get("trigger_extension_atr")) == 2.0
+        and safe_float(anti.get("structural_extension_atr")) == 2.2
+        and safe_float(anti.get("anchor_extension_atr")) == 2.2,
+    ))
+
+    target_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=60, final_score=60,
+        entry_stage=EntryStage.PROBE.value, stage_plan={"stage": EntryStage.PROBE.value},
+    )
+    target_context = {
+        "atr15": 1.0,
+        "candles": {"3m": [
+            Candle(ts=1, open=100.20, high=100.35, low=100.15, close=100.30, confirmed=True),
+            Candle(ts=2, open=100.30, high=100.45, low=100.25, close=100.40, confirmed=True),
+        ]},
+    }
+    target_profile = runway_target_management_profile(
+        target_context, target_candidate, 100.0, 99.0, 101.0, 102.0,
+        [
+            {"level": 100.25, "kind": "LIQUIDITY", "timeframe": "3m", "distance": 0.25},
+            {"level": 100.80, "kind": "PDH", "timeframe": "15m", "distance": 0.80},
+        ],
+    )
+    checks.append((
+        "v9.5.54 target manager rolls consumed liquidity and uses next live pool as PROBE TP0",
+        target_profile.get("scout_partial") is True
+        and target_profile.get("nearest_target_level") == 100.8
+        and target_profile.get("tp0") == 100.8
+        and len(target_profile.get("rolled_consumed_targets") or []) == 1,
+    ))
+
+    base_ts = 1_900_000_000_000
+    c15 = [
+        Candle(base_ts, 100.30, 100.45, 99.95, 100.05, 100, True),
+        Candle(base_ts + 900_000, 100.05, 100.20, 99.75, 99.85, 100, True),
+        Candle(base_ts + 1_800_000, 99.85, 100.00, 99.55, 99.65, 100, True),
+        Candle(base_ts + 2_700_000, 99.60, 101.15, 99.50, 101.00, 150, True),
+    ]
+    c3 = [
+        Candle(base_ts + 2_000_000 + i * 180_000, 99.80 + 0.04 * i, 99.95 + 0.04 * i, 99.70 + 0.04 * i, 99.84 + 0.04 * i, 20, True)
+        for i in range(5)
+    ]
+    c3.append(Candle(base_ts + 2_900_000, 100.00, 100.65, 99.95, 100.55, 30, True))
+    flip = direction_flip_15m_profile(
+        Side.LONG.value, c15, c3, 1.0,
+        {"bias": Side.LONG.value}, {"bias": Side.NEUTRAL.value},
+        has_choch=True,
+    )
+    flip_row = direction_flip_reachability_row(Side.LONG.value, flip)
+    checks.append((
+        "v9.5.54 DIRECTION_FLIP_15M has a causal live detector and reachability row",
+        flip.get("ready") is True
+        and flip_row.get("fired") is True
+        and flip_row.get("setup_type") == SetupType.DIRECTION_FLIP.value,
+    ))
+
+    compact_source = {
+        "id": "router-compaction-v9554", "action": Action.PROBE_ENTRY.value,
+        "side": Side.LONG.value, "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "quality": 60,
+        "stage_plan": {
+            "router_final_tactic": "MARKET_NOW", "router_final_disposition": "EXECUTE_NOW",
+            "router_chain_id": "chain-v9554", "evidence_ts": 1234,
+            "router_confirmation_consumed": True, "router_recheck_consumed": True,
+            "consumed_tactic": "ONE_3M_CONFIRM", "decision_watermark": 1000,
+            "authoritative": True, "authority_source": "CANONICAL_ROUTER_RESULT",
+        },
+    }
+    compact_once = compact_signal_for_journal(compact_source)
+    compact_twice = compact_signal_for_journal(compact_once)
+    compact_thrice = compact_signal_for_journal(compact_twice)
+    checks.append((
+        "v9.5.54 canonical Router fields survive arbitrary repeated compaction",
+        all(compact_thrice.get(key) == compact_once.get(key) for key in V9553_ROUTER_CANONICAL_FIELDS)
+        and compact_thrice.get("consumed_tactic") == "ONE_3M_CONFIRM"
+        and compact_thrice.get("router_confirmation_consumed") is True,
+    ))
+
+    router_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.EXPANSION.value, trigger_ready=True,
+        raw_score=60, final_score=60,
+        trigger_level=100.0, execution_anchor=100.0,
+        execution_source=ExecutionSource.LIVE_3M.value,
+        stage_plan={"router_final_tactic": "MARKET_NOW", "router_final_disposition": "EXECUTE_NOW"},
+    )
+    router_decision = Decision(
+        id="authority-v9554", time=iso_now(), action=Action.PROBE_ENTRY.value,
+        side=Side.LONG.value, setup_type=SetupType.BREAKOUT_RETEST.value,
+        quality=60, reason="fixture", regime=Regime.TRANSITION.value,
+        candidate=router_candidate,
+        plan=TradePlan(entry=100, stop=99, tp1=102, tp2=103, tp3=104, risk_pct=.01, rr1=2, rr2=3, rr3=4, valid=True, execution_ready=True),
+        audit={"ranked_top_n_conversion": {"rows": [{"selected": True, "would_executable": True}]}},
+    )
+    canonical_router_result_v9553(router_decision)
+    _reconcile_ranked_router_telemetry_v9541(router_decision, {})
+    selected_resolution = (
+        ((router_decision.audit.get("ranked_top_n_conversion") or {}).get("rows") or [{}])[0]
+        .get("final_router_resolution") or {}
+    )
+    checks.append((
+        "v9.5.54 exactly one Router result is authoritative across audits",
+        _count_canonical_router_authorities_v9554(router_decision.audit) == 1
+        and selected_resolution.get("authoritative") is False
+        and selected_resolution.get("tactic") == "MARKET_NOW",
+    ))
+
+    orphan_time = (now_utc() - timedelta(hours=2)).isoformat()
+    orphan_journal = {"setup_lifecycle_counters": {"router_lifecycle_v9541": {
+        "transition_counts": {"DEFERRED": 4},
+        "events": [],
+        "latest_by_chain": {
+            f"orphan-{i}": {
+                "time": orphan_time, "transition": "DEFERRED", "side": Side.LONG.value,
+                "setup_type": SetupType.BREAKOUT_RETEST.value, "tactic": "FIRST_RETEST",
+                "router_recheck_count": 0,
+            }
+            for i in range(4)
+        },
+    }}}
+    orphan_state = {"router_opportunity_queue_v9541": [], "opportunity": None}
+    orphan_closed = close_orphan_deferred_router_records_v9554(orphan_journal, orphan_state)
+    orphan_latest = orphan_journal["setup_lifecycle_counters"]["router_lifecycle_v9541"]["latest_by_chain"]
+    checks.append((
+        "v9.5.54 orphan DEFERRED lifecycle records become explicit EXPIRED terminals",
+        orphan_closed == 4
+        and all((orphan_latest.get(f"orphan-{i}") or {}).get("transition") == "EXPIRED" for i in range(4)),
+    ))
+
+    workflow_text = (Path(__file__).resolve().parent / ".github" / "workflows" / "main.yml").read_text(encoding="utf-8")
+    original_atomic_write = globals()["atomic_json_write"]
+    state_failure_propagated = False
+    journal_failure_propagated = False
+    def _forced_persistence_failure_v9554(path: Path, data: dict[str, Any]) -> None:
+        raise OSError("forced persistence failure")
+    try:
+        globals()["atomic_json_write"] = _forced_persistence_failure_v9554
+        try:
+            save_state({"history": []})
+        except OSError:
+            state_failure_propagated = True
+        try:
+            save_journal({"signals": [], "training_signals": [], "trades": [], "signal_events": []})
+        except OSError:
+            journal_failure_propagated = True
+    finally:
+        globals()["atomic_json_write"] = original_atomic_write
+    checks.append((
+        "v9.5.54 state/journal write errors propagate and workflow fails after exhausted push retries",
+        state_failure_propagated
+        and journal_failure_propagated
+        and "push_succeeded=false" in workflow_text
+        and "State/journal push failed after 5 attempts" in workflow_text
+        and 'if [ "$push_succeeded" != "true" ]' in workflow_text,
+    ))
+    return checks
+
+
 _run_self_test_v9553_base = _run_self_test
 def _run_self_test() -> bool:
     base_ok = _run_self_test_v9553_base()
@@ -43327,7 +43846,13 @@ def _run_self_test() -> bool:
         print(f"  [{'OK' if ok else 'FAIL'}] {name}")
         passed += int(bool(ok))
     print(f"SELF-TEST v9.5.53 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
-    return bool(base_ok and passed == len(checks))
+    v9554_checks = v9554_regression_checks()
+    v9554_passed = 0
+    for name, ok in v9554_checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        v9554_passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.54 SUMMARY: prior={'PASS' if (base_ok and passed == len(checks)) else 'FAIL'} + {v9554_passed}/{len(v9554_checks)} repair checks")
+    return bool(base_ok and passed == len(checks) and v9554_passed == len(v9554_checks))
 
 
 if __name__ == "__main__":
