@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.53 (Canonical Router Execution Repair)
+BZU Professional Oil 15M Signal Bot v9.5.56 (Three-Level Execution Authority)
 ====================================================================================
 Оновлення v9.5.56 (three-level execution authority hotfix):
 - Final Authority має три явні результати: FULL_ENTRY, EARLY_PROBE або WAIT.
@@ -494,8 +494,10 @@ V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-
 V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 V9541_BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
 V9541_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
-BOT_VERSION = "pro-hybrid-confluence-v9.5.55-causal-retest-quality-entry"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_55_CAUSAL_RETEST_QUALITY_ENTRY"
+V9556_BOT_VERSION = "pro-hybrid-confluence-v9.5.56-three-level-execution-authority"
+V9556_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_56_THREE_LEVEL_EXECUTION_AUTHORITY"
+BOT_VERSION = V9556_BOT_VERSION
+ARCHITECTURE_VERSION = V9556_ARCHITECTURE_VERSION
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -2188,7 +2190,6 @@ TRADE_ACTIONS_RESERVED_FOR_EXECUTIVE = set(EXECUTABLE_ENTRY_ACTIONS)
 
 class DecisionAuthorityViolation(Exception):
     """Raised when a non-executive component tries to publish a trade action."""
-    pass
 
 
 class DecisionAuthorityGuard:
@@ -5183,26 +5184,6 @@ HIDDEN_GATE_FORBIDDEN_VETO_SOURCES = {
     "ROUTER_PREFERENCE",
 }
 
-def classify_execution_blocker(reason: str) -> str:
-    r = str(reason or "").upper()
-    if any(x in r for x in ("INVALID", "THESIS_FAIL", "INvalidation".upper())):
-        return "INVALIDATION"
-    if any(x in r for x in ("RISK", "CAPITAL", "DAILY_LIMIT")):
-        return "RISK"
-    if any(x in r for x in ("DATA", "SCHEMA", "MISSING")):
-        return "DATA"
-    if any(x in r for x in ("EXECUTION", "ANCHOR_FAIL", "PRICE_UNAVAILABLE")):
-        return "EXECUTION_FAILURE"
-    if any(x in r for x in ("SCORE", "CANONICAL_SCORE")):
-        return "SCORE"
-    if "CALIBRATION" in r:
-        return "CALIBRATION"
-    if "PRECONFIRM" in r:
-        return "PRECONFIRMATION"
-    if "ROUTER" in r:
-        return "ROUTER_PREFERENCE"
-    return "ADVISORY_MODEL"
-
 def hidden_gate_sweep_audit(blocking: list[str], allow_execution: bool = False) -> dict[str, object]:
     classified = [classify_execution_blocker(x) for x in (blocking or [])]
     forbidden = [x for x in classified if x in HIDDEN_GATE_FORBIDDEN_VETO_SOURCES]
@@ -8177,28 +8158,6 @@ V9533_MEMORY_COMPATIBLE_ARCHITECTURES = frozenset({
 })
 
 
-def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
-    source=str(source_architecture or "")
-    memory_compatible=bool(source==ARCHITECTURE_VERSION or source in V9533_MEMORY_COMPATIBLE_ARCHITECTURES)
-    # Router tactic lineage exists only in v9.5.33. Old saved opportunities are
-    # intentionally not carried across the boundary; active trades are handled
-    # separately and remain preserved by load_state().
-    opportunity_compatible=bool(source==ARCHITECTURE_VERSION or source in {
-        V9540_ARCHITECTURE_VERSION,
-        "TRADING_DESK_EXECUTIVE_V9_5_39_EXECUTION_CLARITY_BALANCE",
-        "TRADING_DESK_EXECUTIVE_V9_5_38_BALANCED_EARLY_ENTRY_ANTI_LATE",
-        "TRADING_DESK_EXECUTIVE_V9_5_37_NATIVE_PROBE_WINRATE_STAGING",
-        "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_REACHABILITY_JOURNAL_NEUTRAL",
-        "TRADING_DESK_EXECUTIVE_V9_5_36_EXECUTION_ROUTER_BALANCE_15M_CADENCE",
-    })
-    return {
-        "source_architecture":source or "UNKNOWN",
-        "memory_compatible":memory_compatible,
-        "opportunity_lineage_compatible":opportunity_compatible,
-        "preserve_active_trade":True,
-        "policy":"PRESERVE_SCAN_REGIME_MEMORY_FROM_V9_5_30_PLUS; DROP_PRE_V9_5_33_SAVED_OPPORTUNITY_WITHOUT_ROUTER_TACTIC_LINEAGE",
-        "schema_version":"state_upgrade_policy_v9.5.33",
-    }
 
 
 def load_state() -> dict[str, Any]:
@@ -8426,9 +8385,6 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
 
 
-def prepare_signal_payload_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility alias retained for older call sites."""
-    return compact_signal_for_journal(payload)
 
 
 def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
@@ -9612,31 +9568,6 @@ def candidate_execution_trigger_age_minutes(candidate: Optional[Candidate]) -> f
     return max(0.0, safe_float(getattr(candidate, "trigger_age_minutes", 0.0), 0.0))
 
 
-def canonical_score_admission_profile(candidate_or_score: Any) -> dict[str, Any]:
-    score = int(
-        getattr(candidate_or_score, "final_score", candidate_or_score) or 0
-    )
-    full_entry = score >= ENTRY_SCORE_BASE
-    risky_entry = score >= RISKY_ENTRY_SCORE_BASE
-    gray_lower = max(0, RISKY_ENTRY_SCORE_BASE - RISKY_SCORE_GRAY_ZONE)
-    gray_shadow_only = gray_lower <= score < RISKY_ENTRY_SCORE_BASE
-    band = "ENTRY" if full_entry else "RISKY" if risky_entry else "GRAY_SHADOW_ONLY" if gray_shadow_only else "BELOW"
-    return {
-        "authority": "CANONICAL_SCORE_POLICY_ADVISORY_ONLY",
-        "mode": SCORE_POLICY_MODE,
-        "score": score,
-        "entry_threshold": ENTRY_SCORE_BASE,
-        "risky_threshold": RISKY_ENTRY_SCORE_BASE,
-        "full_entry_eligible": full_entry,
-        "risky_entry_eligible": risky_entry,
-        "gray_shadow_only": gray_shadow_only,
-        "gray_lower_bound": gray_lower,
-        "band": band,
-        "live_defaults_preserved": bool(
-            ENTRY_SCORE_BASE == LIVE_ENTRY_SCORE_BASE
-            and (SCORE_POLICY_MODE != "LIVE" or RISKY_ENTRY_SCORE_BASE == LIVE_RISKY_ENTRY_SCORE_BASE)
-        ),
-    }
 
 
 # ==========================================================
@@ -9840,12 +9771,16 @@ def http_post(url: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> Option
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    last_error = ""
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         if resp.status_code < 400:
             return resp
-    except Exception:
-        pass
+        last_error = f"HTTP {resp.status_code}"
+    except Exception as exc:
+        last_error = f"{type(exc).__name__}: {exc}"
+    if os.getenv("BZU_HTTP_DEBUG", "").lower() in {"1", "true", "yes"}:
+        print(f"[HTTP POST unavailable] {url}: {last_error}")
     return None
 
 
@@ -9929,58 +9864,6 @@ def get_tradingview_price_fallback() -> dict:
         return {}
 
 
-def collect_market_data() -> dict:
-    """Collect OHLC and execution price from OKX; block cross-venue fallback."""
-    c3 = get_okx_candles(OKX_INST_ID, "3m", 240)
-    c15 = get_okx_candles(OKX_INST_ID, "15m", 200)
-    c1h = get_okx_candles(OKX_INST_ID, "1h", 160)
-    c4h = get_okx_candles(OKX_INST_ID, "4h", 140)
-    smt_c15 = get_okx_candles(SMT_ASSET_ID, "15m", 200)
-    
-    # Execution price and OHLC must come from the same venue/instrument.
-    # OKX ticker is authoritative; an OKX candle close is the same-venue fallback.
-    # TradingView/Binance is display-only emergency data and is marked untrusted
-    # for execution so basis differences cannot silently trigger entries/exits.
-    okx_ticker = get_okx_ticker(OKX_INST_ID)
-    tv_ticker = get_tradingview_price_fallback() if not okx_ticker else {}
-
-    if okx_ticker:
-        ticker = okx_ticker
-        price = okx_ticker.get("price")
-        execution_price_trusted = True
-    elif c3:
-        price = c3[-1].close
-        ticker = {
-            "price": price,
-            "change24h": 0.0,
-            "volume24h": 0.0,
-            "source": "OKX_CANDLE_FALLBACK",
-        }
-        execution_price_trusted = False
-    else:
-        ticker = tv_ticker
-        price = ticker.get("price") if ticker else None
-        execution_price_trusted = False
-    
-    return {
-        "time": iso_now(),
-        "instrument": OKX_INST_ID,
-        "instrument_label": INSTRUMENT_LABEL,
-        "instrument_kind": INSTRUMENT_KIND,
-        "smt_instrument": SMT_ASSET_ID,
-        "smt_instrument_configured": SMT_ASSET_ID_CONFIGURED,
-        "smt_instrument_alias_applied": SMT_ASSET_ALIAS_APPLIED,
-        "candles": {"3m": c3, "15m": c15, "1h": c1h, "4h": c4h},
-        "smt_candles": {"15m": smt_c15},
-        "ticker": ticker,
-        "trades": [],
-        "book": {"bids": [], "asks": []},
-        "price": price,
-        "price_source": ticker.get("source", "NONE") if ticker else "NONE",
-        "execution_price_trusted": execution_price_trusted,
-        "execution_venue": "OKX" if ticker and str(ticker.get("source", "")).startswith("OKX") else "CROSS_VENUE_FALLBACK",
-        "execution_price_quality": "LIVE_TICKER" if execution_price_trusted else "BLOCKED_FALLBACK",
-    }
 
 
 def atr(candles: list[Candle], period: int = 14) -> float:
@@ -12904,73 +12787,8 @@ def _trade_ground_truth(trade: dict) -> Optional[tuple[int, float, str]]:
 
 
 
-def _quality_training_rows(journal: dict, family: str = "") -> list[tuple[dict[str, float], int, float]]:
-    signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
-    signals = {
-        str(s.get("id")): s for s in signal_records
-        if isinstance(s, dict) and s.get("id") and bool(_journal_feature_map(s))
-    }
-    rows: list[tuple[dict[str, float], int, float]] = []
-    for trade in journal.get("trades", []):
-        if not isinstance(trade, dict):
-            continue
-        signal = signals.get(str(trade.get("signal_id") or trade.get("id") or ""))
-        if not signal:
-            continue
-        if family and signal.get("setup_family") != family:
-            continue
-        has_tp_fields = any(key in trade for key in ("tp1_hit", "tp2_hit", "tp3_hit"))
-        if family and not has_tp_fields:
-            continue
-        ground_truth = _trade_ground_truth(trade)
-        if ground_truth is None:
-            continue
-        label, sample_weight, _ = ground_truth
-        features = {
-            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
-            for key in QUALITY_FEATURE_KEYS
-        }
-        rows.append((features, label, sample_weight))
-    return rows
 
 
-def _quality_training_rows_filtered(
-    journal: dict,
-    *,
-    side: str = "",
-    short_reversal_only: bool = False,
-    setup_type: str = "",
-) -> list[tuple[dict[str, float], int, float]]:
-    signal_records = list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
-    signals = {
-        str(s.get("id")): s for s in signal_records
-        if isinstance(s, dict) and s.get("id") and bool(_journal_feature_map(s))
-    }
-    rows: list[tuple[dict[str, float], int, float]] = []
-    for trade in journal.get("trades", []) or []:
-        if not isinstance(trade, dict):
-            continue
-        signal = signals.get(str(trade.get("signal_id") or trade.get("id") or ""))
-        if not signal:
-            continue
-        if side and str(signal.get("side") or trade.get("side") or "") != side:
-            continue
-        if setup_type and str(signal.get("setup_type") or trade.get("setup_type") or "") != setup_type:
-            continue
-        if short_reversal_only:
-            profile = signal.get("short_reversal_profile") or (signal.get("score_components") or {}).get("short_reversal") or ({"active": True} if signal.get("short_reversal") else {}) or trade.get("short_reversal_profile") or {}
-            if str(signal.get("side") or trade.get("side") or "") != Side.SHORT.value or not profile.get("active"):
-                continue
-        ground_truth = _trade_ground_truth(trade)
-        if ground_truth is None:
-            continue
-        label, sample_weight, _ = ground_truth
-        features = {
-            key: clamp(safe_float(_journal_feature_map(signal).get(key), 0.0), -1.0, 1.0)
-            for key in QUALITY_FEATURE_KEYS
-        }
-        rows.append((features, label, sample_weight))
-    return rows
 
 
 def compute_short_specific_ml_statistics(journal: dict[str, Any]) -> dict[str, Any]:
@@ -13461,166 +13279,8 @@ def setup_type_side_calibration_audit(journal: dict[str, Any], setup_type: str) 
 
 
 
-def setup_type_side_out_of_sample_validation(
-    journal: dict[str, Any], setup_type: str, side: str,
-) -> dict[str, Any]:
-    """Nested chronological OOS validation for one exact setup *and* side.
-
-    This is not a shortcut around pooled calibration. It exists specifically for
-    setups whose LONG/SHORT economics materially diverge. Each side must earn its
-    own feature-complete sample, inner calibration choice and untouched outer OOS
-    result. The opposite side contributes zero rows and zero authority.
-    """
-    exact_setup = str(setup_type or "")
-    exact_side = str(side or "").upper()
-    rows = _quality_training_rows_filtered(journal, setup_type=exact_setup, side=exact_side)
-    family = next((
-        str(signal.get("setup_family") or "")
-        for signal in list(journal.get("training_signals") or []) + list(journal.get("signals") or [])
-        if isinstance(signal, dict)
-        and str(signal.get("setup_type") or "") == exact_setup
-        and str(signal.get("side") or "").upper() == exact_side
-    ), "")
-    family_default = DEFAULT_QUALITY_COEFFICIENTS.get(family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
-    n = len(rows)
-    base = {
-        "setup_type": exact_setup,
-        "side": exact_side,
-        "sample_size": n,
-        "minimum_sample_size": SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS,
-        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
-        "directional": True,
-    }
-    if exact_side not in {Side.LONG.value, Side.SHORT.value}:
-        return {**base, "enabled": False, "authority_pass": False, "reason": "INVALID_SIDE"}
-    if n < SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS:
-        return {**base, "enabled": False, "authority_pass": False, "reason": "DIRECTIONAL_SAMPLE_BELOW_MINIMUM"}
-
-    fingerprint = _calibration_content_fingerprint(journal, exact_setup, exact_side)
-    cache = globals().setdefault("_LEGACY_CALIBRATION_TRANSIENT_CACHE", {}).setdefault("directional", {})
-    cache_key = f"{exact_setup}:{exact_side}"
-    cached = cache.get(cache_key)
-    if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("report"), dict):
-        return dict(cached["report"])
-
-    validation_count = min(
-        max(SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS, int(math.ceil(n * 0.30))),
-        max(1, n - 12),
-    )
-    warmup = n - validation_count
-    train_rows = rows[:warmup]
-    validation_rows = rows[warmup:]
-    blend_selection = _select_quality_blend_weight(train_rows, family_default)
-    approved_weight = safe_float(blend_selection.get("selected_weight"), 0.0)
-    learned = _fit_logistic_coefficients(train_rows, family_default)
-    blended = _blend_coefficients(family_default, learned, approved_weight)
-    labels = [int(label) for _features, label, _weight in validation_rows]
-    learned_probs = [_quality_probability_from_coefficients(blended, features) for features, _label, _weight in validation_rows]
-    bootstrap_probs = [_quality_probability_from_coefficients(family_default, features) for features, _label, _weight in validation_rows]
-    class_balance = len(set(labels)) >= 2
-    learned_auc = _preconfirm_auc(labels, learned_probs) if class_balance else None
-    bootstrap_auc = _preconfirm_auc(labels, bootstrap_probs) if class_balance else None
-    learned_brier = _quality_weighted_brier(validation_rows, learned_probs)
-    bootstrap_brier = _quality_weighted_brier(validation_rows, bootstrap_probs)
-    auc_pass = bool(learned_auc is not None and learned_auc >= SETUP_CALIBRATION_VALIDATION_MIN_AUC)
-    brier_pass = bool(learned_brier is not None and learned_brier <= SETUP_CALIBRATION_VALIDATION_MAX_BRIER)
-    bootstrap_auc_pass = bool(
-        bootstrap_auc is None or learned_auc is None
-        or learned_auc + SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION >= bootstrap_auc
-    )
-    bootstrap_brier_pass = bool(
-        bootstrap_brier is None or learned_brier is None
-        or learned_brier <= bootstrap_brier + SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION
-    )
-    prediction_pass = len(labels) >= SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS
-    learned_influence_tested = approved_weight > 0.0
-    side_stats = _setup_type_side_trade_statistics(journal, exact_setup, exact_side)
-    expectancy_pass = bool(
-        int(side_stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
-        and safe_float(side_stats.get("expectancy_r"), 0.0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R
-    )
-    authority_pass = bool(
-        prediction_pass and class_balance and learned_influence_tested
-        and auc_pass and brier_pass and bootstrap_auc_pass and bootstrap_brier_pass
-        and expectancy_pass
-    )
-    failed: list[str] = []
-    if not prediction_pass: failed.append("OOS_PREDICTIONS_BELOW_MINIMUM")
-    if not class_balance: failed.append("OOS_SINGLE_CLASS")
-    if not learned_influence_tested: failed.append("INNER_CALIBRATION_SELECTED_BOOTSTRAP_ONLY")
-    if not auc_pass: failed.append("OOS_AUC_BELOW_GATE")
-    if not brier_pass: failed.append("OOS_BRIER_ABOVE_GATE")
-    if not bootstrap_auc_pass: failed.append("OOS_AUC_WORSE_THAN_BOOTSTRAP")
-    if not bootstrap_brier_pass: failed.append("OOS_BRIER_WORSE_THAN_BOOTSTRAP")
-    if not expectancy_pass: failed.append("DIRECTIONAL_EXPECTANCY_NOT_NON_NEGATIVE_OR_SAMPLE_TOO_SMALL")
-    report = {
-        **base,
-        "enabled": True,
-        "authority_pass": authority_pass,
-        "reason": "VALIDATED_DIRECTIONAL" if authority_pass else "DIRECTIONAL_VALIDATION_GATE_FAILED",
-        "failed_conditions": failed,
-        "warmup_rows": warmup,
-        "oos_predictions": len(labels),
-        "oos_positive_labels": sum(labels),
-        "oos_negative_labels": len(labels) - sum(labels),
-        "approved_learned_blend_weight": round(approved_weight, 4),
-        "learned_influence_tested": learned_influence_tested,
-        "blend_selection": blend_selection,
-        "learned_auc": round(learned_auc, 6) if learned_auc is not None else None,
-        "bootstrap_auc": round(bootstrap_auc, 6) if bootstrap_auc is not None else None,
-        "learned_brier": round(learned_brier, 6) if learned_brier is not None else None,
-        "bootstrap_brier": round(bootstrap_brier, 6) if bootstrap_brier is not None else None,
-        "minimum_auc": SETUP_CALIBRATION_VALIDATION_MIN_AUC,
-        "maximum_brier": SETUP_CALIBRATION_VALIDATION_MAX_BRIER,
-        "minimum_directional_expectancy_r": SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R,
-        "directional_trade_statistics": side_stats,
-        "chronological": True,
-        "nested_calibration": True,
-        "opposite_side_rows_used": 0,
-        "outer_oos_labels_select_blend_weight": False,
-        "authority_scope": f"{exact_setup}:{exact_side}",
-    }
-    cache[cache_key] = {"fingerprint": fingerprint, "report": dict(report)}
-    return report
 
 
-def setup_type_directional_calibration_profile(
-    journal: dict[str, Any], setup_type: str, side: str,
-) -> dict[str, Any]:
-    exact_side = str(side or "").upper()
-    stats = _setup_type_side_trade_statistics(journal, setup_type, exact_side)
-    training_rows = int(stats.get("training_rows") or 0)
-    validation = setup_type_side_out_of_sample_validation(journal, setup_type, exact_side)
-    sample_ready = training_rows >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
-    expectancy_pass = bool(
-        int(stats.get("closed_trades") or 0) >= SETUP_CALIBRATION_SIDE_AUDIT_MIN_TRADES
-        and safe_float(stats.get("expectancy_r"), 0.0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_EXPECTANCY_R
-    )
-    authority = bool(sample_ready and expectancy_pass and validation.get("authority_pass"))
-    if not sample_ready:
-        status = "INSUFFICIENT_DIRECTIONAL_FEATURE_SAMPLE"
-    elif not expectancy_pass:
-        status = "DIRECTIONAL_EDGE_NOT_ESTABLISHED"
-    elif not validation.get("authority_pass"):
-        status = "DIRECTIONAL_OOS_VALIDATION_FAILED"
-    else:
-        status = "VALIDATED_DIRECTIONAL_CALIBRATED"
-    return {
-        **stats,
-        "setup_type": str(setup_type or ""),
-        "side": exact_side,
-        "training_rows": training_rows,
-        "minimum_training_rows": SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS,
-        "sample_ready": sample_ready,
-        "expectancy_pass": expectancy_pass,
-        "validation_pass": bool(validation.get("authority_pass")),
-        "learned_authority_allowed": authority,
-        "empirically_calibrated": authority,
-        "status": status,
-        "out_of_sample_validation": validation,
-        "policy": "ONE_SETUP_ONE_SIDE_ONLY; NESTED_OOS; NON_NEGATIVE_DIRECTIONAL_EXPECTANCY; NO_OPPOSITE_SIDE_BORROWING",
-        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
-    }
 
 
 def _quality_probability_from_coefficients(coef: dict[str, float], features: dict[str, float]) -> float:
@@ -13640,249 +13300,12 @@ def _quality_weighted_brier(rows: list[tuple[dict[str, float], int, float]], pro
     return loss/max(total,1e-9)
 
 
-def _select_quality_blend_weight(
-    train_rows: list[tuple[dict[str, float], int, float]], default: dict[str, float], *, minimum_fit_rows: int=12,
-) -> dict[str, Any]:
-    """Choose blend weight on an inner chronological calibration slice only.
-
-    The outer OOS labels never select the weight. Weight 0 (bootstrap) is a real
-    candidate and wins when learned coefficients do not improve calibration.
-    """
-    n=len(train_rows)
-    inner_val_count=max(6,int(math.ceil(n*0.25))) if n else 0
-    inner_train_count=n-inner_val_count
-    if inner_train_count<minimum_fit_rows or inner_val_count<6:
-        return {"selected_weight":0.0,"reason":"INNER_CALIBRATION_TOO_SMALL","train_rows":inner_train_count,"calibration_rows":inner_val_count,"selection_uses_outer_oos_labels":False}
-    inner_train=train_rows[:inner_train_count]; inner_val=train_rows[inner_train_count:]
-    learned=_fit_logistic_coefficients(inner_train,default)
-    labels=[int(label) for _f,label,_w in inner_val]
-    bootstrap_probs=[_quality_probability_from_coefficients(default,f) for f,_l,_w in inner_val]
-    bootstrap_brier=_quality_weighted_brier(inner_val,bootstrap_probs)
-    bootstrap_auc=_preconfirm_auc(labels,bootstrap_probs) if len(set(labels))>=2 else None
-    candidates=[]
-    for weight in (0.0,0.10,0.20,0.30,0.40):
-        coef=_blend_coefficients(default,learned,weight)
-        probs=[_quality_probability_from_coefficients(coef,f) for f,_l,_w in inner_val]
-        brier=_quality_weighted_brier(inner_val,probs)
-        auc=_preconfirm_auc(labels,probs) if len(set(labels))>=2 else None
-        safe_auc=bool(bootstrap_auc is None or auc is None or auc+SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION>=bootstrap_auc)
-        safe_brier=bool(bootstrap_brier is None or brier is None or brier<=bootstrap_brier+SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION)
-        candidates.append({"weight":weight,"brier":brier,"auc":auc,"safe_vs_bootstrap":bool(safe_auc and safe_brier)})
-    safe=[row for row in candidates if row["safe_vs_bootstrap"]]
-    chosen=min(safe or candidates,key=lambda row:(safe_float(row.get("brier"),9.0),-safe_float(row.get("auc"),0.5),safe_float(row.get("weight"),0.0)))
-    return {
-        "selected_weight":round(safe_float(chosen.get("weight"),0.0),4),"reason":"INNER_CALIBRATION_CHAMPION",
-        "train_rows":inner_train_count,"calibration_rows":inner_val_count,
-        "bootstrap_brier":round(bootstrap_brier,6) if bootstrap_brier is not None else None,"bootstrap_auc":round(bootstrap_auc,6) if bootstrap_auc is not None else None,
-        "candidates":[{"weight":row["weight"],"brier":round(row["brier"],6) if row["brier"] is not None else None,"auc":round(row["auc"],6) if row["auc"] is not None else None,"safe_vs_bootstrap":row["safe_vs_bootstrap"]} for row in candidates],
-        "selection_uses_outer_oos_labels":False,"schema_version":"quality_blend_selection_v9.5.27",
-    }
-
-def setup_type_out_of_sample_validation(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
-    """Nested chronological OOS validation for one exact named setup."""
-    exact_setup=str(setup_type or "")
-    rows=_quality_training_rows_filtered(journal,setup_type=exact_setup)
-    family=next((str(signal.get("setup_family") or "") for signal in list(journal.get("training_signals") or [])+list(journal.get("signals") or []) if isinstance(signal,dict) and str(signal.get("setup_type") or "")==exact_setup),"")
-    family_default=DEFAULT_QUALITY_COEFFICIENTS.get(family,DEFAULT_QUALITY_COEFFICIENTS["_global"])
-    n=len(rows)
-    if n<SETUP_CALIBRATION_MIN_CLOSED_TRADES:
-        return {"enabled":False,"authority_pass":False,"reason":"EXACT_SETUP_SAMPLE_BELOW_MINIMUM","sample_size":n,"minimum_sample_size":SETUP_CALIBRATION_MIN_CLOSED_TRADES,"schema_version":SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION}
-    fingerprint=_calibration_content_fingerprint(journal, exact_setup)
-    cache=globals().setdefault("_LEGACY_CALIBRATION_TRANSIENT_CACHE",{}).setdefault("exact",{}); cached=cache.get(exact_setup)
-    if isinstance(cached,dict) and cached.get("fingerprint")==fingerprint and isinstance(cached.get("report"),dict): return dict(cached["report"])
-    validation_count=min(max(SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS,int(math.ceil(n*0.30))),max(1,n-12))
-    warmup=n-validation_count; train_rows=rows[:warmup]; validation_rows=rows[warmup:]
-    blend_selection=_select_quality_blend_weight(train_rows,family_default)
-    approved_weight=safe_float(blend_selection.get("selected_weight"),0.0)
-    learned=_fit_logistic_coefficients(train_rows,family_default)
-    blended=_blend_coefficients(family_default,learned,approved_weight)
-    labels=[int(label) for _features,label,_weight in validation_rows]
-    learned_probs=[_quality_probability_from_coefficients(blended,features) for features,_label,_weight in validation_rows]
-    bootstrap_probs=[_quality_probability_from_coefficients(family_default,features) for features,_label,_weight in validation_rows]
-    class_balance=len(set(labels))>=2
-    learned_auc=_preconfirm_auc(labels,learned_probs) if class_balance else None; bootstrap_auc=_preconfirm_auc(labels,bootstrap_probs) if class_balance else None
-    learned_brier=_quality_weighted_brier(validation_rows,learned_probs); bootstrap_brier=_quality_weighted_brier(validation_rows,bootstrap_probs)
-    auc_pass=bool(learned_auc is not None and learned_auc>=SETUP_CALIBRATION_VALIDATION_MIN_AUC)
-    brier_pass=bool(learned_brier is not None and learned_brier<=SETUP_CALIBRATION_VALIDATION_MAX_BRIER)
-    bootstrap_auc_pass=bool(bootstrap_auc is None or learned_auc is None or learned_auc+SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION>=bootstrap_auc)
-    bootstrap_brier_pass=bool(bootstrap_brier is None or learned_brier is None or learned_brier<=bootstrap_brier+SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION)
-    prediction_pass=len(labels)>=SETUP_CALIBRATION_VALIDATION_MIN_PREDICTIONS
-    learned_influence_tested=approved_weight>0.0
-    authority_pass=bool(prediction_pass and class_balance and learned_influence_tested and auc_pass and brier_pass and bootstrap_auc_pass and bootstrap_brier_pass)
-    failed=[]
-    if not prediction_pass: failed.append("OOS_PREDICTIONS_BELOW_MINIMUM")
-    if not class_balance: failed.append("OOS_SINGLE_CLASS")
-    if not learned_influence_tested: failed.append("INNER_CALIBRATION_SELECTED_BOOTSTRAP_ONLY")
-    if not auc_pass: failed.append("OOS_AUC_BELOW_GATE")
-    if not brier_pass: failed.append("OOS_BRIER_ABOVE_GATE")
-    if not bootstrap_auc_pass: failed.append("OOS_AUC_WORSE_THAN_BOOTSTRAP")
-    if not bootstrap_brier_pass: failed.append("OOS_BRIER_WORSE_THAN_BOOTSTRAP")
-    report={
-        "enabled":True,"authority_pass":authority_pass,"reason":"VALIDATED" if authority_pass else "VALIDATION_GATE_FAILED","failed_conditions":failed,
-        "sample_size":n,"warmup_rows":warmup,"oos_predictions":len(labels),"oos_positive_labels":sum(labels),"oos_negative_labels":len(labels)-sum(labels),
-        "approved_learned_blend_weight":round(approved_weight,4),"learned_influence_tested":learned_influence_tested,"blend_selection":blend_selection,
-        "learned_auc":round(learned_auc,6) if learned_auc is not None else None,"bootstrap_auc":round(bootstrap_auc,6) if bootstrap_auc is not None else None,
-        "learned_brier":round(learned_brier,6) if learned_brier is not None else None,"bootstrap_brier":round(bootstrap_brier,6) if bootstrap_brier is not None else None,
-        "minimum_auc":SETUP_CALIBRATION_VALIDATION_MIN_AUC,"maximum_brier":SETUP_CALIBRATION_VALIDATION_MAX_BRIER,
-        "maximum_auc_degradation_vs_bootstrap":SETUP_CALIBRATION_VALIDATION_MAX_AUC_DEGRADATION,"maximum_brier_degradation_vs_bootstrap":SETUP_CALIBRATION_VALIDATION_MAX_BRIER_DEGRADATION,
-        "chronological":True,"nested_calibration":True,"label_selection_used":False,"outer_oos_labels_select_blend_weight":False,"schema_version":SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
-    }
-    cache[exact_setup]={"fingerprint":fingerprint,"report":dict(report)}
-    for key in list(cache):
-        if key not in _tracked_setup_types(): cache.pop(key,None)
-    return report
-
-def setup_type_calibration_profile(journal: dict[str, Any], setup_type: str) -> dict[str, Any]:
-    rows = _quality_training_rows_filtered(journal, setup_type=str(setup_type or ""))
-    stats = setup_type_trade_statistics(journal, setup_type)
-    training_rows = len(rows)
-    sample_ready = training_rows >= SETUP_CALIBRATION_MIN_CLOSED_TRADES
-    validation = setup_type_out_of_sample_validation(journal, setup_type) if sample_ready else {
-        "enabled": False, "authority_pass": False, "reason": "EXACT_SETUP_SAMPLE_BELOW_MINIMUM",
-        "sample_size": training_rows, "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
-    }
-    side_audit = setup_type_side_calibration_audit(journal, setup_type)
-    validation_pass = bool(validation.get("authority_pass"))
-    side_pass = bool(side_audit.get("pooled_learned_authority_safe", True))
-    learned_authority = bool(sample_ready and validation_pass and side_pass)
-
-    # Directional calibration is computed independently and never rescues the
-    # pooled model. It is merely a future authority lane for a setup whose side
-    # economics are demonstrably different. Each side remains fail-closed until
-    # its own feature-complete nested OOS validation passes.
-    directional_profiles: dict[str, Any] = {}
-    directional_authority_sides: list[str] = []
-    review_directional = bool(
-        side_audit.get("material_side_divergence")
-        or int((side_audit.get("long") or {}).get("training_rows") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
-        or int((side_audit.get("short") or {}).get("training_rows") or 0) >= SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
-    )
-    if review_directional:
-        for direction in (Side.LONG.value, Side.SHORT.value):
-            profile = setup_type_directional_calibration_profile(journal, setup_type, direction)
-            directional_profiles[direction] = profile
-            if profile.get("learned_authority_allowed"):
-                directional_authority_sides.append(direction)
-
-    if not sample_ready:
-        status = "INSUFFICIENT_EXACT_SETUP_SAMPLE"
-    elif not validation_pass and not side_pass:
-        status = "VALIDATION_FAILED_AND_SIDE_DIVERGENCE_BOOTSTRAP_ONLY"
-    elif not validation_pass:
-        status = "SAMPLE_READY_VALIDATION_FAILED_BOOTSTRAP_ONLY"
-    elif not side_pass:
-        status = (
-            "SIDE_DIVERGENCE_DIRECTIONAL_AUTHORITY_AVAILABLE"
-            if directional_authority_sides
-            else "SIDE_DIVERGENCE_REQUIRES_DIRECTIONAL_REVIEW_BOOTSTRAP_ONLY"
-        )
-    else:
-        status = "VALIDATED_CALIBRATED"
-    return {
-        **stats,
-        "training_rows": training_rows,
-        "minimum_training_rows": SETUP_CALIBRATION_MIN_CLOSED_TRADES,
-        "sample_ready": sample_ready,
-        "validation_pass": validation_pass,
-        "side_pooling_pass": side_pass,
-        "learned_authority_allowed": learned_authority,
-        "empirically_calibrated": learned_authority,
-        "directional_review_active": review_directional,
-        "directional_authority": directional_profiles,
-        "directional_authority_sides": directional_authority_sides,
-        "any_directional_learned_authority": bool(directional_authority_sides),
-        "status": status,
-        "out_of_sample_validation": validation,
-        "side_aware_audit": side_audit,
-        "policy": "POOLED_REQUIRES_NESTED_OOS_PLUS_SIDE_SAFETY; MATERIAL_DIVERGENCE_MAY_USE_ONLY_INDEPENDENT_SIDE_OOS_AUTHORITY",
-        "schema_version": SETUP_CALIBRATION_VALIDATION_SCHEMA_VERSION,
-    }
-
-def time_of_day_shadow_profile(journal: dict[str, Any]) -> dict[str, Any]:
-    profile=setup_type_calibration_profile(journal,SetupType.TIME_OF_DAY_ADAPTIVE.value)
-    sample_pass=int(profile.get("closed_trades") or 0)>=TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES
-    expectancy_pass=safe_float(profile.get("expectancy_r"),0.0)>TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R
-    calibration_pass=bool(profile.get("learned_authority_allowed"))
-    live_eligible=bool(sample_pass and expectancy_pass and calibration_pass)
-    return {**profile,"shadow_active":not live_eligible,"live_eligible":live_eligible,"minimum_closed_trades":TIME_OF_DAY_SHADOW_MIN_CLOSED_TRADES,"minimum_expectancy_r":TIME_OF_DAY_SHADOW_MIN_EXPECTANCY_R,"sample_pass":sample_pass,"positive_expectancy_pass":expectancy_pass,"exact_oos_side_validation_pass":calibration_pass,"policy":"SHADOW_UNTIL_MIN_SAMPLE_POSITIVE_EXPECTANCY_AND_EXACT_OOS_SIDE_VALIDATION","schema_version":"time_of_day_shadow_v9.5.25"}
 
 
 
-def _quality_coefficients(
-    journal: dict,
-    setup_family: str,
-    *,
-    side: str = "",
-    short_reversal: bool = False,
-    setup_type: str = "",
-) -> tuple[dict[str, float], str, int, float]:
-    family_default = DEFAULT_QUALITY_COEFFICIENTS.get(setup_family, DEFAULT_QUALITY_COEFFICIENTS["_global"])
-    exact_setup = str(setup_type or "")
-    exact_side = str(side or "").upper()
-    exact_rows = _quality_training_rows_filtered(journal, setup_type=exact_setup) if exact_setup else []
 
-    # Exact named setup remains the primary calibration unit. A broad family or
-    # global fit can never grant a named setup live learned authority.
-    if not exact_setup or len(exact_rows) < SETUP_CALIBRATION_MIN_CLOSED_TRADES:
-        return dict(family_default), "bootstrap:exact_setup_sample_below_minimum", len(exact_rows), 0.0
 
-    calibration_profile = setup_type_calibration_profile(journal, exact_setup)
-    side_divergent = bool((calibration_profile.get("side_aware_audit") or {}).get("material_side_divergence"))
 
-    # v9.5.28: when pooled LONG/SHORT economics materially diverge, pooled
-    # coefficients remain blocked. A candidate may use learned coefficients only
-    # if *its own side* has independently passed the same nested chronological OOS
-    # discipline. No rows from the opposite side are allowed into that fit.
-    if side_divergent and exact_side in {Side.LONG.value, Side.SHORT.value}:
-        directional_profile = (
-            (calibration_profile.get("directional_authority") or {}).get(exact_side)
-            or setup_type_directional_calibration_profile(journal, exact_setup, exact_side)
-        )
-        directional_rows = _quality_training_rows_filtered(journal, setup_type=exact_setup, side=exact_side)
-        if not directional_profile.get("learned_authority_allowed"):
-            status = str(directional_profile.get("status") or "DIRECTIONAL_AUTHORITY_BLOCKED")
-            return (
-                dict(family_default),
-                f"bootstrap:exact_setup_directional_authority_blocked:{exact_side}:{status}",
-                len(directional_rows),
-                0.0,
-            )
-        rows = directional_rows
-        source = f"journal:setup:{exact_setup}:side:{exact_side}"
-        min_rows = SETUP_DIRECTIONAL_CALIBRATION_MIN_ROWS
-        full_rows = SETUP_DIRECTIONAL_CALIBRATION_FULL_ROWS
-        validated_weight = safe_float(
-            (directional_profile.get("out_of_sample_validation") or {}).get("approved_learned_blend_weight"),
-            0.0,
-        )
-    else:
-        if not calibration_profile.get("learned_authority_allowed"):
-            status = str(calibration_profile.get("status") or "VALIDATION_GATE_FAILED")
-            return dict(family_default), f"bootstrap:exact_setup_learned_authority_blocked:{status}", len(exact_rows), 0.0
-        rows = exact_rows
-        source = f"journal:setup:{exact_setup}"
-        min_rows = SETUP_CALIBRATION_MIN_CLOSED_TRADES
-        full_rows = SETUP_CALIBRATION_FULL_CLOSED_TRADES
-        validated_weight = safe_float(
-            (calibration_profile.get("out_of_sample_validation") or {}).get("approved_learned_blend_weight"),
-            0.0,
-        )
-
-    sample_weight_cap = _learned_model_weight(len(rows), min_rows, full_rows)
-    learned_weight = min(validated_weight, sample_weight_cap)
-
-    fingerprint = _calibration_content_fingerprint(journal, exact_setup, exact_side if side_divergent else "")
-    cache = globals().setdefault("_LEGACY_CALIBRATION_TRANSIENT_CACHE", {}).setdefault("coefficients", {})
-    cache_key = f"{setup_family}:{exact_setup}:{exact_side if side_divergent else 'POOLED'}:{source}"
-    cached = cache.get(cache_key)
-    if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and isinstance(cached.get("coef"), dict):
-        learned = cached["coef"]
-    else:
-        learned = _fit_logistic_coefficients(rows, family_default)
-        cache[cache_key] = {"fingerprint": fingerprint, "coef": learned, "computed_at": iso_now()}
-
-    blended = _blend_coefficients(family_default, learned, learned_weight)
-    return blended, f"{source}:blend{learned_weight:.2f}", len(rows), learned_weight
 
 
 def _build_quality_features(
@@ -13966,31 +13389,6 @@ def _multiplicative_quality_gates(features: dict[str, float], setup_family: str,
     }
 
 
-def calibrate_candidate_quality(journal: dict, features: dict[str, float], setup_family: str,
-                                trigger_ready: bool, is_limit_armed: bool,
-                                has_forward_zone: bool, flow_reliable: bool = False,
-                                side: str = "", short_reversal: bool = False,
-                                setup_type: str = "") -> dict[str, Any]:
-    coef, model_source, sample_size, learned_weight = _quality_coefficients(
-        journal, setup_family, side=side, short_reversal=short_reversal, setup_type=setup_type
-    )
-    logit = coef.get("bias", 0.0) + sum(coef.get(key, 0.0) * features.get(key, 0.0) for key in QUALITY_FEATURE_KEYS)
-    base_probability = _sigmoid(logit)
-    gates = _multiplicative_quality_gates(
-        features, setup_family, trigger_ready, is_limit_armed, has_forward_zone, flow_reliable
-    )
-    gated_probability = clamp(base_probability * gates["product"], 0.02, 0.98)
-    score = int(round(100.0 * gated_probability))
-    return {
-        "score": int(clamp(score, 12, 98)),
-        "probability": round(gated_probability, 4),
-        "base_probability": round(base_probability, 4),
-        "model_source": model_source,
-        "sample_size": sample_size,
-        "learned_weight": round(learned_weight, 4),
-        "features": {key: round(float(features.get(key, 0.0)), 4) for key in QUALITY_FEATURE_KEYS},
-        "gates": gates,
-    }
 
 
 
@@ -17436,14 +16834,6 @@ def range_compression_breakout_profile(
         "threshold_fitted_from_dormant_sample":False,"schema_version":"range_compression_breakout_v9.5.25",
     }
 
-def range_compression_model_local_execution_profile(c3: list[Candle], side: str, atr15: float, profile: dict[str, Any]) -> dict[str, Any]:
-    """Fresh 3M execution package tied to the detected breakout boundary."""
-    profile=dict(profile or {}); level=safe_float(profile.get("breakout_level"),0.0); recent=_confirmed_candles(c3,15)
-    if not profile.get("detected") or level<=0 or len(recent)<5:
-        return {"ready":False,"anchor":round_price(level) if level else 0.0,"reason":"NO_DETECTED_BREAKOUT_OR_3M_DATA","schema_version":"range_compression_local_3m_v9.5.25"}
-    snap=trigger_snapshot(recent,side,level,atr15)
-    ready=bool(snap.get("ready") and int(safe_float(snap.get("quality"),0.0))>=58 and not bool(snap.get("chase_risk")))
-    return {"ready":ready,"anchor":round_price(level),"age_minutes":float(safe_float(snap.get("evidence_age_bars"),999.0))*3.0 if ready else 999.0,"quality":int(safe_float(snap.get("quality"),0.0)),"reclaim":bool(snap.get("reclaim")),"displacement":bool(snap.get("displacement")),"retest":bool(snap.get("retest")),"chase_risk":bool(snap.get("chase_risk")),"evidence_age_bars":int(safe_float(snap.get("evidence_age_bars"),999.0)),"last_confirmed_3m_ts":int(safe_float(snap.get("evidence_ts"),0.0)) if ready else int(recent[-1].ts),"reason":"FRESH_BREAKOUT_BOUNDARY_CONFIRMATION" if ready else "WAIT_BREAKOUT_BOUNDARY_RECLAIM_OR_RETEST","schema_version":"range_compression_local_3m_v9.5.40_scan_window_lease"}
 
 
 
@@ -20001,18 +19391,6 @@ def validate_live_entry_price_contract(
     return audit
 
 
-def candidate_contract_entry_anchor(candidate: Optional[Candidate]) -> float:
-    if candidate is None:
-        return 0.0
-    components = getattr(candidate, "score_components", {}) or {}
-    contract = components.get("entry_contract", {}) or {}
-    anchor = safe_float(contract.get("entry_anchor"), 0.0)
-    if anchor > 0.0:
-        return round_price(anchor)
-    execution_anchor = safe_float(getattr(candidate, "execution_anchor", 0.0), 0.0)
-    if execution_anchor > 0.0:
-        return round_price(execution_anchor)
-    return round_price(safe_float(getattr(candidate, "trigger_level", 0.0), 0.0))
 
 
 def synchronize_candidate_trigger_with_contract(candidate: Optional[Candidate]) -> float:
@@ -29779,45 +29157,6 @@ def evidence_adjusted_selection_profile(journal: Optional[dict[str, Any]], candi
     return base
 
 
-def production_research_probe_profile(journal: Optional[dict[str, Any]], candidate: Optional[Candidate]) -> dict[str, Any]:
-    if candidate is None:
-        return {"technical_probe": False, "live_allowed": False, "mode": "NO_CANDIDATE"}
-    technical = fresh_probe_candidate_profile(candidate)
-    score = int(getattr(candidate, "final_score", 0) or 0)
-    if score >= RISKY_ENTRY_SCORE_BASE:
-        return {"technical_probe": bool(technical.get("eligible")), "live_allowed": True, "mode": "CANONICAL_68_PLUS", "score": score}
-    if not technical.get("eligible"):
-        return {"technical_probe": False, "live_allowed": False, "mode": "NOT_TECHNICALLY_EXECUTABLE", "score": score, "technical": technical}
-    source_stats = execution_source_trade_statistics(
-        journal or {}, str(getattr(candidate, "setup_type", "") or ""),
-        str(getattr(candidate, "execution_source", "") or ""), str(getattr(candidate, "side", "") or "")
-    )
-    n = int(source_stats.get("closed_trades") or 0); wins = int(source_stats.get("wins") or 0)
-    expectancy = safe_float(source_stats.get("expectancy_r"), 0.0); wr = wins / n if n else 0.0
-    contextual = contextual_route_edge_profile(journal, candidate)
-    direct_forward = bool(
-        n >= RESEARCH_PROBE_FORWARD_MIN_TRADES and wins >= RESEARCH_PROBE_FORWARD_MIN_WINS
-        and expectancy >= RESEARCH_PROBE_FORWARD_MIN_EXPECTANCY_R and wr >= RESEARCH_PROBE_FORWARD_MIN_WIN_RATE
-    )
-    context_forward = bool(
-        int(contextual.get("source_side_n") or 0) >= RESEARCH_PROBE_FORWARD_MIN_TRADES
-        and safe_float(contextual.get("posterior_expectancy_r"), 0.0) >= RESEARCH_PROBE_FORWARD_MIN_EXPECTANCY_R
-        and safe_float(contextual.get("posterior_win_rate"), 0.0) >= RESEARCH_PROBE_FORWARD_MIN_WIN_RATE
-    )
-    live_allowed = bool(direct_forward or context_forward)
-    return {
-        "technical_probe": True, "live_allowed": live_allowed,
-        "mode": "VALIDATED_FORWARD_PROBE" if live_allowed else "RESEARCH_SHADOW_ONLY",
-        "score": score, "canonical_live_floor": RISKY_ENTRY_SCORE_BASE,
-        "forward_statistics": source_stats, "contextual_edge": contextual,
-        "validation": {
-            "minimum_trades": RESEARCH_PROBE_FORWARD_MIN_TRADES, "minimum_wins": RESEARCH_PROBE_FORWARD_MIN_WINS,
-            "minimum_expectancy_r": RESEARCH_PROBE_FORWARD_MIN_EXPECTANCY_R, "minimum_win_rate": RESEARCH_PROBE_FORWARD_MIN_WIN_RATE,
-            "direct_forward_pass": direct_forward, "context_forward_pass": context_forward,
-        },
-        "policy": "58_67_FULL_SIMULATION; LIVE_ONLY_AFTER_PRIOR_FORWARD_REALIZED_EDGE; NO_FUTURE_LABEL_ACCESS",
-        "schema_version": "production_research_probe_v9.5.31",
-    }
 
 
 _executive_authority_decision_v9530 = executive_authority_decision
@@ -31147,41 +30486,6 @@ def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str
 
 
 
-def build_execution_intelligence_v9532(context: dict[str,Any], candidate: Candidate, journal: Optional[dict[str,Any]], plan: Optional[TradePlan]=None) -> dict[str,Any]:
-    rv=regime_probability_vector(context)
-    runway=liquidity_runway_profile(context,candidate,plan)
-    asi=adverse_selection_index(context,candidate,runway)
-    control=control_transfer_score(context,candidate)
-    cont=continuation_integrity_score(context,candidate)
-    contract=SETUP_STATE_MACHINE_REGISTRY.get(str(candidate.setup_type),{})
-    kind=str(contract.get("kind") or "CONTINUATION")
-    generic_structural=safe_float(control.get("score"),50.0) if kind in {"REVERSAL","AUCTION_MEAN"} else safe_float(cont.get("score"),50.0)
-    sm=setup_state_machine_profile(context,candidate,control=control,continuation=cont,asi=asi)
-    structural=safe_float(sm.get("structural_score"),generic_structural)
-    ctx=contextual_authority_v9532(journal,candidate)
-    seed={"regime_vector":rv,"adverse_selection":asi,"liquidity_runway":runway,"structural_score":structural}
-    outcome=outcome_probability_profile(journal,context,candidate,seed)
-    hazard=survival_hazard_profile(journal,candidate)
-    geometry=route_geometry_profile(journal,candidate)
-    intel={
-        "regime_vector":rv,
-        "liquidity_runway":runway,
-        "adverse_selection":asi,
-        "control_transfer":control,
-        "continuation_integrity":cont,
-        "structural_score":round(structural,2),
-        "state_machine":sm,
-        "setup_relative_quality":setup_relative_quality_percentile(journal,candidate),
-        "contextual_authority":ctx,
-        "outcome_model":outcome,
-        "survival_hazard":hazard,
-        "route_geometry":geometry,
-    }
-    intel["assistants"]=execution_intelligence_assistants(context,candidate,intel)
-    intel["execution_router"]=execution_router_profile(journal,context,candidate,intel)
-    intel["route_geometry"]=route_geometry_profile(journal,candidate,str((intel.get("execution_router") or {}).get("action") or ""))
-    intel["schema_version"]=EXECUTION_INTELLIGENCE_SCHEMA_VERSION
-    return intel
 
 
 
@@ -37094,9 +36398,6 @@ def validate_runtime_configuration() -> dict[str, Any]:
         errors.append("v9.5.36 long-horizon fresh-execution research ledger must remain research-capable")
     if OPPORTUNITY_OUTCOME_MATRIX_LIMIT > 140:
         errors.append("v9.5.36 route matrix retention must remain bounded")
-    if JOURNAL_VERBOSE:
-        # Not a runtime error: explicit operator choice. Keep validation neutral.
-        pass
     return {"valid": not errors, "errors": errors}
 
 
@@ -39969,7 +39270,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.55 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.56 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -40724,35 +40025,6 @@ def calibrate_candidate_quality(
     }
 
 
-def canonical_score_admission_profile(candidate_or_score: Any) -> dict[str, Any]:
-    """One score contract: preserve setups, control only their live stage."""
-    score = int(getattr(candidate_or_score, "final_score", candidate_or_score) or 0)
-    full = score >= ENTRY_SCORE_BASE
-    risky = RISKY_ENTRY_SCORE_BASE <= score < ENTRY_SCORE_BASE
-    shadow = ARMED_SCORE_BASE <= score < RISKY_ENTRY_SCORE_BASE
-    band = "FULL_LIVE" if full else "RISKY_STAGED" if risky else "SHADOW_ARMED" if shadow else "WATCH_RESEARCH"
-    return {
-        "authority": "CANONICAL_STAGE_ADMISSION_NOT_SETUP_REJECTION",
-        "mode": SCORE_POLICY_MODE,
-        "score": score,
-        "watch_threshold": ARMED_SCORE_BASE,
-        "risky_threshold": RISKY_ENTRY_SCORE_BASE,
-        "entry_threshold": ENTRY_SCORE_BASE,
-        "full_entry_eligible": full,
-        "risky_entry_eligible": bool(risky or full),
-        "risky_staged_only": risky,
-        "gray_shadow_only": shadow,
-        "gray_lower_bound": ARMED_SCORE_BASE,
-        "setup_detected_preserved": True,
-        "live_allowed": bool(risky or full),
-        "maximum_live_stage": EntryStage.CORE.value if full else EntryStage.ACCEPTANCE.value if risky else ExecutiveDecisionState.WATCH.value,
-        "band": band,
-        "live_defaults_preserved": bool(
-            ENTRY_SCORE_BASE == LIVE_ENTRY_SCORE_BASE
-            and RISKY_ENTRY_SCORE_BASE == LIVE_RISKY_ENTRY_SCORE_BASE
-            and ARMED_SCORE_BASE == 58
-        ),
-    }
 
 
 def classify_execution_blocker(reason: str) -> str:
@@ -41157,18 +40429,6 @@ def _update_execution_anchor_aggregate_v9551(
     )
 
 
-def _score_contract_action_v9551(
-    candidate: Candidate, preferred_action: str,
-) -> str:
-    score = canonical_score_admission_profile(candidate)
-    if not score.get("live_allowed"):
-        return Action.NO_SETUP.value
-    if score.get("risky_staged_only"):
-        return Action.PROBE_ENTRY.value if preferred_action == Action.PROBE_ENTRY.value else Action.RISKY_ENTRY.value
-    if preferred_action in EXECUTABLE_ENTRY_ACTIONS:
-        return preferred_action
-    stage = str(candidate.entry_stage or "")
-    return Action.ENTRY.value if stage == EntryStage.CORE.value else Action.RISKY_ENTRY.value if stage == EntryStage.ACCEPTANCE.value else Action.PROBE_ENTRY.value
 
 
 def _apply_true_final_authority_v9551(
@@ -43114,8 +42374,8 @@ def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     if source.startswith(marker):
         suffix = source[len(marker):].split("_", 1)[0]
         release = int(suffix) if suffix.isdigit() else 0
-    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 55)
-    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 55)
+    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 56)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 56)
     return {
         "source_architecture": source or "UNKNOWN",
         "source_release": release,
@@ -43259,7 +42519,7 @@ def validate_runtime_configuration() -> dict[str, Any]:
         str(value) for value in (report.get("errors") or [])
         if not any(token in str(value) for token in obsolete_release_seals)
     ]
-    if BOT_VERSION != V9553_BOT_VERSION or ARCHITECTURE_VERSION != V9553_ARCHITECTURE_VERSION:
+    if BOT_VERSION not in {V9553_BOT_VERSION, V9556_BOT_VERSION} or ARCHITECTURE_VERSION not in {V9553_ARCHITECTURE_VERSION, V9556_ARCHITECTURE_VERSION}:
         errors.append("v9.5.54 lifecycle/Router/Direction-Flip release seal is not effective")
     if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
         errors.append("v9.5.54 requires the canonical 58/68/75 contract")
@@ -44382,9 +43642,9 @@ _validate_runtime_configuration_v9555_base = validate_runtime_configuration
 def validate_runtime_configuration() -> dict[str, Any]:
     report = _validate_runtime_configuration_v9555_base()
     errors = list(report.get("errors") or [])
-    if BOT_VERSION != "pro-hybrid-confluence-v9.5.55-causal-retest-quality-entry":
+    if BOT_VERSION not in {"pro-hybrid-confluence-v9.5.55-causal-retest-quality-entry", V9556_BOT_VERSION}:
         errors.append("v9.5.55 bot release seal is not effective")
-    if ARCHITECTURE_VERSION != "TRADING_DESK_EXECUTIVE_V9_5_55_CAUSAL_RETEST_QUALITY_ENTRY":
+    if ARCHITECTURE_VERSION not in {"TRADING_DESK_EXECUTIVE_V9_5_55_CAUSAL_RETEST_QUALITY_ENTRY", V9556_ARCHITECTURE_VERSION}:
         errors.append("v9.5.55 architecture release seal is not effective")
     if SetupType.DIRECTION_FLIP.value not in DORMANT_SETUP_REACHABILITY_TYPES:
         errors.append("v9.5.55 Direction Flip reachability is not persisted")
@@ -45422,6 +44682,60 @@ def v9556_regression_checks() -> list[tuple[str, bool]]:
         low_score.action == Action.PROBE_ENTRY.value
         and low_score_authority.get("entry_tier") == "EARLY_PROBE"
         and safe_float(low_score.plan.position_risk_pct, 1.0) <= V9553_EARLY_PROBE_RISK_CAP + 1e-9,
+    ))
+
+    # Exercise every named setup through the same final authority contract.
+    # This is a wiring/coverage check, not a claim that every setup is equally
+    # profitable; live evidence must still determine its size and route.
+    setup_contract_failures: list[str] = []
+    for setup_type in _tracked_setup_types():
+        setup_candidate = Candidate(
+            side=Side.LONG.value,
+            setup_type=setup_type,
+            setup_family=SETUP_FAMILY_MAP.get(setup_type, SetupFamily.NONE.value),
+            raw_score=80,
+            final_score=80,
+            trigger_ready=True,
+            live_3m_trigger_ready=True,
+            trigger_level=100.0,
+            execution_anchor=100.0,
+            invalidation_level=99.0,
+            execution_source=ExecutionSource.LIVE_3M.value,
+            execution_trigger_age_minutes=0.0,
+            setup_quality_score=80,
+            execution_quality_score=80,
+            trade_plan_quality_score=80,
+            evaluation_bundle={
+                "setup_quality": 80.0,
+                "execution_readiness": 80.0,
+                "trade_quality": 80.0,
+            },
+            revalidation_profile={"state": "FRESH", "entry_supported": True},
+        )
+        setup_plan = TradePlan(
+            entry=100.0, stop=99.0, tp1=102.0, tp2=103.0, tp3=104.0,
+            risk_pct=NORMAL_RISK_PCT, position_risk_pct=NORMAL_RISK_PCT,
+            rr1=2.0, rr2=3.0, rr3=4.0, valid=True,
+            execution_ready=True, structural_invalidation=99.0,
+        )
+        setup_profile = three_level_execution_profile_v9556(
+            setup_candidate,
+            setup_plan,
+            router={
+                "router_final_tactic": "MARKET_NOW",
+                "router_final_disposition": "EXECUTE_NOW",
+            },
+        )
+        if setup_profile.get("tier") != "FULL_ENTRY":
+            setup_contract_failures.append(
+                f"{setup_type}:{setup_profile.get('tier')}"
+            )
+    checks.append((
+        "v9.5.56 all 24 named setups reach the shared FULL_ENTRY contract when factual inputs are valid",
+        not setup_contract_failures
+        and set(SETUP_STATE_MACHINE_REGISTRY) == set(_tracked_setup_types())
+        and set(SETUP_STATE_MACHINE_SEMANTICS) == set(_tracked_setup_types())
+        and all(SETUP_FAMILY_MAP.get(name) not in {None, SetupFamily.NONE.value} for name in _tracked_setup_types()),
     ))
 
     migrated_state = _ensure_execution_anchor_schema_v9556({
