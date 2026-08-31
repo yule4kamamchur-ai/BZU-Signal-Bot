@@ -488,8 +488,8 @@ V9540_BOT_VERSION = "pro-hybrid-confluence-v9.5.40-execution-latency-repair-15m-
 V9540_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_40_EXECUTION_LATENCY_REPAIR_EVIDENCE_ASSISTED_ROUTING_15M_CADENCE"
 V9541_BOT_VERSION = "pro-hybrid-confluence-v9.5.41-router-chain-saturation-telemetry-integrity"
 V9541_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_41_ROUTER_CHAIN_SATURATION_TELEMETRY_INTEGRITY"
-BOT_VERSION = "pro-hybrid-confluence-v9.5.54-lifecycle-router-direction-flip"
-ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_54_LIFECYCLE_ROUTER_DIRECTION_FLIP"
+BOT_VERSION = "pro-hybrid-confluence-v9.5.55-causal-retest-quality-entry"
+ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_55_CAUSAL_RETEST_QUALITY_ENTRY"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -10943,6 +10943,31 @@ def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
             "impulse_strength": {"score": 0, "level": "WEAK"}, "chase_risk": False,
             "time_warp_opportunity": False # ІННОВАЦІЯ №4
         })
+
+        # A READY/RETEST chain is a short execution lease, not permanent market
+        # memory. Reset an expired chain before new candles are evaluated so old
+        # LONG/SHORT flags and price levels cannot be revived days later.
+        last_event_ts = int(safe_float(event.get("last_event_ts"), 0.0))
+        event_age_minutes = (
+            (int(new_candles[-1].ts) - last_event_ts) / 60000.0
+            if last_event_ts > 0 else float("inf")
+        )
+        if (
+            str(event.get("stage") or "") in {"ACCEPTANCE", "RETEST", "READY"}
+            and event_age_minutes > float(TRIGGER_MAX_AGE_MINUTES)
+        ):
+            event = {
+                "side": side, "stage": "SWEEP", "source": "SCAN_3M_CHAIN",
+                "event_ts": 0, "last_event_ts": 0, "trigger_level": context["price"],
+                "event_price": context["price"], "invalidation_level": context["price"],
+                "sweep_level": context["price"], "extreme": context["price"],
+                "displacement": False, "retest_ts": 0, "ready_ts": 0, "hold_closes": 0,
+                "previous_stage": "EXPIRED", "chain_quality": 50, "confirmation_quality": 40,
+                "acceptance_quality": 0, "retest_quality": 0, "processed_bars": 0,
+                "strong_displacement": False, "retest": False, "mitigation": False,
+                "impulse_strength": {"score": 0, "level": "WEAK"}, "chase_risk": False,
+                "time_warp_opportunity": False,
+            }
         
         # --- TIME-WARP VALIDATION ENGINE ---
         # "Повертаємося у часі" і перевіряємо кожну 3-хвилинну свічку всередині сліпої зони
@@ -10972,6 +10997,7 @@ def scan_closed_3m_sequence(state: dict, context: dict) -> dict:
             if snap["ready"] and event["stage"] in ["SWEEP", "CONFIRMATION"]:
                 event["previous_stage"] = event["stage"]
                 event["stage"] = "ACCEPTANCE"
+                event["event_ts"] = retro_recent[-1].ts
                 event["ready_ts"] = retro_recent[-1].ts
                 event["acceptance_quality"] = max(int(event.get("acceptance_quality", 0) or 0), int(snap["quality"]))
                 event["last_event_ts"] = retro_recent[-1].ts
@@ -17043,6 +17069,7 @@ DORMANT_SETUP_REACHABILITY_TYPES = (
     SetupType.PULLBACK_CONTINUATION.value,
     SetupType.MOMENTUM_NO_PULLBACK_CONTINUATION.value,
     SetupType.FAILED_BREAKOUT_SHORT.value,
+    SetupType.DIRECTION_FLIP.value,
 )
 
 
@@ -39924,7 +39951,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.53 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.55 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -41581,10 +41608,12 @@ def v9551_regression_checks() -> list[tuple[str, bool]]:
         decision, {"price": 100.0, "_audit_shadow_scan": True}, {},
     )
     checks.append((
-        "v9.5.51 Final Execution Authority is last and recovers non-economic Router veto",
-        final.action in EXECUTABLE_ENTRY_ACTIONS
+        "v9.5.55 Final Execution Authority preserves a causal FIRST_RETEST tactic",
+        final.action == Action.NO_SETUP.value
         and (final.audit.get("final_execution_authority_v9551") or {}).get("is_last_mutator") is True
-        and (final.audit.get("final_execution_authority_v9551") or {}).get("recovered_non_economic_router_defer") is True,
+        and (final.audit.get("final_execution_authority_v9551") or {}).get("recovered_non_economic_router_defer") is False
+        and ((final.candidate.stage_plan or {}).get("router_final_tactic") == "FIRST_RETEST")
+        and ((final.candidate.stage_plan or {}).get("router_final_disposition") == "DEFERRED"),
     ))
     counterfactual = init_counterfactual_execution_audit()
     update_counterfactual_execution_audit(
@@ -42055,9 +42084,9 @@ def _run_self_test() -> bool:
 # boundary. Detectors, all 24 setup identities, RR floors, stop geometry,
 # calibration and the single-position policy remain unchanged.
 
-V9553_SCHEMA_VERSION = "lifecycle_router_direction_flip_v9.5.54"
-V9553_BOT_VERSION = "pro-hybrid-confluence-v9.5.54-lifecycle-router-direction-flip"
-V9553_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_54_LIFECYCLE_ROUTER_DIRECTION_FLIP"
+V9553_SCHEMA_VERSION = "causal_retest_quality_entry_v9.5.55"
+V9553_BOT_VERSION = "pro-hybrid-confluence-v9.5.55-causal-retest-quality-entry"
+V9553_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_55_CAUSAL_RETEST_QUALITY_ENTRY"
 
 V9553_EARLY_PROBE_RISK_CAP = min(
     EXPERIMENTAL_PROBE_RISK_PCT,
@@ -42451,7 +42480,18 @@ def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decisio
         > int(safe_float(stage.get("decision_watermark"), safe_float(stage.get("router_decision_3m_ts"), 0.0)))
         > 0
     )
-    retest_consumed = bool(stage.get("retest_consumed"))
+    evidence_ts = int(safe_float(stage.get("evidence_ts"), 0.0))
+    watermark = int(safe_float(
+        stage.get("decision_watermark"),
+        safe_float(stage.get("router_decision_3m_ts"), 0.0),
+    ))
+    retest_consumed = bool(
+        stage.get("retest_consumed")
+        and str(stage.get("consumed_tactic") or "") == "FIRST_RETEST"
+        and evidence_ts > watermark > 0
+    )
+    if stage.get("retest_consumed") and not retest_consumed:
+        stage["retest_consumed"] = False
     if requested == "ONE_3M_CONFIRM" and confirmation_consumed:
         requested = "MARKET_NOW"
     if requested == "FIRST_RETEST" and retest_consumed:
@@ -42467,7 +42507,8 @@ def executive_route_resolution_v9533(decision: Decision, tactic: str) -> Decisio
         "router_final_tactic": requested,
         "router_final_disposition": disposition,
         "router_chain_id": str(stage.get("router_chain_id") or _router_chain_id_v9541(candidate)),
-        "evidence_ts": int(safe_float(stage.get("evidence_ts"), 0.0)),
+        "evidence_ts": evidence_ts,
+        "decision_watermark": watermark,
     }
     stage.update(result)
     out.audit = out.audit or {}
@@ -42518,13 +42559,20 @@ def canonical_router_result_v9553(decision: Decision) -> dict[str, Any]:
     confirmation_equivalence = confirmation_equivalence_profile_v9535(
         candidate, dict(xi.get("state_machine") or {}),
     )
-    confirmation_consumed = bool(stage.get("router_confirmation_consumed"))
-    retest_consumed = bool(stage.get("retest_consumed") or consumed.get("retest_consumed"))
     evidence_ts = int(safe_float(stage.get("evidence_ts"), 0.0))
     watermark = int(safe_float(stage.get("decision_watermark"), safe_float(stage.get("router_decision_3m_ts"), 0.0)))
+    confirmation_consumed = bool(stage.get("router_confirmation_consumed"))
+    native_retest_observed = bool(consumed.get("retest_consumed"))
+    retest_consumed = bool(
+        stage.get("retest_consumed")
+        and str(stage.get("consumed_tactic") or "") == "FIRST_RETEST"
+        and evidence_ts > watermark > 0
+    )
     if confirmation_consumed and not (evidence_ts > watermark > 0):
         confirmation_consumed = False
         stage["router_confirmation_consumed"] = False
+    if stage.get("retest_consumed") and not retest_consumed:
+        stage["retest_consumed"] = False
     if tactic == "ONE_3M_CONFIRM" and confirmation_consumed:
         tactic = "MARKET_NOW"
     if tactic == "ONE_3M_CONFIRM" and confirmation_equivalence.get("equivalent_consumed"):
@@ -42533,24 +42581,15 @@ def canonical_router_result_v9553(decision: Decision) -> dict[str, Any]:
     if tactic == "FIRST_RETEST" and retest_consumed:
         tactic = "MARKET_NOW"
 
-    native_trigger = bool(
-        (candidate.trigger_ready or candidate.live_3m_trigger_ready or candidate.limit_armed_ready)
-        and str(candidate.execution_source or "") != ExecutionSource.NONE.value
-        and candidate_execution_trigger_age_minutes(candidate) <= float(EXECUTION_TRIGGER_TTL_MIN)
-    )
-    anchor_now = _execution_anchor_profile_from_candidate_v9551(candidate, decision.plan)
     legacy_economic_reprice = bool(legacy_route.get("economic_reprice"))
-    if (
-        tactic == "FIRST_RETEST" and native_trigger
-        and anchor_now.get("current_fill_allowed") and not anchor_now.get("invalidated")
-        and not legacy_economic_reprice
-    ):
-        tactic = "MARKET_NOW"
-        stage["router_native_current_fill_consumed"] = True
 
     prior_disposition = str(stage.get("router_final_disposition") or "")
     if tactic == "MARKET_NOW":
-        disposition = "EXECUTE_NOW"
+        plan_ready = bool(
+            decision.plan is None
+            or (getattr(decision.plan, "valid", False) and getattr(decision.plan, "execution_ready", False))
+        )
+        disposition = "EXECUTE_NOW" if plan_ready else "TACTIC_READY_PLAN_BLOCKED"
     elif tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"}:
         disposition = "DEFERRED"
     elif prior_disposition:
@@ -42568,6 +42607,7 @@ def canonical_router_result_v9553(decision: Decision) -> dict[str, Any]:
         "decision_watermark": watermark,
         "router_confirmation_consumed": confirmation_consumed,
         "retest_consumed": retest_consumed,
+        "native_retest_observed": native_retest_observed,
         "consumed_tactic": str(stage.get("consumed_tactic") or ""),
         "deferred_from_action": str(
             route_audit.get("deferred_from_action")
@@ -43022,7 +43062,7 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
     for key in (
         "router_confirmation_consumed", "router_recheck_consumed",
         "consumed_tactic", "retest_consumed", "decision_watermark",
-        "authoritative", "authority_source",
+        "native_retest_observed", "authoritative", "authority_source",
     ):
         if key in stage or key in payload:
             compact[key] = copy.deepcopy(stage.get(key, payload.get(key)))
@@ -43055,8 +43095,8 @@ def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     if source.startswith(marker):
         suffix = source[len(marker):].split("_", 1)[0]
         release = int(suffix) if suffix.isdigit() else 0
-    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 54)
-    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 54)
+    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 55)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 55)
     return {
         "source_architecture": source or "UNKNOWN",
         "source_release": release,
@@ -43487,10 +43527,12 @@ def v9553_regression_checks() -> list[tuple[str, bool]]:
     )
     breakout_router = canonical_router_result_v9553(breakout_decision)
     checks.append((
-        "v9.5.53 detector-confirmed BREAKOUT_RETEST consumes retest without asking FIRST_RETEST twice",
+        "v9.5.55 pre-decision BREAKOUT_RETEST evidence cannot consume a future Router FIRST_RETEST",
         breakout_evidence.get("retest_consumed") is True
-        and breakout_router.get("router_final_tactic") == "MARKET_NOW"
-        and breakout_router.get("router_final_disposition") == "EXECUTE_NOW",
+        and breakout_router.get("native_retest_observed") is True
+        and breakout_router.get("retest_consumed") is False
+        and breakout_router.get("router_final_tactic") == "FIRST_RETEST"
+        and breakout_router.get("router_final_disposition") == "DEFERRED",
     ))
 
     runway_candidate = Candidate(
@@ -43853,6 +43895,743 @@ def _run_self_test() -> bool:
         v9554_passed += int(bool(ok))
     print(f"SELF-TEST v9.5.54 SUMMARY: prior={'PASS' if (base_ok and passed == len(checks)) else 'FAIL'} + {v9554_passed}/{len(v9554_checks)} repair checks")
     return bool(base_ok and passed == len(checks) and v9554_passed == len(v9554_checks))
+
+
+# ==========================================================
+# v9.5.55 CAUSAL RETEST / QUALITY EARLY-ENTRY REPAIR
+# ==========================================================
+
+V9555_SCHEMA_VERSION = "causal_retest_quality_entry_v9.5.55"
+V9555_RANGE_BREAKOUT_PROBE_MIN_RUNWAY_R = max(
+    0.20,
+    min(
+        V9535_RUNWAY_CRITICAL_R,
+        float(os.getenv("V9555_RANGE_BREAKOUT_PROBE_MIN_RUNWAY_R", "0.25") or 0.25),
+    ),
+)
+V9555_RANGE_BREAKOUT_MAX_MISSED_R = min(
+    0.55,
+    max(
+        EXECUTION_ANCHOR_MAX_MARKET_MISSED_R,
+        float(os.getenv("V9555_RANGE_BREAKOUT_MAX_MISSED_R", "0.55") or 0.55),
+    ),
+)
+V9555_MIXED_HTF_MARKET_MAX_RUNWAY_R = max(
+    0.25,
+    min(0.50, float(os.getenv("V9555_MIXED_HTF_MARKET_MAX_RUNWAY_R", "0.35") or 0.35)),
+)
+
+
+def _router_causal_consumption_v9555(stage: dict[str, Any], tactic: str) -> dict[str, Any]:
+    evidence_ts = int(safe_float(stage.get("evidence_ts"), 0.0))
+    watermark = int(safe_float(
+        stage.get("decision_watermark"),
+        safe_float(stage.get("router_decision_3m_ts"), 0.0),
+    ))
+    consumed_tactic = str(stage.get("consumed_tactic") or "")
+    flag = (
+        bool(stage.get("retest_consumed"))
+        if tactic == "FIRST_RETEST"
+        else bool(stage.get("router_confirmation_consumed"))
+        if tactic == "ONE_3M_CONFIRM"
+        else bool(stage.get("router_recheck_consumed"))
+    )
+    consumed = bool(flag and consumed_tactic == tactic and evidence_ts > watermark > 0)
+    return {
+        "consumed": consumed,
+        "tactic": tactic,
+        "consumed_tactic": consumed_tactic,
+        "evidence_ts": evidence_ts,
+        "decision_watermark": watermark,
+        "post_decision": bool(evidence_ts > watermark > 0),
+        "schema_version": V9555_SCHEMA_VERSION,
+    }
+
+
+def _fresh_range_escape_v9555(
+    context: dict[str, Any], candidate: Candidate,
+) -> dict[str, Any]:
+    bars = sorted(
+        [
+            candle for candle in ((context.get("candles") or {}).get("3m") or [])
+            if bool(getattr(candle, "confirmed", True))
+        ],
+        key=lambda candle: int(getattr(candle, "ts", 0) or 0),
+    )
+    atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    sign = side_sign(candidate.side)
+    trigger_ts = int(safe_float(getattr(candidate, "trigger_ts", 0), 0.0))
+    result = {
+        "ready": False,
+        "evidence_ts": 0,
+        "evidence_age_bars": 999,
+        "close_break": False,
+        "directional_body": False,
+        "body_ratio": 0.0,
+        "schema_version": V9555_SCHEMA_VERSION,
+    }
+    if len(bars) < 5 or sign == 0:
+        return result
+    first_index = max(4, len(bars) - FRESH_3M_EXECUTION_LEASE_BARS)
+    for index in range(len(bars) - 1, first_index - 1, -1):
+        current = bars[index]
+        evidence_ts = int(safe_float(getattr(current, "ts", 0), 0.0))
+        if trigger_ts > 0 and evidence_ts < trigger_ts:
+            continue
+        prior = bars[index - 4:index]
+        boundary = (
+            max(safe_float(candle.high) for candle in prior)
+            if sign > 0 else min(safe_float(candle.low) for candle in prior)
+        )
+        close_break = sign * (safe_float(current.close) - boundary) >= 0.02 * atr15
+        signed_body = sign * (safe_float(current.close) - safe_float(current.open))
+        candle_range = max(safe_float(current.high) - safe_float(current.low), 1e-9)
+        body_ratio = signed_body / candle_range
+        directional_body = bool(signed_body >= 0.20 * atr15 and body_ratio >= 0.55)
+        if close_break and directional_body:
+            result.update({
+                "ready": True,
+                "evidence_ts": evidence_ts,
+                "evidence_age_bars": len(bars) - 1 - index,
+                "close_break": True,
+                "directional_body": True,
+                "body_atr": round(signed_body / atr15, 4),
+                "body_ratio": round(body_ratio, 4),
+                "boundary": round_price(boundary),
+            })
+            return result
+    return result
+
+
+def range_compression_breakout_probe_profile_v9555(
+    context: dict[str, Any], candidate: Candidate, plan: Optional[TradePlan],
+) -> dict[str, Any]:
+    components = candidate.score_components or {}
+    trade_profile = dict(components.get("setup_trade_profile") or {})
+    market_regime = dict(context.get("market_regime") or {})
+    regime_type = str(
+        trade_profile.get("regime_type")
+        or market_regime.get("regime_type")
+        or market_regime.get("type")
+        or ""
+    ).upper()
+    entry_action = str(
+        trade_profile.get("entry_action")
+        or market_regime.get("entry_action")
+        or "ALLOW"
+    ).upper()
+    applies = bool(
+        regime_type == "RANGE_COMPRESSION" and entry_action == "WAIT"
+        and not trade_profile.get("hard_block") and not market_regime.get("hard_block")
+    )
+    if not applies:
+        return {
+            "eligible": False,
+            "conditions": {"range_compression_wait": False},
+            "failed": ["range_compression_wait"],
+            "risk_cap": V9553_EARLY_PROBE_RISK_CAP,
+            "maximum_stage": EntryStage.PROBE.value,
+            "preconfirmation_has_authority": False,
+            "router_has_trade_authority": False,
+            "schema_version": V9555_SCHEMA_VERSION,
+        }
+    evaluation = dict(candidate.evaluation_bundle or components.get("evaluation_bundle") or {})
+    htf = get_htf_fact(candidate)
+    revalidation = dict(candidate.revalidation_profile or components.get("revalidation_gate") or {})
+    revalidation_state = str(revalidation.get("state") or "").upper()
+    anchor = _execution_anchor_profile_from_candidate_v9551(candidate, plan)
+    escape = _fresh_range_escape_v9555(context, candidate)
+
+    xi = dict(components.get("execution_intelligence_v9532") or {})
+    route = dict(xi.get("execution_router") or {})
+    if route and ("runway_r" in route or "runway_known" in route):
+        runway = runway_risk_profile_v9553(candidate)
+    else:
+        try:
+            raw_runway = liquidity_runway_profile(context, candidate, plan)
+        except Exception:
+            raw_runway = {}
+        runway = {
+            "runway_known": bool(raw_runway.get("known", False)),
+            "runway_r": safe_float(raw_runway.get("runway_r"), 0.0),
+        }
+
+    trigger_age = candidate_execution_trigger_age_minutes(candidate)
+    setup_quality = safe_float(
+        evaluation.get("setup_quality"), safe_float(candidate.setup_quality_score, 0.0),
+    )
+    timing_quality = safe_float(
+        evaluation.get("timing_quality"), safe_float(candidate.timing_quality_score, 0.0),
+    )
+    trade_quality = safe_float(
+        evaluation.get("trade_quality"), safe_float(candidate.trade_plan_quality_score, 0.0),
+    )
+    missed_r = safe_float(anchor.get("missed_favorable_r"), 0.0)
+    conditions = {
+        "range_compression_wait": bool(
+            applies
+        ),
+        "canonical_score_75_plus": int(candidate.final_score or 0) >= ENTRY_SCORE_BASE,
+        "setup_quality_70_plus": setup_quality >= 70.0,
+        "timing_quality_70_plus": timing_quality >= 70.0,
+        "trade_quality_70_plus": trade_quality >= 70.0,
+        "fresh_live_trigger": bool(
+            (candidate.trigger_ready or candidate.live_3m_trigger_ready)
+            and str(candidate.execution_source or "") != ExecutionSource.NONE.value
+            and trigger_age <= float(EXECUTION_TRIGGER_TTL_MIN)
+        ),
+        "fresh_range_escape": bool(escape.get("ready")),
+        "htf_aligned": bool(
+            htf.get("valid") and str(htf.get("state") or "").upper() == "ALIGNED"
+        ),
+        "revalidation_supported": bool(
+            revalidation.get("entry_supported", True)
+            and not revalidation.get("hard_expired")
+            and revalidation_state not in {"DEAD", "INVALIDATED"}
+        ),
+        "anchor_current_and_bounded": bool(
+            anchor.get("current_fill_allowed")
+            and not anchor.get("invalidated")
+            and missed_r <= V9555_RANGE_BREAKOUT_MAX_MISSED_R
+        ),
+        "runway_known_and_sufficient": bool(
+            runway.get("runway_known")
+            and safe_float(runway.get("runway_r"), 0.0) >= V9555_RANGE_BREAKOUT_PROBE_MIN_RUNWAY_R
+        ),
+        "plan_geometry_valid": bool(plan and plan.valid),
+        "no_factual_invalidation": not bool(
+            str(candidate.hard_reject_reason or "").strip()
+            or (candidate.confirmation_state or {}).get("thesis_invalidated")
+        ),
+    }
+    failed = [name for name, passed in conditions.items() if not passed]
+    return {
+        "eligible": not failed,
+        "conditions": conditions,
+        "failed": failed,
+        "escape": escape,
+        "runway": runway,
+        "anchor": anchor,
+        "setup_quality": round(setup_quality, 2),
+        "timing_quality": round(timing_quality, 2),
+        "trade_quality": round(trade_quality, 2),
+        "risk_cap": V9553_EARLY_PROBE_RISK_CAP,
+        "maximum_stage": EntryStage.PROBE.value,
+        "preconfirmation_has_authority": False,
+        "router_has_trade_authority": False,
+        "schema_version": V9555_SCHEMA_VERSION,
+    }
+
+
+_build_trade_plan_v9555_base = build_trade_plan
+def build_trade_plan(
+    context: dict,
+    candidate: Candidate,
+    entry_price_override: Optional[float] = None,
+    journal: Optional[dict[str, Any]] = None,
+) -> TradePlan:
+    plan = _build_trade_plan_v9555_base(
+        context, candidate, entry_price_override=entry_price_override, journal=journal,
+    )
+    profile = range_compression_breakout_probe_profile_v9555(context, candidate, plan)
+    candidate.score_components["range_compression_breakout_probe_v9555"] = copy.deepcopy(profile)
+    candidate.stage_plan = candidate.stage_plan or {}
+    candidate.stage_plan["range_compression_breakout_probe_v9555"] = copy.deepcopy(profile)
+    if not plan.execution_ready and profile.get("eligible"):
+        existing_risk = safe_float(plan.position_risk_pct, safe_float(plan.risk_pct, 0.0))
+        probe_risk = min(
+            V9553_EARLY_PROBE_RISK_CAP,
+            existing_risk if existing_risk > 0.0 else V9553_EARLY_PROBE_RISK_CAP,
+        )
+        candidate.entry_stage = EntryStage.PROBE.value
+        candidate.execution_lane = ExecutionLane.EARLY_TACTICAL.value
+        candidate.stage_plan["stage"] = EntryStage.PROBE.value
+        candidate.stage_plan["range_wait_promoted_to_bounded_probe"] = True
+        candidate.stage_plan["probe_cap_recommendation"] = probe_risk
+        candidate.score_components["range_wait_execution_support"] = "FRESH_ALIGNED_3M_RANGE_ESCAPE"
+        candidate.risk_multiplier = min(
+            safe_float(candidate.risk_multiplier, 1.0),
+            probe_risk / max(NORMAL_RISK_PCT, 1e-9),
+        )
+        plan.execution_ready = True
+        plan.entry_stage = EntryStage.PROBE.value
+        plan.final_stage = EntryStage.PROBE.value
+        plan.position_risk_pct = round(probe_risk, 6)
+        plan.risk_pct = round(probe_risk, 6)
+        plan.stage_plan = candidate.stage_plan
+    return plan
+
+
+def directional_market_guard_v9555(
+    candidate: Candidate, plan: Optional[TradePlan],
+) -> dict[str, Any]:
+    htf = get_htf_fact(candidate)
+    components = dict(htf.get("timeframe_components") or {})
+    four_hour = dict(components.get("4h") or {})
+    four_hour_bias = str(four_hour.get("bias") or Side.NEUTRAL.value).upper()
+    stage = dict(candidate.stage_plan or {})
+    tactic = str(stage.get("router_final_tactic") or stage.get("router_intended_tactic") or "")
+    causal_retest = _router_causal_consumption_v9555(stage, "FIRST_RETEST")
+    runway = runway_risk_profile_v9553(candidate)
+    continuation_family = str(candidate.setup_family or "").upper() in {
+        SetupFamily.CONTINUATION.value, SetupFamily.EXPANSION.value,
+    }
+    weak_mixed = bool(
+        str(htf.get("state") or "").upper() == "MIXED"
+        and safe_float(htf.get("confidence"), 0.0) < 35.0
+    )
+    dominant_htf_against = bool(
+        four_hour_bias in {Side.LONG.value, Side.SHORT.value}
+        and four_hour_bias == opposite(candidate.side)
+    )
+    short_runway = bool(
+        runway.get("runway_known")
+        and safe_float(runway.get("runway_r"), 0.0) < V9555_MIXED_HTF_MARKET_MAX_RUNWAY_R
+    )
+    market_attempt = bool(tactic in {"", "MARKET_NOW"})
+    block_market = bool(
+        continuation_family and weak_mixed and dominant_htf_against and short_runway
+        and market_attempt and not causal_retest.get("consumed")
+    )
+    return {
+        "allow_market": not block_market,
+        "block_market": block_market,
+        "reason": (
+            "MIXED_HTF_DOMINANT_4H_AGAINST_SHORT_RUNWAY_WAIT_CAUSAL_RETEST"
+            if block_market else "DIRECTIONAL_MARKET_GUARD_CLEAR"
+        ),
+        "htf_state": str(htf.get("state") or "UNKNOWN"),
+        "htf_confidence": safe_float(htf.get("confidence"), 0.0),
+        "four_hour_bias": four_hour_bias,
+        "candidate_side": candidate.side,
+        "runway": runway,
+        "router_tactic": tactic,
+        "causal_retest": causal_retest,
+        "setup_blocked": False,
+        "required_next_event": "POST_DECISION_FIRST_RETEST" if block_market else "",
+        "schema_version": V9555_SCHEMA_VERSION,
+    }
+
+
+_apply_true_final_authority_v9555_base = _apply_true_final_authority_v9551
+def _apply_true_final_authority_v9551(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    candidate = decision.candidate
+    guard: dict[str, Any] = {}
+    if candidate is not None:
+        guard = directional_market_guard_v9555(candidate, decision.plan)
+        candidate.score_components["directional_market_guard_v9555"] = copy.deepcopy(guard)
+        candidate.stage_plan = candidate.stage_plan or {}
+        candidate.stage_plan["directional_market_guard_v9555"] = copy.deepcopy(guard)
+        if guard.get("block_market") and decision.plan is not None:
+            decision.plan.execution_ready = False
+    out = _apply_true_final_authority_v9555_base(decision, context, journal)
+    if candidate is not None:
+        out.audit = out.audit or {}
+        out.audit["directional_market_guard_v9555"] = copy.deepcopy(guard)
+        authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+        authority["directional_market_guard"] = copy.deepcopy(guard)
+        if guard.get("block_market"):
+            authority["allow"] = False
+            authority["final_action"] = Action.NO_SETUP.value
+            authority["required_next_event"] = "POST_DECISION_FIRST_RETEST"
+            authority["hard_blockers"] = sorted(set(
+                list(authority.get("hard_blockers") or []) + [str(guard.get("reason"))]
+            ))
+            out.action = Action.NO_SETUP.value
+            out.reason = str(guard.get("reason"))
+        out.audit["final_execution_authority_v9551"] = authority
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+def _sanitize_scan3m_events_v9555(
+    state: dict[str, Any], *, reference_ts: Optional[int] = None,
+) -> dict[str, Any]:
+    scan = _normalize_scan3m_state(state.get("scan_3m"))
+    events = dict(scan.get("events") or {})
+    now_ts = int(reference_ts or now_utc().timestamp() * 1000)
+    reference = max(now_ts, int(safe_float(scan.get("last_scanned_3m_ts"), 0.0)))
+    removed: list[dict[str, Any]] = []
+    for side, raw in list(events.items()):
+        event = dict(raw or {})
+        stage = str(event.get("stage") or "").upper()
+        last_event_ts = int(safe_float(event.get("last_event_ts"), 0.0))
+        active_stage = stage in {"ACCEPTANCE", "RETEST", "READY"}
+        age_minutes = (
+            (reference - last_event_ts) / 60000.0
+            if last_event_ts > 0 else float("inf")
+        )
+        if active_stage and age_minutes > float(TRIGGER_MAX_AGE_MINUTES):
+            removed.append({
+                "side": str(side), "stage": stage,
+                "age_minutes": round(age_minutes, 2) if math.isfinite(age_minutes) else None,
+                "last_event_ts": last_event_ts,
+            })
+            events.pop(side, None)
+    scan["events"] = events
+    state["scan_3m"] = scan
+    return {
+        "removed_count": len(removed),
+        "removed": removed,
+        "remaining_count": len(events),
+        "event_ttl_minutes": TRIGGER_MAX_AGE_MINUTES,
+        "schema_version": V9555_SCHEMA_VERSION,
+    }
+
+
+_load_state_v9555_base = load_state
+def load_state() -> dict[str, Any]:
+    global _V9553_LAST_LOADED_STATE
+    state = _load_state_v9555_base()
+    cleanup = _sanitize_scan3m_events_v9555(state)
+    state.setdefault("state_migration", {})["scan3m_stale_event_cleanup_v9555"] = cleanup
+    _V9553_LAST_LOADED_STATE = state
+    return state
+
+
+_run_audit_journal_v9555_base = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    output = _run_audit_journal_v9555_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    causal_violations: list[dict[str, Any]] = []
+    for signal in payload.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        recommended = str(signal.get("router_recommended_tactic") or "")
+        final_tactic = str(signal.get("router_final_tactic") or signal.get("router_execution_tactic") or "")
+        evidence_ts = int(safe_float(signal.get("evidence_ts"), 0.0))
+        watermark = int(safe_float(signal.get("decision_watermark"), 0.0))
+        causal = bool(
+            signal.get("retest_consumed")
+            and str(signal.get("consumed_tactic") or "") == "FIRST_RETEST"
+            and evidence_ts > watermark > 0
+        )
+        if recommended == "FIRST_RETEST" and final_tactic == "MARKET_NOW" and not causal:
+            causal_violations.append({
+                "signal_id": str(signal.get("id") or ""),
+                "time": str(signal.get("time") or ""),
+                "side": str(signal.get("side") or ""),
+                "setup_type": str(signal.get("setup_type") or ""),
+                "evidence_ts": evidence_ts,
+                "decision_watermark": watermark,
+            })
+    violation_ids = {row["signal_id"] for row in causal_violations if row.get("signal_id")}
+    linked_trades = [
+        trade for trade in (payload.get("trades") or [])
+        if isinstance(trade, dict) and str(trade.get("signal_id") or "") in violation_ids
+    ]
+    closed_trades = [
+        trade for trade in linked_trades
+        if str(trade.get("result_class") or trade.get("result") or "").upper() in {"WIN", "LOSS"}
+    ]
+    wins = sum(
+        1 for trade in closed_trades
+        if str(trade.get("result_class") or trade.get("result") or "").upper() == "WIN"
+    )
+    historical_outcomes = {
+        "linked_trades": len(linked_trades),
+        "closed_trades": len(closed_trades),
+        "wins": wins,
+        "losses": len(closed_trades) - wins,
+        "win_rate_pct": round(100.0 * wins / len(closed_trades), 1) if closed_trades else None,
+        "net_r": round(sum(safe_float(trade.get("pnl_r"), 0.0) for trade in closed_trades), 4),
+        "sample_warning": "DESCRIPTIVE_SMALL_HISTORICAL_SAMPLE_NOT_A_FORWARD_PERFORMANCE_GUARANTEE",
+    }
+    output["v9555_causal_router_quality_entry"] = {
+        "historical_noncausal_first_retest_market_now_count": len(causal_violations),
+        "historical_noncausal_first_retest_market_now_samples": causal_violations[:10],
+        "historical_noncausal_execution_outcomes": historical_outcomes,
+        "fixed_runtime_contract": "FIRST_RETEST_REQUIRES_CONSUMED_TACTIC_AND_POST_DECISION_TIMESTAMP",
+        "range_compression_early_entry": {
+            "mode": "ALIGNED_FRESH_3M_ESCAPE_BOUNDED_PROBE",
+            "minimum_score": ENTRY_SCORE_BASE,
+            "minimum_runway_r": V9555_RANGE_BREAKOUT_PROBE_MIN_RUNWAY_R,
+            "maximum_missed_r": V9555_RANGE_BREAKOUT_MAX_MISSED_R,
+            "risk_cap": V9553_EARLY_PROBE_RISK_CAP,
+        },
+        "mixed_htf_market_guard_max_runway_r": V9555_MIXED_HTF_MARKET_MAX_RUNWAY_R,
+        "direction_flip_reachability_persisted": SetupType.DIRECTION_FLIP.value in DORMANT_SETUP_REACHABILITY_TYPES,
+        "preconfirmation_authority": "AUDIT_ONLY_UNTIL_TRUSTED",
+        "new_journal_event_streams": 0,
+        "schema_version": V9555_SCHEMA_VERSION,
+    }
+    return output
+
+
+_validate_runtime_configuration_v9555_base = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9555_base()
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != "pro-hybrid-confluence-v9.5.55-causal-retest-quality-entry":
+        errors.append("v9.5.55 bot release seal is not effective")
+    if ARCHITECTURE_VERSION != "TRADING_DESK_EXECUTIVE_V9_5_55_CAUSAL_RETEST_QUALITY_ENTRY":
+        errors.append("v9.5.55 architecture release seal is not effective")
+    if SetupType.DIRECTION_FLIP.value not in DORMANT_SETUP_REACHABILITY_TYPES:
+        errors.append("v9.5.55 Direction Flip reachability is not persisted")
+    if (ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE) != (58, 68, 75):
+        errors.append("v9.5.55 requires the canonical 58/68/75 contract")
+    if not all(callable(globals().get(name)) for name in (
+        "_router_causal_consumption_v9555",
+        "range_compression_breakout_probe_profile_v9555",
+        "directional_market_guard_v9555",
+        "_sanitize_scan3m_events_v9555",
+    )):
+        errors.append("v9.5.55 execution repair boundary is incomplete")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "router_retest_contract": "POST_DECISION_EVIDENCE_TS_GT_WATERMARK",
+        "range_wait_contract": "ALIGNED_FRESH_ESCAPE_BOUNDED_PROBE_ONLY",
+    }
+
+
+def _v9555_router_fixture(
+    *, causal: bool, plan_ready: bool = True,
+) -> Decision:
+    watermark = 1_900_000_000_000
+    evidence_ts = watermark + 180_000 if causal else 0
+    stage = {
+        "router_final_tactic": "FIRST_RETEST",
+        "router_intended_tactic": "FIRST_RETEST",
+        "router_final_disposition": "DEFERRED",
+        "router_chain_id": "SHORT|ACCEPTANCE_RETEST_CONTINUATION|898|FIRST_RETEST|89.8",
+        "retest_consumed": True,
+        "consumed_tactic": "FIRST_RETEST" if causal else "",
+        "evidence_ts": evidence_ts,
+        "decision_watermark": watermark if causal else 0,
+    }
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=79, final_score=79,
+        trigger_ready=True, live_3m_trigger_ready=True,
+        trigger_level=89.80, execution_anchor=89.86,
+        invalidation_level=92.377,
+        execution_source=ExecutionSource.ACCEPTANCE_RETEST.value,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "acceptance_retest": {"zone_retest_detected": True},
+            "execution_intelligence_v9532": {
+                "state_machine": {"current_state": "EXECUTION", "kind": "CONTINUATION"},
+                "execution_router": {"action": "FIRST_RETEST", "economic_reprice": False},
+            },
+        },
+        stage_plan=stage,
+    )
+    plan = TradePlan(
+        entry=89.86, stop=92.377, tp1=84.57, tp2=81.1764, tp3=77.275,
+        risk_pct=0.03, rr1=2.10, rr2=3.45, rr3=5.00,
+        position_risk_pct=0.03, valid=True, execution_ready=plan_ready,
+    )
+    return Decision(
+        id="v9555-router-fixture", time=iso_now(), action=Action.PROBE_ENTRY.value,
+        side=candidate.side, setup_type=candidate.setup_type, quality=79,
+        reason="fixture", regime=Regime.TRANSITION.value,
+        candidate=candidate, plan=plan,
+        audit={"router_chain_v9541": {"tactic": "FIRST_RETEST"}},
+    )
+
+
+def v9555_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    false_retest = _v9555_router_fixture(causal=False)
+    false_router = canonical_router_result_v9553(false_retest)
+    checks.append((
+        "v9.5.55 dc67ca9a1e SHORT replay cannot turn FIRST_RETEST into MARKET_NOW with zero causal time",
+        false_router.get("router_final_tactic") == "FIRST_RETEST"
+        and false_router.get("router_final_disposition") == "DEFERRED"
+        and false_router.get("retest_consumed") is False
+        and false_router.get("native_retest_observed") is True,
+    ))
+
+    causal_retest = _v9555_router_fixture(causal=True)
+    causal_router = canonical_router_result_v9553(causal_retest)
+    checks.append((
+        "v9.5.55 post-decision FIRST_RETEST is consumed exactly by causal timestamp",
+        causal_router.get("router_final_tactic") == "MARKET_NOW"
+        and causal_router.get("router_final_disposition") == "EXECUTE_NOW"
+        and causal_router.get("retest_consumed") is True
+        and int(causal_router.get("evidence_ts") or 0) > int(causal_router.get("decision_watermark") or 0) > 0,
+    ))
+
+    plan_blocked = _v9555_router_fixture(causal=True, plan_ready=False)
+    plan_blocked.candidate.stage_plan.update({
+        "router_final_tactic": "MARKET_NOW",
+        "router_final_disposition": "EXECUTE_NOW",
+    })
+    blocked_router = canonical_router_result_v9553(plan_blocked)
+    checks.append((
+        "v9.5.55 Router cannot publish EXECUTE_NOW when the trade plan is not execution-ready",
+        blocked_router.get("router_final_tactic") == "MARKET_NOW"
+        and blocked_router.get("router_final_disposition") == "TACTIC_READY_PLAN_BLOCKED",
+    ))
+
+    mixed_short = _v9555_router_fixture(causal=False)
+    mixed_short.candidate.stage_plan.update({
+        "router_final_tactic": "MARKET_NOW", "router_final_disposition": "EXECUTE_NOW",
+    })
+    mixed_short.candidate.htf_fact = {
+        "state": "MIXED", "market_bias": "MIXED", "candidate_side": Side.SHORT.value,
+        "alignment_score": -0.114315, "confidence": 11.4315, "valid": True,
+        "timeframe_components": {
+            "15m": {"weight": 0.15, "direction": -0.4537, "bias": Side.SHORT.value},
+            "1h": {"weight": 0.35, "direction": -0.2288, "bias": Side.SHORT.value},
+            "4h": {"weight": 0.50, "direction": 0.5249, "bias": Side.LONG.value},
+        },
+    }
+    mixed_short.candidate.score_components["htf_fact"] = copy.deepcopy(mixed_short.candidate.htf_fact)
+    mixed_short.candidate.score_components["execution_intelligence_v9532"]["execution_router"].update({
+        "action": "MARKET_NOW", "runway_known": True, "runway_r": 0.183,
+    })
+    mixed_guard = directional_market_guard_v9555(mixed_short.candidate, mixed_short.plan)
+    checks.append((
+        "v9.5.55 mixed-HTF SHORT against 4H LONG with 0.183R runway cannot market-enter",
+        mixed_guard.get("block_market") is True
+        and mixed_guard.get("required_next_event") == "POST_DECISION_FIRST_RETEST",
+    ))
+
+    base_ts = 1_900_000_000_000
+    c3 = [
+        Candle(base_ts + i * 180_000, 100.00, 100.12, 99.90, 100.02, 20, True)
+        for i in range(5)
+    ]
+    c3.append(Candle(base_ts + 900_000, 100.00, 100.62, 99.98, 100.55, 35, True))
+    aligned_htf = {
+        "state": "ALIGNED", "market_bias": "BULLISH", "candidate_side": Side.LONG.value,
+        "alignment_score": 0.72, "confidence": 72.0, "valid": True,
+        "timeframe_components": {
+            "15m": {"bias": Side.LONG.value, "direction": 0.5, "weight": 0.15},
+            "1h": {"bias": Side.LONG.value, "direction": 0.6, "weight": 0.35},
+            "4h": {"bias": Side.LONG.value, "direction": 0.8, "weight": 0.50},
+        },
+    }
+    range_candidate = Candidate(
+        side=Side.LONG.value, setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=79, final_score=79,
+        trigger_ready=True, live_3m_trigger_ready=True,
+        trigger_level=100.10, execution_anchor=100.10, invalidation_level=99.50,
+        trigger_ts=base_ts, execution_trigger_age_minutes=0.0,
+        execution_source=ExecutionSource.LIVE_3M.value,
+        setup_quality_score=78, timing_quality_score=82,
+        trade_plan_quality_score=78, entry_quality_score=68,
+        htf_fact=aligned_htf,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "htf_fact": aligned_htf,
+            "setup_trade_profile": {
+                "regime_type": "RANGE_COMPRESSION", "entry_action": "WAIT", "hard_block": False,
+            },
+            "execution_anchor_authority": {
+                "current_fill_allowed": True, "invalidated": False,
+                "missed_favorable_r": 0.20, "risk_multiplier": 0.60,
+            },
+            "execution_intelligence_v9532": {"execution_router": {
+                "runway_known": True, "runway_r": 0.65,
+            }},
+        },
+    )
+    range_plan = TradePlan(
+        entry=100.55, stop=99.50, tp1=102.65, tp2=103.70, tp3=104.75,
+        risk_pct=0.03, rr1=2.0, rr2=3.0, rr3=4.0,
+        position_risk_pct=0.03, valid=True, execution_ready=False,
+    )
+    range_context = {
+        "price": 100.55, "atr15": 1.0,
+        "market_regime": {"regime_type": "RANGE_COMPRESSION", "entry_action": "WAIT", "hard_block": False},
+        "candles": {"3m": c3, "15m": []}, "zones": [], "liquidity": {}, "macro_liquidity": {},
+    }
+    range_profile = range_compression_breakout_probe_profile_v9555(
+        range_context, range_candidate, range_plan,
+    )
+    checks.append((
+        "v9.5.55 aligned score-79 fresh range escape is eligible only for bounded PROBE",
+        range_profile.get("eligible") is True
+        and range_profile.get("maximum_stage") == EntryStage.PROBE.value
+        and safe_float(range_profile.get("risk_cap"), 1.0) <= EXPERIMENTAL_PROBE_RISK_PCT,
+    ))
+
+    no_runway_candidate = copy.deepcopy(range_candidate)
+    no_runway_candidate.score_components["execution_intelligence_v9532"]["execution_router"].update({
+        "runway_known": True, "runway_r": 0.049,
+    })
+    no_runway = range_compression_breakout_probe_profile_v9555(
+        range_context, no_runway_candidate, copy.deepcopy(range_plan),
+    )
+    checks.append((
+        "v9.5.55 near-zero 0.049R runway still blocks a market probe",
+        no_runway.get("eligible") is False
+        and "runway_known_and_sufficient" in (no_runway.get("failed") or []),
+    ))
+
+    reachability_journal: dict[str, Any] = {}
+    reachability_context = {
+        "_setup_lifecycle_detected": [],
+        "_setup_lifecycle_qualified": [],
+        "_setup_lifecycle_ranked": [],
+        "_detector_reachability": [{
+            "side": Side.LONG.value,
+            "setup_type": SetupType.DIRECTION_FLIP.value,
+            "evaluated": True, "fired": True,
+            "paths": {"DIRECTION_FLIP_15M": True},
+            "conditions": {"confirmed_15m_history": True},
+            "condition_applicability": {"confirmed_15m_history": True},
+            "predicate_dependencies": {}, "not_applicable_predicates": [],
+            "margins": {}, "diagnostics": {}, "blockers": [],
+        }],
+    }
+    update_setup_lifecycle_counters(reachability_journal, reachability_context, None)
+    flip_ledger = (
+        ((reachability_journal.get("setup_lifecycle_counters") or {}).get("detector_reachability") or {})
+        .get(SetupType.DIRECTION_FLIP.value) or {}
+    )
+    checks.append((
+        "v9.5.55 DIRECTION_FLIP_15M reachability survives the persistence filter",
+        int(flip_ledger.get("evaluated") or 0) == 1
+        and int(flip_ledger.get("fired") or 0) == 1,
+    ))
+
+    stale_state = {"scan_3m": {
+        "last_scanned_3m_ts": base_ts,
+        "last_run_processed": 5, "processed_count": 100,
+        "events": {
+            Side.LONG.value: {
+                "side": Side.LONG.value, "stage": "READY",
+                "event_ts": 0, "last_event_ts": base_ts - 4 * 60 * 60 * 1000,
+                "trigger_level": 87.24, "retest": True, "displacement": True,
+            },
+            Side.SHORT.value: {
+                "side": Side.SHORT.value, "stage": "READY",
+                "event_ts": 0, "last_event_ts": base_ts - 4 * 60 * 60 * 1000,
+                "trigger_level": 87.24, "retest": True, "displacement": True,
+            },
+        },
+    }}
+    cleanup = _sanitize_scan3m_events_v9555(stale_state, reference_ts=base_ts)
+    checks.append((
+        "v9.5.55 stale READY 3M chains are removed before a new market scan",
+        cleanup.get("removed_count") == 2
+        and not ((stale_state.get("scan_3m") or {}).get("events") or {}),
+    ))
+    return checks
+
+
+_run_self_test_v9555_base = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9555_base()
+    checks = v9555_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.55 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
 
 
 if __name__ == "__main__":
