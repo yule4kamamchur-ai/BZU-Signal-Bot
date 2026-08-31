@@ -2,6 +2,12 @@
 """
 BZU Professional Oil 15M Signal Bot v9.5.53 (Canonical Router Execution Repair)
 ====================================================================================
+Оновлення v9.5.56 (three-level execution authority hotfix):
+- Final Authority має три явні результати: FULL_ENTRY, EARLY_PROBE або WAIT.
+- Лише factual data/risk/invalidation залишаються hard blockers. Router retest, anchor quality, score, calibration і preconfirmation лише обмежують стадію/розмір.
+- Слабкий, але не інвалідований anchor може дати EARLY_PROBE лише за валідних trigger, plan і stop geometry; nominal size cap становить 25-40% від normal risk.
+- execution_anchor_schema тепер зберігає реальну версію anchor-контракту для всіх setup; окремий Failed Auction provenance збережено.
+
 Оновлення v9.5.53 (чинний production-контракт; замінює старі policy-примітки нижче):
 - Router завершується єдиним DTO: router_final_tactic, router_final_disposition, router_chain_id, evidence_ts; Final Authority читає тільки цей контракт.
 - ONE_3M_CONFIRM / FIRST_RETEST споживаються один раз лише після causal evidence; native BREAKOUT_RETEST не отримує повторний retest-запит.
@@ -24494,6 +24500,23 @@ def run_bot() -> None:
         else:
             opp_status = OpportunityStatus.ARMED.value
         opp_trigger_level = synchronize_candidate_trigger_with_contract(decision.candidate)
+        opp_components = decision.candidate.score_components or {}
+        opp_entry_contract = dict(opp_components.get("entry_contract") or {})
+        opp_anchor_profile = dict(
+            opp_components.get("execution_anchor_authority")
+            or opp_entry_contract.get("execution_anchor_profile")
+            or {}
+        )
+        if (
+            decision.setup_type == SetupType.FAILED_AUCTION_REJECTION.value
+            and bool((opp_components.get("failed_auction_location") or {}).get("probe_location_ok"))
+        ):
+            opp_anchor_schema = "FAILED_AUCTION_REJECTION_LEVEL_V9_5_15"
+        else:
+            opp_anchor_schema = str(
+                opp_anchor_profile.get("schema_version")
+                or "EXECUTION_ANCHOR_RECONSTRUCT_ON_REENTRY_V9_5_56"
+            )
         opp = Opportunity(
             side=decision.side, setup_type=decision.setup_type, setup_family=decision.candidate.setup_family,
             created_at=iso_now(), expires_at=(now_utc() + timedelta(hours=18)).isoformat(),
@@ -24510,12 +24533,7 @@ def run_bot() -> None:
             ),
             router_decision_3m_ts=int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_decision_3m_ts"), _preconfirm_as_of_ts(context))),
             router_recheck_count=int(safe_float((getattr(decision.candidate, "stage_plan", {}) or {}).get("router_recheck_count"), 0.0)),
-            execution_anchor_schema=(
-                "FAILED_AUCTION_REJECTION_LEVEL_V9_5_15"
-                if decision.setup_type == SetupType.FAILED_AUCTION_REJECTION.value
-                and bool(((decision.candidate.score_components or {}).get("failed_auction_location") or {}).get("probe_location_ok"))
-                else ""
-            ),
+            execution_anchor_schema=opp_anchor_schema,
             thesis_key=decision.candidate.thesis_key, thesis=decision.candidate.thesis,
             market_thesis_age_minutes=candidate_market_thesis_age_minutes(decision.candidate),
             model_thesis_age_minutes=candidate_model_thesis_age_minutes(decision.candidate),
@@ -41608,10 +41626,11 @@ def v9551_regression_checks() -> list[tuple[str, bool]]:
         decision, {"price": 100.0, "_audit_shadow_scan": True}, {},
     )
     checks.append((
-        "v9.5.55 Final Execution Authority preserves a causal FIRST_RETEST tactic",
-        final.action == Action.NO_SETUP.value
+        "v9.5.56 Final Execution Authority preserves FIRST_RETEST as advisory and releases bounded PROBE",
+        final.action == Action.PROBE_ENTRY.value
         and (final.audit.get("final_execution_authority_v9551") or {}).get("is_last_mutator") is True
-        and (final.audit.get("final_execution_authority_v9551") or {}).get("recovered_non_economic_router_defer") is False
+        and (final.audit.get("final_execution_authority_v9551") or {}).get("entry_tier") == "EARLY_PROBE"
+        and (final.audit.get("final_execution_authority_v9551") or {}).get("router_retest_is_hard_blocker") is False
         and ((final.candidate.stage_plan or {}).get("router_final_tactic") == "FIRST_RETEST")
         and ((final.candidate.stage_plan or {}).get("router_final_disposition") == "DEFERRED"),
     ))
@@ -44631,6 +44650,807 @@ def _run_self_test() -> bool:
         print(f"  [{'OK' if ok else 'FAIL'}] {name}")
         passed += int(bool(ok))
     print(f"SELF-TEST v9.5.55 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
+    return bool(base_ok and passed == len(checks))
+
+
+# =============================================================================
+# v9.5.56 THREE-LEVEL EXECUTION AUTHORITY HOTFIX
+# =============================================================================
+# The serialized ``execution_anchor_schema`` is provenance, not the anchor
+# object itself.  The runtime anchor is reconstructed from the candidate and
+# trade plan.  This layer makes that distinction explicit and changes weak
+# execution evidence from an absolute veto into a bounded sizing input.
+
+V9556_SCHEMA_VERSION = "three_level_execution_authority_v9.5.56"
+V9556_MIN_STRUCTURE_QUALITY = max(
+    40.0,
+    min(70.0, float(os.getenv("V9556_MIN_STRUCTURE_QUALITY", "50") or 50.0)),
+)
+V9556_PROBE_MIN_FRACTION = max(
+    0.25,
+    min(0.40, float(os.getenv("V9556_PROBE_MIN_FRACTION", "0.25") or 0.25)),
+)
+V9556_PROBE_MAX_FRACTION = max(
+    V9556_PROBE_MIN_FRACTION,
+    min(0.40, float(os.getenv("V9556_PROBE_MAX_FRACTION", "0.40") or 0.40)),
+)
+V9556_RETEST_PROBE_FRACTION = max(
+    V9556_PROBE_MIN_FRACTION,
+    min(V9556_PROBE_MAX_FRACTION, float(os.getenv("V9556_RETEST_PROBE_FRACTION", "0.30") or 0.30)),
+)
+V9556_FACTUAL_HARD_BLOCKER_CLASSES = {"DATA", "RISK", "INVALIDATION"}
+
+
+def _candidate_execution_blockers_v9556(candidate: Candidate) -> list[str]:
+    reasons: list[str] = []
+    hard_reject = str(getattr(candidate, "hard_reject_reason", "") or "").strip()
+    if hard_reject:
+        reasons.append(hard_reject)
+    confirmation = dict(getattr(candidate, "confirmation_state", {}) or {})
+    if confirmation.get("thesis_invalidated"):
+        reasons.append("THESIS_INVALIDATED")
+    revalidation = dict(getattr(candidate, "revalidation_profile", {}) or {})
+    revalidation_state = str(revalidation.get("state") or "").upper()
+    if revalidation.get("hard_expired") or revalidation_state in {"DEAD", "INVALIDATED"}:
+        reasons.append("THESIS_INVALIDATED_BY_REVALIDATION")
+    return reasons
+
+
+def _factual_hard_blockers_v9556(reasons: list[str]) -> list[str]:
+    return sorted(set(
+        str(reason) for reason in reasons
+        if classify_execution_blocker(str(reason)) in V9556_FACTUAL_HARD_BLOCKER_CLASSES
+    ))
+
+
+def three_level_execution_profile_v9556(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    router: Optional[dict[str, Any]] = None,
+    executive_blockers: Optional[list[str]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Resolve FULL_ENTRY / EARLY_PROBE / WAIT from factual execution inputs.
+
+    Score, Router preference, anchor quality, calibration and preconfirmation
+    may reduce the maximum stage or size.  They cannot veto an otherwise valid
+    probe.  Data failure, invalidation and invalid risk geometry remain closed.
+    """
+    router = dict(router or {})
+    guard = dict(directional_guard or {})
+    blockers = [str(value) for value in (executive_blockers or [])]
+    blockers.extend(_candidate_execution_blockers_v9556(candidate))
+
+    anchor = _execution_anchor_profile_from_candidate_v9551(candidate, plan)
+    anchor_invalidated = bool(anchor.get("invalidated"))
+    if anchor_invalidated:
+        blockers.append("THESIS_INVALIDATED_BY_EXECUTION_ANCHOR")
+
+    trigger_age = candidate_execution_trigger_age_minutes(candidate)
+    trigger_valid = bool(
+        trigger_age <= float(EXECUTION_TRIGGER_TTL_MIN)
+        and (
+            candidate.trigger_ready
+            or candidate.live_3m_trigger_ready
+            or candidate.limit_armed_ready
+            or str(candidate.execution_source or "") != ExecutionSource.NONE.value
+        )
+    )
+    plan_ready = bool(plan and plan.valid and plan.execution_ready)
+    entry = safe_float(getattr(plan, "entry", 0.0), 0.0) if plan else 0.0
+    stop = safe_float(getattr(plan, "stop", 0.0), 0.0) if plan else 0.0
+    risk_geometry_valid = bool(
+        plan and plan.valid and entry > 0.0 and stop > 0.0
+        and (
+            (candidate.side == Side.LONG.value and stop < entry)
+            or (candidate.side == Side.SHORT.value and stop > entry)
+        )
+    )
+    if plan and plan.valid and not risk_geometry_valid:
+        blockers.append("RISK_INVALID_STOP_GEOMETRY")
+
+    runway = dict(router.get("runway_risk") or runway_risk_profile_v9553(candidate) or {})
+    runway_valid = not bool(runway.get("explicit_reprice"))
+    if not runway_valid:
+        blockers.append("RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY")
+
+    evaluation = dict(
+        candidate.evaluation_bundle
+        or (candidate.score_components or {}).get("evaluation_bundle")
+        or {}
+    )
+    setup_quality = safe_float(
+        evaluation.get("setup_quality"),
+        safe_float(candidate.setup_quality_score, safe_float(candidate.raw_score, 0.0)),
+    )
+    execution_quality = safe_float(
+        evaluation.get("execution_readiness"),
+        safe_float(candidate.execution_quality_score, setup_quality),
+    )
+    trade_quality = safe_float(
+        evaluation.get("trade_quality"),
+        safe_float(candidate.trade_plan_quality_score, setup_quality),
+    )
+    structure_valid = bool(
+        str(candidate.setup_type or SetupType.NONE.value) != SetupType.NONE.value
+        and setup_quality >= V9556_MIN_STRUCTURE_QUALITY
+    )
+
+    tactic = str(
+        router.get("router_final_tactic")
+        or (candidate.stage_plan or {}).get("router_final_tactic")
+        or (candidate.stage_plan or {}).get("router_intended_tactic")
+        or "NONE"
+    )
+    disposition = str(
+        router.get("router_final_disposition")
+        or (candidate.stage_plan or {}).get("router_final_disposition")
+        or ""
+    )
+    router_wait_advisory = bool(
+        tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR"}
+        and disposition in {"", "DEFERRED"}
+    )
+    causal_confirmation_required = bool(
+        tactic == "ONE_3M_CONFIRM" and disposition in {"", "DEFERRED"}
+    )
+    anchor_strong = bool(
+        anchor.get("current_fill_allowed")
+        and not anchor_invalidated
+        and not anchor.get("recovered_current_fill")
+        and str(anchor.get("decision") or "") not in {"WAIT_RETEST", "INVALIDATED"}
+    )
+    anchor_quality = clamp(safe_float(anchor.get("quality"), 0.0), 0.0, 100.0)
+    score = int(candidate.final_score or 0)
+    factual_hard = _factual_hard_blockers_v9556(blockers)
+
+    wait_reasons: list[str] = []
+    if not structure_valid:
+        wait_reasons.append("STRUCTURE_NOT_READY")
+    if not trigger_valid:
+        wait_reasons.append("TRIGGER_INVALID")
+    if not plan_ready:
+        wait_reasons.append("PLAN_NOT_EXECUTION_READY")
+    if not risk_geometry_valid:
+        wait_reasons.append("RISK_INVALID_STOP_GEOMETRY")
+    if not runway_valid:
+        wait_reasons.append("RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY")
+    if anchor_invalidated:
+        wait_reasons.append("THESIS_INVALIDATED_BY_EXECUTION_ANCHOR")
+    if causal_confirmation_required:
+        wait_reasons.append("POST_DECISION_3M_CONFIRMATION_REQUIRED")
+
+    ideal_quality = bool(
+        min(setup_quality, execution_quality, trade_quality) >= 70.0
+    )
+    ideal = bool(
+        not factual_hard
+        and not wait_reasons
+        and anchor_strong
+        and not router_wait_advisory
+        and not guard.get("block_market")
+        and score >= ENTRY_SCORE_BASE
+        and ideal_quality
+    )
+    if factual_hard or wait_reasons:
+        tier = "WAIT"
+    elif ideal:
+        tier = "FULL_ENTRY"
+    else:
+        tier = "EARLY_PROBE"
+
+    advisory_reasons = [
+        str(reason) for reason in blockers
+        if str(reason) not in factual_hard
+    ]
+    if not anchor_strong and not anchor_invalidated:
+        advisory_reasons.append("EXECUTION_ANCHOR_WEAK_SIZE_REDUCTION")
+    if router_wait_advisory:
+        advisory_reasons.append(f"{tactic}_ADVISORY_SIZE_REDUCTION")
+    if guard.get("block_market"):
+        advisory_reasons.append("POST_DECISION_FIRST_RETEST_ADVISORY_SIZE_REDUCTION")
+    if score < ENTRY_SCORE_BASE:
+        advisory_reasons.append("ADVISORY_SCORE_STAGE_CAP")
+
+    risk_fraction = 1.0
+    risk_cap = NORMAL_RISK_PCT
+    if tier == "EARLY_PROBE":
+        risk_fraction = V9556_PROBE_MAX_FRACTION
+        if not anchor_strong:
+            anchor_fraction = V9556_PROBE_MIN_FRACTION + (
+                V9556_PROBE_MAX_FRACTION - V9556_PROBE_MIN_FRACTION
+            ) * anchor_quality / 100.0
+            risk_fraction = min(risk_fraction, anchor_fraction)
+        if router_wait_advisory:
+            risk_fraction = min(risk_fraction, V9556_RETEST_PROBE_FRACTION)
+        if guard.get("block_market"):
+            risk_fraction = min(risk_fraction, V9556_PROBE_MIN_FRACTION)
+        if score < ENTRY_SCORE_BASE:
+            risk_fraction = min(risk_fraction, 0.35)
+        risk_fraction = clamp(
+            risk_fraction, V9556_PROBE_MIN_FRACTION, V9556_PROBE_MAX_FRACTION,
+        )
+        risk_cap = NORMAL_RISK_PCT * risk_fraction
+        # Preserve the existing extra-small research lane below the canonical
+        # 68 score.  Score still cannot veto the entry; it only tightens size.
+        if score < RISKY_ENTRY_SCORE_BASE:
+            risk_cap = min(risk_cap, V9553_EARLY_PROBE_RISK_CAP)
+        runway_factor = clamp(safe_float(runway.get("risk_multiplier"), 1.0), 0.0, 1.0)
+        if runway_factor > 0.0:
+            risk_cap *= runway_factor
+    elif tier == "WAIT":
+        risk_fraction = 0.0
+        risk_cap = 0.0
+
+    return {
+        "tier": tier,
+        "allow": tier in {"FULL_ENTRY", "EARLY_PROBE"},
+        "full_entry": tier == "FULL_ENTRY",
+        "early_probe": tier == "EARLY_PROBE",
+        "plan_ready": plan_ready,
+        "trigger_valid": trigger_valid,
+        "trigger_age_minutes": round(trigger_age, 2),
+        "structure_valid": structure_valid,
+        "setup_quality": round(setup_quality, 2),
+        "execution_quality": round(execution_quality, 2),
+        "trade_quality": round(trade_quality, 2),
+        "risk_geometry_valid": risk_geometry_valid,
+        "runway_valid": runway_valid,
+        "runway_risk": runway,
+        "anchor_strong": anchor_strong,
+        "anchor_invalidated": anchor_invalidated,
+        "execution_anchor": anchor,
+        "execution_anchor_schema": str(
+            anchor.get("schema_version")
+            or "EXECUTION_ANCHOR_RECONSTRUCT_ON_REENTRY_V9_5_56"
+        ),
+        "router_tactic": tactic,
+        "router_disposition": disposition,
+        "router_wait_is_advisory": router_wait_advisory,
+        "causal_confirmation_required": causal_confirmation_required,
+        "hard_blockers": factual_hard,
+        "wait_reasons": sorted(set(wait_reasons)),
+        "advisory_reasons": sorted(set(advisory_reasons)),
+        "risk_fraction_of_normal": round(risk_fraction, 4),
+        "risk_cap": round(max(0.0, risk_cap), 6),
+        "score": score,
+        "score_is_stage_and_size_input_only": True,
+        "anchor_is_size_input_unless_invalidated": True,
+        "calibration_can_veto": False,
+        "preconfirmation_can_veto": False,
+        "schema_version": V9556_SCHEMA_VERSION,
+    }
+
+
+_final_execution_authority_v9556_base = final_execution_authority_v9548
+def final_execution_authority_v9548(
+    staged: ExecutiveDecisionContract, plan: Optional[TradePlan], candidate: Candidate,
+) -> dict[str, Any]:
+    base = dict(_final_execution_authority_v9556_base(staged, plan, candidate) or {})
+    router = dict((candidate.stage_plan or {}).get("canonical_router_result_v9553") or {})
+    profile = three_level_execution_profile_v9556(
+        candidate,
+        plan,
+        router=router,
+        executive_blockers=list(staged.blocking_reasons or []),
+    )
+    base.update({
+        "allow": bool(profile.get("allow")),
+        "entry_tier": profile.get("tier"),
+        "hard_blockers": list(profile.get("hard_blockers") or []),
+        "advisory_reasons": list(profile.get("advisory_reasons") or []),
+        "plan_ready": profile.get("plan_ready"),
+        "trigger_valid": profile.get("trigger_valid"),
+        "risk_geometry_valid": profile.get("risk_geometry_valid"),
+        "execution_anchor": copy.deepcopy(profile.get("execution_anchor") or {}),
+        "execution_anchor_schema": profile.get("execution_anchor_schema"),
+        "three_level_execution": profile,
+        "score_veto_disabled": True,
+        "anchor_veto_scope": "FACTUAL_INVALIDATION_ONLY",
+        "schema_version": V9556_SCHEMA_VERSION,
+    })
+    resolved = dict(base.get("resolved_contract") or {})
+    resolved.update({
+        "action": (
+            "ALLOW_FULL_ENTRY" if profile.get("tier") == "FULL_ENTRY"
+            else "ALLOW_EARLY_PROBE" if profile.get("tier") == "EARLY_PROBE"
+            else "WAIT"
+        ),
+        "reasons": list(profile.get("hard_blockers") or profile.get("wait_reasons") or []),
+    })
+    base["resolved_contract"] = resolved
+    return base
+
+
+def _apply_three_level_execution_v9556(
+    decision: Decision,
+    profile: dict[str, Any],
+    *,
+    planned_risk: float,
+) -> Decision:
+    candidate = decision.candidate
+    plan = decision.plan
+    if candidate is None:
+        return decision
+
+    tier = str(profile.get("tier") or "WAIT")
+    if tier == "FULL_ENTRY":
+        final_action = Action.ENTRY.value
+        final_risk = planned_risk if planned_risk > 0.0 else NORMAL_RISK_PCT
+        candidate.entry_stage = EntryStage.CORE.value
+        candidate.execution_lane = ExecutionLane.STANDARD_CONFIRMED.value
+    elif tier == "EARLY_PROBE":
+        final_action = Action.PROBE_ENTRY.value
+        cap = safe_float(profile.get("risk_cap"), 0.0)
+        base_risk = planned_risk if planned_risk > 0.0 else cap
+        final_risk = min(base_risk, cap) if cap > 0.0 else 0.0
+        if final_risk <= 0.0:
+            final_action = Action.NO_SETUP.value
+            tier = "WAIT"
+        candidate.entry_stage = EntryStage.PROBE.value
+        candidate.execution_lane = ExecutionLane.EARLY_TACTICAL.value
+    else:
+        final_action = Action.NO_SETUP.value
+        final_risk = 0.0
+        candidate.entry_stage = (
+            EntryStage.WAIT_RETEST.value
+            if any("ANCHOR" in str(value) or "RETEST" in str(value) for value in (profile.get("wait_reasons") or []))
+            else EntryStage.WAIT_CONFIRMATION.value
+        )
+
+    decision.action = final_action
+    decision.reason = (
+        f"FINAL_EXECUTION_AUTHORITY: {tier} | "
+        f"anchor={'STRONG' if profile.get('anchor_strong') else 'WEAK'} | "
+        f"router={profile.get('router_tactic')}/{profile.get('router_disposition')} | "
+        f"action={final_action}"
+    )
+    candidate.stage_plan = candidate.stage_plan or {}
+    candidate.stage_plan["three_level_execution_v9556"] = copy.deepcopy(profile)
+    candidate.stage_plan["stage"] = candidate.entry_stage
+
+    if plan is not None:
+        plan.entry_stage = candidate.entry_stage
+        plan.final_stage = candidate.entry_stage
+        if final_action in EXECUTABLE_ENTRY_ACTIONS:
+            plan.position_risk_pct = round(final_risk, 6)
+            plan.risk_pct = round(final_risk, 6)
+            if planned_risk > 0.0:
+                candidate.risk_multiplier = min(
+                    safe_float(candidate.risk_multiplier, 1.0),
+                    final_risk / planned_risk,
+                )
+
+    decision.audit = decision.audit or {}
+    director = decision.audit.setdefault("executive_director", {})
+    report = director.setdefault("report", {})
+    executive = report.setdefault("executive_decision", {})
+    authority = dict(
+        decision.audit.get("final_execution_authority_v9551")
+        or ((executive.get("audit") or {}).get("final_execution_authority") or {})
+    )
+    authority.update({
+        "allow": final_action in EXECUTABLE_ENTRY_ACTIONS,
+        "final_action": final_action,
+        "entry_tier": tier,
+        "hard_blockers": list(profile.get("hard_blockers") or []),
+        "advisory_reasons": list(profile.get("advisory_reasons") or []),
+        "three_level_execution": copy.deepcopy(profile),
+        "execution_anchor": copy.deepcopy(profile.get("execution_anchor") or {}),
+        "execution_anchor_schema": profile.get("execution_anchor_schema"),
+        "risk_fraction_of_normal": profile.get("risk_fraction_of_normal"),
+        "risk_cap": profile.get("risk_cap"),
+        "anchor_veto_scope": "FACTUAL_INVALIDATION_ONLY",
+        "router_retest_is_hard_blocker": False,
+        "calibration_can_reject": False,
+        "preconfirmation_can_reject": False,
+        "score_can_reject": False,
+        "is_last_mutator": True,
+        "schema_version": V9556_SCHEMA_VERSION,
+    })
+    decision.audit["final_execution_authority_v9551"] = authority
+    executive.setdefault("audit", {})["final_execution_authority"] = authority
+    report.setdefault("audit", {})["final_execution_authority"] = authority
+    director.update({
+        "final_action": final_action,
+        "authority": "100% THREE_LEVEL_FINAL_AFTER_CANONICAL_ROUTER",
+        "statement": "Final Authority maps valid execution to FULL_ENTRY, EARLY_PROBE or WAIT",
+    })
+    if final_action in EXECUTABLE_ENTRY_ACTIONS:
+        candidate.confirmation_pending = False
+        candidate.opportunity_status = OpportunityStage.EXECUTABLE.value
+        decision.audit["opportunity_status"] = OpportunityStage.EXECUTABLE.value
+        executive.update({
+            "allow_execution": True,
+            "action": candidate.entry_stage,
+            "state": candidate.entry_stage,
+            "allowed_stage": candidate.entry_stage,
+            "final_risk_pct": round(final_risk, 6),
+            "blocking_reasons": [],
+            "warning_reasons": list(profile.get("advisory_reasons") or []),
+        })
+        report["action"] = final_action
+    else:
+        executive.update({
+            "allow_execution": False,
+            "final_risk_pct": 0.0,
+            "blocking_reasons": list(profile.get("hard_blockers") or profile.get("wait_reasons") or []),
+            "warning_reasons": list(profile.get("advisory_reasons") or []),
+        })
+        report["action"] = Action.NO_SETUP.value
+    return decision
+
+
+# Deliberately wrap the v9.5.53 authority implementation directly.  The
+# v9.5.55 directional/retest guard is retained as an advisory input below, but
+# is no longer permitted to set plan.execution_ready=False before final sizing.
+_apply_true_final_authority_v9556_base = _apply_true_final_authority_v9555_base
+def _apply_true_final_authority_v9551(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    candidate = decision.candidate
+    if candidate is None:
+        return decision
+    planned_risk = safe_float(
+        getattr(decision.plan, "position_risk_pct", 0.0),
+        safe_float(getattr(decision.plan, "risk_pct", 0.0), 0.0),
+    )
+    guard = directional_market_guard_v9555(candidate, decision.plan)
+    base_context = dict(context)
+    base_context["_audit_shadow_scan"] = True
+    out = _apply_true_final_authority_v9556_base(decision, base_context, journal)
+    out.audit = out.audit or {}
+    router = dict(out.audit.get("canonical_router_result_v9553") or {})
+    report = (((out.audit.get("executive_director") or {}).get("report") or {}))
+    executive = dict(report.get("executive_decision") or {})
+    profile = three_level_execution_profile_v9556(
+        candidate,
+        out.plan,
+        router=router,
+        executive_blockers=list(executive.get("blocking_reasons") or []),
+        directional_guard=guard,
+    )
+    out = _apply_three_level_execution_v9556(
+        out, profile, planned_risk=planned_risk,
+    )
+    out.audit["directional_market_guard_v9555"] = {
+        **copy.deepcopy(guard),
+        "authority": "ADVISORY_SIZE_INPUT_ONLY",
+        "hard_blocker": False,
+    }
+    authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+    authority["directional_market_guard"] = copy.deepcopy(
+        out.audit["directional_market_guard_v9555"]
+    )
+    out.audit["final_execution_authority_v9551"] = authority
+    if not context.get("_audit_shadow_scan"):
+        _update_execution_anchor_aggregate_v9551(
+            journal,
+            candidate,
+            authority,
+            recovered=out.action in EXECUTABLE_ENTRY_ACTIONS and not profile.get("anchor_strong"),
+            old_entry_available=decision.action in EXECUTABLE_ENTRY_ACTIONS,
+        )
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+def _ensure_execution_anchor_schema_v9556(state: dict[str, Any]) -> dict[str, Any]:
+    migrated = 0
+    rows: list[dict[str, Any]] = []
+    opportunity = state.get("opportunity")
+    if isinstance(opportunity, dict):
+        rows.append(opportunity)
+    rows.extend(
+        row for row in (state.get("router_opportunity_queue_v9541") or [])
+        if isinstance(row, dict)
+    )
+    seen: set[int] = set()
+    for row in rows:
+        if id(row) in seen:
+            continue
+        seen.add(id(row))
+        if str(row.get("execution_anchor_schema") or "").strip():
+            continue
+        # Failed Auction deliberately remains fail-closed without its dedicated
+        # rejection-level provenance.  All other setups can reconstruct the
+        # current anchor from trigger, invalidation and the new market plan.
+        if str(row.get("setup_type") or "") == SetupType.FAILED_AUCTION_REJECTION.value:
+            continue
+        row["execution_anchor_schema"] = "EXECUTION_ANCHOR_RECONSTRUCT_ON_REENTRY_V9_5_56"
+        migrated += 1
+    state.setdefault("state_migration", {})["execution_anchor_schema_v9556"] = {
+        "migrated_rows": migrated,
+        "failed_auction_legacy_rows_remain_fail_closed": True,
+        "schema_version": V9556_SCHEMA_VERSION,
+    }
+    return state
+
+
+_load_state_v9556_base = load_state
+def load_state() -> dict[str, Any]:
+    return _ensure_execution_anchor_schema_v9556(_load_state_v9556_base())
+
+
+_run_audit_journal_v9556_base = run_audit_journal
+def run_audit_journal(path: str) -> dict[str, Any]:
+    output = _run_audit_journal_v9556_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    anchor = dict(payload.get("execution_anchor_repair_audit") or {})
+    output["v9556_three_level_execution_authority"] = {
+        "tiers": ["FULL_ENTRY", "EARLY_PROBE", "WAIT"],
+        "full_entry_requires": [
+            "VALID_STRUCTURE", "FRESH_TRIGGER", "EXECUTION_READY_PLAN",
+            "VALID_RISK_GEOMETRY", "STRONG_NON_INVALIDATED_ANCHOR",
+        ],
+        "early_probe_requires": [
+            "VALID_STRUCTURE", "FRESH_TRIGGER", "EXECUTION_READY_PLAN",
+            "VALID_RISK_GEOMETRY", "NO_FACTUAL_INVALIDATION",
+        ],
+        "hard_blocker_classes": sorted(V9556_FACTUAL_HARD_BLOCKER_CLASSES),
+        "advisory_size_inputs": [
+            "FIRST_RETEST", "LIMIT_AT_ANCHOR", "WEAK_ANCHOR",
+            "SCORE", "CALIBRATION", "PRECONFIRMATION",
+        ],
+        "causal_one_3m_confirmation_still_required": True,
+        "probe_fraction_of_normal": {
+            "minimum": V9556_PROBE_MIN_FRACTION,
+            "maximum": V9556_PROBE_MAX_FRACTION,
+            "retest_default": V9556_RETEST_PROBE_FRACTION,
+        },
+        "historical_anchor_baseline": {
+            "runs": int(anchor.get("runs") or 0),
+            "blocked_candidates": int(anchor.get("blocked_candidates") or 0),
+            "wait_retest_count": int((anchor.get("top_blockers") or {}).get("WAIT_RETEST") or 0),
+        },
+        "execution_anchor_schema_policy": (
+            "PERSIST_PROFILE_SCHEMA_FOR_ALL_SETUPS; "
+            "FAILED_AUCTION_REQUIRES_DEDICATED_REJECTION_PROVENANCE"
+        ),
+        "schema_version": V9556_SCHEMA_VERSION,
+    }
+    return output
+
+
+_validate_runtime_configuration_v9556_base = validate_runtime_configuration
+def validate_runtime_configuration() -> dict[str, Any]:
+    report = _validate_runtime_configuration_v9556_base()
+    errors = list(report.get("errors") or [])
+    if not (
+        0.25 <= V9556_PROBE_MIN_FRACTION
+        <= V9556_RETEST_PROBE_FRACTION
+        <= V9556_PROBE_MAX_FRACTION
+        <= 0.40
+    ):
+        errors.append("v9.5.56 early-probe fraction must stay inside 25-40% of normal risk")
+    if V9556_FACTUAL_HARD_BLOCKER_CLASSES != {"DATA", "RISK", "INVALIDATION"}:
+        errors.append("v9.5.56 hard-blocker scope must remain factual data/risk/invalidation")
+    if not all(callable(globals().get(name)) for name in (
+        "three_level_execution_profile_v9556",
+        "_ensure_execution_anchor_schema_v9556",
+    )):
+        errors.append("v9.5.56 three-level authority boundary is incomplete")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "three_level_execution_authority": True,
+        "three_level_execution_schema": V9556_SCHEMA_VERSION,
+    }
+
+
+def _v9556_authority_fixture(
+    *,
+    anchor_current: bool = True,
+    anchor_invalidated: bool = False,
+    plan_ready: bool = True,
+    valid_geometry: bool = True,
+    score: int = 80,
+    tactic: str = "MARKET_NOW",
+) -> Decision:
+    stop = 99.0 if valid_geometry else 101.0
+    disposition = "EXECUTE_NOW" if tactic == "MARKET_NOW" else "DEFERRED"
+    anchor = {
+        "current_fill_allowed": anchor_current,
+        "execution_ready": anchor_current,
+        "invalidated": anchor_invalidated,
+        "decision": "MARKET_NOW" if anchor_current else "WAIT_RETEST",
+        "quality": 90.0 if anchor_current else 40.0,
+        "risk_multiplier": 1.0,
+        "schema_version": "execution_anchor_test_v9.5.56",
+    }
+    candidate = Candidate(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=80,
+        final_score=score,
+        trigger_ready=True,
+        live_3m_trigger_ready=True,
+        trigger_level=100.0,
+        execution_anchor=100.0,
+        invalidation_level=99.0,
+        execution_source=ExecutionSource.LIVE_3M.value,
+        setup_quality_score=82,
+        execution_quality_score=80,
+        trade_plan_quality_score=80,
+        revalidation_profile={"state": "FRESH", "entry_supported": True},
+        score_components={
+            "execution_anchor_authority": anchor,
+            "execution_intelligence_v9532": {
+                "state_machine": {"current_state": "EXECUTION", "kind": "CONTINUATION"},
+                "execution_router": {
+                    "action": tactic,
+                    "economic_reprice": False,
+                    "runway_known": True,
+                    "runway_r": 1.2,
+                },
+            },
+        },
+        stage_plan={
+            "router_final_tactic": tactic,
+            "router_intended_tactic": tactic,
+            "router_final_disposition": disposition,
+            "router_deferred_from_action": Action.ENTRY.value,
+        },
+    )
+    plan = TradePlan(
+        entry=100.0,
+        stop=stop,
+        tp1=102.0,
+        tp2=103.0,
+        tp3=104.0,
+        risk_pct=NORMAL_RISK_PCT,
+        rr1=2.0,
+        rr2=3.0,
+        rr3=4.0,
+        position_risk_pct=NORMAL_RISK_PCT,
+        valid=True,
+        execution_ready=plan_ready,
+        structural_invalidation=99.0,
+    )
+    action = Action.ENTRY.value if tactic == "MARKET_NOW" else Action.NO_SETUP.value
+    return Decision(
+        id="v9556-authority-fixture",
+        time=iso_now(),
+        action=action,
+        side=candidate.side,
+        setup_type=candidate.setup_type,
+        quality=score,
+        reason="fixture",
+        regime=Regime.TREND.value,
+        candidate=candidate,
+        plan=plan,
+        current_price=100.0,
+        audit={
+            "router_chain_v9541": {
+                "tactic": tactic,
+                "deferred_from_action": Action.ENTRY.value,
+            },
+            "executive_director": {"report": {"executive_decision": {
+                "allow_execution": action in EXECUTABLE_ENTRY_ACTIONS,
+                "final_risk_pct": NORMAL_RISK_PCT,
+                "blocking_reasons": [],
+                "warning_reasons": [],
+                "state": EntryStage.CORE.value,
+                "allowed_stage": EntryStage.CORE.value,
+                "audit": {"final_execution_authority": {"allow": True}},
+            }}},
+        },
+    )
+
+
+def v9556_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    full = _apply_true_final_authority_v9551(
+        _v9556_authority_fixture(),
+        {"price": 100.0, "_audit_shadow_scan": True},
+        {},
+    )
+    full_authority = dict(full.audit.get("final_execution_authority_v9551") or {})
+    checks.append((
+        "v9.5.56 ideal trigger/plan/risk/anchor resolves to FULL_ENTRY at planned risk",
+        full.action == Action.ENTRY.value
+        and full_authority.get("entry_tier") == "FULL_ENTRY"
+        and abs(safe_float(full.plan.position_risk_pct) - NORMAL_RISK_PCT) < 1e-9,
+    ))
+
+    weak = _apply_true_final_authority_v9551(
+        _v9556_authority_fixture(anchor_current=False, tactic="FIRST_RETEST"),
+        {"price": 100.0, "_audit_shadow_scan": True},
+        {},
+    )
+    weak_authority = dict(weak.audit.get("final_execution_authority_v9551") or {})
+    weak_profile = dict(weak_authority.get("three_level_execution") or {})
+    checks.append((
+        "v9.5.56 weak non-invalidated anchor and FIRST_RETEST become a 25-40% EARLY_PROBE",
+        weak.action == Action.PROBE_ENTRY.value
+        and weak_authority.get("entry_tier") == "EARLY_PROBE"
+        and not weak_authority.get("router_retest_is_hard_blocker")
+        and "EXECUTION_ANCHOR_INVALID" not in (weak_authority.get("hard_blockers") or [])
+        and V9556_PROBE_MIN_FRACTION - 1e-9
+        <= safe_float(weak_profile.get("risk_fraction_of_normal"))
+        <= V9556_PROBE_MAX_FRACTION + 1e-9
+        and 0.0 < safe_float(weak.plan.position_risk_pct) <= NORMAL_RISK_PCT * V9556_PROBE_MAX_FRACTION + 1e-9,
+    ))
+
+    invalidated = _apply_true_final_authority_v9551(
+        _v9556_authority_fixture(anchor_current=False, anchor_invalidated=True),
+        {"price": 100.0, "_audit_shadow_scan": True},
+        {},
+    )
+    checks.append((
+        "v9.5.56 factual anchor invalidation remains a hard WAIT",
+        invalidated.action == Action.NO_SETUP.value
+        and "THESIS_INVALIDATED_BY_EXECUTION_ANCHOR"
+        in ((invalidated.audit.get("final_execution_authority_v9551") or {}).get("hard_blockers") or []),
+    ))
+
+    bad_risk = _apply_true_final_authority_v9551(
+        _v9556_authority_fixture(valid_geometry=False),
+        {"price": 100.0, "_audit_shadow_scan": True},
+        {},
+    )
+    checks.append((
+        "v9.5.56 invalid stop geometry remains a hard WAIT",
+        bad_risk.action == Action.NO_SETUP.value
+        and "RISK_INVALID_STOP_GEOMETRY"
+        in ((bad_risk.audit.get("final_execution_authority_v9551") or {}).get("hard_blockers") or []),
+    ))
+
+    no_plan = _apply_true_final_authority_v9551(
+        _v9556_authority_fixture(plan_ready=False),
+        {"price": 100.0, "_audit_shadow_scan": True},
+        {},
+    )
+    checks.append((
+        "v9.5.56 a non-ready plan still waits instead of manufacturing an entry",
+        no_plan.action == Action.NO_SETUP.value
+        and "PLAN_NOT_EXECUTION_READY"
+        in (((no_plan.audit.get("final_execution_authority_v9551") or {}).get("three_level_execution") or {}).get("wait_reasons") or []),
+    ))
+
+    low_score = _apply_true_final_authority_v9551(
+        _v9556_authority_fixture(score=45),
+        {"price": 100.0, "_audit_shadow_scan": True},
+        {},
+    )
+    low_score_authority = dict(low_score.audit.get("final_execution_authority_v9551") or {})
+    checks.append((
+        "v9.5.56 advisory score cannot veto a technically valid setup and only caps it to tiny PROBE",
+        low_score.action == Action.PROBE_ENTRY.value
+        and low_score_authority.get("entry_tier") == "EARLY_PROBE"
+        and safe_float(low_score.plan.position_risk_pct, 1.0) <= V9553_EARLY_PROBE_RISK_CAP + 1e-9,
+    ))
+
+    migrated_state = _ensure_execution_anchor_schema_v9556({
+        "opportunity": {
+            "setup_type": SetupType.FRESH_BASE_CONTINUATION.value,
+            "execution_anchor_schema": "",
+        },
+        "router_opportunity_queue_v9541": [{
+            "setup_type": SetupType.FAILED_AUCTION_REJECTION.value,
+            "execution_anchor_schema": "",
+        }],
+    })
+    checks.append((
+        "v9.5.56 generic opportunities receive anchor schema while legacy Failed Auction stays fail-closed",
+        str((migrated_state.get("opportunity") or {}).get("execution_anchor_schema") or "").endswith("V9_5_56")
+        and not str(((migrated_state.get("router_opportunity_queue_v9541") or [{}])[0]).get("execution_anchor_schema") or ""),
+    ))
+    return checks
+
+
+_run_self_test_v9556_base = _run_self_test
+def _run_self_test() -> bool:
+    base_ok = _run_self_test_v9556_base()
+    checks = v9556_regression_checks()
+    passed = 0
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+        passed += int(bool(ok))
+    print(f"SELF-TEST v9.5.56 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} repair checks")
     return bool(base_ok and passed == len(checks))
 
 
