@@ -1,0 +1,1418 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BZU Signal Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0A0E17;
+    --surface: #111827;
+    --surface2: #1A2235;
+    --border: #1E293B;
+    --border2: #2D3F5C;
+    --green: #10B981;
+    --green-dim: #064E3B;
+    --red: #EF4444;
+    --red-dim: #450A0A;
+    --amber: #F59E0B;
+    --amber-dim: #451A03;
+    --gray: #6B7280;
+    --gray-dim: #1F2937;
+    --blue: #3B82F6;
+    --text: #F1F5F9;
+    --muted: #64748B;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Inter', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 16px;
+  }
+
+  /* HEADER */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .header-logo {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: linear-gradient(135deg, #1d4ed8, #0891b2);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 13px; font-weight: 700; color: white;
+  }
+  .header-title { font-size: 16px; font-weight: 600; color: var(--text); }
+  .header-sub { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  .live-dot.stale { background: var(--amber); animation: none; }
+  .live-dot.error { background: var(--red); animation: none; }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(16,185,129,0.4); }
+    50% { opacity: 0.8; box-shadow: 0 0 0 4px rgba(16,185,129,0); }
+  }
+  .update-time { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  /* PRICE BAR */
+  .price-bar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .price-main { display: flex; align-items: baseline; gap: 8px; }
+  .price-symbol { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .price-value { font-size: 32px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+  .price-change { font-size: 13px; font-family: var(--mono); font-weight: 500; padding: 2px 8px; border-radius: 6px; }
+  .price-change.up { color: var(--green); background: var(--green-dim); }
+  .price-change.down { color: var(--red); background: var(--red-dim); }
+  .price-change.flat { color: var(--gray); background: var(--gray-dim); }
+  .price-source { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  /* SIGNAL CARD */
+  .signal-card {
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+  .signal-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    border-radius: 4px 0 0 4px;
+  }
+  .signal-card.entry { background: #0a1f15; border-color: #065f46; }
+  .signal-card.entry::before { background: var(--green); }
+  .signal-card.risky { background: #1a1200; border-color: #78350f; }
+  .signal-card.risky::before { background: var(--amber); }
+  .signal-card.watch { background: #0f172a; border-color: #1e3a5f; }
+  .signal-card.watch::before { background: var(--blue); }
+  .signal-card.notrade { background: var(--surface); border-color: var(--border); }
+  .signal-card.notrade::before { background: var(--gray); }
+
+  .signal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
+  .signal-title { font-size: 18px; font-weight: 600; }
+  .signal-title.entry { color: var(--green); }
+  .signal-title.risky { color: var(--amber); }
+  .signal-title.watch { color: var(--blue); }
+  .signal-title.notrade { color: var(--gray); }
+
+  /* QUALITY RING */
+  .quality-wrap { display: flex; align-items: center; gap: 10px; }
+  .quality-ring-container { position: relative; width: 60px; height: 60px; }
+  .quality-ring-svg { transform: rotate(-90deg); }
+  .quality-track { fill: none; stroke: var(--border2); stroke-width: 5; }
+  .quality-fill { fill: none; stroke-width: 5; stroke-linecap: round; transition: stroke-dashoffset 1s ease; }
+  .quality-fill.high { stroke: var(--green); }
+  .quality-fill.mid { stroke: var(--amber); }
+  .quality-fill.low { stroke: var(--red); }
+  .quality-number {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 14px; font-weight: 700;
+  }
+  .quality-label { font-size: 11px; color: var(--muted); }
+  .quality-val-label { font-size: 13px; font-weight: 500; }
+
+  .signal-reason { font-size: 13px; color: var(--muted); line-height: 1.5; margin-bottom: 14px; }
+
+  /* TRADE PLAN */
+  .plan-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .plan-cell {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .plan-cell-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .plan-cell-value { font-size: 15px; font-weight: 600; font-family: var(--mono); }
+  .plan-cell-value.entry-price { color: var(--text); }
+  .plan-cell-value.stop { color: var(--red); }
+  .plan-cell-value.tp1 { color: var(--green); }
+  .plan-cell-value.tp2 { color: #34d399; }
+  .plan-cell-value.tp3 { color: #6ee7b7; }
+  .plan-cell-sub { font-size: 10px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+
+  /* ACTIVE TRADE */
+  .active-trade-banner {
+    background: #0a1a2e;
+    border: 1px solid #1e3f6e;
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .active-trade-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--blue); margin-bottom: 12px; font-weight: 600;
+  }
+  .trade-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
+  .trade-stat { }
+  .trade-stat-label { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+  .trade-stat-value { font-size: 14px; font-weight: 600; font-family: var(--mono); }
+  .trade-stat-value.positive { color: var(--green); }
+  .trade-stat-value.negative { color: var(--red); }
+  .trade-stat-value.neutral { color: var(--text); }
+
+  .tp-row { display: flex; gap: 6px; margin-top: 10px; }
+  .tp-badge {
+    padding: 3px 8px; border-radius: 5px; font-size: 11px;
+    font-family: var(--mono); font-weight: 500; border: 1px solid;
+  }
+  .tp-badge.hit { background: var(--green-dim); color: var(--green); border-color: #065f46; }
+  .tp-badge.pending { background: var(--gray-dim); color: var(--muted); border-color: var(--border); }
+
+  /* BOTTOM GRID */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .info-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .info-card-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 10px; }
+  .info-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .info-row:last-child { border-bottom: none; }
+  .info-row-key { font-size: 12px; color: var(--muted); }
+  .info-row-val { font-size: 12px; font-weight: 500; font-family: var(--mono); }
+  .info-row-val.green { color: var(--green); }
+  .info-row-val.red { color: var(--red); }
+  .info-row-val.amber { color: var(--amber); }
+  .info-row-val.blue { color: var(--blue); }
+  .info-row-val.gray { color: var(--gray); }
+
+  /* CONFIRMATIONS */
+  .conf-list { display: flex; flex-direction: column; gap: 4px; }
+  .conf-item { font-size: 12px; display: flex; align-items: flex-start; gap: 6px; line-height: 1.4; }
+  .conf-item.ok { color: #6ee7b7; }
+  .conf-item.warn { color: #fbbf24; }
+  .conf-item .dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .conf-item.ok .dot { background: var(--green); }
+  .conf-item.warn .dot { background: var(--amber); }
+
+  /* NEWS */
+  .news-item { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .news-item:last-child { border-bottom: none; }
+  .news-headline { font-size: 12px; color: var(--text); line-height: 1.4; margin-bottom: 3px; }
+  .news-meta { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+  .news-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; margin-right: 4px; }
+  .news-badge.long { background: var(--green-dim); color: var(--green); }
+  .news-badge.short { background: var(--red-dim); color: var(--red); }
+  .news-badge.neutral { background: var(--gray-dim); color: var(--gray); }
+
+  /* JOURNAL */
+  .journal-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .journal-item:last-child { border-bottom: none; }
+  .journal-side {
+    font-family: var(--mono); font-weight: 600; font-size: 11px;
+    padding: 2px 7px; border-radius: 4px; flex-shrink: 0;
+  }
+  .journal-side.long { background: var(--green-dim); color: var(--green); }
+  .journal-side.short { background: var(--red-dim); color: var(--red); }
+  .journal-side.neutral { background: var(--gray-dim); color: var(--gray); }
+  .journal-action { color: var(--muted); flex: 1; }
+  .journal-time { color: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+
+
+  /* LIVE DASHBOARD MONITOR */
+  .live-monitor-card {
+    margin-top: 14px;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .live-monitor-title {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin-bottom: 10px; font-weight: 600;
+  }
+  .live-monitor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+  }
+  .live-cell {
+    background: rgba(0,0,0,0.16);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 11px;
+  }
+  .live-cell-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .live-cell-value { font-size: 14px; font-weight: 700; font-family: var(--mono); }
+  .live-cell-value.positive { color: var(--green); }
+  .live-cell-value.negative { color: var(--red); }
+  .live-cell-value.warning { color: var(--amber); }
+  .live-cell-value.neutral { color: var(--text); }
+  .live-status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 9px; border-radius: 999px; font-size: 11px;
+    font-family: var(--mono); font-weight: 700; border: 1px solid var(--border);
+  }
+  .live-status-pill.ok { background: var(--green-dim); color: var(--green); border-color: #065f46; }
+  .live-status-pill.warn { background: var(--amber-dim); color: var(--amber); border-color: #78350f; }
+  .live-status-pill.danger { background: var(--red-dim); color: var(--red); border-color: #7f1d1d; }
+  .live-status-pill.neutral { background: var(--gray-dim); color: var(--gray); border-color: var(--border); }
+  .live-note {
+    margin-top: 10px; font-size: 11px; color: var(--muted); line-height: 1.45;
+  }
+
+  /* ERROR STATE */
+  .error-banner {
+    background: #1a0a0a; border: 1px solid #450a0a;
+    border-radius: 10px; padding: 16px; text-align: center;
+    color: var(--red); font-size: 14px; margin-bottom: 14px;
+  }
+
+  /* SKELETON */
+  .skeleton { background: var(--surface2); border-radius: 6px; animation: shimmer 1.5s infinite; }
+  @keyframes shimmer {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  /* FOOTER */
+  .footer { text-align: center; font-size: 11px; color: var(--muted); padding: 20px 0 8px; font-family: var(--mono); }
+
+  /* ICT ZONES */
+  .zone-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 5px; font-size: 11px;
+    font-family: var(--mono); margin: 2px; border: 1px solid;
+  }
+  .zone-pill.bull { background: var(--green-dim); color: var(--green); border-color: #065f46; }
+  .zone-pill.bear { background: var(--red-dim); color: var(--red); border-color: #7f1d1d; }
+  .zone-pill.neutral { background: var(--gray-dim); color: var(--gray); border-color: var(--border); }
+
+  /* REGIME BADGE */
+  .regime-badge {
+    display: inline-block; padding: 4px 10px; border-radius: 6px;
+    font-size: 12px; font-weight: 500; font-family: var(--mono);
+  }
+
+  @media (max-width: 480px) {
+    body { padding: 10px; }
+    .price-value { font-size: 26px; }
+    .signal-title { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="header-logo">BZ</div>
+    <div>
+      <div class="header-title">BZU Signal Bot</div>
+      <div class="header-sub">BZ-USDT-SWAP · ICT/SMC · Regime Engine 2.0</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="live-dot" id="liveDot"></div>
+    <div class="update-time" id="updateTime">завантаження...</div>
+  </div>
+</div>
+
+<div id="errorBanner" class="error-banner" style="display:none;">
+  ⚠️ Не вдалось завантажити дані. Бот ще не запускався або GitHub недоступний.
+</div>
+
+<!-- PRICE BAR -->
+<div class="price-bar" id="priceBar">
+  <div class="price-main">
+    <span class="price-symbol">BZU/USDT</span>
+    <span class="price-value" id="priceValue">—</span>
+    <span class="price-change flat" id="priceChange">—</span>
+  </div>
+  <div class="price-source" id="priceSource">джерело: —</div>
+</div>
+
+<!-- SIGNAL CARD -->
+<div class="signal-card notrade" id="signalCard">
+  <div class="signal-header">
+    <span class="signal-title notrade" id="signalTitle">Завантаження...</span>
+    <div class="quality-wrap">
+      <div class="quality-ring-container">
+        <svg class="quality-ring-svg" width="60" height="60" viewBox="0 0 60 60" role="img" aria-label="Якість сигналу">
+          <circle class="quality-track" cx="30" cy="30" r="26"/>
+          <circle class="quality-fill low" id="qualityArc" cx="30" cy="30" r="26"
+            stroke-dasharray="163.36" stroke-dashoffset="163.36"/>
+        </svg>
+        <div class="quality-number" id="qualityNum">—</div>
+      </div>
+      <div>
+        <div class="quality-val-label" id="qualityLabel">якість</div>
+        <div class="quality-label">/100</div>
+      </div>
+    </div>
+  </div>
+  <div class="signal-reason" id="signalReason">Очікуємо перший сигнал від бота...</div>
+
+  <!-- PLAN -->
+  <div class="plan-grid" id="planGrid" style="display:none;">
+    <div class="plan-cell">
+      <div class="plan-cell-label">Вхід</div>
+      <div class="plan-cell-value entry-price" id="planEntry">—</div>
+    </div>
+    <div class="plan-cell">
+      <div class="plan-cell-label">Стоп</div>
+      <div class="plan-cell-value stop" id="planStop">—</div>
+      <div class="plan-cell-sub" id="planRisk">ризик —%</div>
+    </div>
+    <div class="plan-cell">
+      <div class="plan-cell-label">TP1</div>
+      <div class="plan-cell-value tp1" id="planTp1">—</div>
+      <div class="plan-cell-sub" id="planRr1">RR —</div>
+    </div>
+    <div class="plan-cell">
+      <div class="plan-cell-label">TP2</div>
+      <div class="plan-cell-value tp2" id="planTp2">—</div>
+      <div class="plan-cell-sub" id="planRr2">RR —</div>
+    </div>
+    <div class="plan-cell">
+      <div class="plan-cell-label">TP3</div>
+      <div class="plan-cell-value tp3" id="planTp3">—</div>
+      <div class="plan-cell-sub" id="planRr3">RR —</div>
+    </div>
+  </div>
+</div>
+
+<!-- ACTIVE TRADE -->
+<div class="active-trade-banner" id="activeTradeBanner" style="display:none;">
+  <div class="active-trade-title">🔴 Активна угода</div>
+  <div class="trade-stats">
+    <div class="trade-stat">
+      <div class="trade-stat-label">Сторона</div>
+      <div class="trade-stat-value neutral" id="tradeSide">—</div>
+    </div>
+    <div class="trade-stat">
+      <div class="trade-stat-label">Вхід</div>
+      <div class="trade-stat-value neutral" id="tradeEntry">—</div>
+    </div>
+    <div class="trade-stat">
+      <div class="trade-stat-label">Стоп зараз</div>
+      <div class="trade-stat-value neutral" id="tradeStop">—</div>
+    </div>
+    <div class="trade-stat">
+      <div class="trade-stat-label">Поточний стоп</div>
+      <div class="trade-stat-value neutral" id="tradeStopCurrent">—</div>
+    </div>
+    <div class="trade-stat">
+      <div class="trade-stat-label">Найкраща ціна</div>
+      <div class="trade-stat-value neutral" id="tradeBestPrice">—</div>
+    </div>
+    <div class="trade-stat">
+      <div class="trade-stat-label">Відкрита о</div>
+      <div class="trade-stat-value neutral" id="tradeOpenedAt">—</div>
+    </div>
+  </div>
+  <div class="tp-row" id="tpRow"></div>
+
+  <div class="live-monitor-card" id="liveMonitorCard" style="display:none;">
+    <div class="live-monitor-title">
+      <span>Live супровід · read-only</span>
+      <span id="liveSource">джерело: —</span>
+    </div>
+    <div class="live-monitor-grid">
+      <div class="live-cell">
+        <div class="live-cell-label">PnL зараз</div>
+        <div class="live-cell-value neutral" id="livePnl">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">MFE</div>
+        <div class="live-cell-value neutral" id="liveMfe">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">Giveback</div>
+        <div class="live-cell-value neutral" id="liveGiveback">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">До TP1</div>
+        <div class="live-cell-value neutral" id="liveDistTp1">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">Запас до Stop</div>
+        <div class="live-cell-value neutral" id="liveDistStop">—</div>
+      </div>
+      <div class="live-cell">
+        <div class="live-cell-label">Вік сигналу</div>
+        <div class="live-cell-value neutral" id="liveSignalAge">—</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;">
+      <span class="live-status-pill neutral" id="liveStatusPill">—</span>
+    </div>
+    <div class="live-note" id="liveNote">
+      Дашборд тільки показує live-стан і не відправляє Telegram-повідомлення.
+    </div>
+  </div>
+
+</div>
+
+<!-- INFO GRID -->
+<div class="info-grid">
+
+  <div class="info-card">
+    <div class="info-card-title">Технічний аналіз</div>
+    <div class="info-row">
+      <span class="info-row-key">3M</span>
+      <span class="info-row-val" id="tf3">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">15M</span>
+      <span class="info-row-val" id="tf15">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">1H</span>
+      <span class="info-row-val" id="tf1h">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">4H</span>
+      <span class="info-row-val" id="tf4h">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Структура</span>
+      <span class="info-row-val" id="structure">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">ATR 15M</span>
+      <span class="info-row-val" id="atr15">—</span>
+    </div>
+  </div>
+
+  <div class="info-card">
+    <div class="info-card-title">ICT / Потік</div>
+    <div class="info-row">
+      <span class="info-row-key">ICT сетап</span>
+      <span class="info-row-val" id="ictSetup">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Зона</span>
+      <span class="info-row-val" id="ictZone">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">CVD</span>
+      <span class="info-row-val" id="cvd">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Потік угод</span>
+      <span class="info-row-val" id="flow">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">OI / Funding</span>
+      <span class="info-row-val" id="derivatives">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Ліквідність</span>
+      <span class="info-row-val" id="liquidity">—</span>
+    </div>
+  </div>
+
+  <div class="info-card">
+    <div class="info-card-title">Режим ринку</div>
+    <div style="margin-bottom:10px;" id="regimeBadgeWrap">
+      <span class="regime-badge" id="regimeBadge" style="background:var(--gray-dim);color:var(--gray);">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Тип</span>
+      <span class="info-row-val" id="regimeType">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Вхід</span>
+      <span class="info-row-val" id="regimeEntry">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Сесія</span>
+      <span class="info-row-val" id="session">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Новини</span>
+      <span class="info-row-val" id="newsBias">—</span>
+    </div>
+    <div class="info-row">
+      <span class="info-row-key">Заг. скор</span>
+      <span class="info-row-val" id="totalScore">—</span>
+    </div>
+  </div>
+
+  <div class="info-card" id="confCard">
+    <div class="info-card-title">Підтвердження / Конфлікти</div>
+    <div class="conf-list" id="confList">
+      <span style="font-size:12px;color:var(--muted);">—</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ICT PENDING ZONES -->
+<div class="info-card" style="margin-bottom:14px;" id="ictZonesCard">
+  <div class="info-card-title">Pending ICT зони</div>
+  <div id="ictZonesList" style="padding-top:4px;">
+    <span style="font-size:12px;color:var(--muted);">—</span>
+  </div>
+</div>
+
+<!-- NEWS -->
+<div class="info-card" style="margin-bottom:14px;">
+  <div class="info-card-title">Останні новини</div>
+  <div id="newsList">
+    <span style="font-size:12px;color:var(--muted);">—</span>
+  </div>
+</div>
+
+<!-- JOURNAL -->
+<div class="info-card" style="margin-bottom:14px;">
+  <div class="info-card-title">Журнал сигналів (останні 10)</div>
+  <div id="journalList">
+    <span style="font-size:12px;color:var(--muted);">—</span>
+  </div>
+</div>
+
+<div class="footer" id="footer">
+  Оновлення кожні 60 сек · Дані з GitHub · BZU-Signal-Bot
+</div>
+
+<script>
+const REPO = 'yule4kamamchur-ai/BZU-Signal-Bot';
+const SIGNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/last_signal.json`;
+const JOURNAL_URL = `https://raw.githubusercontent.com/${REPO}/main/signal_journal.json`;
+const REFRESH_MS = 60000;
+const LIVE_SYMBOL_OKX = 'BZ-USDT-SWAP';
+const LIVE_SYMBOL_BINANCE = 'BZUSDT';
+let LAST_STATE = {};
+let LAST_JOURNAL = {};
+let LAST_SIGNAL = {};
+let LAST_CONTEXT = {};
+let LAST_ACTIVE_TRADE = null;
+let LAST_LIVE_MARKET = null;
+
+function $(id) { return document.getElementById(id); }
+function isObj(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+function hasKeys(v) { return isObj(v) && Object.keys(v).length > 0; }
+function firstNonEmptyObject(...objs) { return objs.find(hasKeys) || {}; }
+function asArray(v) { return Array.isArray(v) ? v : []; }
+function firstDefined(...vals) { return vals.find(v => v !== undefined && v !== null && v !== ''); }
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function escapeHtml(v) {
+  return String(v ?? '—')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function colorClass(bias) {
+  if (!bias) return 'gray';
+  const b = String(bias).toUpperCase();
+  if (b.includes('LONG') || b.includes('BUY') || b.includes('BULL')) return 'green';
+  if (b.includes('SHORT') || b.includes('SELL') || b.includes('BEAR')) return 'red';
+  if (b.includes('WAIT') || b.includes('WATCH') || b.includes('RISK')) return 'amber';
+  return 'gray';
+}
+
+function biasLabel(bias) {
+  if (!bias) return '—';
+  const b = String(bias).toUpperCase();
+  if (b.includes('LONG') || b.includes('BUY') || b.includes('BULL')) return '▲ LONG';
+  if (b.includes('SHORT') || b.includes('SELL') || b.includes('BEAR')) return '▼ SHORT';
+  return '= НЕЙТР';
+}
+
+function formatPrice(v) {
+  const n = num(v);
+  if (n === null) return '—';
+  return n.toFixed(4);
+}
+
+function formatPct(v, digits = 2) {
+  const n = num(v);
+  if (n === null) return '—';
+  return `${n > 0 ? '+' : ''}${n.toFixed(digits)}%`;
+}
+
+function formatTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+  } catch { return '—'; }
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString('uk-UA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch { return '—'; }
+}
+
+function setText(id, value, fallback = '—') {
+  const el = $(id);
+  if (el) el.textContent = value === undefined || value === null || value === '' ? fallback : value;
+}
+
+function setRow(id, value, cls = 'gray') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = value === undefined || value === null || value === '' ? '—' : value;
+  el.className = 'info-row-val ' + cls;
+}
+
+function scoreText(score) {
+  const s = num(score);
+  if (s === null) return '—';
+  return `${s > 0 ? '+' : ''}${Math.round(s)}`;
+}
+
+function setQualityRing(quality) {
+  const arc = $('qualityArc');
+  const numEl = $('qualityNum');
+  const label = $('qualityLabel');
+  const qRaw = num(quality);
+  if (qRaw === null) {
+    numEl.textContent = '—';
+    label.textContent = 'якість';
+    arc.style.strokeDashoffset = 2 * Math.PI * 26;
+    return;
+  }
+  const q = Math.max(0, Math.min(100, Math.round(qRaw)));
+  const circumference = 2 * Math.PI * 26;
+  arc.style.strokeDasharray = circumference;
+  arc.style.strokeDashoffset = circumference - (q / 100) * circumference;
+  arc.classList.remove('high', 'mid', 'low');
+  if (q >= 68) arc.classList.add('high');
+  else if (q >= 55) arc.classList.add('mid');
+  else arc.classList.add('low');
+  numEl.textContent = q;
+  numEl.style.color = q >= 68 ? 'var(--green)' : q >= 55 ? 'var(--amber)' : 'var(--red)';
+  label.textContent = q >= 68 ? 'сильний' : q >= 55 ? 'ризиковий' : 'слабкий';
+}
+
+function normalizeAction(signal) {
+  const raw = String(firstDefined(signal?.action, signal?.type, signal?.entry_level, '')).toUpperCase();
+  if (!raw || raw === 'NO_TRADE' || raw.includes('NO_TRADE') || raw.includes('BLOCK') || raw.includes('ЗАБОРО')) return 'no_trade';
+  if (raw.includes('WATCH') || raw.includes('WAIT') || raw.includes('PENDING')) return 'watch';
+  if (raw.includes('RISKY')) return 'risky_entry';
+  if (raw.includes('ENTRY') || raw.includes('IGNITION')) return 'entry';
+  if (raw.includes('EXIT') || raw.includes('SUPPORT') || raw.includes('MANAGE')) return 'watch';
+  return raw.toLowerCase();
+}
+
+function signalTitle(signal) {
+  const explicit = firstDefined(signal?.title, signal?.message_title);
+  if (explicit) return explicit;
+  const action = normalizeAction(signal);
+  const side = String(signal?.side || '').toUpperCase();
+  const suffix = side ? ` ${side}` : '';
+  if (action === 'entry') return `ВХІД${suffix}`;
+  if (action === 'risky_entry') return `РИЗИКОВАНИЙ ВХІД${suffix}`;
+  if (action === 'watch') return `ЧЕКАТИ ТРИГЕР${suffix}`;
+  return 'ВХОДУ НЕМАЄ';
+}
+
+function setSignalCard(signal, ctx, state) {
+  const card = $('signalCard');
+  const titleEl = $('signalTitle');
+  const action = normalizeAction(signal);
+  card.className = 'signal-card';
+  titleEl.className = 'signal-title';
+  if (action === 'entry') {
+    card.classList.add('entry');
+    titleEl.classList.add('entry');
+  } else if (action === 'risky_entry') {
+    card.classList.add('risky');
+    titleEl.classList.add('risky');
+  } else if (action === 'watch') {
+    card.classList.add('watch');
+    titleEl.classList.add('watch');
+  } else {
+    card.classList.add('notrade');
+    titleEl.classList.add('notrade');
+  }
+  titleEl.textContent = signalTitle(signal);
+  const reason = firstDefined(
+    signal?.reason,
+    signal?.regime_engine?.reason,
+    signal?.setup_classifier?.reason,
+    ctx?.regime_engine?.reason,
+    ctx?.market_regime?.reason,
+    state?.reason,
+    '—'
+  );
+  $('signalReason').textContent = reason;
+  setQualityRing(firstDefined(signal?.quality, state?.last_quality, signal?.setup_classifier?.score));
+}
+
+function normalizePlan(signal) {
+  const plan = signal?.plan || {};
+  const out = {
+    entry: firstDefined(plan.entry, plan.entry_price, signal?.entry, signal?.entry_price, signal?.price),
+    stop: firstDefined(plan.stop, plan.stop_price, plan.stop_current, signal?.stop, signal?.stop_initial),
+    tp1: firstDefined(plan.tp1, signal?.tp1),
+    tp2: firstDefined(plan.tp2, signal?.tp2),
+    tp3: firstDefined(plan.tp3, signal?.tp3),
+    risk_pct: firstDefined(plan.risk_pct, signal?.risk_pct),
+    rr1: firstDefined(plan.rr1, signal?.rr1),
+    rr2: firstDefined(plan.rr2, signal?.rr2),
+    rr3: firstDefined(plan.rr3, signal?.rr3)
+  };
+  return out;
+}
+
+function renderPlan(signal) {
+  const grid = $('planGrid');
+  const plan = normalizePlan(signal);
+  if (num(plan.entry) === null && num(plan.tp1) === null && num(plan.stop) === null) {
+    grid.style.display = 'none';
+    return;
+  }
+  grid.style.display = 'grid';
+  setText('planEntry', formatPrice(plan.entry));
+  setText('planStop', formatPrice(plan.stop));
+  const risk = num(plan.risk_pct);
+  setText('planRisk', risk === null ? 'ризик —%' : `ризик ${risk.toFixed(2)}%`);
+  setText('planTp1', formatPrice(plan.tp1));
+  setText('planRr1', num(plan.rr1) === null ? 'RR —' : `RR ${num(plan.rr1).toFixed(2)}`);
+  setText('planTp2', formatPrice(plan.tp2));
+  setText('planRr2', num(plan.rr2) === null ? 'RR —' : `RR ${num(plan.rr2).toFixed(2)}`);
+  setText('planTp3', formatPrice(plan.tp3));
+  setText('planRr3', num(plan.rr3) === null ? 'RR —' : `RR ${num(plan.rr3).toFixed(2)}`);
+}
+
+function tpHit(side, price, target, explicit) {
+  if (explicit !== undefined && explicit !== null) return Boolean(explicit);
+  const p = num(price), t = num(target);
+  if (p === null || t === null) return false;
+  const s = String(side || '').toUpperCase();
+  return s === 'LONG' ? p >= t : s === 'SHORT' ? p <= t : false;
+}
+
+function renderActiveTrade(trade, currentPrice) {
+  const banner = $('activeTradeBanner');
+  if (!trade || num(firstDefined(trade.entry, trade.entry_price)) === null) {
+    banner.style.display = 'none';
+    const card = $('liveMonitorCard');
+    if (card) card.style.display = 'none';
+    return;
+  }
+  banner.style.display = 'block';
+  const side = String(trade.side || '').toUpperCase();
+  $('tradeSide').textContent = side === 'LONG' ? '▲ LONG' : side === 'SHORT' ? '▼ SHORT' : '—';
+  $('tradeSide').className = 'trade-stat-value ' + (side === 'LONG' ? 'positive' : side === 'SHORT' ? 'negative' : 'neutral');
+  setText('tradeEntry', formatPrice(firstDefined(trade.entry, trade.entry_price)));
+  setText('tradeStop', formatPrice(firstDefined(trade.stop_initial, trade.stop, trade.initial_stop)));
+  setText('tradeStopCurrent', formatPrice(firstDefined(trade.stop_current, trade.current_stop, trade.stop)));
+  setText('tradeBestPrice', formatPrice(firstDefined(trade.best_price, trade.best, trade.mfe_price)));
+  setText('tradeOpenedAt', formatDateTime(firstDefined(trade.opened_at, trade.time, trade.created_at)));
+
+  const tp1 = firstDefined(trade.tp1, trade.plan?.tp1);
+  const tp2 = firstDefined(trade.tp2, trade.plan?.tp2);
+  const tp3 = firstDefined(trade.tp3, trade.plan?.tp3);
+  const tpRow = $('tpRow');
+  tpRow.innerHTML = '';
+  [
+    ['TP1', tpHit(side, currentPrice, tp1, trade.tp1_hit), tp1],
+    ['TP2', tpHit(side, currentPrice, tp2, trade.tp2_hit), tp2],
+    ['TP3', tpHit(side, currentPrice, tp3, trade.tp3_hit), tp3]
+  ].forEach(([label, hit, val]) => {
+    if (num(val) === null) return;
+    const el = document.createElement('span');
+    el.className = 'tp-badge ' + (hit ? 'hit' : 'pending');
+    el.textContent = `${label} ${formatPrice(val)}${hit ? ' ✓' : ''}`;
+    tpRow.appendChild(el);
+  });
+}
+
+function tradeKey(trade) {
+  const side = String(trade?.side || '').toUpperCase();
+  const entry = formatPrice(firstDefined(trade?.entry, trade?.entry_price));
+  const opened = firstDefined(trade?.opened_at, trade?.time, trade?.created_at, 'unknown');
+  return `bzu_live_best_${side}_${entry}_${opened}`;
+}
+
+function getStoredBestPrice(trade) {
+  try {
+    const raw = localStorage.getItem(tradeKey(trade));
+    const parsed = num(raw);
+    return parsed;
+  } catch { return null; }
+}
+
+function setStoredBestPrice(trade, price) {
+  try { localStorage.setItem(tradeKey(trade), String(price)); } catch {}
+}
+
+function pctClass(v, reverse = false) {
+  const n = num(v);
+  if (n === null) return 'neutral';
+  if (reverse) return n <= 0.15 ? 'negative' : n <= 0.35 ? 'warning' : 'positive';
+  return n > 0 ? 'positive' : n < 0 ? 'negative' : 'neutral';
+}
+
+function setLiveCell(id, value, cls = 'neutral') {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = value;
+  el.className = 'live-cell-value ' + cls;
+}
+
+function distanceToTargetPct(side, price, target, entry) {
+  const p = num(price), t = num(target), e = num(entry);
+  if (p === null || t === null || e === null || e === 0) return null;
+  const s = String(side || '').toUpperCase();
+  if (s === 'LONG') return ((t - p) / e) * 100;
+  if (s === 'SHORT') return ((p - t) / e) * 100;
+  return null;
+}
+
+function stopSafetyPct(side, price, stop, entry) {
+  const p = num(price), st = num(stop), e = num(entry);
+  if (p === null || st === null || e === null || e === 0) return null;
+  const s = String(side || '').toUpperCase();
+  if (s === 'LONG') return ((p - st) / e) * 100;
+  if (s === 'SHORT') return ((st - p) / e) * 100;
+  return null;
+}
+
+function pnlPct(side, price, entry) {
+  const p = num(price), e = num(entry);
+  if (p === null || e === null || e === 0) return null;
+  const s = String(side || '').toUpperCase();
+  if (s === 'LONG') return ((p - e) / e) * 100;
+  if (s === 'SHORT') return ((e - p) / e) * 100;
+  return null;
+}
+
+function bestMfePct(side, bestPrice, entry) {
+  return pnlPct(side, bestPrice, entry);
+}
+
+function statusMeta(status) {
+  const map = {
+    NORMAL: ['ok', '✅ NORMAL', 'Угода рухається в межах плану. Дашборд тільки моніторить стан.'],
+    NEAR_TP1: ['ok', '🎯 NEAR TP1', 'Ціна близько до TP1. Варто уважно дивитися, але Telegram не змінюється.'],
+    TP1_HIT: ['ok', '✅ TP1 HIT', 'TP1 за live-ціною вже досягнуто або дуже близько. Далі орієнтир — правила супроводу бота.'],
+    PROTECT_PROFIT: ['warn', '🛡️ PROTECT PROFIT', 'Угода вже давала хороший MFE, але частина прибутку віддається. Це сигнал на екрані, не Telegram-команда.'],
+    RETURNING_TO_ENTRY: ['warn', '↩️ RETURNING TO ENTRY', 'Ціна повертається до входу після хорошого руху. Не давати емоційно перетримувати мінус.'],
+    STOP_DANGER: ['danger', '⚠️ STOP DANGER', 'Ціна близько до стопа. Дашборд показує ризик, але стоп не змінює.'],
+    STOP_TOUCHED: ['danger', '🛑 STOP TOUCHED', 'Live-ціна дійшла до стоп-зони або пройшла її. Перевір фактичне виконання на біржі/у плані.'],
+    STALE_SIGNAL: ['warn', '⏳ STALE SIGNAL', 'Останній сигнал старіший за нормальний інтервал. Чекаємо наступне 15-хв оновлення бота.'],
+    NO_LIVE_PRICE: ['neutral', '— NO LIVE PRICE', 'Live-ціну не вдалось отримати, показано останній стан з JSON.']
+  };
+  return map[status] || map.NORMAL;
+}
+
+function chooseLiveStatus({ pnl, mfe, giveback, distTp1, distStop, tp1Hit, signalAgeMin, liveOk }) {
+  if (!liveOk) return 'NO_LIVE_PRICE';
+  if (num(distStop) !== null && distStop <= 0) return 'STOP_TOUCHED';
+  if (num(distStop) !== null && distStop <= 0.15) return 'STOP_DANGER';
+  if (tp1Hit) return 'TP1_HIT';
+  if (num(mfe) !== null && mfe >= 0.40 && !tp1Hit) {
+    if (num(pnl) !== null && Math.abs(pnl) <= 0.10) return 'RETURNING_TO_ENTRY';
+    if (num(giveback) !== null && giveback >= Math.max(0.15, mfe * 0.45)) return 'PROTECT_PROFIT';
+  }
+  if (num(distTp1) !== null && distTp1 >= 0 && distTp1 <= 0.15) return 'NEAR_TP1';
+  if (num(signalAgeMin) !== null && signalAgeMin > 30) return 'STALE_SIGNAL';
+  return 'NORMAL';
+}
+
+function renderLiveMonitor(trade, signal, ctx, liveMarket) {
+  const card = $('liveMonitorCard');
+  if (!card || !trade || num(firstDefined(trade.entry, trade.entry_price)) === null) {
+    if (card) card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+
+  const side = String(trade.side || '').toUpperCase();
+  const entry = firstDefined(trade.entry, trade.entry_price);
+  const stop = firstDefined(trade.stop_current, trade.current_stop, trade.stop, trade.stop_initial, trade.initial_stop);
+  const tp1 = firstDefined(trade.tp1, trade.plan?.tp1, normalizePlan(signal).tp1);
+  const price = firstDefined(liveMarket?.price, currentPriceFrom(ctx, signal, LAST_STATE, trade));
+  const liveOk = liveMarket && num(liveMarket.price) !== null;
+
+  if (num(price) !== null) {
+    setText('priceValue', formatPrice(price));
+    const ch = num(firstDefined(liveMarket?.change24h, ctx?.change24h, ctx?.change_24h));
+    const chEl = $('priceChange');
+    if (chEl && ch !== null) {
+      chEl.textContent = formatPct(ch);
+      chEl.className = 'price-change ' + (ch > 0 ? 'up' : ch < 0 ? 'down' : 'flat');
+    }
+    setText('priceSource', `джерело: ${firstDefined(liveMarket?.source, 'live/API')}`);
+  }
+
+  let best = firstDefined(trade.best_price, trade.best, trade.mfe_price, getStoredBestPrice(trade), price);
+  if (num(price) !== null && num(best) !== null) {
+    best = side === 'LONG' ? Math.max(num(best), num(price)) : side === 'SHORT' ? Math.min(num(best), num(price)) : num(best);
+    setStoredBestPrice(trade, best);
+    setText('tradeBestPrice', formatPrice(best));
+  }
+
+  const pnl = pnlPct(side, price, entry);
+  const mfe = Math.max(0, num(bestMfePct(side, best, entry)) ?? 0);
+  const giveback = Math.max(0, mfe - (num(pnl) ?? 0));
+  const distTp1 = distanceToTargetPct(side, price, tp1, entry);
+  const distStop = stopSafetyPct(side, price, stop, entry);
+  const tp1HitNow = tpHit(side, price, tp1, trade.tp1_hit);
+  const updatedAt = firstDefined(LAST_STATE?.updated_at, LAST_STATE?.time, signal?.time, ctx?.price_checked_at, trade?.opened_at);
+  const signalAge = ageMinutes(updatedAt);
+
+  setLiveCell('livePnl', pnl === null ? '—' : formatPct(pnl, 3), pctClass(pnl));
+  setLiveCell('liveMfe', formatPct(mfe, 3), mfe >= 0.40 ? 'positive' : 'neutral');
+  setLiveCell('liveGiveback', formatPct(giveback, 3), giveback >= Math.max(0.15, mfe * 0.45) && mfe >= 0.40 ? 'warning' : 'neutral');
+  setLiveCell('liveDistTp1', distTp1 === null ? '—' : (distTp1 <= 0 ? 'взято' : formatPct(distTp1, 3)), distTp1 !== null && distTp1 <= 0.15 ? 'positive' : 'neutral');
+  setLiveCell('liveDistStop', distStop === null ? '—' : formatPct(distStop, 3), pctClass(distStop, true));
+  setLiveCell('liveSignalAge', Number.isFinite(signalAge) ? `${Math.round(signalAge)} хв` : '—', signalAge > 30 ? 'warning' : 'neutral');
+  setText('liveSource', `джерело: ${firstDefined(liveMarket?.source, 'JSON fallback')} · ${formatTime(new Date().toISOString())}`);
+
+  const status = chooseLiveStatus({ pnl, mfe, giveback, distTp1, distStop, tp1Hit: tp1HitNow, signalAgeMin: signalAge, liveOk });
+  const [cls, label, note] = statusMeta(status);
+  const pill = $('liveStatusPill');
+  if (pill) {
+    pill.className = 'live-status-pill ' + cls;
+    pill.textContent = label;
+  }
+  setText('liveNote', note);
+  renderActiveTrade(trade, price);
+}
+
+
+function tfRow(tf, id) {
+  const el = $(id);
+  if (!el) return;
+  if (!tf) { setRow(id, '—', 'gray'); return; }
+  const bias = firstDefined(tf.bias, tf.trend, tf.state, 'NEUTRAL');
+  const score = firstDefined(tf.score, tf.value, 0);
+  el.textContent = `${biasLabel(bias)} ${scoreText(score)}`;
+  el.className = 'info-row-val ' + colorClass(bias);
+}
+
+function renderTechAnalysis(ctx) {
+  ctx = ctx || {};
+  tfRow(firstDefined(ctx.tf3, ctx.tf_3m, ctx['3m']), 'tf3');
+  tfRow(firstDefined(ctx.tf15, ctx.tf_15m, ctx['15m']), 'tf15');
+  tfRow(firstDefined(ctx.tf1h, ctx.tf_1h, ctx['1h']), 'tf1h');
+  tfRow(firstDefined(ctx.tf4h, ctx.tf_4h, ctx['4h']), 'tf4h');
+
+  const struct = ctx.structure || ctx.market_structure || {};
+  setRow('structure', firstDefined(struct.phase, struct.state, struct.bias), colorClass(struct.bias || struct.state));
+  setRow('atr15', formatPrice(firstDefined(ctx.atr15, ctx.atr_15m, ctx.tf15?.atr, ctx.tf_15m?.atr)), 'gray');
+}
+
+function renderIctFlow(ctx, signal) {
+  ctx = ctx || {};
+  signal = signal || {};
+  const ict = ctx.ict || signal.ict || {};
+  const classifier = signal.setup_classifier || ctx.setup_classifier || {};
+  const regime = signal.regime_engine || ctx.regime_engine || ctx.market_regime || {};
+  const metrics = regime.metrics || {};
+
+  const setupText = firstDefined(ict.setup, ict.type, classifier.label, classifier.type, metrics.ict_setup);
+  setRow('ictSetup', setupText ? String(setupText).replace(/_/g, ' ') : '—', colorClass(firstDefined(ict.bias, classifier.side, signal.side)));
+  setRow('ictZone', firstDefined(ict.premium_discount, ict.zone, metrics.pd, metrics.premium_discount), 'gray');
+
+  const cvd = ctx.cvd || signal.cvd || {};
+  const cvdText = hasKeys(cvd) ? `${biasLabel(cvd.bias)} (${firstDefined(cvd.confidence, scoreText(cvd.score))})` : '—';
+  setRow('cvd', cvdText, colorClass(cvd.bias));
+
+  const flow = ctx.flow || ctx.order_flow || {};
+  setRow('flow', hasKeys(flow) ? biasLabel(flow.bias) : '—', colorClass(flow.bias));
+
+  const der = ctx.derivatives || ctx.oi_funding || {};
+  const funding = num(der.funding_pct);
+  const derText = hasKeys(der) ? `${biasLabel(der.bias)}${funding !== null ? ` f:${funding.toFixed(4)}%` : ''}` : '—';
+  setRow('derivatives', derText, colorClass(der.bias));
+
+  const liq = ctx.liquidity || {};
+  setRow('liquidity', firstDefined(liq.event, liq.state, biasLabel(liq.bias)), colorClass(liq.bias || liq.event));
+}
+
+function renderRegime(ctx, signal) {
+  ctx = ctx || {};
+  signal = signal || {};
+  const regime = ctx.market_regime || signal.regime_engine || ctx.regime_engine || signal.market_regime || {};
+  const badge = $('regimeBadge');
+  const label = firstDefined(regime.label, regime.name, regime.regime_type, signal.regime_type, '—');
+  badge.textContent = label;
+  const name = String(firstDefined(regime.regime_type, regime.name, signal.regime_type, '')).toUpperCase();
+  if (name.includes('TREND') || name.includes('IGNITION')) { badge.style.background='var(--green-dim)'; badge.style.color='var(--green)'; }
+  else if (name.includes('EXHAUSTION') || name.includes('BLOCK')) { badge.style.background='var(--red-dim)'; badge.style.color='var(--red)'; }
+  else if (name.includes('NEWS') || name.includes('REVERSAL') || name.includes('RISK')) { badge.style.background='var(--amber-dim)'; badge.style.color='var(--amber)'; }
+  else if (name.includes('RANGE')) { badge.style.background='#0c1a2e'; badge.style.color='var(--blue)'; }
+  else { badge.style.background='var(--gray-dim)'; badge.style.color='var(--gray)'; }
+
+  setRow('regimeType', firstDefined(regime.regime_type, regime.name, signal.regime_type), 'gray');
+  const entryAction = firstDefined(regime.entry_action, signal.entry_level, signal.type);
+  const ea = String(entryAction || '').toUpperCase();
+  setRow('regimeEntry', entryAction, ea.includes('ALLOW') || ea.includes('ENTRY') ? 'green' : ea.includes('WAIT') || ea.includes('WATCH') ? 'amber' : ea.includes('BLOCK') ? 'red' : 'gray');
+
+  const session = ctx.session || signal.session || {};
+  setRow('session', hasKeys(session) ? firstDefined(session.name, session.label, session.type) : '—', hasKeys(session) && session.liquidity_risk ? 'amber' : 'gray');
+
+  const news = ctx.news || signal.news || {};
+  const newsText = hasKeys(news) ? `${biasLabel(news.bias)} (${scoreText(news.score)})` : '—';
+  setRow('newsBias', newsText, colorClass(news.bias));
+
+  const ts = num(firstDefined(ctx.total_score, signal.total_score, ctx.tech_score));
+  setRow('totalScore', ts === null ? '—' : `${ts > 0 ? '+' : ''}${Math.round(ts)}`, ts > 30 ? 'green' : ts < -30 ? 'red' : 'gray');
+}
+
+function renderConfirmations(confs, conflicts) {
+  const list = $('confList');
+  list.innerHTML = '';
+  const all = [];
+  asArray(confs).forEach(c => all.push({ text: c, ok: true }));
+  asArray(conflicts).forEach(c => all.push({ text: c, ok: false }));
+  if (!all.length) {
+    list.innerHTML = '<span style="font-size:12px;color:var(--muted);">—</span>';
+    return;
+  }
+  all.slice(0, 12).forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'conf-item ' + (item.ok ? 'ok' : 'warn');
+    div.innerHTML = `<span class="dot"></span><span>${escapeHtml(item.text)}</span>`;
+    list.appendChild(div);
+  });
+}
+
+function renderICTZones(zones) {
+  const el = $('ictZonesList');
+  zones = asArray(zones);
+  if (!zones.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Немає активних зон</span>';
+    return;
+  }
+  el.innerHTML = '';
+  zones.slice(0, 8).forEach(z => {
+    const side = String(z.side || z.bias || '').toUpperCase();
+    const pill = document.createElement('span');
+    pill.className = 'zone-pill ' + (side === 'LONG' ? 'bull' : side === 'SHORT' ? 'bear' : 'neutral');
+    const low = firstDefined(z.low, z.from, z.bottom, z.price_low);
+    const high = firstDefined(z.high, z.to, z.top, z.price_high);
+    pill.textContent = `${side || 'ZONE'} ${z.type || z.name || ''} ${formatPrice(low)}–${formatPrice(high)}`;
+    el.appendChild(pill);
+  });
+}
+
+function normalizeNews(news) {
+  if (Array.isArray(news)) return news;
+  if (!news || typeof news !== 'object') return [];
+  if (Array.isArray(news.important)) return news.important;
+  if (Array.isArray(news.items)) return news.items;
+  if (news.top) return [{ title: news.top, source: news.source || 'news', score: news.score, published_at: news.published_at }];
+  return [];
+}
+
+function renderNews(news) {
+  const items = normalizeNews(news);
+  const el = $('newsList');
+  if (!items.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Новин немає</span>';
+    return;
+  }
+  el.innerHTML = '';
+  items.slice(0, 5).forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'news-item';
+    const score = num(item.score) ?? 0;
+    const badgeClass = score > 0 ? 'long' : score < 0 ? 'short' : 'neutral';
+    const badgeText = score > 0 ? '↑' : score < 0 ? '↓' : '–';
+    div.innerHTML = `
+      <div class="news-headline">
+        <span class="news-badge ${badgeClass}">${badgeText}</span>
+        ${escapeHtml(firstDefined(item.title, item.headline, '—'))}
+      </div>
+      <div class="news-meta">${escapeHtml(firstDefined(item.source, ''))} · ${escapeHtml(formatDateTime(firstDefined(item.published_at, item.time)))}</div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+function renderJournal(items) {
+  const el = $('journalList');
+  items = asArray(items);
+  if (!items.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);">Журнал порожній</span>';
+    return;
+  }
+  el.innerHTML = '';
+  items.slice(-10).reverse().forEach(item => {
+    const side = String(item.side || '').toUpperCase();
+    const div = document.createElement('div');
+    div.className = 'journal-item';
+    const sideClass = side === 'LONG' ? 'long' : side === 'SHORT' ? 'short' : 'neutral';
+    div.innerHTML = `
+      <span class="journal-side ${sideClass}">${escapeHtml(side || '?')}</span>
+      <span class="journal-action">${escapeHtml(firstDefined(item.type, item.action, item.entry_level, item.result_action, '—'))}</span>
+      <span class="journal-time">${escapeHtml(formatDateTime(firstDefined(item.time, item.opened_at, item.closed_at)))}</span>
+    `;
+    el.appendChild(div);
+  });
+}
+
+function currentPriceFrom(ctx, signal, state, activeTrade) {
+  return firstDefined(
+    ctx?.price,
+    ctx?.last_price,
+    signal?.price,
+    state?.price,
+    ctx?.tf15?.close,
+    ctx?.tf_15m?.close,
+    ctx?.tf3?.close,
+    activeTrade?.market_price,
+    activeTrade?.current_price,
+    activeTrade?.best_price
+  );
+}
+
+function renderPrice(ctx, signal, state, activeTrade) {
+  const price = currentPriceFrom(ctx, signal, state, activeTrade);
+  setText('priceValue', formatPrice(price));
+  const change = firstDefined(ctx?.change24h, ctx?.change_24h, ctx?.price_change_pct, state?.change24h, state?.change_24h);
+  const changeN = num(change);
+  const el = $('priceChange');
+  if (changeN === null) {
+    el.textContent = '—';
+    el.className = 'price-change flat';
+  } else {
+    el.textContent = formatPct(changeN);
+    el.className = 'price-change ' + (changeN > 0 ? 'up' : changeN < 0 ? 'down' : 'flat');
+  }
+  setText('priceSource', `джерело: ${firstDefined(ctx?.source, state?.source, 'history[]')}`);
+}
+
+function ageMinutes(iso) {
+  if (!iso) return 999;
+  try {
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return 999;
+    return (Date.now() - t) / 60000;
+  } catch { return 999; }
+}
+
+function newestByTime(items) {
+  const arr = asArray(items).filter(Boolean);
+  if (!arr.length) return null;
+  return arr.reduce((best, cur) => {
+    const bt = new Date(firstDefined(best.time, best.updated_at, best.opened_at, 0)).getTime() || 0;
+    const ct = new Date(firstDefined(cur.time, cur.updated_at, cur.opened_at, 0)).getTime() || 0;
+    return ct >= bt ? cur : best;
+  }, arr[0]);
+}
+
+function hasSignalShape(v) {
+  return hasKeys(v) && (v.type || v.action || v.entry_level || v.quality !== undefined || v.plan || v.context || v.reason || v.price !== undefined);
+}
+
+function extractSignalAndContext(state, journal) {
+  state = state || {};
+  journal = journal || {};
+
+  // Головне виправлення: нові версії бота кладуть готовий сигнал у history[].
+  // Тому беремо останній елемент history[], а не чекаємо last_context.
+  const fromStateHistory = newestByTime(asArray(state.history).filter(hasSignalShape));
+  const fromStateSignals = newestByTime(asArray(state.signals).filter(hasSignalShape));
+  const fromJournalSignals = newestByTime(asArray(journal.signals).filter(hasSignalShape));
+  const fromLastSignal = hasSignalShape(state.last_signal) ? state.last_signal : null;
+  const fromRoot = hasSignalShape(state) ? state : null;
+
+  const baseSignal = fromStateHistory || fromStateSignals || fromJournalSignals || fromLastSignal || fromRoot || {};
+  const signal = { ...baseSignal, ...(fromLastSignal || {}) };
+
+  const ctx = firstNonEmptyObject(
+    signal.context,
+    fromStateHistory?.context,
+    fromStateSignals?.context,
+    fromJournalSignals?.context,
+    state.last_context,
+    state.context
+  );
+
+  return { signal, ctx };
+}
+
+function extractJournalItems(state, journal) {
+  const stateHist = asArray(state?.history);
+  const journalSignals = asArray(journal?.signals);
+  const journalTrades = asArray(journal?.trades);
+  if (journalSignals.length) return journalSignals;
+  if (stateHist.length) return stateHist;
+  if (journalTrades.length) return journalTrades;
+  return [];
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!res.ok) throw new Error(`${url} HTTP ${res.status}`);
+  return await res.json();
+}
+
+
+
+async function fetchLiveMarket(fallbackPrice) {
+  // 1) OKX BZ-USDT-SWAP. Основне live-джерело для BZ-USDT-SWAP.
+  try {
+    const url = `https://www.okx.com/api/v5/market/ticker?instId=${encodeURIComponent(LIVE_SYMBOL_OKX)}&t=${Date.now()}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      const row = data?.data?.[0];
+      const price = num(row?.last);
+      if (price !== null) {
+        const open24h = num(row?.open24h);
+        const change24h = open24h ? ((price - open24h) / open24h) * 100 : null;
+        return { price, change24h, source: `OKX ${LIVE_SYMBOL_OKX}` };
+      }
+    }
+  } catch (e) {
+    console.warn('OKX live price unavailable', e);
+  }
+
+  // 2) Binance Futures fallback. Якщо символ доступний, беремо його.
+  try {
+    const url = `https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(LIVE_SYMBOL_BINANCE)}&t=${Date.now()}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.ok) {
+      const row = await res.json();
+      const price = num(row?.lastPrice);
+      if (price !== null) {
+        return { price, change24h: num(row?.priceChangePercent), source: `Binance Futures ${LIVE_SYMBOL_BINANCE}` };
+      }
+    }
+  } catch (e) {
+    console.warn('Binance live price unavailable', e);
+  }
+
+  // 3) Безпечний fallback: остання ціна з JSON. Telegram/бот не чіпаємо.
+  const fb = num(fallbackPrice);
+  if (fb !== null) return { price: fb, change24h: null, source: 'JSON fallback', fallback: true };
+  return { price: null, change24h: null, source: 'немає live-ціни', fallback: true };
+}
+
+function buildSyntheticTradeFromSignal(signal) {
+  const action = normalizeAction(signal);
+  if (!(action === 'entry' || action === 'risky_entry')) return null;
+  const plan = normalizePlan(signal);
+  if (num(plan.entry) === null) return null;
+  return {
+    side: signal.side,
+    entry: plan.entry,
+    stop: plan.stop,
+    stop_current: plan.stop,
+    tp1: plan.tp1,
+    tp2: plan.tp2,
+    tp3: plan.tp3,
+    opened_at: firstDefined(signal.time, signal.created_at, LAST_STATE.updated_at),
+    best_price: firstDefined(signal.best_price, signal.mfe_price, plan.entry)
+  };
+}
+
+async function refreshLiveOnly() {
+  if (!LAST_SIGNAL || !hasKeys(LAST_SIGNAL)) return;
+  const activeTrade = LAST_ACTIVE_TRADE || buildSyntheticTradeFromSignal(LAST_SIGNAL);
+  const fallbackPrice = currentPriceFrom(LAST_CONTEXT, LAST_SIGNAL, LAST_STATE, activeTrade);
+  LAST_LIVE_MARKET = await fetchLiveMarket(fallbackPrice);
+  renderLiveMonitor(activeTrade, LAST_SIGNAL, LAST_CONTEXT, LAST_LIVE_MARKET);
+}
+
+async function loadData() {
+  try {
+    const [state, journal] = await Promise.all([
+      fetchJson(SIGNAL_URL),
+      fetchJson(JOURNAL_URL).catch(() => ({}))
+    ]);
+
+    $('errorBanner').style.display = 'none';
+
+    const { signal, ctx } = extractSignalAndContext(state, journal);
+    const activeTrade = firstDefined(state.active_trade, state.open_trade, signal.active_trade, buildSyntheticTradeFromSignal(signal), null);
+    const currentPrice = currentPriceFrom(ctx, signal, state, activeTrade);
+
+    LAST_STATE = state || {};
+    LAST_JOURNAL = journal || {};
+    LAST_SIGNAL = signal || {};
+    LAST_CONTEXT = ctx || {};
+    LAST_ACTIVE_TRADE = activeTrade || null;
+
+    renderPrice(ctx, signal, state, activeTrade);
+    setSignalCard(signal, ctx, state);
+    renderPlan(signal);
+    renderActiveTrade(activeTrade, currentPrice);
+    renderTechAnalysis(ctx);
+    renderIctFlow(ctx, signal);
+    renderRegime(ctx, signal);
+    renderConfirmations(firstDefined(signal.confirmations, ctx.confirmations), firstDefined(signal.conflicts, ctx.conflicts));
+    renderICTZones(firstDefined(ctx.pending_ict_zones, state.pending_ict_zones, state.ict_memory?.pending_zones, []));
+    renderNews(firstDefined(ctx.news, signal.news, state.news));
+    renderJournal(extractJournalItems(state, journal));
+
+    const updatedAt = firstDefined(state.updated_at, state.time, signal.time, ctx.price_checked_at, activeTrade?.opened_at);
+    const age = ageMinutes(updatedAt);
+    const dot = $('liveDot');
+    if (age < 20) dot.className = 'live-dot';
+    else if (age < 60) dot.className = 'live-dot stale';
+    else dot.className = 'live-dot error';
+    $('updateTime').textContent = updatedAt ? `сигнал ${formatTime(updatedAt)}` : 'сигнал —';
+    $('footer').textContent = `Dashboard read-only · live-ціна кожні ${Math.round(REFRESH_MS / 1000)} сек · Telegram не змінюється`;
+
+    await refreshLiveOnly();
+  } catch (e) {
+    console.error(e);
+    $('errorBanner').style.display = 'block';
+    $('liveDot').className = 'live-dot error';
+    $('updateTime').textContent = 'помилка';
+  }
+}
+
+loadData();
+setInterval(loadData, REFRESH_MS);
+</script>
+</body>
+</html>
