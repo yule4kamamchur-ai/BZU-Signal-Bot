@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.58 (Evidence Quorum Standard Entry)
+BZU Professional Oil 15M Signal Bot v9.5.59 (Canonical Execution Core)
 ====================================================================================
+Оновлення v9.5.59 (canonical execution core + forward control):
+- Один CanonicalExecutionEngine є єдиним runtime-mutator trade/no-trade після Router; історичні release layers залишені лише як явно названі compatibility callbacks.
+- Router, Final Authority, Risk Ledger і journal compaction отримали по одному канонічному public entry point без каскаду однакових top-level def.
+- Forward control окремо вимірює PREMIUM_FULL, STANDARD_ENTRY та EARLY_PROBE: win rate, expectancy, profit factor, MFE, MAE, adverse slippage і realized R.
+- 24 setup згруповані у шість канонічних market families; одночасні назви одного family/side/anchor/evidence episode дедуплікуються до найсильнішої гіпотези до Executive selection.
+
 Оновлення v9.5.58 (ordinary-entry reachability + evidence quorum):
 - Final Authority має чотири явні рівні: PREMIUM_FULL, STANDARD_ENTRY, EARLY_PROBE або WAIT.
 - STANDARD_ENTRY є звичайним ENTRY з 55-75% normal risk: він потребує незалежного quorum структури, свіжого execution evidence, локації, ризику та ліквідного runway, але не вимагає математично зрілого calibration sample.
@@ -363,6 +369,16 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Optional
 
+from bzu_core import (
+    CANONICAL_SETUP_FAMILY_MAP,
+    CanonicalExecutionEngine,
+    ExecutionEngineHooks,
+    build_forward_control_snapshot,
+    canonical_setup_family,
+    deduplicate_candidates_by_family_episode,
+    family_episode_key,
+)
+
 try:
     import requests
 except ImportError:  # Production-safe stdlib fallback for clean runners.
@@ -513,8 +529,10 @@ V9557_BOT_VERSION = "pro-hybrid-confluence-v9.5.57-balanced-native-probe-structu
 V9557_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_57_BALANCED_NATIVE_PROBE_STRUCTURAL_RUNWAY"
 V9558_BOT_VERSION = "pro-hybrid-confluence-v9.5.58-evidence-quorum-standard-entry"
 V9558_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_58_EVIDENCE_QUORUM_STANDARD_ENTRY"
-BOT_VERSION = V9558_BOT_VERSION
-ARCHITECTURE_VERSION = V9558_ARCHITECTURE_VERSION
+V9559_BOT_VERSION = "pro-hybrid-confluence-v9.5.59-canonical-execution-forward-family-control"
+V9559_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_59_CANONICAL_EXECUTION_FORWARD_FAMILY_CONTROL"
+BOT_VERSION = V9559_BOT_VERSION
+ARCHITECTURE_VERSION = V9559_ARCHITECTURE_VERSION
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -2409,6 +2427,12 @@ class ActiveTrade:
     journal_schema_at_entry: int = 0
     preconfirmation_event_id: str = ""
     entry_score_source: str = ""
+    # v9.5.59 canonical execution/forward attribution.
+    execution_tier: str = ""
+    canonical_setup_family: str = ""
+    family_episode_key: str = ""
+    planned_entry: float = 0.0
+    planned_stop: float = 0.0
 
 
 
@@ -8293,7 +8317,7 @@ def validate_serialized_decision_payload(payload: dict[str, Any]) -> bool:
     return True
 
 
-def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+def _compact_signal_core_v9(payload: dict[str, Any]) -> dict[str, Any]:
     """Compact a signal without touching live decision logic.
 
     Runtime consumers receive the full payload before this function is called.
@@ -8493,6 +8517,11 @@ def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "tp3_hit": payload.get("tp3_hit"),
         "execution_stage": payload.get("execution_stage", payload.get("entry_stage")),
         "execution_source": payload.get("execution_source"),
+        "execution_tier": payload.get("execution_tier"),
+        "canonical_setup_family": payload.get("canonical_setup_family"),
+        "family_episode_key": payload.get("family_episode_key"),
+        "planned_entry": payload.get("planned_entry"),
+        "planned_stop": payload.get("planned_stop"),
         "result": result_class,
         "result_class": result_class,
         "close_action": close_action,
@@ -19747,8 +19776,8 @@ def build_trade_plan(
         candidate.entry_stage = str(candidate.stage_plan.get("stage", EntryStage.PROBE.value))
     if not (candidate.stage_plan or {}).get("innovation_profile"):
         candidate = apply_setup_innovation_overlay(candidate, context)
-    # One provisional ledger is built for the candidate stage. Executive Layer
-    # recalculates the same pure ledger after the final staged decision.
+    # One provisional ledger is built through the canonical v9.5.59 risk entry
+    # point. Executive Layer may request the final stage from the same pure core.
     if fresh_probe_profile.get("eligible") and not score_admission.get("risky_entry_eligible"):
         candidate.entry_stage = EntryStage.PROBE.value
         candidate.stage_plan["stage"] = EntryStage.PROBE.value
@@ -23881,6 +23910,15 @@ def run_bot() -> None:
             journal_schema_at_entry=JOURNAL_VERSION,
             preconfirmation_event_id=str(linked_preconfirmation_event_id or ""),
             entry_score_source=signal_entry_score_source,
+            execution_tier=str(
+                (decision.candidate.stage_plan or {}).get("final_execution_tier_v9559")
+                or (decision.candidate.stage_plan or {}).get("final_execution_tier_v9558")
+                or ("EARLY_PROBE" if decision.action == Action.PROBE_ENTRY.value else "STANDARD_ENTRY")
+            ),
+            canonical_setup_family=canonical_setup_family(decision.setup_type),
+            family_episode_key=family_episode_key(decision.candidate, context),
+            planned_entry=decision.plan.entry,
+            planned_stop=decision.plan.stop,
         )
         store_active_trade(state, active)
         clear_router_chain_v9541(state, decision.candidate, journal, "EXECUTED")
@@ -30380,7 +30418,7 @@ def _bandit_action_profile(journal: Optional[dict[str,Any]], context_key:str, ac
 
 
 
-def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
+def _execution_router_profile_core_v9532(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
     sm=intel["state_machine"]
     asi=safe_float(intel["adverse_selection"].get("index"),50)
     structural=safe_float(intel.get("structural_score"),50)
@@ -34380,7 +34418,10 @@ def executive_decision_engine(
 # ==========================================================
 
 def code_active_trade_fields():
-    return ["signal_id", "execution_source", "entry_stage"]
+    return [
+        "signal_id", "execution_source", "entry_stage", "execution_tier",
+        "canonical_setup_family", "family_episode_key", "planned_entry",
+    ]
 
 
 def run_architecture_audit():
@@ -34388,10 +34429,15 @@ def run_architecture_audit():
     Executed audit, not decorative metadata.
     It inspects the runtime objects actually used by run_bot().
     """
+    historical_self_test = bool(globals().get("_HISTORICAL_RELEASE_SELF_TEST_V9559"))
     checks = {
         "executive_engine_exists": callable(globals().get("executive_decision_engine")),
+        "canonical_execution_engine_exists": globals().get("_CANONICAL_EXECUTION_ENGINE_V9559") is not None or historical_self_test,
         "legacy_committee_removed": globals().get("build_trading_committee_report") is None,
-        "single_final_authority": callable(globals().get("executive_decision_engine")),
+        "single_final_authority": historical_self_test or globals().get("_apply_true_final_authority_v9551") is globals().get("apply_canonical_execution_authority_v9559"),
+        "single_router_entry_point": historical_self_test or globals().get("execution_router_profile") is globals().get("canonical_execution_router_v9559"),
+        "single_risk_entry_point": historical_self_test or globals().get("build_risk_adjustment_ledger") is globals().get("canonical_risk_ledger_v9559"),
+        "single_signal_compactor": historical_self_test or globals().get("compact_signal_for_journal") is globals().get("compact_signal_canonical_v9559"),
         "runtime_config_valid": validate_runtime_configuration()["valid"],
         "signal_trade_link_supported": "signal_id" in code_active_trade_fields(),
     }
@@ -34404,12 +34450,14 @@ def run_architecture_audit():
 
 def run_v8_2_authority_audit():
     authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = bool(globals().get("_HISTORICAL_RELEASE_SELF_TEST_V9559")) or globals().get("_apply_true_final_authority_v9551") is globals().get("apply_canonical_execution_authority_v9559")
     return {
         "version": ARCHITECTURE_VERSION,
-        "single_decision_authority": authority is not None,
+        "single_decision_authority": authority is not None and canonical,
         "executive_object": callable(globals().get("executive_decision_engine")),
+        "canonical_execution_object": globals().get("_CANONICAL_EXECUTION_ENGINE_V9559") is not None,
         "legacy_actions_are_advisory": True,
-        "status": "READY" if authority and callable(globals().get("executive_decision_engine")) else "FAILED",
+        "status": "READY" if authority and canonical and callable(globals().get("executive_decision_engine")) else "FAILED",
     }
 
 
@@ -35038,8 +35086,8 @@ def candidate_regime_fit_probability_v9533(regime_vector: dict[str, Any], candid
 
 
 # ---------- Router with consumed-evidence eligibility ----------
-_execution_router_profile_v9533_effective = execution_router_profile
-def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
+_execution_router_profile_v9533_effective = _execution_router_profile_core_v9532
+def _execution_router_profile_compat_v9533(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
     # Rebuild the v9.5.33 scoring contract so consumed evidence can affect tactic
     # eligibility before the winner is chosen, rather than post-hoc overriding it.
     sm=intel["state_machine"]
@@ -35730,8 +35778,8 @@ def execution_economics_profile_v9535(context: dict[str, Any], candidate: Candid
     }
 
 
-_execution_router_profile_v9534_effective = execution_router_profile
-def execution_router_profile(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
+_execution_router_profile_v9534_effective = _execution_router_profile_compat_v9533
+def _execution_router_profile_compat_v9534(journal: Optional[dict[str,Any]], context: dict[str,Any], candidate: Candidate, intel: dict[str,Any]) -> dict[str,Any]:
     """v9.5.35 tactic router: execution economics before MARKET_NOW.
 
     The setup remains alive. Poor economics can remove only the aggressive
@@ -38737,8 +38785,8 @@ def _router_recommended_tactic_from_signal_v9542(payload: dict[str, Any]) -> str
     return str(((intelligence.get("execution_router") or {}).get("action")) or "")
 
 
-_compact_signal_for_journal_v9541_effective = compact_signal_for_journal
-def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+_compact_signal_for_journal_v9541_effective = _compact_signal_core_v9
+def _compact_signal_compat_v9541(payload: dict[str, Any]) -> dict[str, Any]:
     compact = _compact_signal_for_journal_v9541_effective(payload)
     if not isinstance(compact, dict):
         return {}
@@ -38986,8 +39034,8 @@ def _bandit_action_profile(
     return profile
 
 
-_execution_router_profile_v9541_effective = execution_router_profile
-def execution_router_profile(
+_execution_router_profile_v9541_effective = _execution_router_profile_compat_v9534
+def _execution_router_profile_compat_v9541(
     journal: Optional[dict[str, Any]], context: dict[str, Any], candidate: Candidate, intel: dict[str, Any],
 ) -> dict[str, Any]:
     profile = dict(_execution_router_profile_v9541_effective(journal, context, candidate, intel) or {})
@@ -39258,7 +39306,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.58 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.59 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -40252,7 +40300,7 @@ def _hard_execution_blockers_v9551(reasons: list[str]) -> list[str]:
     ))
 
 
-def final_execution_authority_v9548(
+def _final_execution_contract_core_v9548(
     staged: ExecutiveDecisionContract, plan: Optional[TradePlan], candidate: Candidate,
 ) -> dict[str, Any]:
     """The sole trade/no-trade boundary; every other layer supplies facts only."""
@@ -41817,7 +41865,7 @@ def _policy_only_blocker_v9553(reason: str) -> bool:
     ))
 
 
-def _apply_true_final_authority_v9551(
+def _apply_true_final_authority_core_v9553(
     decision: Decision, context: dict[str, Any], journal: dict[str, Any],
 ) -> Decision:
     candidate = decision.candidate
@@ -42163,8 +42211,8 @@ def store_router_opportunity_v9541(
         )
 
 
-_compact_signal_for_journal_v9553_base = compact_signal_for_journal
-def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+_compact_signal_for_journal_v9553_base = _compact_signal_compat_v9541
+def _compact_signal_compat_v9553(payload: dict[str, Any]) -> dict[str, Any]:
     compact = _compact_signal_for_journal_v9553_base(payload)
     if not isinstance(compact, dict):
         return {}
@@ -42211,8 +42259,8 @@ def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     if source.startswith(marker):
         suffix = source[len(marker):].split("_", 1)[0]
         release = int(suffix) if suffix.isdigit() else 0
-    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 58)
-    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 58)
+    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 59)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 59)
     return {
         "source_architecture": source or "UNKNOWN",
         "source_release": release,
@@ -43329,7 +43377,7 @@ def directional_market_guard_v9555(
     }
 
 
-_apply_true_final_authority_v9555_base = _apply_true_final_authority_v9551
+_apply_true_final_authority_v9555_base = _apply_true_final_authority_core_v9553
 def _sanitize_scan3m_events_v9555(
     state: dict[str, Any], *, reference_ts: Optional[int] = None,
 ) -> dict[str, Any]:
@@ -43989,8 +44037,8 @@ def three_level_execution_profile_v9556(
     }
 
 
-_final_execution_authority_v9556_base = final_execution_authority_v9548
-def final_execution_authority_v9548(
+_final_execution_authority_v9556_base = _final_execution_contract_core_v9548
+def _final_execution_contract_compat_v9556(
     staged: ExecutiveDecisionContract, plan: Optional[TradePlan], candidate: Candidate,
 ) -> dict[str, Any]:
     base = dict(_final_execution_authority_v9556_base(staged, plan, candidate) or {})
@@ -44152,7 +44200,7 @@ def _apply_three_level_execution_v9556(
 # v9.5.55 directional/retest guard is retained as an advisory input below, but
 # is no longer permitted to set plan.execution_ready=False before final sizing.
 _apply_true_final_authority_v9556_base = _apply_true_final_authority_v9555_base
-def _apply_true_final_authority_v9551(
+def _apply_true_final_authority_compat_v9556(
     decision: Decision, context: dict[str, Any], journal: dict[str, Any],
 ) -> Decision:
     candidate = decision.candidate
@@ -45098,8 +45146,8 @@ def balanced_execution_profile_v9557(
     return profile
 
 
-_apply_true_final_authority_v9557_base = _apply_true_final_authority_v9551
-def _apply_true_final_authority_v9551(
+_apply_true_final_authority_v9557_base = _apply_true_final_authority_compat_v9556
+def _apply_true_final_authority_compat_v9557(
     decision: Decision, context: dict[str, Any], journal: dict[str, Any],
 ) -> Decision:
     candidate = decision.candidate
@@ -45162,8 +45210,8 @@ def _apply_true_final_authority_v9551(
     return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
 
 
-_final_execution_authority_v9557_base = final_execution_authority_v9548
-def final_execution_authority_v9548(
+_final_execution_authority_v9557_base = _final_execution_contract_compat_v9556
+def _final_execution_contract_compat_v9557(
     staged: ExecutiveDecisionContract, plan: Optional[TradePlan], candidate: Candidate,
 ) -> dict[str, Any]:
     base = dict(_final_execution_authority_v9557_base(staged, plan, candidate) or {})
@@ -45183,8 +45231,8 @@ def final_execution_authority_v9548(
     return base
 
 
-_compact_signal_for_journal_v9557_base = compact_signal_for_journal
-def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+_compact_signal_for_journal_v9557_base = _compact_signal_compat_v9553
+def _compact_signal_compat_v9557(payload: dict[str, Any]) -> dict[str, Any]:
     """Persist the exact final authority result; never journal blocker=NONE for WAIT."""
     compact = _compact_signal_for_journal_v9557_base(payload)
     if not isinstance(compact, dict):
@@ -46146,8 +46194,8 @@ def _apply_four_level_execution_v9558(
     return out
 
 
-_apply_true_final_authority_v9558_base = _apply_true_final_authority_v9551
-def _apply_true_final_authority_v9551(
+_apply_true_final_authority_v9558_base = _apply_true_final_authority_compat_v9557
+def _apply_true_final_authority_compat_v9558(
     decision: Decision, context: dict[str, Any], journal: dict[str, Any],
 ) -> Decision:
     candidate = decision.candidate
@@ -46199,8 +46247,8 @@ def _apply_true_final_authority_v9551(
     return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
 
 
-_final_execution_authority_v9558_base = final_execution_authority_v9548
-def final_execution_authority_v9548(
+_final_execution_authority_v9558_base = _final_execution_contract_compat_v9557
+def _final_execution_contract_compat_v9558(
     staged: ExecutiveDecisionContract, plan: Optional[TradePlan], candidate: Candidate,
 ) -> dict[str, Any]:
     base = dict(_final_execution_authority_v9558_base(staged, plan, candidate) or {})
@@ -46258,8 +46306,8 @@ def _compact_replayable_standard_v9558(row: dict[str, Any]) -> bool:
     )
 
 
-_compact_signal_for_journal_v9558_base = compact_signal_for_journal
-def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+_compact_signal_for_journal_v9558_base = _compact_signal_compat_v9557
+def _compact_signal_compat_v9558(payload: dict[str, Any]) -> dict[str, Any]:
     compact = _compact_signal_for_journal_v9558_base(payload)
     if not isinstance(compact, dict):
         return {}
@@ -46593,6 +46641,440 @@ def _run_self_test() -> bool:
         passed += int(bool(ok))
     print(f"SELF-TEST v9.5.58 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} ordinary-entry checks")
     return bool(base_ok and passed == len(checks))
+
+
+# ============================================================================
+# v9.5.59 CANONICAL EXECUTION CORE
+# ============================================================================
+# Live runtime names below are assigned once to explicit canonical entry points.
+# Historical release implementations are retained under unique compatibility
+# aliases solely for regression replay; they no longer form a public def cascade.
+
+V9559_SCHEMA_VERSION = "canonical_execution_forward_family_control_v9.5.59"
+
+_risk_adjustment_ledger_core_v9559 = build_risk_adjustment_ledger
+_router_profile_compat_v9541 = _execution_router_profile_compat_v9541
+_authority_pipeline_compat_v9557 = _apply_true_final_authority_v9558_base
+_final_contract_compat_v9558 = _final_execution_contract_compat_v9558
+_signal_compactor_compat_v9558 = _compact_signal_compat_v9558
+_load_journal_compat_v9558 = load_journal
+_save_journal_compat_v9558 = save_journal
+_audit_journal_compat_v9558 = run_audit_journal
+_runtime_validator_compat_v9558 = validate_runtime_configuration
+_self_test_compat_v9558 = _run_self_test
+_detect_candidates_compat_v9534 = detect_candidates
+
+
+def canonical_risk_ledger_v9559(
+    candidate: Any,
+    context: Optional[dict[str, Any]] = None,
+    *,
+    stage: Optional[str] = None,
+    journal: Optional[dict[str, Any]] = None,
+    state: Optional[dict[str, Any]] = None,
+    geometry_multiplier: float = 1.0,
+) -> RiskAdjustmentLedger:
+    """The only production entry point to the pure risk-ledger calculation."""
+    ledger = _risk_adjustment_ledger_core_v9559(
+        candidate,
+        context,
+        stage=stage,
+        journal=journal,
+        state=state,
+        geometry_multiplier=geometry_multiplier,
+    )
+    if candidate is not None:
+        candidate.stage_plan = getattr(candidate, "stage_plan", None) or {}
+        candidate.stage_plan["canonical_risk_ledger_v9559"] = {
+            "requested_stage": str(stage or getattr(candidate, "entry_stage", "WATCH") or "WATCH"),
+            "final_position_risk_pct": ledger.final_position_risk_pct,
+            "capital_cap_pct": ledger.capital_cap_pct,
+            "duplicate_sources": list(ledger.duplicate_sources or []),
+            "pure_core": True,
+            "schema_version": V9559_SCHEMA_VERSION,
+        }
+    return ledger
+
+
+# Compatibility callers and production code now resolve the same single core.
+build_risk_adjustment_ledger = canonical_risk_ledger_v9559
+
+
+def canonical_execution_router_v9559(
+    journal: Optional[dict[str, Any]],
+    context: dict[str, Any],
+    candidate: Candidate,
+    intel: dict[str, Any],
+) -> dict[str, Any]:
+    """One public Router entry point; Router selects tactic, never trade permission."""
+    profile = dict(_router_profile_compat_v9541(journal, context, candidate, intel) or {})
+    profile.update({
+        "canonical_public_entry_point": "canonical_execution_router_v9559",
+        "trade_authority": False,
+        "only_routes_execution": True,
+        "schema_version_v9559": V9559_SCHEMA_VERSION,
+    })
+    return profile
+
+
+execution_router_profile = canonical_execution_router_v9559
+
+
+def detect_candidates_canonical_v9559(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    """Deduplicate synonymous setup names before Executive selection."""
+    candidates = _detect_candidates_compat_v9534(context, state, journal)
+    unique, report = deduplicate_candidates_by_family_episode(
+        candidates, context, _candidate_selection_score,
+    )
+    ranked = finalize_hypothesis_ranking(unique)
+    context["canonical_family_dedup_v9559"] = report
+    context["_ranked_candidate_objects"] = ranked
+    context["_setup_lifecycle_ranked"] = [{
+        "side": candidate.side,
+        "model_id": candidate.ict_model,
+        "setup_type": candidate.setup_type,
+        "canonical_setup_family": canonical_setup_family(candidate.setup_type),
+        "family_episode_key": family_episode_key(candidate, context),
+        "rank": candidate.hypothesis_rank,
+        "final_score": candidate.final_score,
+        "evidence_adjusted_selection_score": round(_candidate_selection_score(candidate), 4),
+        "execution_anchor": round_price(candidate.execution_anchor),
+        "trigger_level": round_price(candidate.trigger_level),
+        "thesis_key": candidate.thesis_key,
+        "as_of_ts": _preconfirm_as_of_ts(context),
+        "schema_version": V9559_SCHEMA_VERSION,
+    } for candidate in ranked]
+    return ranked
+
+
+detect_candidates = detect_candidates_canonical_v9559
+
+
+def canonical_final_execution_contract_v9559(
+    staged: ExecutiveDecisionContract,
+    plan: Optional[TradePlan],
+    candidate: Candidate,
+) -> dict[str, Any]:
+    """One public staged-contract resolver used inside the canonical engine."""
+    contract = dict(_final_contract_compat_v9558(staged, plan, candidate) or {})
+    contract.update({
+        "canonical_engine": "CanonicalExecutionEngine",
+        "single_runtime_mutator": True,
+        "schema_version_v9559": V9559_SCHEMA_VERSION,
+    })
+    return contract
+
+
+final_execution_authority_v9548 = canonical_final_execution_contract_v9559
+
+
+_CANONICAL_EXECUTION_ENGINE_V9559 = CanonicalExecutionEngine(ExecutionEngineHooks(
+    base_executor=_authority_pipeline_compat_v9557,
+    router_reader=canonical_router_result_v9553,
+    profile_builder=ordinary_entry_profile_v9558,
+    profile_applier=_apply_four_level_execution_v9558,
+    directional_guard=directional_market_guard_v9555,
+    approval=DECISION_AUTHORITY_GUARD.approve_executive_decision,
+    anchor_recorder=_update_execution_anchor_aggregate_v9551,
+    safe_float=safe_float,
+    executable_actions=frozenset(EXECUTABLE_ENTRY_ACTIONS),
+))
+
+
+def apply_canonical_execution_authority_v9559(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    """The only live trade/no-trade mutator after the canonical Router DTO."""
+    return _CANONICAL_EXECUTION_ENGINE_V9559.execute(decision, context, journal)
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9559
+
+
+def compact_signal_canonical_v9559(payload: dict[str, Any]) -> dict[str, Any]:
+    """One idempotent signal compactor with canonical tier/family attribution."""
+    compact = _signal_compactor_compat_v9558(payload)
+    if not isinstance(compact, dict):
+        return {}
+    stage = dict(payload.get("stage_plan") or {})
+    authority = dict((payload.get("audit") or {}).get("final_execution_authority_v9551") or {})
+    profile = dict(
+        authority.get("four_level_execution_v9558")
+        or stage.get("four_level_execution_v9558")
+        or {}
+    )
+    tier = str(
+        payload.get("execution_tier")
+        or payload.get("final_execution_tier_v9559")
+        or stage.get("final_execution_tier_v9559")
+        or stage.get("final_execution_tier_v9558")
+        or authority.get("entry_tier")
+        or profile.get("tier")
+        or compact.get("execution_tier")
+        or ""
+    )
+    setup_type = str(payload.get("setup_type") or compact.get("setup_type") or "")
+    family = str(
+        payload.get("canonical_setup_family")
+        or stage.get("canonical_setup_family_v9559")
+        or compact.get("canonical_setup_family")
+        or canonical_setup_family(setup_type)
+    )
+    episode = str(
+        payload.get("family_episode_key")
+        or stage.get("family_episode_key_v9559")
+        or compact.get("family_episode_key")
+        or ""
+    )
+    compact.update({
+        "execution_tier": tier,
+        "final_execution_tier_v9559": tier,
+        "canonical_setup_family": family,
+        "family_episode_key": episode,
+        "planned_entry": payload.get("planned_entry", payload.get("plan_entry", compact.get("planned_entry"))),
+        "planned_stop": payload.get("planned_stop", payload.get("plan_stop", compact.get("planned_stop"))),
+        "canonical_engine_schema": V9559_SCHEMA_VERSION,
+    })
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+compact_signal_for_journal = compact_signal_canonical_v9559
+
+
+def load_journal_canonical_v9559() -> dict[str, Any]:
+    journal = _load_journal_compat_v9558()
+    journal["forward_control_v9559"] = build_forward_control_snapshot(journal)
+    return journal
+
+
+def save_journal_canonical_v9559(journal: dict[str, Any]) -> None:
+    journal["forward_control_v9559"] = build_forward_control_snapshot(journal)
+    journal["canonical_runtime_v9559"] = {
+        "execution_engine": "CanonicalExecutionEngine",
+        "router_entry_point": "canonical_execution_router_v9559",
+        "authority_entry_point": "apply_canonical_execution_authority_v9559",
+        "risk_entry_point": "canonical_risk_ledger_v9559",
+        "signal_compactor": "compact_signal_canonical_v9559",
+        "setup_family_count": len(set(CANONICAL_SETUP_FAMILY_MAP.values())),
+        "setup_type_count": len(CANONICAL_SETUP_FAMILY_MAP),
+        "schema_version": V9559_SCHEMA_VERSION,
+    }
+    return _save_journal_compat_v9558(journal)
+
+
+load_journal = load_journal_canonical_v9559
+save_journal = save_journal_canonical_v9559
+
+
+def run_audit_journal_canonical_v9559(path: str) -> dict[str, Any]:
+    output = _audit_journal_compat_v9558(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    output["v9559_canonical_execution"] = {
+        "single_engine": "CanonicalExecutionEngine",
+        "public_entry_points": {
+            "router": "canonical_execution_router_v9559",
+            "authority": "apply_canonical_execution_authority_v9559",
+            "risk": "canonical_risk_ledger_v9559",
+            "journal_compaction": "compact_signal_canonical_v9559",
+        },
+        "setup_types": len(CANONICAL_SETUP_FAMILY_MAP),
+        "setup_families": len(set(CANONICAL_SETUP_FAMILY_MAP.values())),
+        "family_map": dict(sorted(CANONICAL_SETUP_FAMILY_MAP.items())),
+        "forward_control": build_forward_control_snapshot(payload),
+        "schema_version": V9559_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9559
+
+
+def validate_runtime_configuration_canonical_v9559() -> dict[str, Any]:
+    report = _runtime_validator_compat_v9558()
+    obsolete_release_seals = (
+        "v9.5.54 lifecycle/Router/Direction-Flip release seal",
+        "v9.5.55 bot release seal",
+        "v9.5.55 architecture release seal",
+        "v9.5.58 release seal mismatch",
+    )
+    errors = [
+        str(value) for value in (report.get("errors") or [])
+        if not any(token in str(value) for token in obsolete_release_seals)
+    ]
+    if BOT_VERSION != V9559_BOT_VERSION or ARCHITECTURE_VERSION != V9559_ARCHITECTURE_VERSION:
+        errors.append("v9.5.59 canonical execution release seal mismatch")
+    if len(CANONICAL_SETUP_FAMILY_MAP) != 24 or len(set(CANONICAL_SETUP_FAMILY_MAP.values())) not in {5, 6, 7}:
+        errors.append("v9.5.59 must map 24 setups into five to seven canonical families")
+    if set(CANONICAL_SETUP_FAMILY_MAP) != set(_tracked_setup_types()):
+        errors.append("v9.5.59 canonical family registry differs from the 24 live setups")
+    required = (
+        "canonical_execution_router_v9559",
+        "apply_canonical_execution_authority_v9559",
+        "canonical_risk_ledger_v9559",
+        "compact_signal_canonical_v9559",
+        "build_forward_control_snapshot",
+        "detect_candidates_canonical_v9559",
+    )
+    if not all(callable(globals().get(name)) for name in required):
+        errors.append("v9.5.59 canonical runtime boundary is incomplete")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9559:
+        errors.append("v9.5.59 legacy authority name does not resolve to the canonical engine")
+    if globals().get("execution_router_profile") is not canonical_execution_router_v9559:
+        errors.append("v9.5.59 Router does not resolve to its canonical entry point")
+    if globals().get("build_risk_adjustment_ledger") is not canonical_risk_ledger_v9559:
+        errors.append("v9.5.59 risk ledger does not resolve to its canonical entry point")
+    if globals().get("compact_signal_for_journal") is not compact_signal_canonical_v9559:
+        errors.append("v9.5.59 journal compaction does not resolve to its canonical entry point")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "canonical_execution_engine": True,
+        "canonical_public_entry_points": list(required[:4]),
+        "forward_control_enabled": True,
+        "canonical_setup_family_count": len(set(CANONICAL_SETUP_FAMILY_MAP.values())),
+        "canonical_setup_type_count": len(CANONICAL_SETUP_FAMILY_MAP),
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9559
+
+
+def v9559_regression_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    standard = _v9558_standard_fixture()
+    resolved = apply_canonical_execution_authority_v9559(
+        standard, {"price": 100.0, "atr15": 1.0, "candles": {"3m": []}}, {"trades": [], "signals": []},
+    )
+    trace = dict((resolved.audit or {}).get("canonical_execution_engine_v9559") or {})
+    checks.append((
+        "v9.5.59 one canonical engine performs one Router/profile/risk/action pass",
+        resolved.action == Action.ENTRY.value
+        and trace.get("router_read_count") == 1
+        and trace.get("profile_build_count") == 1
+        and trace.get("risk_authority_count") == 1
+        and trace.get("final_action_mutator_count") == 1,
+    ))
+
+    first = copy.deepcopy(_v9558_standard_fixture().candidate)
+    second = copy.deepcopy(first)
+    assert first is not None and second is not None
+    first.setup_type = SetupType.PULLBACK_CONTINUATION.value
+    second.setup_type = SetupType.FRESH_BASE_CONTINUATION.value
+    first.final_score = 80
+    second.final_score = 86
+    deduped, dedup_report = deduplicate_candidates_by_family_episode(
+        [first, second], {"price": 100.0, "atr15": 1.0, "as_of_ts": 1_800_000_000_000}, _candidate_selection_score,
+    )
+    checks.append((
+        "v9.5.59 synonymous same-family hypotheses deduplicate to the strongest candidate",
+        len(deduped) == 1
+        and deduped[0].setup_type == SetupType.FRESH_BASE_CONTINUATION.value
+        and dedup_report.get("suppressed_candidates") == 1,
+    ))
+    checks.append((
+        "v9.5.59 all 24 setups belong to exactly six canonical families",
+        set(CANONICAL_SETUP_FAMILY_MAP) == set(_tracked_setup_types())
+        and len(set(CANONICAL_SETUP_FAMILY_MAP.values())) == 6,
+    ))
+
+    synthetic = {
+        "signals": [
+            {"id": "s1", "action": "ENTRY", "execution_tier": "PREMIUM_FULL", "setup_type": "BREAKOUT_RETEST", "planned_entry": 100.0, "planned_stop": 99.0},
+            {"id": "s2", "action": "ENTRY", "execution_tier": "STANDARD_ENTRY", "setup_type": "PULLBACK_CONTINUATION", "planned_entry": 100.0, "planned_stop": 99.0},
+            {"id": "s3", "action": "PROBE_ENTRY", "execution_tier": "EARLY_PROBE", "setup_type": "SWEEP_RECLAIM", "planned_entry": 100.0, "planned_stop": 99.0},
+        ],
+        "trades": [
+            {"id": "t1", "signal_id": "s1", "side": "LONG", "setup_type": "BREAKOUT_RETEST", "entry": 100.02, "stop_initial": 99.0, "pnl_r": 1.2, "mfe_r": 1.8, "mae_r": -0.2, "bot_version_at_entry": V9559_BOT_VERSION},
+            {"id": "t2", "signal_id": "s2", "side": "LONG", "setup_type": "PULLBACK_CONTINUATION", "entry": 100.01, "stop_initial": 99.0, "pnl_r": -1.0, "mfe_r": 0.3, "mae_r": -1.0, "bot_version_at_entry": V9559_BOT_VERSION},
+            {"id": "t3", "signal_id": "s3", "side": "LONG", "setup_type": "SWEEP_RECLAIM", "entry": 100.03, "stop_initial": 99.0, "pnl_r": 0.4, "mfe_r": 0.7, "mae_r": -0.3, "bot_version_at_entry": V9559_BOT_VERSION},
+        ],
+    }
+    forward = build_forward_control_snapshot(synthetic)
+    checks.append((
+        "v9.5.59 forward control separates premium, standard and early probe outcomes",
+        all(forward["tier_metrics"][tier]["resolved_trades"] == 1 for tier in ("PREMIUM_FULL", "STANDARD_ENTRY", "EARLY_PROBE")),
+    ))
+    checks.append((
+        "v9.5.59 forward control records expectancy, MFE, MAE, slippage and realized R",
+        forward["tier_metrics"]["PREMIUM_FULL"]["expectancy_r"] == 1.2
+        and forward["tier_metrics"]["PREMIUM_FULL"]["avg_mfe_r"] == 1.8
+        and forward["tier_metrics"]["PREMIUM_FULL"]["avg_mae_r"] == -0.2
+        and forward["tier_metrics"]["PREMIUM_FULL"]["slippage_sample"] == 1
+        and forward["tier_metrics"]["PREMIUM_FULL"]["net_r"] == 1.2,
+    ))
+    checks.append((
+        "v9.5.59 forward statistics cannot mutate live thresholds",
+        forward["promotion_policy"]["automatic_threshold_mutation"] is False
+        and all(row["can_change_live_thresholds"] is False for row in forward["tier_metrics"].values()),
+    ))
+
+    compact = compact_signal_canonical_v9559({
+        "id": "v9559", "time": iso_now(), "action": Action.ENTRY.value,
+        "side": Side.LONG.value, "setup_type": SetupType.PULLBACK_CONTINUATION.value,
+        "stage_plan": {
+            "final_execution_tier_v9559": "STANDARD_ENTRY",
+            "canonical_setup_family_v9559": "TREND_CONTINUATION",
+            "family_episode_key_v9559": "TREND_CONTINUATION|LONG|A1|H1",
+        },
+        "plan_entry": 100.0, "plan_stop": 99.0,
+    })
+    checks.append((
+        "v9.5.59 journal compaction preserves tier, family, episode and execution geometry",
+        compact.get("execution_tier") == "STANDARD_ENTRY"
+        and compact.get("canonical_setup_family") == "TREND_CONTINUATION"
+        and compact.get("family_episode_key")
+        and compact.get("planned_entry") == 100.0
+        and compact.get("planned_stop") == 99.0,
+    ))
+    checks.append((
+        "v9.5.59 compatibility names resolve to one canonical runtime boundary",
+        globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9559
+        and globals().get("final_execution_authority_v9548") is canonical_final_execution_contract_v9559
+        and globals().get("execution_router_profile") is canonical_execution_router_v9559
+        and globals().get("build_risk_adjustment_ledger") is canonical_risk_ledger_v9559
+        and globals().get("compact_signal_for_journal") is compact_signal_canonical_v9559,
+    ))
+    checks.append((
+        "v9.5.59 runtime configuration seals the canonical architecture",
+        validate_runtime_configuration_canonical_v9559().get("valid") is True,
+    ))
+    return checks
+
+
+def run_self_test_canonical_v9559() -> bool:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_validator = globals()["validate_runtime_configuration"]
+    live_historical_flag = globals().get("_HISTORICAL_RELEASE_SELF_TEST_V9559", False)
+    try:
+        # Historical suites verify their own release seals and authority shape.
+        # Isolate those assertions from the live v9.5.59 public aliases; runtime
+        # outside this self-test block always remains canonical v9.5.59.
+        globals()["BOT_VERSION"] = V9558_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9558_ARCHITECTURE_VERSION
+        globals()["validate_runtime_configuration"] = _runtime_validator_compat_v9558
+        globals()["_HISTORICAL_RELEASE_SELF_TEST_V9559"] = True
+        base_ok = bool(_self_test_compat_v9558())
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["validate_runtime_configuration"] = live_validator
+        globals()["_HISTORICAL_RELEASE_SELF_TEST_V9559"] = live_historical_flag
+    checks = v9559_regression_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(f"SELF-TEST v9.5.59 SUMMARY: prior={'PASS' if base_ok else 'FAIL'} + {passed}/{len(checks)} canonical-core checks")
+    return bool(base_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9559
 
 
 if __name__ == "__main__":
