@@ -33,14 +33,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install -r requirements.txt
 
       - name: Sync latest state before run
         run: |
           git fetch origin main
           git reset --hard origin/main
 
-      - name: Validate v9.5.54
+      - name: Validate current bot
         env:
           PRECONFIRM_EXPIRED_LABEL_MODE: "NEGATIVE"
         run: |
@@ -83,7 +83,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update v9.5.54 signal memory and journal [skip ci]"
+          git commit -m "Update signal memory and journal [skip ci]"
 
           push_succeeded=false
           for i in 1 2 3 4 5; do
@@ -108,7 +108,7 @@ jobs:
               exit 0
             fi
 
-            git commit -m "Update v9.5.54 signal memory and journal [skip ci]"
+            git commit -m "Update signal memory and journal [skip ci]"
             sleep 3
           done
 
