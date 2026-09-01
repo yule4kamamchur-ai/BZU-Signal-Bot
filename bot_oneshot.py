@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.60 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.61 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.61 (execution-aware directional quality repair):
+- Ranking виконує ізольований plan/Router/Final-Authority preview для top-6 і дає лише bounded +2.0 tie-breaker фактично виконуваному кандидату; сирі score/quality не змінюються.
+- Непідтверджений countertrend liquidity/failed-expansion reversal більше не обходить Trading Philosophy через generic EARLY_PROBE; потрібен causal control transfer, structure, ASI, runway та setup-quality quorum.
+- Aligned continuation із валідним stop, живим trigger, HTF/regime support, ASI <=32 і runway >=0.15R може подолати лише формальний PLAN_NOT_EXECUTION_READY як 25-35% EARLY_PROBE.
+- Forward control v9.5.61 ізольований від v9.5.59/v9.5.60 та окремо вимірює tier/family/setup win rate, expectancy, profit factor, MFE, MAE, slippage і realized R.
+
 Оновлення v9.5.60 (self-contained single-file distribution):
 - Активні detector-функції та model recipes фізично розділені на шість канонічних family-модулів; спільний candidate loop винесено в окремий orchestrator.
 - Inline pattern registry видалено з моноліту: єдиний registry перевіряє 27 model recipes, 24 setup types і шість взаємовиключних сімейств.
@@ -2704,8 +2710,10 @@ V9559_BOT_VERSION = "pro-hybrid-confluence-v9.5.59-canonical-execution-forward-f
 V9559_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_59_CANONICAL_EXECUTION_FORWARD_FAMILY_CONTROL"
 V9560_BOT_VERSION = "pro-hybrid-confluence-v9.5.60-modular-detector-families-external-tests"
 V9560_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_60_MODULAR_DETECTOR_FAMILIES_EXTERNAL_REGRESSION_SUITE"
-BOT_VERSION = V9560_BOT_VERSION
-ARCHITECTURE_VERSION = V9560_ARCHITECTURE_VERSION
+V9561_BOT_VERSION = "pro-hybrid-confluence-v9.5.61-execution-aware-selection-directional-quality-repair"
+V9561_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_61_EXECUTION_AWARE_SELECTION_DIRECTIONAL_QUALITY_REPAIR"
+BOT_VERSION = V9561_BOT_VERSION
+ARCHITECTURE_VERSION = V9561_ARCHITECTURE_VERSION
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -27921,11 +27929,20 @@ def run_architecture_audit():
     It inspects the runtime objects actually used by run_bot().
     """
     historical_self_test = bool(globals().get("_HISTORICAL_RELEASE_SELF_TEST_V9559"))
+    active_authority = globals().get("_apply_true_final_authority_v9551")
+    canonical_authorities = {
+        globals().get("apply_canonical_execution_authority_v9559"),
+        globals().get("apply_canonical_execution_authority_v9561"),
+    }
     checks = {
         "executive_engine_exists": callable(globals().get("executive_decision_engine")),
-        "canonical_execution_engine_exists": globals().get("_CANONICAL_EXECUTION_ENGINE_V9559") is not None or historical_self_test,
+        "canonical_execution_engine_exists": bool(
+            globals().get("_CANONICAL_EXECUTION_ENGINE_V9559") is not None
+            or globals().get("_CANONICAL_EXECUTION_ENGINE_V9561") is not None
+            or historical_self_test
+        ),
         "legacy_committee_removed": globals().get("build_trading_committee_report") is None,
-        "single_final_authority": historical_self_test or globals().get("_apply_true_final_authority_v9551") is globals().get("apply_canonical_execution_authority_v9559"),
+        "single_final_authority": historical_self_test or active_authority in canonical_authorities,
         "single_router_entry_point": historical_self_test or globals().get("execution_router_profile") is globals().get("canonical_execution_router_v9559"),
         "single_risk_entry_point": historical_self_test or globals().get("build_risk_adjustment_ledger") is globals().get("canonical_risk_ledger_v9559"),
         "single_signal_compactor": historical_self_test or globals().get("compact_signal_for_journal") is globals().get("compact_signal_canonical_v9559"),
@@ -27941,12 +27958,19 @@ def run_architecture_audit():
 
 def run_v8_2_authority_audit():
     authority = globals().get("DECISION_AUTHORITY_GUARD")
-    canonical = bool(globals().get("_HISTORICAL_RELEASE_SELF_TEST_V9559")) or globals().get("_apply_true_final_authority_v9551") is globals().get("apply_canonical_execution_authority_v9559")
+    active_authority = globals().get("_apply_true_final_authority_v9551")
+    canonical = bool(globals().get("_HISTORICAL_RELEASE_SELF_TEST_V9559")) or active_authority in {
+        globals().get("apply_canonical_execution_authority_v9559"),
+        globals().get("apply_canonical_execution_authority_v9561"),
+    }
     return {
         "version": ARCHITECTURE_VERSION,
         "single_decision_authority": authority is not None and canonical,
         "executive_object": callable(globals().get("executive_decision_engine")),
-        "canonical_execution_object": globals().get("_CANONICAL_EXECUTION_ENGINE_V9559") is not None,
+        "canonical_execution_object": bool(
+            globals().get("_CANONICAL_EXECUTION_ENGINE_V9559") is not None
+            or globals().get("_CANONICAL_EXECUTION_ENGINE_V9561") is not None
+        ),
         "legacy_actions_are_advisory": True,
         "status": "READY" if authority and canonical and callable(globals().get("executive_decision_engine")) else "FAILED",
     }
@@ -31907,7 +31931,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.60 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.61 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -37926,6 +37950,1006 @@ def run_self_test_canonical_v9560() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9560
+
+
+# ==========================================================
+# v9.5.61 EXECUTION-AWARE SELECTION + DIRECTIONAL QUALITY
+# ==========================================================
+# Live-journal diagnosis (2026-09-01) exposed two independent authority leaks:
+#   1. ranking stopped at candidate #1 even when a virtually equal candidate
+#      was executable and #1 was deferred by Router/economics;
+#   2. the generic EARLY_PROBE fallback could reopen a countertrend reversal
+#      which Trading Philosophy had correctly rejected.
+#
+# This release does not lower the canonical 58/68/75 score contract and does
+# not add a frequency quota.  It adds a bounded execution-quality tie-breaker,
+# a strict countertrend-control-transfer rule, and one narrow early-continuation
+# bridge for an otherwise valid plan whose regime-mode flag alone stayed WAIT.
+
+V9561_SCHEMA_VERSION = "execution_aware_directional_quality_v9.5.61"
+V9561_SELECTION_EVAL_TOP_N = 6
+V9561_EXECUTABLE_SELECTION_BONUS = 2.0
+V9561_COUNTERTREND_SELECTION_PENALTY = 3.5
+V9561_BRIDGE_MIN_SCORE = 75
+V9561_BRIDGE_MIN_SETUP_QUALITY = 60.0
+V9561_BRIDGE_MIN_TIMING_QUALITY = 80.0
+V9561_BRIDGE_MIN_TRADE_QUALITY = 75.0
+V9561_BRIDGE_MIN_STRUCTURAL = 58.0
+V9561_BRIDGE_MAX_ASI = 32.0
+V9561_BRIDGE_MIN_SETUP_PERCENTILE = 0.55
+V9561_BRIDGE_MIN_RUNWAY_R = 0.15
+V9561_BRIDGE_MIN_RISK_FRACTION = 0.25
+V9561_BRIDGE_MAX_RISK_FRACTION = 0.35
+V9561_COUNTERTREND_MIN_SETUP_QUALITY = 72.0
+V9561_COUNTERTREND_MIN_STRUCTURAL = 65.0
+V9561_COUNTERTREND_MAX_ASI = 32.0
+V9561_COUNTERTREND_MIN_SETUP_PERCENTILE = 0.68
+V9561_COUNTERTREND_MIN_RUNWAY_R = 0.25
+V9561_REVERSAL_FAMILIES = frozenset({"LIQUIDITY_REVERSAL", "FAILED_EXPANSION"})
+V9561_CONTINUATION_BRIDGE_FAMILIES = frozenset({"TREND_CONTINUATION", "STRUCTURAL_EXPANSION"})
+
+_candidate_selection_score_v9560_base = _candidate_selection_score
+_detect_candidates_v9560_base = detect_candidates
+_load_journal_v9560_base = load_journal
+_save_journal_v9560_base = save_journal
+_audit_journal_v9560_base = run_audit_journal
+_validator_v9560_base = validate_runtime_configuration_canonical_v9560
+_self_test_v9560_base = run_self_test_canonical_v9560
+_build_forward_control_snapshot_v9560_base = build_forward_control_snapshot
+
+from bzu_core import forward_control as _forward_control_module_v9561
+
+
+def build_forward_control_snapshot_v9561(journal: dict[str, Any]) -> dict[str, Any]:
+    """Keep v9.5.61 outcomes in their own chronological policy cohort."""
+    original_tags = tuple(_forward_control_module_v9561.CURRENT_POLICY_TAGS)
+    try:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = ("v9.5.61",)
+        current = _build_forward_control_snapshot_v9560_base(journal)
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = ("v9.5.59", "v9.5.60")
+        prior = _build_forward_control_snapshot_v9560_base(journal)
+    finally:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = original_tags
+    current = copy.deepcopy(current)
+    coverage = current.setdefault("coverage", {})
+    coverage["v9561_forward_trade_rows"] = int(coverage.get("current_policy_forward_trade_rows") or 0)
+    coverage["prior_v9559_v9560_forward_trade_rows"] = int(
+        (prior.get("coverage") or {}).get("current_policy_forward_trade_rows") or 0
+    )
+    current["prior_policy_v9559_v9560"] = {
+        "tier_metrics": copy.deepcopy(prior.get("tier_metrics") or {}),
+        "family_metrics": copy.deepcopy(prior.get("family_metrics") or {}),
+        "coverage": copy.deepcopy(prior.get("coverage") or {}),
+        "policy_version_tags": ["v9.5.59", "v9.5.60"],
+        "can_promote_v9561_policy": False,
+    }
+    current.setdefault("promotion_policy", {})["policy_version_tags"] = ["v9.5.61"]
+    current["promotion_policy"]["automatic_threshold_mutation"] = False
+    current["policy_isolation"] = "V9_5_61_DIRECTIONAL_QUALITY_SEPARATE_FROM_V9_5_59_V9_5_60"
+    current["schema_version"] = V9561_SCHEMA_VERSION
+    return current
+
+
+def _v9561_regime_direction_aligned(candidate: Candidate, regime_bias: str) -> bool:
+    side = str(candidate.side or "").upper()
+    bias = str(regime_bias or "UNKNOWN").upper()
+    return bool(
+        bias not in {"BULLISH", "BEARISH"}
+        or (side == Side.LONG.value and bias == "BULLISH")
+        or (side == Side.SHORT.value and bias == "BEARISH")
+    )
+
+
+def _v9561_revalidation_supported(candidate: Candidate) -> bool:
+    revalidation = dict(candidate.revalidation_profile or {})
+    state_name = str(revalidation.get("state") or "").upper()
+    return bool(
+        revalidation.get("entry_supported", True)
+        and not revalidation.get("hard_expired")
+        and state_name not in {"DEAD", "INVALIDATED"}
+    )
+
+
+def directional_quality_profile_v9561(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    base_profile: dict[str, Any],
+    router: Optional[dict[str, Any]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Resolve the v9.5.61 early-continuation bridge and reversal veto.
+
+    The bridge can only release reduced risk with aligned HTF/regime, current
+    execution evidence, controlled adverse selection, sufficient runway and a
+    valid stop.  Countertrend reversal remains a hypothesis until a causal
+    control-transfer event proves that the old directional regime has broken.
+    """
+    profile = ordinary_entry_profile_v9558(
+        candidate,
+        plan,
+        base_profile=base_profile,
+        router=router,
+        directional_guard=directional_guard,
+    )
+    profile = copy.deepcopy(profile)
+    router = dict(router or {})
+    quality = dict(profile.get("quality_quorum_v9558") or _v9558_quality_snapshot(candidate, profile))
+    runway = dict(profile.get("runway_quorum_v9558") or _v9558_runway_snapshot(profile))
+    htf = get_htf_fact(candidate)
+    family = canonical_setup_family(candidate.setup_type)
+    revalidation_ok = _v9561_revalidation_supported(candidate)
+    source = str(candidate.execution_source or ExecutionSource.NONE.value)
+    direct_evidence = bool(
+        source in V9558_DIRECT_EXECUTION_SOURCES
+        and profile.get("trigger_valid")
+    )
+    primary_runway = safe_float(runway.get("primary_runway_r"), 0.0)
+    runway_known = bool(runway.get("known"))
+    regime_aligned = _v9561_regime_direction_aligned(candidate, quality.get("regime_bias"))
+
+    hard_blockers = [str(value) for value in (profile.get("hard_blockers") or [])]
+    wait_reasons = [str(value) for value in (profile.get("wait_reasons") or [])]
+    bridge_wait_scope = {"PLAN_NOT_EXECUTION_READY", "POST_DECISION_3M_CONFIRMATION_REQUIRED"}
+    bridge_conditions = {
+        "continuation_family": family in V9561_CONTINUATION_BRIDGE_FAMILIES,
+        "no_factual_hard_blocker": not hard_blockers,
+        "only_recoverable_plan_wait": bool(wait_reasons) and set(wait_reasons) <= bridge_wait_scope,
+        "valid_plan_and_stop": bool(plan and plan.valid and profile.get("risk_geometry_valid")),
+        "fresh_trigger": bool(profile.get("trigger_valid")),
+        "current_execution_evidence": direct_evidence,
+        "revalidation_supported": revalidation_ok,
+        "anchor_not_invalidated": not bool(profile.get("anchor_invalidated")),
+        "htf_aligned": bool(htf.get("valid") and str(htf.get("state") or "").upper() == "ALIGNED"),
+        "regime_direction_aligned": regime_aligned,
+        "score": safe_float(quality.get("score"), 0.0) >= V9561_BRIDGE_MIN_SCORE,
+        "setup_quality": safe_float(quality.get("setup_quality"), 0.0) >= V9561_BRIDGE_MIN_SETUP_QUALITY,
+        "timing_quality": safe_float(quality.get("timing_quality"), 0.0) >= V9561_BRIDGE_MIN_TIMING_QUALITY,
+        "trade_quality": safe_float(quality.get("trade_quality"), 0.0) >= V9561_BRIDGE_MIN_TRADE_QUALITY,
+        "structural_control": safe_float(quality.get("structural"), 0.0) >= V9561_BRIDGE_MIN_STRUCTURAL,
+        "adverse_selection_controlled": safe_float(quality.get("asi"), 100.0) <= V9561_BRIDGE_MAX_ASI,
+        "setup_percentile": safe_float(quality.get("setup_percentile"), 0.0) >= V9561_BRIDGE_MIN_SETUP_PERCENTILE,
+        "state_at_execution": str(quality.get("state") or "").upper() == "EXECUTION",
+        "economic_runway": bool(runway_known and primary_runway >= V9561_BRIDGE_MIN_RUNWAY_R),
+    }
+    bridge_eligible = all(bridge_conditions.values())
+    if str(profile.get("tier") or "WAIT") == "WAIT" and bridge_eligible:
+        strength = sum([
+            clamp((safe_float(quality.get("score"), 0.0) - V9561_BRIDGE_MIN_SCORE) / 10.0, 0.0, 1.0),
+            clamp((safe_float(quality.get("timing_quality"), 0.0) - V9561_BRIDGE_MIN_TIMING_QUALITY) / 15.0, 0.0, 1.0),
+            clamp((safe_float(quality.get("trade_quality"), 0.0) - V9561_BRIDGE_MIN_TRADE_QUALITY) / 15.0, 0.0, 1.0),
+            clamp((V9561_BRIDGE_MAX_ASI - safe_float(quality.get("asi"), 100.0)) / 20.0, 0.0, 1.0),
+            clamp((primary_runway - V9561_BRIDGE_MIN_RUNWAY_R) / 0.50, 0.0, 1.0),
+        ]) / 5.0
+        risk_fraction = V9561_BRIDGE_MIN_RISK_FRACTION + (
+            V9561_BRIDGE_MAX_RISK_FRACTION - V9561_BRIDGE_MIN_RISK_FRACTION
+        ) * strength
+        risk_fraction = clamp(
+            risk_fraction,
+            V9561_BRIDGE_MIN_RISK_FRACTION,
+            V9561_BRIDGE_MAX_RISK_FRACTION,
+        )
+        if plan is not None:
+            plan.execution_ready = True
+            plan.entry_stage = EntryStage.PROBE.value
+            plan.final_stage = EntryStage.PROBE.value
+        advisory = list(profile.get("advisory_reasons") or [])
+        advisory.extend([
+            "ALIGNED_CONTINUATION_PLAN_MODE_BRIDGED_AT_REDUCED_RISK",
+            "ROUTER_RETEST_RETAINED_AS_SIZE_INPUT",
+        ])
+        profile.update({
+            "tier": "EARLY_PROBE",
+            "allow": True,
+            "full_entry": False,
+            "standard_entry": False,
+            "early_probe": True,
+            "plan_ready": True,
+            "wait_reasons": [],
+            "advisory_reasons": sorted(set(advisory)),
+            "risk_fraction_of_normal": round(risk_fraction, 4),
+            "risk_cap": round(NORMAL_RISK_PCT * risk_fraction, 6),
+            "release_mode_v9561": "ALIGNED_CONTINUATION_PLAN_BRIDGE",
+        })
+
+    reversal_family = family in V9561_REVERSAL_FAMILIES
+    htf_against = bool(htf.get("valid") and str(htf.get("state") or "").upper() == "AGAINST")
+    regime_against = not regime_aligned and str(quality.get("regime_bias") or "").upper() in {"BULLISH", "BEARISH"}
+    countertrend_reversal = bool(reversal_family and (htf_against or regime_against))
+    causal = _v9558_router_causal_proof(candidate, router)
+    control_transfer_conditions = {
+        "causal_post_decision_proof": bool(causal.get("proven")),
+        "plan_execution_ready": bool(plan and plan.valid and plan.execution_ready),
+        "fresh_trigger": bool(profile.get("trigger_valid")),
+        "valid_stop_geometry": bool(profile.get("risk_geometry_valid")),
+        "revalidation_supported": revalidation_ok,
+        "setup_quality": safe_float(quality.get("setup_quality"), 0.0) >= V9561_COUNTERTREND_MIN_SETUP_QUALITY,
+        "structural_control": safe_float(quality.get("structural"), 0.0) >= V9561_COUNTERTREND_MIN_STRUCTURAL,
+        "adverse_selection_controlled": safe_float(quality.get("asi"), 100.0) <= V9561_COUNTERTREND_MAX_ASI,
+        "setup_percentile": safe_float(quality.get("setup_percentile"), 0.0) >= V9561_COUNTERTREND_MIN_SETUP_PERCENTILE,
+        "economic_runway": bool(runway_known and primary_runway >= V9561_COUNTERTREND_MIN_RUNWAY_R),
+        "anchor_not_invalidated": not bool(profile.get("anchor_invalidated")),
+    }
+    control_transfer_proven = all(control_transfer_conditions.values())
+    prior_tier = str(profile.get("tier") or "WAIT")
+    if countertrend_reversal and prior_tier in {"PREMIUM_FULL", "STANDARD_ENTRY", "EARLY_PROBE"} and not control_transfer_proven:
+        wait_reasons = list(profile.get("wait_reasons") or [])
+        wait_reasons.append("COUNTERTREND_REVERSAL_REQUIRES_CONTROL_TRANSFER")
+        advisory = list(profile.get("advisory_reasons") or [])
+        advisory.append("REVERSAL_HYPOTHESIS_RETAINED_FOR_CAUSAL_RECHECK")
+        profile.update({
+            "tier": "WAIT",
+            "allow": False,
+            "full_entry": False,
+            "standard_entry": False,
+            "early_probe": False,
+            "wait_reasons": sorted(set(wait_reasons)),
+            "advisory_reasons": sorted(set(advisory)),
+            "risk_fraction_of_normal": 0.0,
+            "risk_cap": 0.0,
+            "release_mode_v9561": "COUNTERTREND_CONTROL_TRANSFER_WAIT",
+        })
+
+    profile.update({
+        "directional_quality_v9561": {
+            "canonical_setup_family": family,
+            "bridge_eligible": bridge_eligible,
+            "bridge_conditions": bridge_conditions,
+            "countertrend_reversal": countertrend_reversal,
+            "htf_against": htf_against,
+            "regime_against": regime_against,
+            "control_transfer_proven": control_transfer_proven,
+            "control_transfer_conditions": control_transfer_conditions,
+            "causal_proof": causal,
+            "runway_r": round(primary_runway, 4) if runway_known else None,
+            "maximum_bridge_tier": "EARLY_PROBE",
+            "schema_version": V9561_SCHEMA_VERSION,
+        },
+        "schema_version_v9561": V9561_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def _apply_directional_quality_execution_v9561(
+    decision: Decision,
+    profile: dict[str, Any],
+    *,
+    planned_risk: float,
+    context: dict[str, Any],
+    journal: dict[str, Any],
+) -> Decision:
+    out = _apply_four_level_execution_v9558(
+        decision,
+        profile,
+        planned_risk=planned_risk,
+        context=context,
+        journal=journal,
+    )
+    candidate = out.candidate
+    if candidate is not None:
+        candidate.stage_plan = candidate.stage_plan or {}
+        candidate.stage_plan.update({
+            "directional_quality_v9561": copy.deepcopy(profile.get("directional_quality_v9561") or {}),
+            "final_execution_tier_v9561": str(profile.get("tier") or "WAIT"),
+            "final_blocking_reasons_v9561": list(profile.get("hard_blockers") or profile.get("wait_reasons") or []),
+        })
+    out.audit = out.audit or {}
+    authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "entry_tier": str(profile.get("tier") or "WAIT"),
+        "directional_quality_v9561": copy.deepcopy(profile.get("directional_quality_v9561") or {}),
+        "execution_policy_version": V9561_SCHEMA_VERSION,
+    })
+    out.audit["final_execution_authority_v9551"] = authority
+    report = ((out.audit.get("executive_director") or {}).get("report") or {})
+    executive = report.get("executive_decision") or {}
+    executive.setdefault("audit", {})["final_execution_authority"] = authority
+    report.setdefault("audit", {})["final_execution_authority"] = authority
+    return out
+
+
+_CANONICAL_EXECUTION_ENGINE_V9561 = CanonicalExecutionEngine(ExecutionEngineHooks(
+    base_executor=_authority_pipeline_compat_v9557,
+    router_reader=canonical_router_result_v9553,
+    profile_builder=directional_quality_profile_v9561,
+    profile_applier=_apply_directional_quality_execution_v9561,
+    directional_guard=directional_market_guard_v9555,
+    approval=DECISION_AUTHORITY_GUARD.approve_executive_decision,
+    anchor_recorder=_update_execution_anchor_aggregate_v9551,
+    safe_float=safe_float,
+    executable_actions=frozenset(EXECUTABLE_ENTRY_ACTIONS),
+))
+
+
+def apply_canonical_execution_authority_v9561(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _CANONICAL_EXECUTION_ENGINE_V9561.execute(decision, context, journal)
+    out.audit = out.audit or {}
+    trace = dict(out.audit.get("canonical_execution_engine_v9559") or {})
+    trace.update({
+        "policy_profile": "DIRECTIONAL_QUALITY_V9561",
+        "execution_aware_selection": True,
+        "countertrend_control_transfer_guard": True,
+        "schema_version_v9561": V9561_SCHEMA_VERSION,
+    })
+    out.audit["canonical_execution_engine_v9559"] = trace
+    if out.candidate is not None:
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.stage_plan["canonical_execution_engine_v9561"] = copy.deepcopy(trace)
+    return out
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9561
+
+
+def _simulate_candidate_execution_v9561(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    audit_journal: dict[str, Any],
+    candidate: Candidate,
+) -> dict[str, Any]:
+    """Run one isolated candidate through plan, Router and Final Authority."""
+    try:
+        shadow_context = copy.deepcopy(context)
+        shadow_context["_audit_shadow_scan"] = True
+        decision = _candidate_counterfactual_decision(
+            shadow_context,
+            state,
+            audit_journal,
+            candidate,
+        )
+        evaluated = decision.candidate
+        if evaluated is None:
+            raise RuntimeError("counterfactual candidate missing")
+        intelligence = build_execution_intelligence_v9532(
+            shadow_context,
+            evaluated,
+            audit_journal,
+            decision.plan,
+        )
+        evaluated.score_components = evaluated.score_components or {}
+        evaluated.score_components["execution_intelligence_v9532"] = intelligence
+        evaluated.stage_plan = evaluated.stage_plan or {}
+        evaluated.stage_plan["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(intelligence)
+        tactic = str((intelligence.get("execution_router") or {}).get("action") or "MARKET_NOW")
+        decision = executive_route_resolution_v9533(decision, tactic)
+        canonical_router_result_v9553(decision)
+        decision = apply_canonical_execution_authority_v9561(
+            decision,
+            shadow_context,
+            audit_journal,
+        )
+        authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+        quality = dict(authority.get("directional_quality_v9561") or {})
+        score_live = int(safe_float(getattr(evaluated, "final_score", 0.0), 0.0)) >= RISKY_ENTRY_SCORE_BASE
+        executable = bool(
+            score_live
+            and decision.action in EXECUTABLE_ENTRY_ACTIONS
+            and decision.plan is not None
+            and decision.plan.valid
+            and decision.plan.execution_ready
+        )
+        return {
+            "simulation_valid": True,
+            "currently_executable": executable,
+            "final_action": str(decision.action),
+            "entry_tier": str(authority.get("entry_tier") or "WAIT"),
+            "router_tactic": str((decision.audit.get("canonical_router_result_v9553") or {}).get("router_final_tactic") or tactic),
+            "router_disposition": str((decision.audit.get("canonical_router_result_v9553") or {}).get("router_final_disposition") or ""),
+            "plan_valid": bool(decision.plan and decision.plan.valid),
+            "plan_execution_ready": bool(decision.plan and decision.plan.execution_ready),
+            "countertrend_reversal": bool(quality.get("countertrend_reversal")),
+            "control_transfer_proven": bool(quality.get("control_transfer_proven")),
+            "blocking_reasons": list(authority.get("hard_blockers") or (
+                ((decision.audit.get("executive_director") or {}).get("report") or {})
+                .get("executive_decision", {}).get("blocking_reasons") or []
+            )),
+            "schema_version": V9561_SCHEMA_VERSION,
+        }
+    except Exception as exc:
+        return {
+            "simulation_valid": False,
+            "currently_executable": False,
+            "error": f"{type(exc).__name__}: {exc}"[:240],
+            "schema_version": V9561_SCHEMA_VERSION,
+        }
+
+
+def _candidate_selection_score(candidate: Optional[Candidate]) -> float:
+    if candidate is None:
+        return 0.0
+    profile = dict((candidate.score_components or {}).get("execution_aware_selection_v9561") or {})
+    if profile.get("active") and profile.get("selection_score") is not None:
+        return safe_float(profile.get("selection_score"), _candidate_selection_score_v9560_base(candidate))
+    return _candidate_selection_score_v9560_base(candidate)
+
+
+def detect_candidates_canonical_v9561(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    """Prefer a presently executable near-equal hypothesis without forcing one."""
+    ranked = _detect_candidates_v9560_base(context, state, journal)
+    if not ranked:
+        return ranked
+    original_first = ranked[0]
+    audit_journal = copy.deepcopy(journal)
+    evaluated_count = 0
+    executable_count = 0
+    countertrend_deprioritized = 0
+    for candidate in ranked[:V9561_SELECTION_EVAL_TOP_N]:
+        base_score = _candidate_selection_score_v9560_base(candidate)
+        simulation = _simulate_candidate_execution_v9561(
+            context,
+            copy.deepcopy(state),
+            audit_journal,
+            candidate,
+        )
+        evaluated_count += 1
+        executable = bool(simulation.get("currently_executable"))
+        countertrend_unproven = bool(
+            simulation.get("countertrend_reversal")
+            and not simulation.get("control_transfer_proven")
+        )
+        adjustment = V9561_EXECUTABLE_SELECTION_BONUS if executable else 0.0
+        if countertrend_unproven:
+            adjustment -= V9561_COUNTERTREND_SELECTION_PENALTY
+            countertrend_deprioritized += 1
+        adjusted = clamp(base_score + adjustment, 0.0, 100.0)
+        if executable:
+            executable_count += 1
+        candidate.score_components = candidate.score_components or {}
+        candidate.score_components["execution_aware_selection_v9561"] = {
+            "active": True,
+            "base_selection_score": round(base_score, 6),
+            "execution_adjustment": round(adjustment, 6),
+            "selection_score": round(adjusted, 6),
+            "currently_executable": executable,
+            "countertrend_unproven": countertrend_unproven,
+            "simulation": simulation,
+            "bounded_tiebreaker_only": True,
+            "raw_quality_mutated": False,
+            "frequency_quota": False,
+            "schema_version": V9561_SCHEMA_VERSION,
+        }
+    ranked = finalize_hypothesis_ranking(ranked)
+    selection_changed = bool(ranked and ranked[0] is not original_first)
+    audit = {
+        "evaluated_count": evaluated_count,
+        "candidate_count": len(ranked),
+        "currently_executable_count": executable_count,
+        "countertrend_deprioritized_count": countertrend_deprioritized,
+        "selection_changed": selection_changed,
+        "previous_rank_1": {
+            "side": original_first.side,
+            "setup_type": original_first.setup_type,
+            "model_id": original_first.ict_model,
+            "selection_score": round(_candidate_selection_score_v9560_base(original_first), 4),
+        },
+        "selected_rank_1": {
+            "side": ranked[0].side,
+            "setup_type": ranked[0].setup_type,
+            "model_id": ranked[0].ict_model,
+            "selection_score": round(_candidate_selection_score(ranked[0]), 4),
+            "currently_executable": bool(((ranked[0].score_components or {}).get("execution_aware_selection_v9561") or {}).get("currently_executable")),
+        },
+        "policy": "BOUNDED_EXECUTABILITY_TIEBREAKER; NEVER_CREATES_A_TRADE",
+        "schema_version": V9561_SCHEMA_VERSION,
+    }
+    context["execution_aware_selection_v9561"] = audit
+    context["_ranked_candidate_objects"] = ranked
+    context["_setup_lifecycle_ranked"] = [{
+        "side": candidate.side,
+        "model_id": candidate.ict_model,
+        "setup_type": candidate.setup_type,
+        "canonical_setup_family": canonical_setup_family(candidate.setup_type),
+        "rank": candidate.hypothesis_rank,
+        "final_score": candidate.final_score,
+        "evidence_adjusted_selection_score": round(_candidate_selection_score_v9560_base(candidate), 4),
+        "execution_aware_selection_score_v9561": round(_candidate_selection_score(candidate), 4),
+        "currently_executable_v9561": bool(((candidate.score_components or {}).get("execution_aware_selection_v9561") or {}).get("currently_executable")),
+        "execution_anchor": round_price(candidate.execution_anchor),
+        "trigger_level": round_price(candidate.trigger_level),
+        "thesis_key": candidate.thesis_key,
+        "as_of_ts": _preconfirm_as_of_ts(context),
+        "schema_version": V9561_SCHEMA_VERSION,
+    } for candidate in ranked]
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9561", {})
+        aggregate["selection_scans"] = int(aggregate.get("selection_scans") or 0) + 1
+        aggregate["selection_overrides"] = int(aggregate.get("selection_overrides") or 0) + int(selection_changed)
+        aggregate["executable_candidates_seen"] = int(aggregate.get("executable_candidates_seen") or 0) + executable_count
+        aggregate["countertrend_candidates_deprioritized"] = int(aggregate.get("countertrend_candidates_deprioritized") or 0) + countertrend_deprioritized
+        aggregate["last_selection"] = audit
+        aggregate["schema_version"] = V9561_SCHEMA_VERSION
+    return ranked
+
+
+detect_candidates = detect_candidates_canonical_v9561
+
+
+def load_journal_canonical_v9561() -> dict[str, Any]:
+    journal = _load_journal_v9560_base()
+    journal["forward_control_v9561"] = build_forward_control_snapshot_v9561(journal)
+    return journal
+
+
+load_journal = load_journal_canonical_v9561
+
+
+def save_journal_canonical_v9561(journal: dict[str, Any]) -> None:
+    aggregate = journal.setdefault("execution_quality_repair_v9561", {})
+    aggregate.update({
+        "policy_version": V9561_BOT_VERSION,
+        "score_contract": [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE],
+        "frequency_quota_enabled": False,
+        "execution_tiers": ["PREMIUM_FULL", "STANDARD_ENTRY", "EARLY_PROBE", "WAIT"],
+        "countertrend_rule": "CAUSAL_CONTROL_TRANSFER_REQUIRED",
+        "selection_rule": "EXECUTABLE_NEAR_EQUAL_CANDIDATE_GETS_BOUNDED_PRIORITY",
+        "bridge_rule": "ALIGNED_CONTINUATION_ONLY_AT_25_35_PERCENT_NORMAL_RISK",
+        "schema_version": V9561_SCHEMA_VERSION,
+    })
+    journal["forward_control_v9561"] = build_forward_control_snapshot_v9561(journal)
+    return _save_journal_v9560_base(journal)
+
+
+save_journal = save_journal_canonical_v9561
+
+
+def run_audit_journal_canonical_v9561(path: str) -> dict[str, Any]:
+    output = _audit_journal_v9560_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    signals = [row for row in (payload.get("signals") or []) if isinstance(row, dict)]
+    v9560_signals = [
+        row for row in signals
+        if str(row.get("bot_version_at_signal") or "") == V9560_BOT_VERSION
+    ]
+    unsafe_countertrend_entries = []
+    for row in v9560_signals:
+        xi = dict(row.get("execution_intelligence") or {})
+        family = str(row.get("canonical_setup_family") or canonical_setup_family(str(row.get("setup_type") or "")))
+        side = str(row.get("side") or "").upper()
+        bias = str(xi.get("regime_bias") or "UNKNOWN").upper()
+        regime_against = bool(
+            (side == Side.LONG.value and bias == "BEARISH")
+            or (side == Side.SHORT.value and bias == "BULLISH")
+        )
+        if (
+            str(row.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS
+            and family in V9561_REVERSAL_FAMILIES
+            and regime_against
+        ):
+            unsafe_countertrend_entries.append({
+                "id": str(row.get("id") or ""),
+                "time": str(row.get("time") or ""),
+                "side": side,
+                "setup_type": str(row.get("setup_type") or ""),
+                "score": int(safe_float(row.get("score"), 0.0)),
+                "runway_r": safe_float(xi.get("runway_r"), 0.0),
+                "setup_quality": safe_float(row.get("setup_quality"), 0.0),
+            })
+    missed_executable_fallbacks = []
+    for batch in payload.get("ranked_conversion_audits") or []:
+        if not isinstance(batch, dict):
+            continue
+        rows = [row for row in (batch.get("rows") or []) if isinstance(row, dict)]
+        selected = next((row for row in rows if row.get("selected")), None)
+        if not selected or selected.get("would_executable"):
+            continue
+        best_score = safe_float(selected.get("evidence_adjusted_selection_score"), 0.0)
+        alternatives = [
+            row for row in rows
+            if not row.get("selected")
+            and row.get("would_executable")
+            and best_score - safe_float(row.get("evidence_adjusted_selection_score"), 0.0)
+            <= V9561_EXECUTABLE_SELECTION_BONUS
+        ]
+        if alternatives:
+            missed_executable_fallbacks.append({
+                "time": str(batch.get("time") or ""),
+                "selected_setup": str(selected.get("setup_type") or ""),
+                "selected_blocker": str(selected.get("primary_blocker") or ""),
+                "executable_alternatives": [str(row.get("setup_type") or "") for row in alternatives],
+                "smallest_score_gap": round(min(
+                    best_score - safe_float(row.get("evidence_adjusted_selection_score"), 0.0)
+                    for row in alternatives
+                ), 4),
+            })
+    output["v9561_execution_quality_repair"] = {
+        "historical_v9560_signal_count": len(v9560_signals),
+        "historical_countertrend_reversal_entries_without_directional_alignment": unsafe_countertrend_entries,
+        "historical_missed_executable_fallback_count": len(missed_executable_fallbacks),
+        "historical_missed_executable_fallback_samples": missed_executable_fallbacks[-10:],
+        "fixed_contracts": {
+            "ranking": "BOUNDED_EXECUTION_AWARE_SELECTION",
+            "countertrend_reversal": "CAUSAL_CONTROL_TRANSFER_REQUIRED",
+            "aligned_continuation": "NARROW_REDUCED_RISK_PLAN_BRIDGE",
+            "frequency": "OBSERVED_NOT_FORCED",
+        },
+        "runtime_aggregate": dict(payload.get("execution_quality_repair_v9561") or {}),
+        "forward_control": build_forward_control_snapshot_v9561(payload),
+        "schema_version": V9561_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9561
+
+
+def validate_runtime_configuration_canonical_v9561() -> dict[str, Any]:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_apply = globals()["_apply_true_final_authority_v9551"]
+    live_detect = globals()["detect_candidates"]
+    live_score = globals()["_candidate_selection_score"]
+    try:
+        globals()["BOT_VERSION"] = V9560_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9560_ARCHITECTURE_VERSION
+        globals()["_apply_true_final_authority_v9551"] = apply_canonical_execution_authority_v9559
+        globals()["detect_candidates"] = detect_candidates_canonical_v9559
+        globals()["_candidate_selection_score"] = _candidate_selection_score_v9560_base
+        report = _validator_v9560_base()
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["_apply_true_final_authority_v9551"] = live_apply
+        globals()["detect_candidates"] = live_detect
+        globals()["_candidate_selection_score"] = live_score
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9561_BOT_VERSION or ARCHITECTURE_VERSION != V9561_ARCHITECTURE_VERSION:
+        errors.append("v9.5.61 execution-quality release seal mismatch")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9561:
+        errors.append("v9.5.61 Final Authority is not the active canonical mutator")
+    if globals().get("detect_candidates") is not detect_candidates_canonical_v9561:
+        errors.append("v9.5.61 execution-aware candidate selection is not active")
+    if not (
+        0.0 < V9561_EXECUTABLE_SELECTION_BONUS < V9561_COUNTERTREND_SELECTION_PENALTY <= 5.0
+        and 0.20 <= V9561_BRIDGE_MIN_RISK_FRACTION <= V9561_BRIDGE_MAX_RISK_FRACTION <= 0.40
+        and V9561_BRIDGE_MIN_RUNWAY_R >= V9558_STANDARD_MIN_RUNWAY_R
+        and V9561_COUNTERTREND_MIN_RUNWAY_R > V9561_BRIDGE_MIN_RUNWAY_R
+    ):
+        errors.append("v9.5.61 directional quality thresholds are outside the bounded policy")
+    if not callable(globals().get("build_forward_control_snapshot_v9561")):
+        errors.append("v9.5.61 isolated forward-control cohort is unavailable")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "execution_selection": "BOUNDED_EXECUTABILITY_TIEBREAKER",
+        "countertrend_reversal": "WAIT_UNTIL_CAUSAL_CONTROL_TRANSFER",
+        "aligned_continuation_bridge": "EARLY_PROBE_25_TO_35_PERCENT_NORMAL_RISK",
+        "frequency_quota_enabled": False,
+        "schema_version_v9561": V9561_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9561
+
+
+def _v9561_attach_htf(candidate: Candidate, *, state_name: str, market_bias: str) -> None:
+    fact = {
+        "market_bias": market_bias,
+        "candidate_side": candidate.side,
+        "alignment_score": 0.70 if state_name == "ALIGNED" else -0.70,
+        "state": state_name,
+        "timeframe_components": {
+            "15m": {"weight": 0.15, "direction": 0.70, "bias": market_bias},
+            "1h": {"weight": 0.35, "direction": 0.70, "bias": market_bias},
+            "4h": {"weight": 0.50, "direction": 0.70, "bias": market_bias},
+        },
+        "confidence": 70.0,
+        "schema_version": "htf_fact_v9.0",
+        "valid": True,
+        "errors": [],
+    }
+    candidate.htf_fact = copy.deepcopy(fact)
+    candidate.score_components = candidate.score_components or {}
+    candidate.score_components["htf_fact"] = copy.deepcopy(fact)
+
+
+def _v9561_bridge_fixture() -> Decision:
+    decision = _v9558_standard_fixture(source=ExecutionSource.LIVE_3M.value)
+    candidate = decision.candidate
+    assert candidate is not None and decision.plan is not None
+    candidate.setup_type = SetupType.FRESH_BASE_CONTINUATION.value
+    candidate.setup_family = SetupFamily.CONTINUATION.value
+    candidate.final_score = 76
+    candidate.setup_quality_score = 61
+    candidate.timing_quality_score = 85
+    candidate.trade_plan_quality_score = 78
+    candidate.evaluation_bundle.update({
+        "setup_quality": 61.3,
+        "timing_quality": 85.0,
+        "execution_readiness": 85.0,
+        "trade_quality": 78.2,
+    })
+    intelligence = candidate.score_components["execution_intelligence_v9532"]
+    intelligence.update({
+        "asi": 21.5,
+        "structural": 60.0,
+        "setup_pct": 0.576,
+        "regime_bias": "BULLISH",
+        "state": "EXECUTION",
+    })
+    intelligence["adverse_selection"] = {"index": 21.5}
+    intelligence["structural_score"] = 60.0
+    intelligence["setup_relative_quality"] = {"percentile": 0.576}
+    intelligence["state_machine"] = {"current_state": "EXECUTION", "kind": "CONTINUATION"}
+    intelligence["execution_router"] = {
+        "action": "FIRST_RETEST",
+        "runway_known": True,
+        "runway_r": 0.266,
+        "execution_economics": {"runway_known": True, "runway_r": 0.266},
+    }
+    candidate.stage_plan.update({
+        "router_final_tactic": "FIRST_RETEST",
+        "router_intended_tactic": "FIRST_RETEST",
+        "router_final_disposition": "DEFERRED",
+    })
+    decision.plan.execution_ready = False
+    _v9561_attach_htf(candidate, state_name="ALIGNED", market_bias="BULLISH")
+    return decision
+
+
+def _v9561_countertrend_fixture(*, proven: bool) -> Decision:
+    decision = _v9558_standard_fixture(source=ExecutionSource.LIVE_3M.value)
+    candidate = decision.candidate
+    assert candidate is not None and decision.plan is not None
+    candidate.side = Side.SHORT.value
+    decision.side = Side.SHORT.value
+    candidate.setup_type = SetupType.SWEEP_RECLAIM.value
+    candidate.setup_family = SetupFamily.LIQUIDITY_RECOVERY.value
+    candidate.invalidation_level = 101.0
+    decision.plan.stop = 101.0
+    decision.plan.structural_invalidation = 101.0
+    candidate.final_score = 84 if proven else 79
+    setup_quality = 76.0 if proven else 58.3
+    structural = 70.0 if proven else 60.0
+    asi = 25.0 if proven else 22.1
+    setup_pct = 0.80 if proven else 0.727
+    runway = 0.40 if proven else 0.186
+    candidate.setup_quality_score = int(setup_quality)
+    candidate.timing_quality_score = 85
+    candidate.trade_plan_quality_score = 86
+    candidate.evaluation_bundle.update({
+        "setup_quality": setup_quality,
+        "timing_quality": 85.0,
+        "execution_readiness": 85.0,
+        "trade_quality": 86.0,
+    })
+    intelligence = candidate.score_components["execution_intelligence_v9532"]
+    intelligence.update({
+        "asi": asi,
+        "structural": structural,
+        "setup_pct": setup_pct,
+        "regime_bias": "BULLISH",
+        "state": "EXECUTION",
+    })
+    intelligence["adverse_selection"] = {"index": asi}
+    intelligence["structural_score"] = structural
+    intelligence["setup_relative_quality"] = {"percentile": setup_pct}
+    intelligence["state_machine"] = {"current_state": "EXECUTION", "kind": "REVERSAL"}
+    tactic = "MARKET_NOW" if proven else "FIRST_RETEST"
+    disposition = "EXECUTE_NOW" if proven else "DEFERRED"
+    intelligence["execution_router"] = {
+        "action": tactic,
+        "runway_known": True,
+        "runway_r": runway,
+        "execution_economics": {"runway_known": True, "runway_r": runway},
+    }
+    candidate.stage_plan.update({
+        "router_final_tactic": tactic,
+        "router_intended_tactic": tactic,
+        "router_final_disposition": disposition,
+    })
+    decision.action = Action.ENTRY.value if proven else Action.PROBE_ENTRY.value
+    _v9561_attach_htf(candidate, state_name="AGAINST", market_bias="BULLISH")
+    return decision
+
+
+def _v9561_safety_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    context = {"price": 100.0, "atr15": 1.0, "candles": {"3m": []}, "_audit_shadow_scan": True}
+    journal = {"trades": [], "signals": []}
+
+    bridge = apply_canonical_execution_authority_v9561(
+        _v9561_bridge_fixture(), context, copy.deepcopy(journal),
+    )
+    bridge_authority = dict((bridge.audit or {}).get("final_execution_authority_v9551") or {})
+    bridge_profile = dict(bridge_authority.get("directional_quality_v9561") or {})
+    checks.append((
+        "v9.5.61 aligned high-quality continuation can bridge plan-mode WAIT only as a bounded probe",
+        bridge.action == Action.PROBE_ENTRY.value
+        and bridge_profile.get("bridge_eligible") is True
+        and V9561_BRIDGE_MIN_RISK_FRACTION * NORMAL_RISK_PCT - 1e-9
+        <= safe_float(bridge.plan.position_risk_pct, 0.0)
+        <= V9561_BRIDGE_MAX_RISK_FRACTION * NORMAL_RISK_PCT + 1e-9,
+    ))
+
+    opposed = _v9561_bridge_fixture()
+    opposed.candidate.score_components["execution_intelligence_v9532"]["regime_bias"] = "BEARISH"
+    opposed_result = apply_canonical_execution_authority_v9561(
+        opposed, context, copy.deepcopy(journal),
+    )
+    checks.append((
+        "v9.5.61 the continuation bridge cannot enter against the live regime direction",
+        opposed_result.action == Action.NO_SETUP.value,
+    ))
+
+    unsafe = apply_canonical_execution_authority_v9561(
+        _v9561_countertrend_fixture(proven=False), context, copy.deepcopy(journal),
+    )
+    unsafe_authority = dict((unsafe.audit or {}).get("final_execution_authority_v9551") or {})
+    unsafe_executive = (
+        (((unsafe.audit or {}).get("executive_director") or {}).get("report") or {})
+        .get("executive_decision") or {}
+    )
+    unsafe_reasons = list(unsafe_authority.get("hard_blockers") or unsafe_executive.get("blocking_reasons") or [])
+    checks.append((
+        "v9.5.61 an unproven HTF-against sweep cannot bypass Trading Philosophy as EARLY_PROBE",
+        unsafe.action == Action.NO_SETUP.value
+        and "COUNTERTREND_REVERSAL_REQUIRES_CONTROL_TRANSFER" in unsafe_reasons,
+    ))
+
+    proven = apply_canonical_execution_authority_v9561(
+        _v9561_countertrend_fixture(proven=True), context, copy.deepcopy(journal),
+    )
+    proven_quality = dict(((proven.audit or {}).get("final_execution_authority_v9551") or {}).get("directional_quality_v9561") or {})
+    checks.append((
+        "v9.5.61 a genuine countertrend reversal remains reachable after causal control transfer",
+        proven.action in EXECUTABLE_ENTRY_ACTIONS
+        and proven_quality.get("control_transfer_proven") is True,
+    ))
+
+    invalidated = _v9561_bridge_fixture()
+    invalidated.candidate.score_components["execution_anchor_authority"]["invalidated"] = True
+    invalidated_result = apply_canonical_execution_authority_v9561(
+        invalidated, context, copy.deepcopy(journal),
+    )
+    checks.append((
+        "v9.5.61 factual invalidation remains absolute and cannot use the plan bridge",
+        invalidated_result.action == Action.NO_SETUP.value,
+    ))
+
+    waiting = copy.deepcopy(_v9561_bridge_fixture().candidate)
+    executable = copy.deepcopy(waiting)
+    waiting.ict_model = "WAITING_MODEL"
+    executable.ict_model = "EXECUTABLE_MODEL"
+    for candidate in (waiting, executable):
+        candidate.score_components["evidence_adjusted_selection"] = {
+            "active": True, "selection_score": 75.0,
+        }
+    waiting.score_components["execution_aware_selection_v9561"] = {
+        "active": True, "selection_score": 75.0, "currently_executable": False,
+    }
+    executable.score_components["execution_aware_selection_v9561"] = {
+        "active": True, "selection_score": 77.0, "currently_executable": True,
+    }
+    reordered = finalize_hypothesis_ranking([waiting, executable])
+    checks.append((
+        "v9.5.61 a bounded executable tie-breaker selects the live candidate without changing raw quality",
+        reordered[0].ict_model == "EXECUTABLE_MODEL"
+        and waiting.final_score == executable.final_score,
+    ))
+
+    integration_wait = copy.deepcopy(_v9561_bridge_fixture().candidate)
+    integration_live = copy.deepcopy(integration_wait)
+    integration_wait.ict_model = "INTEGRATION_WAIT"
+    integration_live.ict_model = "INTEGRATION_LIVE"
+    integration_wait.score_components.pop("execution_aware_selection_v9561", None)
+    integration_live.score_components.pop("execution_aware_selection_v9561", None)
+    integration_wait.score_components["evidence_adjusted_selection"] = {
+        "active": True, "selection_score": 75.0,
+    }
+    integration_live.score_components["evidence_adjusted_selection"] = {
+        "active": True, "selection_score": 74.99,
+    }
+    live_detector_base = globals()["_detect_candidates_v9560_base"]
+    live_simulator = globals()["_simulate_candidate_execution_v9561"]
+    try:
+        globals()["_detect_candidates_v9560_base"] = lambda _context, _state, _journal: [
+            integration_wait, integration_live,
+        ]
+        globals()["_simulate_candidate_execution_v9561"] = lambda _context, _state, _journal, candidate: {
+            "simulation_valid": True,
+            "currently_executable": candidate.ict_model == "INTEGRATION_LIVE",
+            "countertrend_reversal": False,
+            "control_transfer_proven": False,
+            "final_action": Action.PROBE_ENTRY.value if candidate.ict_model == "INTEGRATION_LIVE" else Action.NO_SETUP.value,
+            "entry_tier": "EARLY_PROBE" if candidate.ict_model == "INTEGRATION_LIVE" else "WAIT",
+            "schema_version": V9561_SCHEMA_VERSION,
+        }
+        integrated = detect_candidates_canonical_v9561(
+            {"price": 100.0, "atr15": 1.0, "_audit_shadow_scan": True},
+            {},
+            {},
+        )
+    finally:
+        globals()["_detect_candidates_v9560_base"] = live_detector_base
+        globals()["_simulate_candidate_execution_v9561"] = live_simulator
+    checks.append((
+        "v9.5.61 detector integration falls through from a waiting rank-1 to a near-equal executable model",
+        integrated[0].ict_model == "INTEGRATION_LIVE"
+        and integrated[0].hypothesis_rank == 1
+        and integration_wait.final_score == integration_live.final_score,
+    ))
+
+    forward = build_forward_control_snapshot_v9561({
+        "signals": [{
+            "id": "v9561-forward-signal",
+            "action": Action.PROBE_ENTRY.value,
+            "execution_tier": "EARLY_PROBE",
+            "setup_type": SetupType.FRESH_BASE_CONTINUATION.value,
+            "canonical_setup_family": "TREND_CONTINUATION",
+            "bot_version_at_signal": V9561_BOT_VERSION,
+            "planned_entry": 100.0,
+            "planned_stop": 99.0,
+        }],
+        "trades": [{
+            "id": "v9561-forward-trade",
+            "signal_id": "v9561-forward-signal",
+            "side": Side.LONG.value,
+            "setup_type": SetupType.FRESH_BASE_CONTINUATION.value,
+            "execution_tier": "EARLY_PROBE",
+            "bot_version_at_entry": V9561_BOT_VERSION,
+            "entry": 100.0,
+            "stop_initial": 99.0,
+            "pnl_r": 0.50,
+            "mfe_r": 0.80,
+            "mae_r": 0.20,
+            "closed_at": iso_now(),
+        }],
+    })
+    checks.append((
+        "v9.5.61 forward control isolates the repaired policy and preserves tier MFE/MAE/R metrics",
+        (forward.get("coverage") or {}).get("v9561_forward_trade_rows") == 1
+        and (forward.get("tier_metrics") or {}).get("EARLY_PROBE", {}).get("expectancy_r") == 0.5
+        and (forward.get("promotion_policy") or {}).get("policy_version_tags") == ["v9.5.61"],
+    ))
+
+    runtime = validate_runtime_configuration_canonical_v9561()
+    checks.append((
+        "v9.5.61 runtime seals one execution-aware selector and one directional Final Authority",
+        runtime.get("valid") is True
+        and globals().get("detect_candidates") is detect_candidates_canonical_v9561
+        and globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9561,
+    ))
+    return checks
+
+
+def run_self_test_canonical_v9561() -> bool:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_validator = globals()["validate_runtime_configuration"]
+    live_apply = globals()["_apply_true_final_authority_v9551"]
+    live_detect = globals()["detect_candidates"]
+    live_score = globals()["_candidate_selection_score"]
+    try:
+        globals()["BOT_VERSION"] = V9560_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9560_ARCHITECTURE_VERSION
+        globals()["validate_runtime_configuration"] = _validator_v9560_base
+        globals()["_apply_true_final_authority_v9551"] = apply_canonical_execution_authority_v9559
+        globals()["detect_candidates"] = detect_candidates_canonical_v9559
+        globals()["_candidate_selection_score"] = _candidate_selection_score_v9560_base
+        prior_ok = bool(_self_test_v9560_base())
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["validate_runtime_configuration"] = live_validator
+        globals()["_apply_true_final_authority_v9551"] = live_apply
+        globals()["detect_candidates"] = live_detect
+        globals()["_candidate_selection_score"] = live_score
+    checks = _v9561_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(f"SELF-TEST v9.5.61 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + {passed}/{len(checks)} execution-quality checks")
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9561
 
 
 # The modules import without a circular dependency; bind their pure helper
