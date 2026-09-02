@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.62 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.63 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.63 (causal regime-transition escrow):
+- Якісний ранній continuation, який зупинився лише через невизначений/протилежний regime-plan, більше не зникає після MARKET_NOW/WAIT: він зберігається як короткий ONE_3M_CONFIRM маршрут.
+- Вхід не відкривається одразу проти режиму. Потрібні дві послідовні підтверджені 3M свічки після рішення, утримання trigger та відсутність factual invalidation; лише тоді доступний малий TRANSITION_PROBE.
+- Поточні ASI, structure, runway, HTF, stop geometry та revalidation перевіряються повторно на наступному штатному 15M запуску; пізній/FOMO entry і зламаний thesis лишаються WAIT.
+- Execution telemetry зберігає окремо Final Authority і Router blockers, планові entry/stop/TP0 та стан transition escrow.
+
 Оновлення v9.5.62 (intracycle causal opportunity arbitration):
 - GitHub Actions як і раніше запускає бот кожні 15 хвилин; підтверджені 3M свічки між запусками використовуються як причинна памʼять, а не як окремий scheduler.
 - Завершений після рішення FIRST_RETEST / LIMIT_AT_ANCHOR / ONE_3M_CONFIRM отримує bounded priority над майже рівним свіжим кандидатом; score, risk, RR і Final Authority не послаблюються.
@@ -2720,8 +2726,10 @@ V9561_BOT_VERSION = "pro-hybrid-confluence-v9.5.61-execution-aware-selection-dir
 V9561_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_61_EXECUTION_AWARE_SELECTION_DIRECTIONAL_QUALITY_REPAIR"
 V9562_BOT_VERSION = "pro-hybrid-confluence-v9.5.62-intracycle-causal-opportunity-arbitration"
 V9562_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_62_INTRACYCLE_CAUSAL_OPPORTUNITY_ARBITRATION_15M_CADENCE"
-BOT_VERSION = V9562_BOT_VERSION
-ARCHITECTURE_VERSION = V9562_ARCHITECTURE_VERSION
+V9563_BOT_VERSION = "pro-hybrid-confluence-v9.5.63-causal-regime-transition-escrow"
+V9563_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_63_CAUSAL_REGIME_TRANSITION_ESCROW_15M_CADENCE"
+BOT_VERSION = V9563_BOT_VERSION
+ARCHITECTURE_VERSION = V9563_ARCHITECTURE_VERSION
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -4504,6 +4512,9 @@ class Opportunity:
     last_transition: str = "DEFERRED"
     last_recheck_at: str = ""
     parent_signal_id: str = ""
+    # v9.5.63: durable proof that a high-quality early continuation was
+    # intentionally deferred for causal regime-transition confirmation.
+    transition_escrow_v9563: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -23170,6 +23181,9 @@ def run_bot() -> None:
         if decision.plan:
             payload.update({
                 "plan_entry": decision.plan.entry,
+                "planned_entry": decision.plan.entry,
+                "planned_stop": decision.plan.stop,
+                "planned_tp0": decision.plan.tp0,
                 "plan_entry_price_source": (decision.candidate.score_components or {}).get("entry_price_contract", {}).get("source", ""),
                 "plan_tp0": decision.plan.tp0,
                 "plan_tp1": decision.plan.tp1,
@@ -31952,7 +31966,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.62 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.63 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -39709,6 +39723,1322 @@ def run_self_test_canonical_v9562() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9562
+
+
+# ==========================================================
+# v9.5.63 CAUSAL REGIME-TRANSITION ESCROW
+# ==========================================================
+# A high-quality continuation can be early while the slow regime classifier is
+# still pointing the other way.  v9.5.62 correctly refused an immediate entry,
+# but it also discarded MARKET_NOW candidates before they entered the causal
+# queue.  This layer closes that gap without turning regime disagreement into a
+# soft pass: the candidate is escrowed, two later confirmed 3M candles must
+# transfer control, and current execution economics are checked again before a
+# small probe is authorized.
+
+V9563_SCHEMA_VERSION = "causal_regime_transition_escrow_v9.5.63"
+V9563_SCHEDULER_CADENCE_MINUTES = 15
+V9563_ESCROW_MIN_SCORE = 68
+V9563_ESCROW_MIN_SETUP_QUALITY = 50.0
+V9563_ESCROW_MIN_TIMING_QUALITY = 80.0
+V9563_ESCROW_MIN_TRADE_QUALITY = 75.0
+V9563_ESCROW_MIN_STRUCTURAL = 58.0
+V9563_ESCROW_MAX_ASI = 25.0
+V9563_ESCROW_MIN_RUNWAY_R = 0.50
+V9563_ESCROW_MIN_REGIME_UNCERTAINTY = 0.55
+V9563_RELEASE_MIN_SETUP_QUALITY = 48.0
+V9563_RELEASE_MIN_TIMING_QUALITY = 75.0
+V9563_RELEASE_MIN_TRADE_QUALITY = 72.0
+V9563_RELEASE_MIN_STRUCTURAL = 58.0
+V9563_RELEASE_MAX_ASI = 35.0
+V9563_RELEASE_MIN_RUNWAY_R = 0.25
+V9563_RELEASE_MIN_RISK_FRACTION = 0.18
+V9563_RELEASE_MAX_RISK_FRACTION = 0.25
+V9563_CONFIRM_MIN_NET_ATR = 0.05
+V9563_CONFIRM_MIN_BODY_ATR = 0.02
+V9563_CONFIRM_MAX_CURRENT_CHASE_ATR = 0.55
+V9563_CONFIRM_MAX_CURRENT_LOSS_ATR = 0.10
+V9563_CONFIRM_MAX_BAR_RANGE_ATR = 1.40
+V9563_RECOVERABLE_WAIT_REASONS = frozenset({
+    "PLAN_NOT_EXECUTION_READY",
+    "POST_DECISION_3M_CONFIRMATION_REQUIRED",
+})
+
+_candidate_from_missed_opportunity_v9562_base = candidate_from_missed_opportunity
+_store_router_opportunity_v9562_base = store_router_opportunity_v9541
+_simulate_candidate_execution_v9562_base = _simulate_candidate_execution_v9561
+_compact_signal_v9562_base = compact_signal_for_journal
+_load_state_v9562_base = load_state
+_load_journal_v9562_base = load_journal
+_save_journal_v9562_base = save_journal
+_audit_journal_v9562_base = run_audit_journal
+_validator_v9562_base = validate_runtime_configuration_canonical_v9562
+_self_test_v9562_base = run_self_test_canonical_v9562
+_state_upgrade_policy_v9562_base = state_upgrade_policy_v9533
+_run_architecture_audit_v9562_base = run_architecture_audit_v9562
+
+
+def _transition_quality_snapshot_v9563(
+    candidate: Candidate,
+    profile: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    quality = dict(
+        profile.get("quality_quorum_v9558")
+        or _v9558_quality_snapshot(candidate, profile)
+    )
+    runway = dict(
+        profile.get("runway_quorum_v9558")
+        or _v9558_runway_snapshot(profile)
+    )
+    xi = dict(_execution_intelligence_values_v9557(candidate).get("raw") or {})
+    return quality, runway, xi
+
+
+def _initial_transition_escrow_profile_v9563(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    profile: dict[str, Any],
+    router: dict[str, Any],
+) -> dict[str, Any]:
+    quality, runway, xi = _transition_quality_snapshot_v9563(candidate, profile)
+    htf = get_htf_fact(candidate)
+    wait_reasons = [str(value) for value in (profile.get("wait_reasons") or [])]
+    hard_blockers = [str(value) for value in (profile.get("hard_blockers") or [])]
+    source = str(candidate.execution_source or ExecutionSource.NONE.value)
+    revalidation_ok = _v9561_revalidation_supported(candidate)
+    primary_runway = safe_float(runway.get("primary_runway_r"), 0.0)
+    regime_bias = str(quality.get("regime_bias") or "UNKNOWN").upper()
+    regime_aligned = _v9561_regime_direction_aligned(candidate, regime_bias)
+    htf_state = str(htf.get("state") or "UNKNOWN").upper()
+    router_tactic = str(router.get("router_final_tactic") or "")
+    router_disposition = str(router.get("router_final_disposition") or "")
+    conditions = {
+        "currently_waiting": str(profile.get("tier") or "WAIT") == "WAIT",
+        "continuation_family": canonical_setup_family(candidate.setup_type) == "TREND_CONTINUATION",
+        "continuation_state_machine": str(xi.get("kind") or "").upper() == "CONTINUATION",
+        "market_now_was_ready": router_tactic == "MARKET_NOW" and router_disposition in {
+            "EXECUTE_NOW", "TACTIC_READY_PLAN_BLOCKED",
+        },
+        "no_factual_hard_blocker": not hard_blockers,
+        "only_recoverable_plan_wait": bool(wait_reasons) and set(wait_reasons) <= V9563_RECOVERABLE_WAIT_REASONS,
+        "valid_plan_and_stop": bool(plan and plan.valid and profile.get("risk_geometry_valid")),
+        "fresh_live_3m_trigger": bool(
+            source == ExecutionSource.LIVE_3M.value and profile.get("trigger_valid")
+        ),
+        "revalidation_supported": revalidation_ok,
+        "anchor_not_invalidated": not bool(profile.get("anchor_invalidated")),
+        "htf_neutral_or_mixed": bool(htf.get("valid") and htf_state in {"NEUTRAL", "MIXED"}),
+        "regime_is_not_yet_aligned": not regime_aligned,
+        "regime_uncertain_enough_for_transition": safe_float(xi.get("regime_uncertainty"), 0.0) >= V9563_ESCROW_MIN_REGIME_UNCERTAINTY,
+        "score": safe_float(quality.get("score"), 0.0) >= V9563_ESCROW_MIN_SCORE,
+        "setup_quality": safe_float(quality.get("setup_quality"), 0.0) >= V9563_ESCROW_MIN_SETUP_QUALITY,
+        "timing_quality": safe_float(quality.get("timing_quality"), 0.0) >= V9563_ESCROW_MIN_TIMING_QUALITY,
+        "trade_quality": safe_float(quality.get("trade_quality"), 0.0) >= V9563_ESCROW_MIN_TRADE_QUALITY,
+        "structural_control": safe_float(quality.get("structural"), 0.0) >= V9563_ESCROW_MIN_STRUCTURAL,
+        "adverse_selection_controlled": safe_float(quality.get("asi"), 100.0) <= V9563_ESCROW_MAX_ASI,
+        "state_at_execution": str(quality.get("state") or "").upper() == "EXECUTION",
+        "economic_runway": bool(runway.get("known") and primary_runway >= V9563_ESCROW_MIN_RUNWAY_R),
+    }
+    eligible = all(conditions.values())
+    return {
+        "active": eligible,
+        "phase": "AWAITING_CAUSAL_CONTROL_TRANSFER" if eligible else "NOT_ELIGIBLE",
+        "conditions": conditions,
+        "failed_conditions": [name for name, passed in conditions.items() if not passed],
+        "original_score": int(safe_float(quality.get("score"), 0.0)),
+        "original_setup_quality": round(safe_float(quality.get("setup_quality"), 0.0), 2),
+        "original_timing_quality": round(safe_float(quality.get("timing_quality"), 0.0), 2),
+        "original_trade_quality": round(safe_float(quality.get("trade_quality"), 0.0), 2),
+        "original_structural": round(safe_float(quality.get("structural"), 0.0), 2),
+        "original_asi": round(safe_float(quality.get("asi"), 100.0), 2),
+        "original_runway_r": round(primary_runway, 4),
+        "original_regime_bias": regime_bias,
+        "original_regime_uncertainty": round(safe_float(xi.get("regime_uncertainty"), 0.0), 4),
+        "original_htf_state": htf_state,
+        "original_router_tactic": router_tactic,
+        "entry_is_immediate": False,
+        "required_confirmation": "TWO_CONSECUTIVE_POST_DECISION_CONFIRMED_3M_BARS_HOLD_TRIGGER",
+        "maximum_release_tier": "EARLY_PROBE",
+        "schema_version": V9563_SCHEMA_VERSION,
+    }
+
+
+def directional_quality_profile_v9563(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    base_profile: dict[str, Any],
+    router: Optional[dict[str, Any]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    profile = directional_quality_profile_v9561(
+        candidate,
+        plan,
+        base_profile=base_profile,
+        router=router,
+        directional_guard=directional_guard,
+    )
+    profile = copy.deepcopy(profile)
+    router = dict(router or {})
+    stage = dict(candidate.stage_plan or {})
+    escrow = dict(
+        stage.get("transition_escrow_v9563")
+        or (candidate.score_components or {}).get("transition_escrow_v9563")
+        or {}
+    )
+    control = dict(stage.get("transition_control_transfer_v9563") or {})
+    quality, runway, _xi = _transition_quality_snapshot_v9563(candidate, profile)
+    primary_runway = safe_float(runway.get("primary_runway_r"), 0.0)
+    htf = get_htf_fact(candidate)
+    hard_blockers = [str(value) for value in (profile.get("hard_blockers") or [])]
+    wait_reasons = [str(value) for value in (profile.get("wait_reasons") or [])]
+    release_conditions = {
+        "escrow_lineage_present": bool(escrow.get("active")),
+        "two_bar_control_transfer_proven": bool(control.get("proven")),
+        "post_decision_evidence": int(safe_float(control.get("evidence_ts"), 0.0)) > int(safe_float(control.get("decision_watermark"), 0.0)) > 0,
+        "currently_waiting": str(profile.get("tier") or "WAIT") == "WAIT",
+        "no_factual_hard_blocker": not hard_blockers,
+        "only_recoverable_plan_wait": bool(wait_reasons) and set(wait_reasons) <= V9563_RECOVERABLE_WAIT_REASONS,
+        "valid_plan_and_stop": bool(plan and plan.valid and profile.get("risk_geometry_valid")),
+        "fresh_trigger": bool(profile.get("trigger_valid")),
+        "revalidation_supported": _v9561_revalidation_supported(candidate),
+        "anchor_not_invalidated": not bool(profile.get("anchor_invalidated")),
+        "htf_not_factually_against": not bool(
+            htf.get("valid") and str(htf.get("state") or "UNKNOWN").upper() == "AGAINST"
+        ),
+        "continuation_family": canonical_setup_family(candidate.setup_type) == "TREND_CONTINUATION",
+        "score": safe_float(quality.get("score"), 0.0) >= V9563_ESCROW_MIN_SCORE,
+        "setup_quality": safe_float(quality.get("setup_quality"), 0.0) >= V9563_RELEASE_MIN_SETUP_QUALITY,
+        "timing_quality": safe_float(quality.get("timing_quality"), 0.0) >= V9563_RELEASE_MIN_TIMING_QUALITY,
+        "trade_quality": safe_float(quality.get("trade_quality"), 0.0) >= V9563_RELEASE_MIN_TRADE_QUALITY,
+        "structural_control": safe_float(quality.get("structural"), 0.0) >= V9563_RELEASE_MIN_STRUCTURAL,
+        "adverse_selection_controlled": safe_float(quality.get("asi"), 100.0) <= V9563_RELEASE_MAX_ASI,
+        "state_at_execution": str(quality.get("state") or "").upper() == "EXECUTION",
+        "economic_runway": bool(runway.get("known") and primary_runway >= V9563_RELEASE_MIN_RUNWAY_R),
+    }
+    release = all(release_conditions.values())
+    transition = copy.deepcopy(escrow)
+    if release:
+        strength = sum([
+            clamp((safe_float(quality.get("score"), 0.0) - V9563_ESCROW_MIN_SCORE) / 12.0, 0.0, 1.0),
+            clamp((safe_float(quality.get("timing_quality"), 0.0) - V9563_RELEASE_MIN_TIMING_QUALITY) / 15.0, 0.0, 1.0),
+            clamp((V9563_RELEASE_MAX_ASI - safe_float(quality.get("asi"), 100.0)) / 25.0, 0.0, 1.0),
+            clamp((primary_runway - V9563_RELEASE_MIN_RUNWAY_R) / 0.75, 0.0, 1.0),
+        ]) / 4.0
+        risk_fraction = clamp(
+            V9563_RELEASE_MIN_RISK_FRACTION
+            + (V9563_RELEASE_MAX_RISK_FRACTION - V9563_RELEASE_MIN_RISK_FRACTION) * strength,
+            V9563_RELEASE_MIN_RISK_FRACTION,
+            V9563_RELEASE_MAX_RISK_FRACTION,
+        )
+        if plan is not None:
+            plan.execution_ready = True
+            plan.entry_stage = EntryStage.PROBE.value
+            plan.final_stage = EntryStage.PROBE.value
+        advisory = list(profile.get("advisory_reasons") or [])
+        advisory.extend([
+            "POST_DECISION_TWO_BAR_CONTROL_TRANSFER_CONFIRMED",
+            "REGIME_TRANSITION_RELEASED_AT_BOUNDED_PROBE_RISK",
+        ])
+        profile.update({
+            "tier": "EARLY_PROBE",
+            "allow": True,
+            "full_entry": False,
+            "standard_entry": False,
+            "early_probe": True,
+            "plan_ready": True,
+            "wait_reasons": [],
+            "advisory_reasons": sorted(set(advisory)),
+            "risk_fraction_of_normal": round(risk_fraction, 4),
+            "risk_cap": round(NORMAL_RISK_PCT * risk_fraction, 6),
+            "release_mode_v9563": "CAUSAL_REGIME_TRANSITION_PROBE",
+        })
+        transition.update({
+            "active": True,
+            "phase": "CAUSAL_CONTROL_TRANSFER_RELEASED",
+            "release_conditions": release_conditions,
+            "release_risk_fraction_of_normal": round(risk_fraction, 4),
+            "current_asi": round(safe_float(quality.get("asi"), 100.0), 2),
+            "current_structural": round(safe_float(quality.get("structural"), 0.0), 2),
+            "current_runway_r": round(primary_runway, 4),
+            "evidence_ts": int(safe_float(control.get("evidence_ts"), 0.0)),
+            "schema_version": V9563_SCHEMA_VERSION,
+        })
+    elif not escrow:
+        transition = _initial_transition_escrow_profile_v9563(
+            candidate, plan, profile, router,
+        )
+    else:
+        transition.update({
+            "release_conditions": release_conditions,
+            "release_failed_conditions": [name for name, passed in release_conditions.items() if not passed],
+            "schema_version": V9563_SCHEMA_VERSION,
+        })
+    profile["causal_regime_transition_v9563"] = transition
+    profile["schema_version_v9563"] = V9563_SCHEMA_VERSION
+    return profile
+
+
+def _apply_causal_regime_transition_v9563(
+    decision: Decision,
+    profile: dict[str, Any],
+    *,
+    planned_risk: float,
+    context: dict[str, Any],
+    journal: dict[str, Any],
+) -> Decision:
+    out = _apply_directional_quality_execution_v9561(
+        decision,
+        profile,
+        planned_risk=planned_risk,
+        context=context,
+        journal=journal,
+    )
+    candidate = out.candidate
+    if candidate is None:
+        return out
+    transition = copy.deepcopy(profile.get("causal_regime_transition_v9563") or {})
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    authority = dict((out.audit or {}).get("final_execution_authority_v9551") or {})
+    phase = str(transition.get("phase") or "")
+    if out.action == Action.NO_SETUP.value and phase == "AWAITING_CAUSAL_CONTROL_TRANSFER":
+        confirmed = _v9532_recent_confirmed(context, "3m", 1)
+        watermark = int(safe_float(getattr(confirmed[-1], "ts", 0), 0.0)) if confirmed else int(safe_float(_preconfirm_as_of_ts(context), 0.0))
+        transition.update({
+            "decision_watermark": watermark,
+            "queued_at": iso_now(),
+            "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        })
+        candidate.confirmation_pending = True
+        candidate.execution_lane = ExecutionLane.WAIT_CONFIRMATION.value
+        candidate.opportunity_status = OpportunityStatus.CONFIRMATION_PENDING.value
+        candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value
+        stage.update({
+            "transition_escrow_v9563": copy.deepcopy(transition),
+            "router_intended_tactic": "ONE_3M_CONFIRM",
+            "router_final_tactic": "ONE_3M_CONFIRM",
+            "router_final_disposition": "DEFERRED",
+            "router_decision_3m_ts": watermark,
+            "decision_watermark": watermark,
+            "final_execution_tier_v9563": "WAIT",
+            "final_blocking_reasons_v9563": ["CAUSAL_REGIME_TRANSITION_CONFIRMATION_REQUIRED"],
+        })
+        candidate.score_components = candidate.score_components or {}
+        candidate.score_components["transition_escrow_v9563"] = copy.deepcopy(transition)
+        out.audit = out.audit or {}
+        out.audit["opportunity_status"] = OpportunityStatus.CONFIRMATION_PENDING.value
+        router_result = dict(out.audit.get("canonical_router_result_v9553") or {})
+        router_result.update({
+            "router_final_tactic": "ONE_3M_CONFIRM",
+            "router_final_disposition": "DEFERRED",
+            "decision_watermark": watermark,
+            "evidence_ts": 0,
+            "authoritative": True,
+            "authority_source": "CANONICAL_ROUTER_RESULT",
+            "transition_escrow": True,
+            "schema_version": V9563_SCHEMA_VERSION,
+        })
+        out.audit["canonical_router_result_v9553"] = router_result
+        authority.update({
+            "allow": False,
+            "final_action": Action.NO_SETUP.value,
+            "entry_tier": "WAIT",
+            "wait_reasons": ["CAUSAL_REGIME_TRANSITION_CONFIRMATION_REQUIRED"],
+            "causal_regime_transition_v9563": copy.deepcopy(transition),
+            "execution_policy_version": V9563_SCHEMA_VERSION,
+        })
+        out.audit["final_execution_authority_v9551"] = authority
+        director = out.audit.setdefault("executive_director", {})
+        report = director.setdefault("report", {})
+        executive = report.setdefault("executive_decision", {})
+        executive.update({
+            "allow_execution": False,
+            "action": ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+            "state": ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+            "allowed_stage": ExecutiveDecisionState.WAIT_CONFIRMATION.value,
+            "required_next_event": "two consecutive post-decision confirmed 3M closes hold the trigger",
+            "blocking_reasons": ["CAUSAL_REGIME_TRANSITION_CONFIRMATION_REQUIRED"],
+        })
+        report["action"] = Action.NO_SETUP.value
+        out.reason = (
+            "FINAL_EXECUTION_AUTHORITY: WAIT | early continuation retained in causal "
+            "regime-transition escrow; two confirmed post-decision 3M bars required"
+        )
+        if not context.get("_audit_shadow_scan"):
+            aggregate = journal.setdefault("execution_quality_repair_v9563", {})
+            aggregate["transition_escrows_created"] = int(aggregate.get("transition_escrows_created") or 0) + 1
+            aggregate["last_transition_escrow"] = copy.deepcopy(transition)
+    else:
+        stage.update({
+            "causal_regime_transition_v9563": copy.deepcopy(transition),
+            "final_execution_tier_v9563": str(profile.get("tier") or "WAIT"),
+            "final_blocking_reasons_v9563": list(profile.get("hard_blockers") or profile.get("wait_reasons") or []),
+        })
+        authority.update({
+            "causal_regime_transition_v9563": copy.deepcopy(transition),
+            "execution_policy_version": V9563_SCHEMA_VERSION,
+        })
+        out.audit["final_execution_authority_v9551"] = authority
+        if out.action in EXECUTABLE_ENTRY_ACTIONS and phase == "CAUSAL_CONTROL_TRANSFER_RELEASED" and not context.get("_audit_shadow_scan"):
+            aggregate = journal.setdefault("execution_quality_repair_v9563", {})
+            aggregate["transition_probes_released"] = int(aggregate.get("transition_probes_released") or 0) + 1
+            aggregate["last_transition_release"] = copy.deepcopy(transition)
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+_CANONICAL_EXECUTION_ENGINE_V9563 = CanonicalExecutionEngine(ExecutionEngineHooks(
+    base_executor=_authority_pipeline_compat_v9557,
+    router_reader=canonical_router_result_v9553,
+    profile_builder=directional_quality_profile_v9563,
+    profile_applier=_apply_causal_regime_transition_v9563,
+    directional_guard=directional_market_guard_v9555,
+    approval=DECISION_AUTHORITY_GUARD.approve_executive_decision,
+    anchor_recorder=_update_execution_anchor_aggregate_v9551,
+    safe_float=safe_float,
+    executable_actions=frozenset(EXECUTABLE_ENTRY_ACTIONS),
+))
+
+
+def apply_canonical_execution_authority_v9563(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _CANONICAL_EXECUTION_ENGINE_V9563.execute(decision, context, journal)
+    out.audit = out.audit or {}
+    trace = dict(out.audit.get("canonical_execution_engine_v9559") or {})
+    trace.update({
+        "policy_profile": "CAUSAL_REGIME_TRANSITION_ESCROW_V9563",
+        "immediate_counter_regime_entry": False,
+        "two_bar_control_transfer_required": True,
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9563": V9563_SCHEMA_VERSION,
+    })
+    out.audit["canonical_execution_engine_v9559"] = trace
+    if out.candidate is not None:
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.stage_plan["canonical_execution_engine_v9563"] = copy.deepcopy(trace)
+    return out
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9563
+
+
+def transition_control_transfer_profile_v9563(
+    opp: Opportunity,
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    escrow = dict(getattr(opp, "transition_escrow_v9563", {}) or {})
+    watermark = int(safe_float(
+        getattr(opp, "router_decision_3m_ts", 0),
+        safe_float(escrow.get("decision_watermark"), 0.0),
+    ))
+    side = str(getattr(opp, "side", "") or "").upper()
+    sign = side_sign(side)
+    trigger = safe_float(getattr(opp, "trigger_level", 0.0), 0.0)
+    invalidation = safe_float(getattr(opp, "invalidation_level", 0.0), 0.0)
+    price = safe_float(context.get("price"), 0.0)
+    atr = max(safe_float(context.get("atr15"), 0.0), price * 0.001, 1e-6)
+    bars = sorted(
+        [
+            bar for bar in _v9532_recent_confirmed(context, "3m", 20)
+            if int(safe_float(getattr(bar, "ts", 0), 0.0)) > watermark
+        ],
+        key=lambda bar: int(safe_float(getattr(bar, "ts", 0), 0.0)),
+    )
+    evidence_ts = 0
+    evidence_pair: list[int] = []
+    invalidated_before_transfer = False
+    pair_metrics: dict[str, Any] = {}
+    for index, bar in enumerate(bars):
+        close = safe_float(getattr(bar, "close", 0.0), 0.0)
+        if invalidation > 0.0 and (
+            (side == Side.LONG.value and close <= invalidation)
+            or (side == Side.SHORT.value and close >= invalidation)
+        ):
+            invalidated_before_transfer = True
+            break
+        if index == 0:
+            continue
+        first, second = bars[index - 1], bar
+        first_close = safe_float(getattr(first, "close", 0.0), 0.0)
+        second_close = close
+        first_body = sign * (
+            first_close - safe_float(getattr(first, "open", first_close), first_close)
+        ) / atr
+        second_body = sign * (
+            second_close - safe_float(getattr(second, "open", second_close), second_close)
+        ) / atr
+        net = sign * (
+            second_close - safe_float(getattr(first, "open", first_close), first_close)
+        ) / atr
+        first_hold = sign * (first_close - trigger) / atr >= -0.02
+        second_hold = sign * (second_close - trigger) / atr >= 0.0
+        directional_bodies = int(first_body >= V9563_CONFIRM_MIN_BODY_ATR) + int(second_body >= V9563_CONFIRM_MIN_BODY_ATR)
+        max_range = max(
+            safe_float(getattr(first, "high", first_close), first_close) - safe_float(getattr(first, "low", first_close), first_close),
+            safe_float(getattr(second, "high", second_close), second_close) - safe_float(getattr(second, "low", second_close), second_close),
+        ) / atr
+        pair_ok = bool(
+            trigger > 0.0
+            and first_hold
+            and second_hold
+            and directional_bodies >= 1
+            and net >= V9563_CONFIRM_MIN_NET_ATR
+            and max_range <= V9563_CONFIRM_MAX_BAR_RANGE_ATR
+        )
+        if pair_ok:
+            evidence_ts = int(safe_float(getattr(second, "ts", 0), 0.0))
+            evidence_pair = [
+                int(safe_float(getattr(first, "ts", 0), 0.0)), evidence_ts,
+            ]
+            pair_metrics = {
+                "first_body_atr": round(first_body, 4),
+                "second_body_atr": round(second_body, 4),
+                "net_move_atr": round(net, 4),
+                "max_bar_range_atr": round(max_range, 4),
+                "first_close_holds_trigger": first_hold,
+                "second_close_accepts_trigger": second_hold,
+            }
+            break
+    current_chase_atr = sign * (price - trigger) / atr if trigger > 0.0 and price > 0.0 else 99.0
+    current_location_valid = bool(
+        -V9563_CONFIRM_MAX_CURRENT_LOSS_ATR
+        <= current_chase_atr
+        <= V9563_CONFIRM_MAX_CURRENT_CHASE_ATR
+    )
+    current_not_invalidated = bool(
+        invalidation <= 0.0
+        or (side == Side.LONG.value and price > invalidation)
+        or (side == Side.SHORT.value and price < invalidation)
+    )
+    conditions = {
+        "escrow_active": bool(escrow.get("active")),
+        "direction_valid": side in {Side.LONG.value, Side.SHORT.value},
+        "causal_watermark_valid": watermark > 0,
+        "two_post_decision_bars_available": len(bars) >= 2,
+        "two_bar_acceptance_found": evidence_ts > watermark > 0,
+        "not_invalidated_before_transfer": not invalidated_before_transfer,
+        "current_not_invalidated": current_not_invalidated,
+        "current_location_not_late_or_lost": current_location_valid,
+    }
+    proven = all(conditions.values())
+    return {
+        "applicable": bool(escrow.get("active")),
+        "ready": proven,
+        "proven": proven,
+        "conditions": conditions,
+        "failed_conditions": [name for name, passed in conditions.items() if not passed],
+        "decision_watermark": watermark,
+        "post_decision_confirmed_3m_bars": len(bars),
+        "evidence_ts": evidence_ts if proven else 0,
+        "evidence_pair_ts": evidence_pair if proven else [],
+        "pair_metrics": pair_metrics if proven else {},
+        "trigger_level": round_price(trigger),
+        "current_price": round_price(price),
+        "current_chase_atr": round(current_chase_atr, 4),
+        "invalidation_level": round_price(invalidation),
+        "invalidated_before_transfer": invalidated_before_transfer,
+        "entry_is_retrospective": False,
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9563_SCHEMA_VERSION,
+    }
+
+
+def candidate_from_missed_opportunity(opp: Opportunity, context: dict) -> Optional[Candidate]:
+    candidate = _candidate_from_missed_opportunity_v9562_base(opp, context)
+    escrow = dict(getattr(opp, "transition_escrow_v9563", {}) or {})
+    if candidate is None or not escrow.get("active"):
+        return candidate
+    control = transition_control_transfer_profile_v9563(opp, context)
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    candidate.score_components = candidate.score_components or {}
+    stage["transition_escrow_v9563"] = copy.deepcopy(escrow)
+    stage["transition_control_transfer_v9563"] = copy.deepcopy(control)
+    candidate.score_components["transition_escrow_v9563"] = copy.deepcopy(escrow)
+    candidate.score_components["transition_control_transfer_v9563"] = copy.deepcopy(control)
+    if control.get("proven"):
+        evidence_ts = int(safe_float(control.get("evidence_ts"), 0.0))
+        watermark = int(safe_float(control.get("decision_watermark"), 0.0))
+        stage.update({
+            "router_recheck_consumed": True,
+            "router_confirmation_consumed": True,
+            "retest_consumed": False,
+            "consumed_tactic": "ONE_3M_CONFIRM",
+            "evidence_ts": evidence_ts,
+            "decision_watermark": watermark,
+            "router_decision_3m_ts": watermark,
+            "router_final_tactic": "MARKET_NOW",
+            "router_final_disposition": "RECHECK_READY",
+            "router_tactic_state": copy.deepcopy(control),
+        })
+        candidate.trigger_ready = True
+        candidate.live_3m_trigger_ready = True
+        candidate.reentry_ready = True
+        candidate.confirmation_pending = False
+        candidate.execution_source = ExecutionSource.LIVE_3M.value
+        candidate.entry_stage = EntryStage.ACCEPTANCE.value
+        candidate.execution_lane = ExecutionLane.STANDARD_CONFIRMED.value
+        candidate.stage = OpportunityStage.EXECUTABLE.value
+        candidate.opportunity_status = OpportunityStage.EXECUTABLE.value
+        candidate.execution_anchor = safe_float(context.get("price"), candidate.execution_anchor)
+        candidate.trigger_age_minutes = max(
+            0.0,
+            (
+                int(safe_float(_preconfirm_as_of_ts(context), evidence_ts)) - evidence_ts
+            ) / 60000.0,
+        )
+        revalidation = dict(candidate.revalidation_profile or {})
+        revalidation.update({
+            "state": "FRESH",
+            "entry_supported": True,
+            "needs_revalidation": False,
+            "hard_expired": False,
+            "causal_transition_evidence_ts": evidence_ts,
+            "schema_version": V9563_SCHEMA_VERSION,
+        })
+        candidate.revalidation_profile = revalidation
+    return candidate
+
+
+def store_router_opportunity_v9541(
+    state: dict[str, Any],
+    opp: Optional[Opportunity],
+    *,
+    decision: Optional[Decision] = None,
+    journal: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    if opp is not None and decision is not None and decision.candidate is not None:
+        stage = dict(decision.candidate.stage_plan or {})
+        escrow = dict(stage.get("transition_escrow_v9563") or {})
+        if escrow.get("active"):
+            opp.transition_escrow_v9563 = copy.deepcopy(escrow)
+            opp.execution_tactic = "ONE_3M_CONFIRM"
+            opp.execution_lane = ExecutionLane.WAIT_CONFIRMATION.value
+            opp.status = OpportunityStatus.CONFIRMATION_PENDING.value
+            opp.router_decision_3m_ts = int(safe_float(
+                stage.get("router_decision_3m_ts"),
+                safe_float(escrow.get("decision_watermark"), 0.0),
+            ))
+    return _store_router_opportunity_v9562_base(
+        state, opp, decision=decision, journal=journal, context=context,
+    )
+
+
+def _simulate_candidate_execution_v9563(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    audit_journal: dict[str, Any],
+    candidate: Candidate,
+) -> dict[str, Any]:
+    try:
+        shadow_context = copy.deepcopy(context)
+        shadow_context["_audit_shadow_scan"] = True
+        decision = _candidate_counterfactual_decision(
+            shadow_context, state, audit_journal, candidate,
+        )
+        evaluated = decision.candidate
+        if evaluated is None:
+            raise RuntimeError("counterfactual candidate missing")
+        intelligence = build_execution_intelligence_v9532(
+            shadow_context, evaluated, audit_journal, decision.plan,
+        )
+        evaluated.score_components = evaluated.score_components or {}
+        evaluated.score_components["execution_intelligence_v9532"] = intelligence
+        evaluated.stage_plan = evaluated.stage_plan or {}
+        evaluated.stage_plan["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(intelligence)
+        requested = str(evaluated.stage_plan.get("router_final_tactic") or "")
+        tactic = requested if requested in EXECUTION_ROUTER_ACTIONS else str(
+            (intelligence.get("execution_router") or {}).get("action") or "MARKET_NOW"
+        )
+        decision = executive_route_resolution_v9533(decision, tactic)
+        canonical_router_result_v9553(decision)
+        decision = apply_canonical_execution_authority_v9563(
+            decision, shadow_context, audit_journal,
+        )
+        authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+        transition = dict(authority.get("causal_regime_transition_v9563") or {})
+        score_live = int(safe_float(getattr(evaluated, "final_score", 0.0), 0.0)) >= RISKY_ENTRY_SCORE_BASE
+        executable = bool(
+            score_live
+            and decision.action in EXECUTABLE_ENTRY_ACTIONS
+            and decision.plan is not None
+            and decision.plan.valid
+            and decision.plan.execution_ready
+        )
+        return {
+            "simulation_valid": True,
+            "currently_executable": executable,
+            "final_action": str(decision.action),
+            "entry_tier": str(authority.get("entry_tier") or "WAIT"),
+            "router_tactic": str((decision.audit.get("canonical_router_result_v9553") or {}).get("router_final_tactic") or tactic),
+            "router_disposition": str((decision.audit.get("canonical_router_result_v9553") or {}).get("router_final_disposition") or ""),
+            "plan_valid": bool(decision.plan and decision.plan.valid),
+            "plan_execution_ready": bool(decision.plan and decision.plan.execution_ready),
+            "transition_control_transfer_released": str(transition.get("phase") or "") == "CAUSAL_CONTROL_TRANSFER_RELEASED",
+            "blocking_reasons": list(authority.get("hard_blockers") or authority.get("wait_reasons") or []),
+            "schema_version": V9563_SCHEMA_VERSION,
+        }
+    except Exception as exc:
+        return {
+            "simulation_valid": False,
+            "currently_executable": False,
+            "error": f"{type(exc).__name__}: {exc}"[:240],
+            "schema_version": V9563_SCHEMA_VERSION,
+        }
+
+
+# v9.5.62 arbitration performs a runtime global lookup.  Point that lookup to
+# the current Final Authority so a completed v9.5.63 escrow cannot be rejected
+# merely because the historical simulator knows only the v9.5.61 bridge.
+_simulate_candidate_execution_v9561 = _simulate_candidate_execution_v9563
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    source = str(source_architecture or "")
+    marker = "TRADING_DESK_EXECUTIVE_V9_5_"
+    release = 0
+    if source.startswith(marker):
+        suffix = source[len(marker):].split("_", 1)[0]
+        release = int(suffix) if suffix.isdigit() else 0
+    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 63)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 63)
+    return {
+        "source_architecture": source or "UNKNOWN",
+        "source_release": release,
+        "memory_compatible": memory_compatible,
+        "opportunity_lineage_compatible": opportunity_compatible,
+        "preserve_active_trade": True,
+        "policy": "PRESERVE_V9_5_30_PLUS_MEMORY; MIGRATE_V9_5_33_PLUS_CAUSAL_LINEAGE; ADD_TRANSITION_ESCROW_FIELD",
+        "schema_version": V9563_SCHEMA_VERSION,
+    }
+
+
+def load_state_canonical_v9563() -> dict[str, Any]:
+    state = _load_state_v9562_base()
+    migration = state.setdefault("state_migration", {})
+    migration.update({
+        "transition_escrow_field_available": True,
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9563_SCHEMA_VERSION,
+    })
+    return state
+
+
+load_state = load_state_canonical_v9563
+
+
+def _blocking_vector_v9563(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    authority_reasons, router_reasons = _blocking_vector_v9562(payload)
+    stage = dict(payload.get("stage_plan") or {})
+    authority = dict((payload.get("audit") or {}).get("final_execution_authority_v9551") or {})
+    for values in (
+        payload.get("final_blocking_reasons_v9557"),
+        payload.get("final_blocking_reasons_v9558"),
+        payload.get("final_blocking_reasons_v9559"),
+        payload.get("final_blocking_reasons_v9561"),
+        payload.get("final_blocking_reasons_v9562"),
+        payload.get("final_blocking_reasons_v9563"),
+        stage.get("final_blocking_reasons_v9557"),
+        stage.get("final_blocking_reasons_v9558"),
+        stage.get("final_blocking_reasons_v9559"),
+        stage.get("final_blocking_reasons_v9561"),
+        stage.get("final_blocking_reasons_v9562"),
+        stage.get("final_blocking_reasons_v9563"),
+        authority.get("hard_blockers"),
+        authority.get("wait_reasons"),
+    ):
+        for value in values or []:
+            text = str(value or "").strip()
+            if text and text not in authority_reasons:
+                authority_reasons.append(text)
+    tactic = str(
+        payload.get("router_final_tactic")
+        or stage.get("router_final_tactic")
+        or ""
+    )
+    disposition = str(
+        payload.get("router_final_disposition")
+        or stage.get("router_final_disposition")
+        or ""
+    )
+    if disposition == "DEFERRED" or tactic in V9562_CAUSAL_TACTICS:
+        reason = f"ROUTER_DEFERRED_{tactic or 'UNSPECIFIED'}"
+        if reason not in router_reasons:
+            router_reasons.append(reason)
+    return authority_reasons, router_reasons
+
+
+def compact_signal_canonical_v9563(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_signal_v9562_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    stage = dict(payload.get("stage_plan") or {})
+    authority = dict((payload.get("audit") or {}).get("final_execution_authority_v9551") or {})
+    transition = dict(
+        stage.get("transition_escrow_v9563")
+        or stage.get("causal_regime_transition_v9563")
+        or authority.get("causal_regime_transition_v9563")
+        or payload.get("transition_escrow_v9563")
+        or {}
+    )
+    control = dict(stage.get("transition_control_transfer_v9563") or {})
+    action = str(payload.get("action") or compact.get("action") or "")
+    authority_reasons, router_reasons = _blocking_vector_v9563(payload)
+    final_reasons = [] if action in EXECUTABLE_ENTRY_ACTIONS else list(dict.fromkeys(authority_reasons + router_reasons))
+    tier = str(
+        payload.get("execution_tier")
+        or stage.get("final_execution_tier_v9563")
+        or authority.get("entry_tier")
+        or compact.get("execution_tier")
+        or "WAIT"
+    )
+    compact.update({
+        "observed_market_price": payload.get("observed_market_price", compact.get("observed_market_price")),
+        "planned_entry": payload.get("planned_entry", payload.get("plan_entry", compact.get("planned_entry"))),
+        "planned_stop": payload.get("planned_stop", payload.get("plan_stop", compact.get("planned_stop"))),
+        "planned_tp0": payload.get("planned_tp0", payload.get("plan_tp0", compact.get("planned_tp0"))),
+        "execution_tier": tier,
+        "final_execution_tier_v9563": tier,
+        "authority_blocking_reasons": authority_reasons,
+        "router_blocking_reasons": router_reasons,
+        "final_blocking_reasons_v9563": final_reasons,
+        "blocking_reason": "NONE" if action in EXECUTABLE_ENTRY_ACTIONS else (
+            final_reasons[0] if final_reasons else str(compact.get("blocking_reason") or "UNCLASSIFIED_WAIT")
+        ),
+        "transition_escrow_v9563": transition,
+        "transition_control_transfer_v9563": control,
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "canonical_compactor_schema_v9563": V9563_SCHEMA_VERSION,
+    })
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+compact_signal_for_journal = compact_signal_canonical_v9563
+
+
+def build_forward_control_snapshot_v9563(journal: dict[str, Any]) -> dict[str, Any]:
+    original_tags = tuple(_forward_control_module_v9561.CURRENT_POLICY_TAGS)
+    try:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = ("v9.5.63",)
+        current = _build_forward_control_snapshot_v9560_base(journal)
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = ("v9.5.62",)
+        prior = _build_forward_control_snapshot_v9560_base(journal)
+    finally:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = original_tags
+    current = copy.deepcopy(current)
+    coverage = current.setdefault("coverage", {})
+    coverage["v9563_forward_trade_rows"] = int(coverage.get("current_policy_forward_trade_rows") or 0)
+    coverage["prior_v9562_forward_trade_rows"] = int((prior.get("coverage") or {}).get("current_policy_forward_trade_rows") or 0)
+    current["prior_policy_v9562"] = {
+        "tier_metrics": copy.deepcopy(prior.get("tier_metrics") or {}),
+        "family_metrics": copy.deepcopy(prior.get("family_metrics") or {}),
+        "coverage": copy.deepcopy(prior.get("coverage") or {}),
+        "policy_version_tags": ["v9.5.62"],
+        "can_promote_v9563_policy": False,
+    }
+    current.setdefault("promotion_policy", {})["policy_version_tags"] = ["v9.5.63"]
+    current["promotion_policy"]["automatic_threshold_mutation"] = False
+    current["policy_isolation"] = "V9_5_63_TRANSITION_ESCROW_SEPARATE_FROM_V9_5_62"
+    current["schema_version"] = V9563_SCHEMA_VERSION
+    return current
+
+
+def load_journal_canonical_v9563() -> dict[str, Any]:
+    journal = _load_journal_v9562_base()
+    journal["forward_control_v9563"] = build_forward_control_snapshot_v9563(journal)
+    return journal
+
+
+load_journal = load_journal_canonical_v9563
+
+
+def save_journal_canonical_v9563(journal: dict[str, Any]) -> None:
+    aggregate = journal.setdefault("execution_quality_repair_v9563", {})
+    aggregate.update({
+        "policy_version": V9563_BOT_VERSION,
+        "score_contract": [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE],
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "immediate_counter_regime_entry": False,
+        "control_transfer": "TWO_POST_DECISION_CONFIRMED_3M_BARS_AND_CURRENT_REVALIDATION",
+        "release_tier": "EARLY_PROBE",
+        "release_risk_fraction_range": [V9563_RELEASE_MIN_RISK_FRACTION, V9563_RELEASE_MAX_RISK_FRACTION],
+        "risk_rr_score_thresholds_changed": False,
+        "frequency_quota_enabled": False,
+        "schema_version": V9563_SCHEMA_VERSION,
+    })
+    journal["forward_control_v9563"] = build_forward_control_snapshot_v9563(journal)
+    return _save_journal_v9562_base(journal)
+
+
+save_journal = save_journal_canonical_v9563
+
+
+def _historical_transition_escrow_candidates_v9563(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for signal in payload.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        xi = dict(signal.get("execution_intelligence") or {})
+        htf_state = str(signal.get("htf_state") or ((signal.get("htf_fact") or {}).get("state")) or "UNKNOWN").upper()
+        reasons = set(
+            [str(signal.get("blocking_reason") or "")]
+            + [str(value) for value in (signal.get("final_blocking_reasons_v9557") or [])]
+            + [str(value) for value in (signal.get("final_blocking_reasons_v9558") or [])]
+        )
+        eligible = bool(
+            str(signal.get("action") or "") == Action.NO_SETUP.value
+            and str(signal.get("canonical_setup_family") or "") == "TREND_CONTINUATION"
+            and str(signal.get("execution_source") or "") == ExecutionSource.LIVE_3M.value
+            and str(signal.get("router_final_tactic") or "") == "MARKET_NOW"
+            and "PLAN_NOT_EXECUTION_READY" in reasons
+            and safe_float(signal.get("score"), 0.0) >= V9563_ESCROW_MIN_SCORE
+            and safe_float(signal.get("setup_quality"), 0.0) >= V9563_ESCROW_MIN_SETUP_QUALITY
+            and safe_float(signal.get("timing_quality"), 0.0) >= V9563_ESCROW_MIN_TIMING_QUALITY
+            and safe_float(signal.get("trade_quality"), 0.0) >= V9563_ESCROW_MIN_TRADE_QUALITY
+            and safe_float(xi.get("structural"), 0.0) >= V9563_ESCROW_MIN_STRUCTURAL
+            and safe_float(xi.get("asi"), 100.0) <= V9563_ESCROW_MAX_ASI
+            and safe_float(xi.get("runway_r"), 0.0) >= V9563_ESCROW_MIN_RUNWAY_R
+            and safe_float(xi.get("regime_uncertainty"), 0.0) >= V9563_ESCROW_MIN_REGIME_UNCERTAINTY
+            and (htf_state in {"UNKNOWN", "NEUTRAL", "MIXED"})
+        )
+        if eligible:
+            rows.append({
+                "id": str(signal.get("id") or ""),
+                "time": str(signal.get("time") or ""),
+                "side": str(signal.get("side") or ""),
+                "setup_type": str(signal.get("setup_type") or ""),
+                "score": int(safe_float(signal.get("score"), 0.0)),
+                "planned_entry": safe_float(signal.get("planned_entry"), 0.0),
+                "asi": safe_float(xi.get("asi"), 0.0),
+                "runway_r": safe_float(xi.get("runway_r"), 0.0),
+                "prior_disposition": str(signal.get("router_final_disposition") or ""),
+            })
+    return rows
+
+
+def run_audit_journal_canonical_v9563(path: str) -> dict[str, Any]:
+    output = _audit_journal_v9562_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    historical = _historical_transition_escrow_candidates_v9563(payload)
+    output["v9563_causal_regime_transition_escrow"] = {
+        "effective_bot_version": BOT_VERSION,
+        "effective_architecture_version": ARCHITECTURE_VERSION,
+        "historical_pre_v9563_candidates_discarded_before_causal_queue": historical[-20:],
+        "historical_candidate_count": len(historical),
+        "fixed_execution_gap": "MARKET_NOW_PLAN_WAIT_NOW_PERSISTS_AS_ONE_3M_CONFIRM",
+        "immediate_entry_against_regime": False,
+        "release_requirements": [
+            "two consecutive confirmed post-decision 3M bars",
+            "trigger acceptance",
+            "no factual invalidation",
+            "current HTF/ASI/structure/runway/stop revalidation",
+        ],
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "runtime_aggregate": dict(payload.get("execution_quality_repair_v9563") or {}),
+        "forward_control": build_forward_control_snapshot_v9563(payload),
+        "schema_version": V9563_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9563
+
+
+def validate_runtime_configuration_canonical_v9563() -> dict[str, Any]:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_apply = globals()["_apply_true_final_authority_v9551"]
+    live_compactor = globals()["compact_signal_for_journal"]
+    live_simulator = globals()["_simulate_candidate_execution_v9561"]
+    live_state_policy = globals()["state_upgrade_policy_v9533"]
+    try:
+        globals()["BOT_VERSION"] = V9562_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9562_ARCHITECTURE_VERSION
+        globals()["_apply_true_final_authority_v9551"] = apply_canonical_execution_authority_v9561
+        globals()["compact_signal_for_journal"] = compact_signal_canonical_v9562
+        globals()["_simulate_candidate_execution_v9561"] = _simulate_candidate_execution_v9562_base
+        globals()["state_upgrade_policy_v9533"] = _state_upgrade_policy_v9562_base
+        report = _validator_v9562_base()
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["_apply_true_final_authority_v9551"] = live_apply
+        globals()["compact_signal_for_journal"] = live_compactor
+        globals()["_simulate_candidate_execution_v9561"] = live_simulator
+        globals()["state_upgrade_policy_v9533"] = live_state_policy
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9563_BOT_VERSION or ARCHITECTURE_VERSION != V9563_ARCHITECTURE_VERSION:
+        errors.append("v9.5.63 transition-escrow release seal mismatch")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9563:
+        errors.append("v9.5.63 Final Authority is not active")
+    if globals().get("candidate_from_missed_opportunity") is not candidate_from_missed_opportunity:
+        errors.append("v9.5.63 causal opportunity reconstruction is not active")
+    if globals().get("store_router_opportunity_v9541") is not store_router_opportunity_v9541:
+        errors.append("v9.5.63 transition escrow persistence is not active")
+    if globals().get("compact_signal_for_journal") is not compact_signal_canonical_v9563:
+        errors.append("v9.5.63 canonical signal compactor is not active")
+    if globals().get("_simulate_candidate_execution_v9561") is not _simulate_candidate_execution_v9563:
+        errors.append("v9.5.63 causal arbitration still uses a historical Final Authority")
+    if [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE] != [58, 68, 75]:
+        errors.append("v9.5.63 changed the canonical 58/68/75 score contract")
+    if V9563_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.63 scheduler cadence must remain 15 minutes")
+    if not (
+        0.15 <= V9563_RELEASE_MIN_RISK_FRACTION
+        <= V9563_RELEASE_MAX_RISK_FRACTION <= 0.25
+        and V9563_ESCROW_MIN_RUNWAY_R > V9563_RELEASE_MIN_RUNWAY_R > 0.0
+        and V9563_ESCROW_MAX_ASI < V9563_RELEASE_MAX_ASI <= 35.0
+    ):
+        errors.append("v9.5.63 transition risk/quality envelope is not bounded")
+    migration = state_upgrade_policy_v9533(V9562_ARCHITECTURE_VERSION)
+    if not migration.get("memory_compatible") or not migration.get("opportunity_lineage_compatible"):
+        errors.append("v9.5.62 state would be lost during v9.5.63 migration")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "scheduler_cadence_minutes": V9563_SCHEDULER_CADENCE_MINUTES,
+        "canonical_score_contract": [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE],
+        "transition_entry": "DEFER_THEN_TWO_BAR_CAUSAL_CONFIRMATION",
+        "maximum_transition_tier": "EARLY_PROBE",
+        "transition_risk_fraction_range": [V9563_RELEASE_MIN_RISK_FRACTION, V9563_RELEASE_MAX_RISK_FRACTION],
+        "risk_rr_thresholds_changed": False,
+        "frequency_quota_enabled": False,
+        "schema_version_v9563": V9563_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9563
+
+
+def run_architecture_audit_v9563() -> dict[str, Any]:
+    report = _run_architecture_audit_v9562_base()
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "canonical_execution_engine_exists": _CANONICAL_EXECUTION_ENGINE_V9563 is not None,
+        "single_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9563,
+        "single_signal_compactor": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9563,
+        "causal_opportunity_arbitrator": (
+            callable(globals().get("evaluate_causal_opportunity_priority_v9562"))
+            and globals().get("_simulate_candidate_execution_v9561") is _simulate_candidate_execution_v9563
+        ),
+        "transition_escrow_persistence": (
+            globals().get("candidate_from_missed_opportunity") is candidate_from_missed_opportunity
+            and globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541
+        ),
+        "unchanged_15m_scheduler_contract": V9563_SCHEDULER_CADENCE_MINUTES == 15,
+        "runtime_config_valid": validate_runtime_configuration_canonical_v9563().get("valid") is True,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9563
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9563
+    executive = callable(globals().get("executive_decision_engine"))
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "executive_object": executive,
+        "canonical_execution_object": _CANONICAL_EXECUTION_ENGINE_V9563 is not None,
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if authority and canonical and executive else "FAILED",
+    }
+
+
+def _v9563_incident_fixture() -> Decision:
+    decision = _v9561_bridge_fixture()
+    candidate = decision.candidate
+    assert candidate is not None and decision.plan is not None
+    candidate.side = Side.LONG.value
+    decision.side = Side.LONG.value
+    candidate.setup_type = SetupType.PULLBACK_CONTINUATION.value
+    candidate.setup_family = SetupFamily.CONTINUATION.value
+    candidate.final_score = 68
+    candidate.setup_quality_score = 51
+    candidate.timing_quality_score = 85
+    candidate.trade_plan_quality_score = 79
+    candidate.evaluation_bundle.update({
+        "setup_quality": 51.42,
+        "timing_quality": 85.0,
+        "execution_readiness": 85.0,
+        "trade_quality": 79.3,
+    })
+    candidate.execution_source = ExecutionSource.LIVE_3M.value
+    candidate.trigger_ready = True
+    candidate.live_3m_trigger_ready = True
+    candidate.revalidation_profile = {
+        "state": "FRESH", "entry_supported": True,
+        "needs_revalidation": False, "hard_expired": False,
+    }
+    intelligence = candidate.score_components["execution_intelligence_v9532"]
+    intelligence.update({
+        "asi": 14.34,
+        "structural": 59.0,
+        "setup_pct": 0.131,
+        "regime_bias": "BEARISH",
+        "regime_uncertainty": 0.68,
+        "state": "EXECUTION",
+        "kind": "CONTINUATION",
+    })
+    intelligence["adverse_selection"] = {"index": 14.34}
+    intelligence["structural_score"] = 59.0
+    intelligence["setup_relative_quality"] = {"percentile": 0.131}
+    intelligence["state_machine"] = {"current_state": "EXECUTION", "kind": "CONTINUATION"}
+    intelligence["execution_router"] = {
+        "action": "MARKET_NOW",
+        "runway_known": True,
+        "runway_r": 0.966,
+        "execution_economics": {"runway_known": True, "runway_r": 0.966},
+    }
+    candidate.stage_plan.update({
+        "router_final_tactic": "MARKET_NOW",
+        "router_intended_tactic": "MARKET_NOW",
+        "router_final_disposition": "TACTIC_READY_PLAN_BLOCKED",
+    })
+    decision.plan.execution_ready = False
+    decision.action = Action.NO_SETUP.value
+    _v9561_attach_htf(candidate, state_name="NEUTRAL", market_bias="NEUTRAL")
+    return decision
+
+
+def _v9563_test_opp(*, watermark: int = 1_000) -> Opportunity:
+    return Opportunity(
+        side=Side.LONG.value,
+        setup_type=SetupType.PULLBACK_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        created_at=iso_now(),
+        expires_at=(now_utc() + timedelta(minutes=35)).isoformat(),
+        score=68,
+        trigger_level=100.0,
+        invalidation_level=99.0,
+        confirmations=["LIVE_3M_TRIGGER"],
+        evidence_families=["STRUCTURE", "LOCATION", "TRIGGER"],
+        execution_lane=ExecutionLane.WAIT_CONFIRMATION.value,
+        status=OpportunityStatus.CONFIRMATION_PENDING.value,
+        selected_source="RANKED_CANDIDATE",
+        execution_tactic="ONE_3M_CONFIRM",
+        router_decision_3m_ts=watermark,
+        transition_escrow_v9563={
+            "active": True,
+            "phase": "AWAITING_CAUSAL_CONTROL_TRANSFER",
+            "decision_watermark": watermark,
+            "original_score": 68,
+            "schema_version": V9563_SCHEMA_VERSION,
+        },
+    )
+
+
+def _v9563_safety_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+    decision = _v9563_incident_fixture()
+    context = {
+        "price": 100.0,
+        "atr15": 1.0,
+        "_audit_shadow_scan": True,
+        "candles": {
+            "3m": [Candle(ts=1_000, open=99.95, high=100.03, low=99.92, close=100.0, volume=1000, confirmed=True)],
+        },
+    }
+    retained = apply_canonical_execution_authority_v9563(decision, context, {})
+    retained_stage = dict(retained.candidate.stage_plan or {}) if retained.candidate else {}
+    checks.append((
+        "v9.5.63 reproduces the 94.14-class incident and retains it as causal escrow instead of losing it",
+        retained.action == Action.NO_SETUP.value
+        and retained.audit.get("opportunity_status") == OpportunityStatus.CONFIRMATION_PENDING.value
+        and retained_stage.get("router_final_tactic") == "ONE_3M_CONFIRM"
+        and (retained_stage.get("transition_escrow_v9563") or {}).get("active") is True,
+    ))
+
+    durable = Opportunity(
+        side=retained.side,
+        setup_type=retained.setup_type,
+        setup_family=retained.candidate.setup_family,
+        created_at=iso_now(),
+        expires_at=(now_utc() + timedelta(minutes=35)).isoformat(),
+        score=int(retained.candidate.final_score or 0),
+        trigger_level=100.0,
+        invalidation_level=99.0,
+        execution_lane=retained.candidate.execution_lane,
+        status=OpportunityStatus.CONFIRMATION_PENDING.value,
+        execution_tactic=str(retained_stage.get("router_intended_tactic") or ""),
+        router_decision_3m_ts=int(safe_float(retained_stage.get("router_decision_3m_ts"), 0.0)),
+        signal_id=retained.id,
+    )
+    durable_state: dict[str, Any] = {}
+    store_router_opportunity_v9541(
+        durable_state, durable, decision=retained, journal={}, context=context,
+    )
+    durable_raw = (durable_state.get("router_opportunity_queue_v9541") or [{}])[0]
+    checks.append((
+        "v9.5.63 persists the MARKET_NOW/plan-wait candidate as a durable ONE_3M_CONFIRM route",
+        durable_raw.get("execution_tactic") == "ONE_3M_CONFIRM"
+        and durable_raw.get("status") == OpportunityStatus.CONFIRMATION_PENDING.value
+        and bool(durable_raw.get("transition_escrow_v9563"))
+        and int(safe_float(durable_raw.get("router_decision_3m_ts"), 0.0)) == 1_000,
+    ))
+
+    opp = _v9563_test_opp()
+    confirmed_context = {
+        "price": 100.14,
+        "atr15": 1.0,
+        "candles": {"3m": [
+            Candle(ts=2_000, open=99.99, high=100.09, low=99.98, close=100.07, volume=1000, confirmed=True),
+            Candle(ts=3_000, open=100.06, high=100.16, low=100.04, close=100.14, volume=1100, confirmed=True),
+        ]},
+        "scan_3m_events": {},
+    }
+    proof = transition_control_transfer_profile_v9563(opp, confirmed_context)
+    checks.append((
+        "v9.5.63 requires and recognizes two causal confirmed 3M closes after the decision watermark",
+        proof.get("proven") is True
+        and proof.get("evidence_pair_ts") == [2_000, 3_000]
+        and proof.get("entry_is_retrospective") is False,
+    ))
+
+    one_bar = copy.deepcopy(confirmed_context)
+    one_bar["candles"]["3m"] = one_bar["candles"]["3m"][:1]
+    invalidated = copy.deepcopy(confirmed_context)
+    invalidated["candles"]["3m"] = [
+        Candle(ts=2_000, open=99.4, high=99.5, low=98.8, close=98.9, volume=1000, confirmed=True),
+        Candle(ts=3_000, open=98.9, high=99.2, low=98.7, close=99.1, volume=1000, confirmed=True),
+    ]
+    late = copy.deepcopy(confirmed_context)
+    late["price"] = 100.80
+    checks.append((
+        "v9.5.63 does not release on one bar, factual invalidation, or a late chased price",
+        transition_control_transfer_profile_v9563(opp, one_bar).get("proven") is False
+        and transition_control_transfer_profile_v9563(opp, invalidated).get("proven") is False
+        and transition_control_transfer_profile_v9563(opp, late).get("proven") is False,
+    ))
+
+    rebuilt = candidate_from_missed_opportunity(opp, confirmed_context)
+    rebuilt_stage = dict(rebuilt.stage_plan or {}) if rebuilt else {}
+    checks.append((
+        "v9.5.63 converts proven escrow evidence into one consumable live re-entry without fabricating an old fill",
+        rebuilt is not None
+        and rebuilt.trigger_ready is True
+        and rebuilt.execution_source == ExecutionSource.LIVE_3M.value
+        and rebuilt_stage.get("router_confirmation_consumed") is True
+        and rebuilt_stage.get("router_final_tactic") == "MARKET_NOW"
+        and safe_float(rebuilt.execution_anchor, 0.0) == 100.14,
+    ))
+
+    release_decision = _v9563_incident_fixture()
+    release_candidate = release_decision.candidate
+    assert release_candidate is not None
+    release_candidate.stage_plan.update({
+        "transition_escrow_v9563": copy.deepcopy(opp.transition_escrow_v9563),
+        "transition_control_transfer_v9563": copy.deepcopy(proof),
+        "router_confirmation_consumed": True,
+        "router_recheck_consumed": True,
+        "consumed_tactic": "ONE_3M_CONFIRM",
+        "decision_watermark": 1_000,
+        "evidence_ts": 3_000,
+        "router_final_tactic": "MARKET_NOW",
+        "router_final_disposition": "RECHECK_READY",
+    })
+    released = apply_canonical_execution_authority_v9563(
+        release_decision, confirmed_context | {"_audit_shadow_scan": True}, {},
+    )
+    released_authority = dict((released.audit or {}).get("final_execution_authority_v9551") or {})
+    released_transition = dict(released_authority.get("causal_regime_transition_v9563") or {})
+    checks.append((
+        "v9.5.63 releases confirmed transition only as a bounded 18-25% normal-risk probe",
+        released.action == Action.PROBE_ENTRY.value
+        and released_transition.get("phase") == "CAUSAL_CONTROL_TRANSFER_RELEASED"
+        and V9563_RELEASE_MIN_RISK_FRACTION * NORMAL_RISK_PCT
+        <= safe_float(released.plan.position_risk_pct, 0.0)
+        <= V9563_RELEASE_MAX_RISK_FRACTION * NORMAL_RISK_PCT,
+    ))
+
+    compact = compact_signal_canonical_v9563({
+        "id": "v9563-telemetry",
+        "time": iso_now(),
+        "action": Action.NO_SETUP.value,
+        "side": Side.LONG.value,
+        "setup_type": SetupType.PULLBACK_CONTINUATION.value,
+        "quality": 68,
+        "observed_market_price": 94.14,
+        "planned_entry": 94.14,
+        "planned_stop": 93.4775,
+        "planned_tp0": 94.78,
+        "final_blocking_reasons_v9557": ["PLAN_NOT_EXECUTION_READY"],
+        "stage_plan": {
+            "router_final_tactic": "ONE_3M_CONFIRM",
+            "router_final_disposition": "DEFERRED",
+            "final_execution_tier_v9563": "WAIT",
+            "transition_escrow_v9563": copy.deepcopy(opp.transition_escrow_v9563),
+        },
+        "audit": {},
+    })
+    checks.append((
+        "v9.5.63 telemetry preserves authority/router blockers and actual plan geometry",
+        "PLAN_NOT_EXECUTION_READY" in (compact.get("authority_blocking_reasons") or [])
+        and "ROUTER_DEFERRED_ONE_3M_CONFIRM" in (compact.get("router_blocking_reasons") or [])
+        and compact.get("observed_market_price") == 94.14
+        and compact.get("planned_stop") == 93.4775
+        and compact.get("planned_tp0") == 94.78,
+    ))
+
+    runtime = validate_runtime_configuration_canonical_v9563()
+    checks.append((
+        "v9.5.63 keeps the 15M scheduler, 58/68/75 contract, one Final Authority and bounded risk",
+        runtime.get("valid") is True
+        and runtime.get("scheduler_cadence_minutes") == 15
+        and runtime.get("canonical_score_contract") == [58, 68, 75]
+        and globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9563,
+    ))
+    return checks
+
+
+def run_self_test_canonical_v9563() -> bool:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_validator = globals()["validate_runtime_configuration"]
+    live_apply = globals()["_apply_true_final_authority_v9551"]
+    live_compactor = globals()["compact_signal_for_journal"]
+    live_simulator = globals()["_simulate_candidate_execution_v9561"]
+    live_state_policy = globals()["state_upgrade_policy_v9533"]
+    try:
+        globals()["BOT_VERSION"] = V9562_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9562_ARCHITECTURE_VERSION
+        globals()["validate_runtime_configuration"] = _validator_v9562_base
+        globals()["_apply_true_final_authority_v9551"] = apply_canonical_execution_authority_v9561
+        globals()["compact_signal_for_journal"] = compact_signal_canonical_v9562
+        globals()["_simulate_candidate_execution_v9561"] = _simulate_candidate_execution_v9562_base
+        globals()["state_upgrade_policy_v9533"] = _state_upgrade_policy_v9562_base
+        prior_ok = bool(_self_test_v9562_base())
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["validate_runtime_configuration"] = live_validator
+        globals()["_apply_true_final_authority_v9551"] = live_apply
+        globals()["compact_signal_for_journal"] = live_compactor
+        globals()["_simulate_candidate_execution_v9561"] = live_simulator
+        globals()["state_upgrade_policy_v9533"] = live_state_policy
+    checks = _v9563_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.63 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} transition-escrow checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9563
 
 
 # The modules import without a circular dependency; bind their pure helper
