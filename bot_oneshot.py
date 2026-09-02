@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.61 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.62 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.62 (intracycle causal opportunity arbitration):
+- GitHub Actions як і раніше запускає бот кожні 15 хвилин; підтверджені 3M свічки між запусками використовуються як причинна памʼять, а не як окремий scheduler.
+- Завершений після рішення FIRST_RETEST / LIMIT_AT_ANCHOR / ONE_3M_CONFIRM отримує bounded priority над майже рівним свіжим кандидатом; score, risk, RR і Final Authority не послаблюються.
+- Відкладений маршрут анулюється лише підтвердженим 3M close за factual invalidation, тому зламаний LONG/SHORT не заморожує чергу і не конкурує з живим напрямком.
+- Журнал окремо показує Final Authority blockers і Router disposition, а forward control v9.5.62 ізольований від попередніх політик.
+
 Оновлення v9.5.61 (execution-aware directional quality repair):
 - Ranking виконує ізольований plan/Router/Final-Authority preview для top-6 і дає лише bounded +2.0 tie-breaker фактично виконуваному кандидату; сирі score/quality не змінюються.
 - Непідтверджений countertrend liquidity/failed-expansion reversal більше не обходить Trading Philosophy через generic EARLY_PROBE; потрібен causal control transfer, structure, ASI, runway та setup-quality quorum.
@@ -2712,8 +2718,10 @@ V9560_BOT_VERSION = "pro-hybrid-confluence-v9.5.60-modular-detector-families-ext
 V9560_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_60_MODULAR_DETECTOR_FAMILIES_EXTERNAL_REGRESSION_SUITE"
 V9561_BOT_VERSION = "pro-hybrid-confluence-v9.5.61-execution-aware-selection-directional-quality-repair"
 V9561_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_61_EXECUTION_AWARE_SELECTION_DIRECTIONAL_QUALITY_REPAIR"
-BOT_VERSION = V9561_BOT_VERSION
-ARCHITECTURE_VERSION = V9561_ARCHITECTURE_VERSION
+V9562_BOT_VERSION = "pro-hybrid-confluence-v9.5.62-intracycle-causal-opportunity-arbitration"
+V9562_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_62_INTRACYCLE_CAUSAL_OPPORTUNITY_ARBITRATION_15M_CADENCE"
+BOT_VERSION = V9562_BOT_VERSION
+ARCHITECTURE_VERSION = V9562_ARCHITECTURE_VERSION
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -20749,6 +20757,10 @@ def evaluate_active_trade_shadow_scan(
 
 def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Decision:
     proposed_opportunity_status = None
+    # v9.5.62: retire only deferred routes whose thesis was crossed by a
+    # confirmed 3M close.  This runs inside the unchanged 15M job and prevents
+    # a stale opposite-side route from occupying the causal opportunity queue.
+    purge_invalidated_router_opportunities_v9562(state, journal, context)
     cands = detect_candidates(context, state, journal)
     cands = apply_confirmation_probability_layer(context, cands, journal)
     current_price = context.get("price", 0)
@@ -20779,8 +20791,16 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
             if not guard["blocked"] and missed_cand.final_score >= MISSED_REENTRY_SCORE * get_adaptive_params(context.get("adaptive_regime", context["regime"]))["reentry_aggressiveness"]:
                 fresh_ranked = finalize_hypothesis_ranking(list(cands)) if cands else []
                 fresh_best = fresh_ranked[0] if fresh_ranked else None
+                causal_priority = evaluate_causal_opportunity_priority_v9562(
+                    missed_cand,
+                    fresh_best,
+                    context=context,
+                    state=state,
+                    journal=journal,
+                )
                 reentry_wins_selection = bool(
                     fresh_best is None
+                    or causal_priority.get("selected")
                     or _candidate_selection_score(missed_cand) >= _candidate_selection_score(fresh_best)
                 )
                 if not reentry_wins_selection:
@@ -20810,6 +20830,7 @@ def _legacy_evaluate_new_setup(context: dict, state: dict, journal: dict) -> Dec
                         ),
                         "reentry_rescored": True,
                         "selected_source": "SAVED_OPPORTUNITY_REENTRY",
+                        "causal_opportunity_arbitration_v9562": copy.deepcopy(causal_priority),
                         "model_id": str(getattr(missed_cand, "ict_model", "NONE") or "NONE"),
                         "legacy_opportunity_status": proposed_action,
                     },
@@ -31931,7 +31952,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.61 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.62 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -38950,6 +38971,744 @@ def run_self_test_canonical_v9561() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9561
+
+
+# ==========================================================
+# v9.5.62 INTRACYCLE CAUSAL OPPORTUNITY ARBITRATION
+# ==========================================================
+# The scheduler remains exactly 15 minutes.  The innovation is causal memory:
+# every confirmed 3M bar which appeared after a Router decision is replayed on
+# the next regular invocation.  A completed retest is compared with the fresh
+# scan as an execution-ready opportunity, not as a stale lower-ranked idea.
+# No admission, RR, risk, stop or Final-Authority threshold is lowered here.
+
+V9562_SCHEMA_VERSION = "intracycle_causal_opportunity_arbitration_v9.5.62"
+V9562_CAUSAL_COMPLETION_MAX_PRIORITY = 4.0
+V9562_SCHEDULER_CADENCE_MINUTES = 15
+V9562_CAUSAL_TACTICS = frozenset({"FIRST_RETEST", "LIMIT_AT_ANCHOR", "ONE_3M_CONFIRM"})
+V9562_EXECUTION_TIERS = ("PREMIUM_FULL", "STANDARD_ENTRY", "EARLY_PROBE", "WAIT")
+
+_candidate_selection_score_v9561_base = _candidate_selection_score
+_load_journal_v9561_base = load_journal
+_save_journal_v9561_base = save_journal
+_audit_journal_v9561_base = run_audit_journal
+_validator_v9561_base = validate_runtime_configuration_canonical_v9561
+_self_test_v9561_base = run_self_test_canonical_v9561
+_compact_signal_v9561_base = compact_signal_for_journal
+_state_upgrade_policy_v9561_base = state_upgrade_policy_v9533
+_run_architecture_audit_v9561_base = run_architecture_audit
+
+
+def build_forward_control_snapshot_v9562(journal: dict[str, Any]) -> dict[str, Any]:
+    """Measure v9.5.62 independently; historical outcomes never tune it live."""
+    original_tags = tuple(_forward_control_module_v9561.CURRENT_POLICY_TAGS)
+    try:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = ("v9.5.62",)
+        current = _build_forward_control_snapshot_v9560_base(journal)
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = ("v9.5.61",)
+        prior = _build_forward_control_snapshot_v9560_base(journal)
+    finally:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = original_tags
+    current = copy.deepcopy(current)
+    coverage = current.setdefault("coverage", {})
+    coverage["v9562_forward_trade_rows"] = int(
+        coverage.get("current_policy_forward_trade_rows") or 0
+    )
+    coverage["prior_v9561_forward_trade_rows"] = int(
+        (prior.get("coverage") or {}).get("current_policy_forward_trade_rows") or 0
+    )
+    current["prior_policy_v9561"] = {
+        "tier_metrics": copy.deepcopy(prior.get("tier_metrics") or {}),
+        "family_metrics": copy.deepcopy(prior.get("family_metrics") or {}),
+        "coverage": copy.deepcopy(prior.get("coverage") or {}),
+        "policy_version_tags": ["v9.5.61"],
+        "can_promote_v9562_policy": False,
+    }
+    current.setdefault("promotion_policy", {})["policy_version_tags"] = ["v9.5.62"]
+    current["promotion_policy"]["automatic_threshold_mutation"] = False
+    current["policy_isolation"] = "V9_5_62_CAUSAL_ARBITRATION_SEPARATE_FROM_V9_5_61"
+    current["schema_version"] = V9562_SCHEMA_VERSION
+    return current
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    """Preserve v9.5.61 causal memory during the v9.5.62 deployment."""
+    source = str(source_architecture or "")
+    marker = "TRADING_DESK_EXECUTIVE_V9_5_"
+    release = 0
+    if source.startswith(marker):
+        suffix = source[len(marker):].split("_", 1)[0]
+        release = int(suffix) if suffix.isdigit() else 0
+    memory_compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 62)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 62)
+    return {
+        "source_architecture": source or "UNKNOWN",
+        "source_release": release,
+        "memory_compatible": memory_compatible,
+        "opportunity_lineage_compatible": opportunity_compatible,
+        "preserve_active_trade": True,
+        "policy": "PRESERVE_V9_5_30_PLUS_MEMORY; MIGRATE_V9_5_33_PLUS_CAUSAL_ROUTER_LINEAGE; PURGE_ONLY_CONFIRMED_INVALIDATION",
+        "schema_version": V9562_SCHEMA_VERSION,
+    }
+
+
+def _latest_confirmed_3m_close_v9562(
+    context: dict[str, Any],
+) -> tuple[Optional[Candle], float]:
+    bars = _v9532_recent_confirmed(context, "3m", 1)
+    if not bars:
+        return None, 0.0
+    bar = bars[-1]
+    return bar, safe_float(getattr(bar, "close", 0.0), 0.0)
+
+
+def purge_invalidated_router_opportunities_v9562(
+    state: dict[str, Any],
+    journal: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """Expire a deferred route only after a confirmed close crosses its stop.
+
+    Intrabar high/low is intentionally ignored: this is a pending-entry thesis,
+    and a wick alone must not erase it.  Actual open positions keep their own
+    independent stop/management engine.
+    """
+    bar, close = _latest_confirmed_3m_close_v9562(context)
+    if bar is None or close <= 0.0:
+        return {
+            "evaluated": 0,
+            "invalidated": 0,
+            "reason": "NO_CONFIRMED_3M_CLOSE",
+            "schema_version": V9562_SCHEMA_VERSION,
+        }
+    candidates = _router_queue_candidates_v9541(state)
+    _flush_router_tombstones_v9541(state, journal)
+    kept: list[Opportunity] = []
+    removed: list[dict[str, Any]] = []
+    for opp in candidates:
+        invalidation = safe_float(getattr(opp, "invalidation_level", 0.0), 0.0)
+        side = str(getattr(opp, "side", "") or "").upper()
+        crossed = bool(
+            invalidation > 0.0
+            and (
+                (side == Side.LONG.value and close <= invalidation)
+                or (side == Side.SHORT.value and close >= invalidation)
+            )
+        )
+        if not crossed:
+            kept.append(opp)
+            continue
+        detail = {
+            "router_chain_id": _router_chain_id_v9541(opp),
+            "side": side,
+            "setup_type": str(opp.setup_type or ""),
+            "confirmed_3m_ts": int(safe_float(getattr(bar, "ts", 0), 0.0)),
+            "confirmed_3m_close": round_price(close),
+            "invalidation_level": round_price(invalidation),
+            "wick_used_for_invalidation": False,
+            "open_position_stop_changed": False,
+        }
+        removed.append(detail)
+        _record_router_lifecycle_v9541(
+            journal,
+            "EXPIRED",
+            opp,
+            reason="CONFIRMED_3M_CLOSE_INVALIDATED_DEFERRED_ROUTE",
+            details=detail,
+        )
+    kept.sort(key=lambda item: (
+        int(item.router_recheck_count or 0),
+        (_parse_time_any(item.created_at).timestamp() if _parse_time_any(item.created_at) else float("inf")),
+        -int(item.score or 0),
+    ))
+    kept = kept[:ROUTER_OPPORTUNITY_QUEUE_LIMIT_V9541]
+    state["router_opportunity_queue_v9541"] = [asdict(item) for item in kept]
+    state["opportunity"] = asdict(kept[0]) if kept else None
+    report = {
+        "evaluated": len(candidates),
+        "invalidated": len(removed),
+        "preserved": len(kept),
+        "confirmed_3m_ts": int(safe_float(getattr(bar, "ts", 0), 0.0)),
+        "confirmed_3m_close": round_price(close),
+        "removed": removed,
+        "policy": "CONFIRMED_CLOSE_ONLY; WICK_DOES_NOT_DELETE; OPEN_TRADE_ENGINE_UNCHANGED",
+        "schema_version": V9562_SCHEMA_VERSION,
+    }
+    if removed and not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9562", {})
+        aggregate["confirmed_route_invalidations"] = int(
+            aggregate.get("confirmed_route_invalidations") or 0
+        ) + len(removed)
+        aggregate["last_confirmed_route_invalidation"] = copy.deepcopy(report)
+    context["router_invalidation_sweep_v9562"] = copy.deepcopy(report)
+    return report
+
+
+def _causal_completion_proof_v9562(candidate: Candidate) -> dict[str, Any]:
+    stage = dict(getattr(candidate, "stage_plan", {}) or {})
+    evidence_ts = int(safe_float(stage.get("evidence_ts"), 0.0))
+    watermark = int(safe_float(
+        stage.get("decision_watermark"),
+        safe_float(stage.get("router_decision_3m_ts"), 0.0),
+    ))
+    tactic = str(stage.get("consumed_tactic") or "")
+    causal_flag = bool(
+        stage.get("router_recheck_consumed")
+        or stage.get("router_confirmation_consumed")
+        or stage.get("retest_consumed")
+    )
+    conditions = {
+        "saved_opportunity_source": str(getattr(candidate, "selected_source", "") or "") == "SAVED_OPPORTUNITY_REENTRY",
+        "causal_tactic": tactic in V9562_CAUSAL_TACTICS,
+        "post_decision_evidence": evidence_ts > watermark > 0,
+        "causal_flag": causal_flag,
+        "router_released": str(stage.get("router_final_tactic") or "") == "MARKET_NOW",
+        "not_factually_invalidated": not bool(
+            ((candidate.score_components or {}).get("execution_anchor_authority") or {}).get("invalidated")
+        ),
+    }
+    return {
+        "proven": all(conditions.values()),
+        "conditions": conditions,
+        "consumed_tactic": tactic,
+        "evidence_ts": evidence_ts,
+        "decision_watermark": watermark,
+        "post_decision_confirmed": evidence_ts > watermark > 0,
+        "schema_version": V9562_SCHEMA_VERSION,
+    }
+
+
+def evaluate_causal_opportunity_priority_v9562(
+    candidate: Candidate,
+    fresh_best: Optional[Candidate],
+    *,
+    context: dict[str, Any],
+    state: dict[str, Any],
+    journal: dict[str, Any],
+) -> dict[str, Any]:
+    """Arbitrate a completed causal route against the fresh scan.
+
+    Priority is possible only after an isolated plan/Router/Final-Authority
+    preview proves that the route is executable.  This avoids replacing one
+    blocked rank-1 with another blocked candidate.
+    """
+    proof = _causal_completion_proof_v9562(candidate)
+    candidate_base = _candidate_selection_score_v9561_base(candidate)
+    fresh_base = (
+        _candidate_selection_score_v9561_base(fresh_best)
+        if fresh_best is not None else 0.0
+    )
+    gap = max(0.0, fresh_base - candidate_base)
+    simulation: dict[str, Any] = {
+        "simulation_valid": False,
+        "currently_executable": False,
+        "reason": "CAUSAL_PROOF_INCOMPLETE",
+    }
+    if proof.get("proven"):
+        simulation = _simulate_candidate_execution_v9561(
+            context,
+            copy.deepcopy(state),
+            copy.deepcopy(journal),
+            copy.deepcopy(candidate),
+        )
+    within_bound = gap <= V9562_CAUSAL_COMPLETION_MAX_PRIORITY + 1e-9
+    selected = bool(
+        proof.get("proven")
+        and simulation.get("simulation_valid")
+        and simulation.get("currently_executable")
+        and within_bound
+    )
+    report = {
+        "active": bool(proof.get("proven")),
+        "selected": selected,
+        "candidate_base_selection_score": round(candidate_base, 6),
+        "fresh_rank_1_base_selection_score": round(fresh_base, 6),
+        "fresh_rank_1_side": str(getattr(fresh_best, "side", "") or ""),
+        "fresh_rank_1_setup_type": str(getattr(fresh_best, "setup_type", "") or ""),
+        "score_gap": round(gap, 6),
+        "maximum_priority_gap": V9562_CAUSAL_COMPLETION_MAX_PRIORITY,
+        "within_bounded_priority": within_bound,
+        "causal_proof": proof,
+        "execution_preview": simulation,
+        "raw_quality_mutated": False,
+        "risk_or_rr_mutated": False,
+        "frequency_quota": False,
+        "scheduler_cadence_minutes": V9562_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9562_SCHEMA_VERSION,
+    }
+    candidate.score_components = candidate.score_components or {}
+    candidate.score_components["causal_opportunity_arbitration_v9562"] = copy.deepcopy(report)
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9562", {})
+        aggregate["causal_routes_evaluated"] = int(aggregate.get("causal_routes_evaluated") or 0) + 1
+        aggregate["causal_routes_prioritized"] = int(aggregate.get("causal_routes_prioritized") or 0) + int(selected)
+        aggregate["last_causal_arbitration"] = copy.deepcopy(report)
+    return report
+
+
+def _candidate_selection_score(candidate: Optional[Candidate]) -> float:
+    """Expose the bounded causal priority without altering technical scores."""
+    if candidate is None:
+        return 0.0
+    base = _candidate_selection_score_v9561_base(candidate)
+    arbitration = dict(
+        ((candidate.score_components or {}).get("causal_opportunity_arbitration_v9562"))
+        or {}
+    )
+    if arbitration.get("selected"):
+        return clamp(base + V9562_CAUSAL_COMPLETION_MAX_PRIORITY, 0.0, 100.0)
+    return base
+
+
+def _blocking_vector_v9562(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    audit = dict(payload.get("audit") or {})
+    authority = dict(audit.get("final_execution_authority_v9551") or {})
+    stage = dict(payload.get("stage_plan") or {})
+    directional = dict(authority.get("directional_quality_v9561") or {})
+    four_level = dict(
+        authority.get("four_level_execution_v9558")
+        or stage.get("four_level_execution_v9558")
+        or {}
+    )
+    executive = (
+        ((audit.get("executive_director") or {}).get("report") or {})
+        .get("executive_decision") or {}
+    )
+    authority_reasons: list[str] = []
+    for values in (
+        authority.get("hard_blockers"),
+        authority.get("wait_reasons"),
+        four_level.get("hard_blockers"),
+        four_level.get("wait_reasons"),
+        directional.get("hard_blockers"),
+        directional.get("wait_reasons"),
+        executive.get("blocking_reasons"),
+        stage.get("final_blocking_reasons_v9561"),
+        stage.get("final_blocking_reasons_v9559"),
+    ):
+        for value in values or []:
+            text = str(value or "").strip()
+            if text and text not in authority_reasons:
+                authority_reasons.append(text)
+    tactic = str(
+        payload.get("router_final_tactic")
+        or stage.get("router_final_tactic")
+        or ((audit.get("canonical_router_result_v9553") or {}).get("router_final_tactic"))
+        or ""
+    )
+    disposition = str(
+        payload.get("router_final_disposition")
+        or stage.get("router_final_disposition")
+        or ((audit.get("canonical_router_result_v9553") or {}).get("router_final_disposition"))
+        or ""
+    )
+    router_reasons = []
+    if disposition == "DEFERRED" or tactic in V9562_CAUSAL_TACTICS:
+        router_reasons.append(f"ROUTER_DEFERRED_{tactic or 'UNSPECIFIED'}")
+    return authority_reasons, router_reasons
+
+
+def compact_signal_canonical_v9562(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep Final Authority and Router reasons separate and lossless."""
+    compact = _compact_signal_v9561_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    stage = dict(payload.get("stage_plan") or {})
+    authority = dict((payload.get("audit") or {}).get("final_execution_authority_v9551") or {})
+    action = str(payload.get("action") or compact.get("action") or "")
+    tier = str(
+        payload.get("execution_tier")
+        or stage.get("final_execution_tier_v9561")
+        or authority.get("entry_tier")
+        or compact.get("execution_tier")
+        or "WAIT"
+    )
+    tactic = str(
+        payload.get("router_final_tactic")
+        or stage.get("router_final_tactic")
+        or compact.get("router_final_tactic")
+        or ""
+    )
+    disposition = str(
+        payload.get("router_final_disposition")
+        or stage.get("router_final_disposition")
+        or compact.get("router_final_disposition")
+        or ""
+    )
+    authority_reasons, router_reasons = _blocking_vector_v9562(payload)
+    final_reasons = [] if action in EXECUTABLE_ENTRY_ACTIONS else authority_reasons + router_reasons
+    final_reasons = list(dict.fromkeys(final_reasons))
+    compact.update({
+        "execution_tier": tier,
+        "final_execution_tier_v9562": tier,
+        "router_final_tactic": tactic,
+        "router_final_disposition": disposition,
+        "authority_blocking_reasons": authority_reasons,
+        "router_blocking_reasons": router_reasons,
+        "final_blocking_reasons_v9562": final_reasons,
+        "blocking_reason": "NONE" if action in EXECUTABLE_ENTRY_ACTIONS else (
+            final_reasons[0] if final_reasons else str(compact.get("blocking_reason") or "UNCLASSIFIED_WAIT")
+        ),
+        "scheduler_cadence_minutes": V9562_SCHEDULER_CADENCE_MINUTES,
+        "intracycle_evidence_timeframe": "3m_confirmed_close",
+        "canonical_compactor_schema_v9562": V9562_SCHEMA_VERSION,
+    })
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+compact_signal_for_journal = compact_signal_canonical_v9562
+
+
+def load_journal_canonical_v9562() -> dict[str, Any]:
+    journal = _load_journal_v9561_base()
+    journal["forward_control_v9562"] = build_forward_control_snapshot_v9562(journal)
+    return journal
+
+
+load_journal = load_journal_canonical_v9562
+
+
+def save_journal_canonical_v9562(journal: dict[str, Any]) -> None:
+    aggregate = journal.setdefault("execution_quality_repair_v9562", {})
+    aggregate.update({
+        "policy_version": V9562_BOT_VERSION,
+        "score_contract": [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE],
+        "risk_rr_final_authority_thresholds_changed": False,
+        "scheduler_cadence_minutes": V9562_SCHEDULER_CADENCE_MINUTES,
+        "intracycle_evidence": "CONFIRMED_3M_BARS_REPLAYED_ON_NEXT_15M_INVOCATION",
+        "causal_selection_rule": "FINAL_AUTHORITY_EXECUTABLE_COMPLETED_ROUTE_WITHIN_4_POINTS",
+        "pending_route_invalidation": "CONFIRMED_3M_CLOSE_ONLY",
+        "frequency_quota_enabled": False,
+        "execution_tiers": list(V9562_EXECUTION_TIERS),
+        "schema_version": V9562_SCHEMA_VERSION,
+    })
+    journal["forward_control_v9562"] = build_forward_control_snapshot_v9562(journal)
+    return _save_journal_v9561_base(journal)
+
+
+save_journal = save_journal_canonical_v9562
+
+
+def run_audit_journal_canonical_v9562(path: str) -> dict[str, Any]:
+    output = _audit_journal_v9561_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    aggregate = dict(payload.get("execution_quality_repair_v9562") or {})
+    output["v9562_intracycle_causal_arbitration"] = {
+        "effective_bot_version": BOT_VERSION,
+        "effective_architecture_version": ARCHITECTURE_VERSION,
+        "scheduler_cadence_minutes": V9562_SCHEDULER_CADENCE_MINUTES,
+        "separate_three_minute_scheduler_created": False,
+        "confirmed_three_minute_memory_replayed": True,
+        "causal_priority_cap": V9562_CAUSAL_COMPLETION_MAX_PRIORITY,
+        "raw_quality_risk_rr_mutated": False,
+        "runtime_aggregate": aggregate,
+        "forward_control": build_forward_control_snapshot_v9562(payload),
+        "schema_version": V9562_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9562
+
+
+def validate_runtime_configuration_canonical_v9562() -> dict[str, Any]:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_score = globals()["_candidate_selection_score"]
+    live_compactor = globals()["compact_signal_for_journal"]
+    try:
+        globals()["BOT_VERSION"] = V9561_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9561_ARCHITECTURE_VERSION
+        globals()["_candidate_selection_score"] = _candidate_selection_score_v9561_base
+        globals()["compact_signal_for_journal"] = compact_signal_canonical_v9559
+        report = _validator_v9561_base()
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["_candidate_selection_score"] = live_score
+        globals()["compact_signal_for_journal"] = live_compactor
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9562_BOT_VERSION or ARCHITECTURE_VERSION != V9562_ARCHITECTURE_VERSION:
+        errors.append("v9.5.62 causal-arbitration release seal mismatch")
+    if globals().get("_candidate_selection_score") is not _candidate_selection_score:
+        errors.append("v9.5.62 causal selection authority is not active")
+    if globals().get("compact_signal_for_journal") is not compact_signal_canonical_v9562:
+        errors.append("v9.5.62 lossless blocking telemetry is not active")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9561:
+        errors.append("v9.5.62 must preserve the v9.5.61 directional Final Authority")
+    if [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE] != [58, 68, 75]:
+        errors.append("v9.5.62 changed the canonical 58/68/75 score contract")
+    if not (0.0 < V9562_CAUSAL_COMPLETION_MAX_PRIORITY <= 4.0):
+        errors.append("v9.5.62 causal priority must remain bounded to four points")
+    if V9562_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.62 scheduler cadence must remain 15 minutes")
+    migration = state_upgrade_policy_v9533(V9561_ARCHITECTURE_VERSION)
+    if not migration.get("memory_compatible") or not migration.get("opportunity_lineage_compatible"):
+        errors.append("v9.5.61 causal state would be lost during v9.5.62 migration")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "scheduler_cadence_minutes": V9562_SCHEDULER_CADENCE_MINUTES,
+        "intracycle_replay": "CONFIRMED_3M_INSIDE_UNCHANGED_15M_JOB",
+        "causal_priority_cap": V9562_CAUSAL_COMPLETION_MAX_PRIORITY,
+        "canonical_score_contract": [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE],
+        "risk_rr_thresholds_changed": False,
+        "frequency_quota_enabled": False,
+        "schema_version_v9562": V9562_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9562
+
+
+def run_architecture_audit_v9562() -> dict[str, Any]:
+    report = _run_architecture_audit_v9561_base()
+    checks = dict(report.get("checks") or {})
+    checks["single_signal_compactor"] = (
+        globals().get("compact_signal_for_journal") is compact_signal_canonical_v9562
+    )
+    checks["causal_opportunity_arbitrator"] = (
+        globals().get("_candidate_selection_score") is _candidate_selection_score
+        and callable(globals().get("evaluate_causal_opportunity_priority_v9562"))
+    )
+    checks["unchanged_15m_scheduler_contract"] = V9562_SCHEDULER_CADENCE_MINUTES == 15
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9562
+
+
+def _v9562_safety_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    causal = copy.deepcopy(_v9561_bridge_fixture().candidate)
+    fresh = copy.deepcopy(_v9561_bridge_fixture().candidate)
+    causal.selected_source = "SAVED_OPPORTUNITY_REENTRY"
+    causal.score_components["evidence_adjusted_selection"] = {
+        "active": True, "selection_score": 70.0,
+    }
+    fresh.score_components["evidence_adjusted_selection"] = {
+        "active": True, "selection_score": 73.0,
+    }
+    causal.stage_plan.update({
+        "router_recheck_consumed": True,
+        "retest_consumed": True,
+        "consumed_tactic": "FIRST_RETEST",
+        "decision_watermark": 1_000,
+        "router_decision_3m_ts": 1_000,
+        "evidence_ts": 2_000,
+        "router_final_tactic": "MARKET_NOW",
+        "router_final_disposition": "RECHECK_READY",
+    })
+    live_simulator = globals()["_simulate_candidate_execution_v9561"]
+    try:
+        globals()["_simulate_candidate_execution_v9561"] = lambda *_args, **_kwargs: {
+            "simulation_valid": True,
+            "currently_executable": True,
+            "final_action": Action.PROBE_ENTRY.value,
+            "entry_tier": "EARLY_PROBE",
+        }
+        arbitration = evaluate_causal_opportunity_priority_v9562(
+            causal,
+            fresh,
+            context={"_audit_shadow_scan": True},
+            state={},
+            journal={},
+        )
+    finally:
+        globals()["_simulate_candidate_execution_v9561"] = live_simulator
+    checks.append((
+        "v9.5.62 a Final-Authority-executable causal retest outranks a fresh idea only inside the four-point bound",
+        arbitration.get("selected") is True
+        and _candidate_selection_score(causal) > _candidate_selection_score(fresh)
+        and causal.final_score == fresh.final_score,
+    ))
+
+    too_far = copy.deepcopy(causal)
+    too_far.score_components.pop("causal_opportunity_arbitration_v9562", None)
+    too_far.score_components["evidence_adjusted_selection"] = {
+        "active": True, "selection_score": 68.0,
+    }
+    live_simulator = globals()["_simulate_candidate_execution_v9561"]
+    try:
+        globals()["_simulate_candidate_execution_v9561"] = lambda *_args, **_kwargs: {
+            "simulation_valid": True,
+            "currently_executable": True,
+        }
+        rejected_gap = evaluate_causal_opportunity_priority_v9562(
+            too_far,
+            fresh,
+            context={"_audit_shadow_scan": True},
+            state={},
+            journal={},
+        )
+    finally:
+        globals()["_simulate_candidate_execution_v9561"] = live_simulator
+    checks.append((
+        "v9.5.62 causal priority cannot rescue a materially weaker setup",
+        rejected_gap.get("selected") is False and rejected_gap.get("score_gap") == 5.0,
+    ))
+
+    created = iso_now()
+    expires = (now_utc() + timedelta(minutes=30)).isoformat()
+    long_opp = Opportunity(
+        side=Side.LONG.value,
+        setup_type=SetupType.FRESH_BASE_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        created_at=created,
+        expires_at=expires,
+        score=74,
+        trigger_level=101.0,
+        invalidation_level=100.5,
+        execution_lane=ExecutionLane.WAIT_RETEST.value,
+        execution_tactic="FIRST_RETEST",
+        thesis_key="v9562-long-invalidated",
+    )
+    short_opp = Opportunity(
+        side=Side.SHORT.value,
+        setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        created_at=created,
+        expires_at=expires,
+        score=73,
+        trigger_level=100.5,
+        invalidation_level=101.0,
+        execution_lane=ExecutionLane.WAIT_RETEST.value,
+        execution_tactic="FIRST_RETEST",
+        thesis_key="v9562-short-wick-preserved",
+    )
+    route_state = {
+        "opportunity": asdict(long_opp),
+        "router_opportunity_queue_v9541": [asdict(long_opp), asdict(short_opp)],
+    }
+    route_journal: dict[str, Any] = {}
+    purge = purge_invalidated_router_opportunities_v9562(
+        route_state,
+        route_journal,
+        {
+            "_audit_shadow_scan": True,
+            "candles": {"3m": [Candle(ts=2_000, open=100.8, high=102.0, low=99.0, close=100.0, confirmed=True)]},
+        },
+    )
+    remaining = _router_queue_candidates_v9541(route_state)
+    checks.append((
+        "v9.5.62 confirmed close invalidates the broken LONG while a SHORT invalidation wick alone does not delete its route",
+        purge.get("invalidated") == 1
+        and len(remaining) == 1
+        and remaining[0].side == Side.SHORT.value,
+    ))
+
+    wait_compact = compact_signal_canonical_v9562({
+        "id": "v9562-compact-wait",
+        "time": iso_now(),
+        "action": Action.NO_SETUP.value,
+        "side": Side.SHORT.value,
+        "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "quality": 77,
+        "stage_plan": {
+            "router_final_tactic": "FIRST_RETEST",
+            "router_final_disposition": "DEFERRED",
+            "final_execution_tier_v9561": "WAIT",
+            "final_blocking_reasons_v9561": ["PLAN_NOT_EXECUTION_READY"],
+        },
+        "audit": {},
+    })
+    checks.append((
+        "v9.5.62 compact journal preserves separate Router and Final-Authority blocking vectors",
+        "PLAN_NOT_EXECUTION_READY" in (wait_compact.get("authority_blocking_reasons") or [])
+        and "ROUTER_DEFERRED_FIRST_RETEST" in (wait_compact.get("router_blocking_reasons") or []),
+    ))
+
+    migration = state_upgrade_policy_v9533(V9561_ARCHITECTURE_VERSION)
+    checks.append((
+        "v9.5.62 deployment preserves v9.5.61 scan memory and causal opportunity lineage",
+        migration.get("memory_compatible") is True
+        and migration.get("opportunity_lineage_compatible") is True,
+    ))
+
+    forward = build_forward_control_snapshot_v9562({
+        "signals": [{
+            "id": "v9562-forward-signal",
+            "action": Action.RISKY_ENTRY.value,
+            "execution_tier": "STANDARD_ENTRY",
+            "setup_type": SetupType.BREAKOUT_RETEST.value,
+            "canonical_setup_family": "TREND_CONTINUATION",
+            "bot_version_at_signal": V9562_BOT_VERSION,
+            "planned_entry": 100.0,
+            "planned_stop": 101.0,
+        }],
+        "trades": [{
+            "id": "v9562-forward-trade",
+            "signal_id": "v9562-forward-signal",
+            "side": Side.SHORT.value,
+            "setup_type": SetupType.BREAKOUT_RETEST.value,
+            "execution_tier": "STANDARD_ENTRY",
+            "bot_version_at_entry": V9562_BOT_VERSION,
+            "entry": 100.0,
+            "stop_initial": 101.0,
+            "pnl_r": 0.70,
+            "mfe_r": 1.10,
+            "mae_r": 0.20,
+            "closed_at": iso_now(),
+        }],
+    })
+    checks.append((
+        "v9.5.62 forward control isolates causal-policy outcomes and retains R/MFE/MAE metrics",
+        (forward.get("coverage") or {}).get("v9562_forward_trade_rows") == 1
+        and (forward.get("tier_metrics") or {}).get("STANDARD_ENTRY", {}).get("expectancy_r") == 0.7
+        and (forward.get("promotion_policy") or {}).get("policy_version_tags") == ["v9.5.62"],
+    ))
+
+    runtime = validate_runtime_configuration_canonical_v9562()
+    checks.append((
+        "v9.5.62 runtime keeps 15M cadence, 58/68/75 admission and the strict directional Final Authority",
+        runtime.get("valid") is True
+        and runtime.get("scheduler_cadence_minutes") == 15
+        and runtime.get("canonical_score_contract") == [58, 68, 75]
+        and globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9561,
+    ))
+    return checks
+
+
+def run_self_test_canonical_v9562() -> bool:
+    live_version = globals()["BOT_VERSION"]
+    live_architecture = globals()["ARCHITECTURE_VERSION"]
+    live_validator = globals()["validate_runtime_configuration"]
+    live_score = globals()["_candidate_selection_score"]
+    live_compactor = globals()["compact_signal_for_journal"]
+    try:
+        globals()["BOT_VERSION"] = V9561_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9561_ARCHITECTURE_VERSION
+        globals()["validate_runtime_configuration"] = _validator_v9561_base
+        globals()["_candidate_selection_score"] = _candidate_selection_score_v9561_base
+        globals()["compact_signal_for_journal"] = compact_signal_canonical_v9559
+        prior_ok = bool(_self_test_v9561_base())
+    finally:
+        globals()["BOT_VERSION"] = live_version
+        globals()["ARCHITECTURE_VERSION"] = live_architecture
+        globals()["validate_runtime_configuration"] = live_validator
+        globals()["_candidate_selection_score"] = live_score
+        globals()["compact_signal_for_journal"] = live_compactor
+    checks = _v9562_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.62 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} causal-arbitration checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9562
 
 
 # The modules import without a circular dependency; bind their pure helper
