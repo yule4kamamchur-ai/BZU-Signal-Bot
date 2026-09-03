@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.66 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.67 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.67 (adaptive execution utility + live hypothesis defense):
+- Один безперервний quality surface відділяє якість торгової ідеї від якості поточного fill: сильний ранній setup виконується MARKET_NOW лише коли execution utility не відстає від alpha; інакше setup не видаляється, а отримує bounded VALUE_ROUTE до кращої ціни.
+- VALUE_ROUTE не вимагає фіксованої кількості нових свічок: достатньо фактичного приходу trusted current price у розраховану value-zone; вигаданий retrospective limit-fill заборонений.
+- Native retest без causal timestamp більше не може перетворити небезпечний FIRST_RETEST у MARKET_NOW, якщо власний price-safety профіль уже позначив fill як unsafe.
+- Swept-but-not-accepted liquidity трактується як rejection, а не як нібито успішно спожита ціль, що відкриває шлях до наступного target.
+- 45-хвилинний preconfirmation horizon залишається незмінним для чесної статистики, але живий EARLY_PROBE негайно реагує на factual hypothesis invalidation або rejected-liquidity path failure на черговому 15-хвилинному запуску.
+- Нових candle-count blockers немає; scheduler, structural stops, capital caps та один self-contained bot_oneshot.py збережені.
+
 Оновлення v9.5.66 (production intelligence + atomic direction handoff):
 - Єдиний execution-intelligence view однаково читає production nested schema і compact journal schema; ASI, runway та assistant opinions більше не падають у нейтральні/аварійні default.
 - Після фактичного закриття позиції повторна арбітрація може безпечно використати той самий confirmed-3M epoch з новою trusted execution price; штучна вимога нової свічки між двома fetch видалена.
@@ -31983,7 +31991,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.66 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.67 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -43756,6 +43764,1343 @@ def run_self_test_canonical_v9566() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9566
+
+
+# =============================================================================
+# v9.5.67 ADAPTIVE EXECUTION UTILITY + LIVE HYPOTHESIS DEFENSE
+# =============================================================================
+# The prior releases correctly separated setup discovery from execution safety,
+# but still let a high setup score compensate arithmetically for a poor current
+# fill.  v9.5.67 makes the execution *route* adaptive instead of adding another
+# yes/no filter.  A strong idea can be EARLY_MARKET or EARLY_VALUE_ROUTE.  The
+# latter is retained as an opportunity and is executable at the trusted current
+# price only when it reaches the calculated value zone.  No fixed candle count
+# is introduced.
+
+V9567_SCHEMA_VERSION = "adaptive_execution_utility_live_hypothesis_defense_v9.5.67"
+V9567_BOT_VERSION = "pro-hybrid-confluence-v9.5.67-adaptive-execution-utility"
+V9567_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_67_ADAPTIVE_EXECUTION_UTILITY_15M_CADENCE"
+)
+V9567_SCHEDULER_CADENCE_MINUTES = 15
+V9567_FORWARD_PROVISIONAL_TRADES = 20
+V9567_FORWARD_REVIEW_TRADES = 50
+V9567_VALUE_ROUTE_MAX_DISTANCE_ATR = 1.25
+V9567_VALUE_ROUTE_TTL_MINUTES = 45
+V9567_MARKET_UTILITY_BASE = 0.67
+V9567_LIVE_INVALIDATION_BUFFER_ATR = 0.08
+
+_apply_execution_authority_v9567_base = apply_canonical_execution_authority_v9566
+_detect_candidates_v9567_base = detect_candidates_canonical_v9566
+_candidate_from_missed_opportunity_v9567_base = candidate_from_missed_opportunity
+_store_router_opportunity_v9567_base = store_router_opportunity_v9541
+_manage_active_trade_v9567_base = manage_active_trade
+_liquidity_runway_profile_v9567_base = liquidity_runway_profile
+_runway_target_management_v9567_base = runway_target_management_profile
+_load_state_v9567_base = load_state
+_load_journal_v9567_base = load_journal
+_save_journal_v9567_base = save_journal
+_compact_signal_v9567_base = compact_signal_canonical_v9566
+_compact_trade_v9567_base = _compact_trade_v9566_public
+_validate_runtime_v9567_base = validate_runtime_configuration_canonical_v9566
+_architecture_audit_v9567_base = run_architecture_audit_v9566
+_authority_audit_v9567_base = run_v8_2_authority_audit
+_audit_journal_v9567_base = run_audit_journal_canonical_v9566
+_run_self_test_v9567_base = _run_self_test
+
+BOT_VERSION = V9567_BOT_VERSION
+ARCHITECTURE_VERSION = V9567_ARCHITECTURE_VERSION
+
+
+def _quality_unit_v9567(value: Any, fallback: float = 55.0) -> float:
+    numeric = safe_float(value, fallback)
+    if numeric <= 1.0:
+        return clamp(numeric, 0.01, 1.0)
+    return clamp(numeric / 100.0, 0.01, 1.0)
+
+
+def _weighted_geometric_v9567(rows: list[tuple[float, float]]) -> float:
+    clean = [(clamp(safe_float(value), 0.01, 1.0), max(0.0, safe_float(weight))) for value, weight in rows]
+    total = sum(weight for _, weight in clean)
+    if total <= 0.0:
+        return 0.0
+    return clamp(math.exp(sum(weight * math.log(value) for value, weight in clean) / total), 0.0, 1.0)
+
+
+def _rejected_liquidity_rows_v9567(candidate: Candidate, plan: Optional[TradePlan]) -> list[dict[str, Any]]:
+    components = dict(candidate.score_components or {})
+    stage = dict(candidate.stage_plan or {})
+    raw_xi = dict(
+        components.get("execution_intelligence_v9532")
+        or stage.get("execution_intelligence_v9532")
+        or {}
+    )
+    sources = [
+        list((raw_xi.get("liquidity_runway") or {}).get("rolled_consumed_targets") or []),
+        list((stage.get("runway_target_management") or {}).get("rolled_consumed_targets") or []),
+    ]
+    entry = safe_float(getattr(plan, "entry", 0.0), 0.0) if plan is not None else 0.0
+    risk = abs(entry - safe_float(getattr(plan, "stop", entry), entry)) if plan is not None else 0.0
+    sign = side_sign(str(candidate.side or Side.NEUTRAL.value))
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, float]] = set()
+    for rows in sources:
+        for raw in rows:
+            if not isinstance(raw, dict) or not raw.get("swept") or raw.get("accepted"):
+                continue
+            level = safe_float(raw.get("level"), 0.0)
+            if level <= 0.0:
+                continue
+            directional = sign * (level - entry) if entry > 0.0 else 0.0
+            distance_r = directional / max(risk, 1e-9) if risk > 0.0 else 0.0
+            # Only an overhead/underfoot rejection close to the intended path
+            # is execution evidence. Old remote sweeps are not recycled.
+            if entry > 0.0 and (directional < -1e-9 or distance_r > 0.45):
+                continue
+            key = (str(raw.get("kind") or "LIQUIDITY"), round(level, 5))
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append({
+                "kind": key[0],
+                "level": round_price(level),
+                "distance_r": round(max(0.0, distance_r), 4),
+                "state": "SWEPT_NOT_ACCEPTED",
+            })
+    return sorted(found, key=lambda row: safe_float(row.get("distance_r"), 99.0))
+
+
+def liquidity_runway_profile(
+    context: dict[str, Any], candidate: Candidate, plan: Optional[TradePlan] = None,
+) -> dict[str, Any]:
+    """Preserve the difference between accepted liquidity and a rejected sweep."""
+    profile = dict(_liquidity_runway_profile_v9567_base(context, candidate, plan) or {})
+    rejected = [
+        dict(row) for row in (profile.get("rolled_consumed_targets") or [])
+        if isinstance(row, dict) and row.get("swept") and not row.get("accepted")
+    ]
+    profile.update({
+        "rejected_sweep_present": bool(rejected),
+        "rejected_sweep_targets": rejected[:4],
+        "consumed_target_policy": "ACCEPTED_ROLLS_FORWARD; SWEPT_NOT_ACCEPTED_IS_ADVERSE_EXECUTION_STATE",
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def runway_target_management_profile(
+    context: dict[str, Any], candidate: Candidate, entry: float, stop: float,
+    tp0: float, tp1: float, technical_targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    profile = dict(_runway_target_management_v9567_base(
+        context, candidate, entry, stop, tp0, tp1, technical_targets,
+    ) or {})
+    rejected = [
+        dict(row) for row in (profile.get("rolled_consumed_targets") or [])
+        if isinstance(row, dict) and row.get("swept") and not row.get("accepted")
+    ]
+    profile.update({
+        "rejected_sweep_present": bool(rejected),
+        "rejected_sweep_targets": rejected[:4],
+        "consumed_target_policy": "ONLY_ACCEPTED_LIQUIDITY_CONFIRMS_DIRECTIONAL_ROUTE",
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def _adaptive_value_anchor_v9567(
+    candidate: Candidate, plan: Optional[TradePlan], context: dict[str, Any],
+) -> float:
+    entry = safe_float(getattr(plan, "entry", 0.0), safe_float(context.get("price"), 0.0))
+    stop = safe_float(getattr(plan, "stop", entry), entry)
+    price = safe_float(context.get("price"), entry)
+    atr = max(safe_float(context.get("atr15"), 0.0), abs(price) * 0.001, 1e-6)
+    sign = side_sign(str(candidate.side or Side.NEUTRAL.value))
+    trigger = safe_float(candidate.trigger_level, 0.0)
+    analytical = safe_float(candidate.execution_anchor, 0.0)
+    favorable = [
+        level for level in (trigger, analytical)
+        if level > 0.0
+        and sign * (entry - level) >= -0.02 * atr
+        and abs(entry - level) / atr <= V9567_VALUE_ROUTE_MAX_DISTANCE_ATR
+    ]
+    if favorable:
+        # The nearest existing model level provides early price improvement
+        # without inventing a new technical level.
+        anchor = min(favorable, key=lambda level: abs(entry - level))
+    else:
+        risk = max(abs(entry - stop), atr, 1e-6)
+        anchor = entry - sign * min(0.35 * atr, 0.12 * risk)
+    invalidation = safe_float(candidate.invalidation_level, 0.0)
+    if invalidation > 0.0:
+        if sign > 0:
+            anchor = max(anchor, invalidation + 0.12 * atr)
+        elif sign < 0:
+            anchor = min(anchor, invalidation - 0.12 * atr)
+    return round_price(anchor)
+
+
+def adaptive_execution_utility_v9567(
+    decision: Decision, context: dict[str, Any],
+) -> dict[str, Any]:
+    candidate = decision.candidate
+    plan = decision.plan
+    if candidate is None:
+        return {"applicable": False, "mode": "NO_CANDIDATE", "schema_version": V9567_SCHEMA_VERSION}
+    evaluation = dict(
+        candidate.evaluation_bundle
+        or (candidate.score_components or {}).get("evaluation_bundle")
+        or {}
+    )
+    view = execution_intelligence_view_v9566(candidate)
+    xi = dict(view.get("compact") or {})
+    opinions = {str(k): str(v or "UNKNOWN").upper() for k, v in dict(view.get("assistant_opinions") or {}).items()}
+    authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+    maturity = dict(
+        authority.get("evidence_maturity_v9566")
+        or authority.get("evidence_maturity_v9565")
+        or authority.get("evidence_maturity_v9564")
+        or {}
+    )
+    groups = dict(maturity.get("groups") or {})
+    structure_group = dict(groups.get("STRUCTURE") or {})
+    location_group = dict(groups.get("LOCATION") or {})
+    context_group = dict(groups.get("CONTEXT") or {})
+
+    setup_q = _quality_unit_v9567(
+        evaluation.get("setup_quality"), safe_float(candidate.setup_quality_score, 68.0),
+    )
+    timing_q = _quality_unit_v9567(
+        evaluation.get("timing_quality"), safe_float(candidate.timing_quality_score, 65.0),
+    )
+    entry_q = _quality_unit_v9567(
+        evaluation.get("entry_quality"),
+        safe_float(candidate.entry_quality_score, safe_float(candidate.execution_quality_score, 62.0)),
+    )
+    trade_q = _quality_unit_v9567(
+        evaluation.get("trade_quality"), safe_float(candidate.trade_plan_quality_score, 62.0),
+    )
+    durability_q = _quality_unit_v9567(
+        candidate.durability_quality_score,
+        safe_float(evaluation.get("trade_quality"), safe_float(candidate.trade_plan_quality_score, 58.0)),
+    )
+    structural_q = _quality_unit_v9567(
+        xi.get("structural"),
+        100.0 * safe_float(structure_group.get("score"), 0.62),
+    )
+    score_q = _quality_unit_v9567(candidate.final_score, 65.0)
+    asi = safe_float(view.get("asi"), 100.0)
+    anti_adverse_q = clamp(1.0 - asi / 100.0, 0.01, 1.0)
+    runway_known = bool(view.get("runway_present"))
+    runway_r = safe_float(view.get("runway_r"), 0.0)
+    runway_q = clamp(runway_r / 0.65, 0.01, 1.0) if runway_known else 0.62
+    location_q = safe_float(location_group.get("score"), 0.0)
+    if location_q <= 0.0:
+        location_q = {
+            "SUPPORT": 1.0, "CAUTION": 0.64, "AGAINST": 0.28,
+            "UNKNOWN": 0.56, "NEUTRAL": 0.58,
+        }.get(opinions.get("LOCATION_ASSISTANT", "UNKNOWN"), 0.56)
+    anti_fomo = _quality_unit_v9567(
+        ((candidate.score_components or {}).get("anti_fomo") or {}).get("score"),
+        safe_float(candidate.anti_fomo_score, 85.0),
+    )
+    context_q = safe_float(context_group.get("score"), 0.0)
+    if context_q <= 0.0:
+        htf_state = str(get_htf_fact(candidate).get("state") or "UNKNOWN").upper()
+        context_q = {
+            "ALIGNED": 1.0, "NEUTRAL": 0.64, "MIXED": 0.55,
+            "AGAINST": 0.22, "UNKNOWN": 0.54,
+        }.get(htf_state, 0.54)
+
+    alpha_quality = _weighted_geometric_v9567([
+        (score_q, 0.20), (setup_q, 0.30), (structural_q, 0.25), (timing_q, 0.25),
+    ])
+    execution_quality = _weighted_geometric_v9567([
+        (entry_q, 0.30), (anti_adverse_q, 0.20), (runway_q, 0.25),
+        (clamp(location_q, 0.01, 1.0), 0.10), (anti_fomo, 0.15),
+    ])
+    path_quality = _weighted_geometric_v9567([(trade_q, 0.55), (durability_q, 0.45)])
+    market_utility = clamp(
+        0.46 * alpha_quality + 0.34 * execution_quality
+        + 0.12 * clamp(context_q, 0.01, 1.0) + 0.08 * path_quality,
+        0.0, 1.0,
+    )
+    dynamic_market_floor = clamp(
+        V9567_MARKET_UTILITY_BASE + 0.04 * clamp((alpha_quality - 0.72) / 0.28, 0.0, 1.0),
+        0.65, 0.73,
+    )
+    rejected_rows = _rejected_liquidity_rows_v9567(candidate, plan)
+    rejected_sweep = bool(rejected_rows)
+    obligation = dict(maturity.get("router_obligation") or {})
+    price_safety = dict(obligation.get("price_optimization_safety") or _price_optimization_safety_v9566(candidate))
+    native_without_causal_price_safety = bool(
+        str(obligation.get("tactic") or "") == "FIRST_RETEST"
+        and str(obligation.get("mode") or "") == "SETUP_NATIVE_RETEST"
+        and not obligation.get("causal_consumed")
+        and int(safe_float(obligation.get("evidence_ts"), 0.0)) <= 0
+        and not price_safety.get("safe")
+    )
+    stage = dict(candidate.stage_plan or {})
+    value_route_consumed = bool(
+        str(stage.get("consumed_tactic") or "") == "LIMIT_AT_ANCHOR"
+        and int(safe_float(stage.get("evidence_ts"), 0.0))
+        > int(safe_float(stage.get("decision_watermark"), 0.0))
+        > 0
+    )
+    market_ready = bool(
+        market_utility >= (dynamic_market_floor - (0.07 if value_route_consumed else 0.0))
+        and execution_quality >= (0.52 if value_route_consumed else 0.56)
+        and not rejected_sweep
+        and not native_without_causal_price_safety
+    )
+    current_executable = decision.action in EXECUTABLE_ENTRY_ACTIONS
+    mode = (
+        "VALUE_ROUTE_FILLED" if current_executable and value_route_consumed and market_ready
+        else "EARLY_MARKET" if current_executable and market_ready
+        else "EARLY_VALUE_ROUTE" if current_executable
+        else "EXISTING_AUTHORITY_WAIT"
+    )
+    value_anchor = _adaptive_value_anchor_v9567(candidate, plan, context) if mode == "EARLY_VALUE_ROUTE" else 0.0
+    return {
+        "applicable": True,
+        "mode": mode,
+        "alpha_quality": round(alpha_quality, 4),
+        "execution_quality": round(execution_quality, 4),
+        "path_quality": round(path_quality, 4),
+        "context_quality": round(context_q, 4),
+        "market_utility": round(market_utility, 4),
+        "dynamic_market_floor": round(dynamic_market_floor, 4),
+        "alpha_execution_gap": round(alpha_quality - execution_quality, 4),
+        "entry_quality": round(entry_q * 100.0, 2),
+        "asi": round(asi, 2),
+        "runway_r": round(runway_r, 4) if runway_known else None,
+        "rejected_sweep_present": rejected_sweep,
+        "rejected_sweep_targets": rejected_rows,
+        "native_retest_without_causal_safe_fill": native_without_causal_price_safety,
+        "value_route_consumed": value_route_consumed,
+        "value_anchor": value_anchor,
+        "fixed_confirmation_candle_count": 0,
+        "decision_surface": "ALPHA_X_EXECUTION_X_PATH_X_CONTEXT_GEOMETRIC_UTILITY",
+        "route_policy": "MARKET_IF_FILL_DOMINATES; OTHERWISE_KEEP_SETUP_AND_REPRICE",
+        "schema_version": V9567_SCHEMA_VERSION,
+    }
+
+
+def _apply_value_route_v9567(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+    profile: dict[str, Any],
+) -> Decision:
+    candidate = decision.candidate
+    if candidate is None:
+        return decision
+    original_action = str(decision.action)
+    original_trigger = safe_float(candidate.trigger_level, 0.0)
+    value_anchor = safe_float(profile.get("value_anchor"), original_trigger)
+    watermark = int(_preconfirm_as_of_ts(context) or int(now_utc().timestamp() * 1000))
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    debt = copy.deepcopy(
+        stage.get("evidence_debt_v9566")
+        or stage.get("evidence_debt_v9565")
+        or stage.get("evidence_debt_v9564")
+        or {}
+    )
+    debt.update({
+        "queue_for_one_material_event": False,
+        "adaptive_value_route_v9567": copy.deepcopy(profile),
+        "required_next_event": "TRUSTED_CURRENT_PRICE_REACHES_VALUE_ZONE",
+        "fixed_confirmation_candle_count": 0,
+        "value_route_ttl_minutes": V9567_VALUE_ROUTE_TTL_MINUTES,
+        "decision_watermark": watermark,
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    })
+    stage.update({
+        "adaptive_execution_v9567": copy.deepcopy(profile),
+        "original_trigger_level_v9567": round_price(original_trigger),
+        "adaptive_value_anchor_v9567": round_price(value_anchor),
+        "router_intended_tactic": "LIMIT_AT_ANCHOR",
+        "router_final_tactic": "LIMIT_AT_ANCHOR",
+        "router_final_disposition": "DEFERRED",
+        "router_deferred_from_action": original_action,
+        "router_decision_3m_ts": watermark,
+        "router_episode_origin_3m_ts": watermark,
+        "router_last_evaluated_3m_ts": watermark,
+        "decision_watermark": watermark,
+        "evidence_ts": 0,
+        "evidence_debt_v9564": copy.deepcopy(debt),
+        "evidence_debt_v9565": copy.deepcopy(debt),
+        "evidence_debt_v9566": copy.deepcopy(debt),
+        "evidence_debt_v9567": copy.deepcopy(debt),
+        "final_execution_tier_v9567": "EARLY_VALUE_ROUTE",
+        "final_blocking_reasons_v9567": [],
+    })
+    candidate.trigger_level = round_price(value_anchor)
+    candidate.execution_anchor = round_price(value_anchor)
+    candidate.execution_lane = ExecutionLane.LIMIT_ONLY.value
+    candidate.entry_stage = EntryStage.WAIT_RETEST.value
+    candidate.confirmation_pending = False
+    candidate.opportunity_status = OpportunityStatus.ARMED.value
+    candidate.score_components = candidate.score_components or {}
+    candidate.score_components["adaptive_execution_v9567"] = copy.deepcopy(profile)
+    if decision.plan is not None:
+        decision.plan.execution_ready = False
+        decision.plan.final_stage = EntryStage.WAIT_RETEST.value
+        decision.plan.reason = "ADAPTIVE_VALUE_ROUTE_TO_BETTER_CURRENT_FILL"
+    decision.action = Action.NO_SETUP.value
+    decision.audit = decision.audit or {}
+    decision.audit["opportunity_status"] = OpportunityStatus.ARMED.value
+    router = dict(decision.audit.get("canonical_router_result_v9553") or {})
+    router.update({
+        "router_recommended_tactic": str(router.get("router_final_tactic") or "MARKET_NOW"),
+        "router_final_tactic": "LIMIT_AT_ANCHOR",
+        "router_final_disposition": "DEFERRED",
+        "decision_watermark": watermark,
+        "evidence_ts": 0,
+        "deferred_from_action": original_action,
+        "adaptive_route_not_blocker": True,
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    })
+    decision.audit["canonical_router_result_v9553"] = router
+    authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "allow": False,
+        "final_action": Action.NO_SETUP.value,
+        "entry_tier": "EARLY_VALUE_ROUTE",
+        "execution_mode_v9567": "EARLY_VALUE_ROUTE",
+        "adaptive_execution_v9567": copy.deepcopy(profile),
+        "setup_retained": True,
+        "hard_blockers": list(authority.get("hard_blockers") or []),
+        "wait_reasons": list(authority.get("wait_reasons") or []),
+        "adaptive_route_is_not_new_confirmation_blocker": True,
+        "fixed_confirmation_candle_count": 0,
+        "is_last_mutator": True,
+        "execution_policy_version": V9567_SCHEMA_VERSION,
+    })
+    decision.audit["final_execution_authority_v9551"] = authority
+    report = decision.audit.setdefault("executive_director", {}).setdefault("report", {})
+    executive = report.setdefault("executive_decision", {})
+    executive.update({
+        "allow_execution": False,
+        "action": ExecutiveDecisionState.WAIT_RETEST.value,
+        "state": ExecutiveDecisionState.WAIT_RETEST.value,
+        "allowed_stage": ExecutiveDecisionState.WAIT_RETEST.value,
+        "required_next_event": "trusted current price reaches adaptive value zone",
+        "blocking_reasons": [],
+        "warning_reasons": sorted(set(list(executive.get("warning_reasons") or []) + ["ADAPTIVE_VALUE_ROUTE"])),
+    })
+    executive.setdefault("audit", {})["final_execution_authority"] = copy.deepcopy(authority)
+    report.setdefault("audit", {})["final_execution_authority"] = copy.deepcopy(authority)
+    report["action"] = Action.NO_SETUP.value
+    decision.reason = (
+        "FINAL_EXECUTION_AUTHORITY: EARLY_VALUE_ROUTE | strong setup retained; "
+        f"trusted current price must reach {round_price(value_anchor)}; fixed candle count=0"
+    )
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9567", {})
+        aggregate["value_routes_created"] = int(aggregate.get("value_routes_created") or 0) + 1
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+
+
+def apply_canonical_execution_authority_v9567(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _apply_execution_authority_v9567_base(decision, context, journal)
+    profile = adaptive_execution_utility_v9567(out, context)
+    if out.candidate is not None:
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.stage_plan["adaptive_execution_v9567"] = copy.deepcopy(profile)
+        out.candidate.stage_plan["final_execution_tier_v9567"] = str(profile.get("mode") or "WAIT")
+        out.candidate.score_components = out.candidate.score_components or {}
+        out.candidate.score_components["adaptive_execution_v9567"] = copy.deepcopy(profile)
+    out.audit = out.audit or {}
+    out.audit["adaptive_execution_v9567"] = copy.deepcopy(profile)
+    if profile.get("mode") == "EARLY_VALUE_ROUTE":
+        return _apply_value_route_v9567(out, context, journal, profile)
+    authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "execution_mode_v9567": str(profile.get("mode") or "EXISTING_AUTHORITY_WAIT"),
+        "adaptive_execution_v9567": copy.deepcopy(profile),
+        "adaptive_route_is_not_new_confirmation_blocker": True,
+        "fixed_confirmation_candle_count": 0,
+        "execution_policy_version": V9567_SCHEMA_VERSION,
+        "is_last_mutator": True,
+    })
+    out.audit["final_execution_authority_v9551"] = authority
+    trace = dict(out.audit.get("canonical_execution_engine_v9559") or {})
+    trace.update({
+        "policy_profile": "ADAPTIVE_EXECUTION_UTILITY_LIVE_HYPOTHESIS_DEFENSE_V9567",
+        "active_final_mutator": "apply_canonical_execution_authority_v9567",
+        "execution_modes": ["EARLY_MARKET", "EARLY_VALUE_ROUTE", "VALUE_ROUTE_FILLED"],
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9567_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    })
+    out.audit["canonical_execution_engine_v9559"] = trace
+    if out.candidate is not None:
+        out.candidate.stage_plan["canonical_execution_engine_v9567"] = copy.deepcopy(trace)
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9567", {})
+        aggregate["authority_evaluations"] = int(aggregate.get("authority_evaluations") or 0) + 1
+        if out.action in EXECUTABLE_ENTRY_ACTIONS:
+            aggregate["market_entries_released"] = int(aggregate.get("market_entries_released") or 0) + 1
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9567
+
+
+def _simulate_candidate_execution_v9567(
+    context: dict[str, Any], state: dict[str, Any], audit_journal: dict[str, Any],
+    candidate: Candidate,
+) -> dict[str, Any]:
+    try:
+        shadow_context = copy.deepcopy(context)
+        shadow_context["_audit_shadow_scan"] = True
+        decision = _candidate_counterfactual_decision(
+            shadow_context, state, audit_journal, candidate,
+        )
+        evaluated = decision.candidate
+        if evaluated is None:
+            raise RuntimeError("counterfactual candidate missing")
+        intelligence = build_execution_intelligence_v9532(
+            shadow_context, evaluated, audit_journal, decision.plan,
+        )
+        evaluated.score_components = evaluated.score_components or {}
+        evaluated.score_components["execution_intelligence_v9532"] = intelligence
+        evaluated.stage_plan = evaluated.stage_plan or {}
+        evaluated.stage_plan["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(intelligence)
+        tactic = str((intelligence.get("execution_router") or {}).get("action") or "MARKET_NOW")
+        decision = executive_route_resolution_v9533(decision, tactic)
+        canonical_router_result_v9553(decision)
+        decision = apply_canonical_execution_authority_v9567(
+            decision, shadow_context, audit_journal,
+        )
+        adaptive = dict((decision.audit or {}).get("adaptive_execution_v9567") or {})
+        executable = bool(
+            decision.action in EXECUTABLE_ENTRY_ACTIONS
+            and decision.plan is not None and decision.plan.valid and decision.plan.execution_ready
+        )
+        return {
+            "simulation_valid": True,
+            "currently_executable": executable,
+            "retained_value_route": adaptive.get("mode") == "EARLY_VALUE_ROUTE",
+            "final_action": str(decision.action),
+            "execution_mode": str(adaptive.get("mode") or "EXISTING_AUTHORITY_WAIT"),
+            "market_utility": safe_float(adaptive.get("market_utility"), 0.0),
+            "value_anchor": safe_float(adaptive.get("value_anchor"), 0.0),
+            "blocking_reasons": list(
+                ((decision.audit or {}).get("final_execution_authority_v9551") or {}).get("hard_blockers") or []
+            ),
+            "schema_version": V9567_SCHEMA_VERSION,
+        }
+    except Exception as exc:
+        return {
+            "simulation_valid": False,
+            "currently_executable": False,
+            "retained_value_route": False,
+            "error": f"{type(exc).__name__}: {exc}"[:240],
+            "schema_version": V9567_SCHEMA_VERSION,
+        }
+
+
+def detect_candidates_canonical_v9567(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    ranked = _detect_candidates_v9564_base(context, state, journal)
+    if not ranked:
+        return ranked
+    original = ranked[0]
+    for candidate in ranked[:V9561_SELECTION_EVAL_TOP_N]:
+        simulation = _simulate_candidate_execution_v9567(
+            context, copy.deepcopy(state), copy.deepcopy(journal), copy.deepcopy(candidate),
+        )
+        adjustment = (
+            V9564_SELECTION_PRIORITY if simulation.get("currently_executable")
+            else 0.55 * V9564_SELECTION_PRIORITY if simulation.get("retained_value_route")
+            else 0.0
+        )
+        candidate.score_components = candidate.score_components or {}
+        candidate.score_components["execution_aware_selection_v9567"] = {
+            "adjustment": round(adjustment, 4),
+            "simulation": simulation,
+            "market_entry_preferred_over_value_route_only_inside_near_equal_quality": True,
+            "raw_score_mutated": False,
+            "schema_version": V9567_SCHEMA_VERSION,
+        }
+    ranked = finalize_hypothesis_ranking(ranked)
+    context["execution_aware_selection_v9567"] = {
+        "candidate_count": len(ranked),
+        "selection_changed": bool(ranked and ranked[0] is not original),
+        "original_setup": str(original.setup_type),
+        "selected_setup": str(ranked[0].setup_type),
+        "selected_mode": str(
+            (((ranked[0].score_components or {}).get("execution_aware_selection_v9567") or {})
+             .get("simulation", {}).get("execution_mode"))
+        ),
+        "fixed_confirmation_candle_count": 0,
+        "policy_matches_final_authority": True,
+        "schema_version": V9567_SCHEMA_VERSION,
+    }
+    context["_ranked_candidate_objects"] = ranked
+    return ranked
+
+
+detect_candidates = detect_candidates_canonical_v9567
+
+
+def candidate_from_missed_opportunity(
+    opp: Opportunity, context: dict,
+) -> Optional[Candidate]:
+    candidate = _candidate_from_missed_opportunity_v9567_base(opp, context)
+    if candidate is None:
+        return None
+    debt = copy.deepcopy(getattr(opp, "evidence_debt_v9564", {}) or {})
+    adaptive = dict(debt.get("adaptive_value_route_v9567") or {})
+    if adaptive:
+        candidate.score_components = candidate.score_components or {}
+        candidate.stage_plan = candidate.stage_plan or {}
+        stage = candidate.stage_plan
+        tactic_state = dict(router_reentry_tactic_readiness_v9533(opp, context) or {})
+        origin, _ = _router_clock_values_v9566(opp)
+        evidence_ts = int(safe_float(tactic_state.get("evidence_ts"), 0.0))
+        value_fill_ready = bool(
+            tactic_state.get("ready") and evidence_ts > origin > 0
+        )
+        stage.update({
+            "router_intended_tactic": "LIMIT_AT_ANCHOR",
+            "router_tactic_state": tactic_state,
+            "router_recheck_consumed": value_fill_ready,
+            "router_confirmation_consumed": False,
+            "retest_consumed": False,
+            "consumed_tactic": "LIMIT_AT_ANCHOR" if value_fill_ready else "",
+            "router_final_tactic": "MARKET_NOW" if value_fill_ready else "LIMIT_AT_ANCHOR",
+            "router_final_disposition": "RECHECK_READY" if value_fill_ready else "DEFERRED",
+            "decision_watermark": origin,
+            "router_decision_3m_ts": origin,
+            "evidence_ts": evidence_ts if value_fill_ready else 0,
+            "route_entry_price_override": (
+                safe_float(tactic_state.get("entry_price_override"), 0.0)
+                if value_fill_ready else 0.0
+            ),
+            "required_next_event": (
+                "NONE_VALUE_ZONE_REACHED"
+                if value_fill_ready else "TRUSTED_CURRENT_PRICE_REACHES_VALUE_ZONE"
+            ),
+            "fixed_confirmation_candle_count_v9567": 0,
+        })
+        candidate.score_components["adaptive_value_route_origin_v9567"] = copy.deepcopy(adaptive)
+        stage["adaptive_value_route_origin_v9567"] = copy.deepcopy(adaptive)
+        candidate.confirmation_pending = False
+        if value_fill_ready:
+            candidate.trigger_ready = True
+            candidate.live_3m_trigger_ready = True
+            candidate.reentry_ready = True
+            candidate.execution_source = ExecutionSource.REENTRY.value
+            candidate.execution_trigger_age_minutes = 0.0
+            candidate.trigger_age_minutes = 0.0
+            candidate.entry_stage = EntryStage.ACCEPTANCE.value
+            candidate.execution_lane = ExecutionLane.MISSED_IMPULSE_REENTRY.value
+            candidate.opportunity_status = OpportunityStage.EXECUTABLE.value
+        else:
+            # This is a live-price route, not a candle-confirmation queue.
+            # Keep the idea visible and bounded without manufacturing readiness.
+            candidate.trigger_ready = False
+            candidate.live_3m_trigger_ready = False
+            candidate.reentry_ready = False
+            candidate.execution_source = ExecutionSource.NONE.value
+            candidate.entry_stage = EntryStage.WAIT_RETEST.value
+            candidate.execution_lane = ExecutionLane.LIMIT_ONLY.value
+            candidate.opportunity_status = OpportunityStatus.WAIT_PULLBACK.value
+    return candidate
+
+
+def store_router_opportunity_v9541(
+    state: dict[str, Any],
+    opp: Optional[Opportunity],
+    *,
+    decision: Optional[Decision] = None,
+    journal: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    candidate = getattr(decision, "candidate", None) if decision is not None else None
+    stage = dict(getattr(candidate, "stage_plan", {}) or {}) if candidate is not None else {}
+    debt = dict(
+        stage.get("evidence_debt_v9567")
+        or stage.get("evidence_debt_v9566")
+        or stage.get("evidence_debt_v9564")
+        or {}
+    )
+    adaptive = dict(debt.get("adaptive_value_route_v9567") or {})
+    if opp is not None and adaptive:
+        created = _parse_time_any(str(getattr(opp, "created_at", "") or "")) or now_utc()
+        opp.expires_at = (created + timedelta(minutes=V9567_VALUE_ROUTE_TTL_MINUTES)).isoformat()
+        opp.execution_tactic = "LIMIT_AT_ANCHOR"
+        opp.execution_lane = ExecutionLane.LIMIT_ONLY.value
+        opp.status = OpportunityStatus.WAIT_PULLBACK.value
+        opp.evidence_debt_v9564 = copy.deepcopy(debt)
+        if candidate is not None:
+            candidate.confirmation_pending = False
+            candidate.execution_lane = ExecutionLane.LIMIT_ONLY.value
+            candidate.opportunity_status = OpportunityStatus.WAIT_PULLBACK.value
+            candidate.stage_plan["value_route_expires_at_v9567"] = opp.expires_at
+    return _store_router_opportunity_v9567_base(
+        state, opp, decision=decision, journal=journal, context=context,
+    )
+
+
+def _entry_rejected_liquidity_v9567(trade: ActiveTrade) -> list[dict[str, Any]]:
+    stage = dict(getattr(trade, "stage_plan", {}) or {})
+    profile = dict(stage.get("runway_target_management") or {})
+    return [
+        dict(row) for row in (profile.get("rolled_consumed_targets") or [])
+        if isinstance(row, dict) and row.get("swept") and not row.get("accepted")
+    ]
+
+
+def live_probe_hypothesis_guard_v9567(
+    trade: ActiveTrade, context: dict[str, Any],
+) -> dict[str, Any]:
+    price = safe_float(context.get("price"), safe_float(trade.entry, 0.0))
+    atr = max(safe_float(context.get("atr15"), 0.0), abs(price) * 0.001, 1e-6)
+    current_r = _trade_current_r(trade, price)
+    mfe_r = _trade_mfe_r(trade)
+    profile: dict[str, Any] = {
+        "applies": False,
+        "exit": False,
+        "reason_code": "",
+        "current_r": round(current_r, 4),
+        "mfe_r": round(mfe_r, 4),
+        "statistical_horizon_mutated": False,
+        "fixed_confirmation_candle_count": 0,
+        "schema_version": V9567_SCHEMA_VERSION,
+    }
+    is_probe = bool(
+        str(getattr(trade, "entry_stage", "") or "").upper() == EntryStage.PROBE.value
+        or str(getattr(trade, "execution_tier", "") or "").upper() == "EARLY_PROBE"
+    )
+    target_hit = any(bool(getattr(trade, name, False)) for name in ("tp0_hit", "tp1_hit", "tp2_hit", "tp3_hit"))
+    if not is_probe or target_hit:
+        profile["reason_code"] = "NOT_UNPROVEN_EARLY_PROBE"
+        return profile
+    profile["applies"] = True
+    event = _linked_preconfirmation_event(trade, context)
+    invalidation = safe_float((event or {}).get("invalidation_level"), 0.0)
+    sign = side_sign(str(trade.side or Side.NEUTRAL.value))
+    try:
+        opened = _parse_time_any(str(trade.opened_at or ""))
+        opened_ts = int(opened.timestamp() * 1000) if opened else 0
+    except Exception:
+        opened_ts = 0
+    confirmed = [
+        candle for candle in ((context.get("candles") or {}).get("3m") or [])
+        if bool(getattr(candle, "confirmed", True)) and int(getattr(candle, "ts", 0) or 0) >= opened_ts
+    ]
+    last_close = safe_float(getattr(confirmed[-1], "close", price), price) if confirmed else price
+    close_crossed = bool(
+        invalidation > 0.0 and confirmed
+        and sign * (last_close - invalidation) <= -0.01 * atr
+    )
+    trusted_crossed = bool(
+        invalidation > 0.0 and context.get("execution_price_trusted", False)
+        and sign * (price - invalidation) <= -V9567_LIVE_INVALIDATION_BUFFER_ATR * atr
+    )
+    rejected = _entry_rejected_liquidity_v9567(trade)
+    path_integrity = safe_float(_active_path_integrity_v9532(trade, context), 50.0)
+    rejected_path_failure = bool(
+        rejected and current_r <= -0.12 and mfe_r < 0.20 and path_integrity < 35.0
+    )
+    factual_invalidation = bool(close_crossed or trusted_crossed)
+    should_exit = bool(factual_invalidation or rejected_path_failure)
+    profile.update({
+        "exit": should_exit,
+        "reason_code": (
+            "LIVE_PROBE_HYPOTHESIS_INVALIDATED" if factual_invalidation
+            else "REJECTED_LIQUIDITY_PATH_FAILED" if rejected_path_failure
+            else "LIVE_HYPOTHESIS_INTACT"
+        ),
+        "linked_preconfirmation_status": _preconfirm_event_status(event) if event else "UNAVAILABLE",
+        "live_invalidation_level": round_price(invalidation) if invalidation > 0.0 else 0.0,
+        "last_confirmed_3m_close": round_price(last_close),
+        "confirmed_close_crossed": close_crossed,
+        "trusted_price_crossed": trusted_crossed,
+        "rejected_liquidity": rejected[:4],
+        "rejected_path_failure": rejected_path_failure,
+        "path_integrity": round(path_integrity, 2),
+        "policy": "LIVE_RISK_RESPONSE_NOW; 45M_FORECAST_LABEL_REMAINS_FROZEN_FOR_STATISTICS",
+    })
+    return profile
+
+
+def manage_active_trade(trade: ActiveTrade, context: dict) -> dict:
+    # Bring MFE/MAE current before the live hypothesis decision. The legacy
+    # manager repeats this idempotently when the trade stays open.
+    _update_trade_extremes_from_context(trade, context)
+    guard = live_probe_hypothesis_guard_v9567(trade, context)
+    if guard.get("exit"):
+        price = round_price(safe_float(context.get("price"), trade.entry))
+        result = {
+            "action": Action.EXIT.value,
+            "title": "EARLY PROBE — ГІПОТЕЗА СКАСОВАНА",
+            "recommendation": "Закрити ранній probe: фактичний шлях сетапу втрачено",
+            "current_pct": _trade_pct(trade.side, trade.entry, price),
+            "best_pct": _trade_pct(trade.side, trade.entry, trade.best_price),
+            "worst_pct": max(0.0, _trade_pct(opposite(trade.side), trade.entry, trade.worst_price)),
+            "giveback_pct": max(0.0, _trade_pct(trade.side, trade.entry, trade.best_price) - _trade_pct(trade.side, trade.entry, price)),
+            "closed": True,
+            "exit_price": price,
+            "notes": [
+                f"v9.5.67 live hypothesis exit: {guard.get('reason_code')} | "
+                f"current={guard.get('current_r')}R, MFE={guard.get('mfe_r')}R, "
+                f"path={guard.get('path_integrity')}"
+            ],
+            "recommended_stop": None,
+            "recommended_stop_reason": "",
+            "management_state": "LIVE_HYPOTHESIS_INVALIDATED",
+            "live_hypothesis_guard_v9567": guard,
+        }
+        trade.management_state = "LIVE_HYPOTHESIS_INVALIDATED"
+        trade.status = "CLOSED"
+        trade.last_action = Action.EXIT.value
+        return _finalize_closed_trade_result(trade, result)
+    result = _manage_active_trade_v9567_base(trade, context)
+    if isinstance(result, dict):
+        result["live_hypothesis_guard_v9567"] = guard
+    return result
+
+
+def build_forward_control_snapshot_v9567(journal: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _build_forward_snapshot_for_tags_v9565(journal, ("v9.5.67",))
+    snapshot.update({
+        "policy_isolation": "V9_5_67_ADAPTIVE_EXECUTION_ONLY",
+        "execution_modes": ["EARLY_MARKET", "EARLY_VALUE_ROUTE", "VALUE_ROUTE_FILLED"],
+        "forward_provisional_minimum": V9567_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9567_FORWARD_REVIEW_TRADES,
+        "schema_version": V9567_SCHEMA_VERSION,
+    })
+    return snapshot
+
+
+def compact_signal_canonical_v9567(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_signal_v9567_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    adaptive = dict(
+        ((payload.get("audit") or {}).get("adaptive_execution_v9567") or {})
+        or ((payload.get("stage_plan") or {}).get("adaptive_execution_v9567") or {})
+    )
+    if adaptive:
+        compact.update({
+            "execution_mode_v9567": str(adaptive.get("mode") or ""),
+            "market_utility_v9567": round(safe_float(adaptive.get("market_utility"), 0.0), 4),
+            "execution_quality_v9567": round(safe_float(adaptive.get("execution_quality"), 0.0), 4),
+            "value_anchor_v9567": round_price(safe_float(adaptive.get("value_anchor"), 0.0)) if adaptive.get("value_anchor") else 0.0,
+            "rejected_sweep_present_v9567": bool(adaptive.get("rejected_sweep_present")),
+        })
+    compact.update({
+        "fixed_confirmation_candle_count_v9567": 0,
+        "canonical_compactor_schema_v9567": V9567_SCHEMA_VERSION,
+    })
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+compact_signal_for_journal = compact_signal_canonical_v9567
+
+
+def compact_trade_canonical_v9567(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_trade_v9567_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    compact["canonical_trade_compactor_schema_v9567"] = V9567_SCHEMA_VERSION
+    return compact
+
+
+compact_trade_for_journal = compact_trade_canonical_v9567
+_compact_trade_v9567_public = compact_trade_for_journal
+
+
+def load_state_canonical_v9567() -> dict[str, Any]:
+    state = _load_state_v9567_base()
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    migration = state.setdefault("state_migration", {})
+    migration.update({
+        "preserve_active_trade": True,
+        "adaptive_value_routes_preserved": True,
+        "journal_reset_required": False,
+        "final_migration_authority": "V9_5_67_ADAPTIVE_EXECUTION",
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    })
+    return state
+
+
+load_state = load_state_canonical_v9567
+
+
+def load_journal_canonical_v9567() -> dict[str, Any]:
+    journal = _load_journal_v9567_base()
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["forward_control_v9567"] = build_forward_control_snapshot_v9567(journal)
+    aggregate = journal.setdefault("execution_quality_repair_v9567", {})
+    aggregate.update({
+        "policy_version": V9567_BOT_VERSION,
+        "adaptive_execution_utility": True,
+        "live_hypothesis_defense": True,
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9567_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9567_SCHEMA_VERSION,
+    })
+    return journal
+
+
+def save_journal_canonical_v9567(journal: dict[str, Any]) -> None:
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["forward_control_v9567"] = build_forward_control_snapshot_v9567(journal)
+    aggregate = journal.setdefault("execution_quality_repair_v9567", {})
+    aggregate.update({
+        "policy_version": V9567_BOT_VERSION,
+        "forward_provisional_minimum": V9567_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9567_FORWARD_REVIEW_TRADES,
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9567_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9567_SCHEMA_VERSION,
+    })
+    return _save_journal_v9567_base(journal)
+
+
+load_journal = load_journal_canonical_v9567
+save_journal = save_journal_canonical_v9567
+
+
+def _run_v9566_boundary_for_v9567(function: Any) -> Any:
+    saved = {
+        name: globals().get(name)
+        for name in (
+            "BOT_VERSION", "ARCHITECTURE_VERSION", "_apply_true_final_authority_v9551",
+            "detect_candidates", "candidate_from_missed_opportunity",
+            "store_router_opportunity_v9541", "manage_active_trade",
+            "liquidity_runway_profile", "runway_target_management_profile",
+            "compact_signal_for_journal", "compact_trade_for_journal", "load_state",
+            "load_journal", "save_journal", "validate_runtime_configuration",
+            "run_architecture_audit", "run_v8_2_authority_audit", "run_audit_journal",
+        )
+    }
+    try:
+        globals().update({
+            "BOT_VERSION": V9566_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9566_ARCHITECTURE_VERSION,
+            "_apply_true_final_authority_v9551": apply_canonical_execution_authority_v9566,
+            "detect_candidates": detect_candidates_canonical_v9566,
+            "candidate_from_missed_opportunity": _candidate_from_missed_opportunity_v9567_base,
+            "store_router_opportunity_v9541": _store_router_opportunity_v9567_base,
+            "manage_active_trade": _manage_active_trade_v9567_base,
+            "liquidity_runway_profile": _liquidity_runway_profile_v9567_base,
+            "runway_target_management_profile": _runway_target_management_v9567_base,
+            "compact_signal_for_journal": compact_signal_canonical_v9566,
+            "compact_trade_for_journal": _compact_trade_v9566_public,
+            "load_state": _load_state_v9567_base,
+            "load_journal": _load_journal_v9567_base,
+            "save_journal": _save_journal_v9567_base,
+            "validate_runtime_configuration": _validate_runtime_v9567_base,
+            "run_architecture_audit": _architecture_audit_v9567_base,
+            "run_v8_2_authority_audit": _authority_audit_v9567_base,
+            "run_audit_journal": _audit_journal_v9567_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def validate_runtime_configuration_canonical_v9567() -> dict[str, Any]:
+    report = _run_v9566_boundary_for_v9567(_validate_runtime_v9567_base)
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9567_BOT_VERSION or ARCHITECTURE_VERSION != V9567_ARCHITECTURE_VERSION:
+        errors.append("v9.5.67 release seal mismatch")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9567:
+        errors.append("v9.5.67 adaptive Final Authority is not active")
+    if globals().get("detect_candidates") is not detect_candidates_canonical_v9567:
+        errors.append("v9.5.67 ranking does not use adaptive execution utility")
+    if globals().get("store_router_opportunity_v9541") is not store_router_opportunity_v9541:
+        errors.append("v9.5.67 value-route persistence is not active")
+    if globals().get("manage_active_trade") is not manage_active_trade:
+        errors.append("v9.5.67 live hypothesis defense is not active")
+    if V9567_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.67 changed the 15-minute scheduler")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "adaptive_execution_modes": ["EARLY_MARKET", "EARLY_VALUE_ROUTE", "VALUE_ROUTE_FILLED"],
+        "new_confirmation_blockers": 0,
+        "fixed_confirmation_candle_count": 0,
+        "scheduler_cadence_minutes": V9567_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9567": V9567_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9567
+
+
+def run_architecture_audit_v9567() -> dict[str, Any]:
+    report = _run_v9566_boundary_for_v9567(_architecture_audit_v9567_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9567_single_adaptive_final_mutator": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9567,
+        "v9567_ranking_matches_final_authority": globals().get("detect_candidates") is detect_candidates_canonical_v9567,
+        "v9567_value_route_persistence": globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541,
+        "v9567_live_hypothesis_defense": globals().get("manage_active_trade") is manage_active_trade,
+        "v9567_value_route_uses_existing_limit_contract": callable(globals().get("router_reentry_tactic_readiness_v9533")),
+        "v9567_no_fixed_candle_count": True,
+        "v9567_unchanged_15m_scheduler": V9567_SCHEDULER_CADENCE_MINUTES == 15,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9567_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9567
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9567
+    executive_ready = callable(globals().get("executive_decision_engine"))
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "executive_object": executive_ready,
+        "canonical_execution_object": callable(globals().get("adaptive_execution_utility_v9567")),
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if authority is not None and canonical and executive_ready else "FAILED",
+    }
+
+
+def run_audit_journal_canonical_v9567(path: str) -> dict[str, Any]:
+    output = _audit_journal_v9567_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    output["v9567_adaptive_execution_utility"] = {
+        "effective_bot_version": BOT_VERSION,
+        "adaptive_execution_modes": ["EARLY_MARKET", "EARLY_VALUE_ROUTE", "VALUE_ROUTE_FILLED"],
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "live_hypothesis_statistical_horizon_separated": True,
+        "forward_control_v9567": build_forward_control_snapshot_v9567(payload),
+        "scheduler_cadence_minutes": V9567_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9567_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9567
+
+
+def _v9567_bad_long_fixture() -> tuple[Decision, dict[str, Any]]:
+    decision = _v9564_fixture(
+        score=88, setup_quality=79.89, structural=65.13,
+        asi=40.53, runway=0.217, htf_state="MIXED", regime_bias="BEARISH",
+    )
+    candidate = decision.candidate
+    plan = decision.plan
+    assert candidate is not None and plan is not None
+    candidate.setup_type = SetupType.FRESH_BASE_CONTINUATION.value
+    candidate.ict_model = "OB_RECLAIM"
+    candidate.trigger_level = 96.57
+    candidate.execution_anchor = 97.065
+    candidate.entry_quality_score = 58
+    candidate.trade_plan_quality_score = 66
+    candidate.durability_quality_score = 56
+    candidate.evaluation_bundle.update({
+        "setup_quality": 79.89,
+        "timing_quality": 85.0,
+        "entry_quality": 57.59,
+        "trade_quality": 66.09,
+    })
+    candidate.anti_fomo_score = 97.73
+    candidate.score_components["anti_fomo"] = {"score": 97.73}
+    candidate.score_components["execution_anchor_authority"] = {
+        "current_fill_allowed": True,
+        "invalidated": False,
+        "late_entry_prevented": False,
+        "rr_degraded": False,
+        "quality": 45.0,
+    }
+    candidate.score_components["execution_intelligence_v9532"].update({
+        "assistant_opinions": {
+            "LOCATION_ASSISTANT": "CAUTION",
+            "STRUCTURE_ASSISTANT": "SUPPORT",
+            "REGIME_ASSISTANT": "CAUTION",
+            "LIQUIDITY_ASSISTANT": "AGAINST",
+            "STATISTICAL_ASSISTANT": "SUPPORT",
+        },
+        "regime_uncertainty": 0.905,
+    })
+    candidate.stage_plan.update({
+        "router_final_tactic": "FIRST_RETEST",
+        "router_final_disposition": "DEFERRED",
+        "native_retest_observed": True,
+        "runway_target_management": {
+            "runway_r": 0.217,
+            "rolled_consumed_targets": [
+                {"kind": "BSL_LIQUIDITY", "level": 96.88, "accepted": False, "swept": True},
+            ],
+        },
+    })
+    decision.audit["canonical_router_result_v9553"].update({
+        "router_final_tactic": "FIRST_RETEST",
+        "router_final_disposition": "DEFERRED",
+        "native_retest_observed": True,
+        "evidence_ts": 0,
+        "decision_watermark": 0,
+    })
+    plan.entry = 96.77
+    plan.stop = 93.4117
+    plan.structural_invalidation = 93.61
+    plan.tp0 = 97.50
+    plan.tp1 = 103.487
+    plan.execution_ready = True
+    context = {
+        "_audit_shadow_scan": True,
+        "price": 96.77,
+        "atr15": 0.440714,
+        "execution_price_trusted": True,
+        "candles": {"3m": [Candle(1_788_448_320_000, 96.45, 96.93, 96.40, 96.82, confirmed=True)]},
+    }
+    return decision, context
+
+
+def _v9567_safety_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    bad, bad_context = _v9567_bad_long_fixture()
+    bad = apply_canonical_execution_authority_v9567(bad, bad_context, {})
+    bad_profile = dict((bad.audit or {}).get("adaptive_execution_v9567") or {})
+    checks.append((
+        "v9.5.67 replays the 96.77 LONG as a retained value route, not an unsafe market entry",
+        bad.action == Action.NO_SETUP.value
+        and bad_profile.get("mode") == "EARLY_VALUE_ROUTE"
+        and bad_profile.get("rejected_sweep_present") is True
+        and bad.candidate is not None
+        and bad.candidate.execution_lane == ExecutionLane.LIMIT_ONLY.value
+        and bad.candidate.stage_plan.get("router_final_tactic") == "LIMIT_AT_ANCHOR"
+        and bad.candidate.stage_plan.get("fixed_confirmation_candle_count_v9567", 0) == 0,
+    ))
+
+    assert bad.candidate is not None
+    route_origin = int(now_utc().timestamp() * 1000)
+    for debt_key in (
+        "evidence_debt_v9564", "evidence_debt_v9565",
+        "evidence_debt_v9566", "evidence_debt_v9567",
+    ):
+        debt = copy.deepcopy(bad.candidate.stage_plan.get(debt_key) or {})
+        debt.update({
+            "decision_watermark": route_origin,
+            "episode_origin_3m_ts": route_origin,
+        })
+        bad.candidate.stage_plan[debt_key] = debt
+    bad.candidate.stage_plan.update({
+        "router_decision_3m_ts": route_origin,
+        "router_episode_origin_3m_ts": route_origin,
+        "decision_watermark": route_origin,
+    })
+    route_created = now_utc()
+    route_opp = Opportunity(
+        side=bad.side,
+        setup_type=bad.setup_type,
+        setup_family=bad.candidate.setup_family,
+        created_at=route_created.isoformat(),
+        expires_at=(route_created + timedelta(hours=18)).isoformat(),
+        score=bad.quality,
+        trigger_level=bad.candidate.trigger_level,
+        invalidation_level=bad.candidate.invalidation_level,
+        confirmations=list(bad.candidate.confirmations),
+        evidence_families=list(bad.candidate.evidence_families),
+        execution_lane=ExecutionLane.LIMIT_ONLY.value,
+        status=OpportunityStatus.WAIT_PULLBACK.value,
+        ict_model=bad.candidate.ict_model,
+        execution_tactic="LIMIT_AT_ANCHOR",
+        router_decision_3m_ts=route_origin,
+        router_episode_origin_3m_ts=route_origin,
+        thesis_key=bad.candidate.thesis_key,
+        thesis=bad.candidate.thesis,
+        evidence_debt_v9564=copy.deepcopy(
+            bad.candidate.stage_plan.get("evidence_debt_v9567") or {}
+        ),
+    )
+    route_state: dict[str, Any] = {
+        "router_opportunity_queue_v9541": [], "opportunity": None,
+    }
+    store_router_opportunity_v9541(
+        route_state, route_opp, decision=bad, journal={}, context=bad_context,
+    )
+    saved_route = opportunity_from_state(route_state)
+    saved_created = _parse_time_any(saved_route.created_at) if saved_route else None
+    saved_expires = _parse_time_any(saved_route.expires_at) if saved_route else None
+    route_ttl = (
+        (saved_expires - saved_created).total_seconds() / 60.0
+        if saved_created and saved_expires else 0.0
+    )
+    checks.append((
+        "v9.5.67 value route survives the 15-minute scheduler but expires instead of freezing",
+        saved_route is not None
+        and saved_route.execution_tactic == "LIMIT_AT_ANCHOR"
+        and saved_route.execution_lane == ExecutionLane.LIMIT_ONLY.value
+        and saved_route.status == OpportunityStatus.WAIT_PULLBACK.value
+        and abs(route_ttl - V9567_VALUE_ROUTE_TTL_MINUTES) < 0.1,
+    ))
+
+    fill_ts = route_origin + 180_000
+    fill_price = safe_float(saved_route.trigger_level, 0.0) if saved_route else 0.0
+    fill_context = {
+        "price": fill_price,
+        "atr15": 0.44,
+        "execution_price_trusted": True,
+        "scan_3m_events": {
+            Side.LONG.value: {
+                "stage": "READY", "last_event_ts": fill_ts,
+            },
+        },
+        "zones": [],
+        "candles": {
+            "3m": [Candle(
+                fill_ts, fill_price + 0.01, fill_price + 0.02,
+                fill_price - 0.01, fill_price, confirmed=True,
+            )],
+        },
+    }
+    filled_candidate = (
+        candidate_from_missed_opportunity(saved_route, fill_context)
+        if saved_route is not None else None
+    )
+    filled_stage = dict(getattr(filled_candidate, "stage_plan", {}) or {})
+    checks.append((
+        "v9.5.67 current trusted price consumes the value route without a confirmation queue",
+        filled_candidate is not None
+        and filled_candidate.confirmation_pending is False
+        and filled_stage.get("consumed_tactic") == "LIMIT_AT_ANCHOR"
+        and filled_stage.get("router_final_tactic") == "MARKET_NOW"
+        and filled_stage.get("router_final_disposition") == "RECHECK_READY"
+        and int(safe_float(filled_stage.get("evidence_ts"), 0.0)) > route_origin,
+    ))
+
+    good_long = _v9564_fixture(
+        score=80, setup_quality=82.0, structural=76.0,
+        asi=20.0, runway=0.95, htf_state="ALIGNED", regime_bias="BULLISH",
+    )
+    assert good_long.candidate is not None
+    good_long.candidate.entry_quality_score = 82
+    good_long.candidate.trade_plan_quality_score = 82
+    good_long.candidate.durability_quality_score = 80
+    good_long.candidate.evaluation_bundle.update({"entry_quality": 82.0, "trade_quality": 82.0})
+    good_long = apply_canonical_execution_authority_v9567(
+        good_long, {"_audit_shadow_scan": True}, {},
+    )
+    checks.append((
+        "v9.5.67 a clean early LONG remains immediately executable without extra candles",
+        good_long.action in EXECUTABLE_ENTRY_ACTIONS
+        and ((good_long.audit or {}).get("adaptive_execution_v9567") or {}).get("mode") == "EARLY_MARKET",
+    ))
+
+    good_short = _v9564_fixture(
+        score=80, setup_quality=82.0, structural=76.0,
+        asi=20.0, runway=0.95, htf_state="ALIGNED", regime_bias="BEARISH",
+    )
+    assert good_short.candidate is not None and good_short.plan is not None
+    good_short.candidate.side = Side.SHORT.value
+    good_short.side = Side.SHORT.value
+    good_short.candidate.invalidation_level = 101.0
+    good_short.plan.stop = 101.0
+    good_short.plan.structural_invalidation = 101.0
+    good_short.candidate.entry_quality_score = 82
+    good_short.candidate.trade_plan_quality_score = 82
+    good_short.candidate.durability_quality_score = 80
+    good_short.candidate.evaluation_bundle.update({"entry_quality": 82.0, "trade_quality": 82.0})
+    _v9561_attach_htf(good_short.candidate, state_name="ALIGNED", market_bias="BEARISH")
+    good_short = apply_canonical_execution_authority_v9567(
+        good_short, {"_audit_shadow_scan": True}, {},
+    )
+    checks.append((
+        "v9.5.67 a clean early SHORT uses the same immediate execution surface as LONG",
+        good_short.action in EXECUTABLE_ENTRY_ACTIONS
+        and ((good_short.audit or {}).get("adaptive_execution_v9567") or {}).get("mode") == "EARLY_MARKET",
+    ))
+
+    opened = now_utc() - timedelta(minutes=15)
+    trade = ActiveTrade(
+        id="v9567-live-guard", signal_id="v9567-event", side=Side.LONG.value,
+        setup_type=SetupType.FRESH_BASE_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, opened_at=opened.isoformat(),
+        entry=100.0, stop_initial=98.0, stop_current=98.0,
+        structural_invalidation=98.2, tp1=103.0, tp2=105.0, tp3=107.0,
+        quality=82, position_risk_pct=0.15, best_price=100.1, worst_price=99.4,
+        entry_stage=EntryStage.PROBE.value, execution_tier="EARLY_PROBE",
+        preconfirmation_event_id="v9567-event",
+    )
+    event = {
+        "id": "v9567-event", "status": "PENDING", "side": Side.LONG.value,
+        "invalidation_level": 99.70,
+    }
+    broken_context = {
+        "price": 99.40, "atr15": 1.0, "execution_price_trusted": True,
+        "preconfirmation_events": [event],
+        "candles": {"3m": [Candle(int((opened + timedelta(minutes=12)).timestamp() * 1000), 99.8, 99.85, 99.3, 99.45, confirmed=True)]},
+    }
+    guard = live_probe_hypothesis_guard_v9567(trade, broken_context)
+    checks.append((
+        "v9.5.67 live probe exits on factual hypothesis failure without waiting for the 45-minute label",
+        guard.get("exit") is True
+        and guard.get("reason_code") == "LIVE_PROBE_HYPOTHESIS_INVALIDATED"
+        and event.get("status") == "PENDING"
+        and guard.get("statistical_horizon_mutated") is False,
+    ))
+
+    noise_context = {
+        "price": 99.66, "atr15": 1.0, "execution_price_trusted": True,
+        "preconfirmation_events": [copy.deepcopy(event)],
+        "candles": {"3m": [Candle(int((opened + timedelta(minutes=12)).timestamp() * 1000), 99.8, 99.9, 99.62, 99.76, confirmed=True)]},
+    }
+    noise_guard = live_probe_hypothesis_guard_v9567(copy.deepcopy(trade), noise_context)
+    checks.append((
+        "v9.5.67 a small live-price wick does not kill an intact early hypothesis",
+        noise_guard.get("exit") is False
+        and noise_guard.get("confirmed_close_crossed") is False
+        and noise_guard.get("trusted_price_crossed") is False,
+    ))
+
+    runtime = validate_runtime_configuration_canonical_v9567()
+    checks.append((
+        "v9.5.67 keeps 24 setups, zero added candle blockers and the 15-minute scheduler",
+        runtime.get("valid") is True
+        and runtime.get("scheduler_cadence_minutes") == 15
+        and runtime.get("fixed_confirmation_candle_count") == 0
+        and runtime.get("new_confirmation_blockers") == 0
+        and len(_tracked_setup_types()) == 24,
+    ))
+    return checks
+
+
+def run_self_test_canonical_v9567() -> bool:
+    prior_ok = bool(_run_v9566_boundary_for_v9567(_run_self_test_v9567_base))
+    checks = _v9567_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.67 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} adaptive-execution checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9567
 
 
 # The modules import without a circular dependency; bind their pure helper
