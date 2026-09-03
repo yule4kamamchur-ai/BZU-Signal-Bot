@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.65 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.66 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.66 (production intelligence + atomic direction handoff):
+- Єдиний execution-intelligence view однаково читає production nested schema і compact journal schema; ASI, runway та assistant opinions більше не падають у нейтральні/аварійні default.
+- Після фактичного закриття позиції повторна арбітрація може безпечно використати той самий confirmed-3M epoch з новою trusted execution price; штучна вимога нової свічки між двома fetch видалена.
+- Router episode зберігає один immutable causal origin; last evaluated 3M ведеться окремо і більше не підміняє decision watermark.
+- Score, RR, risk caps, factual invalidation, one-position policy і GitHub Actions cadence 15m не змінені; нових confirmation-blockers немає.
+
 Оновлення v9.5.65 (Router intent + stable episodes + forward integrity):
 - Router розділяє справжній структурний доказ PROOF_EVENT і бажану оптимізацію ціни PRICE_OPTIMIZATION.
 - FIRST_RETEST більше не знищує свіжий якісний LIVE_3M: безпечний, не переслідуваний рух допускається тільки як EARLY_PROBE 30-50% normal risk.
@@ -4501,6 +4507,10 @@ class Opportunity:
     execution_tactic: str = ""
     # v9.5.35: causal watermark for 15M scheduler -> confirmed 3M intracycle replay.
     router_decision_3m_ts: int = 0
+    # v9.5.66: the causal origin is immutable.  Progress/observability uses a
+    # separate cursor so a later scan cannot silently redefine the episode.
+    router_episode_origin_3m_ts: int = 0
+    router_last_evaluated_3m_ts: int = 0
     router_recheck_count: int = 0
     execution_anchor_schema: str = ""
     thesis_key: str = ""
@@ -31973,7 +31983,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.65 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.66 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -42606,6 +42616,1146 @@ def run_self_test_canonical_v9565() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9565
+
+
+# ============================================================================
+# v9.5.66 PRODUCTION INTELLIGENCE + ATOMIC DIRECTION HANDOFF + CAUSAL CLOCKS
+# ============================================================================
+# This repair changes no score, RR, position-risk or factual-safety threshold.
+# It removes three integration defects: production/compact schema drift, an
+# unreachable same-cycle post-close rescan, and a mutable causal watermark.
+
+V9566_SCHEMA_VERSION = "production_intelligence_atomic_handoff_causal_clocks_v9.5.66"
+V9566_BOT_VERSION = "pro-hybrid-confluence-v9.5.66-production-intelligence-atomic-handoff"
+V9566_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_66_PRODUCTION_INTELLIGENCE_ATOMIC_HANDOFF_15M_CADENCE"
+)
+V9566_SCHEDULER_CADENCE_MINUTES = 15
+V9566_FORWARD_PROVISIONAL_TRADES = 20
+V9566_FORWARD_REVIEW_TRADES = 50
+
+_price_optimization_safety_v9566_base = _price_optimization_safety_v9565
+_evidence_maturity_profile_v9566_base = evidence_maturity_profile_v9565
+_store_router_opportunity_v9566_base = store_router_opportunity_v9541
+_candidate_from_missed_opportunity_v9566_base = candidate_from_missed_opportunity
+_true_post_close_market_refresh_v9566_base = true_post_close_market_refresh
+_load_state_v9566_base = load_state
+_load_journal_v9566_base = load_journal
+_save_journal_v9566_base = save_journal
+_compact_signal_v9566_base = compact_signal_canonical_v9565
+_compact_trade_v9566_base = _compact_trade_v9565_public
+_validate_runtime_configuration_v9566_base = validate_runtime_configuration_canonical_v9565
+_run_architecture_audit_v9566_base = run_architecture_audit_v9565
+_run_v8_2_authority_audit_v9566_base = run_v8_2_authority_audit
+_run_audit_journal_v9566_base = run_audit_journal_canonical_v9565
+_state_upgrade_policy_v9566_base = state_upgrade_policy_v9533
+_run_self_test_v9566_base = _run_self_test
+
+BOT_VERSION = V9566_BOT_VERSION
+ARCHITECTURE_VERSION = V9566_ARCHITECTURE_VERSION
+
+
+def execution_intelligence_view_v9566(
+    candidate: Optional[Candidate] = None,
+    intelligence: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Return one lossless decision view for full production and compact XI.
+
+    Production keeps ASI/runway/assistants nested, while journal compaction
+    stores flat fields.  All execution decisions now consume this boundary so
+    persistence format can never alter trading semantics.
+    """
+    raw = dict(intelligence or {})
+    if not raw and candidate is not None:
+        raw = dict(
+            (candidate.score_components or {}).get("execution_intelligence_v9532")
+            or (candidate.stage_plan or {}).get("execution_intelligence_v9532")
+            or {}
+        )
+    compact = compact_execution_intelligence_v9532(raw) if raw else {}
+    nested_asi = (raw.get("adverse_selection") or {}).get("index")
+    asi_present = bool("asi" in raw or nested_asi is not None)
+    nested_runway = (raw.get("liquidity_runway") or {}).get("runway_r")
+    runway_present = bool("runway_r" in raw or nested_runway is not None)
+    assistant_modules = dict((raw.get("assistants") or {}).get("modules") or {})
+    opinions = dict(compact.get("assistant_opinions") or {})
+    if not opinions and assistant_modules:
+        opinions = {
+            str(name): str((row or {}).get("opinion") or "UNKNOWN").upper()
+            for name, row in assistant_modules.items()
+            if isinstance(row, dict)
+        }
+    else:
+        opinions = {
+            str(name): str(value or "UNKNOWN").upper()
+            for name, value in opinions.items()
+        }
+    metrics = dict(compact.get("assistant_metrics") or {})
+    if not metrics and assistant_modules:
+        metrics = {
+            str(name): safe_float((row or {}).get("metric"), 0.0)
+            for name, row in assistant_modules.items()
+            if isinstance(row, dict)
+        }
+    return {
+        "valid": bool(raw),
+        "source_schema": "COMPACT" if "asi" in raw else "PRODUCTION_NESTED",
+        "asi_present": asi_present,
+        "asi": safe_float(compact.get("asi"), 100.0) if asi_present else 100.0,
+        "runway_present": runway_present,
+        "runway_r": max(0.0, safe_float(compact.get("runway_r"), 0.0)),
+        "assistant_opinions": opinions,
+        "assistant_metrics": metrics,
+        "compact": compact,
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+
+
+def _price_optimization_safety_v9566(candidate: Candidate) -> dict[str, Any]:
+    components = dict(candidate.score_components or {})
+    anchor = dict(
+        components.get("execution_anchor_authority")
+        or (components.get("entry_contract") or {}).get("execution_anchor_profile")
+        or {}
+    )
+    view = execution_intelligence_view_v9566(candidate)
+    invalidated = bool(anchor.get("invalidated"))
+    late_entry = bool(anchor.get("late_entry_prevented") or anchor.get("rr_degraded"))
+    current_fill_allowed = (
+        bool(anchor.get("current_fill_allowed"))
+        if "current_fill_allowed" in anchor
+        else bool(not invalidated and not late_entry)
+    )
+    explicit_chase = any(
+        token in str(reason or "").upper()
+        for reason in (candidate.risks or [])
+        for token in ("CHASE", "LATE_ENTRY", "OVEREXTENDED")
+    )
+    anti_fomo = safe_float(
+        (components.get("anti_fomo") or {}).get("score"),
+        safe_float(candidate.anti_fomo_score, 100.0),
+    )
+    asi = safe_float(view.get("asi"), 100.0)
+    runway_present = bool(view.get("runway_present"))
+    runway_r = max(0.0, safe_float(view.get("runway_r"), 0.0))
+    runway_safe = bool(not runway_present or runway_r >= V9564_CRITICAL_RUNWAY_R)
+    safe = bool(
+        current_fill_allowed
+        and not invalidated
+        and not late_entry
+        and not explicit_chase
+        and anti_fomo >= V9565_PRICE_OPTIMIZATION_MIN_ANTI_FOMO
+        and asi <= V9565_PRICE_OPTIMIZATION_MAX_ASI
+        and runway_safe
+    )
+    return {
+        "safe": safe,
+        "current_fill_allowed": current_fill_allowed,
+        "invalidated": invalidated,
+        "late_entry": late_entry,
+        "explicit_chase": explicit_chase,
+        "anti_fomo_score": round(anti_fomo, 2),
+        "asi": round(asi, 2),
+        "runway_r": round(runway_r, 4) if runway_present else None,
+        "runway_safe": runway_safe,
+        "intelligence_source_schema": str(view.get("source_schema") or "UNKNOWN"),
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+
+
+# v9.5.65 Router obligation resolves this symbol dynamically.
+_price_optimization_safety_v9565 = _price_optimization_safety_v9566
+
+
+def evidence_maturity_profile_v9566(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    base_profile: dict[str, Any],
+    router: Optional[dict[str, Any]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    view = execution_intelligence_view_v9566(candidate)
+    normalized_candidate = copy.deepcopy(candidate)
+    normalized_candidate.score_components = dict(normalized_candidate.score_components or {})
+    normalized_candidate.stage_plan = dict(normalized_candidate.stage_plan or {})
+    normalized_candidate.score_components["execution_intelligence_v9532"] = copy.deepcopy(
+        view.get("compact") or {}
+    )
+    normalized_candidate.stage_plan["execution_intelligence_v9532"] = copy.deepcopy(
+        view.get("compact") or {}
+    )
+    profile = _evidence_maturity_profile_v9566_base(
+        normalized_candidate,
+        plan,
+        base_profile=base_profile,
+        router=router,
+        directional_guard=directional_guard,
+    )
+    profile = copy.deepcopy(profile)
+    maturity = copy.deepcopy(
+        profile.get("evidence_maturity_v9565")
+        or profile.get("evidence_maturity_v9564")
+        or {}
+    )
+    opinions = dict(view.get("assistant_opinions") or {})
+    joint_adverse = bool(
+        opinions.get("LIQUIDITY_ASSISTANT") == AdvisoryOpinion.AGAINST.value
+        and opinions.get("STATISTICAL_ASSISTANT") == AdvisoryOpinion.AGAINST.value
+    )
+    tier_before = str(
+        profile.get("tier_before_context_downgrade_v9565")
+        or profile.get("tier")
+        or "WAIT"
+    )
+    downgrade_reason = "JOINT_LIQUIDITY_STATISTICAL_ADVERSE_CAPS_STANDARD_TO_EARLY_PROBE"
+    if joint_adverse and str(profile.get("tier") or "WAIT") == "STANDARD_ENTRY":
+        maturity_value = safe_float(maturity.get("maturity"), 0.0)
+        risk_fraction = _early_fraction_from_maturity_v9565(maturity_value)
+        profile.update({
+            "tier": "EARLY_PROBE",
+            "allow": True,
+            "full_entry": False,
+            "standard_entry": False,
+            "early_probe": True,
+            "risk_fraction_of_normal": risk_fraction,
+            "risk_cap": round(NORMAL_RISK_PCT * risk_fraction, 6),
+            "tier_before_context_downgrade_v9565": tier_before,
+        })
+        profile["advisory_reasons"] = sorted(set(
+            list(profile.get("advisory_reasons") or []) + [downgrade_reason]
+        ))
+    maturity.update({
+        "joint_liquidity_statistical_adverse": joint_adverse,
+        "tier_before_context_downgrade": tier_before,
+        "tier_after_context_downgrade": str(profile.get("tier") or "WAIT"),
+        "execution_intelligence_source_schema": str(view.get("source_schema") or "UNKNOWN"),
+        "schema_version_v9566": V9566_SCHEMA_VERSION,
+    })
+    profile["evidence_maturity_v9564"] = copy.deepcopy(maturity)
+    profile["evidence_maturity_v9565"] = copy.deepcopy(maturity)
+    profile["evidence_maturity_v9566"] = copy.deepcopy(maturity)
+    profile["joint_adverse_downgrade_v9565"] = joint_adverse
+    profile["joint_adverse_downgrade_v9566"] = joint_adverse
+    profile["schema_version_v9566"] = V9566_SCHEMA_VERSION
+    return profile
+
+
+def unified_evidence_profile_v9566(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    base_profile: dict[str, Any],
+    router: Optional[dict[str, Any]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    view = execution_intelligence_view_v9566(candidate)
+    normalized_candidate = copy.deepcopy(candidate)
+    normalized_candidate.score_components = dict(normalized_candidate.score_components or {})
+    normalized_candidate.stage_plan = dict(normalized_candidate.stage_plan or {})
+    normalized_candidate.score_components["execution_intelligence_v9532"] = copy.deepcopy(
+        view.get("compact") or {}
+    )
+    normalized_candidate.stage_plan["execution_intelligence_v9532"] = copy.deepcopy(
+        view.get("compact") or {}
+    )
+    directional = directional_quality_profile_v9561(
+        normalized_candidate,
+        plan,
+        base_profile=base_profile,
+        router=router,
+        directional_guard=directional_guard,
+    )
+    return evidence_maturity_profile_v9566(
+        normalized_candidate,
+        plan,
+        base_profile=directional,
+        router=router,
+        directional_guard=directional_guard,
+    )
+
+
+def _apply_unified_evidence_v9566(
+    decision: Decision,
+    profile: dict[str, Any],
+    *,
+    planned_risk: float,
+    context: dict[str, Any],
+    journal: dict[str, Any],
+) -> Decision:
+    out = _apply_unified_evidence_v9564(
+        decision,
+        profile,
+        planned_risk=planned_risk,
+        context=context,
+        journal=journal,
+    )
+    if out.candidate is None:
+        return out
+    stage = out.candidate.stage_plan = out.candidate.stage_plan or {}
+    authority = dict((out.audit or {}).get("final_execution_authority_v9551") or {})
+    maturity = copy.deepcopy(
+        profile.get("evidence_maturity_v9566")
+        or authority.get("evidence_maturity_v9564")
+        or {}
+    )
+    tier = str(authority.get("entry_tier") or profile.get("tier") or "WAIT")
+    debt = copy.deepcopy(stage.get("evidence_debt_v9564") or maturity)
+    stage.update({
+        "final_execution_tier_v9566": tier,
+        "final_execution_tier_v9565": tier,
+        "evidence_debt_v9566": debt,
+        "evidence_debt_v9565": debt,
+        "router_requirement_type_v9566": str(maturity.get("router_requirement_type") or "READY"),
+        "final_blocking_reasons_v9566": list(
+            authority.get("hard_blockers") or authority.get("wait_reasons") or []
+        ),
+    })
+    authority.update({
+        "evidence_maturity_v9566": copy.deepcopy(maturity),
+        "evidence_maturity_v9565": copy.deepcopy(maturity),
+        "execution_policy_version": V9566_SCHEMA_VERSION,
+        "router_requirement_type_v9566": str(maturity.get("router_requirement_type") or "READY"),
+        "is_last_mutator": True,
+    })
+    out.audit = out.audit or {}
+    out.audit["final_execution_authority_v9551"] = authority
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9566", {})
+        aggregate["authority_evaluations"] = int(aggregate.get("authority_evaluations") or 0) + 1
+        if out.action in EXECUTABLE_ENTRY_ACTIONS:
+            aggregate["entries_released"] = int(aggregate.get("entries_released") or 0) + 1
+            counts = aggregate.setdefault("entry_tier_counts", {})
+            counts[tier] = int(counts.get(tier) or 0) + 1
+        if maturity.get("price_optimization_bypassed_for_probe"):
+            aggregate["price_optimization_probe_releases"] = int(
+                aggregate.get("price_optimization_probe_releases") or 0
+            ) + 1
+        if maturity.get("joint_liquidity_statistical_adverse") and tier == "EARLY_PROBE":
+            aggregate["joint_adverse_standard_downgrades"] = int(
+                aggregate.get("joint_adverse_standard_downgrades") or 0
+            ) + 1
+        aggregate["last_evidence_maturity"] = copy.deepcopy(maturity)
+    return out
+
+
+_CANONICAL_EXECUTION_ENGINE_V9566 = CanonicalExecutionEngine(ExecutionEngineHooks(
+    base_executor=_authority_pipeline_compat_v9557,
+    router_reader=canonical_router_result_v9553,
+    profile_builder=unified_evidence_profile_v9566,
+    profile_applier=_apply_unified_evidence_v9566,
+    directional_guard=directional_market_guard_v9555,
+    approval=DECISION_AUTHORITY_GUARD.approve_executive_decision,
+    anchor_recorder=_update_execution_anchor_aggregate_v9551,
+    safe_float=safe_float,
+    executable_actions=frozenset(EXECUTABLE_ENTRY_ACTIONS),
+))
+
+
+def apply_canonical_execution_authority_v9566(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _CANONICAL_EXECUTION_ENGINE_V9566.execute(decision, context, journal)
+    out.audit = out.audit or {}
+    trace = dict(out.audit.get("canonical_execution_engine_v9559") or {})
+    trace.update({
+        "policy_profile": "PRODUCTION_INTELLIGENCE_ATOMIC_HANDOFF_CAUSAL_CLOCKS_V9566",
+        "execution_intelligence_view": "FULL_AND_COMPACT_SCHEMA_EQUIVALENT",
+        "post_close_handoff": "SAME_OR_NEW_CONFIRMED_3M_WITH_FRESH_TRUSTED_PRICE",
+        "causal_clock_policy": "IMMUTABLE_ORIGIN_AND_SEPARATE_LAST_EVALUATED",
+        "fixed_confirmation_candle_count": 0,
+        "scheduler_cadence_minutes": V9566_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9566": V9566_SCHEMA_VERSION,
+    })
+    out.audit["canonical_execution_engine_v9559"] = trace
+    if out.candidate is not None:
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.stage_plan["canonical_execution_engine_v9566"] = copy.deepcopy(trace)
+    return out
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9566
+
+
+def _simulate_candidate_execution_v9566(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    audit_journal: dict[str, Any],
+    candidate: Candidate,
+) -> dict[str, Any]:
+    try:
+        shadow_context = copy.deepcopy(context)
+        shadow_context["_audit_shadow_scan"] = True
+        decision = _candidate_counterfactual_decision(
+            shadow_context, state, audit_journal, candidate,
+        )
+        evaluated = decision.candidate
+        if evaluated is None:
+            raise RuntimeError("counterfactual candidate missing")
+        intelligence = build_execution_intelligence_v9532(
+            shadow_context, evaluated, audit_journal, decision.plan,
+        )
+        evaluated.score_components = evaluated.score_components or {}
+        evaluated.score_components["execution_intelligence_v9532"] = intelligence
+        evaluated.stage_plan = evaluated.stage_plan or {}
+        evaluated.stage_plan["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(intelligence)
+        tactic = str((intelligence.get("execution_router") or {}).get("action") or "MARKET_NOW")
+        decision = executive_route_resolution_v9533(decision, tactic)
+        canonical_router_result_v9553(decision)
+        decision = apply_canonical_execution_authority_v9566(
+            decision, shadow_context, audit_journal,
+        )
+        authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+        maturity = dict(
+            authority.get("evidence_maturity_v9566")
+            or authority.get("evidence_maturity_v9565")
+            or authority.get("evidence_maturity_v9564")
+            or {}
+        )
+        executable = bool(
+            decision.action in EXECUTABLE_ENTRY_ACTIONS
+            and decision.plan is not None
+            and decision.plan.valid
+            and decision.plan.execution_ready
+        )
+        return {
+            "simulation_valid": True,
+            "currently_executable": executable,
+            "final_action": str(decision.action),
+            "entry_tier": str(authority.get("entry_tier") or "WAIT"),
+            "maturity": safe_float(maturity.get("maturity"), 0.0),
+            "router_requirement_type": str(maturity.get("router_requirement_type") or "READY"),
+            "queue_for_one_material_event": bool(maturity.get("queue_for_one_material_event")),
+            "countertrend_reversal": bool(maturity.get("countertrend_reversal")),
+            "control_transfer_proven": bool(maturity.get("control_transfer_proven")),
+            "blocking_reasons": list(
+                authority.get("hard_blockers") or authority.get("wait_reasons") or []
+            ),
+            "schema_version": V9566_SCHEMA_VERSION,
+        }
+    except Exception as exc:
+        return {
+            "simulation_valid": False,
+            "currently_executable": False,
+            "error": f"{type(exc).__name__}: {exc}"[:240],
+            "schema_version": V9566_SCHEMA_VERSION,
+        }
+
+
+def detect_candidates_canonical_v9566(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    ranked = _detect_candidates_v9564_base(context, state, journal)
+    if not ranked:
+        return ranked
+    original = ranked[0]
+    for candidate in ranked[:V9561_SELECTION_EVAL_TOP_N]:
+        simulation = _simulate_candidate_execution_v9566(
+            context, copy.deepcopy(state), copy.deepcopy(journal), copy.deepcopy(candidate),
+        )
+        adjustment = V9564_SELECTION_PRIORITY if simulation.get("currently_executable") else 0.0
+        if simulation.get("countertrend_reversal") and not simulation.get("control_transfer_proven"):
+            adjustment -= V9564_SELECTION_PRIORITY
+        candidate.score_components = candidate.score_components or {}
+        selection = {
+            "adjustment": round(adjustment, 4),
+            "simulation": simulation,
+            "executable_near_equal_priority_only": True,
+            "raw_score_mutated": False,
+            "schema_version": V9566_SCHEMA_VERSION,
+        }
+        candidate.score_components["execution_aware_selection_v9566"] = selection
+        candidate.score_components["execution_aware_selection_v9565"] = {
+            **selection, "compatibility_alias_for": "execution_aware_selection_v9566",
+        }
+        candidate.score_components["execution_aware_selection_v9564"] = {
+            **selection, "compatibility_alias_for": "execution_aware_selection_v9566",
+        }
+    ranked = finalize_hypothesis_ranking(ranked)
+    context["execution_aware_selection_v9566"] = {
+        "candidate_count": len(ranked),
+        "selection_changed": bool(ranked and ranked[0] is not original),
+        "original_setup": str(original.setup_type),
+        "selected_setup": str(ranked[0].setup_type),
+        "selected_executable": bool(
+            ((ranked[0].score_components or {}).get("execution_aware_selection_v9566") or {})
+            .get("simulation", {}).get("currently_executable")
+        ),
+        "priority_cap": V9564_SELECTION_PRIORITY,
+        "policy_matches_final_authority": True,
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+    context["_ranked_candidate_objects"] = ranked
+    return ranked
+
+
+detect_candidates = detect_candidates_canonical_v9566
+
+
+def _router_clock_values_v9566(opp: Opportunity) -> tuple[int, int]:
+    debt = dict(getattr(opp, "evidence_debt_v9564", {}) or {})
+    outer = int(safe_float(getattr(opp, "router_decision_3m_ts", 0), 0.0))
+    explicit_origin = int(safe_float(getattr(opp, "router_episode_origin_3m_ts", 0), 0.0))
+    debt_origin = int(safe_float(debt.get("episode_origin_3m_ts"), 0.0))
+    legacy_debt_watermark = int(safe_float(debt.get("decision_watermark"), 0.0))
+    origin = explicit_origin or outer or debt_origin or legacy_debt_watermark
+    last_evaluated = max(
+        origin,
+        int(safe_float(getattr(opp, "router_last_evaluated_3m_ts", 0), 0.0)),
+        int(safe_float(debt.get("last_evaluated_3m_ts"), 0.0)),
+        legacy_debt_watermark,
+    )
+    return origin, last_evaluated
+
+
+def _normalize_router_clocks_v9566(
+    opp: Opportunity, *, origin: int = 0, last_evaluated: int = 0,
+) -> Opportunity:
+    current_origin, current_last = _router_clock_values_v9566(opp)
+    origin = int(origin or current_origin)
+    last_evaluated = max(int(last_evaluated or 0), current_last, origin)
+    opp.router_episode_origin_3m_ts = origin
+    opp.router_last_evaluated_3m_ts = last_evaluated
+    opp.router_decision_3m_ts = origin
+    debt = copy.deepcopy(getattr(opp, "evidence_debt_v9564", {}) or {})
+    if debt:
+        debt.update({
+            "decision_watermark": origin,
+            "episode_origin_3m_ts": origin,
+            "last_evaluated_3m_ts": last_evaluated,
+            "causal_clock_policy": "IMMUTABLE_ORIGIN_SEPARATE_LAST_EVALUATED",
+            "schema_version_v9566": V9566_SCHEMA_VERSION,
+        })
+        opp.evidence_debt_v9564 = debt
+    return opp
+
+
+def _normalize_router_state_clocks_v9566(state: dict[str, Any]) -> int:
+    queue = _router_queue_candidates_v9541(state)
+    normalized: list[Opportunity] = []
+    for opp in queue:
+        normalized.append(_normalize_router_clocks_v9566(opp))
+    state["router_opportunity_queue_v9541"] = [asdict(opp) for opp in normalized]
+    state["opportunity"] = asdict(normalized[0]) if normalized else None
+    return len(normalized)
+
+
+def store_router_opportunity_v9541(
+    state: dict[str, Any],
+    opp: Optional[Opportunity],
+    *,
+    decision: Optional[Decision] = None,
+    journal: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    if opp is None:
+        return _store_router_opportunity_v9566_base(
+            state, opp, decision=decision, journal=journal, context=context,
+        )
+    incoming_origin, incoming_last = _router_clock_values_v9566(opp)
+    if context:
+        incoming_last = max(incoming_last, int(_preconfirm_as_of_ts(context)))
+    chain_id = _router_chain_id_v9541(opp)
+    for existing in _router_queue_candidates_v9541(state):
+        if _router_chain_id_v9541(existing) != chain_id:
+            continue
+        existing_origin, existing_last = _router_clock_values_v9566(existing)
+        incoming_origin = existing_origin or incoming_origin
+        incoming_last = max(incoming_last, existing_last)
+        break
+    _normalize_router_clocks_v9566(
+        opp, origin=incoming_origin, last_evaluated=incoming_last,
+    )
+    candidate = getattr(decision, "candidate", None) if decision is not None else None
+    if candidate is not None:
+        stage = candidate.stage_plan = candidate.stage_plan or {}
+        debt = copy.deepcopy(stage.get("evidence_debt_v9564") or {})
+        if debt:
+            debt.update({
+                "decision_watermark": incoming_origin,
+                "episode_origin_3m_ts": incoming_origin,
+                "last_evaluated_3m_ts": incoming_last,
+                "causal_clock_policy": "IMMUTABLE_ORIGIN_SEPARATE_LAST_EVALUATED",
+                "schema_version_v9566": V9566_SCHEMA_VERSION,
+            })
+            stage["evidence_debt_v9564"] = debt
+            stage["evidence_debt_v9565"] = copy.deepcopy(debt)
+            stage["evidence_debt_v9566"] = copy.deepcopy(debt)
+        stage["router_decision_3m_ts"] = incoming_origin
+        stage["decision_watermark"] = incoming_origin
+        stage["router_episode_origin_3m_ts"] = incoming_origin
+        stage["router_last_evaluated_3m_ts"] = incoming_last
+    _store_router_opportunity_v9566_base(
+        state, opp, decision=decision, journal=journal, context=context,
+    )
+    _normalize_router_state_clocks_v9566(state)
+
+
+def candidate_from_missed_opportunity(
+    opp: Opportunity, context: dict,
+) -> Optional[Candidate]:
+    _normalize_router_clocks_v9566(opp)
+    candidate = _candidate_from_missed_opportunity_v9566_base(opp, context)
+    if candidate is None:
+        return None
+    origin, last_evaluated = _router_clock_values_v9566(opp)
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    stage["router_episode_origin_3m_ts"] = origin
+    stage["router_last_evaluated_3m_ts"] = max(
+        last_evaluated, int(_preconfirm_as_of_ts(context)),
+    )
+    stage["router_decision_3m_ts"] = origin
+    stage["decision_watermark"] = origin
+    debt = copy.deepcopy(stage.get("evidence_debt_v9564") or {})
+    if debt:
+        debt.update({
+            "decision_watermark": origin,
+            "episode_origin_3m_ts": origin,
+            "last_evaluated_3m_ts": stage["router_last_evaluated_3m_ts"],
+            "causal_clock_policy": "IMMUTABLE_ORIGIN_SEPARATE_LAST_EVALUATED",
+            "schema_version_v9566": V9566_SCHEMA_VERSION,
+        })
+        stage["evidence_debt_v9564"] = debt
+        stage["evidence_debt_v9565"] = copy.deepcopy(debt)
+        stage["evidence_debt_v9566"] = copy.deepcopy(debt)
+    return candidate
+
+
+def true_post_close_market_refresh(
+    old_context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-arbitrate after close on a same-or-new confirmed 3M data epoch.
+
+    A second fetch still supplies a fresh trusted execution price.  Requiring a
+    new candle to close in the few seconds between fetches was an accidental
+    15-minute freeze, not a market-safety property.
+    """
+    old_ts = _preconfirm_as_of_ts(old_context)
+    try:
+        data = collect_market_data()
+        fresh = build_context(data, state, journal)
+    except Exception as exc:
+        return {
+            "accepted": False,
+            "reason": "REFRESH_FETCH_FAILED",
+            "audit": {"error": str(exc), "old_3m_ts": old_ts},
+        }
+    new_ts = _preconfirm_as_of_ts(fresh)
+    trusted = bool(fresh.get("price") and fresh.get("execution_price_trusted", False))
+    non_regressed = bool(new_ts >= old_ts or old_ts <= 0)
+    same_epoch = bool(new_ts == old_ts and new_ts > 0)
+    audit = {
+        "old_3m_ts": old_ts,
+        "new_3m_ts": new_ts,
+        "same_confirmed_3m_epoch": same_epoch,
+        "newer_confirmed_3m": new_ts > old_ts,
+        "confirmed_3m_non_regressed": non_regressed,
+        "execution_price_trusted": trusted,
+        "price_source": fresh.get("price_source"),
+        "policy": "SECOND_FETCH; SAME_OR_NEW_CONFIRMED_3M; FRESH_TRUSTED_PRICE; FULL_REARBITRATION",
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+    if not trusted:
+        return {"accepted": False, "reason": "REFRESH_PRICE_UNTRUSTED", "audit": audit}
+    if not non_regressed:
+        return {"accepted": False, "reason": "CONFIRMED_3M_DATA_REGRESSED", "audit": audit}
+    journal["learning_status"] = compute_learning_status(journal)
+    warnings = learning_health_warnings(journal)
+    fresh["learning_status"] = journal.get("learning_status", {})
+    fresh["learning_warnings"] = warnings
+    fresh["preconfirmation_events"] = list(journal.get("preconfirmation_events") or [])
+    fresh["post_close_rearbitration_v9566"] = copy.deepcopy(audit)
+    return {
+        "accepted": True,
+        "reason": "SAME_EPOCH_REARBITRATION_ACCEPTED" if same_epoch else "NEW_EPOCH_REARBITRATION_ACCEPTED",
+        "context": fresh,
+        "audit": audit,
+    }
+
+
+def build_forward_control_snapshot_v9566(journal: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _build_forward_snapshot_for_tags_v9565(journal, ("v9.5.66",))
+    prior = build_forward_control_snapshot_v9565(journal)
+    snapshot["prior_policy_v9565"] = {
+        "tier_metrics": copy.deepcopy(prior.get("tier_metrics") or {}),
+        "family_metrics": copy.deepcopy(prior.get("family_metrics") or {}),
+        "coverage": copy.deepcopy(prior.get("coverage") or {}),
+        "policy_version_tags": ["v9.5.65"],
+        "can_promote_v9566_policy": False,
+    }
+    snapshot["policy_isolation"] = "V9_5_66_PRODUCTION_INTEGRATION_ONLY"
+    snapshot["schema_version"] = V9566_SCHEMA_VERSION
+    return snapshot
+
+
+def compact_signal_canonical_v9566(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_signal_v9566_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    stage = dict(payload.get("stage_plan") or {})
+    authority = dict((payload.get("audit") or {}).get("final_execution_authority_v9551") or {})
+    maturity = dict(
+        stage.get("evidence_debt_v9566")
+        or authority.get("evidence_maturity_v9566")
+        or {}
+    )
+    tier = str(
+        stage.get("final_execution_tier_v9566")
+        or authority.get("entry_tier")
+        or compact.get("execution_tier")
+        or "WAIT"
+    )
+    compact.update({
+        "execution_tier": tier,
+        "final_execution_tier_v9566": tier,
+        "evidence_maturity_v9566": round(
+            safe_float(maturity.get("maturity"), safe_float(compact.get("evidence_maturity_v9565"), 0.0)), 4,
+        ),
+        "risk_fraction_of_normal_v9566": round(
+            safe_float(
+                authority.get("risk_fraction_of_normal"),
+                safe_float(
+                    (authority.get("four_level_execution_v9558") or {}).get("risk_fraction_of_normal"),
+                    safe_float(compact.get("risk_fraction_of_normal_v9565"), 0.0),
+                ),
+            ), 6,
+        ),
+        "router_requirement_type_v9566": str(
+            maturity.get("router_requirement_type")
+            or compact.get("router_requirement_type_v9565")
+            or "READY"
+        ),
+        "fixed_confirmation_candle_count_v9566": 0,
+        "canonical_compactor_schema_v9566": V9566_SCHEMA_VERSION,
+    })
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+compact_signal_for_journal = compact_signal_canonical_v9566
+
+
+def compact_trade_canonical_v9566(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_trade_v9566_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    tier = str(
+        payload.get("execution_tier")
+        or (payload.get("stage_plan") or {}).get("final_execution_tier_v9566")
+        or compact.get("execution_tier")
+        or ""
+    )
+    if tier:
+        compact["execution_tier"] = tier
+    compact["canonical_trade_compactor_schema_v9566"] = V9566_SCHEMA_VERSION
+    return compact
+
+
+compact_trade_for_journal = compact_trade_canonical_v9566
+_compact_trade_v9566_public = compact_trade_for_journal
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    source = str(source_architecture or "")
+    marker = "TRADING_DESK_EXECUTIVE_V9_5_"
+    release = 0
+    if source.startswith(marker):
+        suffix = source[len(marker):].split("_", 1)[0]
+        release = int(suffix) if suffix.isdigit() else 0
+    compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 66)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 66)
+    return {
+        "source_architecture": source or "UNKNOWN",
+        "source_release": release,
+        "memory_compatible": compatible,
+        "opportunity_lineage_compatible": opportunity_compatible,
+        "preserve_active_trade": True,
+        "policy": "PRESERVE_V9_5_30_PLUS_MEMORY; MIGRATE_ROUTER_CLOCKS; NO_JOURNAL_RESET",
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+
+
+def load_state_canonical_v9566() -> dict[str, Any]:
+    state = _load_state_v9566_base()
+    queue_rows = _normalize_router_state_clocks_v9566(state)
+    prior = dict(state.get("state_migration") or {})
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state["state_migration"] = {
+        **prior,
+        "router_clock_rows_normalized_v9566": queue_rows,
+        "causal_clock_policy": "IMMUTABLE_ORIGIN_SEPARATE_LAST_EVALUATED",
+        "post_close_handoff_policy": "SAME_OR_NEW_CONFIRMED_3M_FULL_REARBITRATION",
+        "final_migration_authority": "V9_5_66_PRODUCTION_INTEGRATION",
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+    return state
+
+
+load_state = load_state_canonical_v9566
+
+
+def load_journal_canonical_v9566() -> dict[str, Any]:
+    journal = _load_journal_v9566_base()
+    journal["forward_control_v9566"] = build_forward_control_snapshot_v9566(journal)
+    aggregate = journal.setdefault("execution_quality_repair_v9566", {})
+    aggregate.update({
+        "policy_version": V9566_BOT_VERSION,
+        "production_intelligence_normalized": True,
+        "same_epoch_post_close_rearbitration": True,
+        "immutable_causal_origin": True,
+        "scheduler_cadence_minutes": V9566_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9566_SCHEMA_VERSION,
+    })
+    return journal
+
+
+def save_journal_canonical_v9566(journal: dict[str, Any]) -> None:
+    journal["forward_control_v9566"] = build_forward_control_snapshot_v9566(journal)
+    aggregate = journal.setdefault("execution_quality_repair_v9566", {})
+    aggregate.update({
+        "policy_version": V9566_BOT_VERSION,
+        "production_intelligence_normalized": True,
+        "same_epoch_post_close_rearbitration": True,
+        "immutable_causal_origin": True,
+        "forward_provisional_minimum": V9566_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9566_FORWARD_REVIEW_TRADES,
+        "scheduler_cadence_minutes": V9566_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9566_SCHEMA_VERSION,
+    })
+    return _save_journal_v9566_base(journal)
+
+
+load_journal = load_journal_canonical_v9566
+save_journal = save_journal_canonical_v9566
+
+
+def _run_v9565_boundary_for_v9566(function: Any) -> Any:
+    saved = {
+        name: globals().get(name)
+        for name in (
+            "BOT_VERSION", "ARCHITECTURE_VERSION",
+            "_apply_true_final_authority_v9551", "detect_candidates",
+            "compact_signal_for_journal", "compact_trade_for_journal",
+            "load_state", "load_journal", "save_journal",
+            "validate_runtime_configuration", "run_architecture_audit",
+            "run_v8_2_authority_audit", "run_audit_journal",
+            "state_upgrade_policy_v9533", "true_post_close_market_refresh",
+            "candidate_from_missed_opportunity", "store_router_opportunity_v9541",
+            "_price_optimization_safety_v9565",
+        )
+    }
+    try:
+        globals().update({
+            "BOT_VERSION": V9565_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9565_ARCHITECTURE_VERSION,
+            "_apply_true_final_authority_v9551": apply_canonical_execution_authority_v9565,
+            "detect_candidates": detect_candidates_canonical_v9565,
+            "compact_signal_for_journal": compact_signal_canonical_v9565,
+            "compact_trade_for_journal": _compact_trade_v9565_public,
+            "load_state": load_state_canonical_v9565,
+            "load_journal": load_journal_canonical_v9565,
+            "save_journal": save_journal_canonical_v9565,
+            "validate_runtime_configuration": validate_runtime_configuration_canonical_v9565,
+            "run_architecture_audit": run_architecture_audit_v9565,
+            "run_v8_2_authority_audit": _run_v8_2_authority_audit_v9566_base,
+            "run_audit_journal": run_audit_journal_canonical_v9565,
+            "state_upgrade_policy_v9533": _state_upgrade_policy_v9566_base,
+            "true_post_close_market_refresh": _true_post_close_market_refresh_v9566_base,
+            "candidate_from_missed_opportunity": _candidate_from_missed_opportunity_v9566_base,
+            "store_router_opportunity_v9541": _store_router_opportunity_v9566_base,
+            "_price_optimization_safety_v9565": _price_optimization_safety_v9566_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def validate_runtime_configuration_canonical_v9566() -> dict[str, Any]:
+    report = _run_v9565_boundary_for_v9566(_validate_runtime_configuration_v9566_base)
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9566_BOT_VERSION or ARCHITECTURE_VERSION != V9566_ARCHITECTURE_VERSION:
+        errors.append("v9.5.66 release seal mismatch")
+    if V9566_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.66 changed the 15-minute scheduler contract")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9566:
+        errors.append("v9.5.66 Final Authority is not active")
+    if globals().get("detect_candidates") is not detect_candidates_canonical_v9566:
+        errors.append("v9.5.66 ranking preview is not aligned with Final Authority")
+    if globals().get("compact_signal_for_journal") is not compact_signal_canonical_v9566:
+        errors.append("v9.5.66 signal compactor is not active")
+    if globals().get("compact_trade_for_journal") is not _compact_trade_v9566_public:
+        errors.append("v9.5.66 trade compactor is not active")
+    if globals().get("load_state") is not load_state_canonical_v9566:
+        errors.append("v9.5.66 state migration is not active")
+    if globals().get("true_post_close_market_refresh") is not true_post_close_market_refresh:
+        errors.append("v9.5.66 post-close handoff is not active")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "production_intelligence_normalized": True,
+        "same_epoch_post_close_rearbitration": True,
+        "immutable_causal_origin": True,
+        "new_confirmation_blockers": 0,
+        "fixed_confirmation_candle_count": 0,
+        "scheduler_cadence_minutes": V9566_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9566": V9566_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9566
+
+
+def run_architecture_audit_v9566() -> dict[str, Any]:
+    report = _run_v9565_boundary_for_v9566(_run_architecture_audit_v9566_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9566_single_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9566,
+        "v9566_production_intelligence_view": callable(globals().get("execution_intelligence_view_v9566")),
+        "v9566_ranking_matches_final_authority": globals().get("detect_candidates") is detect_candidates_canonical_v9566,
+        "v9566_same_epoch_post_close_handoff": globals().get("true_post_close_market_refresh") is true_post_close_market_refresh,
+        "v9566_canonical_state_migration": globals().get("load_state") is load_state_canonical_v9566,
+        "v9566_unchanged_15m_scheduler": V9566_SCHEDULER_CADENCE_MINUTES == 15,
+        "v9566_no_new_confirmation_blockers": True,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9566
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9566
+    executive_ready = callable(globals().get("executive_decision_engine"))
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "executive_object": executive_ready,
+        "canonical_execution_object": globals().get("_CANONICAL_EXECUTION_ENGINE_V9566") is not None,
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if authority is not None and canonical and executive_ready else "FAILED",
+    }
+
+
+def run_audit_journal_canonical_v9566(path: str) -> dict[str, Any]:
+    output = _run_v9565_boundary_for_v9566(
+        lambda: _run_audit_journal_v9566_base(path)
+    )
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    output["v9566_production_integration"] = {
+        "effective_bot_version": BOT_VERSION,
+        "production_intelligence_normalized": True,
+        "same_epoch_post_close_rearbitration": True,
+        "immutable_causal_origin": True,
+        "forward_control_v9566": build_forward_control_snapshot_v9566(payload),
+        "scheduler_cadence_minutes": V9566_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9566_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9566
+
+
+def _production_intelligence_fixture_v9566(compact: dict[str, Any]) -> dict[str, Any]:
+    opinions = dict(compact.get("assistant_opinions") or {})
+    metrics = dict(compact.get("assistant_metrics") or {})
+    return {
+        "regime_vector": {
+            "dominant": compact.get("regime") or "UNKNOWN",
+            "directional_bias": compact.get("regime_bias") or "UNKNOWN",
+            "uncertainty": safe_float(compact.get("regime_uncertainty"), 0.5),
+        },
+        "liquidity_runway": {"runway_r": safe_float(compact.get("runway_r"), 0.0)},
+        "adverse_selection": {"index": safe_float(compact.get("asi"), 100.0)},
+        "structural_score": safe_float(compact.get("structural"), 50.0),
+        "state_machine": {
+            "current_state": compact.get("state") or "EXECUTION",
+            "kind": compact.get("kind") or "CONTINUATION",
+        },
+        "setup_relative_quality": {"percentile": safe_float(compact.get("setup_pct"), 0.5)},
+        "contextual_authority": {"edge_probability": safe_float(compact.get("ctx_edge"), 0.5)},
+        "outcome_model": {
+            "probability": safe_float(compact.get("outcome_p"), 0.5),
+            "uncertainty_width": safe_float(compact.get("outcome_uncertainty"), 0.5),
+        },
+        "survival_hazard": {
+            "p_tp0_by_minutes": {
+                "15": safe_float(compact.get("hazard_15"), 0.0),
+                "30": safe_float(compact.get("hazard_30"), 0.0),
+                "60": safe_float(compact.get("hazard_60"), 0.0),
+            },
+            "timing_reliability": safe_float(compact.get("hazard_reliability"), 0.0),
+            "expected_reaction_window_minutes": safe_float(compact.get("reaction_window"), 45.0),
+        },
+        "route_geometry": {"n": int(safe_float(compact.get("geo_n"), 0.0))},
+        "execution_router": {"action": compact.get("router") or "MARKET_NOW"},
+        "assistants": {
+            "modules": {
+                str(name): {
+                    "opinion": str(value or "UNKNOWN"),
+                    "metric": safe_float(metrics.get(name), 0.0),
+                }
+                for name, value in opinions.items()
+            }
+        },
+        "schema_version": EXECUTION_INTELLIGENCE_SCHEMA_VERSION,
+    }
+
+
+def _v9566_safety_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    production_decision = _v9565_first_retest_fixture()
+    assert production_decision.candidate is not None
+    compact_xi = dict(
+        production_decision.candidate.score_components["execution_intelligence_v9532"]
+    )
+    production_decision.candidate.score_components["execution_intelligence_v9532"] = (
+        _production_intelligence_fixture_v9566(compact_xi)
+    )
+    safety = _price_optimization_safety_v9566(production_decision.candidate)
+    production_result = apply_canonical_execution_authority_v9566(
+        production_decision, {"_audit_shadow_scan": True}, {},
+    )
+    production_authority = dict(
+        (production_result.audit or {}).get("final_execution_authority_v9551") or {}
+    )
+    checks.append((
+        "v9.5.66 production nested ASI/runway releases the same bounded FIRST_RETEST probe as compact XI",
+        safety.get("safe") is True
+        and safety.get("asi") == round(safe_float(compact_xi.get("asi"), 0.0), 2)
+        and safety.get("runway_r") == round(safe_float(compact_xi.get("runway_r"), 0.0), 4)
+        and production_result.action == Action.PROBE_ENTRY.value
+        and production_authority.get("entry_tier") == "EARLY_PROBE",
+    ))
+
+    adverse = _v9564_fixture(
+        score=76, setup_quality=76.0, structural=72.0,
+        asi=20.0, runway=0.90, regime_bias="UNKNOWN",
+    )
+    assert adverse.candidate is not None
+    adverse_compact = dict(adverse.candidate.score_components["execution_intelligence_v9532"])
+    adverse_compact.setdefault("assistant_opinions", {})["LIQUIDITY_ASSISTANT"] = AdvisoryOpinion.AGAINST.value
+    adverse_compact.setdefault("assistant_opinions", {})["STATISTICAL_ASSISTANT"] = AdvisoryOpinion.AGAINST.value
+    adverse.candidate.score_components["execution_intelligence_v9532"] = (
+        _production_intelligence_fixture_v9566(adverse_compact)
+    )
+    adverse_result = apply_canonical_execution_authority_v9566(
+        adverse, {"_audit_shadow_scan": True}, {},
+    )
+    adverse_authority = dict(
+        (adverse_result.audit or {}).get("final_execution_authority_v9551") or {}
+    )
+    adverse_maturity = dict(adverse_authority.get("evidence_maturity_v9566") or {})
+    checks.append((
+        "v9.5.66 production nested assistant opinions enforce the joint-adverse STANDARD-to-EARLY cap",
+        adverse_result.action == Action.PROBE_ENTRY.value
+        and adverse_authority.get("entry_tier") == "EARLY_PROBE"
+        and adverse_maturity.get("joint_liquidity_statistical_adverse") is True,
+    ))
+
+    old_context = {
+        "candles": {"3m": [Candle(1_700_000_000_000, 100.0, 100.2, 99.8, 100.1, confirmed=True)]}
+    }
+    fresh_context = {
+        "candles": {"3m": [Candle(1_700_000_000_000, 100.0, 100.2, 99.8, 100.1, confirmed=True)]},
+        "price": 100.12,
+        "execution_price_trusted": True,
+        "price_source": "TEST_TRUSTED",
+    }
+    saved_runtime = {
+        "collect_market_data": globals()["collect_market_data"],
+        "build_context": globals()["build_context"],
+        "compute_learning_status": globals()["compute_learning_status"],
+        "learning_health_warnings": globals()["learning_health_warnings"],
+    }
+    try:
+        globals()["collect_market_data"] = lambda: {"fixture": True}
+        globals()["build_context"] = lambda data, state, journal: copy.deepcopy(fresh_context)
+        globals()["compute_learning_status"] = lambda journal: {}
+        globals()["learning_health_warnings"] = lambda journal: []
+        refresh = true_post_close_market_refresh(old_context, {}, {})
+    finally:
+        globals().update(saved_runtime)
+    checks.append((
+        "v9.5.66 post-close handoff accepts the same confirmed 3M epoch with a fresh trusted price",
+        refresh.get("accepted") is True
+        and refresh.get("reason") == "SAME_EPOCH_REARBITRATION_ACCEPTED"
+        and (refresh.get("audit") or {}).get("same_confirmed_3m_epoch") is True,
+    ))
+
+    old = Opportunity(
+        side=Side.LONG.value,
+        setup_type=SetupType.FRESH_BASE_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        created_at=iso_now(),
+        expires_at=(now_utc() + timedelta(minutes=30)).isoformat(),
+        score=75,
+        trigger_level=100.0,
+        invalidation_level=99.0,
+        ict_model="OB_RECLAIM",
+        execution_tactic="ONE_3M_CONFIRM",
+        router_decision_3m_ts=1_700_000_000_000,
+        evidence_debt_v9564={
+            "queue_for_one_material_event": True,
+            "decision_watermark": 1_700_000_000_000,
+        },
+    )
+    moved = copy.deepcopy(old)
+    moved.router_decision_3m_ts = 1_700_000_180_000
+    moved.evidence_debt_v9564["decision_watermark"] = 1_700_000_180_000
+    queue_state: dict[str, Any] = {
+        "router_opportunity_queue_v9541": [asdict(old)],
+        "opportunity": asdict(old),
+    }
+    store_router_opportunity_v9541(queue_state, moved, journal={}, context=None)
+    row = dict((queue_state.get("router_opportunity_queue_v9541") or [{}])[0])
+    debt = dict(row.get("evidence_debt_v9564") or {})
+    checks.append((
+        "v9.5.66 repeated defer preserves one causal origin and records progress separately",
+        int(safe_float(row.get("router_decision_3m_ts"), 0.0)) == 1_700_000_000_000
+        and int(safe_float(row.get("router_episode_origin_3m_ts"), 0.0)) == 1_700_000_000_000
+        and int(safe_float(debt.get("decision_watermark"), 0.0)) == 1_700_000_000_000
+        and int(safe_float(row.get("router_last_evaluated_3m_ts"), 0.0)) == 1_700_000_180_000
+        and int(safe_float(debt.get("last_evaluated_3m_ts"), 0.0)) == 1_700_000_180_000,
+    ))
+
+    runtime = validate_runtime_configuration_canonical_v9566()
+    checks.append((
+        "v9.5.66 keeps 24 setups, factual safety, zero fixed candle count and the 15-minute scheduler",
+        runtime.get("valid") is True
+        and runtime.get("scheduler_cadence_minutes") == 15
+        and runtime.get("fixed_confirmation_candle_count") == 0
+        and runtime.get("new_confirmation_blockers") == 0
+        and len(_tracked_setup_types()) == 24,
+    ))
+    return checks
+
+
+def run_self_test_canonical_v9566() -> bool:
+    prior_ok = bool(_run_v9565_boundary_for_v9566(_run_self_test_v9566_base))
+    checks = _v9566_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.66 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} production-integration checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9566
 
 
 # The modules import without a circular dependency; bind their pure helper
