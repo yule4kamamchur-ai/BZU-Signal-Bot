@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.64 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.65 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.65 (Router intent + stable episodes + forward integrity):
+- Router розділяє справжній структурний доказ PROOF_EVENT і бажану оптимізацію ціни PRICE_OPTIMIZATION.
+- FIRST_RETEST більше не знищує свіжий якісний LIVE_3M: безпечний, не переслідуваний рух допускається тільки як EARLY_PROBE 30-50% normal risk.
+- Незначний рух execution-anchor не створює новий Router episode; перша нова матеріальна 3M-подія може коректно погасити збережений evidence debt.
+- Одночасне заперечення LIQUIDITY і STATISTICAL для STANDARD_ENTRY знижує рівень до EARLY_PROBE замість повного блокування.
+- Signal/trade compaction є повторювано безпечним, а статистика v9.5.64 і v9.5.65 ізольована; 20 угод дають лише попередню оцінку, 50 — повний forward-review.
+- Ranking-preview і Final Authority використовують одну v9.5.65 policy; production cadence залишається один запуск кожні 15 хвилин.
+
 Оновлення v9.5.64 (unified evidence maturity):
 - LIVE_3M trigger, native retest і confirmation-equivalence є одним доказом EXECUTION, а не трьома послідовними підтвердженнями.
 - Немає фіксованої вимоги двох додаткових 3M свічок: якщо execution-доказ справді відсутній, Router чекає одну нову причинну directional-hold подію.
@@ -31965,7 +31973,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.64 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.65 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -41268,6 +41276,1336 @@ def run_self_test_canonical_v9564() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9564
+
+
+# ==========================================================
+# v9.5.65 ROUTER INTENT / STABLE EPISODES / FORWARD INTEGRITY
+# ==========================================================
+# FIRST_RETEST is a price-improvement preference, not a second proof event.
+# A fresh, non-chased LIVE_3M trigger may therefore enter only as EARLY_PROBE
+# while the preferred retest is absent.  ONE_3M_CONFIRM remains a genuine
+# PROOF_EVENT and LIMIT_AT_ANCHOR still requires an actual causal fill.
+#
+# Router episode identity is intentionally independent of small moving-anchor
+# changes and tactic rewrites.  The emergency TTL remains the temporal boundary,
+# so one market thesis cannot live forever or collide across directions/setups.
+
+V9565_BOT_VERSION = "pro-hybrid-confluence-v9.5.65-router-intent-forward-integrity"
+V9565_ARCHITECTURE_VERSION = "TRADING_DESK_EXECUTIVE_V9_5_65_ROUTER_INTENT_STABLE_EPISODES_FORWARD_INTEGRITY_15M_CADENCE"
+V9565_SCHEMA_VERSION = "router_intent_stable_episode_forward_integrity_v9.5.65"
+V9565_SCHEDULER_CADENCE_MINUTES = 15
+V9565_FORWARD_PROVISIONAL_TRADES = 20
+V9565_FORWARD_REVIEW_TRADES = 50
+V9565_PRICE_OPTIMIZATION_MAX_ASI = 35.0
+V9565_PRICE_OPTIMIZATION_MIN_ANTI_FOMO = 55.0
+V9565_ROUTER_REQUIREMENT_TYPES = ("READY", "PROOF_EVENT", "PRICE_OPTIMIZATION")
+
+BOT_VERSION = V9565_BOT_VERSION
+ARCHITECTURE_VERSION = V9565_ARCHITECTURE_VERSION
+
+_router_chain_id_v9564_base = _router_chain_id_v9541
+
+
+def _stable_router_thesis_root_v9565(item: Any) -> str:
+    """Remove only the mutable terminal anchor bucket from a thesis identity."""
+    thesis = str(getattr(item, "thesis_key", "") or "").strip()
+    if thesis:
+        parts = thesis.split("|")
+        if len(parts) > 1:
+            terminal = parts[-1].replace(".", "", 1).replace("-", "", 1)
+            if terminal.isdigit():
+                parts = parts[:-1]
+        thesis = "|".join(parts)
+    if thesis:
+        return thesis
+    model = str(getattr(item, "ict_model", "") or "NO_MODEL")
+    return f"{getattr(item, 'side', Side.NEUTRAL.value)}|{model}|{getattr(item, 'setup_type', SetupType.NONE.value)}"
+
+
+def _router_chain_id_stable_v9565(item: Any) -> str:
+    """One causal chain per live side/setup/thesis, bounded by the existing TTL."""
+    side = str(getattr(item, "side", Side.NEUTRAL.value) or Side.NEUTRAL.value)
+    setup = str(getattr(item, "setup_type", SetupType.NONE.value) or SetupType.NONE.value)
+    model = str(getattr(item, "ict_model", "") or "NO_MODEL")
+    thesis_root = _stable_router_thesis_root_v9565(item)
+    return f"V9565|{side}|{setup}|{model}|{thesis_root}"
+
+
+# Every existing Router lifecycle helper resolves this name at runtime.  Rebinding
+# the single identity boundary upgrades queue deduplication, causal replay,
+# tombstones and lifecycle telemetry together instead of adding parallel logic.
+_router_chain_id_v9541 = _router_chain_id_stable_v9565
+
+
+def _price_optimization_safety_v9565(candidate: Candidate) -> dict[str, Any]:
+    components = dict(candidate.score_components or {})
+    anchor = dict(
+        components.get("execution_anchor_authority")
+        or (components.get("entry_contract") or {}).get("execution_anchor_profile")
+        or {}
+    )
+    xi = dict(
+        components.get("execution_intelligence_v9532")
+        or (candidate.stage_plan or {}).get("execution_intelligence_v9532")
+        or {}
+    )
+    invalidated = bool(anchor.get("invalidated"))
+    late_entry = bool(anchor.get("late_entry_prevented") or anchor.get("rr_degraded"))
+    if "current_fill_allowed" in anchor:
+        current_fill_allowed = bool(anchor.get("current_fill_allowed"))
+    else:
+        current_fill_allowed = bool(not invalidated and not late_entry)
+    explicit_chase = any(
+        token in str(reason or "").upper()
+        for reason in (candidate.risks or [])
+        for token in ("CHASE", "LATE_ENTRY", "OVEREXTENDED")
+    )
+    anti_fomo = safe_float(
+        (components.get("anti_fomo") or {}).get("score"),
+        safe_float(candidate.anti_fomo_score, 100.0),
+    )
+    asi = safe_float(xi.get("asi"), 100.0)
+    runway_present = "runway_r" in xi and xi.get("runway_r") is not None
+    runway_r = max(0.0, safe_float(xi.get("runway_r"), 0.0))
+    runway_safe = bool(not runway_present or runway_r >= V9564_CRITICAL_RUNWAY_R)
+    safe = bool(
+        current_fill_allowed
+        and not invalidated
+        and not late_entry
+        and not explicit_chase
+        and anti_fomo >= V9565_PRICE_OPTIMIZATION_MIN_ANTI_FOMO
+        and asi <= V9565_PRICE_OPTIMIZATION_MAX_ASI
+        and runway_safe
+    )
+    return {
+        "safe": safe,
+        "current_fill_allowed": current_fill_allowed,
+        "invalidated": invalidated,
+        "late_entry": late_entry,
+        "explicit_chase": explicit_chase,
+        "anti_fomo_score": round(anti_fomo, 2),
+        "asi": round(asi, 2),
+        "runway_r": round(runway_r, 4) if runway_present else None,
+        "runway_safe": runway_safe,
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+
+
+def _v9565_router_obligation(
+    candidate: Candidate,
+    router: dict[str, Any],
+    *,
+    native_retest: bool,
+    fresh_live_trigger: bool,
+    equivalence: dict[str, Any],
+) -> dict[str, Any]:
+    tactic = str(router.get("router_final_tactic") or "NONE")
+    disposition = str(router.get("router_final_disposition") or "")
+    evidence_ts = int(safe_float(router.get("evidence_ts"), 0.0))
+    watermark = int(safe_float(router.get("decision_watermark"), 0.0))
+    causal_consumed = bool(
+        evidence_ts > watermark > 0
+        and (
+            router.get("router_confirmation_consumed")
+            or router.get("retest_consumed")
+            or router.get("router_recheck_consumed")
+            or disposition == "RECHECK_READY"
+        )
+    )
+    price_safety = _price_optimization_safety_v9565(candidate)
+    price_bypass = False
+
+    if tactic in {"NONE", "MARKET_NOW"}:
+        requirement_type = "READY"
+        satisfied = True
+        mode = "MARKET_TACTIC_READY"
+    elif tactic == "FIRST_RETEST":
+        requirement_type = "PRICE_OPTIMIZATION"
+        price_bypass = bool(fresh_live_trigger and price_safety.get("safe"))
+        satisfied = bool(causal_consumed or native_retest or price_bypass)
+        mode = (
+            "CAUSAL_RETEST" if causal_consumed
+            else "SETUP_NATIVE_RETEST" if native_retest
+            else "DIRECT_LIVE_TRIGGER_BOUNDED_PROBE" if price_bypass
+            else "PRICE_OPTIMIZATION_PENDING"
+        )
+    elif tactic == "ONE_3M_CONFIRM":
+        requirement_type = "PROOF_EVENT"
+        satisfied = bool(
+            causal_consumed
+            or equivalence.get("equivalent_consumed")
+            or (fresh_live_trigger and not bool(candidate.confirmation_pending))
+        )
+        mode = (
+            "CAUSAL_PROOF_EVENT" if causal_consumed
+            else "NATIVE_PROOF_EQUIVALENCE" if equivalence.get("equivalent_consumed")
+            else "CURRENT_LIVE_PROOF_EVENT" if satisfied
+            else "PROOF_EVENT_MISSING"
+        )
+    elif tactic == "LIMIT_AT_ANCHOR":
+        requirement_type = "PRICE_OPTIMIZATION"
+        satisfied = causal_consumed
+        mode = "CAUSAL_LIMIT_FILL" if satisfied else "LIMIT_FILL_PENDING"
+    else:
+        requirement_type = "PROOF_EVENT"
+        satisfied = False
+        mode = "UNSUPPORTED_ROUTER_TACTIC"
+
+    return {
+        "satisfied": satisfied,
+        "mode": mode,
+        "tactic": tactic,
+        "disposition": disposition,
+        "requirement_type": requirement_type,
+        "proof_event_satisfied": bool(
+            requirement_type != "PROOF_EVENT" or satisfied
+        ),
+        "price_optimization_satisfied": bool(
+            requirement_type != "PRICE_OPTIMIZATION"
+            or causal_consumed or native_retest
+        ),
+        "price_optimization_bypassed_for_probe": price_bypass,
+        "bounded_probe_only": price_bypass,
+        "price_optimization_safety": price_safety,
+        "causal_consumed": causal_consumed,
+        "evidence_ts": evidence_ts,
+        "decision_watermark": watermark,
+        "fixed_candle_count_required": False,
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+
+
+# The v9.5.64 evidence calculator reads this one boundary dynamically.
+_v9564_router_obligation = _v9565_router_obligation
+
+
+_evidence_maturity_profile_v9565_base = evidence_maturity_profile_v9564
+
+
+def _early_fraction_from_maturity_v9565(maturity: float) -> float:
+    strength = clamp(
+        (maturity - V9564_EARLY_MIN_MATURITY)
+        / max(V9564_STANDARD_MIN_MATURITY - V9564_EARLY_MIN_MATURITY, 1e-9),
+        0.0,
+        1.0,
+    )
+    return round(
+        V9564_EARLY_MIN_FRACTION
+        + (V9564_EARLY_MAX_FRACTION - V9564_EARLY_MIN_FRACTION) * strength,
+        4,
+    )
+
+
+def evidence_maturity_profile_v9565(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    base_profile: dict[str, Any],
+    router: Optional[dict[str, Any]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    profile = _evidence_maturity_profile_v9565_base(
+        candidate,
+        plan,
+        base_profile=base_profile,
+        router=router,
+        directional_guard=directional_guard,
+    )
+    profile = copy.deepcopy(profile)
+    maturity = copy.deepcopy(profile.get("evidence_maturity_v9564") or {})
+    obligation = dict(maturity.get("router_obligation") or {})
+    xi = dict(
+        (candidate.score_components or {}).get("execution_intelligence_v9532")
+        or (candidate.stage_plan or {}).get("execution_intelligence_v9532")
+        or {}
+    )
+    opinions = {
+        str(key): str(value or "UNKNOWN").upper()
+        for key, value in dict(xi.get("assistant_opinions") or {}).items()
+    }
+    joint_adverse = bool(
+        opinions.get("LIQUIDITY_ASSISTANT") == AdvisoryOpinion.AGAINST.value
+        and opinions.get("STATISTICAL_ASSISTANT") == AdvisoryOpinion.AGAINST.value
+    )
+    tier_before = str(profile.get("tier") or "WAIT")
+    downgrade_reasons: list[str] = []
+    if obligation.get("bounded_probe_only") and tier_before in {"STANDARD_ENTRY", "PREMIUM_FULL"}:
+        downgrade_reasons.append("FIRST_RETEST_PRICE_OPTIMIZATION_CAPS_LIVE_ENTRY_TO_EARLY_PROBE")
+    if joint_adverse and tier_before == "STANDARD_ENTRY":
+        downgrade_reasons.append("JOINT_LIQUIDITY_STATISTICAL_ADVERSE_CAPS_STANDARD_TO_EARLY_PROBE")
+
+    if downgrade_reasons:
+        maturity_value = safe_float(maturity.get("maturity"), 0.0)
+        risk_fraction = _early_fraction_from_maturity_v9565(maturity_value)
+        profile.update({
+            "tier": "EARLY_PROBE",
+            "allow": True,
+            "full_entry": False,
+            "standard_entry": False,
+            "early_probe": True,
+            "risk_fraction_of_normal": risk_fraction,
+            "risk_cap": round(NORMAL_RISK_PCT * risk_fraction, 6),
+            "tier_before_context_downgrade_v9565": tier_before,
+        })
+        profile["advisory_reasons"] = sorted(set(
+            list(profile.get("advisory_reasons") or []) + downgrade_reasons
+        ))
+
+    maturity.update({
+        "router_requirement_type": str(obligation.get("requirement_type") or "READY"),
+        "price_optimization_bypassed_for_probe": bool(
+            obligation.get("price_optimization_bypassed_for_probe")
+        ),
+        "joint_liquidity_statistical_adverse": joint_adverse,
+        "tier_before_context_downgrade": tier_before,
+        "tier_after_context_downgrade": str(profile.get("tier") or "WAIT"),
+        "schema_version_v9565": V9565_SCHEMA_VERSION,
+    })
+    profile["evidence_maturity_v9564"] = maturity
+    profile["evidence_maturity_v9565"] = copy.deepcopy(maturity)
+    profile["router_requirement_type_v9565"] = str(
+        obligation.get("requirement_type") or "READY"
+    )
+    profile["joint_adverse_downgrade_v9565"] = joint_adverse
+    profile["schema_version_v9565"] = V9565_SCHEMA_VERSION
+    return profile
+
+
+def unified_evidence_profile_v9565(
+    candidate: Candidate,
+    plan: Optional[TradePlan],
+    *,
+    base_profile: dict[str, Any],
+    router: Optional[dict[str, Any]] = None,
+    directional_guard: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    directional = directional_quality_profile_v9561(
+        candidate,
+        plan,
+        base_profile=base_profile,
+        router=router,
+        directional_guard=directional_guard,
+    )
+    return evidence_maturity_profile_v9565(
+        candidate,
+        plan,
+        base_profile=directional,
+        router=router,
+        directional_guard=directional_guard,
+    )
+
+
+def _apply_unified_evidence_v9565(
+    decision: Decision,
+    profile: dict[str, Any],
+    *,
+    planned_risk: float,
+    context: dict[str, Any],
+    journal: dict[str, Any],
+) -> Decision:
+    out = _apply_unified_evidence_v9564(
+        decision,
+        profile,
+        planned_risk=planned_risk,
+        context=context,
+        journal=journal,
+    )
+    if out.candidate is None:
+        return out
+    stage = out.candidate.stage_plan = out.candidate.stage_plan or {}
+    authority = dict((out.audit or {}).get("final_execution_authority_v9551") or {})
+    maturity = copy.deepcopy(
+        authority.get("evidence_maturity_v9564")
+        or profile.get("evidence_maturity_v9565")
+        or {}
+    )
+    tier = str(authority.get("entry_tier") or profile.get("tier") or "WAIT")
+    stage.update({
+        "final_execution_tier_v9565": tier,
+        "evidence_debt_v9565": copy.deepcopy(stage.get("evidence_debt_v9564") or maturity),
+        "router_requirement_type_v9565": str(
+            maturity.get("router_requirement_type") or "READY"
+        ),
+        "final_blocking_reasons_v9565": list(
+            authority.get("hard_blockers") or authority.get("wait_reasons") or []
+        ),
+    })
+    authority.update({
+        "evidence_maturity_v9565": copy.deepcopy(maturity),
+        "execution_policy_version": V9565_SCHEMA_VERSION,
+        "router_requirement_type_v9565": str(
+            maturity.get("router_requirement_type") or "READY"
+        ),
+        "is_last_mutator": True,
+    })
+    out.audit["final_execution_authority_v9551"] = authority
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("execution_quality_repair_v9565", {})
+        aggregate["authority_evaluations"] = int(aggregate.get("authority_evaluations") or 0) + 1
+        if out.action in EXECUTABLE_ENTRY_ACTIONS:
+            aggregate["entries_released"] = int(aggregate.get("entries_released") or 0) + 1
+            counts = aggregate.setdefault("entry_tier_counts", {})
+            counts[tier] = int(counts.get(tier) or 0) + 1
+        if maturity.get("price_optimization_bypassed_for_probe"):
+            aggregate["price_optimization_probe_releases"] = int(
+                aggregate.get("price_optimization_probe_releases") or 0
+            ) + 1
+        if maturity.get("joint_liquidity_statistical_adverse") and tier == "EARLY_PROBE":
+            aggregate["joint_adverse_standard_downgrades"] = int(
+                aggregate.get("joint_adverse_standard_downgrades") or 0
+            ) + 1
+        aggregate["last_evidence_maturity"] = copy.deepcopy(maturity)
+    return out
+
+
+_CANONICAL_EXECUTION_ENGINE_V9565 = CanonicalExecutionEngine(ExecutionEngineHooks(
+    base_executor=_authority_pipeline_compat_v9557,
+    router_reader=canonical_router_result_v9553,
+    profile_builder=unified_evidence_profile_v9565,
+    profile_applier=_apply_unified_evidence_v9565,
+    directional_guard=directional_market_guard_v9555,
+    approval=DECISION_AUTHORITY_GUARD.approve_executive_decision,
+    anchor_recorder=_update_execution_anchor_aggregate_v9551,
+    safe_float=safe_float,
+    executable_actions=frozenset(EXECUTABLE_ENTRY_ACTIONS),
+))
+
+
+def apply_canonical_execution_authority_v9565(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _CANONICAL_EXECUTION_ENGINE_V9565.execute(decision, context, journal)
+    out.audit = out.audit or {}
+    trace = dict(out.audit.get("canonical_execution_engine_v9559") or {})
+    trace.update({
+        "policy_profile": "ROUTER_INTENT_STABLE_EPISODE_FORWARD_INTEGRITY_V9565",
+        "router_requirement_types": list(V9565_ROUTER_REQUIREMENT_TYPES),
+        "first_retest_live_policy": "SAFE_LIVE_3M_IS_EARLY_PROBE; RETEST_IS_PRICE_OPTIMIZATION",
+        "joint_adverse_policy": "LIQUIDITY_AND_STATISTICAL_AGAINST_DOWNGRADE_STANDARD_TO_EARLY",
+        "fixed_confirmation_candle_count": 0,
+        "scheduler_cadence_minutes": V9565_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9565": V9565_SCHEMA_VERSION,
+    })
+    out.audit["canonical_execution_engine_v9559"] = trace
+    if out.candidate is not None:
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.stage_plan["canonical_execution_engine_v9565"] = copy.deepcopy(trace)
+    return out
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9565
+
+
+def _simulate_candidate_execution_v9565(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    audit_journal: dict[str, Any],
+    candidate: Candidate,
+) -> dict[str, Any]:
+    """Preview ranking with the same v9.5.65 policy used by Final Authority."""
+    try:
+        shadow_context = copy.deepcopy(context)
+        shadow_context["_audit_shadow_scan"] = True
+        decision = _candidate_counterfactual_decision(
+            shadow_context, state, audit_journal, candidate,
+        )
+        evaluated = decision.candidate
+        if evaluated is None:
+            raise RuntimeError("counterfactual candidate missing")
+        intelligence = build_execution_intelligence_v9532(
+            shadow_context, evaluated, audit_journal, decision.plan,
+        )
+        evaluated.score_components = evaluated.score_components or {}
+        evaluated.score_components["execution_intelligence_v9532"] = intelligence
+        evaluated.stage_plan = evaluated.stage_plan or {}
+        evaluated.stage_plan["execution_intelligence_v9532"] = (
+            compact_execution_intelligence_v9532(intelligence)
+        )
+        tactic = str(
+            (intelligence.get("execution_router") or {}).get("action")
+            or "MARKET_NOW"
+        )
+        decision = executive_route_resolution_v9533(decision, tactic)
+        canonical_router_result_v9553(decision)
+        decision = apply_canonical_execution_authority_v9565(
+            decision, shadow_context, audit_journal,
+        )
+        authority = dict(
+            (decision.audit or {}).get("final_execution_authority_v9551") or {}
+        )
+        maturity = dict(
+            authority.get("evidence_maturity_v9565")
+            or authority.get("evidence_maturity_v9564")
+            or {}
+        )
+        executable = bool(
+            decision.action in EXECUTABLE_ENTRY_ACTIONS
+            and decision.plan is not None
+            and decision.plan.valid
+            and decision.plan.execution_ready
+        )
+        return {
+            "simulation_valid": True,
+            "currently_executable": executable,
+            "final_action": str(decision.action),
+            "entry_tier": str(authority.get("entry_tier") or "WAIT"),
+            "maturity": safe_float(maturity.get("maturity"), 0.0),
+            "router_requirement_type": str(
+                maturity.get("router_requirement_type") or "READY"
+            ),
+            "queue_for_one_material_event": bool(
+                maturity.get("queue_for_one_material_event")
+            ),
+            "countertrend_reversal": bool(
+                maturity.get("countertrend_reversal")
+            ),
+            "control_transfer_proven": bool(
+                maturity.get("control_transfer_proven")
+            ),
+            "blocking_reasons": list(
+                authority.get("hard_blockers")
+                or authority.get("wait_reasons")
+                or []
+            ),
+            "schema_version": V9565_SCHEMA_VERSION,
+        }
+    except Exception as exc:
+        return {
+            "simulation_valid": False,
+            "currently_executable": False,
+            "error": f"{type(exc).__name__}: {exc}"[:240],
+            "schema_version": V9565_SCHEMA_VERSION,
+        }
+
+
+def detect_candidates_canonical_v9565(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    """Keep raw ranking intact and apply only the existing bounded tie-breaker."""
+    ranked = _detect_candidates_v9564_base(context, state, journal)
+    if not ranked:
+        return ranked
+    original = ranked[0]
+    for candidate in ranked[:V9561_SELECTION_EVAL_TOP_N]:
+        simulation = _simulate_candidate_execution_v9565(
+            context, copy.deepcopy(state), copy.deepcopy(journal),
+            copy.deepcopy(candidate),
+        )
+        adjustment = (
+            V9564_SELECTION_PRIORITY
+            if simulation.get("currently_executable")
+            else 0.0
+        )
+        if (
+            simulation.get("countertrend_reversal")
+            and not simulation.get("control_transfer_proven")
+        ):
+            adjustment -= V9564_SELECTION_PRIORITY
+        candidate.score_components = candidate.score_components or {}
+        candidate.score_components["execution_aware_selection_v9565"] = {
+            "adjustment": round(adjustment, 4),
+            "simulation": simulation,
+            "executable_near_equal_priority_only": True,
+            "raw_score_mutated": False,
+            "schema_version": V9565_SCHEMA_VERSION,
+        }
+        # The canonical sorter already reads this compatibility boundary. It is
+        # mirrored, not recomputed, so there is still only one ranking path.
+        candidate.score_components["execution_aware_selection_v9564"] = {
+            **candidate.score_components["execution_aware_selection_v9565"],
+            "compatibility_alias_for": "execution_aware_selection_v9565",
+        }
+    ranked = finalize_hypothesis_ranking(ranked)
+    context["execution_aware_selection_v9565"] = {
+        "candidate_count": len(ranked),
+        "selection_changed": bool(ranked and ranked[0] is not original),
+        "original_setup": str(original.setup_type),
+        "selected_setup": str(ranked[0].setup_type),
+        "selected_executable": bool(
+            ((ranked[0].score_components or {}).get(
+                "execution_aware_selection_v9565"
+            ) or {}).get("simulation", {}).get("currently_executable")
+        ),
+        "priority_cap": V9564_SELECTION_PRIORITY,
+        "policy_matches_final_authority": True,
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+    context["_ranked_candidate_objects"] = ranked
+    return ranked
+
+
+detect_candidates = detect_candidates_canonical_v9565
+
+
+_compact_signal_v9565_base = compact_signal_for_journal
+
+
+def compact_signal_canonical_v9565(payload: dict[str, Any]) -> dict[str, Any]:
+    """Idempotently preserve v9.5.64/65 maturity and risk through every pass."""
+    stage = dict(payload.get("stage_plan") or {})
+    authority = dict((payload.get("audit") or {}).get("final_execution_authority_v9551") or {})
+    raw_maturity: Any = (
+        stage.get("evidence_debt_v9565")
+        or stage.get("evidence_debt_v9564")
+        or authority.get("evidence_maturity_v9565")
+        or authority.get("evidence_maturity_v9564")
+    )
+    if not raw_maturity:
+        raw_maturity = payload.get("evidence_maturity_v9565")
+        if raw_maturity in (None, ""):
+            raw_maturity = payload.get("evidence_maturity_v9564")
+    maturity_dict = dict(raw_maturity) if isinstance(raw_maturity, dict) else {}
+    maturity_value = safe_float(
+        maturity_dict.get("maturity"),
+        safe_float(raw_maturity, 0.0) if not isinstance(raw_maturity, dict) else 0.0,
+    )
+    debt = list(
+        maturity_dict.get("debt")
+        or payload.get("evidence_debt_v9565")
+        or payload.get("evidence_debt_v9564")
+        or []
+    )
+    tier = str(
+        stage.get("final_execution_tier_v9565")
+        or stage.get("final_execution_tier_v9564")
+        or authority.get("entry_tier")
+        or payload.get("final_execution_tier_v9565")
+        or payload.get("final_execution_tier_v9564")
+        or payload.get("execution_tier")
+        or "WAIT"
+    )
+    risk_fraction = safe_float(
+        authority.get("risk_fraction_of_normal"),
+        safe_float(
+            (authority.get("four_level_execution_v9558") or {}).get("risk_fraction_of_normal"),
+            safe_float(
+                payload.get("risk_fraction_of_normal_v9565"),
+                safe_float(payload.get("risk_fraction_of_normal_v9564"), 0.0),
+            ),
+        ),
+    )
+    requirement_type = str(
+        stage.get("router_requirement_type_v9565")
+        or authority.get("router_requirement_type_v9565")
+        or maturity_dict.get("router_requirement_type")
+        or payload.get("router_requirement_type_v9565")
+        or "READY"
+    )
+    blocking = list(
+        stage.get("final_blocking_reasons_v9565")
+        or stage.get("final_blocking_reasons_v9564")
+        or authority.get("hard_blockers")
+        or authority.get("wait_reasons")
+        or payload.get("final_blocking_reasons_v9565")
+        or payload.get("final_blocking_reasons_v9564")
+        or []
+    )
+
+    compact = _compact_signal_v9565_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    action = str(payload.get("action") or compact.get("action") or "")
+    compact.update({
+        "execution_tier": tier,
+        "final_execution_tier_v9565": tier,
+        "final_execution_tier_v9564": tier,
+        "evidence_maturity_v9565": round(maturity_value, 4),
+        "evidence_maturity_v9564": round(maturity_value, 4),
+        "evidence_debt_v9565": debt,
+        "evidence_debt_v9564": debt,
+        "risk_fraction_of_normal_v9565": round(risk_fraction, 6),
+        "risk_fraction_of_normal_v9564": round(risk_fraction, 6),
+        "router_requirement_type_v9565": requirement_type,
+        "fixed_confirmation_candle_count_v9565": 0,
+        "final_blocking_reasons_v9565": [] if action in EXECUTABLE_ENTRY_ACTIONS else blocking,
+        "canonical_compactor_schema_v9565": V9565_SCHEMA_VERSION,
+    })
+    return {key: value for key, value in compact.items() if value not in (None, "", {}, [])}
+
+
+compact_signal_for_journal = compact_signal_canonical_v9565
+
+
+_compact_trade_v9565_base = compact_trade_for_journal
+
+
+def compact_trade_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
+    stage = dict(payload.get("stage_plan") or {})
+    tier = str(
+        payload.get("execution_tier")
+        or stage.get("final_execution_tier_v9565")
+        or stage.get("final_execution_tier_v9564")
+        or ""
+    )
+    preserved = {
+        key: copy.deepcopy(payload.get(key))
+        for key in (
+            "position_risk_pct", "planned_entry", "planned_stop",
+            "canonical_setup_family", "family_episode_key",
+            "bot_version_at_entry", "architecture_version_at_entry",
+        )
+        if payload.get(key) not in (None, "", {}, [])
+    }
+    compact = _compact_trade_v9565_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    if tier:
+        compact["execution_tier"] = tier
+    compact.update(preserved)
+    compact["canonical_trade_compactor_schema_v9565"] = V9565_SCHEMA_VERSION
+    return compact
+
+
+_compact_trade_v9565_public = compact_trade_for_journal
+
+
+def _repair_trade_tier_lineage_v9565(journal: dict[str, Any]) -> int:
+    signals = {
+        str(row.get("id") or ""): row
+        for row in (journal.get("signals") or [])
+        if isinstance(row, dict) and row.get("id")
+    }
+    repaired = 0
+    for trade in (journal.get("trades") or []):
+        if not isinstance(trade, dict):
+            continue
+        linked = signals.get(str(trade.get("signal_id") or ""), {})
+        linked_action = str(linked.get("action") or "")
+        tier = str(
+            trade.get("execution_tier")
+            or linked.get("execution_tier")
+            or linked.get("final_execution_tier_v9565")
+            or linked.get("final_execution_tier_v9564")
+            or ""
+        )
+        # Old signal compaction could overwrite an executed PROBE_ENTRY with
+        # WAIT. WAIT is not an execution tier and must never enter trade stats.
+        # The published action is authoritative for this bounded repair.
+        if linked_action == Action.PROBE_ENTRY.value:
+            tier = "EARLY_PROBE"
+        elif linked_action == Action.RISKY_ENTRY.value and tier not in {
+            "PREMIUM_FULL", "STANDARD_ENTRY", "EARLY_PROBE",
+        }:
+            tier = "STANDARD_ENTRY"
+        if tier in {"PREMIUM_FULL", "STANDARD_ENTRY", "EARLY_PROBE"} and not trade.get("execution_tier"):
+            trade["execution_tier"] = tier
+            repaired += 1
+        if "position_risk_pct" not in trade and trade.get("risk_pct") is not None:
+            trade["position_risk_pct"] = safe_float(trade.get("risk_pct"), 0.0)
+    return repaired
+
+
+def _repair_latest_known_maturity_v9565(journal: dict[str, Any]) -> int:
+    """Recover only the final legacy row whose exact maturity survived elsewhere."""
+    known = dict(
+        (journal.get("execution_quality_repair_v9564") or {}).get(
+            "last_evidence_maturity"
+        ) or {}
+    )
+    maturity = safe_float(known.get("maturity"), 0.0)
+    if maturity <= 0.0:
+        return 0
+    rows = [
+        row for row in (journal.get("signals") or [])
+        if isinstance(row, dict)
+        and "v9.5.64" in str(row.get("bot_version_at_signal") or "")
+    ]
+    if not rows:
+        return 0
+    target = max(rows, key=lambda row: str(row.get("time") or ""))
+    if safe_float(target.get("evidence_maturity_v9564"), 0.0) > 0.0:
+        return 0
+    obligation = dict(known.get("router_obligation") or {})
+    tactic = str(obligation.get("tactic") or "")
+    requirement_type = (
+        "PRICE_OPTIMIZATION"
+        if tactic in {"FIRST_RETEST", "LIMIT_AT_ANCHOR"}
+        else "PROOF_EVENT"
+        if tactic == "ONE_3M_CONFIRM"
+        else "READY"
+    )
+    debt = list(known.get("debt") or [])
+    target.update({
+        "evidence_maturity_v9564": round(maturity, 4),
+        "evidence_maturity_v9565": round(maturity, 4),
+        "evidence_debt_v9564": debt,
+        "evidence_debt_v9565": debt,
+        "router_requirement_type_v9565": requirement_type,
+        "legacy_maturity_repair_source_v9565": (
+            "execution_quality_repair_v9564.last_evidence_maturity"
+        ),
+    })
+    return 1
+
+
+def _build_forward_snapshot_for_tags_v9565(
+    journal: dict[str, Any], tags: tuple[str, ...],
+) -> dict[str, Any]:
+    original_tags = tuple(_forward_control_module_v9561.CURRENT_POLICY_TAGS)
+    try:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = tags
+        snapshot = _build_forward_control_snapshot_v9560_base(journal)
+    finally:
+        _forward_control_module_v9561.CURRENT_POLICY_TAGS = original_tags
+    snapshot = copy.deepcopy(snapshot)
+    promotion = snapshot.setdefault("promotion_policy", {})
+    promotion.update({
+        "policy_version_tags": list(tags),
+        "automatic_threshold_mutation": False,
+        "minimum_provisional_resolved_trades": V9565_FORWARD_PROVISIONAL_TRADES,
+        "minimum_forward_review_resolved_trades": V9565_FORWARD_REVIEW_TRADES,
+    })
+    resolved = sum(
+        int((row or {}).get("resolved_trades") or 0)
+        for row in (snapshot.get("tier_metrics") or {}).values()
+    )
+    review_status = (
+        "FULL_FORWARD_REVIEW_READY"
+        if resolved >= V9565_FORWARD_REVIEW_TRADES
+        else "PROVISIONAL_REVIEW_READY"
+        if resolved >= V9565_FORWARD_PROVISIONAL_TRADES
+        else "COLLECTING_FORWARD_SAMPLE"
+    )
+    promotion.update({
+        "resolved_current_policy_trades": resolved,
+        "review_status": review_status,
+        "trades_to_provisional_review": max(
+            0, V9565_FORWARD_PROVISIONAL_TRADES - resolved,
+        ),
+        "trades_to_full_review": max(
+            0, V9565_FORWARD_REVIEW_TRADES - resolved,
+        ),
+    })
+    return snapshot
+
+
+def build_forward_control_snapshot_v9564(journal: dict[str, Any]) -> dict[str, Any]:
+    """Correct the former nested-v9.5.62 tag override for historical v9.5.64."""
+    snapshot = _build_forward_snapshot_for_tags_v9565(journal, ("v9.5.64",))
+    snapshot["policy_isolation"] = "V9_5_64_UNIFIED_EVIDENCE_ONLY_CORRECTED_BY_V9565"
+    snapshot["schema_version"] = V9565_SCHEMA_VERSION
+    return snapshot
+
+
+def build_forward_control_snapshot_v9565(journal: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _build_forward_snapshot_for_tags_v9565(journal, ("v9.5.65",))
+    prior = build_forward_control_snapshot_v9564(journal)
+    snapshot["prior_policy_v9564"] = {
+        "tier_metrics": copy.deepcopy(prior.get("tier_metrics") or {}),
+        "family_metrics": copy.deepcopy(prior.get("family_metrics") or {}),
+        "coverage": copy.deepcopy(prior.get("coverage") or {}),
+        "policy_version_tags": ["v9.5.64"],
+        "can_promote_v9565_policy": False,
+    }
+    snapshot["policy_isolation"] = "V9_5_65_ROUTER_INTENT_ONLY"
+    snapshot["schema_version"] = V9565_SCHEMA_VERSION
+    return snapshot
+
+
+_load_journal_v9565_base = load_journal
+_save_journal_v9565_base = save_journal
+
+
+def load_journal_canonical_v9565() -> dict[str, Any]:
+    journal = _load_journal_v9565_base()
+    repaired = _repair_trade_tier_lineage_v9565(journal)
+    maturity_repaired = _repair_latest_known_maturity_v9565(journal)
+    journal["forward_control_v9564"] = build_forward_control_snapshot_v9564(journal)
+    journal["forward_control_v9565"] = build_forward_control_snapshot_v9565(journal)
+    aggregate = journal.setdefault("execution_quality_repair_v9565", {})
+    aggregate["trade_tier_rows_repaired"] = max(
+        int(aggregate.get("trade_tier_rows_repaired") or 0), repaired,
+    )
+    aggregate["known_maturity_rows_repaired"] = max(
+        int(aggregate.get("known_maturity_rows_repaired") or 0), maturity_repaired,
+    )
+    aggregate["trade_tier_rows_repaired_this_load"] = repaired
+    aggregate["known_maturity_rows_repaired_this_load"] = maturity_repaired
+    return journal
+
+
+def save_journal_canonical_v9565(journal: dict[str, Any]) -> None:
+    repaired = _repair_trade_tier_lineage_v9565(journal)
+    maturity_repaired = _repair_latest_known_maturity_v9565(journal)
+    aggregate = journal.setdefault("execution_quality_repair_v9565", {})
+    aggregate.update({
+        "policy_version": V9565_BOT_VERSION,
+        "scheduler_cadence_minutes": V9565_SCHEDULER_CADENCE_MINUTES,
+        "router_requirement_types": list(V9565_ROUTER_REQUIREMENT_TYPES),
+        "first_retest_is_price_optimization": True,
+        "safe_live_first_retest_tier_cap": "EARLY_PROBE",
+        "stable_router_episode_identity": True,
+        "joint_adverse_standard_downgrade": True,
+        "forward_provisional_minimum": V9565_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9565_FORWARD_REVIEW_TRADES,
+        "trade_tier_rows_repaired": max(
+            int(aggregate.get("trade_tier_rows_repaired") or 0), repaired,
+        ),
+        "known_maturity_rows_repaired": max(
+            int(aggregate.get("known_maturity_rows_repaired") or 0), maturity_repaired,
+        ),
+        "trade_tier_rows_repaired_this_save": repaired,
+        "known_maturity_rows_repaired_this_save": maturity_repaired,
+        "schema_version": V9565_SCHEMA_VERSION,
+    })
+    journal["forward_control_v9564"] = build_forward_control_snapshot_v9564(journal)
+    journal["forward_control_v9565"] = build_forward_control_snapshot_v9565(journal)
+    return _save_journal_v9565_base(journal)
+
+
+load_journal = load_journal_canonical_v9565
+save_journal = save_journal_canonical_v9565
+
+
+_load_state_v9565_base = load_state
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    source = str(source_architecture or "")
+    marker = "TRADING_DESK_EXECUTIVE_V9_5_"
+    release = 0
+    if source.startswith(marker):
+        suffix = source[len(marker):].split("_", 1)[0]
+        release = int(suffix) if suffix.isdigit() else 0
+    compatible = bool(source == ARCHITECTURE_VERSION or 30 <= release <= 65)
+    opportunity_compatible = bool(source == ARCHITECTURE_VERSION or 33 <= release <= 65)
+    return {
+        "source_architecture": source or "UNKNOWN",
+        "source_release": release,
+        "memory_compatible": compatible,
+        "opportunity_lineage_compatible": opportunity_compatible,
+        "preserve_active_trade": True,
+        "policy": "PRESERVE_V9_5_30_PLUS_MEMORY; NORMALIZE_ROUTER_EPISODES; KEEP_ONE_EVENT_DEBT",
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+
+
+def load_state_canonical_v9565() -> dict[str, Any]:
+    state = _load_state_v9565_base()
+    prior = dict(state.get("state_migration") or {})
+    source = str(prior.get("source_architecture") or state.get("architecture_version") or "")
+    migration = state_upgrade_policy_v9533(source)
+    queue = _router_queue_candidates_v9541(state)
+    state["router_opportunity_queue_v9541"] = [asdict(opp) for opp in queue]
+    state["opportunity"] = asdict(queue[0]) if queue else None
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state["state_migration"] = {
+        **prior,
+        **migration,
+        "stable_router_chain_rows": len(queue),
+        "final_migration_authority": "V9_5_65_ROUTER_INTENT_STABLE_EPISODES",
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+    return state
+
+
+load_state = load_state_canonical_v9565
+
+
+_validator_v9565_base = validate_runtime_configuration_canonical_v9564
+_architecture_audit_v9565_base = run_architecture_audit_v9564
+
+
+def _run_v9564_boundary_for_v9565(function: Any) -> Any:
+    saved = {
+        "BOT_VERSION": globals()["BOT_VERSION"],
+        "ARCHITECTURE_VERSION": globals()["ARCHITECTURE_VERSION"],
+        "_apply_true_final_authority_v9551": globals()["_apply_true_final_authority_v9551"],
+        "detect_candidates": globals()["detect_candidates"],
+        "compact_signal_for_journal": globals()["compact_signal_for_journal"],
+        "load_state": globals()["load_state"],
+        "validate_runtime_configuration": globals().get("validate_runtime_configuration"),
+        "_router_chain_id_v9541": globals()["_router_chain_id_v9541"],
+    }
+    try:
+        globals()["BOT_VERSION"] = V9564_BOT_VERSION
+        globals()["ARCHITECTURE_VERSION"] = V9564_ARCHITECTURE_VERSION
+        globals()["_apply_true_final_authority_v9551"] = apply_canonical_execution_authority_v9564
+        globals()["detect_candidates"] = detect_candidates_canonical_v9564
+        globals()["compact_signal_for_journal"] = compact_signal_canonical_v9564
+        globals()["load_state"] = load_state_canonical_v9564
+        globals()["validate_runtime_configuration"] = validate_runtime_configuration_canonical_v9564
+        globals()["_router_chain_id_v9541"] = _router_chain_id_v9564_base
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def validate_runtime_configuration_canonical_v9565() -> dict[str, Any]:
+    report = _run_v9564_boundary_for_v9565(_validator_v9565_base)
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9565_BOT_VERSION or ARCHITECTURE_VERSION != V9565_ARCHITECTURE_VERSION:
+        errors.append("v9.5.65 release seal mismatch")
+    if V9565_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.65 changed the 15-minute scheduler contract")
+    if globals().get("_apply_true_final_authority_v9551") is not apply_canonical_execution_authority_v9565:
+        errors.append("v9.5.65 Final Authority is not active")
+    if globals().get("compact_signal_for_journal") is not compact_signal_canonical_v9565:
+        errors.append("v9.5.65 signal compactor is not active")
+    if globals().get("compact_trade_for_journal") is not _compact_trade_v9565_public:
+        errors.append("v9.5.65 trade compactor is not active")
+    if globals().get("detect_candidates") is not detect_candidates_canonical_v9565:
+        errors.append("v9.5.65 ranking preview is not aligned with Final Authority")
+    if globals().get("load_state") is not load_state_canonical_v9565:
+        errors.append("v9.5.65 state migration is not active")
+    if V9565_FORWARD_PROVISIONAL_TRADES != 20 or V9565_FORWARD_REVIEW_TRADES != 50:
+        errors.append("v9.5.65 forward review sample contract changed")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "final_authority": "ROUTER_INTENT_THEN_UNIFIED_EVIDENCE_MATURITY",
+        "router_requirement_types": list(V9565_ROUTER_REQUIREMENT_TYPES),
+        "stable_router_episode_identity": True,
+        "joint_adverse_standard_downgrade": True,
+        "forward_provisional_minimum": V9565_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9565_FORWARD_REVIEW_TRADES,
+        "fixed_confirmation_candle_count": 0,
+        "scheduler_cadence_minutes": V9565_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9565": V9565_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9565
+
+
+def run_architecture_audit_v9565() -> dict[str, Any]:
+    report = _run_v9564_boundary_for_v9565(_architecture_audit_v9565_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9565_single_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9565,
+        "v9565_single_signal_compactor": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9565,
+        "v9565_single_trade_compactor": globals().get("compact_trade_for_journal") is _compact_trade_v9565_public,
+        "v9565_ranking_matches_final_authority": globals().get("detect_candidates") is detect_candidates_canonical_v9565,
+        "v9565_canonical_state_migration": globals().get("load_state") is load_state_canonical_v9565,
+        "v9565_router_requirement_split": set(V9565_ROUTER_REQUIREMENT_TYPES) == {"READY", "PROOF_EVENT", "PRICE_OPTIMIZATION"},
+        "v9565_stable_episode_identity": globals().get("_router_chain_id_v9541") is _router_chain_id_stable_v9565,
+        "v9565_forward_sample_contract": V9565_FORWARD_PROVISIONAL_TRADES == 20 and V9565_FORWARD_REVIEW_TRADES == 50,
+        "v9565_unchanged_15m_scheduler": V9565_SCHEDULER_CADENCE_MINUTES == 15,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9565
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = (
+        globals().get("_apply_true_final_authority_v9551")
+        is apply_canonical_execution_authority_v9565
+    )
+    executive_ready = callable(globals().get("executive_decision_engine"))
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "executive_object": executive_ready,
+        "canonical_execution_object": globals().get("_CANONICAL_EXECUTION_ENGINE_V9565") is not None,
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if authority is not None and canonical and executive_ready else "FAILED",
+    }
+
+
+def run_audit_journal_canonical_v9565(path: str) -> dict[str, Any]:
+    output = run_audit_journal_canonical_v9564(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    _repair_trade_tier_lineage_v9565(payload)
+    output["v9565_router_intent_forward_integrity"] = {
+        "effective_bot_version": BOT_VERSION,
+        "router_requirement_types": list(V9565_ROUTER_REQUIREMENT_TYPES),
+        "first_retest_is_price_optimization": True,
+        "safe_live_first_retest_tier_cap": "EARLY_PROBE",
+        "joint_adverse_standard_downgrade": True,
+        "stable_router_episode_identity": True,
+        "forward_control_v9564_corrected": build_forward_control_snapshot_v9564(payload),
+        "forward_control_v9565": build_forward_control_snapshot_v9565(payload),
+        "forward_provisional_minimum": V9565_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9565_FORWARD_REVIEW_TRADES,
+        "scheduler_cadence_minutes": V9565_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9565_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9565
+
+
+def _v9565_first_retest_fixture(*, chased: bool = False) -> Decision:
+    decision = _v9564_fixture(
+        score=80, setup_quality=72.0, structural=68.0,
+        asi=20.0, runway=0.70, regime_bias="UNKNOWN",
+    )
+    candidate = decision.candidate
+    assert candidate is not None
+    candidate.stage_plan["native_retest_observed"] = False
+    candidate.stage_plan["router_final_tactic"] = "FIRST_RETEST"
+    candidate.stage_plan["router_final_disposition"] = "DEFERRED"
+    candidate.stage_plan.pop("retest_consumed", None)
+    candidate.score_components.pop("breakout_retest_model_local_execution", None)
+    candidate.score_components.pop("acceptance_retest", None)
+    candidate.score_components["execution_anchor_authority"] = {
+        "current_fill_allowed": not chased,
+        "invalidated": False,
+        "late_entry_prevented": chased,
+        "rr_degraded": False,
+        "quality": 82.0 if not chased else 20.0,
+    }
+    candidate.anti_fomo_score = 90.0 if not chased else 30.0
+    decision.audit["canonical_router_result_v9553"].update({
+        "router_final_tactic": "FIRST_RETEST",
+        "router_final_disposition": "DEFERRED",
+        "native_retest_observed": False,
+        "retest_consumed": False,
+        "evidence_ts": 0,
+        "decision_watermark": 0,
+    })
+    return decision
+
+
+def _v9565_safety_checks() -> list[tuple[str, bool]]:
+    checks: list[tuple[str, bool]] = []
+
+    price_optimized = apply_canonical_execution_authority_v9565(
+        _v9565_first_retest_fixture(), {"_audit_shadow_scan": True}, {},
+    )
+    price_authority = dict((price_optimized.audit or {}).get("final_execution_authority_v9551") or {})
+    price_maturity = dict(price_authority.get("evidence_maturity_v9565") or {})
+    price_fraction = safe_float(
+        (price_authority.get("four_level_execution_v9558") or {}).get("risk_fraction_of_normal"),
+        0.0,
+    )
+    checks.append((
+        "v9.5.65 safe LIVE_3M bypasses FIRST_RETEST only as bounded EARLY_PROBE",
+        price_optimized.action == Action.PROBE_ENTRY.value
+        and price_authority.get("entry_tier") == "EARLY_PROBE"
+        and price_maturity.get("router_requirement_type") == "PRICE_OPTIMIZATION"
+        and price_maturity.get("price_optimization_bypassed_for_probe") is True
+        and V9564_EARLY_MIN_FRACTION <= price_fraction <= V9564_EARLY_MAX_FRACTION,
+    ))
+
+    chased = apply_canonical_execution_authority_v9565(
+        _v9565_first_retest_fixture(chased=True), {"_audit_shadow_scan": True}, {},
+    )
+    checks.append((
+        "v9.5.65 chased FIRST_RETEST remains WAIT instead of using the probe bridge",
+        chased.action == Action.NO_SETUP.value,
+    ))
+
+    proof = _v9565_first_retest_fixture()
+    assert proof.candidate is not None
+    proof.candidate.stage_plan["router_final_tactic"] = "ONE_3M_CONFIRM"
+    proof.candidate.stage_plan["router_final_disposition"] = "DEFERRED"
+    proof.candidate.confirmation_pending = True
+    proof.audit["canonical_router_result_v9553"].update({
+        "router_final_tactic": "ONE_3M_CONFIRM",
+        "router_final_disposition": "DEFERRED",
+    })
+    proof = apply_canonical_execution_authority_v9565(
+        proof, {"_audit_shadow_scan": True}, {},
+    )
+    proof_authority = dict((proof.audit or {}).get("final_execution_authority_v9551") or {})
+    proof_maturity = dict(proof_authority.get("evidence_maturity_v9565") or {})
+    checks.append((
+        "v9.5.65 a genuinely missing PROOF_EVENT still waits for one material event",
+        proof.action == Action.NO_SETUP.value
+        and proof_maturity.get("router_requirement_type") == "PROOF_EVENT"
+        and proof_maturity.get("queue_for_one_material_event") is True,
+    ))
+
+    adverse = _v9564_fixture(
+        score=76, setup_quality=76.0, structural=72.0,
+        asi=20.0, runway=0.90, regime_bias="UNKNOWN",
+    )
+    assert adverse.candidate is not None
+    opinions = adverse.candidate.score_components["execution_intelligence_v9532"]["assistant_opinions"]
+    opinions["LIQUIDITY_ASSISTANT"] = AdvisoryOpinion.AGAINST.value
+    opinions["STATISTICAL_ASSISTANT"] = AdvisoryOpinion.AGAINST.value
+    adverse = apply_canonical_execution_authority_v9565(
+        adverse, {"_audit_shadow_scan": True}, {},
+    )
+    adverse_authority = dict((adverse.audit or {}).get("final_execution_authority_v9551") or {})
+    checks.append((
+        "v9.5.65 joint LIQUIDITY+STATISTICAL opposition downgrades STANDARD to EARLY without blocking",
+        adverse.action == Action.PROBE_ENTRY.value
+        and adverse_authority.get("entry_tier") == "EARLY_PROBE"
+        and "JOINT_LIQUIDITY_STATISTICAL_ADVERSE_CAPS_STANDARD_TO_EARLY_PROBE"
+        in set((adverse_authority.get("four_level_execution_v9558") or {}).get("advisory_reasons") or []),
+    ))
+
+    old = Opportunity(
+        side=Side.LONG.value, setup_type=SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value, created_at=iso_now(),
+        expires_at=(now_utc() + timedelta(minutes=30)).isoformat(), score=70,
+        trigger_level=95.565, invalidation_level=94.80,
+        ict_model="ACCEPTANCE_RETEST_CONTINUATION",
+        execution_tactic="ONE_3M_CONFIRM", router_decision_3m_ts=1_700_000_000_000,
+        thesis_key="LONG|ACCEPTANCE_RETEST_CONTINUATION|ACCEPTANCE_RETEST_CONTINUATION|956",
+    )
+    moved = copy.deepcopy(old)
+    moved.trigger_level = 95.40
+    moved.thesis_key = "LONG|ACCEPTANCE_RETEST_CONTINUATION|ACCEPTANCE_RETEST_CONTINUATION|954"
+    opposite = copy.deepcopy(moved)
+    opposite.side = Side.SHORT.value
+    checks.append((
+        "v9.5.65 small anchor movement keeps one Router episode while direction remains isolated",
+        _router_chain_id_v9541(old) == _router_chain_id_v9541(moved)
+        and _router_chain_id_v9541(old) != _router_chain_id_v9541(opposite),
+    ))
+
+    queue_state: dict[str, Any] = {"router_opportunity_queue_v9541": [], "opportunity": None}
+    store_router_opportunity_v9541(queue_state, old, journal={}, context={})
+    moved.router_decision_3m_ts = 1_700_000_180_000
+    store_router_opportunity_v9541(queue_state, moved, journal={}, context={})
+    merged_rows = list(queue_state.get("router_opportunity_queue_v9541") or [])
+    checks.append((
+        "v9.5.65 stable episode merge preserves the original causal watermark",
+        len(merged_rows) == 1
+        and int(safe_float(merged_rows[0].get("router_decision_3m_ts"), 0.0)) == 1_700_000_000_000,
+    ))
+
+    signal_payload = {
+        "id": "v9565-compact", "time": iso_now(), "action": price_optimized.action,
+        "side": price_optimized.side, "setup_type": price_optimized.setup_type,
+        "quality": price_optimized.quality,
+        "stage_plan": copy.deepcopy(price_optimized.candidate.stage_plan if price_optimized.candidate else {}),
+        "audit": copy.deepcopy(price_optimized.audit),
+        "bot_version_at_signal": V9565_BOT_VERSION,
+    }
+    compact_once = compact_signal_canonical_v9565(signal_payload)
+    compact_twice = compact_signal_canonical_v9565(compact_once)
+    checks.append((
+        "v9.5.65 repeated signal compaction preserves maturity, risk fraction and tier",
+        safe_float(compact_once.get("evidence_maturity_v9565"), 0.0) > 0.0
+        and compact_twice.get("evidence_maturity_v9565") == compact_once.get("evidence_maturity_v9565")
+        and compact_twice.get("risk_fraction_of_normal_v9565") == compact_once.get("risk_fraction_of_normal_v9565")
+        and compact_twice.get("execution_tier") == compact_once.get("execution_tier"),
+    ))
+
+    trade_payload = {
+        "id": "v9565-trade", "signal_id": "v9565-compact", "side": Side.LONG.value,
+        "setup_type": SetupType.ACCEPTANCE_RETEST_CONTINUATION.value,
+        "setup_family": SetupFamily.CONTINUATION.value,
+        "time": iso_now(), "closed_at": iso_now(), "result": "WIN", "pnl_r": 0.5,
+        "execution_tier": "EARLY_PROBE", "position_risk_pct": 0.20,
+        "planned_entry": 100.0, "planned_stop": 99.5,
+        "bot_version_at_entry": V9565_BOT_VERSION,
+    }
+    compact_trade_once = compact_trade_for_journal(trade_payload)
+    compact_trade_twice = compact_trade_for_journal(compact_trade_once)
+    checks.append((
+        "v9.5.65 trade compaction retains tier and position risk idempotently",
+        compact_trade_twice.get("execution_tier") == "EARLY_PROBE"
+        and safe_float(compact_trade_twice.get("position_risk_pct"), 0.0) == 0.20,
+    ))
+
+    damaged_lineage = {
+        "signals": [{
+            "id": "legacy-probe", "action": Action.PROBE_ENTRY.value,
+            "execution_tier": "WAIT",
+        }],
+        "trades": [{"id": "legacy-trade", "signal_id": "legacy-probe"}],
+    }
+    repaired_rows = _repair_trade_tier_lineage_v9565(damaged_lineage)
+    checks.append((
+        "v9.5.65 executed legacy probes cannot be backfilled as WAIT trades",
+        repaired_rows == 1
+        and damaged_lineage["trades"][0].get("execution_tier") == "EARLY_PROBE",
+    ))
+
+    damaged_maturity = {
+        "signals": [{
+            "id": "legacy-maturity", "time": iso_now(),
+            "action": Action.NO_SETUP.value,
+            "execution_tier": "WAIT",
+            "evidence_maturity_v9564": 0.0,
+            "bot_version_at_signal": V9564_BOT_VERSION,
+        }],
+        "execution_quality_repair_v9564": {
+            "last_evidence_maturity": {
+                "maturity": 0.71,
+                "debt": ["ROUTER_MATERIAL_EVENT"],
+                "router_obligation": {"tactic": "FIRST_RETEST"},
+            },
+        },
+    }
+    first_maturity_repair = _repair_latest_known_maturity_v9565(damaged_maturity)
+    second_maturity_repair = _repair_latest_known_maturity_v9565(damaged_maturity)
+    repaired_compact = compact_signal_canonical_v9565(
+        damaged_maturity["signals"][0]
+    )
+    checks.append((
+        "v9.5.65 known legacy maturity repair is exact, bounded and idempotent",
+        first_maturity_repair == 1
+        and second_maturity_repair == 0
+        and repaired_compact.get("evidence_maturity_v9565") == 0.71
+        and repaired_compact.get("router_requirement_type_v9565")
+        == "PRICE_OPTIMIZATION",
+    ))
+
+    forward_journal = {
+        "signals": [
+            {"id": "old", "execution_tier": "STANDARD_ENTRY", "bot_version_at_signal": V9564_BOT_VERSION},
+            {"id": "new", "execution_tier": "EARLY_PROBE", "bot_version_at_signal": V9565_BOT_VERSION},
+        ],
+        "trades": [
+            {"id": "old-t", "signal_id": "old", "execution_tier": "STANDARD_ENTRY", "bot_version_at_entry": V9564_BOT_VERSION, "result": "LOSS", "pnl_r": -1.0, "closed_at": iso_now()},
+            {"id": "new-t", "signal_id": "new", "execution_tier": "EARLY_PROBE", "bot_version_at_entry": V9565_BOT_VERSION, "result": "WIN", "pnl_r": 0.5, "closed_at": iso_now()},
+        ],
+    }
+    old_forward = build_forward_control_snapshot_v9564(forward_journal)
+    new_forward = build_forward_control_snapshot_v9565(forward_journal)
+    checks.append((
+        "v9.5.65 forward control isolates v9.5.64 from v9.5.65 and enforces 20/50 review floors",
+        int((old_forward.get("coverage") or {}).get("current_policy_forward_trade_rows") or 0) == 1
+        and int((new_forward.get("coverage") or {}).get("current_policy_forward_trade_rows") or 0) == 1
+        and safe_float((old_forward.get("tier_metrics") or {}).get("STANDARD_ENTRY", {}).get("net_r"), 0.0) == -1.0
+        and safe_float((new_forward.get("tier_metrics") or {}).get("EARLY_PROBE", {}).get("net_r"), 0.0) == 0.5
+        and int((new_forward.get("promotion_policy") or {}).get("minimum_provisional_resolved_trades") or 0) == 20
+        and int((new_forward.get("promotion_policy") or {}).get("minimum_forward_review_resolved_trades") or 0) == 50
+        and (new_forward.get("promotion_policy") or {}).get("review_status")
+        == "COLLECTING_FORWARD_SAMPLE",
+    ))
+
+    migration = state_upgrade_policy_v9533(V9564_ARCHITECTURE_VERSION)
+    runtime = validate_runtime_configuration_canonical_v9565()
+    checks.append((
+        "v9.5.65 preserves v9.5.64 state, 24 setup contracts and 15-minute cadence",
+        migration.get("memory_compatible") is True
+        and migration.get("opportunity_lineage_compatible") is True
+        and runtime.get("valid") is True
+        and runtime.get("scheduler_cadence_minutes") == 15
+        and globals().get("detect_candidates") is detect_candidates_canonical_v9565
+        and len(_tracked_setup_types()) == 24,
+    ))
+    return checks
+
+
+_run_self_test_v9565_base = _run_self_test
+
+
+def run_self_test_canonical_v9565() -> bool:
+    prior_ok = bool(_run_v9564_boundary_for_v9565(_run_self_test_v9565_base))
+    checks = _v9565_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.65 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} router-intent/forward-integrity checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9565
 
 
 # The modules import without a circular dependency; bind their pure helper
