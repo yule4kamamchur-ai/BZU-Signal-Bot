@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.68 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.69 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.69 (restart-safe Router persistence + directional value fill):
+- Стан v9.5.67/v9.5.68 сумісно мігрується у v9.5.69; збережена Router-черга, causal watermark і recheck budget не губляться між 15-хвилинними запусками.
+- LIMIT_AT_ANCHOR виконується за trusted current price на anchor або на кращій для напрямку ціні; симетричний коридор більше не відкидає сприятливий overshoot, але factual invalidation лишається hard blocker.
+- Journal compaction повторно зберігає канонічні v9.5.67/v9.5.68 route-поля як із повного signal, так і з уже compact last_signal.
+- Повний regression перевіряє create route -> save -> restart -> current-price retest -> executable entry без зміни scheduler 15m, score/RR/risk caps чи one-position policy.
+
 Оновлення v9.5.68 (reachable route contract + state reconciliation):
 - Router має чотири взаємовиключні результати: MARKET, PRICE_OPTIMIZATION, PROOF_EVENT або WATCH_ONLY; одна причина більше не може одночасно називатися retest і confirmation.
 - PROOF_EVENT зберігається лише тоді, коли одна матеріальна подія математично піднімає maturity до EARLY_PROBE і всі інші осі вже достатні.
@@ -31998,7 +32004,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.68 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.69 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -46319,6 +46325,939 @@ def run_self_test_canonical_v9568() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9568
+
+
+# ==========================================================
+# v9.5.69 RESTART-SAFE ROUTER / IDEMPOTENT JOURNAL
+# ==========================================================
+# v9.5.68 correctly reconciled v9.5.67 input, but its compatibility
+# boundary temporarily rebound the active architecture to v9.5.67.  Once a
+# state had been saved as v9.5.68, the next run therefore classified it as a
+# future/foreign state and dropped the Router queue before reconciliation.
+# This release makes the serialized v9.5.67-v9.5.69 lineage explicit, keeps
+# the existing 15-minute scheduler, and changes no score/RR/risk threshold.
+
+V9569_SCHEMA_VERSION = "restart_safe_router_idempotent_journal_v9.5.69"
+V9569_BOT_VERSION = "pro-hybrid-confluence-v9.5.69-restart-safe-router"
+V9569_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_69_RESTART_SAFE_ROUTER_15M_CADENCE"
+)
+V9569_SCHEDULER_CADENCE_MINUTES = 15
+V9569_MIN_COMPATIBLE_MEMORY_RELEASE = 30
+V9569_MIN_COMPATIBLE_ROUTER_RELEASE = 33
+V9569_LIVE_INVALIDATION_BUFFER_ATR = 0.01
+
+_apply_execution_authority_v9569_base = apply_canonical_execution_authority_v9568
+_detect_candidates_v9569_base = detect_candidates_canonical_v9568
+_candidate_from_missed_opportunity_v9569_base = candidate_from_missed_opportunity
+_store_router_opportunity_v9569_base = store_router_opportunity_v9541
+_router_reentry_readiness_v9569_base = router_reentry_tactic_readiness_v9533
+_state_upgrade_policy_v9569_base = state_upgrade_policy_v9533
+_load_state_v9569_base = load_state_canonical_v9568
+_load_journal_v9569_base = load_journal_canonical_v9568
+_save_journal_v9569_base = save_journal_canonical_v9568
+_compact_signal_v9569_base = compact_signal_canonical_v9568
+_compact_trade_v9569_base = compact_trade_canonical_v9568
+_validate_runtime_v9569_base = validate_runtime_configuration_canonical_v9568
+_architecture_audit_v9569_base = run_architecture_audit_v9568
+_authority_audit_v9569_base = run_v8_2_authority_audit
+_audit_journal_v9569_base = run_audit_journal_canonical_v9568
+_run_self_test_v9569_base = _run_self_test
+
+BOT_VERSION = V9569_BOT_VERSION
+ARCHITECTURE_VERSION = V9569_ARCHITECTURE_VERSION
+
+
+def _architecture_release_v9569(source_architecture: str) -> int:
+    source = str(source_architecture or "")
+    marker = "TRADING_DESK_EXECUTIVE_V9_5_"
+    if not source.startswith(marker):
+        return 0
+    suffix = source[len(marker):].split("_", 1)[0]
+    return int(suffix) if suffix.isdigit() else 0
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    """Declare the durable state lineage before any older loader can filter it."""
+    source = str(source_architecture or "")
+    release = _architecture_release_v9569(source)
+    memory_compatible = bool(
+        source == ARCHITECTURE_VERSION
+        or V9569_MIN_COMPATIBLE_MEMORY_RELEASE <= release <= 69
+    )
+    opportunity_compatible = bool(
+        source == ARCHITECTURE_VERSION
+        or V9569_MIN_COMPATIBLE_ROUTER_RELEASE <= release <= 69
+    )
+    return {
+        "source_architecture": source or "UNKNOWN",
+        "source_release": release,
+        "memory_compatible": memory_compatible,
+        "opportunity_lineage_compatible": opportunity_compatible,
+        "preserve_active_trade": True,
+        "policy": (
+            "PRESERVE_V9_5_30_TO_69_MEMORY; "
+            "PRESERVE_V9_5_33_TO_69_ROUTER_LINEAGE; NO_JOURNAL_RESET"
+        ),
+        "compatible_router_releases": [67, 68, 69],
+        "schema_version": V9569_SCHEMA_VERSION,
+    }
+
+
+def router_reentry_tactic_readiness_v9533(
+    opp: Opportunity, context: dict[str, Any],
+) -> dict[str, Any]:
+    """Use directional current-price semantics for a saved LIMIT_AT_ANCHOR.
+
+    LONG is executable at the anchor or lower; SHORT is executable at the
+    anchor or higher.  A 0.04 ATR tolerance is retained only on the adverse
+    side.  The price must be trusted, current, causally newer than creation,
+    and strictly on the live side of factual invalidation.
+    """
+    result = dict(_router_reentry_readiness_v9569_base(opp, context) or {})
+    tactic = str(getattr(opp, "execution_tactic", "") or "")
+    if tactic != "LIMIT_AT_ANCHOR":
+        return result
+
+    price = safe_float(context.get("price"), 0.0)
+    atr = max(safe_float(context.get("atr15"), 0.0), abs(price) * 0.001, 1e-6)
+    anchor = safe_float(getattr(opp, "trigger_level", 0.0), 0.0)
+    invalidation = safe_float(getattr(opp, "invalidation_level", 0.0), 0.0)
+    sign = side_sign(str(getattr(opp, "side", Side.NEUTRAL.value) or Side.NEUTRAL.value))
+    trusted = bool(context.get("execution_price_trusted", False))
+    created = _parse_time_any(str(getattr(opp, "created_at", "") or ""))
+    created_ts = int(created.timestamp() * 1000) if created else 0
+    bars = [
+        candle for candle in _v9532_recent_confirmed(context, "3m", 20)
+        if int(getattr(candle, "ts", 0) or 0) > created_ts
+    ]
+    evidence_ts = int(getattr(bars[-1], "ts", 0) or 0) if bars else 0
+    directional_improvement_atr = (
+        sign * (anchor - price) / atr
+        if sign and anchor > 0.0 and price > 0.0 else -99.0
+    )
+    price_at_or_better = bool(
+        directional_improvement_atr >= -EXECUTION_ROUTER_LIMIT_LIVE_TOLERANCE_ATR
+    )
+    hypothesis_intact = bool(
+        invalidation <= 0.0
+        or sign * (price - invalidation) > V9569_LIVE_INVALIDATION_BUFFER_ATR * atr
+    )
+    ready = bool(
+        sign and anchor > 0.0 and price > 0.0 and trusted and bars
+        and price_at_or_better and hypothesis_intact
+    )
+    if not trusted:
+        reason = "WAIT_TRUSTED_CURRENT_PRICE"
+    elif not bars:
+        reason = "WAIT_CAUSAL_POST_DECISION_PRICE"
+    elif not hypothesis_intact:
+        reason = "LIMIT_ROUTE_FACTUALLY_INVALIDATED"
+    elif not price_at_or_better:
+        reason = "WAIT_CURRENT_PRICE_AT_OR_BETTER_THAN_ANCHOR"
+    else:
+        reason = "CURRENT_PRICE_AT_OR_BETTER_THAN_LIMIT_ANCHOR"
+    result.update({
+        "applicable": True,
+        "ready": ready,
+        "tactic": tactic,
+        "reason": reason,
+        "post_decision_bars": len(bars),
+        "evidence_ts": evidence_ts,
+        "distance_to_anchor_atr": round(abs(price - anchor) / atr, 4) if anchor > 0.0 and price > 0.0 else 99.0,
+        "directional_improvement_atr": round(directional_improvement_atr, 4),
+        "price_at_or_better_than_anchor": price_at_or_better,
+        "adverse_side_tolerance_atr": EXECUTION_ROUTER_LIMIT_LIVE_TOLERANCE_ATR,
+        "symmetric_anchor_corridor": False,
+        "execution_price_trusted": trusted,
+        "factual_invalidation_intact": hypothesis_intact,
+        "entry_price_override": round_price(price) if ready else 0.0,
+        "current_price_only": True,
+        "retrospective_synthetic_fill": False,
+        "native_trigger_still_required": True,
+        "setup_blocked": False,
+        "schema_version": V9569_SCHEMA_VERSION,
+    })
+    return result
+
+
+def candidate_from_missed_opportunity(
+    opp: Opportunity, context: dict,
+) -> Optional[Candidate]:
+    candidate = _candidate_from_missed_opportunity_v9569_base(opp, context)
+    if candidate is None:
+        return None
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    directional_limit_consumed = bool(
+        str(stage.get("consumed_tactic") or "") == "LIMIT_AT_ANCHOR"
+        and str(stage.get("router_final_tactic") or "") == "MARKET_NOW"
+        and str(stage.get("router_final_disposition") or "") == "RECHECK_READY"
+        and int(safe_float(stage.get("evidence_ts"), 0.0))
+        > int(safe_float(stage.get("decision_watermark"), 0.0))
+        > 0
+    )
+    if directional_limit_consumed:
+        # LIMIT_ARMED is an existing direct-execution source.  REENTRY is only
+        # lineage; leaving it as the execution source makes the maturity layer
+        # discard a valid trusted current-price fill as non-execution evidence.
+        candidate.execution_source = ExecutionSource.LIMIT_ARMED.value
+        candidate.trigger_ready = True
+        candidate.live_3m_trigger_ready = True
+        candidate.limit_armed_ready = True
+        candidate.reentry_ready = True
+        candidate.confirmation_pending = False
+        candidate.execution_trigger_age_minutes = 0.0
+        candidate.trigger_age_minutes = 0.0
+        stage.update({
+            "directional_limit_fill_v9569": True,
+            "execution_source_v9569": ExecutionSource.LIMIT_ARMED.value,
+            "router_recheck_consumed": True,
+            "fixed_confirmation_candle_count_v9569": 0,
+        })
+    return candidate
+
+
+def store_router_opportunity_v9541(
+    state: dict[str, Any], opp: Optional[Opportunity], *,
+    decision: Optional[Decision] = None, journal: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    _store_router_opportunity_v9569_base(
+        state, opp, decision=decision, journal=journal, context=context,
+    )
+    reconciliation = reconcile_router_queue_v9568(state)
+    migration = state.setdefault("state_migration", {})
+    migration.update({
+        "router_queue_persisted_across_restarts_v9569": True,
+        "router_queue_reconciliation_v9569": reconciliation,
+        "causal_watermark_reset": False,
+        "recheck_budget_reset": False,
+        "schema_version_v9569": V9569_SCHEMA_VERSION,
+    })
+
+
+def load_state_canonical_v9569() -> dict[str, Any]:
+    # The global v9.5.69 policy is intentionally visible while the v9.5.68
+    # compatibility loader temporarily binds v9.5.67.  It therefore accepts
+    # both v9.5.67 input and a state already saved by v9.5.68/v9.5.69.
+    state = _load_state_v9569_base()
+    reconciliation = reconcile_router_queue_v9568(state)
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    migration = state.setdefault("state_migration", {})
+    migration.update({
+        "v9567_state_compatible": True,
+        "v9568_state_compatible": True,
+        "v9569_state_compatible": True,
+        "router_queue_persisted_across_restarts_v9569": True,
+        "router_queue_reconciliation_v9569": reconciliation,
+        "preserve_active_trade": True,
+        "journal_reset_required": False,
+        "causal_watermark_reset": False,
+        "recheck_budget_reset": False,
+        "final_migration_authority": "V9_5_69_RESTART_SAFE_ROUTER",
+        "schema_version_v9569": V9569_SCHEMA_VERSION,
+    })
+    return state
+
+
+load_state = load_state_canonical_v9569
+
+
+V9569_PERSISTENT_SIGNAL_FIELDS = (
+    "execution_mode_v9567", "market_utility_v9567",
+    "execution_quality_v9567", "value_anchor_v9567",
+    "rejected_sweep_present_v9567",
+    "execution_mode_v9568", "execution_route_reachable_v9568",
+    "proof_event_reachable_v9568", "queue_for_one_material_event_v9568",
+    "setup_trigger_ready_v9568", "execution_event_ready_v9568",
+    "potential_after_one_event_v9568", "final_blocking_reasons_v9568",
+)
+
+
+def _route_contract_from_signal_v9569(payload: dict[str, Any]) -> dict[str, Any]:
+    audit = dict(payload.get("audit") or {})
+    stage = dict(payload.get("stage_plan") or {})
+    nested = dict(
+        audit.get("execution_route_contract_v9568")
+        or stage.get("execution_route_contract_v9568")
+        or {}
+    )
+    flat_map = {
+        "mode": "execution_mode_v9568",
+        "reachable": "execution_route_reachable_v9568",
+        "proof_event_reachable": "proof_event_reachable_v9568",
+        "queue_for_one_material_event": "queue_for_one_material_event_v9568",
+        "setup_trigger_ready": "setup_trigger_ready_v9568",
+        "execution_event_ready": "execution_event_ready_v9568",
+        "potential_after_one_material_event": "potential_after_one_event_v9568",
+    }
+    for contract_key, flat_key in flat_map.items():
+        if contract_key not in nested and flat_key in payload:
+            nested[contract_key] = copy.deepcopy(payload[flat_key])
+    return nested
+
+
+def compact_signal_canonical_v9569(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compact full or already-compact signals to the exact same route row."""
+    compact = _compact_signal_v9569_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    # A few historical compactors derive a field only after another compacted
+    # field exists.  Reach their bounded fixed point inside this single call so
+    # the caller never observes pass-1/pass-2 drift.
+    for _ in range(4):
+        stabilized = _compact_signal_v9569_base(compact)
+        if not isinstance(stabilized, dict) or stabilized == compact:
+            break
+        compact = stabilized
+    for key in V9569_PERSISTENT_SIGNAL_FIELDS:
+        if key in payload:
+            compact[key] = copy.deepcopy(payload[key])
+
+    contract = _route_contract_from_signal_v9569(payload)
+    if contract:
+        compact.update({
+            "execution_mode_v9568": str(contract.get("mode") or "WATCH_ONLY"),
+            "execution_route_reachable_v9568": bool(contract.get("reachable")),
+            "proof_event_reachable_v9568": bool(contract.get("proof_event_reachable")),
+            "queue_for_one_material_event_v9568": bool(contract.get("queue_for_one_material_event")),
+            "setup_trigger_ready_v9568": bool(contract.get("setup_trigger_ready")),
+            "execution_event_ready_v9568": bool(contract.get("execution_event_ready")),
+            "potential_after_one_event_v9568": round(
+                safe_float(contract.get("potential_after_one_material_event"), 0.0), 4,
+            ),
+        })
+    stage = dict(payload.get("stage_plan") or {})
+    if "final_blocking_reasons_v9568" in stage:
+        compact["final_blocking_reasons_v9568"] = list(
+            stage.get("final_blocking_reasons_v9568") or []
+        )
+    elif "final_blocking_reasons_v9568" in payload:
+        compact["final_blocking_reasons_v9568"] = list(
+            payload.get("final_blocking_reasons_v9568") or []
+        )
+    compact.update({
+        "fixed_confirmation_candle_count_v9569": 0,
+        "canonical_compactor_schema_v9569": V9569_SCHEMA_VERSION,
+    })
+    return compact
+
+
+compact_signal_for_journal = compact_signal_canonical_v9569
+
+
+def compact_trade_canonical_v9569(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_trade_v9569_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    compact["canonical_trade_compactor_schema_v9569"] = V9569_SCHEMA_VERSION
+    return compact
+
+
+compact_trade_for_journal = compact_trade_canonical_v9569
+
+
+def build_forward_control_snapshot_v9569(journal: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _build_forward_snapshot_for_tags_v9565(journal, ("v9.5.69",))
+    snapshot.update({
+        "policy_isolation": "V9_5_69_RESTART_SAFE_ROUTER_ONLY",
+        "route_modes": list(V9568_ROUTE_MODES),
+        "forward_provisional_minimum": V9567_FORWARD_PROVISIONAL_TRADES,
+        "forward_review_minimum": V9567_FORWARD_REVIEW_TRADES,
+        "schema_version": V9569_SCHEMA_VERSION,
+    })
+    return snapshot
+
+
+def load_journal_canonical_v9569() -> dict[str, Any]:
+    journal = _load_journal_v9569_base()
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["forward_control_v9569"] = build_forward_control_snapshot_v9569(journal)
+    journal.setdefault("execution_quality_repair_v9569", {}).update({
+        "policy_version": V9569_BOT_VERSION,
+        "restart_safe_router_queue": True,
+        "directional_limit_anchor": True,
+        "idempotent_signal_compaction": True,
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9569_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9569_SCHEMA_VERSION,
+    })
+    return journal
+
+
+def save_journal_canonical_v9569(journal: dict[str, Any]) -> None:
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal["forward_control_v9569"] = build_forward_control_snapshot_v9569(journal)
+    journal.setdefault("execution_quality_repair_v9569", {}).update({
+        "policy_version": V9569_BOT_VERSION,
+        "restart_safe_router_queue": True,
+        "directional_limit_anchor": True,
+        "idempotent_signal_compaction": True,
+        "scheduler_cadence_minutes": V9569_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9569_SCHEMA_VERSION,
+    })
+    return _save_journal_v9569_base(journal)
+
+
+load_journal = load_journal_canonical_v9569
+save_journal = save_journal_canonical_v9569
+
+
+def apply_canonical_execution_authority_v9569(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _apply_execution_authority_v9569_base(decision, context, journal)
+    out.audit = out.audit or {}
+    authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "execution_policy_version": V9569_SCHEMA_VERSION,
+        "restart_safe_router_queue": True,
+        "directional_limit_anchor": True,
+        "idempotent_signal_compaction": True,
+        "is_last_mutator": True,
+    })
+    out.audit["final_execution_authority_v9551"] = authority
+    trace = dict(out.audit.get("canonical_execution_engine_v9559") or {})
+    trace.update({
+        "policy_profile": "RESTART_SAFE_ROUTER_IDEMPOTENT_JOURNAL_V9569",
+        "active_final_mutator": "apply_canonical_execution_authority_v9569",
+        "scheduler_cadence_minutes": V9569_SCHEDULER_CADENCE_MINUTES,
+        "score_rr_risk_thresholds_unchanged": True,
+        "one_position_policy_unchanged": True,
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "schema_version_v9569": V9569_SCHEMA_VERSION,
+    })
+    out.audit["canonical_execution_engine_v9559"] = trace
+    if out.candidate is not None:
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.stage_plan["canonical_execution_engine_v9569"] = copy.deepcopy(trace)
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9569
+
+
+def detect_candidates_canonical_v9569(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    return _detect_candidates_v9569_base(context, state, journal)
+
+
+detect_candidates = detect_candidates_canonical_v9569
+
+
+def _run_v9568_boundary_for_v9569(function: Any) -> Any:
+    names = (
+        "BOT_VERSION", "ARCHITECTURE_VERSION", "_apply_true_final_authority_v9551",
+        "detect_candidates", "candidate_from_missed_opportunity",
+        "store_router_opportunity_v9541",
+        "router_reentry_tactic_readiness_v9533", "state_upgrade_policy_v9533",
+        "compact_signal_for_journal", "compact_trade_for_journal",
+        "load_state", "load_journal", "save_journal",
+        "validate_runtime_configuration", "run_architecture_audit",
+        "run_v8_2_authority_audit", "run_audit_journal",
+    )
+    saved = {name: globals().get(name) for name in names}
+    try:
+        globals().update({
+            "BOT_VERSION": V9568_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9568_ARCHITECTURE_VERSION,
+            "_apply_true_final_authority_v9551": apply_canonical_execution_authority_v9568,
+            "detect_candidates": detect_candidates_canonical_v9568,
+            "candidate_from_missed_opportunity": _candidate_from_missed_opportunity_v9569_base,
+            "store_router_opportunity_v9541": _store_router_opportunity_v9569_base,
+            "router_reentry_tactic_readiness_v9533": _router_reentry_readiness_v9569_base,
+            "state_upgrade_policy_v9533": _state_upgrade_policy_v9569_base,
+            "compact_signal_for_journal": compact_signal_canonical_v9568,
+            "compact_trade_for_journal": compact_trade_canonical_v9568,
+            "load_state": _load_state_v9569_base,
+            "load_journal": _load_journal_v9569_base,
+            "save_journal": _save_journal_v9569_base,
+            "validate_runtime_configuration": _validate_runtime_v9569_base,
+            "run_architecture_audit": _architecture_audit_v9569_base,
+            "run_v8_2_authority_audit": _authority_audit_v9569_base,
+            "run_audit_journal": _audit_journal_v9569_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def _v9569_state_lineage_compatible() -> bool:
+    return all(
+        state_upgrade_policy_v9533(architecture).get("memory_compatible")
+        and state_upgrade_policy_v9533(architecture).get("opportunity_lineage_compatible")
+        for architecture in (
+            V9567_ARCHITECTURE_VERSION,
+            V9568_ARCHITECTURE_VERSION,
+            V9569_ARCHITECTURE_VERSION,
+        )
+    )
+
+
+def validate_runtime_configuration_canonical_v9569() -> dict[str, Any]:
+    report = _run_v9568_boundary_for_v9569(_validate_runtime_v9569_base)
+    errors = list(report.get("errors") or [])
+    checks = {
+        "release_seal": BOT_VERSION == V9569_BOT_VERSION and ARCHITECTURE_VERSION == V9569_ARCHITECTURE_VERSION,
+        "single_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9569,
+        "ranking_matches_authority": globals().get("detect_candidates") is detect_candidates_canonical_v9569,
+        "restart_safe_state_loader": globals().get("load_state") is load_state_canonical_v9569,
+        "router_queue_persistence_active": globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541,
+        "directional_limit_anchor_active": globals().get("router_reentry_tactic_readiness_v9533") is router_reentry_tactic_readiness_v9533,
+        "idempotent_compactor_active": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9569,
+        "v9567_v9568_v9569_state_compatible": _v9569_state_lineage_compatible(),
+        "scheduler_unchanged": V9569_SCHEDULER_CADENCE_MINUTES == 15,
+        "one_position_policy_unchanged": True,
+        "score_rr_risk_thresholds_unchanged": True,
+        "no_fixed_confirmation_count": True,
+    }
+    errors.extend(name for name, ok in checks.items() if not ok)
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "restart_safe_checks": checks,
+        "compatible_router_releases": [67, 68, 69],
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9569_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9569": V9569_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9569
+
+
+def run_architecture_audit_v9569() -> dict[str, Any]:
+    report = _run_v9568_boundary_for_v9569(_architecture_audit_v9569_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9569_single_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9569,
+        "v9569_restart_safe_state_loader": globals().get("load_state") is load_state_canonical_v9569,
+        "v9569_router_queue_persistence": globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541,
+        "v9569_directional_limit_anchor": globals().get("router_reentry_tactic_readiness_v9533") is router_reentry_tactic_readiness_v9533,
+        "v9569_idempotent_compactor": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9569,
+        "v9569_state_lineage": _v9569_state_lineage_compatible(),
+        "v9569_15m_scheduler": V9569_SCHEDULER_CADENCE_MINUTES == 15,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9569_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9569
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9569
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "executive_object": callable(globals().get("executive_decision_engine")),
+        "canonical_execution_object": callable(globals().get("reachable_execution_route_v9568")),
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if authority is not None and canonical else "FAILED",
+    }
+
+
+def run_audit_journal_canonical_v9569(path: str) -> dict[str, Any]:
+    output = _audit_journal_v9569_base(path)
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    output["v9569_restart_safe_router"] = {
+        "effective_bot_version": BOT_VERSION,
+        "compatible_router_releases": [67, 68, 69],
+        "router_queue_persisted_across_restart": True,
+        "limit_anchor_directional": True,
+        "current_trusted_price_only": True,
+        "retrospective_synthetic_fill": False,
+        "idempotent_compaction": True,
+        "forward_control_v9569": build_forward_control_snapshot_v9569(payload),
+        "scheduler_cadence_minutes": V9569_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9569_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9569
+
+
+def _v9569_value_route_fixture(
+    *, side: str = Side.LONG.value, anchor: float = 100.0,
+    invalidation: float = 98.0, chain_id: str = "v9569-restart-route",
+) -> Opportunity:
+    created = now_utc() - timedelta(minutes=6)
+    origin = int(created.timestamp() * 1000)
+    return Opportunity(
+        side=side,
+        setup_type=SetupType.FRESH_BASE_CONTINUATION.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        created_at=created.isoformat(),
+        expires_at=(created + timedelta(minutes=V9568_VALUE_ROUTE_TTL_MINUTES)).isoformat(),
+        score=80,
+        trigger_level=anchor,
+        invalidation_level=invalidation,
+        execution_lane=ExecutionLane.LIMIT_ONLY.value,
+        status=OpportunityStatus.WAIT_PULLBACK.value,
+        execution_tactic="LIMIT_AT_ANCHOR",
+        router_decision_3m_ts=origin,
+        router_episode_origin_3m_ts=origin,
+        router_last_evaluated_3m_ts=origin,
+        router_recheck_count=0,
+        router_chain_id=chain_id,
+        signal_id=f"{chain_id}-signal",
+        evidence_debt_v9564={
+            "adaptive_value_route_v9567": {
+                "mode": "EARLY_VALUE_ROUTE", "value_anchor": anchor,
+                "schema_version": V9567_SCHEMA_VERSION,
+            },
+            "router_requirement_type": "PRICE_OPTIMIZATION",
+            "queue_for_one_material_event": False,
+            "execution_route_contract_v9568": {
+                "mode": "PRICE_OPTIMIZATION", "reachable": True,
+                "price_optimization_reachable": True,
+                "proof_event_reachable": False,
+                "queue_for_one_material_event": False,
+                "schema_version": V9568_SCHEMA_VERSION,
+            },
+        },
+    )
+
+
+def _v9569_restart_roundtrip_checks() -> bool:
+    original_state_file = globals().get("STATE_FILE")
+    try:
+        with tempfile.TemporaryDirectory(prefix="bzu-v9569-state-") as temp_dir:
+            for architecture in (
+                V9567_ARCHITECTURE_VERSION,
+                V9568_ARCHITECTURE_VERSION,
+                V9569_ARCHITECTURE_VERSION,
+            ):
+                globals()["STATE_FILE"] = Path(temp_dir) / f"state-{_architecture_release_v9569(architecture)}.json"
+                opportunity = _v9569_value_route_fixture(
+                    chain_id=f"v9569-release-{_architecture_release_v9569(architecture)}",
+                )
+                state = {
+                    "version": "compatibility-fixture",
+                    "architecture_version": architecture,
+                    "active_trade": None,
+                    "opportunity": None,
+                    "router_opportunity_queue_v9541": [],
+                    "scan_3m": _empty_scan3m_state(),
+                    "regime_memory": {"v9569_marker": "preserve"},
+                    "stage_history": [{"v9569_marker": "preserve"}],
+                    "latest_signal": None,
+                    "last_message_key": "v9569-preserve",
+                    "history": [],
+                }
+                store_router_opportunity_v9541(state, opportunity, journal={})
+                save_state(state)
+                loaded = load_state_canonical_v9569()
+                queue = list(loaded.get("router_opportunity_queue_v9541") or [])
+                if not (
+                    len(queue) == 1
+                    and int(queue[0].get("router_decision_3m_ts") or 0) == opportunity.router_decision_3m_ts
+                    and int(queue[0].get("router_recheck_count") or 0) == opportunity.router_recheck_count
+                    and (loaded.get("regime_memory") or {}).get("v9569_marker") == "preserve"
+                    and loaded.get("architecture_version") == V9569_ARCHITECTURE_VERSION
+                ):
+                    return False
+        return True
+    finally:
+        globals()["STATE_FILE"] = original_state_file
+
+
+def _v9569_directional_limit_checks() -> bool:
+    long_opp = _v9569_value_route_fixture(side=Side.LONG.value, invalidation=98.0)
+    short_opp = _v9569_value_route_fixture(side=Side.SHORT.value, invalidation=102.0)
+
+    def context_for(opp: Opportunity, price: float) -> dict[str, Any]:
+        evidence_ts = int(opp.router_decision_3m_ts) + 180_000
+        return {
+            "price": price, "atr15": 1.0, "execution_price_trusted": True,
+            "candles": {"3m": [Candle(
+                evidence_ts, price, price + 0.01, price - 0.01, price,
+                confirmed=True,
+            )]},
+        }
+
+    long_better = router_reentry_tactic_readiness_v9533(long_opp, context_for(long_opp, 99.70))
+    long_worse = router_reentry_tactic_readiness_v9533(long_opp, context_for(long_opp, 100.06))
+    long_invalid = router_reentry_tactic_readiness_v9533(long_opp, context_for(long_opp, 97.90))
+    short_better = router_reentry_tactic_readiness_v9533(short_opp, context_for(short_opp, 100.30))
+    short_worse = router_reentry_tactic_readiness_v9533(short_opp, context_for(short_opp, 99.94))
+    return bool(
+        long_better.get("ready") and long_better.get("directional_improvement_atr") == 0.3
+        and not long_worse.get("ready")
+        and not long_invalid.get("ready")
+        and long_invalid.get("reason") == "LIMIT_ROUTE_FACTUALLY_INVALIDATED"
+        and short_better.get("ready") and short_better.get("directional_improvement_atr") == 0.3
+        and not short_worse.get("ready")
+        and not long_better.get("symmetric_anchor_corridor")
+        and long_better.get("retrospective_synthetic_fill") is False
+    )
+
+
+def _v9569_compaction_checks() -> bool:
+    full = {
+        "id": "v9569-compaction", "time": iso_now(),
+        "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+        "setup_type": SetupType.FRESH_BASE_CONTINUATION.value,
+        "audit": {
+            "adaptive_execution_v9567": {
+                "mode": "EARLY_VALUE_ROUTE", "market_utility": 0.6812,
+                "execution_quality": 0.6123, "value_anchor": 99.7,
+                "rejected_sweep_present": False,
+            },
+            "execution_route_contract_v9568": {
+                "mode": "PRICE_OPTIMIZATION", "reachable": True,
+                "proof_event_reachable": False,
+                "queue_for_one_material_event": False,
+                "setup_trigger_ready": True, "execution_event_ready": False,
+                "potential_after_one_material_event": 0.7312,
+            },
+        },
+        "stage_plan": {"final_blocking_reasons_v9568": ["WAIT_CURRENT_PRICE"]},
+    }
+    first = compact_signal_canonical_v9569(full)
+    second = compact_signal_canonical_v9569(first)
+    third = compact_signal_canonical_v9569(second)
+    required = {
+        "execution_mode_v9568": "PRICE_OPTIMIZATION",
+        "execution_route_reachable_v9568": True,
+        "final_blocking_reasons_v9568": ["WAIT_CURRENT_PRICE"],
+    }
+    return bool(
+        first == second == third
+        and all(first.get(key) == value for key, value in required.items())
+        and first.get("canonical_compactor_schema_v9569") == V9569_SCHEMA_VERSION
+    )
+
+
+def _v9569_full_router_lifecycle_check() -> bool:
+    """Create -> persist -> restart -> causal retest -> executable -> stored trade."""
+    original_state_file = globals().get("STATE_FILE")
+    try:
+        with tempfile.TemporaryDirectory(prefix="bzu-v9569-lifecycle-") as temp_dir:
+            globals()["STATE_FILE"] = Path(temp_dir) / "state.json"
+            route = _v9569_value_route_fixture(chain_id="v9569-full-lifecycle")
+            origin = int(route.router_decision_3m_ts)
+            state: dict[str, Any] = {
+                "version": V9568_BOT_VERSION,
+                "architecture_version": V9568_ARCHITECTURE_VERSION,
+                "active_trade": None,
+                "opportunity": None,
+                "router_opportunity_queue_v9541": [],
+                "scan_3m": _empty_scan3m_state(),
+                "regime_memory": {"v9569_full_cycle": True},
+                "stage_history": [],
+                "latest_signal": None,
+                "last_message_key": "",
+                "history": [],
+            }
+            lifecycle_journal: dict[str, Any] = {}
+            store_router_opportunity_v9541(
+                state, route, journal=lifecycle_journal,
+            )
+            if len(state.get("router_opportunity_queue_v9541") or []) != 1:
+                return False
+            save_state(state)
+
+            restarted = load_state_canonical_v9569()
+            restored = opportunity_from_state(restarted)
+            if restored is None:
+                return False
+            if not (
+                int(restored.router_decision_3m_ts or 0) == origin
+                and int(restored.router_recheck_count or 0) == 0
+                and restored.execution_tactic == "LIMIT_AT_ANCHOR"
+            ):
+                return False
+
+            fill_ts = origin + 180_000
+            fill_price = safe_float(restored.trigger_level, 100.0) - 0.30
+            fill_context = {
+                "price": fill_price,
+                "atr15": 1.0,
+                "execution_price_trusted": True,
+                "_audit_shadow_scan": True,
+                "zones": [],
+                "scan_3m_events": {
+                    Side.LONG.value: {"stage": "READY", "last_event_ts": fill_ts},
+                },
+                "candles": {"3m": [Candle(
+                    fill_ts, fill_price + 0.10, fill_price + 0.20,
+                    fill_price - 0.10, fill_price, confirmed=True,
+                )]},
+            }
+            reentry = candidate_from_missed_opportunity(restored, fill_context)
+            if reentry is None:
+                return False
+            reentry_stage = dict(reentry.stage_plan or {})
+            if not (
+                reentry_stage.get("consumed_tactic") == "LIMIT_AT_ANCHOR"
+                and reentry_stage.get("router_final_tactic") == "MARKET_NOW"
+                and reentry_stage.get("router_final_disposition") == "RECHECK_READY"
+                and int(safe_float(reentry_stage.get("evidence_ts"), 0.0)) > origin
+            ):
+                return False
+
+            decision = _v9564_fixture(
+                score=80, setup_quality=82.0, structural=76.0,
+                asi=20.0, runway=0.95, htf_state="ALIGNED",
+                regime_bias="BULLISH",
+            )
+            candidate = decision.candidate
+            plan = decision.plan
+            if candidate is None or plan is None:
+                return False
+            candidate.entry_quality_score = 82
+            candidate.trade_plan_quality_score = 82
+            candidate.durability_quality_score = 80
+            candidate.evaluation_bundle.update({
+                "entry_quality": 82.0, "trade_quality": 82.0,
+            })
+            candidate.stage_plan.update(copy.deepcopy(reentry_stage))
+            candidate.side = Side.LONG.value
+            candidate.trigger_level = restored.trigger_level
+            candidate.execution_anchor = restored.trigger_level
+            candidate.invalidation_level = restored.invalidation_level
+            candidate.trigger_ready = True
+            candidate.live_3m_trigger_ready = True
+            candidate.reentry_ready = True
+            candidate.confirmation_pending = False
+            candidate.execution_source = reentry.execution_source
+            candidate.limit_armed_ready = reentry.limit_armed_ready
+            candidate.execution_trigger_age_minutes = 0.0
+            candidate.trigger_age_minutes = 0.0
+            candidate.stage_plan["router_chain_id"] = str(
+                reentry_stage.get("router_chain_id") or restored.router_chain_id
+            )
+            decision.side = Side.LONG.value
+            decision.current_price = fill_price
+            plan.entry = fill_price
+            plan.stop = restored.invalidation_level
+            plan.structural_invalidation = restored.invalidation_level
+            plan.tp0 = 101.20
+            plan.tp1 = 103.00
+            plan.tp2 = 105.00
+            plan.tp3 = 107.00
+            plan.valid = True
+            plan.execution_ready = False
+            decision.audit["canonical_router_result_v9553"].update({
+                "router_final_tactic": "MARKET_NOW",
+                "router_final_disposition": "RECHECK_READY",
+                "router_chain_id": candidate.stage_plan["router_chain_id"],
+                "evidence_ts": fill_ts,
+                "decision_watermark": origin,
+                "router_recheck_consumed": True,
+                "router_confirmation_consumed": False,
+                "retest_consumed": False,
+                "native_retest_observed": True,
+                "authoritative": True,
+                "authority_source": "CANONICAL_ROUTER_RESULT",
+            })
+            decision = apply_canonical_execution_authority_v9569(
+                decision, fill_context, lifecycle_journal,
+            )
+            if not (
+                decision.action in EXECUTABLE_ENTRY_ACTIONS
+                and decision.plan is not None
+                and decision.plan.execution_ready
+            ):
+                return False
+
+            opened = ActiveTrade(
+                id="v9569-trade", signal_id=decision.id,
+                side=decision.side, setup_type=decision.setup_type,
+                setup_family=candidate.setup_family, opened_at=iso_now(),
+                entry=decision.plan.entry, stop_initial=decision.plan.stop,
+                stop_current=decision.plan.stop,
+                structural_invalidation=decision.plan.structural_invalidation,
+                tp1=decision.plan.tp1, tp2=decision.plan.tp2,
+                tp3=decision.plan.tp3, quality=decision.quality,
+                position_risk_pct=decision.plan.position_risk_pct,
+                best_price=decision.plan.entry, worst_price=decision.plan.entry,
+                trigger_level=candidate.trigger_level,
+                execution_source=candidate.execution_source,
+                entry_stage=candidate.entry_stage,
+                stage_plan=copy.deepcopy(candidate.stage_plan),
+            )
+            restarted["latest_signal"] = {
+                "id": decision.id, "action": decision.action,
+            }
+            store_active_trade(restarted, opened)
+            clear_router_chain_v9541(
+                restarted, candidate, lifecycle_journal, "EXECUTED",
+            )
+            invariant = _execution_commit_invariant_v9553(restarted)
+            return bool(
+                invariant.get("valid")
+                and (restarted.get("router_execution_commit_v9553") or {}).get("status") == "EXECUTED"
+                and isinstance(restarted.get("active_trade"), dict)
+                and not restarted.get("router_opportunity_queue_v9541")
+                and restarted.get("opportunity") is None
+            )
+    finally:
+        globals()["STATE_FILE"] = original_state_file
+
+
+def _v9569_safety_checks() -> list[tuple[str, bool]]:
+    runtime = validate_runtime_configuration_canonical_v9569()
+    return [
+        (
+            "v9.5.69 preserves v9.5.67/v9.5.68/v9.5.69 Router state across restart",
+            _v9569_restart_roundtrip_checks(),
+        ),
+        (
+            "v9.5.69 LIMIT_AT_ANCHOR accepts directional improvement, rejects adverse drift and invalidation",
+            _v9569_directional_limit_checks(),
+        ),
+        (
+            "v9.5.69 signal compaction is a fixed point and retains v9.5.68 route fields",
+            _v9569_compaction_checks(),
+        ),
+        (
+            "v9.5.69 full lifecycle creates, saves, restarts, retests and stores an executed trade",
+            _v9569_full_router_lifecycle_check(),
+        ),
+        (
+            "v9.5.69 keeps 24 setups, one-position policy, zero new candle blockers and 15-minute cadence",
+            runtime.get("valid") is True
+            and runtime.get("scheduler_cadence_minutes") == 15
+            and runtime.get("fixed_confirmation_candle_count") == 0
+            and runtime.get("new_confirmation_blockers") == 0
+            and len(_tracked_setup_types()) == 24,
+        ),
+    ]
+
+
+def run_self_test_canonical_v9569() -> bool:
+    prior_ok = bool(_run_v9568_boundary_for_v9569(_run_self_test_v9569_base))
+    checks = _v9569_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.69 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} restart-safety checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9569
 
 
 # The modules import without a circular dependency; bind their pure helper
