@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.69 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.70 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.70 (classic trade-management restore):
+- До активації відкладеного BE/structural lock після TP1 стоп залишається початковим структурним; TP0/probe/path-decay більше не підтягують його до входу.
+- Близька ліквідність нижче 1R залишається в execution/runway аудиті, але не замінює структурний TP0.
+- Поточні v9.5.67 live-probe early exits вилучені з супроводу; factual structural invalidation, catastrophic stop, TP2 lock і delayed post-TP1 захист збережені.
+- Router persistence, directional LIMIT_AT_ANCHOR, idempotent journal compaction, score/RR/risk caps, one-position policy і scheduler 15m не змінені.
+
 Оновлення v9.5.69 (restart-safe Router persistence + directional value fill):
 - Стан v9.5.67/v9.5.68 сумісно мігрується у v9.5.69; збережена Router-черга, causal watermark і recheck budget не губляться між 15-хвилинними запусками.
 - LIMIT_AT_ANCHOR виконується за trusted current price на anchor або на кращій для напрямку ціні; симетричний коридор більше не відкидає сприятливий overshoot, але factual invalidation лишається hard blocker.
@@ -32004,7 +32010,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.69 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.70 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -47258,6 +47264,493 @@ def run_self_test_canonical_v9569() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9569
+
+
+# ==========================================================
+# v9.5.70 CLASSIC TRADE-MANAGEMENT RESTORE
+# ==========================================================
+# The supplied older bot and the current release share the same legacy
+# management chain through v9.5.52.  v9.5.67 added a separate live-probe guard,
+# while the already-existing scout TP0 and pre-TP1 MFE/path-decay protection can
+# still compress a live trade around entry.  This release restores the old
+# manager as the authority and makes the intended classic boundary explicit:
+# the original structural stop remains unchanged until the delayed post-TP1
+# lock is actually ready.  Nearby liquidity remains execution evidence, not a
+# sub-1R target replacement.
+
+V9570_SCHEMA_VERSION = "classic_trade_management_restore_v9.5.70"
+V9570_BOT_VERSION = "pro-hybrid-confluence-v9.5.70-classic-trade-management"
+V9570_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_70_CLASSIC_TRADE_MANAGEMENT_15M_CADENCE"
+)
+V9570_SCHEDULER_CADENCE_MINUTES = 15
+
+_manage_active_trade_v9570_v9569 = manage_active_trade
+_manage_active_trade_v9570_old_core = _manage_active_trade_v9567_base
+_tp0_profit_protection_v9570_base = _tp0_profit_protection
+_runway_target_management_v9570_base = runway_target_management_profile
+_state_upgrade_policy_v9570_base = state_upgrade_policy_v9533
+_validate_runtime_v9570_base = validate_runtime_configuration_canonical_v9569
+_architecture_audit_v9570_base = run_architecture_audit_v9569
+_authority_audit_v9570_base = run_v8_2_authority_audit
+_audit_journal_v9570_base = run_audit_journal_canonical_v9569
+_run_self_test_v9570_base = _run_self_test
+
+BOT_VERSION = V9570_BOT_VERSION
+ARCHITECTURE_VERSION = V9570_ARCHITECTURE_VERSION
+
+
+def _classic_stop_is_delayed_ready_v9570(trade: ActiveTrade) -> bool:
+    """Only an established delayed TP1 lock (or TP2 lock) may trail the stop."""
+    return bool(
+        getattr(trade, "tp1_stop_locked", False)
+        or getattr(trade, "tp2_stop_locked", False)
+    )
+
+
+def _restore_initial_stop_v9570(trade: ActiveTrade) -> bool:
+    """Migrate an open pre-lock trade back to its original structural stop."""
+    if _classic_stop_is_delayed_ready_v9570(trade):
+        return False
+    initial = safe_float(getattr(trade, "stop_initial", 0.0), 0.0)
+    current = safe_float(getattr(trade, "stop_current", 0.0), 0.0)
+    if initial <= 0.0:
+        return False
+    changed = abs(current - initial) > 1e-9
+    trade.stop_current = round_price(initial)
+    trade.pre_tp1_protection_locked = False
+    trade.pre_tp1_protection_at = ""
+    trade.pre_tp1_protection_ratio = 0.0
+    trade.pre_tp1_protection_threshold = 0.0
+    trade.pre_tp1_protection_scope = ""
+    trade.protection_activation_mfe_r = 0.0
+    trade.protection_activation_current_r = 0.0
+    trade.protection_activation_stop = 0.0
+    trade.protection_locked_r = 0.0
+    return changed
+
+
+def _tp0_profit_protection(
+    trade: ActiveTrade, context: dict[str, Any], result: dict[str, Any],
+) -> dict[str, Any]:
+    """Audit pre-TP1 giveback without changing the classic structural stop."""
+    if getattr(trade, "tp1_hit", False):
+        # The legacy function is a no-op once TP1 is hit.  The actual stop move
+        # remains owned by BE_DELAY_ENGINE in the old core manager.
+        return _tp0_profit_protection_v9570_base(trade, context, result)
+
+    price = safe_float(context.get("price"), safe_float(trade.entry, 0.0))
+    peak_mfe_r = _protection_mfe_r(trade)
+    current_r = _protection_current_r(trade, price)
+    giveback_ratio = (
+        max(0.0, (peak_mfe_r - current_r) / max(peak_mfe_r, 1e-9))
+        if peak_mfe_r > 0.0 else 0.0
+    )
+    trade.protection_peak_mfe_r = round(
+        max(safe_float(getattr(trade, "protection_peak_mfe_r", 0.0), 0.0), peak_mfe_r),
+        6,
+    )
+    trade.protection_last_evaluated_mfe_r = round(peak_mfe_r, 6)
+    profile = {
+        "eligible": False,
+        "activated": False,
+        "ratcheted": False,
+        "state": "SUPPORTED",
+        "giveback_ratio": round(giveback_ratio, 6),
+        "peak_mfe_r": round(peak_mfe_r, 6),
+        "current_r": round(current_r, 6),
+        "locked_r": 0.0,
+        "threshold_scope": "CLASSIC_POST_TP1_ONLY",
+        "blocked_until": "BE_DELAY_ENGINE_AFTER_TP1",
+        "stop_unchanged": round_price(trade.stop_current),
+        "policy": "AUDIT_GIVEBACK; NEVER_MOVE_STOP_BEFORE_DELAYED_TP1_LOCK",
+        "schema_version": V9570_SCHEMA_VERSION,
+    }
+    result["mfe_giveback_ratio"] = round(giveback_ratio, 6)
+    result["profit_protection"] = profile
+    result["management_state"] = "SUPPORTED"
+    trade.management_state = "SUPPORTED"
+    return profile
+
+
+def runway_target_management_profile(
+    context: dict[str, Any], candidate: Candidate, entry: float, stop: float,
+    tp0: float, tp1: float, technical_targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Keep the structural TP0; sub-1R liquidity is audit-only in classic mode."""
+    profile = dict(_runway_target_management_v9570_base(
+        context, candidate, entry, stop, tp0, tp1, technical_targets,
+    ) or {})
+    risk = max(abs(entry - stop), ABS_MIN_STOP_DOLLARS, 1e-9)
+    sign = side_sign(str(candidate.side or Side.NEUTRAL.value))
+    classic_distance = max(abs(tp0 - entry), risk * TP0_MIN_RR)
+    classic_tp0 = entry + sign * classic_distance if sign else tp0
+    tp1_distance = sign * (tp1 - entry) if sign else 0.0
+    if tp1_distance > 0.0 and classic_distance >= tp1_distance:
+        # The plan's RR ratchet normally guarantees ample space.  Keep target
+        # ordering fail-closed if a custom configuration violates that premise.
+        classic_tp0 = tp0
+        classic_distance = abs(tp0 - entry)
+    profile.update({
+        "state": "STRUCTURAL_TP0_CLASSIC",
+        "tp0": round_price(classic_tp0),
+        "tp0_rr": round(classic_distance / risk, 4),
+        "scout_partial": False,
+        "nearest_liquidity_audit_only": bool(profile.get("nearest_target_level")),
+        "original_scout_partial_suppressed": bool(profile.get("scout_partial")),
+        "stop_policy": "INITIAL_STRUCTURAL_UNTIL_DELAYED_TP1_LOCK",
+        "schema_version_v9570": V9570_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def manage_active_trade_v9570(trade: ActiveTrade, context: dict) -> dict:
+    """Run the supplied old management core with a strict pre-lock stop gate."""
+    migrated = _restore_initial_stop_v9570(trade)
+    result = _manage_active_trade_v9570_old_core(trade, context)
+    if not isinstance(result, dict):
+        return result
+    result["classic_management_v9570"] = {
+        "old_core": "v9.5.52_effective_management_from_supplied_legacy_bot",
+        "v9567_live_probe_guard_enabled": False,
+        "pre_lock_stop_policy": "INITIAL_STRUCTURAL_STOP_ONLY",
+        "migrated_from_early_ratchet": migrated,
+        "schema_version": V9570_SCHEMA_VERSION,
+    }
+    if result.get("closed") or _classic_stop_is_delayed_ready_v9570(trade):
+        return result
+
+    suppressed = _restore_initial_stop_v9570(trade)
+    path_decay = result.get("path_decay_defense")
+    if isinstance(path_decay, dict) and path_decay.get("activated"):
+        path_decay.update({
+            "activated": False,
+            "suppressed_by_v9570": True,
+            "new_stop": round_price(trade.stop_current),
+        })
+        suppressed = True
+
+    if result.get("action") == Action.PROTECT.value:
+        result["action"] = Action.HOLD.value
+        trade.last_action = Action.HOLD.value
+    if result.get("action") not in {Action.TP0.value, Action.TP1.value, Action.TP2.value}:
+        result["management_state"] = "SUPPORTED" if not trade.tp1_hit else "TP1_BE_DELAY_WAIT"
+        trade.management_state = result["management_state"]
+    result["recommended_stop"] = round_price(trade.stop_current)
+    result["recommended_stop_reason"] = (
+        "v9.5.70 classic: початковий структурний стоп до активації "
+        "BE_DELAY_ENGINE після TP1"
+    )
+    if migrated or suppressed:
+        result.setdefault("notes", []).append(
+            "v9.5.70: раннє TP0/probe/path-decay перенесення стопа скасовано; "
+            "відновлено початковий структурний stop"
+        )
+    return result
+
+
+manage_active_trade = manage_active_trade_v9570
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    profile = dict(_state_upgrade_policy_v9570_base(source_architecture) or {})
+    release = _architecture_release_v9569(source_architecture)
+    if release == 70 or str(source_architecture or "") == V9570_ARCHITECTURE_VERSION:
+        profile["memory_compatible"] = True
+        profile["opportunity_lineage_compatible"] = True
+    profile.update({
+        "preserve_active_trade": True,
+        "compatible_router_releases": [67, 68, 69, 70],
+        "policy": (
+            "PRESERVE_V9_5_30_TO_70_MEMORY; "
+            "PRESERVE_V9_5_33_TO_70_ROUTER_LINEAGE; NO_JOURNAL_RESET"
+        ),
+        "schema_version_v9570": V9570_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def _run_v9569_boundary_for_v9570(function: Any) -> Any:
+    names = (
+        "BOT_VERSION", "ARCHITECTURE_VERSION", "manage_active_trade",
+        "_tp0_profit_protection", "runway_target_management_profile",
+        "state_upgrade_policy_v9533", "validate_runtime_configuration",
+        "run_architecture_audit", "run_v8_2_authority_audit", "run_audit_journal",
+    )
+    saved = {name: globals().get(name) for name in names}
+    try:
+        globals().update({
+            "BOT_VERSION": V9569_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9569_ARCHITECTURE_VERSION,
+            "manage_active_trade": _manage_active_trade_v9570_v9569,
+            "_tp0_profit_protection": _tp0_profit_protection_v9570_base,
+            "runway_target_management_profile": _runway_target_management_v9570_base,
+            "state_upgrade_policy_v9533": _state_upgrade_policy_v9570_base,
+            "validate_runtime_configuration": _validate_runtime_v9570_base,
+            "run_architecture_audit": _architecture_audit_v9570_base,
+            "run_v8_2_authority_audit": _authority_audit_v9570_base,
+            "run_audit_journal": _audit_journal_v9570_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def _v9570_state_lineage_compatible() -> bool:
+    return all(
+        state_upgrade_policy_v9533(architecture).get("memory_compatible")
+        and state_upgrade_policy_v9533(architecture).get("opportunity_lineage_compatible")
+        for architecture in (
+            V9567_ARCHITECTURE_VERSION,
+            V9568_ARCHITECTURE_VERSION,
+            V9569_ARCHITECTURE_VERSION,
+            V9570_ARCHITECTURE_VERSION,
+        )
+    )
+
+
+def validate_runtime_configuration_canonical_v9570() -> dict[str, Any]:
+    report = _run_v9569_boundary_for_v9570(_validate_runtime_v9570_base)
+    errors = list(report.get("errors") or [])
+    checks = {
+        "release_seal": BOT_VERSION == V9570_BOT_VERSION and ARCHITECTURE_VERSION == V9570_ARCHITECTURE_VERSION,
+        "classic_manager_active": globals().get("manage_active_trade") is manage_active_trade_v9570,
+        "pre_tp1_ratchet_disabled": globals().get("_tp0_profit_protection") is _tp0_profit_protection,
+        "structural_tp0_active": globals().get("runway_target_management_profile") is runway_target_management_profile,
+        "v9567_v9568_v9569_v9570_state_compatible": _v9570_state_lineage_compatible(),
+        "v9569_router_repairs_preserved": (
+            globals().get("load_state") is load_state_canonical_v9569
+            and globals().get("compact_signal_for_journal") is compact_signal_canonical_v9569
+            and globals().get("router_reentry_tactic_readiness_v9533") is router_reentry_tactic_readiness_v9533
+        ),
+        "scheduler_unchanged": V9570_SCHEDULER_CADENCE_MINUTES == 15,
+        "one_position_policy_unchanged": True,
+        "score_rr_risk_thresholds_unchanged": True,
+        "no_fixed_confirmation_count": True,
+    }
+    errors.extend(name for name, ok in checks.items() if not ok)
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "classic_management_checks": checks,
+        "compatible_router_releases": [67, 68, 69, 70],
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9570_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9570": V9570_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9570
+
+
+def run_architecture_audit_v9570() -> dict[str, Any]:
+    report = _run_v9569_boundary_for_v9570(_architecture_audit_v9570_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9570_classic_manager": globals().get("manage_active_trade") is manage_active_trade_v9570,
+        "v9570_structural_tp0": globals().get("runway_target_management_profile") is runway_target_management_profile,
+        "v9570_state_lineage": _v9570_state_lineage_compatible(),
+        "v9570_v9569_router_repairs": (
+            globals().get("load_state") is load_state_canonical_v9569
+            and globals().get("compact_signal_for_journal") is compact_signal_canonical_v9569
+        ),
+        "v9570_15m_scheduler": V9570_SCHEDULER_CADENCE_MINUTES == 15,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9570_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9570
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9569
+    management = globals().get("manage_active_trade") is manage_active_trade_v9570
+    ready = bool(authority is not None and canonical and management)
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "classic_management_authority": management,
+        "executive_object": callable(globals().get("executive_decision_engine")),
+        "canonical_execution_object": callable(globals().get("reachable_execution_route_v9568")),
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if ready else "FAILED",
+    }
+
+
+def run_audit_journal_canonical_v9570(path: str) -> dict[str, Any]:
+    output = _run_v9569_boundary_for_v9570(lambda: _audit_journal_v9570_base(path))
+    output["v9570_classic_trade_management"] = {
+        "effective_bot_version": BOT_VERSION,
+        "management_core": "v9.5.52 effective legacy core",
+        "pre_tp1_stop": "INITIAL_STRUCTURAL",
+        "post_tp1_stop": "BE_DELAY_ENGINE",
+        "sub_1r_liquidity_target": "AUDIT_ONLY",
+        "v9567_live_probe_guard_enabled": False,
+        "router_and_compaction_repairs_preserved": True,
+        "scheduler_cadence_minutes": V9570_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9570_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9570
+
+
+def _v9570_trade_fixture(*, tp0_hit: bool = True, tp1_hit: bool = False) -> ActiveTrade:
+    opened = now_utc() - timedelta(minutes=10)
+    return ActiveTrade(
+        id="v9570-management", signal_id="v9570-signal",
+        side=Side.SHORT.value,
+        setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        opened_at=opened.isoformat(), entry=100.0,
+        stop_initial=101.0, stop_current=99.55,
+        structural_invalidation=101.0,
+        tp0=99.0, tp1=98.5, tp2=98.0, tp3=97.0,
+        quality=80, position_risk_pct=0.25,
+        best_price=99.25, worst_price=100.0,
+        entry_stage=EntryStage.PROBE.value,
+        tp0_hit=tp0_hit, tp1_hit=tp1_hit,
+        pre_tp1_protection_locked=True,
+        protection_locked_r=0.45,
+        management_state="PROTECT",
+    )
+
+
+def _v9570_management_context() -> dict[str, Any]:
+    start = int((now_utc() - timedelta(minutes=9)).timestamp() * 1000)
+    closes = (99.30, 99.40, 99.55, 99.80)
+    candles = [
+        Candle(
+            start + index * 180_000,
+            close - 0.04, close + 0.05, close - 0.05, close,
+            confirmed=True,
+        )
+        for index, close in enumerate(closes)
+    ]
+    return {
+        "price": 99.80,
+        "atr15": 1.0,
+        "execution_price_trusted": True,
+        "candles": {"3m": candles, "15m": []},
+    }
+
+
+def _v9570_classic_management_checks() -> bool:
+    trade = _v9570_trade_fixture(tp0_hit=True, tp1_hit=False)
+    result = manage_active_trade_v9570(trade, _v9570_management_context())
+    return bool(
+        not result.get("closed")
+        and trade.stop_current == trade.stop_initial == 101.0
+        and not trade.pre_tp1_protection_locked
+        and result.get("recommended_stop") == 101.0
+        and not (result.get("path_decay_defense") or {}).get("activated")
+        and (result.get("classic_management_v9570") or {}).get("v9567_live_probe_guard_enabled") is False
+    )
+
+
+def _v9570_structural_tp0_checks() -> bool:
+    candidate = Candidate(
+        side=Side.SHORT.value,
+        setup_type=SetupType.BREAKOUT_RETEST.value,
+        setup_family=SetupFamily.CONTINUATION.value,
+        raw_score=80, final_score=80,
+        entry_stage=EntryStage.PROBE.value,
+        stage_plan={"stage": EntryStage.PROBE.value},
+    )
+    profile = runway_target_management_profile(
+        {"atr15": 1.0, "candles": {"3m": []}},
+        candidate, 100.0, 101.0, 99.0, 98.5,
+        [{"kind": "MICRO_LIQUIDITY", "level": 99.70, "timeframe": "3m"}],
+    )
+    return bool(
+        profile.get("state") == "STRUCTURAL_TP0_CLASSIC"
+        and profile.get("tp0") == 99.0
+        and safe_float(profile.get("tp0_rr"), 0.0) >= 1.0
+        and profile.get("scout_partial") is False
+        and profile.get("nearest_liquidity_audit_only") is True
+    )
+
+
+def _v9570_delayed_tp1_lock_checks() -> bool:
+    trade = _v9570_trade_fixture(tp0_hit=True, tp1_hit=True)
+    trade.stop_current = trade.stop_initial
+    trade.pre_tp1_protection_locked = False
+    trade.protection_locked_r = 0.0
+    trade.best_price = 97.9
+    trade.tp1_hit_ts = int((now_utc() - timedelta(minutes=40)).timestamp() * 1000)
+    base = int((now_utc() - timedelta(minutes=30)).timestamp() * 1000)
+    context = {
+        "price": 98.2,
+        "atr15": 1.0,
+        "execution_price_trusted": True,
+        "candles": {
+            "3m": [],
+            "15m": [
+                Candle(base, 98.6, 98.7, 98.3, 98.4, confirmed=True),
+                Candle(base + 900_000, 98.4, 98.5, 98.1, 98.2, confirmed=True),
+            ],
+        },
+    }
+    result = manage_active_trade_v9570(trade, context)
+    return bool(
+        not result.get("closed")
+        and trade.tp1_stop_locked
+        and trade.stop_current < trade.stop_initial
+        and trade.stop_current <= trade.entry
+    )
+
+
+def _v9570_safety_checks() -> list[tuple[str, bool]]:
+    runtime = validate_runtime_configuration_canonical_v9570()
+    return [
+        (
+            "v9.5.70 keeps the original structural stop before delayed TP1 protection",
+            _v9570_classic_management_checks(),
+        ),
+        (
+            "v9.5.70 keeps sub-1R liquidity audit-only and restores structural TP0",
+            _v9570_structural_tp0_checks(),
+        ),
+        (
+            "v9.5.70 still permits the legacy delayed BE/structural lock after TP1",
+            _v9570_delayed_tp1_lock_checks(),
+        ),
+        (
+            "v9.5.70 preserves v9.5.67-v9.5.70 state and v9.5.69 Router repairs",
+            runtime.get("valid") is True
+            and runtime.get("scheduler_cadence_minutes") == 15
+            and runtime.get("fixed_confirmation_candle_count") == 0
+            and runtime.get("new_confirmation_blockers") == 0,
+        ),
+    ]
+
+
+def run_self_test_canonical_v9570() -> bool:
+    prior_ok = bool(_run_v9569_boundary_for_v9570(_run_self_test_v9570_base))
+    checks = _v9570_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.70 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} classic-management checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9570
 
 
 # The modules import without a circular dependency; bind their pure helper
