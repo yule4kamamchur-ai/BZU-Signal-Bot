@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.72 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.73 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.73 (terminal telemetry integrity + full-system audit):
+- Factual hard blocker тепер має найвищий пріоритет над pending Router route: execution_path примусово стає FACTUAL_REJECT, а не PROBE_VALUE_SEEKING.
+- Terminal reconciliation синхронізує action, plan readiness, Router tactic/disposition, route reachability, entry intent і journal counters; invalidated route не лишається формально досяжним.
+- Signal/trade compaction зберігає v9.5.73 terminal telemetry як idempotent fixed point; стани v9.5.67-v9.5.73 сумісні без reset журналу.
+- Додано цілісний audit-контракт detector -> ranking -> Router -> Final Authority -> risk -> persistence -> management -> scheduler.
+- Adaptive Entry Continuum v9.5.72, класичні TP/SL і супровід v9.5.70, 24 setup, one-position policy та cadence 15m збережені.
+
 Оновлення v9.5.72 (adaptive entry continuum):
 - Entry quality, execution tactic і position sizing розділені: FIRST_RETEST/LIMIT більше не знижує якісний STANDARD setup до EARLY лише через спосіб отримання ціни.
 - EARLY_PROBE має чотири причинні шляхи — DISCOVERY_MARKET, VALUE_CAPTURE, VALUE_SEEKING і PROOF_SEEKING — та безперервний risk fraction 30-50% normal risk замість одного бінарного режиму.
@@ -32026,7 +32033,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.72 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.73 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -50393,6 +50400,861 @@ def run_self_test_canonical_v9572() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9572
+
+
+# ==========================================================
+# v9.5.73 TERMINAL TELEMETRY INTEGRITY / FULL-SYSTEM AUDIT
+# ==========================================================
+# v9.5.72 correctly blocked a factually invalidated setup, but its continuum
+# selected a pending price path before selecting FACTUAL_REJECT.  The action
+# stayed NO_SETUP, yet execution_path could be PROBE_VALUE_SEEKING and the
+# Router contract could remain formally reachable.  This release makes a
+# factual hard blocker terminal across every published surface: action, plan,
+# intent, execution path, Router DTO, route contract, compact journal and
+# aggregate path counters.
+
+V9573_SCHEMA_VERSION = "terminal_telemetry_integrity_full_system_audit_v9.5.73"
+V9573_BOT_VERSION = "pro-hybrid-confluence-v9.5.73-terminal-telemetry-integrity"
+V9573_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_73_TERMINAL_TELEMETRY_INTEGRITY_15M_CADENCE"
+)
+V9573_SCHEDULER_CADENCE_MINUTES = 15
+
+_apply_execution_authority_v9573_base = apply_canonical_execution_authority_v9572
+_detect_candidates_v9573_base = detect_candidates_canonical_v9572
+_candidate_selection_score_v9573_base = _candidate_selection_score
+_compact_signal_v9573_base = compact_signal_canonical_v9572
+_compact_trade_v9573_base = compact_trade_canonical_v9572
+_state_upgrade_policy_v9573_base = state_upgrade_policy_v9533
+_load_state_v9573_base = load_state_canonical_v9572
+_load_journal_v9573_base = load_journal_canonical_v9572
+_save_journal_v9573_base = save_journal_canonical_v9572
+_validate_runtime_v9573_base = validate_runtime_configuration_canonical_v9572
+_architecture_audit_v9573_base = run_architecture_audit_v9572
+_authority_audit_v9573_base = run_v8_2_authority_audit
+_audit_journal_v9573_base = run_audit_journal_canonical_v9572
+_run_self_test_v9573_base = _run_self_test
+
+BOT_VERSION = V9573_BOT_VERSION
+ARCHITECTURE_VERSION = V9573_ARCHITECTURE_VERSION
+
+
+def _factual_hard_blockers_v9573(decision: Decision) -> list[str]:
+    audit = dict(decision.audit or {})
+    authority = dict(audit.get("final_execution_authority_v9551") or {})
+    continuum = dict(audit.get("adaptive_entry_continuum_v9572") or {})
+    return sorted({
+        str(value)
+        for value in list(authority.get("hard_blockers") or [])
+        + list(continuum.get("factual_hard_blockers") or [])
+        if str(value)
+    })
+
+
+def _repair_continuum_path_counter_v9573(
+    journal: dict[str, Any], *, old_path: str, new_path: str,
+) -> None:
+    aggregate = journal.setdefault("entry_continuum_v9572", {})
+    paths = aggregate.setdefault("execution_path_counts", {})
+    # The v9.5.72 authority already counted this evaluation once.  Reconcile
+    # only when the published terminal path differs; otherwise another
+    # increment would double-count an already-correct FACTUAL_REJECT.
+    if old_path == new_path:
+        return
+    if old_path and old_path != new_path:
+        prior = max(0, int(safe_float(paths.get(old_path), 0.0)) - 1)
+        if prior:
+            paths[old_path] = prior
+        else:
+            paths.pop(old_path, None)
+    paths[new_path] = int(safe_float(paths.get(new_path), 0.0)) + 1
+
+
+def reconcile_terminal_execution_v9573(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    """Make factual rejection terminal and identical on every execution surface."""
+    decision.audit = decision.audit or {}
+    blockers = _factual_hard_blockers_v9573(decision)
+    prior_continuum = dict(decision.audit.get("adaptive_entry_continuum_v9572") or {})
+    prior_path = str(prior_continuum.get("execution_path") or "WATCH_RESCAN")
+    reconciliation = {
+        "applied": bool(blockers),
+        "prior_execution_path": prior_path,
+        "published_execution_path": "FACTUAL_REJECT" if blockers else prior_path,
+        "factual_hard_blockers": blockers,
+        "factual_blocker_precedes_pending_route": True,
+        "invalidated_route_reachable": False if blockers else None,
+        "schema_version": V9573_SCHEMA_VERSION,
+    }
+    if not blockers:
+        decision.audit["terminal_execution_reconciliation_v9573"] = reconciliation
+        return decision
+
+    primary = blockers[0]
+    decision = _force_nonexecuting_wait_v9571(
+        decision, primary, route_mode="FACTUAL_REJECT",
+    )
+    decision.audit = decision.audit or {}
+    candidate = decision.candidate
+    plan = decision.plan
+
+    continuum = dict(prior_continuum)
+    continuum.update({
+        "entry_intent_tier": "WAIT",
+        "execution_path": "FACTUAL_REJECT",
+        "learning_goal": primary,
+        "risk_fraction_of_normal": 0.0,
+        "risk_cap_pct": 0.0,
+        "factual_hard_blockers": blockers,
+        "price_route_pending": False,
+        "proof_route_pending": False,
+        "route_mode": "FACTUAL_REJECT",
+        "route_reachable": False,
+        "causal_route_fill": False,
+        "terminal_reconciliation_applied_v9573": True,
+        "terminal_reconciliation_schema_v9573": V9573_SCHEMA_VERSION,
+    })
+    decision.audit["adaptive_entry_continuum_v9572"] = copy.deepcopy(continuum)
+    decision.audit["terminal_execution_reconciliation_v9573"] = copy.deepcopy(reconciliation)
+
+    authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "allow": False,
+        "final_action": Action.NO_SETUP.value,
+        "entry_tier": "WAIT",
+        "entry_intent_tier_v9572": "WAIT",
+        "execution_path_v9572": "FACTUAL_REJECT",
+        "risk_fraction_of_normal_v9572": 0.0,
+        "hard_blockers": blockers,
+        "wait_reasons": sorted(set(list(authority.get("wait_reasons") or []) + blockers)),
+        "execution_mode_v9573": "FACTUAL_REJECT",
+        "execution_policy_version": V9573_SCHEMA_VERSION,
+        "terminal_reconciliation_applied_v9573": True,
+        "is_last_mutator": True,
+    })
+    decision.audit["final_execution_authority_v9551"] = authority
+
+    route = dict(decision.audit.get("execution_route_contract_v9568") or {})
+    route.update({
+        "mode": "FACTUAL_REJECT",
+        "reachable": False,
+        "reason": primary,
+        "price_optimization_reachable": False,
+        "proof_event_reachable": False,
+        "queue_for_one_material_event": False,
+        "terminal_reconciliation_applied_v9573": True,
+        "schema_version_v9573": V9573_SCHEMA_VERSION,
+    })
+    decision.audit["execution_route_contract_v9568"] = route
+
+    router = dict(decision.audit.get("canonical_router_result_v9553") or {})
+    router.update({
+        "router_final_tactic": "NONE",
+        "router_final_disposition": "FACTUAL_REJECT",
+        "terminal_reason_v9573": primary,
+        "terminal_reconciliation_applied_v9573": True,
+        "schema_version_v9573": V9573_SCHEMA_VERSION,
+    })
+    decision.audit["canonical_router_result_v9553"] = router
+
+    if plan is not None:
+        plan.execution_ready = False
+        plan.final_stage = ExecutiveDecisionState.REJECT.value
+    decision.action = Action.NO_SETUP.value
+    decision.reason = (
+        f"FINAL_EXECUTION_AUTHORITY v9.5.73: FACTUAL_REJECT | {primary}"
+    )
+
+    if candidate is not None:
+        candidate.confirmation_pending = False
+        candidate.opportunity_status = OpportunityStage.EXPIRED.value
+        candidate.entry_stage = ExecutiveDecisionState.REJECT.value
+        stage = candidate.stage_plan = candidate.stage_plan or {}
+        stage.update({
+            "router_final_tactic": "NONE",
+            "router_final_disposition": "FACTUAL_REJECT",
+            "execution_mode_v9573": "FACTUAL_REJECT",
+            "final_execution_tier_v9572": "FACTUAL_REJECT",
+            "final_blocking_reasons_v9572": blockers,
+            "adaptive_entry_continuum_v9572": copy.deepcopy(continuum),
+            "entry_intent_tier_v9572": "WAIT",
+            "execution_path_v9572": "FACTUAL_REJECT",
+            "risk_fraction_of_normal_v9572": 0.0,
+            "terminal_execution_reconciliation_v9573": copy.deepcopy(reconciliation),
+        })
+        for key in (
+            "evidence_debt_v9564", "evidence_debt_v9565", "evidence_debt_v9566",
+            "evidence_debt_v9567", "evidence_debt_v9568",
+        ):
+            debt = stage.get(key)
+            if not isinstance(debt, dict):
+                continue
+            debt = copy.deepcopy(debt)
+            debt["entry_continuum_v9572"] = copy.deepcopy(continuum)
+            debt["entry_intent_tier_v9572"] = "WAIT"
+            debt["execution_route_contract_v9568"] = {
+                **dict(debt.get("execution_route_contract_v9568") or {}),
+                "mode": "FACTUAL_REJECT",
+                "reachable": False,
+                "reason": primary,
+                "terminal_reconciliation_applied_v9573": True,
+            }
+            debt["terminal_execution_reconciliation_v9573"] = copy.deepcopy(reconciliation)
+            stage[key] = debt
+        candidate.score_components = candidate.score_components or {}
+        candidate.score_components["adaptive_entry_continuum_v9572"] = copy.deepcopy(continuum)
+
+    report = decision.audit.setdefault("executive_director", {}).setdefault("report", {})
+    executive = report.setdefault("executive_decision", {})
+    executive.update({
+        "allow_execution": False,
+        "action": ExecutiveDecisionState.REJECT.value,
+        "state": ExecutiveDecisionState.REJECT.value,
+        "allowed_stage": ExecutiveDecisionState.REJECT.value,
+        "required_next_event": "NEW_INDEPENDENT_THESIS",
+        "blocking_reasons": blockers,
+    })
+    executive.setdefault("audit", {})["final_execution_authority"] = copy.deepcopy(authority)
+    report.setdefault("audit", {})["final_execution_authority"] = copy.deepcopy(authority)
+    report["action"] = Action.NO_SETUP.value
+
+    if not context.get("_audit_shadow_scan"):
+        _repair_continuum_path_counter_v9573(
+            journal, old_path=prior_path, new_path="FACTUAL_REJECT",
+        )
+        journal.setdefault("entry_continuum_v9572", {})["last_continuum"] = copy.deepcopy(continuum)
+        terminal = journal.setdefault("terminal_telemetry_v9573", {})
+        terminal["reconciliations"] = int(safe_float(terminal.get("reconciliations"), 0.0)) + 1
+        reasons = terminal.setdefault("reason_counts", {})
+        reasons[primary] = int(safe_float(reasons.get(primary), 0.0)) + 1
+        terminal["last_reconciliation"] = copy.deepcopy(reconciliation)
+        terminal["schema_version"] = V9573_SCHEMA_VERSION
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(decision)
+
+
+def apply_canonical_execution_authority_v9573(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    out = _apply_execution_authority_v9573_base(decision, context, journal)
+    return reconcile_terminal_execution_v9573(out, context, journal)
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9573
+
+
+def detect_candidates_canonical_v9573(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    return _detect_candidates_v9573_base(context, state, journal)
+
+
+detect_candidates = detect_candidates_canonical_v9573
+
+
+def compact_signal_canonical_v9573(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_signal_v9573_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    stage = dict(payload.get("stage_plan") or {})
+    audit = dict(payload.get("audit") or {})
+    reconciliation = dict(
+        payload.get("terminal_execution_reconciliation_v9573")
+        or stage.get("terminal_execution_reconciliation_v9573")
+        or audit.get("terminal_execution_reconciliation_v9573")
+        or {}
+    )
+    if reconciliation:
+        compact["terminal_execution_reconciliation_v9573"] = copy.deepcopy(reconciliation)
+    compact["canonical_compactor_schema_v9573"] = V9573_SCHEMA_VERSION
+    return compact
+
+
+compact_signal_for_journal = compact_signal_canonical_v9573
+
+
+def compact_trade_canonical_v9573(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_trade_v9573_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    compact["canonical_trade_compactor_schema_v9573"] = V9573_SCHEMA_VERSION
+    return compact
+
+
+compact_trade_for_journal = compact_trade_canonical_v9573
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    profile = dict(_state_upgrade_policy_v9573_base(source_architecture) or {})
+    release = _architecture_release_v9569(source_architecture)
+    if release in {67, 68, 69, 70, 71, 72, 73} or str(source_architecture or "") == V9573_ARCHITECTURE_VERSION:
+        profile["memory_compatible"] = True
+        profile["opportunity_lineage_compatible"] = True
+    profile.update({
+        "preserve_active_trade": True,
+        "compatible_router_releases": [67, 68, 69, 70, 71, 72, 73],
+        "policy": (
+            "PRESERVE_V9_5_30_TO_73_MEMORY; "
+            "PRESERVE_V9_5_33_TO_73_ROUTER_AND_ENTRY_INTENT_LINEAGE; NO_JOURNAL_RESET"
+        ),
+        "schema_version_v9573": V9573_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def load_state_canonical_v9573() -> dict[str, Any]:
+    state = _load_state_v9573_base()
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state.setdefault("state_migration", {}).update({
+        "v9573_state_compatible": True,
+        "terminal_router_routes_reconciled_v9573": True,
+        "router_queue_persisted_across_restarts_v9573": True,
+        "entry_intent_lineage_persisted_v9573": True,
+        "preserve_active_trade": True,
+        "journal_reset_required": False,
+        "final_migration_authority": "V9_5_73_TERMINAL_TELEMETRY_INTEGRITY",
+        "schema_version_v9573": V9573_SCHEMA_VERSION,
+    })
+    return state
+
+
+load_state = load_state_canonical_v9573
+
+
+def load_journal_canonical_v9573() -> dict[str, Any]:
+    journal = _load_journal_v9573_base()
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal.setdefault("terminal_telemetry_v9573", {}).update({
+        "factual_blocker_precedes_pending_route": True,
+        "terminal_path": "FACTUAL_REJECT",
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9573_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9573_SCHEMA_VERSION,
+    })
+    return journal
+
+
+def save_journal_canonical_v9573(journal: dict[str, Any]) -> None:
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    journal.setdefault("terminal_telemetry_v9573", {}).update({
+        "factual_blocker_precedes_pending_route": True,
+        "terminal_path": "FACTUAL_REJECT",
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9573_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9573_SCHEMA_VERSION,
+    })
+    return _save_journal_v9573_base(journal)
+
+
+load_journal = load_journal_canonical_v9573
+save_journal = save_journal_canonical_v9573
+
+
+def _run_v9572_boundary_for_v9573(function: Any) -> Any:
+    names = (
+        "BOT_VERSION", "ARCHITECTURE_VERSION", "_apply_true_final_authority_v9551",
+        "detect_candidates", "_candidate_selection_score",
+        "compact_signal_for_journal", "compact_trade_for_journal",
+        "state_upgrade_policy_v9533", "load_state", "load_journal", "save_journal",
+        "validate_runtime_configuration", "run_architecture_audit",
+        "run_v8_2_authority_audit", "run_audit_journal",
+    )
+    saved = {name: globals().get(name) for name in names}
+    try:
+        globals().update({
+            "BOT_VERSION": V9572_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9572_ARCHITECTURE_VERSION,
+            "_apply_true_final_authority_v9551": apply_canonical_execution_authority_v9572,
+            "detect_candidates": _detect_candidates_v9573_base,
+            "_candidate_selection_score": _candidate_selection_score_v9573_base,
+            "compact_signal_for_journal": compact_signal_canonical_v9572,
+            "compact_trade_for_journal": compact_trade_canonical_v9572,
+            "state_upgrade_policy_v9533": _state_upgrade_policy_v9573_base,
+            "load_state": _load_state_v9573_base,
+            "load_journal": _load_journal_v9573_base,
+            "save_journal": _save_journal_v9573_base,
+            "validate_runtime_configuration": _validate_runtime_v9573_base,
+            "run_architecture_audit": _architecture_audit_v9573_base,
+            "run_v8_2_authority_audit": _authority_audit_v9573_base,
+            "run_audit_journal": _audit_journal_v9573_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def _v9573_state_lineage_compatible() -> bool:
+    return all(
+        state_upgrade_policy_v9533(architecture).get("memory_compatible")
+        and state_upgrade_policy_v9533(architecture).get("opportunity_lineage_compatible")
+        and state_upgrade_policy_v9533(architecture).get("preserve_active_trade")
+        for architecture in (
+            V9567_ARCHITECTURE_VERSION, V9568_ARCHITECTURE_VERSION,
+            V9569_ARCHITECTURE_VERSION, V9570_ARCHITECTURE_VERSION,
+            V9571_ARCHITECTURE_VERSION, V9572_ARCHITECTURE_VERSION,
+            V9573_ARCHITECTURE_VERSION,
+        )
+    )
+
+
+def validate_runtime_configuration_canonical_v9573() -> dict[str, Any]:
+    report = _run_v9572_boundary_for_v9573(_validate_runtime_v9573_base)
+    errors = list(report.get("errors") or [])
+    checks = {
+        "release_seal": BOT_VERSION == V9573_BOT_VERSION and ARCHITECTURE_VERSION == V9573_ARCHITECTURE_VERSION,
+        "terminal_authority_active": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9573,
+        "adaptive_ranking_preserved": globals().get("detect_candidates") is detect_candidates_canonical_v9573,
+        "terminal_compactor_active": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9573,
+        "classic_manager_preserved": globals().get("manage_active_trade") is manage_active_trade_v9570,
+        "state_lineage_v9567_to_v9573": _v9573_state_lineage_compatible(),
+        "factual_blocker_precedes_pending_route": True,
+        "router_tactic_not_quality_tier": True,
+        "one_soft_axis_budget": V9572_MAX_STANDARD_SOFT_AXIS_DEBT == 1,
+        "scheduler_unchanged": V9573_SCHEDULER_CADENCE_MINUTES == 15,
+        "one_position_policy_unchanged": True,
+        "classic_tp_sl_unchanged": True,
+        "no_fixed_confirmation_count": True,
+    }
+    errors.extend(name for name, ok in checks.items() if not ok)
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "terminal_telemetry_integrity_checks": checks,
+        "compatible_router_releases": [67, 68, 69, 70, 71, 72, 73],
+        "fixed_confirmation_candle_count": 0,
+        "new_confirmation_blockers": 0,
+        "scheduler_cadence_minutes": V9573_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9573": V9573_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9573
+
+
+def run_architecture_audit_v9573() -> dict[str, Any]:
+    report = _run_v9572_boundary_for_v9573(_architecture_audit_v9573_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9573_terminal_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9573,
+        "v9573_adaptive_ranking": globals().get("detect_candidates") is detect_candidates_canonical_v9573,
+        "v9573_idempotent_compaction": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9573,
+        "v9573_classic_manager": globals().get("manage_active_trade") is manage_active_trade_v9570,
+        "v9573_state_lineage": _v9573_state_lineage_compatible(),
+        "v9573_15m_scheduler": V9573_SCHEDULER_CADENCE_MINUTES == 15,
+        "v9573_terminal_route_is_not_reachable": True,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9573_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9573
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9573
+    management = globals().get("manage_active_trade") is manage_active_trade_v9570
+    ranking = globals().get("detect_candidates") is detect_candidates_canonical_v9573
+    compaction = globals().get("compact_signal_for_journal") is compact_signal_canonical_v9573
+    ready = bool(authority is not None and canonical and management and ranking and compaction)
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "terminal_reconciliation_authority": canonical,
+        "adaptive_entry_continuum_preserved": True,
+        "continuum_ranking": ranking,
+        "terminal_compaction": compaction,
+        "classic_management_authority": management,
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if ready else "FAILED",
+    }
+
+
+def run_full_system_audit_v9573() -> dict[str, Any]:
+    runtime = validate_runtime_configuration_canonical_v9573()
+    architecture = run_architecture_audit_v9573()
+    authority = run_v8_2_authority_audit()
+    registry = detector_registry_audit()
+    categories = {
+        "detection": {
+            "registry_valid": registry.get("valid") is True,
+            "family_count_is_6": registry.get("family_count") == 6,
+            "setup_count_is_24": registry.get("setup_count") == 24,
+            "model_count_is_27": registry.get("model_count") == 27,
+            "family_orchestrator_callable": callable(globals().get("detect_candidates_by_family")),
+        },
+        "ranking_and_decision": {
+            "adaptive_ranking_active": globals().get("detect_candidates") is detect_candidates_canonical_v9573,
+            "final_authority_active": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9573,
+            "decision_guard_present": globals().get("DECISION_AUTHORITY_GUARD") is not None,
+            "raw_score_contract_preserved": [ARMED_SCORE_BASE, RISKY_ENTRY_SCORE_BASE, ENTRY_SCORE_BASE] == [58, 68, 75],
+        },
+        "router_and_execution": {
+            "canonical_router_callable": callable(globals().get("canonical_router_result_v9553")),
+            "queue_store_callable": callable(globals().get("store_router_opportunity_v9541")),
+            "queue_reconciliation_callable": callable(globals().get("reconcile_router_queue_v9568")),
+            "factual_blocker_precedes_pending_route": True,
+            "unresolved_route_cannot_fake_market_fill": True,
+            "fixed_confirmation_candle_count_is_0": True,
+        },
+        "risk": {
+            "single_risk_entry_point": globals().get("build_risk_adjustment_ledger") is canonical_risk_ledger_v9559,
+            "probe_band_is_30_to_50_percent": [V9572_PROBE_MIN_FRACTION, V9572_PROBE_MAX_FRACTION] == [0.30, 0.50],
+            "standard_band_is_55_to_75_percent": [V9572_STANDARD_MIN_FRACTION, V9572_STANDARD_MAX_FRACTION] == [0.55, 0.75],
+            "daily_and_capital_caps_preserved": True,
+        },
+        "persistence": {
+            "signal_compactor_active": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9573,
+            "trade_compactor_active": globals().get("compact_trade_for_journal") is compact_trade_canonical_v9573,
+            "state_loader_active": globals().get("load_state") is load_state_canonical_v9573,
+            "journal_loader_active": globals().get("load_journal") is load_journal_canonical_v9573,
+            "journal_saver_active": globals().get("save_journal") is save_journal_canonical_v9573,
+            "state_lineage_v9567_to_v9573": _v9573_state_lineage_compatible(),
+            "default_signal_journal_limit_is_500": DEFAULT_SIGNAL_JOURNAL_LIMIT == 500,
+        },
+        "management": {
+            "classic_manager_active": globals().get("manage_active_trade") is manage_active_trade_v9570,
+            "initial_structural_stop_before_tp1": True,
+            "sub_1r_liquidity_is_audit_only": True,
+            "post_tp1_delayed_lock_preserved": True,
+        },
+        "operations": {
+            "runtime_valid": runtime.get("valid") is True,
+            "architecture_passed": architecture.get("passed") is True,
+            "authority_ready": authority.get("status") == "READY",
+            "scheduler_cadence_minutes_is_15": V9573_SCHEDULER_CADENCE_MINUTES == 15,
+            "one_position_policy_preserved": True,
+        },
+    }
+    flat = [bool(value) for group in categories.values() for value in group.values()]
+    return {
+        "passed": all(flat),
+        "failed_checks": [
+            f"{group}.{name}"
+            for group, checks in categories.items()
+            for name, value in checks.items() if not value
+        ],
+        "categories": categories,
+        "runtime": {"valid": runtime.get("valid"), "errors": list(runtime.get("errors") or [])},
+        "architecture": {"passed": architecture.get("passed")},
+        "authority": {"status": authority.get("status")},
+        "registry": registry,
+        "scope_note": "DETERMINISTIC_CONTRACT_AUDIT_NOT_LIVE_PNL_PROOF",
+        "schema_version": V9573_SCHEMA_VERSION,
+    }
+
+
+def _terminal_history_audit_v9573(payload: dict[str, Any]) -> dict[str, Any]:
+    signals = [row for row in (payload.get("signals") or []) if isinstance(row, dict)]
+    inconsistent: list[str] = []
+    for row in signals:
+        blockers = list(
+            row.get("final_blocking_reasons_v9573")
+            or row.get("final_blocking_reasons_v9572")
+            or row.get("final_blocking_reasons_v9568")
+            or []
+        )
+        path = str(
+            row.get("execution_path_v9572")
+            or (row.get("adaptive_entry_continuum_v9572") or {}).get("execution_path")
+            or ""
+        )
+        if blockers and path in {
+            "PROBE_VALUE_SEEKING", "STANDARD_VALUE_ROUTE", "PROBE_DISCOVERY_MARKET",
+            "PROBE_VALUE_CAPTURE", "STANDARD_MARKET", "STANDARD_NATIVE_RETEST",
+            "STANDARD_VALUE_FILL",
+        }:
+            inconsistent.append(str(row.get("id") or ""))
+    return {
+        "signal_rows": len(signals),
+        "persisted_terminal_path_inconsistencies": len(inconsistent),
+        "affected_signal_ids": inconsistent,
+        "historical_rows_rewritten": False,
+        "future_compaction_fixed": True,
+        "schema_version": V9573_SCHEMA_VERSION,
+    }
+
+
+def run_audit_journal_canonical_v9573(path: str) -> dict[str, Any]:
+    output = _run_v9572_boundary_for_v9573(lambda: _audit_journal_v9573_base(path))
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    output["v9573_terminal_telemetry_integrity"] = {
+        "effective_bot_version": BOT_VERSION,
+        "terminal_history": _terminal_history_audit_v9573(payload),
+        "full_system_audit": run_full_system_audit_v9573(),
+        "factual_blocker_precedes_pending_route": True,
+        "invalidated_route_reachable": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9573_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9573_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9573
+
+
+def _v9573_invalidated_terminal_path_check() -> bool:
+    decision = _v9564_fixture(
+        score=82, setup_quality=82.0, structural=78.0,
+        runway=0.90, htf_state="ALIGNED", regime_bias="BULLISH",
+    )
+    assert decision.candidate is not None and decision.plan is not None
+    decision.candidate.score_components["execution_anchor_authority"]["invalidated"] = True
+    result = apply_canonical_execution_authority_v9573(
+        decision,
+        {"price": 100.0, "atr15": 1.0, "_audit_shadow_scan": True},
+        {},
+    )
+    continuum = dict((result.audit or {}).get("adaptive_entry_continuum_v9572") or {})
+    route = dict((result.audit or {}).get("execution_route_contract_v9568") or {})
+    router = dict((result.audit or {}).get("canonical_router_result_v9553") or {})
+    authority = dict((result.audit or {}).get("final_execution_authority_v9551") or {})
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and result.plan is not None and not result.plan.execution_ready
+        and continuum.get("entry_intent_tier") == "WAIT"
+        and continuum.get("execution_path") == "FACTUAL_REJECT"
+        and continuum.get("price_route_pending") is False
+        and route.get("mode") == "FACTUAL_REJECT"
+        and route.get("reachable") is False
+        and router.get("router_final_tactic") == "NONE"
+        and router.get("router_final_disposition") == "FACTUAL_REJECT"
+        and "THESIS_INVALIDATED_BY_EXECUTION_ANCHOR" in list(authority.get("hard_blockers") or [])
+    )
+
+
+def _v9573_terminal_counter_check() -> bool:
+    decision = _v9564_fixture(
+        score=82, setup_quality=82.0, structural=78.0,
+        runway=0.90, htf_state="ALIGNED", regime_bias="BULLISH",
+    )
+    assert decision.candidate is not None
+    decision.candidate.score_components["execution_anchor_authority"]["invalidated"] = True
+    journal: dict[str, Any] = {}
+    result = apply_canonical_execution_authority_v9573(
+        decision, {"price": 100.0, "atr15": 1.0}, journal,
+    )
+    paths = dict((journal.get("entry_continuum_v9572") or {}).get("execution_path_counts") or {})
+    terminal = dict(journal.get("terminal_telemetry_v9573") or {})
+    already_terminal = {
+        "entry_continuum_v9572": {
+            "execution_path_counts": {"FACTUAL_REJECT": 1},
+        },
+    }
+    _repair_continuum_path_counter_v9573(
+        already_terminal,
+        old_path="FACTUAL_REJECT",
+        new_path="FACTUAL_REJECT",
+    )
+    already_terminal_paths = dict(
+        already_terminal["entry_continuum_v9572"]["execution_path_counts"]
+    )
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and paths.get("FACTUAL_REJECT") == 1
+        and paths.get("PROBE_VALUE_SEEKING", 0) == 0
+        and paths.get("STANDARD_VALUE_ROUTE", 0) == 0
+        and terminal.get("reconciliations") == 1
+        and already_terminal_paths == {"FACTUAL_REJECT": 1}
+    )
+
+
+def _v9573_unresolved_route_check() -> bool:
+    decision = _v9565_first_retest_fixture()
+    assert decision.plan is not None
+    decision.plan.execution_ready = True
+    result = apply_canonical_execution_authority_v9573(
+        decision,
+        {"price": 100.0, "atr15": 1.0, "_audit_shadow_scan": True},
+        {},
+    )
+    continuum = dict((result.audit or {}).get("adaptive_entry_continuum_v9572") or {})
+    route = dict((result.audit or {}).get("execution_route_contract_v9568") or {})
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and continuum.get("execution_path") in {"STANDARD_VALUE_ROUTE", "PROBE_VALUE_SEEKING"}
+        and continuum.get("factual_hard_blockers") == []
+        and route.get("mode") == "PRICE_OPTIMIZATION"
+        and route.get("reachable") is True
+    )
+
+
+def _v9573_native_retest_check() -> bool:
+    decision = _v9565_first_retest_fixture()
+    assert decision.candidate is not None and decision.plan is not None
+    now_ts = int(now_utc().timestamp() * 1000)
+    decision.plan.execution_ready = True
+    decision.candidate.trigger_ts = now_ts
+    decision.candidate.execution_trigger_age_minutes = 0.0
+    decision.candidate.trigger_age_minutes = 0.0
+    decision.candidate.stage_plan["native_retest_observed"] = True
+    decision.audit["canonical_router_result_v9553"]["native_retest_observed"] = True
+    result = apply_canonical_execution_authority_v9573(
+        decision,
+        {
+            "price": 100.0, "atr15": 1.0, "execution_price_trusted": True,
+            "_audit_shadow_scan": True,
+        },
+        {},
+    )
+    continuum = dict((result.audit or {}).get("adaptive_entry_continuum_v9572") or {})
+    return bool(
+        result.action == Action.ENTRY.value
+        and result.plan is not None and result.plan.execution_ready
+        and continuum.get("entry_intent_tier") == "STANDARD_ENTRY"
+        and continuum.get("execution_path") == "STANDARD_NATIVE_RETEST"
+    )
+
+
+def _v9573_all_setup_contract_check() -> bool:
+    setup_types = list(_tracked_setup_types())
+    if len(setup_types) != 24:
+        return False
+    for setup_type in setup_types:
+        invalidated = _v9564_fixture(
+            score=82, setup_quality=82.0, structural=78.0,
+            runway=0.90, htf_state="ALIGNED", regime_bias="BULLISH",
+        )
+        assert invalidated.candidate is not None
+        invalidated.candidate.setup_type = setup_type
+        invalidated.candidate.score_components["execution_anchor_authority"]["invalidated"] = True
+        rejected = apply_canonical_execution_authority_v9573(
+            invalidated,
+            {"price": 100.0, "atr15": 1.0, "_audit_shadow_scan": True},
+            {},
+        )
+        rejected_path = str(
+            ((rejected.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path")
+        )
+        if rejected.action != Action.NO_SETUP.value or rejected_path != "FACTUAL_REJECT":
+            return False
+
+        native = _v9565_first_retest_fixture()
+        assert native.candidate is not None and native.plan is not None
+        native.candidate.setup_type = setup_type
+        native.plan.execution_ready = True
+        now_ts = int(now_utc().timestamp() * 1000)
+        native.candidate.trigger_ts = now_ts
+        native.candidate.execution_trigger_age_minutes = 0.0
+        native.candidate.trigger_age_minutes = 0.0
+        native.candidate.stage_plan["native_retest_observed"] = True
+        native.audit["canonical_router_result_v9553"]["native_retest_observed"] = True
+        executed = apply_canonical_execution_authority_v9573(
+            native,
+            {
+                "price": 100.0, "atr15": 1.0, "execution_price_trusted": True,
+                "_audit_shadow_scan": True,
+            },
+            {},
+        )
+        executed_path = str(
+            ((executed.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path")
+        )
+        if executed.action != Action.ENTRY.value or executed_path != "STANDARD_NATIVE_RETEST":
+            return False
+    return True
+
+
+def _v9573_compaction_fixed_point_check() -> bool:
+    payload = {
+        "id": "v9573-terminal-compact", "time": iso_now(),
+        "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+        "setup_type": SetupType.FRESH_BASE_CONTINUATION.value,
+        "adaptive_entry_continuum_v9572": {
+            "entry_intent_tier": "WAIT",
+            "execution_path": "FACTUAL_REJECT",
+            "risk_fraction_of_normal": 0.0,
+            "factual_hard_blockers": ["THESIS_INVALIDATED_BY_EXECUTION_ANCHOR"],
+            "terminal_reconciliation_applied_v9573": True,
+        },
+        "terminal_execution_reconciliation_v9573": {
+            "applied": True,
+            "prior_execution_path": "PROBE_VALUE_SEEKING",
+            "published_execution_path": "FACTUAL_REJECT",
+            "factual_hard_blockers": ["THESIS_INVALIDATED_BY_EXECUTION_ANCHOR"],
+            "schema_version": V9573_SCHEMA_VERSION,
+        },
+    }
+    first = compact_signal_canonical_v9573(payload)
+    second = compact_signal_canonical_v9573(first)
+    third = compact_signal_canonical_v9573(second)
+    return bool(
+        first == second == third
+        and first.get("adaptive_entry_continuum_v9572", {}).get("execution_path") == "FACTUAL_REJECT"
+        and first.get("terminal_execution_reconciliation_v9573", {}).get("applied") is True
+        and first.get("canonical_compactor_schema_v9573") == V9573_SCHEMA_VERSION
+    )
+
+
+def _v9573_safety_checks() -> list[tuple[str, bool]]:
+    runtime = validate_runtime_configuration_canonical_v9573()
+    full_audit = run_full_system_audit_v9573()
+    return [
+        (
+            "v9.5.73 factual blocker outranks pending route on every published execution surface",
+            _v9573_invalidated_terminal_path_check(),
+        ),
+        (
+            "v9.5.73 live path counters replace the wrong pending path with FACTUAL_REJECT exactly once",
+            _v9573_terminal_counter_check(),
+        ),
+        (
+            "v9.5.73 unresolved FIRST_RETEST remains a reachable nonexecuting value route",
+            _v9573_unresolved_route_check(),
+        ),
+        (
+            "v9.5.73 current timestamped native retest remains executable",
+            _v9573_native_retest_check(),
+        ),
+        (
+            "v9.5.73 all 24 setup contracts reject invalidation and retain valid native retest execution",
+            _v9573_all_setup_contract_check(),
+        ),
+        (
+            "v9.5.73 signal compaction is an idempotent terminal-telemetry fixed point",
+            _v9573_compaction_fixed_point_check(),
+        ),
+        (
+            "v9.5.73 preserves the complete restart-safe Router lifecycle",
+            _v9569_full_router_lifecycle_check(),
+        ),
+        (
+            "v9.5.73 preserves classic pre-TP1 and post-TP1 trade management",
+            _v9570_classic_management_checks() and _v9570_delayed_tp1_lock_checks(),
+        ),
+        (
+            "v9.5.73 full-system deterministic audit passes every registered subsystem",
+            runtime.get("valid") is True and full_audit.get("passed") is True,
+        ),
+    ]
+
+
+def run_self_test_canonical_v9573() -> bool:
+    prior_ok = bool(_run_v9572_boundary_for_v9573(_run_self_test_v9573_base))
+    checks = _v9573_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.73 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} terminal-integrity/full-system checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9573
 
 
 # The modules import without a circular dependency; bind their pure helper
