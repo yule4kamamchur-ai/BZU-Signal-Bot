@@ -3656,6 +3656,15 @@ REENTRY_AGGRESSIVE_THRESHOLD = 72
 MIN_PRO_LAYERS_ENTRY = 4
 A_PLUS_ENTRY_MIN = 82
 
+# Shadow-only policy experiment. These thresholds never authorize or size a
+# live trade; they are persisted beside the canonical result so a later audit
+# can compare the proposed, softer policy against forward outcomes.
+SHADOW_ARMED_SCORE = int(os.getenv("ICT_SHADOW_ARMED_SCORE", "58") or 58)
+SHADOW_RISKY_ENTRY_SCORE = int(os.getenv("ICT_SHADOW_RISKY_ENTRY_SCORE", "62") or 62)
+SHADOW_ENTRY_SCORE = int(os.getenv("ICT_SHADOW_ENTRY_SCORE", "75") or 75)
+SHADOW_A_PLUS_ENTRY_MIN = int(os.getenv("ICT_SHADOW_A_PLUS_ENTRY_MIN", "78") or 78)
+SHADOW_MIN_PRO_LAYERS_ENTRY = int(os.getenv("ICT_SHADOW_MIN_PRO_LAYERS_ENTRY", "3") or 3)
+
 # === Vector Scoring Weights (v6.7 — Pattern-Specific Weights) ===
 # Reversal-родина (LIQUIDITY_RECOVERY / STRUCTURAL_TRANSITION / RANGE_EXECUTION):
 # ідеальне вирівнювання HTF у бік входу означає ПІЗНІЙ вхід — штрафуємо його,
@@ -11615,6 +11624,13 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
     tf1h_bias = context.get("tf1h", {}).get("bias")
     tf4h_bias = context.get("tf4h", {}).get("bias")
     htf_aligned = (tf1h_bias == candidate.side) or (tf4h_bias == candidate.side)
+    directional_htf = [
+        bias for bias in (tf1h_bias, tf4h_bias)
+        if bias in {Side.LONG.value, Side.SHORT.value}
+    ]
+    # A genuinely neutral HTF is acceptable in the shadow experiment. A
+    # directional HTF with no same-side vote is still treated as opposition.
+    shadow_htf_not_opposed = bool(htf_aligned or not directional_htf)
 
     advisory_allow_entry = bool(
         score_policy["full_entry_eligible"]
@@ -11634,6 +11650,30 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         and htf_aligned
         and gate_product >= 0.46
         and pattern_gate >= 0.70
+    )
+
+    shadow_gates = dict(gates.get("shadow_experiment") or {})
+    shadow_gate_product = safe_float(shadow_gates.get("product"), gate_product)
+    shadow_trigger_gate = safe_float(shadow_gates.get("trigger_gate"), trigger_gate)
+    shadow_pattern_gate = safe_float(shadow_gates.get("pattern_gate"), pattern_gate)
+    shadow_location_gate = safe_float(shadow_gates.get("location_gate"), location_gate)
+    shadow_allow_entry = bool(
+        score >= SHADOW_ENTRY_SCORE
+        and layers >= SHADOW_MIN_PRO_LAYERS_ENTRY
+        and trigger_ready
+        and strong_ict
+        and shadow_gate_product >= 0.55
+        and shadow_trigger_gate >= 0.88
+        and shadow_pattern_gate >= 0.88
+        and shadow_location_gate >= 0.65
+    )
+    shadow_allow_risky = bool(
+        score >= SHADOW_RISKY_ENTRY_SCORE
+        and layers >= max(3, SHADOW_MIN_PRO_LAYERS_ENTRY - 1)
+        and (trigger_ready or strong_ict)
+        and shadow_htf_not_opposed
+        and shadow_gate_product >= 0.46
+        and shadow_pattern_gate >= 0.70
     )
 
     if advisory_allow_entry and score >= A_PLUS_ENTRY_MIN and strong_ict:
@@ -11660,6 +11700,34 @@ def evaluate_professional_gate(context: dict, candidate: Candidate) -> dict:
         "layers": layers,
         "gate_product": gate_product,
         "score_policy": score_policy,
+        "shadow_experiment": {
+            "audit_only": True,
+            "can_authorize_trade": False,
+            "allow_entry": shadow_allow_entry,
+            "allow_risky": shadow_allow_risky,
+            "grade": (
+                "A+" if shadow_allow_entry and score >= SHADOW_A_PLUS_ENTRY_MIN
+                else "A" if shadow_allow_entry
+                else "B" if shadow_allow_risky
+                else "WATCH"
+            ),
+            "score_thresholds": {
+                "armed": SHADOW_ARMED_SCORE,
+                "risky": SHADOW_RISKY_ENTRY_SCORE,
+                "entry": SHADOW_ENTRY_SCORE,
+                "a_plus": SHADOW_A_PLUS_ENTRY_MIN,
+            },
+            "minimum_entry_layers": SHADOW_MIN_PRO_LAYERS_ENTRY,
+            "gate_thresholds": {
+                "product": 0.55,
+                "trigger": 0.88,
+                "pattern": 0.88,
+                "location": 0.65,
+            },
+            "htf_not_opposed": shadow_htf_not_opposed,
+            "neutral_htf_is_eligible": True,
+            "gate_product": round(shadow_gate_product, 3),
+        },
         "reason": reason,
     }
 
@@ -15400,6 +15468,19 @@ def _multiplicative_quality_gates(features: dict[str, float], setup_family: str,
         trigger_gate * location_gate * pattern_gate * forward_zone_gate *
         exhaustion_gate * liquidity_gate * trend_gate * htf_late_gate
     )
+    # Proposed B1 relaxation is computed in parallel and is deliberately not
+    # used by the canonical product above. This makes one-scan A/B telemetry
+    # possible without silently changing live admission.
+    shadow_trigger_gate = 1.0 if (trigger_ready or is_limit_armed) else 0.72
+    shadow_location_gate = 0.70 + 0.30 * features["loc"]
+    shadow_pattern_gate = 0.80 if features["no_pattern"] >= 1.0 else 1.0
+    shadow_exhaustion_gate = 1.0 - (0.30 * features["exhaustion"])
+    shadow_liquidity_gate = 0.65 + 0.35 * features["liquidity"] if family_is_reversal else 1.0
+    shadow_product = (
+        shadow_trigger_gate * shadow_location_gate * shadow_pattern_gate *
+        forward_zone_gate * shadow_exhaustion_gate * shadow_liquidity_gate *
+        trend_gate * htf_late_gate
+    )
     return {
         "trigger_gate": round(trigger_gate, 3),
         "location_gate": round(location_gate, 3),
@@ -15411,6 +15492,23 @@ def _multiplicative_quality_gates(features: dict[str, float], setup_family: str,
         "trend_gate_source": trend_gate_source,
         "htf_late_gate": round(htf_late_gate, 3),
         "product": round(clamp(product, 0.0, 1.0), 3),
+        "shadow_experiment": {
+            "audit_only": True,
+            "can_authorize_trade": False,
+            "trigger_gate": round(shadow_trigger_gate, 3),
+            "location_gate": round(shadow_location_gate, 3),
+            "pattern_gate": round(shadow_pattern_gate, 3),
+            "forward_zone_gate": round(forward_zone_gate, 3),
+            "exhaustion_gate": round(shadow_exhaustion_gate, 3),
+            "liquidity_gate": round(shadow_liquidity_gate, 3),
+            "trend_gate": round(trend_gate, 3),
+            "htf_late_gate": round(htf_late_gate, 3),
+            "product": round(clamp(shadow_product, 0.0, 1.0), 3),
+            "delta_product": round(
+                clamp(shadow_product, 0.0, 1.0) - clamp(product, 0.0, 1.0), 3
+            ),
+            "policy": "B1_RELAXATION_SHADOW_ONLY",
+        },
     }
 
 
@@ -23198,6 +23296,7 @@ def run_bot() -> None:
             "score_components": components,
             "score_features": components.get("features", {}),
             "score_gates": components.get("gates", {}),
+            "professional_gate": decision.candidate.professional_gate,
             "score_model_source": components.get("model_source", ""),
             "score_model_sample_size": components.get("sample_size", 0),
             "score_model_learned_weight": components.get("learned_weight", 0.0),
@@ -40866,6 +40965,7 @@ load_journal = load_journal_canonical_v9564
 save_journal = save_journal_canonical_v9564
 
 
+_state_upgrade_policy_v9533_v9562_base = state_upgrade_policy_v9533
 def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     source = str(source_architecture or "")
     marker = "TRADING_DESK_EXECUTIVE_V9_5_"
@@ -41054,6 +41154,7 @@ def run_architecture_audit_v9564() -> dict[str, Any]:
 run_architecture_audit = run_architecture_audit_v9564
 
 
+_run_v8_2_authority_audit_v9564_base = run_v8_2_authority_audit
 def run_v8_2_authority_audit():
     authority = globals().get("DECISION_AUTHORITY_GUARD")
     canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9564
@@ -42156,6 +42257,7 @@ def _build_forward_snapshot_for_tags_v9565(
     return snapshot
 
 
+_build_forward_control_snapshot_v9564_v9565_base = build_forward_control_snapshot_v9564
 def build_forward_control_snapshot_v9564(journal: dict[str, Any]) -> dict[str, Any]:
     """Correct the former nested-v9.5.62 tag override for historical v9.5.64."""
     snapshot = _build_forward_snapshot_for_tags_v9565(journal, ("v9.5.64",))
@@ -42237,6 +42339,7 @@ save_journal = save_journal_canonical_v9565
 _load_state_v9565_base = load_state
 
 
+_state_upgrade_policy_v9533_v9565_base = state_upgrade_policy_v9533
 def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
     source = str(source_architecture or "")
     marker = "TRADING_DESK_EXECUTIVE_V9_5_"
@@ -42375,6 +42478,7 @@ def run_architecture_audit_v9565() -> dict[str, Any]:
 run_architecture_audit = run_architecture_audit_v9565
 
 
+_run_v8_2_authority_audit_v9565_base = run_v8_2_authority_audit
 def run_v8_2_authority_audit():
     authority = globals().get("DECISION_AUTHORITY_GUARD")
     canonical = (
@@ -54025,9 +54129,31 @@ def normalize_signal_telemetry_v9575(
 def compact_signal_canonical_v9575(payload: dict[str, Any]) -> dict[str, Any]:
     source = payload
     current: dict[str, Any] = {}
+    score_gates = dict(payload.get("score_gates") or {})
+    gate_live = dict(
+        payload.get("quality_gate_live_v9575")
+        or {key: value for key, value in score_gates.items() if key != "shadow_experiment"}
+    )
+    gate_shadow = dict(
+        payload.get("quality_gate_shadow_v9575")
+        or score_gates.get("shadow_experiment")
+        or {}
+    )
+    professional_gate = dict(payload.get("professional_gate") or {})
+    professional_shadow = dict(
+        payload.get("professional_gate_shadow_v9575")
+        or professional_gate.get("shadow_experiment")
+        or {}
+    )
     for _ in range(8):
         compact = _compact_signal_v9575_base(source)
         normalized = normalize_signal_telemetry_v9575(compact, source)
+        if gate_live:
+            normalized["quality_gate_live_v9575"] = copy.deepcopy(gate_live)
+        if gate_shadow:
+            normalized["quality_gate_shadow_v9575"] = copy.deepcopy(gate_shadow)
+        if professional_shadow:
+            normalized["professional_gate_shadow_v9575"] = copy.deepcopy(professional_shadow)
         if normalized == current:
             return normalized
         current = normalized
