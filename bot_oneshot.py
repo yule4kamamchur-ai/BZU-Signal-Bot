@@ -53284,6 +53284,42 @@ def liquidity_runway_profile_v9575(
 liquidity_runway_profile = liquidity_runway_profile_v9575
 
 
+def _v9575_sync_runway_cache(
+    candidate: Candidate, profile: dict[str, Any], topology: dict[str, Any],
+) -> None:
+    """Write this call's live runway_r/known into execution_router's cache.
+
+    runway_risk_profile_v9553 (the pre-v9.5.53 near-zero-liquidity gate) has
+    no market context of its own and only ever reads whatever was last cached
+    in candidate.score_components["execution_intelligence_v9532"]
+    ["execution_router"]. This is the one place that cache gets refreshed
+    with a live-computed value, so it must run unconditionally -- including
+    when the richer v9.5.75 topology/ladder path can't identify a target and
+    the caller returns early.
+    """
+    live_runway_r = safe_float(profile.get("runway_r"), 1.5)
+    live_known = bool(profile.get("known", topology.get("known", False)))
+    components = candidate.score_components = candidate.score_components or {}
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    xi = dict(
+        components.get("execution_intelligence_v9532")
+        or stage.get("execution_intelligence_v9532")
+        or {}
+    )
+    route = dict(xi.get("execution_router") or {})
+    economics = dict(route.get("execution_economics") or {})
+    economics.update({"runway_known": live_known, "runway_r": round(live_runway_r, 4)})
+    route.update({
+        "runway_known": live_known,
+        "runway_r": round(live_runway_r, 4),
+        "execution_economics": economics,
+        "runway_cache_synced_v9575": True,
+    })
+    xi["execution_router"] = route
+    components["execution_intelligence_v9532"] = xi
+    stage["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(xi)
+
+
 def _refresh_execution_runway_v9575(
     decision: Decision, context: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -53293,6 +53329,16 @@ def _refresh_execution_runway_v9575(
     profile = liquidity_runway_profile_v9575(context, candidate, decision.plan)
     topology = dict(profile.get("runway_topology_v9574") or {})
     ladder = dict(profile.get("target_ladder_utility_v9575") or {})
+    # Resync the runway_r that the pre-v9.5.53 gate (runway_risk_profile_v9553)
+    # reads, to this call's live-computed value, BEFORE the early return below.
+    # That gate has no market context of its own -- it only ever reads whatever
+    # was last cached in execution_router.runway_r. Previously, when topology
+    # came back "unknown", this function returned early without touching that
+    # cache at all, so the gate kept scoring against whatever runway_r was
+    # written at initial candidate-scoring time, which can be several bars
+    # stale by the time the final gate runs. This keeps that cache current on
+    # every call regardless of whether the richer ladder bookkeeping applies.
+    _v9575_sync_runway_cache(candidate, profile, topology)
     if not topology.get("known"):
         return topology, ladder
     components = candidate.score_components = candidate.score_components or {}
