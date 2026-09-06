@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.73 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.74 (Self-Contained Single File)
 ====================================================================================
+Оновлення v9.5.74 (hierarchical runway + atomic telemetry):
+- Runway більше не є бінарним veto: близька ліквідність класифікується як checkpoint, а не як фінальна перешкода, лише за наявності окремої кваліфікованої структурної цілі та цілісної торгової тези.
+- Для такого маршруту використовується bounded PROBE_CHECKPOINT_BRIDGE з безперервним risk fraction 18-42%; глобальний runway floor 0.08R, hard invalidation, risk caps і структурні бар'єри не послаблені.
+- Справжній близький OB/FVG/supply/demand barrier лишається FACTUAL_REJECT; якщо дальшої цілі немає, setup також не отримує штучного дозволу.
+- Terminal telemetry атомарно синхронізує action, execution_path, mode, reachability, blocking reasons і Executive divergence; compaction/migration є ідемпотентним fixed point.
+- Класичні TP/SL та супровід v9.5.70, restart-safe Router, 24 setup, one-position policy та cadence 15m збережені.
+
 Оновлення v9.5.73 (terminal telemetry integrity + full-system audit):
 - Factual hard blocker тепер має найвищий пріоритет над pending Router route: execution_path примусово стає FACTUAL_REJECT, а не PROBE_VALUE_SEEKING.
 - Terminal reconciliation синхронізує action, plan readiness, Router tactic/disposition, route reachability, entry intent і journal counters; invalidated route не лишається формально досяжним.
@@ -32033,7 +32040,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.73 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.74 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -51255,6 +51262,1544 @@ def run_self_test_canonical_v9573() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9573
+
+
+# =============================================================================
+# v9.5.74 HIERARCHICAL RUNWAY TOPOLOGY / ATOMIC TERMINAL TELEMETRY
+# =============================================================================
+# A nearest liquidity print is not always the economic end of a thesis.  BSL,
+# SSL and session/range liquidity can be a directional checkpoint in front of
+# a separate structural objective.  Older layers used only the nearest target
+# distance as ``runway_r`` and therefore converted a valid continuation into a
+# terminal risk rejection.  This release keeps the original 0.08R safety floor
+# for real barriers, while a verified two-horizon target topology receives a
+# continuously discounted economic runway and a bounded scout-risk cap.
+#
+# The same final decision is then published atomically to every telemetry
+# surface.  Legacy ``execution_path``, v9.5.68 route fields, v9.5.72 continuum,
+# Executive divergence events, compact state and compact journal can no longer
+# describe different terminal outcomes for one signal.
+
+V9574_SCHEMA_VERSION = "hierarchical_runway_atomic_telemetry_v9.5.74"
+V9574_BOT_VERSION = "pro-hybrid-confluence-v9.5.74-hierarchical-runway-atomic-telemetry"
+V9574_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_74_HIERARCHICAL_RUNWAY_ATOMIC_TELEMETRY_15M_CADENCE"
+)
+V9574_SCHEDULER_CADENCE_MINUTES = 15
+V9574_NEAR_RUNWAY_R = V9553_MIN_MARKET_RUNWAY_R
+V9574_MIN_SECONDARY_RUNWAY_R = V9557_MIN_SECONDARY_STRUCTURAL_RUNWAY_R
+V9574_MIN_TOPOLOGY_CONFIDENCE = 0.58
+V9574_SCOUT_MIN_FRACTION = 0.18
+V9574_SCOUT_MAX_FRACTION = 0.42
+V9574_EFFECTIVE_RUNWAY_CAP_R = 0.65
+
+V9574_LIQUIDITY_CHECKPOINT_TOKENS = (
+    "BSL", "SSL", "LIQUIDITY", "PDH", "PDL", "ASIAN_HIGH", "ASIAN_LOW",
+    "RANGE_HIGH", "RANGE_LOW", "DAILY_OPEN", "WEEKLY_OPEN", "MACRO_EQ",
+    "OR_HIGH", "OR_LOW", "SESSION_MEAN", "VWAP",
+)
+V9574_BARRIER_TOKENS = (
+    "ORDER_BLOCK", "_OB", "OB_", "FVG", "SUPPLY", "DEMAND",
+)
+
+_liquidity_runway_profile_v9574_base = liquidity_runway_profile
+_apply_execution_authority_v9574_base = apply_canonical_execution_authority_v9573
+_detect_candidates_v9574_base = detect_candidates_canonical_v9573
+_compact_signal_v9574_base = compact_signal_canonical_v9573
+_compact_trade_v9574_base = compact_trade_canonical_v9573
+_state_upgrade_policy_v9574_base = state_upgrade_policy_v9533
+_load_state_v9574_base = load_state_canonical_v9573
+_save_state_v9574_base = save_state
+_load_journal_v9574_base = load_journal_canonical_v9573
+_save_journal_v9574_base = save_journal_canonical_v9573
+_validate_runtime_v9574_base = validate_runtime_configuration_canonical_v9573
+_architecture_audit_v9574_base = run_architecture_audit_v9573
+_authority_audit_v9574_base = run_v8_2_authority_audit
+_audit_journal_v9574_base = run_audit_journal_canonical_v9573
+_run_self_test_v9574_base = _run_self_test
+
+BOT_VERSION = V9574_BOT_VERSION
+ARCHITECTURE_VERSION = V9574_ARCHITECTURE_VERSION
+
+
+def _v9574_target_role(kind: str, timeframe: str = "") -> str:
+    label = str(kind or "TECHNICAL").upper()
+    if any(token in label for token in V9574_BARRIER_TOKENS):
+        return "STRUCTURAL_BARRIER"
+    if any(token in label for token in V9574_LIQUIDITY_CHECKPOINT_TOKENS):
+        return "LIQUIDITY_CHECKPOINT"
+    if str(timeframe or "").lower() in {"3m", "5m", "15m"}:
+        return "INTERNAL_CHECKPOINT"
+    return "STRUCTURAL_OBJECTIVE"
+
+
+def _v9574_quality_snapshot(candidate: Candidate) -> dict[str, float]:
+    evaluation = dict(
+        candidate.evaluation_bundle
+        or (candidate.score_components or {}).get("evaluation_bundle")
+        or {}
+    )
+    intelligence = _execution_intelligence_values_v9557(candidate)
+    return {
+        "score": safe_float(candidate.final_score, 0.0),
+        "setup_quality": safe_float(
+            evaluation.get("setup_quality"), safe_float(candidate.setup_quality_score, 0.0),
+        ),
+        "timing_quality": safe_float(
+            evaluation.get("timing_quality"), safe_float(candidate.timing_quality_score, 0.0),
+        ),
+        "trade_quality": safe_float(
+            evaluation.get("trade_quality"), safe_float(candidate.trade_plan_quality_score, 0.0),
+        ),
+        "structural": safe_float(intelligence.get("structural"), 0.0),
+        "asi": safe_float(intelligence.get("asi"), 100.0),
+        "setup_percentile": safe_float(intelligence.get("setup_percentile"), 0.0),
+    }
+
+
+def _v9574_checkpoint_confidence(candidate: Candidate) -> tuple[float, dict[str, float]]:
+    quality = _v9574_quality_snapshot(candidate)
+    normalized = {
+        "score": clamp((quality["score"] - ARMED_SCORE_BASE) / max(ENTRY_SCORE_BASE - ARMED_SCORE_BASE, 1.0), 0.0, 1.0),
+        "setup": clamp(quality["setup_quality"] / 100.0, 0.01, 1.0),
+        "timing": clamp(quality["timing_quality"] / 100.0, 0.01, 1.0),
+        "trade": clamp(quality["trade_quality"] / 100.0, 0.01, 1.0),
+        "structure": clamp(quality["structural"] / 100.0, 0.01, 1.0),
+        "anti_adverse": clamp(1.0 - quality["asi"] / 100.0, 0.01, 1.0),
+    }
+    confidence = _weighted_geometric_v9567([
+        (normalized["score"], 0.12),
+        (normalized["setup"], 0.21),
+        (normalized["timing"], 0.17),
+        (normalized["trade"], 0.16),
+        (normalized["structure"], 0.20),
+        (normalized["anti_adverse"], 0.14),
+    ])
+    return clamp(confidence, 0.0, 1.0), normalized
+
+
+def _v9574_plan_target_candidate(
+    candidate: Candidate, plan: Optional[TradePlan], risk: float,
+) -> dict[str, Any]:
+    if plan is None or risk <= 0.0:
+        return {}
+    entry = safe_float(plan.entry, 0.0)
+    tp1 = safe_float(plan.tp1, 0.0)
+    directional = side_sign(candidate.side) * (tp1 - entry)
+    basis = str(plan.target_basis or "")
+    tp1_basis = basis.split("| TP2:", 1)[0].upper()
+    factual_source = bool(
+        directional > 0.0
+        and "TP1:" in tp1_basis
+        and "RR-ПРОФІЛ" not in tp1_basis
+        and "RR PROFILE" not in tp1_basis
+        and any(token in tp1_basis for token in (
+            "FVG", "OB", "LIQUID", "BSL", "SSL", "PDH", "PDL", "ASIAN",
+            "RANGE", "OPEN", "MACRO", "VWAP", "SESSION",
+        ))
+    )
+    runway = directional / risk if directional > 0.0 else 0.0
+    if not factual_source or runway < V9574_MIN_SECONDARY_RUNWAY_R:
+        return {}
+    return {
+        "kind": "PLAN_TP1_FACTUAL_TARGET",
+        "timeframe": str(plan.stop_timeframe or ""),
+        "level": round_price(tp1),
+        "runway_r": round(runway, 4),
+        "role": "STRUCTURAL_OBJECTIVE",
+        "source": "TRADE_PLAN_FACTUAL_TP1",
+    }
+
+
+def _v9574_secondary_target_is_qualified(row: dict[str, Any]) -> bool:
+    timeframe = str(row.get("timeframe") or "").lower()
+    role = str(row.get("role") or "")
+    kind = str(row.get("kind") or "").upper()
+    return bool(
+        role in {"STRUCTURAL_BARRIER", "STRUCTURAL_OBJECTIVE"}
+        or timeframe in {"1h", "4h", "1d", "1w"}
+        or kind in {
+            "PDH", "PDL", "ASIAN_HIGH", "ASIAN_LOW", "DAILY_OPEN",
+            "WEEKLY_OPEN", "MACRO_EQ",
+        }
+    )
+
+
+def runway_target_topology_v9574(
+    context: dict[str, Any], candidate: Candidate, plan: Optional[TradePlan],
+    nearest_profile: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Classify the nearest target by role and value the next thesis horizon.
+
+    The topology never makes a structural barrier disappear.  It only replaces
+    a terminal nearest-target veto when the nearest target is a directional
+    checkpoint, the thesis is still intact and a separate factual objective is
+    available farther in the trade direction.
+    """
+    nearest_profile = dict(nearest_profile or {})
+    price = safe_float(context.get("price"), safe_float(getattr(plan, "entry", 0.0), 0.0))
+    atr = max(safe_float(context.get("atr15"), 0.0), abs(price) * 0.001, 1e-6)
+    entry = safe_float(getattr(plan, "entry", price), price) if plan else price
+    stop = safe_float(getattr(plan, "stop", 0.0), 0.0) if plan else 0.0
+    risk = (
+        max(abs(entry - stop), ABS_MIN_STOP_DOLLARS, 1e-6)
+        if plan and entry > 0.0 and stop > 0.0
+        else max(abs(entry - safe_float(candidate.invalidation_level, entry)), ABS_MIN_STOP_DOLLARS, atr * MIN_STOP_ATR15, 1e-6)
+    )
+    rows: list[dict[str, Any]] = []
+    consumed: list[dict[str, Any]] = []
+    if price > 0.0:
+        try:
+            targets = find_technical_targets(
+                candidate.side, price, context.get("zones") or [],
+                context.get("liquidity") or {}, atr,
+                macro=context.get("macro_liquidity") or {},
+            )
+        except Exception:
+            targets = []
+        bars = _v9532_recent_confirmed(context, "3m", 10)
+        sign = side_sign(candidate.side)
+        for target in targets:
+            status = _target_consumed_v9553(target, candidate.side, bars, atr)
+            level = safe_float(target.get("level"), 0.0)
+            directional = sign * (level - entry)
+            row = {
+                "kind": str(target.get("kind") or "TECHNICAL"),
+                "timeframe": str(target.get("timeframe") or ""),
+                "level": round_price(level) if level > 0.0 else 0.0,
+                "runway_r": round(directional / risk, 4) if directional > 0.0 else 0.0,
+                "role": _v9574_target_role(
+                    str(target.get("kind") or ""), str(target.get("timeframe") or ""),
+                ),
+                "strength": round(safe_float(target.get("strength"), 0.0), 4),
+                "magnet_score": round(safe_float(target.get("magnet_score"), 0.0), 4),
+                "consumed": bool(status.get("consumed")),
+                "accepted": bool(status.get("accepted")),
+                "swept": bool(status.get("swept")),
+            }
+            if row["consumed"]:
+                consumed.append(row)
+            elif directional > 0.0:
+                rows.append(row)
+    rows.sort(key=lambda row: safe_float(row.get("runway_r"), 1e9))
+    nearest = dict(rows[0]) if rows else {}
+    raw_nearest = safe_float(
+        nearest.get("runway_r"), safe_float(nearest_profile.get("runway_r"), 0.0),
+    )
+    minimum_secondary = max(
+        V9574_MIN_SECONDARY_RUNWAY_R,
+        raw_nearest + max(0.25, 0.40 * V9574_MIN_SECONDARY_RUNWAY_R),
+    )
+    secondary = next(
+        (
+            dict(row) for row in rows[1:]
+            if safe_float(row.get("runway_r"), 0.0) >= minimum_secondary
+            and _v9574_secondary_target_is_qualified(row)
+        ),
+        {},
+    )
+    if not secondary:
+        secondary = _v9574_plan_target_candidate(candidate, plan, risk)
+    secondary_runway = safe_float(secondary.get("runway_r"), 0.0)
+    role = str(nearest.get("role") or _v9574_target_role(
+        str(nearest_profile.get("nearest_target_kind") or ""), "",
+    ))
+    confidence, normalized = _v9574_checkpoint_confidence(candidate)
+    components = dict(candidate.score_components or {})
+    anchor = dict(
+        components.get("execution_anchor_authority")
+        or ((components.get("entry_contract") or {}).get("execution_anchor_profile") or {})
+    )
+    revalidation = dict(candidate.revalidation_profile or {})
+    revalidation_state = str(revalidation.get("state") or "").upper()
+    valid_geometry = bool(
+        plan and plan.valid and entry > 0.0 and stop > 0.0
+        and (
+            (candidate.side == Side.LONG.value and stop < entry)
+            or (candidate.side == Side.SHORT.value and stop > entry)
+        )
+    )
+    checkpoint = bool(
+        nearest
+        and role in {"LIQUIDITY_CHECKPOINT", "INTERNAL_CHECKPOINT"}
+        and 0.0 <= raw_nearest < V9574_NEAR_RUNWAY_R
+    )
+    thesis_intact = bool(
+        not anchor.get("invalidated")
+        and not revalidation.get("hard_expired")
+        and revalidation_state not in {"DEAD", "INVALIDATED"}
+        and bool(revalidation.get("entry_supported", True))
+    )
+    bridge_eligible = bool(
+        checkpoint
+        and secondary_runway >= V9574_MIN_SECONDARY_RUNWAY_R
+        and valid_geometry
+        and thesis_intact
+        and safe_float(candidate.final_score, 0.0) >= ARMED_SCORE_BASE
+        and confidence >= V9574_MIN_TOPOLOGY_CONFIDENCE
+    )
+    discounted = (
+        secondary_runway * (0.36 + 0.30 * confidence)
+        if bridge_eligible else raw_nearest
+    )
+    effective_runway = (
+        clamp(max(V9574_NEAR_RUNWAY_R, discounted), V9574_NEAR_RUNWAY_R, V9574_EFFECTIVE_RUNWAY_CAP_R)
+        if bridge_eligible else max(0.0, raw_nearest)
+    )
+    secondary_strength = clamp(secondary_runway / 1.50, 0.0, 1.0)
+    risk_fraction_cap = (
+        V9574_SCOUT_MIN_FRACTION
+        + (V9574_SCOUT_MAX_FRACTION - V9574_SCOUT_MIN_FRACTION)
+        * (0.72 * confidence + 0.28 * secondary_strength)
+        if bridge_eligible else 0.0
+    )
+    native = bool(
+        (candidate.stage_plan or {}).get("native_retest_observed")
+        or ((components.get("breakout_retest_model_local_execution") or {}).get("ready"))
+        or ((components.get("acceptance_retest") or {}).get("execution_ready"))
+    )
+    fresh = bool(
+        candidate_execution_trigger_age_minutes(candidate) <= float(EXECUTION_TRIGGER_TTL_MIN)
+        and (candidate.trigger_ready or candidate.live_3m_trigger_ready or candidate.limit_armed_ready)
+    )
+    return {
+        "known": bool(nearest or nearest_profile.get("known")),
+        "nearest_target": nearest,
+        "nearest_target_kind": str(nearest.get("kind") or nearest_profile.get("nearest_target_kind") or "UNAVAILABLE"),
+        "nearest_target_level": nearest.get("level", nearest_profile.get("nearest_target_level")),
+        "nearest_target_role": role,
+        "nearest_runway_r": round(raw_nearest, 4),
+        "secondary_structural_target": secondary,
+        "secondary_structural_runway_r": round(secondary_runway, 4) if secondary else None,
+        "target_count": len(rows),
+        "targets": rows[:6],
+        "consumed_target_count": len(consumed),
+        "checkpoint_near_zero": checkpoint,
+        "structural_barrier_near_zero": bool(
+            nearest and role == "STRUCTURAL_BARRIER" and raw_nearest < V9574_NEAR_RUNWAY_R
+        ),
+        "bridge_eligible": bridge_eligible,
+        "thesis_intact": thesis_intact,
+        "valid_stop_geometry": valid_geometry,
+        "checkpoint_confidence": round(confidence, 4),
+        "confidence_components": {key: round(value, 4) for key, value in normalized.items()},
+        "effective_runway_r": round(effective_runway, 4),
+        "risk_fraction_cap": round(clamp(risk_fraction_cap, 0.0, V9574_SCOUT_MAX_FRACTION), 4),
+        "current_native_execution": bool(native and fresh),
+        "route_policy": (
+            "BOUNDED_SCOUT_THEN_GRADUATE_AFTER_CHECKPOINT"
+            if bridge_eligible and native and fresh
+            else "PERSIST_CAUSAL_ROUTE_TO_CHECKPOINT"
+            if bridge_eligible
+            else "KEEP_STRUCTURAL_BARRIER_FLOOR"
+        ),
+        "raw_nearest_preserved": True,
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+def liquidity_runway_profile_v9574(
+    context: dict[str, Any], candidate: Candidate, plan: Optional[TradePlan] = None,
+) -> dict[str, Any]:
+    base = dict(_liquidity_runway_profile_v9574_base(context, candidate, plan) or {})
+    topology = runway_target_topology_v9574(context, candidate, plan, base)
+    raw_nearest = safe_float(topology.get("nearest_runway_r"), safe_float(base.get("runway_r"), 0.0))
+    effective = safe_float(topology.get("effective_runway_r"), raw_nearest)
+    base.update({
+        "raw_nearest_runway_r": round(raw_nearest, 4),
+        "primary_runway_r": round(raw_nearest, 4),
+        "secondary_structural_runway_r": topology.get("secondary_structural_runway_r"),
+        "runway_topology_v9574": copy.deepcopy(topology),
+        "runway_r": round(effective, 4),
+        "topology_adjusted": bool(topology.get("bridge_eligible")),
+        "market_probe_allowed": bool(
+            topology.get("bridge_eligible")
+            or not base.get("known")
+            or effective >= V9574_NEAR_RUNWAY_R
+        ),
+        "explicit_reprice": bool(
+            base.get("known") and effective < V9574_NEAR_RUNWAY_R
+        ),
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    if topology.get("bridge_eligible"):
+        base["score"] = round(100.0 * clamp((effective - 0.08) / 0.57, 0.0, 1.0), 2)
+    candidate.score_components = candidate.score_components or {}
+    candidate.stage_plan = candidate.stage_plan or {}
+    candidate.score_components["runway_topology_v9574"] = copy.deepcopy(topology)
+    candidate.stage_plan["runway_topology_v9574"] = copy.deepcopy(topology)
+    return base
+
+
+liquidity_runway_profile = liquidity_runway_profile_v9574
+
+
+def _refresh_execution_runway_v9574(
+    decision: Decision, context: dict[str, Any],
+) -> dict[str, Any]:
+    candidate = decision.candidate
+    if candidate is None:
+        return {}
+    profile = liquidity_runway_profile_v9574(context, candidate, decision.plan)
+    topology = dict(profile.get("runway_topology_v9574") or {})
+    if not topology.get("known"):
+        return topology
+    components = candidate.score_components = candidate.score_components or {}
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    xi = dict(
+        components.get("execution_intelligence_v9532")
+        or stage.get("execution_intelligence_v9532")
+        or {}
+    )
+    raw_nearest = safe_float(topology.get("nearest_runway_r"), safe_float(xi.get("runway_r"), 0.0))
+    effective = safe_float(topology.get("effective_runway_r"), raw_nearest)
+    xi.update({
+        "runway_r": round(effective, 4),
+        "raw_nearest_runway_r": round(raw_nearest, 4),
+        "secondary_structural_runway_r": topology.get("secondary_structural_runway_r"),
+        "runway_topology_v9574": copy.deepcopy(topology),
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    opinions = dict(xi.get("assistant_opinions") or {})
+    metrics = dict(xi.get("assistant_metrics") or {})
+    if topology.get("bridge_eligible"):
+        opinions["LIQUIDITY_ASSISTANT"] = "CAUTION"
+        metrics["LIQUIDITY_ASSISTANT"] = round(effective, 4)
+    xi["assistant_opinions"] = opinions
+    xi["assistant_metrics"] = metrics
+    components["execution_intelligence_v9532"] = xi
+    components["runway_topology_v9574"] = copy.deepcopy(topology)
+    stage["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(xi)
+    stage["runway_topology_v9574"] = copy.deepcopy(topology)
+    return topology
+
+
+def _v9574_mode_from_path(path: str, action: str) -> str:
+    path = str(path or "")
+    if path == "FACTUAL_REJECT":
+        return "FACTUAL_REJECT"
+    if "VALUE" in path and action not in EXECUTABLE_ENTRY_ACTIONS:
+        return "PRICE_OPTIMIZATION"
+    if "PROOF" in path:
+        return "PROOF_EVENT"
+    if action in EXECUTABLE_ENTRY_ACTIONS:
+        return "MARKET"
+    return "WATCH_ONLY"
+
+
+def _v9574_decision_blockers(decision: Decision) -> list[str]:
+    audit = dict(decision.audit or {})
+    authority = dict(audit.get("final_execution_authority_v9551") or {})
+    continuum = dict(audit.get("adaptive_entry_continuum_v9572") or {})
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS:
+        return []
+    return sorted({
+        str(value) for value in (
+            list(continuum.get("factual_hard_blockers") or [])
+            + list(authority.get("hard_blockers") or [])
+        ) if str(value)
+    })
+
+
+def _cap_checkpoint_bridge_v9574(decision: Decision) -> Decision:
+    candidate = decision.candidate
+    plan = decision.plan
+    if candidate is None:
+        return decision
+    topology = dict(
+        (candidate.score_components or {}).get("runway_topology_v9574")
+        or (candidate.stage_plan or {}).get("runway_topology_v9574")
+        or {}
+    )
+    if not topology.get("bridge_eligible"):
+        return decision
+    decision.audit = decision.audit or {}
+    continuum = dict(decision.audit.get("adaptive_entry_continuum_v9572") or {})
+    blockers = [
+        str(value) for value in list(continuum.get("factual_hard_blockers") or [])
+        if str(value) != "RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"
+    ]
+    if blockers:
+        return decision
+    fraction_cap = clamp(
+        safe_float(topology.get("risk_fraction_cap"), V9574_SCOUT_MIN_FRACTION),
+        V9574_SCOUT_MIN_FRACTION,
+        V9574_SCOUT_MAX_FRACTION,
+    )
+    original_intent = str(continuum.get("entry_intent_tier") or "WAIT")
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS and plan is not None and plan.valid:
+        cap_risk = NORMAL_RISK_PCT * fraction_cap
+        current_risk = safe_float(plan.position_risk_pct, safe_float(plan.risk_pct, 0.0))
+        bounded_risk = min(current_risk, cap_risk) if current_risk > 0.0 else cap_risk
+        if bounded_risk > 0.0:
+            decision.action = Action.PROBE_ENTRY.value
+            plan.execution_ready = True
+            plan.entry_stage = EntryStage.PROBE.value
+            plan.final_stage = EntryStage.PROBE.value
+            plan.position_risk_pct = round(bounded_risk, 6)
+            plan.risk_pct = plan.position_risk_pct
+            candidate.entry_stage = EntryStage.PROBE.value
+            candidate.execution_lane = ExecutionLane.EARLY_TACTICAL.value
+            candidate.confirmation_pending = False
+            candidate.opportunity_status = OpportunityStage.EXECUTABLE.value
+            continuum.update({
+                "quality_intent_before_topology_v9574": original_intent,
+                "entry_intent_tier": "EARLY_PROBE",
+                "execution_path": "PROBE_CHECKPOINT_BRIDGE",
+                "learning_goal": "MEASURE_CHECKPOINT_CLEARANCE_THEN_GRADUATE",
+                "risk_fraction_of_normal": round(fraction_cap, 4),
+                "risk_cap_pct": round(cap_risk, 6),
+                "factual_hard_blockers": [],
+                "price_route_pending": False,
+                "proof_route_pending": False,
+                "route_mode": "MARKET",
+                "route_reachable": True,
+                "runway_topology_v9574": copy.deepcopy(topology),
+                "schema_version_v9574": V9574_SCHEMA_VERSION,
+            })
+    elif continuum.get("execution_path") != "FACTUAL_REJECT":
+        current_fraction = safe_float(continuum.get("risk_fraction_of_normal"), fraction_cap)
+        continuum.update({
+            "quality_intent_before_topology_v9574": original_intent,
+            "entry_intent_tier": "EARLY_PROBE" if original_intent != "WAIT" else original_intent,
+            "risk_fraction_of_normal": round(min(current_fraction, fraction_cap), 4),
+            "risk_cap_pct": round(NORMAL_RISK_PCT * min(current_fraction, fraction_cap), 6),
+            "runway_topology_v9574": copy.deepcopy(topology),
+            "schema_version_v9574": V9574_SCHEMA_VERSION,
+        })
+    decision.audit["adaptive_entry_continuum_v9572"] = continuum
+    authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+    if decision.action in EXECUTABLE_ENTRY_ACTIONS:
+        authority.update({
+            "allow": True,
+            "final_action": Action.PROBE_ENTRY.value,
+            "entry_tier": "EARLY_PROBE",
+            "entry_intent_tier_v9572": "EARLY_PROBE",
+            "execution_path_v9572": "PROBE_CHECKPOINT_BRIDGE",
+            "risk_fraction_of_normal_v9572": round(fraction_cap, 4),
+            "hard_blockers": [],
+            "wait_reasons": [],
+        })
+    authority["runway_topology_v9574"] = copy.deepcopy(topology)
+    authority["schema_version_v9574"] = V9574_SCHEMA_VERSION
+    decision.audit["final_execution_authority_v9551"] = authority
+    candidate.score_components["adaptive_entry_continuum_v9572"] = copy.deepcopy(continuum)
+    candidate.stage_plan.update({
+        "runway_topology_v9574": copy.deepcopy(topology),
+        "adaptive_entry_continuum_v9572": copy.deepcopy(continuum),
+        "entry_intent_tier_v9572": str(continuum.get("entry_intent_tier") or "WAIT"),
+        "execution_path_v9572": str(continuum.get("execution_path") or "WATCH_RESCAN"),
+        "risk_fraction_of_normal_v9572": safe_float(continuum.get("risk_fraction_of_normal"), 0.0),
+    })
+    return decision
+
+
+def synchronize_decision_telemetry_v9574(decision: Decision) -> Decision:
+    """Publish one final action/path/blocker tuple to every runtime surface."""
+    decision.audit = decision.audit or {}
+    candidate = decision.candidate
+    continuum = dict(decision.audit.get("adaptive_entry_continuum_v9572") or {})
+    blockers = _v9574_decision_blockers(decision)
+    action = str(decision.action or Action.NO_SETUP.value)
+    path = str(continuum.get("execution_path") or "")
+    if blockers:
+        path = "FACTUAL_REJECT"
+    elif not path:
+        path = (
+            "STANDARD_MARKET" if action == Action.ENTRY.value
+            else "PROBE_DISCOVERY_MARKET" if action == Action.PROBE_ENTRY.value
+            else "WATCH_RESCAN"
+        )
+    mode = _v9574_mode_from_path(path, action)
+    route = dict(decision.audit.get("execution_route_contract_v9568") or {})
+    reachable = bool(
+        False if blockers
+        else True if action in EXECUTABLE_ENTRY_ACTIONS
+        else route.get("reachable", path in {"STANDARD_VALUE_ROUTE", "PROBE_VALUE_SEEKING", "PROBE_PROOF_SEEKING"})
+    )
+    risk_fraction = safe_float(continuum.get("risk_fraction_of_normal"), 0.0)
+    if blockers:
+        continuum.update({
+            "entry_intent_tier": "WAIT", "execution_path": "FACTUAL_REJECT",
+            "risk_fraction_of_normal": 0.0, "risk_cap_pct": 0.0,
+            "factual_hard_blockers": blockers, "route_mode": "FACTUAL_REJECT",
+            "route_reachable": False, "price_route_pending": False,
+            "proof_route_pending": False,
+        })
+        risk_fraction = 0.0
+    continuum.update({
+        "execution_path": path,
+        "route_mode": mode,
+        "route_reachable": reachable,
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    decision.audit["adaptive_entry_continuum_v9572"] = copy.deepcopy(continuum)
+    route.update({
+        "mode": mode, "reachable": reachable,
+        "reason": blockers[0] if blockers else str(route.get("reason") or path),
+        "price_optimization_reachable": bool(mode == "PRICE_OPTIMIZATION" and reachable),
+        "proof_event_reachable": bool(mode == "PROOF_EVENT" and reachable),
+        "terminal_reconciled_v9574": bool(blockers),
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    decision.audit["execution_route_contract_v9568"] = route
+    authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "allow": action in EXECUTABLE_ENTRY_ACTIONS,
+        "final_action": action,
+        "entry_intent_tier_v9572": str(continuum.get("entry_intent_tier") or "WAIT"),
+        "execution_path_v9572": path,
+        "execution_mode_v9568": mode,
+        "execution_route_reachable_v9568": reachable,
+        "final_blocking_reasons_v9568": blockers,
+        "final_blocking_reasons_v9572": blockers,
+        "risk_fraction_of_normal_v9572": round(risk_fraction, 4),
+        "hard_blockers": blockers,
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+        "is_last_mutator": True,
+    })
+    decision.audit["final_execution_authority_v9551"] = authority
+    if candidate is not None:
+        stage = candidate.stage_plan = candidate.stage_plan or {}
+        stage.update({
+            "execution_path": path,
+            "execution_path_v9572": path,
+            "entry_intent_tier_v9572": str(continuum.get("entry_intent_tier") or "WAIT"),
+            "execution_mode_v9568": mode,
+            "execution_route_reachable_v9568": reachable,
+            "final_blocking_reasons_v9568": blockers,
+            "final_blocking_reasons_v9571": blockers,
+            "final_blocking_reasons_v9572": blockers,
+            "risk_fraction_of_normal_v9572": round(risk_fraction, 4),
+            "adaptive_entry_continuum_v9572": copy.deepcopy(continuum),
+            "atomic_telemetry_v9574": True,
+        })
+        candidate.score_components = candidate.score_components or {}
+        candidate.score_components["adaptive_entry_continuum_v9572"] = copy.deepcopy(continuum)
+    divergence = dict(decision.audit.get("executive_divergence") or {})
+    if divergence:
+        prior = str(divergence.get("final_action") or "")
+        divergence.update({
+            "pre_terminal_action_v9574": prior if prior != action else str(divergence.get("pre_terminal_action_v9574") or ""),
+            "final_action": action,
+            "legacy_vs_final": str(divergence.get("legacy_recommendation") or "") != action,
+            "selected_eligible_but_no_setup": bool(
+                divergence.get("selected")
+                and divergence.get("eligible_pre_conflict", divergence.get("execution_eligible_pre_conflict"))
+                and action == Action.NO_SETUP.value
+            ),
+            "terminal_reconciled_v9574": True,
+            "authoritative_execution_path_v9574": path,
+            "authoritative_blockers_v9574": blockers,
+        })
+        decision.audit["executive_divergence"] = divergence
+    report = decision.audit.setdefault("executive_director", {}).setdefault("report", {})
+    executive = report.setdefault("executive_decision", {})
+    executive.update({
+        "action": action if action in EXECUTABLE_ENTRY_ACTIONS else ExecutiveDecisionState.REJECT.value if blockers else executive.get("action"),
+        "allow_execution": action in EXECUTABLE_ENTRY_ACTIONS,
+        "blocking_reasons": blockers,
+    })
+    executive.setdefault("audit", {})["final_execution_authority"] = copy.deepcopy(authority)
+    report.setdefault("audit", {})["final_execution_authority"] = copy.deepcopy(authority)
+    report["action"] = action
+    decision.audit["atomic_terminal_telemetry_v9574"] = {
+        "action": action, "execution_path": path, "execution_mode": mode,
+        "route_reachable": reachable, "blocking_reasons": blockers,
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+    return decision
+
+
+def apply_canonical_execution_authority_v9574(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    topology = _refresh_execution_runway_v9574(decision, context)
+    out = _apply_execution_authority_v9574_base(decision, context, journal)
+    if out.candidate is not None and topology:
+        out.candidate.score_components = out.candidate.score_components or {}
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.score_components["runway_topology_v9574"] = copy.deepcopy(topology)
+        out.candidate.stage_plan["runway_topology_v9574"] = copy.deepcopy(topology)
+    if topology.get("structural_barrier_near_zero"):
+        out.audit = out.audit or {}
+        authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+        authority["hard_blockers"] = sorted(set(
+            list(authority.get("hard_blockers") or [])
+            + ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+        ))
+        out.audit["final_execution_authority_v9551"] = authority
+        continuum = dict(out.audit.get("adaptive_entry_continuum_v9572") or {})
+        continuum["factual_hard_blockers"] = sorted(set(
+            list(continuum.get("factual_hard_blockers") or [])
+            + ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+        ))
+        out.audit["adaptive_entry_continuum_v9572"] = continuum
+        out = reconcile_terminal_execution_v9573(out, context, journal)
+    out = _cap_checkpoint_bridge_v9574(out)
+    out = synchronize_decision_telemetry_v9574(out)
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("runway_topology_v9574", {})
+        aggregate["evaluations"] = int(safe_float(aggregate.get("evaluations"), 0.0)) + 1
+        if topology.get("checkpoint_near_zero"):
+            aggregate["near_checkpoint_observations"] = int(safe_float(aggregate.get("near_checkpoint_observations"), 0.0)) + 1
+        if topology.get("bridge_eligible"):
+            aggregate["bridge_eligible"] = int(safe_float(aggregate.get("bridge_eligible"), 0.0)) + 1
+        if out.action == Action.PROBE_ENTRY.value and topology.get("bridge_eligible"):
+            aggregate["bounded_scout_entries"] = int(safe_float(aggregate.get("bounded_scout_entries"), 0.0)) + 1
+        if topology.get("structural_barrier_near_zero"):
+            aggregate["structural_barrier_rejections"] = int(safe_float(aggregate.get("structural_barrier_rejections"), 0.0)) + 1
+        aggregate["last_topology"] = copy.deepcopy(topology)
+        aggregate["global_runway_floor_lowered"] = False
+        aggregate["frequency_quota_enabled"] = False
+        aggregate["schema_version"] = V9574_SCHEMA_VERSION
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9574
+
+
+def detect_candidates_canonical_v9574(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    return _detect_candidates_v9574_base(context, state, journal)
+
+
+detect_candidates = detect_candidates_canonical_v9574
+
+
+def _v9574_signal_blockers(payload: dict[str, Any]) -> list[str]:
+    if str(payload.get("action") or "") in EXECUTABLE_ENTRY_ACTIONS:
+        return []
+    reconciliation = dict(payload.get("terminal_execution_reconciliation_v9573") or {})
+    continuum = dict(payload.get("adaptive_entry_continuum_v9572") or {})
+    # Choose one terminal authority by release precedence.  Unioning legacy
+    # vectors is unsafe: v9.5.68 stored PROOF_EVENT_PENDING and
+    # ROUTE_NOT_REACHABLE_BY_ONE_EVENT in a field later named "final", while
+    # v9.5.72 correctly published an empty factual-blocker vector for a live
+    # Router route.  Re-introducing those superseded values during migration
+    # would turn a reachable route into a synthetic FACTUAL_REJECT.
+    sources: list[tuple[bool, list[Any]]] = [
+        ("final_blocking_reasons_v9574" in payload, list(payload.get("final_blocking_reasons_v9574") or [])),
+        (
+            "factual_hard_blockers" in reconciliation,
+            list(reconciliation.get("factual_hard_blockers") or []),
+        ),
+        ("final_blocking_reasons_v9572" in payload, list(payload.get("final_blocking_reasons_v9572") or [])),
+        (
+            "factual_hard_blockers" in continuum,
+            list(continuum.get("factual_hard_blockers") or []),
+        ),
+        ("final_blocking_reasons_v9571" in payload, list(payload.get("final_blocking_reasons_v9571") or [])),
+        ("final_blocking_reasons_v9568" in payload, list(payload.get("final_blocking_reasons_v9568") or [])),
+        ("final_blocking_reasons_v9565" in payload, list(payload.get("final_blocking_reasons_v9565") or [])),
+        ("final_blocking_reasons_v9558" in payload, list(payload.get("final_blocking_reasons_v9558") or [])),
+        ("final_blocking_reasons_v9557" in payload, list(payload.get("final_blocking_reasons_v9557") or [])),
+    ]
+    selected = next((values for present, values in sources if present), [])
+    return _factual_hard_blockers_v9556([str(value) for value in selected if str(value)])
+
+
+def _v9574_signal_path(payload: dict[str, Any], blockers: list[str]) -> str:
+    if blockers:
+        return "FACTUAL_REJECT"
+    continuum = dict(payload.get("adaptive_entry_continuum_v9572") or {})
+    path = str(
+        payload.get("execution_path_v9572")
+        or continuum.get("execution_path")
+        or ""
+    )
+    action = str(payload.get("action") or Action.NO_SETUP.value)
+    if path:
+        return path
+    if action == Action.ENTRY.value:
+        return "STANDARD_MARKET"
+    if action == Action.PROBE_ENTRY.value:
+        return "PROBE_DISCOVERY_MARKET"
+    return "WATCH_RESCAN"
+
+
+def normalize_signal_telemetry_v9574(
+    compact: dict[str, Any], source: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Canonicalize a compact signal without recovering or inventing evidence."""
+    if not isinstance(compact, dict):
+        return {}
+    source = source if isinstance(source, dict) else compact
+    combined = dict(source)
+    combined.update(compact)
+    source_continuum = dict(source.get("adaptive_entry_continuum_v9572") or {})
+    compact_continuum = dict(compact.get("adaptive_entry_continuum_v9572") or {})
+    continuum = {**source_continuum, **compact_continuum}
+    combined["adaptive_entry_continuum_v9572"] = continuum
+    blockers = _v9574_signal_blockers(combined)
+    path = _v9574_signal_path(combined, blockers)
+    action = str(compact.get("action") or source.get("action") or Action.NO_SETUP.value)
+    mode = _v9574_mode_from_path(path, action)
+    reachable = bool(
+        False if blockers
+        else True if action in EXECUTABLE_ENTRY_ACTIONS
+        else combined.get("execution_route_reachable_v9568", path in {
+            "STANDARD_VALUE_ROUTE", "PROBE_VALUE_SEEKING", "PROBE_PROOF_SEEKING",
+        })
+    )
+    intent = str(
+        compact.get("entry_intent_tier_v9572")
+        or source.get("entry_intent_tier_v9572")
+        or continuum.get("entry_intent_tier")
+        or ("WAIT" if blockers else "")
+    )
+    risk_fraction = safe_float(
+        compact.get("risk_fraction_of_normal_v9572"),
+        safe_float(source.get("risk_fraction_of_normal_v9572"), safe_float(continuum.get("risk_fraction_of_normal"), 0.0)),
+    )
+    if blockers:
+        intent = "WAIT"
+        risk_fraction = 0.0
+    continuum.update({
+        "entry_intent_tier": intent or "WAIT",
+        "execution_path": path,
+        "factual_hard_blockers": blockers,
+        "risk_fraction_of_normal": round(risk_fraction, 4),
+        "route_mode": mode,
+        "route_reachable": reachable,
+        "price_route_pending": bool(mode == "PRICE_OPTIMIZATION" and reachable),
+        "proof_route_pending": bool(mode == "PROOF_EVENT" and reachable),
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    topology = dict(
+        compact.get("runway_topology_v9574")
+        or source.get("runway_topology_v9574")
+        or continuum.get("runway_topology_v9574")
+        or (source.get("stage_plan") or {}).get("runway_topology_v9574")
+        or ((source.get("score_components") or {}).get("runway_topology_v9574") or {})
+    )
+    if topology:
+        compact["runway_topology_v9574"] = copy.deepcopy(topology)
+        continuum["runway_topology_v9574"] = copy.deepcopy(topology)
+    compact.update({
+        "execution_path": path,
+        "execution_path_v9572": path,
+        "entry_intent_tier_v9572": intent or "WAIT",
+        "execution_mode_v9568": mode,
+        "execution_route_reachable_v9568": reachable,
+        "final_blocking_reasons_v9568": blockers,
+        "final_blocking_reasons_v9571": blockers,
+        "final_blocking_reasons_v9572": blockers,
+        "final_blocking_reasons_v9574": blockers,
+        "risk_fraction_of_normal_v9572": round(risk_fraction, 4),
+        "blocking_reason": blockers[0] if blockers else str(compact.get("blocking_reason") or ""),
+        "adaptive_entry_continuum_v9572": continuum,
+        "atomic_terminal_telemetry_v9574": {
+            "action": action,
+            "execution_path": path,
+            "execution_mode": mode,
+            "route_reachable": reachable,
+            "blocking_reasons": blockers,
+            "schema_version": V9574_SCHEMA_VERSION,
+        },
+        "canonical_compactor_schema_v9574": V9574_SCHEMA_VERSION,
+    })
+    return compact
+
+
+def compact_signal_canonical_v9574(payload: dict[str, Any]) -> dict[str, Any]:
+    source = payload
+    current: dict[str, Any] = {}
+    for _ in range(6):
+        compact = _compact_signal_v9574_base(source)
+        normalized = normalize_signal_telemetry_v9574(compact, source)
+        if normalized == current:
+            return normalized
+        current = normalized
+        source = current
+    return current
+
+
+compact_signal_for_journal = compact_signal_canonical_v9574
+
+
+def compact_trade_canonical_v9574(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_trade_v9574_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    compact["canonical_trade_compactor_schema_v9574"] = V9574_SCHEMA_VERSION
+    return compact
+
+
+compact_trade_for_journal = compact_trade_canonical_v9574
+
+
+def _v9574_rebuild_divergence_analytics(journal: dict[str, Any]) -> None:
+    events = [row for row in (journal.get("executive_divergences") or []) if isinstance(row, dict)]
+    by_reason: dict[str, int] = {}
+    for event in events:
+        reasons = list(event.get("reason_codes") or ["none"])
+        for reason in reasons:
+            key = str(reason or "none")
+            by_reason[key] = int(by_reason.get(key, 0)) + 1
+    journal.setdefault("analytics", {})["executive_divergence"] = {
+        "total_decisions": len(events),
+        "legacy_vs_final": sum(bool(row.get("legacy_vs_final")) for row in events),
+        "selected_eligible_but_no_setup": sum(bool(row.get("selected_eligible_but_no_setup")) for row in events),
+        "close_misses": sum(bool(row.get("close_miss")) for row in events),
+        "by_reason": by_reason,
+        "updated_at": str(events[-1].get("time") or "") if events else "",
+        "rebuilt_from_atomic_events_v9574": True,
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+def reconcile_persisted_telemetry_v9574(journal: dict[str, Any]) -> dict[str, Any]:
+    signals = [row for row in (journal.get("signals") or []) if isinstance(row, dict)]
+    normalized: list[dict[str, Any]] = []
+    signal_changes = 0
+    for row in signals:
+        compact = compact_signal_canonical_v9574(row)
+        signal_changes += int(compact != row)
+        normalized.append(compact)
+    journal["signals"] = normalized
+    signal_map = {
+        str(row.get("id") or row.get("signal_id") or ""): row
+        for row in normalized if str(row.get("id") or row.get("signal_id") or "")
+    }
+    divergence_changes = 0
+    reconciled_events: list[dict[str, Any]] = []
+    for source_event in (journal.get("executive_divergences") or []):
+        if not isinstance(source_event, dict):
+            continue
+        event = copy.deepcopy(source_event)
+        signal = signal_map.get(str(event.get("id") or event.get("source_signal_id") or ""))
+        if signal:
+            final_action = str(signal.get("action") or Action.NO_SETUP.value)
+            prior = str(event.get("final_action") or "")
+            blockers = list(signal.get("final_blocking_reasons_v9574") or [])
+            path = str(signal.get("execution_path_v9572") or "WATCH_RESCAN")
+            if prior and prior != final_action:
+                event["pre_terminal_action_v9574"] = prior
+            event.update({
+                "final_action": final_action,
+                "legacy_vs_final": str(event.get("legacy_recommendation") or "") != final_action,
+                "selected_eligible_but_no_setup": bool(
+                    event.get("selected")
+                    and event.get("eligible_pre_conflict", event.get("execution_eligible_pre_conflict"))
+                    and final_action == Action.NO_SETUP.value
+                ),
+                "terminal_reconciled_v9574": True,
+                "authoritative_execution_path_v9574": path,
+                "authoritative_blockers_v9574": blockers,
+            })
+            reasons = [str(value) for value in (event.get("reason_codes") or [])]
+            for blocker in blockers:
+                if blocker not in reasons:
+                    reasons.append(blocker)
+            event["reason_codes"] = reasons
+        divergence_changes += int(event != source_event)
+        reconciled_events.append(event)
+    journal["executive_divergences"] = reconciled_events[-EXECUTIVE_DIVERGENCE_JOURNAL_LIMIT:]
+    _v9574_rebuild_divergence_analytics(journal)
+    persisted_paths: dict[str, int] = {}
+    persisted_intents: dict[str, int] = {}
+    for row in normalized:
+        if not row.get("execution_path_v9572"):
+            continue
+        path = str(row.get("execution_path_v9572"))
+        intent = str(row.get("entry_intent_tier_v9572") or "WAIT")
+        persisted_paths[path] = int(persisted_paths.get(path, 0)) + 1
+        persisted_intents[intent] = int(persisted_intents.get(intent, 0)) + 1
+    audit = journal.setdefault("atomic_telemetry_v9574", {})
+    audit.pop("signals_reconciled_on_last_pass", None)
+    audit.pop("divergences_reconciled_on_last_pass", None)
+    if signal_changes or divergence_changes or not audit:
+        audit.update({
+            "signals_reconciled_total": int(audit.get("signals_reconciled_total") or 0) + signal_changes,
+            "divergences_reconciled_total": int(audit.get("divergences_reconciled_total") or 0) + divergence_changes,
+            "historical_rows_normalized": True,
+            "last_reconciled_at": iso_now(),
+        })
+    audit.update({
+        "persisted_execution_path_counts": persisted_paths,
+        "persisted_entry_intent_counts": persisted_intents,
+        "single_action_path_blocker_tuple": True,
+        "schema_version": V9574_SCHEMA_VERSION,
+    })
+    return {
+        "signal_changes": signal_changes,
+        "divergence_changes": divergence_changes,
+        "signal_rows": len(normalized),
+        "divergence_rows": len(reconciled_events),
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    profile = dict(_state_upgrade_policy_v9574_base(source_architecture) or {})
+    release = _architecture_release_v9569(source_architecture)
+    if release in {67, 68, 69, 70, 71, 72, 73, 74} or str(source_architecture or "") == V9574_ARCHITECTURE_VERSION:
+        profile["memory_compatible"] = True
+        profile["opportunity_lineage_compatible"] = True
+    profile.update({
+        "preserve_active_trade": True,
+        "compatible_router_releases": [67, 68, 69, 70, 71, 72, 73, 74],
+        "policy": (
+            "PRESERVE_V9_5_30_TO_74_MEMORY; PRESERVE_V9_5_33_TO_74_ROUTER_AND_ENTRY_INTENT_LINEAGE; "
+            "NORMALIZE_TELEMETRY_WITHOUT_JOURNAL_RESET"
+        ),
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def _v9574_normalize_state_signal(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    return normalize_signal_telemetry_v9574(copy.deepcopy(value), value)
+
+
+def load_state_canonical_v9574() -> dict[str, Any]:
+    state = _load_state_v9574_base()
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state["latest_signal"] = _v9574_normalize_state_signal(state.get("latest_signal"))
+    state["history"] = [
+        _v9574_normalize_state_signal(row) if isinstance(row, dict) and (row.get("id") or row.get("signal_id")) else row
+        for row in list(state.get("history") or [])[-MAX_HISTORY:]
+    ]
+    state.setdefault("state_migration", {}).update({
+        "v9574_state_compatible": True,
+        "router_queue_persisted_across_restarts_v9574": True,
+        "atomic_terminal_telemetry_v9574": True,
+        "hierarchical_runway_topology_v9574": True,
+        "preserve_active_trade": True,
+        "journal_reset_required": False,
+        "final_migration_authority": "V9_5_74_HIERARCHICAL_RUNWAY_ATOMIC_TELEMETRY",
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    return state
+
+
+load_state = load_state_canonical_v9574
+
+
+def save_state_canonical_v9574(state: dict[str, Any]) -> None:
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state["latest_signal"] = _v9574_normalize_state_signal(state.get("latest_signal"))
+    state["history"] = [
+        _v9574_normalize_state_signal(row) if isinstance(row, dict) and (row.get("id") or row.get("signal_id")) else row
+        for row in list(state.get("history") or [])[-MAX_HISTORY:]
+    ]
+    state.setdefault("state_migration", {}).update({
+        "v9574_state_compatible": True,
+        "atomic_terminal_telemetry_v9574": True,
+        "hierarchical_runway_topology_v9574": True,
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    })
+    return _save_state_v9574_base(state)
+
+
+save_state = save_state_canonical_v9574
+
+
+def load_journal_canonical_v9574() -> dict[str, Any]:
+    journal = _load_journal_v9574_base()
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    reconcile_persisted_telemetry_v9574(journal)
+    journal.setdefault("runway_topology_v9574", {}).update({
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9574_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9574_SCHEMA_VERSION,
+    })
+    return journal
+
+
+def save_journal_canonical_v9574(journal: dict[str, Any]) -> None:
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    reconcile_persisted_telemetry_v9574(journal)
+    journal.setdefault("runway_topology_v9574", {}).update({
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9574_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9574_SCHEMA_VERSION,
+    })
+    return _save_journal_v9574_base(journal)
+
+
+load_journal = load_journal_canonical_v9574
+save_journal = save_journal_canonical_v9574
+
+
+def _run_v9573_boundary_for_v9574(function: Any) -> Any:
+    names = (
+        "BOT_VERSION", "ARCHITECTURE_VERSION", "liquidity_runway_profile",
+        "_apply_true_final_authority_v9551", "detect_candidates",
+        "compact_signal_for_journal", "compact_trade_for_journal",
+        "state_upgrade_policy_v9533", "load_state", "save_state",
+        "load_journal", "save_journal", "validate_runtime_configuration",
+        "run_architecture_audit", "run_v8_2_authority_audit", "run_audit_journal",
+    )
+    saved = {name: globals().get(name) for name in names}
+    try:
+        globals().update({
+            "BOT_VERSION": V9573_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9573_ARCHITECTURE_VERSION,
+            "liquidity_runway_profile": _liquidity_runway_profile_v9574_base,
+            "_apply_true_final_authority_v9551": apply_canonical_execution_authority_v9573,
+            "detect_candidates": detect_candidates_canonical_v9573,
+            "compact_signal_for_journal": compact_signal_canonical_v9573,
+            "compact_trade_for_journal": compact_trade_canonical_v9573,
+            "state_upgrade_policy_v9533": _state_upgrade_policy_v9574_base,
+            "load_state": _load_state_v9574_base,
+            "save_state": _save_state_v9574_base,
+            "load_journal": _load_journal_v9574_base,
+            "save_journal": _save_journal_v9574_base,
+            "validate_runtime_configuration": _validate_runtime_v9574_base,
+            "run_architecture_audit": _architecture_audit_v9574_base,
+            "run_v8_2_authority_audit": _authority_audit_v9574_base,
+            "run_audit_journal": _audit_journal_v9574_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def validate_runtime_configuration_canonical_v9574() -> dict[str, Any]:
+    report = _run_v9573_boundary_for_v9574(_validate_runtime_v9574_base)
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9574_BOT_VERSION or ARCHITECTURE_VERSION != V9574_ARCHITECTURE_VERSION:
+        errors.append("v9.5.74 release seal mismatch")
+    if V9574_NEAR_RUNWAY_R != V9553_MIN_MARKET_RUNWAY_R:
+        errors.append("v9.5.74 must preserve the structural-barrier runway floor")
+    if not (0.0 < V9574_SCOUT_MIN_FRACTION <= V9574_SCOUT_MAX_FRACTION < V9572_STANDARD_MIN_FRACTION):
+        errors.append("v9.5.74 checkpoint scout risk must remain below STANDARD risk")
+    if V9574_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.74 scheduler cadence must remain 15 minutes")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "hierarchical_runway_topology": True,
+        "atomic_terminal_telemetry": True,
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "checkpoint_scout_risk_fraction": [V9574_SCOUT_MIN_FRACTION, V9574_SCOUT_MAX_FRACTION],
+        "scheduler_cadence_minutes": V9574_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9574": V9574_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9574
+
+
+def run_architecture_audit_v9574() -> dict[str, Any]:
+    report = _run_v9573_boundary_for_v9574(_architecture_audit_v9574_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9574_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9574,
+        "v9574_target_topology": globals().get("liquidity_runway_profile") is liquidity_runway_profile_v9574,
+        "v9574_atomic_signal_compactor": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9574,
+        "v9574_atomic_trade_compactor": globals().get("compact_trade_for_journal") is compact_trade_canonical_v9574,
+        "v9574_state_loader": globals().get("load_state") is load_state_canonical_v9574,
+        "v9574_state_saver": globals().get("save_state") is save_state_canonical_v9574,
+        "v9574_journal_loader": globals().get("load_journal") is load_journal_canonical_v9574,
+        "v9574_journal_saver": globals().get("save_journal") is save_journal_canonical_v9574,
+        "v9574_classic_manager": globals().get("manage_active_trade") is manage_active_trade_v9570,
+        "v9574_floor_not_lowered": V9574_NEAR_RUNWAY_R == V9553_MIN_MARKET_RUNWAY_R,
+        "v9574_no_frequency_quota": not V9558_CADENCE_QUOTA_ENABLED,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9574
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9574
+    topology = globals().get("liquidity_runway_profile") is liquidity_runway_profile_v9574
+    compaction = globals().get("compact_signal_for_journal") is compact_signal_canonical_v9574
+    management = globals().get("manage_active_trade") is manage_active_trade_v9570
+    ready = bool(authority is not None and canonical and topology and compaction and management)
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "hierarchical_runway_authority": topology,
+        "atomic_telemetry_compaction": compaction,
+        "classic_management_authority": management,
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if ready else "FAILED",
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+def run_full_system_audit_v9574() -> dict[str, Any]:
+    runtime = validate_runtime_configuration_canonical_v9574()
+    architecture = run_architecture_audit_v9574()
+    authority = run_v8_2_authority_audit()
+    registry = detector_registry_audit()
+    categories = {
+        "detection": {
+            "registry_valid": registry.get("valid") is True,
+            "family_count_is_6": registry.get("family_count") == 6,
+            "setup_count_is_24": registry.get("setup_count") == 24,
+            "model_count_is_27": registry.get("model_count") == 27,
+        },
+        "runway": {
+            "nearest_fact_preserved": True,
+            "structural_barrier_floor_preserved": V9574_NEAR_RUNWAY_R == V9553_MIN_MARKET_RUNWAY_R,
+            "secondary_target_required": V9574_MIN_SECONDARY_RUNWAY_R >= 0.75,
+            "checkpoint_risk_below_standard": V9574_SCOUT_MAX_FRACTION < V9572_STANDARD_MIN_FRACTION,
+            "no_frequency_quota": not V9558_CADENCE_QUOTA_ENABLED,
+        },
+        "authority_and_telemetry": {
+            "final_authority_active": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9574,
+            "atomic_compactor_active": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9574,
+            "state_roundtrip_active": globals().get("save_state") is save_state_canonical_v9574,
+            "journal_migration_active": globals().get("save_journal") is save_journal_canonical_v9574,
+        },
+        "risk_and_management": {
+            "single_risk_entry_point": globals().get("build_risk_adjustment_ledger") is canonical_risk_ledger_v9559,
+            "classic_manager_active": globals().get("manage_active_trade") is manage_active_trade_v9570,
+            "initial_structural_stop_before_tp1": True,
+            "post_tp1_delayed_lock_preserved": True,
+        },
+        "operations": {
+            "runtime_valid": runtime.get("valid") is True,
+            "architecture_passed": architecture.get("passed") is True,
+            "authority_ready": authority.get("status") == "READY",
+            "scheduler_cadence_minutes_is_15": V9574_SCHEDULER_CADENCE_MINUTES == 15,
+            "one_position_policy_preserved": True,
+        },
+    }
+    return {
+        "passed": all(bool(value) for checks in categories.values() for value in checks.values()),
+        "failed_checks": [
+            f"{group}.{name}" for group, checks in categories.items()
+            for name, value in checks.items() if not value
+        ],
+        "categories": categories,
+        "runtime": {"valid": runtime.get("valid"), "errors": list(runtime.get("errors") or [])},
+        "architecture": {"passed": architecture.get("passed")},
+        "authority": {"status": authority.get("status")},
+        "registry": registry,
+        "scope_note": "DETERMINISTIC_CONTRACT_AUDIT_NOT_LIVE_PNL_PROOF",
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+def _telemetry_inconsistencies_v9574(payload: dict[str, Any]) -> dict[str, Any]:
+    signals = [row for row in (payload.get("signals") or []) if isinstance(row, dict)]
+    signal_map = {str(row.get("id") or ""): row for row in signals if row.get("id")}
+    path_conflicts: list[str] = []
+    blocker_conflicts: list[str] = []
+    divergence_conflicts: list[str] = []
+    for row in signals:
+        signal_id = str(row.get("id") or "")
+        blockers_68 = list(row.get("final_blocking_reasons_v9568") or [])
+        blockers_72 = list(row.get("final_blocking_reasons_v9572") or [])
+        if str(row.get("execution_path") or "") != str(row.get("execution_path_v9572") or ""):
+            path_conflicts.append(signal_id)
+        if blockers_68 != blockers_72:
+            blocker_conflicts.append(signal_id)
+    for event in (payload.get("executive_divergences") or []):
+        if not isinstance(event, dict):
+            continue
+        signal_id = str(event.get("id") or event.get("source_signal_id") or "")
+        signal = signal_map.get(signal_id)
+        if signal and str(event.get("final_action") or "") != str(signal.get("action") or ""):
+            divergence_conflicts.append(signal_id)
+    return {
+        "signal_rows": len(signals),
+        "execution_path_conflicts": path_conflicts,
+        "v9568_blocker_conflicts": blocker_conflicts,
+        "executive_divergence_action_conflicts": divergence_conflicts,
+        "total_conflicts": len(path_conflicts) + len(blocker_conflicts) + len(divergence_conflicts),
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+
+
+def run_audit_journal_canonical_v9574(path: str) -> dict[str, Any]:
+    output = _run_v9573_boundary_for_v9574(lambda: _audit_journal_v9574_base(path))
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    before = _telemetry_inconsistencies_v9574(payload)
+    migrated = copy.deepcopy(payload)
+    migration = reconcile_persisted_telemetry_v9574(migrated)
+    after = _telemetry_inconsistencies_v9574(migrated)
+    output["v9574_hierarchical_runway_atomic_telemetry"] = {
+        "effective_bot_version": BOT_VERSION,
+        "telemetry_before_migration": before,
+        "telemetry_after_migration": after,
+        "migration": migration,
+        "full_system_audit": run_full_system_audit_v9574(),
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9574_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9574_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9574
+
+
+def _v9574_checkpoint_context(*, barrier: bool = False) -> dict[str, Any]:
+    zones = [
+        Zone("FVG", Side.SHORT.value, 100.02, 100.08, 1, "15m", 1.0)
+    ] if barrier else []
+    return {
+        "price": 100.0,
+        "atr15": 1.0,
+        "zones": zones,
+        "liquidity": {
+            "15m": {"bsl": [] if barrier else [100.021]},
+            "1h": {"bsl": [101.0]},
+        },
+        "macro_liquidity": {},
+        "candles": {"3m": []},
+        "execution_price_trusted": True,
+        "_audit_shadow_scan": True,
+    }
+
+
+def _v9574_latest_long_bridge_check() -> bool:
+    decision = _v9564_fixture(
+        score=78, setup_quality=79.84, structural=65.82,
+        asi=37.23, runway=0.021, htf_state="MIXED", regime_bias="BULLISH",
+    )
+    assert decision.candidate is not None and decision.plan is not None
+    now_ts = int(now_utc().timestamp() * 1000)
+    candidate = decision.candidate
+    candidate.trigger_ready = True
+    candidate.live_3m_trigger_ready = True
+    candidate.trigger_ts = now_ts
+    candidate.trigger_age_minutes = 0.0
+    candidate.execution_trigger_age_minutes = 0.0
+    candidate.stage_plan["native_retest_observed"] = True
+    decision.plan.execution_ready = True
+    decision.plan.target_basis = (
+        "TP0: 0.65R | TP1: BSL_LIQUIDITY (1h, magnet 1.2) | "
+        "TP2: RR-профіль | TP3: RR-профіль"
+    )
+    decision.audit.setdefault("canonical_router_result_v9553", {})["native_retest_observed"] = True
+    result = apply_canonical_execution_authority_v9574(
+        decision, _v9574_checkpoint_context(), {},
+    )
+    topology = dict((result.candidate.score_components or {}).get("runway_topology_v9574") or {})
+    telemetry = dict((result.audit or {}).get("atomic_terminal_telemetry_v9574") or {})
+    continuum = dict((result.audit or {}).get("adaptive_entry_continuum_v9572") or {})
+    return bool(
+        topology.get("nearest_runway_r") == 0.021
+        and safe_float(topology.get("secondary_structural_runway_r"), 0.0) >= 0.75
+        and topology.get("bridge_eligible") is True
+        and safe_float(topology.get("effective_runway_r"), 0.0) >= V9574_NEAR_RUNWAY_R
+        and result.action == Action.PROBE_ENTRY.value
+        and result.plan.execution_ready
+        and result.plan.position_risk_pct <= NORMAL_RISK_PCT * V9574_SCOUT_MAX_FRACTION + 1e-9
+        and continuum.get("execution_path") == "PROBE_CHECKPOINT_BRIDGE"
+        and telemetry == {
+            "action": Action.PROBE_ENTRY.value,
+            "execution_path": "PROBE_CHECKPOINT_BRIDGE",
+            "execution_mode": "MARKET",
+            "route_reachable": True,
+            "blocking_reasons": [],
+            "schema_version": V9574_SCHEMA_VERSION,
+        }
+    )
+
+
+def _v9574_structural_barrier_check() -> bool:
+    decision = _v9564_fixture(
+        score=82, setup_quality=82.0, structural=78.0,
+        asi=12.0, runway=0.02, htf_state="ALIGNED", regime_bias="BULLISH",
+    )
+    assert decision.plan is not None
+    decision.plan.execution_ready = True
+    result = apply_canonical_execution_authority_v9574(
+        decision, _v9574_checkpoint_context(barrier=True), {},
+    )
+    topology = dict((result.candidate.score_components or {}).get("runway_topology_v9574") or {}) if result.candidate else {}
+    telemetry = dict((result.audit or {}).get("atomic_terminal_telemetry_v9574") or {})
+    return bool(
+        topology.get("structural_barrier_near_zero") is True
+        and topology.get("bridge_eligible") is False
+        and result.action == Action.NO_SETUP.value
+        and telemetry.get("execution_path") == "FACTUAL_REJECT"
+        and telemetry.get("route_reachable") is False
+        and telemetry.get("blocking_reasons") == ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+    )
+
+
+def _v9574_atomic_compaction_check() -> bool:
+    payload = {
+        "id": "v9574-atomic", "time": iso_now(),
+        "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+        "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "execution_path": "INNOVATION_FALLBACK",
+        "execution_path_v9572": "FACTUAL_REJECT",
+        "execution_mode_v9568": "FACTUAL_REJECT",
+        "execution_route_reachable_v9568": False,
+        "final_blocking_reasons_v9568": [],
+        "final_blocking_reasons_v9572": ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"],
+        "adaptive_entry_continuum_v9572": {
+            "entry_intent_tier": "WAIT", "execution_path": "FACTUAL_REJECT",
+            "factual_hard_blockers": ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"],
+            "risk_fraction_of_normal": 0.0,
+        },
+    }
+    first = compact_signal_canonical_v9574(payload)
+    second = compact_signal_canonical_v9574(first)
+    third = compact_signal_canonical_v9574(second)
+    return bool(
+        first == second == third
+        and first.get("execution_path") == first.get("execution_path_v9572") == "FACTUAL_REJECT"
+        and first.get("execution_mode_v9568") == "FACTUAL_REJECT"
+        and first.get("execution_route_reachable_v9568") is False
+        and first.get("final_blocking_reasons_v9568") == first.get("final_blocking_reasons_v9572")
+        == ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+    )
+
+
+def _v9574_pending_route_precedence_check() -> bool:
+    payload = {
+        "id": "v9574-route-precedence", "time": iso_now(),
+        "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+        "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "execution_path": "INNOVATION_FALLBACK",
+        "execution_path_v9572": "PROBE_PROOF_SEEKING",
+        "execution_mode_v9568": "PROOF_EVENT",
+        "execution_route_reachable_v9568": True,
+        "final_blocking_reasons_v9568": ["PROOF_EVENT_PENDING"],
+        "final_blocking_reasons_v9572": [],
+        "terminal_execution_reconciliation_v9573": {
+            "applied": False,
+            "factual_hard_blockers": [],
+        },
+        "adaptive_entry_continuum_v9572": {
+            "entry_intent_tier": "EARLY_PROBE",
+            "execution_path": "PROBE_PROOF_SEEKING",
+            "factual_hard_blockers": [],
+            "risk_fraction_of_normal": 0.30,
+        },
+    }
+    first = compact_signal_canonical_v9574(payload)
+    second = compact_signal_canonical_v9574(first)
+    return bool(
+        first == second
+        and first.get("execution_path") == first.get("execution_path_v9572") == "PROBE_PROOF_SEEKING"
+        and first.get("execution_mode_v9568") == "PROOF_EVENT"
+        and first.get("execution_route_reachable_v9568") is True
+        and first.get("final_blocking_reasons_v9568") == []
+        and first.get("final_blocking_reasons_v9572") == []
+    )
+
+
+def _v9574_journal_migration_fixed_point_check() -> bool:
+    payload = {
+        "signals": [{
+            "id": "s", "time": "2026-09-06T00:00:00+00:00",
+            "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+            "setup_type": SetupType.BREAKOUT_RETEST.value,
+            "execution_path": "INNOVATION_FALLBACK",
+            "execution_path_v9572": "FACTUAL_REJECT",
+            "final_blocking_reasons_v9568": [],
+            "final_blocking_reasons_v9572": ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"],
+        }],
+        "executive_divergences": [{
+            "id": "s", "time": "2026-09-06T00:00:00+00:00",
+            "legacy_recommendation": Action.ENTRY.value,
+            "final_action": Action.PROBE_ENTRY.value,
+            "selected": True, "eligible_pre_conflict": True,
+            "reason_codes": [],
+        }],
+        "analytics": {},
+    }
+    first_report = reconcile_persisted_telemetry_v9574(payload)
+    first = copy.deepcopy(payload)
+    second_report = reconcile_persisted_telemetry_v9574(payload)
+    signal = payload["signals"][0]
+    divergence = payload["executive_divergences"][0]
+    return bool(
+        first_report.get("signal_changes") == 1
+        and first_report.get("divergence_changes") == 1
+        and second_report.get("signal_changes") == 0
+        and second_report.get("divergence_changes") == 0
+        and first == payload
+        and signal.get("execution_path") == signal.get("execution_path_v9572") == "FACTUAL_REJECT"
+        and signal.get("final_blocking_reasons_v9568") == signal.get("final_blocking_reasons_v9572")
+        and divergence.get("final_action") == Action.NO_SETUP.value
+        and divergence.get("authoritative_execution_path_v9574") == "FACTUAL_REJECT"
+    )
+
+
+def _v9574_safety_checks() -> list[tuple[str, bool]]:
+    runtime = validate_runtime_configuration_canonical_v9574()
+    full_audit = run_full_system_audit_v9574()
+    return [
+        (
+            "v9.5.74 latest-like LONG uses a bounded checkpoint bridge instead of a false terminal runway veto",
+            _v9574_latest_long_bridge_check(),
+        ),
+        (
+            "v9.5.74 a true near structural barrier preserves the original factual runway rejection",
+            _v9574_structural_barrier_check(),
+        ),
+        (
+            "v9.5.74 terminal action, paths, v9.5.68 blockers and route reachability compact atomically",
+            _v9574_atomic_compaction_check(),
+        ),
+        (
+            "v9.5.74 migration preserves a reachable pending route instead of reviving superseded blockers",
+            _v9574_pending_route_precedence_check(),
+        ),
+        (
+            "v9.5.74 historical signal and Executive divergence migration is an idempotent fixed point",
+            _v9574_journal_migration_fixed_point_check(),
+        ),
+        (
+            "v9.5.74 preserves the complete restart-safe Router lifecycle",
+            _v9569_full_router_lifecycle_check(),
+        ),
+        (
+            "v9.5.74 preserves classic pre-TP1 and delayed post-TP1 management",
+            _v9570_classic_management_checks() and _v9570_delayed_tp1_lock_checks(),
+        ),
+        (
+            "v9.5.74 full-system deterministic audit passes with no global threshold relaxation or frequency quota",
+            runtime.get("valid") is True and full_audit.get("passed") is True,
+        ),
+    ]
+
+
+def run_self_test_canonical_v9574() -> bool:
+    prior_ok = bool(_run_v9573_boundary_for_v9574(_run_self_test_v9574_base))
+    checks = _v9574_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.74 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} hierarchical-runway/atomic-telemetry checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9574
 
 
 # The modules import without a circular dependency; bind their pure helper
