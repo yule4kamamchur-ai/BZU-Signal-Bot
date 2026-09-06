@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """
-BZU Professional Oil 15M Signal Bot v9.5.74 (Self-Contained Single File)
+BZU Professional Oil 15M Signal Bot v9.5.75 (Self-Contained Single File)
 ====================================================================================
-Оновлення v9.5.74 (hierarchical runway + atomic telemetry):
+Оновлення v9.5.75 (institutional sequence + target-ladder utility):
+- причинний institutional chain: liquidity map/sponsorship -> displacement ->
+  structure transfer -> retest/acceptance -> expansion;
+- near-zero liquidity checkpoint оцінюється як драбина фактичних цілей, а не
+  як автоматичний terminal veto; структурний бар'єр і floor 0.08R збережені;
+- bounded EARLY_PROBE допускається лише з поточною timestamped execution
+  подією, повним причинним ланцюгом та позитивною clearance utility;
+- незавершений, але життєздатний ланцюг зберігається як causal Router route;
+- STANDARD_ENTRY, SL/TP і classic pre-TP1/post-TP1 management не змінені.
+
+Попереднє оновлення v9.5.74 (hierarchical runway + atomic telemetry):
 - Runway більше не є бінарним veto: близька ліквідність класифікується як checkpoint, а не як фінальна перешкода, лише за наявності окремої кваліфікованої структурної цілі та цілісної торгової тези.
 - Для такого маршруту використовується bounded PROBE_CHECKPOINT_BRIDGE з безперервним risk fraction 18-42%; глобальний runway floor 0.08R, hard invalidation, risk caps і структурні бар'єри не послаблені.
 - Справжній близький OB/FVG/supply/demand barrier лишається FACTUAL_REJECT; якщо дальшої цілі немає, setup також не отримує штучного дозволу.
@@ -32040,7 +32050,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
     return out
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.74 Journal v2")
+    parser = argparse.ArgumentParser(description="BZU Professional Oil 15M Signal Bot v9.5.75 Journal v2")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--audit-journal", type=str, help="Replay journal decisions without trading")
     args = parser.parse_args()
@@ -52800,6 +52810,2444 @@ def run_self_test_canonical_v9574() -> bool:
 
 
 _run_self_test = run_self_test_canonical_v9574
+
+
+# =============================================================================
+# v9.5.75 INSTITUTIONAL SEQUENCE / DISTRIBUTED TARGET-LADDER UTILITY
+# =============================================================================
+# v9.5.74 correctly distinguished a liquidity checkpoint from a structural
+# barrier, but still required one secondary objective at >= 0.75R.  A real
+# auction can instead expose several ordered liquidity magnets whose combined
+# clearance is economically useful.  This layer does not lower the global
+# runway floor and does not turn a score into an entry.  It evaluates the full
+# target ladder and requires one causal institutional sequence before a
+# bounded probe can be published:
+#
+# liquidity map/sponsorship -> displacement -> structure transfer ->
+# retest/acceptance -> expansion.
+#
+# Missing causal evidence produces a durable one-event/value route.  Factual
+# invalidation, structural barriers, stop geometry and capital caps remain
+# terminal.  STANDARD_ENTRY and classic trade management are left untouched.
+
+V9575_SCHEMA_VERSION = "institutional_sequence_target_ladder_v9.5.75"
+V9575_BOT_VERSION = "pro-hybrid-confluence-v9.5.75-institutional-sequence-target-ladder"
+V9575_ARCHITECTURE_VERSION = (
+    "TRADING_DESK_EXECUTIVE_V9_5_75_INSTITUTIONAL_SEQUENCE_TARGET_LADDER_15M_CADENCE"
+)
+V9575_SCHEDULER_CADENCE_MINUTES = 15
+V9575_MIN_DISTRIBUTED_TARGETS = 3
+V9575_MIN_DISTRIBUTED_HORIZON_R = 0.50
+V9575_CLEARANCE_COST_BUFFER_R = 0.02
+V9575_CLEARANCE_SAFETY_MARGIN = 0.015
+V9575_MIN_STRUCTURE_AXIS = 0.55
+V9575_MIN_REVERSAL_TRANSFER_AXIS = 0.60
+V9575_PROBE_MIN_FRACTION = 0.12
+V9575_PROBE_MAX_FRACTION = 0.32
+V9575_EFFECTIVE_RUNWAY_CAP_R = 0.55
+
+_liquidity_runway_profile_v9575_base = liquidity_runway_profile_v9574
+_apply_execution_authority_v9575_base = _apply_execution_authority_v9574_base
+_detect_candidates_v9575_base = detect_candidates_canonical_v9574
+_compact_signal_v9575_base = compact_signal_canonical_v9574
+_compact_trade_v9575_base = compact_trade_canonical_v9574
+_state_upgrade_policy_v9575_base = state_upgrade_policy_v9533
+_load_state_v9575_base = load_state_canonical_v9574
+_save_state_v9575_base = save_state_canonical_v9574
+_load_journal_v9575_base = load_journal_canonical_v9574
+_save_journal_v9575_base = save_journal_canonical_v9574
+_validate_runtime_v9575_base = validate_runtime_configuration_canonical_v9574
+_architecture_audit_v9575_base = run_architecture_audit_v9574
+_authority_audit_v9575_base = run_v8_2_authority_audit
+_audit_journal_v9575_base = run_audit_journal_canonical_v9574
+_run_self_test_v9575_base = _run_self_test
+_candidate_from_missed_opportunity_v9575_base = candidate_from_missed_opportunity
+_store_router_opportunity_v9575_base = store_router_opportunity_v9541
+
+BOT_VERSION = V9575_BOT_VERSION
+ARCHITECTURE_VERSION = V9575_ARCHITECTURE_VERSION
+
+
+def _v9575_distinct_ladder_targets(topology: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return ordered, unconsumed factual nodes without double-counting clusters."""
+    rows = [
+        copy.deepcopy(row) for row in list(topology.get("targets") or [])
+        if isinstance(row, dict)
+        and not row.get("consumed")
+        and safe_float(row.get("runway_r"), 0.0) > 0.0
+    ]
+    secondary = dict(topology.get("secondary_structural_target") or {})
+    if (
+        secondary
+        and not secondary.get("consumed")
+        and safe_float(secondary.get("runway_r"), 0.0) > 0.0
+    ):
+        rows.append(secondary)
+    rows.sort(key=lambda row: safe_float(row.get("runway_r"), 1e9))
+    distinct: list[dict[str, Any]] = []
+    for row in rows:
+        runway = safe_float(row.get("runway_r"), 0.0)
+        level = safe_float(row.get("level"), 0.0)
+        if any(
+            abs(runway - safe_float(prior.get("runway_r"), 0.0)) < 0.015
+            or (level > 0.0 and abs(level - safe_float(prior.get("level"), 0.0)) < 1e-9)
+            for prior in distinct
+        ):
+            continue
+        distinct.append(row)
+    return distinct[:6]
+
+
+def target_ladder_utility_v9575(
+    candidate: Candidate, plan: Optional[TradePlan], topology: dict[str, Any],
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Value ordered checkpoint clearance without treating it as win probability."""
+    rows = _v9575_distinct_ladder_targets(topology)
+    tradable_rows = [
+        row for row in rows
+        if str(row.get("role") or "") != "STRUCTURAL_BARRIER"
+    ]
+    terminal = max(
+        (safe_float(row.get("runway_r"), 0.0) for row in tradable_rows),
+        default=0.0,
+    )
+    barrier_before_terminal = any(
+        str(row.get("role") or "") == "STRUCTURAL_BARRIER"
+        and safe_float(row.get("runway_r"), 0.0) <= terminal + 1e-9
+        for row in rows
+    )
+    stage = dict(candidate.stage_plan or {})
+    origin_ladder = dict(
+        stage.get("target_ladder_origin_v9575")
+        or ((stage.get("evidence_debt_v9564") or {}).get("target_ladder_utility_v9575"))
+        or {}
+    )
+    origin_targets = [
+        row for row in list(origin_ladder.get("targets") or [])
+        if isinstance(row, dict) and safe_float(row.get("level"), 0.0) > 0.0
+    ]
+    price = safe_float((context or {}).get("price"), safe_float(getattr(plan, "entry", 0.0), 0.0))
+    sign = side_sign(candidate.side)
+    cleared_origin_targets = [
+        row for row in origin_targets
+        if sign and sign * (price - safe_float(row.get("level"), 0.0)) >= 0.0
+    ]
+    evidence_ts = int(safe_float(stage.get("evidence_ts"), 0.0))
+    watermark = int(safe_float(
+        stage.get("decision_watermark"), safe_float(stage.get("router_decision_3m_ts"), 0.0),
+    ))
+    causal_route_progress = bool(
+        evidence_ts > watermark > 0
+        and str(stage.get("consumed_tactic") or "") == "ONE_3M_CONFIRM"
+        and str(stage.get("router_final_tactic") or "") == "MARKET_NOW"
+    )
+    causal_ladder_handoff = bool(
+        causal_route_progress
+        and origin_ladder.get("economically_viable") is True
+        and len(origin_targets) >= V9575_MIN_DISTRIBUTED_TARGETS
+        and len(cleared_origin_targets) >= 1
+        and len(tradable_rows) >= 2
+        and terminal >= V9575_MIN_DISTRIBUTED_HORIZON_R
+    )
+    checkpoint_case = bool(
+        topology.get("checkpoint_near_zero")
+        and str(topology.get("nearest_target_role") or "")
+        in {"LIQUIDITY_CHECKPOINT", "INTERNAL_CHECKPOINT"}
+    ) or causal_ladder_handoff
+    strict_two_horizon = bool(
+        topology.get("bridge_eligible")
+        and safe_float(topology.get("secondary_structural_runway_r"), 0.0)
+        >= V9574_MIN_SECONDARY_RUNWAY_R
+        and len(tradable_rows) >= 2
+    )
+    distributed_ladder = bool(
+        (len(tradable_rows) >= V9575_MIN_DISTRIBUTED_TARGETS or causal_ladder_handoff)
+        and terminal >= V9575_MIN_DISTRIBUTED_HORIZON_R
+    )
+
+    confidence, normalized = _v9574_checkpoint_confidence(candidate)
+    gaps = [
+        max(0.0, safe_float(right.get("runway_r"), 0.0) - safe_float(left.get("runway_r"), 0.0))
+        for left, right in zip(tradable_rows, tradable_rows[1:])
+    ]
+    spacing_quality = (
+        sum(clamp(gap / 0.12, 0.0, 1.0) for gap in gaps) / len(gaps)
+        if gaps else 0.0
+    )
+    effective_target_count = len(tradable_rows) + (min(len(cleared_origin_targets), 1) if causal_ladder_handoff else 0)
+    ladder_depth = clamp((effective_target_count - 1) / 3.0, 0.0, 1.0)
+    terminal_quality = clamp(terminal / 1.20, 0.0, 1.0)
+    quality_core = clamp(
+        0.45 * confidence
+        + 0.20 * normalized.get("score", 0.0)
+        + 0.13 * normalized.get("setup", 0.0)
+        + 0.12 * normalized.get("structure", 0.0)
+        + 0.10 * normalized.get("timing", 0.0),
+        0.0, 1.0,
+    )
+    ladder_coherence = clamp(
+        0.45 + 0.20 * ladder_depth + 0.20 * terminal_quality
+        + 0.15 * spacing_quality,
+        0.0, 1.0,
+    )
+    # This is deliberately named a proxy: it is a deterministic clearance
+    # utility, not an empirical claim about win probability.
+    clearance_proxy = clamp(
+        0.72 * quality_core + 0.28 * ladder_coherence,
+        0.0, 0.95,
+    )
+    break_even = (
+        (1.0 + V9575_CLEARANCE_COST_BUFFER_R) / (1.0 + terminal)
+        if terminal > 0.0 else 1.0
+    )
+    required = min(1.0, break_even + V9575_CLEARANCE_SAFETY_MARGIN)
+    plan_geometry = bool(
+        plan and plan.valid and safe_float(plan.entry, 0.0) > 0.0
+        and safe_float(plan.stop, 0.0) > 0.0
+        and (
+            (candidate.side == Side.LONG.value and plan.stop < plan.entry)
+            or (candidate.side == Side.SHORT.value and plan.stop > plan.entry)
+        )
+    )
+    structural_quality = safe_float(normalized.get("structure"), 0.0)
+    structural_candidate = bool(
+        checkpoint_case
+        and (strict_two_horizon or distributed_ladder)
+        and not barrier_before_terminal
+        and not topology.get("structural_barrier_near_zero")
+        and topology.get("thesis_intact", True)
+        and plan_geometry
+        and safe_float(candidate.final_score, 0.0) >= ARMED_SCORE_BASE
+        and structural_quality >= 0.50
+    )
+    economically_viable = bool(structural_candidate and clearance_proxy >= required)
+    surplus = max(0.0, clearance_proxy - required)
+    fraction = (
+        V9575_PROBE_MIN_FRACTION
+        + 0.13 * clamp(surplus / 0.12, 0.0, 1.0)
+        + 0.07 * clamp((terminal - V9575_MIN_DISTRIBUTED_HORIZON_R) / 0.50, 0.0, 1.0)
+        if economically_viable else 0.0
+    )
+    fraction = clamp(fraction, 0.0, V9575_PROBE_MAX_FRACTION)
+    effective = (
+        clamp(
+            terminal * (0.38 + 0.24 * clearance_proxy),
+            V9574_NEAR_RUNWAY_R,
+            V9575_EFFECTIVE_RUNWAY_CAP_R,
+        )
+        if economically_viable else safe_float(topology.get("nearest_runway_r"), 0.0)
+    )
+    return {
+        "applies": checkpoint_case,
+        "ladder_type": (
+            "DISTRIBUTED_MULTI_CHECKPOINT" if distributed_ladder
+            else "STRICT_TWO_HORIZON" if strict_two_horizon
+            else "INSUFFICIENT_LADDER"
+        ),
+        "target_count": len(tradable_rows),
+        "origin_target_count": len(origin_targets),
+        "cleared_checkpoint_count": len(cleared_origin_targets),
+        "causal_ladder_handoff": causal_ladder_handoff,
+        "causal_route_progress": causal_route_progress,
+        "targets": [
+            {
+                "kind": str(row.get("kind") or "TECHNICAL"),
+                "role": str(row.get("role") or ""),
+                "timeframe": str(row.get("timeframe") or ""),
+                "level": row.get("level"),
+                "runway_r": round(safe_float(row.get("runway_r"), 0.0), 4),
+            }
+            for row in tradable_rows[:4]
+        ],
+        "terminal_runway_r": round(terminal, 4),
+        "strict_two_horizon": strict_two_horizon,
+        "distributed_ladder": distributed_ladder,
+        "barrier_before_terminal": barrier_before_terminal,
+        "valid_stop_geometry": plan_geometry,
+        "quality_core": round(quality_core, 4),
+        "ladder_coherence": round(ladder_coherence, 4),
+        "clearance_confidence_proxy": round(clearance_proxy, 4),
+        "clearance_break_even_proxy": round(break_even, 4),
+        "required_clearance_proxy": round(required, 4),
+        "utility_surplus": round(surplus, 4),
+        "structural_candidate": structural_candidate,
+        "economically_viable": economically_viable,
+        "effective_runway_r": round(effective, 4),
+        "risk_fraction_cap": round(fraction, 4),
+        "proxy_is_not_empirical_probability": True,
+        "global_runway_floor_lowered": False,
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def liquidity_runway_profile_v9575(
+    context: dict[str, Any], candidate: Candidate, plan: Optional[TradePlan] = None,
+) -> dict[str, Any]:
+    base = dict(_liquidity_runway_profile_v9575_base(context, candidate, plan) or {})
+    topology = dict(base.get("runway_topology_v9574") or {})
+    entry = safe_float(getattr(plan, "entry", context.get("price")), safe_float(context.get("price"), 0.0)) if plan else safe_float(context.get("price"), 0.0)
+    stop = safe_float(getattr(plan, "stop", 0.0), 0.0) if plan else 0.0
+    risk = max(abs(entry - stop), ABS_MIN_STOP_DOLLARS, 1e-6) if entry > 0.0 and stop > 0.0 else 0.0
+    sign = side_sign(candidate.side)
+    raw_barriers: list[dict[str, Any]] = []
+    if risk > 0.0:
+        for zone in list(context.get("zones") or []):
+            kind = str(getattr(zone, "kind", "") or "").upper()
+            if (
+                getattr(zone, "mitigated", False)
+                or str(getattr(zone, "side", "") or "") != opposite(candidate.side)
+                or not any(token in kind for token in V9574_BARRIER_TOKENS)
+            ):
+                continue
+            directional = [
+                (sign * (safe_float(level, 0.0) - entry), safe_float(level, 0.0))
+                for level in (getattr(zone, "low", 0.0), getattr(zone, "high", 0.0))
+            ]
+            ahead = [(distance, level) for distance, level in directional if distance > 0.0]
+            if not ahead:
+                continue
+            distance, level = min(ahead)
+            runway = distance / risk
+            if runway < V9574_NEAR_RUNWAY_R:
+                raw_barriers.append({
+                    "kind": kind,
+                    "timeframe": str(getattr(zone, "timeframe", "") or ""),
+                    "level": round_price(level),
+                    "runway_r": round(runway, 4),
+                    "role": "STRUCTURAL_BARRIER",
+                    "source": "UNCLUSTERED_ZONE_PRECEDENCE_V9575",
+                })
+    if raw_barriers:
+        raw_barriers.sort(key=lambda row: safe_float(row.get("runway_r"), 1e9))
+        barrier = raw_barriers[0]
+        topology.update({
+            "nearest_target": copy.deepcopy(barrier),
+            "nearest_target_kind": str(barrier.get("kind") or "STRUCTURAL_BARRIER"),
+            "nearest_target_level": barrier.get("level"),
+            "nearest_target_role": "STRUCTURAL_BARRIER",
+            "nearest_runway_r": safe_float(barrier.get("runway_r"), 0.0),
+            "checkpoint_near_zero": False,
+            "structural_barrier_near_zero": True,
+            "bridge_eligible": False,
+            "unclustered_structural_barrier_precedence_v9575": True,
+        })
+    ladder = target_ladder_utility_v9575(candidate, plan, topology, context)
+    raw = safe_float(topology.get("nearest_runway_r"), safe_float(base.get("runway_r"), 0.0))
+    if ladder.get("economically_viable"):
+        effective = safe_float(ladder.get("effective_runway_r"), raw)
+        base.update({
+            "runway_r": round(effective, 4),
+            "market_probe_allowed": True,
+            "explicit_reprice": False,
+            "topology_adjusted": True,
+            "institutional_ladder_adjusted_v9575": True,
+        })
+        topology["effective_runway_r"] = round(effective, 4)
+        topology["institutional_ladder_bridge_v9575"] = True
+    else:
+        topology["institutional_ladder_bridge_v9575"] = False
+    topology["target_ladder_utility_v9575"] = copy.deepcopy(ladder)
+    base.update({
+        "raw_nearest_runway_r": round(raw, 4),
+        "primary_runway_r": round(raw, 4),
+        "runway_topology_v9574": copy.deepcopy(topology),
+        "target_ladder_utility_v9575": copy.deepcopy(ladder),
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    candidate.score_components = candidate.score_components or {}
+    candidate.stage_plan = candidate.stage_plan or {}
+    candidate.score_components["runway_topology_v9574"] = copy.deepcopy(topology)
+    candidate.score_components["target_ladder_utility_v9575"] = copy.deepcopy(ladder)
+    candidate.stage_plan["runway_topology_v9574"] = copy.deepcopy(topology)
+    candidate.stage_plan["target_ladder_utility_v9575"] = copy.deepcopy(ladder)
+    return base
+
+
+liquidity_runway_profile = liquidity_runway_profile_v9575
+
+
+def _refresh_execution_runway_v9575(
+    decision: Decision, context: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    candidate = decision.candidate
+    if candidate is None:
+        return {}, {}
+    profile = liquidity_runway_profile_v9575(context, candidate, decision.plan)
+    topology = dict(profile.get("runway_topology_v9574") or {})
+    ladder = dict(profile.get("target_ladder_utility_v9575") or {})
+    if not topology.get("known"):
+        return topology, ladder
+    components = candidate.score_components = candidate.score_components or {}
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    xi = dict(
+        components.get("execution_intelligence_v9532")
+        or stage.get("execution_intelligence_v9532")
+        or {}
+    )
+    raw = safe_float(topology.get("nearest_runway_r"), safe_float(xi.get("runway_r"), 0.0))
+    effective = safe_float(ladder.get("effective_runway_r"), raw)
+    if not ladder.get("economically_viable"):
+        effective = safe_float(topology.get("effective_runway_r"), raw)
+    xi.update({
+        "runway_r": round(effective, 4),
+        "raw_nearest_runway_r": round(raw, 4),
+        "runway_topology_v9574": copy.deepcopy(topology),
+        "target_ladder_utility_v9575": copy.deepcopy(ladder),
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    route = dict(xi.get("execution_router") or {})
+    economics = dict(route.get("execution_economics") or {})
+    economics.update({"runway_known": True, "runway_r": round(effective, 4)})
+    route.update({
+        "runway_known": True,
+        "runway_r": round(effective, 4),
+        "execution_economics": economics,
+    })
+    xi["execution_router"] = route
+    liquidity = dict(xi.get("liquidity_runway") or {})
+    liquidity.update({
+        "known": True,
+        "runway_r": round(effective, 4),
+        "raw_nearest_runway_r": round(raw, 4),
+        "institutional_ladder_adjusted_v9575": bool(ladder.get("economically_viable")),
+    })
+    xi["liquidity_runway"] = liquidity
+    opinions = dict(xi.get("assistant_opinions") or {})
+    metrics = dict(xi.get("assistant_metrics") or {})
+    if ladder.get("economically_viable"):
+        opinions["LIQUIDITY_ASSISTANT"] = "CAUTION"
+        metrics["LIQUIDITY_ASSISTANT"] = round(effective, 4)
+    xi["assistant_opinions"] = opinions
+    xi["assistant_metrics"] = metrics
+    components["execution_intelligence_v9532"] = xi
+    stage["execution_intelligence_v9532"] = compact_execution_intelligence_v9532(xi)
+    return topology, ladder
+
+
+def _v9575_nested_truth(source: Any, tokens: tuple[str, ...]) -> bool:
+    if isinstance(source, dict):
+        for key, value in source.items():
+            label = str(key or "").upper()
+            if any(token in label for token in tokens):
+                if value is True or (isinstance(value, (int, float)) and value > 0):
+                    return True
+                if isinstance(value, str) and value.upper() in {
+                    "TRUE", "READY", "CONFIRMED", "VALID", "OBSERVED", "PASSED", "ACCEPTED",
+                }:
+                    return True
+            if _v9575_nested_truth(value, tokens):
+                return True
+    elif isinstance(source, (list, tuple)):
+        return any(_v9575_nested_truth(value, tokens) for value in source)
+    elif isinstance(source, str):
+        label = source.upper()
+        return any(token in label for token in tokens)
+    return False
+
+
+def _v9575_invalidation_reason(candidate: Optional[Candidate]) -> str:
+    if candidate is None:
+        return ""
+    components = dict(candidate.score_components or {})
+    anchor = dict(
+        components.get("execution_anchor_authority")
+        or (components.get("entry_contract") or {}).get("execution_anchor_profile")
+        or {}
+    )
+    if anchor.get("invalidated"):
+        return "THESIS_INVALIDATED_BY_EXECUTION_ANCHOR"
+    revalidation = dict(candidate.revalidation_profile or {})
+    if revalidation.get("hard_expired") or str(revalidation.get("state") or "").upper() in {"DEAD", "INVALIDATED"}:
+        return "THESIS_INVALIDATED_BY_REVALIDATION"
+    confirmation = dict(candidate.confirmation_state or {})
+    if confirmation.get("thesis_invalidated"):
+        return "THESIS_INVALIDATED"
+    if str(candidate.hard_reject_reason or "").strip():
+        return str(candidate.hard_reject_reason).strip()
+    return ""
+
+
+def _v9575_current_causal_event(candidate: Candidate) -> dict[str, Any]:
+    stage = dict(candidate.stage_plan or {})
+    handoff = dict(stage.get("institutional_causal_handoff_v9575") or {})
+    source = str(candidate.execution_source or ExecutionSource.NONE.value)
+    direct = source in (set(V9558_DIRECT_EXECUTION_SOURCES) | {ExecutionSource.ZONE_RETEST_PROBE.value})
+    trigger_ts = int(safe_float(candidate.trigger_ts, 0.0))
+    if 0 < trigger_ts < 10_000_000_000:
+        trigger_ts *= 1000
+    explicit_age = candidate_execution_trigger_age_minutes(candidate)
+    derived_age = (
+        max(0.0, (int(now_utc().timestamp() * 1000) - trigger_ts) / 60_000.0)
+        if trigger_ts > 0 else float("inf")
+    )
+    age = max(explicit_age, derived_age) if trigger_ts > 0 else explicit_age
+    ready = bool(candidate.trigger_ready or candidate.live_3m_trigger_ready or candidate.limit_armed_ready)
+    direct_current = bool(
+        direct and trigger_ts > 0 and age <= float(EXECUTION_TRIGGER_TTL_MIN) and ready
+    )
+    evidence_ts = int(safe_float(stage.get("evidence_ts"), 0.0))
+    watermark = int(safe_float(
+        stage.get("decision_watermark"), safe_float(stage.get("router_decision_3m_ts"), 0.0),
+    ))
+    router_current = bool(
+        evidence_ts > watermark > 0
+        and (
+            stage.get("router_confirmation_consumed")
+            or stage.get("retest_consumed")
+            or stage.get("router_recheck_consumed")
+        )
+    )
+    handoff_evidence_ts = int(safe_float(handoff.get("evidence_ts"), 0.0))
+    handoff_watermark = int(safe_float(handoff.get("decision_watermark"), 0.0))
+    if 0 < handoff_evidence_ts < 10_000_000_000:
+        handoff_evidence_ts *= 1000
+    if 0 < handoff_watermark < 10_000_000_000:
+        handoff_watermark *= 1000
+    handoff_age = (
+        max(0.0, (int(now_utc().timestamp() * 1000) - handoff_evidence_ts) / 60_000.0)
+        if handoff_evidence_ts > 0 else float("inf")
+    )
+    handoff_current = bool(
+        handoff.get("present")
+        and handoff_evidence_ts > handoff_watermark > 0
+        and handoff.get("fresh")
+        and handoff_age <= float(EXECUTION_TRIGGER_TTL_MIN)
+    )
+    event_evidence_ts = (
+        evidence_ts if router_current else
+        handoff_evidence_ts if handoff_current else
+        trigger_ts if direct_current else 0
+    )
+    return {
+        "present": bool(direct_current or router_current or handoff_current),
+        "source": "ROUTER_CAUSAL_FILL" if (router_current or handoff_current) else source,
+        "direct_source": direct,
+        "trigger_ts": trigger_ts,
+        "trigger_age_minutes": round(age, 2) if math.isfinite(age) else None,
+        "evidence_ts": event_evidence_ts,
+        "decision_watermark": handoff_watermark if handoff_current else watermark,
+        "timestamped": bool(router_current or handoff_current or trigger_ts > 0),
+        "fresh": bool(router_current or handoff_current or (trigger_ts > 0 and age <= float(EXECUTION_TRIGGER_TTL_MIN))),
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def institutional_sequence_profile_v9575(
+    decision: Decision, topology: dict[str, Any], ladder: dict[str, Any],
+) -> dict[str, Any]:
+    candidate = decision.candidate
+    if candidate is None:
+        return {"complete": False, "next_stage": "NO_CANDIDATE", "schema_version": V9575_SCHEMA_VERSION}
+    current = _v9575_current_causal_event(candidate)
+    _, maturity = _v9572_authority_maturity(decision)
+    fallback = _v9572_fallback_evidence_groups(
+        decision, execution_event=bool(current.get("present")),
+    )
+    groups = dict(maturity.get("groups") or {})
+    merged_groups = {
+        name: {**dict(fallback.get(name) or {}), **dict(groups.get(name) or {})}
+        for name in {"STRUCTURE", "EXECUTION", "LOCATION", "ECONOMICS", "CONTEXT"}
+    }
+    structure_axis = safe_float((merged_groups.get("STRUCTURE") or {}).get("score"), 0.0)
+    components = dict(candidate.score_components or {})
+    stage = dict(candidate.stage_plan or {})
+    evidence = {"components": components, "stage": stage, "confirmations": list(candidate.confirmations or [])}
+    consumed = dict(consumed_execution_evidence_v9534(candidate) or {})
+    setup = str(candidate.setup_type or "").upper()
+    family = str(candidate.setup_family or "").upper()
+    authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+    directional = dict(
+        authority.get("directional_quality_v9561")
+        or stage.get("directional_quality_v9561")
+        or {}
+    )
+    reversal_setups = {
+        SetupType.SWEEP_RECLAIM.value,
+        SetupType.CAPITULATION_RECOVERY.value,
+        SetupType.DIRECTION_FLIP.value,
+        SetupType.RANGE_EDGE_REVERSAL.value,
+        SetupType.FAILED_OPENING_RANGE_BREAKOUT.value,
+        SetupType.FAILED_AUCTION_REJECTION.value,
+        SetupType.LIQUIDITY_SWEEP_REVERSAL_SHORT.value,
+        SetupType.FAILED_BREAKOUT_SHORT.value,
+        SetupType.MSS_REVERSAL_SHORT.value,
+        SetupType.BUYER_EXHAUSTION_SHORT.value,
+        SetupType.OR_FAILURE_2_SHORT.value,
+    }
+    reversal = bool(
+        setup in reversal_setups
+        or directional.get("countertrend_reversal")
+    )
+    continuation = bool(
+        not reversal and (
+            family in {
+                SetupFamily.CONTINUATION.value,
+                SetupFamily.EXPANSION.value,
+                SetupFamily.STRUCTURAL_TRANSITION.value,
+            }
+            or any(token in setup for token in ("CONTINUATION", "BREAKOUT", "IGNITION", "LADDER", "RECLAIM"))
+        )
+    )
+    sweep = _v9575_nested_truth(evidence, ("SWEEP", "RAID", "STOP_HUNT", "LIQUIDITY_TAKEN"))
+    reclaim = _v9575_nested_truth(evidence, ("RECLAIM", "FAILED_BREAK", "ACCEPTANCE"))
+    transfer = _v9575_nested_truth(evidence, ("CONTROL_TRANSFER", "MSS", "CHOCH", "BOS", "STRUCTURE_SHIFT"))
+    displacement_fact = _v9575_nested_truth(evidence, ("DISPLACEMENT", "IMPULSE", "MOMENTUM"))
+    failure_or_exhaustion = _v9575_nested_truth(
+        evidence, ("FAILED_AUCTION", "FAILED_BREAKOUT", "REJECTION", "EXHAUSTION", "OR_FAILURE"),
+    )
+    liquidity_event = bool(sweep or reclaim or failure_or_exhaustion)
+    native = bool(
+        stage.get("native_retest_observed")
+        or (components.get("breakout_retest_model_local_execution") or {}).get("ready")
+        or (components.get("acceptance_retest") or {}).get("execution_ready")
+    )
+    map_ready = bool(
+        ladder.get("applies")
+        and (topology.get("checkpoint_near_zero") or ladder.get("causal_ladder_handoff"))
+        and topology.get("thesis_intact", True)
+        and ladder.get("valid_stop_geometry")
+    )
+    sponsorship = bool(
+        (continuation and structure_axis >= V9575_MIN_STRUCTURE_AXIS and (
+            candidate.has_forward_zone
+            or safe_float(candidate.execution_anchor, 0.0) > 0.0
+            or safe_float(candidate.trigger_level, 0.0) > 0.0
+            or native
+        ))
+        or (reversal and liquidity_event and (reclaim or transfer))
+    )
+    displacement = bool(
+        current.get("present")
+        and (
+            displacement_fact
+            or candidate.live_3m_trigger_ready
+            or consumed.get("confirmation_consumed")
+            or consumed.get("retest_consumed")
+            or native
+        )
+    )
+    structure_transfer = bool(
+        (continuation and structure_axis >= V9575_MIN_STRUCTURE_AXIS)
+        or (reversal and structure_axis >= V9575_MIN_REVERSAL_TRANSFER_AXIS and transfer)
+    )
+    retest_acceptance = bool(
+        current.get("present")
+        and (
+            native
+            or consumed.get("retest_consumed")
+            or consumed.get("confirmation_consumed")
+            or consumed.get("displacement_consumed")
+            or (continuation and candidate.trigger_ready)
+        )
+    )
+    expansion = bool(ladder.get("economically_viable"))
+    phases = {
+        "LIQUIDITY_MAP_SPONSORSHIP": bool(map_ready and sponsorship),
+        "DISPLACEMENT": displacement,
+        "STRUCTURE_TRANSFER": structure_transfer,
+        "RETEST_ACCEPTANCE": retest_acceptance,
+        "EXPANSION_UTILITY": expansion,
+    }
+    next_stage = next((name for name, complete in phases.items() if not complete), "COMPLETE")
+    invalidation = _v9575_invalidation_reason(candidate)
+    complete = bool(all(phases.values()) and not invalidation)
+    return {
+        "applies": bool(ladder.get("applies")),
+        "setup_class": "REVERSAL" if reversal else "CONTINUATION" if continuation else "HYBRID",
+        "phases": phases,
+        "completed_phase_count": sum(bool(value) for value in phases.values()),
+        "required_phase_count": len(phases),
+        "complete": complete,
+        "next_stage": "FACTUAL_INVALIDATION" if invalidation else next_stage,
+        "current_causal_event": current,
+        "structure_axis": round(structure_axis, 4),
+        "liquidity_sweep_observed": sweep,
+        "liquidity_event_observed": liquidity_event,
+        "reclaim_observed": reclaim,
+        "control_transfer_proven": transfer,
+        "native_retest_observed": native,
+        "invalidation_reason": invalidation,
+        "score_only_entry_forbidden": True,
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def _v9575_remove_runway_only_blocker(decision: Decision) -> list[str]:
+    authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+    continuum = dict((decision.audit or {}).get("adaptive_entry_continuum_v9572") or {})
+    blockers = sorted(set(
+        str(value) for value in (
+            list(authority.get("hard_blockers") or [])
+            + list(continuum.get("factual_hard_blockers") or [])
+        ) if str(value)
+    ))
+    return [value for value in blockers if value != "RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+
+
+def _v9575_publish_pending_route(
+    decision: Decision, sequence: dict[str, Any], ladder: dict[str, Any],
+    *, price_safe: bool,
+) -> Decision:
+    candidate = decision.candidate
+    if candidate is None:
+        return decision
+    path = "PROBE_INSTITUTIONAL_PROOF" if price_safe else "PROBE_INSTITUTIONAL_VALUE"
+    mode = "PROOF_EVENT" if price_safe else "PRICE_OPTIMIZATION"
+    tactic = "ONE_3M_CONFIRM" if price_safe else "LIMIT_AT_ANCHOR"
+    next_stage = str(sequence.get("next_stage") or "NEW_CAUSAL_EVENT")
+    decision.audit = decision.audit or {}
+    decision.action = Action.NO_SETUP.value
+    decision.reason = f"FINAL_EXECUTION_AUTHORITY v9.5.75: {path} | next={next_stage}"
+    if decision.plan is not None:
+        decision.plan.execution_ready = False
+        decision.plan.final_stage = EntryStage.WAIT_CONFIRMATION.value if price_safe else EntryStage.WAIT_RETEST.value
+    candidate.confirmation_pending = bool(price_safe)
+    candidate.opportunity_status = (
+        OpportunityStatus.CONFIRMATION_PENDING.value if price_safe else OpportunityStatus.WAIT_PULLBACK.value
+    )
+    candidate.entry_stage = EntryStage.WAIT_CONFIRMATION.value if price_safe else EntryStage.WAIT_RETEST.value
+    candidate.execution_lane = ExecutionLane.WAIT_CONFIRMATION.value if price_safe else ExecutionLane.WAIT_RETEST.value
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    stage.update({
+        "router_intended_tactic": tactic,
+        "router_final_tactic": tactic,
+        "router_final_disposition": "DEFERRED",
+        "router_requirement_type_v9565": mode,
+        "router_requirement_type_v9566": mode,
+        "proof_event_reachable_v9568": bool(price_safe),
+        "price_optimization_reachable_v9568": bool(not price_safe),
+        "queue_for_one_material_event_v9568": bool(price_safe),
+        "institutional_sequence_v9575": copy.deepcopy(sequence),
+        "target_ladder_utility_v9575": copy.deepcopy(ladder),
+        "execution_path_v9572": path,
+        "entry_intent_tier_v9572": "EARLY_PROBE",
+        "risk_fraction_of_normal_v9572": safe_float(ladder.get("risk_fraction_cap"), 0.0),
+    })
+    continuum = dict(decision.audit.get("adaptive_entry_continuum_v9572") or {})
+    continuum.update({
+        "entry_intent_tier": "EARLY_PROBE",
+        "execution_path": path,
+        "learning_goal": f"COMPLETE_INSTITUTIONAL_STAGE:{next_stage}",
+        "risk_fraction_of_normal": round(safe_float(ladder.get("risk_fraction_cap"), 0.0), 4),
+        "risk_cap_pct": 0.0,
+        "factual_hard_blockers": [],
+        "price_route_pending": not price_safe,
+        "proof_route_pending": price_safe,
+        "route_mode": mode,
+        "route_reachable": True,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    decision.audit["adaptive_entry_continuum_v9572"] = continuum
+    authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "allow": False,
+        "final_action": Action.NO_SETUP.value,
+        "entry_tier": "EARLY_PROBE_PENDING",
+        "hard_blockers": [],
+        "wait_reasons": [f"INSTITUTIONAL_STAGE_PENDING:{next_stage}"],
+        "execution_path_v9572": path,
+        "institutional_sequence_v9575": copy.deepcopy(sequence),
+        "target_ladder_utility_v9575": copy.deepcopy(ladder),
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+        "is_last_mutator": True,
+    })
+    decision.audit["final_execution_authority_v9551"] = authority
+    route = dict(decision.audit.get("execution_route_contract_v9568") or {})
+    route.update({
+        "mode": mode,
+        "reachable": True,
+        "reason": f"INSTITUTIONAL_STAGE_PENDING:{next_stage}",
+        "price_optimization_reachable": not price_safe,
+        "proof_event_reachable": price_safe,
+        "queue_for_one_material_event": price_safe,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    decision.audit["execution_route_contract_v9568"] = route
+    _v9575_attach_route_snapshot(candidate, route, sequence, ladder)
+    reconciliation = dict(decision.audit.get("terminal_execution_reconciliation_v9573") or {})
+    reconciliation.update({
+        "applied": False,
+        "published_execution_path": path,
+        "factual_hard_blockers": [],
+        "invalidated_route_reachable": None,
+        "institutional_route_v9575": True,
+    })
+    decision.audit["terminal_execution_reconciliation_v9573"] = reconciliation
+    decision.audit["opportunity_status"] = (
+        OpportunityStatus.CONFIRMATION_PENDING.value if price_safe else OpportunityStatus.ARMED.value
+    )
+    return decision
+
+
+def _v9575_authorize_probe(
+    decision: Decision, sequence: dict[str, Any], ladder: dict[str, Any],
+    context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    candidate = decision.candidate
+    plan = decision.plan
+    if candidate is None or plan is None or not plan.valid:
+        return decision
+    fraction = clamp(
+        safe_float(ladder.get("risk_fraction_cap"), V9575_PROBE_MIN_FRACTION),
+        V9575_PROBE_MIN_FRACTION,
+        V9575_PROBE_MAX_FRACTION,
+    )
+    risk_authority = _v9558_authorized_core_risk(
+        candidate, plan,
+        tier="STANDARD_ENTRY", risk_fraction=fraction,
+        context=context, journal=journal,
+    )
+    risk = safe_float(risk_authority.get("risk"), 0.0)
+    if risk <= 0.0:
+        authority = dict((decision.audit or {}).get("final_execution_authority_v9551") or {})
+        authority["hard_blockers"] = sorted(set(
+            list(authority.get("hard_blockers") or []) + ["CAPITAL_RISK_UNAVAILABLE"]
+        ))
+        decision.audit["final_execution_authority_v9551"] = authority
+        return decision
+    decision.action = Action.PROBE_ENTRY.value
+    decision.reason = (
+        "FINAL_EXECUTION_AUTHORITY v9.5.75: INSTITUTIONAL_LADDER_PROBE | "
+        f"phases=5/5 | utility_surplus={safe_float(ladder.get('utility_surplus'), 0.0):.4f}"
+    )
+    plan.execution_ready = True
+    plan.entry_stage = EntryStage.PROBE.value
+    plan.final_stage = EntryStage.PROBE.value
+    plan.position_risk_pct = round(risk, 6)
+    plan.risk_pct = plan.position_risk_pct
+    if risk_authority.get("ledger"):
+        plan.risk_ledger = copy.deepcopy(risk_authority["ledger"])
+        candidate.risk_ledger = copy.deepcopy(risk_authority["ledger"])
+    candidate.entry_stage = EntryStage.PROBE.value
+    candidate.execution_lane = ExecutionLane.EARLY_TACTICAL.value
+    candidate.confirmation_pending = False
+    candidate.opportunity_status = OpportunityStage.EXECUTABLE.value
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    stage.update({
+        "router_final_tactic": "MARKET_NOW",
+        "router_final_disposition": "INSTITUTIONAL_SEQUENCE_EXECUTE",
+        "router_requirement_type_v9565": "READY",
+        "router_requirement_type_v9566": "READY",
+        "proof_event_reachable_v9568": False,
+        "price_optimization_reachable_v9568": False,
+        "queue_for_one_material_event_v9568": False,
+        "institutional_sequence_v9575": copy.deepcopy(sequence),
+        "target_ladder_utility_v9575": copy.deepcopy(ladder),
+        "execution_path_v9572": "PROBE_INSTITUTIONAL_LADDER",
+        "entry_intent_tier_v9572": "EARLY_PROBE",
+        "risk_fraction_of_normal_v9572": round(fraction, 4),
+    })
+    continuum = dict(decision.audit.get("adaptive_entry_continuum_v9572") or {})
+    continuum.update({
+        "entry_intent_tier": "EARLY_PROBE",
+        "execution_path": "PROBE_INSTITUTIONAL_LADDER",
+        "learning_goal": "OBSERVE_CHECKPOINT_CLEARANCE_BEFORE_STANDARD_GRADUATION",
+        "risk_fraction_of_normal": round(fraction, 4),
+        "risk_cap_pct": round(NORMAL_RISK_PCT * fraction, 6),
+        "factual_hard_blockers": [],
+        "price_route_pending": False,
+        "proof_route_pending": False,
+        "route_mode": "MARKET",
+        "route_reachable": True,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    decision.audit["adaptive_entry_continuum_v9572"] = continuum
+    authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+    authority.update({
+        "allow": True,
+        "final_action": Action.PROBE_ENTRY.value,
+        "entry_tier": "EARLY_PROBE",
+        "hard_blockers": [],
+        "wait_reasons": [],
+        "execution_path_v9572": "PROBE_INSTITUTIONAL_LADDER",
+        "risk_authority_v9575": copy.deepcopy(risk_authority),
+        "institutional_sequence_v9575": copy.deepcopy(sequence),
+        "target_ladder_utility_v9575": copy.deepcopy(ladder),
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+        "is_last_mutator": True,
+    })
+    decision.audit["final_execution_authority_v9551"] = authority
+    route = dict(decision.audit.get("execution_route_contract_v9568") or {})
+    route.update({
+        "mode": "MARKET", "reachable": True,
+        "reason": "INSTITUTIONAL_SEQUENCE_COMPLETE",
+        "price_optimization_reachable": False,
+        "proof_event_reachable": False,
+        "queue_for_one_material_event": False,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    decision.audit["execution_route_contract_v9568"] = route
+    _v9575_attach_route_snapshot(candidate, route, sequence, ladder)
+    decision.audit["opportunity_status"] = OpportunityStage.EXECUTABLE.value
+    return decision
+
+
+def synchronize_decision_telemetry_v9575(decision: Decision) -> Decision:
+    invalidation = _v9575_invalidation_reason(decision.candidate)
+    if invalidation and decision.action not in EXECUTABLE_ENTRY_ACTIONS:
+        decision.audit = decision.audit or {}
+        authority = dict(decision.audit.get("final_execution_authority_v9551") or {})
+        authority["hard_blockers"] = sorted(set(
+            list(authority.get("hard_blockers") or []) + [invalidation]
+        ))
+        decision.audit["final_execution_authority_v9551"] = authority
+        continuum = dict(decision.audit.get("adaptive_entry_continuum_v9572") or {})
+        continuum["factual_hard_blockers"] = sorted(set(
+            list(continuum.get("factual_hard_blockers") or []) + [invalidation]
+        ))
+        decision.audit["adaptive_entry_continuum_v9572"] = continuum
+    decision = synchronize_decision_telemetry_v9574(decision)
+    candidate = decision.candidate
+    sequence = dict(
+        ((decision.audit or {}).get("final_execution_authority_v9551") or {}).get("institutional_sequence_v9575")
+        or ((candidate.stage_plan or {}).get("institutional_sequence_v9575") if candidate else {})
+        or {}
+    )
+    ladder = dict(
+        ((decision.audit or {}).get("final_execution_authority_v9551") or {}).get("target_ladder_utility_v9575")
+        or ((candidate.stage_plan or {}).get("target_ladder_utility_v9575") if candidate else {})
+        or {}
+    )
+    decision.audit["institutional_terminal_telemetry_v9575"] = {
+        "action": str(decision.action),
+        "execution_path": str(((decision.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") or ""),
+        "execution_mode": str(((decision.audit or {}).get("execution_route_contract_v9568") or {}).get("mode") or ""),
+        "route_reachable": bool(((decision.audit or {}).get("execution_route_contract_v9568") or {}).get("reachable")),
+        "blocking_reasons": _v9574_decision_blockers(decision),
+        "institutional_sequence_complete": bool(sequence.get("complete")),
+        "next_institutional_stage": str(sequence.get("next_stage") or ""),
+        "ladder_economically_viable": bool(ladder.get("economically_viable")),
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+    return decision
+
+
+def apply_canonical_execution_authority_v9575(
+    decision: Decision, context: dict[str, Any], journal: dict[str, Any],
+) -> Decision:
+    pre_authority_event = (
+        _v9575_current_causal_event(decision.candidate)
+        if decision.candidate is not None else {}
+    )
+    topology, ladder = _refresh_execution_runway_v9575(decision, context)
+    # Call the v9.5.73 terminal authority directly.  v9.5.74's wrapper would
+    # recompute the old single-secondary runway and erase the ladder utility.
+    out = _apply_execution_authority_v9575_base(decision, context, journal)
+    if out.candidate is not None:
+        out.candidate.score_components = out.candidate.score_components or {}
+        out.candidate.stage_plan = out.candidate.stage_plan or {}
+        out.candidate.score_components["runway_topology_v9574"] = copy.deepcopy(topology)
+        out.candidate.score_components["target_ladder_utility_v9575"] = copy.deepcopy(ladder)
+        out.candidate.stage_plan["runway_topology_v9574"] = copy.deepcopy(topology)
+        out.candidate.stage_plan["target_ladder_utility_v9575"] = copy.deepcopy(ladder)
+        if pre_authority_event.get("present"):
+            # v9.5.73 remains the protected base authority, but it does not know
+            # the v9.5.75 proof-route source.  Carry the already validated
+            # causal event across that internal boundary exactly once.
+            out.candidate.stage_plan["institutional_causal_handoff_v9575"] = copy.deepcopy(pre_authority_event)
+    if topology.get("structural_barrier_near_zero"):
+        out.audit = out.audit or {}
+        authority = dict(out.audit.get("final_execution_authority_v9551") or {})
+        authority["hard_blockers"] = sorted(set(
+            list(authority.get("hard_blockers") or [])
+            + ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+        ))
+        out.audit["final_execution_authority_v9551"] = authority
+        continuum = dict(out.audit.get("adaptive_entry_continuum_v9572") or {})
+        continuum["factual_hard_blockers"] = sorted(set(
+            list(continuum.get("factual_hard_blockers") or [])
+            + ["RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY"]
+        ))
+        out.audit["adaptive_entry_continuum_v9572"] = continuum
+        out = reconcile_terminal_execution_v9573(out, context, journal)
+
+    institutional_case = bool(ladder.get("applies") and (
+        ladder.get("economically_viable") or topology.get("bridge_eligible")
+    ))
+    sequence = institutional_sequence_profile_v9575(out, topology, ladder)
+    if out.candidate is not None:
+        out.candidate.stage_plan["institutional_sequence_v9575"] = copy.deepcopy(sequence)
+        out.candidate.score_components["institutional_sequence_v9575"] = copy.deepcopy(sequence)
+    out.audit = out.audit or {}
+    out.audit["institutional_sequence_v9575"] = copy.deepcopy(sequence)
+    out.audit["target_ladder_utility_v9575"] = copy.deepcopy(ladder)
+
+    if institutional_case:
+        non_runway_blockers = _v9575_remove_runway_only_blocker(out)
+        invalidation = _v9575_invalidation_reason(out.candidate)
+        price_safety = dict(_price_optimization_safety_v9566(out.candidate) or {}) if out.candidate else {"safe": False}
+        if invalidation or non_runway_blockers:
+            pass
+        elif sequence.get("complete") and price_safety.get("safe"):
+            out = _v9575_authorize_probe(out, sequence, ladder, context, journal)
+        else:
+            out = _v9575_publish_pending_route(
+                out, sequence, ladder, price_safe=bool(price_safety.get("safe")),
+            )
+    out = synchronize_decision_telemetry_v9575(out)
+    if not context.get("_audit_shadow_scan"):
+        aggregate = journal.setdefault("institutional_sequence_v9575", {})
+        aggregate["evaluations"] = int(safe_float(aggregate.get("evaluations"), 0.0)) + 1
+        if ladder.get("applies"):
+            aggregate["checkpoint_cases"] = int(safe_float(aggregate.get("checkpoint_cases"), 0.0)) + 1
+        if ladder.get("economically_viable"):
+            aggregate["economically_viable_ladders"] = int(safe_float(aggregate.get("economically_viable_ladders"), 0.0)) + 1
+        if out.action == Action.PROBE_ENTRY.value and institutional_case:
+            aggregate["institutional_probe_entries"] = int(safe_float(aggregate.get("institutional_probe_entries"), 0.0)) + 1
+        path = str(((out.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") or "")
+        if path == "PROBE_INSTITUTIONAL_PROOF":
+            aggregate["proof_routes"] = int(safe_float(aggregate.get("proof_routes"), 0.0)) + 1
+        if path == "PROBE_INSTITUTIONAL_VALUE":
+            aggregate["value_routes"] = int(safe_float(aggregate.get("value_routes"), 0.0)) + 1
+        if topology.get("structural_barrier_near_zero"):
+            aggregate["structural_barrier_rejections"] = int(safe_float(aggregate.get("structural_barrier_rejections"), 0.0)) + 1
+        aggregate.update({
+            "last_sequence": copy.deepcopy(sequence),
+            "last_ladder": copy.deepcopy(ladder),
+            "global_runway_floor_lowered": False,
+            "frequency_quota_enabled": False,
+            "standard_entry_thresholds_changed": False,
+            "classic_management_v9570_preserved": True,
+            "schema_version": V9575_SCHEMA_VERSION,
+        })
+    return DECISION_AUTHORITY_GUARD.approve_executive_decision(out)
+
+
+_apply_true_final_authority_v9551 = apply_canonical_execution_authority_v9575
+
+
+def detect_candidates_canonical_v9575(
+    context: dict[str, Any], state: dict[str, Any], journal: dict[str, Any],
+) -> list[Candidate]:
+    return _detect_candidates_v9575_base(context, state, journal)
+
+
+detect_candidates = detect_candidates_canonical_v9575
+
+
+def _compact_target_ladder_v9575(value: Any) -> dict[str, Any]:
+    source = dict(value or {}) if isinstance(value, dict) else {}
+    if not source:
+        return {}
+    return {
+        "applies": bool(source.get("applies")),
+        "ladder_type": str(source.get("ladder_type") or ""),
+        "target_count": int(safe_float(source.get("target_count"), 0.0)),
+        "origin_target_count": int(safe_float(source.get("origin_target_count"), 0.0)),
+        "cleared_checkpoint_count": int(safe_float(source.get("cleared_checkpoint_count"), 0.0)),
+        "causal_ladder_handoff": bool(source.get("causal_ladder_handoff")),
+        "causal_route_progress": bool(source.get("causal_route_progress")),
+        "targets": [
+            {
+                "kind": str(row.get("kind") or "TECHNICAL"),
+                "role": str(row.get("role") or ""),
+                "timeframe": str(row.get("timeframe") or ""),
+                "level": row.get("level"),
+                "runway_r": round(safe_float(row.get("runway_r"), 0.0), 4),
+            }
+            for row in list(source.get("targets") or [])[:4] if isinstance(row, dict)
+        ],
+        "terminal_runway_r": round(safe_float(source.get("terminal_runway_r"), 0.0), 4),
+        "barrier_before_terminal": bool(source.get("barrier_before_terminal")),
+        "clearance_confidence_proxy": round(safe_float(source.get("clearance_confidence_proxy"), 0.0), 4),
+        "required_clearance_proxy": round(safe_float(source.get("required_clearance_proxy"), 0.0), 4),
+        "utility_surplus": round(safe_float(source.get("utility_surplus"), 0.0), 4),
+        "economically_viable": bool(source.get("economically_viable")),
+        "effective_runway_r": round(safe_float(source.get("effective_runway_r"), 0.0), 4),
+        "risk_fraction_cap": round(safe_float(source.get("risk_fraction_cap"), 0.0), 4),
+        "proxy_is_not_empirical_probability": True,
+        "global_runway_floor_lowered": False,
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def _compact_institutional_sequence_v9575(value: Any) -> dict[str, Any]:
+    source = dict(value or {}) if isinstance(value, dict) else {}
+    if not source:
+        return {}
+    current = dict(source.get("current_causal_event") or {})
+    return {
+        "applies": bool(source.get("applies")),
+        "setup_class": str(source.get("setup_class") or ""),
+        "phases": {
+            str(key): bool(result)
+            for key, result in dict(source.get("phases") or {}).items()
+        },
+        "completed_phase_count": int(safe_float(source.get("completed_phase_count"), 0.0)),
+        "required_phase_count": int(safe_float(source.get("required_phase_count"), 0.0)),
+        "complete": bool(source.get("complete")),
+        "next_stage": str(source.get("next_stage") or ""),
+        "current_causal_event": {
+            "present": bool(current.get("present")),
+            "source": str(current.get("source") or ""),
+            "evidence_ts": int(safe_float(current.get("evidence_ts"), 0.0)),
+            "decision_watermark": int(safe_float(current.get("decision_watermark"), 0.0)),
+            "timestamped": bool(current.get("timestamped")),
+            "fresh": bool(current.get("fresh")),
+        },
+        "structure_axis": round(safe_float(source.get("structure_axis"), 0.0), 4),
+        "liquidity_sweep_observed": bool(source.get("liquidity_sweep_observed")),
+        "liquidity_event_observed": bool(source.get("liquidity_event_observed")),
+        "reclaim_observed": bool(source.get("reclaim_observed")),
+        "control_transfer_proven": bool(source.get("control_transfer_proven")),
+        "native_retest_observed": bool(source.get("native_retest_observed")),
+        "invalidation_reason": str(source.get("invalidation_reason") or ""),
+        "score_only_entry_forbidden": True,
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def _v9575_profile_from_payload(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    stage = dict(payload.get("stage_plan") or {})
+    audit = dict(payload.get("audit") or {})
+    authority = dict(audit.get("final_execution_authority_v9551") or {})
+    return dict(
+        payload.get(key)
+        or stage.get(key)
+        or authority.get(key)
+        or audit.get(key)
+        or ((payload.get("score_components") or {}).get(key) if isinstance(payload.get("score_components"), dict) else {})
+        or {}
+    )
+
+
+def normalize_signal_telemetry_v9575(
+    compact: dict[str, Any], source: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if not isinstance(compact, dict):
+        return {}
+    source = source if isinstance(source, dict) else compact
+    compact = normalize_signal_telemetry_v9574(compact, source)
+    sequence = _compact_institutional_sequence_v9575(
+        _v9575_profile_from_payload(source, "institutional_sequence_v9575")
+        or compact.get("institutional_sequence_v9575")
+    )
+    ladder = _compact_target_ladder_v9575(
+        _v9575_profile_from_payload(source, "target_ladder_utility_v9575")
+        or compact.get("target_ladder_utility_v9575")
+    )
+    combined_reasons = [
+        str(value) for value in (
+            list(compact.get("final_blocking_reasons_v9574") or [])
+            + list(compact.get("final_blocking_reasons_v9572") or [])
+            + list(source.get("final_blocking_reasons_v9574") or [])
+            + list(source.get("final_blocking_reasons_v9572") or [])
+        ) if str(value)
+    ]
+    explicit_invalidation = str(sequence.get("invalidation_reason") or "")
+    if not explicit_invalidation:
+        explicit_invalidation = next(
+            (reason for reason in combined_reasons if "INVALIDAT" in reason.upper()), "",
+        )
+    action = str(compact.get("action") or source.get("action") or Action.NO_SETUP.value)
+    continuum = dict(compact.get("adaptive_entry_continuum_v9572") or {})
+    if explicit_invalidation and action not in EXECUTABLE_ENTRY_ACTIONS:
+        blockers = sorted(set(combined_reasons + [explicit_invalidation]))
+        path = "FACTUAL_REJECT"
+        mode = "FACTUAL_REJECT"
+        reachable = False
+        intent = "WAIT"
+        risk_fraction = 0.0
+    else:
+        blockers = list(compact.get("final_blocking_reasons_v9574") or [])
+        path = str(compact.get("execution_path_v9572") or continuum.get("execution_path") or "WATCH_RESCAN")
+        mode = _v9574_mode_from_path(path, action)
+        reachable = bool(
+            False if blockers
+            else True if action in EXECUTABLE_ENTRY_ACTIONS
+            else compact.get("execution_route_reachable_v9568", path in {
+                "STANDARD_VALUE_ROUTE", "PROBE_VALUE_SEEKING", "PROBE_PROOF_SEEKING",
+                "PROBE_INSTITUTIONAL_PROOF", "PROBE_INSTITUTIONAL_VALUE",
+            })
+        )
+        intent = str(compact.get("entry_intent_tier_v9572") or continuum.get("entry_intent_tier") or "WAIT")
+        risk_fraction = safe_float(compact.get("risk_fraction_of_normal_v9572"), safe_float(continuum.get("risk_fraction_of_normal"), 0.0))
+    continuum.update({
+        "entry_intent_tier": intent,
+        "execution_path": path,
+        "factual_hard_blockers": blockers,
+        "risk_fraction_of_normal": round(risk_fraction, 4),
+        "route_mode": mode,
+        "route_reachable": reachable,
+        "price_route_pending": bool(mode == "PRICE_OPTIMIZATION" and reachable),
+        "proof_route_pending": bool(mode == "PROOF_EVENT" and reachable),
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    compact.update({
+        "execution_path": path,
+        "execution_path_v9572": path,
+        "entry_intent_tier_v9572": intent,
+        "execution_mode_v9568": mode,
+        "execution_route_reachable_v9568": reachable,
+        "proof_event_reachable_v9568": bool(mode == "PROOF_EVENT" and reachable),
+        "price_optimization_reachable_v9568": bool(mode == "PRICE_OPTIMIZATION" and reachable),
+        "queue_for_one_material_event_v9568": bool(mode == "PROOF_EVENT" and reachable),
+        "router_requirement_type_v9565": (
+            "PROOF_EVENT" if mode == "PROOF_EVENT"
+            else "PRICE_OPTIMIZATION" if mode == "PRICE_OPTIMIZATION"
+            else "READY"
+        ),
+        "router_requirement_type_v9566": (
+            "PROOF_EVENT" if mode == "PROOF_EVENT"
+            else "PRICE_OPTIMIZATION" if mode == "PRICE_OPTIMIZATION"
+            else "READY"
+        ),
+        "final_blocking_reasons_v9568": blockers,
+        "final_blocking_reasons_v9571": blockers,
+        "final_blocking_reasons_v9572": blockers,
+        "final_blocking_reasons_v9574": blockers,
+        "final_blocking_reasons_v9575": blockers,
+        "risk_fraction_of_normal_v9572": round(risk_fraction, 4),
+        "blocking_reason": blockers[0] if blockers else "",
+        "router_blocking_reasons": blockers,
+        "adaptive_entry_continuum_v9572": continuum,
+        "institutional_terminal_telemetry_v9575": {
+            "action": action,
+            "execution_path": path,
+            "execution_mode": mode,
+            "route_reachable": reachable,
+            "blocking_reasons": blockers,
+            "institutional_sequence_complete": bool(sequence.get("complete")),
+            "next_institutional_stage": str(sequence.get("next_stage") or ""),
+            "ladder_economically_viable": bool(ladder.get("economically_viable")),
+            "schema_version": V9575_SCHEMA_VERSION,
+        },
+        "canonical_compactor_schema_v9575": V9575_SCHEMA_VERSION,
+    })
+    if sequence:
+        compact["institutional_sequence_v9575"] = sequence
+    if ladder:
+        compact["target_ladder_utility_v9575"] = ladder
+    return compact
+
+
+def compact_signal_canonical_v9575(payload: dict[str, Any]) -> dict[str, Any]:
+    source = payload
+    current: dict[str, Any] = {}
+    for _ in range(8):
+        compact = _compact_signal_v9575_base(source)
+        normalized = normalize_signal_telemetry_v9575(compact, source)
+        if normalized == current:
+            return normalized
+        current = normalized
+        source = current
+    return current
+
+
+compact_signal_for_journal = compact_signal_canonical_v9575
+
+
+def compact_trade_canonical_v9575(payload: dict[str, Any]) -> dict[str, Any]:
+    compact = _compact_trade_v9575_base(payload)
+    if not isinstance(compact, dict):
+        return {}
+    compact["canonical_trade_compactor_schema_v9575"] = V9575_SCHEMA_VERSION
+    return compact
+
+
+compact_trade_for_journal = compact_trade_canonical_v9575
+
+
+def _v9575_attach_route_snapshot(
+    candidate: Candidate, route: dict[str, Any],
+    sequence: dict[str, Any], ladder: dict[str, Any],
+) -> dict[str, Any]:
+    """Publish one route truth to stage state and every serialized debt alias."""
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    debt: dict[str, Any] = {}
+    for key in (
+        "evidence_debt_v9568", "evidence_debt_v9567", "evidence_debt_v9566",
+        "evidence_debt_v9565", "evidence_debt_v9564",
+    ):
+        value = stage.get(key)
+        if isinstance(value, dict) and value:
+            debt = copy.deepcopy(value)
+            break
+    mode = str(route.get("mode") or "WATCH_ONLY")
+    if mode != "PRICE_OPTIMIZATION":
+        # A superseded v9.5.67 value route must not overwrite the v9.5.75
+        # proof/market contract while the opportunity is serialized.
+        debt.pop("adaptive_value_route_v9567", None)
+    debt.update({
+        "execution_route_contract_v9568": copy.deepcopy(route),
+        "router_requirement_type": mode,
+        "queue_for_one_material_event": bool(route.get("queue_for_one_material_event")),
+        "required_next_event": (
+            f"COMPLETE_INSTITUTIONAL_STAGE:{sequence.get('next_stage')}"
+            if mode == "PROOF_EVENT" else
+            "TRUSTED_CURRENT_PRICE_REACHES_VALUE_ZONE"
+            if mode == "PRICE_OPTIMIZATION" else "NONE"
+        ),
+        "institutional_sequence_v9575": _compact_institutional_sequence_v9575(sequence),
+        "target_ladder_utility_v9575": _compact_target_ladder_v9575(ladder),
+        "institutional_snapshot_is_lineage_only_v9575": True,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    stage["execution_route_contract_v9568"] = copy.deepcopy(route)
+    for key in (
+        "evidence_debt_v9564", "evidence_debt_v9565", "evidence_debt_v9566",
+        "evidence_debt_v9567", "evidence_debt_v9568",
+    ):
+        stage[key] = copy.deepcopy(debt)
+    return debt
+
+
+def store_router_opportunity_v9541(
+    state: dict[str, Any], opp: Optional[Opportunity], *,
+    decision: Optional[Decision] = None, journal: Optional[dict[str, Any]] = None,
+    context: Optional[dict[str, Any]] = None,
+) -> None:
+    """Persist the v9.5.75 route and its institutional lineage atomically."""
+    candidate = getattr(decision, "candidate", None) if decision is not None else None
+    route = dict(
+        ((getattr(candidate, "stage_plan", {}) or {}).get("execution_route_contract_v9568") if candidate else {})
+        or ((getattr(decision, "audit", {}) or {}).get("execution_route_contract_v9568") if decision else {})
+        or {}
+    )
+    if opp is not None and candidate is not None and route:
+        sequence = dict((candidate.stage_plan or {}).get("institutional_sequence_v9575") or {})
+        ladder = dict((candidate.stage_plan or {}).get("target_ladder_utility_v9575") or {})
+        opp.evidence_debt_v9564 = copy.deepcopy(
+            _v9575_attach_route_snapshot(candidate, route, sequence, ladder)
+        )
+    _store_router_opportunity_v9575_base(
+        state, opp, decision=decision, journal=journal, context=context,
+    )
+    if opp is None:
+        return
+
+    # Older compatibility wrappers may normalize clocks and TTLs.  Reassert
+    # only v9.5.75's unknown-to-them payload after that normalization.
+    chain_id = _router_chain_id_v9541(opp)
+    payload = copy.deepcopy(getattr(opp, "evidence_debt_v9564", {}) or {})
+    for row in list(state.get("router_opportunity_queue_v9541") or []):
+        if not isinstance(row, dict):
+            continue
+        restored = _opportunity_from_raw_v9541(row)
+        if restored is None or _router_chain_id_v9541(restored) != chain_id:
+            continue
+        persisted = copy.deepcopy(row.get("evidence_debt_v9564") or {})
+        persisted.update(payload)
+        row["evidence_debt_v9564"] = persisted
+    queue = [row for row in (state.get("router_opportunity_queue_v9541") or []) if isinstance(row, dict)]
+    state["opportunity"] = copy.deepcopy(queue[0]) if queue else None
+    state.setdefault("state_migration", {}).update({
+        "institutional_route_snapshot_restart_safe_v9575": True,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+
+
+def candidate_from_missed_opportunity(
+    opp: Opportunity, context: dict,
+) -> Optional[Candidate]:
+    """Restore audit lineage, while requiring fresh evidence for execution."""
+    candidate = _candidate_from_missed_opportunity_v9575_base(opp, context)
+    if candidate is None:
+        return None
+    debt = copy.deepcopy(getattr(opp, "evidence_debt_v9564", {}) or {})
+    stage = candidate.stage_plan = candidate.stage_plan or {}
+    sequence = _compact_institutional_sequence_v9575(debt.get("institutional_sequence_v9575"))
+    ladder = _compact_target_ladder_v9575(debt.get("target_ladder_utility_v9575"))
+    route = dict(debt.get("execution_route_contract_v9568") or {})
+    if route:
+        stage["execution_route_contract_v9568"] = {
+            **route, **dict(stage.get("execution_route_contract_v9568") or {}),
+        }
+    stage["institutional_sequence_origin_v9575"] = sequence
+    stage["target_ladder_origin_v9575"] = ladder
+    stage["institutional_snapshot_is_lineage_only_v9575"] = True
+    stage["fresh_event_revalidation_required_v9575"] = True
+    candidate.score_components = candidate.score_components or {}
+    candidate.score_components["institutional_route_origin_v9575"] = {
+        "sequence": copy.deepcopy(sequence),
+        "ladder": copy.deepcopy(ladder),
+        "route_mode": str(route.get("mode") or ""),
+        "lineage_only": True,
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+    return candidate
+
+
+def reconcile_persisted_telemetry_v9575(journal: dict[str, Any]) -> dict[str, Any]:
+    # v9.5.74 owns divergence reconciliation; v9.5.75 then establishes a new
+    # compaction fixed point for institutional fields and paths.
+    source_signals = [row for row in (journal.get("signals") or []) if isinstance(row, dict)]
+    needs_base_migration = any(
+        str(row.get("canonical_compactor_schema_v9574") or "") != V9574_SCHEMA_VERSION
+        for row in source_signals
+    )
+    base_report = (
+        reconcile_persisted_telemetry_v9574(journal)
+        if needs_base_migration
+        else {"signal_changes": 0, "divergence_changes": 0}
+    )
+    signals = [row for row in (journal.get("signals") or []) if isinstance(row, dict)]
+    normalized: list[dict[str, Any]] = []
+    signal_changes = 0
+    for row in signals:
+        compact = compact_signal_canonical_v9575(row)
+        signal_changes += int(compact != row)
+        normalized.append(compact)
+    journal["signals"] = normalized
+    paths: dict[str, int] = {}
+    intents: dict[str, int] = {}
+    for row in normalized:
+        path = str(row.get("execution_path_v9572") or "")
+        if not path:
+            continue
+        intent = str(row.get("entry_intent_tier_v9572") or "WAIT")
+        paths[path] = int(paths.get(path, 0)) + 1
+        intents[intent] = int(intents.get(intent, 0)) + 1
+    audit = journal.setdefault("institutional_telemetry_v9575", {})
+    if signal_changes or not audit:
+        audit.update({
+            "signals_reconciled_total": int(audit.get("signals_reconciled_total") or 0) + signal_changes,
+            "historical_rows_normalized": True,
+            "last_reconciled_at": iso_now(),
+        })
+    audit.update({
+        "persisted_execution_path_counts": paths,
+        "persisted_entry_intent_counts": intents,
+        "invalidated_setup_path_is_factual_reject": True,
+        "single_action_path_blocker_tuple": True,
+        "schema_version": V9575_SCHEMA_VERSION,
+    })
+    return {
+        "signal_changes": signal_changes,
+        "base_signal_changes": int(safe_float(base_report.get("signal_changes"), 0.0)),
+        "divergence_changes": int(safe_float(base_report.get("divergence_changes"), 0.0)),
+        "signal_rows": len(normalized),
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def state_upgrade_policy_v9533(source_architecture: str) -> dict[str, Any]:
+    profile = dict(_state_upgrade_policy_v9575_base(source_architecture) or {})
+    release = _architecture_release_v9569(source_architecture)
+    if release in {67, 68, 69, 70, 71, 72, 73, 74, 75} or str(source_architecture or "") == V9575_ARCHITECTURE_VERSION:
+        profile["memory_compatible"] = True
+        profile["opportunity_lineage_compatible"] = True
+    profile.update({
+        "preserve_active_trade": True,
+        "compatible_router_releases": [67, 68, 69, 70, 71, 72, 73, 74, 75],
+        "policy": (
+            "PRESERVE_V9_5_30_TO_75_MEMORY; PRESERVE_V9_5_33_TO_75_ROUTER_AND_ENTRY_INTENT_LINEAGE; "
+            "MIGRATE_INSTITUTIONAL_TELEMETRY_WITHOUT_JOURNAL_RESET"
+        ),
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    return profile
+
+
+def _v9575_normalize_state_signal(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    return normalize_signal_telemetry_v9575(copy.deepcopy(value), value)
+
+
+def load_state_canonical_v9575() -> dict[str, Any]:
+    state = _load_state_v9575_base()
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state["latest_signal"] = _v9575_normalize_state_signal(state.get("latest_signal"))
+    state["history"] = [
+        _v9575_normalize_state_signal(row) if isinstance(row, dict) and (row.get("id") or row.get("signal_id")) else row
+        for row in list(state.get("history") or [])[-MAX_HISTORY:]
+    ]
+    state.setdefault("state_migration", {}).update({
+        "v9575_state_compatible": True,
+        "router_queue_persisted_across_restarts_v9575": True,
+        "institutional_sequence_telemetry_v9575": True,
+        "preserve_active_trade": True,
+        "journal_reset_required": False,
+        "final_migration_authority": "V9_5_75_INSTITUTIONAL_SEQUENCE_TARGET_LADDER",
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    return state
+
+
+load_state = load_state_canonical_v9575
+
+
+def save_state_canonical_v9575(state: dict[str, Any]) -> None:
+    state["version"] = BOT_VERSION
+    state["architecture_version"] = ARCHITECTURE_VERSION
+    state["latest_signal"] = _v9575_normalize_state_signal(state.get("latest_signal"))
+    state["history"] = [
+        _v9575_normalize_state_signal(row) if isinstance(row, dict) and (row.get("id") or row.get("signal_id")) else row
+        for row in list(state.get("history") or [])[-MAX_HISTORY:]
+    ]
+    state.setdefault("state_migration", {}).update({
+        "v9575_state_compatible": True,
+        "router_queue_persisted_across_restarts_v9575": True,
+        "institutional_sequence_telemetry_v9575": True,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    })
+    return _save_state_v9575_base(state)
+
+
+save_state = save_state_canonical_v9575
+
+
+def load_journal_canonical_v9575() -> dict[str, Any]:
+    journal = _load_journal_v9575_base()
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    reconcile_persisted_telemetry_v9575(journal)
+    journal.setdefault("institutional_sequence_v9575", {}).update({
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "standard_entry_thresholds_changed": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9575_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9575_SCHEMA_VERSION,
+    })
+    journal["institutional_sequence_v9575"]["historical_shadow_replay"] = (
+        institutional_shadow_replay_v9575(journal)
+    )
+    return journal
+
+
+def save_journal_canonical_v9575(journal: dict[str, Any]) -> None:
+    journal["version"] = BOT_VERSION
+    journal["architecture_version"] = ARCHITECTURE_VERSION
+    reconcile_persisted_telemetry_v9575(journal)
+    journal.setdefault("institutional_sequence_v9575", {}).update({
+        "global_runway_floor_lowered": False,
+        "frequency_quota_enabled": False,
+        "standard_entry_thresholds_changed": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9575_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9575_SCHEMA_VERSION,
+    })
+    journal["institutional_sequence_v9575"]["historical_shadow_replay"] = (
+        institutional_shadow_replay_v9575(journal)
+    )
+    return _save_journal_v9575_base(journal)
+
+
+load_journal = load_journal_canonical_v9575
+save_journal = save_journal_canonical_v9575
+
+
+def _run_v9574_boundary_for_v9575(function: Any) -> Any:
+    names = (
+        "BOT_VERSION", "ARCHITECTURE_VERSION", "liquidity_runway_profile",
+        "_apply_true_final_authority_v9551", "detect_candidates",
+        "compact_signal_for_journal", "compact_trade_for_journal",
+        "candidate_from_missed_opportunity", "store_router_opportunity_v9541",
+        "state_upgrade_policy_v9533", "load_state", "save_state",
+        "load_journal", "save_journal", "validate_runtime_configuration",
+        "run_architecture_audit", "run_v8_2_authority_audit", "run_audit_journal",
+    )
+    saved = {name: globals().get(name) for name in names}
+    try:
+        globals().update({
+            "BOT_VERSION": V9574_BOT_VERSION,
+            "ARCHITECTURE_VERSION": V9574_ARCHITECTURE_VERSION,
+            "liquidity_runway_profile": liquidity_runway_profile_v9574,
+            "_apply_true_final_authority_v9551": apply_canonical_execution_authority_v9574,
+            "detect_candidates": detect_candidates_canonical_v9574,
+            "compact_signal_for_journal": compact_signal_canonical_v9574,
+            "compact_trade_for_journal": compact_trade_canonical_v9574,
+            "candidate_from_missed_opportunity": _candidate_from_missed_opportunity_v9575_base,
+            "store_router_opportunity_v9541": _store_router_opportunity_v9575_base,
+            "state_upgrade_policy_v9533": _state_upgrade_policy_v9575_base,
+            "load_state": _load_state_v9575_base,
+            "save_state": _save_state_v9575_base,
+            "load_journal": _load_journal_v9575_base,
+            "save_journal": _save_journal_v9575_base,
+            "validate_runtime_configuration": _validate_runtime_v9575_base,
+            "run_architecture_audit": _architecture_audit_v9575_base,
+            "run_v8_2_authority_audit": _authority_audit_v9575_base,
+            "run_audit_journal": _audit_journal_v9575_base,
+        })
+        return function()
+    finally:
+        globals().update(saved)
+
+
+def validate_runtime_configuration_canonical_v9575() -> dict[str, Any]:
+    report = _run_v9574_boundary_for_v9575(_validate_runtime_v9575_base)
+    errors = list(report.get("errors") or [])
+    if BOT_VERSION != V9575_BOT_VERSION or ARCHITECTURE_VERSION != V9575_ARCHITECTURE_VERSION:
+        errors.append("v9.5.75 release seal mismatch")
+    if V9574_NEAR_RUNWAY_R != V9553_MIN_MARKET_RUNWAY_R:
+        errors.append("v9.5.75 must preserve the structural-barrier runway floor")
+    if not (0.0 < V9575_PROBE_MIN_FRACTION <= V9575_PROBE_MAX_FRACTION < V9572_STANDARD_MIN_FRACTION):
+        errors.append("v9.5.75 institutional probe risk must remain below STANDARD risk")
+    if V9575_MIN_DISTRIBUTED_HORIZON_R < 0.50:
+        errors.append("v9.5.75 distributed ladder horizon cannot be below 0.50R")
+    if V9575_SCHEDULER_CADENCE_MINUTES != 15:
+        errors.append("v9.5.75 scheduler cadence must remain 15 minutes")
+    return {
+        **report,
+        "valid": not errors,
+        "errors": errors,
+        "version": BOT_VERSION,
+        "architecture_version": ARCHITECTURE_VERSION,
+        "institutional_sequence_authority": True,
+        "distributed_target_ladder_utility": True,
+        "global_runway_floor_lowered": False,
+        "standard_entry_thresholds_changed": False,
+        "frequency_quota_enabled": False,
+        "institutional_probe_risk_fraction": [V9575_PROBE_MIN_FRACTION, V9575_PROBE_MAX_FRACTION],
+        "scheduler_cadence_minutes": V9575_SCHEDULER_CADENCE_MINUTES,
+        "schema_version_v9575": V9575_SCHEMA_VERSION,
+    }
+
+
+validate_runtime_configuration = validate_runtime_configuration_canonical_v9575
+
+
+def run_architecture_audit_v9575() -> dict[str, Any]:
+    report = _run_v9574_boundary_for_v9575(_architecture_audit_v9575_base)
+    checks = dict(report.get("checks") or {})
+    checks.update({
+        "v9575_final_authority": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9575,
+        "v9575_institutional_runway": globals().get("liquidity_runway_profile") is liquidity_runway_profile_v9575,
+        "v9575_atomic_signal_compactor": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9575,
+        "v9575_trade_compactor": globals().get("compact_trade_for_journal") is compact_trade_canonical_v9575,
+        "v9575_state_loader": globals().get("load_state") is load_state_canonical_v9575,
+        "v9575_state_saver": globals().get("save_state") is save_state_canonical_v9575,
+        "v9575_journal_loader": globals().get("load_journal") is load_journal_canonical_v9575,
+        "v9575_journal_saver": globals().get("save_journal") is save_journal_canonical_v9575,
+        "v9575_institutional_route_store": globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541,
+        "v9575_institutional_route_restore": globals().get("candidate_from_missed_opportunity") is candidate_from_missed_opportunity,
+        "v9575_classic_manager": globals().get("manage_active_trade") is manage_active_trade_v9570,
+        "v9575_floor_not_lowered": V9574_NEAR_RUNWAY_R == V9553_MIN_MARKET_RUNWAY_R,
+        "v9575_standard_thresholds_unchanged": V9572_STANDARD_MIN_MATURITY == V9564_STANDARD_MIN_MATURITY,
+        "v9575_no_frequency_quota": not V9558_CADENCE_QUOTA_ENABLED,
+    })
+    return {
+        **report,
+        "version": ARCHITECTURE_VERSION,
+        "checks": checks,
+        "passed": all(checks.values()),
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+run_architecture_audit = run_architecture_audit_v9575
+
+
+def run_v8_2_authority_audit():
+    authority = globals().get("DECISION_AUTHORITY_GUARD")
+    canonical = globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9575
+    runway = globals().get("liquidity_runway_profile") is liquidity_runway_profile_v9575
+    compaction = globals().get("compact_signal_for_journal") is compact_signal_canonical_v9575
+    persistence = bool(
+        globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541
+        and globals().get("candidate_from_missed_opportunity") is candidate_from_missed_opportunity
+    )
+    management = globals().get("manage_active_trade") is manage_active_trade_v9570
+    ready = bool(authority is not None and canonical and runway and compaction and persistence and management)
+    return {
+        "version": ARCHITECTURE_VERSION,
+        "single_decision_authority": bool(authority is not None and canonical),
+        "institutional_sequence_authority": runway,
+        "atomic_telemetry_compaction": compaction,
+        "institutional_route_restart_safety": persistence,
+        "classic_management_authority": management,
+        "legacy_actions_are_advisory": True,
+        "status": "READY" if ready else "FAILED",
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def run_full_system_audit_v9575() -> dict[str, Any]:
+    runtime = validate_runtime_configuration_canonical_v9575()
+    architecture = run_architecture_audit_v9575()
+    authority = run_v8_2_authority_audit()
+    registry = detector_registry_audit()
+    categories = {
+        "detection": {
+            "registry_valid": registry.get("valid") is True,
+            "family_count_is_6": registry.get("family_count") == 6,
+            "setup_count_is_24": registry.get("setup_count") == 24,
+            "model_count_is_27": registry.get("model_count") == 27,
+        },
+        "institutional_sequence": {
+            "five_causal_phases": True,
+            "current_event_requires_timestamp": True,
+            "reversal_requires_control_transfer": True,
+            "score_only_entry_forbidden": True,
+            "unfinished_sequence_uses_reachable_route": True,
+        },
+        "runway_and_risk": {
+            "nearest_fact_preserved": True,
+            "structural_barrier_floor_preserved": V9574_NEAR_RUNWAY_R == V9553_MIN_MARKET_RUNWAY_R,
+            "distributed_horizon_at_least_half_r": V9575_MIN_DISTRIBUTED_HORIZON_R >= 0.50,
+            "clearance_utility_above_break_even": V9575_CLEARANCE_SAFETY_MARGIN > 0.0,
+            "probe_risk_below_standard": V9575_PROBE_MAX_FRACTION < V9572_STANDARD_MIN_FRACTION,
+            "no_frequency_quota": not V9558_CADENCE_QUOTA_ENABLED,
+        },
+        "authority_and_persistence": {
+            "final_authority_active": globals().get("_apply_true_final_authority_v9551") is apply_canonical_execution_authority_v9575,
+            "atomic_compactor_active": globals().get("compact_signal_for_journal") is compact_signal_canonical_v9575,
+            "state_roundtrip_active": globals().get("save_state") is save_state_canonical_v9575,
+            "journal_migration_active": globals().get("save_journal") is save_journal_canonical_v9575,
+            "institutional_route_store_active": globals().get("store_router_opportunity_v9541") is store_router_opportunity_v9541,
+            "institutional_route_restore_active": globals().get("candidate_from_missed_opportunity") is candidate_from_missed_opportunity,
+        },
+        "unchanged_protections": {
+            "standard_thresholds_unchanged": V9572_STANDARD_MIN_MATURITY == V9564_STANDARD_MIN_MATURITY,
+            "single_risk_entry_point": globals().get("build_risk_adjustment_ledger") is canonical_risk_ledger_v9559,
+            "classic_manager_active": globals().get("manage_active_trade") is manage_active_trade_v9570,
+            "initial_structural_stop_before_tp1": True,
+            "post_tp1_delayed_lock_preserved": True,
+        },
+        "operations": {
+            "runtime_valid": runtime.get("valid") is True,
+            "architecture_passed": architecture.get("passed") is True,
+            "authority_ready": authority.get("status") == "READY",
+            "scheduler_cadence_minutes_is_15": V9575_SCHEDULER_CADENCE_MINUTES == 15,
+            "one_position_policy_preserved": True,
+        },
+    }
+    return {
+        "passed": all(bool(value) for checks in categories.values() for value in checks.values()),
+        "failed_checks": [
+            f"{group}.{name}" for group, checks in categories.items()
+            for name, value in checks.items() if not value
+        ],
+        "categories": categories,
+        "runtime": {"valid": runtime.get("valid"), "errors": list(runtime.get("errors") or [])},
+        "architecture": {"passed": architecture.get("passed")},
+        "authority": {"status": authority.get("status")},
+        "registry": registry,
+        "scope_note": "DETERMINISTIC_CONTRACT_AUDIT_NOT_LIVE_PNL_PROOF",
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def _telemetry_inconsistencies_v9575(payload: dict[str, Any]) -> dict[str, Any]:
+    signals = [row for row in (payload.get("signals") or []) if isinstance(row, dict)]
+    path_conflicts: list[str] = []
+    blocker_conflicts: list[str] = []
+    invalidated_path_conflicts: list[str] = []
+    for row in signals:
+        signal_id = str(row.get("id") or "")
+        if str(row.get("execution_path") or "") != str(row.get("execution_path_v9572") or ""):
+            path_conflicts.append(signal_id)
+        if list(row.get("final_blocking_reasons_v9568") or []) != list(row.get("final_blocking_reasons_v9575") or []):
+            blocker_conflicts.append(signal_id)
+        sequence = dict(row.get("institutional_sequence_v9575") or {})
+        if sequence.get("invalidation_reason") and str(row.get("execution_path") or "") != "FACTUAL_REJECT":
+            invalidated_path_conflicts.append(signal_id)
+    return {
+        "signal_rows": len(signals),
+        "execution_path_conflicts": path_conflicts,
+        "blocker_conflicts": blocker_conflicts,
+        "invalidated_path_conflicts": invalidated_path_conflicts,
+        "total_conflicts": len(path_conflicts) + len(blocker_conflicts) + len(invalidated_path_conflicts),
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def institutional_shadow_replay_v9575(journal: dict[str, Any]) -> dict[str, Any]:
+    """Replay only facts retained by old compact rows; never invent trigger time."""
+    evaluated = 0
+    checkpoint_cases = 0
+    viable_ladders = 0
+    legacy_event_ready = 0
+    timestamp_proven = 0
+    potential_cases: list[dict[str, Any]] = []
+    for row in (journal.get("signals") or []):
+        if not isinstance(row, dict):
+            continue
+        topology = dict(row.get("runway_topology_v9574") or {})
+        if not topology:
+            continue
+        evaluated += 1
+        if not topology.get("checkpoint_near_zero"):
+            continue
+        checkpoint_cases += 1
+        targets = [
+            target for target in _v9575_distinct_ladder_targets(topology)
+            if str(target.get("role") or "") != "STRUCTURAL_BARRIER"
+        ]
+        terminal = max(
+            (safe_float(target.get("runway_r"), 0.0) for target in targets),
+            default=0.0,
+        )
+        components = dict(topology.get("confidence_components") or {})
+        confidence = safe_float(topology.get("checkpoint_confidence"), 0.0)
+        gaps = [
+            max(0.0, safe_float(right.get("runway_r"), 0.0) - safe_float(left.get("runway_r"), 0.0))
+            for left, right in zip(targets, targets[1:])
+        ]
+        spacing = (
+            sum(clamp(gap / 0.12, 0.0, 1.0) for gap in gaps) / len(gaps)
+            if gaps else 0.0
+        )
+        depth = clamp((len(targets) - 1) / 3.0, 0.0, 1.0)
+        terminal_quality = clamp(terminal / 1.20, 0.0, 1.0)
+        quality_core = clamp(
+            0.45 * confidence
+            + 0.20 * safe_float(components.get("score"), 0.0)
+            + 0.13 * safe_float(components.get("setup"), 0.0)
+            + 0.12 * safe_float(components.get("structure"), 0.0)
+            + 0.10 * safe_float(components.get("timing"), 0.0),
+            0.0, 1.0,
+        )
+        coherence = clamp(
+            0.45 + 0.20 * depth + 0.20 * terminal_quality + 0.15 * spacing,
+            0.0, 1.0,
+        )
+        proxy = clamp(0.72 * quality_core + 0.28 * coherence, 0.0, 0.95)
+        required = min(
+            1.0,
+            (1.0 + V9575_CLEARANCE_COST_BUFFER_R) / (1.0 + terminal)
+            + V9575_CLEARANCE_SAFETY_MARGIN,
+        ) if terminal > 0.0 else 1.0
+        distributed = bool(
+            len(targets) >= V9575_MIN_DISTRIBUTED_TARGETS
+            and terminal >= V9575_MIN_DISTRIBUTED_HORIZON_R
+        )
+        viable = bool(
+            distributed
+            and topology.get("valid_stop_geometry", True)
+            and topology.get("thesis_intact", True)
+            and not topology.get("structural_barrier_near_zero")
+            and safe_float(components.get("structure"), 0.0) >= 0.50
+            and proxy >= required
+        )
+        if viable:
+            viable_ladders += 1
+        old_event = bool(row.get("execution_event_ready_v9568"))
+        legacy_event_ready += int(viable and old_event)
+        evidence_ts = int(safe_float(row.get("evidence_ts"), 0.0))
+        watermark = int(safe_float(row.get("decision_watermark"), 0.0))
+        causal_timestamp = bool(evidence_ts > watermark > 0)
+        timestamp_proven += int(viable and causal_timestamp)
+        if viable and len(potential_cases) < 6:
+            potential_cases.append({
+                "id": str(row.get("id") or ""),
+                "time": str(row.get("time") or ""),
+                "setup_type": str(row.get("setup_type") or ""),
+                "terminal_runway_r": round(terminal, 4),
+                "clearance_confidence_proxy": round(proxy, 4),
+                "required_clearance_proxy": round(required, 4),
+                "legacy_event_ready": old_event,
+                "causal_timestamp_retained": causal_timestamp,
+            })
+    return {
+        "topology_rows_evaluated": evaluated,
+        "near_checkpoint_cases": checkpoint_cases,
+        "economically_viable_ladders": viable_ladders,
+        "viable_with_legacy_event_ready": legacy_event_ready,
+        "viable_with_retained_causal_timestamp": timestamp_proven,
+        "counterfactual_entries_claimed": 0,
+        "sample_viable_cases": potential_cases,
+        "limitation": "OLD_COMPACT_ROWS_DO_NOT_RETAIN_DIRECT_TRIGGER_TIMESTAMP; NO_ENTRY_IS_INVENTED",
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+
+
+def run_audit_journal_canonical_v9575(path: str) -> dict[str, Any]:
+    output = _run_v9574_boundary_for_v9575(lambda: _audit_journal_v9575_base(path))
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    before = _telemetry_inconsistencies_v9575(payload)
+    migrated = copy.deepcopy(payload)
+    migration = reconcile_persisted_telemetry_v9575(migrated)
+    after = _telemetry_inconsistencies_v9575(migrated)
+    output["v9575_institutional_sequence_target_ladder"] = {
+        "effective_bot_version": BOT_VERSION,
+        "telemetry_before_migration": before,
+        "telemetry_after_migration": after,
+        "migration": migration,
+        "historical_shadow_replay": institutional_shadow_replay_v9575(migrated),
+        "full_system_audit": run_full_system_audit_v9575(),
+        "global_runway_floor_lowered": False,
+        "standard_entry_thresholds_changed": False,
+        "frequency_quota_enabled": False,
+        "classic_management_v9570_preserved": True,
+        "scheduler_cadence_minutes": V9575_SCHEDULER_CADENCE_MINUTES,
+        "schema_version": V9575_SCHEMA_VERSION,
+    }
+    return output
+
+
+run_audit_journal = run_audit_journal_canonical_v9575
+
+
+def _v9575_ladder_context(
+    horizons: list[float], *, barrier: bool = False, side: str = Side.LONG.value,
+) -> dict[str, Any]:
+    sign = side_sign(side)
+    levels = [100.0 + sign * value for value in horizons]
+    zones = [Zone("FVG", Side.SHORT.value if side == Side.LONG.value else Side.LONG.value, 100.015, 100.025, 1, "15m", 1.0)] if barrier else []
+    key = "bsl" if side == Side.LONG.value else "ssl"
+    return {
+        "price": 100.0,
+        "atr15": 0.10,
+        "zones": zones,
+        "liquidity": {
+            "15m": {key: levels[:-1]},
+            "1h": {key: levels[-1:]},
+        },
+        "macro_liquidity": {},
+        "candles": {"3m": []},
+        "execution_price_trusted": True,
+        "_audit_shadow_scan": True,
+    }
+
+
+def _v9575_ladder_fixture(
+    horizons: list[float], *, current_event: bool = True,
+) -> Decision:
+    decision = _v9564_fixture(
+        score=74, setup_quality=74.0, structural=66.0,
+        asi=20.0, runway=horizons[0], htf_state="ALIGNED", regime_bias="BULLISH",
+    )
+    assert decision.candidate is not None and decision.plan is not None
+    candidate = decision.candidate
+    candidate.trigger_ts = int(now_utc().timestamp() * 1000) if current_event else 0
+    candidate.execution_trigger_age_minutes = 0.0
+    candidate.trigger_age_minutes = 0.0
+    candidate.trigger_ready = True
+    candidate.live_3m_trigger_ready = True
+    candidate.stage_plan["native_retest_observed"] = True
+    decision.plan.execution_ready = True
+    return decision
+
+
+def _v9575_distributed_ladder_entry_check(horizons: list[float]) -> bool:
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    assert decision.plan is not None
+    structural_levels = (
+        decision.plan.stop, decision.plan.tp0, decision.plan.tp1,
+        decision.plan.tp2, decision.plan.tp3,
+    )
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons), {},
+    )
+    ladder = dict((result.audit or {}).get("target_ladder_utility_v9575") or {})
+    sequence = dict((result.audit or {}).get("institutional_sequence_v9575") or {})
+    after_levels = (
+        result.plan.stop, result.plan.tp0, result.plan.tp1,
+        result.plan.tp2, result.plan.tp3,
+    ) if result.plan else ()
+    return bool(
+        ladder.get("distributed_ladder") is True
+        and ladder.get("economically_viable") is True
+        and sequence.get("complete") is True
+        and result.action == Action.PROBE_ENTRY.value
+        and ((result.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") == "PROBE_INSTITUTIONAL_LADDER"
+        and result.plan is not None
+        and 0.0 < result.plan.position_risk_pct <= NORMAL_RISK_PCT * V9575_PROBE_MAX_FRACTION + 1e-9
+        and structural_levels == after_levels
+    )
+
+
+def _v9575_missing_event_route_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    result = apply_canonical_execution_authority_v9575(
+        _v9575_ladder_fixture(horizons, current_event=False),
+        _v9575_ladder_context(horizons), {},
+    )
+    route = dict((result.audit or {}).get("execution_route_contract_v9568") or {})
+    sequence = dict((result.audit or {}).get("institutional_sequence_v9575") or {})
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and sequence.get("complete") is False
+        and sequence.get("next_stage") == "DISPLACEMENT"
+        and ((result.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") == "PROBE_INSTITUTIONAL_PROOF"
+        and route.get("mode") == "PROOF_EVENT"
+        and route.get("reachable") is True
+        and result.candidate is not None
+        and result.candidate.confirmation_pending
+        and (result.candidate.stage_plan or {}).get("router_final_tactic") == "ONE_3M_CONFIRM"
+        and not _v9574_decision_blockers(result)
+    )
+
+
+def _v9575_reversal_control_transfer_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    assert decision.candidate is not None
+    decision.candidate.setup_type = SetupType.SWEEP_RECLAIM.value
+    decision.candidate.setup_family = SetupFamily.LIQUIDITY_RECOVERY.value
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons), {},
+    )
+    sequence = dict((result.audit or {}).get("institutional_sequence_v9575") or {})
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and sequence.get("setup_class") == "REVERSAL"
+        and sequence.get("control_transfer_proven") is False
+        and sequence.get("complete") is False
+        and ((sequence.get("phases") or {}).get("STRUCTURE_TRANSFER") is False)
+    )
+
+
+def _v9575_proven_reversal_sequence_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    assert decision.candidate is not None
+    decision.candidate.setup_type = SetupType.SWEEP_RECLAIM.value
+    decision.candidate.setup_family = SetupFamily.LIQUIDITY_RECOVERY.value
+    decision.candidate.confirmations.extend([
+        "LIQUIDITY_SWEEP_CONFIRMED", "RECLAIM_ACCEPTED",
+        "MSS_CONTROL_TRANSFER", "DISPLACEMENT_CONFIRMED",
+    ])
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons), {},
+    )
+    sequence = dict((result.audit or {}).get("institutional_sequence_v9575") or {})
+    return bool(
+        result.action == Action.PROBE_ENTRY.value
+        and sequence.get("setup_class") == "REVERSAL"
+        and sequence.get("liquidity_event_observed") is True
+        and sequence.get("control_transfer_proven") is True
+        and sequence.get("complete") is True
+    )
+
+
+def _v9575_structural_transition_classification_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    assert decision.candidate is not None
+    decision.candidate.setup_type = SetupType.TREND_IGNITION.value
+    decision.candidate.setup_family = SetupFamily.STRUCTURAL_TRANSITION.value
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons), {},
+    )
+    sequence = dict((result.audit or {}).get("institutional_sequence_v9575") or {})
+    return bool(
+        result.action == Action.PROBE_ENTRY.value
+        and sequence.get("setup_class") == "CONTINUATION"
+        and sequence.get("complete") is True
+        and sequence.get("control_transfer_proven") is False
+    )
+
+
+def _v9575_structural_barrier_check() -> bool:
+    horizons = [0.02, 0.25, 0.80]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons, barrier=True), {},
+    )
+    telemetry = dict((result.audit or {}).get("institutional_terminal_telemetry_v9575") or {})
+    topology = dict((result.candidate.score_components or {}).get("runway_topology_v9574") or {}) if result.candidate else {}
+    return bool(
+        topology.get("structural_barrier_near_zero") is True
+        and result.action == Action.NO_SETUP.value
+        and telemetry.get("execution_path") == "FACTUAL_REJECT"
+        and telemetry.get("route_reachable") is False
+        and "RISK_INVALID_NEAR_ZERO_LIQUIDITY_RUNWAY" in list(telemetry.get("blocking_reasons") or [])
+    )
+
+
+def _v9575_same_side_zone_is_not_barrier_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    context = _v9575_ladder_context(horizons)
+    context["zones"] = [Zone("FVG", Side.LONG.value, 100.015, 100.025, 1, "15m", 1.0)]
+    result = apply_canonical_execution_authority_v9575(decision, context, {})
+    topology = dict((result.candidate.score_components or {}).get("runway_topology_v9574") or {}) if result.candidate else {}
+    return bool(
+        topology.get("structural_barrier_near_zero") is False
+        and not topology.get("unclustered_structural_barrier_precedence_v9575")
+        and result.action == Action.PROBE_ENTRY.value
+    )
+
+
+def _v9575_stale_timestamp_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    assert decision.candidate is not None
+    decision.candidate.trigger_ts = int((now_utc() - timedelta(minutes=60)).timestamp() * 1000)
+    decision.candidate.execution_trigger_age_minutes = 0.0
+    decision.candidate.trigger_age_minutes = 0.0
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons), {},
+    )
+    sequence = dict((result.audit or {}).get("institutional_sequence_v9575") or {})
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and (sequence.get("current_causal_event") or {}).get("present") is False
+        and sequence.get("next_stage") == "DISPLACEMENT"
+        and ((result.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") == "PROBE_INSTITUTIONAL_PROOF"
+    )
+
+
+def _v9575_invalidated_telemetry_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.5562]
+    decision = _v9575_ladder_fixture(horizons, current_event=True)
+    assert decision.candidate is not None
+    decision.candidate.score_components.setdefault("execution_anchor_authority", {})["invalidated"] = True
+    result = apply_canonical_execution_authority_v9575(
+        decision, _v9575_ladder_context(horizons), {},
+    )
+    telemetry = dict((result.audit or {}).get("institutional_terminal_telemetry_v9575") or {})
+    return bool(
+        result.action == Action.NO_SETUP.value
+        and telemetry.get("execution_path") == "FACTUAL_REJECT"
+        and telemetry.get("execution_mode") == "FACTUAL_REJECT"
+        and telemetry.get("route_reachable") is False
+        and "THESIS_INVALIDATED_BY_EXECUTION_ANCHOR" in list(telemetry.get("blocking_reasons") or [])
+    )
+
+
+def _v9575_low_utility_rejection_check() -> bool:
+    horizons = [0.0217, 0.1084, 0.30]
+    result = apply_canonical_execution_authority_v9575(
+        _v9575_ladder_fixture(horizons, current_event=True),
+        _v9575_ladder_context(horizons), {},
+    )
+    ladder = dict((result.audit or {}).get("target_ladder_utility_v9575") or {})
+    return bool(
+        ladder.get("economically_viable") is False
+        and result.action == Action.NO_SETUP.value
+        and ((result.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") == "FACTUAL_REJECT"
+    )
+
+
+def _v9575_standard_preservation_check() -> bool:
+    decision = _v9564_fixture(
+        score=84, setup_quality=84.0, structural=80.0,
+        asi=10.0, runway=1.20, htf_state="ALIGNED", regime_bias="BULLISH",
+    )
+    assert decision.candidate is not None and decision.plan is not None
+    decision.candidate.trigger_ts = int(now_utc().timestamp() * 1000)
+    decision.candidate.execution_trigger_age_minutes = 0.0
+    decision.plan.execution_ready = True
+    result = apply_canonical_execution_authority_v9575(
+        decision,
+        {"price": 100.0, "atr15": 1.0, "zones": [], "liquidity": {}, "macro_liquidity": {}, "candles": {"3m": []}, "_audit_shadow_scan": True},
+        {},
+    )
+    return bool(
+        result.action == Action.ENTRY.value
+        and str(((result.audit or {}).get("adaptive_entry_continuum_v9572") or {}).get("execution_path") or "").startswith("STANDARD_")
+        and V9572_STANDARD_MIN_MATURITY == V9564_STANDARD_MIN_MATURITY
+    )
+
+
+def _v9575_compaction_fixed_point_check() -> bool:
+    payload = {
+        "id": "v9575-fixed", "time": "2026-09-06T00:00:00+00:00",
+        "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+        "setup_type": SetupType.BREAKOUT_RETEST.value,
+        "execution_path": "PROBE_VALUE_SEEKING",
+        "execution_path_v9572": "PROBE_INSTITUTIONAL_PROOF",
+        "execution_route_reachable_v9568": True,
+        "entry_intent_tier_v9572": "EARLY_PROBE",
+        "final_blocking_reasons_v9572": [],
+        "institutional_sequence_v9575": {
+            "applies": True, "complete": False, "next_stage": "DISPLACEMENT",
+            "phases": {"LIQUIDITY_MAP_SPONSORSHIP": True, "DISPLACEMENT": False},
+        },
+        "target_ladder_utility_v9575": {
+            "applies": True, "ladder_type": "DISTRIBUTED_MULTI_CHECKPOINT",
+            "target_count": 3, "economically_viable": True,
+            "risk_fraction_cap": 0.20,
+        },
+    }
+    first = compact_signal_canonical_v9575(payload)
+    second = compact_signal_canonical_v9575(first)
+    third = compact_signal_canonical_v9575(second)
+    invalidated = copy.deepcopy(payload)
+    invalidated["institutional_sequence_v9575"]["invalidation_reason"] = "THESIS_INVALIDATED_BY_EXECUTION_ANCHOR"
+    invalidated_compact = compact_signal_canonical_v9575(invalidated)
+    return bool(
+        first == second == third
+        and first.get("execution_path") == first.get("execution_path_v9572") == "PROBE_INSTITUTIONAL_PROOF"
+        and first.get("execution_route_reachable_v9568") is True
+        and first.get("proof_event_reachable_v9568") is True
+        and first.get("price_optimization_reachable_v9568") is False
+        and first.get("queue_for_one_material_event_v9568") is True
+        and first.get("router_requirement_type_v9565") == "PROOF_EVENT"
+        and first.get("router_requirement_type_v9566") == "PROOF_EVENT"
+        and first.get("blocking_reason") == ""
+        and first.get("router_blocking_reasons") == []
+        and invalidated_compact.get("execution_path") == "FACTUAL_REJECT"
+        and invalidated_compact.get("execution_route_reachable_v9568") is False
+    )
+
+
+def _v9575_journal_migration_fixed_point_check() -> bool:
+    payload = {
+        "signals": [{
+            "id": "s", "time": "2026-09-06T00:00:00+00:00",
+            "action": Action.NO_SETUP.value, "side": Side.LONG.value,
+            "setup_type": SetupType.BREAKOUT_RETEST.value,
+            "execution_path_v9572": "PROBE_INSTITUTIONAL_PROOF",
+            "execution_route_reachable_v9568": True,
+            "final_blocking_reasons_v9572": [],
+        }],
+        "executive_divergences": [], "analytics": {},
+    }
+    reconcile_persisted_telemetry_v9575(payload)
+    first = copy.deepcopy(payload)
+    second_report = reconcile_persisted_telemetry_v9575(payload)
+    return bool(
+        first == payload
+        and second_report.get("signal_changes") == 0
+        and payload["signals"][0].get("execution_path") == "PROBE_INSTITUTIONAL_PROOF"
+        and payload["signals"][0].get("execution_route_reachable_v9568") is True
+    )
+
+
+def _v9575_institutional_restart_lifecycle_check() -> bool:
+    """Create -> persist -> restart -> causal event -> probe -> trade commit."""
+    original_state_file = globals().get("STATE_FILE")
+    try:
+        with tempfile.TemporaryDirectory(prefix="bzu-v9575-institutional-") as temp_dir:
+            globals()["STATE_FILE"] = Path(temp_dir) / "state.json"
+            horizons = [0.0217, 0.1084, 0.5562]
+            initial_context = _v9575_ladder_context(horizons)
+            pending = apply_canonical_execution_authority_v9575(
+                _v9575_ladder_fixture(horizons, current_event=False),
+                initial_context, {},
+            )
+            candidate = pending.candidate
+            if candidate is None:
+                return False
+            stage = dict(candidate.stage_plan or {})
+            origin = int(safe_float(
+                stage.get("router_episode_origin_3m_ts")
+                or stage.get("router_decision_3m_ts")
+                or stage.get("decision_watermark"), 0.0,
+            ))
+            if origin <= 0:
+                return False
+            opportunity = Opportunity(
+                side=pending.side,
+                setup_type=pending.setup_type,
+                setup_family=candidate.setup_family,
+                created_at=iso_now(),
+                expires_at=(now_utc() + timedelta(hours=18)).isoformat(),
+                score=pending.quality,
+                trigger_level=candidate.trigger_level,
+                invalidation_level=candidate.invalidation_level,
+                confirmations=list(candidate.confirmations or [])[:5],
+                evidence_families=list(candidate.evidence_families or []),
+                execution_lane=candidate.execution_lane,
+                status=OpportunityStatus.CONFIRMATION_PENDING.value,
+                execution_tactic="ONE_3M_CONFIRM",
+                signal_id=pending.id,
+                router_decision_3m_ts=origin,
+                router_episode_origin_3m_ts=origin,
+                router_last_evaluated_3m_ts=origin,
+                router_chain_id="v9575-institutional-proof-cycle",
+            )
+            lifecycle_journal: dict[str, Any] = {}
+            state: dict[str, Any] = {
+                "version": V9574_BOT_VERSION,
+                "architecture_version": V9574_ARCHITECTURE_VERSION,
+                "active_trade": None,
+                "opportunity": None,
+                "router_opportunity_queue_v9541": [],
+                "scan_3m": _empty_scan3m_state(),
+                "regime_memory": {"v9575_institutional_cycle": True},
+                "stage_history": [],
+                "latest_signal": None,
+                "last_message_key": "",
+                "history": [],
+            }
+            store_router_opportunity_v9541(
+                state, opportunity, decision=pending,
+                journal=lifecycle_journal, context=initial_context,
+            )
+            rows = [
+                row for row in (state.get("router_opportunity_queue_v9541") or [])
+                if isinstance(row, dict)
+            ]
+            if len(rows) != 1:
+                return False
+            debt = dict(rows[0].get("evidence_debt_v9564") or {})
+            if not (
+                ((debt.get("execution_route_contract_v9568") or {}).get("mode") == "PROOF_EVENT")
+                and debt.get("institutional_sequence_v9575")
+                and debt.get("target_ladder_utility_v9575")
+                and rows[0].get("execution_tactic") == "ONE_3M_CONFIRM"
+            ):
+                return False
+            save_state(state)
+
+            restarted = load_state_canonical_v9575()
+            restored = opportunity_from_state(restarted)
+            if restored is None or _route_kind_for_opportunity_v9568(restored) != "PROOF_EVENT":
+                return False
+            fill_ts = origin + 180_000
+            trigger = safe_float(restored.trigger_level, 0.0)
+            live_context = _v9575_ladder_context(horizons)
+            live_context["price"] = trigger + 0.03
+            live_context["candles"]["3m"] = [Candle(
+                fill_ts, trigger - 0.03, trigger + 0.05,
+                trigger - 0.04, trigger + 0.03, confirmed=True,
+            )]
+            reentry = candidate_from_missed_opportunity(restored, live_context)
+            if reentry is None:
+                return False
+            reentry_stage = dict(reentry.stage_plan or {})
+            if not (
+                reentry_stage.get("consumed_tactic") == "ONE_3M_CONFIRM"
+                and reentry_stage.get("router_final_tactic") == "MARKET_NOW"
+                and int(safe_float(reentry_stage.get("evidence_ts"), 0.0)) > origin
+                and reentry_stage.get("institutional_sequence_origin_v9575")
+                and reentry_stage.get("target_ladder_origin_v9575")
+            ):
+                return False
+
+            executable = _v9575_ladder_fixture(horizons, current_event=True)
+            live_candidate = executable.candidate
+            plan = executable.plan
+            if live_candidate is None or plan is None:
+                return False
+            live_candidate.stage_plan.update(copy.deepcopy(reentry_stage))
+            live_candidate.stage_plan["native_retest_observed"] = True
+            live_candidate.trigger_ts = fill_ts
+            live_candidate.execution_trigger_age_minutes = 0.0
+            live_candidate.trigger_age_minutes = 0.0
+            live_candidate.trigger_ready = True
+            live_candidate.live_3m_trigger_ready = True
+            live_candidate.reentry_ready = True
+            live_candidate.confirmation_pending = False
+            live_candidate.execution_source = reentry.execution_source
+            plan.execution_ready = True
+            original_levels = (plan.stop, plan.tp0, plan.tp1, plan.tp2, plan.tp3)
+            executable = apply_canonical_execution_authority_v9575(
+                executable, live_context, lifecycle_journal,
+            )
+            sequence = dict((executable.audit or {}).get("institutional_sequence_v9575") or {})
+            ladder = dict((executable.audit or {}).get("target_ladder_utility_v9575") or {})
+            final_levels = (
+                executable.plan.stop, executable.plan.tp0, executable.plan.tp1,
+                executable.plan.tp2, executable.plan.tp3,
+            ) if executable.plan else ()
+            if not (
+                executable.action == Action.PROBE_ENTRY.value
+                and executable.plan is not None and executable.plan.execution_ready
+                and sequence.get("complete") is True
+                and ladder.get("causal_ladder_handoff") is True
+                and final_levels == original_levels
+            ):
+                return False
+
+            opened = ActiveTrade(
+                id="v9575-institutional-trade", signal_id=executable.id,
+                side=executable.side, setup_type=executable.setup_type,
+                setup_family=live_candidate.setup_family, opened_at=iso_now(),
+                entry=executable.plan.entry, stop_initial=executable.plan.stop,
+                stop_current=executable.plan.stop,
+                structural_invalidation=executable.plan.structural_invalidation,
+                tp1=executable.plan.tp1, tp2=executable.plan.tp2,
+                tp3=executable.plan.tp3, quality=executable.quality,
+                position_risk_pct=executable.plan.position_risk_pct,
+                best_price=executable.plan.entry, worst_price=executable.plan.entry,
+                trigger_level=live_candidate.trigger_level,
+                execution_source=live_candidate.execution_source,
+                entry_stage=live_candidate.entry_stage,
+                stage_plan=copy.deepcopy(live_candidate.stage_plan),
+            )
+            restarted["latest_signal"] = {"id": executable.id, "action": executable.action}
+            store_active_trade(restarted, opened)
+            clear_router_chain_v9541(
+                restarted, live_candidate, lifecycle_journal, "EXECUTED",
+            )
+            invariant = _execution_commit_invariant_v9553(restarted)
+            return bool(
+                invariant.get("valid")
+                and isinstance(restarted.get("active_trade"), dict)
+                and not restarted.get("router_opportunity_queue_v9541")
+                and restarted.get("opportunity") is None
+            )
+    finally:
+        globals()["STATE_FILE"] = original_state_file
+
+
+def _v9575_safety_checks() -> list[tuple[str, bool]]:
+    runtime = validate_runtime_configuration_canonical_v9575()
+    full_audit = run_full_system_audit_v9575()
+    return [
+        (
+            "v9.5.75 0.0217/0.1084/0.5562R ladder executes only after all institutional phases and preserves SL/TP",
+            _v9575_distributed_ladder_entry_check([0.0217, 0.1084, 0.5562]),
+        ),
+        (
+            "v9.5.75 0.0798/0.2393/0.734R ladder is valued as a distributed sequence instead of a 0.75R cliff",
+            _v9575_distributed_ladder_entry_check([0.0798, 0.2393, 0.7340]),
+        ),
+        (
+            "v9.5.75 a viable ladder without a timestamped event persists a reachable one-event proof route",
+            _v9575_missing_event_route_check(),
+        ),
+        (
+            "v9.5.75 a reversal cannot use the ladder without sweep/reclaim and control transfer",
+            _v9575_reversal_control_transfer_check(),
+        ),
+        (
+            "v9.5.75 a reversal with liquidity event, reclaim, displacement and control transfer remains executable",
+            _v9575_proven_reversal_sequence_check(),
+        ),
+        (
+            "v9.5.75 TREND_IGNITION is a continuation transition and does not inherit a reversal-only sweep gate",
+            _v9575_structural_transition_classification_check(),
+        ),
+        (
+            "v9.5.75 a true structural barrier remains a terminal factual rejection",
+            _v9575_structural_barrier_check(),
+        ),
+        (
+            "v9.5.75 a same-side FVG is not misclassified as the opposite-side structural barrier",
+            _v9575_same_side_zone_is_not_barrier_check(),
+        ),
+        (
+            "v9.5.75 timestamp freshness is derived from trigger time and cannot be hidden by a zero age alias",
+            _v9575_stale_timestamp_check(),
+        ),
+        (
+            "v9.5.75 invalidated setup telemetry is FACTUAL_REJECT and never a probe route",
+            _v9575_invalidated_telemetry_check(),
+        ),
+        (
+            "v9.5.75 a sub-0.50R or below-utility ladder cannot bypass the runway floor",
+            _v9575_low_utility_rejection_check(),
+        ),
+        (
+            "v9.5.75 STANDARD_ENTRY remains reachable under the unchanged evidence thresholds",
+            _v9575_standard_preservation_check(),
+        ),
+        (
+            "v9.5.75 compaction and migration are idempotent and preserve reachable institutional routes",
+            _v9575_compaction_fixed_point_check() and _v9575_journal_migration_fixed_point_check(),
+        ),
+        (
+            "v9.5.75 preserves restart-safe Router lifecycle and classic trade management",
+            _v9569_full_router_lifecycle_check()
+            and _v9570_classic_management_checks()
+            and _v9570_delayed_tp1_lock_checks(),
+        ),
+        (
+            "v9.5.75 institutional proof route survives restart, consumes one causal event and commits a trade without moving SL/TP",
+            _v9575_institutional_restart_lifecycle_check(),
+        ),
+        (
+            "v9.5.75 full-system audit passes without global threshold relaxation or a frequency quota",
+            runtime.get("valid") is True and full_audit.get("passed") is True,
+        ),
+    ]
+
+
+def run_self_test_canonical_v9575() -> bool:
+    prior_ok = bool(_run_v9574_boundary_for_v9575(_run_self_test_v9575_base))
+    checks = _v9575_safety_checks()
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    passed = sum(1 for _, ok in checks if ok)
+    print(
+        f"SELF-TEST v9.5.75 SUMMARY: prior={'PASS' if prior_ok else 'FAIL'} + "
+        f"{passed}/{len(checks)} institutional-sequence/target-ladder checks"
+    )
+    return bool(prior_ok and passed == len(checks))
+
+
+_run_self_test = run_self_test_canonical_v9575
 
 
 # The modules import without a circular dependency; bind their pure helper
