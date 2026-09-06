@@ -33707,6 +33707,12 @@ V9553_MIN_MARKET_RUNWAY_R = max(
     0.05,
     min(V9535_RUNWAY_CRITICAL_R, float(os.getenv("V9553_MIN_MARKET_RUNWAY_R", "0.08") or 0.08)),
 )
+# Absolute floor below which runway is genuinely too thin to trade at all.
+# V9553_MIN_MARKET_RUNWAY_R (0.08 by default) is now only the point where the
+# reduced-probe ramp reaches its ceiling, not a hard cliff. Below this floor
+# the setup is still a full veto (factor=0.0); between the floor and 0.08 the
+# risk multiplier ramps smoothly instead of dropping to 0.0 at 0.08 exactly.
+V9553_ABSOLUTE_MIN_RUNWAY_R = min(0.05, V9553_MIN_MARKET_RUNWAY_R)
 V9553_ANCHOR_REDUCED_FILL_MAX_MISSED_R = max(
     EXECUTION_ANCHOR_MAX_MARKET_MISSED_R,
     min(0.75, float(os.getenv("V9553_ANCHOR_REDUCED_FILL_MAX_MISSED_R", "0.65") or 0.65)),
@@ -33930,9 +33936,15 @@ def runway_risk_profile_v9553(candidate: Candidate) -> dict[str, Any]:
     if not runway_known:
         factor = 1.0
         state = "UNKNOWN_NEUTRAL"
-    elif runway < V9553_MIN_MARKET_RUNWAY_R:
+    elif runway < V9553_ABSOLUTE_MIN_RUNWAY_R:
         factor = 0.0
         state = "EXPLICIT_REPRICE"
+    elif runway < V9553_MIN_MARKET_RUNWAY_R:
+        near_floor_span = max(V9553_MIN_MARKET_RUNWAY_R - V9553_ABSOLUTE_MIN_RUNWAY_R, 1e-9)
+        factor = clamp(
+            0.05 + 0.15 * (runway - V9553_ABSOLUTE_MIN_RUNWAY_R) / near_floor_span, 0.05, 0.20,
+        )
+        state = "REDUCED_PROBE_NEAR_FLOOR"
     else:
         span = max(V9535_RUNWAY_COMFORT_R - V9553_MIN_MARKET_RUNWAY_R, 1e-9)
         factor = clamp(0.20 + 0.80 * (runway - V9553_MIN_MARKET_RUNWAY_R) / span, 0.20, 1.0)
@@ -33941,10 +33953,11 @@ def runway_risk_profile_v9553(candidate: Candidate) -> dict[str, Any]:
         "runway_known": runway_known,
         "runway_r": round(runway, 4),
         "risk_multiplier": round(factor, 4),
-        "market_probe_allowed": bool(not runway_known or runway >= V9553_MIN_MARKET_RUNWAY_R),
-        "explicit_reprice": bool(runway_known and runway < V9553_MIN_MARKET_RUNWAY_R),
+        "market_probe_allowed": bool(not runway_known or runway >= V9553_ABSOLUTE_MIN_RUNWAY_R),
+        "explicit_reprice": bool(runway_known and runway < V9553_ABSOLUTE_MIN_RUNWAY_R),
         "state": state,
         "minimum_market_runway_r": V9553_MIN_MARKET_RUNWAY_R,
+        "absolute_minimum_runway_r": V9553_ABSOLUTE_MIN_RUNWAY_R,
         "setup_blocked": False,
         "schema_version": V9553_SCHEMA_VERSION,
     }
