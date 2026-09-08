@@ -6809,38 +6809,6 @@ def _reaction_summary(candidate: Optional[Candidate]) -> str:
     return " | ".join(parts) if parts else "3M-РЕАКЦІЯ ПІДТВЕРДЖЕНА"
 
 
-def _failed_gate(audit: dict[str, Any]) -> tuple[str, str]:
-    """Best rejected hypothesis: which side, and the single gate that stopped it."""
-    rejected = [row for row in (audit.get("rejected_hypotheses") or []) if isinstance(row, dict)]
-    if not rejected:
-        return "", ""
-    top = rejected[0]
-    label = f"{side_word(top.get('side'))} {setup_label(top.get('setup_type'))}"
-    score = safe_int(top.get("final_score"), 0)
-    if score:
-        label += f" | score {score}"
-    return label, str(top.get("failed_gate") or top.get("reason") or "")
-
-
-def _anchor_watch_lines(audit: dict[str, Any]) -> list[str]:
-    watch = dict(audit.get("anchor_watch") or {})
-    count = safe_int(watch.get("count"), 0)
-    if count <= 0:
-        return ["<b>Anchor-и в пам'яті:</b> 0 — ринок не сформував жодної причини для входу"]
-    nearest = dict(watch.get("nearest") or {})
-    lines = []
-    if nearest:
-        lines.append(
-            "<b>Найсвіжіший anchor:</b> "
-            f"{_esc(_anchor_kind_label(nearest.get('kind')))} {_fmt_price(nearest.get('level'))} "
-            f"({_esc(side_word(nearest.get('side')))}, {safe_float(nearest.get('age_minutes')):.0f} хв тому, "
-            f"{safe_float(nearest.get('distance_atr')):.2f} ATR від ціни)"
-        )
-    if count > 1:
-        lines.append(f"<b>Anchor-и в пам'яті:</b> {count}")
-    return lines
-
-
 def _approaching_entry(audit: dict[str, Any]) -> dict[str, Any]:
     nearest = dict((audit.get("anchor_watch") or {}).get("nearest") or {})
     if not nearest:
@@ -6903,7 +6871,13 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
 
     if decision.action == Action.NO_SETUP.value:
         approaching = _approaching_entry(audit)
-        if approaching:
+        if str(decision.reason or "") == "ACTIVE_TRADE_OPEN":
+            # With the "чому ні" line gone this has to say so itself: an open position,
+            # not a missing level, is why there is no new entry.
+            lines = [
+                f"<b>Тримаємо позицію</b> ({_esc(side_word(decision.side))}) — нового входу немає.",
+            ]
+        elif approaching:
             lines = [
                 "🟡 <b>Вхід наближається: рівень сформовано.</b>",
                 f"{_esc(_anchor_kind_label(approaching.get('kind')))} на {_fmt_price(approaching.get('level'))} "
@@ -6921,20 +6895,11 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
                 lines.append("Немає рівня з підтвердженою 3m-реакцією — вхід не виконується.")
 
         lines.append(f"<b>Ціна зараз:</b> {_fmt_price(price)}")
-        lines.append(regime_line)
-        lines.extend(_anchor_watch_lines(audit))
 
         if decision.candidate:
             quality = safe_int(decision.candidate.entry_quality, safe_int(decision.candidate.final_score))
             if quality > 0:
                 lines.append(f"<b>Якість:</b> {quality}/100")
-        hypothesis, gate = _failed_gate(audit)
-        if hypothesis:
-            lines.append(f"<b>Найближча гіпотеза:</b> {_esc(hypothesis)}")
-        if gate:
-            lines.append(f"<b>Чому ні:</b> {_esc(gate[:200])}")
-        elif decision.reason:
-            lines.append(f"<b>Чому ні:</b> {_esc(decision.reason[:200])}")
 
         risk_line = _risk_budget_line(audit)
         if risk_line:
@@ -9218,7 +9183,14 @@ def _check_messages() -> list[str]:
         context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=False, distance_atr=distance)
         audit = {
             "anchor_watch": _anchor_watch([anchor], context),
-            "rejected_hypotheses": [],
+            # A SHORT hypothesis ranked above a LONG nearest anchor is the exact
+            # contradiction the operator reported: two different selections, one message.
+            "rejected_hypotheses": [{
+                "side": Side.SHORT.value,
+                "setup_type": SetupType.FRESH_BASE_CONTINUATION.value,
+                "final_score": 66,
+                "failed_gate": "GATE_PROXIMITY",
+            }],
             "daily_risk": daily_risk_budget({"trades": []}, {"active_trade": None}, 0.0),
             "price_source": context.get("price_source"),
             "execution_price_trusted": True,
@@ -9242,8 +9214,18 @@ def _check_messages() -> list[str]:
         for tag in ("<b>", "</b>", "<i>", "&lt;b&gt;"):
             if tag in plain:
                 problems.append(f"plain_telegram_text left {tag} in the message at {label}")
-        if not _anchor_watch_lines(audit):
-            problems.append(f"the message at {label} has no anchor-watch section")
+
+        # The operator asked for these out of the every-15-minutes message: too much
+        # text, and the hypothesis line contradicted the level the message was about.
+        for removed in ("Режим:", "Сесія:", "Найсвіжіший anchor", "Anchor-и в пам'яті",
+                        "Найближча гіпотеза", "Чому ні", "GATE_PROXIMITY"):
+            if removed in plain:
+                problems.append(f"the no-entry message at {label} still shows '{removed}'")
+        if side_word(Side.SHORT.value) in plain:
+            problems.append(
+                f"the no-entry message at {label} names the SHORT hypothesis while the "
+                "nearest level is LONG — the two selections must not both be shown"
+            )
 
         record = build_signal_record(context, decision, None, audit)
         # index.html reads these to render a signal row; without them the dashboard
