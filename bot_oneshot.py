@@ -3188,17 +3188,21 @@ def evaluate_reaction(context: dict[str, Any], anchor: Anchor) -> Reaction:
         return refuse("GATE_STOP", f"STOP_{stop_profile['distance_atr']:.2f}ATR_EXCEEDS_CAP")
 
     # GATE_RUNWAY — 0.25R of MFE must physically exist inside the no-followthrough window.
+    # Both floors are required: OR-ing them let a wide stop buy its way past MIN_RUNWAY_R,
+    # because the wider the stop gets, the easier the absolute-ATR floor is to clear.
     risk = max(stop_profile["distance"], ABS_MIN_STOP_DOLLARS, 1e-9)
     runway = nearest_runway_r(context, anchor.side, price, risk)
+    runway_ok = bool(runway.get("meets_min_r") and runway.get("meets_min_atr"))
     gates["GATE_RUNWAY"] = {
-        "pass": bool(runway.get("meets_min_r") or runway.get("meets_min_atr")),
+        "pass": runway_ok,
         "runway_r": runway.get("runway_r"),
         "nearest_kind": (runway.get("nearest") or {}).get("kind"),
         "nearest_distance_atr": (runway.get("nearest") or {}).get("distance_atr"),
         "min_runway_r": MIN_RUNWAY_R, "min_runway_atr": MIN_RUNWAY_ATR,
     }
-    if not (runway.get("meets_min_r") or runway.get("meets_min_atr")):
-        return refuse("GATE_RUNWAY", "NEAREST_TARGET_TOO_CLOSE_FOR_025R_MFE")
+    if not runway_ok:
+        short = "RUNWAY_BELOW_MIN_R" if not runway.get("meets_min_r") else "RUNWAY_BELOW_MIN_ATR"
+        return refuse("GATE_RUNWAY", short)
 
     reaction_ts = safe_int(rejection.get("ts"))
     latency = ((now_ms - reaction_ts) / 60000.0) if reaction_ts else 0.0
@@ -3255,6 +3259,7 @@ def sync_anchors(
     horizon_ms = now_ms - ANCHOR_MAX_AGE_MIN * 60 * 1000
 
     carried: list[Anchor] = []
+    spent: list[Anchor] = []
     retired: dict[str, int] = {"expired": 0, "invalidated": 0, "cooldown": 0, "stale": 0}
     for raw in stored or []:
         anchor = anchor_from_dict(raw)
@@ -3264,6 +3269,11 @@ def sync_anchors(
             retired["expired"] += 1
             continue
         if anchor.state in {AnchorState.TRIGGERED.value, AnchorState.INVALIDATED.value, AnchorState.REJECTED.value}:
+            # A spent level is dropped from memory, but its cooldown has to survive:
+            # the detectors re-print the same swing every run, and without this the
+            # level came back armed on the next cycle after stopping out.
+            if int(anchor.cooldown_until_ts) > now_ms:
+                spent.append(anchor)
             retired["stale"] += 1
             continue
         sign = side_sign(anchor.side)
@@ -3286,6 +3296,11 @@ def sync_anchors(
         duplicate.reason = anchor.reason
         duplicate.evidence = dict(anchor.evidence or {})
         duplicate.last_checked_ts = now_ms
+
+    for anchor in merged:
+        blocker = next((s for s in spent if _anchors_are_the_same(s, anchor, atr15)), None)
+        if blocker is not None and int(blocker.cooldown_until_ts) > int(anchor.cooldown_until_ts):
+            anchor.cooldown_until_ts = int(blocker.cooldown_until_ts)
 
     for anchor in merged:
         if int(anchor.cooldown_until_ts) > now_ms:
@@ -8423,6 +8438,15 @@ def validate_runtime_configuration() -> dict[str, Any]:
             "the supervision stop floor exceeds the early-entry stop cap, so no plan can ever be valid."
         )
 
+    # GATE_RUNWAY exists so the plan's own promise is not fiction: TP1 is placed at
+    # MIN_RR1 while the nearest real opposing level sits at runway_r. A runway floor
+    # below MIN_RR1 admits entries whose first real target is behind a wall.
+    if MIN_RUNWAY_R < MIN_RR1:
+        warnings.append(
+            f"MIN_RUNWAY_R {MIN_RUNWAY_R:.2f} < MIN_RR1 {MIN_RR1:.2f} — an entry can be admitted whose "
+            "TP1 lies beyond the nearest opposing level, so the plan's first real target is unreachable."
+        )
+
     if not MIN_SCORE_PROBE <= MIN_SCORE_ACCEPTANCE <= MIN_SCORE_CORE:
         problems.append(
             f"score floors not ordered: PROBE {MIN_SCORE_PROBE} <= ACCEPTANCE {MIN_SCORE_ACCEPTANCE} "
@@ -8673,7 +8697,7 @@ def _synthetic_market(side: str, *, reaction: bool, distance_atr: float = 0.10) 
     }
 
 
-def _synthetic_context(side: str, *, reaction: bool, distance_atr: float = 0.10) -> tuple[dict[str, Any], Anchor, dict[str, Any]]:
+def _synthetic_context(side: str, *, reaction: bool, distance_atr: float = 0.10, runway_atr: Optional[float] = None) -> tuple[dict[str, Any], Anchor, dict[str, Any]]:
     data = _synthetic_market(side, reaction=reaction, distance_atr=distance_atr)
     level = float(data.pop("_anchor_level"))
     context = build_context(data, {"regime_memory": {}}, {"trades": [], "signals": []})
@@ -8689,6 +8713,11 @@ def _synthetic_context(side: str, *, reaction: bool, distance_atr: float = 0.10)
     )
     if anchor is None:
         raise AssertionError("make_anchor refused a valid synthetic level")
+    # The walk leaves the previous day's high 1.06 ATR ahead of price, which is a
+    # real runway refusal. Checks about proximity, latency or plan shape should not
+    # inherit that verdict, so they can ask for open air instead.
+    if runway_atr is not None:
+        _force_nearest_target(context, side, runway_atr)
     return context, anchor, data
 
 
@@ -8729,7 +8758,7 @@ def _check_late_entry_is_impossible() -> list[str]:
     for side in (Side.LONG.value, Side.SHORT.value):
         for reaction in (True, False):
             for distance in (0.10, 0.34, 1.20, 3.75):
-                context, anchor, _ = _synthetic_context(side, reaction=reaction, distance_atr=distance)
+                context, anchor, _ = _synthetic_context(side, reaction=reaction, distance_atr=distance, runway_atr=3.20)
                 result = evaluate_reaction(context, anchor)
                 proximity = safe_float((result.gates.get("GATE_PROXIMITY") or {}).get("distance_atr"), 99.0)
                 if not result.ready:
@@ -8756,7 +8785,7 @@ def _check_late_entry_is_impossible() -> list[str]:
 
 def _check_entry_chain() -> list[str]:
     """anchor -> reaction -> candidate -> stage -> plan, all the way to a fill."""
-    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True)
+    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
     reaction = evaluate_reaction(context, anchor)
     if not reaction.ready:
         return [f"synthetic reaction not ready: {reaction.reason}"]
@@ -8811,8 +8840,10 @@ def _check_entry_chain() -> list[str]:
 
 def _check_supervision_unchanged() -> list[str]:
     """The supervision layer must still run, byte-ported, inside the new file."""
-    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True)
+    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
     reaction = evaluate_reaction(context, anchor)
+    if not reaction.ready:
+        return [f"synthetic reaction not ready: {reaction.reason}"]
     journal: dict[str, Any] = {"trades": [], "signals": [], "training_signals": [],
                                "signal_events": [], "preconfirmation_events": []}
     candidate = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
@@ -8888,8 +8919,10 @@ def _check_supervision_unchanged() -> list[str]:
 
 def _check_probe_no_followthrough() -> list[str]:
     """A PROBE whose preconfirmation FAILED keeps the fast exit; CONFIRMED does not."""
-    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True)
+    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
     reaction = evaluate_reaction(context, anchor)
+    if not reaction.ready:
+        return [f"synthetic reaction not ready: {reaction.reason}"]
     journal: dict[str, Any] = {"trades": [], "signals": [], "training_signals": [],
                                "signal_events": [], "preconfirmation_events": []}
     candidate = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
@@ -8942,8 +8975,10 @@ def _check_probe_no_followthrough() -> list[str]:
 
 def _check_preconfirmation_lifecycle() -> list[str]:
     """The resolver labels an event from price alone: CONFIRMED / FAILED / EXPIRED."""
-    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True)
+    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
     reaction = evaluate_reaction(context, anchor)
+    if not reaction.ready:
+        return [f"synthetic reaction not ready: {reaction.reason}"]
     journal: dict[str, Any] = {"trades": [], "signals": [], "training_signals": [],
                                "signal_events": [], "preconfirmation_events": []}
     candidate = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
@@ -9033,7 +9068,7 @@ def _check_persistence_roundtrip() -> list[str]:
         globals()["STATE_FILE"] = Path(workdir) / "last_signal_v6_4.json"
         globals()["JOURNAL_FILE"] = Path(workdir) / "signal_journal_v6_4.json"
 
-        context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True)
+        context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
         anchor.state = AnchorState.ARMED.value
         state = load_state()
         store_anchors(state, [anchor])
@@ -9290,6 +9325,136 @@ def _check_watch_reports_the_trend_side() -> list[str]:
     return problems
 
 
+def _force_nearest_target(context: dict[str, Any], side: str, distance_atr: float) -> None:
+    """Reduce the context to one opposing level, at a chosen distance in ATR.
+
+    technical_targets reads six sources. A runway check that leaves all of them in
+    place measures whichever level the fixture happened to generate, not the case
+    under test.
+    """
+    price = safe_float(context.get("price"))
+    atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    sign = side_sign(side)
+    level = round_price(price + sign * distance_atr * atr15)
+    context["structure15"] = {**dict(context.get("structure15") or {}), "swing_highs": [], "swing_lows": []}
+    context["liquidity"] = {**dict(context.get("liquidity") or {}), "equal_highs": [], "equal_lows": []}
+    context["zones"] = {**dict(context.get("zones") or {}), "order_blocks": [], "fvg": []}
+    session = {**dict(context.get("session") or {})}
+    for key in ("day_high", "week_high", "prev_day_high", "day_low", "week_low", "prev_day_low"):
+        session[key] = 0.0
+    session["day_high" if sign > 0 else "day_low"] = level
+    context["session"] = session
+
+
+def _check_runway_gate_needs_both_floors() -> list[str]:
+    """MIN_RUNWAY_R is a floor, not one of two alternative ways to pass.
+
+    On 2026-09-09 v10 opened two trades and both stopped out at -1.0R. Set against
+    the one trade that won, the discriminator was meets_min_r: the winner had 1.85R
+    of runway, the losers 1.325R and 0.747R. Both losers cleared GATE_RUNWAY through
+    meets_min_atr, which gets easier to satisfy the wider the stop is, so the escape
+    hatch was anti-correlated with trade quality. The 14:48 LONG risked 1.51 ATR to
+    reach a target 1.13 ATR away, and its realised MFE was 0.7678R — price travelled
+    exactly as far as the runway said it could, then reversed.
+    """
+    problems: list[str] = []
+    side = Side.LONG.value
+    context, anchor, _ = _synthetic_context(side, reaction=True, distance_atr=0.10, runway_atr=3.20)
+    price = safe_float(context.get("price"))
+    atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+
+    baseline = evaluate_reaction(context, anchor)
+    if not baseline.ready:
+        return [f"the runway fixture is not READY before the target is moved: {baseline.reason}"]
+    risk = safe_float((baseline.gates.get("GATE_STOP") or {}).get("distance"))
+    if risk <= 1e-9:
+        return ["the fixture produced no stop distance, so runway_r cannot be measured"]
+
+    # The shape both losers had: enough absolute ATR, not enough R.
+    _force_nearest_target(context, side, 1.30)
+    thin = nearest_runway_r(context, side, price, risk)
+    if thin.get("meets_min_r") or not thin.get("meets_min_atr"):
+        return [f"the fixture did not reproduce the losing shape (risk {risk / atr15:.2f} ATR): {thin}"]
+
+    refused = evaluate_reaction(context, anchor)
+    if refused.ready:
+        problems.append(
+            f"a trade with {thin.get('runway_r')}R of runway was READY — MIN_RUNWAY_R {MIN_RUNWAY_R} is "
+            "still being satisfied by the absolute-ATR floor instead of being enforced"
+        )
+    elif not refused.reason.startswith("GATE_RUNWAY"):
+        problems.append(f"the thin-runway trade was refused by {refused.reason}, expected GATE_RUNWAY")
+    elif "RUNWAY_BELOW_MIN_R" not in refused.reason:
+        problems.append(f"the refusal does not say which of the two floors failed: {refused.reason}")
+
+    # The winner's shape still has to get through, or the gate is simply closed.
+    _force_nearest_target(context, side, 3.20)
+    wide = nearest_runway_r(context, side, price, risk)
+    resumed = evaluate_reaction(context, anchor)
+    if not resumed.ready:
+        problems.append(f"{wide.get('runway_r')}R of runway was refused: {resumed.reason}")
+
+    # The ATR floor is checked directly: the reaction fixture cannot produce a stop
+    # tight enough for the absolute floor to be the binding one.
+    _force_nearest_target(context, side, 0.50)
+    atr_bound = nearest_runway_r(context, side, price, 0.50 * atr15 / 1.80)
+    if not atr_bound.get("meets_min_r") or atr_bound.get("meets_min_atr"):
+        problems.append(f"could not construct the case where only the ATR floor fails: {atr_bound}")
+    for label, runway, expected in (("wide", wide, True), ("thin", thin, False), ("atr_bound", atr_bound, False)):
+        verdict = bool(runway.get("meets_min_r") and runway.get("meets_min_atr"))
+        if verdict is not expected:
+            problems.append(f"the AND of the two floors gave {verdict} for the {label} case, expected {expected}")
+    return problems
+
+
+def _check_spent_level_stays_in_cooldown() -> list[str]:
+    """A level that just stopped out may not be re-armed on the next cycle.
+
+    The SHORT at 99.77 stopped out at 14:33 on 2026-09-09; at 14:48 the same level
+    was back in memory ARMED at 0.00 ATR from price. consume_anchor does set a
+    cooldown, but sync_anchors retired the spent anchor as stale before that
+    cooldown could reach the merged list, and the fresh+carried dedupe order meant
+    the re-detected copy always won with cooldown_until_ts=0 — the opposite of what
+    the comment on that branch promised.
+    """
+    problems: list[str] = []
+    side = Side.SHORT.value
+    context, anchor, _ = _synthetic_context(side, reaction=False, distance_atr=0.60)
+    spent = anchor_from_dict(anchor_to_dict(anchor))
+    fresh = anchor_from_dict(anchor_to_dict(anchor))
+    if spent is None or fresh is None:
+        return ["anchor_from_dict could not clone the synthetic anchor"]
+    spent.id = new_id("anc")
+    fresh.id = new_id("anc")
+    consume_anchor(spent, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
+
+    merged, audit = sync_anchors(context, [anchor_to_dict(spent)], [fresh])
+    if merged:
+        problems.append(
+            f"the level came back armed while its {ANCHOR_COOLDOWN_MIN}-minute cooldown was running — "
+            "the same range edge can be re-traded on the next 15-minute cycle after stopping out"
+        )
+    if safe_int((audit.get("retired") or {}).get("cooldown")) != 1:
+        problems.append(f"sync_anchors reported retired={audit.get('retired')}, expected the cooldown to be counted")
+
+    # Counterpart: once the cooldown has elapsed the level is tradeable again, so
+    # this is a delay and not a permanent ban on the level.
+    expired = anchor_from_dict(anchor_to_dict(spent))
+    if expired is None:
+        return problems + ["anchor_from_dict could not clone the spent anchor"]
+    expired.cooldown_until_ts = 1
+    # sync_anchors writes the cooldown onto the anchor it then filters out, so the
+    # object used above is no longer clean.
+    revived = anchor_from_dict(anchor_to_dict(anchor))
+    if revived is None:
+        return problems + ["anchor_from_dict could not clone the synthetic anchor a second time"]
+    revived.id = new_id("anc")
+    later, _ = sync_anchors(context, [anchor_to_dict(expired)], [revived])
+    if len(later) != 1:
+        problems.append(f"an elapsed cooldown left {len(later)} anchors armed, expected the level to return")
+    return problems
+
+
 def _check_messages() -> list[str]:
     """The no-entry message must exist and fit: it is what arrives every 15 minutes."""
     problems: list[str] = []
@@ -9463,6 +9628,8 @@ def _run_self_test() -> bool:
         ("життєвий цикл preconfirmation", _check_preconfirmation_lifecycle),
         ("персистенція та очистка легасі", _check_persistence_roundtrip),
         ("аналітика та авто-деградація", _check_analytics_and_degradation),
+        ("runway як підлога, а не альтернатива", _check_runway_gate_needs_both_floors),
+        ("cooldown після стоп-ауту", _check_spent_level_stays_in_cooldown),
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
     ]
