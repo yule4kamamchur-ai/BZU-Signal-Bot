@@ -6405,6 +6405,8 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "regime": payload.get("regime"),
         "session": payload.get("session"),
         "price": payload.get("price", payload.get("current_price")),
+        "atr15": payload.get("atr15"),
+        "refusals": payload.get("refusals"),
         "anchor_id": payload.get("anchor_id"),
         "anchor_kind": payload.get("anchor_kind"),
         "anchor_level": payload.get("anchor_level"),
@@ -7324,39 +7326,56 @@ def compute_learning_status(journal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def learning_health_warnings(learning_status: dict[str, Any], entry_audit: dict[str, Any]) -> list[str]:
-    """Two or three sentences the user should see, not a diagnostics dump."""
+def learning_health_warnings(learning_status: dict[str, Any]) -> list[str]:
+    """Only what changes behaviour: a suspension or a demotion.
+
+    The sample-size and entry-quality statistics used to be repeated here on every
+    run. They are permanent states, not events, and entry_quality_audit measures the
+    31 inherited legacy trades alongside v10's own entries — so quoting "56% of trades
+    never reached 0.25R MFE" described a bot that no longer exists. Those numbers stay
+    in the journal and on the dashboard, where they can be read with their sample size.
+    """
     status = dict(learning_status or {})
-    audit = dict(entry_audit or {})
     warnings: list[str] = []
 
     if status.get("execution_suspended"):
         warnings.append("Усі сетапи деградовано: виконання призупинено, журнали продовжують збирати вибірку.")
-    elif status.get("mode") == "ACCUMULATING":
-        warnings.append(
-            f"Історії замало для авто-деградації ({status.get('measured_trades')} угод) — "
-            f"рішення ухвалюються на структурі, не на статистиці."
-        )
     if status.get("demoted_setups"):
         warnings.append(f"Заблоковано за від'ємним expectancy: {', '.join(list(status['demoted_setups'])[:4])}.")
-
-    if audit.get("measured_trades"):
-        share = audit.get("share_mfe_below_025r")
-        if share is not None and share > 0.45:
-            warnings.append(
-                f"{share:.0%} угод не дійшли навіть до 0.25R MFE — вхід запізній або ринок без продовження."
-            )
-        latency = audit.get("median_reaction_latency_minutes")
-        if latency is not None and latency > LATENCY_EARLY_MINUTES:
-            warnings.append(f"Медіанна латентність реакції {latency:.0f} хв — вище цільових {LATENCY_EARLY_MINUTES:.0f} хв.")
-        if audit.get("entry_score_is_discriminative") is False and safe_int(audit.get("measured_trades")) >= SETUP_STATS_MIN_SAMPLE:
-            warnings.append("Оцінка якості входу не розрізнює результати — ваги потребують перегляду.")
-    return warnings[:3]
+    return warnings[:2]
 
 
 # ==========================================================
 # SIGNAL RECORD  (journal rows + dashboard payload)
 # ==========================================================
+
+def _refusal_summary(audit: dict[str, Any]) -> dict[str, Any]:
+    """Which gate stopped the run, counted across every armed anchor.
+
+    A refusal names exactly one gate, but nothing journaled it: a no-entry run left
+    only the reason string NO_ANCHOR_WITH_CONFIRMED_3M_REACTION, which says that no
+    level reacted without saying whether the cause was distance, freshness, the
+    rejection wick or the runway. Answering "the market rose all morning and the bot
+    did nothing, why?" meant re-deriving ATR15 from unrelated preconfirmation records.
+    """
+    rows = [row for row in (audit.get("rejected_hypotheses") or []) if isinstance(row, dict)]
+    if not rows:
+        return {}
+    gates: dict[str, int] = {}
+    for row in rows:
+        gate = str(row.get("failed_gate") or "UNKNOWN")
+        gates[gate] = gates.get(gate, 0) + 1
+    ordered = sorted(gates.items(), key=lambda item: (-item[1], item[0]))
+    nearest = dict((audit.get("anchor_watch") or {}).get("nearest") or {})
+    return {
+        "count": len(rows),
+        "gates": dict(ordered),
+        "dominant_gate": ordered[0][0],
+        "watched_level": nearest.get("level"),
+        "watched_side": str(nearest.get("side") or ""),
+        "watched_distance_atr": nearest.get("distance_atr"),
+    }
+
 
 def build_signal_record(
     context: dict[str, Any],
@@ -7428,6 +7447,7 @@ def build_signal_record(
         "score_components": dict(getattr(candidate, "score_components", {}) or {}) if candidate else {},
         "competing_hypotheses": list(getattr(candidate, "competing_hypotheses", []) or [])[:JOURNAL_HYPOTHESIS_TOP] if candidate else [],
         "hypothesis_rank": safe_int(getattr(candidate, "hypothesis_rank", 0)) if candidate else 0,
+        "refusals": _refusal_summary(audit),
         "executed": bool(plan and plan.valid and plan.execution_ready and decision.action in EXECUTABLE_ENTRY_ACTIONS),
         "preconfirmation_event_id": str(audit.get("preconfirmation_event_id") or ""),
         "bot_version": BOT_VERSION,
@@ -7929,16 +7949,26 @@ def _entry_action_for_stage(stage: str) -> str:
 
 
 def _anchor_watch(anchors: list[Anchor], context: dict[str, Any]) -> dict[str, Any]:
-    """What the no-entry message reports: how many reasons exist, and the nearest."""
+    """What the no-entry message reports: how many reasons exist, and the nearest.
+
+    "Nearest" is restricted to the side the structure actually favours, using the same
+    bias the detectors use. Picking by raw distance alone let a SHORT sweep-high 0.04
+    USD from price outrank eleven armed LONG levels during a morning that only went up,
+    so the message told the operator to wait for a short in an uptrend.
+    """
     price = safe_float(context.get("price"))
     atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
     now_ms = int(now_utc().timestamp() * 1000)
+    bias = _trend_side(context)
     armed = [a for a in anchors if a.state == AnchorState.ARMED.value]
     if not armed:
-        return {"count": 0, "nearest": {}}
-    nearest = min(armed, key=lambda a: abs(price - a.level))
+        return {"count": 0, "aligned_count": 0, "bias": bias, "nearest": {}}
+    aligned = [a for a in armed if a.side == bias]
+    nearest = min(aligned or armed, key=lambda a: abs(price - a.level))
     return {
         "count": len(armed),
+        "aligned_count": len(aligned),
+        "bias": bias,
         "nearest": {
             "id": nearest.id,
             "kind": nearest.kind,
@@ -7947,6 +7977,7 @@ def _anchor_watch(anchors: list[Anchor], context: dict[str, Any]) -> dict[str, A
             "setup_type": nearest.setup_type,
             "state": nearest.state,
             "score": safe_int(nearest.score),
+            "aligned_with_bias": bool(aligned),
             "age_minutes": round((now_ms - safe_int(nearest.created_ts)) / 60000.0, 1),
             "distance_atr": round(abs(price - nearest.level) / atr15, 4),
         },
@@ -8226,9 +8257,7 @@ def run_bot() -> int:
     journal["calendar_statistics"] = compute_calendar_statistics(journal)
     journal["learning_status"] = compute_learning_status(journal)
     learning_mode = str((journal["learning_status"] or {}).get("mode") or "")
-    context["learning_warnings"] = learning_health_warnings(
-        journal["learning_status"], journal["entry_quality_audit"],
-    )
+    context["learning_warnings"] = learning_health_warnings(journal["learning_status"])
 
     # --- 5. рішення про вхід (лише без відкритої позиції) -------------------
     audit: dict[str, Any] = {
@@ -8557,7 +8586,7 @@ def run_audit_journal(path: str) -> dict[str, Any]:
         "analytics_from_this_schema": stored_is_v10,
         "entry_quality_audit": entry_audit,
         "learning_status": learning,
-        "learning_warnings": learning_health_warnings(learning, entry_audit),
+        "learning_warnings": learning_health_warnings(learning),
         "degradation": {
             "executable_count": degradation["executable_count"],
             "demoted": degradation["demoted"],
@@ -9169,8 +9198,95 @@ def _check_analytics_and_degradation() -> list[str]:
     learning = compute_learning_status(journal)
     if not str(learning.get("mode") or ""):
         problems.append("learning_status has no mode")
-    if not isinstance(learning_health_warnings(learning, entry_audit), list):
+    problems.extend(_check_learning_warnings_are_quiet(learning))
+    return problems
+
+
+def _check_learning_warnings_are_quiet(learning: dict[str, Any]) -> list[str]:
+    """The message may only warn about a change in what the bot will trade.
+
+    These are the two lines that arrived on every run for days and that the user
+    asked to have removed. They are replayed here from the live production state so
+    that re-adding either one fails the build.
+    """
+    problems: list[str] = []
+    # The exact state production was in when the complaint arrived: 32 trades, no
+    # setup yet at the 12-trade sample, nothing demoted, nothing suspended.
+    chronic = {
+        "mode": "ACCUMULATING",
+        "measured_trades": safe_int(learning.get("measured_trades"), 32) or 32,
+        "execution_suspended": False,
+        "demoted_setups": [],
+    }
+    if not isinstance(learning_health_warnings(chronic), list):
         problems.append("learning_health_warnings did not return a list")
+    if learning_health_warnings(chronic):
+        problems.append(
+            "an ACCUMULATING learning_status with no demotions still produces a warning — "
+            "the permanent sample-size narration was supposed to be gone"
+        )
+    if learning_health_warnings({**chronic, "execution_suspended": True}) == []:
+        problems.append("suspending all execution no longer warns — that is a behaviour change worth telling")
+    if learning_health_warnings({**chronic, "demoted_setups": ["BREAKOUT_RETEST"]}) == []:
+        problems.append("demoting a setup no longer warns — that is a behaviour change worth telling")
+    return problems
+
+
+def _check_watch_reports_the_trend_side() -> list[str]:
+    """The level the bot says it is waiting on must be on the side it is waiting on.
+
+    On 2026-09-09 the market rose from 97.95 to 99.34 and all 42 runs reported SHORT,
+    because the nearest armed anchor by raw distance happened to be a sweep-high 0.04
+    USD away while eleven of the twelve levels in memory were LONG. The operator had
+    already reported the same contradiction once, as "we wait for a long but the
+    nearest hypothesis is a short".
+    """
+    problems: list[str] = []
+    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=False, distance_atr=0.60)
+    price = safe_float(context.get("price"))
+    atr15 = max(safe_float(context.get("atr15")), 1e-9)
+    # Set rather than read: the synthetic series is not trending enough for the
+    # structure detector to call it, and this check is about how _anchor_watch picks
+    # a side once a bias exists, not about how the bias is derived.
+    context["structure15"] = {**dict(context.get("structure15") or {}), "direction": Side.LONG.value}
+    bias = _trend_side(context)
+    if bias != Side.LONG.value:
+        return [f"setting structure15.direction did not produce a LONG bias, got '{bias}'"]
+
+    # A far closer level on the opposite side: the sweep-high that hijacked the message.
+    opposite = anchor_from_dict(anchor_to_dict(anchor))
+    if opposite is None:
+        return ["anchor_from_dict could not clone the synthetic anchor"]
+    opposite.id = new_id("anc")
+    opposite.side = Side.SHORT.value
+    opposite.kind = AnchorKind.SWEEP_HIGH.value
+    opposite.level = round_price(price + 0.02 * atr15)
+    opposite.invalidation = round_price(opposite.level + 0.30 * atr15)
+
+    watch = _anchor_watch([opposite, anchor], context)
+    nearest = dict(watch.get("nearest") or {})
+    if nearest.get("side") != Side.LONG.value:
+        problems.append(
+            f"a SHORT level {abs(price - safe_float(opposite.level)) / atr15:.2f} ATR away outranked the LONG bias — "
+            f"the message would tell the operator to wait for {side_word(Side.SHORT.value)} in an uptrend"
+        )
+    if safe_int(watch.get("count")) != 2 or safe_int(watch.get("aligned_count")) != 1:
+        problems.append(
+            f"anchor_watch counted {watch.get('count')} armed and {watch.get('aligned_count')} aligned, expected 2 and 1"
+        )
+    if str(watch.get("bias") or "") != Side.LONG.value:
+        problems.append("anchor_watch does not report the bias it selected by, so the choice is not explainable")
+
+    # With no structural bias there is nothing to align to, and raw distance is the
+    # only honest ordering left.
+    flat = dict(context)
+    flat["structure15"] = {"direction": Side.NEUTRAL.value}
+    flat["regime_bias"] = Side.NEUTRAL.value
+    fallback = dict((_anchor_watch([opposite, anchor], flat).get("nearest") or {}))
+    if fallback.get("side") != Side.SHORT.value:
+        problems.append(
+            f"with a neutral structure the nearest level should win regardless of side, got {fallback.get('side')}"
+        )
     return problems
 
 
@@ -9181,6 +9297,13 @@ def _check_messages() -> list[str]:
     # reaction zone says an entry is forming instead. Both must be sendable.
     for distance, expected in ((1.20, "немає"), (0.10, "наближається")):
         context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=False, distance_atr=distance)
+        # The production state that produced the two complained-about lines, pushed
+        # through the real function rather than pasted into the context: p12 prints
+        # whatever it finds there, so injecting strings would test nothing.
+        context["learning_warnings"] = learning_health_warnings({
+            "mode": "ACCUMULATING", "measured_trades": 32,
+            "execution_suspended": False, "demoted_setups": [],
+        })
         audit = {
             "anchor_watch": _anchor_watch([anchor], context),
             # A SHORT hypothesis ranked above a LONG nearest anchor is the exact
@@ -9218,7 +9341,8 @@ def _check_messages() -> list[str]:
         # The operator asked for these out of the every-15-minutes message: too much
         # text, and the hypothesis line contradicted the level the message was about.
         for removed in ("Режим:", "Сесія:", "Найсвіжіший anchor", "Anchor-и в пам'яті",
-                        "Найближча гіпотеза", "Чому ні", "GATE_PROXIMITY"):
+                        "Найближча гіпотеза", "Чому ні", "GATE_PROXIMITY",
+                        "Історії замало", "не дійшли навіть до 0.25R", "⚠️"):
             if removed in plain:
                 problems.append(f"the no-entry message at {label} still shows '{removed}'")
         if side_word(Side.SHORT.value) in plain:
@@ -9236,6 +9360,46 @@ def _check_messages() -> list[str]:
                 problems.append(f"signal record is missing {key}")
         if record.get("executed"):
             problems.append("a NO_SETUP signal record claims it executed")
+
+        # Without this the journal says only NO_ANCHOR_WITH_CONFIRMED_3M_REACTION, which
+        # is why answering "the market rose and nothing opened, why?" took re-deriving
+        # ATR15 out of unrelated preconfirmation records.
+        refusals = dict(record.get("refusals") or {})
+        if refusals.get("dominant_gate") != "GATE_PROXIMITY":
+            problems.append(
+                f"the record reports the stopping gate as '{refusals.get('dominant_gate')}', expected GATE_PROXIMITY"
+            )
+        if safe_int(refusals.get("count")) != 1:
+            problems.append(f"the record counted {refusals.get('count')} refusals, expected 1")
+        if refusals.get("watched_side") != Side.LONG.value:
+            problems.append(
+                f"the journaled row watched the {refusals.get('watched_side')} level, not the bias-aligned LONG one"
+            )
+        compact = compact_signal_for_journal(record)
+        for key in ("refusals", "atr15"):
+            if key not in compact:
+                problems.append(f"compact_signal_for_journal dropped {key}, so the journal cannot answer why")
+
+    # The counterpart: the channel is narrowed, not dead. If every setup were ever
+    # demoted the bot would stop trading silently, and that must still be told.
+    context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=False, distance_atr=1.20)
+    context["learning_warnings"] = learning_health_warnings({
+        "mode": "SUSPENDED", "measured_trades": 400,
+        "execution_suspended": True, "demoted_setups": [],
+    })
+    suspended = Decision(
+        id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+        side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value, quality=0,
+        reason="NO_ANCHOR_WITH_CONFIRMED_3M_REACTION", regime=str(context.get("regime") or ""),
+        audit={
+            "anchor_watch": _anchor_watch([anchor], context),
+            "rejected_hypotheses": [],
+            "daily_risk": daily_risk_budget({"trades": []}, {"active_trade": None}, 0.0),
+        },
+        current_price=safe_float(context.get("price")),
+    )
+    if "⚠️" not in plain_telegram_text(build_decision_message(context, suspended)):
+        problems.append("a suspended execution no longer reaches the message — the warning channel is dead, not narrowed")
 
     if TELEGRAM_MAX_LENGTH > 4096:
         problems.append(f"TELEGRAM_MAX_LENGTH {TELEGRAM_MAX_LENGTH} exceeds the Telegram API limit of 4096")
@@ -9299,6 +9463,7 @@ def _run_self_test() -> bool:
         ("життєвий цикл preconfirmation", _check_preconfirmation_lifecycle),
         ("персистенція та очистка легасі", _check_persistence_roundtrip),
         ("аналітика та авто-деградація", _check_analytics_and_degradation),
+        ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
     ]
     failed: list[str] = []
