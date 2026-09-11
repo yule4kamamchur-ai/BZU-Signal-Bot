@@ -106,7 +106,10 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # IDENTITY
 # ==========================================================
 
-BOT_VERSION = "pro-organic-v10.0.0-anchor-reaction-market-entry"
+# Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
+# compatibility check), so this label can follow the entry model while the one below
+# must not move or the live anchor and regime memory is discarded on the first run.
+BOT_VERSION = "pro-organic-v10.0.0-anchor-reaction-limit-entry"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -153,6 +156,11 @@ MAX_JOURNAL_FEATURE_KEYS = max(4, min(64, int(os.getenv("MAX_JOURNAL_FEATURE_KEY
 # Anchors live across runs: the 15-minute cron must still catch a reaction that
 # happened between two invocations.
 STATE_ANCHOR_KEY = "anchors_v10"
+# A resting limit order lives here, never in state["active_trade"]:
+# active_trade_from_state does not look at status, so anything stored there is
+# revived as an OPEN position and the unchanged supervision layer would manage an
+# order that was never filled as if it were a live trade.
+STATE_PENDING_KEY = "pending_limit_v10"
 
 # The journal keeps outcome history and nothing else. Every version-specific
 # audit blob the old bot accumulated is dropped on save; atomic_json_write still
@@ -160,7 +168,7 @@ STATE_ANCHOR_KEY = "anchors_v10"
 JOURNAL_CORE_KEYS = frozenset({
     "version", "architecture_version", "journal_version", "updated_at",
     "trades", "signals", "training_signals", "signal_events",
-    "preconfirmation_events",
+    "preconfirmation_events", "limit_orders",
     "analytics", "setup_statistics", "entry_quality_audit",
     "calendar_statistics", "learning_status", "degradation", "migration",
 })
@@ -386,6 +394,15 @@ ANCHOR_MEMORY_LIMIT = max(1, min(40, int(os.getenv("ANCHOR_MEMORY_LIMIT", "12") 
 # Після спрацювання або відбою не перевхідимо рівень ще N хвилин.
 ANCHOR_COOLDOWN_MIN = max(0, int(os.getenv("ANCHOR_COOLDOWN_MIN", "90") or 90))
 
+# Вхід — лімітним ордером на рівні, а не ринком по факту реакції.
+# 1.0 = ордер рівно на anchor.level (без наздоганяння), 0.5 = посередині між ціною і
+# рівнем, 0.0 = ринковий вхід. Політика входу змінюється числом, а не правкою коду.
+LIMIT_ENTRY_RETRACE_PCT = min(1.0, max(0.0, float(os.getenv("LIMIT_ENTRY_RETRACE_PCT", "1.0") or 1.0)))
+# Ордер живе стільки, скільки anchor: expires_ts керований ANCHOR_MAX_AGE_MIN.
+PENDING_LIMIT_TERMINAL_STATUSES = frozenset({"FILLED", "EXPIRED", "CANCELLED"})
+LIMIT_ORDER_JOURNAL_LIMIT = max(50, int(os.getenv("LIMIT_ORDER_JOURNAL_LIMIT", "300") or 300))
+LIMIT_ORDER_SCHEMA_VERSION = "organic_limit_order_v10.0.0"
+
 
 # ==========================================================
 # SETUP AUTO-DEGRADATION  ("Фокус + авто-деградація")
@@ -406,7 +423,11 @@ SETUP_DEGRADATION_SCHEMA_VERSION = "setup_auto_degradation_v10.0.0"
 
 MIN_SCORE_PROBE = max(1, min(100, int(os.getenv("MIN_SCORE_PROBE", "58") or 58)))
 MIN_SCORE_CORE = max(MIN_SCORE_PROBE, min(100, int(os.getenv("MIN_SCORE_CORE", "72") or 72)))
-MIN_HTF_ALIGNMENT_SCORE = max(0, min(100, int(os.getenv("MIN_HTF_ALIGNMENT_SCORE", "45") or 45)))
+# htf_alignment_for_side scores a discrete ladder: 100 both timeframes agree,
+# 70 one agrees, 50 both NEUTRAL, 45 HTF unknown, 25 one contradicts, 0 against.
+# The floor must sit above 50, or "no higher timeframe has an opinion" counts as
+# an edge and the bot trades both directions of a range it cannot read.
+MIN_HTF_ALIGNMENT_SCORE = max(0, min(100, int(os.getenv("MIN_HTF_ALIGNMENT_SCORE", "60") or 60)))
 MAX_SPREAD_ATR = max(0.05, float(os.getenv("MAX_SPREAD_ATR", "0.25") or 0.25))
 CORE_MIN_RISK_PCT_EFFECTIVE = max(0.01, float(os.getenv("CORE_MIN_RISK_PCT_EFFECTIVE", "0.10") or 0.10))
 MIN_SCORE_ACCEPTANCE = max(MIN_SCORE_PROBE, min(MIN_SCORE_CORE, int(os.getenv("MIN_SCORE_ACCEPTANCE", "65") or 65)))
@@ -3058,12 +3079,23 @@ def _rejection_evidence(bars: list[Candle], anchor: Anchor) -> dict[str, Any]:
     return best
 
 
-def _displacement_evidence(bars: list[Candle], anchor: Anchor, atr3: float) -> dict[str, Any]:
-    """Is the newest bar actually moving away from the level, not hovering on it?"""
+def _displacement_evidence(bars: list[Candle], anchor: Anchor, atr3: float, after_ts: int = 0) -> dict[str, Any]:
+    """Is the market actually moving away from the level, not hovering on it?
+
+    The window used to be the last two 3m bars — six minutes — while the bot only
+    runs every fifteen, which is five bars. An impulse that fired seven minutes
+    before a run was therefore invisible, even though GATE_TOUCH and
+    GATE_REJECTION both look back thirty minutes. Ordering replaces recency as the
+    freshness bound: the displacement has to come at or after the rejection that
+    justified it, and both stay inside TRIGGER_LOOKBACK_3M.
+    """
     sign = side_sign(anchor.side)
     if not bars or atr3 <= 0:
-        return {"displaced": False, "reason": "NO_BARS", "body_atr3": 0.0}
-    tail = bars[-2:]
+        return {"displaced": False, "reason": "NO_BARS", "body_atr3": 0.0, "bars_checked": 0}
+    tail = [c for c in bars if int(c.ts) >= after_ts] if after_ts else list(bars)
+    if not tail:
+        tail = list(bars)
+    newest_ts = int(bars[-1].ts)
     for c in reversed(tail):
         directional = (_is_bull(c) and sign > 0) or (not _is_bull(c) and sign < 0)
         body_atr3 = _body(c) / atr3
@@ -3071,6 +3103,7 @@ def _displacement_evidence(bars: list[Candle], anchor: Anchor, atr3: float) -> d
             return {
                 "displaced": True, "reason": "", "body_atr3": round(body_atr3, 3),
                 "ts": int(c.ts), "close": round(c.close, 6), "bars_checked": len(tail),
+                "age_minutes": round((newest_ts - int(c.ts)) / 60000.0, 1),
             }
     last = tail[-1]
     body_atr3 = _body(last) / atr3
@@ -3113,7 +3146,16 @@ def evaluate_reaction(context: dict[str, Any], anchor: Anchor) -> Reaction:
     gates: dict[str, Any] = {"schema_version": REACTION_SCHEMA_VERSION}
 
     def refuse(gate: str, reason: str) -> Reaction:
-        gates[gate] = {"pass": False, "reason": reason}
+        # Merge, never replace: every gate below writes its measurements before it
+        # knows the verdict. Overwriting here is what made a refused GATE_RUNWAY
+        # journal nothing but a reason string, so the runway_r distribution of
+        # refused anchors was unrecoverable and MIN_RUNWAY_R could not be re-tuned
+        # on evidence. Audit only — pass and reason stay authoritative.
+        prior = gates.get(gate)
+        audit = dict(prior) if isinstance(prior, dict) else {}
+        audit["pass"] = False
+        audit["reason"] = reason
+        gates[gate] = audit
         return Reaction(anchor_id=anchor.id, ready=False, entry_price=price, reason=f"{gate}: {reason}", gates=gates)
 
     if price <= 0:
@@ -3168,7 +3210,7 @@ def evaluate_reaction(context: dict[str, Any], anchor: Anchor) -> Reaction:
         return refuse("GATE_REJECTION", str(rejection.get("reason") or "REJECTION_TOO_WEAK"))
 
     # GATE_DISPLACEMENT — refusal must have turned into movement.
-    displacement = _displacement_evidence(bars, anchor, atr3)
+    displacement = _displacement_evidence(bars, anchor, atr3, safe_int(rejection.get("ts")))
     displacement["pass"] = bool(displacement.get("displaced"))
     gates["GATE_DISPLACEMENT"] = displacement
     if not displacement.get("displaced"):
@@ -3198,6 +3240,9 @@ def evaluate_reaction(context: dict[str, Any], anchor: Anchor) -> Reaction:
         "runway_r": runway.get("runway_r"),
         "nearest_kind": (runway.get("nearest") or {}).get("kind"),
         "nearest_distance_atr": (runway.get("nearest") or {}).get("distance_atr"),
+        "meets_min_r": bool(runway.get("meets_min_r")),
+        "meets_min_atr": bool(runway.get("meets_min_atr")),
+        "available": bool(runway.get("available")),
         "min_runway_r": MIN_RUNWAY_R, "min_runway_atr": MIN_RUNWAY_ATR,
     }
     if not runway_ok:
@@ -6560,10 +6605,12 @@ def _retain_signal_events(events: list[Any], protected_signal_ids: set[str], cap
 def load_state() -> dict[str, Any]:
     """Read last_signal_v6_4.json.
 
-    Only three things survive a version change on purpose: the open trade (the
-    unchanged supervision layer owns it), the anchor memory (an early entry must
-    not be lost because the reaction happened between two cron runs), and the
-    regime memory. Everything else is recomputed from the market every run.
+    Four things survive a version change on purpose: the open trade (the unchanged
+    supervision layer owns it), a resting limit order (it is still working between
+    two cron runs, and forgetting it means either an unmanaged fill or a second
+    order on the same level), the anchor memory (an early entry must not be lost
+    because the reaction happened between two runs), and the regime memory.
+    Everything else is recomputed from the market every run.
     """
     raw = load_json(STATE_FILE, {})
     source_arch = str(raw.get("architecture_version") or "")
@@ -6575,11 +6622,13 @@ def load_state() -> dict[str, Any]:
         if anchor is not None
     ][-ANCHOR_MEMORY_LIMIT:]
     regime_memory = raw.get("regime_memory") if compatible else {}
+    pending_raw = raw.get(STATE_PENDING_KEY) if compatible else None
     return {
         "version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
         "active_trade": raw.get("active_trade"),
         STATE_ANCHOR_KEY: anchors,
+        STATE_PENDING_KEY: pending_raw if isinstance(pending_raw, dict) else None,
         "regime_memory": regime_memory if isinstance(regime_memory, dict) else {},
         "latest_signal": raw.get("latest_signal"),
         "last_message_key": raw.get("last_message_key", "") if compatible else "",
@@ -6633,6 +6682,66 @@ def store_active_trade(state: dict[str, Any], trade: Optional[ActiveTrade]) -> N
     state["active_trade"] = asdict(trade) if trade else None
 
 
+def pending_limit_from_state(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The one limit order that may be resting, or None.
+
+    Terminal records are refused here rather than trusted: a FILLED or EXPIRED row
+    left in the slot by an interrupted run would make the "one limit at a time"
+    guard refuse every future entry, silently and permanently.
+    """
+    raw = (state or {}).get(STATE_PENDING_KEY)
+    if not isinstance(raw, dict):
+        return None
+    if str(raw.get("status") or "PENDING").upper() in PENDING_LIMIT_TERMINAL_STATUSES:
+        return None
+    return raw
+
+
+def store_pending_limit(state: dict[str, Any], order: Optional[dict[str, Any]]) -> None:
+    state[STATE_PENDING_KEY] = dict(order) if isinstance(order, dict) else None
+
+
+def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
+    return asdict(candidate)
+
+
+def candidate_from_dict(raw: Any) -> Optional[Candidate]:
+    """Rebuild the candidate that justified a resting order.
+
+    It travels inside the order record because build_candidate cannot reproduce it
+    at fill time: a limit can fill up to ANCHOR_MAX_AGE_MIN after the reaction, by
+    which point the 3m window has moved on and the anchor itself may be expired.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        fields = Candidate.__dataclass_fields__
+        return Candidate(**{k: raw.get(k) for k in fields if k in raw})
+    except Exception:
+        return None
+
+
+def plan_to_dict(plan: TradePlan) -> dict[str, Any]:
+    return asdict(plan)
+
+
+def plan_from_dict(raw: Any) -> Optional[TradePlan]:
+    """The plan frozen at placement, not one re-derived when the order fills.
+
+    Rebuilding it at fill time would recompute the stop and the targets from an
+    ATR and a structure that have since moved, which is planning with hindsight:
+    the order the operator placed and the trade supervision manages must carry
+    the same numbers.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        fields = TradePlan.__dataclass_fields__
+        return TradePlan(**{k: raw.get(k) for k in fields if k in raw})
+    except Exception:
+        return None
+
+
 def store_anchors(state: dict[str, Any], anchors: list[Anchor]) -> None:
     state[STATE_ANCHOR_KEY] = [anchor_to_dict(anchor) for anchor in anchors or []][-ANCHOR_MEMORY_LIMIT:]
 
@@ -6650,7 +6759,7 @@ def load_journal() -> dict[str, Any]:
     journal = load_json(JOURNAL_FILE, {})
     previous_version = safe_int(journal.get("journal_version"), 1)
     for key in ("signals", "training_signals", "signal_events", "trades",
-                "preconfirmation_events"):
+                "preconfirmation_events", "limit_orders"):
         journal.setdefault(key, [])
     for key in ("setup_statistics", "entry_quality_audit", "calendar_statistics",
                 "learning_status", "degradation"):
@@ -6715,6 +6824,9 @@ def save_journal(journal: dict[str, Any]) -> None:
         if isinstance(item, dict)
         for compact in [compact_preconfirmation_event(item)] if compact
     ][-PRECONFIRM_EMBEDDED_JOURNAL_LIMIT:]
+    journal["limit_orders"] = [
+        item for item in list(journal.get("limit_orders") or []) if isinstance(item, dict)
+    ][-LIMIT_ORDER_JOURNAL_LIMIT:]
 
     pruned = {key: value for key, value in journal.items() if key in JOURNAL_CORE_KEYS}
     pruned.setdefault("migration", {}).update({
@@ -6881,6 +6993,21 @@ def _plan_lines(plan: TradePlan) -> list[str]:
     return lines
 
 
+def _pending_limit_lines(order: dict[str, Any], price: float) -> list[str]:
+    """The order the operator is waiting on: level, side, distance, time left."""
+    if not isinstance(order, dict) or not order:
+        return []
+    now_ms = int(now_utc().timestamp() * 1000)
+    standing_min = max(0.0, (now_ms - safe_int(order.get("placed_ts"))) / 60000.0)
+    left_min = max(0.0, (safe_int(order.get("expires_ts")) - now_ms) / 60000.0)
+    limit = safe_float(order.get("limit_price"))
+    return [
+        f"Рівень <b>{_fmt_price(limit)}</b> ({_esc(side_word(str(order.get('side') or '')))}) — "
+        f"ціна за {_fmt_price(abs(price - limit))} від нього.",
+        f"Стоїть {standing_min:.0f} хв, дійсний ще {left_min:.0f} хв.",
+    ]
+
+
 def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
     audit = dict(decision.audit or {})
     price = safe_float(decision.current_price, safe_float(context.get("price"), 0.0))
@@ -6893,6 +7020,14 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
             # not a missing level, is why there is no new entry.
             lines = [
                 f"<b>Тримаємо позицію</b> ({_esc(side_word(decision.side))}) — нового входу немає.",
+            ]
+        elif str(decision.reason or "") == "PENDING_LIMIT_OPEN":
+            # Not "nothing happened": an order is working and this is the waiting step
+            # of the lifecycle. It repeats every fifteen minutes on purpose — there is
+            # no message de-duplication in this bot and the operator asked to see it.
+            lines = [
+                "🟡 <b>Очікуємо входу в лімітний ордер.</b>",
+                *_pending_limit_lines(dict(context.get("pending_limit") or {}), price),
             ]
         elif approaching:
             lines = [
@@ -6926,9 +7061,15 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
         return "\n".join(lines)[:TELEGRAM_MAX_LENGTH]
 
     candidate = decision.candidate
+    resting = dict(context.get("pending_limit") or {})
+    if str(decision.reason or "") == "LIMIT_FILLED_AT_LEVEL":
+        title = "✅ <b>Лімітний ордер виконано — угоду відкрито</b>"
+    elif resting:
+        title = "🟡 <b>Лімітний ордер виставлено — очікуємо входу</b>"
+    else:
+        title = f"<b>{ACTION_LABELS.get(decision.action, decision.action)}</b>"
     lines = [
-        f"<b>{ACTION_LABELS.get(decision.action, decision.action)}</b> | "
-        f"{side_word(decision.side)} | {setup_label(decision.setup_type)}",
+        f"{title} | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Ціна зараз:</b> {_fmt_price(price)}",
     ]
     if candidate:
@@ -6948,6 +7089,15 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
     plan = decision.plan
     if plan and plan.valid and decision.action in EXECUTABLE_ENTRY_ACTIONS:
         lines.extend(_plan_lines(plan))
+        if resting:
+            left_min = max(
+                0.0,
+                (safe_int(resting.get("expires_ts")) - int(now_utc().timestamp() * 1000)) / 60000.0,
+            )
+            lines.append(
+                f"<b>Дійсний ще:</b> {left_min:.0f} хв — якщо ціна не повернеться на рівень, "
+                "ордер знімається і угоди немає."
+            )
 
     if candidate:
         confirmations = [str(x).strip() for x in (candidate.confirmations or []) if str(x).strip()]
@@ -7382,7 +7532,7 @@ def _refusal_summary(audit: dict[str, Any]) -> dict[str, Any]:
         gates[gate] = gates.get(gate, 0) + 1
     ordered = sorted(gates.items(), key=lambda item: (-item[1], item[0]))
     nearest = dict((audit.get("anchor_watch") or {}).get("nearest") or {})
-    return {
+    summary = {
         "count": len(rows),
         "gates": dict(ordered),
         "dominant_gate": ordered[0][0],
@@ -7390,6 +7540,21 @@ def _refusal_summary(audit: dict[str, Any]) -> dict[str, Any]:
         "watched_side": str(nearest.get("side") or ""),
         "watched_distance_atr": nearest.get("distance_atr"),
     }
+    runway_rows = [row for row in rows if str(row.get("failed_gate") or "") == "GATE_RUNWAY"]
+    if runway_rows:
+        # Paired on purpose: GATE_RUNWAY requires both floors, so two independently
+        # sorted lists could not answer which pair a different threshold would admit.
+        summary["runway"] = {
+            "refused": len(runway_rows),
+            "below_min_r": sum(1 for row in runway_rows if row.get("meets_min_r") is False),
+            "below_min_atr": sum(1 for row in runway_rows if row.get("meets_min_atr") is False),
+            "no_target_found": sum(1 for row in runway_rows if row.get("runway_available") is False),
+            "measured": sorted(
+                [round(safe_float(row.get("runway_r")), 3), round(safe_float(row.get("runway_distance_atr")), 3)]
+                for row in runway_rows
+            ),
+        }
+    return summary
 
 
 def build_signal_record(
@@ -7819,6 +7984,309 @@ def link_preconfirmation_event_to_trade(
 
 
 # ==========================================================
+# LIMIT ORDER LIFECYCLE
+# ==========================================================
+# The eleven gates decide WHETHER a level reacted. They never decided the entry
+# PRICE, and that is where the late entry lived: GATE_DISPLACEMENT requires the
+# refusal to have turned into movement, so a market order buys the level after it
+# has already paid. Measured on the journal, the stop from that entry carried
+# 10-20% more risk than the stop from the level itself.
+#
+# So the reaction now rests a limit on the level and the trade exists only if the
+# level is revisited. The plan is frozen at placement: the operator's order and
+# the supervised trade carry the same stop and the same targets.
+#
+# This mirrors the preconfirmation lifecycle on purpose — confirmed 3m candles
+# only, an explicit anti-hindsight boundary, PENDING -> terminal statuses.
+
+
+def _iso_from_ms(ms: int) -> str:
+    """Epoch ms in exactly iso_now()'s format.
+
+    The format is load-bearing: _opened_at_ms (p10:348) parses ActiveTrade.opened_at
+    with datetime.fromisoformat and returns 0 on any failure, which would silently
+    remove the lower bound of supervision's candle scan.
+    """
+    return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).isoformat()
+
+
+def _limit_entry_price(anchor: Anchor, price: float) -> dict[str, Any]:
+    """Where the order rests, and whether it is behind the market at all."""
+    level = safe_float(getattr(anchor, "level", 0.0))
+    limit = level + (1.0 - LIMIT_ENTRY_RETRACE_PCT) * (price - level)
+    sign = side_sign(str(getattr(anchor, "side", "") or ""))
+    return {
+        "level": round_price(level),
+        "limit_price": round_price(limit),
+        # A limit earns its price only by waiting: below the market for a LONG,
+        # above it for a SHORT. GATE_PROXIMITY admits +-0.35 ATR on either side, so
+        # price can already be past the level — an order there fills instantly and
+        # is a market entry wearing a limit's name.
+        "behind_price": bool(sign * (price - limit) > 0),
+    }
+
+
+def _limit_window(context: dict[str, Any], order: dict[str, Any]) -> list[Candle]:
+    """Confirmed 3m candles the order could have been filled in, in order.
+
+    Lower bound is placed_ts, not "everything we have": a bar that opened before
+    the order existed could have touched the level before we ever saw it, and
+    claiming that fill would be hindsight. Upper bound is the preconfirmation
+    as-of — the newest confirmed bar — capped by the order's own expiry.
+    """
+    start = safe_int(order.get("placed_ts"))
+    expires = safe_int(order.get("expires_ts"))
+    end = min(expires, _preconfirm_as_of_ts(context)) if expires > 0 else _preconfirm_as_of_ts(context)
+    candles = [
+        c for c in ((context.get("candles") or {}).get("3m", []) or [])
+        if getattr(c, "confirmed", True) and start <= int(getattr(c, "ts", 0) or 0) <= end
+    ]
+    return sorted(candles, key=lambda c: int(getattr(c, "ts", 0) or 0))
+
+
+def _first_touch(candles: list[Candle], side: str, stop: float, targets: tuple[tuple[str, float], ...]) -> dict[str, Any]:
+    for candle in candles:
+        stop_hit = _candle_touches_level(side, candle, stop, is_stop=True)
+        target_hit = next(
+            (pair for pair in targets if pair[1] > 0 and _candle_touches_level(side, candle, pair[1], is_stop=False)),
+            None,
+        )
+        if not stop_hit and target_hit is None:
+            continue
+        if stop_hit and target_hit is not None:
+            # One bar touched both sides of the plan. OHLC cannot say which came
+            # first, so this is reported as unknown instead of guessed as a loss.
+            return {"resolution": "AMBIGUOUS", "resolved_ts": int(candle.ts), "resolved_price": round_price(stop)}
+        if stop_hit:
+            return {"resolution": "STOP_FIRST", "resolved_ts": int(candle.ts), "resolved_price": round_price(stop)}
+        return {
+            "resolution": str(target_hit[0]),
+            "resolved_ts": int(candle.ts),
+            "resolved_price": round_price(target_hit[1]),
+        }
+    return {"resolution": "UNRESOLVED", "resolved_ts": 0, "resolved_price": 0.0}
+
+
+def _shadow_geometry(plan: TradePlan) -> dict[str, Any]:
+    """Both models are measured with the same ruler, so both start from geometry."""
+    entry = round_price(plan.entry)
+    stop = round_price(plan.stop)
+    return {
+        "entry": entry, "stop": stop,
+        "tp0": round_price(plan.tp0), "tp1": round_price(plan.tp1),
+        "risk": round(max(abs(entry - stop), 1e-9), 6),
+        "resolution": "UNRESOLVED", "resolved_ts": 0, "resolved_price": 0.0,
+        "result_r": 0.0, "bars_observed": 0,
+    }
+
+
+def _shadow_resolve(shadow: dict[str, Any], side: str, candles: list[Candle]) -> dict[str, Any]:
+    """One geometric first-touch pass — deliberately NOT a supervision replay.
+
+    Running manage_active_trade a second time on a shadow trade would cross-talk
+    through context["fresh_opposite_execution"] and the linked preconfirmation
+    events, and supervision owns one active trade. So the shadow answers a narrow,
+    comparable question instead: within the same window and the same information,
+    which model reached its first milestone first. It knows nothing about partials,
+    trailing or the PROBE no-followthrough exit; the real limit trade is supervised
+    properly and its row in journal["trades"] stays authoritative.
+    """
+    out = dict(shadow) if isinstance(shadow, dict) else {}
+    entry = safe_float(out.get("entry"))
+    risk = max(safe_float(out.get("risk")), 1e-9)
+    touch = _first_touch(
+        candles, side, safe_float(out.get("stop")),
+        (("TP0_FIRST", safe_float(out.get("tp0"))), ("TP1_FIRST", safe_float(out.get("tp1")))),
+    )
+    out.update(touch)
+    out["bars_observed"] = len(candles)
+    if touch["resolution"] == "STOP_FIRST":
+        out["result_r"] = -1.0
+    elif touch["resolution"] == "TP0_FIRST":
+        out["result_r"] = round(abs(safe_float(out.get("tp0")) - entry) / risk, 3)
+    elif touch["resolution"] == "TP1_FIRST":
+        out["result_r"] = round(abs(safe_float(out.get("tp1")) - entry) / risk, 3)
+    return out
+
+
+def _limit_order_row(
+    context: dict[str, Any],
+    candidate: Candidate,
+    anchor: Anchor,
+    signal_id: str,
+    event_id: str,
+    placement: dict[str, Any],
+    now_ms: int,
+) -> dict[str, Any]:
+    return {
+        "order_id": new_id("lim"),
+        "signal_id": str(signal_id),
+        "anchor_id": str(anchor.id),
+        "anchor_kind": str(anchor.kind),
+        "side": str(candidate.side),
+        "setup_type": str(candidate.setup_type),
+        "setup_family": str(candidate.setup_family),
+        "level": placement["level"],
+        "limit_price": placement["limit_price"],
+        "placed_ts": int(now_ms),
+        "expires_ts": int(getattr(anchor, "expires_ts", 0) or 0),
+        "status": "PENDING",
+        "status_reason": "",
+        "fill_ts": 0,
+        "fill_price": 0.0,
+        "trade_id": "",
+        "preconfirmation_event_id": str(event_id or ""),
+        "entry_stage": str(candidate.entry_stage),
+        "entry_action": _entry_action_for_stage(str(candidate.entry_stage)),
+        "score": safe_int(candidate.final_score),
+        "regime": str(context.get("regime") or ""),
+        "retrace_pct": LIMIT_ENTRY_RETRACE_PCT,
+        "limit_shadow": {},
+        "market_shadow": {},
+        "schema_version": LIMIT_ORDER_SCHEMA_VERSION,
+    }
+
+
+def place_limit_order(
+    context: dict[str, Any],
+    journal: dict[str, Any],
+    state: dict[str, Any],
+    candidate: Candidate,
+    anchor: Anchor,
+    market_plan: TradePlan,
+    signal_id: str,
+    event_id: str,
+) -> tuple[dict[str, Any], Optional[TradePlan]]:
+    """Turn a reacted anchor into a resting order plus the market model's shadow."""
+    price = safe_float(context.get("price"))
+    placement = _limit_entry_price(anchor, price)
+    row = _limit_order_row(context, candidate, anchor, signal_id, event_id,
+                           placement, int(now_utc().timestamp() * 1000))
+    # The market shadow is the plan _make_decision already built at the run's price:
+    # an entry that is certain to fill, measured over the very same window.
+    row["market_shadow"] = _shadow_geometry(market_plan)
+
+    if not placement["behind_price"]:
+        row["status"] = "CANCELLED"
+        row["status_reason"] = "LIMIT_NOT_BEHIND_PRICE"
+        return row, None
+
+    limit_plan = build_trade_plan(
+        context, candidate, entry_price_override=placement["limit_price"], journal=journal, state=state,
+    )
+    if not (limit_plan.valid and limit_plan.execution_ready):
+        row["status"] = "CANCELLED"
+        row["status_reason"] = str(limit_plan.reason or "LIMIT_PLAN_NOT_EXECUTABLE")
+        return row, None
+
+    limit_plan.execution_source = "LIMIT_FILL_AT_ANCHOR"
+    row["entry_stage"] = str(limit_plan.entry_stage)
+    row["entry_action"] = _entry_action_for_stage(str(limit_plan.entry_stage))
+    row["risk_pct"] = round(safe_float(limit_plan.position_risk_pct), 6)
+    row["limit_shadow"] = _shadow_geometry(limit_plan)
+    row["plan"] = plan_to_dict(limit_plan)
+    row["candidate"] = candidate_to_dict(candidate)
+    return row, limit_plan
+
+
+def _upsert_limit_order(journal: dict[str, Any], row: dict[str, Any]) -> None:
+    orders = [item for item in list(journal.get("limit_orders") or []) if isinstance(item, dict)]
+    order_id = str(row.get("order_id") or "")
+    for index, existing in enumerate(orders):
+        if str(existing.get("order_id") or "") == order_id:
+            orders[index] = row
+            journal["limit_orders"] = orders
+            return
+    orders.append(row)
+    journal["limit_orders"] = orders
+
+
+def resolve_pending_limit(
+    context: dict[str, Any],
+    order: dict[str, Any],
+    anchors_by_id: dict[str, Anchor],
+    learning_mode: str,
+) -> tuple[Optional[ActiveTrade], Optional[Decision], dict[str, Any]]:
+    """FILLED / EXPIRED / still PENDING, decided only from confirmed 3m candles."""
+    row = json_safe(dict(order))
+    side = str(row.get("side") or "")
+    limit_price = safe_float(row.get("limit_price"))
+    now_ms = int(now_utc().timestamp() * 1000)
+    candles = _limit_window(context, row)
+
+    fill = next(
+        (c for c in candles if _candle_touches_level(side, c, limit_price, is_stop=True)),
+        None,
+    )
+    expired = now_ms > safe_int(row.get("expires_ts"))
+
+    limit_shadow = dict(row.get("limit_shadow") or {})
+    if fill is None:
+        limit_shadow["bars_observed"] = len(candles)
+        limit_shadow["resolution"] = "NO_FILL" if expired else str(limit_shadow.get("resolution") or "UNRESOLVED")
+    else:
+        fill_ts = int(fill.ts)
+        # From the fill bar onward, the fill bar included: it is the first bar in
+        # which the position existed, and skipping it would hide up to three
+        # minutes of adverse excursion from supervision.
+        limit_shadow = _shadow_resolve(limit_shadow, side, [c for c in candles if int(c.ts) >= fill_ts])
+    row["limit_shadow"] = limit_shadow
+    row["market_shadow"] = _shadow_resolve(dict(row.get("market_shadow") or {}), side, candles)
+
+    if fill is None:
+        row["status"] = "EXPIRED" if expired else "PENDING"
+        if expired:
+            row["status_reason"] = "LEVEL_NOT_REVISITED_BEFORE_EXPIRY"
+        return None, None, row
+
+    fill_ts = int(fill.ts)
+    row["status"] = "FILLED"
+    row["status_reason"] = "LEVEL_REVISITED"
+    row["fill_ts"] = fill_ts
+    # Filled at the order's own price, never at the bar's close: that is the whole
+    # point of a limit, and the close would silently re-introduce the chase.
+    row["fill_price"] = round_price(limit_price)
+
+    candidate = candidate_from_dict(row.get("candidate"))
+    plan = plan_from_dict(row.get("plan"))
+    if candidate is None or plan is None:
+        row["status"] = "CANCELLED"
+        row["status_reason"] = "ORDER_RECORD_NOT_RESTOREABLE"
+        return None, None, row
+
+    decision = Decision(
+        # Its own id, not the placement's: this run appends a fresh signal record in
+        # section 7, and reusing the placement id would put two records under one id.
+        # The row keeps both, so order -> signal -> trade still reads in both
+        # directions, and the trade links to the record that protects it from pruning.
+        id=new_id("sig"),
+        time=_iso_from_ms(fill_ts),
+        action=str(row.get("entry_action") or Action.PROBE_ENTRY.value),
+        side=side,
+        setup_type=str(row.get("setup_type") or SetupType.NONE.value),
+        quality=safe_int(row.get("score")),
+        reason="LIMIT_FILLED_AT_LEVEL",
+        regime=str(row.get("regime") or str(context.get("regime") or "")),
+        candidate=candidate, plan=plan, audit={}, current_price=safe_float(context.get("price")),
+    )
+    row["fill_signal_id"] = str(decision.id)
+    opened = _open_active_trade(context, candidate, plan, decision, learning_mode,
+                                str(row.get("preconfirmation_event_id") or ""))
+    # Dated at the fill, not at this run. Supervision bounds its candle scan with
+    # max(last_checked_3m_ts, _opened_at_ms(opened_at)) (p10:371, p10:522, p10:648),
+    # so a run-time stamp would blind it to every bar between the fill and now —
+    # up to twelve minutes of a position it is supposed to be managing. It also
+    # starts the PROBE no-followthrough clock where it belongs: at the entry.
+    opened.opened_at = _iso_from_ms(fill_ts)
+    row["trade_id"] = str(opened.id)
+
+    anchor = anchors_by_id.get(str(row.get("anchor_id") or ""))
+    if anchor is not None:
+        consume_anchor(anchor, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
+    return opened, decision, row
+
+
+# ==========================================================
 # SUPERVISION -> JOURNAL
 # ==========================================================
 
@@ -8004,7 +8472,7 @@ def _rejected_hypotheses(refusals: list[tuple[Anchor, Reaction]]) -> list[dict[s
     rows: list[dict[str, Any]] = []
     for anchor, reaction in refusals:
         gate, _, reason = str(reaction.reason or "").partition(": ")
-        rows.append({
+        row: dict[str, Any] = {
             "anchor_id": anchor.id,
             "anchor_kind": anchor.kind,
             "side": anchor.side,
@@ -8015,7 +8483,18 @@ def _rejected_hypotheses(refusals: list[tuple[Anchor, Reaction]]) -> list[dict[s
             "final_score": safe_int(anchor.score),
             "failed_gate": gate,
             "reason": reason or str(reaction.reason or ""),
-        })
+        }
+        if gate == "GATE_RUNWAY":
+            # Runway is the gate that refuses almost everything reaching it, so its
+            # numbers are what let a different floor be replayed against the journal
+            # instead of guessed at from the handful of trades that got through.
+            measured = dict((reaction.gates or {}).get("GATE_RUNWAY") or {})
+            row["runway_r"] = measured.get("runway_r")
+            row["runway_distance_atr"] = measured.get("nearest_distance_atr")
+            row["meets_min_r"] = measured.get("meets_min_r")
+            row["meets_min_atr"] = measured.get("meets_min_atr")
+            row["runway_available"] = measured.get("available")
+        rows.append(row)
     rows.sort(key=lambda row: row["score"], reverse=True)
     return rows[:REJECTED_HYPOTHESIS_SHADOW_LIMIT]
 
@@ -8214,6 +8693,10 @@ def run_bot() -> int:
 
     # --- 3. супровід відкритої угоди (НЕЗМІННИЙ) ---------------------------
     active = active_trade_from_state(state)
+    # Read here, resolved in section 6 after supervision: a trade still has to be
+    # opened at the end of a cycle and supervised from the next one, which is the
+    # invariant the unchanged layer was built against.
+    pending = pending_limit_from_state(state)
     follow_result: dict[str, Any] = {}
     if active is not None:
         if ranked:
@@ -8300,6 +8783,14 @@ def run_bot() -> int:
         "schema_version": SCHEMA_VERSION,
     }
 
+    audit["pending_limit"] = {
+        "order_id": str((pending or {}).get("order_id") or ""),
+        "side": str((pending or {}).get("side") or ""),
+        "limit_price": safe_float((pending or {}).get("limit_price")),
+        "placed_ts": safe_int((pending or {}).get("placed_ts")),
+        "expires_ts": safe_int((pending or {}).get("expires_ts")),
+    } if pending is not None else {}
+
     if active is not None:
         # A trade is still open. Step 3 already wrote this cycle's history row
         # and already owns state["active_trade"]; nothing here may touch either.
@@ -8309,6 +8800,20 @@ def run_bot() -> int:
             id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
             side=str(active.side), setup_type=str(active.setup_type), quality=0,
             reason="ACTIVE_TRADE_OPEN", regime=str(context.get("regime") or ""),
+            audit=audit, current_price=price,
+        )
+    elif pending is not None:
+        # An order is already resting on a level. Selecting a second candidate here
+        # would spend a different reacted level and stack a second order on top of
+        # the first, so this cycle only reports on the one that is working.
+        deferred_to_open_trade = True
+        plan = None
+        decision = Decision(
+            id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+            side=str(pending.get("side") or Side.NEUTRAL.value),
+            setup_type=str(pending.get("setup_type") or SetupType.NONE.value),
+            quality=safe_int(pending.get("score")),
+            reason="PENDING_LIMIT_OPEN", regime=str(context.get("regime") or ""),
             audit=audit, current_price=price,
         )
     else:
@@ -8323,7 +8828,7 @@ def run_bot() -> int:
             "reason": decision.reason,
         }
 
-    # --- 6. виконання -------------------------------------------------------
+    # --- 6. виконання: лімітний ордер на рівні, не ринковий вхід ------------
     opened: Optional[ActiveTrade] = None
     executable = bool(
         plan and plan.valid and plan.execution_ready
@@ -8336,31 +8841,103 @@ def run_bot() -> int:
         decision.reason = "PRICE_SOURCE_DISPLAY_ONLY_NOT_EXECUTABLE"
         executable = False
 
-    if executable and plan is not None and decision.candidate is not None:
+    placement_anchor: Optional[Anchor] = None
+    if executable and decision.candidate is not None:
+        placement_anchor = anchors_by_id.get(str(decision.candidate.anchor_id))
+        if placement_anchor is None:
+            # The order needs the anchor's own level and expiry, so a candidate whose
+            # anchor left memory this cycle cannot be placed. Flipping executable here
+            # (like the price guard above) lets the trailing branch journal the cycle.
+            decision.action = Action.NO_SETUP.value
+            decision.reason = "ANCHOR_NOT_IN_MEMORY"
+            executable = False
+
+    if pending is not None:
+        # 6a. An order was already resting. Resolve it before deciding anything new:
+        # whether it filled is a fact about the last fifteen minutes, and a fill hands
+        # the unchanged supervision layer an ordinary ActiveTrade.
+        opened, filled_decision, order_row = resolve_pending_limit(
+            context, pending, anchors_by_id, learning_mode,
+        )
+        status = str(order_row.get("status") or "PENDING")
+        _upsert_limit_order(journal, order_row)
+        terminal = status in PENDING_LIMIT_TERMINAL_STATUSES
+        store_pending_limit(state, None if terminal else order_row)
+        context["pending_limit"] = None if opened is not None else order_row
+        audit["pending_limit"] = {**dict(audit.get("pending_limit") or {}), "status": status}
+
+        if opened is not None and filled_decision is not None:
+            store_active_trade(state, opened)
+            decision = filled_decision
+            plan = filled_decision.plan
+            append_history(state, {
+                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                "quality": safe_int(decision.quality), "price": safe_float(order_row.get("fill_price")),
+                "trade_id": opened.id, "signal_id": decision.id,
+                "order_id": str(order_row.get("order_id") or ""),
+            })
+            print(
+                f"[INFO] Лімітний ордер виконано: {decision.side} {decision.setup_type} "
+                f"stage={opened.entry_stage} fill={_fmt_price(opened.entry)} "
+                f"stop={_fmt_price(opened.stop_initial)} risk={opened.position_risk_pct:.4f}% "
+                f"trade_id={opened.id} order_id={order_row.get('order_id')}"
+            )
+        else:
+            append_history(state, {
+                "type": Action.NO_SETUP.value, "side": str(pending.get("side") or ""),
+                "setup_type": str(pending.get("setup_type") or ""),
+                "quality": safe_int(pending.get("score")), "price": price,
+                "reason": f"LIMIT_{status}", "order_id": str(order_row.get("order_id") or ""),
+            })
+            print(f"[INFO] Лімітний ордер {status}: {order_row.get('status_reason') or 'чекає на рівень'}")
+    elif executable and plan is not None and decision.candidate is not None and placement_anchor is not None:
+        # 6b. Nothing resting and a reaction passed all eleven gates: place the order.
         event_id = ""
         if PRECONFIRMATION_LAYER_ENABLED:
+            # Created at placement, not at fill: the event measures whether the market
+            # accepted the reaction within its fixed window, which is a fact about the
+            # reaction and does not depend on when our price came back. Section 2
+            # already resolves every PENDING event each cycle, so nothing extra runs.
             event = make_preconfirmation_event(context, decision.candidate, decision.id)
             journal.setdefault("preconfirmation_events", []).append(event)
             context["preconfirmation_events"] = list(journal["preconfirmation_events"])[-PRECONFIRM_EMBEDDED_JOURNAL_LIMIT:]
             event_id = event["event_id"]
             audit["preconfirmation_event_id"] = event_id
 
-        opened = _open_active_trade(context, decision.candidate, plan, decision, learning_mode, event_id)
-        store_active_trade(state, opened)
-        anchor = anchors_by_id.get(str(decision.candidate.anchor_id))
-        if anchor is not None:
-            consume_anchor(anchor, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
-        append_history(state, {
-            "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-            "quality": safe_int(decision.quality), "price": price,
-            "trade_id": opened.id, "signal_id": decision.id,
-        })
-        print(
-            f"[INFO] Угода відкрита: {decision.side} {decision.setup_type} "
-            f"stage={opened.entry_stage} entry={_fmt_price(opened.entry)} "
-            f"stop={_fmt_price(opened.stop_initial)} risk={opened.position_risk_pct:.4f}% "
-            f"signal_id={opened.signal_id} trade_id={opened.id}"
+        order_row, limit_plan = place_limit_order(
+            context, journal, state, decision.candidate, placement_anchor, plan, decision.id, event_id,
         )
+        _upsert_limit_order(journal, order_row)
+        if limit_plan is None:
+            decision.action = Action.NO_SETUP.value
+            decision.reason = str(order_row.get("status_reason") or "LIMIT_NOT_PLACED")
+            plan = None
+            append_history(state, {
+                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                "quality": safe_int(decision.quality), "price": price,
+                "reason": decision.reason, "order_id": str(order_row.get("order_id") or ""),
+            })
+        else:
+            store_pending_limit(state, order_row)
+            context["pending_limit"] = order_row
+            # The message and the journal record describe the order the operator has
+            # to place, so they carry the plan built from the limit price — not the
+            # market plan, which now lives only in the row's market_shadow.
+            decision.plan = limit_plan
+            plan = limit_plan
+            append_history(state, {
+                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                "quality": safe_int(decision.quality), "price": safe_float(order_row.get("limit_price")),
+                "signal_id": decision.id, "order_id": str(order_row.get("order_id") or ""),
+                "reason": "LIMIT_PLACED_AT_LEVEL",
+            })
+            print(
+                f"[INFO] Лімітний ордер виставлено: {decision.side} {decision.setup_type} "
+                f"limit={_fmt_price(order_row.get('limit_price'))} stop={_fmt_price(limit_plan.stop)} "
+                f"tp0={_fmt_price(limit_plan.tp0)} risk={limit_plan.position_risk_pct:.4f}% "
+                f"дійсний до {_iso_from_ms(safe_int(order_row.get('expires_ts')))[:16]} "
+                f"order_id={order_row.get('order_id')}"
+            )
     elif not deferred_to_open_trade:
         append_history(state, {
             "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
@@ -8786,6 +9363,16 @@ def _check_late_entry_is_impossible() -> list[str]:
 def _check_entry_chain() -> list[str]:
     """anchor -> reaction -> candidate -> stage -> plan, all the way to a fill."""
     context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
+    # Set rather than read: the synthetic walk is not directional enough on 1H/4H for
+    # htf_fact to call a trend, and this check is about the chain that carries a ready
+    # reaction to a fill, not about the HTF admission floor — that floor is measured
+    # directly by _check_htf_neutral_is_not_an_edge.
+    context["htf_fact"] = {
+        **dict(context.get("htf_fact") or {}),
+        "state": "ALIGNED",
+        "direction_1h": anchor.side,
+        "direction_4h": anchor.side,
+    }
     reaction = evaluate_reaction(context, anchor)
     if not reaction.ready:
         return [f"synthetic reaction not ready: {reaction.reason}"]
@@ -9407,6 +9994,52 @@ def _check_runway_gate_needs_both_floors() -> list[str]:
     return problems
 
 
+def _check_refused_runway_is_measured() -> list[str]:
+    """A runway refusal has to carry its numbers, or the floor cannot be re-tuned.
+
+    refuse() used to overwrite the gate audit with {pass, reason}. Over 182 live runs
+    47 of the 50 anchors that reached GATE_RUNWAY were refused by it and not one of
+    their runway_r values survived, so MIN_RUNWAY_R could be defended from four trades
+    but never measured against the population it was refusing.
+    """
+    problems: list[str] = []
+    side = Side.LONG.value
+    context, anchor, _ = _synthetic_context(side, reaction=True, distance_atr=0.10, runway_atr=1.30)
+    reaction = evaluate_reaction(context, anchor)
+    if reaction.ready:
+        return ["the thin-runway fixture was READY, so there is no refusal left to measure"]
+    if not reaction.reason.startswith("GATE_RUNWAY"):
+        return [f"the fixture was refused by {reaction.reason}, expected GATE_RUNWAY"]
+
+    audit = dict((reaction.gates or {}).get("GATE_RUNWAY") or {})
+    for field in ("runway_r", "nearest_distance_atr", "meets_min_r", "meets_min_atr", "available"):
+        if audit.get(field) is None:
+            problems.append(f"the refused GATE_RUNWAY audit lost {field}; it kept only {sorted(audit)}")
+    if audit.get("pass") is not False or not audit.get("reason"):
+        problems.append("merging the measurements cost the audit the verdict it exists to report")
+
+    rows = _rejected_hypotheses([(anchor, reaction)])
+    if not rows:
+        return problems + ["_rejected_hypotheses dropped the only refusal"]
+    if rows[0].get("runway_r") is None:
+        problems.append("the refusal row does not carry runway_r, so the journal cannot measure the floor")
+
+    summary = _refusal_summary({"rejected_hypotheses": rows, "anchor_watch": _anchor_watch([anchor], context)})
+    measured = (summary.get("runway") or {}).get("measured") or []
+    if not measured:
+        problems.append("the journaled refusal summary kept the gate count but no runway measurement")
+    elif len(measured[0]) != 2:
+        problems.append(f"the runway measurement is not a (runway_r, distance_atr) pair: {measured[0]}")
+    elif safe_float(measured[0][0]) >= MIN_RUNWAY_R:
+        problems.append(
+            f"a refusal measured at {measured[0][0]}R clears MIN_RUNWAY_R {MIN_RUNWAY_R} — "
+            "the recorded pair is not the one that actually failed"
+        )
+    if safe_int((summary.get("runway") or {}).get("below_min_r")) != 1:
+        problems.append(f"the summary did not attribute the refusal to the R floor: {summary.get('runway')}")
+    return problems
+
+
 def _check_spent_level_stays_in_cooldown() -> list[str]:
     """A level that just stopped out may not be re-armed on the next cycle.
 
@@ -9452,6 +10085,491 @@ def _check_spent_level_stays_in_cooldown() -> list[str]:
     later, _ = sync_anchors(context, [anchor_to_dict(expired)], [revived])
     if len(later) != 1:
         problems.append(f"an elapsed cooldown left {len(later)} anchors armed, expected the level to return")
+    return problems
+
+
+def _check_displacement_window_matches_the_cadence() -> list[str]:
+    """The impulse may not have to be newer than the bot's own sampling interval.
+
+    The bot runs every fifteen minutes, which is five 3m bars, but the displacement
+    gate looked only at the last two — six minutes — while GATE_TOUCH and
+    GATE_REJECTION both look back thirty. Measured over 182 live runs: 141 anchors
+    passed proximity, intactness, touch and rejection, then died here. It was the
+    largest single blocker after proximity, and it was a window shorter than the
+    cadence it was sampling.
+    """
+    problems: list[str] = []
+    now_ms = int(now_utc().timestamp() * 1000)
+    step = 3 * 60_000
+    atr3 = 0.20
+    ts = [now_ms - (5 - i) * step for i in range(6)]
+
+    def bar(index: int, o: float, h: float, l: float, c: float) -> Candle:
+        return Candle(ts=ts[index], open=o, high=h, low=l, close=c)
+
+    bars = [
+        bar(0, 70.00, 70.05, 69.85, 70.02),   # visits the level and closes back off it
+        bar(1, 70.02, 70.20, 70.00, 70.16),   # the impulse: body 0.14 = 0.70 atr3
+        bar(2, 70.16, 70.19, 70.14, 70.17),   # three quiet bars after it
+        bar(3, 70.17, 70.20, 70.15, 70.18),
+        bar(4, 70.18, 70.21, 70.16, 70.19),
+        bar(5, 70.19, 70.22, 70.17, 70.20),
+    ]
+    if bars[1] in bars[-2:]:
+        return ["the fixture puts the impulse inside the last two bars, so it cannot reproduce the blind spot"]
+    if _body(bars[1]) / atr3 < REACTION_BODY_ATR3:
+        return [f"the fixture impulse body {_body(bars[1]) / atr3:.2f} atr3 is below {REACTION_BODY_ATR3}"]
+
+    _, long_anchor, _ = _synthetic_context(Side.LONG.value, reaction=False)
+    _, short_anchor, _ = _synthetic_context(Side.SHORT.value, reaction=False)
+
+    seen = _displacement_evidence(bars, long_anchor, atr3, ts[0])
+    # Four bars between the impulse and the newest bar: older than the 15-minute
+    # cadence would allow a limit order to sit, newer than the two bars the gate
+    # used to look at.
+    expected_age = (ts[5] - ts[1]) / 60000.0
+    if not seen.get("displaced"):
+        problems.append(
+            f"an impulse {expected_age:.0f} minutes old was refused as {seen.get('reason')} — the window is still "
+            "shorter than the 15-minute cadence, so the reaction the bot can see is the one it cannot use"
+        )
+    else:
+        if abs(safe_float(seen.get("age_minutes")) - expected_age) > 0.51:
+            problems.append(f"the accepted impulse reports age {seen.get('age_minutes')} min, expected {expected_age:.1f}")
+        if safe_int(seen.get("bars_checked")) != 6:
+            problems.append(f"the gate scanned {seen.get('bars_checked')} bars, expected all 6 from the rejection on")
+
+    # Ordering is what replaces recency: an impulse that predates the rejection
+    # belongs to the move that caused the touch, not to the reaction against it.
+    if _displacement_evidence(bars, long_anchor, atr3, ts[2]).get("displaced"):
+        problems.append("a displacement older than the rejection was accepted — causality is not enforced")
+    if _displacement_evidence(bars, short_anchor, atr3, ts[0]).get("displaced"):
+        problems.append("a bullish impulse satisfied the displacement gate for a SHORT anchor")
+    return problems
+
+
+def _check_htf_neutral_is_not_an_edge() -> list[str]:
+    """An entry needs at least one higher timeframe pointing its way.
+
+    All four trades v10 opened separate on this. The winner had htf_state ALIGNED at
+    score 100; all three losers had MIXED at exactly 50, which is what
+    htf_alignment_for_side returns when both 1H and 4H are NEUTRAL. The floor sat at
+    45, five points below that, so "the higher timeframes have no opinion" counted as
+    an edge — and on 2026-09-10 the bot shorted the start of a rally that ran from
+    100.21 to 104.43.
+    """
+    problems: list[str] = []
+    neutral = {"direction_1h": Side.NEUTRAL.value, "direction_4h": Side.NEUTRAL.value}
+    cases = {
+        "both HTF neutral": {"state": "MIXED", **neutral},
+        "HTF unknown": {"state": "UNKNOWN", **neutral},
+        "one HTF agrees": {"state": "MIXED", "direction_1h": Side.LONG.value, "direction_4h": Side.NEUTRAL.value},
+        "one HTF contradicts": {"state": "MIXED", "direction_1h": Side.SHORT.value, "direction_4h": Side.NEUTRAL.value},
+        "both HTF aligned": {"state": "ALIGNED", "direction_1h": Side.LONG.value, "direction_4h": Side.LONG.value},
+        "both HTF against": {"state": "AGAINST", "direction_1h": Side.SHORT.value, "direction_4h": Side.SHORT.value},
+    }
+    scores = {name: safe_float(htf_alignment_for_side(htf, Side.LONG.value).get("score")) for name, htf in cases.items()}
+
+    for name in ("both HTF neutral", "HTF unknown", "one HTF contradicts", "both HTF against"):
+        if scores[name] >= MIN_HTF_ALIGNMENT_SCORE:
+            problems.append(
+                f"a LONG with {name} scores {scores[name]:.0f} and clears the floor {MIN_HTF_ALIGNMENT_SCORE} — "
+                "no higher timeframe supports the direction, so there is no edge to trade"
+            )
+    for name in ("one HTF agrees", "both HTF aligned"):
+        if scores[name] < MIN_HTF_ALIGNMENT_SCORE:
+            problems.append(
+                f"a LONG with {name} scores {scores[name]:.0f}, below the floor {MIN_HTF_ALIGNMENT_SCORE} — "
+                "the bot would sit out a trend the higher timeframes agree with"
+            )
+    return problems
+
+
+# ==========================================================
+# LIMIT ENTRY
+# ==========================================================
+
+def _ready_candidate(side: str) -> tuple[dict[str, Any], Anchor, Candidate, TradePlan, dict[str, Any]]:
+    """anchor -> reaction -> candidate -> stage -> market plan: the handover point.
+
+    Every check below starts here because none of them is about the gates. The gates
+    still decide WHETHER a level reacted; what changed is what happens after.
+    """
+    context, anchor, _ = _synthetic_context(side, reaction=True, runway_atr=3.20)
+    # Set rather than read, exactly as _check_entry_chain does: the synthetic walk is
+    # not directional enough on 1H/4H for htf_fact to call a trend, and the HTF floor
+    # is measured by _check_htf_neutral_is_not_an_edge instead.
+    context["htf_fact"] = {
+        **dict(context.get("htf_fact") or {}),
+        "state": "ALIGNED", "direction_1h": anchor.side, "direction_4h": anchor.side,
+    }
+    reaction = evaluate_reaction(context, anchor)
+    if not reaction.ready:
+        raise AssertionError(f"synthetic reaction not ready: {reaction.reason}")
+    journal: dict[str, Any] = {"trades": [], "signals": [], "training_signals": [],
+                               "signal_events": [], "preconfirmation_events": [], "limit_orders": []}
+    candidate = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
+    if candidate is None:
+        raise AssertionError("build_candidate refused a ready reaction")
+    selected, reason = _select_candidate(rank_candidates([candidate]), context)
+    if selected is None:
+        raise AssertionError(f"_select_candidate refused: {reason}")
+    selected.entry_stage = str(resolve_entry_stage(selected, context, journal)["entry_stage"])
+    market_plan = build_trade_plan(context, selected, journal=journal, state={"active_trade": None})
+    if not (market_plan.valid and market_plan.execution_ready):
+        raise AssertionError(f"market plan not executable: {market_plan.reason}")
+    return context, anchor, selected, market_plan, journal
+
+
+def _check_limit_rests_on_the_level() -> list[str]:
+    """The order waits at the level: it never chases and never buys the reaction."""
+    problems: list[str] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, market_plan, journal = _ready_candidate(side)
+        price = safe_float(context.get("price"))
+        placement = _limit_entry_price(anchor, price)
+        if abs(placement["limit_price"] - round_price(anchor.level)) > 1e-9:
+            problems.append(
+                f"{side}: LIMIT_ENTRY_RETRACE_PCT={LIMIT_ENTRY_RETRACE_PCT} put the order at "
+                f"{placement['limit_price']} instead of on the level {round_price(anchor.level)}"
+            )
+        if not placement["behind_price"]:
+            problems.append(f"{side}: an order on the level was not behind price, so nothing could be placed")
+            continue
+        row, limit_plan = place_limit_order(
+            context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+        )
+        if limit_plan is None:
+            problems.append(f"{side}: placement cancelled as {row.get('status_reason')}")
+            continue
+        if str(row.get("status")) != "PENDING":
+            problems.append(f"{side}: a placed order reports status {row.get('status')}")
+        if side_sign(side) * (price - limit_plan.entry) <= 0:
+            problems.append(f"{side}: the plan entry {limit_plan.entry} is not behind price {price}")
+        # What a better entry buys, and what it does not.
+        #
+        # decision_distance = max(structural_distance, noise_floor), and noise_floor
+        # carries an absolute-dollar minimum. When that minimum binds — it pinned 3 of
+        # the 4 v10 trades in the live journal at exactly 0.40 — a better entry does
+        # NOT shrink risk or improve RR: the same 0.40 just slides down with the entry.
+        # What always improves is the geometry against the market as it actually stands:
+        # the stop sits farther from where price is and TP1 sits closer to it. Those two
+        # distances are what decide whether the levels get hit, so they are what is
+        # asserted here. Strict risk reduction is proven separately, in the regime where
+        # the structural stop rather than the dollar floor sets the distance.
+        risk_limit = abs(limit_plan.entry - limit_plan.stop)
+        risk_market = abs(market_plan.entry - market_plan.stop)
+        if risk_limit > risk_market + 1e-9:
+            problems.append(
+                f"{side}: the limit plan risks {risk_limit:.4f}, MORE than the market plan's {risk_market:.4f}"
+            )
+        if side_sign(side) * (price - limit_plan.stop) <= side_sign(side) * (price - market_plan.stop) + 1e-9:
+            problems.append(
+                f"{side}: the limit stop sits {side_sign(side) * (price - limit_plan.stop):.4f} from price, "
+                f"no farther than the market stop's {side_sign(side) * (price - market_plan.stop):.4f}"
+            )
+        if abs(price - limit_plan.tp1) >= abs(price - market_plan.tp1) - 1e-9:
+            problems.append(
+                f"{side}: the limit TP1 sits {abs(price - limit_plan.tp1):.4f} from price, "
+                f"no closer than the market TP1's {abs(price - market_plan.tp1):.4f}"
+            )
+        if str(limit_plan.execution_source) != "LIMIT_FILL_AT_ANCHOR":
+            problems.append(
+                f"{side}: execution_source {limit_plan.execution_source} would not separate these trades "
+                "from the market-entered ones already in the journal"
+            )
+
+    # Price already past the level. Such an order fills the instant it is placed, which
+    # is a market entry wearing a limit's name — and GATE_PROXIMITY admits +-0.35 ATR on
+    # either side, so this is reachable in production rather than hypothetical.
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.LONG.value)
+    context["price"] = round_price(anchor.level) - 0.05
+    row, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is not None:
+        problems.append(f"a level already behind price still placed an order at {row.get('limit_price')}")
+    if str(row.get("status")) != "CANCELLED" or str(row.get("status_reason")) != "LIMIT_NOT_BEHIND_PRICE":
+        problems.append(f"the marketable-limit case reported {row.get('status')}/{row.get('status_reason')}")
+
+    # The regime where a better entry DOES shrink risk. The structural stop is a fixed
+    # price, so moving the entry toward it moves structural_distance with it — and TP1 is
+    # a multiple of that distance, so the target comes closer too. Push the stop out to
+    # 92% of the early-entry cap so the dollar floor stops binding; one of the four live
+    # v10 trades (risk 0.4819 against a 0.40 floor) was already in this regime.
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.LONG.value)
+    sign = side_sign(Side.LONG.value)
+    atr15 = safe_float(((market_plan.stage_plan or {}).get("geometry") or {}).get("atr15"))
+    far = dict((candidate.reaction or {}).get("GATE_STOP") or {})
+    far["stop"] = round_price(market_plan.entry - sign * MAX_STOP_ATR * atr15 * 0.92)
+    far["distance"] = round(abs(market_plan.entry - far["stop"]), 6)
+    candidate.reaction = {**dict(candidate.reaction or {}), "GATE_STOP": far}
+    market_far = build_trade_plan(context, candidate, journal=journal, state={"active_trade": None})
+    if not (market_far.valid and market_far.execution_ready):
+        problems.append(f"the structural-bound market plan refused: {market_far.reason}")
+        return problems
+    row, limit_far = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_far, new_id("sig"), "",
+    )
+    if limit_far is None:
+        problems.append(f"the structural-bound placement cancelled as {row.get('status_reason')}")
+        return problems
+    if abs(limit_far.entry - limit_far.stop) >= abs(market_far.entry - market_far.stop) - 1e-9:
+        problems.append(
+            f"structural-bound: the limit plan risks {abs(limit_far.entry - limit_far.stop):.4f}, not less than "
+            f"the market plan's {abs(market_far.entry - market_far.stop):.4f}"
+        )
+    if abs(limit_far.tp1 - limit_far.entry) >= abs(market_far.tp1 - market_far.entry) - 1e-9:
+        problems.append(
+            f"structural-bound: TP1 sits {abs(limit_far.tp1 - limit_far.entry):.4f} from the limit entry, not closer "
+            f"than the market plan's {abs(market_far.tp1 - market_far.entry):.4f}"
+        )
+    return problems
+
+
+def _check_fill_needs_a_bar_after_placement() -> list[str]:
+    """A fill is a fact about confirmed 3m candles that opened AFTER the order."""
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.LONG.value)
+    row, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is None:
+        return [f"placement cancelled as {row.get('status_reason')}"]
+    problems: list[str] = []
+    step = PRECONFIRM_RESOLUTION_BAR_MS
+    placed = safe_int(row["placed_ts"])
+    row["expires_ts"] = placed + 60 * 60_000
+    limit = safe_float(row["limit_price"])
+
+    # Dipped through the level, but opened before the order existed: nobody was resting
+    # there yet, so claiming this fill would be hindsight.
+    stale = Candle(ts=placed - step, open=limit + 0.10, high=limit + 0.14,
+                   low=limit - 0.06, close=limit + 0.08, confirmed=True)
+    # Opened after placement, touched the level, then closed far below it. The close must
+    # never reach fill_price or the limit silently degrades back into a chase.
+    touched = Candle(ts=placed + step, open=limit + 0.04, high=limit + 0.06,
+                     low=limit - 0.02, close=limit - 0.30, confirmed=True)
+
+    probe = dict(context)
+    probe["candles"] = {"3m": [stale]}
+    opened, _, out = resolve_pending_limit(probe, dict(row), {anchor.id: anchor}, "NOT_LEARNED")
+    if opened is not None or str(out.get("status")) != "PENDING":
+        problems.append(f"a bar that opened before placement produced {out.get('status')} — that fill is hindsight")
+    if anchor.state == AnchorState.TRIGGERED.value:
+        problems.append("an order that had not filled already consumed its anchor")
+
+    probe["candles"] = {"3m": [stale, touched]}
+    opened, _, out = resolve_pending_limit(probe, dict(row), {anchor.id: anchor}, "NOT_LEARNED")
+    if opened is None:
+        problems.append(f"the first bar after placement touched the level and the order stayed {out.get('status')}")
+        return problems
+    if abs(safe_float(out.get("fill_price")) - limit) > 1e-9:
+        problems.append(
+            f"fill_price {out.get('fill_price')} is not the order price {limit} — "
+            f"the bar close {touched.close} leaked in"
+        )
+    if safe_int(out.get("fill_ts")) != touched.ts:
+        problems.append(f"fill_ts {out.get('fill_ts')} is not the touching bar {touched.ts}")
+    if abs(opened.entry - limit) > 1e-9:
+        problems.append(f"the trade opened at {opened.entry} instead of the limit {limit}")
+    # Supervision bounds its candle scan with max(last_checked_3m_ts, _opened_at_ms(opened_at)).
+    # Dated at this run instead of at the fill, it would skip every bar in between.
+    if _opened_at_ms(opened.opened_at) != touched.ts:
+        problems.append(
+            f"supervision's lower bound parses to {_opened_at_ms(opened.opened_at)}, not the fill bar "
+            f"{touched.ts} — the bars between the fill and this run would be invisible to it"
+        )
+    if str(opened.execution_source) != "LIMIT_FILL_AT_ANCHOR":
+        problems.append(f"the filled trade reports execution_source {opened.execution_source}")
+    if anchor.state != AnchorState.TRIGGERED.value:
+        problems.append("a filled order left its anchor armed, so the next cycle could rest a second order on it")
+    return problems
+
+
+def _check_unfilled_order_opens_nothing() -> list[str]:
+    """An order that expires unfilled is not a trade, and must not shut the gate forever."""
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.SHORT.value)
+    row, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is None:
+        return [f"placement cancelled as {row.get('status_reason')}"]
+    problems: list[str] = []
+    placed = safe_int(row["placed_ts"])
+    row["expires_ts"] = placed - 1000
+    limit = safe_float(row["limit_price"])
+    # A SHORT fills on high >= limit, so this bar ran the other way and never reached it.
+    away = Candle(ts=placed + PRECONFIRM_RESOLUTION_BAR_MS, open=limit - 0.10, high=limit - 0.02,
+                  low=limit - 0.20, close=limit - 0.15, confirmed=True)
+    probe = dict(context)
+    probe["candles"] = {"3m": [away]}
+
+    opened, decision, out = resolve_pending_limit(probe, dict(row), {anchor.id: anchor}, "NOT_LEARNED")
+    if opened is not None or decision is not None:
+        problems.append("an order the level never revisited still opened a trade")
+    if str(out.get("status")) != "EXPIRED":
+        problems.append(f"an order past expires_ts with no touch reports {out.get('status')}")
+    if str((out.get("limit_shadow") or {}).get("resolution")) != "NO_FILL":
+        problems.append(
+            f"the limit shadow of an unfilled order reads {(out.get('limit_shadow') or {}).get('resolution')}, "
+            "so the fill-rate comparison would count it as an outcome"
+        )
+    if anchor.state == AnchorState.TRIGGERED.value:
+        problems.append("an expired order consumed its anchor and burned the level for nothing")
+
+    state: dict[str, Any] = {"active_trade": None}
+    store_pending_limit(state, out)
+    if state.get("active_trade") is not None:
+        problems.append(
+            "storing a resting order wrote to state['active_trade'], which active_trade_from_state "
+            "revives as an OPEN position because it never looks at status"
+        )
+    if pending_limit_from_state(state) is not None:
+        problems.append("a terminal order still reads as resting, which would refuse every future entry")
+    return problems
+
+
+def _check_both_models_are_measured_alike() -> list[str]:
+    """Shadow-tracking means nothing unless one ruler measures both models."""
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.LONG.value)
+    row, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is None:
+        return [f"placement cancelled as {row.get('status_reason')}"]
+    problems: list[str] = []
+    limit_shadow = dict(row.get("limit_shadow") or {})
+    market_shadow = dict(row.get("market_shadow") or {})
+    if not limit_shadow or not market_shadow:
+        return ["placement recorded no shadow geometry, so there is nothing to compare"]
+    if abs(safe_float(limit_shadow.get("entry")) - safe_float(market_shadow.get("entry"))) < 1e-9:
+        problems.append("both models recorded the same entry, so the comparison cannot show the price benefit")
+    if safe_float(limit_shadow.get("risk")) > safe_float(market_shadow.get("risk")) + 1e-9:
+        problems.append(
+            f"the limit model risks {limit_shadow.get('risk')} against the market model's "
+            f"{market_shadow.get('risk')} — the benefit being measured is missing"
+        )
+    # The comparison has to be able to show the benefit even when the absolute-dollar
+    # stop floor pins both risks equal, which it did on 3 of the 4 live v10 trades. What
+    # survives the floor is the geometry against the market as it stands at placement.
+    price = safe_float(context.get("price"))
+    if abs(price - safe_float(limit_shadow.get("stop"))) <= abs(price - safe_float(market_shadow.get("stop"))) + 1e-9:
+        problems.append(
+            f"the limit stop {limit_shadow.get('stop')} is no farther from price {price} "
+            f"than the market stop {market_shadow.get('stop')}"
+        )
+    if abs(price - safe_float(limit_shadow.get("tp1"))) >= abs(price - safe_float(market_shadow.get("tp1"))) - 1e-9:
+        problems.append(
+            f"the limit TP1 {limit_shadow.get('tp1')} is no closer to price {price} "
+            f"than the market TP1 {market_shadow.get('tp1')}"
+        )
+    if sorted(limit_shadow) != sorted(market_shadow):
+        problems.append(f"the two shadows carry different fields: {sorted(limit_shadow)} vs {sorted(market_shadow)}")
+
+    # One ruler includes its refusal to guess. A bar spanning both the stop and a target
+    # has no knowable intrabar order, so it is unknown for BOTH models rather than a loss
+    # for one and a win for the other.
+    for label, geometry in (("limit", limit_shadow), ("market", market_shadow)):
+        entry = safe_float(geometry.get("entry"))
+        wide = Candle(
+            ts=safe_int(row["placed_ts"]), open=entry,
+            high=max(safe_float(geometry.get("tp0")), safe_float(geometry.get("tp1"))) + 0.50,
+            low=safe_float(geometry.get("stop")) - 0.50, close=entry, confirmed=True,
+        )
+        resolved = _shadow_resolve(geometry, Side.LONG.value, [wide])
+        if str(resolved.get("resolution")) != "AMBIGUOUS":
+            problems.append(f"the {label} shadow read an unknowable bar as {resolved.get('resolution')}")
+        if safe_float(resolved.get("result_r")) != 0.0:
+            problems.append(f"the {label} shadow scored an unknowable bar {resolved.get('result_r')}R")
+    return problems
+
+
+def _check_order_journal_does_not_duplicate() -> list[str]:
+    """One row per order, however many fifteen-minute cycles it takes to resolve."""
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.LONG.value)
+    row, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is None:
+        return [f"placement cancelled as {row.get('status_reason')}"]
+    problems: list[str] = []
+    _upsert_limit_order(journal, row)
+    _upsert_limit_order(journal, dict(row, status="PENDING"))
+    _upsert_limit_order(journal, dict(row, status="FILLED", fill_price=safe_float(row["limit_price"])))
+    orders = [item for item in list(journal.get("limit_orders") or []) if isinstance(item, dict)]
+    if len(orders) != 1:
+        problems.append(f"resolving one order three times left {len(orders)} rows in the journal")
+    elif str(orders[0].get("status")) != "FILLED":
+        problems.append(f"the upsert kept the stale row instead of the resolved one: {orders[0].get('status')}")
+
+    context2, anchor2, candidate2, market2, _ = _ready_candidate(Side.SHORT.value)
+    row2, _ = place_limit_order(
+        context2, {"trades": [], "signals": [], "limit_orders": []}, {"active_trade": None},
+        candidate2, anchor2, market2, new_id("sig"), "",
+    )
+    _upsert_limit_order(journal, row2)
+    orders = [item for item in list(journal.get("limit_orders") or []) if isinstance(item, dict)]
+    ids = [str(item.get("order_id")) for item in orders]
+    if len(orders) != 2 or len(set(ids)) != 2:
+        problems.append(f"a genuinely second order did not get its own row: {ids}")
+    return problems
+
+
+def _check_limit_keys_survive_a_reload() -> list[str]:
+    """Both new keys are whitelisted, or the next cron run silently drops them.
+
+    load_state returns an explicit list of survivors and save_journal prunes to
+    JOURNAL_CORE_KEYS, so a key that is written but not registered disappears
+    fifteen minutes later without an error anywhere.
+    """
+    real_state, real_journal = STATE_FILE, JOURNAL_FILE
+    workdir = tempfile.mkdtemp(prefix="bzu-selftest-limit-")
+    problems: list[str] = []
+    try:
+        globals()["STATE_FILE"] = Path(workdir) / "last_signal_v6_4.json"
+        globals()["JOURNAL_FILE"] = Path(workdir) / "signal_journal_v6_4.json"
+        context, anchor, candidate, market_plan, _ = _ready_candidate(Side.LONG.value)
+        row, limit_plan = place_limit_order(
+            context, {"trades": [], "signals": [], "limit_orders": []}, {"active_trade": None},
+            candidate, anchor, market_plan, new_id("sig"), "",
+        )
+        if limit_plan is None:
+            return [f"placement cancelled as {row.get('status_reason')}"]
+
+        state = load_state()
+        store_pending_limit(state, row)
+        save_state(state)
+        restored = pending_limit_from_state(load_state())
+        if restored is None:
+            problems.append(f"{STATE_PENDING_KEY} did not survive the state round-trip — load_state dropped it")
+        else:
+            if str(restored.get("order_id")) != str(row.get("order_id")):
+                problems.append("a different order came back from the state round-trip")
+            if candidate_from_dict(restored.get("candidate")) is None:
+                problems.append("the candidate inside the order did not survive, so a fill could not open a trade")
+            if plan_from_dict(restored.get("plan")) is None:
+                problems.append("the frozen plan did not survive, so a fill would have to re-plan with hindsight")
+
+        journal = load_journal()
+        _upsert_limit_order(journal, row)
+        save_journal(journal)
+        on_disk = load_json(JOURNAL_FILE, {})
+        if "limit_orders" not in on_disk:
+            problems.append("save_journal pruned limit_orders — it is missing from JOURNAL_CORE_KEYS")
+        elif len(list(on_disk.get("limit_orders") or [])) != 1:
+            problems.append(f"the journal kept {len(list(on_disk.get('limit_orders') or []))} order rows, expected 1")
+    finally:
+        globals()["STATE_FILE"] = real_state
+        globals()["JOURNAL_FILE"] = real_journal
+        for name in os.listdir(workdir):
+            try:
+                os.remove(os.path.join(workdir, name))
+            except OSError:
+                pass
+        try:
+            os.rmdir(workdir)
+        except OSError:
+            pass
     return problems
 
 
@@ -9566,6 +10684,65 @@ def _check_messages() -> list[str]:
     if "⚠️" not in plain_telegram_text(build_decision_message(context, suspended)):
         problems.append("a suspended execution no longer reaches the message — the warning channel is dead, not narrowed")
 
+    # The three states the operator asked to be told about, every fifteen minutes:
+    # waiting for the fill, the order placed, the order filled. Built from a real
+    # placement rather than a hand-written dict — p12 prints what it finds in
+    # context["pending_limit"], so a pasted row would test nothing.
+    context, anchor, candidate, market_plan, journal = _ready_candidate(Side.LONG.value)
+    order, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is None:
+        problems.append(f"the message fixture cancelled as {order.get('status_reason')}")
+        return problems
+    level_text = _fmt_price(safe_float(order.get("limit_price")))
+    context["pending_limit"] = dict(order)
+    audit = {
+        "anchor_watch": _anchor_watch([anchor], context),
+        "rejected_hypotheses": [],
+        "daily_risk": daily_risk_budget({"trades": []}, {"active_trade": None}, 0.0),
+        "price_source": context.get("price_source"),
+        "execution_price_trusted": True,
+    }
+    states = (
+        ("waiting", Decision(
+            id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+            side=str(order.get("side")), setup_type=str(order.get("setup_type")),
+            quality=safe_int(order.get("score")), reason="PENDING_LIMIT_OPEN",
+            regime=str(context.get("regime") or ""), audit=audit,
+            current_price=safe_float(context.get("price")),
+        ), ("очікуємо входу в лімітний ордер", level_text)),
+        ("placed", Decision(
+            id=new_id("sig"), time=iso_now(), action=str(order.get("entry_action")),
+            side=str(order.get("side")), setup_type=str(order.get("setup_type")),
+            quality=safe_int(order.get("score")), reason="LIMIT_PLACED_AT_LEVEL",
+            regime=str(context.get("regime") or ""), audit=audit, candidate=candidate,
+            plan=limit_plan, current_price=safe_float(context.get("price")),
+        ), ("лімітний ордер виставлено", "дійсний ще")),
+        ("filled", Decision(
+            id=new_id("sig"), time=iso_now(), action=str(order.get("entry_action")),
+            side=str(order.get("side")), setup_type=str(order.get("setup_type")),
+            quality=safe_int(order.get("score")), reason="LIMIT_FILLED_AT_LEVEL",
+            regime=str(context.get("regime") or ""), audit=audit, candidate=candidate,
+            plan=limit_plan, current_price=safe_float(context.get("price")),
+        ), ("лімітний ордер виконано",)),
+    )
+    for label, decision, expected in states:
+        message = build_decision_message(context, decision)
+        plain = plain_telegram_text(message)
+        for fragment in expected:
+            if fragment not in plain.lower():
+                problems.append(f"the '{label}' limit message does not say '{fragment}'")
+        if len(message) > TELEGRAM_MAX_LENGTH:
+            problems.append(
+                f"the '{label}' limit message is {len(message)} chars, over {TELEGRAM_MAX_LENGTH}"
+            )
+    # The waiting message must not read as "nothing happened" — that is the whole point
+    # of the lifecycle the operator described.
+    waiting = plain_telegram_text(build_decision_message(context, states[0][1]))
+    if "входу зараз немає" in waiting.lower():
+        problems.append("a resting order is reported as 'входу зараз немає', so the wait looks like a dead bot")
+
     if TELEGRAM_MAX_LENGTH > 4096:
         problems.append(f"TELEGRAM_MAX_LENGTH {TELEGRAM_MAX_LENGTH} exceeds the Telegram API limit of 4096")
     if not SEND_NO_SETUP and not TELEGRAM_NOTIFY_EVERY_RUN:
@@ -9629,7 +10806,16 @@ def _run_self_test() -> bool:
         ("персистенція та очистка легасі", _check_persistence_roundtrip),
         ("аналітика та авто-деградація", _check_analytics_and_degradation),
         ("runway як підлога, а не альтернатива", _check_runway_gate_needs_both_floors),
+        ("відмова runway залишає числа", _check_refused_runway_is_measured),
         ("cooldown після стоп-ауту", _check_spent_level_stays_in_cooldown),
+        ("вікно імпульсу проти каденції", _check_displacement_window_matches_the_cadence),
+        ("HTF без думки — це не едж", _check_htf_neutral_is_not_an_edge),
+        ("ліміт стоїть на рівні, а не наздоганяє", _check_limit_rests_on_the_level),
+        ("виконання без заднього числа", _check_fill_needs_a_bar_after_placement),
+        ("не виконався — угоди немає", _check_unfilled_order_opens_nothing),
+        ("обидві моделі міряються однаково", _check_both_models_are_measured_alike),
+        ("журнал ордерів не дублюється", _check_order_journal_does_not_duplicate),
+        ("ключі ордера переживають перезавантаження", _check_limit_keys_survive_a_reload),
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
     ]
