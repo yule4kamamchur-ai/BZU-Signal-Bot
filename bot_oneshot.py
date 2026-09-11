@@ -109,7 +109,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.0.0-anchor-reaction-limit-entry"
+BOT_VERSION = "pro-organic-v10.1.0-hybrid-limit-market-entry"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -171,6 +171,7 @@ JOURNAL_CORE_KEYS = frozenset({
     "preconfirmation_events", "limit_orders",
     "analytics", "setup_statistics", "entry_quality_audit",
     "calendar_statistics", "learning_status", "degradation", "migration",
+    "execution_model_statistics",
 })
 
 PRECONFIRM_EMBEDDED_JOURNAL_LIMIT = max(100, int(os.getenv("PRECONFIRM_EMBEDDED_JOURNAL_LIMIT", "500") or 500))
@@ -401,7 +402,41 @@ LIMIT_ENTRY_RETRACE_PCT = min(1.0, max(0.0, float(os.getenv("LIMIT_ENTRY_RETRACE
 # Ордер живе стільки, скільки anchor: expires_ts керований ANCHOR_MAX_AGE_MIN.
 PENDING_LIMIT_TERMINAL_STATUSES = frozenset({"FILLED", "EXPIRED", "CANCELLED"})
 LIMIT_ORDER_JOURNAL_LIMIT = max(50, int(os.getenv("LIMIT_ORDER_JOURNAL_LIMIT", "300") or 300))
-LIMIT_ORDER_SCHEMA_VERSION = "organic_limit_order_v10.0.0"
+LIMIT_ORDER_SCHEMA_VERSION = "organic_limit_order_v10.1.0"
+
+# ==========================================================
+# HYBRID EXECUTION ROUTING  (ліміт + market як два живі шляхи)
+# ==========================================================
+#
+# Which model executes a candidate is a property of the setup, not a global
+# switch. Return-to-the-level families are traded with a limit resting on the
+# level, because that is where their edge is: the journal measures entries
+# 0.162 ATR past the level against a 1.217 ATR stop, so waiting for the retrace
+# is worth +0.133R on every one of them. TREND_CONTINUATION and SESSION_EXPANSION
+# are the opposite — price leaves the level and does not come back, so a limit
+# there is not an early entry, it is a missed trade. Those 19 of 35 closed trades
+# are why a limit-only bot loses most of its flow.
+#
+# Both sets are spelled out rather than derived from CANONICAL_FAMILIES because
+# this part executes before p02 defines it in the concatenated single file. The
+# union guard that keeps them honest sits next to the 24-setup guard in p02.
+_DEFAULT_MARKET_ROUTED = "TREND_CONTINUATION,SESSION_EXPANSION"
+MARKET_ROUTED_CANONICAL_FAMILIES = frozenset(
+    part.strip().upper()
+    for part in str(os.getenv("MARKET_ROUTED_CANONICAL_FAMILIES", _DEFAULT_MARKET_ROUTED) or _DEFAULT_MARKET_ROUTED).split(",")
+    if part.strip()
+)
+LIMIT_ROUTED_CANONICAL_FAMILIES = frozenset({
+    "LIQUIDITY_REVERSAL", "VALUE_RECLAIM", "FAILED_EXPANSION", "STRUCTURAL_EXPANSION",
+})
+
+# A resting limit that never fills is not automatically a lost trade. If price
+# runs the other way but stays inside the anchor's proximity band and a NEW
+# displacement bar confirms the move, the order is cancelled and the entry is
+# taken at market. The age bound is what keeps that a reaction to now rather
+# than a second spending of the reaction that placed the order.
+ESCALATION_MAX_DISPLACEMENT_AGE_MIN = min(15.0, max(3.0, float(os.getenv("ESCALATION_MAX_DISPLACEMENT_AGE_MIN", "9.0") or 9.0)))
+EXECUTION_MODEL_SCHEMA_VERSION = "organic_execution_model_v10.1.0"
 
 
 # ==========================================================
@@ -583,6 +618,20 @@ CANONICAL_FAMILIES = tuple(sorted(set(CANONICAL_SETUP_FAMILY_MAP.values())))
 CANONICAL_FAMILY_SCHEMA_VERSION = "canonical_setup_families_v9.5.59"
 if len(CANONICAL_SETUP_FAMILY_MAP) != 24 or len(CANONICAL_FAMILIES) != 6:
     raise RuntimeError("canonical family registry must cover 24 setups in six families")
+
+# Every family must be claimed by exactly one execution route. A family in
+# neither set would fall through to the limit branch unnoticed; one in both
+# would make routing ambiguous. MARKET_ROUTED is env-overridable, so a
+# misspelled name has to fail here rather than quietly mis-route a setup.
+_routed = set(MARKET_ROUTED_CANONICAL_FAMILIES) | set(LIMIT_ROUTED_CANONICAL_FAMILIES)
+if _routed != set(CANONICAL_FAMILIES):
+    raise RuntimeError(
+        "execution routes must partition the six canonical families exactly: "
+        f"unrouted={sorted(set(CANONICAL_FAMILIES) - _routed)} "
+        f"unknown={sorted(_routed - set(CANONICAL_FAMILIES))}"
+    )
+if MARKET_ROUTED_CANONICAL_FAMILIES & LIMIT_ROUTED_CANONICAL_FAMILIES:
+    raise RuntimeError("a canonical family cannot be routed to both limit and market")
 
 # Canonical family -> journal-compatible SetupFamily label.
 CANONICAL_TO_JOURNAL_FAMILY = {
@@ -7062,8 +7111,16 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
 
     candidate = decision.candidate
     resting = dict(context.get("pending_limit") or {})
+    escalation = dict(audit.get("escalation") or {})
     if str(decision.reason or "") == "LIMIT_FILLED_AT_LEVEL":
         title = "✅ <b>Лімітний ордер виконано — угоду відкрито</b>"
+    elif str(decision.reason or "") == "LIMIT_ESCALATED_TO_MARKET":
+        # Checked before `resting` on purpose: escalating clears the pending slot, so
+        # by now resting is empty and this would fall through to a generic title and
+        # lose the only fact that explains the entry.
+        title = "⚡ <b>Ліміт не виповнився — увійшли ринком</b>"
+    elif str(decision.reason or "") == "MARKET_ENTRY_AT_REACTION":
+        title = "⚡ <b>Ринковий вхід — виконання тут і зараз</b>"
     elif resting:
         title = "🟡 <b>Лімітний ордер виставлено — очікуємо входу</b>"
     else:
@@ -7072,6 +7129,12 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
         f"{title} | {side_word(decision.side)} | {setup_label(decision.setup_type)}",
         f"<b>Ціна зараз:</b> {_fmt_price(price)}",
     ]
+    if escalation and str(decision.reason or "") == "LIMIT_ESCALATED_TO_MARKET":
+        lines.append(
+            f"<b>Рівень {_fmt_price(escalation.get('cancelled_level'))} не повернувся — "
+            f"імпульс {_esc(str(int(safe_float(escalation.get('displacement_age_min')))))} хв тому, "
+            f"ордер знято.</b>"
+        )
     if candidate:
         anchor_level = safe_float(candidate.execution_anchor, safe_float(candidate.trigger_level))
         if anchor_level > 0:
@@ -7319,6 +7382,115 @@ def compute_analytics(journal: dict[str, Any]) -> dict[str, Any]:
         "by_side": _group_by(rows, lambda t: str(t.get("side") or "").upper()),
         "computed_at": iso_now(),
         "schema_version": ANALYTICS_SCHEMA_VERSION,
+    }
+
+
+def _execution_model(trade: dict[str, Any]) -> str:
+    """Which live model actually put this trade on.
+
+    Only a limit fill is a LIMIT execution. Everything else — a market-routed setup,
+    an escalation, and every legacy row from before the hybrid — entered at a market
+    price, so it belongs with MARKET. Classifying an escalation as LIMIT would credit
+    the limit model with a price it never obtained.
+    """
+    return "LIMIT" if str(trade.get("execution_source") or "").upper() == "LIMIT_FILL_AT_ANCHOR" else "MARKET"
+
+
+def _model_bucket(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """`_bucket_outcome` plus the three fields a model comparison needs.
+
+    Kept separate because compute_analytics and compute_calendar_statistics both
+    depend on _bucket_outcome's exact shape.
+    """
+    bucket = _bucket_outcome(rows)
+    mfe_values = [safe_float(row["trade"].get("mfe_r"), 0.0) for row in rows]
+    bucket["median_mfe_r"] = round(percentile(mfe_values, 0.5), 4) if mfe_values else None
+    bucket["sample_sufficient"] = bool(bucket["trades"] >= SETUP_STATS_MIN_SAMPLE)
+    # A reading, not a rule. Nothing downstream sizes or vetoes on this: the operator
+    # asked for two to three days of evidence before touching risk at all.
+    if not bucket["sample_sufficient"]:
+        bucket["verdict"] = "INSUFFICIENT_SAMPLE"
+    elif bucket["wilson_lower"] < SETUP_DEMOTE_WINRATE_FLOOR and bucket["expectancy_r"] < SETUP_DEMOTE_EXPECTANCY_R:
+        bucket["verdict"] = "UNDERPERFORMING"
+    elif bucket["expectancy_r"] >= SETUP_PROMOTE_EXPECTANCY_R:
+        bucket["verdict"] = "OUTPERFORMING"
+    else:
+        bucket["verdict"] = "NEUTRAL"
+    return bucket
+
+
+def _model_group_by(rows: list[dict[str, Any]], key_fn: Any) -> dict[str, Any]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(str(key_fn(row["trade"]) or "UNKNOWN"), []).append(row)
+    return {key: _model_bucket(group) for key, group in sorted(groups.items())}
+
+
+def compute_execution_model_statistics(journal: dict[str, Any]) -> dict[str, Any]:
+    """Limit vs market, measured — computed and persisted, never enforced.
+
+    The hybrid runs both models live, so which one deserves the risk is a question
+    the journal can answer and intuition cannot. This is the instrument for the
+    sizing decision that is deliberately being deferred: it records the comparison
+    and stops there. No branch of it reaches position_risk_pct or build_candidate.
+    """
+    rows = _outcome_rows(_closed_trades(journal))
+    family_of = lambda t: str(  # noqa: E731 - mirrors compute_analytics' own fallback
+        t.get("canonical_setup_family") or canonical_setup_family(str(t.get("setup_type") or ""))
+    ).upper()
+
+    orders = [row for row in list(journal.get("limit_orders") or []) if isinstance(row, dict)]
+    placed = [row for row in orders if str(row.get("status") or "").upper() in
+              {"FILLED", "EXPIRED", "CANCELLED", "PENDING"}]
+    filled = [row for row in placed if str(row.get("status") or "").upper() == "FILLED"]
+    escalated = [row for row in placed if bool(row.get("escalated"))]
+
+    def _shadow_mean(key: str, rows_: list[dict[str, Any]]) -> Optional[float]:
+        values = [
+            safe_float((row.get(key) or {}).get("result_r"))
+            for row in rows_
+            if str((row.get(key) or {}).get("resolution") or "") not in ("", "UNRESOLVED")
+        ]
+        return round(sum(values) / len(values), 4) if values else None
+
+    return {
+        "by_model": _model_group_by(rows, _execution_model),
+        # The family is the routing key, so this is the bucket that says whether the
+        # routing itself is right: a LIMIT-routed family that keeps losing is a family
+        # that should be re-routed, not re-sized.
+        "by_family_model": _model_group_by(
+            rows, lambda t: f"{family_of(t)}:{_execution_model(t)}"
+        ),
+        "by_stage_regime": _model_group_by(
+            rows,
+            lambda t: f"{str(t.get('execution_stage') or '').upper()}:"
+                      f"{str(t.get('opened_regime') or t.get('regime') or '').upper()}",
+        ),
+        # Answerable from the resting orders alone, without waiting for anything to
+        # close: both shadows are resolved over the same window on the same candles.
+        "order_outcomes": {
+            "orders": len(placed),
+            "filled": len(filled),
+            "escalated": len(escalated),
+            "fill_rate": round(len(filled) / len(placed), 4) if placed else None,
+            "escalation_rate": round(len(escalated) / len(placed), 4) if placed else None,
+            "expired_unfilled": sum(
+                1 for row in placed if str(row.get("status") or "").upper() == "EXPIRED"
+            ),
+            "limit_shadow_mean_r": _shadow_mean("limit_shadow", filled),
+            "market_shadow_mean_r": _shadow_mean("market_shadow", placed),
+            "escalation_refusals": {
+                reason: sum(1 for row in placed if str(row.get("escalation_refused") or "") == reason)
+                for reason in sorted({
+                    str(row.get("escalation_refused") or "")
+                    for row in placed if str(row.get("escalation_refused") or "")
+                })
+            },
+        },
+        "enforced": False,
+        "min_sample": SETUP_STATS_MIN_SAMPLE,
+        "computed_at": iso_now(),
+        "schema_version": EXECUTION_MODEL_SCHEMA_VERSION,
     }
 
 
@@ -8010,6 +8182,25 @@ def _iso_from_ms(ms: int) -> str:
     return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).isoformat()
 
 
+def _execution_route(candidate: Any) -> str:
+    """Which live model executes this candidate: "LIMIT" or "MARKET".
+
+    Routing follows the setup's nature, not a global switch. Return-to-the-level
+    families earn their edge by waiting for the retrace, so they rest a limit on
+    the level. TREND_CONTINUATION and SESSION_EXPANSION are the opposite: price
+    leaves and does not come back, and a limit there is not an early entry but a
+    missed trade — 19 of the 35 closed trades in the live journal are exactly
+    that family. An unrecognised family falls to LIMIT, the model that can never
+    pay a worse price than the market.
+    """
+    family = str(
+        getattr(candidate, "canonical_setup_family", "")
+        or canonical_setup_family(getattr(candidate, "setup_type", ""))
+        or ""
+    ).upper()
+    return "MARKET" if family in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
+
+
 def _limit_entry_price(anchor: Anchor, price: float) -> dict[str, Any]:
     """Where the order rests, and whether it is behind the market at all."""
     level = safe_float(getattr(anchor, "level", 0.0))
@@ -8165,6 +8356,23 @@ def place_limit_order(
     # The market shadow is the plan _make_decision already built at the run's price:
     # an entry that is certain to fill, measured over the very same window.
     row["market_shadow"] = _shadow_geometry(market_plan)
+    # The shadow is only geometry. Escalation has to rebuild a real trade from this
+    # row, so the live market model is serialized too — otherwise the one plan that
+    # could still be executed at market is the one that was thrown away at placement.
+    row["market_plan"] = plan_to_dict(market_plan)
+    row["market_candidate"] = candidate_to_dict(candidate)
+    row["execution_route"] = _execution_route(candidate)
+    row["canonical_setup_family"] = str(
+        getattr(candidate, "canonical_setup_family", "")
+        or canonical_setup_family(getattr(candidate, "setup_type", ""))
+        or ""
+    ).upper()
+    row["escalated"] = False
+    row["escalated_ts"] = 0
+    row["escalated_price"] = 0.0
+    row["escalated_signal_id"] = ""
+    row["escalated_displacement_ts"] = 0
+    row["escalation_refused"] = ""
 
     if not placement["behind_price"]:
         row["status"] = "CANCELLED"
@@ -8284,6 +8492,224 @@ def resolve_pending_limit(
     if anchor is not None:
         consume_anchor(anchor, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
     return opened, decision, row
+
+
+def _escalation_candidate(
+    context: dict[str, Any],
+    order_row: dict[str, Any],
+    ranked: list[Candidate],
+    anchors_by_id: dict[str, Anchor],
+) -> tuple[Optional[Candidate], str]:
+    """Should a limit that did not fill be cancelled and taken at market instead?
+
+    Returns the candidate to execute, or a refusal reason. An empty reason means escalate.
+
+    The rule that carries this function is the displacement bar's timestamp. Section 1
+    re-evaluates every anchor each cycle, so a candidate for the resting order's anchor
+    is usually already sitting in `ranked` — but most cycles that candidate is the SAME
+    reaction that placed the order. Executing it now would buy an old signal at a worse
+    price, which is exactly the late entry this design exists to remove. Requiring the
+    displacement bar to have opened after placement is what makes escalation a response
+    to something new rather than a second spending of something stale.
+    """
+    if str(order_row.get("status") or "") != "PENDING":
+        return None, f"ORDER_{str(order_row.get('status') or 'UNKNOWN')}"
+    now_ms = int(now_utc().timestamp() * 1000)
+    if now_ms > safe_int(order_row.get("expires_ts")):
+        return None, "ORDER_EXPIRED"
+    if not bool(context.get("execution_price_trusted")):
+        # The same kill-switch a fresh entry obeys: a display-only price describes the
+        # market but cannot fill an order.
+        return None, "PRICE_SOURCE_DISPLAY_ONLY_NOT_EXECUTABLE"
+
+    anchor_id = str(order_row.get("anchor_id") or "")
+    anchor = anchors_by_id.get(anchor_id)
+    if anchor is None or str(getattr(anchor, "state", "")) != AnchorState.ARMED.value:
+        return None, "ANCHOR_NO_LONGER_ARMED"
+
+    candidate = next((c for c in ranked if str(getattr(c, "anchor_id", "")) == anchor_id), None)
+    if candidate is None:
+        return None, "NO_FRESH_REACTION"
+
+    displacement = dict((getattr(candidate, "reaction", None) or {}).get("GATE_DISPLACEMENT") or {})
+    displacement_ts = safe_int(displacement.get("ts"))
+    if displacement_ts <= safe_int(order_row.get("placed_ts")):
+        return None, "DISPLACEMENT_NOT_NEWER_THAN_ORDER"
+    age_minutes = safe_float(displacement.get("age_minutes"))
+    if age_minutes > ESCALATION_MAX_DISPLACEMENT_AGE_MIN:
+        return None, f"DISPLACEMENT_{age_minutes:.0f}MIN_TOO_OLD"
+
+    side = str(order_row.get("side") or getattr(candidate, "side", "") or "")
+    price = safe_float(context.get("price"))
+    sign = side_sign(side)
+    beyond = sign * (price - safe_float(order_row.get("limit_price")))
+    if beyond <= 0:
+        # Price is at or behind the order, so the level is still on offer. Waiting is
+        # strictly better than paying up for an entry the limit would have given free.
+        return None, "WAITING_FOR_FILL"
+    if beyond > ANCHOR_MAX_ATR * safe_float(context.get("atr15")):
+        # Implied by GATE_PROXIMITY today, stated anyway: if that gate is ever widened,
+        # escalation must not quietly turn into chasing the move.
+        return None, "ESCALATION_WOULD_CHASE"
+
+    selected, rejection_reason = _select_candidate([candidate], context)
+    if selected is None:
+        return None, str(rejection_reason or "ESCALATION_BELOW_ENTRY_FLOORS")
+    return selected, ""
+
+
+def _escalation_decision(
+    context: dict[str, Any],
+    journal: dict[str, Any],
+    state: dict[str, Any],
+    order_row: dict[str, Any],
+    ranked: list[Candidate],
+    anchors_by_id: dict[str, Anchor],
+) -> tuple[Optional[Candidate], Optional[TradePlan], str]:
+    """Predicate and budget together: may this resting order become a market entry?
+
+    Returns the candidate, an executable plan rebuilt at the current price, and a
+    refusal reason. An empty reason means escalate.
+
+    The plan is rebuilt rather than restored from the row on purpose. The row carries
+    the market plan priced when the order was placed, and entering on it now is the
+    stale entry `_escalation_candidate` just worked to exclude — so the same freshness
+    rule that admits the candidate has to price the trade too. Routing the budget
+    through build_trade_plan keeps the daily cap a single gate for both routes instead
+    of one the limit obeys and the escalation walks around.
+    """
+    candidate, refusal = _escalation_candidate(context, order_row, ranked, anchors_by_id)
+    if candidate is None:
+        return None, None, refusal
+    plan = build_trade_plan(context, candidate, journal=journal, state=state)
+    if not (plan.valid and plan.execution_ready):
+        return candidate, None, str(plan.reason or "ESCALATION_PLAN_NOT_EXECUTABLE")
+    return candidate, plan, ""
+
+
+def _execute_escalation(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    journal: dict[str, Any],
+    anchors_by_id: dict[str, Anchor],
+    order_row: dict[str, Any],
+    candidate: Candidate,
+    plan: TradePlan,
+    learning_mode: str,
+    audit: dict[str, Any],
+    price: float,
+) -> tuple[ActiveTrade, Decision]:
+    """Cancel the resting order and take the entry at market, in that order.
+
+    The sequence is the invariant, so it lives in one function rather than inline in
+    the cycle: no cycle may end holding both a resting order and an open position, and
+    none may hold neither. That means the order row is cancelled and the pending slot
+    cleared BEFORE the trade is stored — reversing those two would leave a window where
+    a crash keeps both, and doing the trade first would let a later cycle see a filled
+    order and an open position at once.
+    """
+    plan.execution_source = "LIMIT_ESCALATED_TO_MARKET"
+    order_id = str(order_row.get("order_id") or "")
+    anchor = anchors_by_id.get(str(order_row.get("anchor_id") or ""))
+    displacement = dict((getattr(candidate, "reaction", None) or {}).get("GATE_DISPLACEMENT") or {})
+    escalation_ts = int(now_utc().timestamp() * 1000)
+
+    order_row["status"] = "CANCELLED"
+    order_row["status_reason"] = "ESCALATED_TO_MARKET_ENTRY"
+    order_row["escalated"] = True
+    order_row["escalated_ts"] = escalation_ts
+    order_row["escalated_price"] = round(price, 6)
+    order_row["escalated_displacement_ts"] = safe_int(displacement.get("ts"))
+    limit_shadow = dict(order_row.get("limit_shadow") or {})
+    limit_shadow["resolution"] = "ESCALATED_NO_FILL"
+    order_row["limit_shadow"] = limit_shadow
+    # The pending slot is cleared below, so the level this order rested on and the
+    # impulse that justified abandoning it have to be captured now or the message
+    # layer cannot report them.
+    audit["escalation"] = {
+        "cancelled_level": safe_float(order_row.get("limit_price")),
+        "displacement_age_min": safe_float(displacement.get("age_minutes")),
+        "order_id": order_id,
+    }
+    # Same order_id, so the upsert replaces the row rather than adding a second
+    # record of one order.
+    _upsert_limit_order(journal, order_row)
+
+    store_pending_limit(state, None)
+    audit["pending_limit"] = {**dict(audit.get("pending_limit") or {}), "status": "CANCELLED"}
+
+    decision = Decision(
+        id=new_id("sig"), time=iso_now(),
+        action=_entry_action_for_stage(str(plan.entry_stage)),
+        side=str(candidate.side), setup_type=str(candidate.setup_type),
+        quality=safe_int(candidate.final_score), reason="LIMIT_ESCALATED_TO_MARKET",
+        regime=str(context.get("regime") or ""), candidate=candidate, plan=plan,
+        audit=audit, current_price=price,
+    )
+    order_row["escalated_signal_id"] = str(decision.id)
+    opened = _open_active_trade(
+        context, candidate, plan, decision, learning_mode,
+        str(order_row.get("preconfirmation_event_id") or ""),
+    )
+    store_active_trade(state, opened)
+    if anchor is not None:
+        consume_anchor(anchor, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
+    append_history(state, {
+        "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+        "quality": safe_int(decision.quality), "price": safe_float(plan.entry),
+        "trade_id": opened.id, "signal_id": decision.id, "order_id": order_id,
+        "reason": "LIMIT_ESCALATED_TO_MARKET",
+    })
+    print(
+        f"[INFO] Ліміт не виповнився — вхід ринком: {decision.side} {decision.setup_type} "
+        f"stage={opened.entry_stage} entry={_fmt_price(opened.entry)} "
+        f"скасований рівень={_fmt_price(order_row.get('limit_price'))} "
+        f"імпульс {safe_float(displacement.get('age_minutes')):.0f} хв тому "
+        f"risk={opened.position_risk_pct:.4f}% trade_id={opened.id} order_id={order_id}"
+    )
+    return opened, decision
+
+
+def _execute_market_entry(
+    context: dict[str, Any],
+    state: dict[str, Any],
+    anchors_by_id: dict[str, Anchor],
+    candidate: Candidate,
+    plan: TradePlan,
+    decision: Decision,
+    learning_mode: str,
+    event_id: str,
+) -> ActiveTrade:
+    """Execute a reaction at the current price: no order rests, nothing waits.
+
+    This is the route TREND_CONTINUATION and SESSION_EXPANSION take. It writes no row
+    to limit_orders and leaves the pending slot clear, because there is no order to
+    resolve later — the trade is open the moment this returns, and supervision owns it
+    from there exactly as it owns a limit fill.
+    """
+    plan.execution_source = "MARKET_AT_REACTION"
+    decision.reason = "MARKET_ENTRY_AT_REACTION"
+    opened = _open_active_trade(
+        context, candidate, plan, decision, learning_mode, event_id,
+    )
+    store_active_trade(state, opened)
+    anchor = anchors_by_id.get(str(candidate.anchor_id))
+    if anchor is not None:
+        consume_anchor(anchor, AnchorState.TRIGGERED.value, "ENTRY_EXECUTED")
+    append_history(state, {
+        "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+        "quality": safe_int(decision.quality), "price": safe_float(plan.entry),
+        "trade_id": opened.id, "signal_id": decision.id,
+        "reason": "MARKET_ENTRY_AT_REACTION",
+    })
+    print(
+        f"[INFO] Угода відкрита ринком: {decision.side} {decision.setup_type} "
+        f"family={candidate.canonical_setup_family} stage={opened.entry_stage} "
+        f"entry={_fmt_price(opened.entry)} stop={_fmt_price(opened.stop_initial)} "
+        f"tp0={_fmt_price(opened.tp0)} risk={opened.position_risk_pct:.4f}% "
+        f"signal_id={opened.signal_id} trade_id={opened.id}"
+    )
+    return opened
 
 
 # ==========================================================
@@ -8754,6 +9180,9 @@ def run_bot() -> int:
     journal["entry_quality_audit"] = compute_entry_quality_audit(journal)
     journal["calendar_statistics"] = compute_calendar_statistics(journal)
     journal["learning_status"] = compute_learning_status(journal)
+    # Measured, never enforced: this is the evidence the deferred risk-sizing decision
+    # will be made on, so it has to accumulate even while nothing reads it back.
+    journal["execution_model_statistics"] = compute_execution_model_statistics(journal)
     learning_mode = str((journal["learning_status"] or {}).get("mode") or "")
     context["learning_warnings"] = learning_health_warnings(journal["learning_status"])
 
@@ -8828,7 +9257,7 @@ def run_bot() -> int:
             "reason": decision.reason,
         }
 
-    # --- 6. виконання: лімітний ордер на рівні, не ринковий вхід ------------
+    # --- 6. виконання: ліміт на рівні або ринком — за природою сетапу -------
     opened: Optional[ActiveTrade] = None
     executable = bool(
         plan and plan.valid and plan.execution_ready
@@ -8845,12 +9274,20 @@ def run_bot() -> int:
     if executable and decision.candidate is not None:
         placement_anchor = anchors_by_id.get(str(decision.candidate.anchor_id))
         if placement_anchor is None:
-            # The order needs the anchor's own level and expiry, so a candidate whose
-            # anchor left memory this cycle cannot be placed. Flipping executable here
-            # (like the price guard above) lets the trailing branch journal the cycle.
+            # Both routes need the anchor: the limit for its level and expiry, the
+            # market route to consume it on entry. A candidate whose anchor left
+            # memory this cycle cannot be executed either way. Flipping executable
+            # here (like the price guard above) lets the trailing branch journal it.
             decision.action = Action.NO_SETUP.value
             decision.reason = "ANCHOR_NOT_IN_MEMORY"
             executable = False
+
+    # Computed after both kill-switches so neither route can slip past them. Not
+    # decided in _make_decision: that function has to keep building the market plan
+    # for both routes, because the limit route needs it as its shadow and as the
+    # fallback an escalation executes.
+    route = _execution_route(decision.candidate) if executable and decision.candidate is not None else ""
+    audit["execution_route"] = route
 
     if pending is not None:
         # 6a. An order was already resting. Resolve it before deciding anything new:
@@ -8883,15 +9320,47 @@ def run_bot() -> int:
                 f"trade_id={opened.id} order_id={order_row.get('order_id')}"
             )
         else:
-            append_history(state, {
-                "type": Action.NO_SETUP.value, "side": str(pending.get("side") or ""),
-                "setup_type": str(pending.get("setup_type") or ""),
-                "quality": safe_int(pending.get("score")), "price": price,
-                "reason": f"LIMIT_{status}", "order_id": str(order_row.get("order_id") or ""),
-            })
-            print(f"[INFO] Лімітний ордер {status}: {order_row.get('status_reason') or 'чекає на рівень'}")
+            # Still resting. A fill is a fact about the last fifteen minutes; an
+            # escalation is a choice, so it is only considered now that resolve has
+            # said the level was not revisited.
+            escalation_refusal = "" if status == "PENDING" else f"ORDER_{status}"
+            escalate: Optional[Candidate] = None
+            escalated_plan: Optional[TradePlan] = None
+            if status == "PENDING":
+                escalate, escalated_plan, escalation_refusal = _escalation_decision(
+                    context, journal, state, order_row, ranked, anchors_by_id,
+                )
+
+            if escalate is not None and escalated_plan is not None:
+                opened, decision = _execute_escalation(
+                    context, state, journal, anchors_by_id, order_row, escalate,
+                    escalated_plan, learning_mode, audit, price,
+                )
+                context["pending_limit"] = None
+                plan = escalated_plan
+            else:
+                order_row["escalation_refused"] = escalation_refusal
+                _upsert_limit_order(journal, order_row)
+                # store_pending_limit keeps a shallow copy, so the refusal recorded just
+                # now needs a re-store to reach state — but only while the row is still
+                # live. Putting a terminal row back into a slot that was cleared above
+                # would leave junk behind for pending_limit_from_state to refuse.
+                if not terminal:
+                    store_pending_limit(state, order_row)
+                append_history(state, {
+                    "type": Action.NO_SETUP.value, "side": str(pending.get("side") or ""),
+                    "setup_type": str(pending.get("setup_type") or ""),
+                    "quality": safe_int(pending.get("score")), "price": price,
+                    "reason": f"LIMIT_{status}", "order_id": str(order_row.get("order_id") or ""),
+                    "escalation_refused": escalation_refusal,
+                })
+                print(
+                    f"[INFO] Лімітний ордер {status}: {order_row.get('status_reason') or 'чекає на рівень'}"
+                    + (f" | ескалація: {escalation_refusal}" if escalation_refusal else "")
+                )
     elif executable and plan is not None and decision.candidate is not None and placement_anchor is not None:
-        # 6b. Nothing resting and a reaction passed all eleven gates: place the order.
+        # 6b/6c. Nothing resting and a reaction passed all eleven gates. Which of the
+        # two live models executes it is the setup's own property, decided by `route`.
         event_id = ""
         if PRECONFIRMATION_LAYER_ENABLED:
             # Created at placement, not at fill: the event measures whether the market
@@ -8904,40 +9373,52 @@ def run_bot() -> int:
             event_id = event["event_id"]
             audit["preconfirmation_event_id"] = event_id
 
-        order_row, limit_plan = place_limit_order(
-            context, journal, state, decision.candidate, placement_anchor, plan, decision.id, event_id,
-        )
-        _upsert_limit_order(journal, order_row)
-        if limit_plan is None:
-            decision.action = Action.NO_SETUP.value
-            decision.reason = str(order_row.get("status_reason") or "LIMIT_NOT_PLACED")
-            plan = None
-            append_history(state, {
-                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-                "quality": safe_int(decision.quality), "price": price,
-                "reason": decision.reason, "order_id": str(order_row.get("order_id") or ""),
-            })
-        else:
-            store_pending_limit(state, order_row)
-            context["pending_limit"] = order_row
-            # The message and the journal record describe the order the operator has
-            # to place, so they carry the plan built from the limit price — not the
-            # market plan, which now lives only in the row's market_shadow.
-            decision.plan = limit_plan
-            plan = limit_plan
-            append_history(state, {
-                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-                "quality": safe_int(decision.quality), "price": safe_float(order_row.get("limit_price")),
-                "signal_id": decision.id, "order_id": str(order_row.get("order_id") or ""),
-                "reason": "LIMIT_PLACED_AT_LEVEL",
-            })
-            print(
-                f"[INFO] Лімітний ордер виставлено: {decision.side} {decision.setup_type} "
-                f"limit={_fmt_price(order_row.get('limit_price'))} stop={_fmt_price(limit_plan.stop)} "
-                f"tp0={_fmt_price(limit_plan.tp0)} risk={limit_plan.position_risk_pct:.4f}% "
-                f"дійсний до {_iso_from_ms(safe_int(order_row.get('expires_ts')))[:16]} "
-                f"order_id={order_row.get('order_id')}"
+        if route == "MARKET":
+            # 6c. Trend-continuation and session-expansion setups: price leaves the
+            # level and does not come back, so resting an order here would not be an
+            # early entry, it would be a missed trade. Executed at the current price.
+            opened = _execute_market_entry(
+                context, state, anchors_by_id, decision.candidate, plan, decision,
+                learning_mode, event_id,
             )
+        else:
+            # 6b. Return-to-the-level setups: the edge is the retrace, so the order
+            # rests on the level and earns its price by waiting.
+            order_row, limit_plan = place_limit_order(
+                context, journal, state, decision.candidate, placement_anchor, plan, decision.id, event_id,
+            )
+            _upsert_limit_order(journal, order_row)
+            if limit_plan is None:
+                decision.action = Action.NO_SETUP.value
+                decision.reason = str(order_row.get("status_reason") or "LIMIT_NOT_PLACED")
+                plan = None
+                append_history(state, {
+                    "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                    "quality": safe_int(decision.quality), "price": price,
+                    "reason": decision.reason, "order_id": str(order_row.get("order_id") or ""),
+                })
+            else:
+                store_pending_limit(state, order_row)
+                context["pending_limit"] = order_row
+                # The message and the journal record describe the order the operator has
+                # to place, so they carry the plan built from the limit price. The market
+                # plan stays on the row as the shadow it is measured against, and as the
+                # model an escalation falls back to.
+                decision.plan = limit_plan
+                plan = limit_plan
+                append_history(state, {
+                    "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                    "quality": safe_int(decision.quality), "price": safe_float(order_row.get("limit_price")),
+                    "signal_id": decision.id, "order_id": str(order_row.get("order_id") or ""),
+                    "reason": "LIMIT_PLACED_AT_LEVEL",
+                })
+                print(
+                    f"[INFO] Лімітний ордер виставлено: {decision.side} {decision.setup_type} "
+                    f"limit={_fmt_price(order_row.get('limit_price'))} stop={_fmt_price(limit_plan.stop)} "
+                    f"tp0={_fmt_price(limit_plan.tp0)} risk={limit_plan.position_risk_pct:.4f}% "
+                    f"дійсний до {_iso_from_ms(safe_int(order_row.get('expires_ts')))[:16]} "
+                    f"order_id={order_row.get('order_id')}"
+                )
     elif not deferred_to_open_trade:
         append_history(state, {
             "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
@@ -9274,7 +9755,14 @@ def _synthetic_market(side: str, *, reaction: bool, distance_atr: float = 0.10) 
     }
 
 
-def _synthetic_context(side: str, *, reaction: bool, distance_atr: float = 0.10, runway_atr: Optional[float] = None) -> tuple[dict[str, Any], Anchor, dict[str, Any]]:
+def _synthetic_context(
+    side: str,
+    *,
+    reaction: bool,
+    distance_atr: float = 0.10,
+    runway_atr: Optional[float] = None,
+    setup_type: str = SetupType.SWEEP_RECLAIM.value,
+) -> tuple[dict[str, Any], Anchor, dict[str, Any]]:
     data = _synthetic_market(side, reaction=reaction, distance_atr=distance_atr)
     level = float(data.pop("_anchor_level"))
     context = build_context(data, {"regime_memory": {}}, {"trades": [], "signals": []})
@@ -9284,7 +9772,7 @@ def _synthetic_context(side: str, *, reaction: bool, distance_atr: float = 0.10,
     atr15 = safe_float(context["atr15"])
     sign = side_sign(side)
     anchor = make_anchor(
-        SetupType.SWEEP_RECLAIM.value, str(side), level, level - sign * 0.30 * atr15 / 0.30,
+        str(setup_type), str(side), level, level - sign * 0.30 * atr15 / 0.30,
         AnchorKind.DEMAND_ZONE.value if sign > 0 else AnchorKind.SUPPLY_ZONE.value,
         "self-test synthetic level", context, score=70.0,
     )
@@ -10189,13 +10677,18 @@ def _check_htf_neutral_is_not_an_edge() -> list[str]:
 # LIMIT ENTRY
 # ==========================================================
 
-def _ready_candidate(side: str) -> tuple[dict[str, Any], Anchor, Candidate, TradePlan, dict[str, Any]]:
+def _ready_candidate(
+    side: str,
+    setup_type: str = SetupType.SWEEP_RECLAIM.value,
+) -> tuple[dict[str, Any], Anchor, Candidate, TradePlan, dict[str, Any]]:
     """anchor -> reaction -> candidate -> stage -> market plan: the handover point.
 
     Every check below starts here because none of them is about the gates. The gates
     still decide WHETHER a level reacted; what changed is what happens after.
     """
-    context, anchor, _ = _synthetic_context(side, reaction=True, runway_atr=3.20)
+    context, anchor, _ = _synthetic_context(
+        side, reaction=True, runway_atr=3.20, setup_type=setup_type,
+    )
     # Set rather than read, exactly as _check_entry_chain does: the synthetic walk is
     # not directional enough on 1H/4H for htf_fact to call a trend, and the HTF floor
     # is measured by _check_htf_neutral_is_not_an_edge instead.
@@ -10210,15 +10703,46 @@ def _ready_candidate(side: str) -> tuple[dict[str, Any], Anchor, Candidate, Trad
                                "signal_events": [], "preconfirmation_events": [], "limit_orders": []}
     candidate = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
     if candidate is None:
-        raise AssertionError("build_candidate refused a ready reaction")
+        raise AssertionError(f"build_candidate refused a ready reaction for {setup_type}")
     selected, reason = _select_candidate(rank_candidates([candidate]), context)
     if selected is None:
-        raise AssertionError(f"_select_candidate refused: {reason}")
+        raise AssertionError(f"_select_candidate refused {setup_type}: {reason}")
     selected.entry_stage = str(resolve_entry_stage(selected, context, journal)["entry_stage"])
     market_plan = build_trade_plan(context, selected, journal=journal, state={"active_trade": None})
     if not (market_plan.valid and market_plan.execution_ready):
         raise AssertionError(f"market plan not executable: {market_plan.reason}")
     return context, anchor, selected, market_plan, journal
+
+
+def _resting_order(
+    side: str,
+    setup_type: str = SetupType.SWEEP_RECLAIM.value,
+) -> tuple[dict[str, Any], Anchor, Candidate, TradePlan, dict[str, Any], dict[str, Any]]:
+    """A limit actually resting on the level, plus everything that placed it."""
+    context, anchor, candidate, market_plan, journal = _ready_candidate(side, setup_type)
+    row, limit_plan = place_limit_order(
+        context, journal, {"active_trade": None}, candidate, anchor, market_plan, new_id("sig"), "",
+    )
+    if limit_plan is None:
+        raise AssertionError(f"placement cancelled as {row.get('status_reason')}")
+    row["expires_ts"] = safe_int(row["placed_ts"]) + 60 * 60_000
+    return context, anchor, candidate, market_plan, journal, row
+
+
+def _later_cycle(row: dict[str, Any], candidate: Candidate) -> dict[str, Any]:
+    """The same order as a subsequent cycle sees it: placed before the impulse bar.
+
+    placed_ts is wall-clock, and the newest 3m bar always opens at or before now, so
+    in the cycle that places an order the displacement bar can never be newer than it.
+    That is the point of the predicate — but it also means an escalation is only ever
+    reachable from a LATER cycle, where a new bar has opened since. Dating the row back
+    one cadence reproduces exactly that relation without inventing a bar in the future.
+    """
+    displacement = dict((getattr(candidate, "reaction", None) or {}).get("GATE_DISPLACEMENT") or {})
+    later = dict(row)
+    later["placed_ts"] = safe_int(displacement.get("ts")) - PRECONFIRM_RESOLUTION_BAR_MS
+    later["expires_ts"] = safe_int(later["placed_ts"]) + 60 * 60_000
+    return later
 
 
 def _check_limit_rests_on_the_level() -> list[str]:
@@ -10573,6 +11097,497 @@ def _check_limit_keys_survive_a_reload() -> list[str]:
     return problems
 
 
+def _check_route_follows_the_canonical_family() -> list[str]:
+    """Which model executes a setup is the setup's own property, never a constant.
+
+    All 24 canonical setups are driven through `_execution_route`, so a hardcoded
+    "LIMIT" — the shape the bot had before the hybrid — fails on the first
+    trend-continuation setup instead of quietly turning 54% of the flow back into
+    empty waiting.
+    """
+    problems: list[str] = []
+    market = set(MARKET_ROUTED_CANONICAL_FAMILIES)
+    limit = set(LIMIT_ROUTED_CANONICAL_FAMILIES)
+    if market & limit:
+        problems.append(f"families claimed by both routes: {sorted(market & limit)}")
+    if market | limit != set(CANONICAL_FAMILIES):
+        problems.append(
+            f"routes do not partition the six families: unrouted="
+            f"{sorted(set(CANONICAL_FAMILIES) - (market | limit))} "
+            f"unknown={sorted((market | limit) - set(CANONICAL_FAMILIES))}"
+        )
+
+    _, _, template, _, _ = _ready_candidate(Side.LONG.value)
+    seen: set[str] = set()
+    for setup in sorted(CANONICAL_SETUP_FAMILY_MAP):
+        family = CANONICAL_SETUP_FAMILY_MAP[setup]
+        seen.add(family)
+        expected = "MARKET" if family in market else "LIMIT"
+        clone = candidate_from_dict(candidate_to_dict(template))
+        if clone is None:
+            problems.append(f"{setup}: the candidate did not survive the dict round-trip")
+            continue
+        clone.setup_type = setup
+        clone.canonical_setup_family = family
+        got = _execution_route(clone)
+        if got != expected:
+            problems.append(f"{setup} ({family}) routed to {got}, expected {expected}")
+        # The label is empty on 30 of the 35 trades already in the live journal, so the
+        # fallback has to reach the same route or history would be re-routed by accident.
+        clone.canonical_setup_family = ""
+        derived = _execution_route(clone)
+        if derived != expected:
+            problems.append(
+                f"{setup}: with no canonical_setup_family stored the route became {derived}, "
+                f"expected {expected} from the setup_type fallback"
+            )
+    if seen != set(CANONICAL_FAMILIES):
+        problems.append(f"the taxonomy covers {sorted(seen)}, not all six families")
+
+    # Both routes have to be real, driven end to end through the actual chain.
+    for setup, expected in ((SetupType.PULLBACK_CONTINUATION.value, "MARKET"),
+                            (SetupType.OPENING_RANGE_BREAKOUT.value, "MARKET"),
+                            (SetupType.SWEEP_RECLAIM.value, "LIMIT")):
+        for side in (Side.LONG.value, Side.SHORT.value):
+            _, _, candidate, _, _ = _ready_candidate(side, setup)
+            got = _execution_route(candidate)
+            if got != expected:
+                problems.append(f"{setup} {side} built family={candidate.canonical_setup_family} and routed {got}")
+
+    # Driving the router is not enough: a cycle that hardcodes route = "LIMIT" never
+    # calls it, and every assertion above would still pass. The same bytecode technique
+    # _check_detectors_cover_taxonomy uses ties the decision to the call site.
+    called = set(getattr(run_bot, "__code__", None).co_names or ())
+    for required in ("_execution_route", "_execute_market_entry", "place_limit_order",
+                     "_escalation_decision", "_execute_escalation"):
+        if required not in called:
+            problems.append(
+                f"run_bot no longer calls {required}, so the route it computes is not the "
+                "route that executes — a hardcoded branch would pass every check above"
+            )
+    if "_open_active_trade" in called:
+        problems.append(
+            "run_bot opens a trade outside _execute_market_entry and _execute_escalation, "
+            "so an entry path exists that neither helper's invariants cover"
+        )
+    return problems
+
+
+def _check_market_route_opens_without_an_order() -> list[str]:
+    """A market-routed reaction is a trade now: nothing rests and nothing waits.
+
+    This is the half of the hybrid that was missing. Before it, every candidate went
+    to a limit regardless of family, and a trend-continuation setup — price leaving the
+    level for good — became an order that could never fill.
+    """
+    problems: list[str] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, market_plan, journal = _ready_candidate(
+            side, SetupType.PULLBACK_CONTINUATION.value,
+        )
+        if _execution_route(candidate) != "MARKET":
+            problems.append(f"{side}: a trend-continuation candidate was not routed to market")
+            continue
+        state: dict[str, Any] = {"active_trade": None}
+        decision = Decision(
+            id=new_id("sig"), time=iso_now(),
+            action=_entry_action_for_stage(str(market_plan.entry_stage)),
+            side=str(candidate.side), setup_type=str(candidate.setup_type),
+            quality=safe_int(candidate.final_score), reason="", regime=str(context.get("regime") or ""),
+            candidate=candidate, plan=market_plan, audit={}, current_price=safe_float(context.get("price")),
+        )
+        opened = _execute_market_entry(
+            context, state, {anchor.id: anchor}, candidate, market_plan, decision, "NOT_LEARNED", "",
+        )
+        orders = [row for row in list(journal.get("limit_orders") or []) if isinstance(row, dict)]
+        if orders:
+            problems.append(f"{side}: a market entry wrote {len(orders)} order rows it has no way to resolve")
+        if pending_limit_from_state(state) is not None:
+            problems.append(
+                f"{side}: a market entry left an order in {STATE_PENDING_KEY}, so the next cycle would "
+                "resolve a resting order that was never placed and refuse every new entry"
+            )
+        if active_trade_from_state(state) is None:
+            problems.append(f"{side}: a market entry did not store the trade it opened")
+        if abs(opened.entry - market_plan.entry) > 1e-9:
+            problems.append(f"{side}: the trade opened at {opened.entry}, not the market plan's {market_plan.entry}")
+        if abs(opened.entry - round_price(anchor.level)) < 1e-9:
+            problems.append(f"{side}: the market entry filled at the level, so it is a limit wearing another name")
+        if str(opened.execution_source) != "MARKET_AT_REACTION":
+            problems.append(
+                f"{side}: execution_source {opened.execution_source} would not separate this trade "
+                "from the limit fills in the model statistics"
+            )
+        if str(decision.reason) != "MARKET_ENTRY_AT_REACTION":
+            problems.append(f"{side}: reason {decision.reason} gives the message layer no title to choose")
+        if anchor.state != AnchorState.TRIGGERED.value:
+            problems.append(f"{side}: a market entry left its anchor armed, so the next cycle re-trades the level")
+    return problems
+
+
+def _check_escalation_needs_a_displacement_after_placement() -> list[str]:
+    """The load-bearing rule: an escalation answers a NEW impulse, never the old one.
+
+    Section 1 re-evaluates every armed anchor each cycle, so the candidate for a resting
+    order's anchor is almost always already in `ranked` — and in the cycle that placed
+    the order it is the very reaction that placed it. Spending that same reaction again,
+    at a price the level no longer offers, is the late entry this whole design removes.
+    """
+    problems: list[str] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, _, journal, row = _resting_order(side)
+        displacement = dict((candidate.reaction or {}).get("GATE_DISPLACEMENT") or {})
+        if not displacement:
+            problems.append(f"{side}: the candidate carries no GATE_DISPLACEMENT evidence to date")
+            continue
+
+        # The cycle that placed the order. placed_ts is wall-clock and the newest 3m bar
+        # always opens at or before now, so the impulse can never be newer than the order
+        # it justified — which is exactly why escalation cannot fire in the same breath.
+        got, refusal = _escalation_candidate(context, dict(row), [candidate], {anchor.id: anchor})
+        if got is not None or refusal != "DISPLACEMENT_NOT_NEWER_THAN_ORDER":
+            problems.append(
+                f"{side}: the reaction that placed the order was allowed to escalate it "
+                f"({refusal or 'admitted'}) — that is buying the same signal twice, worse"
+            )
+
+        # A later cycle: a bar has opened since the order went on.
+        later = _later_cycle(row, candidate)
+        got, refusal = _escalation_candidate(context, later, [candidate], {anchor.id: anchor})
+        if got is None:
+            problems.append(f"{side}: a displacement newer than the order was refused as {refusal}")
+        elif str(got.anchor_id) != str(anchor.id):
+            problems.append(f"{side}: escalation returned a candidate for another anchor")
+
+        # Newer, but no longer fresh: the bound is what keeps it a reaction to now.
+        stale = candidate_from_dict(candidate_to_dict(candidate))
+        if stale is not None:
+            stale.reaction = {
+                **dict(stale.reaction or {}),
+                "GATE_DISPLACEMENT": {
+                    **displacement,
+                    "age_minutes": ESCALATION_MAX_DISPLACEMENT_AGE_MIN + 1.0,
+                },
+            }
+            got, refusal = _escalation_candidate(context, later, [stale], {anchor.id: anchor})
+            if got is not None or f"{ESCALATION_MAX_DISPLACEMENT_AGE_MIN + 1:.0f}MIN_TOO_OLD" not in refusal:
+                problems.append(
+                    f"{side}: an impulse older than ESCALATION_MAX_DISPLACEMENT_AGE_MIN="
+                    f"{ESCALATION_MAX_DISPLACEMENT_AGE_MIN} was allowed to escalate ({refusal or 'admitted'})"
+                )
+    return problems
+
+
+def _check_escalation_fires_only_on_the_right_side() -> list[str]:
+    """Escalation is for a level the market left, not one it is still offering."""
+    problems: list[str] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, _, _, row = _resting_order(side)
+        later = _later_cycle(row, candidate)
+        limit = safe_float(row.get("limit_price"))
+        atr15 = safe_float(context.get("atr15"))
+        sign = side_sign(side)
+
+        # Price back at or behind the order: the fill is still on offer, so paying up
+        # for it would buy at a worse price the entry the limit would have given free.
+        at_level = dict(context)
+        at_level["price"] = limit - sign * 0.02
+        got, refusal = _escalation_candidate(at_level, later, [candidate], {anchor.id: anchor})
+        if got is not None or refusal != "WAITING_FOR_FILL":
+            problems.append(f"{side}: a level price could still reach escalated anyway ({refusal or 'admitted'})")
+
+        # Price gone, but far: chasing. ANCHOR_MAX_ATR bounds it today via GATE_PROXIMITY,
+        # and this assertion is here so widening that gate cannot silently turn the
+        # escalation into a market-order chase.
+        chased = dict(context)
+        chased["price"] = limit + sign * ANCHOR_MAX_ATR * atr15 * 2.0
+        got, refusal = _escalation_candidate(chased, later, [candidate], {anchor.id: anchor})
+        if got is not None or refusal != "ESCALATION_WOULD_CHASE":
+            problems.append(
+                f"{side}: an entry {ANCHOR_MAX_ATR * 2:.2f} ATR past the level was allowed "
+                f"({refusal or 'admitted'}) — that is chasing, not escalating"
+            )
+
+        # Between the two bounds is the band the design intends, and it must admit.
+        inside = dict(context)
+        inside["price"] = limit + sign * ANCHOR_MAX_ATR * atr15 * 0.5
+        got, refusal = _escalation_candidate(inside, later, [candidate], {anchor.id: anchor})
+        if got is None and refusal not in ("ESCALATION_BELOW_ENTRY_FLOORS",):
+            problems.append(f"{side}: an in-band move was refused as {refusal}")
+    return problems
+
+
+def _check_escalation_cancels_the_order_in_the_same_cycle() -> list[str]:
+    """One cycle, one slot: the order is cancelled before the trade is stored.
+
+    Reversing those two would leave a state where a resting order and an open position
+    coexist, and the next cycle would resolve an order whose level has already been
+    traded. Both slots filled is a double entry; both empty is a trade nobody supervises.
+    """
+    problems: list[str] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, _, journal, row = _resting_order(side)
+        later = _later_cycle(row, candidate)
+        state: dict[str, Any] = {"active_trade": None}
+        store_pending_limit(state, later)
+        _upsert_limit_order(journal, later)
+
+        escalate, plan, refusal = _escalation_decision(
+            context, journal, state, later, [candidate], {anchor.id: anchor},
+        )
+        if escalate is None or plan is None:
+            problems.append(f"{side}: a valid in-band impulse was refused as {refusal}")
+            continue
+        audit: dict[str, Any] = {"pending_limit": {"status": "PENDING"}}
+        opened, decision = _execute_escalation(
+            context, state, journal, {anchor.id: anchor}, later, escalate, plan,
+            "NOT_LEARNED", audit, safe_float(context.get("price")),
+        )
+
+        resting = pending_limit_from_state(state)
+        if resting is not None:
+            problems.append(f"{side}: the order is still resting after the entry — both slots are filled")
+        if active_trade_from_state(state) is None:
+            problems.append(f"{side}: no trade was stored, so both slots are empty and nothing is supervised")
+        if str(later.get("status")) != "CANCELLED":
+            problems.append(f"{side}: the escalated order reports status {later.get('status')}")
+        if str(later.get("status_reason")) != "ESCALATED_TO_MARKET_ENTRY":
+            problems.append(f"{side}: status_reason {later.get('status_reason')} does not say why it was cancelled")
+        if not bool(later.get("escalated")):
+            problems.append(f"{side}: the row does not carry escalated=True, so the fill-rate comparison loses it")
+        if str((later.get("limit_shadow") or {}).get("resolution")) != "ESCALATED_NO_FILL":
+            problems.append(
+                f"{side}: limit_shadow resolution {(later.get('limit_shadow') or {}).get('resolution')} "
+                "would count an abandoned level as an ordinary no-fill"
+            )
+        if str(later.get("escalated_signal_id") or "") != str(decision.id):
+            problems.append(f"{side}: the row cannot be traced to the decision that replaced it")
+        rows = [item for item in list(journal.get("limit_orders") or []) if isinstance(item, dict)]
+        same = [item for item in rows if str(item.get("order_id")) == str(later.get("order_id"))]
+        if len(same) != 1:
+            problems.append(f"{side}: one escalation left {len(same)} journal rows for order {later.get('order_id')}")
+        if str(opened.execution_source) != "LIMIT_ESCALATED_TO_MARKET":
+            problems.append(
+                f"{side}: execution_source {opened.execution_source} would credit the limit model "
+                "with a market price it never obtained"
+            )
+        if abs(opened.entry - plan.entry) > 1e-9:
+            problems.append(f"{side}: the trade opened at {opened.entry}, not the rebuilt plan's {plan.entry}")
+        if abs(opened.entry - safe_float(later.get("limit_price"))) < 1e-9:
+            problems.append(f"{side}: the escalation filled at the cancelled level, so nothing was actually abandoned")
+        if anchor.state != AnchorState.TRIGGERED.value:
+            problems.append(f"{side}: the anchor stayed armed, so the next cycle could rest a second order on it")
+        escalation = dict(audit.get("escalation") or {})
+        if abs(safe_float(escalation.get("cancelled_level")) - safe_float(later.get("limit_price"))) > 1e-9:
+            problems.append(
+                f"{side}: the audit lost the cancelled level {escalation.get('cancelled_level')}, "
+                "so the message cannot say which level did not come back"
+            )
+    return problems
+
+
+def _check_fill_beats_escalation() -> list[str]:
+    """A touch and a fresh impulse in the same window: the fill wins, at the limit price.
+
+    A fill is a fact about confirmed candles; an escalation is a choice. The choice is
+    only consulted once resolve has said the level was not revisited, so a bar that did
+    revisit it can never be traded twice or at the worse of the two prices.
+    """
+    problems: list[str] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        context, anchor, candidate, _, journal, row = _resting_order(side)
+        later = _later_cycle(row, candidate)
+        limit = safe_float(later.get("limit_price"))
+        sign = side_sign(side)
+        step = PRECONFIRM_RESOLUTION_BAR_MS
+
+        # One bar does both jobs: it reaches the level, and it opens after placement so
+        # the escalation predicate would have admitted it. Built per side rather than by
+        # multiplying offsets by side_sign, which inverts high below low on a SHORT.
+        bar_ts = safe_int(later.get("placed_ts")) + step
+        if sign > 0:
+            touched = Candle(ts=bar_ts, open=limit + 0.04, high=limit + 0.06,
+                             low=limit - 0.02, close=limit - 0.30, confirmed=True)
+        else:
+            touched = Candle(ts=bar_ts, open=limit - 0.04, high=limit + 0.02,
+                             low=limit - 0.06, close=limit + 0.30, confirmed=True)
+        probe = dict(context)
+        probe["candles"] = {"3m": [touched]}
+        opened, filled_decision, out = resolve_pending_limit(probe, dict(later), {anchor.id: anchor}, "NOT_LEARNED")
+        if opened is None:
+            problems.append(f"{side}: a bar that touched the level left the order {out.get('status')}")
+            continue
+        if abs(safe_float(out.get("fill_price")) - limit) > 1e-9:
+            problems.append(f"{side}: the fill price {out.get('fill_price')} is not the order price {limit}")
+        if abs(opened.entry - limit) > 1e-9:
+            problems.append(f"{side}: the trade opened at {opened.entry} instead of the limit {limit}")
+        if bool(out.get("escalated")):
+            problems.append(f"{side}: an order that filled was also marked escalated")
+        if str((out.get("limit_shadow") or {}).get("resolution")) == "ESCALATED_NO_FILL":
+            problems.append(f"{side}: a filled order reported its level as abandoned")
+
+        # And once resolved, the predicate cannot reach it again: status is the first
+        # thing it tests, so a filled row is refused rather than traded a second time.
+        got, refusal = _escalation_candidate(probe, dict(out), [candidate], {anchor.id: anchor})
+        if got is not None or refusal != "ORDER_FILLED":
+            problems.append(f"{side}: a FILLED row was still escalatable ({refusal or 'admitted'})")
+        if filled_decision is None or str(filled_decision.reason) != "LIMIT_FILLED_AT_LEVEL":
+            problems.append(f"{side}: the fill decision lost the reason the message titles it by")
+    return problems
+
+
+def _check_escalation_respects_the_killswitches() -> list[str]:
+    """Every refusal a fresh entry obeys also stops an escalation, and the order rests.
+
+    An escalation is not a loophole. In particular the daily risk cap is enforced by
+    rebuilding the plan through build_trade_plan rather than by reusing the one frozen at
+    placement, which the budget had already been consulted about hours earlier.
+    """
+    problems: list[str] = []
+    context, anchor, candidate, _, journal, row = _resting_order(Side.LONG.value)
+    later = _later_cycle(row, candidate)
+    anchors = {anchor.id: anchor}
+
+    cases = [
+        ("untrusted price", dict(context, execution_price_trusted=False), journal,
+         "PRICE_SOURCE_DISPLAY_ONLY_NOT_EXECUTABLE"),
+        ("no fresh reaction", dict(context), journal, "NO_FRESH_REACTION"),
+        ("anchor left memory", dict(context), journal, "ANCHOR_NO_LONGER_ARMED"),
+    ]
+    for label, probe_context, probe_journal, expected in cases:
+        ranked = [] if label == "no fresh reaction" else [candidate]
+        known = {} if label == "anchor left memory" else anchors
+        got, plan, refusal = _escalation_decision(
+            probe_context, probe_journal, {"active_trade": None}, dict(later), ranked, known,
+        )
+        if got is not None or plan is not None or refusal != expected:
+            problems.append(f"{label}: expected {expected}, got {refusal or 'admitted'}")
+
+    expired = dict(later)
+    expired["expires_ts"] = safe_int(expired["placed_ts"]) - 1000
+    got, plan, refusal = _escalation_decision(
+        context, journal, {"active_trade": None}, expired, [candidate], anchors,
+    )
+    if got is not None or plan is not None or refusal != "ORDER_EXPIRED":
+        problems.append(f"an order past expires_ts: expected ORDER_EXPIRED, got {refusal or 'admitted'}")
+
+    # The budget. Same predicate outcome, different answer from the plan — which is why
+    # the two are composed in one function instead of decided by the predicate alone.
+    spent = dict(journal)
+    spent["trades"] = [
+        {"id": f"cap{i}", "signal_id": f"cap-sig{i}", "closed_at": iso_now(),
+         "position_risk_pct": DAILY_RISK_CAP}
+        for i in range(2)
+    ]
+    state: dict[str, Any] = {"active_trade": None}
+    store_pending_limit(state, later)
+    got, plan, refusal = _escalation_decision(context, spent, state, dict(later), [candidate], anchors)
+    if got is None:
+        problems.append("the predicate refused before the budget was ever consulted, so the cap is untested")
+    elif plan is not None or refusal != "DAILY_RISK_BUDGET_EXHAUSTED":
+        problems.append(f"an exhausted daily cap: expected DAILY_RISK_BUDGET_EXHAUSTED, got {refusal or 'admitted'}")
+    if active_trade_from_state(state) is not None:
+        problems.append("a trade was stored despite the exhausted daily cap")
+    if pending_limit_from_state(state) is None:
+        problems.append(
+            "the refused escalation cleared the pending slot, so the order that is still "
+            "resting on the exchange would never be resolved again"
+        )
+    return problems
+
+
+def _check_execution_model_statistics_are_never_enforcing() -> list[str]:
+    """The measurement moves; nothing downstream moves with it.
+
+    The operator asked for two to three days of evidence before risk sizing is touched
+    at all, so these buckets must accumulate without being read back. The proof is a
+    swap: two journals holding identical outcomes attributed to opposite models have to
+    produce opposite verdicts and an identical entry decision.
+    """
+    def trade_row(index: int, setup: str, result_r: float, source: str) -> dict[str, Any]:
+        return {
+            "id": f"m{index}", "signal_id": f"ms{index}", "side": "LONG", "setup_type": setup,
+            "setup_family": canonical_setup_family(setup), "canonical_setup_family": canonical_setup_family(setup),
+            "result_r": result_r, "pnl_r": result_r, "realized_return_pct": result_r * 0.5,
+            "outcome_status": "RESOLVED", "close_action": "TP1" if result_r > 0 else "STOP",
+            "mfe_r": max(result_r, 0.0), "mae_r": max(-result_r, 0.0),
+            "closed_at": iso_now(), "entry_stage": EntryStage.PROBE.value,
+            "execution_stage": EntryStage.PROBE.value, "opened_regime": "TRANSITION",
+            "execution_source": source, "position_risk_pct": 0.01,
+        }
+
+    def swapped(market_bad: bool) -> dict[str, Any]:
+        bad = "MARKET_AT_REACTION" if market_bad else "LIMIT_FILL_AT_ANCHOR"
+        good = "LIMIT_FILL_AT_ANCHOR" if market_bad else "MARKET_AT_REACTION"
+        trades = [trade_row(i, SetupType.FRESH_BASE_CONTINUATION.value, -1.0, bad) for i in range(14)]
+        trades += [trade_row(50 + i, SetupType.SWEEP_RECLAIM.value, 1.0, good) for i in range(14)]
+        return {"trades": trades, "signals": [], "training_signals": [], "signal_events": [],
+                "preconfirmation_events": [], "limit_orders": []}
+
+    def scene(journal: dict[str, Any]) -> tuple[Any, ...]:
+        context, anchor, _ = _synthetic_context(Side.LONG.value, reaction=True, runway_atr=3.20)
+        context["htf_fact"] = {
+            **dict(context.get("htf_fact") or {}),
+            "state": "ALIGNED", "direction_1h": anchor.side, "direction_4h": anchor.side,
+        }
+        reaction = evaluate_reaction(context, anchor)
+        built = build_candidate(context, anchor, reaction, compute_degradation_table(journal))
+        if built is None:
+            return ("REFUSED_BY_ADMISSION",)
+        selected, reason = _select_candidate(rank_candidates([built]), context)
+        if selected is None:
+            return ("REFUSED_BY_SELECTION", reason)
+        selected.entry_stage = str(resolve_entry_stage(selected, context, journal)["entry_stage"])
+        plan = build_trade_plan(context, selected, journal=journal, state={"active_trade": None})
+        ledger = dict((plan.stage_plan or {}).get("risk_ledger") or {})
+        return (
+            safe_int(selected.final_score), str(selected.entry_stage),
+            round(safe_float(plan.position_risk_pct), 6), round(safe_float(plan.entry), 6),
+            round(safe_float(plan.stop), 6), round(safe_float(plan.tp1), 6),
+            bool(plan.valid), bool(plan.execution_ready),
+            json.dumps(ledger.get("breakdown"), sort_keys=True),
+        )
+
+    problems: list[str] = []
+    market_bad = compute_execution_model_statistics(swapped(True))
+    market_good = compute_execution_model_statistics(swapped(False))
+    if market_bad.get("enforced") is not False or market_good.get("enforced") is not False:
+        problems.append("the statistics claim to be enforced, which is not what was agreed")
+    if str((market_bad.get("by_model") or {}).get("MARKET", {}).get("verdict")) != "UNDERPERFORMING":
+        problems.append(
+            f"14 catastrophic market trades read as "
+            f"{(market_bad.get('by_model') or {}).get('MARKET', {}).get('verdict')}, so the measurement is blind"
+        )
+    if str((market_good.get("by_model") or {}).get("MARKET", {}).get("verdict")) != "OUTPERFORMING":
+        problems.append("swapping the labels did not move the market verdict, so nothing is being measured")
+    family_bad = (market_bad.get("by_family_model") or {}).get("TREND_CONTINUATION:MARKET") or {}
+    if safe_int(family_bad.get("trades")) != 14:
+        problems.append(f"by_family_model counted {family_bad.get('trades')} of 14 trend-continuation trades")
+
+    # Legacy rows: canonical_setup_family is empty on 30 of the 35 trades already in the
+    # live journal, and execution_source predates both new labels. Without the fallback
+    # that history vanishes from the measurement instead of landing in MARKET.
+    legacy = [trade_row(i, SetupType.BREAKOUT_RETEST.value, 0.5, "LIVE_3M") for i in range(3)]
+    for row in legacy:
+        row.pop("canonical_setup_family")
+    legacy_stats = compute_execution_model_statistics({"trades": legacy, "limit_orders": []})
+    if "STRUCTURAL_EXPANSION:MARKET" not in list(legacy_stats.get("by_family_model") or {}):
+        problems.append(
+            f"legacy rows bucketed as {sorted(legacy_stats.get('by_family_model') or {})}, "
+            "so the pre-hybrid history would disappear from the comparison"
+        )
+
+    before, after = scene(swapped(True)), scene(swapped(False))
+    if before != after:
+        problems.append(
+            "attributing the same outcomes to the other model changed the entry decision: "
+            f"{before} vs {after} — the statistics are feeding back into sizing or admission"
+        )
+    if before[0] == "REFUSED_BY_ADMISSION" or before[0] == "REFUSED_BY_SELECTION":
+        problems.append(f"a catastrophic market bucket stopped the bot trading at all: {before}")
+    return problems
+
+
 def _check_messages() -> list[str]:
     """The no-entry message must exist and fit: it is what arrives every 15 minutes."""
     problems: list[str] = []
@@ -10816,6 +11831,14 @@ def _run_self_test() -> bool:
         ("обидві моделі міряються однаково", _check_both_models_are_measured_alike),
         ("журнал ордерів не дублюється", _check_order_journal_does_not_duplicate),
         ("ключі ордера переживають перезавантаження", _check_limit_keys_survive_a_reload),
+        ("маршрут за природою сетапу", _check_route_follows_the_canonical_family),
+        ("ринковий вхід не створює ордера", _check_market_route_opens_without_an_order),
+        ("ескалація лише на свіжий імпульс", _check_escalation_needs_a_displacement_after_placement),
+        ("ескалація лише в бік руху", _check_escalation_fires_only_on_the_right_side),
+        ("ескалація знімає ордер у тому ж циклі", _check_escalation_cancels_the_order_in_the_same_cycle),
+        ("виконання ліміта важливіше за ескалацію", _check_fill_beats_escalation),
+        ("ескалація кориться kill-switch", _check_escalation_respects_the_killswitches),
+        ("статистика моделей нічого не примушує", _check_execution_model_statistics_are_never_enforcing),
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
     ]
