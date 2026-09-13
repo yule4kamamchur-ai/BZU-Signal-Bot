@@ -109,7 +109,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.1.0-hybrid-limit-market-entry"
+BOT_VERSION = "pro-organic-v10.2.0-limit-arming-on-fresh-levels"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -403,6 +403,30 @@ LIMIT_ENTRY_RETRACE_PCT = min(1.0, max(0.0, float(os.getenv("LIMIT_ENTRY_RETRACE
 PENDING_LIMIT_TERMINAL_STATUSES = frozenset({"FILLED", "EXPIRED", "CANCELLED"})
 LIMIT_ORDER_JOURNAL_LIMIT = max(50, int(os.getenv("LIMIT_ORDER_JOURNAL_LIMIT", "300") or 300))
 LIMIT_ORDER_SCHEMA_VERSION = "organic_limit_order_v10.1.0"
+
+# Армінг: ліміт на рівні, якого ціна ще НЕ досягла. ANCHOR_MAX_ATR (0.35) обмежує
+# ринковий вхід — там ціна вже впритул до рівня, бо реакція підтвердилась. Армінг
+# навпаки чекає, поки ціна дійде, тому його межа ширша: рівень має бути досяжним
+# за життя якоря, але не настільки далеко, щоб ордер був фантазією.
+LIMIT_ARM_MAX_ATR = min(6.0, max(0.40, float(os.getenv("LIMIT_ARM_MAX_ATR", "2.50") or 2.50)))
+LIMIT_ARM_SCHEMA_VERSION = "organic_limit_arming_v10.2.0"
+
+# Стіна волатильності. _plan_geometry відмовляє, коли noise_floor — який ніколи не
+# менший за ABS_MIN_STOP_DOLLARS — перевищує MAX_STOP_ATR*atr15. Нижче цього atr15
+# валідного плану не існує на жодному маршруті, ні лімітному, ні ринковому. Це
+# арифметика двох констант в різних одиницях (долари проти ATR), а не евристика,
+# тому повідомлення називає її прямо, а не ховає за GATE_PROXIMITY.
+#
+# Це УНІВЕРСАЛЬНА підлога: noise_floor не залежить від структури, тож нижче 0.25 не
+# входить нічого. Окремо існує структурна підлога — _provisional_stop (p07) виносить
+# invalidation ще на buffer = max(0.10*atr15, COMMISSION_BUFFER_DOLLARS), тож рівень,
+# чий фальсифікатор стоїть на відстані ABS_MIN_STOP_DOLLARS, потребує
+# 0.40 + 0.10*atr15 <= 1.60*atr15, тобто atr15 >= 0.2667. Чим ширша структура, тим
+# вища її власна підлога. Це факт про окремий рівень, а не про ринок, і його показує
+# лічильник відмов STOP_EXCEEDS_CAP у журналі — повідомлення ж називає лише ту межу,
+# нижче якої не входить нічого взагалі. Константа лиш звітна: вона нічого не відкриває
+# і не закриває, армінг і план перевіряють стоп самі.
+TRADEABLE_ATR15_FLOOR = ABS_MIN_STOP_DOLLARS / max(MAX_STOP_ATR, 1e-9)
 
 # ==========================================================
 # HYBRID EXECUTION ROUTING  (ліміт + market як два живі шляхи)
@@ -6516,6 +6540,8 @@ def compact_signal_for_journal(payload: dict[str, Any]) -> dict[str, Any]:
         "price": payload.get("price", payload.get("current_price")),
         "atr15": payload.get("atr15"),
         "refusals": payload.get("refusals"),
+        "arming": payload.get("arming"),
+        "volatility": payload.get("volatility"),
         "anchor_id": payload.get("anchor_id"),
         "anchor_kind": payload.get("anchor_kind"),
         "anchor_level": payload.get("anchor_level"),
@@ -7014,6 +7040,60 @@ def _risk_budget_line(audit: dict[str, Any]) -> str:
     return line
 
 
+def _volatility_stand_down_line(
+    context: dict[str, Any], audit: Optional[dict[str, Any]] = None,
+) -> str:
+    """Say the wall out loud when it is the reason nothing can be entered.
+
+    _plan_geometry refuses every candidate once noise_floor — never smaller than
+    ABS_MIN_STOP_DOLLARS — exceeds MAX_STOP_ATR*atr15. That is arithmetic of two
+    constants in different units, not a judgement about the setup, and it holds on
+    both routes. Without this line the operator sees only "no entry" for 220 cycles
+    straight and cannot tell a squeeze from a broken bot.
+
+    That floor is the universal one, and it is not the only wall. make_anchor repairs a
+    degenerate falsifier out to ABS_MIN_STOP_DOLLARS and _provisional_stop then adds
+    max(0.10*atr15, COMMISSION_BUFFER_DOLLARS) on top, so a repaired level needs
+    0.40 + 0.10*atr15 <= 1.60*atr15 — atr15 >= 0.2667. Between the two thresholds the
+    market reads as tradeable while every repaired level dies on the stop cap: a live
+    cycle at atr15 0.25 lost six of eight that way. Silence there is the same failure
+    this line exists to prevent, so the cap is named too, with the ATR it would take.
+    """
+    atr15 = safe_float(context.get("atr15"))
+    if atr15 <= 0:
+        return ""
+    if atr15 < TRADEABLE_ATR15_FLOOR:
+        return (
+            f"<b>Ринок у стисненні:</b> ATR15 {atr15:.2f} проти порогу {TRADEABLE_ATR15_FLOOR:.2f} — "
+            "стоп виходить ширшим за дозволений, тож валідного плану входу не існує "
+            "на жодному маршруті. Чекаємо повернення волатильності."
+        )
+
+    arming = dict((audit or {}).get("limit_arming") or {})
+    rows = [row for row in (arming.get("refusals") or []) if isinstance(row, dict)]
+    stop_rows = [row for row in rows if str(row.get("reason") or "").startswith("STOP_")]
+    # A majority, not unanimity: a live cycle at atr15 0.25 lost six of eight levels to
+    # the cap while two failed for ordinary structural reasons, and requiring every row
+    # kept the line silent in exactly the cycle that needed it. Below a majority this is
+    # a dry market rather than a wall, and crying wall there would teach the operator to
+    # ignore the line when it is true.
+    if not rows or len(stop_rows) * 2 <= len(rows):
+        return ""
+    buffer_now = max(0.10 * atr15, COMMISSION_BUFFER_DOLLARS)
+    needed = max(
+        (safe_float(row.get("stop_distance_atr")) * atr15 - buffer_now)
+        / max(MAX_STOP_ATR - 0.10, 1e-9)
+        for row in stop_rows
+    )
+    if needed <= atr15:
+        return ""
+    return (
+        f"<b>Стоп не вміщається:</b> ATR15 {atr15:.2f} — {len(stop_rows)} з {len(rows)} рівнів "
+        f"потребують стоп ширший за стелю {MAX_STOP_ATR:.2f}×ATR, тож навіть 3m-реакція на них "
+        f"не дасть входу. Вхід можливий від ATR15 ≈ {needed:.2f}."
+    )
+
+
 def _plan_lines(plan: TradePlan) -> list[str]:
     stage_plan = dict(plan.stage_plan or {})
     geometry = dict(stage_plan.get("geometry") or {})
@@ -7064,6 +7144,9 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
 
     if decision.action == Action.NO_SETUP.value:
         approaching = _approaching_entry(audit)
+        # Computed before the branches because one of them has to stop promising
+        # something the wall has already ruled out.
+        stand_down = _volatility_stand_down_line(context, audit)
         if str(decision.reason or "") == "ACTIVE_TRADE_OPEN":
             # With the "чому ні" line gone this has to say so itself: an open position,
             # not a missing level, is why there is no new entry.
@@ -7079,11 +7162,16 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
                 *_pending_limit_lines(dict(context.get("pending_limit") or {}), price),
             ]
         elif approaching:
+            # "чекаємо 3m-реакцію" is a promise. Under the stop cap a reaction on these
+            # levels still cannot produce an entry, so the sentence ends at the distance
+            # and the stand-down line below carries the reason — two claims that agree
+            # instead of one that retracts the other.
+            waiting = "" if stand_down else ", чекаємо 3m-реакцію"
             lines = [
                 "🟡 <b>Вхід наближається: рівень сформовано.</b>",
                 f"{_esc(_anchor_kind_label(approaching.get('kind')))} на {_fmt_price(approaching.get('level'))} "
                 f"({_esc(side_word(approaching.get('side')))}) — ціна за "
-                f"{safe_float(approaching.get('distance_atr')):.2f} ATR, чекаємо 3m-реакцію.",
+                f"{safe_float(approaching.get('distance_atr')):.2f} ATR{waiting}.",
             ]
         else:
             lines = ["<b>Входу зараз немає.</b>"]
@@ -7094,6 +7182,12 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
                 )
             else:
                 lines.append("Немає рівня з підтвердженою 3m-реакцією — вхід не виконується.")
+
+        # Only where nothing is already working: an open position and a resting order
+        # each name their own reason, and stacking a squeeze warning on top of them
+        # would read as if the standing decision had been revoked.
+        if stand_down and str(decision.reason or "") not in ("ACTIVE_TRADE_OPEN", "PENDING_LIMIT_OPEN"):
+            lines.append(stand_down)
 
         lines.append(f"<b>Ціна зараз:</b> {_fmt_price(price)}")
 
@@ -7142,7 +7236,32 @@ def build_decision_message(context: dict[str, Any], decision: Decision) -> str:
                 f"<b>Anchor:</b> {_esc(_anchor_kind_label(candidate.anchor_kind))} "
                 f"{_fmt_price(anchor_level)} | {_esc(candidate.anchor_id[:12])}"
             )
-        lines.append(f"<b>Реакція 3m:</b> {_esc(_reaction_summary(candidate))}")
+        # run_bot clears the pending slot the moment an order fills, so `resting` is
+        # empty for a filled armed order and its arming measurements are gone with it.
+        # execution_source is restored from the order row and survives, which is why the
+        # provenance is read from the candidate: falling through to _reaction_summary
+        # printed "3M-РЕАКЦІЯ ПІДТВЕРДЖЕНА" for a fill that had no reaction gates at
+        # all, contradicting the NO_3M_REACTION_YET line in the same message.
+        armed_no_reaction = bool(resting.get("armed_without_reaction")) or (
+            str(getattr(candidate, "execution_source", "") or "") == "LIMIT_ARMED_AT_LEVEL"
+            and not dict(getattr(candidate, "reaction", None) or {})
+        )
+        arming = dict(resting.get("arming") or {})
+        if armed_no_reaction and arming.get("distance_atr") is not None:
+            # The truth is the interesting part anyway: this is the early entry, placed
+            # before the level is reached rather than after.
+            lines.append(
+                f"<b>Реакції ще немає:</b> ордер стоїть на рівні, ціна за "
+                f"{safe_float(arming.get('distance_atr')):.2f} ATR від нього — "
+                "вхід відбудеться, якщо ціна дійде до рівня."
+            )
+        elif armed_no_reaction:
+            lines.append(
+                "<b>Без 3m-реакції:</b> це ранній вхід — ордер стояв на рівні до виконання, "
+                "ціна прийшла до нього сама."
+            )
+        else:
+            lines.append(f"<b>Реакція 3m:</b> {_esc(_reaction_summary(candidate))}")
         lines.append(
             f"<b>Скор:</b> {safe_int(candidate.final_score)}/100 | "
             f"<b>Якість входу:</b> {safe_int(candidate.entry_quality)}/100"
@@ -7729,6 +7848,73 @@ def _refusal_summary(audit: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _arming_summary(audit: dict[str, Any]) -> dict[str, Any]:
+    """What the fresh levels cost us this cycle, in numbers that accumulate.
+
+    audit["limit_arming"] is rebuilt every cycle and thrown away with it, so a week of
+    "nothing armed" left no trace of whether the levels were too far, too close to the
+    resistance above them, or simply not there. The deferred decision about MIN_RUNWAY_R
+    is a decision about a distribution, and a distribution nobody wrote down cannot be
+    argued with. Counted per reason so the dominant one is readable without replaying.
+    """
+    arming = dict(audit.get("limit_arming") or {})
+    if not arming:
+        return {}
+    rows = [row for row in (arming.get("refusals") or []) if isinstance(row, dict)]
+    reasons: dict[str, int] = {}
+    for row in rows:
+        reason = str(row.get("reason") or "UNKNOWN")
+        # Several reasons embed their own measurement — LEVEL_2.70ATR_UNREACHABLE,
+        # SCORE_55_BELOW_58 — so they are bucketed by shape, otherwise the tally is one
+        # entry per value and the dominant refusal is unreadable.
+        if reason.startswith("LEVEL_") and reason.endswith("UNREACHABLE"):
+            key = "LEVEL_UNREACHABLE"
+        elif reason.startswith("SCORE_"):
+            key = "SCORE_BELOW_MIN"
+        elif reason.startswith("HTF_"):
+            key = "HTF_BELOW_MIN"
+        elif reason.startswith("ANCHOR_AGE_"):
+            key = "ANCHOR_TOO_OLD"
+        elif reason.startswith("SPREAD_"):
+            key = "SPREAD_TOO_WIDE"
+        elif reason.startswith("STOP_"):
+            key = "STOP_EXCEEDS_CAP"
+        else:
+            key = reason
+        reasons[key] = reasons.get(key, 0) + 1
+    ordered = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
+    measured = [
+        round(safe_float(row.get("runway_r")), 3) for row in rows
+        if row.get("runway_r") is not None
+    ]
+    summary = {
+        "evaluated": safe_int(arming.get("evaluated")),
+        "considered": safe_int(arming.get("considered")),
+        "refused": safe_int(arming.get("refused")),
+        "skipped_reacted": safe_int(arming.get("skipped_reacted")),
+        "armed": bool(arming.get("armed")),
+        "reasons": dict(ordered),
+        # One headline, not two. The audit's own "refusal" is whichever row came first,
+        # so a live cycle reported LEVEL_NOT_AHEAD_OF_PRICE while the tally said
+        # STOP_EXCEEDS_CAP — two answers to the same question in one block. It survives
+        # only for the cycle where nothing was refused and build_trade_plan said no.
+        "dominant_refusal": ordered[0][0] if ordered else str(arming.get("refusal") or ""),
+        "limit_arm_max_atr": safe_float(arming.get("limit_arm_max_atr")),
+        "tradeable_atr15_floor": safe_float(arming.get("tradeable_atr15_floor")),
+    }
+    if summary["armed"]:
+        summary["order_id"] = str(arming.get("order_id") or "")
+        summary["level"] = arming.get("level")
+        summary["distance_atr"] = arming.get("distance_atr")
+    if measured:
+        summary["runway_r_refused"] = sorted(measured)
+    distances = [round(safe_float(row.get("distance_atr")), 3) for row in rows
+                 if row.get("distance_atr") is not None]
+    if distances:
+        summary["distance_atr_refused"] = sorted(distances)
+    return summary
+
+
 def build_signal_record(
     context: dict[str, Any],
     decision: Decision,
@@ -7800,6 +7986,18 @@ def build_signal_record(
         "competing_hypotheses": list(getattr(candidate, "competing_hypotheses", []) or [])[:JOURNAL_HYPOTHESIS_TOP] if candidate else [],
         "hypothesis_rank": safe_int(getattr(candidate, "hypothesis_rank", 0)) if candidate else 0,
         "refusals": _refusal_summary(audit),
+        "arming": _arming_summary(audit),
+        "volatility": {
+            # A refusal names the gate that fired; the gate ladder cannot name the wall
+            # underneath it. Below this atr15 _plan_geometry refuses every candidate on
+            # every route, because noise_floor is at least ABS_MIN_STOP_DOLLARS while the
+            # cap is MAX_STOP_ATR*atr15 — so dominant_gate reported whichever gate happened
+            # to fire first and the real constraint never reached the journal.
+            "atr15": round(safe_float(context.get("atr15")), 6),
+            "tradeable_floor": round(TRADEABLE_ATR15_FLOOR, 6),
+            "stand_down": bool(0 < safe_float(context.get("atr15")) < TRADEABLE_ATR15_FLOOR),
+            "basis": "ABS_MIN_STOP_DOLLARS / MAX_STOP_ATR",
+        },
         "executed": bool(plan and plan.valid and plan.execution_ready and decision.action in EXECUTABLE_ENTRY_ACTIONS),
         "preconfirmation_event_id": str(audit.get("preconfirmation_event_id") or ""),
         "bot_version": BOT_VERSION,
@@ -8201,6 +8399,156 @@ def _execution_route(candidate: Any) -> str:
     return "MARKET" if family in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
 
 
+def _anchor_route(anchor: Anchor) -> str:
+    """The route an anchor's setup belongs to, before any reaction exists.
+
+    make_anchor stores the canonical family on the anchor itself, so the route is
+    knowable at detection time. _execution_route cannot be used here: it reads a
+    candidate, and an unreacted level has none.
+    """
+    family = str(
+        getattr(anchor, "setup_family", "")
+        or canonical_setup_family(getattr(anchor, "setup_type", ""))
+        or ""
+    ).upper()
+    return "MARKET" if family in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
+
+
+def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, Any]:
+    """May a limit rest on this level before price arrives?
+
+    The eleven gates answer a different question — did this level already react, so
+    a market entry is justified now. A resting order is placed BEFORE the touch, so
+    touch, rejection and displacement are evidence it cannot have by construction.
+    Demanding them is what left limit_orders empty through 220 live cycles: the route
+    whose whole purpose is to wait for a level could only fire once the level had
+    already been spent. What an order does need is that the level is still
+    unfalsified, still reachable inside the anchor's own lifetime, and that the
+    geometry measured FROM THE LEVEL — not from wherever price waits — is tradable.
+
+    Measurements are written before every verdict so a refusal carries its numbers
+    into the journal, the way evaluate_reaction's refuse() does.
+    """
+    price = safe_float(context.get("price"))
+    atr15 = max(safe_float(context.get("atr15"), 0.0), 1e-9)
+    level = safe_float(getattr(anchor, "level", 0.0))
+    sign = side_sign(str(getattr(anchor, "side", "") or ""))
+    out: dict[str, Any] = {
+        "schema_version": LIMIT_ARM_SCHEMA_VERSION, "anchor_id": str(anchor.id),
+        "route": "LIMIT", "armable": False, "reason": "",
+        "price": round_price(price), "level": round_price(level), "atr15": round(atr15, 6),
+        "max_distance_atr": LIMIT_ARM_MAX_ATR,
+    }
+
+    if price <= 0 or level <= 0 or not sign:
+        out["reason"] = "NO_TRUSTED_PRICE_OR_LEVEL"
+        return out
+    if not bool(context.get("execution_price_trusted")):
+        # A cross-venue display price can describe the market but cannot fill an
+        # order, and an armed order is exactly a promise to fill one later.
+        out["reason"] = "PRICE_SOURCE_DISPLAY_ONLY_NOT_EXECUTABLE"
+        return out
+
+    now_ms = int(now_utc().timestamp() * 1000)
+    age_minutes = (now_ms - int(anchor.created_ts)) / 60000.0
+    out["age_minutes"] = round(age_minutes, 2)
+    if now_ms > int(anchor.expires_ts):
+        out["reason"] = "ANCHOR_EXPIRED"
+        return out
+    if age_minutes > ANCHOR_MAX_AGE_MIN:
+        out["reason"] = f"ANCHOR_AGE_{age_minutes:.0f}M"
+        return out
+    if int(anchor.cooldown_until_ts) > now_ms:
+        out["reason"] = "LEVEL_RECENTLY_CONSUMED"
+        return out
+
+    # Intactness is the one reaction gate an untouched level can and must still pass:
+    # the falsifier firing while the order rests is what turns a wait into a loss.
+    bars = _reaction_bars(context, anchor)
+    beyond = [c for c in bars if sign * (c.close - anchor.invalidation) <= 0]
+    out["invalidation"] = round_price(safe_float(anchor.invalidation))
+    out["confirmed_beyond_invalidation"] = len(beyond)
+    if sign * (price - anchor.invalidation) <= 0 or beyond:
+        out["reason"] = "ANCHOR_ALREADY_INVALIDATED"
+        return out
+
+    # The order earns its price by waiting, so the level must lie AHEAD of the market:
+    # below it for a LONG, above it for a SHORT. A level price has already passed
+    # fills on placement and is a market entry wearing a limit's name.
+    distance_atr = sign * (price - level) / atr15
+    out["distance_atr"] = round(distance_atr, 4)
+    if distance_atr <= 0:
+        out["reason"] = "LEVEL_NOT_AHEAD_OF_PRICE"
+        return out
+    if distance_atr > LIMIT_ARM_MAX_ATR:
+        out["reason"] = f"LEVEL_{distance_atr:.2f}ATR_UNREACHABLE"
+        return out
+
+    spread_atr = safe_float(context.get("spread_atr"))
+    out["spread_atr"] = round(spread_atr, 4)
+    if spread_atr > MAX_SPREAD_ATR:
+        out["reason"] = f"SPREAD_{spread_atr:.2f}ATR"
+        return out
+
+    # Stop and runway are measured at the level, because that is where the order
+    # fills. Passing them at the waiting price would prove nothing about the entry.
+    # The empty reaction means no rejection wick exists to guard the stop against yet.
+    stop_profile = _provisional_stop(anchor, level, {}, atr15)
+    out["stop"] = stop_profile.get("stop")
+    out["stop_distance_atr"] = stop_profile.get("distance_atr")
+    if not stop_profile.get("within_cap"):
+        out["reason"] = f"STOP_{safe_float(stop_profile.get('distance_atr')):.2f}ATR_EXCEEDS_CAP"
+        return out
+
+    risk = max(safe_float(stop_profile.get("distance")), ABS_MIN_STOP_DOLLARS, 1e-9)
+    # nearest_runway_r passes its entry to technical_targets, which measures every
+    # distance from context["price"] and not from the entry it was handed. GATE_RUNWAY
+    # can afford that: GATE_PROXIMITY has already put the price within 0.35 ATR of the
+    # level, so the two origins coincide. Arming cannot — it considers levels up to
+    # LIMIT_ARM_MAX_ATR away, and a LONG level below the price has strictly MORE room to
+    # the resistance above than the price does. Measuring from the price charged all five
+    # long levels in a live cycle the same 0.63R and refused every one of them.
+    runway = nearest_runway_r(context, str(anchor.side), level, risk)
+    ahead = sorted(
+        (
+            (sign * (safe_float(row.get("level")) - level), row)
+            for row in (runway.get("targets") or []) if isinstance(row, dict)
+        ),
+        key=lambda item: item[0],
+    )
+    ahead = [item for item in ahead if item[0] > 0]
+    runway_distance, nearest_target = ahead[0] if ahead else (0.0, {})
+    runway_r = runway_distance / risk if risk > 0 else 0.0
+    runway_distance_atr = runway_distance / atr15
+    meets_min_r = bool(ahead) and runway_r >= MIN_RUNWAY_R
+    meets_min_atr = bool(ahead) and runway_distance_atr >= MIN_RUNWAY_ATR
+    out["runway_r"] = round(runway_r, 4)
+    out["runway_distance"] = round_price(runway_distance)
+    out["runway_distance_atr"] = round(runway_distance_atr, 4)
+    out["runway_nearest_kind"] = str(nearest_target.get("kind") or "")
+    out["runway_nearest_level"] = nearest_target.get("level")
+    out["runway_measured_from"] = "ANCHOR_LEVEL"
+    out["runway_r_from_current_price"] = runway.get("runway_r")
+    out["meets_min_r"] = meets_min_r
+    out["meets_min_atr"] = meets_min_atr
+    if not (meets_min_r and meets_min_atr):
+        out["reason"] = "RUNWAY_BELOW_MIN_R" if not meets_min_r else "RUNWAY_BELOW_MIN_ATR"
+        return out
+
+    out["armable"] = True
+    out["stop_profile"] = stop_profile
+    out["runway"] = {
+        **runway,
+        "runway_r": round(runway_r, 4),
+        "nearest": {**dict(nearest_target), "distance": round(runway_distance, 6),
+                    "distance_atr": round(runway_distance_atr, 3)},
+        "meets_min_r": meets_min_r,
+        "meets_min_atr": meets_min_atr,
+        "measured_from": "ANCHOR_LEVEL",
+    }
+    return out
+
+
 def _limit_entry_price(anchor: Anchor, price: float) -> dict[str, Any]:
     """Where the order rests, and whether it is behind the market at all."""
     level = safe_float(getattr(anchor, "level", 0.0))
@@ -8397,6 +8745,252 @@ def place_limit_order(
     return row, limit_plan
 
 
+def _arming_candidate(
+    context: dict[str, Any],
+    anchor: Anchor,
+    arming: dict[str, Any],
+    degradation: dict[str, Any],
+) -> Optional[Candidate]:
+    """A candidate for a level that has NOT reacted yet.
+
+    build_candidate scores timing out of the rejection and displacement gates. An
+    untouched level has neither, so reusing it would mean inventing the very evidence
+    this route exists to do without. The weights are renormalised over the three
+    components that are knowable — setup, location, context — so final_score stays on
+    the same 0..100 scale MIN_SCORE_PROBE is written against, and the missing timing
+    surfaces where it belongs: timing_quality_score 0 makes classify_probe_conviction
+    fall to EXPERIMENTAL, so an unconfirmed level risks the smallest probe there is.
+    """
+    setup_type = str(anchor.setup_type)
+    profile = dict((degradation.get("setups") or {}).get(setup_type) or {})
+    if not profile.get("executable", True):
+        return None
+
+    context_quality = _context_quality(context, anchor, dict(context.get("smt") or {}))
+    setup_quality = clamp(safe_float(anchor.score), 0.0, 100.0)
+    # Location is all an unreacted level can be judged on: how far price has to travel
+    # to reach it, and how much room exists beyond it once it does.
+    reach = clamp(100.0 * (1.0 - safe_float(arming.get("distance_atr")) / max(LIMIT_ARM_MAX_ATR, 1e-9)), 0.0, 100.0)
+    room = clamp(100.0 * safe_float(arming.get("runway_r")) / max(2.0 * MIN_RUNWAY_R, 1e-9), 0.0, 100.0)
+    location_quality = clamp(0.60 * reach + 0.40 * room, 0.0, 100.0)
+
+    known_weight = 0.30 + 0.25 + 0.15
+    final_score = int(round(clamp(
+        (0.30 * setup_quality + 0.25 * location_quality + 0.15 * context_quality["quality"]) / known_weight,
+        0.0, 100.0,
+    )))
+    entry_quality = int(round(location_quality))
+    durability_quality = int(round(clamp(
+        0.5 * context_quality["quality"] + 0.3 * location_quality + 0.2 * setup_quality, 0.0, 100.0,
+    )))
+    trade_quality = int(round(clamp(
+        0.35 * setup_quality + 0.30 * entry_quality + 0.20 * durability_quality
+        + 0.15 * context_quality["quality"], 0.0, 100.0,
+    )))
+
+    runway = dict(arming.get("runway") or {})
+    episode_key = f"{anchor.setup_family}:{anchor.side}:{round(anchor.level, 4)}"
+    age_minutes = safe_float(arming.get("age_minutes"))
+    return Candidate(
+        side=str(anchor.side),
+        setup_type=setup_type,
+        setup_family=journal_setup_family(setup_type),
+        raw_score=int(round(setup_quality)),
+        final_score=final_score,
+        score_components={
+            "setup_quality": round(setup_quality, 2),
+            "timing_quality": 0,
+            "location_quality": round(location_quality, 2),
+            "context_quality": context_quality["quality"],
+            "weights": {
+                "setup": 0.30, "timing": 0.0, "location": 0.25, "context": 0.15,
+                "renormalised_over": round(known_weight, 4),
+                "timing_absent": "NO_3M_REACTION_YET",
+            },
+            "location": {"reach_quality": round(reach, 2), "room_quality": round(room, 2)},
+            "context": context_quality,
+            "runway": runway,
+            "degradation": profile,
+            "arming": dict(arming),
+        },
+        confirmations=[
+            f"ANCHOR {anchor.kind} @ {_fmt_price(anchor.level)}",
+            f"LIMIT ARMED — рівень попереду ціни на {safe_float(arming.get('distance_atr')):.2f} ATR",
+            f"RUNWAY {safe_float(arming.get('runway_r')):.2f}R to {(runway.get('nearest') or {}).get('kind', 'TARGET')}",
+            f"HTF {context_quality['htf_state']} | REGIME {context_quality['regime']}",
+        ],
+        risks=["NO_3M_REACTION_YET"] + (
+            [] if context_quality["htf_supports"] else [f"HTF {context_quality['htf_state']} проти напрямку"]
+        ),
+        trigger_ready=False,
+        trigger_level=safe_float(anchor.level),
+        invalidation_level=safe_float(anchor.invalidation),
+        target_levels=[row["level"] for row in (runway.get("targets") or [])],
+        confirmation_tier=1,
+        stage="ARMED_LIMIT",
+        execution_anchor=safe_float(anchor.level),
+        anchor_id=str(anchor.id),
+        anchor_kind=str(anchor.kind),
+        thesis_key=episode_key,
+        thesis=str(anchor.reason or ""),
+        execution_source="LIMIT_ARMED_AT_LEVEL",
+        entry_stage=EntryStage.PROBE.value,
+        stage_plan={
+            "anchor": anchor_to_dict(anchor),
+            "arming": dict(arming),
+            "runway": runway,
+            "innovation_profile": {"setup_trade_profile": {}, "profile_source": "organic_v10"},
+        },
+        risk_multiplier=safe_float(profile.get("risk_multiplier"), 1.0),
+        setup_quality_score=int(round(setup_quality)),
+        timing_quality_score=0,
+        entry_quality_score=entry_quality,
+        durability_quality_score=durability_quality,
+        trade_quality_score=trade_quality,
+        htf_fact=dict(context.get("htf_fact") or {}),
+        reaction={},
+        admission=profile,
+        entry_quality=entry_quality,
+        entry_freshness_score=round(clamp(
+            100.0 * (1.0 - age_minutes / max(ANCHOR_MAX_AGE_MIN, 1e-9)), 0.0, 100.0), 2),
+        evidence_adjusted_selection_score=round(final_score * safe_float(profile.get("risk_multiplier"), 1.0), 4),
+        canonical_setup_family=str(
+            getattr(anchor, "setup_family", "") or canonical_setup_family(setup_type) or "").upper(),
+        family_episode_key=episode_key,
+    )
+
+
+def _arm_limit_at_level(
+    context: dict[str, Any],
+    journal: dict[str, Any],
+    state: dict[str, Any],
+    anchors: list[Anchor],
+    degradation: dict[str, Any],
+    audit: dict[str, Any],
+    signal_id: str,
+    reacted_ids: frozenset = frozenset(),
+) -> Optional[tuple[dict[str, Any], TradePlan, Candidate]]:
+    """Rest one limit on the best fresh level price has not reached yet.
+
+    Called only when no reaction confirmed an entry, so arming never competes with a
+    real one. Levels that DID react are excluded outright: their candidate was already
+    scored and refused by the reaction path, and the renormalised weights here score
+    differently, so admitting them would be a second hearing for a refusal just made.
+    The volatility wall and the daily budget are left to build_trade_plan on purpose:
+    re-checking them here would create a second, drift-prone copy of limits a reacted
+    order obeys, and the whole point is that both routes answer to the same arithmetic.
+    One order rests at a time, so the best level wins and the rest are journaled as
+    refused rather than queued.
+    """
+    htf = dict(context.get("htf_fact") or {})
+    considered: list[tuple[float, Anchor, dict[str, Any], Candidate]] = []
+    refused: list[dict[str, Any]] = []
+    skipped_reacted = 0
+    evaluated = 0
+
+    def reject(anchor: Anchor, arming: dict[str, Any], reason: str) -> None:
+        refused.append({
+            "anchor_id": str(anchor.id), "setup_type": str(anchor.setup_type),
+            "side": str(anchor.side), "level": round_price(safe_float(anchor.level)),
+            "distance_atr": arming.get("distance_atr"), "reason": reason,
+            # The measurement behind the reason. Without it a week of refusals is a week
+            # of strings, and the runway distribution the deferred MIN_RUNWAY_R decision
+            # needs cannot be recovered from the journal at all.
+            "runway_r": arming.get("runway_r"),
+            "runway_distance_atr": arming.get("runway_distance_atr"),
+            "stop_distance_atr": arming.get("stop_distance_atr"),
+            "meets_min_r": arming.get("meets_min_r"),
+            "meets_min_atr": arming.get("meets_min_atr"),
+        })
+
+    for anchor in anchors:
+        if str(anchor.id) in reacted_ids:
+            skipped_reacted += 1
+            continue
+        if _anchor_route(anchor) != "LIMIT":
+            continue
+        evaluated += 1
+        arming = evaluate_limit_arming(context, anchor)
+        if not arming.get("armable"):
+            reject(anchor, arming, str(arming.get("reason") or "NOT_ARMABLE"))
+            continue
+        alignment = htf_alignment_for_side(htf, str(anchor.side))
+        alignment_score = safe_float(alignment.get("score"))
+        if alignment_score < MIN_HTF_ALIGNMENT_SCORE:
+            reject(anchor, arming, f"HTF_{alignment.get('state')}_{alignment_score:.0f}_BELOW_{MIN_HTF_ALIGNMENT_SCORE}")
+            continue
+        candidate = _arming_candidate(context, anchor, arming, degradation)
+        if candidate is None:
+            reject(anchor, arming, "SETUP_DEMOTED_BY_OWN_STATISTICS")
+            continue
+        if safe_int(candidate.final_score) < MIN_SCORE_PROBE:
+            reject(anchor, arming, f"SCORE_{candidate.final_score}_BELOW_{MIN_SCORE_PROBE}")
+            continue
+        considered.append((candidate.evidence_adjusted_selection_score, anchor, arming, candidate))
+
+    considered.sort(key=lambda item: (-item[0], str(item[1].setup_type), str(item[1].id)))
+    arming_audit: dict[str, Any] = {
+        "route": "LIMIT",
+        "evaluated": evaluated,
+        "considered": len(considered),
+        "refused": len(refused),
+        "refusals": refused[:REJECTED_HYPOTHESIS_SHADOW_LIMIT],
+        "skipped_reacted": skipped_reacted,
+        "armed": False,
+        "refusal": "",
+        "tradeable_atr15_floor": round(TRADEABLE_ATR15_FLOOR, 6),
+        "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
+    }
+    audit["limit_arming"] = arming_audit
+    if not considered:
+        arming_audit["refusal"] = str(refused[0]["reason"]) if refused else "NO_LIMIT_ROUTED_ANCHOR"
+        return None
+
+    _, anchor, arming, candidate = considered[0]
+    plan = build_trade_plan(
+        context, candidate, entry_price_override=safe_float(anchor.level),
+        journal=journal, state=state,
+    )
+    if not (plan.valid and plan.execution_ready):
+        arming_audit["refusal"] = str(plan.reason or "ARMING_PLAN_NOT_EXECUTABLE")
+        return None
+
+    plan.execution_source = "LIMIT_ARMED_AT_LEVEL"
+    placement = _limit_entry_price(anchor, safe_float(context.get("price")))
+    row = _limit_order_row(
+        context, candidate, anchor, str(signal_id), "",
+        placement, int(now_utc().timestamp() * 1000),
+    )
+    # No reaction, so no counterfactual market entry exists to shadow. The empty dict
+    # is read as NO_MARKET_MODEL by resolve_pending_limit rather than resolved at 0.0.
+    row["armed_without_reaction"] = True
+    row["arming"] = dict(arming)
+    row["market_shadow"] = {}
+    row["market_plan"] = {}
+    row["market_candidate"] = {}
+    row["execution_route"] = "LIMIT"
+    row["canonical_setup_family"] = str(candidate.canonical_setup_family or "").upper()
+    row["escalated"] = False
+    row["escalated_ts"] = 0
+    row["escalated_price"] = 0.0
+    row["escalated_signal_id"] = ""
+    row["escalated_displacement_ts"] = 0
+    row["escalation_refused"] = ""
+    row["entry_stage"] = str(plan.entry_stage)
+    row["entry_action"] = _entry_action_for_stage(str(plan.entry_stage))
+    row["risk_pct"] = round(safe_float(plan.position_risk_pct), 6)
+    row["limit_shadow"] = _shadow_geometry(plan)
+    row["plan"] = plan_to_dict(plan)
+    row["candidate"] = candidate_to_dict(candidate)
+    row["schema_version"] = LIMIT_ARM_SCHEMA_VERSION
+
+    arming_audit["armed"] = True
+    arming_audit["order_id"] = str(row.get("order_id"))
+    arming_audit["level"] = placement["limit_price"]
+    arming_audit["distance_atr"] = arming.get("distance_atr")
+    return row, plan, candidate
+
+
 def _upsert_limit_order(journal: dict[str, Any], row: dict[str, Any]) -> None:
     orders = [item for item in list(journal.get("limit_orders") or []) if isinstance(item, dict)]
     order_id = str(row.get("order_id") or "")
@@ -8439,7 +9033,16 @@ def resolve_pending_limit(
         # minutes of adverse excursion from supervision.
         limit_shadow = _shadow_resolve(limit_shadow, side, [c for c in candles if int(c.ts) >= fill_ts])
     row["limit_shadow"] = limit_shadow
-    row["market_shadow"] = _shadow_resolve(dict(row.get("market_shadow") or {}), side, candles)
+    # An order armed on an untouched level has no market model to shadow: nothing
+    # reacted, so no counterfactual entry exists at the waiting price. Resolving that
+    # empty shadow would measure a first touch against entry 0.0 and write junk into
+    # the model comparison. A reacted order always populates entry, so it is unaffected.
+    market_shadow = dict(row.get("market_shadow") or {})
+    row["market_shadow"] = (
+        _shadow_resolve(market_shadow, side, candles)
+        if safe_float(market_shadow.get("entry")) > 0
+        else {**market_shadow, "resolution": "NO_MARKET_MODEL"}
+    )
 
     if fill is None:
         row["status"] = "EXPIRED" if expired else "PENDING"
@@ -9420,10 +10023,50 @@ def run_bot() -> int:
                     f"order_id={order_row.get('order_id')}"
                 )
     elif not deferred_to_open_trade:
-        append_history(state, {
-            "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-            "quality": safe_int(decision.quality), "price": price, "reason": decision.reason,
-        })
+        # 6d. Nothing resting and nothing reacted. For a return-to-level setup that is
+        # not the end of the matter: waiting for the level IS the edge, so the order is
+        # armed on the fresh level and the fill is left to the market. This is the half
+        # of the hybrid that had no path before — a limit could only be placed after
+        # the level had already reacted, which is a market entry that waits.
+        armed = _arm_limit_at_level(
+            context, journal, state, anchors, degradation, audit, str(decision.id),
+            frozenset(str(candidate.anchor_id) for candidate in candidates),
+        )
+        if armed is not None:
+            order_row, armed_plan, armed_candidate = armed
+            _upsert_limit_order(journal, order_row)
+            store_pending_limit(state, order_row)
+            context["pending_limit"] = order_row
+            # The decision becomes the order, so section 7 journals it and section 8
+            # reports it as what the operator has to act on, not as another no-entry.
+            decision.candidate = armed_candidate
+            decision.side = str(armed_candidate.side)
+            decision.setup_type = str(armed_candidate.setup_type)
+            decision.quality = safe_int(armed_candidate.final_score)
+            decision.action = _entry_action_for_stage(str(armed_plan.entry_stage))
+            decision.reason = "LIMIT_ARMED_AT_LEVEL"
+            decision.plan = armed_plan
+            plan = armed_plan
+            audit["execution_route"] = "LIMIT"
+            append_history(state, {
+                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                "quality": safe_int(decision.quality), "price": safe_float(order_row.get("limit_price")),
+                "signal_id": decision.id, "order_id": str(order_row.get("order_id") or ""),
+                "reason": "LIMIT_ARMED_AT_LEVEL",
+            })
+            print(
+                f"[INFO] Ліміт заармлено на свіжому рівні: {decision.side} {decision.setup_type} "
+                f"limit={_fmt_price(order_row.get('limit_price'))} stop={_fmt_price(armed_plan.stop)} "
+                f"tp0={_fmt_price(armed_plan.tp0)} risk={armed_plan.position_risk_pct:.4f}% "
+                f"рівень за {safe_float((order_row.get('arming') or {}).get('distance_atr')):.2f} ATR "
+                f"дійсний до {_iso_from_ms(safe_int(order_row.get('expires_ts')))[:16]} "
+                f"order_id={order_row.get('order_id')}"
+            )
+        else:
+            append_history(state, {
+                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
+                "quality": safe_int(decision.quality), "price": price, "reason": decision.reason,
+            })
 
     # --- 7. один запис сигналу для журналу, навчання та дашборду ------------
     # signal_events belongs to supervision (section 3); the decision row below already
@@ -11809,6 +12452,615 @@ def _check_detectors_cover_taxonomy() -> list[str]:
     return problems
 
 
+def _armable_level(
+    side: str,
+    distance_atr: float = 1.20,
+    runway_atr: float = 3.20,
+    setup_type: str = SetupType.SWEEP_RECLAIM.value,
+    atr15: Optional[float] = None,
+    reacted: bool = False,
+) -> tuple[dict[str, Any], Anchor, dict[str, Any], dict[str, Any], dict[str, Any], Any]:
+    """A level price has NOT reached yet, driven through the real arming path.
+
+    reaction=False is the whole point: the reaction ladder has nothing to say about a
+    level that has not been touched, and a harness that armed a reacted level would
+    test the placement branch wearing another name.
+    """
+    context, anchor, _ = _synthetic_context(
+        side, reaction=False, distance_atr=distance_atr,
+        runway_atr=runway_atr, setup_type=setup_type,
+    )
+    # Set rather than read, exactly as _ready_candidate does: the synthetic walk is not
+    # directional enough on 1H/4H for htf_fact to call a trend. The HTF floor itself is
+    # measured by _check_htf_neutral_is_not_an_edge.
+    context["htf_fact"] = {
+        **dict(context.get("htf_fact") or {}),
+        "state": "ALIGNED", "direction_1h": anchor.side, "direction_4h": anchor.side,
+    }
+    if atr15 is not None:
+        context["atr15"] = atr15
+    journal: dict[str, Any] = {"trades": [], "signals": [], "training_signals": [],
+                               "signal_events": [], "preconfirmation_events": [], "limit_orders": []}
+    audit: dict[str, Any] = {}
+    state: dict[str, Any] = {"active_trade": None}
+    armed = _arm_limit_at_level(
+        context, journal, state, [anchor], compute_degradation_table(journal),
+        audit, new_id("sig"), frozenset({anchor.id}) if reacted else frozenset(),
+    )
+    return context, anchor, journal, state, audit, armed
+
+
+def _check_limit_arms_on_a_fresh_level() -> list[str]:
+    """The early entry: an order rests on a level price has not reached yet.
+
+    Before this path existed a limit could only be placed after GATE_TOUCH,
+    GATE_REJECTION and GATE_DISPLACEMENT had all passed — proof the level was already
+    visited and price already leaving. With LIMIT_ENTRY_RETRACE_PCT at 1.0 the order
+    then rested on a level GATE_PROXIMITY said price was within 0.35 ATR of, so the
+    limit route could only ever fire inside a narrow post-displacement retrace. That is
+    why limit_orders stayed empty through 220 live cycles: not a threshold too tight,
+    but a path that required the trade to have already happened.
+    """
+    problems: list[str] = []
+    risks: list[float] = []
+    for side in (Side.LONG.value, Side.SHORT.value):
+        for distance in (0.60, 1.20, 2.00):
+            label = f"{side} @{distance:.2f} ATR"
+            context, anchor, journal, state, audit, armed = _armable_level(side, distance)
+            summary = dict(audit.get("limit_arming") or {})
+            if armed is None:
+                problems.append(f"{label}: nothing armed — refusal '{summary.get('refusal')}'")
+                continue
+            row, plan, candidate = armed
+            if not summary.get("armed"):
+                problems.append(f"{label}: an order came back but the audit says nothing armed")
+            if not row.get("armed_without_reaction"):
+                problems.append(f"{label}: the row does not declare itself armed without a reaction")
+            if abs(safe_float(row.get("limit_price")) - round_price(anchor.level)) > 1e-9:
+                problems.append(
+                    f"{label}: the order rests at {row.get('limit_price')}, not the level {anchor.level}"
+                )
+            if abs(plan.entry - round_price(anchor.level)) > 1e-9:
+                problems.append(f"{label}: the plan enters at {plan.entry}, not the level {anchor.level}")
+            if dict(row.get("market_shadow") or {}):
+                problems.append(
+                    f"{label}: an armed order carries a market shadow, so resolve_pending_limit "
+                    "would measure a first touch against an entry that never existed"
+                )
+            if str(plan.execution_source) != "LIMIT_ARMED_AT_LEVEL":
+                problems.append(
+                    f"{label}: execution_source '{plan.execution_source}' would not separate an armed "
+                    "fill from a reacted one in the model statistics"
+                )
+            if candidate.reaction:
+                problems.append(f"{label}: the arming candidate claims reaction evidence it does not have")
+            if safe_int(candidate.timing_quality_score) != 0:
+                problems.append(
+                    f"{label}: timing_quality {candidate.timing_quality_score} on an untouched level is "
+                    "fabricated evidence — it is what earns a bigger probe"
+                )
+            if safe_int(candidate.final_score) < MIN_SCORE_PROBE:
+                problems.append(f"{label}: armed at score {candidate.final_score}, under MIN_SCORE_PROBE")
+            if not (plan.valid and plan.execution_ready):
+                problems.append(f"{label}: armed with a plan that is not executable")
+            risks.append(safe_float(plan.position_risk_pct))
+            # The order has to reach the operator: without this, section 8 would print
+            # another no-entry and the operator would never place it.
+            decision = Decision(
+                id=new_id("sig"), time=iso_now(),
+                action=_entry_action_for_stage(str(plan.entry_stage)),
+                side=str(candidate.side), setup_type=str(candidate.setup_type),
+                quality=safe_int(candidate.final_score), reason="LIMIT_ARMED_AT_LEVEL",
+                regime=str(context.get("regime") or ""), candidate=candidate, plan=plan,
+                audit=audit, current_price=safe_float(context.get("price")),
+            )
+            context["pending_limit"] = row
+            message = build_decision_message(context, decision)
+            if "3M-РЕАКЦІЯ ПІДТВЕРДЖЕНА" in plain_telegram_text(message):
+                problems.append(
+                    f"{label}: the message claims a confirmed 3m reaction for a level nothing has touched"
+                )
+            if "Реакції ще немає" not in plain_telegram_text(message):
+                problems.append(f"{label}: the message does not say the level has not reacted yet")
+            if len(message) > TELEGRAM_MAX_LENGTH:
+                problems.append(f"{label}: message is {len(message)} chars, over {TELEGRAM_MAX_LENGTH}")
+
+    # Waiting further has to cost something, or a level 2.5 ATR away is as good as one
+    # 0.6 ATR away and the reach term in _arming_candidate is decoration.
+    if len(risks) >= 6 and risks[-1] >= risks[0]:
+        problems.append(
+            f"the risk on the farthest level ({risks[-1]:.4f}%) is not below the nearest "
+            f"({risks[0]:.4f}%) — distance does not taper the probe"
+        )
+
+    # The runway has to be measured from the level, not from the waiting price. The two
+    # differ by the whole distance to the level: technical_targets computes every
+    # distance from context["price"] whatever entry it is handed, which GATE_RUNWAY can
+    # afford because GATE_PROXIMITY puts price within 0.35 ATR of the level. Measuring
+    # from the price here charged all five long levels in a live cycle the same 0.63R and
+    # refused every one, while the levels themselves had clear air above them.
+    context, anchor, _, _, _, _ = _armable_level(Side.LONG.value, 2.00)
+    arming = evaluate_limit_arming(context, anchor)
+    if str(arming.get("runway_measured_from") or "") != "ANCHOR_LEVEL":
+        problems.append(
+            f"the arming runway declares its origin as '{arming.get('runway_measured_from')}', "
+            "so the journal cannot tell which end the number was measured from"
+        )
+    from_level = safe_float(arming.get("runway_r"))
+    from_price = safe_float(arming.get("runway_r_from_current_price"))
+    if from_level <= from_price:
+        problems.append(
+            f"a long level {safe_float(arming.get('distance_atr')):.2f} ATR below the price shows "
+            f"{from_level:.3f}R from the level against {from_price:.3f}R from the price — the level "
+            "has strictly more room to the resistance above, so the origin is still the price"
+        )
+
+    # Driving the helper is not enough: a cycle that never calls it arms nothing and
+    # every assertion above still passes. Same bytecode tie _check_detectors_cover_taxonomy uses.
+    called = set(getattr(run_bot, "__code__", None).co_names or ())
+    for required in ("_arm_limit_at_level",):
+        if required not in called:
+            problems.append(
+                f"run_bot no longer calls {required}, so a cycle with no reaction still ends "
+                "in NO_SETUP and the limit route stays unreachable"
+            )
+    arming_names = set(getattr(_arm_limit_at_level, "__code__", None).co_names or ())
+    for required in ("evaluate_limit_arming", "_arming_candidate", "build_trade_plan"):
+        if required not in arming_names:
+            problems.append(f"_arm_limit_at_level no longer calls {required}")
+    return problems
+
+
+def _check_arming_refuses_a_level_price_already_owns() -> list[str]:
+    """Arming waits for price to arrive; it never re-arms a level already spent.
+
+    Each case is a different way the order would be fiction: a level at the price is a
+    market order, a level behind the price has been invalidated, a level 4 ATR away will
+    outlive its anchor, a level that already reacted was just refused by the reaction
+    path and must not get a second hearing, and a market-routed setup leaves the level
+    for good so waiting on it is a missed trade, not an early one.
+    """
+    problems: list[str] = []
+    cases = (
+        (0.0, 3.20, SetupType.SWEEP_RECLAIM.value, False, "LEVEL_NOT_AHEAD_OF_PRICE"),
+        (-1.20, 3.20, SetupType.SWEEP_RECLAIM.value, False, "ANCHOR_ALREADY_INVALIDATED"),
+        (4.00, 6.00, SetupType.SWEEP_RECLAIM.value, False, "LEVEL_4.00ATR_UNREACHABLE"),
+        (1.20, 3.20, SetupType.SWEEP_RECLAIM.value, True, "NO_LIMIT_ROUTED_ANCHOR"),
+        (1.20, 3.20, SetupType.PULLBACK_CONTINUATION.value, False, "NO_LIMIT_ROUTED_ANCHOR"),
+        (1.20, 3.20, SetupType.OPENING_RANGE_BREAKOUT.value, False, "NO_LIMIT_ROUTED_ANCHOR"),
+    )
+    for distance, runway, setup, reacted, expected in cases:
+        label = f"{setup} @{distance:.2f} ATR reacted={reacted}"
+        _, _, _, _, audit, armed = _armable_level(
+            Side.LONG.value, distance, runway, setup, reacted=reacted)
+        summary = dict(audit.get("limit_arming") or {})
+        if armed is not None:
+            problems.append(f"{label}: an order was armed, expected refusal '{expected}'")
+            continue
+        if str(summary.get("refusal") or "") != expected:
+            problems.append(
+                f"{label}: refusal '{summary.get('refusal')}', expected '{expected}'"
+            )
+        if reacted and safe_int(summary.get("skipped_reacted")) != 1:
+            problems.append(
+                f"{label}: a level that already reacted was not counted as skipped, so the "
+                "exclusion could be silently dropping it for another reason"
+            )
+    return problems
+
+
+def _check_arming_evidence_reaches_the_journal() -> list[str]:
+    """A refused level leaves numbers behind, not just a reason string.
+
+    The decision about MIN_RUNWAY_R was deferred until there is data to decide on, and
+    the data lives here: how much clear air each refused level actually had. Two things
+    can silently break it. compact_signal_for_journal is a whitelist, so a field that is
+    not listed disappears without an error; and the refusal reasons embed their own
+    measurement (LEVEL_2.70ATR_UNREACHABLE, SCORE_55_BELOW_58), so tallying them raw
+    yields one entry per value and the dominant refusal becomes unreadable.
+    """
+    problems: list[str] = []
+
+    # 0.40 ATR of runway against a stop that is never smaller than ABS_MIN_STOP_DOLLARS:
+    # the level is refused on the runway floor, and the measurement is the point of it.
+    context, anchor, _, _, audit, armed = _armable_level(Side.LONG.value, 1.20, 0.40)
+    if armed is not None:
+        return ["the harness armed a level with 0.40 ATR of runway, so no refusal is on trial"]
+    refusal_rows = [row for row in dict(audit.get("limit_arming") or {}).get("refusals") or []]
+    if not refusal_rows:
+        return ["the harness produced no refusal rows, so there is nothing for the journal to carry"]
+
+    decision = Decision(
+        id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+        side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value, quality=0,
+        reason="NO_ANCHOR_WITH_CONFIRMED_3M_REACTION", regime=str(context.get("regime") or ""),
+        audit=audit, current_price=safe_float(context.get("price")),
+    )
+    record = build_signal_record(context, decision, None, audit)
+    journaled = dict(record.get("arming") or {})
+    if not journaled:
+        return ["build_signal_record produced no arming block, so a week of refusals is a week of nothing"]
+
+    if safe_int(journaled.get("refused")) != len(refusal_rows):
+        problems.append(
+            f"the record reports {journaled.get('refused')} refusals against "
+            f"{len(refusal_rows)} rows in the audit"
+        )
+    if safe_int(journaled.get("evaluated")) != (
+        safe_int(journaled.get("considered")) + safe_int(journaled.get("refused"))
+    ):
+        problems.append(
+            f"evaluated={journaled.get('evaluated')} is not considered="
+            f"{journaled.get('considered')} + refused={journaled.get('refused')}, so the block "
+            "reports levels that reached the ranking beside levels that did not with no "
+            "denominator to tell them apart"
+        )
+    if str(journaled.get("dominant_refusal") or "") != "RUNWAY_BELOW_MIN_R":
+        problems.append(
+            f"dominant_refusal is '{journaled.get('dominant_refusal')}', so the tally is not "
+            "reading the rows it summarises"
+        )
+    if sum(safe_int(count) for count in dict(journaled.get("reasons") or {}).values()) != len(refusal_rows):
+        problems.append(
+            f"the reason buckets {journaled.get('reasons')} do not add up to {len(refusal_rows)} refusals"
+        )
+    runway = list(journaled.get("runway_r_refused") or [])
+    if not runway:
+        problems.append("runway_r_refused is empty, so the deferred MIN_RUNWAY_R decision has no distribution")
+    elif any(safe_float(row) >= MIN_RUNWAY_R for row in runway):
+        problems.append(
+            f"runway_r_refused holds {runway}, but every one of them is below MIN_RUNWAY_R "
+            f"{MIN_RUNWAY_R} — the number journaled is not the number the gate measured"
+        )
+    if not (journaled.get("distance_atr_refused") or []):
+        problems.append("distance_atr_refused is empty, so reach cannot be weighed against refusal")
+
+    compact = compact_signal_for_journal(record)
+    if "arming" not in compact:
+        problems.append(
+            "compact_signal_for_journal dropped arming, so the measurements never reach the file "
+            "the decision is supposed to be read from"
+        )
+
+    # A reason that carries its own number has to collapse to one bucket, otherwise the
+    # tally is a list of unique strings and no refusal is ever dominant.
+    _, _, _, _, far_audit, far_armed = _armable_level(Side.LONG.value, 4.00, 6.00)
+    if far_armed is not None:
+        problems.append("a level 4.00 ATR away was armed instead of refused as unreachable")
+    far_record = build_signal_record(context, decision, None, far_audit)
+    far_reasons = dict(dict(far_record.get("arming") or {}).get("reasons") or {})
+    if "LEVEL_UNREACHABLE" not in far_reasons:
+        problems.append(
+            f"an unreachable level was bucketed as {sorted(far_reasons)}, so the measurement "
+            "inside the reason survived into the tally and split it"
+        )
+    if any(str(key).startswith("LEVEL_4") for key in far_reasons):
+        problems.append(f"the tally kept a per-value bucket: {sorted(far_reasons)}")
+
+    # One refusal is the case where the two possible headlines agree, so it cannot show
+    # that only one of them is reported. Two different reasons, first row not the
+    # majority, is the cycle where a pass-through of the audit's own "refusal" would
+    # contradict the tally beside it.
+    split = _arming_summary({
+        "limit_arming": {
+            "evaluated": 3, "considered": 0, "refused": 3,
+            "refusal": "LEVEL_NOT_AHEAD_OF_PRICE",
+            "refusals": [
+                {"reason": "LEVEL_NOT_AHEAD_OF_PRICE"},
+                {"reason": "STOP_1.72ATR_EXCEEDS_CAP"},
+                {"reason": "STOP_1.68ATR_EXCEEDS_CAP"},
+            ],
+        }
+    })
+    if str(split.get("dominant_refusal") or "") != "STOP_EXCEEDS_CAP":
+        problems.append(
+            f"with two STOP rows and one level row the headline is "
+            f"'{split.get('dominant_refusal')}' — the tally is not the headline"
+        )
+    if dict(split.get("reasons") or {}) != {"STOP_EXCEEDS_CAP": 2, "LEVEL_NOT_AHEAD_OF_PRICE": 1}:
+        problems.append(
+            f"two STOP refusals carrying different measurements did not collapse into one "
+            f"bucket: {split.get('reasons')}"
+        )
+    if "refusal" in split:
+        problems.append(
+            "the summary reports the audit's first-row refusal beside dominant_refusal, so one "
+            "block answers the same question twice with different answers"
+        )
+    return problems
+
+
+def _check_arming_respects_the_volatility_wall() -> list[str]:
+    """Below TRADEABLE_ATR15_FLOOR no order rests, and the reason names the wall.
+
+    This is the constraint that produced 205 entry-less cycles at atr15 < 0.25 while
+    dominant_gate reported whichever gate happened to fire first. It is arithmetic of
+    two constants in different units — noise_floor is never below ABS_MIN_STOP_DOLLARS
+    while the cap is MAX_STOP_ATR*atr15 — so it is derivable, and the check asserts the
+    derivation rather than a magic number that could drift from it.
+    """
+    problems: list[str] = []
+    floor = ABS_MIN_STOP_DOLLARS / max(MAX_STOP_ATR, 1e-9)
+    if abs(TRADEABLE_ATR15_FLOOR - floor) > 1e-9:
+        problems.append(
+            f"TRADEABLE_ATR15_FLOOR is {TRADEABLE_ATR15_FLOOR}, but ABS_MIN_STOP_DOLLARS / "
+            f"MAX_STOP_ATR is {floor:.6f} — the reported threshold is not the real one"
+        )
+
+    below = floor * 0.96
+    above = floor * 1.04
+    _, _, _, _, low_audit, low_armed = _armable_level(Side.LONG.value, atr15=below)
+    if low_armed is not None:
+        problems.append(
+            f"an order was armed at atr15 {below:.3f}, below the tradeable floor {floor:.3f} — "
+            "a plan that _plan_geometry would refuse reached the operator"
+        )
+    refusal = str((low_audit.get("limit_arming") or {}).get("refusal") or "")
+    if "STOP_NOISE_FLOOR" not in refusal:
+        problems.append(
+            f"at atr15 {below:.3f} the refusal was '{refusal}', which does not name the noise "
+            "floor — the operator would still be guessing which constraint bit"
+        )
+    _, _, _, _, _, high_armed = _armable_level(Side.LONG.value, atr15=above)
+    if high_armed is None:
+        problems.append(
+            f"nothing armed at atr15 {above:.3f}, just above the floor {floor:.3f} — the wall "
+            "is being applied somewhere other than where it was derived"
+        )
+    return problems
+
+
+def _check_stand_down_is_told_plainly() -> list[str]:
+    """A squeeze says it is a squeeze, every fifteen minutes, in the message itself.
+
+    The journal could already answer this; the operator could not. Two hundred and
+    twenty cycles of "Входу зараз немає" is indistinguishable from a broken bot, and the
+    fix that was asked for is the sentence, not a threshold change — risk stays as it is.
+    """
+    problems: list[str] = []
+    for atr15, expect_line in ((TRADEABLE_ATR15_FLOOR * 0.56, True),
+                               (TRADEABLE_ATR15_FLOOR * 1.6, False)):
+        context, anchor, _ = _synthetic_context(
+            Side.LONG.value, reaction=False, distance_atr=1.20, runway_atr=3.20)
+        context["atr15"] = atr15
+        context["learning_warnings"] = []
+        audit = {
+            "anchor_watch": _anchor_watch([anchor], context),
+            "rejected_hypotheses": [],
+            "daily_risk": daily_risk_budget({"trades": []}, {"active_trade": None}, 0.0),
+        }
+        decision = Decision(
+            id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+            side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value, quality=0,
+            reason="NO_ANCHOR_WITH_CONFIRMED_3M_REACTION", regime=str(context.get("regime") or ""),
+            audit=audit, current_price=safe_float(context.get("price")),
+        )
+        plain = plain_telegram_text(build_decision_message(context, decision))
+        label = f"atr15 {atr15:.3f}"
+        if expect_line:
+            if "стисненні" not in plain:
+                problems.append(f"{label}: the message does not say the market is in a squeeze")
+            if f"{TRADEABLE_ATR15_FLOOR:.2f}" not in plain:
+                problems.append(
+                    f"{label}: the message does not name the tradeable floor "
+                    f"{TRADEABLE_ATR15_FLOOR:.2f}, so 'wait for volatility' has no number to wait for"
+                )
+            if f"{atr15:.2f}" not in plain:
+                problems.append(f"{label}: the message does not quote the measured ATR15")
+        elif "стисненні" in plain:
+            problems.append(f"{label}: the message cries squeeze above the tradeable floor")
+        # The operator's earlier complaint still binds: these must stay out.
+        for removed in ("Режим:", "Сесія:", "Найсвіжіший anchor", "Anchor-и в пам'яті",
+                        "Найближча гіпотеза", "Чому ні", "GATE_PROXIMITY",
+                        "Історії замало", "не дійшли навіть до 0.25R", "⚠️"):
+            if removed in plain:
+                problems.append(f"{label}: the stand-down message reintroduced '{removed}'")
+
+        record = build_signal_record(context, decision, None, audit)
+        volatility = dict(record.get("volatility") or {})
+        if not volatility:
+            problems.append(f"{label}: the record carries no volatility block")
+            continue
+        if bool(volatility.get("stand_down")) != expect_line:
+            problems.append(
+                f"{label}: the record says stand_down={volatility.get('stand_down')}, expected {expect_line}"
+            )
+        if abs(safe_float(volatility.get("tradeable_floor")) - TRADEABLE_ATR15_FLOOR) > 1e-9:
+            problems.append(f"{label}: the record journaled the wrong floor")
+        compact = compact_signal_for_journal(record)
+        if "volatility" not in compact:
+            problems.append(
+                f"{label}: compact_signal_for_journal dropped volatility, so the journal cannot "
+                "separate a squeeze from a dry market"
+            )
+
+    # The second wall sits ABOVE the universal floor. make_anchor repairs a degenerate
+    # falsifier out to ABS_MIN_STOP_DOLLARS and _provisional_stop then adds
+    # max(0.10*atr15, COMMISSION_BUFFER_DOLLARS) on top, so a repaired level needs
+    # atr15 >= ABS_MIN_STOP_DOLLARS / (MAX_STOP_ATR - 0.10). A live cycle at atr15 0.25
+    # lost six of eight levels to it while the market still read as tradeable, and the
+    # message said nothing at all — the same silence this check exists to prevent.
+    repaired_floor = ABS_MIN_STOP_DOLLARS / max(MAX_STOP_ATR - 0.10, 1e-9)
+    # 0.20 ATR puts the level inside 2*ANCHOR_ZONE_ATR, so the message takes the
+    # "вхід наближається" branch exactly as the live cycle did — the branch whose
+    # "чекаємо 3m-реакцію" promise the wall contradicts.
+    context, anchor, journal, _, _, _ = _armable_level(
+        Side.LONG.value, 0.20, 3.20, atr15=TRADEABLE_ATR15_FLOOR)
+    anchor.invalidation = round_price(
+        safe_float(anchor.level) - side_sign(str(anchor.side)) * ABS_MIN_STOP_DOLLARS)
+    cap_audit: dict[str, Any] = {}
+    _arm_limit_at_level(context, journal, {"active_trade": None}, [anchor],
+                        compute_degradation_table(journal), cap_audit, new_id("sig"))
+    cap_audit["anchor_watch"] = _anchor_watch([anchor], context)
+    cap_rows = [row for row in dict(cap_audit.get("limit_arming") or {}).get("refusals") or []]
+    if not cap_rows or not all(str(row.get("reason") or "").startswith("STOP_") for row in cap_rows):
+        problems.append(
+            f"a level whose falsifier was repaired to ABS_MIN_STOP_DOLLARS refused as "
+            f"{[row.get('reason') for row in cap_rows]} at atr15 {TRADEABLE_ATR15_FLOOR:.3f}, so "
+            "the stop-cap case is not being reproduced and the line below is untested"
+        )
+    else:
+        decision = Decision(
+            id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
+            side=Side.NEUTRAL.value, setup_type=SetupType.NONE.value, quality=0,
+            reason="NO_ANCHOR_WITH_CONFIRMED_3M_REACTION", regime=str(context.get("regime") or ""),
+            audit=cap_audit, current_price=safe_float(context.get("price")),
+        )
+        plain = plain_telegram_text(build_decision_message(context, decision))
+        if "Вхід наближається" not in plain:
+            problems.append(
+                f"the harness did not reach the approaching-entry branch, so the contradiction "
+                f"between it and the wall is untested: {plain[:160]}"
+            )
+        if "Стоп не вміщається" not in plain:
+            problems.append(
+                f"every level was refused on the stop cap at atr15 {TRADEABLE_ATR15_FLOOR:.3f} and "
+                f"the message did not say so: {plain[:160]}"
+            )
+        if "чекаємо 3m-реакцію" in plain:
+            problems.append(
+                "the message promises to wait for a 3m reaction in the same breath as saying a "
+                "reaction cannot produce an entry — the self-contradiction the operator rejected"
+            )
+        if f"{repaired_floor:.2f}" not in plain:
+            problems.append(
+                f"the message does not name the ATR15 the level actually needs "
+                f"({repaired_floor:.2f}), so 'wait for volatility' has no number to wait for"
+            )
+        if "стисненні" in plain:
+            problems.append(
+                "above the universal floor the message still calls it a squeeze, which claims no "
+                "plan exists on any route when one does for a level with a tighter falsifier"
+            )
+        for removed in ("Режим:", "Сесія:", "Найсвіжіший anchor", "Anchor-и в пам'яті",
+                        "Найближча гіпотеза", "Чому ні", "GATE_PROXIMITY", "⚠️"):
+            if removed in plain:
+                problems.append(f"the stop-cap message reintroduced '{removed}'")
+
+        # Half the levels losing to the cap is a dry market, not a wall. Naming the cap
+        # there would teach the operator to ignore the line when it is true.
+        decision.audit = {"limit_arming": {
+            "evaluated": 2, "considered": 0, "refused": 2,
+            "refusals": [
+                {"reason": "STOP_1.70ATR_EXCEEDS_CAP", "stop_distance_atr": 1.70},
+                {"reason": "LEVEL_2.60ATR_UNREACHABLE", "stop_distance_atr": None},
+            ],
+        }}
+        mixed = plain_telegram_text(build_decision_message(context, decision))
+        if "Стоп не вміщається" in mixed:
+            problems.append(
+                "the stop-cap line fired on a cycle where only half the levels lost to the cap, "
+                "so a merely dry market would be reported as an untradeable one"
+            )
+
+        # A majority has to fire, or the rule is unanimity wearing another name — and the
+        # live cycle that motivated this line lost six of eight, not eight of eight.
+        decision.audit = {"limit_arming": {
+            "evaluated": 3, "considered": 0, "refused": 3,
+            "refusals": [
+                {"reason": "STOP_1.70ATR_EXCEEDS_CAP", "stop_distance_atr": 1.70},
+                {"reason": "STOP_1.66ATR_EXCEEDS_CAP", "stop_distance_atr": 1.66},
+                {"reason": "LEVEL_2.60ATR_UNREACHABLE", "stop_distance_atr": None},
+            ],
+        }}
+        majority = plain_telegram_text(build_decision_message(context, decision))
+        if "Стоп не вміщається" not in majority:
+            problems.append(
+                "two of three levels refused on the stop cap and the message stayed silent, so "
+                "the line only speaks on a unanimous cycle no real market produces"
+            )
+        elif "2 з 3 рівнів" not in majority:
+            problems.append(
+                f"the line does not carry its own count, so it claims every level was refused "
+                f"when two of three were: {majority[:160]}"
+            )
+    return problems
+
+
+def _check_arming_keeps_the_message_cadence() -> list[str]:
+    """Arming changes what the message says, never whether it is sent.
+
+    The operator asked for a message every fifteen minutes with or without an entry.
+    An armed order flips decision.action to an executable entry action, so the branch
+    that guaranteed the no-entry message is no longer the one that runs — the send
+    condition has to hold for it too, or the cycle that arms goes silent.
+    """
+    problems: list[str] = []
+    context, anchor, _, state, audit, armed = _armable_level(Side.LONG.value)
+    if armed is None:
+        return ["the harness did not arm an order, so the cadence of arming is untested"]
+    row, plan, candidate = armed
+    context["pending_limit"] = row
+    decision = Decision(
+        id=new_id("sig"), time=iso_now(),
+        action=_entry_action_for_stage(str(plan.entry_stage)),
+        side=str(candidate.side), setup_type=str(candidate.setup_type),
+        quality=safe_int(candidate.final_score), reason="LIMIT_ARMED_AT_LEVEL",
+        regime=str(context.get("regime") or ""), candidate=candidate, plan=plan,
+        audit=audit, current_price=safe_float(context.get("price")),
+    )
+    if not (decision.action != Action.NO_SETUP.value or SEND_NO_SETUP or TELEGRAM_NOTIFY_EVERY_RUN):
+        problems.append(
+            "an armed order does not satisfy the send condition, so the cycle that arms "
+            "an order would be the one cycle the operator hears nothing about"
+        )
+    plain = plain_telegram_text(build_decision_message(context, decision))
+    if "Лімітний ордер виставлено" not in plain:
+        problems.append(f"the armed message does not say an order was placed: {plain[:120]}")
+    if _fmt_price(anchor.level) not in plain:
+        problems.append("the armed message does not quote the level the operator has to place")
+    if len(plain_telegram_text(build_decision_message(context, decision))) > TELEGRAM_MAX_LENGTH:
+        problems.append("the armed message exceeds TELEGRAM_MAX_LENGTH")
+
+    # The fill is rebuilt from the candidate restored out of the order row, because
+    # run_bot clears the pending slot the moment the trade opens. That candidate carries
+    # no reaction gates, and the message used to fall through to _reaction_summary's
+    # fallback and print "3M-РЕАКЦІЯ ПІДТВЕРДЖЕНА" beside its own NO_3M_REACTION_YET —
+    # one message contradicting itself about how the entry happened.
+    filled_candidate = candidate_from_dict(row.get("candidate"))
+    filled_plan = plan_from_dict(row.get("plan"))
+    if filled_candidate is None or filled_plan is None:
+        problems.append("the armed order row cannot restore its candidate and plan, so a fill cannot be reported")
+    else:
+        filled_context = dict(context)
+        filled_context["pending_limit"] = None
+        filled = Decision(
+            id=new_id("sig"), time=iso_now(),
+            action=_entry_action_for_stage(str(filled_plan.entry_stage)),
+            side=str(filled_candidate.side), setup_type=str(filled_candidate.setup_type),
+            quality=safe_int(filled_candidate.final_score), reason="LIMIT_FILLED_AT_LEVEL",
+            regime=str(context.get("regime") or ""), candidate=filled_candidate,
+            plan=filled_plan, audit={}, current_price=safe_float(context.get("price")),
+        )
+        filled_plain = plain_telegram_text(build_decision_message(filled_context, filled))
+        if "3M-РЕАКЦІЯ ПІДТВЕРДЖЕНА" in filled_plain:
+            problems.append(
+                "a fill from an armed order claims a confirmed 3m reaction it never had, while "
+                "the same message lists NO_3M_REACTION_YET"
+            )
+        if "Без 3m-реакції" not in filled_plain:
+            problems.append(
+                f"the filled message does not say the entry had no 3m reaction: {filled_plain[:200]}"
+            )
+        if "Лімітний ордер виконано" not in filled_plain:
+            problems.append(f"the filled message does not say the order was executed: {filled_plain[:120]}")
+
+    # The order has to survive a reload: arming stores it in the same slot the reacted
+    # path uses, and the next cycle resolves it from state, not from memory.
+    store_pending_limit(state, row)
+    restored = pending_limit_from_state(state)
+    if restored is None:
+        problems.append("the armed order did not survive store_pending_limit")
+    else:
+        for key in ("limit_price", "armed_without_reaction", "arming", "plan", "candidate",
+                    "expires_ts", "anchor_id", "execution_route"):
+            if key not in restored:
+                problems.append(f"the reloaded armed order lost {key}")
+        if dict(restored.get("market_shadow") or {}):
+            problems.append("the reloaded armed order grew a market shadow it was stored without")
+    return problems
+
+
 def _run_self_test() -> bool:
     checks: list[tuple[str, Any]] = [
         ("конфігурація", _check_configuration),
@@ -11833,6 +13085,11 @@ def _run_self_test() -> bool:
         ("ключі ордера переживають перезавантаження", _check_limit_keys_survive_a_reload),
         ("маршрут за природою сетапу", _check_route_follows_the_canonical_family),
         ("ринковий вхід не створює ордера", _check_market_route_opens_without_an_order),
+        ("ліміт армиться на свіжому рівні", _check_limit_arms_on_a_fresh_level),
+        ("армінг не чекає пройдений рівень", _check_arming_refuses_a_level_price_already_owns),
+        ("відмова армінгу лишає числа в журналі", _check_arming_evidence_reaches_the_journal),
+        ("армінг кориться стіні волатильності", _check_arming_respects_the_volatility_wall),
+        ("армінг не ламає каденцію повідомлень", _check_arming_keeps_the_message_cadence),
         ("ескалація лише на свіжий імпульс", _check_escalation_needs_a_displacement_after_placement),
         ("ескалація лише в бік руху", _check_escalation_fires_only_on_the_right_side),
         ("ескалація знімає ордер у тому ж циклі", _check_escalation_cancels_the_order_in_the_same_cycle),
@@ -11841,6 +13098,7 @@ def _run_self_test() -> bool:
         ("статистика моделей нічого не примушує", _check_execution_model_statistics_are_never_enforcing),
         ("сторона рівня в повідомленні", _check_watch_reports_the_trend_side),
         ("повідомлення без входу", _check_messages),
+        ("стиснення назване прямо", _check_stand_down_is_told_plainly),
     ]
     failed: list[str] = []
     print(f"SELF-TEST {BOT_VERSION} ({len(checks)} перевірок, офлайн)")
