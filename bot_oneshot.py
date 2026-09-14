@@ -382,6 +382,12 @@ REACTION_REJECTION_RATIO = min(0.95, max(0.30, float(os.getenv("REACTION_REJECTI
 REACTION_BODY_ATR3 = max(0.10, float(os.getenv("REACTION_BODY_ATR3", "0.45") or 0.45))
 # Буфер зони рівня (в ATR15), у якому дотик взагалі шукається.
 ANCHOR_ZONE_ATR = min(1.00, max(0.05, float(os.getenv("ANCHOR_ZONE_ATR", "0.25") or 0.25)))
+# ACCEPTANCE_RETEST_CONTINUATION: скільки 15m-барів тому міг статися structure
+# shift і ще вважатися "свіжим прийняттям". Раніше decay був лише у скорі
+# (66 - 3*age, підлога 50) без відсіву — рівень 8-10 барів у минулому все
+# одно арміл anchor на мінімальному скорі. У журналі це давало 62.5%
+# NO_FOLLOWTHROUGH-виходів для сетапу. Тепер старший за це — не anchor.
+ACCEPTANCE_MAX_AGE_BARS = max(1, int(os.getenv("ACCEPTANCE_MAX_AGE_BARS", "4") or 4))
 # Anchor старіє: причина, якій понад N хвилин, уже не причина.
 ANCHOR_MAX_AGE_MIN = max(15, int(os.getenv("ANCHOR_MAX_AGE_MIN", "180") or 180))
 # Максимальна відстань стопа від входу (ATR15) — інакше вхід уже запізний.
@@ -470,6 +476,17 @@ EXECUTION_MODEL_SCHEMA_VERSION = "organic_execution_model_v10.1.0"
 SETUP_STATS_MIN_SAMPLE = max(5, int(os.getenv("SETUP_STATS_MIN_SAMPLE", "12") or 12))
 SETUP_DEMOTE_WINRATE_FLOOR = min(0.60, max(0.05, float(os.getenv("SETUP_DEMOTE_WINRATE_FLOOR", "0.28") or 0.28)))
 SETUP_DEMOTE_EXPECTANCY_R = min(0.0, max(-1.0, float(os.getenv("SETUP_DEMOTE_EXPECTANCY_R", "-0.15") or -0.15)))
+# Full DEMOTED status needs SETUP_STATS_MIN_SAMPLE (12) closed trades before it
+# will act — correct, a full kill needs real confidence. But that meant a
+# setup already failing badly on 6-11 trades (e.g. LIQUIDITY_REVERSAL: 7
+# trades, Wilson lower 0.08, expectancy -0.35R) kept trading at full risk for
+# months while it waited to accumulate the other 5+ trades. This adds an
+# earlier, softer checkpoint: from SETUP_STATS_EARLY_WARNING_SAMPLE trades on,
+# a setup that already clears the same demote bar on ITS OWN numbers (not just
+# the family's) gets its risk halved — still executable, still collecting
+# evidence, just not at full size while it looks this bad.
+SETUP_STATS_EARLY_WARNING_SAMPLE = max(3, min(SETUP_STATS_MIN_SAMPLE, int(os.getenv("SETUP_STATS_EARLY_WARNING_SAMPLE", "6") or 6)))
+SETUP_EARLY_WARNING_RISK_MULTIPLIER = min(1.0, max(0.10, float(os.getenv("SETUP_EARLY_WARNING_RISK_MULTIPLIER", "0.50") or 0.50)))
 SETUP_PROMOTE_EXPECTANCY_R = max(0.0, float(os.getenv("SETUP_PROMOTE_EXPECTANCY_R", "0.25") or 0.25))
 SETUP_PROMOTE_WINRATE_FLOOR = min(0.90, max(0.10, float(os.getenv("SETUP_PROMOTE_WINRATE_FLOOR", "0.35") or 0.35)))
 SETUP_WILSON_Z = max(0.5, float(os.getenv("SETUP_WILSON_Z", "1.96") or 1.96))
@@ -2538,11 +2555,20 @@ def detect_fresh_base_continuation(context: dict[str, Any]) -> Optional[Anchor]:
     level = low if side == Side.LONG.value else high
     invalidation = level - side_sign(side) * max(0.70 * atr15, ABS_MIN_STOP_DOLLARS)
     displaced = any(_body(c) >= 0.9 * atr15 and ((_is_bull(c) and side == Side.LONG.value) or (not _is_bull(c) and side == Side.SHORT.value)) for c in rows)
+    # 2026-09: displacement used to be a +8 score bonus, not a requirement — a
+    # base with zero impulse into it still armed an anchor at score 58 and
+    # traded at PROBE size. In the journal these no-displacement bases carried
+    # 63.6% of all NO_FOLLOWTHROUGH exits for this setup (11 trades measured).
+    # A base nobody pushed into is not evidence anyone wants to defend it, so
+    # displacement is now a precondition, and the anchor keeps only the
+    # confirmed-displacement score.
+    if not displaced:
+        return None
     return make_anchor(
         SetupType.FRESH_BASE_CONTINUATION.value, side, level, invalidation,
         AnchorKind.RANGE_EDGE.value,
         f"Свіжа база {low:.4f}-{high:.4f}, робоча межа {level:.4f}",
-        context, score=58 + (8 if displaced else 0),
+        context, score=66,
         evidence={"base_low": low, "base_high": high, "compression": base.get("compression"),
                   "displacement_seen": displaced, "base_age_bars": base.get("bars")},
     )
@@ -2566,11 +2592,19 @@ def detect_acceptance_retest_continuation(context: dict[str, Any]) -> Optional[A
     sign = side_sign(side)
     invalidation = level - sign * max(0.85 * atr15, ABS_MIN_STOP_DOLLARS)
     age = safe_int(shift.get("age_bars"), 0)
+    # 2026-09: score decayed with age but never rejected, so a break accepted
+    # 8-10 bars ago still armed at the score floor (50) and traded at PROBE
+    # size on stale evidence. This setup carried 62.5% NO_FOLLOWTHROUGH exits
+    # (8 trades measured) with a median MFE of only 0.15R — mostly acceptance
+    # that was no longer fresh by the time the retest arrived. ACCEPTANCE_MAX_AGE_BARS
+    # turns the decay into a hard cutoff instead of a soft one.
+    if age > ACCEPTANCE_MAX_AGE_BARS:
+        return None
     return make_anchor(
         SetupType.ACCEPTANCE_RETEST_CONTINUATION.value, side, level, invalidation,
         AnchorKind.BREAK_LEVEL.value,
         f"Рівень {level:.4f} пробито й прийнято, чекаємо ретест",
-        context, score=max(50, 66 - 3 * age),
+        context, score=max(58, 66 - 3 * age),
         evidence={"break_level": level, "shift_kind": shift.get("kind"), "age_bars": age},
     )
 
@@ -3564,30 +3598,81 @@ def setup_degradation_status(setup_type: str, statistics: dict[str, Any]) -> dic
         "schema_version": SETUP_DEGRADATION_SCHEMA_VERSION,
     }
 
-    if trades < SETUP_STATS_MIN_SAMPLE:
-        # Not enough evidence to condemn a setup. It keeps trading at reduced
-        # conviction, and the family record breaks a tie if it is clear.
-        family_trades = safe_int(family_row.get("trades"))
-        family_negative = bool(
-            safe_int(family_row.get("trades")) >= SETUP_STATS_MIN_SAMPLE
-            and safe_float(family_row.get("wilson_lower")) < SETUP_DEMOTE_WINRATE_FLOOR
-            and safe_float(family_row.get("expectancy_r")) < SETUP_DEMOTE_EXPECTANCY_R
-        )
-        profile.update({
-            "status": "INSUFFICIENT_SAMPLE",
-            "executable": not family_negative,
-            "risk_multiplier": 0.60 if family_negative else 1.00,
-            "reason": (
-                f"family {family} is negative-expectancy on {family_trades} trades"
-                if family_negative else
-                f"only {trades}/{SETUP_STATS_MIN_SAMPLE} closed trades — not enough evidence to demote"
-            ),
-        })
-        return profile
-
     wilson = safe_float(row.get("wilson_lower"))
     expectancy = safe_float(row.get("expectancy_r"))
     win_rate = safe_float(row.get("win_rate"))
+
+    if trades < SETUP_STATS_MIN_SAMPLE:
+        # Not enough evidence to condemn a setup outright. It keeps trading,
+        # and either the family record or the setup's own early numbers can
+        # cut its risk before a tie is fully proven.
+        family_trades = safe_int(family_row.get("trades"))
+        family_wilson = safe_float(family_row.get("wilson_lower"))
+        family_expectancy = safe_float(family_row.get("expectancy_r"))
+        family_negative = bool(
+            family_trades >= SETUP_STATS_MIN_SAMPLE
+            and family_wilson < SETUP_DEMOTE_WINRATE_FLOOR
+            and family_expectancy < SETUP_DEMOTE_EXPECTANCY_R
+        )
+        # Same demote bar as full DEMOTED, just on a smaller sample the full
+        # status is not willing to act on yet. Early warning, not a verdict —
+        # executable stays True, only the risk multiplier moves. Checked both
+        # on the setup's own trades and on its family's, because a family can
+        # cross the early-warning sample size (e.g. several 1-4 trade cousins
+        # summing to LIQUIDITY_REVERSAL's 7) before any single setup in it does.
+        setup_early_negative = bool(
+            trades >= SETUP_STATS_EARLY_WARNING_SAMPLE
+            and wilson < SETUP_DEMOTE_WINRATE_FLOOR
+            and expectancy < SETUP_DEMOTE_EXPECTANCY_R
+        )
+        family_early_negative = bool(
+            not family_negative
+            and family_trades >= SETUP_STATS_EARLY_WARNING_SAMPLE
+            and family_wilson < SETUP_DEMOTE_WINRATE_FLOOR
+            and family_expectancy < SETUP_DEMOTE_EXPECTANCY_R
+        )
+        any_early_negative = setup_early_negative or family_early_negative
+        if family_negative:
+            risk_multiplier = min(0.60, SETUP_EARLY_WARNING_RISK_MULTIPLIER) if setup_early_negative else 0.60
+            reason = f"family {family} is negative-expectancy on {family_trades} trades"
+            if setup_early_negative:
+                reason += f", and {key} itself is already negative on its own {trades} trades"
+        elif setup_early_negative and family_early_negative:
+            risk_multiplier = SETUP_EARLY_WARNING_RISK_MULTIPLIER
+            reason = (
+                f"{trades}/{SETUP_STATS_MIN_SAMPLE} closed trades — {key} is already negative on its "
+                f"own numbers (Wilson lower {wilson:.2f}, expectancy {expectancy:+.3f}R) and so is its "
+                f"family {family} on {family_trades} trades (Wilson lower {family_wilson:.2f}, "
+                f"expectancy {family_expectancy:+.3f}R) — risk halved early"
+            )
+        elif setup_early_negative:
+            risk_multiplier = SETUP_EARLY_WARNING_RISK_MULTIPLIER
+            reason = (
+                f"{trades}/{SETUP_STATS_MIN_SAMPLE} closed trades, but already negative on its "
+                f"own numbers (win_rate {win_rate:.0%}, Wilson lower {wilson:.2f}, "
+                f"expectancy {expectancy:+.3f}R) — risk halved early, watching for "
+                f"{SETUP_STATS_MIN_SAMPLE} before a full demote"
+            )
+        elif family_early_negative:
+            risk_multiplier = SETUP_EARLY_WARNING_RISK_MULTIPLIER
+            reason = (
+                f"family {family} is already negative on {family_trades} trades "
+                f"(Wilson lower {family_wilson:.2f}, expectancy {family_expectancy:+.3f}R), below the "
+                f"{SETUP_STATS_MIN_SAMPLE}-trade sample the family needs for a full call — "
+                f"risk halved early for {key}"
+            )
+        else:
+            risk_multiplier = 1.00
+            reason = f"only {trades}/{SETUP_STATS_MIN_SAMPLE} closed trades — not enough evidence to demote"
+        profile.update({
+            "status": "INSUFFICIENT_SAMPLE",
+            "executable": not family_negative,
+            "risk_multiplier": risk_multiplier,
+            "early_warning": any_early_negative,
+            "reason": reason,
+        })
+        return profile
+
     if wilson < SETUP_DEMOTE_WINRATE_FLOOR and expectancy < SETUP_DEMOTE_EXPECTANCY_R:
         profile.update({
             "status": "DEMOTED",
@@ -7449,6 +7534,39 @@ def _bucket_outcome(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+ENTRY_SCORE_BUCKET_ORDER = ("LOW", "MID", "HIGH")
+
+
+def _entry_score_direction(score_buckets: dict[str, list[dict[str, Any]]]) -> str:
+    """MONOTONIC if expectancy rises LOW -> MID -> HIGH (ties allowed), else INVERTED.
+
+    Only buckets that actually have trades are compared, so a missing MID
+    bucket does not block the check.
+    """
+    present = [b for b in ENTRY_SCORE_BUCKET_ORDER if score_buckets.get(b)]
+    if len(present) < 2:
+        return "UNKNOWN"
+    values = [_bucket_outcome(score_buckets[b])["expectancy_r"] for b in present]
+    non_decreasing = all(values[i] <= values[i + 1] + 1e-9 for i in range(len(values) - 1))
+    return "MONOTONIC" if non_decreasing else "INVERTED"
+
+
+def _entry_score_is_monotonic(score_buckets: dict[str, list[dict[str, Any]]]) -> bool:
+    """A score only "discriminates" if higher buckets also score higher expectancy.
+
+    A wide spread with HIGH doing WORSE than LOW is not evidence the score is
+    informative — it is evidence the score is currently misleading position
+    sizing, and should not be reported as a working signal.
+    """
+    if len(score_buckets) < 2:
+        return False
+    spread = (
+        max(_bucket_outcome(g)["expectancy_r"] for g in score_buckets.values())
+        - min(_bucket_outcome(g)["expectancy_r"] for g in score_buckets.values())
+    )
+    return spread > 0.15 and _entry_score_direction(score_buckets) == "MONOTONIC"
+
+
 def _group_by(rows: list[dict[str, Any]], key_fn: Any) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -7725,11 +7843,12 @@ def compute_entry_quality_audit(journal: dict[str, Any]) -> dict[str, Any]:
         "expectancy_by_entry_score": {
             bucket: _bucket_outcome(group) for bucket, group in sorted(score_buckets.items())
         },
-        "entry_score_is_discriminative": bool(
-            len(score_buckets) >= 2
-            and max(_bucket_outcome(g)["expectancy_r"] for g in score_buckets.values())
-            - min(_bucket_outcome(g)["expectancy_r"] for g in score_buckets.values()) > 0.15
-        ),
+        # A score is only "discriminative" if a HIGHER bucket earns a HIGHER
+        # expectancy. A wide spread in the wrong direction (HIGH scoring worse
+        # than LOW) used to satisfy this flag too — that is not discrimination,
+        # it is the score actively misleading position sizing. ORDER = LOW < MID < HIGH.
+        "entry_score_is_discriminative": _entry_score_is_monotonic(score_buckets),
+        "entry_score_direction": _entry_score_direction(score_buckets),
         "computed_at": iso_now(),
         "schema_version": ENTRY_AUDIT_SCHEMA_VERSION,
     }
