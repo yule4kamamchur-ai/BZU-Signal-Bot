@@ -40,6 +40,7 @@ import argparse
 import copy
 import html
 import json
+import collections
 import math
 import os
 import sys
@@ -109,7 +110,7 @@ except ImportError:  # Production-safe stdlib fallback for clean runners.
 # Write-only at every site: only ARCHITECTURE_VERSION is compared (load_state's
 # compatibility check), so this label can follow the entry model while the one below
 # must not move or the live anchor and regime memory is discarded on the first run.
-BOT_VERSION = "pro-organic-v10.2.0-limit-arming-on-fresh-levels"
+BOT_VERSION = "pro-organic-v10.3.0-live-multi-limit-gates"
 ARCHITECTURE_VERSION = "ORGANIC_ANCHOR_REACTION_V10_0_0_15M_CADENCE"
 INSTRUMENT_LABEL = "BZ/USDT"
 SCHEMA_VERSION = "organic_v10.0.0"
@@ -161,6 +162,15 @@ STATE_ANCHOR_KEY = "anchors_v10"
 # revived as an OPEN position and the unchanged supervision layer would manage an
 # order that was never filled as if it were a live trade.
 STATE_PENDING_KEY = "pending_limit_v10"
+# Multiple independent resting limits may coexist. The state key is now a list;
+# legacy single-dict state is migrated transparently on load.
+MAX_PENDING_LIMIT_ORDERS = max(1, min(20, int(os.getenv("MAX_PENDING_LIMIT_ORDERS", "8") or 8)))
+MARKET_REACTION_MAX_LATENCY_MIN = max(3.0, float(os.getenv("MARKET_REACTION_MAX_LATENCY_MIN", "9") or 9))
+LIMIT_REACTION_MAX_LATENCY_MIN = max(
+    MARKET_REACTION_MAX_LATENCY_MIN,
+    float(os.getenv("LIMIT_REACTION_MAX_LATENCY_MIN", "15") or 15),
+)
+LIMIT_GATE_STATS_SCHEMA_VERSION = "organic_limit_gate_stats_v10.3.0"
 
 # The journal keeps outcome history and nothing else. Every version-specific
 # audit blob the old bot accumulated is dropped on save; atomic_json_write still
@@ -171,7 +181,7 @@ JOURNAL_CORE_KEYS = frozenset({
     "preconfirmation_events", "limit_orders",
     "analytics", "setup_statistics", "entry_quality_audit",
     "calendar_statistics", "learning_status", "degradation", "migration",
-    "execution_model_statistics",
+    "execution_model_statistics", "limit_arming_statistics",
 })
 
 PRECONFIRM_EMBEDDED_JOURNAL_LIMIT = max(100, int(os.getenv("PRECONFIRM_EMBEDDED_JOURNAL_LIMIT", "500") or 500))
@@ -3730,7 +3740,7 @@ def compute_degradation_table(journal: dict[str, Any]) -> dict[str, Any]:
 # majority on timing and location — the two things that decided whether a trade
 # ever reached 0.25R of MFE.
 
-def _reaction_timing_quality(reaction: Reaction) -> dict[str, Any]:
+def _reaction_timing_quality(reaction: Reaction, route: str = "MARKET") -> dict[str, Any]:
     gates = dict(reaction.gates or {})
     rejection = dict(gates.get("GATE_REJECTION") or {})
     displacement = dict(gates.get("GATE_DISPLACEMENT") or {})
@@ -3738,7 +3748,9 @@ def _reaction_timing_quality(reaction: Reaction) -> dict[str, Any]:
     body_atr3 = clamp(safe_float(displacement.get("body_atr3")) / max(REACTION_BODY_ATR3, 1e-9), 0.0, 2.0)
     closed_back = 1.0 if rejection.get("closed_back_inside") else 0.0
     latency = safe_float(reaction.latency_minutes)
-    latency_score = clamp(1.0 - (latency / max(TRIGGER_LOOKBACK_3M * 3.0, 1.0)), 0.0, 1.0)
+    route = "MARKET" if str(route).upper() == "MARKET" else "LIMIT"
+    latency_budget = MARKET_REACTION_MAX_LATENCY_MIN if route == "MARKET" else LIMIT_REACTION_MAX_LATENCY_MIN
+    latency_score = clamp(1.0 - (latency / max(latency_budget, 1.0)), 0.0, 1.0)
     quality = clamp(
         34 * min(rejection_strength, 1.0)
         + 26 * min(body_atr3, 1.0)
@@ -3753,6 +3765,8 @@ def _reaction_timing_quality(reaction: Reaction) -> dict[str, Any]:
         "closed_back_inside": bool(rejection.get("closed_back_inside")),
         "latency_minutes": round(latency, 2),
         "latency_score": round(latency_score, 4),
+        "latency_budget_minutes": round(latency_budget, 2),
+        "route": route,
     }
 
 
@@ -3826,7 +3840,8 @@ def build_candidate(
     risk = max(safe_float((reaction.gates.get("GATE_STOP") or {}).get("distance")), ABS_MIN_STOP_DOLLARS, 1e-9)
     runway = nearest_runway_r(context, anchor.side, reaction.entry_price, risk)
 
-    timing = _reaction_timing_quality(reaction)
+    route = "MARKET" if str(anchor.setup_family or "").upper() in MARKET_ROUTED_CANONICAL_FAMILIES else "LIMIT"
+    timing = _reaction_timing_quality(reaction, route)
     location = _location_quality(reaction, runway)
     smt = dict(context.get("smt") or {})
     context_quality = _context_quality(context, anchor, smt)
@@ -3852,6 +3867,31 @@ def build_candidate(
 
     episode_key = f"{anchor.setup_family}:{anchor.side}:{round(anchor.level, 4)}"
     freshness = round(clamp(100.0 - 6.0 * reaction.latency_minutes, 0.0, 100.0), 2)
+
+    # Freshness is about the impulse relative to the anchor, not merely "strong bar + quick".
+    rejection_ts = safe_int((reaction.gates.get("GATE_REJECTION") or {}).get("ts"))
+    displacement_gate = dict(reaction.gates.get("GATE_DISPLACEMENT") or {})
+    displacement_ts = safe_int(displacement_gate.get("ts"))
+    anchor_age_at_reaction_min = (
+        max(0.0, (rejection_ts - safe_int(anchor.created_ts)) / 60000.0)
+        if rejection_ts else 0.0
+    )
+    impulse_age_min = (
+        max(0.0, (displacement_ts - rejection_ts) / 60000.0)
+        if displacement_ts and rejection_ts else 0.0
+    )
+    reaction_close = safe_float(
+        displacement_gate.get("close"),
+        safe_float(reaction.entry_price),
+    )
+    impulse_distance_atr = abs(reaction_close - safe_float(anchor.level)) / max(safe_float((context.get("atr15") or 0.0)), 1e-9)
+    impulse_freshness = round(clamp(
+        100.0
+        - 35.0 * anchor_age_at_reaction_min / max(ANCHOR_MAX_AGE_MIN, 1e-9)
+        - 25.0 * impulse_age_min / 6.0
+        - 20.0 * min(impulse_distance_atr, 2.0) / 2.0,
+        0.0, 100.0,
+    ), 2)
     entry_distance_atr = safe_float((reaction.gates.get("GATE_PROXIMITY") or {}).get("distance_atr"))
     stop_distance_atr = safe_float((reaction.gates.get("GATE_STOP") or {}).get("distance_atr"))
     candidate = Candidate(
@@ -3871,6 +3911,12 @@ def build_candidate(
             "context": context_quality,
             "runway": runway,
             "degradation": profile,
+            "anchor_reaction_freshness": {
+                "score": impulse_freshness,
+                "anchor_age_at_reaction_min": round(anchor_age_at_reaction_min, 2),
+                "impulse_age_min": round(impulse_age_min, 2),
+                "impulse_distance_atr": round(impulse_distance_atr, 4),
+            },
             "features": {
                 "setup_quality": round(setup_quality / 100.0, 4),
                 "timing_quality": round(timing["quality"] / 100.0, 4),
@@ -3887,6 +3933,11 @@ def build_candidate(
                 "entry_distance_atr": round(entry_distance_atr, 4),
                 "stop_distance_atr": round(stop_distance_atr, 4),
                 "reaction_latency_minutes": round(reaction.latency_minutes, 2),
+                "anchor_age_at_reaction_min": round(anchor_age_at_reaction_min, 2),
+                "impulse_age_min": round(impulse_age_min, 2),
+                "impulse_distance_atr": round(impulse_distance_atr, 4),
+                "impulse_freshness": round(impulse_freshness / 100.0, 4),
+                "route": route,
             },
         },
         confirmations=[
@@ -3909,6 +3960,13 @@ def build_candidate(
         thesis=anchor.reason,
         execution_source="ANCHOR_REACTION_3M",
         stage_plan={
+            "route": route,
+            "anchor_reaction_freshness": {
+                "score": impulse_freshness,
+                "anchor_age_at_reaction_min": round(anchor_age_at_reaction_min, 2),
+                "impulse_age_min": round(impulse_age_min, 2),
+                "impulse_distance_atr": round(impulse_distance_atr, 4),
+            },
             "anchor": anchor_to_dict(anchor),
             "reaction": dict(reaction.gates or {}),
             "reaction_latency_minutes": reaction.latency_minutes,
@@ -4114,8 +4172,10 @@ def classify_probe_conviction(candidate: Candidate, context: dict[str, Any]) -> 
 
 def _probe_risk_pct(conviction: dict[str, Any], admission: dict[str, Any]) -> float:
     tier = str(conviction.get("tier") or "EXPERIMENTAL").upper()
+    # HIGH conviction must not unlock a larger probe while the current empirical
+    # direction is unconfirmed/inverted. Keep HIGH at the ordinary probe budget.
     base = {
-        "HIGH": HIGH_CONVICTION_PROBE_RISK_PCT,
+        "HIGH": PROBE_RISK_PCT,
         "MEDIUM": MEDIUM_CONVICTION_PROBE_RISK_PCT,
     }.get(tier, EXPERIMENTAL_PROBE_RISK_PCT)
     status = str(admission.get("status") or "").upper()
@@ -6783,12 +6843,22 @@ def load_state() -> dict[str, Any]:
     ][-ANCHOR_MEMORY_LIMIT:]
     regime_memory = raw.get("regime_memory") if compatible else {}
     pending_raw = raw.get(STATE_PENDING_KEY) if compatible else None
+    if isinstance(pending_raw, dict):
+        pending_limits = [pending_raw]
+    elif isinstance(pending_raw, list):
+        pending_limits = [row for row in pending_raw if isinstance(row, dict)]
+    else:
+        pending_limits = []
+    pending_limits = [
+        row for row in pending_limits
+        if str(row.get("status") or "PENDING").upper() not in PENDING_LIMIT_TERMINAL_STATUSES
+    ][-MAX_PENDING_LIMIT_ORDERS:]
     return {
         "version": BOT_VERSION,
         "architecture_version": ARCHITECTURE_VERSION,
         "active_trade": raw.get("active_trade"),
         STATE_ANCHOR_KEY: anchors,
-        STATE_PENDING_KEY: pending_raw if isinstance(pending_raw, dict) else None,
+        STATE_PENDING_KEY: pending_limits,
         "regime_memory": regime_memory if isinstance(regime_memory, dict) else {},
         "latest_signal": raw.get("latest_signal"),
         "last_message_key": raw.get("last_message_key", "") if compatible else "",
@@ -6842,23 +6912,60 @@ def store_active_trade(state: dict[str, Any], trade: Optional[ActiveTrade]) -> N
     state["active_trade"] = asdict(trade) if trade else None
 
 
-def pending_limit_from_state(state: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """The one limit order that may be resting, or None.
-
-    Terminal records are refused here rather than trusted: a FILLED or EXPIRED row
-    left in the slot by an interrupted run would make the "one limit at a time"
-    guard refuse every future entry, silently and permanently.
-    """
+def pending_limit_orders_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return every still-live resting limit, migrating the legacy single dict in place."""
     raw = (state or {}).get(STATE_PENDING_KEY)
-    if not isinstance(raw, dict):
-        return None
-    if str(raw.get("status") or "PENDING").upper() in PENDING_LIMIT_TERMINAL_STATUSES:
-        return None
-    return raw
+    if isinstance(raw, dict):
+        rows = [raw]
+    elif isinstance(raw, list):
+        rows = [row for row in raw if isinstance(row, dict)]
+    else:
+        rows = []
+    live = [
+        row for row in rows
+        if str(row.get("status") or "PENDING").upper() not in PENDING_LIMIT_TERMINAL_STATUSES
+    ]
+    return live[-MAX_PENDING_LIMIT_ORDERS:]
+
+
+def pending_limit_from_state(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Backward-compatible primary pending-limit accessor: returns the nearest/first live order."""
+    orders = pending_limit_orders_from_state(state)
+    return orders[0] if orders else None
+
+
+def store_pending_limits(state: dict[str, Any], orders: list[dict[str, Any]]) -> None:
+    live = [
+        dict(order) for order in (orders or [])
+        if isinstance(order, dict)
+        and str(order.get("status") or "PENDING").upper() not in PENDING_LIMIT_TERMINAL_STATUSES
+    ]
+    state[STATE_PENDING_KEY] = live[-MAX_PENDING_LIMIT_ORDERS:]
 
 
 def store_pending_limit(state: dict[str, Any], order: Optional[dict[str, Any]]) -> None:
-    state[STATE_PENDING_KEY] = dict(order) if isinstance(order, dict) else None
+    """Compatibility helper: add/replace one order without deleting sibling resting limits."""
+    current = pending_limit_orders_from_state(state)
+    if order is None:
+        store_pending_limits(state, [])
+        return
+    order_id = str(order.get("order_id") or "")
+    merged = [row for row in current if str(row.get("order_id") or "") != order_id]
+    if str(order.get("status") or "PENDING").upper() not in PENDING_LIMIT_TERMINAL_STATUSES:
+        merged.append(dict(order))
+    store_pending_limits(state, merged)
+
+
+def remove_pending_limit(state: dict[str, Any], order_id: str) -> None:
+    """Remove exactly one live order without touching sibling resting limits."""
+    target = str(order_id or "")
+    store_pending_limits(
+        state,
+        [
+            row for row in pending_limit_orders_from_state(state)
+            if str(row.get("order_id") or "") != target
+        ],
+    )
 
 
 def candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
@@ -6922,7 +7029,7 @@ def load_journal() -> dict[str, Any]:
                 "preconfirmation_events", "limit_orders"):
         journal.setdefault(key, [])
     for key in ("setup_statistics", "entry_quality_audit", "calendar_statistics",
-                "learning_status", "degradation"):
+                "learning_status", "degradation", "limit_arming_statistics"):
         journal.setdefault(key, {})
     journal.setdefault("analytics", {
         "trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "wilson_lower": 0.0,
@@ -7968,70 +8075,91 @@ def _refusal_summary(audit: dict[str, Any]) -> dict[str, Any]:
 
 
 def _arming_summary(audit: dict[str, Any]) -> dict[str, Any]:
-    """What the fresh levels cost us this cycle, in numbers that accumulate.
-
-    audit["limit_arming"] is rebuilt every cycle and thrown away with it, so a week of
-    "nothing armed" left no trace of whether the levels were too far, too close to the
-    resistance above them, or simply not there. The deferred decision about MIN_RUNWAY_R
-    is a decision about a distribution, and a distribution nobody wrote down cannot be
-    argued with. Counted per reason so the dominant one is readable without replaying.
-    """
+    """Per-cycle LIMIT gate summary using full counts when available, legacy rows as fallback."""
     arming = dict(audit.get("limit_arming") or {})
     if not arming:
         return {}
     rows = [row for row in (arming.get("refusals") or []) if isinstance(row, dict)]
-    reasons: dict[str, int] = {}
-    for row in rows:
-        reason = str(row.get("reason") or "UNKNOWN")
-        # Several reasons embed their own measurement — LEVEL_2.70ATR_UNREACHABLE,
-        # SCORE_55_BELOW_58 — so they are bucketed by shape, otherwise the tally is one
-        # entry per value and the dominant refusal is unreadable.
-        if reason.startswith("LEVEL_") and reason.endswith("UNREACHABLE"):
-            key = "LEVEL_UNREACHABLE"
-        elif reason.startswith("SCORE_"):
-            key = "SCORE_BELOW_MIN"
-        elif reason.startswith("HTF_"):
-            key = "HTF_BELOW_MIN"
-        elif reason.startswith("ANCHOR_AGE_"):
-            key = "ANCHOR_TOO_OLD"
-        elif reason.startswith("SPREAD_"):
-            key = "SPREAD_TOO_WIDE"
-        elif reason.startswith("STOP_"):
-            key = "STOP_EXCEEDS_CAP"
-        else:
-            key = reason
-        reasons[key] = reasons.get(key, 0) + 1
-    ordered = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
-    measured = [
-        round(safe_float(row.get("runway_r")), 3) for row in rows
-        if row.get("runway_r") is not None
-    ]
+    gate_counts = dict(arming.get("gate_counts") or {})
+    refusal_counts = dict(arming.get("refusal_counts") or {})
+
+    if not refusal_counts:
+        def bucket(reason: str) -> str:
+            r = str(reason or "UNKNOWN")
+            if r.startswith("LEVEL_") and r.endswith("UNREACHABLE"): return "LEVEL_UNREACHABLE"
+            if r.startswith("SCORE_"): return "SCORE_BELOW_MIN"
+            if r.startswith("HTF_"): return "HTF_BELOW_MIN"
+            if r.startswith("ANCHOR_AGE_"): return "ANCHOR_TOO_OLD"
+            if r.startswith("SPREAD_"): return "SPREAD_TOO_WIDE"
+            if r.startswith("STOP_"): return "STOP_EXCEEDS_CAP"
+            return r
+        counts = collections.Counter(bucket(row.get("reason") or "UNKNOWN") for row in rows)
+        refusal_counts = dict(counts)
+
     summary = {
         "evaluated": safe_int(arming.get("evaluated")),
+        "limit_eligible": safe_int(arming.get("limit_eligible", arming.get("evaluated"))),
         "considered": safe_int(arming.get("considered")),
         "refused": safe_int(arming.get("refused")),
         "skipped_reacted": safe_int(arming.get("skipped_reacted")),
+        "skipped_existing": safe_int(arming.get("skipped_existing")),
         "armed": bool(arming.get("armed")),
-        "reasons": dict(ordered),
-        # One headline, not two. The audit's own "refusal" is whichever row came first,
-        # so a live cycle reported LEVEL_NOT_AHEAD_OF_PRICE while the tally said
-        # STOP_EXCEEDS_CAP — two answers to the same question in one block. It survives
-        # only for the cycle where nothing was refused and build_trade_plan said no.
-        "dominant_refusal": ordered[0][0] if ordered else str(arming.get("refusal") or ""),
+        "armed_count": safe_int(arming.get("armed_count")),
+        "gate_counts": gate_counts,
+        "refusal_counts": refusal_counts,
+        "reasons": refusal_counts,
+        "dominant_refusal": (
+            max(refusal_counts.items(), key=lambda item: (item[1], item[0]))[0]
+            if refusal_counts else str(arming.get("refusal") or "")
+        ),
         "limit_arm_max_atr": safe_float(arming.get("limit_arm_max_atr")),
         "tradeable_atr15_floor": safe_float(arming.get("tradeable_atr15_floor")),
     }
-    if summary["armed"]:
-        summary["order_id"] = str(arming.get("order_id") or "")
-        summary["level"] = arming.get("level")
-        summary["distance_atr"] = arming.get("distance_atr")
-    if measured:
-        summary["runway_r_refused"] = sorted(measured)
-    distances = [round(safe_float(row.get("distance_atr")), 3) for row in rows
-                 if row.get("distance_atr") is not None]
-    if distances:
-        summary["distance_atr_refused"] = sorted(distances)
+    runway_sample = sorted(
+        round(safe_float(row.get("runway_r")), 3)
+        for row in rows if row.get("runway_r") is not None
+    )
+    distance_sample = sorted(
+        round(safe_float(row.get("distance_atr")), 3)
+        for row in rows if row.get("distance_atr") is not None
+    )
+    # Keep old field names so existing journal consumers/self-tests remain compatible.
+    if runway_sample:
+        summary["runway_r_refused"] = runway_sample
+        summary["runway_r_refused_sample"] = runway_sample
+    if distance_sample:
+        summary["distance_atr_refused"] = distance_sample
+        summary["distance_atr_refused_sample"] = distance_sample
     return summary
+
+
+def accumulate_limit_arming_statistics(journal: dict[str, Any], audit: dict[str, Any]) -> None:
+    """Persist full LIMIT gate/refusal counts across signal-journal retention windows."""
+    arming = dict(audit.get("limit_arming") or {})
+    if not arming:
+        return
+    stats = dict(journal.get("limit_arming_statistics") or {})
+    stats.setdefault("schema_version", LIMIT_GATE_STATS_SCHEMA_VERSION)
+    stats["cycles"] = safe_int(stats.get("cycles")) + 1
+    stats["limit_eligible"] = safe_int(stats.get("limit_eligible")) + safe_int(
+        arming.get("limit_eligible", arming.get("evaluated"))
+    )
+    stats["considered"] = safe_int(stats.get("considered")) + safe_int(arming.get("considered"))
+    stats["refused"] = safe_int(stats.get("refused")) + safe_int(arming.get("refused"))
+    stats["armed_orders"] = safe_int(stats.get("armed_orders")) + safe_int(arming.get("armed_count"))
+    stats.setdefault("refusal_counts", {})
+    for bucket, count in dict(arming.get("refusal_counts") or {}).items():
+        stats["refusal_counts"][str(bucket)] = safe_int(stats["refusal_counts"].get(str(bucket))) + safe_int(count)
+    stats.setdefault("gate_passes", {})
+    for gate, count in dict(arming.get("gate_counts") or {}).items():
+        stats["gate_passes"][str(gate)] = safe_int(stats["gate_passes"].get(str(gate))) + safe_int(count)
+    eligible = max(safe_int(stats.get("limit_eligible")), 1)
+    stats["gate_pass_rates"] = {
+        str(gate): round(safe_float(count) / eligible, 4)
+        for gate, count in dict(stats.get("gate_passes") or {}).items()
+    }
+    stats["updated_at"] = iso_now()
+    journal["limit_arming_statistics"] = stats
 
 
 def build_signal_record(
@@ -8056,6 +8184,8 @@ def build_signal_record(
     budget = dict(stage_plan.get("daily_risk_budget") or {})
     nearest = dict((audit.get("anchor_watch") or {}).get("nearest") or {})
 
+    freshness = dict(getattr(candidate, "score_components", {}) or {}).get("anchor_reaction_freshness", {}) if candidate else {}
+    limit_arming = dict(audit.get("limit_arming") or {})
     record: dict[str, Any] = {
         "id": decision.id,
         "time": decision.time,
@@ -8088,6 +8218,9 @@ def build_signal_record(
         "entry_distance_atr": safe_float(gates.get("distance_atr")),
         "reaction_latency_minutes": safe_float(reaction.get("latency_minutes")),
         "reaction_gates": reaction,
+        "anchor_reaction_freshness": freshness,
+        "limit_gate_counts": dict(limit_arming.get("gate_counts") or {}),
+        "limit_refusal_counts": dict(limit_arming.get("refusal_counts") or {}),
         "runway_r": runway.get("runway_r"),
         "stop_distance_atr": round(
             safe_float(geometry.get("decision_distance")) / safe_float(geometry.get("atr15")), 4
@@ -8557,17 +8690,20 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
         "route": "LIMIT", "armable": False, "reason": "",
         "price": round_price(price), "level": round_price(level), "atr15": round(atr15, 6),
         "max_distance_atr": LIMIT_ARM_MAX_ATR,
+        "gates": {},
     }
 
     if price <= 0 or level <= 0 or not sign:
         out["reason"] = "NO_TRUSTED_PRICE_OR_LEVEL"
         return out
+    out["gates"]["PRICE"] = True
     if not bool(context.get("execution_price_trusted")):
         # A cross-venue display price can describe the market but cannot fill an
         # order, and an armed order is exactly a promise to fill one later.
         out["reason"] = "PRICE_SOURCE_DISPLAY_ONLY_NOT_EXECUTABLE"
         return out
 
+    out["gates"]["EXECUTION_PRICE_TRUSTED"] = True
     now_ms = int(now_utc().timestamp() * 1000)
     age_minutes = (now_ms - int(anchor.created_ts)) / 60000.0
     out["age_minutes"] = round(age_minutes, 2)
@@ -8580,6 +8716,8 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     if int(anchor.cooldown_until_ts) > now_ms:
         out["reason"] = "LEVEL_RECENTLY_CONSUMED"
         return out
+    out["gates"]["FRESH"] = True
+    out["gates"]["COOLDOWN"] = True
 
     # Intactness is the one reaction gate an untouched level can and must still pass:
     # the falsifier firing while the order rests is what turns a wait into a loss.
@@ -8590,6 +8728,7 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     if sign * (price - anchor.invalidation) <= 0 or beyond:
         out["reason"] = "ANCHOR_ALREADY_INVALIDATED"
         return out
+    out["gates"]["INTACT"] = True
 
     # The order earns its price by waiting, so the level must lie AHEAD of the market:
     # below it for a LONG, above it for a SHORT. A level price has already passed
@@ -8599,15 +8738,18 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     if distance_atr <= 0:
         out["reason"] = "LEVEL_NOT_AHEAD_OF_PRICE"
         return out
+    out["gates"]["AHEAD"] = True
     if distance_atr > LIMIT_ARM_MAX_ATR:
         out["reason"] = f"LEVEL_{distance_atr:.2f}ATR_UNREACHABLE"
         return out
+    out["gates"]["REACHABLE"] = True
 
     spread_atr = safe_float(context.get("spread_atr"))
     out["spread_atr"] = round(spread_atr, 4)
     if spread_atr > MAX_SPREAD_ATR:
         out["reason"] = f"SPREAD_{spread_atr:.2f}ATR"
         return out
+    out["gates"]["SPREAD"] = True
 
     # Stop and runway are measured at the level, because that is where the order
     # fills. Passing them at the waiting price would prove nothing about the entry.
@@ -8618,6 +8760,7 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     if not stop_profile.get("within_cap"):
         out["reason"] = f"STOP_{safe_float(stop_profile.get('distance_atr')):.2f}ATR_EXCEEDS_CAP"
         return out
+    out["gates"]["STOP_CAP"] = True
 
     risk = max(safe_float(stop_profile.get("distance")), ABS_MIN_STOP_DOLLARS, 1e-9)
     # nearest_runway_r passes its entry to technical_targets, which measures every
@@ -8650,9 +8793,14 @@ def evaluate_limit_arming(context: dict[str, Any], anchor: Anchor) -> dict[str, 
     out["runway_r_from_current_price"] = runway.get("runway_r")
     out["meets_min_r"] = meets_min_r
     out["meets_min_atr"] = meets_min_atr
-    if not (meets_min_r and meets_min_atr):
-        out["reason"] = "RUNWAY_BELOW_MIN_R" if not meets_min_r else "RUNWAY_BELOW_MIN_ATR"
+    if not meets_min_r:
+        out["reason"] = "RUNWAY_BELOW_MIN_R"
         return out
+    out["gates"]["RUNWAY_R"] = True
+    if not meets_min_atr:
+        out["reason"] = "RUNWAY_BELOW_MIN_ATR"
+        return out
+    out["gates"]["RUNWAY_ATR"] = True
 
     out["armable"] = True
     out["stop_profile"] = stop_profile
@@ -8979,6 +9127,141 @@ def _arming_candidate(
     )
 
 
+def _arm_limit_at_level_many(
+    context: dict[str, Any],
+    journal: dict[str, Any],
+    state: dict[str, Any],
+    anchors: list[Anchor],
+    degradation: dict[str, Any],
+    audit: dict[str, Any],
+    signal_id: str,
+    reacted_ids: frozenset = frozenset(),
+    existing_order_anchor_ids: frozenset = frozenset(),
+    max_orders: Optional[int] = None,
+) -> list[tuple[dict[str, Any], TradePlan, Candidate]]:
+    """Evaluate all LIMIT anchors and arm up to the available independent slots."""
+    htf = dict(context.get("htf_fact") or {})
+    target_count = MAX_PENDING_LIMIT_ORDERS if max_orders is None else max(0, min(MAX_PENDING_LIMIT_ORDERS, int(max_orders)))
+    considered = []
+    refused = []
+    gate_counts = collections.Counter()
+    refusal_counts = collections.Counter()
+    skipped_reacted = skipped_existing = evaluated = 0
+
+    def bucket(reason: str) -> str:
+        r = str(reason or "UNKNOWN")
+        if r.startswith("LEVEL_") and r.endswith("UNREACHABLE"): return "LEVEL_UNREACHABLE"
+        if r.startswith("SCORE_"): return "SCORE_BELOW_MIN"
+        if r.startswith("HTF_"): return "HTF_BELOW_MIN"
+        if r.startswith("ANCHOR_AGE_"): return "ANCHOR_TOO_OLD"
+        if r.startswith("SPREAD_"): return "SPREAD_TOO_WIDE"
+        if r.startswith("STOP_"): return "STOP_EXCEEDS_CAP"
+        return r
+
+    def reject(anchor, arming, reason):
+        k=bucket(reason); refusal_counts[k]+=1
+        refused.append({
+            "anchor_id": str(anchor.id), "setup_type": str(anchor.setup_type),
+            "setup_family": str(anchor.setup_family), "side": str(anchor.side),
+            "level": round_price(safe_float(anchor.level)),
+            "distance_atr": arming.get("distance_atr"), "reason": str(reason),
+            "failed_gate": k, "runway_r": arming.get("runway_r"),
+            "runway_distance_atr": arming.get("runway_distance_atr"),
+            "stop_distance_atr": arming.get("stop_distance_atr"),
+            "meets_min_r": arming.get("meets_min_r"),
+            "meets_min_atr": arming.get("meets_min_atr"),
+        })
+
+    for anchor in anchors:
+        aid = str(anchor.id)
+        if aid in reacted_ids:
+            skipped_reacted += 1; continue
+        if aid in existing_order_anchor_ids:
+            skipped_existing += 1; continue
+        if _anchor_route(anchor) != "LIMIT":
+            continue
+        evaluated += 1
+        arming = evaluate_limit_arming(context, anchor)
+        for gate_name, passed in dict(arming.get("gates") or {}).items():
+            if passed: gate_counts[str(gate_name)] += 1
+        if not arming.get("armable"):
+            reject(anchor, arming, arming.get("reason") or "NOT_ARMABLE"); continue
+
+        alignment = htf_alignment_for_side(htf, str(anchor.side))
+        alignment_score = safe_float(alignment.get("score"))
+        if alignment_score < MIN_HTF_ALIGNMENT_SCORE:
+            reject(anchor, arming, f"HTF_{alignment.get('state')}_{alignment_score:.0f}_BELOW_{MIN_HTF_ALIGNMENT_SCORE}"); continue
+        gate_counts["HTF_ALIGNMENT"] += 1
+
+        candidate = _arming_candidate(context, anchor, arming, degradation)
+        if candidate is None:
+            reject(anchor, arming, "SETUP_DEMOTED_BY_OWN_STATISTICS"); continue
+        gate_counts["SETUP_STATISTICS"] += 1
+        if safe_int(candidate.final_score) < MIN_SCORE_PROBE:
+            reject(anchor, arming, f"SCORE_{candidate.final_score}_BELOW_{MIN_SCORE_PROBE}"); continue
+        gate_counts["SCORE_MIN"] += 1
+        considered.append((candidate.evidence_adjusted_selection_score, anchor, arming, candidate))
+
+    considered.sort(key=lambda x: (-x[0], str(x[1].setup_type), str(x[1].id)))
+    arming_audit = {
+        "schema_version": LIMIT_GATE_STATS_SCHEMA_VERSION, "route":"LIMIT",
+        "evaluated": evaluated, "limit_eligible": evaluated, "considered": len(considered),
+        "refused": len(refused), "refusal_counts": dict(refusal_counts),
+        "gate_counts": dict(gate_counts), "refusals": refused[:REJECTED_HYPOTHESIS_SHADOW_LIMIT],
+        "skipped_reacted": skipped_reacted, "skipped_existing": skipped_existing,
+        "armed": False, "armed_count": 0, "max_pending_limit_orders": MAX_PENDING_LIMIT_ORDERS,
+        "capacity_available": target_count, "refusal": "",
+        "tradeable_atr15_floor": round(TRADEABLE_ATR15_FLOOR,6),
+        "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
+    }
+    audit["limit_arming"] = arming_audit
+    if target_count <= 0:
+        arming_audit["refusal"] = "PENDING_LIMIT_CAPACITY_EXHAUSTED"
+        return []
+    if not considered:
+        arming_audit["refusal"] = (
+            str(refused[0].get("reason") or "")
+            if refused else "NO_LIMIT_ROUTED_ANCHOR"
+        )
+        return []
+
+    armed=[]
+    for _, anchor, arming, candidate in considered[:target_count]:
+        plan = build_trade_plan(context, candidate, entry_price_override=safe_float(anchor.level), journal=journal, state=state)
+        if not (plan.valid and plan.execution_ready):
+            reason = str(plan.reason or "ARMING_PLAN_NOT_EXECUTABLE")
+            refusal_counts[bucket(reason)] += 1
+            if not arming_audit.get("refusal"):
+                arming_audit["refusal"] = reason
+            continue
+        plan.execution_source="LIMIT_ARMED_AT_LEVEL"
+        placement=_limit_entry_price(anchor, safe_float(context.get("price")))
+        row=_limit_order_row(context,candidate,anchor,str(signal_id),"",placement,int(now_utc().timestamp()*1000))
+        row.update({
+            "armed_without_reaction": True, "arming": dict(arming), "market_shadow": {},
+            "market_plan": {}, "market_candidate": {}, "execution_route": "LIMIT",
+            "canonical_setup_family": str(candidate.canonical_setup_family or "").upper(),
+            "escalated": False, "escalated_ts": 0, "escalated_price": 0.0,
+            "escalated_signal_id": "", "escalated_displacement_ts": 0, "escalation_refused": "",
+            "entry_stage": str(plan.entry_stage), "entry_action": _entry_action_for_stage(str(plan.entry_stage)),
+            "risk_pct": round(safe_float(plan.position_risk_pct),6),
+            "limit_shadow": _shadow_geometry(plan), "plan": plan_to_dict(plan),
+            "candidate": candidate_to_dict(candidate), "schema_version": LIMIT_ARM_SCHEMA_VERSION,
+        })
+        armed.append((row,plan,candidate))
+
+    arming_audit["armed"]=bool(armed)
+    arming_audit["armed_count"]=len(armed)
+    arming_audit["order_ids"]=[str(r.get("order_id") or "") for r,_,_ in armed]
+    arming_audit["levels"]=[r.get("limit_price") for r,_,_ in armed]
+    arming_audit["distance_atr"]=[safe_float((r.get("arming") or {}).get("distance_atr")) for r,_,_ in armed]
+    arming_audit["refusal_counts"]=dict(refusal_counts)
+    arming_audit["refused"]=sum(refusal_counts.values())
+    if not armed and not arming_audit["refusal"]:
+        arming_audit["refusal"]="ARMING_PLAN_NOT_EXECUTABLE"
+    return armed
+
+
 def _arm_limit_at_level(
     context: dict[str, Any],
     journal: dict[str, Any],
@@ -8989,125 +9272,12 @@ def _arm_limit_at_level(
     signal_id: str,
     reacted_ids: frozenset = frozenset(),
 ) -> Optional[tuple[dict[str, Any], TradePlan, Candidate]]:
-    """Rest one limit on the best fresh level price has not reached yet.
-
-    Called only when no reaction confirmed an entry, so arming never competes with a
-    real one. Levels that DID react are excluded outright: their candidate was already
-    scored and refused by the reaction path, and the renormalised weights here score
-    differently, so admitting them would be a second hearing for a refusal just made.
-    The volatility wall and the daily budget are left to build_trade_plan on purpose:
-    re-checking them here would create a second, drift-prone copy of limits a reacted
-    order obeys, and the whole point is that both routes answer to the same arithmetic.
-    One order rests at a time, so the best level wins and the rest are journaled as
-    refused rather than queued.
-    """
-    htf = dict(context.get("htf_fact") or {})
-    considered: list[tuple[float, Anchor, dict[str, Any], Candidate]] = []
-    refused: list[dict[str, Any]] = []
-    skipped_reacted = 0
-    evaluated = 0
-
-    def reject(anchor: Anchor, arming: dict[str, Any], reason: str) -> None:
-        refused.append({
-            "anchor_id": str(anchor.id), "setup_type": str(anchor.setup_type),
-            "side": str(anchor.side), "level": round_price(safe_float(anchor.level)),
-            "distance_atr": arming.get("distance_atr"), "reason": reason,
-            # The measurement behind the reason. Without it a week of refusals is a week
-            # of strings, and the runway distribution the deferred MIN_RUNWAY_R decision
-            # needs cannot be recovered from the journal at all.
-            "runway_r": arming.get("runway_r"),
-            "runway_distance_atr": arming.get("runway_distance_atr"),
-            "stop_distance_atr": arming.get("stop_distance_atr"),
-            "meets_min_r": arming.get("meets_min_r"),
-            "meets_min_atr": arming.get("meets_min_atr"),
-        })
-
-    for anchor in anchors:
-        if str(anchor.id) in reacted_ids:
-            skipped_reacted += 1
-            continue
-        if _anchor_route(anchor) != "LIMIT":
-            continue
-        evaluated += 1
-        arming = evaluate_limit_arming(context, anchor)
-        if not arming.get("armable"):
-            reject(anchor, arming, str(arming.get("reason") or "NOT_ARMABLE"))
-            continue
-        alignment = htf_alignment_for_side(htf, str(anchor.side))
-        alignment_score = safe_float(alignment.get("score"))
-        if alignment_score < MIN_HTF_ALIGNMENT_SCORE:
-            reject(anchor, arming, f"HTF_{alignment.get('state')}_{alignment_score:.0f}_BELOW_{MIN_HTF_ALIGNMENT_SCORE}")
-            continue
-        candidate = _arming_candidate(context, anchor, arming, degradation)
-        if candidate is None:
-            reject(anchor, arming, "SETUP_DEMOTED_BY_OWN_STATISTICS")
-            continue
-        if safe_int(candidate.final_score) < MIN_SCORE_PROBE:
-            reject(anchor, arming, f"SCORE_{candidate.final_score}_BELOW_{MIN_SCORE_PROBE}")
-            continue
-        considered.append((candidate.evidence_adjusted_selection_score, anchor, arming, candidate))
-
-    considered.sort(key=lambda item: (-item[0], str(item[1].setup_type), str(item[1].id)))
-    arming_audit: dict[str, Any] = {
-        "route": "LIMIT",
-        "evaluated": evaluated,
-        "considered": len(considered),
-        "refused": len(refused),
-        "refusals": refused[:REJECTED_HYPOTHESIS_SHADOW_LIMIT],
-        "skipped_reacted": skipped_reacted,
-        "armed": False,
-        "refusal": "",
-        "tradeable_atr15_floor": round(TRADEABLE_ATR15_FLOOR, 6),
-        "limit_arm_max_atr": LIMIT_ARM_MAX_ATR,
-    }
-    audit["limit_arming"] = arming_audit
-    if not considered:
-        arming_audit["refusal"] = str(refused[0]["reason"]) if refused else "NO_LIMIT_ROUTED_ANCHOR"
-        return None
-
-    _, anchor, arming, candidate = considered[0]
-    plan = build_trade_plan(
-        context, candidate, entry_price_override=safe_float(anchor.level),
-        journal=journal, state=state,
+    """Legacy single-order wrapper retained by the self-test suite."""
+    rows = _arm_limit_at_level_many(
+        context, journal, state, anchors, degradation, audit, signal_id,
+        reacted_ids=reacted_ids, existing_order_anchor_ids=frozenset(), max_orders=1,
     )
-    if not (plan.valid and plan.execution_ready):
-        arming_audit["refusal"] = str(plan.reason or "ARMING_PLAN_NOT_EXECUTABLE")
-        return None
-
-    plan.execution_source = "LIMIT_ARMED_AT_LEVEL"
-    placement = _limit_entry_price(anchor, safe_float(context.get("price")))
-    row = _limit_order_row(
-        context, candidate, anchor, str(signal_id), "",
-        placement, int(now_utc().timestamp() * 1000),
-    )
-    # No reaction, so no counterfactual market entry exists to shadow. The empty dict
-    # is read as NO_MARKET_MODEL by resolve_pending_limit rather than resolved at 0.0.
-    row["armed_without_reaction"] = True
-    row["arming"] = dict(arming)
-    row["market_shadow"] = {}
-    row["market_plan"] = {}
-    row["market_candidate"] = {}
-    row["execution_route"] = "LIMIT"
-    row["canonical_setup_family"] = str(candidate.canonical_setup_family or "").upper()
-    row["escalated"] = False
-    row["escalated_ts"] = 0
-    row["escalated_price"] = 0.0
-    row["escalated_signal_id"] = ""
-    row["escalated_displacement_ts"] = 0
-    row["escalation_refused"] = ""
-    row["entry_stage"] = str(plan.entry_stage)
-    row["entry_action"] = _entry_action_for_stage(str(plan.entry_stage))
-    row["risk_pct"] = round(safe_float(plan.position_risk_pct), 6)
-    row["limit_shadow"] = _shadow_geometry(plan)
-    row["plan"] = plan_to_dict(plan)
-    row["candidate"] = candidate_to_dict(candidate)
-    row["schema_version"] = LIMIT_ARM_SCHEMA_VERSION
-
-    arming_audit["armed"] = True
-    arming_audit["order_id"] = str(row.get("order_id"))
-    arming_audit["level"] = placement["limit_price"]
-    arming_audit["distance_atr"] = arming.get("distance_atr")
-    return row, plan, candidate
+    return rows[0] if rows else None
 
 
 def _upsert_limit_order(journal: dict[str, Any], row: dict[str, Any]) -> None:
@@ -9357,7 +9527,7 @@ def _execute_escalation(
     # record of one order.
     _upsert_limit_order(journal, order_row)
 
-    store_pending_limit(state, None)
+    remove_pending_limit(state, order_id)
     audit["pending_limit"] = {**dict(audit.get("pending_limit") or {}), "status": "CANCELLED"}
 
     decision = Decision(
@@ -9934,37 +10104,31 @@ def run_bot() -> int:
         "schema_version": SCHEMA_VERSION,
     }
 
+    pending_orders = pending_limit_orders_from_state(state)
     audit["pending_limit"] = {
-        "order_id": str((pending or {}).get("order_id") or ""),
-        "side": str((pending or {}).get("side") or ""),
-        "limit_price": safe_float((pending or {}).get("limit_price")),
-        "placed_ts": safe_int((pending or {}).get("placed_ts")),
-        "expires_ts": safe_int((pending or {}).get("expires_ts")),
-    } if pending is not None else {}
+        "count": len(pending_orders),
+        "order_ids": [str(row.get("order_id") or "") for row in pending_orders],
+        "orders": [
+            {
+                "order_id": str(row.get("order_id") or ""),
+                "anchor_id": str(row.get("anchor_id") or ""),
+                "side": str(row.get("side") or ""),
+                "setup_type": str(row.get("setup_type") or ""),
+                "limit_price": safe_float(row.get("limit_price")),
+                "placed_ts": safe_int(row.get("placed_ts")),
+                "expires_ts": safe_int(row.get("expires_ts")),
+            }
+            for row in pending_orders
+        ],
+    }
 
     if active is not None:
-        # A trade is still open. Step 3 already wrote this cycle's history row
-        # and already owns state["active_trade"]; nothing here may touch either.
         deferred_to_open_trade = True
         plan: Optional[TradePlan] = None
         decision = Decision(
             id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
             side=str(active.side), setup_type=str(active.setup_type), quality=0,
             reason="ACTIVE_TRADE_OPEN", regime=str(context.get("regime") or ""),
-            audit=audit, current_price=price,
-        )
-    elif pending is not None:
-        # An order is already resting on a level. Selecting a second candidate here
-        # would spend a different reacted level and stack a second order on top of
-        # the first, so this cycle only reports on the one that is working.
-        deferred_to_open_trade = True
-        plan = None
-        decision = Decision(
-            id=new_id("sig"), time=iso_now(), action=Action.NO_SETUP.value,
-            side=str(pending.get("side") or Side.NEUTRAL.value),
-            setup_type=str(pending.get("setup_type") or SetupType.NONE.value),
-            quality=safe_int(pending.get("score")),
-            reason="PENDING_LIMIT_OPEN", regime=str(context.get("regime") or ""),
             audit=audit, current_price=price,
         )
     else:
@@ -9979,15 +10143,95 @@ def run_bot() -> int:
             "reason": decision.reason,
         }
 
-    # --- 6. виконання: ліміт на рівні або ринком — за природою сетапу -------
+
+    # --- 6. виконання: ліміти та market працюють паралельно ------------------
     opened: Optional[ActiveTrade] = None
+    pending_orders = pending_limit_orders_from_state(state)
+    remaining_pending: list[dict[str, Any]] = []
+
+    # Resolve every resting order first. A fill is a fact; a single active-trade
+    # supervisor remains the safety invariant, so a second simultaneous fill is logged
+    # explicitly instead of being silently turned into an unmanaged position.
+    for pending_order in pending_orders:
+        opened_i, filled_decision, order_row = resolve_pending_limit(
+            context, pending_order, anchors_by_id, learning_mode,
+        )
+        status = str(order_row.get("status") or "PENDING")
+        _upsert_limit_order(journal, order_row)
+
+        if opened_i is not None and filled_decision is not None:
+            if opened is None and active is None:
+                opened = opened_i
+                store_active_trade(state, opened)
+                decision = filled_decision
+                plan = filled_decision.plan
+                append_history(state, {
+                    "type": decision.action, "side": decision.side,
+                    "setup_type": decision.setup_type, "quality": safe_int(decision.quality),
+                    "price": safe_float(order_row.get("fill_price")),
+                    "trade_id": opened.id, "signal_id": decision.id,
+                    "order_id": str(order_row.get("order_id") or ""),
+                })
+                print(
+                    f"[INFO] Лімітний ордер виконано: {decision.side} {decision.setup_type} "
+                    f"fill={_fmt_price(opened.entry)} risk={opened.position_risk_pct:.4f}% "
+                    f"trade_id={opened.id} order_id={order_row.get('order_id')}"
+                )
+            else:
+                # The exchange/model says this order filled, but supervision already has
+                # a live position. Do not resurrect it as a second ActiveTrade.
+                order_row["status_reason"] = "FILLED_WHILE_ACTIVE_TRADE_EXISTS"
+                _upsert_limit_order(journal, order_row)
+                print(
+                    f"[WARN] LIMIT fill while another trade is active: "
+                    f"order_id={order_row.get('order_id')} anchor={order_row.get('anchor_id')}"
+                )
+            continue
+
+        if status == "PENDING":
+            escalation_refusal = ""
+            if opened is None and active is None:
+                escalate, escalated_plan, escalation_refusal = _escalation_decision(
+                    context, journal, state, order_row, ranked, anchors_by_id,
+                )
+                if escalate is not None and escalated_plan is not None:
+                    opened, decision = _execute_escalation(
+                        context, state, journal, anchors_by_id, order_row, escalate,
+                        escalated_plan, learning_mode, audit, price,
+                    )
+                    plan = escalated_plan
+                    continue
+            order_row["escalation_refused"] = escalation_refusal
+            _upsert_limit_order(journal, order_row)
+            remaining_pending.append(order_row)
+            continue
+
+        # EXPIRED/CANCELLED are terminal and therefore intentionally dropped from state.
+        append_history(state, {
+            "type": Action.NO_SETUP.value, "side": str(order_row.get("side") or ""),
+            "setup_type": str(order_row.get("setup_type") or ""),
+            "quality": safe_int(order_row.get("score")), "price": price,
+            "reason": f"LIMIT_{status}", "order_id": str(order_row.get("order_id") or ""),
+        })
+
+    store_pending_limits(state, remaining_pending)
+    context["pending_limits"] = list(remaining_pending)
+    context["pending_limit"] = remaining_pending[0] if remaining_pending else None
+    audit["pending_limit"] = {
+        **dict(audit.get("pending_limit") or {}),
+        "count": len(remaining_pending),
+        "order_ids": [str(row.get("order_id") or "") for row in remaining_pending],
+        "resolved_this_run": len(pending_orders) - len(remaining_pending),
+    }
+
+    # A fresh reaction can execute even when other independent LIMIT orders remain.
+    # The daily budget and the single ActiveTrade supervisor stay the final risk guards.
     executable = bool(
-        plan and plan.valid and plan.execution_ready
+        opened is None
+        and plan and plan.valid and plan.execution_ready
         and decision.action in EXECUTABLE_ENTRY_ACTIONS
     )
     if executable and not bool(context.get("execution_price_trusted")):
-        # A cross-venue display price can describe the market but cannot fill an
-        # order. The plan stays in the journal; the entry does not happen.
         decision.action = Action.NO_SETUP.value
         decision.reason = "PRICE_SOURCE_DISPLAY_ONLY_NOT_EXECUTABLE"
         executable = False
@@ -9996,99 +10240,16 @@ def run_bot() -> int:
     if executable and decision.candidate is not None:
         placement_anchor = anchors_by_id.get(str(decision.candidate.anchor_id))
         if placement_anchor is None:
-            # Both routes need the anchor: the limit for its level and expiry, the
-            # market route to consume it on entry. A candidate whose anchor left
-            # memory this cycle cannot be executed either way. Flipping executable
-            # here (like the price guard above) lets the trailing branch journal it.
             decision.action = Action.NO_SETUP.value
             decision.reason = "ANCHOR_NOT_IN_MEMORY"
             executable = False
 
-    # Computed after both kill-switches so neither route can slip past them. Not
-    # decided in _make_decision: that function has to keep building the market plan
-    # for both routes, because the limit route needs it as its shadow and as the
-    # fallback an escalation executes.
     route = _execution_route(decision.candidate) if executable and decision.candidate is not None else ""
     audit["execution_route"] = route
 
-    if pending is not None:
-        # 6a. An order was already resting. Resolve it before deciding anything new:
-        # whether it filled is a fact about the last fifteen minutes, and a fill hands
-        # the unchanged supervision layer an ordinary ActiveTrade.
-        opened, filled_decision, order_row = resolve_pending_limit(
-            context, pending, anchors_by_id, learning_mode,
-        )
-        status = str(order_row.get("status") or "PENDING")
-        _upsert_limit_order(journal, order_row)
-        terminal = status in PENDING_LIMIT_TERMINAL_STATUSES
-        store_pending_limit(state, None if terminal else order_row)
-        context["pending_limit"] = None if opened is not None else order_row
-        audit["pending_limit"] = {**dict(audit.get("pending_limit") or {}), "status": status}
-
-        if opened is not None and filled_decision is not None:
-            store_active_trade(state, opened)
-            decision = filled_decision
-            plan = filled_decision.plan
-            append_history(state, {
-                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-                "quality": safe_int(decision.quality), "price": safe_float(order_row.get("fill_price")),
-                "trade_id": opened.id, "signal_id": decision.id,
-                "order_id": str(order_row.get("order_id") or ""),
-            })
-            print(
-                f"[INFO] Лімітний ордер виконано: {decision.side} {decision.setup_type} "
-                f"stage={opened.entry_stage} fill={_fmt_price(opened.entry)} "
-                f"stop={_fmt_price(opened.stop_initial)} risk={opened.position_risk_pct:.4f}% "
-                f"trade_id={opened.id} order_id={order_row.get('order_id')}"
-            )
-        else:
-            # Still resting. A fill is a fact about the last fifteen minutes; an
-            # escalation is a choice, so it is only considered now that resolve has
-            # said the level was not revisited.
-            escalation_refusal = "" if status == "PENDING" else f"ORDER_{status}"
-            escalate: Optional[Candidate] = None
-            escalated_plan: Optional[TradePlan] = None
-            if status == "PENDING":
-                escalate, escalated_plan, escalation_refusal = _escalation_decision(
-                    context, journal, state, order_row, ranked, anchors_by_id,
-                )
-
-            if escalate is not None and escalated_plan is not None:
-                opened, decision = _execute_escalation(
-                    context, state, journal, anchors_by_id, order_row, escalate,
-                    escalated_plan, learning_mode, audit, price,
-                )
-                context["pending_limit"] = None
-                plan = escalated_plan
-            else:
-                order_row["escalation_refused"] = escalation_refusal
-                _upsert_limit_order(journal, order_row)
-                # store_pending_limit keeps a shallow copy, so the refusal recorded just
-                # now needs a re-store to reach state — but only while the row is still
-                # live. Putting a terminal row back into a slot that was cleared above
-                # would leave junk behind for pending_limit_from_state to refuse.
-                if not terminal:
-                    store_pending_limit(state, order_row)
-                append_history(state, {
-                    "type": Action.NO_SETUP.value, "side": str(pending.get("side") or ""),
-                    "setup_type": str(pending.get("setup_type") or ""),
-                    "quality": safe_int(pending.get("score")), "price": price,
-                    "reason": f"LIMIT_{status}", "order_id": str(order_row.get("order_id") or ""),
-                    "escalation_refused": escalation_refusal,
-                })
-                print(
-                    f"[INFO] Лімітний ордер {status}: {order_row.get('status_reason') or 'чекає на рівень'}"
-                    + (f" | ескалація: {escalation_refusal}" if escalation_refusal else "")
-                )
-    elif executable and plan is not None and decision.candidate is not None and placement_anchor is not None:
-        # 6b/6c. Nothing resting and a reaction passed all eleven gates. Which of the
-        # two live models executes it is the setup's own property, decided by `route`.
+    if executable and plan is not None and decision.candidate is not None and placement_anchor is not None:
         event_id = ""
         if PRECONFIRMATION_LAYER_ENABLED:
-            # Created at placement, not at fill: the event measures whether the market
-            # accepted the reaction within its fixed window, which is a fact about the
-            # reaction and does not depend on when our price came back. Section 2
-            # already resolves every PENDING event each cycle, so nothing extra runs.
             event = make_preconfirmation_event(context, decision.candidate, decision.id)
             journal.setdefault("preconfirmation_events", []).append(event)
             context["preconfirmation_events"] = list(journal["preconfirmation_events"])[-PRECONFIRM_EMBEDDED_JOURNAL_LIMIT:]
@@ -10096,16 +10257,11 @@ def run_bot() -> int:
             audit["preconfirmation_event_id"] = event_id
 
         if route == "MARKET":
-            # 6c. Trend-continuation and session-expansion setups: price leaves the
-            # level and does not come back, so resting an order here would not be an
-            # early entry, it would be a missed trade. Executed at the current price.
             opened = _execute_market_entry(
                 context, state, anchors_by_id, decision.candidate, plan, decision,
                 learning_mode, event_id,
             )
         else:
-            # 6b. Return-to-the-level setups: the edge is the retrace, so the order
-            # rests on the level and earns its price by waiting.
             order_row, limit_plan = place_limit_order(
                 context, journal, state, decision.candidate, placement_anchor, plan, decision.id, event_id,
             )
@@ -10114,18 +10270,11 @@ def run_bot() -> int:
                 decision.action = Action.NO_SETUP.value
                 decision.reason = str(order_row.get("status_reason") or "LIMIT_NOT_PLACED")
                 plan = None
-                append_history(state, {
-                    "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-                    "quality": safe_int(decision.quality), "price": price,
-                    "reason": decision.reason, "order_id": str(order_row.get("order_id") or ""),
-                })
             else:
                 store_pending_limit(state, order_row)
-                context["pending_limit"] = order_row
-                # The message and the journal record describe the order the operator has
-                # to place, so they carry the plan built from the limit price. The market
-                # plan stays on the row as the shadow it is measured against, and as the
-                # model an escalation falls back to.
+                remaining_pending = pending_limit_orders_from_state(state)
+                context["pending_limits"] = list(remaining_pending)
+                context["pending_limit"] = remaining_pending[0] if remaining_pending else None
                 decision.plan = limit_plan
                 plan = limit_plan
                 append_history(state, {
@@ -10136,28 +10285,57 @@ def run_bot() -> int:
                 })
                 print(
                     f"[INFO] Лімітний ордер виставлено: {decision.side} {decision.setup_type} "
-                    f"limit={_fmt_price(order_row.get('limit_price'))} stop={_fmt_price(limit_plan.stop)} "
-                    f"tp0={_fmt_price(limit_plan.tp0)} risk={limit_plan.position_risk_pct:.4f}% "
-                    f"дійсний до {_iso_from_ms(safe_int(order_row.get('expires_ts')))[:16]} "
+                    f"limit={_fmt_price(order_row.get('limit_price'))} "
+                    f"stop={_fmt_price(limit_plan.stop)} risk={limit_plan.position_risk_pct:.4f}% "
                     f"order_id={order_row.get('order_id')}"
                 )
-    elif not deferred_to_open_trade:
-        # 6d. Nothing resting and nothing reacted. For a return-to-level setup that is
-        # not the end of the matter: waiting for the level IS the edge, so the order is
-        # armed on the fresh level and the fill is left to the market. This is the half
-        # of the hybrid that had no path before — a limit could only be placed after
-        # the level had already reacted, which is a market entry that waits.
-        armed = _arm_limit_at_level(
+
+    # Independently arm every other eligible untouched LIMIT anchor up to capacity.
+    # This is intentionally independent of the selected reaction and of other pending
+    # orders: each anchor gets its own order_id and lifecycle.
+    if opened is None and active is None:
+        current_pending = pending_limit_orders_from_state(state)
+        capacity = max(0, MAX_PENDING_LIMIT_ORDERS - len(current_pending))
+        existing_anchor_ids = frozenset(str(row.get("anchor_id") or "") for row in current_pending)
+        armed_rows = _arm_limit_at_level_many(
             context, journal, state, anchors, degradation, audit, str(decision.id),
-            frozenset(str(candidate.anchor_id) for candidate in candidates),
+            reacted_ids=frozenset(str(c.anchor_id) for c in candidates),
+            existing_order_anchor_ids=existing_anchor_ids,
+            max_orders=capacity,
         )
-        if armed is not None:
-            order_row, armed_plan, armed_candidate = armed
+        for order_row, armed_plan, armed_candidate in armed_rows:
             _upsert_limit_order(journal, order_row)
             store_pending_limit(state, order_row)
-            context["pending_limit"] = order_row
-            # The decision becomes the order, so section 7 journals it and section 8
-            # reports it as what the operator has to act on, not as another no-entry.
+            append_history(state, {
+                "type": _entry_action_for_stage(str(armed_plan.entry_stage)),
+                "side": str(armed_candidate.side),
+                "setup_type": str(armed_candidate.setup_type),
+                "quality": safe_int(armed_candidate.final_score),
+                "price": safe_float(order_row.get("limit_price")),
+                "signal_id": str(order_row.get("signal_id") or decision.id),
+                "order_id": str(order_row.get("order_id") or ""),
+                "reason": "LIMIT_ARMED_AT_LEVEL",
+            })
+            print(
+                f"[INFO] Ліміт заармлено: {armed_candidate.side} {armed_candidate.setup_type} "
+                f"limit={_fmt_price(order_row.get('limit_price'))} "
+                f"distance={safe_float((order_row.get('arming') or {}).get('distance_atr')):.2f} ATR "
+                f"order_id={order_row.get('order_id')}"
+            )
+
+        current_pending = pending_limit_orders_from_state(state)
+        context["pending_limits"] = list(current_pending)
+        context["pending_limit"] = current_pending[0] if current_pending else None
+        audit["pending_limit"] = {
+            **dict(audit.get("pending_limit") or {}),
+            "count": len(current_pending),
+            "order_ids": [str(row.get("order_id") or "") for row in current_pending],
+        }
+
+        # Surface the strongest newly armed order in the decision row without hiding
+        # the multi-order count carried in audit["limit_arming"].
+        if armed_rows and decision.action == Action.NO_SETUP.value:
+            order_row, armed_plan, armed_candidate = armed_rows[0]
             decision.candidate = armed_candidate
             decision.side = str(armed_candidate.side)
             decision.setup_type = str(armed_candidate.setup_type)
@@ -10167,25 +10345,7 @@ def run_bot() -> int:
             decision.plan = armed_plan
             plan = armed_plan
             audit["execution_route"] = "LIMIT"
-            append_history(state, {
-                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-                "quality": safe_int(decision.quality), "price": safe_float(order_row.get("limit_price")),
-                "signal_id": decision.id, "order_id": str(order_row.get("order_id") or ""),
-                "reason": "LIMIT_ARMED_AT_LEVEL",
-            })
-            print(
-                f"[INFO] Ліміт заармлено на свіжому рівні: {decision.side} {decision.setup_type} "
-                f"limit={_fmt_price(order_row.get('limit_price'))} stop={_fmt_price(armed_plan.stop)} "
-                f"tp0={_fmt_price(armed_plan.tp0)} risk={armed_plan.position_risk_pct:.4f}% "
-                f"рівень за {safe_float((order_row.get('arming') or {}).get('distance_atr')):.2f} ATR "
-                f"дійсний до {_iso_from_ms(safe_int(order_row.get('expires_ts')))[:16]} "
-                f"order_id={order_row.get('order_id')}"
-            )
-        else:
-            append_history(state, {
-                "type": decision.action, "side": decision.side, "setup_type": decision.setup_type,
-                "quality": safe_int(decision.quality), "price": price, "reason": decision.reason,
-            })
+
 
     # --- 7. один запис сигналу для журналу, навчання та дашборду ------------
     # signal_events belongs to supervision (section 3); the decision row below already
@@ -10203,6 +10363,7 @@ def run_bot() -> int:
         print("TELEGRAM (DECISION):", plain_telegram_text(message)[:320])
         send_telegram(message)
 
+    accumulate_limit_arming_statistics(journal, audit)
     store_anchors(state, anchors)
     save_state(state)
     save_journal(journal)
@@ -12717,16 +12878,16 @@ def _check_limit_arms_on_a_fresh_level() -> list[str]:
     # Driving the helper is not enough: a cycle that never calls it arms nothing and
     # every assertion above still passes. Same bytecode tie _check_detectors_cover_taxonomy uses.
     called = set(getattr(run_bot, "__code__", None).co_names or ())
-    for required in ("_arm_limit_at_level",):
+    for required in ("_arm_limit_at_level_many",):
         if required not in called:
             problems.append(
                 f"run_bot no longer calls {required}, so a cycle with no reaction still ends "
                 "in NO_SETUP and the limit route stays unreachable"
             )
-    arming_names = set(getattr(_arm_limit_at_level, "__code__", None).co_names or ())
+    arming_names = set(getattr(_arm_limit_at_level_many, "__code__", None).co_names or ())
     for required in ("evaluate_limit_arming", "_arming_candidate", "build_trade_plan"):
         if required not in arming_names:
-            problems.append(f"_arm_limit_at_level no longer calls {required}")
+            problems.append(f"_arm_limit_at_level_many no longer calls {required}")
     return problems
 
 
